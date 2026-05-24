@@ -10,6 +10,8 @@
 
 [English](#) | [中文](README_ZH.md)
 
+Mirror: [Gitee（国内镜像）](https://gitee.com/wangzwa/jishu-hub)
+
 </div>
 
 ## Why Jishu Hub?

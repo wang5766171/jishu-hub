@@ -10,6 +10,8 @@
 
 [English](README.md) | [中文](#)
 
+镜像：[Gitee（国内加速）](https://gitee.com/wangzwa/jishu-hub) | [GitHub](https://github.com/wang5766171/jishu-hub)
+
 </div>
 
 ## 为什么选择 Jishu Hub？
