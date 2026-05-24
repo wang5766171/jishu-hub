@@ -1,8 +1,8 @@
 <div align="center">
 
-# Jishu Hub
+# Jishu Hub（机枢）
 
-### A Desktop Manager for Claude Code — Projects, Sessions & Config in One Place
+### A Multi-Agent Collaboration Platform for CLI-based AI Agents
 
 [![Version](https://img.shields.io/github/v/release/wang5766171/jishu-hub?color=blue&label=version)](https://github.com/wang5766171/jishu-hub/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://github.com/wang5766171/jishu-hub/releases)
@@ -11,26 +11,24 @@
 
 [English](#) | [中文](README_ZH.md)
 
-Mirror: [Gitee（国内镜像）](https://gitee.com/wangzwa/jishu-hub)
+Mirror: [Gitee](https://gitee.com/wangzwa/jishu-hub)
 
 </div>
 
 ## Why Jishu Hub?
 
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code) is a powerful AI coding CLI — but everyday use has its friction:
+AI coding agents are evolving rapidly — Claude Code, OpenAI Codex, and more are emerging as powerful CLI tools. But managing them is fragmented: scattered terminals, buried session logs, hand-edited configs.
 
-- Switching between projects requires repeated terminal commands
-- Session history is buried in JSONL files
-- Editing config means hand-editing `settings.json` (easy to make mistakes)
-- Chatting with AI means opening a terminal every time
+**Jishu Hub (机枢)** is a multi-agent collaboration platform that unifies these CLI-based AI agents in one desktop interface. Like precision gears in a machine — each agent is a "机枢" — running stably and intelligently on the platform.
 
-**Jishu Hub** wraps Claude Code in a native desktop GUI:
+Currently running **Claude Code** as the first agent, with a plugin architecture designed to onboard more agents as they emerge.
 
-- **In-App Chat** — Talk to Claude directly inside Hub, no terminal needed. Send any file type as attachments
-- **Project Management** — Auto-discovers all projects, one-click switching
-- **Session Browser** — Search and browse full conversation history with syntax highlighting
-- **Config Editor** — Form-based editing, no more JSON typos
-- **Plugin Architecture** — Extensible multi-agent framework ready for future agents
+- **Multi-Agent Platform** — Plugin architecture to onboard any CLI-based AI agent, not locked to one provider
+- **In-App Chat** — Talk to AI agents directly inside Hub, no terminal needed. Send any file type as attachments
+- **Session Browser** — Search and browse full conversation history across all projects
+- **Project Management** — Auto-discovers projects, one-click switching
+- **Config Editor** — Form-based editing with presets and auto-backup
+- **Extensible by Design** — AgentPlugin trait abstraction, ready for the next agent
 
 ## Screenshots
 
@@ -45,8 +43,13 @@ Mirror: [Gitee（国内镜像）](https://gitee.com/wangzwa/jishu-hub)
 
 ## Features
 
+### Agent Collaboration
+- Plugin-based agent registration and switching
+- Currently supports Claude Code CLI
+- AgentPlugin trait abstraction for easy onboarding of new agents
+
 ### Chat
-- Chat with Claude directly in the app, no terminal required
+- Chat with AI agents directly in the app, no terminal required
 - Send any file type as attachments (images, documents, code, etc.)
 - Project-local files detected automatically — referenced by path, not copied
 - Three ways to add files: paste, drag-and-drop, or file picker
@@ -59,12 +62,12 @@ Mirror: [Gitee（国内镜像）](https://gitee.com/wangzwa/jishu-hub)
 - Resume sessions in terminal with one click
 
 ### Project Management
-- Auto-discovers all projects under `~/.claude/projects/`
+- Auto-discovers all projects
 - Shows session count and last active time
 - Add projects via folder picker (including uninitialized projects)
 
 ### Configuration
-- Visual form editor for `settings.json`
+- Visual form editor for agent settings
 - Model selector, environment variables, plugin toggles
 - Save and switch between config presets
 - Auto-backup with one-click restore
@@ -136,9 +139,8 @@ npm run tauri dev
 
 | Path | Description |
 |------|-------------|
-| `~/.claude/projects/` | Claude Code project data |
-| `~/.claude/settings.json` | Global configuration |
-| `~/.jishu-hub/` | Hub metadata (session names, presets, state) |
+| `~/.jishu-hub/` | Hub metadata (agents, session names, presets, state) |
+| `~/.claude/` | Claude Code agent data |
 
 </details>
 

@@ -2,7 +2,7 @@
 
 # Jishu Hub（机枢）
 
-### Claude Code 桌面管理客户端 —— 项目、会话、配置一站管理
+### 基于 CLI 技术的多智能体协同平台
 
 [![Version](https://img.shields.io/github/v/release/wang5766171/jishu-hub?color=blue&label=版本)](https://gitee.com/wangzwa/jishu-hub/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://gitee.com/wangzwa/jishu-hub/releases)
@@ -11,26 +11,24 @@
 
 [English](README.md) | [中文](#)
 
-镜像：[Gitee（国内加速）](https://gitee.com/wangzwa/jishu-hub) | [GitHub](https://github.com/wang5766171/jishu-hub)
+镜像：[Gitee](https://gitee.com/wangzwa/jishu-hub) | [GitHub](https://github.com/wang5766171/jishu-hub)
 
 </div>
 
 ## 为什么选择 Jishu Hub？
 
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code) 是强大的 AI 编程 CLI 工具，但日常使用中总有些不方便：
+AI 编程智能体正在快速演进 —— Claude Code、OpenAI Codex 等强大的 CLI 工具不断涌现，但管理它们却很零散：终端窗口到处都是、会话日志深埋文件中、配置需要手动编辑 JSON。
 
-- 多个项目切换要反复敲命令
-- 会话历史只能翻 JSONL 文件
-- 改配置要手动编辑 `settings.json`，容易出错
-- 想和 AI 对话还得打开终端
+**Jishu Hub（机枢）** 是一个多智能体协同平台，将各种基于 CLI 的 AI 智能体统一到同一个桌面界面中。就像一台精密机器中的齿轮 —— 每个智能体就是一个"机枢"，在平台上稳定、智能地协作运行。
 
-**Jishu Hub** 给 Claude Code 套上了一层图形界面，让你可以：
+目前已接入 **Claude Code** 作为首个智能体，插件化架构可随时接入更多智能体。
 
-- **应用内对话** —— 不用开终端，直接在 Hub 内和 Claude 交流，支持发送任意文件附件
-- **项目管理** —— 自动发现所有项目，一键切换
-- **会话浏览** —— 搜索和回看完整对话历史，支持语法高亮
-- **配置编辑** —— 表单化操作，告别 JSON 手误
-- **插件架构** —— 预留多智能体扩展能力
+- **多智能体平台** — 插件化架构，可接入任意基于 CLI 的 AI 智能体，不绑定单一厂商
+- **应用内对话** — 无需打开终端，直接在 Hub 内与 AI 智能体交流，支持发送任意文件附件
+- **会话浏览** — 跨项目搜索和回看完整对话历史
+- **项目管理** — 自动发现所有项目，一键切换
+- **配置编辑** — 表单化操作，支持预设保存与自动备份
+- **可扩展设计** — AgentPlugin 插件抽象层，随时准备接入下一个智能体
 
 ## 界面预览
 
@@ -42,12 +40,17 @@
 </p>
 -->
 
-> 📸 截图即将上传
+> 截图即将上传
 
 ## 功能特性
 
+### 智能体协同
+- 插件化智能体注册与切换
+- 目前支持 Claude Code CLI
+- AgentPlugin trait 抽象层，可轻松接入新智能体
+
 ### 对话
-- 应用内直接与 Claude 对话，无需打开终端
+- 应用内直接与 AI 智能体对话，无需打开终端
 - 支持发送任意格式文件附件（图片、文档、代码等）
 - 项目内文件自动识别，直接引用路径不重复复制
 - 支持粘贴、拖拽、文件选择器三种方式添加附件
@@ -60,12 +63,12 @@
 - 会话可一键在终端中继续
 
 ### 项目管理
-- 自动发现 `~/.claude/projects/` 下的所有项目
+- 自动发现所有项目
 - 显示会话数、最后活跃时间
 - 通过文件夹选择器添加项目（含未初始化项目）
 
 ### 配置管理
-- 可视化表单编辑 `settings.json`
+- 可视化表单编辑智能体配置
 - 模型选择、环境变量、插件开关
 - 配置预设保存与一键切换
 - 自动备份 + 一键恢复历史版本
@@ -81,9 +84,9 @@
 
 ## 快速开始
 
-前往 [GitHub Releases](https://github.com/wang5766171/jishu-hub/releases/latest) 下载最新版本安装包。
+前往 [Gitee Releases](https://gitee.com/wangzwa/jishu-hub/releases) 下载最新版本安装包。
 
-国内用户可从 [Gitee Releases](https://gitee.com/wangzwa/jishu-hub/releases) 下载。
+也可以从 [GitHub Releases](https://github.com/wang5766171/jishu-hub/releases/latest) 下载。
 
 **系统要求**：Windows 10 及以上
 
@@ -137,9 +140,8 @@ npm run tauri dev
 
 | 路径 | 说明 |
 |------|------|
-| `~/.claude/projects/` | Claude Code 项目数据 |
-| `~/.claude/settings.json` | 全局配置 |
-| `~/.jishu-hub/` | Hub 元数据（会话名称、预设、状态） |
+| `~/.jishu-hub/` | Hub 元数据（智能体注册、会话名称、预设、状态） |
+| `~/.claude/` | Claude Code 智能体数据 |
 
 </details>
 
