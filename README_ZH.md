@@ -4,8 +4,9 @@
 
 ### Claude Code 桌面管理客户端 —— 项目、会话、配置一站管理
 
-[![Version](https://img.shields.io/github/v/release/wang5766171/jishu-hub?color=blue&label=版本)](https://github.com/wang5766171/jishu-hub/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://github.com/wang5766171/jishu-hub/releases)
+[![Version](https://img.shields.io/github/v/release/wang5766171/jishu-hub?color=blue&label=版本)](https://gitee.com/wangzwa/jishu-hub/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://gitee.com/wangzwa/jishu-hub/releases)
+[![Download](https://img.shields.io/badge/下载-latest%20release-brightgreen.svg)](https://gitee.com/wangzwa/jishu-hub/releases)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
 
 [English](README.md) | [中文](#)

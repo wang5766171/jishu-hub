@@ -6,6 +6,7 @@
 
 [![Version](https://img.shields.io/github/v/release/wang5766171/jishu-hub?color=blue&label=version)](https://github.com/wang5766171/jishu-hub/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://github.com/wang5766171/jishu-hub/releases)
+[![Download](https://img.shields.io/badge/download-latest%20release-brightgreen.svg)](https://github.com/wang5766171/jishu-hub/releases/latest)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
 
 [English](#) | [中文](README_ZH.md)
