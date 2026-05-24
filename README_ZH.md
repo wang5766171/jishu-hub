@@ -32,15 +32,20 @@ AI 编程智能体正在快速演进 —— Claude Code、OpenAI Codex 等强大
 
 ## 界面预览
 
-<!-- 在此处添加截图，格式如下： -->
-<!--
 <p align="center">
-  <img src="./docs/screenshots/chat-zh.png" alt="对话页面" width="49%" />
-  <img src="./docs/screenshots/manage-zh.png" alt="管理页面" width="49%" />
+  <img src="./docs/screenshots/会话-暗色.png" alt="对话（暗色）" width="49%" />
+  <img src="./docs/screenshots/会话彩色.png" alt="对话（彩色）" width="49%" />
 </p>
--->
 
-> 截图即将上传
+<p align="center">
+  <img src="./docs/screenshots/项目管理.png" alt="项目管理" width="49%" />
+  <img src="./docs/screenshots/配置管理.png" alt="配置管理" width="49%" />
+</p>
+
+<p align="center">
+  <img src="./docs/screenshots/会话内容搜索.png" alt="会话搜索" width="49%" />
+  <img src="./docs/screenshots/快捷命令.png" alt="快捷命令" width="49%" />
+</p>
 
 ## 功能特性
 

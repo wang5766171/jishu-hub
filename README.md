@@ -32,14 +32,20 @@ Currently running **Claude Code** as the first agent, with a plugin architecture
 
 ## Screenshots
 
-<!-- Add screenshots here, format:
 <p align="center">
-  <img src="./docs/screenshots/chat-en.png" alt="Chat Page" width="49%" />
-  <img src="./docs/screenshots/manage-en.png" alt="Manage Page" width="49%" />
+  <img src="./docs/screenshots/会话-暗色.png" alt="Chat (Dark)" width="49%" />
+  <img src="./docs/screenshots/会话彩色.png" alt="Chat (Colorful)" width="49%" />
 </p>
--->
 
-> Screenshots coming soon
+<p align="center">
+  <img src="./docs/screenshots/项目管理.png" alt="Projects" width="49%" />
+  <img src="./docs/screenshots/配置管理.png" alt="Config" width="49%" />
+</p>
+
+<p align="center">
+  <img src="./docs/screenshots/会话内容搜索.png" alt="Search" width="49%" />
+  <img src="./docs/screenshots/快捷命令.png" alt="Commands" width="49%" />
+</p>
 
 ## Features
 
