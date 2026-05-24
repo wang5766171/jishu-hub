@@ -77,6 +77,25 @@
 
 ## Quick Start
 
+Download the latest release from [GitHub Releases](https://github.com/wang5766171/jishu-hub/releases/latest).
+
+For users in China, downloads are also available from [Gitee Releases](https://gitee.com/wangzwa/jishu-hub/releases).
+
+**System Requirements**: Windows 10 or later
+
+## Contributing
+
+Contributions are welcome! Whether it's code, bug reports, or feature suggestions.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+<details>
+<summary><strong>Local Development</strong></summary>
+
 ### Prerequisites
 
 | Tool | Min Version | Purpose |
@@ -88,27 +107,13 @@
 ### Build & Run
 
 ```bash
-# Clone the repo
 git clone https://github.com/wang5766171/jishu-hub.git
 cd jishu-hub
-
-# Install dependencies
 npm install
-
-# Dev mode (hot reload)
 npm run tauri dev
-
-# Production build
-npm run tauri build
 ```
 
-## Download & Install
-
-Download the latest release from [GitHub Releases](https://github.com/wang5766171/jishu-hub/releases/latest).
-
-For users in China, downloads are also available from [Gitee Releases](https://gitee.com/wangzwa/jishu-hub/releases).
-
-**System Requirements**: Windows 10 or later
+</details>
 
 <details>
 <summary><strong>Tech Stack</strong></summary>
@@ -133,16 +138,6 @@ For users in China, downloads are also available from [Gitee Releases](https://g
 | `~/.jishu-hub/` | Hub metadata (session names, presets, state) |
 
 </details>
-
-## Contributing
-
-Contributions are welcome! Whether it's code, bug reports, or feature suggestions.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
 
 ## License
 

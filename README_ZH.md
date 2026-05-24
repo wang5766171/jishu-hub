@@ -78,6 +78,25 @@
 
 ## 快速开始
 
+前往 [GitHub Releases](https://github.com/wang5766171/jishu-hub/releases/latest) 下载最新版本安装包。
+
+国内用户可从 [Gitee Releases](https://gitee.com/wangzwa/jishu-hub/releases) 下载。
+
+**系统要求**：Windows 10 及以上
+
+## 贡献
+
+欢迎贡献代码、报告问题或提出建议！
+
+1. Fork 本仓库
+2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
+3. 提交更改 (`git commit -m 'Add amazing feature'`)
+4. 推送到分支 (`git push origin feature/amazing-feature`)
+5. 发起 Pull Request
+
+<details>
+<summary><strong>本地开发</strong></summary>
+
 ### 环境要求
 
 | 软件 | 最低版本 | 用途 |
@@ -89,27 +108,13 @@
 ### 构建运行
 
 ```bash
-# 克隆项目
 git clone https://github.com/wang5766171/jishu-hub.git
 cd jishu-hub
-
-# 安装依赖
 npm install
-
-# 开发模式（热重载）
 npm run tauri dev
-
-# 生产构建
-npm run tauri build
 ```
 
-## 下载安装
-
-前往 [Releases](https://github.com/wang5766171/jishu-hub/releases/latest) 下载最新版本安装包。
-
-国内用户可从 [Gitee Releases](https://gitee.com/wangzwa/jishu-hub/releases) 下载。
-
-**系统要求**：Windows 10 及以上
+</details>
 
 <details>
 <summary><strong>技术架构</strong></summary>
@@ -134,16 +139,6 @@ npm run tauri build
 | `~/.jishu-hub/` | Hub 元数据（会话名称、预设、状态） |
 
 </details>
-
-## 贡献
-
-欢迎贡献代码、报告问题或提出建议！
-
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
-3. 提交更改 (`git commit -m 'Add amazing feature'`)
-4. 推送到分支 (`git push origin feature/amazing-feature`)
-5. 发起 Pull Request
 
 ## License
 
