@@ -6,8 +6,8 @@ export type FontLevel = "s" | "m" | "l" | "xl";
 const STORAGE_KEY_BASE = "jishu-hub-font-size-base";
 const STORAGE_KEY_PROSE = "jishu-hub-font-size-prose";
 
-const BASE_MAP: Record<FontLevel, string> = { s: "14px", m: "15px", l: "16px", xl: "17px" };
-const PROSE_MAP: Record<FontLevel, string> = { s: "14px", m: "15px", l: "16px", xl: "17px" };
+const BASE_MAP: Record<FontLevel, string> = { s: "15px", m: "19px", l: "23px", xl: "27px" };
+const PROSE_MAP: Record<FontLevel, string> = { s: "12px", m: "15px", l: "18px", xl: "21px" };
 
 function applyFontSize(base: FontLevel, prose: FontLevel) {
   // Set fontSize directly on root to trigger CSS transition (CSS variable changes are instant)

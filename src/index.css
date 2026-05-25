@@ -81,7 +81,7 @@
   --icon-send-fg: var(--color-primary-foreground);
 
   /* Font size presets (default: medium) */
-  --font-size-base: 15px;
+  --font-size-base: 19px;
   --font-size-prose: 15px;
 }
 
