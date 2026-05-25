@@ -160,28 +160,37 @@ pub fn run_silent_command(
     args: &[&str],
     cwd: Option<&str>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let mut cmd = if cfg!(target_os = "windows") {
-        let mut c = std::process::Command::new("cmd");
-        c.arg("/C");
-        c.arg(command);
-        for arg in args {
-            c.arg(arg);
-        }
+    if cfg!(target_os = "windows") {
+        let mut c = std::process::Command::new("powershell");
+        c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]);
+
+        let args_joined = args.iter()
+            .map(|a| if a.contains(' ') { format!("'{}'", a.replace("'", "''")) } else { a.to_string() })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let pwsh_cmd = match cwd {
+            Some(dir) => {
+                // Use LiteralPath to support special characters like [ ] or Chinese
+                format!("Set-Location -LiteralPath '{}'; & {} {}", dir.replace("'", "''"), command, args_joined)
+            },
+            None => format!("& {} {}", command, args_joined),
+        };
+
+        c.arg(pwsh_cmd);
         #[cfg(target_os = "windows")]
         c.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        c
+        let status = c.status()?;
+        Ok(status.success())
     } else {
         let mut c = std::process::Command::new(command);
         c.args(args);
-        c
-    };
-
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
+        if let Some(dir) = cwd {
+            c.current_dir(dir);
+        }
+        let status = c.status()?;
+        Ok(status.success())
     }
-
-    let status = cmd.status()?;
-    Ok(status.success())
 }
 
 /// Run a command in a new terminal window. The terminal stays open after the command finishes.
