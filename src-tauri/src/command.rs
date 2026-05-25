@@ -13,7 +13,6 @@ pub struct CustomCommand {
     pub project_path: Option<String>,
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Commands {
     pub commands: Vec<CustomCommand>,
@@ -26,7 +25,9 @@ fn commands_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(dir.join("commands.json"))
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(path: &PathBuf) -> Result<T, Box<dyn std::error::Error>> {
+fn read_json<T: for<'de> Deserialize<'de>>(
+    path: &PathBuf,
+) -> Result<T, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
     Ok(serde_json::from_str(&content)?)
 }
@@ -71,7 +72,10 @@ pub fn delete_custom_command(id: &str) -> Result<(), Box<dyn std::error::Error>>
     write_json(&path, &data)
 }
 
-pub fn open_in_terminal(project_path: &str, resume_session_id: Option<&str>) -> Result<u32, Box<dyn std::error::Error>> {
+pub fn open_in_terminal(
+    project_path: &str,
+    resume_session_id: Option<&str>,
+) -> Result<u32, Box<dyn std::error::Error>> {
     let claude_cmd = match resume_session_id {
         Some(id) => format!("claude --resume {}", id),
         None => "claude".to_string(),
@@ -114,7 +118,10 @@ pub fn open_in_terminal(project_path: &str, resume_session_id: Option<&str>) -> 
         std::process::Command::new("osascript")
             .args([
                 "-e",
-                &format!("tell application \"Terminal\" to do script \"cd '{}' && {}\"", project_path, claude_cmd),
+                &format!(
+                    "tell application \"Terminal\" to do script \"cd '{}' && {}\"",
+                    project_path, claude_cmd
+                ),
             ])
             .spawn()?;
         Ok(child.id())
@@ -122,7 +129,12 @@ pub fn open_in_terminal(project_path: &str, resume_session_id: Option<&str>) -> 
         // Linux: try common terminal emulators
         let terminal = which_terminal()?;
         let child = std::process::Command::new(terminal)
-            .args(["-e", "sh", "-c", &format!("cd '{}' && {}", project_path, claude_cmd)])
+            .args([
+                "-e",
+                "sh",
+                "-c",
+                &format!("cd '{}' && {}", project_path, claude_cmd),
+            ])
             .spawn()?;
         Ok(child.id())
     }
@@ -142,8 +154,76 @@ fn which_terminal() -> Result<&'static str, Box<dyn std::error::Error>> {
     Ok("xterm")
 }
 
+/// Run an initialization command in a new terminal window and wait for it to finish.
+pub fn run_init_command(
+    command: &str,
+    cwd: Option<&str>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    if cfg!(target_os = "windows") {
+        let has_wt = std::process::Command::new("cmd")
+            .args(["/C", "where wt >nul 2>nul"])
+            .creation_flags(0x00000008)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        if has_wt {
+            let mut cmd = std::process::Command::new("wt");
+            if let Some(dir) = cwd {
+                cmd.args(["-d", dir]);
+            }
+            // Use cmd /C to exit when finished
+            cmd.args(["--", "cmd", "/C", command]).status()?;
+        } else {
+            let mut cmd = std::process::Command::new("cmd");
+            cmd.args(["/C", command]);
+            if let Some(dir) = cwd {
+                cmd.current_dir(dir);
+            }
+            cmd.status()?;
+        }
+    } else if cfg!(target_os = "macos") {
+        // MacOS is harder to wait for via AppleScript, but we can try
+        let escaped = command.replace('\'', "'\\''");
+        let shell_cmd = match cwd {
+            Some(dir) => format!(
+                "cd '{}' && {}; exit",
+                dir, escaped
+            ),
+            None => format!("{}; exit", escaped),
+        };
+        // This is still async in AppleScript sense, but we can try to wait for the osascript itself
+        std::process::Command::new("osascript")
+            .args([
+                "-e",
+                &format!(
+                    "tell application \"Terminal\" to do script \"{}\"",
+                    shell_cmd
+                ),
+            ])
+            .status()?;
+    } else {
+        let terminal = which_terminal()?;
+        let escaped = command.replace('\'', "'\\''");
+        let shell_cmd = match cwd {
+            Some(dir) => format!(
+                "cd '{}' && {}; exit",
+                dir, escaped
+            ),
+            None => format!("{}; exit", escaped),
+        };
+        std::process::Command::new(terminal)
+            .args(["-e", "sh", "-c", &shell_cmd])
+            .status()?;
+    }
+    Ok(true)
+}
+
 /// Run a command in a new terminal window. The terminal stays open after the command finishes.
-pub fn run_in_terminal(command: &str, cwd: Option<&str>) -> Result<bool, Box<dyn std::error::Error>> {
+pub fn run_in_terminal(
+    command: &str,
+    cwd: Option<&str>,
+) -> Result<bool, Box<dyn std::error::Error>> {
     if cfg!(target_os = "windows") {
         let has_wt = std::process::Command::new("cmd")
             .args(["/C", "where wt >nul 2>nul"])
@@ -158,8 +238,7 @@ pub fn run_in_terminal(command: &str, cwd: Option<&str>) -> Result<bool, Box<dyn
             if let Some(dir) = cwd {
                 cmd.args(["-d", dir]);
             }
-            cmd.args(["--", "cmd", "/K", &wrapped])
-                .spawn()?;
+            cmd.args(["--", "cmd", "/K", &wrapped]).spawn()?;
         } else {
             let wrapped = format!("prompt $P$G& @echo %CD%^>{}& @echo.& {}", command, command);
             let mut cmd = std::process::Command::new("cmd");
@@ -172,7 +251,10 @@ pub fn run_in_terminal(command: &str, cwd: Option<&str>) -> Result<bool, Box<dyn
     } else if cfg!(target_os = "macos") {
         let escaped = command.replace('\'', "'\\''");
         let shell_cmd = match cwd {
-            Some(dir) => format!("cd '{}' && echo '> {}'; echo; {}; exec bash", dir, escaped, command),
+            Some(dir) => format!(
+                "cd '{}' && echo '> {}'; echo; {}; exec bash",
+                dir, escaped, command
+            ),
             None => format!("echo '> {}'; echo; {}; exec bash", escaped, command),
         };
         std::process::Command::new("open")
@@ -180,13 +262,22 @@ pub fn run_in_terminal(command: &str, cwd: Option<&str>) -> Result<bool, Box<dyn
             .spawn()?;
         std::thread::sleep(std::time::Duration::from_millis(500));
         std::process::Command::new("osascript")
-            .args(["-e", &format!("tell application \"Terminal\" to do script \"{}\"", shell_cmd)])
+            .args([
+                "-e",
+                &format!(
+                    "tell application \"Terminal\" to do script \"{}\"",
+                    shell_cmd
+                ),
+            ])
             .spawn()?;
     } else {
         let terminal = which_terminal()?;
         let escaped = command.replace('\'', "'\\''");
         let shell_cmd = match cwd {
-            Some(dir) => format!("cd '{}' && echo '> {}'; echo; {}; exec sh", dir, escaped, command),
+            Some(dir) => format!(
+                "cd '{}' && echo '> {}'; echo; {}; exec sh",
+                dir, escaped, command
+            ),
             None => format!("echo '> {}'; echo; {}; exec sh", escaped, command),
         };
         std::process::Command::new(terminal)

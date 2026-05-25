@@ -53,22 +53,13 @@ export function ProjectCard({
   const handleInit = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await invokeCommand("run_in_terminal", { commandStr: "claude init", cwd: project.path });
-      
-      // Since initialization happens in a separate terminal process, it takes time.
-      // We need to poll the project status to see when the .claude folder is created.
-      let attempts = 0;
-      const pollInterval = setInterval(() => {
-        attempts++;
-        if (attempts > 30) { // Give up after 30 seconds
-          clearInterval(pollInterval);
-        }
-        onRefresh?.();
-      }, 1000);
+      // Use init_project which waits for completion
+      await invokeCommand("init_project", { commandStr: "claude init", cwd: project.path });
     } catch (err) {
       console.error("Failed to run claude init:", err);
-      onRefresh?.();
     }
+    // Refresh once after the command finishes
+    onRefresh?.();
   };
 
   const handleCardClick = () => {

@@ -14,8 +14,15 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
   const [error, setError] = useState<string | null>(null);
 
   const fetch = useCallback((silent?: boolean): Promise<T> => {
-    if (!silent) setLoading(true);
+    if (!silent) {
+      setLoading(true);
+      setData(null);
+    }
     setError(null);
+    if (!command) {
+      setLoading(false);
+      return Promise.resolve(null as unknown as T);
+    }
     return invoke<T>(command, args)
       .then((result) => {
         setData(result);
