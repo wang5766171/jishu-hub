@@ -162,20 +162,28 @@ pub fn run_silent_command(
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let mut cmd = if cfg!(target_os = "windows") {
         let mut c = std::process::Command::new("cmd");
-        c.args(["/C", command]);
-        c.args(args);
+        if let Some(dir) = cwd {
+            // Standardize path separators for Windows
+            let clean_dir = dir.replace('/', "\\");
+            // Build a single command string that switches drive and directory
+            let args_joined = args.iter().map(|a| if a.contains(' ') { format!("\"{}\"", a) } else { a.to_string() }).collect::<Vec<_>>().join(" ");
+            let full_cmd = format!("cd /D \"{}\" && {} {}", clean_dir, command, args_joined);
+            c.args(["/C", &full_cmd]);
+        } else {
+            c.args(["/C", command]);
+            c.args(args);
+        }
         #[cfg(target_os = "windows")]
         c.creation_flags(0x08000000); // CREATE_NO_WINDOW
         c
     } else {
         let mut c = std::process::Command::new(command);
         c.args(args);
+        if let Some(dir) = cwd {
+            c.current_dir(dir);
+        }
         c
     };
-
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
 
     let status = cmd.status()?;
     Ok(status.success())
