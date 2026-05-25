@@ -1,31 +1,31 @@
-# Jishu Hub v0.4.1 Release Plan
+# Jishu Hub v0.4.1 版本规划
 
-This document outlines the changes to be implemented in the v0.4.1 release.
+本文档概述了 v0.4.1 版本中将要实施的修改内容。
 
-## 1. Title Bar Optimization
-*   **Status**: Completed.
-*   **Details**: Replaced manual drag event handling with native `-webkit-app-region: drag` for a smooth, native-like window dragging experience on Windows without the "toggle drag" bug.
+## 1. 标题栏体验优化
+*   **状态**: 已完成
+*   **详情**: 移除了手动接管拖拽事件的代码，改用原生的 `-webkit-app-region: drag` 属性，彻底解决了 Windows 系统下偶尔出现的“点击拖拽（松开不停止）”的 bug，提供了丝滑的原生窗口拖拽体验。
 
-## 2. About Menu Update
-*   **Target**: `src/App.tsx`
-*   **Details**: Update the Gitee link from `https://gitee.com/wangzwa/claude-hub` to `https://gitee.com/wangzwa/jishu-hub`.
+## 2. 关于菜单地址更正
+*   **状态**: 已完成
+*   **详情**: 将关于菜单中的 Gitee 链接从 `https://gitee.com/wangzwa/claude-hub` 更正为正确的仓库地址 `https://gitee.com/wangzwa/jishu-hub`。
 
-## 3. Project Initialization Fix
-*   **Target**: `src/components/projects/project-card.tsx` and backend command.
-*   **Details**: Investigate and fix the issue where clicking the "not initialized" alert on a new project does nothing. We will ensure that the init command properly triggers terminal execution or provides feedback.
+## 3. 项目初始化无响应修复
+*   **状态**: 已完成
+*   **详情**: 修复了在添加未包含 `.claude` 目录的新项目时，点击“未初始化，点击执行 claude init”按钮没有任何反应的问题。修正了后端调用的参数字段（从 `command` 改为 `commandStr`）。
 
-## 4. Session List Search Restoration
-*   **Target**: `src/pages/chat-page.tsx`, `src/components/sessions/session-list.tsx`, `src/lib/session-search.ts`
-*   **Details**: Restore the session list search functionality that was lost in v0.4.0. The search box in the sidebar should filter the list of sessions based on content/titles, indicating the number of matching sessions, in addition to the right-pane content search.
+## 4. 会话列表搜索功能恢复
+*   **状态**: 已完成
+*   **详情**: 恢复了侧边栏搜索框过滤会话列表的功能。现在在搜索时，不仅右侧的会话内容会高亮，左侧的会话列表也会实时过滤出包含该内容的会话，并以气泡形式显示命中次数及预览相关的文本片段。
 
-## 5. Title Bar Menu Renaming
-*   **Target**: `src/App.tsx`, `src/i18n/zh.json`, `src/i18n/en.json`
-*   **Details**: Rename the "Config" (配置) button in the title bar to "Manage" (管理) to prevent user confusion with the "Config" menu item inside the Manage page itself.
+## 5. 标题栏按钮更名防歧义
+*   **状态**: 已完成
+*   **详情**: 将标题栏上的“配置”按钮重命名为“管理”，以避免与点击进去后的管理页面中真正的“配置”菜单项名称产生混淆。
 
-## 6. Sidebar Collapse UI Optimization (AI Polish)
-*   **Target**: `src/components/layout/sidebar.tsx`
-*   **Details**: When the left sidebar is collapsed, it retains three icons. Currently, the height of these icons or their container changes, causing a UI jump. Ensure the collapsed state maintains the exact same height for these elements as the expanded state.
+## 6. 折叠侧边栏高度一致性优化
+*   **状态**: 已完成
+*   **详情**: 重新设置了左侧边栏顶部的布局高度。为“项目图标”、“展开按钮”和“新对话按钮”所在的三行指定了固定的高度约束，确保在展开和折叠侧边栏时，这三个图标的垂直位置完全一致，消除了视觉跳跃感。
 
-## 7. Font Size Step Adjustments
-*   **Target**: `src/hooks/use-font-size.ts`, `src/index.css`
-*   **Details**: Adjust the font size progression. The current "Small" will become "Medium". Based on this new baseline, we will add new "Small", "Large", and "Extra Large" options with smaller, more granular steps to avoid drastic sizing changes.
+## 7. 会话内容字体大小梯度优化
+*   **状态**: 已完成
+*   **详情**: 仅针对“会话内容”调整了字号。将原来的“小”档位（15px）上调为现在的“中”档位。以 15px 为基准，采用 3px 为步长，重新确立了细腻的四档梯度：小 (12px)、中 (15px)、大 (18px)、特大 (21px)，并保持了系统 UI 字体梯度不变。
