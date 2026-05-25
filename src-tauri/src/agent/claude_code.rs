@@ -214,7 +214,7 @@ impl AgentPlugin for ClaudeCodeAgent {
         // Use non-interactive mode to skip trust dialog and init project metadata
         crate::command::run_silent_command(
             "claude",
-            &["-p", "Check project status", "--limit", "1"],
+            &["-p", "Check project status"],
             Some(project_path),
         )
         .map_err(|e| e.to_string())
