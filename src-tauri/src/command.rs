@@ -80,7 +80,22 @@ pub fn open_in_terminal(
         Some(id) => format!("claude --resume {}", id),
         None => "claude".to_string(),
     };
+    
+    open_in_terminal_raw(project_path, &claude_cmd, resume_session_id)
+}
 
+pub fn open_in_terminal_with_command(
+    project_path: &str,
+    command: &str,
+) -> Result<u32, Box<dyn std::error::Error>> {
+    open_in_terminal_raw(project_path, command, None)
+}
+
+fn open_in_terminal_raw(
+    project_path: &str,
+    claude_cmd: &str,
+    window_id: Option<&str>,
+) -> Result<u32, Box<dyn std::error::Error>> {
     if cfg!(target_os = "windows") {
         let has_wt = std::process::Command::new("cmd")
             .args(["/C", "where wt >nul 2>nul"])
@@ -93,7 +108,7 @@ pub fn open_in_terminal(
             // Spawn wt directly — avoids nested quoting issues with cmd /C
             let mut cmd = std::process::Command::new("wt");
             // Named window per session so we can focus the correct one later
-            if let Some(id) = resume_session_id {
+            if let Some(id) = window_id {
                 cmd.args(["-w", &format!("claude-{}", id)]);
             }
             let child = cmd

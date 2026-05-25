@@ -116,6 +116,12 @@ pub trait AgentPlugin {
         resume_session_id: Option<&str>,
     ) -> Result<u32, Box<dyn std::error::Error>>;
 
+    fn open_in_terminal_with_command(
+        &self,
+        project_path: &str,
+        command: &str,
+    ) -> Result<u32, Box<dyn std::error::Error>>;
+
     fn init_project(&self, project_path: &str) -> Result<bool, String>;
 }
 

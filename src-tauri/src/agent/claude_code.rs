@@ -210,10 +210,24 @@ impl AgentPlugin for ClaudeCodeAgent {
         crate::command::open_in_terminal(project_path, resume_session_id)
     }
 
+    fn open_in_terminal_with_command(
+        &self,
+        project_path: &str,
+        command: &str,
+    ) -> Result<u32, Box<dyn std::error::Error>> {
+        crate::command::open_in_terminal_with_command(project_path, command)
+    }
+
     fn init_project(&self, project_path: &str) -> Result<bool, String> {
-        // Open a visible terminal running `claude`. This allows the user to interact
-        // with the native "Quick safety check" prompt for empty/uninitialized folders.
-        crate::command::open_in_terminal(project_path, None)
+        // Open a visible terminal running `claude` with an initial prompt. 
+        // This forces Claude to take an action (initializing the project) 
+        // while allowing the user to interact with the safety check.
+        // We use "-p" here so it's a one-shot command if the user accepts trust, 
+        // or just interactive without -p. Let's use a prompt that makes it do something.
+        // On Windows, the quotes around the prompt need to be careful if we pass via cmd /K.
+        // Actually, just `claude "Initialize this project"` works.
+        let command = "claude \"Please initialize this project and tell me when it's done.\"";
+        crate::command::open_in_terminal_with_command(project_path, command)
             .map(|_| true)
             .map_err(|e| e.to_string())
     }
