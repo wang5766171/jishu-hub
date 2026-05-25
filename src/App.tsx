@@ -10,7 +10,7 @@ import { Github } from "@/components/icons/github";
 import { Gitee } from "@/components/icons/gitee";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useState, useEffect, useCallback, useRef, type MouseEvent as ReactMouseEvent } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { useTheme, type Theme } from "@/hooks/use-theme";
 import { useFontSize, type FontLevel } from "@/hooks/use-font-size";

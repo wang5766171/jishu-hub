@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { MessageView } from "@/components/sessions/message-view";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
@@ -114,7 +114,7 @@ export function ChatPage({
   // Build display session list with new session injection
   let displaySessions = sessions ?? [];
   if (activeSearchQuery.trim() && sessions) {
-    displaySessions = searchResults.map(r => sessions.find(s => s.id === r.sessionId)!).filter(Boolean) as Session[];
+    displaySessions = searchResults.map((r: SessionSearchResult) => sessions.find(s => s.id === r.sessionId)!).filter(Boolean) as Session[];
   }
 
   if (newChatInfo && newChatInfo.projectId === projectId && !activeSearchQuery.trim()) {
@@ -563,7 +563,7 @@ export function ChatPage({
               : session.started_at
                 ? formatRelativeTime(session.started_at)
                 : null;
-            const searchHit = searchResults.find(r => r.sessionId === session.id);
+            const searchHit = searchResults.find((r: SessionSearchResult) => r.sessionId === session.id);
             return (
               <button
                 key={isFakeEntry ? "__new_chat__" : session.id}
