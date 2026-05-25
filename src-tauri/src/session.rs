@@ -6,7 +6,10 @@ fn serialize_pathbuf<S: serde::Serializer>(path: &PathBuf, s: S) -> Result<S::Ok
     s.serialize_str(&path.to_string_lossy())
 }
 
-fn serialize_option_datetime<S: serde::Serializer>(dt: &Option<DateTime<Utc>>, s: S) -> Result<S::Ok, S::Error> {
+fn serialize_option_datetime<S: serde::Serializer>(
+    dt: &Option<DateTime<Utc>>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
     match dt {
         Some(d) => s.serialize_str(&d.to_rfc3339()),
         None => s.serialize_none(),
@@ -84,7 +87,8 @@ fn smart_summary(text: &str) -> String {
         first_sentence.to_string()
     } else {
         // Find a natural break point near 50 chars
-        let end = first_sentence.char_indices()
+        let end = first_sentence
+            .char_indices()
             .take_while(|(i, _)| *i < 50)
             .last()
             .map(|(i, c)| i + c.len_utf8())
@@ -104,11 +108,10 @@ fn parse_content_blocks(value: &serde_json::Value) -> Vec<ContentBlock> {
                 vec![ContentBlock::Text { text: s.clone() }]
             }
         }
-        serde_json::Value::Array(arr) => {
-            arr.iter()
-                .filter_map(|item| serde_json::from_value(item.clone()).ok())
-                .collect()
-        }
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .filter_map(|item| serde_json::from_value(item.clone()).ok())
+            .collect(),
         _ => vec![],
     }
 }
@@ -125,7 +128,8 @@ pub fn parse_message(line: &str) -> Option<Message> {
         return None;
     }
 
-    let content_value = v.get("message")
+    let content_value = v
+        .get("message")
         .and_then(|m| m.get("content"))
         .cloned()
         .unwrap_or(serde_json::Value::Null);
@@ -138,7 +142,11 @@ pub fn parse_message(line: &str) -> Option<Message> {
 
     let timestamp = v.get("timestamp").and_then(|t| t.as_i64());
 
-    Some(Message { role, content, timestamp })
+    Some(Message {
+        role,
+        content,
+        timestamp,
+    })
 }
 
 fn merge_tool_results(messages: &mut Vec<Message>) {
@@ -146,7 +154,10 @@ fn merge_tool_results(messages: &mut Vec<Message>) {
     while i < messages.len() {
         let is_only_tool_results = messages[i].role == "user"
             && !messages[i].content.is_empty()
-            && messages[i].content.iter().all(|b| matches!(b, ContentBlock::ToolResult { .. }));
+            && messages[i]
+                .content
+                .iter()
+                .all(|b| matches!(b, ContentBlock::ToolResult { .. }));
 
         if is_only_tool_results && messages[i - 1].role == "assistant" {
             let blocks: Vec<ContentBlock> = messages[i].content.drain(..).collect();
@@ -195,15 +206,15 @@ pub fn load_session(path: &Path) -> Option<Session> {
         return None;
     }
 
-    let started_at = messages.first()
+    let started_at = messages
+        .first()
         .and_then(|m| m.timestamp)
         .map(|ts| DateTime::from_timestamp_millis(ts).unwrap_or_default());
 
-    let display_name = last_ai_title.or_else(|| {
-        first_user_text.map(|t| smart_summary(&t))
-    });
+    let display_name = last_ai_title.or_else(|| first_user_text.map(|t| smart_summary(&t)));
 
-    let project_path = path.parent()
+    let project_path = path
+        .parent()
         .and_then(|dir| dir.file_name())
         .map(|name| crate::project::decode_project_path(&name.to_string_lossy()));
 
@@ -225,13 +236,19 @@ pub fn list_sessions(project_dir: &Path) -> Vec<Session> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().map(|ext| ext == "jsonl").unwrap_or(false) {
-                let mtime = path.metadata().ok()
+                let mtime = path
+                    .metadata()
+                    .ok()
                     .and_then(|m| m.modified().ok())
                     .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                 if let Some(mut session) = load_session(&path) {
                     session.last_active = mtime
-                        .duration_since(std::time::SystemTime::UNIX_EPOCH).ok()
-                        .map(|d| DateTime::from_timestamp_millis(d.as_millis() as i64).unwrap_or_default());
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .ok()
+                        .map(|d| {
+                            DateTime::from_timestamp_millis(d.as_millis() as i64)
+                                .unwrap_or_default()
+                        });
                     sessions_with_time.push((session, mtime));
                 }
             }
@@ -273,7 +290,10 @@ mod tests {
 
     #[test]
     fn test_smart_summary_splits_on_punctuation() {
-        assert_eq!(smart_summary("First sentence. Second one"), "First sentence");
+        assert_eq!(
+            smart_summary("First sentence. Second one"),
+            "First sentence"
+        );
         assert_eq!(smart_summary("第一句。第二句"), "第一句");
     }
 

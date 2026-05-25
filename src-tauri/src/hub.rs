@@ -9,7 +9,9 @@ fn hub_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(dir)
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(path: &PathBuf) -> Result<T, Box<dyn std::error::Error>> {
+fn read_json<T: for<'de> Deserialize<'de>>(
+    path: &PathBuf,
+) -> Result<T, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
     Ok(serde_json::from_str(&content)?)
 }
@@ -302,7 +304,10 @@ pub fn load_project_metas() -> Result<HashMap<String, ProjectMeta>, Box<dyn std:
     Ok(metas.metas)
 }
 
-pub fn save_project_meta(encoded_name: &str, meta: ProjectMeta) -> Result<(), Box<dyn std::error::Error>> {
+pub fn save_project_meta(
+    encoded_name: &str,
+    meta: ProjectMeta,
+) -> Result<(), Box<dyn std::error::Error>> {
     let path = project_metas_path()?;
     let mut metas = if path.exists() {
         read_json::<ProjectMetas>(&path)?
@@ -362,7 +367,10 @@ fn save_project_merges(merges: &ProjectMerges) -> Result<(), Box<dyn std::error:
     write_json(&project_merges_path()?, merges)
 }
 
-pub fn merge_projects_logical(primary: &str, secondaries: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn merge_projects_logical(
+    primary: &str,
+    secondaries: Vec<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut merges = load_project_merges()?;
 
     // First, remove all secondaries from being primaries themselves
@@ -438,18 +446,23 @@ pub fn register_terminal_session(
     } else {
         TerminalSessions::default()
     };
-    sessions.sessions.insert(session_id, TerminalSessionInfo {
-        pid,
-        project_path,
-        started_at: chrono::Utc::now().to_rfc3339(),
-    });
+    sessions.sessions.insert(
+        session_id,
+        TerminalSessionInfo {
+            pid,
+            project_path,
+            started_at: chrono::Utc::now().to_rfc3339(),
+        },
+    );
     write_json(&path, &sessions)
 }
 
 /// Find a running terminal for the given session by searching process command lines.
 /// More reliable than PID tracking because wt.exe may delegate to existing WindowsTerminal.exe
 /// and the spawned PID dies immediately.
-pub fn find_session_terminal(session_id: &str) -> Result<Option<TerminalSessionInfo>, Box<dyn std::error::Error>> {
+pub fn find_session_terminal(
+    session_id: &str,
+) -> Result<Option<TerminalSessionInfo>, Box<dyn std::error::Error>> {
     if let Some(pid) = find_process_by_resume(session_id)? {
         let path = terminal_sessions_path()?;
         let mut sessions: TerminalSessions = if path.exists() {
@@ -459,14 +472,20 @@ pub fn find_session_terminal(session_id: &str) -> Result<Option<TerminalSessionI
         };
         let info = TerminalSessionInfo {
             pid,
-            project_path: sessions.sessions.get(session_id)
+            project_path: sessions
+                .sessions
+                .get(session_id)
                 .map(|s| s.project_path.clone())
                 .unwrap_or_default(),
-            started_at: sessions.sessions.get(session_id)
+            started_at: sessions
+                .sessions
+                .get(session_id)
                 .map(|s| s.started_at.clone())
                 .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
         };
-        sessions.sessions.insert(session_id.to_string(), info.clone());
+        sessions
+            .sessions
+            .insert(session_id.to_string(), info.clone());
         write_json(&path, &sessions)?;
         Ok(Some(info))
     } else {
@@ -546,7 +565,9 @@ pub fn cleanup_dead_sessions() -> Result<u32, Box<dyn std::error::Error>> {
     };
     let before = sessions.sessions.len();
     sessions.sessions.retain(|session_id, _info| {
-        find_process_by_resume(session_id).map(|r| r.is_some()).unwrap_or(false)
+        find_process_by_resume(session_id)
+            .map(|r| r.is_some())
+            .unwrap_or(false)
     });
     let removed = (before - sessions.sessions.len()) as u32;
     write_json(&path, &sessions)?;
@@ -574,7 +595,8 @@ pub fn list_config_templates() -> Vec<ConfigTemplate> {
         ConfigTemplate {
             id: "third-party-proxy".into(),
             name: "第三方 API 代理".into(),
-            description: "使用第三方代理或中转服务（OpenRouter、国内中转等）访问 Claude 或兼容模型".into(),
+            description: "使用第三方代理或中转服务（OpenRouter、国内中转等）访问 Claude 或兼容模型"
+                .into(),
             config: third_party_proxy_config(),
         },
         ConfigTemplate {
@@ -621,9 +643,18 @@ fn aws_bedrock_config() -> crate::config::ClaudeConfig {
     env.insert("AWS_ACCESS_KEY_ID".into(), String::new());
     env.insert("AWS_SECRET_ACCESS_KEY".into(), String::new());
     env.insert("AWS_REGION".into(), "us-east-1".into());
-    env.insert("ANTHROPIC_DEFAULT_SONNET_MODEL".into(), "us.anthropic.claude-sonnet-4-6".into());
-    env.insert("ANTHROPIC_DEFAULT_OPUS_MODEL".into(), "us.anthropic.claude-opus-4-7".into());
-    env.insert("ANTHROPIC_DEFAULT_HAIKU_MODEL".into(), "us.anthropic.claude-haiku-4-5-20251001-v1:0".into());
+    env.insert(
+        "ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
+        "us.anthropic.claude-sonnet-4-6".into(),
+    );
+    env.insert(
+        "ANTHROPIC_DEFAULT_OPUS_MODEL".into(),
+        "us.anthropic.claude-opus-4-7".into(),
+    );
+    env.insert(
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL".into(),
+        "us.anthropic.claude-haiku-4-5-20251001-v1:0".into(),
+    );
     crate::config::ClaudeConfig {
         api_provider: Some("bedrock".into()),
         env: Some(env),
@@ -635,9 +666,18 @@ fn google_vertex_config() -> crate::config::ClaudeConfig {
     let mut env = std::collections::HashMap::new();
     env.insert("ANTHROPIC_VERTEX_PROJECT_ID".into(), String::new());
     env.insert("CLOUD_ML_REGION".into(), "us-east5".into());
-    env.insert("ANTHROPIC_DEFAULT_SONNET_MODEL".into(), "claude-sonnet-4-6".into());
-    env.insert("ANTHROPIC_DEFAULT_OPUS_MODEL".into(), "claude-opus-4-7".into());
-    env.insert("ANTHROPIC_DEFAULT_HAIKU_MODEL".into(), "claude-haiku-4-5-20251001".into());
+    env.insert(
+        "ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
+        "claude-sonnet-4-6".into(),
+    );
+    env.insert(
+        "ANTHROPIC_DEFAULT_OPUS_MODEL".into(),
+        "claude-opus-4-7".into(),
+    );
+    env.insert(
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL".into(),
+        "claude-haiku-4-5-20251001".into(),
+    );
     crate::config::ClaudeConfig {
         api_provider: Some("vertex".into()),
         env: Some(env),

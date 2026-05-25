@@ -68,7 +68,8 @@ pub fn scan_projects() -> Vec<Project> {
     // Aggregate session counts from merged secondaries into primaries
     if let Ok(merges) = crate::hub::load_project_merges() {
         for (primary, secs) in &merges.merges {
-            if let Some(primary_project) = projects.iter_mut().find(|p| p.encoded_name == *primary) {
+            if let Some(primary_project) = projects.iter_mut().find(|p| p.encoded_name == *primary)
+            {
                 for sec in secs {
                     let sec_dir = projects_dir.join(sec);
                     if sec_dir.exists() {
@@ -135,7 +136,10 @@ fn parse_project(projects_dir: &Path, encoded_name: &str) -> Option<Project> {
 
     let session_count = count_sessions(&project_dir);
     let last_active = get_last_active(&project_dir);
-    let has_claude_md = Path::new(&decoded_path).join(".claude").join("CLAUDE.md").exists();
+    let has_claude_md = Path::new(&decoded_path)
+        .join(".claude")
+        .join("CLAUDE.md")
+        .exists();
     // A project is "initialized" if it has a record in ~/.claude/projects/
     let initialized = project_dir.is_dir();
 
@@ -225,7 +229,10 @@ fn result_is_valid(result: &str) -> bool {
 
 pub fn encode_project_path(path: &str) -> String {
     // Claude Code encodes: ':\' -> '--' (drive separator), then all remaining '\' and '/' -> '-'
-    let with_drive = path.replace(":\\", "--").replace('\\', "-").replace('/', "-");
+    let with_drive = path
+        .replace(":\\", "--")
+        .replace('\\', "-")
+        .replace('/', "-");
     with_drive
 }
 
@@ -267,9 +274,17 @@ pub fn add_project(path: &str) -> Option<Project> {
 
 fn count_sessions(dir: &Path) -> usize {
     std::fs::read_dir(dir)
-        .map(|entries| entries.filter_map(|e| e.ok()).filter(|e| {
-            e.path().extension().map(|ext| ext == "jsonl").unwrap_or(false)
-        }).count())
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .map(|ext| ext == "jsonl")
+                        .unwrap_or(false)
+                })
+                .count()
+        })
         .unwrap_or(0)
 }
 
@@ -277,7 +292,12 @@ fn get_last_active(dir: &Path) -> Option<String> {
     std::fs::read_dir(dir)
         .ok()?
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map(|ext| ext == "jsonl").unwrap_or(false))
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "jsonl")
+                .unwrap_or(false)
+        })
         .filter_map(|e| e.metadata().ok()?.modified().ok())
         .max()
         .map(|t| {
@@ -293,9 +313,18 @@ mod tests {
 
     #[test]
     fn test_get_level1_dir() {
-        assert_eq!(get_level1_dir("D:\\MyCodes\\claude-hub"), Some("D:\\MyCodes".to_string()));
-        assert_eq!(get_level1_dir("E:\\projectA"), Some("E:\\projectA".to_string()));
-        assert_eq!(get_level1_dir("D:\\MyCodes\\Milk Order\\all-sys"), Some("D:\\MyCodes".to_string()));
+        assert_eq!(
+            get_level1_dir("D:\\MyCodes\\claude-hub"),
+            Some("D:\\MyCodes".to_string())
+        );
+        assert_eq!(
+            get_level1_dir("E:\\projectA"),
+            Some("E:\\projectA".to_string())
+        );
+        assert_eq!(
+            get_level1_dir("D:\\MyCodes\\Milk Order\\all-sys"),
+            Some("D:\\MyCodes".to_string())
+        );
     }
 
     #[test]

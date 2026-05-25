@@ -39,11 +39,15 @@ pub struct HookCommand {
 }
 
 fn settings_path(project_path: &str) -> PathBuf {
-    PathBuf::from(project_path).join(".claude").join("settings.json")
+    PathBuf::from(project_path)
+        .join(".claude")
+        .join("settings.json")
 }
 
 fn settings_local_path(project_path: &str) -> PathBuf {
-    PathBuf::from(project_path).join(".claude").join("settings.local.json")
+    PathBuf::from(project_path)
+        .join(".claude")
+        .join("settings.local.json")
 }
 
 fn ensure_claude_dir(project_path: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -54,7 +58,9 @@ fn ensure_claude_dir(project_path: &str) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-pub fn load_project_settings(project_path: &str) -> Result<ProjectSettings, Box<dyn std::error::Error>> {
+pub fn load_project_settings(
+    project_path: &str,
+) -> Result<ProjectSettings, Box<dyn std::error::Error>> {
     let path = settings_path(project_path);
     if !path.exists() {
         return Ok(ProjectSettings::default());
@@ -63,7 +69,9 @@ pub fn load_project_settings(project_path: &str) -> Result<ProjectSettings, Box<
     Ok(serde_json::from_str(&content)?)
 }
 
-pub fn load_project_settings_local(project_path: &str) -> Result<ProjectSettings, Box<dyn std::error::Error>> {
+pub fn load_project_settings_local(
+    project_path: &str,
+) -> Result<ProjectSettings, Box<dyn std::error::Error>> {
     let path = settings_local_path(project_path);
     if !path.exists() {
         return Ok(ProjectSettings::default());
@@ -72,7 +80,10 @@ pub fn load_project_settings_local(project_path: &str) -> Result<ProjectSettings
     Ok(serde_json::from_str(&content)?)
 }
 
-pub fn save_project_settings(project_path: &str, settings: &ProjectSettings) -> Result<(), Box<dyn std::error::Error>> {
+pub fn save_project_settings(
+    project_path: &str,
+    settings: &ProjectSettings,
+) -> Result<(), Box<dyn std::error::Error>> {
     ensure_claude_dir(project_path)?;
     let path = settings_path(project_path);
     let mut val = serde_json::to_value(settings)?;
@@ -83,7 +94,10 @@ pub fn save_project_settings(project_path: &str, settings: &ProjectSettings) -> 
     Ok(())
 }
 
-pub fn save_project_settings_local(project_path: &str, settings: &ProjectSettings) -> Result<(), Box<dyn std::error::Error>> {
+pub fn save_project_settings_local(
+    project_path: &str,
+    settings: &ProjectSettings,
+) -> Result<(), Box<dyn std::error::Error>> {
     ensure_claude_dir(project_path)?;
     let path = settings_local_path(project_path);
     let mut val = serde_json::to_value(settings)?;
@@ -95,7 +109,9 @@ pub fn save_project_settings_local(project_path: &str, settings: &ProjectSetting
 }
 
 pub fn load_claude_md(project_path: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let path = PathBuf::from(project_path).join(".claude").join("CLAUDE.md");
+    let path = PathBuf::from(project_path)
+        .join(".claude")
+        .join("CLAUDE.md");
     if !path.exists() {
         return Ok(None);
     }
@@ -119,7 +135,8 @@ mod tests {
 
     #[test]
     fn test_roundtrip_serialization() {
-        let json = r#"{"permissions":{"defaultMode":"bypassPermissions","allow":["Bash(cargo build)"]}}"#;
+        let json =
+            r#"{"permissions":{"defaultMode":"bypassPermissions","allow":["Bash(cargo build)"]}}"#;
         let settings: ProjectSettings = serde_json::from_str(json).unwrap();
         let reserialized = serde_json::to_string(&settings).unwrap();
         assert!(reserialized.contains("\"defaultMode\":\"bypassPermissions\""));
@@ -127,10 +144,14 @@ mod tests {
 
     #[test]
     fn test_serialize_to_frontend_format() {
-        let json = r#"{"permissions":{"defaultMode":"bypassPermissions","allow":["Bash(cargo build)"]}}"#;
+        let json =
+            r#"{"permissions":{"defaultMode":"bypassPermissions","allow":["Bash(cargo build)"]}}"#;
         let settings: ProjectSettings = serde_json::from_str(json).unwrap();
         let output = serde_json::to_value(&settings).unwrap();
         let perms = output.get("permissions").unwrap();
-        assert_eq!(perms.get("defaultMode").unwrap().as_str(), Some("bypassPermissions"));
+        assert_eq!(
+            perms.get("defaultMode").unwrap().as_str(),
+            Some("bypassPermissions")
+        );
     }
 }

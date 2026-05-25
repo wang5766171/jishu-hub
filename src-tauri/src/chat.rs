@@ -39,7 +39,9 @@ pub async fn send_message(
 ) -> Result<ChatSession, String> {
     log::info!(
         "send_message: project={}, session={:?}, message_len={}",
-        project_path, session_id, message.len()
+        project_path,
+        session_id,
+        message.len()
     );
 
     // cmd /C treats newlines as command separators — must escape them
@@ -115,10 +117,7 @@ pub async fn send_message(
                 continue;
             }
             if let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) {
-                let event_type = match event
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                {
+                let event_type = match event.get("type").and_then(|v| v.as_str()) {
                     Some("system") => event
                         .get("subtype")
                         .and_then(|v| v.as_str())

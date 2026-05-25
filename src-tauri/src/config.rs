@@ -1,22 +1,26 @@
-use serde::{Deserialize, Serialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-fn deserialize_flex_env<'de, D>(deserializer: D) -> Result<Option<HashMap<String, String>>, D::Error>
+fn deserialize_flex_env<'de, D>(
+    deserializer: D,
+) -> Result<Option<HashMap<String, String>>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let opt: Option<HashMap<String, serde_json::Value>> = Option::deserialize(deserializer)?;
     Ok(opt.map(|map| {
-        map.into_iter().map(|(k, v)| {
-            let s = match v {
-                serde_json::Value::String(s) => s,
-                serde_json::Value::Number(n) => n.to_string(),
-                serde_json::Value::Bool(b) => b.to_string(),
-                other => other.to_string(),
-            };
-            (k, s)
-        }).collect()
+        map.into_iter()
+            .map(|(k, v)| {
+                let s = match v {
+                    serde_json::Value::String(s) => s,
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    other => other.to_string(),
+                };
+                (k, s)
+            })
+            .collect()
     }))
 }
 
@@ -208,7 +212,11 @@ pub fn list_backups() -> Result<Vec<BackupEntry>, Box<dyn std::error::Error>> {
         .filter_map(|e| e.ok())
         .map(|e| {
             let path = e.path();
-            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             let timestamp = path
                 .file_stem()
                 .unwrap_or_default()

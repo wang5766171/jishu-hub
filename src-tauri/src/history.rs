@@ -28,10 +28,13 @@ pub fn parse_history_file(path: &Path) -> Vec<HistoryEntry> {
         Err(_) => return Vec::new(),
     };
 
-    content.lines()
+    content
+        .lines()
         .rev()
         .filter_map(|line| {
-            if line.trim().is_empty() { return None; }
+            if line.trim().is_empty() {
+                return None;
+            }
             serde_json::from_str(line).ok()
         })
         .collect()

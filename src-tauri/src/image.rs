@@ -101,8 +101,7 @@ pub fn save_session_files(
         let bytes = BASE64
             .decode(&file.data)
             .map_err(|e| format!("Decode failed for {}: {}", file.filename, e))?;
-        fs::write(&filepath, bytes)
-            .map_err(|e| format!("Write failed for {}: {}", filename, e))?;
+        fs::write(&filepath, bytes).map_err(|e| format!("Write failed for {}: {}", filename, e))?;
 
         saved.push(SavedFile {
             path: filepath.to_string_lossy().to_string(),
@@ -150,10 +149,7 @@ pub fn get_clipboard_file_paths() -> Result<Vec<String>, String> {
 pub fn read_image_as_data_url(path: String) -> Result<String, String> {
     let bytes = fs::read(&path).map_err(|e| format!("Failed to read image: {}", e))?;
     let pb = PathBuf::from(&path);
-    let ext = pb
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("png");
+    let ext = pb.extension().and_then(|e| e.to_str()).unwrap_or("png");
     let mime = mime_for_ext(ext);
     let b64 = BASE64.encode(&bytes);
     Ok(format!("data:{};base64,{}", mime, b64))
