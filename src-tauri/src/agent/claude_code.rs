@@ -211,12 +211,10 @@ impl AgentPlugin for ClaudeCodeAgent {
     }
 
     fn init_project(&self, project_path: &str) -> Result<bool, String> {
-        // Use non-interactive mode to skip trust dialog and init project metadata
-        crate::command::run_silent_command(
-            "claude",
-            &["-p", "Check project status"],
-            Some(project_path),
-        )
-        .map_err(|e| e.to_string())
+        // Open a visible terminal running `claude`. This allows the user to interact
+        // with the native "Quick safety check" prompt for empty/uninitialized folders.
+        crate::command::open_in_terminal(project_path, None)
+            .map(|_| true)
+            .map_err(|e| e.to_string())
     }
 }

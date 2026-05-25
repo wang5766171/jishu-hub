@@ -37,6 +37,7 @@ export function ProjectCard({
   const displayName = meta?.custom_name || project.name;
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const pendingInitRefresh = useRef(false);
 
   // Close menu on outside click
   useEffect(() => {
@@ -50,16 +51,28 @@ export function ProjectCard({
     return () => document.removeEventListener("mousedown", handler);
   }, [menuOpen]);
 
+  // Refresh status once when returning to the app from the terminal
+  useEffect(() => {
+    const handleFocus = () => {
+      if (pendingInitRefresh.current) {
+        pendingInitRefresh.current = false;
+        onRefresh?.();
+      }
+    };
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, [onRefresh]);
+
   const handleInit = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      // Now use silent init via Rust backend
+      // Opens a visible terminal running `claude`
       await invokeCommand("init_project", { projectPath: project.path });
+      // Wait for the user to return to the Jishu Hub window to refresh
+      pendingInitRefresh.current = true;
     } catch (err) {
       console.error("Failed to init project:", err);
     }
-    // Command is synchronous (awaits process exit), so refresh immediately
-    onRefresh?.();
   };
 
   const handleCardClick = () => {
