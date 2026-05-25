@@ -1,27 +1,8 @@
-import type { Session, Message, ContentBlock, SessionSearchResult } from "@/types";
-
-export function searchInContentBlock(block: ContentBlock, q: string): boolean {
-  switch (block.type) {
-    case "text":
-      return block.text.toLowerCase().includes(q);
-    case "tool_use":
-      return block.name.toLowerCase().includes(q) || JSON.stringify(block.input).toLowerCase().includes(q);
-    case "tool_result":
-      return JSON.stringify(block.content).toLowerCase().includes(q);
-    case "thinking":
-      return block.thinking.toLowerCase().includes(q);
-    default:
-      return false;
-  }
-}
-
-export function searchInMessage(message: Message, q: string): boolean {
-  return message.content.some(block => searchInContentBlock(block, q));
-}
+import type { Session, Message, SessionSearchResult } from "@/types";
 
 function extractPreviewText(message: Message, q: string): string {
   for (const block of message.content) {
-    if (block.type === "text" && searchInContentBlock(block, q)) {
+    if (block.type === "text") {
       const text = block.text;
       const idx = text.toLowerCase().indexOf(q);
       if (idx !== -1) {
@@ -37,6 +18,8 @@ function extractPreviewText(message: Message, q: string): string {
 export function searchSessions(sessions: Session[], query: string): SessionSearchResult[] {
   if (!query.trim()) return [];
   const q = query.toLowerCase();
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(escaped, "gi");
   const results: SessionSearchResult[] = [];
 
   for (const session of sessions) {
@@ -45,12 +28,22 @@ export function searchSessions(sessions: Session[], query: string): SessionSearc
     let previewText = "";
 
     for (let i = 0; i < session.messages.length; i++) {
-      if (searchInMessage(session.messages[i], q)) {
-        matchCount++;
-        if (firstMatchIndex === -1) {
-          firstMatchIndex = i;
-          previewText = extractPreviewText(session.messages[i], q);
+      const message = session.messages[i];
+      let messageHasMatch = false;
+
+      for (const block of message.content) {
+        if (block.type === "text") {
+          const m = block.text.match(regex);
+          if (m && m.length > 0) {
+            matchCount += m.length;
+            messageHasMatch = true;
+          }
         }
+      }
+
+      if (messageHasMatch && firstMatchIndex === -1) {
+        firstMatchIndex = i;
+        previewText = extractPreviewText(message, q);
       }
     }
 
