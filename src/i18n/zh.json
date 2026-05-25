@@ -13,7 +13,7 @@
   "nav": {
     "projects": "项目",
     "sessions": "会话",
-    "config": "配置",
+    "config": "管理",
     "commands": "命令"
   },
   "status": {

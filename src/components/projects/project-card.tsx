@@ -53,7 +53,7 @@ export function ProjectCard({
   const handleInit = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await invokeCommand("run_in_terminal", { command: "claude init", cwd: project.path });
+      await invokeCommand("run_in_terminal", { commandStr: "claude init", cwd: project.path });
     } catch (err) {
       console.error("Failed to run claude init:", err);
     }

@@ -246,7 +246,7 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
                   <span>GitHub</span>
                 </button>
                 <button
-                  onClick={() => invokeCommand("open_url", { url: "https://gitee.com/wangzwa/claude-hub" }).catch(console.error)}
+                  onClick={() => invokeCommand("open_url", { url: "https://gitee.com/wangzwa/jishu-hub" }).catch(console.error)}
                   className="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-fast w-full"
                 >
                   <Gitee className="h-3.5 w-3.5 text-[var(--icon-about)]" />

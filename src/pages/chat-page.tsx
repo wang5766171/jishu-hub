@@ -12,7 +12,8 @@ import {
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
-import type { Session, Project, Message, ContentBlock, StreamChunk } from "@/types";
+import { searchSessions } from "@/lib/session-search";
+import type { Session, Project, Message, ContentBlock, StreamChunk, SessionSearchResult } from "@/types";
 
 function TerminalIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -105,9 +106,18 @@ export function ChatPage({
     listRefreshKey,
   );
 
+  const searchResults = useMemo<SessionSearchResult[]>(() => {
+    if (!sessions || !activeSearchQuery.trim()) return [];
+    return searchSessions(sessions, activeSearchQuery);
+  }, [sessions, activeSearchQuery]);
+
   // Build display session list with new session injection
   let displaySessions = sessions ?? [];
-  if (newChatInfo && newChatInfo.projectId === projectId) {
+  if (activeSearchQuery.trim() && sessions) {
+    displaySessions = searchResults.map(r => sessions.find(s => s.id === r.sessionId)!).filter(Boolean) as Session[];
+  }
+
+  if (newChatInfo && newChatInfo.projectId === projectId && !activeSearchQuery.trim()) {
     const effectiveId = newChatInfo.realId || newChatInfo.pendingId;
     const alreadyExists = displaySessions.some(s => s.id === effectiveId);
     if (!alreadyExists) {
@@ -426,12 +436,12 @@ export function ChatPage({
         <div className={cn("flex flex-col", sidebarCollapsed && "hidden")} style={{ background: "var(--color-layer-1)" }}>
           {/* Project card */}
           {currentProject ? (
-            <div className="flex items-center gap-2 px-3 py-2 border-b border-border/20">
-              <FolderOpen className="h-5 w-5 shrink-0 ml-2 text-[var(--icon-folder)]" />
+            <div className="flex items-center gap-2 px-3 h-10 border-b border-border/20">
+              <FolderOpen className="h-5 w-5 shrink-0 ml-1 text-[var(--icon-folder)]" />
               <span className="truncate text-sm font-semibold text-foreground flex-1 min-w-0 leading-none pt-[1px]" title={currentProject.name}>{currentProject.name}</span>
               <button
                 onClick={onSwitchProject}
-                className="shrink-0 px-1.5 flex items-center gap-0.5 rounded-md text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-fast"
+                className="shrink-0 px-1.5 h-6 flex items-center gap-0.5 rounded-md text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-fast"
                 title={t("sessions.switchProject")}
               >
                 <span className="leading-none pt-[1px]">{t("sessions.switchProject")}</span>
@@ -439,12 +449,12 @@ export function ChatPage({
               </button>
             </div>
           ) : (
-            <div className="flex items-center gap-2 px-3 py-2 border-b border-border/20">
-              <FolderOpen className="h-5 w-5 shrink-0 ml-2 text-muted-foreground/40" />
-              <span className="text-sm font-semibold text-muted-foreground leading-none pt-[1px]">{t("sessions.noProject")}</span>
+            <div className="flex items-center gap-2 px-3 h-10 border-b border-border/20">
+              <FolderOpen className="h-5 w-5 shrink-0 ml-1 text-muted-foreground/40" />
+              <span className="text-sm font-semibold text-muted-foreground leading-none pt-[1px] flex-1">{t("sessions.noProject")}</span>
               <button
                 onClick={onSwitchProject}
-                className="ml-auto px-1.5 flex items-center gap-0.5 rounded-md text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-fast"
+                className="shrink-0 px-1.5 h-6 flex items-center gap-0.5 rounded-md text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-fast"
               >
                 <span className="leading-none pt-[1px]">{t("sessions.switchProject")}</span>
                 <ArrowRight className="h-3 w-3" />
@@ -452,7 +462,7 @@ export function ChatPage({
             </div>
           )}
           {/* Actions */}
-          <div className="flex items-center gap-1.5 px-3 pt-2 pb-1">
+          <div className="flex items-center gap-1.5 px-3 h-11 pt-2 pb-1">
             <button
               onClick={projectId ? handleNewSession : undefined}
               title={projectId ? t("sessions.newSession") : t("sessions.selectProject")}
@@ -479,8 +489,8 @@ export function ChatPage({
             </button>
           </div>
           {/* Search */}
-          <div className="px-3 pb-2">
-            <div className="relative">
+          <div className="px-3 h-10 pb-2">
+            <div className="relative h-8">
               <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--icon-search)]" />
               <Input
                 value={searchQuery}
@@ -490,7 +500,7 @@ export function ChatPage({
                   setMsgSearchSeed(e.target.value);
                 }}
                 placeholder={t("sessions.search")}
-                className="h-8 pl-8 pr-7 !text-sm !leading-none shadow-none rounded-lg border-border/40 truncate"
+                className="h-full pl-8 pr-7 !text-sm !leading-none shadow-none rounded-lg border-border/40 truncate"
               />
               {searchQuery && (
                 <button
@@ -507,26 +517,26 @@ export function ChatPage({
         {/* Collapsed sidebar header */}
         <div className={cn("flex flex-col", !sidebarCollapsed && "hidden")} style={{ background: "var(--color-layer-1)" }}>
           {/* Row 1: Project icon */}
-          <div className="flex items-center justify-center py-2 border-b border-border/20">
+          <div className="flex items-center justify-center h-10 border-b border-border/20">
             <button
               onClick={onSwitchProject}
-              className="h-8 w-8 flex items-center justify-center rounded-lg hover:bg-accent/50 transition-fast"
+              className="h-7 w-7 flex items-center justify-center rounded-lg hover:bg-accent/50 transition-fast"
               title={currentProject?.name ?? t("sessions.noProject")}
             >
               <FolderOpen className="h-4 w-4 text-[var(--icon-folder)]" />
             </button>
           </div>
           {/* Row 2: Expand button */}
-          <div className="flex items-center justify-center pt-2 pb-1">
+          <div className="flex items-center justify-center h-11 pt-2 pb-1">
             <button
               onClick={() => setSidebarCollapsed(false)}
-              className="h-8 w-8 flex items-center justify-center rounded-lg hover:bg-accent/50 transition-fast text-muted-foreground hover:text-foreground"
+              className="h-7 w-7 flex items-center justify-center rounded-lg hover:bg-accent/50 transition-fast text-muted-foreground hover:text-foreground"
             >
               <PanelLeftOpen className="h-4 w-4" />
             </button>
           </div>
           {/* Row 3: New chat */}
-          <div className="flex items-center justify-center pb-2">
+          <div className="flex items-center justify-center h-10 pb-2">
             <button
               onClick={projectId ? handleNewSession : undefined}
               title={projectId ? t("sessions.newSession") : t("sessions.selectProject")}
@@ -553,24 +563,38 @@ export function ChatPage({
               : session.started_at
                 ? formatRelativeTime(session.started_at)
                 : null;
+            const searchHit = searchResults.find(r => r.sessionId === session.id);
             return (
               <button
                 key={isFakeEntry ? "__new_chat__" : session.id}
                 onClick={() => handleSelectSession(session.id)}
                 className={cn(
-                  "flex w-full items-center gap-3 pl-5 pr-2 py-1.5 text-xs transition-fast",
+                  "flex flex-col w-full items-start pl-5 pr-2 py-2 text-xs transition-fast border-b border-border/10",
                   isActive
                     ? "bg-primary/10 text-foreground font-medium"
                     : "text-muted-foreground hover:bg-accent/30 hover:text-foreground"
                 )}
               >
-                <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
-                <span className="truncate flex-1 text-left min-w-0 leading-none pt-[1px]">{name}</span>
-                {timeStr && (
-                  <span className={cn(
-                    "text-[0.65em] shrink-0 tabular-nums",
-                    isActive ? "text-accent-foreground/40" : "text-muted-foreground/40"
-                  )}>{timeStr}</span>
+                <div className="flex items-center gap-3 w-full">
+                  <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
+                  <span className="truncate flex-1 text-left min-w-0 leading-none pt-[1px]">{name}</span>
+                  {searchHit ? (
+                    <span className="shrink-0 rounded-full bg-primary/20 text-primary px-1.5 py-0.5 text-[9px] font-medium leading-none">
+                      {searchHit.matchCount}
+                    </span>
+                  ) : timeStr ? (
+                    <span className={cn(
+                      "text-[0.65em] shrink-0 tabular-nums",
+                      isActive ? "text-accent-foreground/40" : "text-muted-foreground/40"
+                    )}>{timeStr}</span>
+                  ) : null}
+                </div>
+                {searchHit && searchHit.previewText && (
+                  <div className="mt-1.5 pl-6 w-full text-left">
+                    <p className="text-[10px] text-muted-foreground/70 line-clamp-2 leading-tight break-all">
+                      {searchHit.previewText}
+                    </p>
+                  </div>
                 )}
               </button>
             );
