@@ -277,8 +277,12 @@ fn cleanup_dead_sessions() -> Result<u32, String> {
 }
 
 #[tauri::command]
-fn init_project(command_str: String, cwd: Option<String>) -> Result<bool, String> {
-    command::run_init_command(&command_str, cwd.as_deref()).map_err(|e| e.to_string())
+fn init_project(
+    state: tauri::State<'_, Mutex<AppState>>,
+    project_path: String,
+) -> Result<bool, String> {
+    let s = state.lock().unwrap();
+    s.registry.active().init_project(&project_path)
 }
 
 #[tauri::command]

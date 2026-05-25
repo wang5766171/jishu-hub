@@ -53,12 +53,12 @@ export function ProjectCard({
   const handleInit = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      // Use init_project which waits for completion
-      await invokeCommand("init_project", { commandStr: "claude init", cwd: project.path });
+      // Now use silent init via Rust backend
+      await invokeCommand("init_project", { projectPath: project.path });
     } catch (err) {
-      console.error("Failed to run claude init:", err);
+      console.error("Failed to init project:", err);
     }
-    // Refresh once after the command finishes
+    // Command is synchronous (awaits process exit), so refresh immediately
     onRefresh?.();
   };
 

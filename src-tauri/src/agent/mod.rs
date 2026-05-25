@@ -35,7 +35,10 @@ impl AgentRegistry {
     }
 
     pub fn active(&self) -> &dyn AgentPlugin {
-        self.agents.get(&self.active_id).map(|a| a.as_ref()).unwrap()
+        self.agents
+            .get(&self.active_id)
+            .map(|a| a.as_ref())
+            .unwrap()
     }
 
     pub fn list_agents(&self) -> Vec<AgentInfo> {
@@ -64,7 +67,11 @@ pub trait AgentPlugin {
 
     // Session management
     fn list_sessions(&self, encoded_name: &str) -> Result<Vec<crate::session::Session>, String>;
-    fn get_session_messages(&self, session_id: &str, encoded_name: &str) -> Result<Vec<crate::session::Message>, String>;
+    fn get_session_messages(
+        &self,
+        session_id: &str,
+        encoded_name: &str,
+    ) -> Result<Vec<crate::session::Message>, String>;
 
     // Config management
     fn load_config(&self) -> Result<crate::config::ClaudeConfig, String>;
@@ -76,10 +83,24 @@ pub trait AgentPlugin {
     fn import_config(&self, path: &str) -> Result<crate::config::ClaudeConfig, String>;
 
     // Project config
-    fn load_project_settings(&self, path: &str) -> Result<crate::project_config::ProjectSettings, String>;
-    fn load_project_settings_local(&self, path: &str) -> Result<crate::project_config::ProjectSettings, String>;
-    fn save_project_settings(&self, path: &str, settings: &crate::project_config::ProjectSettings) -> Result<(), String>;
-    fn save_project_settings_local(&self, path: &str, settings: &crate::project_config::ProjectSettings) -> Result<(), String>;
+    fn load_project_settings(
+        &self,
+        path: &str,
+    ) -> Result<crate::project_config::ProjectSettings, String>;
+    fn load_project_settings_local(
+        &self,
+        path: &str,
+    ) -> Result<crate::project_config::ProjectSettings, String>;
+    fn save_project_settings(
+        &self,
+        path: &str,
+        settings: &crate::project_config::ProjectSettings,
+    ) -> Result<(), String>;
+    fn save_project_settings_local(
+        &self,
+        path: &str,
+        settings: &crate::project_config::ProjectSettings,
+    ) -> Result<(), String>;
     fn load_claude_md(&self, path: &str) -> Result<Option<String>, String>;
 
     // Chat
@@ -91,7 +112,13 @@ pub trait AgentPlugin {
     fn load_history(&self) -> Vec<crate::history::HistoryEntry>;
 
     // Terminal
-    fn open_in_terminal(&self, project_path: &str, resume_session_id: Option<&str>) -> Result<u32, Box<dyn std::error::Error>>;
+    fn open_in_terminal(
+        &self,
+        project_path: &str,
+        resume_session_id: Option<&str>,
+    ) -> Result<u32, Box<dyn std::error::Error>>;
+
+    fn init_project(&self, project_path: &str) -> Result<bool, String>;
 }
 
 #[derive(Debug, Clone)]

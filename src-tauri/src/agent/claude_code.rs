@@ -63,9 +63,17 @@ impl AgentPlugin for ClaudeCodeAgent {
         Ok(all_sessions)
     }
 
-    fn get_session_messages(&self, session_id: &str, encoded_name: &str) -> Result<Vec<crate::session::Message>, String> {
+    fn get_session_messages(
+        &self,
+        session_id: &str,
+        encoded_name: &str,
+    ) -> Result<Vec<crate::session::Message>, String> {
         let home = dirs::home_dir().ok_or("Cannot find home directory")?;
-        let session_path = home.join(".claude").join("projects").join(encoded_name).join(format!("{}.jsonl", session_id));
+        let session_path = home
+            .join(".claude")
+            .join("projects")
+            .join(encoded_name)
+            .join(format!("{}.jsonl", session_id));
         if !session_path.exists() {
             return Err(format!("Session file not found: {}", session_id));
         }
@@ -102,20 +110,35 @@ impl AgentPlugin for ClaudeCodeAgent {
         crate::config::import_config(path).map_err(|e| e.to_string())
     }
 
-    fn load_project_settings(&self, path: &str) -> Result<crate::project_config::ProjectSettings, String> {
+    fn load_project_settings(
+        &self,
+        path: &str,
+    ) -> Result<crate::project_config::ProjectSettings, String> {
         crate::project_config::load_project_settings(path).map_err(|e| e.to_string())
     }
 
-    fn load_project_settings_local(&self, path: &str) -> Result<crate::project_config::ProjectSettings, String> {
+    fn load_project_settings_local(
+        &self,
+        path: &str,
+    ) -> Result<crate::project_config::ProjectSettings, String> {
         crate::project_config::load_project_settings_local(path).map_err(|e| e.to_string())
     }
 
-    fn save_project_settings(&self, path: &str, settings: &crate::project_config::ProjectSettings) -> Result<(), String> {
+    fn save_project_settings(
+        &self,
+        path: &str,
+        settings: &crate::project_config::ProjectSettings,
+    ) -> Result<(), String> {
         crate::project_config::save_project_settings(path, settings).map_err(|e| e.to_string())
     }
 
-    fn save_project_settings_local(&self, path: &str, settings: &crate::project_config::ProjectSettings) -> Result<(), String> {
-        crate::project_config::save_project_settings_local(path, settings).map_err(|e| e.to_string())
+    fn save_project_settings_local(
+        &self,
+        path: &str,
+        settings: &crate::project_config::ProjectSettings,
+    ) -> Result<(), String> {
+        crate::project_config::save_project_settings_local(path, settings)
+            .map_err(|e| e.to_string())
     }
 
     fn load_claude_md(&self, path: &str) -> Result<Option<String>, String> {
@@ -171,14 +194,29 @@ impl AgentPlugin for ClaudeCodeAgent {
             Some("assistant") => "message",
             Some(t) => t,
             None => "unknown",
-        }.to_string()
+        }
+        .to_string()
     }
 
     fn load_history(&self) -> Vec<crate::history::HistoryEntry> {
         crate::history::load_history()
     }
 
-    fn open_in_terminal(&self, project_path: &str, resume_session_id: Option<&str>) -> Result<u32, Box<dyn std::error::Error>> {
+    fn open_in_terminal(
+        &self,
+        project_path: &str,
+        resume_session_id: Option<&str>,
+    ) -> Result<u32, Box<dyn std::error::Error>> {
         crate::command::open_in_terminal(project_path, resume_session_id)
+    }
+
+    fn init_project(&self, project_path: &str) -> Result<bool, String> {
+        // Use non-interactive mode to skip trust dialog and init project metadata
+        crate::command::run_silent_command(
+            "claude",
+            &["-p", "Check project status", "--limit", "1"],
+            Some(project_path),
+        )
+        .map_err(|e| e.to_string())
     }
 }

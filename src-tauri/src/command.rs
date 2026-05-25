@@ -154,6 +154,33 @@ fn which_terminal() -> Result<&'static str, Box<dyn std::error::Error>> {
     Ok("xterm")
 }
 
+/// Run a command silently in the background (no window) and wait for it to finish.
+pub fn run_silent_command(
+    command: &str,
+    args: &[&str],
+    cwd: Option<&str>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let mut cmd = if cfg!(target_os = "windows") {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", command]);
+        c.args(args);
+        #[cfg(target_os = "windows")]
+        c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        c
+    } else {
+        let mut c = std::process::Command::new(command);
+        c.args(args);
+        c
+    };
+
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+
+    let status = cmd.status()?;
+    Ok(status.success())
+}
+
 /// Run an initialization command in a new terminal window and wait for it to finish.
 pub fn run_init_command(
     command: &str,
