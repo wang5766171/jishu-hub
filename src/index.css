@@ -83,6 +83,31 @@
   /* Font size presets (default: medium) */
   --font-size-base: 19px;
   --font-size-prose: 15px;
+
+  /* Tool state colors */
+  --tool-pending: hsl(240 5% 65%);
+  --tool-running: hsl(217 91% 60%);
+  --tool-success: hsl(142 71% 45%);
+  --tool-error: hsl(0 84% 60%);
+  --tool-aborted: hsl(240 5% 50%);
+
+  /* Tool kind badge colors */
+  --tool-bg-file-read: hsl(220 90% 96%);
+  --tool-bg-file-edit: hsl(150 60% 95%);
+  --tool-bg-file-write: hsl(160 70% 95%);
+  --tool-bg-file-delete: hsl(0 80% 96%);
+  --tool-bg-shell: hsl(280 60% 96%);
+  --tool-bg-search: hsl(45 90% 95%);
+  --tool-bg-web: hsl(195 70% 95%);
+  --tool-bg-think: hsl(260 40% 96%);
+  --tool-bg-subtask: hsl(20 80% 95%);
+  --tool-bg-other: hsl(240 5% 96%);
+
+  /* Diff colors */
+  --diff-added: hsl(140 65% 92%);
+  --diff-added-fg: hsl(140 65% 25%);
+  --diff-removed: hsl(0 70% 95%);
+  --diff-removed-fg: hsl(0 70% 35%);
 }
 
 /* === Colorful theme === */
@@ -143,8 +168,30 @@
   --icon-theme: #fb923c;
   --icon-about: #22d3ee;
   --icon-pin: #f87171;
-}
 
+  /* Tool state colors (dark) */
+  --tool-pending: hsl(240 5% 55%);
+  --tool-running: hsl(217 91% 65%);
+  --tool-success: hsl(142 71% 55%);
+  --tool-error: hsl(0 84% 65%);
+  --tool-aborted: hsl(240 5% 45%);
+
+  --tool-bg-file-read: hsl(220 30% 18%);
+  --tool-bg-file-edit: hsl(150 30% 16%);
+  --tool-bg-file-write: hsl(160 30% 16%);
+  --tool-bg-file-delete: hsl(0 30% 20%);
+  --tool-bg-shell: hsl(280 30% 18%);
+  --tool-bg-search: hsl(45 40% 18%);
+  --tool-bg-web: hsl(195 30% 18%);
+  --tool-bg-think: hsl(260 20% 18%);
+  --tool-bg-subtask: hsl(20 30% 18%);
+  --tool-bg-other: hsl(240 5% 15%);
+
+  --diff-added: hsl(140 50% 18%);
+  --diff-added-fg: hsl(140 50% 75%);
+  --diff-removed: hsl(0 50% 22%);
+  --diff-removed-fg: hsl(0 50% 75%);
+}
 [data-theme="dark"] ::-webkit-scrollbar-thumb {
   background: hsl(240 5% 40% / 0.4);
 }
@@ -163,9 +210,9 @@
 @layer base {
   :root {
     font-size: var(--font-size-base);
-    transition: font-size 300ms ease-out, --font-size-prose 300ms ease-out;
   }
-  * {
+  .border, .border-t, .border-b, .border-l, .border-r,
+  .border-x, .border-y, .border-input, .border-border {
     border-color: var(--color-border);
   }
   body {
@@ -334,7 +381,16 @@
 
 /* macOS-style transition utilities */
 .transition-macos {
-  transition: all var(--transition-normal);
+  transition: background-color var(--transition-normal), color var(--transition-normal), border-color var(--transition-normal), opacity var(--transition-normal);
+}
+
+/* Sidebar */
+.chat-sidebar {
+  background: var(--color-layer-2);
+  border-right: 1px solid var(--color-border);
+  box-shadow: 1px 0 0 0 var(--color-border), 4px 0 8px -2px rgba(0, 0, 0, 0.06);
+  position: relative;
+  z-index: 11;
 }
 .transition-fast {
   transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), opacity var(--transition-fast);

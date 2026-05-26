@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, memo } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { FileText } from "lucide-react";
 
@@ -54,13 +54,24 @@ export function parseFileRefs(text: string): FileRef[] {
   return refs;
 }
 
-export function InlineImageDisplay({ path }: { path: string }) {
+const imageCache = new Map<string, Promise<string>>();
+
+function loadImage(path: string): Promise<string> {
+  let p = imageCache.get(path);
+  if (!p) {
+    p = invokeCommand<string>("read_image_as_data_url", { path });
+    imageCache.set(path, p);
+  }
+  return p;
+}
+
+export const InlineImageDisplay = memo(function InlineImageDisplay({ path }: { path: string }) {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [error, setError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    invokeCommand<string>("read_image_as_data_url", { path })
+    loadImage(path)
       .then((url) => {
         if (!cancelled) setDataUrl(url);
       })
@@ -84,7 +95,7 @@ export function InlineImageDisplay({ path }: { path: string }) {
       onClick={() => window.open(dataUrl, "_blank")}
     />
   );
-}
+});
 
 function InlineFileBadge({ label }: { label: string }) {
   return (
@@ -95,8 +106,8 @@ function InlineFileBadge({ label }: { label: string }) {
   );
 }
 
-export function InlineImages({ text }: { text: string }) {
-  const refs = parseFileRefs(text);
+export const InlineImages = memo(function InlineImages({ text }: { text: string }) {
+  const refs = useMemo(() => parseFileRefs(text), [text]);
   if (refs.length === 0) return null;
   return (
     <div className="flex flex-wrap gap-2 mb-1.5">
@@ -109,7 +120,7 @@ export function InlineImages({ text }: { text: string }) {
       )}
     </div>
   );
-}
+});
 
 export function stripImagePrompt(text: string): string {
   let result = text

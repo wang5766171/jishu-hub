@@ -1,7 +1,6 @@
 
 import "@/i18n";
-import { ChatPage } from "@/pages/chat-page";
-import { ManagePage } from "@/pages/manage-page";
+import { lazy, Suspense } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { useTranslation } from "react-i18next";
 import { Minus, Pin, PinOff, Settings, Square, Sun, Palette, Moon, Info, Type, X } from "lucide-react";
@@ -14,7 +13,12 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { useTheme, type Theme } from "@/hooks/use-theme";
 import { useFontSize, type FontLevel } from "@/hooks/use-font-size";
+import { AgentProvider } from "@/agents";
+import { AgentSwitcher } from "@/agents";
 import type { Page, Project } from "@/types";
+
+const ChatPage = lazy(() => import("@/pages/chat-page").then(m => ({ default: m.ChatPage })));
+const ManagePage = lazy(() => import("@/pages/manage-page").then(m => ({ default: m.ManagePage })));
 
 const themeConfig: Record<Theme, { icon: typeof Sun; label: string }> = {
   light: { icon: Sun, label: "浅色" },
@@ -91,14 +95,20 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
     if (!appWindow) return;
 
     let unlisten: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
     appWindow.onResized(() => {
-      appWindow.isMaximized().then(setMaximized).catch(() => {});
+      if (timer != null) return;
+      timer = setTimeout(async () => {
+        timer = null;
+        const m = await appWindow!.isMaximized();
+        setMaximized(prev => prev === m ? prev : m);
+      }, 200);
     }).then((fn) => {
       unlisten = fn;
     }).catch(() => {});
 
-    return () => unlisten?.();
+    return () => { unlisten?.(); if (timer) clearTimeout(timer); };
   }, []);
 
   useEffect(() => {
@@ -256,6 +266,7 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
             </div>
           )}
         </div>
+        <AgentSwitcher />
         <button
           onClick={handleToggle}
           className={cn(
@@ -305,14 +316,12 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
 function App() {
   useTranslation();
   const [currentPage, setCurrentPage] = useState<Page>("chat");
-  const [refreshing, setRefreshing] = useState(false);
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const { data: projects, loading: projectsLoading, refetch: refetchProjects } = useInvoke<Project[]>("scan_projects");
   const { data: sessionNames, loading: namesLoading, refetch: refetchNames } = useInvoke<Record<string, string>>("get_session_names");
 
-  // Startup: hooks start with loading=true (initial state, not a transition — reliable)
-  // Refresh: refreshing flag set in event handler, cleared after awaiting actual Promises
-  const loading = projectsLoading || namesLoading || refreshing;
+  // Only show loading overlay on initial load, not on refresh
+  const loading = projectsLoading || namesLoading;
 
   // Restore last project on startup
   useEffect(() => {
@@ -328,19 +337,13 @@ function App() {
 
   // Refresh handler: directly await refetch Promises in the event handler
   const handleRefresh = useCallback(async (): Promise<number> => {
-    setRefreshing(true);
-    try {
-      const newProjects = await refetchProjects();
-      // Sync currentProject with refreshed data
-      setCurrentProject(prev => {
-        if (!prev) return null;
-        return newProjects.find(p => p.encoded_name === prev.encoded_name) ?? null;
-      });
-      await refetchNames();
-      return Date.now();
-    } finally {
-      setRefreshing(false);
-    }
+    const newProjects = await refetchProjects();
+    setCurrentProject(prev => {
+      if (!prev) return null;
+      return newProjects.find(p => p.encoded_name === prev.encoded_name) ?? null;
+    });
+    await refetchNames(true);
+    return Date.now();
   }, [refetchProjects, refetchNames]);
 
   const handleEnterProject = useCallback((project: Project) => {
@@ -357,17 +360,22 @@ function App() {
   }, []);
 
   return (
+    <AgentProvider>
     <div className="flex flex-col h-screen bg-background relative">
       <TitleBar currentPage={currentPage} onNavigate={setCurrentPage} disabled={loading} />
       <div className="flex-1 overflow-hidden">
-        <div className={cn("h-full", currentPage !== "chat" && "hidden")}><ChatPage currentProject={currentProject} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} /></div>
-        <div className={cn("h-full", currentPage !== "manage" && "hidden")}><ManagePage onBack={() => setCurrentPage("chat")} onEnterProject={handleEnterProject} navigateToProjects={manageNavKey} /></div>
+        <Suspense fallback={<LoadingOverlay />}>
+          {currentPage === "chat"
+            ? <ChatPage currentProject={currentProject} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} />
+            : <ManagePage onBack={() => setCurrentPage("chat")} onEnterProject={handleEnterProject} navigateToProjects={manageNavKey} />}
+        </Suspense>
       </div>
       <div className="h-6 flex items-center px-4 text-[10px] text-muted-foreground/50 border-t border-border/30">
         <span>{projects?.length ?? 0} projects</span>
       </div>
       {loading && <LoadingOverlay />}
     </div>
+    </AgentProvider>
   );
 }
 

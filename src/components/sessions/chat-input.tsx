@@ -1,12 +1,11 @@
-import { useState, useRef, useCallback, forwardRef, useImperativeHandle } from "react";
+import { useState, useRef, useCallback, forwardRef, useImperativeHandle, memo } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { Button } from "@/components/ui/button";
 import { Send, Square, Paperclip } from "lucide-react";
 import { FilePreview } from "./file-preview";
-import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { SavedFile, StreamChunk } from "@/types";
+import type { SavedFile } from "@/types";
 
 interface AttachedFile {
   id: string;
@@ -30,7 +29,7 @@ function isInsideProject(filePath: string, projectPath: string): boolean {
   return normFile.startsWith(normProject.endsWith("/") ? normProject : normProject + "/");
 }
 
-export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(function ChatInput({
+const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function ChatInput({
   sessionId,
   projectPath,
   disabled = false,
@@ -284,14 +283,6 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
       setActiveSessionId(chatSession.session_id);
       if (onMessageSent) onMessageSent(chatSession.session_id, fullMessage);
 
-      const unlisten = await listen<StreamChunk>("chat-stream", (event) => {
-        if (event.payload.session_id === chatSession.session_id && event.payload.event_type === "result") {
-          setSending(false);
-          setActiveSessionId(null);
-          unlisten();
-        }
-      });
-
       setMessage("");
       setFiles([]);
     } catch (err) {
@@ -408,7 +399,7 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
               <Button
                 variant={(message.trim() || files.length > 0) ? "default" : "secondary"}
                 size="icon-sm"
-                className={`h-8 w-8 rounded-full transition-all ${
+                className={`h-8 w-8 rounded-full transition-colors transition-shadow ${
                   (message.trim() || files.length > 0)
                     ? "bg-[var(--icon-send-bg)] text-[var(--icon-send-fg)] shadow-sm hover:opacity-90"
                     : "text-muted-foreground opacity-50"
@@ -426,3 +417,5 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
     </div>
   );
 });
+
+export const ChatInput = memo(ChatInputBase);

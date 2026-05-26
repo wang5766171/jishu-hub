@@ -38,6 +38,26 @@ export function searchSessions(sessions: Session[], query: string): SessionSearc
             matchCount += m.length;
             messageHasMatch = true;
           }
+        } else if (block.type === "tool_use") {
+          const searchable = `${block.name} ${JSON.stringify(block.input)}`;
+          const m = searchable.match(regex);
+          if (m && m.length > 0) {
+            matchCount += m.length;
+            messageHasMatch = true;
+          }
+        } else if (block.type === "tool_result") {
+          const searchable = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
+          const m = searchable.match(regex);
+          if (m && m.length > 0) {
+            matchCount += m.length;
+            messageHasMatch = true;
+          }
+        } else if (block.type === "thinking") {
+          const m = block.thinking.match(regex);
+          if (m && m.length > 0) {
+            matchCount += m.length;
+            messageHasMatch = true;
+          }
         }
       }
 

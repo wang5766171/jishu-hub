@@ -12,6 +12,8 @@ import { User, Bot, Wrench, ChevronDown, ChevronUp, ChevronRight, Search, ArrowD
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Message, ContentBlock } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
+import { ToolCallCard, classifyToolName } from "@/components/observability/tool-call-card";
+import type { ToolCall } from "@/components/observability/tool-call-card";
 
 interface MessageViewProps {
   messages: Message[];
@@ -47,7 +49,7 @@ function highlightText(text: string, query: string, matchOffset: number, current
   });
 }
 
-function ToolUseBlock({ block, query, dark }: { block: ContentBlock & { type: "tool_use" }; query: string; dark?: boolean }) {
+const ToolUseBlock = memo(function ToolUseBlock({ block, query, dark }: { block: ContentBlock & { type: "tool_use" }; query: string; dark?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const inputStr = JSON.stringify(block.input, null, 2);
 
@@ -82,9 +84,9 @@ function ToolUseBlock({ block, query, dark }: { block: ContentBlock & { type: "t
       </div>
     </Collapsible>
   );
-}
+});
 
-function ToolResultBlock({ block, query, dark }: { block: ContentBlock & { type: "tool_result" }; query: string; dark?: boolean }) {
+const ToolResultBlock = memo(function ToolResultBlock({ block, query, dark }: { block: ContentBlock & { type: "tool_result" }; query: string; dark?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const contentStr = typeof block.content === "string"
     ? block.content
@@ -119,9 +121,9 @@ function ToolResultBlock({ block, query, dark }: { block: ContentBlock & { type:
       </div>
     </Collapsible>
   );
-}
+});
 
-function ThinkingBlock({ block }: { block: ContentBlock & { type: "thinking" } }) {
+const ThinkingBlock = memo(function ThinkingBlock({ block }: { block: ContentBlock & { type: "thinking" } }) {
   const { t } = useTranslation();
 
   return (
@@ -134,9 +136,9 @@ function ThinkingBlock({ block }: { block: ContentBlock & { type: "thinking" } }
       </pre>
     </details>
   );
-}
+});
 
-function TextBlock({ text, query, dark, matchOffset, currentMatch }: { text: string; query: string; dark?: boolean; matchOffset?: number; currentMatch?: number }) {
+const TextBlock = memo(function TextBlock({ text, query, dark, matchOffset, currentMatch }: { text: string; query: string; dark?: boolean; matchOffset?: number; currentMatch?: number }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const needsCollapse = text.length > 800;
@@ -191,7 +193,7 @@ function TextBlock({ text, query, dark, matchOffset, currentMatch }: { text: str
       </CollapsibleTrigger>
     </Collapsible>
   );
-}
+});
 
 function extractMessageText(msg: Message): string {
   return msg.content.map(block => {
@@ -219,7 +221,7 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 mt-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
       title={t("sessions.copy")}
     >
       {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
@@ -228,12 +230,24 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function renderBlock(block: ContentBlock, query: string, dark?: boolean, matchOffset?: number, currentMatch?: number): React.ReactNode {
+function renderBlock(block: ContentBlock, query: string, dark?: boolean, matchOffset?: number, currentMatch?: number, _resultMap?: Map<string, string>): React.ReactNode {
   switch (block.type) {
     case "text":
       return <TextBlock text={block.text} query={query} dark={dark} matchOffset={matchOffset} currentMatch={currentMatch} />;
-    case "tool_use":
-      return <ToolUseBlock block={block} query={query} dark={dark} />;
+    case "tool_use": {
+      const resultMap = _resultMap;
+      const toolCall: ToolCall = {
+        id: block.id || block.name,
+        toolName: block.name,
+        kind: classifyToolName(block.name),
+        status: resultMap?.has(block.id) ? "success" : "success",
+        input: (typeof block.input === "object" && block.input !== null) ? block.input as Record<string, unknown> : {},
+        output: resultMap?.get(block.id),
+        startedAt: undefined,
+        endedAt: undefined,
+      };
+      return <ToolCallCard call={toolCall} />;
+    }
     case "tool_result":
       return <ToolResultBlock block={block} query={query} dark={dark} />;
     case "thinking":
@@ -272,14 +286,57 @@ export const MessageView = memo(function MessageView({ messages, initialSearchQu
     return { total, offsets, matchToMessage };
   }, [messages, renderingQuery]);
 
+  // Build a map from tool_use_id to tool_result content for ToolCallCard integration
+  const resultMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const msg of messages) {
+      for (const block of msg.content) {
+        if (block.type === "tool_result" && block.tool_use_id) {
+          const content = typeof block.content === "string"
+            ? block.content
+            : JSON.stringify(block.content);
+          map.set(block.tool_use_id, content);
+        }
+      }
+    }
+    return map;
+  }, [messages]);
+
   const [currentOcc, setCurrentOcc] = useState(0);
   const [scrollTrigger, setScrollTrigger] = useState(0);
 
   const virtualizer = useVirtualizer({
     count: messages.length,
     getScrollElement: () => scrollContainerRef?.current ?? null,
-    estimateSize: () => 80,
-    overscan: 10,
+    estimateSize: (i) => {
+      const msg = messages[i];
+      let h = 0;
+      for (const block of msg.content) {
+        switch (block.type) {
+          case "text": {
+            const t = block.text;
+            const lines = (t.match(/\n/g)?.length ?? 0) + Math.ceil(t.length / 55);
+            h += lines * 22;
+            const codeBlockCount = (t.match(/```/g)?.length ?? 0) >> 1;
+            h += codeBlockCount * 60;
+            break;
+          }
+          case "tool_use":
+          case "tool_result": {
+            const json = JSON.stringify(block.type === "tool_use" ? (block as ContentBlock & { type: "tool_use" }).input : (block as ContentBlock & { type: "tool_result" }).content);
+            h += Math.max(44, Math.min(140, json.length / 4 + 36));
+            break;
+          }
+          case "thinking":
+            h += 28;
+            break;
+        }
+      }
+      // avatar(28) + header(20) + bubble-pad(20) + copy-btn(24) + margin(16)
+      return Math.max(72, h + 108);
+    },
+    overscan: 15,
+    getItemKey: (i) => messages[i].timestamp ?? `idx-${i}`,
   });
 
   // When search query changes, auto-scroll to first match
@@ -298,7 +355,7 @@ export const MessageView = memo(function MessageView({ messages, initialSearchQu
     setScrollTrigger((n) => n + 1);
   };
 
-  // Scroll to the message containing currentOcc, then fine-tune to the match highlight
+  // Scroll to the match highlight
   useEffect(() => {
     if (searchState.total === 0 || scrollTrigger === 0) return;
     const msgIdx = searchState.matchToMessage[currentOcc];
@@ -342,7 +399,7 @@ export const MessageView = memo(function MessageView({ messages, initialSearchQu
             {isUser && <InlineImages text={extractMessageText(msg)} />}
             {msg.content.map((block, j) => (
               <div key={j} className="overflow-hidden">
-                {renderBlock(block, renderingQuery, isUser, searchState.offsets.get(`${i}-${j}`) ?? 0, currentOcc)}
+                {renderBlock(block, renderingQuery, isUser, searchState.offsets.get(`${i}-${j}`) ?? 0, currentOcc, resultMap)}
               </div>
             ))}
           </div>
@@ -355,7 +412,7 @@ export const MessageView = memo(function MessageView({ messages, initialSearchQu
         )}
       </div>
     );
-  }, [renderingQuery, searchState.offsets, currentOcc, t]);
+  }, [renderingQuery, searchState.offsets, currentOcc, resultMap, t]);
 
   const fullMessageList = (
     <div className="space-y-4 p-4 overflow-hidden max-w-full">
@@ -374,7 +431,6 @@ export const MessageView = memo(function MessageView({ messages, initialSearchQu
             <div
               key={virtualItem.key}
               data-index={virtualItem.index}
-              ref={virtualizer.measureElement}
               style={{
                 position: "absolute",
                 top: 0,
@@ -382,7 +438,7 @@ export const MessageView = memo(function MessageView({ messages, initialSearchQu
                 left: 0,
                 right: 0,
               }}
-              className="pb-4 overflow-hidden max-w-full"
+              className="pb-4 max-w-full"
             >
               {renderMessage(msg, virtualItem.index)}
             </div>

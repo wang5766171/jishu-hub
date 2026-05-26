@@ -4,17 +4,18 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { User, Bot, Wrench, ChevronRight, Copy, Check } from "lucide-react";
-import type { StreamChunk } from "@/types";
+import { useStreamStore } from "@/hooks/use-stream-store";
 import { InlineImages, stripImagePrompt } from "./inline-image";
 
 interface StreamingMessageProps {
-  chunks: StreamChunk[];
   isComplete: boolean;
   userMessage?: string;
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
+  onComplete?: (text: string, tools: Array<{ name: string; input: unknown }>) => void;
 }
 
-export const StreamingMessage = memo(function StreamingMessage({ chunks, isComplete, userMessage, scrollContainerRef }: StreamingMessageProps) {
+export const StreamingMessage = memo(function StreamingMessage({ isComplete, userMessage, scrollContainerRef, onComplete }: StreamingMessageProps) {
+  const chunks = useStreamStore();
   const { t } = useTranslation();
   const [displayText, setDisplayText] = useState("");
   const [toolUses, setToolUses] = useState<Array<{ name: string; input: unknown }>>([]);
