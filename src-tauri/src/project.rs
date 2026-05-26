@@ -155,61 +155,81 @@ fn parse_project(projects_dir: &Path, encoded_name: &str) -> Option<Project> {
 }
 
 pub fn decode_project_path(encoded: &str) -> String {
-    // Claude Code encodes paths: remove ':', replace '/' and '\' with '-'.
-    // Drive letter + first '\' becomes '--' (e.g., "D:\MyCodes" → "D--MyCodes").
-    // Decoding is ambiguous when directory names contain '-' (e.g., "claude-hub").
-    // We resolve this by checking if each decoded segment exists on the filesystem.
+    // Claude Code encodes paths: ':\' → '--', then '\'/' → '-', and spaces → '-'.
+    // This makes decoding ambiguous (e.g., "TestProject---2" could be "TestProject - 2",
+    // "TestProject-- 2", etc.). We resolve by matching against actual filesystem entries.
     if let Some(pos) = encoded.find("--") {
         let drive = &encoded[..pos];
         let rest = &encoded[pos + 2..];
-        let parts: Vec<&str> = rest.split('-').collect();
-        return resolve_path_from_parts(&format!("{}:\\", drive), &parts);
-    }
-    encoded.replace('-', "\\")
-}
+        let base = format!("{}:\\", drive);
 
-/// Recursively try to build a valid filesystem path from dash-separated segments.
-/// At each step, try:
-/// 1. Joining segments with literal '-' (handles dirs like "claude-hub")
-/// 2. Also try replacing '-' with ' ' in the merged segment (handles dirs like "Milk Order")
-fn resolve_path_from_parts(current: &str, remaining: &[&str]) -> String {
-    if remaining.is_empty() {
-        return current.to_string();
-    }
-
-    // Build merged candidates from leading segments joined with '-'
-    let mut merged = remaining[0].to_string();
-    for i in 0..remaining.len() {
-        if i > 0 {
-            merged.push('-');
-            merged.push_str(remaining[i]);
+        let result = decode_by_fs_matching(&base, rest);
+        if result_is_valid(&result) {
+            return result;
         }
 
-        // Try the literal merged segment (dashes stay as dashes)
-        let candidate = join_path(current, &merged);
-        let rest = &remaining[i + 1..];
-        if candidate_is_valid(&candidate, rest.is_empty()) {
-            let result = resolve_path_from_parts(&candidate, rest);
+        // Fallback for deleted/missing directories
+        join_path(&base, &rest.replace('-', "\\"))
+    } else {
+        encoded.replace('-', "\\")
+    }
+}
+
+/// Encode a single directory name the way Claude Code does (spaces → dashes).
+fn encode_segment(name: &str) -> String {
+    name.replace(' ', "-")
+}
+
+/// Decode an encoded path suffix by greedily matching against filesystem entries.
+/// At each level, enumerate actual directory names, encode each one, and check
+/// if it matches a prefix of the remaining encoded string. Longest match wins.
+fn decode_by_fs_matching(current_dir: &str, remaining: &str) -> String {
+    if remaining.is_empty() {
+        return current_dir.to_string();
+    }
+
+    let dir = Path::new(current_dir);
+    if !dir.is_dir() {
+        return join_path(current_dir, &remaining.replace('-', "\\"));
+    }
+
+    // Collect filesystem entries whose encoded name matches a prefix of `remaining`
+    let mut matches: Vec<(String, usize)> = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let encoded_seg = encode_segment(&name);
+
+            if remaining.starts_with(&encoded_seg) {
+                matches.push((name, encoded_seg.len()));
+            }
+        }
+    }
+
+    // Greedy: try longest matches first
+    matches.sort_by(|a, b| b.1.cmp(&a.1));
+
+    for (name, consumed) in matches {
+        let rest_after = &remaining[consumed..];
+        // The next '-' (if any) is a path separator between segments
+        let next_remaining = rest_after.strip_prefix('-').unwrap_or(rest_after);
+        let next_dir = join_path(current_dir, &name);
+
+        if next_remaining.is_empty() {
+            if Path::new(&next_dir).is_dir() {
+                return next_dir;
+            }
+        } else {
+            let result = decode_by_fs_matching(&next_dir, next_remaining);
             if result_is_valid(&result) {
                 return result;
             }
         }
-
-        // Also try replacing '-' with ' ' in the merged segment (space decoding)
-        let merged_with_spaces = merged.replace('-', " ");
-        if merged_with_spaces != merged {
-            let candidate_spaced = join_path(current, &merged_with_spaces);
-            if candidate_is_valid(&candidate_spaced, rest.is_empty()) {
-                let result = resolve_path_from_parts(&candidate_spaced, rest);
-                if result_is_valid(&result) {
-                    return result;
-                }
-            }
-        }
     }
 
-    // Fallback: join everything with path separator
-    join_path(current, &remaining.join("\\"))
+    // No filesystem match — fall back to naive decode
+    join_path(current_dir, &remaining.replace('-', "\\"))
 }
 
 /// Join two path components, avoiding double backslashes.
@@ -218,22 +238,16 @@ fn join_path(base: &str, segment: &str) -> String {
     format!("{}\\{}", base_trimmed, segment)
 }
 
-fn candidate_is_valid(path: &str, is_final: bool) -> bool {
-    let p = std::path::Path::new(path);
-    is_final || p.is_dir()
-}
-
 fn result_is_valid(result: &str) -> bool {
     Path::new(result).is_dir()
 }
 
 pub fn encode_project_path(path: &str) -> String {
-    // Claude Code encodes: ':\' -> '--' (drive separator), then all remaining '\' and '/' -> '-'
-    let with_drive = path
-        .replace(":\\", "--")
+    // Claude Code encodes: ':\' -> '--' (drive separator), '\'/' -> '-', spaces -> '-'
+    path.replace(":\\", "--")
         .replace('\\', "-")
-        .replace('/', "-");
-    with_drive
+        .replace('/', "-")
+        .replace(' ', "-")
 }
 
 /// Get the level-1 directory from a project path.
@@ -334,6 +348,14 @@ mod tests {
     }
 
     #[test]
+    fn test_encode_path_with_spaces() {
+        assert_eq!(
+            encode_project_path("E:\\TestProject - 2"),
+            "E--TestProject---2"
+        );
+    }
+
+    #[test]
     fn test_decode_simple_path() {
         let tmp = std::env::temp_dir().join("test_simple_path");
         let _ = fs::remove_dir_all(&tmp);
@@ -388,5 +410,24 @@ mod tests {
         assert_eq!(decoded, path);
 
         let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn test_decode_path_space_dash_space() {
+        // "TestProject - 2" → encoded "TestProject---2" (space→dash, dash stays, space→dash)
+        let tmp = std::env::temp_dir().join("TestProject - 2");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let path = tmp.to_string_lossy().to_string();
+        let encoded = encode_project_path(&path);
+
+        // Verify the encoding has triple dash for " - "
+        assert!(encoded.contains("TestProject---2"), "expected triple dash in: {encoded}");
+
+        let decoded = decode_project_path(&encoded);
+        assert_eq!(decoded, path);
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
