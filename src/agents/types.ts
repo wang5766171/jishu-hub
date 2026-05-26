@@ -18,13 +18,17 @@ export interface AgentStatus {
   id: string;
   display_name: string;
   icon: string;
-  capabilities: number;
+  capabilities: string;
   health: AgentHealth;
   install_hint: string | null;
 }
 
 export class CapabilitySet {
-  constructor(private flags: number) {}
+  private flags: bigint;
+
+  constructor(flags: string | number | bigint) {
+    this.flags = BigInt(flags);
+  }
 
   has(name: string): boolean {
     const flag = CapabilityFlags[name];
@@ -32,41 +36,41 @@ export class CapabilitySet {
     return (this.flags & flag) === flag;
   }
 
-  get raw(): number {
+  get raw(): bigint {
     return this.flags;
   }
 }
 
 // Pre-computed decimal values to avoid JS 32-bit shift overflow
-export const CapabilityFlags: Record<string, number> = {
-  RESUME_BY_ID: 1,
-  RESUME_LATEST: 2,
-  RESUME_PICKER: 4,
-  SESSION_FORK: 8,
-  SESSION_LIST: 16,
-  SESSION_DELETE: 32,
-  SESSION_EXPORT: 64,
-  SESSION_IMPORT: 128,
+export const CapabilityFlags: Record<string, bigint> = {
+  RESUME_BY_ID: 1n,
+  RESUME_LATEST: 2n,
+  RESUME_PICKER: 4n,
+  SESSION_FORK: 8n,
+  SESSION_LIST: 16n,
+  SESSION_DELETE: 32n,
+  SESSION_EXPORT: 64n,
+  SESSION_IMPORT: 128n,
 
-  IMAGE_INPUT: 1024,
-  FILE_INPUT: 2048,
-  STDIN_PROMPT: 4096,
+  IMAGE_INPUT: 1024n,
+  FILE_INPUT: 2048n,
+  STDIN_PROMPT: 4096n,
 
-  STREAM_TEXT_DELTA: 1048576,
-  STREAM_TOOL_CALLS: 2097152,
-  STREAM_THINKING: 4194304,
-  PARTIAL_MESSAGE: 8388608,
+  STREAM_TEXT_DELTA: 1048576n,
+  STREAM_TOOL_CALLS: 2097152n,
+  STREAM_THINKING: 4194304n,
+  PARTIAL_MESSAGE: 8388608n,
 
-  ABORT: 1073741824,
-  APPROVAL_REQUEST: 2147483648,
+  ABORT: 1073741824n,
+  APPROVAL_REQUEST: 2147483648n,
 
-  CONFIG_GLOBAL: 1099511627776,   // 1<<40
-  CONFIG_PROJECT: 2199023255552,  // 1<<41
-  CONFIG_BACKUP: 4398046511104,   // 1<<42
-  CONFIG_TEMPLATES: 8796093022208, // 1<<43
+  CONFIG_GLOBAL: 1099511627776n,   // 1<<40
+  CONFIG_PROJECT: 2199023255552n,  // 1<<41
+  CONFIG_BACKUP: 4398046511104n,   // 1<<42
+  CONFIG_TEMPLATES: 8796093022208n, // 1<<43
 
-  SUBAGENT_DISPATCH: 1125899906842624,  // 1<<50
-  SUBAGENT_RECEIVE: 2251799813685248,    // 1<<51
+  SUBAGENT_DISPATCH: 1125899906842624n,  // 1<<50
+  SUBAGENT_RECEIVE: 2251799813685248n,    // 1<<51
 
-  RPC_BIDIRECTIONAL: 1152921504606846976, // 1<<60
+  RPC_BIDIRECTIONAL: 1152921504606846976n, // 1<<60
 };

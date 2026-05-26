@@ -7,7 +7,8 @@ import { FileReadBody } from "./bodies/FileEditBody";
 import { ShellExecBody } from "./bodies/ShellExecBody";
 import { SearchBody } from "./bodies/SearchBody";
 import { OtherBody } from "./bodies/OtherBody";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { useFileViewer } from "@/components/file-viewer";
+import { ChevronDown, ChevronRight, FileSearch } from "lucide-react";
 
 function ToolCallCardBody({ call }: { call: ToolCall }) {
   switch (call.kind) {
@@ -35,9 +36,11 @@ const statusBorder: Record<ToolCall["status"], string> = {
 
 export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCall }) {
   const [expanded, setExpanded] = useState(call.status === "error");
+  const { openViewer } = useFileViewer();
   const path = (call.input.file_path as string) || (call.input.path as string) || (call.input.command as string) || (call.input.pattern as string) || "";
   const shortPath = path.length > 60 ? "…" + path.slice(path.length - 55) : path;
   const duration = call.startedAt && call.endedAt ? ((call.endedAt - call.startedAt) / 1000).toFixed(1) + "s" : null;
+  const isFile = call.kind.startsWith("file_") && path;
 
   return (
     <div
@@ -60,6 +63,27 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
         <span className="flex-1 font-mono text-[0.75em] truncate text-[var(--color-foreground)]" title={path}>
           {shortPath}
         </span>
+        {isFile && (
+          <span
+            role="button"
+            tabIndex={0}
+            title="Open file"
+            onClick={(event) => {
+              event.stopPropagation();
+              openViewer({ kind: call.kind === "file_edit" ? "diff" : "file", path });
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                event.stopPropagation();
+                openViewer({ kind: call.kind === "file_edit" ? "diff" : "file", path });
+              }
+            }}
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-[var(--color-accent)] hover:text-foreground"
+          >
+            <FileSearch className="h-3.5 w-3.5" />
+          </span>
+        )}
         {duration && (
           <span className="text-[0.67em] text-muted-foreground shrink-0">{duration}</span>
         )}

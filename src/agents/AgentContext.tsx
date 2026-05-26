@@ -45,6 +45,9 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       ]);
       if (list) setAgents(list);
       if (active) setActiveId(active);
+      await safeInvoke("agent_refresh_health");
+      const refreshed = await safeInvoke<AgentStatus[]>("agent_list_statuses");
+      if (refreshed) setAgents(refreshed);
     })();
   }, []);
 

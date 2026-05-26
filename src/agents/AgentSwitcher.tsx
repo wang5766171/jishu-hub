@@ -52,6 +52,11 @@ export const AgentSwitcher = memo(function AgentSwitcher() {
             <button
               key={agent.id}
               onClick={() => {
+                if (!agent.health.installed) {
+                  if (agent.install_hint) void navigator.clipboard?.writeText(agent.install_hint);
+                  window.alert(agent.install_hint ? `未安装：${agent.display_name}\n\n已复制安装命令：\n${agent.install_hint}` : `未安装：${agent.display_name}`);
+                  return;
+                }
                 setActive(agent.id);
                 setOpen(false);
               }}

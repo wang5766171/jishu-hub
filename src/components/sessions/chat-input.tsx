@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Send, Square, Paperclip } from "lucide-react";
 import { FilePreview } from "./file-preview";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { SavedFile } from "@/types";
+import type { ChatSession, SavedFile } from "@/types";
 
 interface AttachedFile {
   id: string;
@@ -20,6 +20,7 @@ interface ChatInputProps {
   sessionId: string | null;
   projectPath: string | null;
   disabled?: boolean;
+  allowFiles?: boolean;
   onMessageSent?: (chatSessionId: string, userMessage: string) => void;
 }
 
@@ -33,6 +34,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   sessionId,
   projectPath,
   disabled = false,
+  allowFiles = true,
   onMessageSent,
 }: ChatInputProps, ref) {
   const { t } = useTranslation();
@@ -61,6 +63,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
+      if (!allowFiles) return;
       const imageExts = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico"]);
       const items = e.clipboardData.items;
       const osFiles = e.clipboardData.files;
@@ -177,11 +180,11 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         reader.readAsDataURL(file);
       }
     },
-    [files.length]
+    [allowFiles, files.length, projectPath, t]
   );
 
   const handleFileSelect = async () => {
-    if (!projectPath) return;
+    if (!allowFiles || !projectPath) return;
     const selected = await open({ multiple: true, directory: false });
     if (!selected) return;
     const paths = Array.isArray(selected) ? selected : [selected];
@@ -239,7 +242,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
       const externalPathFiles = files.filter((f) => f.localPath && !(projectPath && isInsideProject(f.localPath, projectPath!)));
       const uploadFiles = files.filter((f) => !f.localPath);
 
-      if (localFiles.length > 0 || uploadFiles.length > 0) {
+      if (allowFiles && (localFiles.length > 0 || uploadFiles.length > 0)) {
         const allFileLines: string[] = [];
 
         // Local project files: reference directly
@@ -279,7 +282,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         fullMessage += `\n\n<!--CLAUDE_HUB_IMAGES_BEGIN-->\n[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]\n${fileListStr}\n<!--CLAUDE_HUB_IMAGES_END-->`;
       }
 
-      const chatSession = await invokeCommand<{ session_id: string; process_id: number }>(
+      const chatSession = await invokeCommand<ChatSession>(
         "send_message",
         {
           projectPath,
@@ -310,7 +313,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!projectPath || disabled || sending) return;
+    if (!allowFiles || !projectPath || disabled || sending) return;
 
     const droppedFiles = Array.from(e.dataTransfer.files);
     if (droppedFiles.length === 0) return;
@@ -391,7 +394,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
               size="icon-sm"
               className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
               onClick={handleFileSelect}
-              disabled={disabled || sending}
+              disabled={disabled || sending || !allowFiles}
               title={t("sessions.attachImage")}
             >
               <Paperclip className="h-4 w-4" />

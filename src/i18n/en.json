@@ -80,6 +80,8 @@
     "foundSessions": "{{count}} sessions found",
     "noSessionsFound": "No matching sessions",
     "matches": "matches",
+    "previousMatch": "Previous match",
+    "nextMatch": "Next match",
     "expand": "Expand",
     "collapse": "Collapse",
     "copy": "Copy",

@@ -1,20 +1,22 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { streamStore } from "@/hooks/use-stream-store";
-import { MessageView } from "@/components/sessions/message-view";
+import { MessageView, type MessageSearchNavigation, type MessageSearchStatus } from "@/components/sessions/message-view";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
 import { ChatInput } from "@/components/sessions/chat-input";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
+import { StatusBar as ObservabilityStatusBar } from "@/components/observability";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, PanelLeftClose, PanelLeftOpen, ArrowRight,
+  MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ChevronDown,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { searchSessions } from "@/lib/session-search";
-import type { Session, Project, Message, ContentBlock, StreamChunk, SessionSearchResult } from "@/types";
+import { useAgent } from "@/agents";
+import type { Session, Project, Message, ContentBlock, AgentStreamChunk, SessionSearchResult } from "@/types";
 
 function TerminalIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -68,6 +70,7 @@ export function ChatPage({
   onSwitchProject: () => void;
 }) {
   const { t } = useTranslation();
+  const { activeId, active, capabilities } = useAgent();
   const projectId = currentProject?.encoded_name ?? null;
 
   // selectedSession: null or real backend UUID — never fake IDs
@@ -79,22 +82,38 @@ export function ChatPage({
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
   const [pendingUserMessage, setPendingUserMessage] = useState<string | null>(null);
-  const [msgSearchSeed, setMsgSearchSeed] = useState("");
+  const [messageSearchStatus, setMessageSearchStatus] = useState<MessageSearchStatus>({ current: 0, total: 0 });
+  const [messageSearchNavigation, setMessageSearchNavigation] = useState<MessageSearchNavigation | null>(null);
   const [optimisticSessions, setOptimisticSessions] = useState<Session[]>([]);
 
   const messageAreaRef = useRef<HTMLDivElement>(null);
-  const streamChunksRef = useRef<StreamChunk[]>([]);
+  const streamChunksRef = useRef<AgentStreamChunk[]>([]);
   const pendingUserMsgRef = useRef<string | null>(null);
   const resolvedSessionIdRef = useRef<string | null>(null);
+  const activeIdRef = useRef<string | null>(activeId);
+  const streamingAgentRef = useRef<string | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const selectedSessionRef = useRef<string | null>(null);
   const visitedSessions = useRef(new Set<string>());
   const scrollMemory = useRef(new Map<string, number>());
   const scrollAction = useRef<{ type: "bottom" } | { type: "restore", top: number } | null>(null);
   // Buffer for early chunks arriving before handleMessageSent sets streamingSessionRef
-  const earlyChunksRef = useRef<StreamChunk[]>([]);
+  const earlyChunksRef = useRef<AgentStreamChunk[]>([]);
 
   const showChatArea = !!selectedSession;
+  const fileToolCount = useMemo(() => {
+    return sessionMessages.reduce((count, msg) => (
+      count + msg.content.filter((block) => {
+        if (block.type !== "tool_use") return false;
+        const name = block.name.toLowerCase();
+        return name.includes("read") || name.includes("edit") || name.includes("write");
+      }).length
+    ), 0);
+  }, [sessionMessages]);
+
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
 
   // Single hook for current project's sessions
   const [listRefreshKey, setListRefreshKey] = useState(0);
@@ -117,12 +136,38 @@ export function ChatPage({
     displaySessions = [...optimisticSessions, ...displaySessions];
   }
 
+  const hasSearchQuery = searchQuery.trim().length > 0;
+  const showMessageSearchControls = hasSearchQuery && !!selectedSession && selectedSession !== "new";
+  const messageSearchTotal = showMessageSearchControls ? messageSearchStatus.total : 0;
+  const messageSearchLabel = messageSearchTotal > 0
+    ? `${messageSearchStatus.current}/${messageSearchTotal}`
+    : "0/0";
+
+  const requestMessageSearchNavigation = useCallback((direction: 1 | -1) => {
+    setMessageSearchNavigation((prev) => ({
+      direction,
+      nonce: (prev?.nonce ?? 0) + 1,
+    }));
+  }, []);
+
+  const handleMessageSearchStatusChange = useCallback((status: MessageSearchStatus) => {
+    setMessageSearchStatus((prev) => (
+      prev.current === status.current && prev.total === status.total ? prev : status
+    ));
+  }, []);
+
   // Auto-clear optimistic sessions once real session appears in backend list
   useEffect(() => {
     if (sessions && optimisticSessions.length > 0) {
       setOptimisticSessions(prev => prev.filter(opt => !sessions.some(s => s.id === opt.id)));
     }
   }, [sessions]);
+
+  useEffect(() => {
+    if (!showMessageSearchControls) {
+      setMessageSearchStatus({ current: 0, total: 0 });
+    }
+  }, [showMessageSearchControls]);
 
   // Clear session state when project changes
   useEffect(() => {
@@ -161,7 +206,6 @@ export function ChatPage({
     const isFirstVisit = !visitedSessions.current.has(sessionId);
     setSelectedSession(sessionId);
     selectedSessionRef.current = sessionId;
-    setMsgSearchSeed(searchQuery);
 
     try {
       const messages = await invokeCommand<Message[]>("get_session_messages", {
@@ -193,7 +237,6 @@ export function ChatPage({
     streamStore.setSession(null);
     setPendingUserMessage(null);
     pendingUserMsgRef.current = null;
-    setMsgSearchSeed("");
     resolvedSessionIdRef.current = null;
 
     requestAnimationFrame(() => {
@@ -264,6 +307,7 @@ export function ChatPage({
     setPendingUserMessage(msg);
     pendingUserMsgRef.current = msg;
     resolvedSessionIdRef.current = null;
+    streamingAgentRef.current = activeIdRef.current;
 
     // Replay early chunks that arrived before this callback ran
     const early = earlyChunksRef.current.filter(c => c.session_id === sid);
@@ -292,12 +336,15 @@ export function ChatPage({
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
-    listen<StreamChunk[] | StreamChunk>("chat-stream", (event) => {
+    listen<AgentStreamChunk[] | AgentStreamChunk>("agent-event", (event) => {
       const payload = event.payload;
       const chunks = Array.isArray(payload) ? payload : [payload];
       const currentStreaming = streamStore.getSessionId();
 
       for (const chunk of chunks) {
+        if (streamingAgentRef.current && chunk.agent_id !== streamingAgentRef.current) continue;
+        if (!currentStreaming && chunk.agent_id !== activeIdRef.current) continue;
+
         // Buffer early chunks that arrive before handleMessageSent sets the ref
         if (!currentStreaming) {
           earlyChunksRef.current.push(chunk);
@@ -369,6 +416,7 @@ export function ChatPage({
 
           // Clear streaming state
           streamStore.setSession(null);
+          streamingAgentRef.current = null;
           streamChunksRef.current = [];
           setPendingUserMessage(null);
           pendingUserMsgRef.current = null;
@@ -477,11 +525,8 @@ export function ChatPage({
               <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--icon-search)]" />
               <Input
                 value={searchQuery}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  setMsgSearchSeed(e.target.value);
-                }}
-                placeholder={t("sessions.search")}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={t("sessions.searchAll")}
                 className="h-full pl-8 pr-7 !text-sm !leading-none shadow-none rounded-lg border-border/40 truncate"
               />
               {searchQuery && (
@@ -491,6 +536,35 @@ export function ChatPage({
                 >
                   <X className="h-3 w-3" />
                 </button>
+              )}
+              {showMessageSearchControls && (
+                <div className="absolute left-[calc(100%+0.42rem)] top-1/2 z-30 flex h-[2.55rem] -translate-y-1/2 overflow-hidden rounded-[12px] border border-border/50 bg-background/95 shadow-[0_0.45rem_1.25rem_rgba(0,0,0,0.16)] backdrop-blur">
+                  <span className="flex min-w-[2.85rem] items-center justify-center px-[0.65rem] text-[0.7rem] font-medium tabular-nums text-muted-foreground leading-none">
+                    {messageSearchLabel}
+                  </span>
+                  <div className="flex h-full w-[1.55rem] flex-col border-l border-border/40">
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      disabled={messageSearchTotal === 0}
+                      onClick={() => requestMessageSearchNavigation(-1)}
+                      title={t("sessions.previousMatch")}
+                      className="h-1/2 w-full rounded-none px-0 hover:bg-accent/70 disabled:opacity-30"
+                    >
+                      <ChevronUp className="size-[0.85rem]" strokeWidth={3} />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      disabled={messageSearchTotal === 0}
+                      onClick={() => requestMessageSearchNavigation(1)}
+                      title={t("sessions.nextMatch")}
+                      className="h-1/2 w-full rounded-none border-t border-border/30 px-0 hover:bg-accent/70 disabled:opacity-30"
+                    >
+                      <ChevronDown className="size-[0.85rem]" strokeWidth={3} />
+                    </Button>
+                  </div>
+                </div>
               )}
             </div>
           </div>
@@ -608,6 +682,11 @@ export function ChatPage({
           </div>
         ) : (
           <>
+            <ObservabilityStatusBar
+              model={active?.display_name}
+              turns={sessionMessages.length}
+              fileCount={fileToolCount}
+            />
             {/* Session header */}
             {selectedSession && selectedSession !== "new" ? (
               <div className="flex items-center justify-between px-5 h-[44px] border-b border-border/30" style={{ background: "var(--color-layer-1)" }}>
@@ -616,6 +695,14 @@ export function ChatPage({
                   <span className="text-[11px] text-muted-foreground/50 font-mono shrink-0">{selectedSession.slice(0, 8)}</span>
                 </div>
                 <div className="flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={handleRefreshMessages}
+                    title={t("sessions.refresh")}
+                  >
+                    <RotateCw className="h-3.5 w-3.5" />
+                  </Button>
                   <Button
                     variant="ghost"
                     size="icon-xs"
@@ -638,7 +725,14 @@ export function ChatPage({
             {/* Messages */}
             <div ref={messageAreaRef} className="flex-1 min-h-0 overflow-y-auto" style={{ overflowAnchor: "none" }}>
               {selectedSession && selectedSession !== "new" && (
-                <MessageView messages={sessionMessages} initialSearchQuery={msgSearchSeed} onRefresh={handleRefreshMessages} flat scrollContainerRef={messageAreaRef} />
+                <MessageView
+                  messages={sessionMessages}
+                  searchQuery={searchQuery}
+                  searchNavigation={messageSearchNavigation}
+                  onSearchStatusChange={handleMessageSearchStatusChange}
+                  flat
+                  scrollContainerRef={messageAreaRef}
+                />
               )}
               {streamStore.getSessionId() && 
                 (streamStore.getSessionId() === selectedSession || resolvedSessionIdRef.current === selectedSession) && 
@@ -661,6 +755,7 @@ export function ChatPage({
             projectPath={currentProject?.path ?? null}
             disabled={streamStore.getSessionId() !== null}
             onMessageSent={handleMessageSent}
+            allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
           />
         )}
       </div>

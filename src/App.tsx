@@ -13,8 +13,9 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { useTheme, type Theme } from "@/hooks/use-theme";
 import { useFontSize, type FontLevel } from "@/hooks/use-font-size";
-import { AgentProvider } from "@/agents";
+import { AgentProvider, useAgent } from "@/agents";
 import { AgentSwitcher } from "@/agents";
+import { FileViewerProvider } from "@/components/file-viewer";
 import type { Page, Project } from "@/types";
 
 const ChatPage = lazy(() => import("@/pages/chat-page").then(m => ({ default: m.ChatPage })));
@@ -313,8 +314,9 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
   );
 }
 
-function App() {
+function AppContent() {
   useTranslation();
+  const { activeId } = useAgent();
   const [currentPage, setCurrentPage] = useState<Page>("chat");
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const { data: projects, loading: projectsLoading, refetch: refetchProjects } = useInvoke<Project[]>("scan_projects");
@@ -359,8 +361,20 @@ function App() {
     setCurrentPage("manage");
   }, []);
 
+  useEffect(() => {
+    if (!activeId) return;
+    refetchProjects()
+      .then((newProjects) => {
+        setCurrentProject((prev) => {
+          if (!prev) return null;
+          return newProjects.find((p) => p.encoded_name === prev.encoded_name) ?? null;
+        });
+      })
+      .catch(console.error);
+    refetchNames(true).catch(console.error);
+  }, [activeId, refetchProjects, refetchNames]);
+
   return (
-    <AgentProvider>
     <div className="flex flex-col h-screen bg-background relative">
       <TitleBar currentPage={currentPage} onNavigate={setCurrentPage} disabled={loading} />
       <div className="flex-1 overflow-hidden">
@@ -375,6 +389,15 @@ function App() {
       </div>
       {loading && <LoadingOverlay />}
     </div>
+  );
+}
+
+function App() {
+  return (
+    <AgentProvider>
+      <FileViewerProvider>
+        <AppContent />
+      </FileViewerProvider>
     </AgentProvider>
   );
 }

@@ -80,9 +80,9 @@
   --icon-send-bg: var(--color-primary);
   --icon-send-fg: var(--color-primary-foreground);
 
-  /* Font size presets (default: medium) */
-  --font-size-base: 19px;
-  --font-size-prose: 15px;
+  /* Font size presets (default: small) */
+  --font-size-base: 15px;
+  --font-size-prose: 12px;
 
   /* Tool state colors */
   --tool-pending: hsl(240 5% 65%);

@@ -80,6 +80,8 @@
     "foundSessions": "找到 {{count}} 个会话",
     "noSessionsFound": "没有匹配的会话",
     "matches": "处匹配",
+    "previousMatch": "上一处匹配",
+    "nextMatch": "下一处匹配",
     "expand": "展开",
     "collapse": "收起",
     "copy": "复制",

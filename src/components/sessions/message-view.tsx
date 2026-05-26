@@ -1,14 +1,12 @@
-import { useState, useMemo, useEffect, useDeferredValue, memo, useCallback } from "react";
+import { useState, useMemo, useEffect, useDeferredValue, memo, useCallback, useRef } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { User, Bot, ChevronDown, ChevronUp, Search, ArrowDown, ArrowUp, RotateCw, Copy, Check, X } from "lucide-react";
+import { User, Bot, ChevronDown, ChevronUp, Copy, Check } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Message, ContentBlock } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
@@ -18,9 +16,21 @@ import type { ToolCall } from "@/components/observability/tool-call-card";
 interface MessageViewProps {
   messages: Message[];
   initialSearchQuery?: string;
-  onRefresh?: () => void;
+  searchQuery?: string;
+  searchNavigation?: MessageSearchNavigation | null;
+  onSearchStatusChange?: (status: MessageSearchStatus) => void;
   flat?: boolean;
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
+}
+
+export interface MessageSearchStatus {
+  current: number;
+  total: number;
+}
+
+export interface MessageSearchNavigation {
+  direction: 1 | -1;
+  nonce: number;
 }
 
 function formatTimestamp(ts: number | null): string {
@@ -288,14 +298,26 @@ function estimateRowSize(row: RenderRow): number {
   return 110;
 }
 
-export const MessageView = memo(function MessageView({ messages, initialSearchQuery, onRefresh, flat, scrollContainerRef }: MessageViewProps) {
+export const MessageView = memo(function MessageView({
+  messages,
+  initialSearchQuery,
+  searchQuery: externalSearchQuery,
+  searchNavigation,
+  onSearchStatusChange,
+  flat,
+  scrollContainerRef,
+}: MessageViewProps) {
   const { t } = useTranslation();
-  const [searchQuery, setSearchQuery] = useState(initialSearchQuery || "");
+  const [localSearchQuery, setLocalSearchQuery] = useState(initialSearchQuery || "");
+  const searchQuery = externalSearchQuery ?? localSearchQuery;
   const renderingQuery = useDeferredValue(searchQuery);
+  const lastNavigationNonceRef = useRef(searchNavigation?.nonce ?? null);
 
   useEffect(() => {
-    setSearchQuery(initialSearchQuery || "");
-  }, [initialSearchQuery]);
+    if (externalSearchQuery === undefined) {
+      setLocalSearchQuery(initialSearchQuery || "");
+    }
+  }, [externalSearchQuery, initialSearchQuery]);
 
   const searchState = useMemo(() => {
     if (!renderingQuery.trim()) return { total: 0, offsets: new Map<string, number>(), matchToMessage: [] as number[] };
@@ -361,11 +383,25 @@ export const MessageView = memo(function MessageView({ messages, initialSearchQu
     setScrollTrigger((n) => n + 1);
   }, [renderingQuery, searchState.total]);
 
-  const navigateMatch = (dir: 1 | -1) => {
+  const navigateMatch = useCallback((dir: 1 | -1) => {
     if (searchState.total === 0) return;
     setCurrentOcc((prev) => (prev + dir + searchState.total) % searchState.total);
     setScrollTrigger((n) => n + 1);
-  };
+  }, [searchState.total]);
+
+  useEffect(() => {
+    if (!searchNavigation || searchNavigation.nonce === lastNavigationNonceRef.current) return;
+    lastNavigationNonceRef.current = searchNavigation.nonce;
+    navigateMatch(searchNavigation.direction);
+  }, [navigateMatch, searchNavigation]);
+
+  useEffect(() => {
+    if (!renderingQuery.trim() || searchState.total === 0) {
+      onSearchStatusChange?.({ current: 0, total: 0 });
+      return;
+    }
+    onSearchStatusChange?.({ current: currentOcc + 1, total: searchState.total });
+  }, [currentOcc, onSearchStatusChange, renderingQuery, searchState.total]);
 
   // Scroll to the match highlight (按 row index 找含目标 messageIndex 的 row)
   useEffect(() => {
@@ -384,7 +420,7 @@ export const MessageView = memo(function MessageView({ messages, initialSearchQu
       el?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 120);
     return () => clearTimeout(timer);
-  }, [scrollTrigger]);
+  }, [currentOcc, flat, rows, scrollTrigger, searchState.matchToMessage, searchState.total, virtualizer]);
 
   const renderRow = useCallback((row: RenderRow) => {
     if (row.kind === "tool-group") {
@@ -500,113 +536,11 @@ export const MessageView = memo(function MessageView({ messages, initialSearchQu
 
   // Flat mode: no ScrollArea — parent controls scrolling, search bar sticky at top
   if (flat) {
-    return (
-      <>
-        <div className="sticky top-0 z-10 border-b border-border/30 px-4 py-2 flex items-center gap-2" style={{ background: "var(--color-layer-4)" }}>
-          <div className="relative flex-1">
-            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--icon-search)]" />
-            <Input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={t("sessions.search")}
-              className="h-8 pl-8 pr-7 text-sm"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery("")}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            )}
-          </div>
-          {searchState.total > 0 && (
-            <div className="flex items-center gap-0">
-              <span className="text-xs text-muted-foreground whitespace-nowrap pr-1">
-                {currentOcc + 1}/{searchState.total}
-              </span>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                onClick={() => navigateMatch(-1)}
-              >
-                <ArrowUp className="h-3 w-3" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                onClick={() => navigateMatch(1)}
-              >
-                <ArrowDown className="h-3 w-3" />
-              </Button>
-            </div>
-          )}
-          {renderingQuery && searchState.total === 0 && (
-            <span className="text-xs text-muted-foreground">{t("sessions.noResults")}</span>
-          )}
-          {onRefresh && (
-            <Button variant="ghost" size="icon-xs" onClick={onRefresh}>
-              <RotateCw className="h-3.5 w-3.5" />
-            </Button>
-          )}
-        </div>
-        {messageList}
-      </>
-    );
+    return messageList;
   }
 
   return (
     <div className="flex h-full flex-col">
-      {/* Search bar */}
-      <div className="border-b border-border px-4 py-2 flex items-center gap-2">
-        <div className="relative flex-1">
-          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder={t("sessions.search")}
-            className="h-8 pl-8 pr-7 text-sm"
-          />
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-            >
-              <X className="h-3 w-3" />
-            </button>
-          )}
-        </div>
-        {searchState.total > 0 && (
-          <div className="flex items-center gap-0">
-            <span className="text-xs text-muted-foreground whitespace-nowrap pr-1">
-              {currentOcc + 1}/{searchState.total}
-            </span>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => navigateMatch(-1)}
-            >
-              <ArrowUp className="h-3 w-3" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => navigateMatch(1)}
-            >
-              <ArrowDown className="h-3 w-3" />
-            </Button>
-          </div>
-        )}
-        {searchQuery && searchState.total === 0 && (
-          <span className="text-xs text-muted-foreground">{t("sessions.noResults")}</span>
-        )}
-        {onRefresh && (
-          <Button variant="ghost" size="icon-xs" onClick={onRefresh}>
-            <RotateCw className="h-3.5 w-3.5" />
-          </Button>
-        )}
-      </div>
-
       {/* Messages */}
       <ScrollArea className="flex-1 min-h-0 message-scroll">
         {messageList}

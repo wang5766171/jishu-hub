@@ -179,14 +179,19 @@ export interface ProjectMergeInfo {
 }
 
 export interface ChatSession {
-  sessionId: string;
-  processId: number;
+  agent_id: string;
+  session_id: string;
+  process_id: number;
 }
 
 export interface StreamChunk {
   session_id: string;
   event_type: string;
   data: Record<string, unknown>;
+}
+
+export interface AgentStreamChunk extends StreamChunk {
+  agent_id: string;
 }
 
 export interface InputFile {

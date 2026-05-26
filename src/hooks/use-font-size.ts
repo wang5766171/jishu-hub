@@ -8,6 +8,7 @@ const STORAGE_KEY_PROSE = "jishu-hub-font-size-prose";
 
 const BASE_MAP: Record<FontLevel, string> = { s: "15px", m: "19px", l: "23px", xl: "27px" };
 const PROSE_MAP: Record<FontLevel, string> = { s: "12px", m: "15px", l: "18px", xl: "21px" };
+const DEFAULT_FONT_LEVEL: FontLevel = "s";
 
 function applyFontSize(base: FontLevel, prose: FontLevel) {
   // Set fontSize directly on root to trigger CSS transition (CSS variable changes are instant)
@@ -17,10 +18,10 @@ function applyFontSize(base: FontLevel, prose: FontLevel) {
 
 export function useFontSize() {
   const [fontSizeBase, setFontSizeBaseState] = useState<FontLevel>(() => {
-    return (localStorage.getItem(STORAGE_KEY_BASE) as FontLevel) || "m";
+    return (localStorage.getItem(STORAGE_KEY_BASE) as FontLevel) || DEFAULT_FONT_LEVEL;
   });
   const [fontSizeProse, setFontSizeProseState] = useState<FontLevel>(() => {
-    return (localStorage.getItem(STORAGE_KEY_PROSE) as FontLevel) || "m";
+    return (localStorage.getItem(STORAGE_KEY_PROSE) as FontLevel) || DEFAULT_FONT_LEVEL;
   });
 
   useEffect(() => {
