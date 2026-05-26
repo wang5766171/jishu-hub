@@ -8,11 +8,11 @@ import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { User, Bot, Wrench, ChevronDown, ChevronUp, ChevronRight, Search, ArrowDown, ArrowUp, RotateCw, Copy, Check, X } from "lucide-react";
+import { User, Bot, ChevronDown, ChevronUp, Search, ArrowDown, ArrowUp, RotateCw, Copy, Check, X } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Message, ContentBlock } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
-import { ToolCallCard, classifyToolName } from "@/components/observability/tool-call-card";
+import { ToolGroup, classifyToolName } from "@/components/observability/tool-call-card";
 import type { ToolCall } from "@/components/observability/tool-call-card";
 
 interface MessageViewProps {
@@ -48,80 +48,6 @@ function highlightText(text: string, query: string, matchOffset: number, current
     return part;
   });
 }
-
-const ToolUseBlock = memo(function ToolUseBlock({ block, query, dark }: { block: ContentBlock & { type: "tool_use" }; query: string; dark?: boolean }) {
-  const [expanded, setExpanded] = useState(false);
-  const inputStr = JSON.stringify(block.input, null, 2);
-
-  return (
-    <Collapsible open={expanded} onOpenChange={setExpanded} className="overflow-hidden">
-      <div className={cn(
-        "rounded-md border text-sm",
-        dark ? "border-blue-300/50 bg-blue-400/30" : "border-blue-200 bg-blue-50"
-      )}>
-        <CollapsibleTrigger asChild>
-          <button
-            className={cn(
-              "flex items-center gap-2 w-full px-3 py-1.5 text-left transition-colors min-w-0",
-              dark ? "text-blue-100 hover:bg-blue-400/40" : "text-blue-700 hover:bg-blue-100"
-            )}
-          >
-            {expanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
-            <Wrench className="h-3 w-3 shrink-0" />
-            <span className="font-mono font-medium truncate">[{block.name}]</span>
-          </button>
-        </CollapsibleTrigger>
-        {expanded && (
-          <pre className={cn(
-            "px-3 py-2 border-t text-xs font-mono whitespace-pre-wrap break-all max-h-64 overflow-auto",
-            dark
-              ? "border-blue-300/30 text-blue-100 bg-black/10"
-              : "border-blue-200 text-blue-800 bg-blue-50/50"
-          )}>
-            {query ? highlightText(inputStr, query, 0, -1) : inputStr}
-          </pre>
-        )}
-      </div>
-    </Collapsible>
-  );
-});
-
-const ToolResultBlock = memo(function ToolResultBlock({ block, query, dark }: { block: ContentBlock & { type: "tool_result" }; query: string; dark?: boolean }) {
-  const [expanded, setExpanded] = useState(false);
-  const contentStr = typeof block.content === "string"
-    ? block.content
-    : JSON.stringify(block.content, null, 2);
-  const displayText = expanded ? contentStr : contentStr.slice(0, 500);
-
-  return (
-    <Collapsible open={expanded} onOpenChange={setExpanded} className="overflow-hidden">
-      <div className={cn(
-        "rounded-md border text-sm",
-        dark ? "border-amber-300/50 bg-amber-400/30" : "border-amber-200 bg-amber-50"
-      )}>
-        <CollapsibleTrigger asChild>
-          <div
-            className={cn(
-              "flex items-center gap-1 px-3 py-1.5 text-xs font-medium cursor-pointer select-none",
-              dark ? "text-amber-100 hover:bg-amber-400/40" : "text-amber-700 hover:bg-amber-100"
-            )}
-          >
-            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            [Result]
-          </div>
-        </CollapsibleTrigger>
-        {expanded && (
-          <pre className={cn(
-            "px-3 py-2 text-xs font-mono whitespace-pre-wrap break-all max-h-64 overflow-auto",
-            dark ? "text-amber-100" : "text-amber-800"
-          )}>
-            {query ? highlightText(displayText, query, 0, -1) : displayText}
-          </pre>
-        )}
-      </div>
-    </Collapsible>
-  );
-});
 
 const ThinkingBlock = memo(function ThinkingBlock({ block }: { block: ContentBlock & { type: "thinking" } }) {
   const { t } = useTranslation();
@@ -230,31 +156,136 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function renderBlock(block: ContentBlock, query: string, dark?: boolean, matchOffset?: number, currentMatch?: number, _resultMap?: Map<string, string>): React.ReactNode {
+/** 单条 ContentBlock 的展示。tool_use/tool_result 在外层做聚合，这里不再处理。 */
+function renderBlock(block: ContentBlock, query: string, dark?: boolean, matchOffset?: number, currentMatch?: number): React.ReactNode {
   switch (block.type) {
     case "text":
       return <TextBlock text={block.text} query={query} dark={dark} matchOffset={matchOffset} currentMatch={currentMatch} />;
-    case "tool_use": {
-      const resultMap = _resultMap;
-      const toolCall: ToolCall = {
-        id: block.id || block.name,
-        toolName: block.name,
-        kind: classifyToolName(block.name),
-        status: resultMap?.has(block.id) ? "success" : "success",
-        input: (typeof block.input === "object" && block.input !== null) ? block.input as Record<string, unknown> : {},
-        output: resultMap?.get(block.id),
-        startedAt: undefined,
-        endedAt: undefined,
-      };
-      return <ToolCallCard call={toolCall} />;
-    }
-    case "tool_result":
-      return <ToolResultBlock block={block} query={query} dark={dark} />;
     case "thinking":
       return <ThinkingBlock block={block} />;
     default:
       return null;
   }
+}
+
+/**
+ * 把消息内容拆分为「文本/思考块」与「工具调用组」，方便渲染层做 Codex 风格的聚合卡。
+ * 连续的 tool_use 块被聚合为同一组；tool_result 用于补全对应 tool_use 的 output，本身不再单独渲染。
+ */
+type RenderItem =
+  | { kind: "block"; block: ContentBlock; blockIndex: number }
+  | { kind: "tool-group"; calls: ToolCall[] };
+
+function buildRenderItems(content: ContentBlock[], resultMap: Map<string, string>): RenderItem[] {
+  const items: RenderItem[] = [];
+  let pending: ToolCall[] = [];
+
+  const flush = () => {
+    if (pending.length > 0) {
+      items.push({ kind: "tool-group", calls: pending });
+      pending = [];
+    }
+  };
+
+  content.forEach((block, blockIndex) => {
+    if (block.type === "tool_use") {
+      const id = block.id || `${block.name}-${blockIndex}`;
+      const output = resultMap.get(block.id);
+      pending.push({
+        id,
+        toolName: block.name,
+        kind: classifyToolName(block.name),
+        status: "success",
+        input: (typeof block.input === "object" && block.input !== null) ? block.input as Record<string, unknown> : {},
+        output,
+      });
+    } else if (block.type === "tool_result") {
+      // 已经通过 resultMap 关联到 tool_use 的 output，跳过单独渲染。
+    } else {
+      flush();
+      items.push({ kind: "block", block, blockIndex });
+    }
+  });
+  flush();
+  return items;
+}
+
+// ============================================================================
+// 跨消息层面：把消息列表预处理为 row 列表
+//   - tool-group row：连续仅含 tool_use/tool_result 的助手消息合并为单一 row
+//   - message row：其他消息（含文本/思考的助手消息、用户消息）原样保留
+// ============================================================================
+type RenderRow =
+  | { kind: "message"; messageIndex: number }
+  | { kind: "tool-group"; startIndex: number; endIndex: number; calls: ToolCall[] };
+
+function isAssistantToolOnlyMessage(msg: Message): boolean {
+  if (msg.role !== "assistant" || msg.content.length === 0) return false;
+  return msg.content.every((b) => b.type === "tool_use" || b.type === "tool_result");
+}
+
+function isUserToolResultOnlyMessage(msg: Message): boolean {
+  if (msg.role !== "user" || msg.content.length === 0) return false;
+  return msg.content.every((b) => b.type === "tool_result");
+}
+
+function buildRenderRows(messages: Message[], resultMap: Map<string, string>): RenderRow[] {
+  const rows: RenderRow[] = [];
+  let groupStart = -1;
+  let groupEnd = -1;
+  let groupCalls: ToolCall[] = [];
+
+  const flushGroup = () => {
+    if (groupCalls.length === 0) return;
+    rows.push({ kind: "tool-group", startIndex: groupStart, endIndex: groupEnd, calls: groupCalls });
+    groupStart = -1;
+    groupEnd = -1;
+    groupCalls = [];
+  };
+
+  messages.forEach((msg, i) => {
+    const toolOnlyAssistant = isAssistantToolOnlyMessage(msg);
+    // 尝试把孤立的 user-tool_result-only 消息也并入当前 pending group
+    const userToolResultsOnly = isUserToolResultOnlyMessage(msg);
+
+    if (toolOnlyAssistant) {
+      if (groupStart === -1) groupStart = i;
+      groupEnd = i;
+      for (const block of msg.content) {
+        if (block.type === "tool_use") {
+          const id = block.id || `${block.name}-${i}`;
+          groupCalls.push({
+            id,
+            toolName: block.name,
+            kind: classifyToolName(block.name),
+            status: "success",
+            input: typeof block.input === "object" && block.input !== null
+              ? (block.input as Record<string, unknown>)
+              : {},
+            output: resultMap.get(block.id),
+          });
+        }
+      }
+    } else if (userToolResultsOnly && groupCalls.length > 0) {
+      // 把 result 并入当前组（output 已通过 resultMap 找到，无需新增 call）
+      groupEnd = i;
+    } else {
+      flushGroup();
+      rows.push({ kind: "message", messageIndex: i });
+    }
+  });
+  flushGroup();
+  return rows;
+}
+
+/** Row 高度估算。被 measureElement 在挂载后接管为真实高度，此处只需粗估保证初次渲染稳定。 */
+function estimateRowSize(row: RenderRow): number {
+  if (row.kind === "tool-group") {
+    // 折叠后：单卡 ≈ 40，聚合 ≈ 36（仅 header）；预留少量 padding
+    return row.calls.length === 1 ? 56 : 52;
+  }
+  // 普通消息粗估：avatar + header + 一行内容 + copy
+  return 110;
 }
 
 export const MessageView = memo(function MessageView({ messages, initialSearchQuery, onRefresh, flat, scrollContainerRef }: MessageViewProps) {
@@ -302,41 +333,22 @@ export const MessageView = memo(function MessageView({ messages, initialSearchQu
     return map;
   }, [messages]);
 
+  // 把消息列表预处理为 row 列表：连续仅含 tool_use/tool_result 的助手消息合并为单一 tool-group row
+  const rows = useMemo<RenderRow[]>(() => buildRenderRows(messages, resultMap), [messages, resultMap]);
+
   const [currentOcc, setCurrentOcc] = useState(0);
   const [scrollTrigger, setScrollTrigger] = useState(0);
 
   const virtualizer = useVirtualizer({
-    count: messages.length,
+    count: rows.length,
     getScrollElement: () => scrollContainerRef?.current ?? null,
-    estimateSize: (i) => {
-      const msg = messages[i];
-      let h = 0;
-      for (const block of msg.content) {
-        switch (block.type) {
-          case "text": {
-            const t = block.text;
-            const lines = (t.match(/\n/g)?.length ?? 0) + Math.ceil(t.length / 55);
-            h += lines * 22;
-            const codeBlockCount = (t.match(/```/g)?.length ?? 0) >> 1;
-            h += codeBlockCount * 60;
-            break;
-          }
-          case "tool_use":
-          case "tool_result": {
-            const json = JSON.stringify(block.type === "tool_use" ? (block as ContentBlock & { type: "tool_use" }).input : (block as ContentBlock & { type: "tool_result" }).content);
-            h += Math.max(44, Math.min(140, json.length / 4 + 36));
-            break;
-          }
-          case "thinking":
-            h += 28;
-            break;
-        }
-      }
-      // avatar(28) + header(20) + bubble-pad(20) + copy-btn(24) + margin(16)
-      return Math.max(72, h + 108);
+    estimateSize: (i) => estimateRowSize(rows[i]),
+    overscan: 8,
+    getItemKey: (i) => {
+      const row = rows[i];
+      if (row.kind === "tool-group") return `tg-${row.startIndex}-${row.endIndex}`;
+      return messages[row.messageIndex].timestamp ?? `idx-${row.messageIndex}`;
     },
-    overscan: 15,
-    getItemKey: (i) => messages[i].timestamp ?? `idx-${i}`,
   });
 
   // When search query changes, auto-scroll to first match
@@ -355,12 +367,17 @@ export const MessageView = memo(function MessageView({ messages, initialSearchQu
     setScrollTrigger((n) => n + 1);
   };
 
-  // Scroll to the match highlight
+  // Scroll to the match highlight (按 row index 找含目标 messageIndex 的 row)
   useEffect(() => {
     if (searchState.total === 0 || scrollTrigger === 0) return;
     const msgIdx = searchState.matchToMessage[currentOcc];
     if (msgIdx !== undefined && flat) {
-      virtualizer.scrollToIndex(msgIdx, { align: "center" });
+      const rowIdx = rows.findIndex((r) =>
+        r.kind === "message"
+          ? r.messageIndex === msgIdx
+          : msgIdx >= r.startIndex && msgIdx <= r.endIndex
+      );
+      if (rowIdx !== -1) virtualizer.scrollToIndex(rowIdx, { align: "center" });
     }
     const timer = setTimeout(() => {
       const el = document.querySelector(`[data-match-idx="${currentOcc}"]`);
@@ -369,68 +386,99 @@ export const MessageView = memo(function MessageView({ messages, initialSearchQu
     return () => clearTimeout(timer);
   }, [scrollTrigger]);
 
-  const renderMessage = useCallback((msg: Message, i: number) => {
+  const renderRow = useCallback((row: RenderRow) => {
+    if (row.kind === "tool-group") {
+      // 多消息合并而成的工具组 row：单一卡片占位，左侧 bot 头像
+      return (
+        <div className="flex gap-2 w-full justify-start">
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--icon-avatar-bot-bg)] text-[var(--icon-avatar-bot)] mt-1.5">
+            <Bot className="h-3 w-3" />
+          </div>
+          <div className="max-w-[88%] min-w-0 flex flex-col">
+            <ToolGroup calls={row.calls} />
+          </div>
+        </div>
+      );
+    }
+
+    const i = row.messageIndex;
+    const msg = messages[i];
     const isUser = msg.role === "user";
+    const items = buildRenderItems(msg.content, resultMap);
+    const hasOnlyTools = !isUser && items.every((it) => it.kind === "tool-group");
+
     return (
       <div
         className={cn(
-          "flex gap-2.5 w-full",
+          "flex gap-2 w-full",
           isUser ? "justify-end" : "justify-start",
         )}
       >
         {!isUser && (
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--icon-avatar-bot-bg)] text-[var(--icon-avatar-bot)] mt-5">
-            <Bot className="h-3.5 w-3.5" />
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--icon-avatar-bot-bg)] text-[var(--icon-avatar-bot)] mt-3.5">
+            <Bot className="h-3 w-3" />
           </div>
         )}
-        <div className={cn("max-w-[85%] min-w-0 flex flex-col", isUser && "items-end")}>
-          <div className="flex items-center gap-2 mb-1 text-xs">
+        <div className={cn("max-w-[88%] min-w-0 flex flex-col", isUser && "items-end")}>
+          <div className="flex items-center gap-2 mb-0.5 text-[11px]">
             <span className="font-medium text-muted-foreground">
               {isUser ? t("sessions.user") : t("sessions.assistant")}
             </span>
             {msg.timestamp && (
-              <span className="text-muted-foreground">{formatTimestamp(msg.timestamp)}</span>
+              <span className="text-muted-foreground/70">{formatTimestamp(msg.timestamp)}</span>
             )}
           </div>
           <div className={cn(
-            "rounded-xl px-3.5 py-2.5 space-y-2 overflow-hidden min-w-0 max-w-full",
-            isUser ? "bg-blue-500 text-white" : "bg-muted"
+            "min-w-0 max-w-full space-y-1.5",
+            isUser
+              ? "rounded-xl px-3 py-2 bg-blue-500 text-white"
+              : hasOnlyTools
+                ? ""
+                : "rounded-xl px-3 py-2 bg-muted",
           )}>
             {isUser && <InlineImages text={extractMessageText(msg)} />}
-            {msg.content.map((block, j) => (
-              <div key={j} className="overflow-hidden">
-                {renderBlock(block, renderingQuery, isUser, searchState.offsets.get(`${i}-${j}`) ?? 0, currentOcc, resultMap)}
-              </div>
-            ))}
+            {items.map((item, idx) => {
+              if (item.kind === "tool-group") {
+                return <ToolGroup key={`tg-${idx}`} calls={item.calls} />;
+              }
+              const block = item.block;
+              const offsetKey = `${i}-${item.blockIndex}`;
+              return (
+                <div key={`b-${item.blockIndex}`} className="overflow-hidden">
+                  {renderBlock(block, renderingQuery, isUser, searchState.offsets.get(offsetKey) ?? 0, currentOcc)}
+                </div>
+              );
+            })}
           </div>
           <CopyButton text={extractMessageText(msg)} />
         </div>
         {isUser && (
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--icon-avatar-user-bg)] text-[var(--icon-avatar-user)] mt-5">
-            <User className="h-3.5 w-3.5" />
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--icon-avatar-user-bg)] text-[var(--icon-avatar-user)] mt-3.5">
+            <User className="h-3 w-3" />
           </div>
         )}
       </div>
     );
-  }, [renderingQuery, searchState.offsets, currentOcc, resultMap, t]);
+  }, [messages, renderingQuery, searchState.offsets, currentOcc, resultMap, t]);
 
   const fullMessageList = (
-    <div className="space-y-4 p-4 overflow-hidden max-w-full">
-      {messages.map((msg, i) => (
-        <div key={i}>{renderMessage(msg, i)}</div>
+    <div className="space-y-2 p-3 overflow-hidden max-w-full">
+      {rows.map((row, idx) => (
+        <div key={idx}>{renderRow(row)}</div>
       ))}
     </div>
   );
 
   const virtualMessageList = (
-    <div className="p-4">
+    <div className="p-3">
       <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
         {virtualizer.getVirtualItems().map((virtualItem) => {
-          const msg = messages[virtualItem.index];
+          const row = rows[virtualItem.index];
           return (
             <div
               key={virtualItem.key}
               data-index={virtualItem.index}
+              ref={virtualizer.measureElement}
               style={{
                 position: "absolute",
                 top: 0,
@@ -438,9 +486,9 @@ export const MessageView = memo(function MessageView({ messages, initialSearchQu
                 left: 0,
                 right: 0,
               }}
-              className="pb-4 max-w-full"
+              className="pb-2 max-w-full"
             >
-              {renderMessage(msg, virtualItem.index)}
+              {renderRow(row)}
             </div>
           );
         })}

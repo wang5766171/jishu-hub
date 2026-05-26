@@ -3,18 +3,19 @@ import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { User, Bot, Wrench, ChevronRight, Copy, Check } from "lucide-react";
+import { User, Bot } from "lucide-react";
 import { useStreamStore } from "@/hooks/use-stream-store";
 import { InlineImages, stripImagePrompt } from "./inline-image";
+import { ToolGroup, classifyToolName } from "@/components/observability/tool-call-card";
+import type { ToolCall } from "@/components/observability/tool-call-card";
 
 interface StreamingMessageProps {
   isComplete: boolean;
   userMessage?: string;
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
-  onComplete?: (text: string, tools: Array<{ name: string; input: unknown }>) => void;
 }
 
-export const StreamingMessage = memo(function StreamingMessage({ isComplete, userMessage, scrollContainerRef, onComplete }: StreamingMessageProps) {
+export const StreamingMessage = memo(function StreamingMessage({ isComplete, userMessage, scrollContainerRef }: StreamingMessageProps) {
   const chunks = useStreamStore();
   const { t } = useTranslation();
   const [displayText, setDisplayText] = useState("");
@@ -87,46 +88,58 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
 
   const hasContent = displayText.length > 0 || toolUses.length > 0;
 
+  // 把流式工具调用映射成 ToolCall（暂无 id/output，因为流式只有 input）
+  const streamToolCalls: ToolCall[] = toolUses.map((tool, i) => ({
+    id: `stream-${i}-${tool.name}`,
+    toolName: tool.name,
+    kind: classifyToolName(tool.name),
+    status: isComplete ? "success" : "running",
+    input: (typeof tool.input === "object" && tool.input !== null) ? (tool.input as Record<string, unknown>) : {},
+  }));
+
+  // 仅工具调用、无文本时不需要套 muted 气泡
+  const assistantHasOnlyTools = toolUses.length > 0 && displayText.length === 0;
+
   return (
-    <div className="px-4 py-3 space-y-4">
+    <div className="px-3 py-2 space-y-2">
       {/* User message bubble */}
       {userMessage && (
-        <div className="flex gap-2.5 w-full justify-end">
-          <div className="max-w-[85%] min-w-0 flex flex-col items-end">
-            <div className="flex items-center gap-2 mb-1 text-xs">
+        <div className="flex gap-2 w-full justify-end">
+          <div className="max-w-[88%] min-w-0 flex flex-col items-end">
+            <div className="flex items-center gap-2 mb-0.5 text-[11px]">
               <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>
             </div>
-            <div className="rounded-xl px-3.5 py-2.5 bg-blue-500 text-white whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full" style={{ fontSize: "var(--font-size-prose)" }}>
+            <div className="rounded-xl px-3 py-2 bg-blue-500 text-white whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full" style={{ fontSize: "var(--font-size-prose)" }}>
               <InlineImages text={userMessage} />
               {stripImagePrompt(userMessage)}
             </div>
           </div>
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--icon-avatar-user-bg)] text-[var(--icon-avatar-user)] mt-5">
-            <User className="h-3.5 w-3.5" />
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--icon-avatar-user-bg)] text-[var(--icon-avatar-user)] mt-3.5">
+            <User className="h-3 w-3" />
           </div>
         </div>
       )}
 
       {/* Assistant streaming response */}
-      <div className="flex gap-2.5 w-full justify-start">
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--icon-avatar-bot-bg)] text-[var(--icon-avatar-bot)] mt-5">
-          <Bot className="h-3.5 w-3.5" />
+      <div className="flex gap-2 w-full justify-start">
+        <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--icon-avatar-bot-bg)] text-[var(--icon-avatar-bot)] mt-3.5">
+          <Bot className="h-3 w-3" />
         </div>
-        <div className="max-w-[85%] min-w-0 flex flex-col">
-          <div className="flex items-center gap-2 mb-1 text-xs">
+        <div className="max-w-[88%] min-w-0 flex flex-col">
+          <div className="flex items-center gap-2 mb-0.5 text-[11px]">
             <span className="font-medium text-muted-foreground">{t("sessions.assistant")}</span>
           </div>
           {!hasContent && !isComplete ? (
-            <div className="rounded-xl px-3.5 py-2.5 bg-muted overflow-hidden">
+            <div className="rounded-xl px-3 py-2 bg-muted overflow-hidden">
               <div className="flex items-center gap-2 text-muted-foreground text-sm">
                 <span className="inline-block w-1.5 h-4 bg-primary animate-pulse" />
                 <span>{t("sessions.thinkingDots")}</span>
               </div>
             </div>
           ) : (
-            <>
+            <div className={assistantHasOnlyTools ? "space-y-1.5" : "space-y-1.5"}>
               {displayText && (
-                <div className="rounded-xl px-3.5 py-2.5 bg-muted overflow-hidden min-w-0 max-w-full">
+                <div className="rounded-xl px-3 py-2 bg-muted overflow-hidden min-w-0 max-w-full">
                   <div className="markdown-prose overflow-hidden">
                     <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
                       {displayText}
@@ -135,14 +148,10 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
                   </div>
                 </div>
               )}
-              {toolUses.length > 0 && (
-                <div className="mt-2 space-y-1.5">
-                  {toolUses.map((tool, i) => (
-                    <StreamingToolBlock key={i} name={tool.name} input={tool.input} />
-                  ))}
-                </div>
+              {streamToolCalls.length > 0 && (
+                <ToolGroup calls={streamToolCalls} />
               )}
-            </>
+            </div>
           )}
         </div>
       </div>
@@ -150,48 +159,3 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
   );
 });
 
-function StreamingToolBlock({ name, input }: { name: string; input: unknown }) {
-  const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(true);
-  const [copied, setCopied] = useState(false);
-  const inputStr = JSON.stringify(input, null, 2);
-
-  const handleCopy = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    await navigator.clipboard.writeText(inputStr);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
-
-  return (
-    <div className="rounded-md border border-blue-200 bg-blue-50 text-sm overflow-hidden">
-      <button
-        className="flex items-center gap-2 w-full px-3 py-1.5 text-left text-blue-700 hover:bg-blue-100 transition-colors min-w-0"
-        onClick={() => setExpanded(!expanded)}
-      >
-        {expanded ? (
-          <ChevronRight className="h-3 w-3 shrink-0 rotate-90" />
-        ) : (
-          <ChevronRight className="h-3 w-3 shrink-0" />
-        )}
-        <Wrench className="h-3 w-3 shrink-0" />
-        <span className="font-mono font-medium truncate">[{name}]</span>
-      </button>
-      {expanded && (
-        <div className="border-t border-blue-200 px-3 py-2 relative">
-          <button
-            onClick={handleCopy}
-            className="absolute top-1.5 right-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-blue-400 hover:text-blue-600 hover:bg-blue-100 transition-colors"
-            title={t("sessions.copy")}
-          >
-            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-            {copied ? t("sessions.copied") : t("sessions.copy")}
-          </button>
-          <pre className="text-xs font-mono whitespace-pre-wrap break-all text-blue-800 max-h-64 overflow-auto">
-            {inputStr}
-          </pre>
-        </div>
-      )}
-    </div>
-  );
-}

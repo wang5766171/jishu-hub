@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo } from "react";
 
 export const ShellExecBody = memo(function ShellExecBody({ input, output, error }: { input: Record<string, unknown>; output?: string; error?: string }) {
   const command = (input.command as string) || "";

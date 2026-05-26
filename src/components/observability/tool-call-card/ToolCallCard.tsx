@@ -1,6 +1,6 @@
 import { memo, useState } from "react";
 import { cn } from "@/lib/utils";
-import type { ToolCall, ToolKind } from "./types";
+import type { ToolCall } from "./types";
 import { StatusBadge } from "./status-badge";
 import { KindIcon, kindLabel } from "./kind-icon";
 import { FileReadBody } from "./bodies/FileEditBody";
