@@ -406,6 +406,41 @@ fn list_config_templates(state: tauri::State<'_, Mutex<AppState>>) -> Vec<hub::C
 }
 
 #[tauri::command]
+fn agent_list_statuses(state: tauri::State<'_, Mutex<AppState>>) -> Vec<agent::AgentStatus> {
+    let s = state.lock().unwrap();
+    s.registry.list_agent_statuses()
+}
+
+#[tauri::command]
+fn agent_set_active(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
+    let mut s = state.lock().unwrap();
+    s.registry.set_active(&id)
+}
+
+#[tauri::command]
+fn agent_get_active(state: tauri::State<'_, Mutex<AppState>>) -> String {
+    let s = state.lock().unwrap();
+    s.registry.active_id().to_string()
+}
+
+#[tauri::command]
+fn agent_refresh_health(state: tauri::State<'_, Mutex<AppState>>) -> Result<(), String> {
+    let s = state.lock().unwrap();
+    // Each agent's probe_sync() is synchronous — no await needed
+    let agents: Vec<_> = s.registry.agents_info();
+    let results: Vec<(String, agent::AgentHealth)> = agents
+        .iter()
+        .map(|(id, plugin)| (id.clone(), plugin.probe_sync()))
+        .collect();
+    drop(s);
+
+    // Re-lock to update cache
+    let s = state.lock().unwrap();
+    s.registry.update_health_cache(results);
+    Ok(())
+}
+
+#[tauri::command]
 fn get_app_dir() -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe.parent().ok_or("No parent dir")?;
@@ -486,6 +521,10 @@ pub fn run() {
             get_merged_secondaries,
             list_config_templates,
             get_app_dir,
+            agent_list_statuses,
+            agent_set_active,
+            agent_get_active,
+            agent_refresh_health,
             chat::send_message,
             chat::abort_chat,
             image::save_session_files,

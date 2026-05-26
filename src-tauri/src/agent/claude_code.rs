@@ -1,4 +1,4 @@
-use super::{AgentInfo, AgentPlugin, ChatRequest};
+use super::{AgentCapabilities, AgentHealth, AgentInfo, AgentPlugin, ChatRequest};
 
 pub struct ClaudeCodeAgent;
 
@@ -17,6 +17,56 @@ impl AgentPlugin for ClaudeCodeAgent {
             icon: "terminal".to_string(),
             enabled: true,
         }
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        use AgentCapabilities as C;
+        C::RESUME_BY_ID | C::SESSION_LIST | C::IMAGE_INPUT | C::FILE_INPUT
+            | C::STREAM_TEXT_DELTA | C::STREAM_TOOL_CALLS | C::STREAM_THINKING | C::PARTIAL_MESSAGE
+            | C::ABORT | C::CONFIG_GLOBAL | C::CONFIG_PROJECT | C::CONFIG_BACKUP | C::CONFIG_TEMPLATES
+    }
+
+    fn install_hint(&self) -> Option<String> {
+        Some("npm install -g @anthropic-ai/claude-code".to_string())
+    }
+
+    fn probe_sync(&self) -> AgentHealth {
+        let candidates = super::discovery::default_candidates_for("claude");
+        // Synchronous check: just verify binary exists
+        let runtime = tokio::runtime::Runtime::new();
+        let result = if let Ok(rt) = runtime {
+            rt.block_on(async {
+                let binary = super::discovery::probe_binary("claude", &candidates.iter().map(|s| s.as_str()).collect::<Vec<_>>()).await;
+                match binary {
+                    Some(path) => {
+                        let version = super::discovery::version_of(&path).await;
+                        AgentHealth {
+                            installed: true,
+                            version,
+                            error: None,
+                            binary_path: Some(path.to_string_lossy().to_string()),
+                            last_checked_at: now_ms(),
+                        }
+                    }
+                    None => AgentHealth {
+                        installed: false,
+                        version: None,
+                        error: Some("claude not found in PATH".to_string()),
+                        binary_path: None,
+                        last_checked_at: now_ms(),
+                    },
+                }
+            })
+        } else {
+            AgentHealth {
+                installed: false,
+                version: None,
+                error: Some("Failed to create tokio runtime".to_string()),
+                binary_path: None,
+                last_checked_at: now_ms(),
+            }
+        };
+        result
     }
 
     fn scan_projects(&self) -> Vec<crate::project::Project> {
@@ -219,16 +269,16 @@ impl AgentPlugin for ClaudeCodeAgent {
     }
 
     fn init_project(&self, project_path: &str) -> Result<bool, String> {
-        // Open a visible terminal running `claude` with an initial prompt. 
-        // This forces Claude to take an action (initializing the project) 
-        // while allowing the user to interact with the safety check.
-        // We use "-p" here so it's a one-shot command if the user accepts trust, 
-        // or just interactive without -p. Let's use a prompt that makes it do something.
-        // On Windows, the quotes around the prompt need to be careful if we pass via cmd /K.
-        // Actually, just `claude "Initialize this project"` works.
         let command = "claude \"Please initialize this project and tell me when it's done.\"";
         crate::command::open_in_terminal_with_command(project_path, command)
             .map(|_| true)
             .map_err(|e| e.to_string())
     }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }

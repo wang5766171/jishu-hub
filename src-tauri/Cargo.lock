@@ -1699,6 +1699,7 @@ name = "jishu-hub"
 version = "0.4.1"
 dependencies = [
  "base64 0.22.1",
+ "bitflags 2.11.1",
  "chrono",
  "dirs",
  "log",
@@ -1709,6 +1710,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-log",
+ "thiserror 2.0.18",
  "tokio",
 ]
 

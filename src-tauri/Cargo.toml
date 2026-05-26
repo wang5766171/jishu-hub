@@ -29,3 +29,5 @@ dirs = "6"
 tokio = { version = "1", features = ["process", "io-util", "net"] }
 base64 = "0.22"
 open = "5"
+bitflags = "2"
+thiserror = "2"

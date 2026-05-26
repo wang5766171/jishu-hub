@@ -1,9 +1,17 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
+pub mod capability;
 pub mod claude_code;
+pub mod classify;
+pub mod discovery;
+pub mod normalized;
+pub mod adapters;
 
 pub use claude_code::ClaudeCodeAgent;
+pub use capability::{AgentCapabilities, AgentHealth, AgentInfo as PlatformAgentInfo, AgentManifest};
+pub use normalized::AgentError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
@@ -14,9 +22,21 @@ pub struct AgentInfo {
     pub enabled: bool,
 }
 
+/// Extended agent info with capability and health data for the platform API
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentStatus {
+    pub id: String,
+    pub display_name: String,
+    pub icon: String,
+    pub capabilities: AgentCapabilities,
+    pub health: AgentHealth,
+    pub install_hint: Option<String>,
+}
+
 pub struct AgentRegistry {
     agents: HashMap<String, Box<dyn AgentPlugin + Send + Sync>>,
     active_id: String,
+    health_cache: Arc<Mutex<HashMap<String, AgentHealth>>>,
 }
 
 impl AgentRegistry {
@@ -26,9 +46,18 @@ impl AgentRegistry {
         let id = claude_code.info().id.clone();
         agents.insert(id.clone(), Box::new(claude_code));
 
+        let codex = adapters::codex::CodexAdapter::new();
+        let codex_id = codex.info().id.clone();
+        agents.insert(codex_id, Box::new(codex));
+
+        let opencode = adapters::opencode::OpencodeAdapter::new();
+        let opencode_id = opencode.info().id.clone();
+        agents.insert(opencode_id, Box::new(opencode));
+
         Self {
             agents,
             active_id: id,
+            health_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -39,8 +68,36 @@ impl AgentRegistry {
             .unwrap()
     }
 
+    pub fn active_id(&self) -> &str {
+        &self.active_id
+    }
+
     pub fn list_agents(&self) -> Vec<AgentInfo> {
         self.agents.values().map(|a| a.info()).collect()
+    }
+
+    /// List all agents with health and capability status (platform API)
+    pub fn list_agent_statuses(&self) -> Vec<AgentStatus> {
+        let health_cache = self.health_cache.lock().unwrap_or_else(|e| e.into_inner());
+        self.agents.values().map(|a| {
+            let info = a.info();
+            let caps = a.capabilities();
+            let health = health_cache.get(&info.id).cloned().unwrap_or_else(|| AgentHealth {
+                installed: false,
+                version: None,
+                error: Some("Not probed yet".to_string()),
+                binary_path: None,
+                last_checked_at: 0,
+            });
+            AgentStatus {
+                id: info.id.clone(),
+                display_name: info.display_name.clone(),
+                icon: info.icon.clone(),
+                capabilities: caps,
+                health,
+                install_hint: a.install_hint(),
+            }
+        }).collect()
     }
 
     pub fn set_active(&mut self, id: &str) -> Result<(), String> {
@@ -51,10 +108,71 @@ impl AgentRegistry {
             Err(format!("Agent not found: {}", id))
         }
     }
+
+    pub fn get(&self, id: &str) -> Option<&(dyn AgentPlugin + Send + Sync)> {
+        self.agents.get(id).map(|a| a.as_ref())
+    }
+
+    /// Probe all agents and update health cache
+    /// This method must NOT be called while holding an external MutexGuard over self,
+    /// since it internally borrows self across .await points.
+    pub async fn refresh_health(&self) {
+        let results: Vec<(String, AgentHealth)> = {
+            let agents: Vec<_> = self.agents.iter().collect();
+            let mut health_results = Vec::new();
+            for (id, agent) in agents {
+                let health = agent.probe().await;
+                health_results.push((id.clone(), health));
+            }
+            health_results
+        };
+
+        let mut cache = self.health_cache.lock().unwrap_or_else(|e| e.into_inner());
+        for (id, health) in results {
+            cache.insert(id, health);
+        }
+    }
+
+    /// Collect (id, &(dyn AgentPlugin + Send + Sync)) pairs for synchronous probing
+    pub fn agents_info(&self) -> Vec<(String, &(dyn AgentPlugin + Send + Sync))> {
+        self.agents
+            .iter()
+            .map(|(id, plugin)| (id.clone(), plugin.as_ref()))
+            .collect()
+    }
+
+    /// Update health cache with pre-computed results
+    pub fn update_health_cache(&self, results: Vec<(String, AgentHealth)>) {
+        let mut cache = self.health_cache.lock().unwrap_or_else(|e| e.into_inner());
+        for (id, health) in results {
+            cache.insert(id, health);
+        }
+    }
 }
 
 pub trait AgentPlugin {
     fn info(&self) -> AgentInfo;
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities::empty()
+    }
+    fn install_hint(&self) -> Option<String> { None }
+
+    /// Probe agent health (binary detection, version check)
+    fn probe_sync(&self) -> AgentHealth {
+        AgentHealth {
+            installed: false,
+            version: None,
+            error: None,
+            binary_path: None,
+            last_checked_at: 0,
+        }
+    }
+
+    /// Async probe (default delegates to sync)
+    fn probe(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = AgentHealth> + Send + '_>> {
+        let health = self.probe_sync();
+        Box::pin(async move { health })
+    }
 
     // Project management
     fn scan_projects(&self) -> Vec<crate::project::Project>;
