@@ -112,6 +112,9 @@ pub async fn send_message(
     tauri::async_runtime::spawn(async move {
         let mut lines = reader.lines();
         let mut saw_result = false;
+        let mut buf: Vec<StreamChunk> = Vec::with_capacity(32);
+        let mut last_flush = std::time::Instant::now();
+
         while let Ok(Some(line)) = lines.next_line().await {
             if line.trim().is_empty() {
                 continue;
@@ -134,15 +137,23 @@ pub async fn send_message(
                     saw_result = true;
                 }
 
-                let _ = app_clone.emit(
-                    "chat-stream",
-                    StreamChunk {
-                        session_id: sid_clone.clone(),
-                        event_type,
-                        data: event,
-                    },
-                );
+                buf.push(StreamChunk {
+                    session_id: sid_clone.clone(),
+                    event_type: event_type.clone(),
+                    data: event,
+                });
+
+                let force = event_type == "result" || event_type == "message";
+                if force || buf.len() >= 32 || last_flush.elapsed() >= std::time::Duration::from_millis(16) {
+                    let _ = app_clone.emit("chat-stream", &buf);
+                    buf.clear();
+                    last_flush = std::time::Instant::now();
+                }
             }
+        }
+
+        if !buf.is_empty() {
+            let _ = app_clone.emit("chat-stream", &buf);
         }
 
         // If process exited without sending a result event, emit a synthetic error
