@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, forwardRef, useImperativeHandle, memo } from "react";
+import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle, memo } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { Button } from "@/components/ui/button";
@@ -43,6 +43,14 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useImperativeHandle(ref, () => textareaRef.current!, []);
+
+  // Reset sending state when parent clears disabled (stream finished)
+  useEffect(() => {
+    if (!disabled) {
+      setSending(false);
+      setActiveSessionId(null);
+    }
+  }, [disabled]);
 
   const placeholder =
     files.length === 0
