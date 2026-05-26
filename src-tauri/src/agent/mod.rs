@@ -10,8 +10,7 @@ pub mod normalized;
 pub mod adapters;
 
 pub use claude_code::ClaudeCodeAgent;
-pub use capability::{AgentCapabilities, AgentHealth, AgentInfo as PlatformAgentInfo, AgentManifest};
-pub use normalized::AgentError;
+pub use capability::{AgentCapabilities, AgentHealth};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
@@ -28,7 +27,7 @@ pub struct AgentStatus {
     pub id: String,
     pub display_name: String,
     pub icon: String,
-    pub capabilities: AgentCapabilities,
+    pub capabilities: String,
     pub health: AgentHealth,
     pub install_hint: Option<String>,
 }
@@ -93,7 +92,7 @@ impl AgentRegistry {
                 id: info.id.clone(),
                 display_name: info.display_name.clone(),
                 icon: info.icon.clone(),
-                capabilities: caps,
+                capabilities: caps.bits().to_string(),
                 health,
                 install_hint: a.install_hint(),
             }
@@ -248,4 +247,35 @@ pub struct ChatRequest {
     pub project_path: String,
     pub session_id: Option<String>,
     pub message: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_status_serializes_capabilities_as_decimal_string() {
+        let status = AgentStatus {
+            id: "codex".to_string(),
+            display_name: "Codex".to_string(),
+            icon: "bot".to_string(),
+            capabilities: (AgentCapabilities::RPC_BIDIRECTIONAL | AgentCapabilities::APPROVAL_REQUEST)
+                .bits()
+                .to_string(),
+            health: AgentHealth {
+                installed: true,
+                version: Some("1.0.0".to_string()),
+                error: None,
+                binary_path: Some("codex".to_string()),
+                last_checked_at: 1,
+            },
+            install_hint: None,
+        };
+
+        let value = serde_json::to_value(status).unwrap();
+        assert_eq!(
+            value["capabilities"],
+            serde_json::Value::String("1152921506754330624".to_string())
+        );
+    }
 }

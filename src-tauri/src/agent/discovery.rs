@@ -131,7 +131,9 @@ fn now_ms() -> i64 {
 
 /// Default candidate paths for known agents
 pub fn default_candidates_for(name: &str) -> Vec<String> {
+    #[cfg(not(target_os = "windows"))]
     let home = dirs::home_dir().unwrap_or_default();
+    #[cfg(not(target_os = "windows"))]
     let home_str = home.to_string_lossy().to_string();
 
     #[cfg(target_os = "windows")]

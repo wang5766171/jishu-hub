@@ -158,21 +158,56 @@ pub fn decode_project_path(encoded: &str) -> String {
     // Claude Code encodes paths: ':\' → '--', then '\'/' → '-', and spaces → '-'.
     // This makes decoding ambiguous (e.g., "TestProject---2" could be "TestProject - 2",
     // "TestProject-- 2", etc.). We resolve by matching against actual filesystem entries.
+    if let Some(result) = decode_from_known_prefix(encoded) {
+        return result.to_string_lossy().to_string();
+    }
+
     if let Some(pos) = encoded.find("--") {
         let drive = &encoded[..pos];
         let rest = &encoded[pos + 2..];
-        let base = format!("{}:\\", drive);
+        let base = PathBuf::from(format!("{}:\\", drive));
 
-        let result = decode_by_fs_matching(&base, rest);
-        if result_is_valid(&result) {
-            return result;
+        if let Some(result) = decode_by_fs_matching(&base, rest) {
+            return result.to_string_lossy().to_string();
         }
 
         // Fallback for deleted/missing directories
-        join_path(&base, &rest.replace('-', "\\"))
+        format!("{}:\\{}", drive, rest.replace('-', "\\"))
     } else {
         encoded.replace('-', "\\")
     }
+}
+
+fn decode_from_known_prefix(encoded: &str) -> Option<PathBuf> {
+    let mut prefixes = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        prefixes.push(home);
+    }
+    prefixes.push(std::env::temp_dir());
+    if let Ok(cwd) = std::env::current_dir() {
+        prefixes.push(cwd);
+    }
+
+    prefixes.sort();
+    prefixes.dedup();
+    prefixes.sort_by_key(|p| std::cmp::Reverse(p.to_string_lossy().len()));
+
+    for prefix in prefixes {
+        let prefix_string = prefix
+            .to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_string();
+        let encoded_prefix = encode_project_path(&prefix_string);
+        if encoded == encoded_prefix {
+            return Some(PathBuf::from(prefix_string));
+        }
+        if let Some(remaining) = encoded.strip_prefix(&format!("{encoded_prefix}-")) {
+            if let Some(result) = decode_by_fs_matching(&PathBuf::from(prefix_string), remaining) {
+                return Some(result);
+            }
+        }
+    }
+    None
 }
 
 /// Encode a single directory name the way Claude Code does (spaces → dashes).
@@ -180,29 +215,28 @@ fn encode_segment(name: &str) -> String {
     name.replace(' ', "-")
 }
 
-/// Decode an encoded path suffix by greedily matching against filesystem entries.
+/// Decode an encoded path suffix by matching against real filesystem entries.
 /// At each level, enumerate actual directory names, encode each one, and check
-/// if it matches a prefix of the remaining encoded string. Longest match wins.
-fn decode_by_fs_matching(current_dir: &str, remaining: &str) -> String {
+/// if it consumes the next encoded segment. Longest valid match wins.
+fn decode_by_fs_matching(current_dir: &Path, remaining: &str) -> Option<PathBuf> {
     if remaining.is_empty() {
-        return current_dir.to_string();
+        return Some(current_dir.to_path_buf());
     }
 
-    let dir = Path::new(current_dir);
-    if !dir.is_dir() {
-        return join_path(current_dir, &remaining.replace('-', "\\"));
+    if !current_dir.is_dir() {
+        return None;
     }
 
     // Collect filesystem entries whose encoded name matches a prefix of `remaining`
-    let mut matches: Vec<(String, usize)> = Vec::new();
+    let mut matches: Vec<(PathBuf, usize)> = Vec::new();
 
-    if let Ok(entries) = std::fs::read_dir(dir) {
+    if let Ok(entries) = std::fs::read_dir(current_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             let encoded_seg = encode_segment(&name);
 
-            if remaining.starts_with(&encoded_seg) {
-                matches.push((name, encoded_seg.len()));
+            if remaining == encoded_seg || remaining.starts_with(&format!("{encoded_seg}-")) {
+                matches.push((entry.path(), encoded_seg.len()));
             }
         }
     }
@@ -210,36 +244,21 @@ fn decode_by_fs_matching(current_dir: &str, remaining: &str) -> String {
     // Greedy: try longest matches first
     matches.sort_by(|a, b| b.1.cmp(&a.1));
 
-    for (name, consumed) in matches {
+    for (path, consumed) in matches {
         let rest_after = &remaining[consumed..];
         // The next '-' (if any) is a path separator between segments
         let next_remaining = rest_after.strip_prefix('-').unwrap_or(rest_after);
-        let next_dir = join_path(current_dir, &name);
 
         if next_remaining.is_empty() {
-            if Path::new(&next_dir).is_dir() {
-                return next_dir;
+            if path.is_dir() {
+                return Some(path);
             }
-        } else {
-            let result = decode_by_fs_matching(&next_dir, next_remaining);
-            if result_is_valid(&result) {
-                return result;
-            }
+        } else if let Some(result) = decode_by_fs_matching(&path, next_remaining) {
+            return Some(result);
         }
     }
 
-    // No filesystem match — fall back to naive decode
-    join_path(current_dir, &remaining.replace('-', "\\"))
-}
-
-/// Join two path components, avoiding double backslashes.
-fn join_path(base: &str, segment: &str) -> String {
-    let base_trimmed = base.trim_end_matches('\\');
-    format!("{}\\{}", base_trimmed, segment)
-}
-
-fn result_is_valid(result: &str) -> bool {
-    Path::new(result).is_dir()
+    None
 }
 
 pub fn encode_project_path(path: &str) -> String {

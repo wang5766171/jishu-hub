@@ -71,13 +71,11 @@ impl AgentPlugin for CodexAdapter {
     }
 
     fn scan_projects(&self) -> Vec<crate::project::Project> {
-        // Codex doesn't have a project directory structure like Claude
-        // Sessions are stored in ~/.codex/sessions/ by cwd
-        vec![]
+        crate::project::scan_projects()
     }
 
-    fn add_project(&self, _path: &str) -> Option<crate::project::Project> {
-        None
+    fn add_project(&self, path: &str) -> Option<crate::project::Project> {
+        crate::project::add_project(path)
     }
 
     fn decode_project_path(&self, encoded: &str) -> String {
@@ -107,7 +105,6 @@ impl AgentPlugin for CodexAdapter {
     }
 
     fn load_config(&self) -> Result<crate::config::ClaudeConfig, String> {
-        // TODO: Read ~/.codex/config.toml and convert to ClaudeConfig shape
         Err("Codex config not yet supported".to_string())
     }
 

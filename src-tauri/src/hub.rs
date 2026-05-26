@@ -70,6 +70,12 @@ pub struct AppState {
     pub theme: Option<String>,
     pub font_size_base: Option<String>,
     pub font_size_prose: Option<String>,
+    #[serde(default)]
+    pub active_agent_id: Option<String>,
+    #[serde(default)]
+    pub agent_binary_paths: HashMap<String, String>,
+    #[serde(default)]
+    pub agent_last_health: HashMap<String, serde_json::Value>,
 }
 
 fn state_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -87,6 +93,47 @@ pub fn load_state() -> Result<AppState, Box<dyn std::error::Error>> {
 pub fn save_state(state: &AppState) -> Result<(), Box<dyn std::error::Error>> {
     let path = state_path()?;
     write_json(&path, state)
+}
+
+pub fn migrate_v0_5_0() -> Result<(), Box<dyn std::error::Error>> {
+    let session_path = session_names_path()?;
+    if session_path.exists() {
+        let mut data: SessionNames = read_json(&session_path)?;
+        let legacy_names: Vec<(String, String)> = data
+            .names
+            .iter()
+            .filter(|(key, _)| !key.contains(':'))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        let mut changed = false;
+        for (key, value) in legacy_names {
+            let namespaced = format!("claude-code:{key}");
+            if let std::collections::hash_map::Entry::Vacant(entry) = data.names.entry(namespaced) {
+                entry.insert(value);
+                changed = true;
+            }
+        }
+        if changed {
+            write_json(&session_path, &data)?;
+        }
+    }
+
+    let mut state = load_state().unwrap_or_default();
+    if state.active_agent_id.is_none() {
+        state.active_agent_id = Some("claude-code".to_string());
+        save_state(&state)?;
+    }
+    Ok(())
+}
+
+pub fn load_active_agent_id() -> Result<Option<String>, Box<dyn std::error::Error>> {
+    Ok(load_state()?.active_agent_id)
+}
+
+pub fn save_active_agent_id(id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut state = load_state().unwrap_or_default();
+    state.active_agent_id = Some(id.to_string());
+    save_state(&state)
 }
 
 pub fn load_language() -> Result<Option<String>, Box<dyn std::error::Error>> {

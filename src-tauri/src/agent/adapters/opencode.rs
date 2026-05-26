@@ -73,11 +73,11 @@ impl AgentPlugin for OpencodeAdapter {
     }
 
     fn scan_projects(&self) -> Vec<crate::project::Project> {
-        vec![]
+        crate::project::scan_projects()
     }
 
-    fn add_project(&self, _path: &str) -> Option<crate::project::Project> {
-        None
+    fn add_project(&self, path: &str) -> Option<crate::project::Project> {
+        crate::project::add_project(path)
     }
 
     fn decode_project_path(&self, encoded: &str) -> String {

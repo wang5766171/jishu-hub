@@ -210,6 +210,10 @@ fn load_last_project() -> Result<Option<String>, String> {
 
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return Err("Only http(s) URLs can be opened".to_string());
+    }
     open::that(&url).map_err(|e| e.to_string())
 }
 
@@ -414,7 +418,8 @@ fn agent_list_statuses(state: tauri::State<'_, Mutex<AppState>>) -> Vec<agent::A
 #[tauri::command]
 fn agent_set_active(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
     let mut s = state.lock().unwrap();
-    s.registry.set_active(&id)
+    s.registry.set_active(&id)?;
+    hub::save_active_agent_id(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -452,7 +457,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let registry = agent::AgentRegistry::new();
+            let _ = hub::migrate_v0_5_0();
+            let mut registry = agent::AgentRegistry::new();
+            if let Ok(Some(active_id)) = hub::load_active_agent_id() {
+                let _ = registry.set_active(&active_id);
+            }
             app.manage(Mutex::new(AppState { registry }));
             app.manage(std::sync::Mutex::new(chat::ChatState::new()));
             if let Ok(pinned) = hub::load_always_on_top() {
