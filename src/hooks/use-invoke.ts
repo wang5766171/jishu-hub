@@ -14,10 +14,7 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
   const [error, setError] = useState<string | null>(null);
 
   const fetch = useCallback((silent?: boolean): Promise<T> => {
-    if (!silent) {
-      setLoading(true);
-      setData(null);
-    }
+    if (!silent) setLoading(true);
     setError(null);
     if (!command) {
       setLoading(false);
