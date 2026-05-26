@@ -5,6 +5,7 @@ type Listener = () => void;
 
 class StreamStore {
   private chunks: StreamChunk[] = [];
+  private _snapshot: StreamChunk[] = [];
   private sid: string | null = null;
   private listeners = new Set<Listener>();
   private flushScheduled = false;
@@ -12,6 +13,7 @@ class StreamStore {
   setSession(sid: string | null) {
     this.sid = sid;
     this.chunks = [];
+    this._snapshot = [];
     this.flushScheduled = false;
     this.notify();
   }
@@ -23,11 +25,12 @@ class StreamStore {
     this.flushScheduled = true;
     requestAnimationFrame(() => {
       this.flushScheduled = false;
+      this._snapshot = [...this.chunks];
       this.notify();
     });
   }
 
-  snapshot = () => this.chunks;
+  snapshot = () => this._snapshot;
 
   subscribe = (l: Listener) => {
     this.listeners.add(l);
@@ -39,6 +42,7 @@ class StreamStore {
   /** Force immediate notification (for result events) */
   flushNow() {
     this.flushScheduled = false;
+    this._snapshot = [...this.chunks];
     this.notify();
   }
 

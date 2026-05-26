@@ -77,17 +77,13 @@ export function ChatPage({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const deferredSearchQuery = useDeferredValue(searchQuery);
-  // streamingSession holds "pending-<pid>" during streaming — used only for event routing
-  const [streamingSession, setStreamingSession] = useState<string | null>(null);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
   const [pendingUserMessage, setPendingUserMessage] = useState<string | null>(null);
   const [msgSearchSeed, setMsgSearchSeed] = useState("");
-  // Tracks new session for sidebar display before real ID is known
-  const [newChatInfo, setNewChatInfo] = useState<{ projectId: string; pendingId: string; realId?: string; displayName: string } | null>(null);
+  const [optimisticSessions, setOptimisticSessions] = useState<Session[]>([]);
 
   const messageAreaRef = useRef<HTMLDivElement>(null);
   const streamChunksRef = useRef<StreamChunk[]>([]);
-  const streamingSessionRef = useRef<string | null>(null);
   const pendingUserMsgRef = useRef<string | null>(null);
   const resolvedSessionIdRef = useRef<string | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
@@ -95,8 +91,10 @@ export function ChatPage({
   const visitedSessions = useRef(new Set<string>());
   const scrollMemory = useRef(new Map<string, number>());
   const scrollAction = useRef<{ type: "bottom" } | { type: "restore", top: number } | null>(null);
+  // Buffer for early chunks arriving before handleMessageSent sets streamingSessionRef
+  const earlyChunksRef = useRef<StreamChunk[]>([]);
 
-  const showChatArea = !!selectedSession || !!streamingSession || !!newChatInfo;
+  const showChatArea = !!selectedSession;
 
   // Single hook for current project's sessions
   const [listRefreshKey, setListRefreshKey] = useState(0);
@@ -111,34 +109,20 @@ export function ChatPage({
     return searchSessions(sessions, deferredSearchQuery);
   }, [sessions, deferredSearchQuery]);
 
-  // Build display session list with new session injection
+  // Build display session list with optimistic sessions prepended
   let displaySessions = sessions ?? [];
   if (deferredSearchQuery.trim() && sessions) {
     displaySessions = searchResults.map((r: SessionSearchResult) => sessions.find(s => s.id === r.sessionId)!).filter(Boolean) as Session[];
+  } else if (!deferredSearchQuery.trim()) {
+    displaySessions = [...optimisticSessions, ...displaySessions];
   }
 
-  if (newChatInfo && newChatInfo.projectId === projectId && !deferredSearchQuery.trim()) {
-    const effectiveId = newChatInfo.realId || newChatInfo.pendingId;
-    const alreadyExists = displaySessions.some(s => s.id === effectiveId);
-    if (!alreadyExists) {
-      const fakeSession: Session = {
-        id: effectiveId,
-        path: "",
-        messages: [],
-        display_name: newChatInfo.displayName,
-        started_at: new Date().toISOString(),
-        last_active: new Date().toISOString(),
-      };
-      displaySessions = [fakeSession, ...displaySessions];
-    }
-  }
-
-  // Auto-clear newChatInfo once real session appears in backend list
+  // Auto-clear optimistic sessions once real session appears in backend list
   useEffect(() => {
-    if (newChatInfo?.realId && sessions?.some(s => s.id === newChatInfo.realId)) {
-      setNewChatInfo(null);
+    if (sessions && optimisticSessions.length > 0) {
+      setOptimisticSessions(prev => prev.filter(opt => !sessions.some(s => s.id === opt.id)));
     }
-  }, [sessions, newChatInfo]);
+  }, [sessions]);
 
   // Clear session state when project changes
   useEffect(() => {
@@ -146,6 +130,7 @@ export function ChatPage({
     selectedSessionRef.current = null;
     setSessionMessages([]);
     streamChunksRef.current = [];
+    earlyChunksRef.current = [];
     setPendingUserMessage(null);
     pendingUserMsgRef.current = null;
     resolvedSessionIdRef.current = null;
@@ -178,9 +163,6 @@ export function ChatPage({
     selectedSessionRef.current = sessionId;
     setMsgSearchSeed(searchQuery);
 
-    // Clear newChatInfo when selecting an existing session
-    if (newChatInfo) setNewChatInfo(null);
-
     try {
       const messages = await invokeCommand<Message[]>("get_session_messages", {
         sessionId,
@@ -205,18 +187,14 @@ export function ChatPage({
   const handleNewSession = async () => {
     if (!projectId) return;
 
-    setSelectedSession(null);
-    selectedSessionRef.current = null;
+    setSelectedSession("new");
+    selectedSessionRef.current = "new";
     setSessionMessages([]);
     streamStore.setSession(null);
-    setStreamingSession(null);
     setPendingUserMessage(null);
     pendingUserMsgRef.current = null;
     setMsgSearchSeed("");
     resolvedSessionIdRef.current = null;
-
-    // newChatInfo triggers chat area display and sidebar "新对话" entry
-    setNewChatInfo({ projectId, pendingId: "new", displayName: "新对话" });
 
     requestAnimationFrame(() => {
       chatInputRef.current?.focus();
@@ -268,127 +246,146 @@ export function ChatPage({
   const handleMessageSent = useCallback((sid: string, msg: string) => {
     streamChunksRef.current = [];
     streamStore.setSession(sid);
-    setStreamingSession(sid);           // "pending-<pid>"
-    streamingSessionRef.current = sid;
+
+    if (!selectedSession || selectedSession === "new") {
+      const newOptSession: Session = {
+        id: sid,
+        path: currentProject?.path || "",
+        messages: [],
+        display_name: t("sessions.newChat") || "新对话",
+        started_at: new Date().toISOString(),
+        last_active: new Date().toISOString(),
+      };
+      setOptimisticSessions(prev => [newOptSession, ...prev]);
+      setSelectedSession(sid);
+      selectedSessionRef.current = sid;
+    }
+
     setPendingUserMessage(msg);
     pendingUserMsgRef.current = msg;
     resolvedSessionIdRef.current = null;
 
-    if (!selectedSession) {
-      // New conversation: don't set selectedSession (stays null)
-      setNewChatInfo(prev =>
-        prev
-          ? { ...prev, pendingId: sid }
-          : { projectId: projectId!, pendingId: sid, displayName: "新对话" }
-      );
+    // Replay early chunks that arrived before this callback ran
+    const early = earlyChunksRef.current.filter(c => c.session_id === sid);
+    for (const chunk of early) {
+      streamStore.push(chunk);
+      streamChunksRef.current.push(chunk);
+      const realId = extractRealSessionId(chunk.data);
+      if (realId && realId !== sid) {
+        resolvedSessionIdRef.current = realId;
+        setOptimisticSessions(prev => prev.map(s => s.id === sid ? { ...s, id: realId } : s));
+        setSelectedSession(realId);
+        selectedSessionRef.current = realId;
+        visitedSessions.current.add(realId);
+      }
     }
+    earlyChunksRef.current = [];
 
     requestAnimationFrame(() => {
       if (messageAreaRef.current) {
         messageAreaRef.current.scrollTop = messageAreaRef.current.scrollHeight;
       }
     });
-  }, [selectedSession, projectId]);
+  }, [selectedSession, currentProject?.path, t]);
 
   // Stream listener (mount-only, exact match on streaming session)
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
-    listen<StreamChunk>("chat-stream", (event) => {
-      const chunk = event.payload;
-      const currentStreaming = streamingSessionRef.current;
+    listen<StreamChunk[] | StreamChunk>("chat-stream", (event) => {
+      const payload = event.payload;
+      const chunks = Array.isArray(payload) ? payload : [payload];
+      const currentStreaming = streamStore.getSessionId();
 
-      // Exact match only — prevents cross-session contamination
-      if (chunk.session_id !== currentStreaming) return;
+      for (const chunk of chunks) {
+        // Buffer early chunks that arrive before handleMessageSent sets the ref
+        if (!currentStreaming) {
+          earlyChunksRef.current.push(chunk);
+          continue;
+        }
 
-      // Use streamStore for O(1) push instead of O(N²) useState spread
-      streamStore.push(chunk);
-      streamChunksRef.current.push(chunk);
+        // Exact match only — prevents cross-session contamination
+        if (chunk.session_id !== currentStreaming) continue;
 
-      // Extract real session_id from system init or result events
-      const realId = extractRealSessionId(chunk.data);
-      if (realId && realId !== currentStreaming) {
-        resolvedSessionIdRef.current = realId;
-        setNewChatInfo(prev => prev ? { ...prev, realId } : null);
-      }
+        // Use streamStore for O(1) push instead of O(N²) useState spread
+        streamStore.push(chunk);
+        streamChunksRef.current.push(chunk);
 
-      if (chunk.event_type === "result") {
-        // Reconstruct text and tool_use from all accumulated chunks
-        let text = "";
-        const tools: Array<{ type: "tool_use"; id: string; name: string; input: unknown }> = [];
-        for (const c of streamChunksRef.current) {
-          if (c.event_type === "delta") {
-            const delta = (c.data as Record<string, unknown>)?.event as Record<string, unknown> | undefined;
-            const deltaObj = delta?.delta as Record<string, unknown> | undefined;
-            if (deltaObj?.type === "text_delta" && typeof deltaObj.text === "string") {
-              text += deltaObj.text;
-            }
-          } else if (c.event_type === "message") {
-            const content = (c.data as Record<string, unknown>)?.content as Array<Record<string, unknown>> | undefined;
-            if (content) {
-              for (const block of content) {
-                if (block.type === "tool_use") tools.push({ type: "tool_use", id: block.id as string ?? "", name: block.name as string, input: block.input });
+        // Extract real session_id from system init or result events
+        const realId = extractRealSessionId(chunk.data);
+        if (realId && realId !== currentStreaming && realId !== resolvedSessionIdRef.current) {
+          resolvedSessionIdRef.current = realId;
+          setOptimisticSessions(prev => prev.map(s => s.id === currentStreaming ? { ...s, id: realId } : s));
+          setSelectedSession(realId);
+          selectedSessionRef.current = realId;
+          visitedSessions.current.add(realId);
+        }
+
+        if (chunk.event_type === "result") {
+          // Reconstruct text and tool_use from all accumulated chunks
+          let text = "";
+          const tools: Array<{ type: "tool_use"; id: string; name: string; input: unknown }> = [];
+          for (const c of streamChunksRef.current) {
+            if (c.event_type === "delta") {
+              const delta = (c.data as Record<string, unknown>)?.event as Record<string, unknown> | undefined;
+              const deltaObj = delta?.delta as Record<string, unknown> | undefined;
+              if (deltaObj?.type === "text_delta" && typeof deltaObj.text === "string") {
+                text += deltaObj.text;
+              }
+            } else if (c.event_type === "message") {
+              const content = (c.data as Record<string, unknown>)?.content as Array<Record<string, unknown>> | undefined;
+              if (content) {
+                for (const block of content) {
+                  if (block.type === "tool_use") tools.push({ type: "tool_use", id: block.id as string ?? "", name: block.name as string, input: block.input });
+                }
               }
             }
           }
-        }
 
-        // Build final messages
-        const newMessages: Message[] = [];
-        if (pendingUserMsgRef.current) {
-          newMessages.push({ role: "user", content: [{ type: "text", text: pendingUserMsgRef.current }], timestamp: Date.now() });
-        }
-        const assistantContent: ContentBlock[] = [];
-        assistantContent.push(...tools);
-        if (text) assistantContent.push({ type: "text", text });
-        if (assistantContent.length > 0) {
-          newMessages.push({ role: "assistant", content: assistantContent, timestamp: Date.now() });
-        }
-
-        setSessionMessages((prev) => [...prev, ...newMessages]);
-
-        // Resolve to real session ID
-        const resolvedId = resolvedSessionIdRef.current;
-        if (resolvedId) {
-          setSelectedSession(resolvedId);
-          selectedSessionRef.current = resolvedId;
-          visitedSessions.current.add(resolvedId);
-        } else if (!selectedSessionRef.current) {
-          // Fallback: CLI didn't provide session_id in events — discover from file system
-          setTimeout(async () => {
-            try {
-              const freshSessions = await invokeCommand<Session[]>("list_sessions", { encodedName: projectId! });
-              if (freshSessions && freshSessions.length > 0 && !selectedSessionRef.current) {
-                const newest = freshSessions[0];
-                setSelectedSession(newest.id);
-                selectedSessionRef.current = newest.id;
-                visitedSessions.current.add(newest.id);
-              }
-            } catch {}
-            setListRefreshKey(prev => prev + 1);
-          }, 1000);
-        }
-
-        // Clear streaming state
-        setStreamingSession(null);
-        streamingSessionRef.current = null;
-        streamStore.setSession(null);
-        streamChunksRef.current = [];
-        setPendingUserMessage(null);
-        pendingUserMsgRef.current = null;
-
-        // Refresh session list
-        setListRefreshKey(prev => prev + 1);
-
-        requestAnimationFrame(() => {
-          if (messageAreaRef.current) {
-            messageAreaRef.current.scrollTop = messageAreaRef.current.scrollHeight;
+          // Fallback: extract text from result event if deltas were missed
+          if (!text) {
+            const resultText = (chunk.data as Record<string, unknown>)?.result;
+            if (typeof resultText === "string") text = resultText;
           }
-          // Refocus input after assistant finishes responding
-          chatInputRef.current?.focus();
-        });
 
-        setTimeout(() => { refetchNames(true); }, 2000);
+          // Build final messages
+          const newMessages: Message[] = [];
+          if (pendingUserMsgRef.current) {
+            newMessages.push({ role: "user", content: [{ type: "text", text: pendingUserMsgRef.current }], timestamp: Date.now() });
+          }
+          const assistantContent: ContentBlock[] = [];
+          assistantContent.push(...tools);
+          if (text) assistantContent.push({ type: "text", text });
+          if (assistantContent.length > 0) {
+            newMessages.push({ role: "assistant", content: assistantContent, timestamp: Date.now() });
+          }
+
+          setSessionMessages((prev) => {
+            if (selectedSessionRef.current === (resolvedSessionIdRef.current || currentStreaming)) {
+              return [...prev, ...newMessages];
+            }
+            return prev;
+          });
+
+          // Clear streaming state
+          streamStore.setSession(null);
+          streamChunksRef.current = [];
+          setPendingUserMessage(null);
+          pendingUserMsgRef.current = null;
+
+          // Refresh session list directly
+          setListRefreshKey(prev => prev + 1);
+
+          requestAnimationFrame(() => {
+            if (messageAreaRef.current) {
+              messageAreaRef.current.scrollTop = messageAreaRef.current.scrollHeight;
+            }
+            // Refocus input after assistant finishes responding
+            chatInputRef.current?.focus();
+          });
+
+          setTimeout(() => { refetchNames(true); }, 2000);
+        }
       }
     }).then((fn) => {
       if (cancelled) {
@@ -406,15 +403,8 @@ export function ChatPage({
 
   // Derive display name for the current session
   const displayName = selectedSession
-    ? (sessionNames?.[selectedSession] || sessions?.find(s => s.id === selectedSession)?.display_name || selectedSession.slice(0, 8))
-    : (newChatInfo?.displayName || "");
-
-  // Update new chat display name from session names when available
-  useEffect(() => {
-    if (newChatInfo?.realId && sessionNames?.[newChatInfo.realId]) {
-      setNewChatInfo(prev => prev ? { ...prev, displayName: sessionNames[newChatInfo.realId!]! } : null);
-    }
-  }, [sessionNames, newChatInfo?.realId]);
+    ? (sessionNames?.[selectedSession] || sessions?.find(s => s.id === selectedSession)?.display_name || optimisticSessions.find(s => s.id === selectedSession)?.display_name || selectedSession.slice(0, 8))
+    : "";
 
   return (
     <div className="flex h-full">
@@ -545,10 +535,7 @@ export function ChatPage({
         {/* Session list: expanded */}
         <div className={cn("flex-1 overflow-y-auto", sidebarCollapsed && "hidden")}>
           {displaySessions.map((session) => {
-            const effectiveNewId = newChatInfo?.realId || newChatInfo?.pendingId;
-            const isFakeEntry = !!(newChatInfo && session.id === effectiveNewId);
-            const isActive = session.id === selectedSession
-              || (isFakeEntry && !selectedSession && streamingSession !== null);
+            const isActive = session.id === selectedSession;
             const name = sessionNames?.[session.id] || session.display_name || session.id.slice(0, 8);
             const timeStr = session.last_active
               ? formatRelativeTime(session.last_active)
@@ -558,7 +545,7 @@ export function ChatPage({
             const searchHit = searchResults.find((r: SessionSearchResult) => r.sessionId === session.id);
             return (
               <button
-                key={isFakeEntry ? "__new_chat__" : session.id}
+                key={session.id}
                 onClick={() => handleSelectSession(session.id)}
                 className={cn(
                   "flex flex-col w-full items-start pl-5 pr-2 py-2 text-xs transition-fast border-b border-border/10",
@@ -622,7 +609,7 @@ export function ChatPage({
         ) : (
           <>
             {/* Session header */}
-            {selectedSession ? (
+            {selectedSession && selectedSession !== "new" ? (
               <div className="flex items-center justify-between px-5 h-[44px] border-b border-border/30" style={{ background: "var(--color-layer-1)" }}>
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="font-medium text-sm truncate">{displayName}</span>
@@ -650,12 +637,14 @@ export function ChatPage({
             )}
             {/* Messages */}
             <div ref={messageAreaRef} className="flex-1 min-h-0 overflow-y-auto" style={{ overflowAnchor: "none" }}>
-              {selectedSession && (
+              {selectedSession && selectedSession !== "new" && (
                 <MessageView messages={sessionMessages} initialSearchQuery={msgSearchSeed} onRefresh={handleRefreshMessages} flat scrollContainerRef={messageAreaRef} />
               )}
-              {streamingSession && (
+              {streamStore.getSessionId() && 
+                (streamStore.getSessionId() === selectedSession || resolvedSessionIdRef.current === selectedSession) && 
+                selectedSession && selectedSession !== "new" && (
                 <StreamingMessage
-                  key={streamingSession}
+                  key={streamStore.getSessionId()!}
                   isComplete={false}
                   userMessage={pendingUserMessage ?? undefined}
                   scrollContainerRef={messageAreaRef}
@@ -668,9 +657,9 @@ export function ChatPage({
         {projectId && (
           <ChatInput
             ref={chatInputRef}
-            sessionId={selectedSession}
+            sessionId={selectedSession === "new" ? null : selectedSession}
             projectPath={currentProject?.path ?? null}
-            disabled={streamingSession !== null}
+            disabled={streamStore.getSessionId() !== null}
             onMessageSent={handleMessageSent}
           />
         )}
