@@ -143,13 +143,8 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
     if (!appWindow) return;
 
     try {
-      const wasMaximized = await appWindow.isMaximized();
-      if (wasMaximized) {
-        await appWindow.unmaximize();
-      } else {
-        await appWindow.maximize();
-      }
-      setMaximized(!wasMaximized);
+      await appWindow.toggleMaximize();
+      setMaximized(await appWindow.isMaximized());
     } catch (e) {
       console.error(e);
     }
