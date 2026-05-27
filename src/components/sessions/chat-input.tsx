@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { Button } from "@/components/ui/button";
-import { Send, Square, Paperclip } from "lucide-react";
+import { Check, ChevronDown, KeyRound, Paperclip, Plus, Send, Square, Sparkles, Blocks } from "lucide-react";
 import { FilePreview } from "./file-preview";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ChatSession, SavedFile } from "@/types";
@@ -27,6 +27,12 @@ interface ChatInputProps {
   containerClassName?: string;
   panelClassName?: string;
   contextFooter?: ReactNode;
+  accessModeLabel?: string;
+  accessModeTitle?: string;
+  accessModeReadOnly?: boolean;
+  accessModeOptions?: Array<{ value: string; label: string }>;
+  accessModeValue?: string;
+  onAccessModeChange?: (value: string) => void | Promise<void>;
 }
 
 function isInsideProject(filePath: string, projectPath: string): boolean {
@@ -44,13 +50,22 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   containerClassName,
   panelClassName,
   contextFooter,
+  accessModeLabel,
+  accessModeTitle,
+  accessModeReadOnly = true,
+  accessModeOptions = [],
+  accessModeValue,
+  onAccessModeChange,
 }: ChatInputProps, ref) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
   const [files, setFiles] = useState<AttachedFile[]>([]);
   const [sending, setSending] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [toolMenuOpen, setToolMenuOpen] = useState(false);
+  const [accessMenuOpen, setAccessMenuOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
 
   useImperativeHandle(ref, () => textareaRef.current!, []);
 
@@ -61,6 +76,16 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
       setActiveSessionId(null);
     }
   }, [disabled]);
+
+  useEffect(() => {
+    const handler = (event: MouseEvent) => {
+      if (toolbarRef.current?.contains(event.target as Node)) return;
+      setToolMenuOpen(false);
+      setAccessMenuOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
 
   const placeholder =
     files.length === 0
@@ -400,16 +425,95 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
 
         <div className="flex items-center justify-between px-3 pb-3 pt-1">
           <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
-              onClick={handleFileSelect}
-              disabled={disabled || sending || !allowFiles}
-              title={t("sessions.attachImage")}
-            >
-              <Paperclip className="h-4 w-4" />
-            </Button>
+            <div ref={toolbarRef} className="relative flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
+                onClick={() => {
+                  setToolMenuOpen((open) => !open);
+                  setAccessMenuOpen(false);
+                }}
+                disabled={disabled || sending}
+                title={t("sessions.addContext")}
+              >
+                <Plus className="h-4 w-4" strokeWidth={2.3} />
+              </Button>
+              {toolMenuOpen && (
+                <div className="absolute bottom-full left-0 z-40 mb-2 w-44 rounded-xl border border-border bg-popover p-1.5 shadow-lg">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setToolMenuOpen(false);
+                      handleFileSelect();
+                    }}
+                    disabled={disabled || sending || !allowFiles}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-fast hover:bg-accent/60 disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    <Paperclip className="h-4 w-4 text-[var(--icon-action)]" />
+                    <span>{t("sessions.attachFile")}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-muted-foreground opacity-55"
+                  >
+                    <Sparkles className="h-4 w-4 text-[var(--icon-theme)]" />
+                    <span className="flex-1">{t("sessions.skillsComingSoon")}</span>
+                    <span className="text-[0.72em]">{t("sessions.comingSoon")}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-muted-foreground opacity-55"
+                  >
+                    <Blocks className="h-4 w-4 text-[var(--icon-config)]" />
+                    <span className="flex-1">{t("sessions.pluginsComingSoon")}</span>
+                    <span className="text-[0.72em]">{t("sessions.comingSoon")}</span>
+                  </button>
+                </div>
+              )}
+              {accessModeLabel && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (accessModeReadOnly || accessModeOptions.length === 0) return;
+                      setAccessMenuOpen((open) => !open);
+                      setToolMenuOpen(false);
+                    }}
+                    disabled={disabled || sending}
+                    title={accessModeTitle ?? t("sessions.accessMode")}
+                    className={cn(
+                      "flex h-8 items-center gap-1.5 rounded-full border border-border/50 bg-background/80 px-2.5 text-xs text-muted-foreground transition-fast hover:bg-accent/45 hover:text-foreground",
+                      accessModeReadOnly && "cursor-default hover:bg-background/80 hover:text-muted-foreground",
+                    )}
+                  >
+                    <KeyRound className="h-3.5 w-3.5 text-[var(--icon-config)]" />
+                    <span className="max-w-[8rem] truncate">{accessModeLabel}</span>
+                    {!accessModeReadOnly && <ChevronDown className="h-3 w-3" />}
+                  </button>
+                  {accessMenuOpen && !accessModeReadOnly && (
+                    <div className="absolute bottom-full left-0 z-40 mb-2 w-44 rounded-xl border border-border bg-popover p-1.5 shadow-lg">
+                      {accessModeOptions.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => {
+                            setAccessMenuOpen(false);
+                            onAccessModeChange?.(option.value);
+                          }}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-fast hover:bg-accent/60"
+                        >
+                          <span className="flex-1">{option.label}</span>
+                          {option.value === accessModeValue && <Check className="h-4 w-4 text-[var(--icon-action)]" />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="flex items-center gap-1">

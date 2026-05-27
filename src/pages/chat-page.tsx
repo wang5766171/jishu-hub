@@ -16,7 +16,7 @@ import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { searchSessions } from "@/lib/session-search";
 import { useAgent } from "@/agents";
-import type { Session, Project, ProjectMeta, Message, ContentBlock, AgentStreamChunk, SessionSearchResult } from "@/types";
+import type { Session, Project, ProjectMeta, ProjectSettings, Message, ContentBlock, AgentStreamChunk, SessionSearchResult } from "@/types";
 
 function TerminalIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -80,6 +80,7 @@ export function ChatPage({
   const { t } = useTranslation();
   const { activeId, active, capabilities } = useAgent();
   const projectId = currentProject?.encoded_name ?? null;
+  const projectPathForSettings = currentProject?.path ?? null;
 
   // selectedSession: null or real backend UUID — never fake IDs
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
@@ -146,6 +147,13 @@ export function ChatPage({
   const hasSearchQuery = searchQuery.trim().length > 0;
   const showMessageSearchControls = hasSearchQuery && !!selectedSession && selectedSession !== "new";
   const showStartComposer = !!projectId && (!selectedSession || selectedSession === "new");
+  const supportsAccessModeSwitch = activeId === "claude-code";
+  const [accessRefreshKey, setAccessRefreshKey] = useState(0);
+  const { data: projectSettings } = useInvoke<ProjectSettings>(
+    supportsAccessModeSwitch && projectPathForSettings ? "load_project_settings_local" : "",
+    supportsAccessModeSwitch && projectPathForSettings ? { projectPath: projectPathForSettings } : undefined,
+    accessRefreshKey,
+  );
   const messageSearchTotal = showMessageSearchControls ? messageSearchStatus.total : 0;
   const messageSearchLabel = messageSearchTotal > 0
     ? `${messageSearchStatus.current}/${messageSearchTotal}`
@@ -208,7 +216,33 @@ export function ChatPage({
   const handleRefresh = async () => {
     const newKey = await onRefresh();
     setListRefreshKey(newKey);
+    setAccessRefreshKey(Date.now());
   };
+
+  const accessModeOptions = useMemo(() => ([
+    { value: "default", label: t("sessions.accessDefault") },
+    { value: "bypassPermissions", label: t("sessions.accessBypass") },
+    { value: "plan", label: t("sessions.accessPlan") },
+  ]), [t]);
+
+  const accessModeValue = projectSettings?.permissions?.defaultMode || "default";
+  const accessModeLabel = accessModeOptions.find((option) => option.value === accessModeValue)?.label ?? t("sessions.accessDefault");
+
+  const handleAccessModeChange = useCallback(async (value: string) => {
+    if (!supportsAccessModeSwitch || !projectPathForSettings) return;
+    const nextSettings: ProjectSettings = {
+      permissions: {
+        defaultMode: value === "default" ? null : value,
+        allow: projectSettings?.permissions?.allow ?? null,
+        deny: projectSettings?.permissions?.deny ?? null,
+      },
+      hooks: projectSettings?.hooks ?? null,
+      env: projectSettings?.env ?? null,
+      model: projectSettings?.model ?? null,
+    };
+    await invokeCommand("save_project_settings_local", { projectPath: projectPathForSettings, settings: nextSettings });
+    setAccessRefreshKey(Date.now());
+  }, [projectPathForSettings, projectSettings, supportsAccessModeSwitch]);
 
   useLayoutEffect(() => {
     if (!scrollAction.current || !messageAreaRef.current) return;
@@ -738,6 +772,12 @@ export function ChatPage({
                 containerClassName="max-w-full px-0 pb-0 pt-0"
                 panelClassName="overflow-hidden rounded-[22px] border-border/70 bg-card/98 shadow-[0_18px_48px_rgba(0,0,0,0.10)]"
                 contextFooter={startComposerFooter}
+                accessModeLabel={accessModeLabel}
+                accessModeTitle={supportsAccessModeSwitch ? t("sessions.accessMode") : t("sessions.accessModeReadOnly")}
+                accessModeReadOnly={!supportsAccessModeSwitch}
+                accessModeOptions={accessModeOptions}
+                accessModeValue={accessModeValue}
+                onAccessModeChange={handleAccessModeChange}
               />
             </div>
           </div>
@@ -817,6 +857,12 @@ export function ChatPage({
             disabled={streamStore.getSessionId() !== null}
             onMessageSent={handleMessageSent}
             allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
+            accessModeLabel={accessModeLabel}
+            accessModeTitle={supportsAccessModeSwitch ? t("sessions.accessMode") : t("sessions.accessModeReadOnly")}
+            accessModeReadOnly={!supportsAccessModeSwitch}
+            accessModeOptions={accessModeOptions}
+            accessModeValue={accessModeValue}
+            onAccessModeChange={handleAccessModeChange}
           />
         )}
       </div>

@@ -109,7 +109,7 @@
   --message-assistant-bg: transparent;
   --message-assistant-fg: var(--color-foreground);
   --message-thinking-bg: hsl(240 5% 96% / 0.75);
-  --message-content-max-width: 920px;
+  --message-content-max-width: 760px;
   --tool-card-bg: hsl(0 0% 100%);
   --tool-card-header-bg: hsl(240 5% 97%);
   --tool-card-border: hsl(240 6% 86%);
