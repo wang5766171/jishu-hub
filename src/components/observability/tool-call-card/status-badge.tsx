@@ -15,7 +15,7 @@ export const StatusBadge = memo(function StatusBadge({ status }: { status: ToolS
   const config = statusConfig[status];
   const Icon = config.icon;
   return (
-    <span className="inline-flex items-center gap-1 text-[0.73em] font-medium" style={{ color: config.color }}>
+    <span className="inline-flex items-center gap-1 rounded-full bg-background/70 px-1.5 py-0.5 text-[0.73em] font-semibold" style={{ color: config.color }}>
       <Icon
         className={cn("w-[1em] h-[1em]", config.animate ? "animate-spin" : "")}
       />

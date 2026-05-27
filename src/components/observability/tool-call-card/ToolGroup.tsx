@@ -3,25 +3,17 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ToolCallCard } from "./ToolCallCard";
 import type { ToolCall } from "./types";
-import { kindLabel } from "./kind-icon";
 
 interface ToolGroupProps {
   calls: ToolCall[];
-  /** 是否默认展开（包含 error 时强制展开） */
   defaultExpanded?: boolean;
 }
 
-/**
- * 把若干连续工具调用合并为一张折叠卡，参考 Codex「已编辑 N 个文件」聚合样式。
- * 单个调用不走 group，直接渲染 ToolCallCard。
- */
 export const ToolGroup = memo(function ToolGroup({ calls, defaultExpanded }: ToolGroupProps) {
   const hasError = calls.some((c) => c.status === "error");
   const [expanded, setExpanded] = useState(defaultExpanded ?? hasError);
-
   const summary = useMemo(() => buildSummary(calls), [calls]);
 
-  // 单个调用不需要聚合外壳
   if (calls.length === 1) {
     return <ToolCallCard call={calls[0]} />;
   }
@@ -30,21 +22,21 @@ export const ToolGroup = memo(function ToolGroup({ calls, defaultExpanded }: Too
     <div
       style={{ fontSize: "var(--font-size-prose)" }}
       className={cn(
-        "rounded-md border text-[0.85em] transition-colors",
+        "overflow-hidden rounded-xl border bg-[var(--tool-card-bg)] text-[0.85em] shadow-sm transition-colors",
         hasError
           ? "border-[var(--tool-error)] ring-1 ring-[var(--tool-error)]/30"
-          : "border-border/60",
+          : "border-[var(--tool-card-border)] shadow-[inset_3px_0_0_var(--tool-success)]",
       )}
     >
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--color-accent)]/30 transition-fast"
+        className="w-full flex items-center gap-2 bg-[var(--tool-card-header-bg)] px-3 py-2 text-left hover:bg-[var(--color-accent)]/45 transition-fast"
       >
-        <span className="text-[0.78em] font-medium text-[var(--color-foreground)] truncate">
+        <span className="text-[0.78em] font-semibold text-[var(--color-foreground)] truncate">
           {summary}
         </span>
-        <span className="ml-auto text-[0.7em] text-muted-foreground shrink-0">
-          {calls.length} 项
+        <span className="ml-auto rounded-full bg-background/70 px-1.5 py-0.5 text-[0.7em] text-muted-foreground shrink-0">
+          {calls.length} {"\u9879"}
         </span>
         {expanded ? (
           <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
@@ -54,7 +46,7 @@ export const ToolGroup = memo(function ToolGroup({ calls, defaultExpanded }: Too
       </button>
 
       {expanded && (
-        <div className="px-2 py-1.5 border-t border-border/30 space-y-1">
+        <div className="space-y-1.5 border-t border-border/40 p-2">
           {calls.map((call) => (
             <ToolCallCard key={call.id} call={call} />
           ))}
@@ -64,7 +56,6 @@ export const ToolGroup = memo(function ToolGroup({ calls, defaultExpanded }: Too
   );
 });
 
-/** 生成「编辑 3 个文件 · 执行 2 条命令」之类的摘要 */
 function buildSummary(calls: ToolCall[]): string {
   const counts: Partial<Record<ToolCall["kind"], number>> = {};
   for (const c of calls) counts[c.kind] = (counts[c.kind] ?? 0) + 1;
@@ -74,31 +65,31 @@ function buildSummary(calls: ToolCall[]): string {
     if (!n) continue;
     parts.push(`${verbFor(kind as ToolCall["kind"])} ${n} ${unitFor(kind as ToolCall["kind"])}`);
   }
-  return parts.join(" · ");
+  return parts.join(" \u00b7 ");
 }
 
 function verbFor(kind: ToolCall["kind"]): string {
   switch (kind) {
     case "file_read":
-      return "读取";
+      return "\u8bfb\u53d6";
     case "file_edit":
-      return "编辑";
+      return "\u7f16\u8f91";
     case "file_write":
-      return "写入";
+      return "\u5199\u5165";
     case "file_delete":
-      return "删除";
+      return "\u5220\u9664";
     case "shell_exec":
-      return "执行";
+      return "\u6267\u884c";
     case "search":
-      return "搜索";
+      return "\u641c\u7d22";
     case "web":
-      return "请求";
+      return "\u8bf7\u6c42";
     case "think":
-      return "思考";
+      return "\u601d\u8003";
     case "subtask":
-      return "派发";
+      return "\u4efb\u52a1";
     default:
-      return "调用";
+      return "\u8c03\u7528";
   }
 }
 
@@ -108,18 +99,12 @@ function unitFor(kind: ToolCall["kind"]): string {
     case "file_edit":
     case "file_write":
     case "file_delete":
-      return "个文件";
+      return "\u4e2a\u6587\u4ef6";
     case "shell_exec":
-      return "条命令";
-    case "search":
-      return "次";
-    case "web":
-      return "次";
-    case "think":
-      return "次";
+      return "\u6761\u547d\u4ee4";
     case "subtask":
-      return "项";
+      return "\u9879";
     default:
-      return `次 ${kindLabel(kind)}`;
+      return "\u6b21";
   }
 }

@@ -377,12 +377,13 @@ export function ChatPage({
         if (chunk.data.kind === "turn_complete") {
           // Reconstruct text and tool_use from all accumulated chunks
           let text = "";
+          let thinking = "";
           const tools: Array<{ type: "tool_use"; id: string; name: string; input: unknown }> = [];
           for (const c of streamChunksRef.current) {
             if (c.data.kind === "text_delta") {
               text += c.data.delta;
             } else if (c.data.kind === "thinking") {
-              text += c.data.delta;
+              thinking += c.data.delta;
             } else if (c.data.kind === "tool_use_start") {
               tools.push({ type: "tool_use", id: c.data.call_id, name: c.data.tool, input: c.data.input });
             } else if (c.data.kind === "message") {
@@ -392,7 +393,7 @@ export function ChatPage({
                 } else if (block.type === "text") {
                   text += block.text;
                 } else if (block.type === "thinking") {
-                  text += block.thinking;
+                  thinking += block.thinking;
                 }
               }
             }
@@ -404,6 +405,7 @@ export function ChatPage({
             newMessages.push({ role: "user", content: [{ type: "text", text: pendingUserMsgRef.current }], timestamp: Date.now() });
           }
           const assistantContent: ContentBlock[] = [];
+          if (thinking) assistantContent.push({ type: "thinking", thinking });
           assistantContent.push(...tools);
           if (text) assistantContent.push({ type: "text", text });
           if (assistantContent.length > 0) {

@@ -103,6 +103,18 @@
   --tool-bg-subtask: hsl(20 80% 95%);
   --tool-bg-other: hsl(240 5% 96%);
 
+  /* Conversation surfaces */
+  --message-user-bg: hsl(240 5% 92%);
+  --message-user-fg: var(--color-foreground);
+  --message-assistant-bg: transparent;
+  --message-assistant-fg: var(--color-foreground);
+  --message-thinking-bg: hsl(240 5% 96% / 0.75);
+  --message-content-max-width: 920px;
+  --tool-card-bg: hsl(0 0% 100%);
+  --tool-card-header-bg: hsl(240 5% 97%);
+  --tool-card-border: hsl(240 6% 86%);
+  --tool-card-code-bg: hsl(240 5% 95%);
+
   /* Diff colors */
   --diff-added: hsl(140 65% 92%);
   --diff-added-fg: hsl(140 65% 25%);
@@ -126,6 +138,15 @@
   --icon-pin: #ef4444;
   --icon-send-bg: #3b82f6;
   --icon-send-fg: #ffffff;
+  --message-user-bg: #2f80ed;
+  --message-user-fg: #ffffff;
+  --message-assistant-bg: transparent;
+  --message-assistant-fg: var(--color-foreground);
+  --message-thinking-bg: hsl(210 90% 97% / 0.9);
+  --tool-card-bg: hsl(0 0% 100%);
+  --tool-card-header-bg: hsl(210 35% 97%);
+  --tool-card-border: hsl(210 25% 86%);
+  --tool-card-code-bg: hsl(210 35% 96%);
 }
 
 /* === Dark theme === */
@@ -168,6 +189,15 @@
   --icon-theme: #fb923c;
   --icon-about: #22d3ee;
   --icon-pin: #f87171;
+  --message-user-bg: hsl(240 5% 20%);
+  --message-user-fg: var(--color-foreground);
+  --message-assistant-bg: transparent;
+  --message-assistant-fg: var(--color-foreground);
+  --message-thinking-bg: hsl(240 5% 15% / 0.85);
+  --tool-card-bg: hsl(240 6% 12%);
+  --tool-card-header-bg: hsl(240 5% 15%);
+  --tool-card-border: hsl(240 5% 25%);
+  --tool-card-code-bg: hsl(240 6% 9%);
 
   /* Tool state colors (dark) */
   --tool-pending: hsl(240 5% 55%);

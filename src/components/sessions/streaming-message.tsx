@@ -19,8 +19,10 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
   const chunks = useStreamStore();
   const { t } = useTranslation();
   const [displayText, setDisplayText] = useState("");
+  const [thinkingText, setThinkingText] = useState("");
   const [toolUses, setToolUses] = useState<Array<{ name: string; input: unknown }>>([]);
   const textRef = useRef("");
+  const thinkingRef = useRef("");
   const toolsRef = useRef<Array<{ name: string; input: unknown }>>([]);
   const rafRef = useRef<number>(0);
   const processedCount = useRef(0);
@@ -60,7 +62,7 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
       if (chunk.data.kind === "text_delta") {
         textRef.current += chunk.data.delta;
       } else if (chunk.data.kind === "thinking") {
-        textRef.current += chunk.data.delta;
+        thinkingRef.current += chunk.data.delta;
       } else if (chunk.data.kind === "tool_use_start") {
         toolsRef.current.push({ name: chunk.data.tool, input: chunk.data.input });
       } else if (chunk.data.kind === "message") {
@@ -70,7 +72,7 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
           } else if (block.type === "text") {
             textRef.current += block.text;
           } else if (block.type === "thinking") {
-            textRef.current += block.thinking;
+            thinkingRef.current += block.thinking;
           }
         }
       }
@@ -80,6 +82,7 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
     cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(() => {
       setDisplayText(textRef.current);
+      setThinkingText(thinkingRef.current);
       setToolUses([...toolsRef.current]);
       scrollToBottom();
     });
@@ -87,7 +90,8 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
     return () => cancelAnimationFrame(rafRef.current);
   }, [chunks, scrollToBottom]);
 
-  const hasContent = displayText.length > 0 || toolUses.length > 0;
+  const hasBubbleContent = displayText.length > 0 || thinkingText.length > 0;
+  const hasContent = hasBubbleContent || toolUses.length > 0;
 
   // 把流式工具调用映射成 ToolCall（暂无 id/output，因为流式只有 input）
   const streamToolCalls: ToolCall[] = toolUses.map((tool, i) => ({
@@ -98,11 +102,8 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
     input: (typeof tool.input === "object" && tool.input !== null) ? (tool.input as Record<string, unknown>) : {},
   }));
 
-  // 仅工具调用、无文本时不需要套 muted 气泡
-  const assistantHasOnlyTools = toolUses.length > 0 && displayText.length === 0;
-
   return (
-    <div className="px-3 py-2 space-y-2">
+    <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
       {/* User message bubble */}
       {userMessage && (
         <div className="flex gap-2 w-full justify-end">
@@ -110,7 +111,7 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
             <div className="flex items-center gap-2 mb-0.5 text-[11px]">
               <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>
             </div>
-            <div className="rounded-xl px-3 py-2 bg-blue-500 text-white whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full" style={{ fontSize: "var(--font-size-prose)" }}>
+            <div className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full" style={{ fontSize: "var(--font-size-prose)" }}>
               <InlineImages text={userMessage} />
               {stripImagePrompt(userMessage)}
             </div>
@@ -131,26 +132,43 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
             <span className="font-medium text-muted-foreground">{t("sessions.assistant")}</span>
           </div>
           {!hasContent && !isComplete ? (
-            <div className="rounded-xl px-3 py-2 bg-muted overflow-hidden">
+            <div className="rounded-xl px-3 py-2 bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)] overflow-hidden">
               <div className="flex items-center gap-2 text-muted-foreground text-sm">
                 <span className="inline-block w-1.5 h-4 bg-primary animate-pulse" />
                 <span>{t("sessions.thinkingDots")}</span>
               </div>
             </div>
           ) : (
-            <div className={assistantHasOnlyTools ? "space-y-1.5" : "space-y-1.5"}>
-              {displayText && (
-                <div className="rounded-xl px-3 py-2 bg-muted overflow-hidden min-w-0 max-w-full">
-                  <div className="markdown-prose overflow-hidden">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-                      {displayText}
-                    </ReactMarkdown>
-                    {!isComplete && <span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5" />}
-                  </div>
+            <div className="space-y-1.5">
+              {hasContent && (
+                <div className="rounded-xl bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)] px-3 py-2 overflow-hidden min-w-0 max-w-full space-y-2">
+                  {thinkingText && (
+                    <details className="rounded-lg border border-border/40 bg-[var(--message-thinking-bg)] px-2.5 py-1.5 text-xs text-muted-foreground">
+                      <summary className="cursor-pointer select-none hover:text-foreground">
+                        {t("sessions.showThinking")}
+                      </summary>
+                      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
+                        {thinkingText}
+                      </pre>
+                    </details>
+                  )}
+                  {displayText && (
+                    <div className="markdown-prose overflow-hidden">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                        {displayText}
+                      </ReactMarkdown>
+                      {!isComplete && <span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5" />}
+                    </div>
+                  )}
+                  {!displayText && !isComplete && (
+                    <span className="inline-block w-1.5 h-4 bg-primary animate-pulse" />
+                  )}
+                  {streamToolCalls.length > 0 && (
+                    <div className="rounded-lg">
+                      <ToolGroup calls={streamToolCalls} />
+                    </div>
+                  )}
                 </div>
-              )}
-              {streamToolCalls.length > 0 && (
-                <ToolGroup calls={streamToolCalls} />
               )}
             </div>
           )}

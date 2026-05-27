@@ -267,7 +267,6 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
             </div>
           )}
         </div>
-        <AgentSwitcher />
         <button
           onClick={handleToggle}
           className={cn(
@@ -279,6 +278,7 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
           {pinned ? <PinOff className="h-3.5 w-3.5 text-[var(--icon-pin)]" /> : <Pin className="h-3.5 w-3.5 text-[var(--icon-pin)]" />}
           <span>{pinned ? t("about.unpin") : t("about.pin")}</span>
         </button>
+        <AgentSwitcher />
       </div>
       <div className="min-w-8 flex-1 self-stretch" onDoubleClick={toggleMaximizeWindow} />
       <div className="ml-2 flex h-full items-stretch" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>

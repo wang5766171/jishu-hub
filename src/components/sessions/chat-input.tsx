@@ -361,7 +361,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   };
 
   return (
-    <div className="px-4 pb-4 pt-2">
+    <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4 pb-4 pt-2">
       <div
         className="relative flex flex-col rounded-2xl border border-input bg-card shadow-sm focus-within:ring-1 focus-within:ring-ring focus-within:border-ring transition-shadow"
         onDrop={handleDrop}

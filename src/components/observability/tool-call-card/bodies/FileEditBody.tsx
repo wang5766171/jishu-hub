@@ -7,15 +7,15 @@ export const FileReadBody = memo(function FileReadBody({ input, output }: { inpu
   const lineRange = offset && limit ? `:${offset}-${offset + limit}` : "";
 
   return (
-    <div className="text-[0.75em] space-y-1">
+    <div className="text-[0.75em] space-y-1.5">
       {path && (
         <div className="font-mono text-[var(--color-foreground)] opacity-80 truncate" title={path}>
           {path}{lineRange}
         </div>
       )}
       {output && (
-        <pre className="font-mono text-[0.73em] bg-[var(--color-muted)] rounded p-2 overflow-x-auto max-h-40 overflow-y-auto whitespace-pre">
-          {output.length > 2000 ? output.slice(0, 2000) + "\n… (truncated)" : output}
+        <pre className="font-mono text-[0.73em] bg-[var(--tool-card-code-bg)] border border-border/45 rounded-lg p-2 overflow-x-auto max-h-40 overflow-y-auto whitespace-pre">
+          {output.length > 2000 ? output.slice(0, 2000) + "\n... (truncated)" : output}
         </pre>
       )}
     </div>
