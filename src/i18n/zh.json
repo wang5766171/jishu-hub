@@ -113,6 +113,7 @@
     "localMode": "本地模式",
     "currentAgent": "当前助手",
     "projectPath": "项目路径",
+    "loadingProjectSessions": "正在加载项目会话...",
     "streamError": "流式响应异常终止，图片路径格式可能不受支持"
   },
   "config": {

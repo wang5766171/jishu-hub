@@ -113,6 +113,7 @@
     "localMode": "Local mode",
     "currentAgent": "Current agent",
     "projectPath": "Project path",
+    "loadingProjectSessions": "Loading project sessions...",
     "streamError": "Stream terminated unexpectedly, image path format may not be supported"
   },
   "config": {

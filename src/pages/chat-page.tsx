@@ -69,6 +69,7 @@ export function ChatPage({
   sessionNames,
   refetchNames,
   onSwitchProject,
+  onProjectSessionsLoadingChange,
 }: {
   currentProject: Project | null;
   currentProjectMeta?: ProjectMeta;
@@ -76,6 +77,7 @@ export function ChatPage({
   sessionNames: Record<string, string> | null;
   refetchNames: (silent?: boolean) => Promise<Record<string, string>>;
   onSwitchProject: () => void;
+  onProjectSessionsLoadingChange?: (loading: boolean) => void;
 }) {
   const { t } = useTranslation();
   const { activeId, active, capabilities } = useAgent();
@@ -125,11 +127,19 @@ export function ChatPage({
 
   // Single hook for current project's sessions
   const [listRefreshKey, setListRefreshKey] = useState(0);
-  const { data: sessions } = useInvoke<Session[]>(
+  const { data: sessions, loading: sessionsLoading } = useInvoke<Session[]>(
     projectId ? "list_sessions" : "",
     projectId ? { encodedName: projectId } : undefined,
     listRefreshKey,
   );
+
+  useEffect(() => {
+    onProjectSessionsLoadingChange?.(Boolean(projectId && sessionsLoading));
+  }, [projectId, sessionsLoading, onProjectSessionsLoadingChange]);
+
+  useEffect(() => {
+    return () => onProjectSessionsLoadingChange?.(false);
+  }, [onProjectSessionsLoadingChange]);
 
   const searchResults = useMemo<SessionSearchResult[]>(() => {
     if (!sessions || !deferredSearchQuery.trim()) return [];

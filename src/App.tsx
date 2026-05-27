@@ -60,13 +60,20 @@ function FontSizeRow({ label, value, onChange, t }: { label: string; value: Font
   );
 }
 
-function LoadingOverlay() {
+function LoadingOverlay({ label }: { label?: string }) {
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-      <div className="relative h-14 w-14">
-        <div className="absolute inset-0 rounded-full border-2 border-muted-foreground/20" />
-        <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-primary animate-spin" />
-        <img src={logo} alt="" className="absolute inset-2 h-10 w-10 rounded-lg" />
+      <div className="flex flex-col items-center gap-3">
+        <div className="relative h-14 w-14">
+          <div className="absolute inset-0 rounded-full border-2 border-muted-foreground/20" />
+          <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-primary animate-spin" />
+          <img src={logo} alt="" className="absolute inset-2 h-10 w-10 rounded-lg" />
+        </div>
+        {label && (
+          <div className="rounded-full border border-border/60 bg-card/90 px-3 py-1.5 text-xs font-medium text-muted-foreground shadow-sm">
+            {label}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -315,16 +322,18 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
 }
 
 function AppContent() {
-  useTranslation();
+  const { t } = useTranslation();
   const { activeId } = useAgent();
   const [currentPage, setCurrentPage] = useState<Page>("chat");
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
+  const [projectSessionsLoading, setProjectSessionsLoading] = useState(false);
   const { data: projects, loading: projectsLoading, refetch: refetchProjects } = useInvoke<Project[]>("scan_projects");
   const { data: sessionNames, loading: namesLoading, refetch: refetchNames } = useInvoke<Record<string, string>>("get_session_names");
   const { data: projectMetas, refetch: refetchProjectMetas } = useInvoke<Record<string, ProjectMeta>>("load_project_metas");
 
   // Only show loading overlay on initial load, not on refresh
   const loading = projectsLoading || namesLoading;
+  const blockingLoading = loading || projectSessionsLoading;
 
   // Restore last project on startup
   useEffect(() => {
@@ -351,6 +360,7 @@ function AppContent() {
   }, [refetchProjects, refetchNames, refetchProjectMetas]);
 
   const handleEnterProject = useCallback(async (project: Project) => {
+    setProjectSessionsLoading(true);
     refetchProjectMetas(true).catch(console.error);
     setCurrentProject(project);
     invokeCommand("save_last_project", { encodedName: project.encoded_name }).catch(console.error);
@@ -360,8 +370,13 @@ function AppContent() {
   const [manageNavKey, setManageNavKey] = useState(0);
 
   const handleSwitchProject = useCallback(() => {
+    setProjectSessionsLoading(false);
     setManageNavKey(k => k + 1);
     setCurrentPage("manage");
+  }, []);
+
+  const handleProjectSessionsLoadingChange = useCallback((nextLoading: boolean) => {
+    setProjectSessionsLoading((prev) => prev === nextLoading ? prev : nextLoading);
   }, []);
 
   useEffect(() => {
@@ -382,18 +397,18 @@ function AppContent() {
 
   return (
     <div className="flex flex-col h-screen bg-background relative">
-      <TitleBar currentPage={currentPage} onNavigate={setCurrentPage} disabled={loading} />
+      <TitleBar currentPage={currentPage} onNavigate={setCurrentPage} disabled={blockingLoading} />
       <div className="flex-1 overflow-hidden">
         <Suspense fallback={<LoadingOverlay />}>
           {currentPage === "chat"
-            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} />
+            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} />
             : <ManagePage onBack={() => setCurrentPage("chat")} onEnterProject={handleEnterProject} navigateToProjects={manageNavKey} />}
         </Suspense>
       </div>
       <div className="h-6 flex items-center px-4 text-[10px] text-muted-foreground/50 border-t border-border/30">
         <span>{projects?.length ?? 0} projects</span>
       </div>
-      {loading && <LoadingOverlay />}
+      {blockingLoading && <LoadingOverlay label={projectSessionsLoading ? t("sessions.loadingProjectSessions") : undefined} />}
     </div>
   );
 }
