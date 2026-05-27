@@ -13,8 +13,9 @@
     "windows": [
       {
         "title": "Jishu Hub",
-        "width": 1100,
-        "height": 700,
+        "width": 1920,
+        "height": 1220,
+        "center": true,
         "minWidth": 800,
         "minHeight": 500,
         "decorations": false,
