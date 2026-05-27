@@ -5,18 +5,17 @@ import { AddCommandDialog } from "@/components/commands/add-command-dialog";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Plus, Play, Pencil, Trash2, Terminal } from "lucide-react";
-import type { CustomCommand } from "@/types";
-
-const BUILT_IN_COMMANDS = [
-  { name: "claude --version", command: "claude --version" },
-  { name: "claude mcp list", command: "claude mcp list" },
-];
+import { useAgent } from "@/agents";
+import type { AgentCommandPreset, CustomCommand } from "@/types";
 
 const COOLDOWN_MS = 2000;
 
 export function CommandsPage() {
   const { t } = useTranslation();
+  const { activeId, active } = useAgent();
   const { data: commands, loading, refetch } = useInvoke<CustomCommand[]>("list_custom_commands");
+  const agentRefreshKey = activeId ? Array.from(activeId).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) : 0;
+  const { data: builtInCommands } = useInvoke<AgentCommandPreset[]>("agent_command_presets", undefined, agentRefreshKey);
   const [addOpen, setAddOpen] = useState(false);
   const [editCmd, setEditCmd] = useState<CustomCommand | null>(null);
   const [runningKey, setRunningKey] = useState<string | null>(null);
@@ -56,6 +55,8 @@ export function CommandsPage() {
     setEditCmd(null);
   };
 
+  const visibleCommands = (commands ?? []).filter((cmd) => !cmd.agentId || cmd.agentId === activeId);
+
   if (loading) {
     return <Skeleton className="h-64" />;
   }
@@ -64,17 +65,20 @@ export function CommandsPage() {
     <div className="space-y-6 p-6 h-full overflow-auto">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">{t("commands.title")}</h2>
-        <Button size="sm" onClick={handleAddNew}>
-          <Plus className="mr-2 h-4 w-4" />
-          {t("commands.addCommand")}
-        </Button>
+        <div className="flex items-center gap-2">
+          {active && <span className="rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">{active.display_name}</span>}
+          <Button size="sm" onClick={handleAddNew}>
+            <Plus className="mr-2 h-4 w-4" />
+            {t("commands.addCommand")}
+          </Button>
+        </div>
       </div>
 
       {/* Built-in commands */}
       <div className="space-y-3">
         <h3 className="sm font-medium text-muted-foreground">{t("commands.builtIn")}</h3>
         <div className="space-y-2">
-          {BUILT_IN_COMMANDS.map((cmd) => (
+          {(builtInCommands ?? []).map((cmd) => (
             <div key={cmd.name} className="flex items-center justify-between rounded-md border px-4 py-3">
               <div className="flex items-center gap-2">
                 <Terminal className="h-4 w-4 text-muted-foreground" />
@@ -97,14 +101,14 @@ export function CommandsPage() {
       {/* Custom commands */}
       <div className="space-y-3">
         <h3 className="text-sm font-medium text-muted-foreground">{t("commands.custom")}</h3>
-        {!commands || commands.length === 0 ? (
+        {visibleCommands.length === 0 ? (
           <div className="rounded-md border border-dashed p-8 text-center text-muted-foreground">
             <p>{t("commands.noCommands")}</p>
             <p className="text-sm">{t("commands.noCommandsDesc")}</p>
           </div>
         ) : (
           <div className="space-y-2">
-            {commands.map((cmd) => (
+            {visibleCommands.map((cmd) => (
               <div key={cmd.id} className="flex items-center justify-between rounded-md border px-4 py-3">
                 <div className="space-y-1 min-w-0">
                   <span className="text-sm font-medium">{cmd.name}</span>
@@ -140,6 +144,7 @@ export function CommandsPage() {
         open={addOpen}
         onOpenChange={(open) => { setAddOpen(open); if (!open) setEditCmd(null); }}
         editCommand={editCmd}
+        agentId={activeId}
         onSaved={handleSaved}
       />
     </div>

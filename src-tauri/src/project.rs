@@ -15,6 +15,8 @@ pub struct Project {
     pub last_active: Option<String>,
     pub has_claude_md: bool,
     #[serde(default)]
+    pub agent_ids: Vec<String>,
+    #[serde(default)]
     pub initialized: bool,
 }
 
@@ -117,6 +119,7 @@ fn build_project_from_path(path: &str) -> Option<Project> {
         session_count,
         last_active,
         has_claude_md: project_path.join(".claude").join("CLAUDE.md").exists(),
+        agent_ids: detect_project_agents(project_path, &claude_project_dir),
         initialized,
     })
 }
@@ -140,6 +143,7 @@ fn parse_project(projects_dir: &Path, encoded_name: &str) -> Option<Project> {
         .join(".claude")
         .join("CLAUDE.md")
         .exists();
+    let agent_ids = detect_project_agents(Path::new(&decoded_path), &project_dir);
     // A project is "initialized" if it has a record in ~/.claude/projects/
     let initialized = project_dir.is_dir();
 
@@ -150,8 +154,27 @@ fn parse_project(projects_dir: &Path, encoded_name: &str) -> Option<Project> {
         session_count,
         last_active,
         has_claude_md,
+        agent_ids,
         initialized,
     })
+}
+
+fn detect_project_agents(project_path: &Path, claude_project_dir: &Path) -> Vec<String> {
+    let mut agents = Vec::new();
+    if claude_project_dir.is_dir() || project_path.join(".claude").join("CLAUDE.md").exists() {
+        agents.push("claude-code".to_string());
+    }
+    if project_path.join("AGENTS.md").exists() || project_path.join(".codex").is_dir() {
+        agents.push("codex".to_string());
+    }
+    if project_path.join("opencode.json").exists()
+        || project_path.join("opencode.jsonc").exists()
+        || project_path.join("opencode.toml").exists()
+        || project_path.join(".opencode").is_dir()
+    {
+        agents.push("opencode".to_string());
+    }
+    agents
 }
 
 pub fn decode_project_path(encoded: &str) -> String {

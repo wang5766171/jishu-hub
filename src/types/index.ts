@@ -5,6 +5,7 @@ export interface Project {
   session_count: number;
   last_active: string | null;
   has_claude_md: boolean;
+  agent_ids?: string[];
   initialized: boolean;
 }
 
@@ -148,7 +149,13 @@ export interface CustomCommand {
   id: string;
   name: string;
   command: string;
+  agentId?: string | null;
   projectPath: string | null;
+}
+
+export interface AgentCommandPreset {
+  name: string;
+  command: string;
 }
 
 export interface ProjectPermissions {

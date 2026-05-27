@@ -11,10 +11,11 @@ interface AddCommandDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   editCommand?: CustomCommand | null;
+  agentId: string | null;
   onSaved: () => void;
 }
 
-export function AddCommandDialog({ open, onOpenChange, editCommand, onSaved }: AddCommandDialogProps) {
+export function AddCommandDialog({ open, onOpenChange, editCommand, agentId, onSaved }: AddCommandDialogProps) {
   const { t } = useTranslation();
   const [name, setName] = useState("");
   const [command, setCommand] = useState("");
@@ -37,6 +38,7 @@ export function AddCommandDialog({ open, onOpenChange, editCommand, onSaved }: A
         id: editCommand?.id ?? Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         name: name.trim(),
         command: command.trim(),
+        agentId,
         projectPath: projectPath.trim() || null,
       };
       await invokeCommand("save_custom_command", { cmd });

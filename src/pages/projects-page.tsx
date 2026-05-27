@@ -9,6 +9,7 @@ import { AddProjectDialog } from "@/components/projects/add-project-dialog";
 import { MergeDialog } from "@/components/projects/merge-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
+import { useAgent } from "@/agents";
 import type { Project, ProjectMeta, ProjectMergeInfo } from "@/types";
 
 interface ProjectsPageProps {
@@ -17,6 +18,7 @@ interface ProjectsPageProps {
 
 export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
   const { t } = useTranslation();
+  const { agents, activeId } = useAgent();
   const { data: projects, loading, refetch } = useInvoke<Project[]>("scan_projects");
   const { data: projectMetas, refetch: refetchMetas } = useInvoke<Record<string, ProjectMeta>>("load_project_metas");
   const { data: merges, refetch: refetchMerges } = useInvoke<ProjectMergeInfo>("get_project_merges");
@@ -30,6 +32,7 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
   const [mergeDialogOpen, setMergeDialogOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<string>("all");
   const [tagsExpanded, setTagsExpanded] = useState(false);
 
   const allTags = useMemo(() => {
@@ -82,6 +85,9 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
     let result = projects ?? [];
     if (selectedTag) {
       result = result.filter(p => projectMetas?.[p.encoded_name]?.tags?.includes(selectedTag));
+    }
+    if (selectedAgent !== "all") {
+      result = result.filter(p => (p.agent_ids ?? []).includes(selectedAgent));
     }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
@@ -138,6 +144,34 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
               className="h-8 pl-8 text-sm"
             />
           </div>
+          {agents.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <button
+                onClick={() => setSelectedAgent("all")}
+                className={`inline-flex items-center px-2 py-0.5 text-xs rounded-full transition-colors ${
+                  selectedAgent === "all"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-secondary text-secondary-foreground hover:bg-primary/20"
+                }`}
+              >
+                {t("projects.allAgents")}
+              </button>
+              {agents.map(agent => (
+                <button
+                  key={agent.id}
+                  onClick={() => setSelectedAgent(selectedAgent === agent.id ? "all" : agent.id)}
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full transition-colors ${
+                    selectedAgent === agent.id
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-secondary text-secondary-foreground hover:bg-primary/20"
+                  }`}
+                >
+                  {agent.id === activeId && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
+                  {agent.display_name}
+                </button>
+              ))}
+            </div>
+          )}
           {allTags.length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap">
               {allTags
@@ -207,6 +241,7 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
               onTagClick={(tag) => setSelectedTag(selectedTag === tag ? null : tag)}
               onRefresh={() => { refetch(); refetchMerges(); }}
               onEnterChat={() => onEnterProject?.(project)}
+              agentNames={Object.fromEntries(agents.map(agent => [agent.id, agent.display_name]))}
             />
           ))}
         </div>
@@ -222,6 +257,7 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
           onUpdateMetas={refetchMetas}
           merges={merges ?? undefined}
           onSplit={handleMergeComplete}
+          agentNames={Object.fromEntries(agents.map(agent => [agent.id, agent.display_name]))}
         />
       )}
 

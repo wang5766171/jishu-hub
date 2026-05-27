@@ -18,6 +18,7 @@ interface ProjectCardProps {
   onTagClick?: (tag: string) => void;
   onRefresh?: () => void;
   onEnterChat?: () => void;
+  agentNames?: Record<string, string>;
 }
 
 export function ProjectCard({
@@ -32,10 +33,12 @@ export function ProjectCard({
   onTagClick,
   onRefresh,
   onEnterChat,
+  agentNames = {},
 }: ProjectCardProps) {
   const { t } = useTranslation();
   const displayName = meta?.custom_name || project.name;
   const [menuOpen, setMenuOpen] = useState(false);
+  const [agentsExpanded, setAgentsExpanded] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const pendingInitRefresh = useRef(false);
 
@@ -66,7 +69,6 @@ export function ProjectCard({
   const handleInit = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      // Opens a visible terminal running `claude`
       await invokeCommand("init_project", { projectPath: project.path });
       // Wait for the user to return to the Jishu Hub window to refresh
       pendingInitRefresh.current = true;
@@ -81,6 +83,12 @@ export function ProjectCard({
       onEnterChat?.();
     }
   };
+
+  const projectAgents = (project.agent_ids ?? []).map((id) => ({
+    id,
+    label: agentNames[id] || id,
+  }));
+  const visibleAgents = agentsExpanded ? projectAgents : projectAgents.slice(0, 2);
 
   return (
     <Card
@@ -127,6 +135,32 @@ export function ProjectCard({
           <p className="mt-0.5 truncate text-xs text-muted-foreground">
             {project.name}
           </p>
+        )}
+        {projectAgents.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-1">
+            {visibleAgents.map((agent) => (
+              <span
+                key={agent.id}
+                className="inline-flex max-w-[8rem] items-center rounded-full border border-border/60 bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                title={agent.label}
+              >
+                <span className="truncate">{agent.label}</span>
+              </span>
+            ))}
+            {projectAgents.length > 2 && (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setAgentsExpanded((expanded) => !expanded);
+                }}
+                className="inline-flex items-center rounded-full border border-border/60 px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+                title={t("projects.viewAllAgents")}
+              >
+                {agentsExpanded ? t("projects.collapseAgents") : `+${projectAgents.length - 2}`}
+              </button>
+            )}
+          </div>
         )}
         <p className="mt-1 truncate text-xs text-muted-foreground" title={project.path}>
           {project.path}

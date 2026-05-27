@@ -27,7 +27,7 @@
     "noProjectsDesc": "添加一个包含 .claude 目录的项目以开始使用",
     "hasClaudeMd": "包含 CLAUDE.md",
     "sessionCount": "{{count}} 个会话",
-    "notInitialized": "未初始化，点击执行 claude init",
+    "notInitialized": "未初始化，点击执行当前智能体初始化",
     "path": "路径：",
     "sessions": "会话数",
     "lastActive": "最后活跃",
@@ -52,7 +52,11 @@
     "fileLabel": "文件{{index}}",
     "enterChat": "进入会话",
     "defaultImageMessage": "请查看这张图片",
-    "defaultFileMessage": "请查看这些文件"
+    "defaultFileMessage": "请查看这些文件",
+    "allAgents": "全部智能体",
+    "agents": "归属智能体",
+    "viewAllAgents": "查看全部智能体",
+    "collapseAgents": "收起"
   },
   "sessions": {
     "projects": "项目",

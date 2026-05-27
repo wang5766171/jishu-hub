@@ -20,9 +20,10 @@ interface ProjectDetailProps {
   onUpdateMetas?: () => void;
   merges?: ProjectMergeInfo;
   onSplit?: () => void;
+  agentNames?: Record<string, string>;
 }
 
-export function ProjectDetail({ project, onClose, onViewSessions, onRemoved, projectMetas, onUpdateMetas, merges, onSplit }: ProjectDetailProps) {
+export function ProjectDetail({ project, onClose, onViewSessions, onRemoved, projectMetas, onUpdateMetas, merges, onSplit, agentNames = {} }: ProjectDetailProps) {
   const collectAllTags = (metas?: Record<string, ProjectMeta>): string[] => {
     if (!metas) return [];
     const tagSet = new Set<string>();
@@ -103,6 +104,20 @@ export function ProjectDetail({ project, onClose, onViewSessions, onRemoved, pro
                   <span className={project.has_claude_md ? "text-green-500" : "text-muted-foreground"}>
                     {project.has_claude_md ? t("common.yes") : t("common.no")}
                   </span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">{t("projects.agents")}</span>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {(project.agent_ids ?? []).length > 0 ? (
+                      (project.agent_ids ?? []).map((id) => (
+                        <span key={id} className="rounded-full border border-border/60 bg-muted/60 px-2 py-0.5 text-xs">
+                          {agentNames[id] || id}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-xs text-muted-foreground">{t("common.na")}</span>
+                    )}
+                  </div>
                 </div>
               </CardContent>
             </Card>

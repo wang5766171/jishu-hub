@@ -27,7 +27,7 @@
     "noProjectsDesc": "Add a project with a .claude directory to get started",
     "hasClaudeMd": "Has CLAUDE.md",
     "sessionCount": "{{count}} sessions",
-    "notInitialized": "Not initialized, click to run claude init",
+    "notInitialized": "Not initialized, click to initialize with the current agent",
     "path": "Path:",
     "sessions": "Sessions",
     "lastActive": "Last Active",
@@ -52,7 +52,11 @@
     "fileLabel": "File {{index}}",
     "enterChat": "Enter Chat",
     "defaultImageMessage": "Please review this image",
-    "defaultFileMessage": "Please review these files"
+    "defaultFileMessage": "Please review these files",
+    "allAgents": "All agents",
+    "agents": "Agents",
+    "viewAllAgents": "View all agents",
+    "collapseAgents": "Collapse"
   },
   "sessions": {
     "projects": "Projects",
