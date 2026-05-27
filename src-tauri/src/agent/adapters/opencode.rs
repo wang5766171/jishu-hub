@@ -1,4 +1,5 @@
 use crate::agent::{
+    normalized::{NormalizedEvent, TurnEndReason},
     AgentCapabilities, AgentHealth, AgentInfo, AgentPlugin, ChatRequest,
 };
 
@@ -8,6 +9,67 @@ impl OpencodeAdapter {
     pub fn new() -> Self {
         Self
     }
+}
+
+pub fn normalize_stream_event(event: &serde_json::Value) -> Vec<NormalizedEvent> {
+    match event.get("type").and_then(|v| v.as_str()) {
+        Some("text_delta") | Some("message.delta") => {
+            let delta = event
+                .get("text")
+                .or_else(|| event.get("delta"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if delta.is_empty() {
+                raw(event)
+            } else {
+                vec![NormalizedEvent::TextDelta {
+                    delta: delta.to_string(),
+                }]
+            }
+        }
+        Some("message") | Some("message.completed") => normalize_opencode_message(event),
+        Some("session.idle") | Some("result") => normalize_opencode_complete(event),
+        _ => raw(event),
+    }
+}
+
+fn normalize_opencode_message(event: &serde_json::Value) -> Vec<NormalizedEvent> {
+    if let Some(text) = event
+        .get("text")
+        .or_else(|| event.get("content"))
+        .and_then(|v| v.as_str())
+    {
+        return vec![NormalizedEvent::TextDelta {
+            delta: text.to_string(),
+        }];
+    }
+    raw(event)
+}
+
+fn normalize_opencode_complete(event: &serde_json::Value) -> Vec<NormalizedEvent> {
+    let mut normalized = Vec::new();
+    if let Some(session_id) = event
+        .get("sessionID")
+        .or_else(|| event.get("session_id"))
+        .or_else(|| event.get("sessionId"))
+        .and_then(|v| v.as_str())
+    {
+        normalized.push(NormalizedEvent::SessionResolved {
+            session_id: session_id.to_string(),
+        });
+    }
+    normalized.push(NormalizedEvent::TurnComplete {
+        reason: TurnEndReason::Complete,
+        usage: None,
+    });
+    normalized
+}
+
+fn raw(event: &serde_json::Value) -> Vec<NormalizedEvent> {
+    vec![NormalizedEvent::Raw {
+        agent: "opencode".to_string(),
+        raw: event.clone(),
+    }]
 }
 
 impl AgentPlugin for OpencodeAdapter {
@@ -23,10 +85,19 @@ impl AgentPlugin for OpencodeAdapter {
 
     fn capabilities(&self) -> AgentCapabilities {
         use AgentCapabilities as C;
-        C::RESUME_BY_ID | C::SESSION_FORK | C::SESSION_LIST | C::SESSION_DELETE
-            | C::SESSION_EXPORT | C::SESSION_IMPORT | C::FILE_INPUT
-            | C::STREAM_TEXT_DELTA | C::STREAM_THINKING
-            | C::ABORT | C::CONFIG_GLOBAL | C::SUBAGENT_DISPATCH | C::SUBAGENT_RECEIVE
+        C::RESUME_BY_ID
+            | C::SESSION_FORK
+            | C::SESSION_LIST
+            | C::SESSION_DELETE
+            | C::SESSION_EXPORT
+            | C::SESSION_IMPORT
+            | C::FILE_INPUT
+            | C::STREAM_TEXT_DELTA
+            | C::STREAM_THINKING
+            | C::ABORT
+            | C::CONFIG_GLOBAL
+            | C::SUBAGENT_DISPATCH
+            | C::SUBAGENT_RECEIVE
             | C::RPC_BIDIRECTIONAL
     }
 
@@ -39,7 +110,11 @@ impl AgentPlugin for OpencodeAdapter {
         let runtime = tokio::runtime::Runtime::new();
         let result = if let Ok(rt) = runtime {
             rt.block_on(async {
-                let binary = super::super::discovery::probe_binary("opencode", &candidates.iter().map(|s| s.as_str()).collect::<Vec<_>>()).await;
+                let binary = super::super::discovery::probe_binary(
+                    "opencode",
+                    &candidates.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                )
+                .await;
                 match binary {
                     Some(path) => {
                         let version = super::super::discovery::version_of(&path).await;
@@ -167,9 +242,7 @@ impl AgentPlugin for OpencodeAdapter {
     }
 
     fn build_chat_command(&self, req: ChatRequest) -> tokio::process::Command {
-        let mut args: Vec<String> = vec![
-            req.message,
-        ];
+        let mut args: Vec<String> = vec![req.message];
 
         if let Some(ref sid) = req.session_id {
             args.push("--session".into());
@@ -245,4 +318,46 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::normalized::{NormalizedEvent, TurnEndReason};
+
+    #[test]
+    fn normalizes_opencode_text_delta() {
+        let event = serde_json::json!({
+            "type": "text_delta",
+            "text": "hello"
+        });
+
+        assert_eq!(
+            normalize_stream_event(&event),
+            vec![NormalizedEvent::TextDelta {
+                delta: "hello".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn normalizes_opencode_idle_as_complete() {
+        let event = serde_json::json!({
+            "type": "session.idle",
+            "sessionID": "open-session"
+        });
+
+        assert_eq!(
+            normalize_stream_event(&event),
+            vec![
+                NormalizedEvent::SessionResolved {
+                    session_id: "open-session".to_string()
+                },
+                NormalizedEvent::TurnComplete {
+                    reason: TurnEndReason::Complete,
+                    usage: None,
+                },
+            ]
+        );
+    }
 }

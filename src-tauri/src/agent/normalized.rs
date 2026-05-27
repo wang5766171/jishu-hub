@@ -1,31 +1,91 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NormalizedEvent {
-    TextDelta { delta: String },
-    Message { content: Vec<ContentBlock> },
-    ToolUseStart { call_id: String, tool: String, input: serde_json::Value },
-    ToolUseResult { call_id: String, output: serde_json::Value, is_error: bool },
-    Thinking { delta: String },
-    ApprovalRequest { request_id: String, approval_kind: ApprovalKind, payload: serde_json::Value },
-    SessionResolved { session_id: String },
-    TurnComplete { reason: TurnEndReason, usage: Option<UsageStats> },
-    Error { message: String, recoverable: bool },
-    Raw { agent: String, raw: serde_json::Value },
+    TextDelta {
+        delta: String,
+    },
+    Message {
+        content: Vec<ContentBlock>,
+    },
+    ToolUseStart {
+        call_id: String,
+        tool: String,
+        input: serde_json::Value,
+    },
+    ToolUseResult {
+        call_id: String,
+        output: serde_json::Value,
+        is_error: bool,
+    },
+    Thinking {
+        delta: String,
+    },
+    ApprovalRequest {
+        request_id: String,
+        approval_kind: ApprovalKind,
+        payload: serde_json::Value,
+    },
+    SessionResolved {
+        session_id: String,
+    },
+    TurnComplete {
+        reason: TurnEndReason,
+        usage: Option<UsageStats>,
+    },
+    Error {
+        message: String,
+        recoverable: bool,
+    },
+    Raw {
+        agent: String,
+        raw: serde_json::Value,
+    },
 }
 
-#[derive(Debug, Clone, Serialize)]
+impl NormalizedEvent {
+    pub fn event_type(&self) -> &'static str {
+        match self {
+            NormalizedEvent::TextDelta { .. } => "text_delta",
+            NormalizedEvent::Message { .. } => "message",
+            NormalizedEvent::ToolUseStart { .. } => "tool_use_start",
+            NormalizedEvent::ToolUseResult { .. } => "tool_use_result",
+            NormalizedEvent::Thinking { .. } => "thinking",
+            NormalizedEvent::ApprovalRequest { .. } => "approval_request",
+            NormalizedEvent::SessionResolved { .. } => "session_resolved",
+            NormalizedEvent::TurnComplete { .. } => "turn_complete",
+            NormalizedEvent::Error { .. } => "error",
+            NormalizedEvent::Raw { .. } => "raw",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ContentBlock {
-    Text { text: String },
-    ToolUse { id: String, name: String, input: serde_json::Value },
-    ToolResult { tool_use_id: String, content: serde_json::Value, is_error: bool },
-    Thinking { thinking: String },
-    Image { source: ImageSource },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: serde_json::Value,
+        is_error: bool,
+    },
+    Thinking {
+        thinking: String,
+    },
+    Image {
+        source: ImageSource,
+    },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TurnEndReason {
     Complete,
     Aborted,
@@ -33,14 +93,14 @@ pub enum TurnEndReason {
     MaxTokens,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ApprovalKind {
     Command,
     FileWrite,
     Other,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UsageStats {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
@@ -48,7 +108,7 @@ pub struct UsageStats {
     pub context_remaining: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ImageSource {
     pub url: Option<String>,
     pub path: Option<String>,
@@ -75,8 +135,17 @@ pub struct ChatRequest {
 
 #[derive(Debug, Clone)]
 pub enum Attachment {
-    LocalPath { path: String, label: String, is_image: bool },
-    Inline { data_base64: String, filename: String, label: String, mime: String },
+    LocalPath {
+        path: String,
+        label: String,
+        is_image: bool,
+    },
+    Inline {
+        data_base64: String,
+        filename: String,
+        label: String,
+        mime: String,
+    },
 }
 
 pub struct ChatHandle {

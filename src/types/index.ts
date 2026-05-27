@@ -187,12 +187,24 @@ export interface ChatSession {
 export interface StreamChunk {
   session_id: string;
   event_type: string;
-  data: Record<string, unknown>;
+  data: NormalizedEvent;
 }
 
 export interface AgentStreamChunk extends StreamChunk {
   agent_id: string;
 }
+
+export type NormalizedEvent =
+  | { kind: "text_delta"; delta: string }
+  | { kind: "message"; content: ContentBlock[] }
+  | { kind: "tool_use_start"; call_id: string; tool: string; input: unknown }
+  | { kind: "tool_use_result"; call_id: string; output: unknown; is_error: boolean }
+  | { kind: "thinking"; delta: string }
+  | { kind: "approval_request"; request_id: string; approval_kind: string; payload: unknown }
+  | { kind: "session_resolved"; session_id: string }
+  | { kind: "turn_complete"; reason: string; usage: unknown | null }
+  | { kind: "error"; message: string; recoverable: boolean }
+  | { kind: "raw"; agent: string; raw: unknown };
 
 export interface InputFile {
   data: string;

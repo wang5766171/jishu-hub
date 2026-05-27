@@ -1,5 +1,6 @@
 mod agent;
 mod chat;
+mod cli_runtime;
 mod command;
 mod config;
 mod history;

@@ -1,3 +1,4 @@
+use super::normalized::{NormalizedEvent, TurnEndReason};
 use super::{AgentCapabilities, AgentHealth, AgentInfo, AgentPlugin, ChatRequest};
 
 pub struct ClaudeCodeAgent;
@@ -6,6 +7,141 @@ impl ClaudeCodeAgent {
     pub fn new() -> Self {
         Self
     }
+}
+
+pub fn normalize_stream_event(event: &serde_json::Value) -> Vec<NormalizedEvent> {
+    match event.get("type").and_then(|v| v.as_str()) {
+        Some("stream_event") => normalize_claude_stream_event(event),
+        Some("assistant") => normalize_claude_assistant(event),
+        Some("result") => normalize_claude_result(event),
+        Some("system") => normalize_claude_system(event),
+        _ => vec![NormalizedEvent::Raw {
+            agent: "claude-code".to_string(),
+            raw: event.clone(),
+        }],
+    }
+}
+
+fn normalize_claude_stream_event(event: &serde_json::Value) -> Vec<NormalizedEvent> {
+    let inner = event.get("event").unwrap_or(event);
+    let delta = inner.get("delta");
+
+    if let Some(text) = delta.and_then(|d| d.get("text")).and_then(|v| v.as_str()) {
+        return vec![NormalizedEvent::TextDelta {
+            delta: text.to_string(),
+        }];
+    }
+
+    if let Some(thinking) = delta
+        .and_then(|d| d.get("thinking"))
+        .and_then(|v| v.as_str())
+    {
+        return vec![NormalizedEvent::Thinking {
+            delta: thinking.to_string(),
+        }];
+    }
+
+    vec![NormalizedEvent::Raw {
+        agent: "claude-code".to_string(),
+        raw: event.clone(),
+    }]
+}
+
+fn normalize_claude_assistant(event: &serde_json::Value) -> Vec<NormalizedEvent> {
+    let content = event
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .or_else(|| event.get("content"))
+        .and_then(|v| v.as_array());
+
+    let Some(content) = content else {
+        return vec![NormalizedEvent::Raw {
+            agent: "claude-code".to_string(),
+            raw: event.clone(),
+        }];
+    };
+
+    let mut normalized = Vec::new();
+    for block in content {
+        match block.get("type").and_then(|v| v.as_str()) {
+            Some("text") => {
+                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                    normalized.push(NormalizedEvent::TextDelta {
+                        delta: text.to_string(),
+                    });
+                }
+            }
+            Some("tool_use") => {
+                let call_id = block
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let tool = block
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("tool")
+                    .to_string();
+                let input = block
+                    .get("input")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                normalized.push(NormalizedEvent::ToolUseStart {
+                    call_id,
+                    tool,
+                    input,
+                });
+            }
+            Some("thinking") => {
+                if let Some(thinking) = block.get("thinking").and_then(|v| v.as_str()) {
+                    normalized.push(NormalizedEvent::Thinking {
+                        delta: thinking.to_string(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if normalized.is_empty() {
+        vec![NormalizedEvent::Raw {
+            agent: "claude-code".to_string(),
+            raw: event.clone(),
+        }]
+    } else {
+        normalized
+    }
+}
+
+fn normalize_claude_result(event: &serde_json::Value) -> Vec<NormalizedEvent> {
+    let mut normalized = Vec::new();
+    if let Some(session_id) = event.get("session_id").and_then(|v| v.as_str()) {
+        normalized.push(NormalizedEvent::SessionResolved {
+            session_id: session_id.to_string(),
+        });
+    }
+
+    let reason = match event.get("subtype").and_then(|v| v.as_str()) {
+        Some("error") => TurnEndReason::Error,
+        _ => TurnEndReason::Complete,
+    };
+    normalized.push(NormalizedEvent::TurnComplete {
+        reason,
+        usage: None,
+    });
+    normalized
+}
+
+fn normalize_claude_system(event: &serde_json::Value) -> Vec<NormalizedEvent> {
+    if let Some(session_id) = event.get("session_id").and_then(|v| v.as_str()) {
+        return vec![NormalizedEvent::SessionResolved {
+            session_id: session_id.to_string(),
+        }];
+    }
+    vec![NormalizedEvent::Raw {
+        agent: "claude-code".to_string(),
+        raw: event.clone(),
+    }]
 }
 
 impl AgentPlugin for ClaudeCodeAgent {
@@ -21,9 +157,19 @@ impl AgentPlugin for ClaudeCodeAgent {
 
     fn capabilities(&self) -> AgentCapabilities {
         use AgentCapabilities as C;
-        C::RESUME_BY_ID | C::SESSION_LIST | C::IMAGE_INPUT | C::FILE_INPUT
-            | C::STREAM_TEXT_DELTA | C::STREAM_TOOL_CALLS | C::STREAM_THINKING | C::PARTIAL_MESSAGE
-            | C::ABORT | C::CONFIG_GLOBAL | C::CONFIG_PROJECT | C::CONFIG_BACKUP | C::CONFIG_TEMPLATES
+        C::RESUME_BY_ID
+            | C::SESSION_LIST
+            | C::IMAGE_INPUT
+            | C::FILE_INPUT
+            | C::STREAM_TEXT_DELTA
+            | C::STREAM_TOOL_CALLS
+            | C::STREAM_THINKING
+            | C::PARTIAL_MESSAGE
+            | C::ABORT
+            | C::CONFIG_GLOBAL
+            | C::CONFIG_PROJECT
+            | C::CONFIG_BACKUP
+            | C::CONFIG_TEMPLATES
     }
 
     fn install_hint(&self) -> Option<String> {
@@ -36,7 +182,11 @@ impl AgentPlugin for ClaudeCodeAgent {
         let runtime = tokio::runtime::Runtime::new();
         let result = if let Ok(rt) = runtime {
             rt.block_on(async {
-                let binary = super::discovery::probe_binary("claude", &candidates.iter().map(|s| s.as_str()).collect::<Vec<_>>()).await;
+                let binary = super::discovery::probe_binary(
+                    "claude",
+                    &candidates.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                )
+                .await;
                 match binary {
                     Some(path) => {
                         let version = super::discovery::version_of(&path).await;
@@ -281,4 +431,74 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::normalized::{NormalizedEvent, TurnEndReason};
+
+    #[test]
+    fn normalizes_claude_text_delta() {
+        let event = serde_json::json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": { "type": "text_delta", "text": "hello" }
+            }
+        });
+
+        assert_eq!(
+            normalize_stream_event(&event),
+            vec![NormalizedEvent::TextDelta {
+                delta: "hello".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn normalizes_claude_tool_use_message() {
+        let event = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "Read",
+                    "input": { "file_path": "README.md" }
+                }]
+            }
+        });
+
+        assert_eq!(
+            normalize_stream_event(&event),
+            vec![NormalizedEvent::ToolUseStart {
+                call_id: "toolu_1".to_string(),
+                tool: "Read".to_string(),
+                input: serde_json::json!({ "file_path": "README.md" }),
+            }]
+        );
+    }
+
+    #[test]
+    fn normalizes_claude_result() {
+        let event = serde_json::json!({
+            "type": "result",
+            "session_id": "abc123",
+            "subtype": "success"
+        });
+
+        assert_eq!(
+            normalize_stream_event(&event),
+            vec![
+                NormalizedEvent::SessionResolved {
+                    session_id: "abc123".to_string()
+                },
+                NormalizedEvent::TurnComplete {
+                    reason: TurnEndReason::Complete,
+                    usage: None,
+                },
+            ]
+        );
+    }
 }

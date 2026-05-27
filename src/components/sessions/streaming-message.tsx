@@ -57,19 +57,20 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
     if (newChunks.length === 0) return;
 
     for (const chunk of newChunks) {
-      if (chunk.event_type === "delta") {
-        const delta = (chunk.data as Record<string, unknown>)?.event as Record<string, unknown> | undefined;
-        const deltaObj = delta?.delta as Record<string, unknown> | undefined;
-        if (deltaObj?.type === "text_delta" && typeof deltaObj.text === "string") {
-          textRef.current += deltaObj.text;
-        }
-      } else if (chunk.event_type === "message") {
-        const content = (chunk.data as Record<string, unknown>)?.content as Array<Record<string, unknown>> | undefined;
-        if (content) {
-          for (const block of content) {
-            if (block.type === "tool_use") {
-              toolsRef.current.push({ name: block.name as string, input: block.input });
-            }
+      if (chunk.data.kind === "text_delta") {
+        textRef.current += chunk.data.delta;
+      } else if (chunk.data.kind === "thinking") {
+        textRef.current += chunk.data.delta;
+      } else if (chunk.data.kind === "tool_use_start") {
+        toolsRef.current.push({ name: chunk.data.tool, input: chunk.data.input });
+      } else if (chunk.data.kind === "message") {
+        for (const block of chunk.data.content) {
+          if (block.type === "tool_use") {
+            toolsRef.current.push({ name: block.name, input: block.input });
+          } else if (block.type === "text") {
+            textRef.current += block.text;
+          } else if (block.type === "thinking") {
+            textRef.current += block.thinking;
           }
         }
       }
@@ -158,4 +159,3 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
     </div>
   );
 });
-

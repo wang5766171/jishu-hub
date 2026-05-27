@@ -49,6 +49,12 @@ function formatRelativeTime(date: Date | string): string {
 function extractRealSessionId(data: unknown): string | null {
   const obj = data as Record<string, unknown> | null;
   if (!obj) return null;
+  if (obj.kind === "session_resolved") {
+    const normalizedSid = obj.session_id;
+    if (typeof normalizedSid === "string" && normalizedSid.length >= 8) {
+      return normalizedSid;
+    }
+  }
   const sid = obj.session_id;
   if (typeof sid === "string" && !sid.startsWith("pending-") && !sid.startsWith("new_session_") && sid.length >= 8) {
     return sid;
@@ -368,31 +374,28 @@ export function ChatPage({
           visitedSessions.current.add(realId);
         }
 
-        if (chunk.event_type === "result") {
+        if (chunk.data.kind === "turn_complete") {
           // Reconstruct text and tool_use from all accumulated chunks
           let text = "";
           const tools: Array<{ type: "tool_use"; id: string; name: string; input: unknown }> = [];
           for (const c of streamChunksRef.current) {
-            if (c.event_type === "delta") {
-              const delta = (c.data as Record<string, unknown>)?.event as Record<string, unknown> | undefined;
-              const deltaObj = delta?.delta as Record<string, unknown> | undefined;
-              if (deltaObj?.type === "text_delta" && typeof deltaObj.text === "string") {
-                text += deltaObj.text;
-              }
-            } else if (c.event_type === "message") {
-              const content = (c.data as Record<string, unknown>)?.content as Array<Record<string, unknown>> | undefined;
-              if (content) {
-                for (const block of content) {
-                  if (block.type === "tool_use") tools.push({ type: "tool_use", id: block.id as string ?? "", name: block.name as string, input: block.input });
+            if (c.data.kind === "text_delta") {
+              text += c.data.delta;
+            } else if (c.data.kind === "thinking") {
+              text += c.data.delta;
+            } else if (c.data.kind === "tool_use_start") {
+              tools.push({ type: "tool_use", id: c.data.call_id, name: c.data.tool, input: c.data.input });
+            } else if (c.data.kind === "message") {
+              for (const block of c.data.content) {
+                if (block.type === "tool_use") {
+                  tools.push({ type: "tool_use", id: block.id, name: block.name, input: block.input });
+                } else if (block.type === "text") {
+                  text += block.text;
+                } else if (block.type === "thinking") {
+                  text += block.thinking;
                 }
               }
             }
-          }
-
-          // Fallback: extract text from result event if deltas were missed
-          if (!text) {
-            const resultText = (chunk.data as Record<string, unknown>)?.result;
-            if (typeof resultText === "string") text = resultText;
           }
 
           // Build final messages

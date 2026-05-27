@@ -1,4 +1,5 @@
 use crate::agent::{
+    normalized::{NormalizedEvent, TurnEndReason},
     AgentCapabilities, AgentHealth, AgentInfo, AgentPlugin, ChatRequest,
 };
 
@@ -8,6 +9,80 @@ impl CodexAdapter {
     pub fn new() -> Self {
         Self
     }
+}
+
+pub fn normalize_stream_event(event: &serde_json::Value) -> Vec<NormalizedEvent> {
+    match event.get("type").and_then(|v| v.as_str()) {
+        Some("message_delta") | Some("exec_command_output_delta") => {
+            let delta = event
+                .get("delta")
+                .or_else(|| event.get("text"))
+                .or_else(|| event.get("output"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if delta.is_empty() {
+                raw(event)
+            } else {
+                vec![NormalizedEvent::TextDelta {
+                    delta: delta.to_string(),
+                }]
+            }
+        }
+        Some("message") => normalize_codex_message(event),
+        Some("result") | Some("turn_complete") => normalize_codex_complete(event),
+        _ => raw(event),
+    }
+}
+
+fn normalize_codex_message(event: &serde_json::Value) -> Vec<NormalizedEvent> {
+    if let Some(text) = event
+        .get("message")
+        .or_else(|| event.get("content"))
+        .and_then(|v| v.as_str())
+    {
+        return vec![NormalizedEvent::TextDelta {
+            delta: text.to_string(),
+        }];
+    }
+
+    raw(event)
+}
+
+fn normalize_codex_complete(event: &serde_json::Value) -> Vec<NormalizedEvent> {
+    let mut normalized = Vec::new();
+    if let Some(session_id) = event
+        .get("session_id")
+        .or_else(|| event.get("sessionId"))
+        .and_then(|v| v.as_str())
+    {
+        normalized.push(NormalizedEvent::SessionResolved {
+            session_id: session_id.to_string(),
+        });
+    }
+
+    if let Some(error) = event.get("error").and_then(|v| v.as_str()) {
+        normalized.push(NormalizedEvent::Error {
+            message: error.to_string(),
+            recoverable: false,
+        });
+        normalized.push(NormalizedEvent::TurnComplete {
+            reason: TurnEndReason::Error,
+            usage: None,
+        });
+    } else {
+        normalized.push(NormalizedEvent::TurnComplete {
+            reason: TurnEndReason::Complete,
+            usage: None,
+        });
+    }
+    normalized
+}
+
+fn raw(event: &serde_json::Value) -> Vec<NormalizedEvent> {
+    vec![NormalizedEvent::Raw {
+        agent: "codex".to_string(),
+        raw: event.clone(),
+    }]
 }
 
 impl AgentPlugin for CodexAdapter {
@@ -23,9 +98,17 @@ impl AgentPlugin for CodexAdapter {
 
     fn capabilities(&self) -> AgentCapabilities {
         use AgentCapabilities as C;
-        C::RESUME_LATEST | C::RESUME_PICKER | C::SESSION_FORK | C::SESSION_LIST
-            | C::IMAGE_INPUT | C::STREAM_TEXT_DELTA | C::STREAM_TOOL_CALLS
-            | C::ABORT | C::APPROVAL_REQUEST | C::CONFIG_GLOBAL | C::RPC_BIDIRECTIONAL
+        C::RESUME_LATEST
+            | C::RESUME_PICKER
+            | C::SESSION_FORK
+            | C::SESSION_LIST
+            | C::IMAGE_INPUT
+            | C::STREAM_TEXT_DELTA
+            | C::STREAM_TOOL_CALLS
+            | C::ABORT
+            | C::APPROVAL_REQUEST
+            | C::CONFIG_GLOBAL
+            | C::RPC_BIDIRECTIONAL
     }
 
     fn install_hint(&self) -> Option<String> {
@@ -37,7 +120,11 @@ impl AgentPlugin for CodexAdapter {
         let runtime = tokio::runtime::Runtime::new();
         let result = if let Ok(rt) = runtime {
             rt.block_on(async {
-                let binary = super::super::discovery::probe_binary("codex", &candidates.iter().map(|s| s.as_str()).collect::<Vec<_>>()).await;
+                let binary = super::super::discovery::probe_binary(
+                    "codex",
+                    &candidates.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                )
+                .await;
                 match binary {
                     Some(path) => {
                         let version = super::super::discovery::version_of(&path).await;
@@ -167,11 +254,7 @@ impl AgentPlugin for CodexAdapter {
     }
 
     fn build_chat_command(&self, req: ChatRequest) -> tokio::process::Command {
-        let mut args: Vec<String> = vec![
-            "exec".into(),
-            "--json".into(),
-            req.message,
-        ];
+        let mut args: Vec<String> = vec!["exec".into(), "--json".into(), req.message];
 
         if let Some(ref sid) = req.session_id {
             args.push("--resume".into());
@@ -247,4 +330,46 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::normalized::{NormalizedEvent, TurnEndReason};
+
+    #[test]
+    fn normalizes_codex_message_delta() {
+        let event = serde_json::json!({
+            "type": "message_delta",
+            "delta": "hello"
+        });
+
+        assert_eq!(
+            normalize_stream_event(&event),
+            vec![NormalizedEvent::TextDelta {
+                delta: "hello".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn normalizes_codex_turn_complete_with_session() {
+        let event = serde_json::json!({
+            "type": "turn_complete",
+            "session_id": "codex-session"
+        });
+
+        assert_eq!(
+            normalize_stream_event(&event),
+            vec![
+                NormalizedEvent::SessionResolved {
+                    session_id: "codex-session".to_string()
+                },
+                NormalizedEvent::TurnComplete {
+                    reason: TurnEndReason::Complete,
+                    usage: None,
+                },
+            ]
+        );
+    }
 }

@@ -2,15 +2,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+pub mod adapters;
 pub mod capability;
-pub mod claude_code;
 pub mod classify;
+pub mod claude_code;
 pub mod discovery;
 pub mod normalized;
-pub mod adapters;
 
-pub use claude_code::ClaudeCodeAgent;
 pub use capability::{AgentCapabilities, AgentHealth};
+pub use claude_code::ClaudeCodeAgent;
+pub use normalized::NormalizedEvent;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
@@ -78,25 +79,31 @@ impl AgentRegistry {
     /// List all agents with health and capability status (platform API)
     pub fn list_agent_statuses(&self) -> Vec<AgentStatus> {
         let health_cache = self.health_cache.lock().unwrap_or_else(|e| e.into_inner());
-        self.agents.values().map(|a| {
-            let info = a.info();
-            let caps = a.capabilities();
-            let health = health_cache.get(&info.id).cloned().unwrap_or_else(|| AgentHealth {
-                installed: false,
-                version: None,
-                error: Some("Not probed yet".to_string()),
-                binary_path: None,
-                last_checked_at: 0,
-            });
-            AgentStatus {
-                id: info.id.clone(),
-                display_name: info.display_name.clone(),
-                icon: info.icon.clone(),
-                capabilities: caps.bits().to_string(),
-                health,
-                install_hint: a.install_hint(),
-            }
-        }).collect()
+        self.agents
+            .values()
+            .map(|a| {
+                let info = a.info();
+                let caps = a.capabilities();
+                let health = health_cache
+                    .get(&info.id)
+                    .cloned()
+                    .unwrap_or_else(|| AgentHealth {
+                        installed: false,
+                        version: None,
+                        error: Some("Not probed yet".to_string()),
+                        binary_path: None,
+                        last_checked_at: 0,
+                    });
+                AgentStatus {
+                    id: info.id.clone(),
+                    display_name: info.display_name.clone(),
+                    icon: info.icon.clone(),
+                    capabilities: caps.bits().to_string(),
+                    health,
+                    install_hint: a.install_hint(),
+                }
+            })
+            .collect()
     }
 
     pub fn set_active(&mut self, id: &str) -> Result<(), String> {
@@ -154,7 +161,9 @@ pub trait AgentPlugin {
     fn capabilities(&self) -> AgentCapabilities {
         AgentCapabilities::empty()
     }
-    fn install_hint(&self) -> Option<String> { None }
+    fn install_hint(&self) -> Option<String> {
+        None
+    }
 
     /// Probe agent health (binary detection, version check)
     fn probe_sync(&self) -> AgentHealth {
@@ -168,7 +177,9 @@ pub trait AgentPlugin {
     }
 
     /// Async probe (default delegates to sync)
-    fn probe(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = AgentHealth> + Send + '_>> {
+    fn probe(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = AgentHealth> + Send + '_>> {
         let health = self.probe_sync();
         Box::pin(async move { health })
     }
@@ -242,6 +253,18 @@ pub trait AgentPlugin {
     fn init_project(&self, project_path: &str) -> Result<bool, String>;
 }
 
+pub fn normalize_stream_event(agent_id: &str, event: &serde_json::Value) -> Vec<NormalizedEvent> {
+    match agent_id {
+        "claude-code" => claude_code::normalize_stream_event(event),
+        "codex" => adapters::codex::normalize_stream_event(event),
+        "opencode" => adapters::opencode::normalize_stream_event(event),
+        _ => vec![NormalizedEvent::Raw {
+            agent: agent_id.to_string(),
+            raw: event.clone(),
+        }],
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub project_path: String,
@@ -259,7 +282,8 @@ mod tests {
             id: "codex".to_string(),
             display_name: "Codex".to_string(),
             icon: "bot".to_string(),
-            capabilities: (AgentCapabilities::RPC_BIDIRECTIONAL | AgentCapabilities::APPROVAL_REQUEST)
+            capabilities: (AgentCapabilities::RPC_BIDIRECTIONAL
+                | AgentCapabilities::APPROVAL_REQUEST)
                 .bits()
                 .to_string(),
             health: AgentHealth {
