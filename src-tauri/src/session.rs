@@ -122,6 +122,10 @@ pub fn parse_message(line: &str) -> Option<Message> {
     }
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
 
+    if v.get("isMeta").and_then(|m| m.as_bool()).unwrap_or(false) {
+        return None;
+    }
+
     let role = v.get("type")?.as_str()?.to_string();
 
     if !CONVERSATION_TYPES.contains(&role.as_str()) {
@@ -320,5 +324,11 @@ mod tests {
             }
             other => panic!("Expected ToolResult, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_parse_message_ignores_meta_skill_context() {
+        let line = r#"{"type":"user","isMeta":true,"sourceToolUseID":"call_skill","message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: C:\\Users\\me\\.claude\\skills\\graphify\n\n# /graphify"}]}}"#;
+        assert!(parse_message(line).is_none());
     }
 }
