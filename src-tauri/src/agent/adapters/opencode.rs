@@ -1,3 +1,7 @@
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
+use std::path::PathBuf;
+
 use crate::agent::{
     normalized::{NormalizedEvent, TurnEndReason},
     AgentCapabilities, AgentHealth, AgentInfo, AgentPlugin, ChatRequest,
@@ -206,6 +210,154 @@ fn raw(event: &serde_json::Value) -> Vec<NormalizedEvent> {
     }]
 }
 
+#[derive(Debug, Deserialize)]
+struct OpencodeSessionListEntry {
+    id: String,
+    title: Option<String>,
+    updated: Option<i64>,
+    created: Option<i64>,
+    directory: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeExport {
+    messages: Vec<OpencodeExportMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeExportMessage {
+    info: OpencodeExportMessageInfo,
+    #[serde(default)]
+    parts: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeExportMessageInfo {
+    role: String,
+    time: Option<OpencodeExportTime>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeExportTime {
+    created: Option<i64>,
+}
+
+fn parse_session_list(
+    raw: &str,
+    project_path: &str,
+) -> Result<Vec<crate::session::Session>, String> {
+    let json = extract_json(raw).ok_or_else(|| "No JSON session list found".to_string())?;
+    let entries: Vec<OpencodeSessionListEntry> =
+        serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let mut sessions = entries
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .directory
+                .as_deref()
+                .map(|dir| same_path(dir, project_path))
+                .unwrap_or(false)
+        })
+        .map(|entry| {
+            let started_at = entry.created.and_then(datetime_from_millis);
+            let last_active = entry.updated.and_then(datetime_from_millis);
+            crate::session::Session {
+                id: entry.id.clone(),
+                path: PathBuf::from(project_path).join(format!("{}.opencode.json", entry.id)),
+                messages: Vec::new(),
+                started_at,
+                display_name: entry.title.filter(|title| !title.trim().is_empty()),
+                last_active,
+                project_path: Some(project_path.to_string()),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+    Ok(sessions)
+}
+
+fn parse_export_messages(raw: &str) -> Result<Vec<crate::session::Message>, String> {
+    let json = extract_json(raw).ok_or_else(|| "No JSON export found".to_string())?;
+    let exported: OpencodeExport = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let mut messages = Vec::new();
+
+    for message in exported.messages {
+        if message.info.role != "user" && message.info.role != "assistant" {
+            continue;
+        }
+
+        let mut content = Vec::new();
+        for part in message.parts {
+            let part_type = part
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            match part_type {
+                "text" => {
+                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                        if !text.trim().is_empty() {
+                            content.push(crate::session::ContentBlock::Text {
+                                text: text.to_string(),
+                            });
+                        }
+                    }
+                }
+                "thinking" | "reasoning" => {
+                    if let Some(text) = part
+                        .get("thinking")
+                        .or_else(|| part.get("text"))
+                        .and_then(|v| v.as_str())
+                    {
+                        if !text.trim().is_empty() {
+                            content.push(crate::session::ContentBlock::Thinking {
+                                thinking: text.to_string(),
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if content.is_empty() {
+            continue;
+        }
+
+        messages.push(crate::session::Message {
+            role: message.info.role,
+            content,
+            timestamp: message.info.time.and_then(|time| time.created),
+        });
+    }
+
+    Ok(messages)
+}
+
+fn extract_json(raw: &str) -> Option<&str> {
+    let start = raw.find(|ch| ch == '{' || ch == '[')?;
+    let end = raw.rfind(|ch| ch == '}' || ch == ']')?;
+    if end > start {
+        Some(raw[start..=end].trim())
+    } else {
+        None
+    }
+}
+
+fn same_path(left: &str, right: &str) -> bool {
+    let normalize = |value: &str| {
+        value
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
+    };
+    normalize(left) == normalize(right)
+}
+
+fn datetime_from_millis(value: i64) -> Option<DateTime<Utc>> {
+    DateTime::from_timestamp_millis(value)
+}
+
 impl AgentPlugin for OpencodeAdapter {
     fn info(&self) -> AgentInfo {
         AgentInfo {
@@ -301,16 +453,38 @@ impl AgentPlugin for OpencodeAdapter {
         crate::project::get_level1_dir(path)
     }
 
-    fn list_sessions(&self, _encoded_name: &str) -> Result<Vec<crate::session::Session>, String> {
-        Ok(vec![])
+    fn list_sessions(&self, encoded_name: &str) -> Result<Vec<crate::session::Session>, String> {
+        let project_path = crate::project::decode_project_path(encoded_name);
+        let output = std::process::Command::new("opencode")
+            .args(["session", "list", "--format", "json", "--max-count", "500"])
+            .current_dir(&project_path)
+            .output()
+            .map_err(|e| format!("Failed to list opencode sessions: {e}"))?;
+
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+
+        parse_session_list(&String::from_utf8_lossy(&output.stdout), &project_path)
     }
 
     fn get_session_messages(
         &self,
-        _session_id: &str,
-        _encoded_name: &str,
+        session_id: &str,
+        encoded_name: &str,
     ) -> Result<Vec<crate::session::Message>, String> {
-        Ok(vec![])
+        let project_path = crate::project::decode_project_path(encoded_name);
+        let output = std::process::Command::new("opencode")
+            .args(["export", session_id])
+            .current_dir(&project_path)
+            .output()
+            .map_err(|e| format!("Failed to export opencode session: {e}"))?;
+
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+
+        parse_export_messages(&String::from_utf8_lossy(&output.stdout))
     }
 
     fn load_config(&self) -> Result<crate::config::ClaudeConfig, String> {
@@ -468,6 +642,98 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
     use crate::agent::normalized::{NormalizedEvent, TurnEndReason};
+
+    #[test]
+    fn parses_opencode_session_list_for_project() {
+        let raw = r#"[
+            {
+                "id": "ses_1",
+                "title": "打招呼与确认回复请求",
+                "updated": 1779924225844,
+                "created": 1779924224291,
+                "directory": "D:\\MyCodes\\jishu-hub"
+            },
+            {
+                "id": "ses_other",
+                "title": "Other",
+                "updated": 1779924000000,
+                "created": 1779923000000,
+                "directory": "E:\\Other"
+            }
+        ]"#;
+
+        let sessions = parse_session_list(raw, "D:\\MyCodes\\jishu-hub").unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "ses_1");
+        assert_eq!(
+            sessions[0].display_name.as_deref(),
+            Some("打招呼与确认回复请求")
+        );
+        assert_eq!(
+            sessions[0].project_path.as_deref(),
+            Some("D:\\MyCodes\\jishu-hub")
+        );
+        assert_eq!(
+            sessions[0].last_active.unwrap().timestamp_millis(),
+            1779924225844
+        );
+    }
+
+    #[test]
+    fn parses_opencode_export_messages() {
+        let raw = r#"{
+            "info": {
+                "id": "ses_1",
+                "title": "打招呼",
+                "directory": "D:\\MyCodes\\jishu-hub",
+                "time": { "created": 1779924224291, "updated": 1779924225844 }
+            },
+            "messages": [
+                {
+                    "info": { "role": "user", "time": { "created": 1779924224348 } },
+                    "parts": [{ "type": "text", "text": "你好" }]
+                },
+                {
+                    "info": { "role": "assistant", "time": { "created": 1779924224453 } },
+                    "parts": [
+                        { "type": "step-start" },
+                        { "type": "text", "text": "你好！有什么可以帮你的？" },
+                        { "type": "step-finish", "reason": "stop" }
+                    ]
+                }
+            ]
+        }"#;
+
+        let messages = parse_export_messages(raw).unwrap();
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[1].role, "assistant");
+        match &messages[1].content[0] {
+            crate::session::ContentBlock::Text { text } => {
+                assert_eq!(text, "你好！有什么可以帮你的？");
+            }
+            other => panic!("Expected text block, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_opencode_export_with_trailing_status_text() {
+        let raw = r#"{
+            "messages": [
+                {
+                    "info": { "role": "assistant", "time": { "created": 1779924224453 } },
+                    "parts": [{ "type": "text", "text": "ok" }]
+                }
+            ]
+        }
+        Exporting session: ses_1"#;
+
+        let messages = parse_export_messages(raw).unwrap();
+
+        assert_eq!(messages.len(), 1);
+    }
 
     #[test]
     fn normalizes_opencode_text_delta() {
