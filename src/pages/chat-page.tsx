@@ -770,7 +770,7 @@ export function ChatPage({
                 onMessageSent={handleMessageSent}
                 allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
                 containerClassName="max-w-full px-0 pb-0 pt-0"
-                panelClassName="overflow-hidden rounded-[22px] border-border/70 bg-card/98 shadow-[0_18px_48px_rgba(0,0,0,0.10)]"
+                panelClassName="rounded-[22px] border-border/70 bg-card/98 shadow-[0_18px_48px_rgba(0,0,0,0.10)]"
                 contextFooter={startComposerFooter}
                 accessModeLabel={accessModeLabel}
                 accessModeTitle={supportsAccessModeSwitch ? t("sessions.accessMode") : t("sessions.accessModeReadOnly")}

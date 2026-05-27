@@ -397,7 +397,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     <div className={cn("mx-auto w-full max-w-[var(--message-content-max-width)] px-4 pb-4 pt-2", containerClassName)}>
       <div
         className={cn(
-          "relative flex flex-col rounded-2xl border border-input bg-card shadow-sm focus-within:ring-1 focus-within:ring-ring focus-within:border-ring transition-shadow",
+          "relative flex flex-col overflow-visible rounded-2xl border border-input bg-card shadow-sm focus-within:ring-1 focus-within:ring-ring focus-within:border-ring transition-shadow",
           panelClassName,
         )}
         onDrop={handleDrop}
@@ -423,7 +423,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
           }}
         />
 
-        <div className="flex items-center justify-between px-3 pb-3 pt-1">
+        <div className="flex items-end justify-between px-2.5 pb-2 pt-0">
           <div className="flex items-center gap-1">
             <div ref={toolbarRef} className="relative flex items-center gap-1">
               <Button
@@ -440,7 +440,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                 <Plus className="h-4 w-4" strokeWidth={2.3} />
               </Button>
               {toolMenuOpen && (
-                <div className="absolute bottom-full left-0 z-40 mb-2 w-44 rounded-xl border border-border bg-popover p-1.5 shadow-lg">
+                <div className="absolute bottom-[calc(100%+0.45rem)] left-0 z-[80] w-44 rounded-xl border border-border bg-popover p-1.5 shadow-xl">
                   <button
                     type="button"
                     onClick={() => {
@@ -494,7 +494,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                     {!accessModeReadOnly && <ChevronDown className="h-3 w-3" />}
                   </button>
                   {accessMenuOpen && !accessModeReadOnly && (
-                    <div className="absolute bottom-full left-0 z-40 mb-2 w-44 rounded-xl border border-border bg-popover p-1.5 shadow-lg">
+                    <div className="absolute bottom-[calc(100%+0.45rem)] left-0 z-[80] w-44 rounded-xl border border-border bg-popover p-1.5 shadow-xl">
                       {accessModeOptions.map((option) => (
                         <button
                           key={option.value}
