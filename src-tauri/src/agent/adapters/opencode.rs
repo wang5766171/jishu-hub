@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::agent::{
@@ -358,6 +359,394 @@ fn datetime_from_millis(value: i64) -> Option<DateTime<Utc>> {
     DateTime::from_timestamp_millis(value)
 }
 
+fn opencode_config_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+    Ok(home.join(".config").join("opencode"))
+}
+
+fn opencode_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let dir = opencode_config_dir()?;
+    let json = dir.join("opencode.json");
+    if json.exists() {
+        return Ok(json);
+    }
+    let jsonc = dir.join("opencode.jsonc");
+    if jsonc.exists() {
+        return Ok(jsonc);
+    }
+    Ok(json)
+}
+
+fn opencode_backup_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let dir = opencode_config_dir()?.join("backups");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+fn read_opencode_config_value() -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let path = opencode_config_path()?;
+    if !path.exists() {
+        return Ok(serde_json::json!({
+            "$schema": "https://opencode.ai/config.json"
+        }));
+    }
+    let content = std::fs::read_to_string(path)?;
+    parse_json_or_jsonc(&content).map_err(|e| e.into())
+}
+
+fn parse_json_or_jsonc(raw: &str) -> Result<serde_json::Value, serde_json::Error> {
+    serde_json::from_str(raw).or_else(|_| serde_json::from_str(&strip_json_comments(raw)))
+}
+
+fn strip_json_comments(raw: &str) -> String {
+    let mut output = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    while let Some(ch) = chars.next() {
+        if in_string {
+            output.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = true;
+            output.push(ch);
+            continue;
+        }
+
+        if ch == '/' && chars.peek() == Some(&'/') {
+            chars.next();
+            for next in chars.by_ref() {
+                if next == '\n' {
+                    output.push('\n');
+                    break;
+                }
+            }
+            continue;
+        }
+
+        if ch == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            let mut prev = '\0';
+            for next in chars.by_ref() {
+                if prev == '*' && next == '/' {
+                    break;
+                }
+                prev = next;
+            }
+            continue;
+        }
+
+        output.push(ch);
+    }
+
+    output
+}
+
+#[cfg(test)]
+fn parse_opencode_config(raw: &str) -> Result<crate::config::ClaudeConfig, String> {
+    let value = parse_json_or_jsonc(raw).map_err(|e| e.to_string())?;
+    opencode_value_to_shared_config(&value)
+}
+
+fn opencode_value_to_shared_config(
+    value: &serde_json::Value,
+) -> Result<crate::config::ClaudeConfig, String> {
+    let mut config = crate::config::ClaudeConfig::default();
+    config.model = value
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    config.small_model = value
+        .get("small_model")
+        .or_else(|| value.get("smallModel"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    if let Some(mcp) = value.get("mcp").and_then(|v| v.as_object()) {
+        let mut servers = HashMap::new();
+        for (name, server) in mcp {
+            if let Some(server_obj) = server.as_object() {
+                let command_value = server_obj.get("command");
+                let (command, args) = match command_value {
+                    Some(serde_json::Value::Array(items)) => {
+                        let mut values = items.iter().filter_map(|item| item.as_str());
+                        let command = values.next().map(|s| s.to_string());
+                        let args = values.map(|s| s.to_string()).collect::<Vec<_>>();
+                        (command, if args.is_empty() { None } else { Some(args) })
+                    }
+                    Some(serde_json::Value::String(command)) => (
+                        Some(command.clone()),
+                        server_obj.get("args").and_then(|v| {
+                            v.as_array().map(|arr| {
+                                arr.iter()
+                                    .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                                    .collect::<Vec<_>>()
+                            })
+                        }),
+                    ),
+                    _ => (None, None),
+                };
+
+                servers.insert(
+                    name.clone(),
+                    crate::config::McpServerConfig {
+                        command,
+                        args,
+                        env: server_obj
+                            .get("environment")
+                            .or_else(|| server_obj.get("env"))
+                            .and_then(|v| v.as_object())
+                            .map(|map| {
+                                map.iter()
+                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                    .collect::<HashMap<_, _>>()
+                            }),
+                        cwd: server_obj
+                            .get("cwd")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        server_type: server_obj
+                            .get("type")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        url: server_obj
+                            .get("url")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                    },
+                );
+            }
+        }
+        if !servers.is_empty() {
+            config.mcp_servers = Some(servers);
+        }
+    }
+
+    if let Some(plugins) = value.get("plugin").and_then(|v| v.as_array()) {
+        let enabled = plugins
+            .iter()
+            .filter_map(|item| item.as_str())
+            .map(|name| (name.to_string(), true))
+            .collect::<HashMap<_, _>>();
+        if !enabled.is_empty() {
+            config.enabled_plugins = Some(enabled);
+        }
+    }
+
+    Ok(config)
+}
+
+fn merge_opencode_config(
+    mut existing: serde_json::Value,
+    config: &crate::config::ClaudeConfig,
+) -> Result<serde_json::Value, String> {
+    if !existing.is_object() {
+        existing = serde_json::json!({});
+    }
+    let obj = existing
+        .as_object_mut()
+        .ok_or_else(|| "opencode config must be an object".to_string())?;
+
+    if !obj.contains_key("$schema") {
+        obj.insert(
+            "$schema".to_string(),
+            serde_json::json!("https://opencode.ai/config.json"),
+        );
+    }
+
+    set_or_remove_string(obj, "model", config.model.as_deref());
+    set_or_remove_string(obj, "small_model", config.small_model.as_deref());
+
+    if let Some(plugins) = &config.enabled_plugins {
+        let enabled = plugins
+            .iter()
+            .filter(|(_, enabled)| **enabled)
+            .map(|(name, _)| serde_json::Value::String(name.clone()))
+            .collect::<Vec<_>>();
+        if enabled.is_empty() {
+            obj.remove("plugin");
+        } else {
+            obj.insert("plugin".to_string(), serde_json::Value::Array(enabled));
+        }
+    }
+
+    if let Some(mcp_servers) = &config.mcp_servers {
+        let mut existing_mcp = obj
+            .remove("mcp")
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+        for (name, server) in mcp_servers {
+            let mut server_obj = existing_mcp
+                .remove(name)
+                .and_then(|v| v.as_object().cloned())
+                .unwrap_or_default();
+
+            if let Some(server_type) = &server.server_type {
+                server_obj.insert("type".to_string(), serde_json::json!(server_type));
+            } else if server.command.is_some() {
+                server_obj.insert("type".to_string(), serde_json::json!("local"));
+            } else if server.url.is_some() {
+                server_obj.insert("type".to_string(), serde_json::json!("remote"));
+            }
+
+            if let Some(command) = &server.command {
+                let mut command_parts = vec![serde_json::Value::String(command.clone())];
+                if let Some(args) = &server.args {
+                    command_parts.extend(args.iter().cloned().map(serde_json::Value::String));
+                }
+                server_obj.insert(
+                    "command".to_string(),
+                    serde_json::Value::Array(command_parts),
+                );
+            }
+            if let Some(env) = &server.env {
+                server_obj.insert(
+                    "environment".to_string(),
+                    serde_json::Value::Object(env.clone().into_iter().collect()),
+                );
+            }
+            set_or_remove_string(&mut server_obj, "cwd", server.cwd.as_deref());
+            set_or_remove_string(&mut server_obj, "url", server.url.as_deref());
+            existing_mcp.insert(name.clone(), serde_json::Value::Object(server_obj));
+        }
+        obj.insert("mcp".to_string(), serde_json::Value::Object(existing_mcp));
+    }
+
+    Ok(existing)
+}
+
+fn set_or_remove_string(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value.filter(|v| !v.trim().is_empty()) {
+        obj.insert(
+            key.to_string(),
+            serde_json::Value::String(value.to_string()),
+        );
+    } else {
+        obj.remove(key);
+    }
+}
+
+fn load_opencode_config() -> Result<crate::config::ClaudeConfig, Box<dyn std::error::Error>> {
+    let value = read_opencode_config_value()?;
+    opencode_value_to_shared_config(&value).map_err(|e| e.into())
+}
+
+fn save_opencode_config(
+    config: &crate::config::ClaudeConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = opencode_config_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    backup_opencode_config()?;
+    let existing = read_opencode_config_value()?;
+    let merged = merge_opencode_config(existing, config).map_err(|e| e.to_string())?;
+    std::fs::write(path, serde_json::to_string_pretty(&merged)?)?;
+    Ok(())
+}
+
+fn backup_opencode_config() -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    let src = opencode_config_path()?;
+    if !src.exists() {
+        return Ok(None);
+    }
+    let backup_dir = opencode_backup_dir()?;
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let ext = src
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("json");
+    let dst = backup_dir.join(format!("opencode_{}.{}", timestamp, ext));
+    std::fs::copy(src, &dst)?;
+    Ok(Some(dst))
+}
+
+fn list_opencode_backups() -> Result<Vec<crate::config::BackupEntry>, Box<dyn std::error::Error>> {
+    let backup_dir = opencode_backup_dir()?;
+    let mut backups = Vec::new();
+    for entry in std::fs::read_dir(backup_dir)?.flatten() {
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if !(name.ends_with(".json") || name.ends_with(".jsonc")) {
+            continue;
+        }
+        let timestamp = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .strip_prefix("opencode_")
+            .and_then(|s| {
+                chrono::NaiveDateTime::parse_from_str(s, "%Y%m%d_%H%M%S")
+                    .ok()
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+            });
+        backups.push(crate::config::BackupEntry {
+            name,
+            path: path.to_string_lossy().to_string(),
+            timestamp,
+        });
+    }
+    backups.sort_by(|a, b| b.name.cmp(&a.name));
+    Ok(backups)
+}
+
+fn restore_opencode_backup(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let content = std::fs::read_to_string(path)?;
+    let _: serde_json::Value = parse_json_or_jsonc(&content)?;
+    let dst = opencode_config_path()?;
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(dst, content)?;
+    Ok(())
+}
+
+fn export_opencode_config(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let src = opencode_config_path()?;
+    let content = if src.exists() {
+        std::fs::read_to_string(src)?
+    } else {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "$schema": "https://opencode.ai/config.json"
+        }))?
+    };
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
+fn import_opencode_config(
+    path: &str,
+) -> Result<crate::config::ClaudeConfig, Box<dyn std::error::Error>> {
+    let content = std::fs::read_to_string(path)?;
+    let value = parse_json_or_jsonc(&content)?;
+    let config = opencode_value_to_shared_config(&value).map_err(|e| e.to_string())?;
+    backup_opencode_config()?;
+    let dst = opencode_config_path()?;
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(dst, serde_json::to_string_pretty(&value)?)?;
+    Ok(config)
+}
+
 impl AgentPlugin for OpencodeAdapter {
     fn info(&self) -> AgentInfo {
         AgentInfo {
@@ -488,31 +877,48 @@ impl AgentPlugin for OpencodeAdapter {
     }
 
     fn load_config(&self) -> Result<crate::config::ClaudeConfig, String> {
-        Err("opencode config not yet supported".to_string())
+        load_opencode_config().map_err(|e| e.to_string())
     }
 
-    fn save_config(&self, _config: &crate::config::ClaudeConfig) -> Result<(), String> {
-        Err("Not supported".to_string())
+    fn save_config(&self, config: &crate::config::ClaudeConfig) -> Result<(), String> {
+        save_opencode_config(config).map_err(|e| e.to_string())
     }
 
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
-        vec![]
+        vec![
+            crate::hub::ConfigTemplate {
+                id: "opencode-default".to_string(),
+                name: "opencode 默认配置".to_string(),
+                description: "保留 opencode 默认模型与 MCP 设置，仅创建基础配置结构".to_string(),
+                config: crate::config::ClaudeConfig::default(),
+            },
+            crate::hub::ConfigTemplate {
+                id: "opencode-glm".to_string(),
+                name: "opencode GLM 模型".to_string(),
+                description: "设置 opencode 的主模型与小模型为 GLM".to_string(),
+                config: crate::config::ClaudeConfig {
+                    model: Some("zhipuai-coding-plan/glm-5.1".to_string()),
+                    small_model: Some("zhipuai-coding-plan/glm-5.1".to_string()),
+                    ..Default::default()
+                },
+            },
+        ]
     }
 
     fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String> {
-        Ok(vec![])
+        list_opencode_backups().map_err(|e| e.to_string())
     }
 
-    fn restore_backup(&self, _path: &str) -> Result<(), String> {
-        Err("Not supported".to_string())
+    fn restore_backup(&self, path: &str) -> Result<(), String> {
+        restore_opencode_backup(path).map_err(|e| e.to_string())
     }
 
-    fn export_config(&self, _path: &str) -> Result<(), String> {
-        Err("Not supported".to_string())
+    fn export_config(&self, path: &str) -> Result<(), String> {
+        export_opencode_config(path).map_err(|e| e.to_string())
     }
 
-    fn import_config(&self, _path: &str) -> Result<crate::config::ClaudeConfig, String> {
-        Err("Not supported".to_string())
+    fn import_config(&self, path: &str) -> Result<crate::config::ClaudeConfig, String> {
+        import_opencode_config(path).map_err(|e| e.to_string())
     }
 
     fn load_project_settings(
@@ -600,8 +1006,8 @@ impl AgentPlugin for OpencodeAdapter {
         let command = resume_session_id
             .map(|sid| crate::agent::command_config::resume_command("opencode", sid))
             .unwrap_or_else(|| crate::agent::command_config::launch_command("opencode"));
-        let window_id =
-            resume_session_id.map(|sid| crate::agent::command_config::terminal_window_id("opencode", sid));
+        let window_id = resume_session_id
+            .map(|sid| crate::agent::command_config::terminal_window_id("opencode", sid));
         crate::command::open_agent_terminal(project_path, &command, window_id.as_deref())
     }
 
@@ -622,7 +1028,11 @@ impl AgentPlugin for OpencodeAdapter {
 }
 
 fn build_run_args(req: &ChatRequest) -> Vec<String> {
-    let mut args = vec!["run".to_string(), "--format".to_string(), "json".to_string()];
+    let mut args = vec![
+        "run".to_string(),
+        "--format".to_string(),
+        "json".to_string(),
+    ];
     if let Some(ref sid) = req.session_id {
         args.push("--session".to_string());
         args.push(sid.clone());
@@ -736,6 +1146,77 @@ mod tests {
     }
 
     #[test]
+    fn parses_opencode_config_into_shared_config_shape() {
+        let raw = r#"{
+            "model": "zhipuai-coding-plan/glm-5.1",
+            "small_model": "zhipuai-coding-plan/glm-5.1",
+            "mcp": {
+                "local": {
+                    "type": "local",
+                    "command": ["npx", "-y", "@example/mcp"],
+                    "environment": { "TOKEN": "abc" }
+                },
+                "remote": {
+                    "type": "remote",
+                    "url": "https://example.com/mcp"
+                }
+            },
+            "plugin": ["@example/plugin"]
+        }"#;
+
+        let config = parse_opencode_config(raw).unwrap();
+
+        assert_eq!(config.model.as_deref(), Some("zhipuai-coding-plan/glm-5.1"));
+        assert_eq!(
+            config.small_model.as_deref(),
+            Some("zhipuai-coding-plan/glm-5.1")
+        );
+        let mcp = config.mcp_servers.unwrap();
+        assert_eq!(mcp["local"].command.as_deref(), Some("npx"));
+        assert_eq!(
+            mcp["local"].args.as_ref().unwrap(),
+            &vec!["-y".to_string(), "@example/mcp".to_string()]
+        );
+        assert_eq!(
+            mcp["local"].env.as_ref().unwrap()["TOKEN"],
+            serde_json::json!("abc")
+        );
+        assert_eq!(
+            mcp["remote"].url.as_deref(),
+            Some("https://example.com/mcp")
+        );
+        assert_eq!(
+            config.enabled_plugins.unwrap().get("@example/plugin"),
+            Some(&true)
+        );
+    }
+
+    #[test]
+    fn merges_shared_config_back_to_opencode_json() {
+        let existing = serde_json::json!({
+            "$schema": "https://opencode.ai/config.json",
+            "provider": { "demo": { "options": { "apiKey": "keep" } } },
+            "model": "old",
+            "small_model": "old-small",
+            "mcp": {}
+        });
+        let mut config = crate::config::ClaudeConfig::default();
+        config.model = Some("new/model".to_string());
+        config.small_model = Some("new/small".to_string());
+        config.enabled_plugins = Some(std::collections::HashMap::from([(
+            "@example/plugin".to_string(),
+            true,
+        )]));
+
+        let merged = merge_opencode_config(existing, &config).unwrap();
+
+        assert_eq!(merged["provider"]["demo"]["options"]["apiKey"], "keep");
+        assert_eq!(merged["model"], "new/model");
+        assert_eq!(merged["small_model"], "new/small");
+        assert_eq!(merged["plugin"][0], "@example/plugin");
+    }
+
+    #[test]
     fn normalizes_opencode_text_delta() {
         let event = serde_json::json!({
             "type": "text_delta",
@@ -791,7 +1272,14 @@ mod tests {
                 session_id: Some("ses_123".to_string()),
                 message: "continue".to_string(),
             }),
-            vec!["run", "--format", "json", "--session", "ses_123", "continue"]
+            vec![
+                "run",
+                "--format",
+                "json",
+                "--session",
+                "ses_123",
+                "continue"
+            ]
         );
     }
 
@@ -853,7 +1341,10 @@ mod tests {
                 "reason": "tool-calls"
             }
         });
-        assert_eq!(normalize_stream_event(&tool_step), Vec::<NormalizedEvent>::new());
+        assert_eq!(
+            normalize_stream_event(&tool_step),
+            Vec::<NormalizedEvent>::new()
+        );
 
         let error = serde_json::json!({
             "type": "error",

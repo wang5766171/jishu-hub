@@ -46,8 +46,12 @@ pub fn built_in_commands(agent_id: &str) -> Vec<AgentCommandPreset> {
         ],
         "opencode" => vec![
             preset("opencode --version", "opencode --version"),
+            preset("opencode session list", "opencode session list"),
             preset("opencode models", "opencode models"),
-            preset("opencode run", "opencode run --format json \"Say hello\""),
+            preset("opencode mcp list", "opencode mcp list"),
+            preset("opencode agent list", "opencode agent list"),
+            preset("opencode debug config", "opencode debug config"),
+            preset("opencode run", "opencode run \"Say hello\""),
         ],
         other => vec![preset(
             format!("{other} --version"),

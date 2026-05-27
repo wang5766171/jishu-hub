@@ -120,13 +120,14 @@ fn delete_preset(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn apply_preset(id: String) -> Result<(), String> {
+fn apply_preset(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
     let presets = hub::list_presets().map_err(|e| e.to_string())?;
     let preset = presets
         .into_iter()
         .find(|p| p.id == id)
         .ok_or("Preset not found")?;
-    config::save_config(&preset.config).map_err(|e| e.to_string())
+    let s = state.lock().unwrap();
+    s.registry.active().save_config(&preset.config)
 }
 
 #[tauri::command]
