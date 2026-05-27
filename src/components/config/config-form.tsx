@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { Button } from "@/components/ui/button";
@@ -45,6 +45,8 @@ export function ConfigForm({ config: initialConfig, onSaved }: ConfigFormProps) 
   const { t } = useTranslation();
   const [config, setConfig] = useState<ClaudeConfig>(initialConfig);
   const [saving, setSaving] = useState(false);
+  const [mcpJson, setMcpJson] = useState(() => JSON.stringify(initialConfig.mcpServers ?? {}, null, 2));
+  const [mcpJsonError, setMcpJsonError] = useState("");
 
   // List pattern inputs
   const [newAllowPattern, setNewAllowPattern] = useState("");
@@ -52,6 +54,12 @@ export function ConfigForm({ config: initialConfig, onSaved }: ConfigFormProps) 
 
   // Env var input
   const [newEnvKey, setNewEnvKey] = useState("");
+
+  useEffect(() => {
+    setConfig(initialConfig);
+    setMcpJson(JSON.stringify(initialConfig.mcpServers ?? {}, null, 2));
+    setMcpJsonError("");
+  }, [initialConfig]);
 
   // --- Field handlers ---
 
@@ -149,6 +157,26 @@ export function ConfigForm({ config: initialConfig, onSaved }: ConfigFormProps) 
     updateConfig({ enabledPlugins: plugins });
   };
 
+  const handleMcpJsonChange = (value: string) => {
+    setMcpJson(value);
+    if (!value.trim()) {
+      setMcpJsonError("");
+      updateConfig({ mcpServers: null });
+      return;
+    }
+    try {
+      const parsed = JSON.parse(value);
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+        setMcpJsonError(t("config.invalidJson"));
+        return;
+      }
+      setMcpJsonError("");
+      updateConfig({ mcpServers: parsed as ClaudeConfig["mcpServers"] });
+    } catch {
+      setMcpJsonError(t("config.invalidJson"));
+    }
+  };
+
   // Advanced
   const handleVerbose = (checked: boolean) => updateConfig({ verbose: checked || null });
   const handleMaxTurns = (val: string) => {
@@ -172,15 +200,16 @@ export function ConfigForm({ config: initialConfig, onSaved }: ConfigFormProps) 
   const hasChanges = JSON.stringify(config) !== JSON.stringify(initialConfig);
 
   // Sections with content come first, empty ones last
-  type SectionId = "env" | "plugins" | "permissions" | "model" | "advanced";
+  type SectionId = "env" | "plugins" | "mcp" | "permissions" | "model" | "advanced";
   const sectionHasContent: Record<SectionId, boolean> = {
     env: !!config.env && Object.keys(config.env).length > 0,
     plugins: !!config.enabledPlugins && Object.keys(config.enabledPlugins).length > 0,
     permissions: !!(config.permissions?.defaultMode || (config.permissions?.allow?.length) || (config.permissions?.deny?.length) || config.sandbox?.enabled || config.skipDangerousModePermissionPrompt),
     model: !!(config.model || config.smallModel || config.largeModel || config.apiProvider),
+    mcp: !!config.mcpServers && Object.keys(config.mcpServers).length > 0,
     advanced: !!(config.verbose || config.maxTurns),
   };
-  const sectionOrder: SectionId[] = (["env", "plugins", "permissions", "model", "advanced"] as SectionId[]).sort((a, b) => {
+  const sectionOrder: SectionId[] = (["env", "plugins", "mcp", "permissions", "model", "advanced"] as SectionId[]).sort((a, b) => {
     if (sectionHasContent[a] && !sectionHasContent[b]) return -1;
     if (!sectionHasContent[a] && sectionHasContent[b]) return 1;
     return 0;
@@ -194,7 +223,7 @@ export function ConfigForm({ config: initialConfig, onSaved }: ConfigFormProps) 
       <div className="sticky top-0 z-10 bg-background pb-3 border-b border-border mb-3">
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-semibold">{t("config.configuration")}</h3>
-          <Button onClick={handleSave} disabled={!hasChanges || saving} size="sm">
+          <Button onClick={handleSave} disabled={!hasChanges || saving || !!mcpJsonError} size="sm">
             <Save className="h-4 w-4" />
             {saving ? t("common.saving") : t("common.save")}
           </Button>
@@ -425,6 +454,28 @@ export function ConfigForm({ config: initialConfig, onSaved }: ConfigFormProps) 
                   ))}
                   {(!config.enabledPlugins || Object.keys(config.enabledPlugins).length === 0) && (
                     <p className="text-sm text-muted-foreground">{t("config.noPlugins")}</p>
+                  )}
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          );
+
+          if (sid === "mcp") return (
+            <AccordionItem key="mcp" value="mcp">
+              <AccordionTrigger className="group"><span>{t("config.mcpServers")}<SectionHelp content={t("config.fieldMapMcp")} /></span></AccordionTrigger>
+              <AccordionContent>
+                <div className="space-y-2 pt-2">
+                  <textarea
+                    className="h-56 w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    value={mcpJson}
+                    onChange={(e) => handleMcpJsonChange(e.target.value)}
+                    spellCheck={false}
+                    placeholder='{"server-name":{"type":"local","command":["npx","-y","@example/mcp"]}}'
+                  />
+                  {mcpJsonError ? (
+                    <p className="text-xs text-destructive">{mcpJsonError}</p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">{t("config.mcpJsonHint")}</p>
                   )}
                 </div>
               </AccordionContent>

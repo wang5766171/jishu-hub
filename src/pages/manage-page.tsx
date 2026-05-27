@@ -16,7 +16,7 @@ interface ManagePageProps {
 
 const tabs: { id: ManageTab; icon: typeof FolderOpen; labelKey: string; iconColor: string }[] = [
   { id: "projects", icon: FolderOpen, labelKey: "nav.projects", iconColor: "text-[var(--icon-folder)]" },
-  { id: "config", icon: Settings, labelKey: "nav.config", iconColor: "text-[var(--icon-action)]" },
+  { id: "config", icon: Settings, labelKey: "config.configuration", iconColor: "text-[var(--icon-action)]" },
   { id: "commands", icon: Rocket, labelKey: "nav.commands", iconColor: "text-[var(--icon-action)]" },
   { id: "backups", icon: Archive, labelKey: "config.backups", iconColor: "text-[var(--icon-folder)]" },
 ];

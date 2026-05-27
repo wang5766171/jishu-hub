@@ -13,6 +13,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Plus, Trash2, Sparkles, User, FileJson, Pencil, Eye } from "lucide-react";
+import { useAgent } from "@/agents";
 import type { Preset, ConfigTemplate, ClaudeConfig, SandboxConfig } from "@/types";
 
 interface TemplateManagerProps {
@@ -632,9 +633,11 @@ function cleanConfigForJson(config: ClaudeConfig): Record<string, unknown> {
 
 export function TemplateManager({ onApplied }: TemplateManagerProps) {
   const { t } = useTranslation();
-  const { data: systemTemplates, loading: loadingSystem } = useInvoke<ConfigTemplate[]>("list_config_templates");
+  const { activeId } = useAgent();
+  const agentRefreshKey = activeId ? Array.from(activeId).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) : 0;
+  const { data: systemTemplates, loading: loadingSystem } = useInvoke<ConfigTemplate[]>("list_config_templates", undefined, agentRefreshKey);
   const { data: userTemplates, loading: loadingUser, refetch } = useInvoke<Preset[]>("list_presets");
-  const { data: currentConfig } = useInvoke<ClaudeConfig>("load_config");
+  const { data: currentConfig } = useInvoke<ClaudeConfig>("load_config", undefined, agentRefreshKey);
 
   const [saveOpen, setSaveOpen] = useState(false);
   const [newOpen, setNewOpen] = useState(false);

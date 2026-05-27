@@ -8,11 +8,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Download, Upload } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { useAgent } from "@/agents";
 import type { ClaudeConfig } from "@/types";
 
 export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "templates" | "backups" }) {
   const { t } = useTranslation();
-  const { data: config, loading, refetch } = useInvoke<ClaudeConfig>("load_config");
+  const { activeId, active } = useAgent();
+  const agentRefreshKey = activeId ? Array.from(activeId).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) : 0;
+  const { data: config, loading, refetch } = useInvoke<ClaudeConfig>("load_config", undefined, agentRefreshKey);
   const [activeTab, setActiveTab] = useState<"edit" | "templates" | "backups">(initialTab);
 
   const handleConfigSaved = useCallback(() => {
@@ -21,7 +24,7 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
 
   const handleExport = async () => {
     const path = await open({
-      defaultPath: "claude-settings.json",
+      defaultPath: `${activeId || "agent"}-settings.json`,
       filters: [{ name: "JSON", extensions: ["json"] }],
     });
     if (path) {
@@ -65,7 +68,10 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
   return (
     <div className="flex flex-col h-full p-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">{t("config.title")}</h2>
+        <div>
+          <h2 className="text-xl font-semibold">{t("config.title")}</h2>
+          {active && <p className="mt-1 text-xs text-muted-foreground">{active.display_name}</p>}
+        </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={handleExport}>
             <Download className="mr-2 h-4 w-4" />

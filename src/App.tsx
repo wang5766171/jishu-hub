@@ -202,7 +202,7 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
           )}
         >
           <Settings className="h-3.5 w-3.5 text-[var(--icon-config)]" />
-          <span>{currentPage === "manage" ? t("sessions.title") : t("nav.config")}</span>
+          <span>{t("nav.config")}</span>
         </button>
         <button
           onClick={cycleTheme}
