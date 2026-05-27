@@ -99,6 +99,10 @@
     "toolCalls": "Tool Calls ({{count}})",
     "thinkingDots": "Thinking...",
     "newChat": "New Chat",
+    "startPrompt": "What should we build in {{project}}?",
+    "localMode": "Local mode",
+    "currentAgent": "Current agent",
+    "projectPath": "Project path",
     "streamError": "Stream terminated unexpectedly, image path format may not be supported"
   },
   "config": {

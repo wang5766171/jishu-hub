@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle, memo } from "react";
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { Button } from "@/components/ui/button";
@@ -6,6 +7,7 @@ import { Send, Square, Paperclip } from "lucide-react";
 import { FilePreview } from "./file-preview";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ChatSession, SavedFile } from "@/types";
+import { cn } from "@/lib/utils";
 
 interface AttachedFile {
   id: string;
@@ -22,6 +24,9 @@ interface ChatInputProps {
   disabled?: boolean;
   allowFiles?: boolean;
   onMessageSent?: (chatSessionId: string, userMessage: string) => void;
+  containerClassName?: string;
+  panelClassName?: string;
+  contextFooter?: ReactNode;
 }
 
 function isInsideProject(filePath: string, projectPath: string): boolean {
@@ -36,6 +41,9 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   disabled = false,
   allowFiles = true,
   onMessageSent,
+  containerClassName,
+  panelClassName,
+  contextFooter,
 }: ChatInputProps, ref) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
@@ -361,9 +369,12 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   };
 
   return (
-    <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4 pb-4 pt-2">
+    <div className={cn("mx-auto w-full max-w-[var(--message-content-max-width)] px-4 pb-4 pt-2", containerClassName)}>
       <div
-        className="relative flex flex-col rounded-2xl border border-input bg-card shadow-sm focus-within:ring-1 focus-within:ring-ring focus-within:border-ring transition-shadow"
+        className={cn(
+          "relative flex flex-col rounded-2xl border border-input bg-card shadow-sm focus-within:ring-1 focus-within:ring-ring focus-within:border-ring transition-shadow",
+          panelClassName,
+        )}
         onDrop={handleDrop}
         onDragOver={handleDragOver}
       >
@@ -424,6 +435,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
             )}
           </div>
         </div>
+        {contextFooter}
       </div>
     </div>
   );

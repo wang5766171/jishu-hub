@@ -99,6 +99,10 @@
     "toolCalls": "工具调用 ({{count}})",
     "thinkingDots": "思考中...",
     "newChat": "新对话",
+    "startPrompt": "我们应该在 {{project}} 中构建什么？",
+    "localMode": "本地模式",
+    "currentAgent": "当前助手",
+    "projectPath": "项目路径",
     "streamError": "流式响应异常终止，图片路径格式可能不受支持"
   },
   "config": {

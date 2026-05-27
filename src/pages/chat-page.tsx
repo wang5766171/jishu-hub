@@ -9,7 +9,7 @@ import { StatusBar as ObservabilityStatusBar } from "@/components/observability"
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ChevronDown,
+  Bot, HardDrive, MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ChevronDown,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
@@ -106,7 +106,6 @@ export function ChatPage({
   // Buffer for early chunks arriving before handleMessageSent sets streamingSessionRef
   const earlyChunksRef = useRef<AgentStreamChunk[]>([]);
 
-  const showChatArea = !!selectedSession;
   const fileToolCount = useMemo(() => {
     return sessionMessages.reduce((count, msg) => (
       count + msg.content.filter((block) => {
@@ -144,6 +143,7 @@ export function ChatPage({
 
   const hasSearchQuery = searchQuery.trim().length > 0;
   const showMessageSearchControls = hasSearchQuery && !!selectedSession && selectedSession !== "new";
+  const showStartComposer = !!projectId && (!selectedSession || selectedSession === "new");
   const messageSearchTotal = showMessageSearchControls ? messageSearchStatus.total : 0;
   const messageSearchLabel = messageSearchTotal > 0
     ? `${messageSearchStatus.current}/${messageSearchTotal}`
@@ -458,6 +458,29 @@ export function ChatPage({
   const displayName = selectedSession
     ? (sessionNames?.[selectedSession] || sessions?.find(s => s.id === selectedSession)?.display_name || optimisticSessions.find(s => s.id === selectedSession)?.display_name || selectedSession.slice(0, 8))
     : "";
+  const projectDisplayName = currentProject?.name ?? t("sessions.noProject");
+  const projectPath = currentProject?.path ?? "";
+  const startComposerFooter = currentProject ? (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border/40 bg-muted/45 px-4 py-2.5 text-xs text-muted-foreground">
+      <span className="inline-flex min-w-0 items-center gap-1.5">
+        <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[var(--icon-folder)]" />
+        <span className="truncate font-medium text-foreground" title={projectDisplayName}>{projectDisplayName}</span>
+      </span>
+      <span className="inline-flex min-w-0 items-center gap-1.5" title={projectPath}>
+        <HardDrive className="h-3.5 w-3.5 shrink-0" />
+        <span className="truncate">{t("sessions.localMode")}</span>
+      </span>
+      <span className="inline-flex min-w-0 items-center gap-1.5" title={active?.display_name ?? ""}>
+        <Bot className="h-3.5 w-3.5 shrink-0" />
+        <span className="truncate">{active?.display_name ?? t("sessions.currentAgent")}</span>
+      </span>
+      {projectPath && (
+        <span className="min-w-0 flex-1 truncate text-right font-mono text-[0.92em]" title={`${t("sessions.projectPath")}: ${projectPath}`}>
+          {projectPath}
+        </span>
+      )}
+    </div>
+  ) : null;
 
   return (
     <div className="flex h-full">
@@ -665,25 +688,40 @@ export function ChatPage({
 
       {/* Right: Chat area */}
       <div className="flex-1 flex flex-col min-w-0 bg-background">
-        {!showChatArea ? (
+        {!projectId ? (
           <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3">
             <div className="h-14 w-14 rounded-2xl bg-muted flex items-center justify-center">
               <MessageSquare className="h-7 w-7 text-[var(--icon-message)]" />
             </div>
-            {projectId ? (
-              <p className="text-sm">{t("sessions.selectSession")}</p>
-            ) : (
-              <div className="flex items-center gap-2">
-                <span className="text-sm">{t("sessions.noProject")}</span>
-                <button
-                  onClick={onSwitchProject}
-                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm text-primary hover:bg-primary/10 transition-fast font-medium"
-                >
-                  <span className="leading-none pt-[1px]">{t("sessions.switchProject")}</span>
-                  <ArrowRight className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            )}
+            <div className="flex items-center gap-2">
+              <span className="text-sm">{t("sessions.noProject")}</span>
+              <button
+                onClick={onSwitchProject}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm text-primary hover:bg-primary/10 transition-fast font-medium"
+              >
+                <span className="leading-none pt-[1px]">{t("sessions.switchProject")}</span>
+                <ArrowRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        ) : showStartComposer ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center px-6 py-10">
+            <div className="flex w-full max-w-[960px] min-w-0 flex-col items-center">
+              <h1 className="mb-14 max-w-full text-center text-[2rem] font-medium leading-tight tracking-normal text-foreground">
+                {t("sessions.startPrompt", { project: projectDisplayName })}
+              </h1>
+              <ChatInput
+                ref={chatInputRef}
+                sessionId={null}
+                projectPath={currentProject?.path ?? null}
+                disabled={streamStore.getSessionId() !== null}
+                onMessageSent={handleMessageSent}
+                allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
+                containerClassName="max-w-full px-0 pb-0 pt-0"
+                panelClassName="overflow-hidden rounded-[22px] border-border/70 bg-card/98 shadow-[0_18px_48px_rgba(0,0,0,0.10)]"
+                contextFooter={startComposerFooter}
+              />
+            </div>
           </div>
         ) : (
           <>
@@ -753,7 +791,7 @@ export function ChatPage({
           </>
         )}
         {/* Chat input */}
-        {projectId && (
+        {projectId && !showStartComposer && (
           <ChatInput
             ref={chatInputRef}
             sessionId={selectedSession === "new" ? null : selectedSession}
