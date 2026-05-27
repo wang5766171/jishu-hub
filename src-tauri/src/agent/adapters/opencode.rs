@@ -751,7 +751,7 @@ impl AgentPlugin for OpencodeAdapter {
     fn info(&self) -> AgentInfo {
         AgentInfo {
             id: "opencode".to_string(),
-            display_name: "opencode".to_string(),
+            display_name: "Open Code".to_string(),
             version: "1.0".to_string(),
             icon: "code".to_string(),
             enabled: true,
@@ -1052,6 +1052,11 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
     use crate::agent::normalized::{NormalizedEvent, TurnEndReason};
+
+    #[test]
+    fn uses_open_code_display_name() {
+        assert_eq!(OpencodeAdapter::new().info().display_name, "Open Code");
+    }
 
     #[test]
     fn parses_opencode_session_list_for_project() {
