@@ -116,40 +116,11 @@ fn parse_content_blocks(value: &serde_json::Value) -> Vec<ContentBlock> {
     }
 }
 
-fn is_internal_task_notification(v: &serde_json::Value, content: &serde_json::Value) -> bool {
-    let has_origin = v
-        .get("origin")
-        .and_then(|origin| origin.get("kind"))
-        .and_then(|kind| kind.as_str())
-        == Some("task-notification");
-
-    if has_origin {
-        return true;
-    }
-
-    match content {
-        serde_json::Value::String(s) => s.trim_start().starts_with("<task-notification>"),
-        serde_json::Value::Array(items) => items.iter().any(|item| {
-            item.get("type").and_then(|t| t.as_str()) == Some("text")
-                && item
-                    .get("text")
-                    .and_then(|text| text.as_str())
-                    .map(|text| text.trim_start().starts_with("<task-notification>"))
-                    .unwrap_or(false)
-        }),
-        _ => false,
-    }
-}
-
 pub fn parse_message(line: &str) -> Option<Message> {
     if line.trim().is_empty() {
         return None;
     }
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
-
-    if v.get("isMeta").and_then(|m| m.as_bool()).unwrap_or(false) {
-        return None;
-    }
 
     let role = v.get("type")?.as_str()?.to_string();
 
@@ -162,10 +133,6 @@ pub fn parse_message(line: &str) -> Option<Message> {
         .and_then(|m| m.get("content"))
         .cloned()
         .unwrap_or(serde_json::Value::Null);
-
-    if role == "user" && is_internal_task_notification(&v, &content_value) {
-        return None;
-    }
 
     let content = parse_content_blocks(&content_value);
 
@@ -203,6 +170,13 @@ fn merge_tool_results(messages: &mut Vec<Message>) {
 }
 
 pub fn load_session(path: &Path) -> Option<Session> {
+    load_session_with_filter(path, |_| false)
+}
+
+pub fn load_session_with_filter<F>(path: &Path, should_skip_record: F) -> Option<Session>
+where
+    F: Fn(&serde_json::Value) -> bool,
+{
     let id = path.file_stem()?.to_string_lossy().to_string();
     let content = std::fs::read_to_string(path).ok()?;
     let lines: Vec<&str> = content.lines().collect();
@@ -212,6 +186,15 @@ pub fn load_session(path: &Path) -> Option<Session> {
     let mut first_user_text: Option<String> = None;
 
     for line in &lines {
+        if serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .as_ref()
+            .map(|v| should_skip_record(v))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
         // Check for ai-title
         if let Some(title) = parse_ai_title(line) {
             last_ai_title = Some(title);
@@ -263,6 +246,13 @@ pub fn load_session(path: &Path) -> Option<Session> {
 }
 
 pub fn list_sessions(project_dir: &Path) -> Vec<Session> {
+    list_sessions_with_filter(project_dir, |_| false)
+}
+
+pub fn list_sessions_with_filter<F>(project_dir: &Path, should_skip_record: F) -> Vec<Session>
+where
+    F: Fn(&serde_json::Value) -> bool + Copy,
+{
     let mut sessions_with_time: Vec<(Session, std::time::SystemTime)> = Vec::new();
 
     if let Ok(entries) = std::fs::read_dir(project_dir) {
@@ -274,7 +264,7 @@ pub fn list_sessions(project_dir: &Path) -> Vec<Session> {
                     .ok()
                     .and_then(|m| m.modified().ok())
                     .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                if let Some(mut session) = load_session(&path) {
+                if let Some(mut session) = load_session_with_filter(&path, should_skip_record) {
                     session.last_active = mtime
                         .duration_since(std::time::SystemTime::UNIX_EPOCH)
                         .ok()
@@ -355,21 +345,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_parse_message_ignores_meta_skill_context() {
-        let line = r#"{"type":"user","isMeta":true,"sourceToolUseID":"call_skill","message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: C:\\Users\\me\\.claude\\skills\\graphify\n\n# /graphify"}]}}"#;
-        assert!(parse_message(line).is_none());
-    }
-
-    #[test]
-    fn test_parse_message_ignores_task_notification_origin() {
-        let line = r#"{"type":"user","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<task-id>a24c09786e84bbcda</task-id>\n<summary>Agent completed</summary>\n</task-notification>"}}"#;
-        assert!(parse_message(line).is_none());
-    }
-
-    #[test]
-    fn test_parse_message_ignores_task_notification_text_block() {
-        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<task-notification>\n<task-id>a24c09786e84bbcda</task-id>\n</task-notification>"}]}}"#;
-        assert!(parse_message(line).is_none());
-    }
 }

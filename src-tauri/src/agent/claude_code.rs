@@ -144,6 +144,42 @@ fn normalize_claude_system(event: &serde_json::Value) -> Vec<NormalizedEvent> {
     }]
 }
 
+fn is_claude_internal_jsonl_record(v: &serde_json::Value) -> bool {
+    if v.get("isMeta").and_then(|m| m.as_bool()).unwrap_or(false) {
+        return true;
+    }
+
+    if v.get("type").and_then(|t| t.as_str()) != Some("user") {
+        return false;
+    }
+
+    if v.get("origin")
+        .and_then(|origin| origin.get("kind"))
+        .and_then(|kind| kind.as_str())
+        == Some("task-notification")
+    {
+        return true;
+    }
+
+    let content = v
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .unwrap_or(&serde_json::Value::Null);
+
+    match content {
+        serde_json::Value::String(s) => s.trim_start().starts_with("<task-notification>"),
+        serde_json::Value::Array(items) => items.iter().any(|item| {
+            item.get("type").and_then(|t| t.as_str()) == Some("text")
+                && item
+                    .get("text")
+                    .and_then(|text| text.as_str())
+                    .map(|text| text.trim_start().starts_with("<task-notification>"))
+                    .unwrap_or(false)
+        }),
+        _ => false,
+    }
+}
+
 impl AgentPlugin for ClaudeCodeAgent {
     fn info(&self) -> AgentInfo {
         AgentInfo {
@@ -247,13 +283,17 @@ impl AgentPlugin for ClaudeCodeAgent {
             return Err(format!("Project directory not found: {}", encoded_name));
         }
 
-        let mut all_sessions = crate::session::list_sessions(&project_dir);
+        let mut all_sessions =
+            crate::session::list_sessions_with_filter(&project_dir, is_claude_internal_jsonl_record);
 
         if let Ok(secondaries) = crate::hub::get_merged_secondaries(encoded_name) {
             for sec in secondaries {
                 let sec_dir = projects_dir.join(&sec);
                 if sec_dir.exists() {
-                    let mut sec_sessions = crate::session::list_sessions(&sec_dir);
+                    let mut sec_sessions = crate::session::list_sessions_with_filter(
+                        &sec_dir,
+                        is_claude_internal_jsonl_record,
+                    );
                     all_sessions.append(&mut sec_sessions);
                 }
             }
@@ -277,7 +317,7 @@ impl AgentPlugin for ClaudeCodeAgent {
         if !session_path.exists() {
             return Err(format!("Session file not found: {}", session_id));
         }
-        crate::session::load_session(&session_path)
+        crate::session::load_session_with_filter(&session_path, is_claude_internal_jsonl_record)
             .map(|s| s.messages)
             .ok_or_else(|| format!("Failed to parse session: {}", session_id))
     }
@@ -500,5 +540,50 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn filters_claude_meta_skill_context_records() {
+        let record = serde_json::json!({
+            "type": "user",
+            "isMeta": true,
+            "sourceToolUseID": "call_skill",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "Base directory for this skill: C:\\Users\\me\\.claude\\skills\\graphify"
+                }]
+            }
+        });
+
+        assert!(is_claude_internal_jsonl_record(&record));
+    }
+
+    #[test]
+    fn filters_claude_task_notification_records() {
+        let record = serde_json::json!({
+            "type": "user",
+            "origin": { "kind": "task-notification" },
+            "message": {
+                "role": "user",
+                "content": "<task-notification>\n<task-id>a24c09786e84bbcda</task-id>\n</task-notification>"
+            }
+        });
+
+        assert!(is_claude_internal_jsonl_record(&record));
+    }
+
+    #[test]
+    fn keeps_normal_claude_user_records() {
+        let record = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": "Please run /graphify . --update"
+            }
+        });
+
+        assert!(!is_claude_internal_jsonl_record(&record));
     }
 }
