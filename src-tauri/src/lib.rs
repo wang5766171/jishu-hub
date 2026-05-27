@@ -239,6 +239,14 @@ fn list_custom_commands() -> Result<Vec<command::CustomCommand>, String> {
 }
 
 #[tauri::command]
+fn agent_command_presets(
+    state: tauri::State<'_, Mutex<AppState>>,
+) -> Vec<agent::command_config::AgentCommandPreset> {
+    let s = state.lock().unwrap();
+    agent::command_config::built_in_commands(s.registry.active_id())
+}
+
+#[tauri::command]
 fn save_custom_command(cmd: command::CustomCommand) -> Result<(), String> {
     command::save_custom_command(cmd).map_err(|e| e.to_string())
 }
@@ -250,20 +258,33 @@ fn delete_custom_command(id: String) -> Result<(), String> {
 
 #[tauri::command]
 fn open_in_terminal(
+    state: tauri::State<'_, Mutex<AppState>>,
     project_path: String,
     resume_session_id: Option<String>,
 ) -> Result<u32, String> {
-    command::open_in_terminal(&project_path, resume_session_id.as_deref())
+    let s = state.lock().unwrap();
+    s.registry
+        .active()
+        .open_in_terminal(&project_path, resume_session_id.as_deref())
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn register_terminal_session(
+    state: tauri::State<'_, Mutex<AppState>>,
     session_id: String,
     pid: u32,
     project_path: String,
+    agent_id: Option<String>,
 ) -> Result<(), String> {
-    hub::register_terminal_session(session_id, pid, project_path).map_err(|e| e.to_string())
+    let fallback_agent_id = {
+        let s = state.lock().unwrap();
+        s.registry.active_id().to_string()
+    };
+    let agent_id = agent_id.unwrap_or(fallback_agent_id);
+    let window_id = agent::command_config::terminal_window_id(&agent_id, &session_id);
+    hub::register_terminal_session(session_id, pid, project_path, agent_id, window_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -507,6 +528,7 @@ pub fn run() {
             load_font_sizes,
             save_font_sizes,
             list_custom_commands,
+            agent_command_presets,
             save_custom_command,
             delete_custom_command,
             open_in_terminal,

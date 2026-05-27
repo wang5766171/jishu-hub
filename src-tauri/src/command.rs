@@ -9,6 +9,8 @@ pub struct CustomCommand {
     pub id: String,
     pub name: String,
     pub command: String,
+    #[serde(rename = "agentId", default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     #[serde(rename = "projectPath")]
     pub project_path: Option<String>,
 }
@@ -72,16 +74,12 @@ pub fn delete_custom_command(id: &str) -> Result<(), Box<dyn std::error::Error>>
     write_json(&path, &data)
 }
 
-pub fn open_in_terminal(
+pub fn open_agent_terminal(
     project_path: &str,
-    resume_session_id: Option<&str>,
+    command: &str,
+    window_id: Option<&str>,
 ) -> Result<u32, Box<dyn std::error::Error>> {
-    let claude_cmd = match resume_session_id {
-        Some(id) => format!("claude --resume {}", id),
-        None => "claude".to_string(),
-    };
-    
-    open_in_terminal_raw(project_path, &claude_cmd, resume_session_id)
+    open_in_terminal_raw(project_path, command, window_id)
 }
 
 pub fn open_in_terminal_with_command(
@@ -93,7 +91,7 @@ pub fn open_in_terminal_with_command(
 
 fn open_in_terminal_raw(
     project_path: &str,
-    claude_cmd: &str,
+    terminal_command: &str,
     window_id: Option<&str>,
 ) -> Result<u32, Box<dyn std::error::Error>> {
     if cfg!(target_os = "windows") {
@@ -109,17 +107,17 @@ fn open_in_terminal_raw(
             let mut cmd = std::process::Command::new("wt");
             // Named window per session so we can focus the correct one later
             if let Some(id) = window_id {
-                cmd.args(["-w", &format!("claude-{}", id)]);
+                cmd.args(["-w", id]);
             }
             let child = cmd
                 .args(["-d", project_path])
-                .args(["--", "cmd", "/K", &claude_cmd])
+                .args(["--", "cmd", "/K", terminal_command])
                 .spawn()?;
             Ok(child.id())
         } else {
             // Use .current_dir() instead of cd /D to avoid quoting issues
             let child = std::process::Command::new("cmd")
-                .args(["/K", &claude_cmd])
+                .args(["/K", terminal_command])
                 .current_dir(project_path)
                 .spawn()?;
             Ok(child.id())
@@ -128,14 +126,14 @@ fn open_in_terminal_raw(
         let child = std::process::Command::new("open")
             .args(["-a", "Terminal", project_path])
             .spawn()?;
-        // Small delay then run claude via AppleScript
+        // Small delay then run the agent command via AppleScript
         std::thread::sleep(std::time::Duration::from_millis(500));
         std::process::Command::new("osascript")
             .args([
                 "-e",
                 &format!(
                     "tell application \"Terminal\" to do script \"cd '{}' && {}\"",
-                    project_path, claude_cmd
+                    project_path, terminal_command
                 ),
             ])
             .spawn()?;
@@ -148,7 +146,7 @@ fn open_in_terminal_raw(
                 "-e",
                 "sh",
                 "-c",
-                &format!("cd '{}' && {}", project_path, claude_cmd),
+                &format!("cd '{}' && {}", project_path, terminal_command),
             ])
             .spawn()?;
         Ok(child.id())

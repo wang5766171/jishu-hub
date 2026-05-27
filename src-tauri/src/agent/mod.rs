@@ -6,6 +6,7 @@ pub mod adapters;
 pub mod capability;
 pub mod classify;
 pub mod claude_code;
+pub mod command_config;
 pub mod discovery;
 pub mod normalized;
 

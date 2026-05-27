@@ -20,9 +20,11 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
   const { t } = useTranslation();
   const [displayText, setDisplayText] = useState("");
   const [thinkingText, setThinkingText] = useState("");
+  const [errorText, setErrorText] = useState("");
   const [toolUses, setToolUses] = useState<Array<{ name: string; input: unknown }>>([]);
   const textRef = useRef("");
   const thinkingRef = useRef("");
+  const errorRef = useRef("");
   const toolsRef = useRef<Array<{ name: string; input: unknown }>>([]);
   const rafRef = useRef<number>(0);
   const processedCount = useRef(0);
@@ -63,6 +65,8 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
         textRef.current += chunk.data.delta;
       } else if (chunk.data.kind === "thinking") {
         thinkingRef.current += chunk.data.delta;
+      } else if (chunk.data.kind === "error") {
+        errorRef.current = chunk.data.message;
       } else if (chunk.data.kind === "tool_use_start") {
         toolsRef.current.push({ name: chunk.data.tool, input: chunk.data.input });
       } else if (chunk.data.kind === "message") {
@@ -83,6 +87,7 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
     rafRef.current = requestAnimationFrame(() => {
       setDisplayText(textRef.current);
       setThinkingText(thinkingRef.current);
+      setErrorText(errorRef.current);
       setToolUses([...toolsRef.current]);
       scrollToBottom();
     });
@@ -90,7 +95,7 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
     return () => cancelAnimationFrame(rafRef.current);
   }, [chunks, scrollToBottom]);
 
-  const hasBubbleContent = displayText.length > 0 || thinkingText.length > 0;
+  const hasBubbleContent = displayText.length > 0 || thinkingText.length > 0 || errorText.length > 0;
   const hasContent = hasBubbleContent || toolUses.length > 0;
 
   // 把流式工具调用映射成 ToolCall（暂无 id/output，因为流式只有 input）
@@ -158,6 +163,11 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
                         {displayText}
                       </ReactMarkdown>
                       {!isComplete && <span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5" />}
+                    </div>
+                  )}
+                  {errorText && (
+                    <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-sm text-destructive">
+                      {errorText}
                     </div>
                   )}
                   {!displayText && !isComplete && (

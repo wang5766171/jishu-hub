@@ -127,7 +127,11 @@ fn normalize_opencode_tool_use(event: &serde_json::Value) -> Vec<NormalizedEvent
 }
 
 fn normalize_opencode_step_finish(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    match event.get("reason").and_then(|v| v.as_str()) {
+    match event
+        .get("reason")
+        .or_else(|| event.get("part").and_then(|part| part.get("reason")))
+        .and_then(|v| v.as_str())
+    {
         Some("tool-calls") => vec![],
         Some("error") => vec![NormalizedEvent::TurnComplete {
             reason: TurnEndReason::Error,
@@ -385,7 +389,7 @@ impl AgentPlugin for OpencodeAdapter {
     }
 
     fn build_resume_command(&self, session_id: &str) -> String {
-        format!("opencode --session {}", session_id)
+        crate::agent::command_config::resume_command("opencode", session_id)
     }
 
     fn parse_stream_event(&self, event: &serde_json::Value) -> String {
@@ -414,11 +418,12 @@ impl AgentPlugin for OpencodeAdapter {
         project_path: &str,
         resume_session_id: Option<&str>,
     ) -> Result<u32, Box<dyn std::error::Error>> {
-        let command = match resume_session_id {
-            Some(sid) => format!("opencode --session {}", sid),
-            None => "opencode".to_string(),
-        };
-        crate::command::open_in_terminal_with_command(project_path, &command)
+        let command = resume_session_id
+            .map(|sid| crate::agent::command_config::resume_command("opencode", sid))
+            .unwrap_or_else(|| crate::agent::command_config::launch_command("opencode"));
+        let window_id =
+            resume_session_id.map(|sid| crate::agent::command_config::terminal_window_id("opencode", sid));
+        crate::command::open_agent_terminal(project_path, &command, window_id.as_deref())
     }
 
     fn open_in_terminal_with_command(
@@ -430,8 +435,8 @@ impl AgentPlugin for OpencodeAdapter {
     }
 
     fn init_project(&self, project_path: &str) -> Result<bool, String> {
-        let command = "opencode \"Please initialize this project and tell me when it's done.\"";
-        crate::command::open_in_terminal_with_command(project_path, command)
+        let command = crate::agent::command_config::init_command("opencode");
+        crate::command::open_in_terminal_with_command(project_path, &command)
             .map(|_| true)
             .map_err(|e| e.to_string())
     }
@@ -554,6 +559,14 @@ mod tests {
                 usage: None,
             }]
         );
+
+        let tool_step = serde_json::json!({
+            "type": "step_finish",
+            "part": {
+                "reason": "tool-calls"
+            }
+        });
+        assert_eq!(normalize_stream_event(&tool_step), Vec::<NormalizedEvent>::new());
 
         let error = serde_json::json!({
             "type": "error",

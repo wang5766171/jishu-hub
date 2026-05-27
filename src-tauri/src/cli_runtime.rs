@@ -34,8 +34,10 @@ pub fn spawn_stream_reader<R, E>(
 {
     if let Some(stderr) = stderr {
         let stderr_agent_id = agent_id.clone();
+        let stderr_session_id = session_id.clone();
+        let stderr_app = app.clone();
         tauri::async_runtime::spawn(async move {
-            drain_stderr(stderr_agent_id, stderr).await;
+            drain_stderr(stderr_app, stderr_agent_id, stderr_session_id, stderr).await;
         });
     }
 
@@ -45,7 +47,7 @@ pub fn spawn_stream_reader<R, E>(
     });
 }
 
-async fn drain_stderr<R>(agent_id: String, stderr: R)
+async fn drain_stderr<R>(app: tauri::AppHandle, agent_id: String, session_id: String, stderr: R)
 where
     R: AsyncRead + Unpin,
 {
@@ -53,6 +55,23 @@ where
     let mut lines = reader.lines();
     while let Ok(Some(line)) = lines.next_line().await {
         log::warn!("[{} stderr] {}", agent_id, line);
+        if agent_id == "opencode" && !line.trim().is_empty() {
+            let event = NormalizedEvent::Error {
+                message: line,
+                recoverable: true,
+            };
+            if let Ok(data) = serde_json::to_value(event) {
+                emit_stream_batch(
+                    &app,
+                    &agent_id,
+                    &[StreamChunk {
+                        session_id: session_id.clone(),
+                        event_type: "error".to_string(),
+                        data,
+                    }],
+                );
+            }
+        }
     }
 }
 

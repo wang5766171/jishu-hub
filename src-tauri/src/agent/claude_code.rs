@@ -420,7 +420,7 @@ impl AgentPlugin for ClaudeCodeAgent {
     }
 
     fn build_resume_command(&self, session_id: &str) -> String {
-        format!("claude --resume {}", session_id)
+        crate::agent::command_config::resume_command("claude-code", session_id)
     }
 
     fn parse_stream_event(&self, event: &serde_json::Value) -> String {
@@ -447,7 +447,12 @@ impl AgentPlugin for ClaudeCodeAgent {
         project_path: &str,
         resume_session_id: Option<&str>,
     ) -> Result<u32, Box<dyn std::error::Error>> {
-        crate::command::open_in_terminal(project_path, resume_session_id)
+        let command = resume_session_id
+            .map(|sid| crate::agent::command_config::resume_command("claude-code", sid))
+            .unwrap_or_else(|| crate::agent::command_config::launch_command("claude-code"));
+        let window_id =
+            resume_session_id.map(|sid| crate::agent::command_config::terminal_window_id("claude-code", sid));
+        crate::command::open_agent_terminal(project_path, &command, window_id.as_deref())
     }
 
     fn open_in_terminal_with_command(
@@ -455,12 +460,12 @@ impl AgentPlugin for ClaudeCodeAgent {
         project_path: &str,
         command: &str,
     ) -> Result<u32, Box<dyn std::error::Error>> {
-        crate::command::open_in_terminal_with_command(project_path, command)
+        crate::command::open_in_terminal_with_command(project_path, &command)
     }
 
     fn init_project(&self, project_path: &str) -> Result<bool, String> {
-        let command = "claude \"Please initialize this project and tell me when it's done.\"";
-        crate::command::open_in_terminal_with_command(project_path, command)
+        let command = crate::agent::command_config::init_command("claude-code");
+        crate::command::open_in_terminal_with_command(project_path, &command)
             .map(|_| true)
             .map_err(|e| e.to_string())
     }

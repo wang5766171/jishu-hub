@@ -332,6 +332,7 @@ export function ChatPage({
       });
       await invokeCommand("register_terminal_session", {
         sessionId, pid, projectPath: cwd,
+        agentId: activeId,
       });
     } catch (err) {
       console.error("Failed to resume session:", err);
@@ -446,6 +447,8 @@ export function ChatPage({
               text += c.data.delta;
             } else if (c.data.kind === "thinking") {
               thinking += c.data.delta;
+            } else if (c.data.kind === "error") {
+              text += text ? `\n\n${c.data.message}` : c.data.message;
             } else if (c.data.kind === "tool_use_start") {
               tools.push({ type: "tool_use", id: c.data.call_id, name: c.data.tool, input: c.data.input });
             } else if (c.data.kind === "message") {

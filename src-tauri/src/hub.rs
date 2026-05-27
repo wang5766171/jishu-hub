@@ -471,6 +471,10 @@ pub struct TerminalSessionInfo {
     pub pid: u32,
     pub project_path: String,
     pub started_at: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub window_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -486,6 +490,8 @@ pub fn register_terminal_session(
     session_id: String,
     pid: u32,
     project_path: String,
+    agent_id: String,
+    window_id: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path = terminal_sessions_path()?;
     let mut sessions: TerminalSessions = if path.exists() {
@@ -498,6 +504,8 @@ pub fn register_terminal_session(
         TerminalSessionInfo {
             pid,
             project_path,
+            agent_id: Some(agent_id),
+            window_id: Some(window_id),
             started_at: chrono::Utc::now().to_rfc3339(),
         },
     );
@@ -529,6 +537,8 @@ pub fn find_session_terminal(
                 .get(session_id)
                 .map(|s| s.started_at.clone())
                 .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+            agent_id: sessions.sessions.get(session_id).and_then(|s| s.agent_id.clone()),
+            window_id: sessions.sessions.get(session_id).and_then(|s| s.window_id.clone()),
         };
         sessions
             .sessions
@@ -551,11 +561,38 @@ pub fn find_session_terminal(
 pub fn focus_session_terminal(session_id: &str) -> Result<bool, Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     {
-        let window_name = format!("claude-{}", session_id);
-        let output = std::process::Command::new("wt")
-            .args(["-w", &window_name, "focus-tab"])
-            .output()?;
-        Ok(output.status.success())
+        let mut candidates = Vec::new();
+        let path = terminal_sessions_path()?;
+        if path.exists() {
+            let sessions: TerminalSessions = read_json(&path)?;
+            if let Some(info) = sessions.sessions.get(session_id) {
+                if let Some(window_id) = &info.window_id {
+                    candidates.push(window_id.clone());
+                }
+                if let Some(agent_id) = &info.agent_id {
+                    candidates.push(crate::agent::command_config::terminal_window_id(
+                        agent_id, session_id,
+                    ));
+                }
+            }
+        }
+        candidates.extend([
+            crate::agent::command_config::terminal_window_id("claude-code", session_id),
+            crate::agent::command_config::terminal_window_id("codex", session_id),
+            crate::agent::command_config::terminal_window_id("opencode", session_id),
+        ]);
+        candidates.sort();
+        candidates.dedup();
+
+        for window_name in candidates {
+            let output = std::process::Command::new("wt")
+                .args(["-w", &window_name, "focus-tab"])
+                .output()?;
+            if output.status.success() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -567,12 +604,22 @@ pub fn focus_session_terminal(session_id: &str) -> Result<bool, Box<dyn std::err
 fn find_process_by_resume(session_id: &str) -> Result<Option<u32>, Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     {
+        let marker_filter = crate::agent::command_config::resume_markers(session_id)
+            .into_iter()
+            .map(|marker| {
+                format!(
+                    "$_.CommandLine -like '*{}*'",
+                    marker.replace('\'', "''")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" -or ");
         let output = std::process::Command::new("powershell")
             .args([
                 "-NoProfile", "-NonInteractive", "-Command",
                 &format!(
-                    "$p = Get-CimInstance Win32_Process -Filter 'CommandLine LIKE ''%%--resume {}%%''' | Where-Object {{ $_.Name -ne 'powershell.exe' -and $_.Name -ne 'bash.exe' }}; if ($p) {{ ($p | Select-Object -First 1).ProcessId }}",
-                    session_id
+                    "$p = Get-CimInstance Win32_Process | Where-Object {{ ({}) -and $_.Name -ne 'powershell.exe' -and $_.Name -ne 'bash.exe' }}; if ($p) {{ ($p | Select-Object -First 1).ProcessId }}",
+                    marker_filter
                 ),
             ])
             .output()?;
@@ -588,8 +635,9 @@ fn find_process_by_resume(session_id: &str) -> Result<Option<u32>, Box<dyn std::
     }
     #[cfg(not(target_os = "windows"))]
     {
+        let pattern = crate::agent::command_config::resume_markers(session_id).join("|");
         let output = std::process::Command::new("pgrep")
-            .args(["-f", &format!("--resume {}", session_id)])
+            .args(["-f", &pattern])
             .output()?;
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
