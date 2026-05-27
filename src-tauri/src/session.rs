@@ -116,6 +116,31 @@ fn parse_content_blocks(value: &serde_json::Value) -> Vec<ContentBlock> {
     }
 }
 
+fn is_internal_task_notification(v: &serde_json::Value, content: &serde_json::Value) -> bool {
+    let has_origin = v
+        .get("origin")
+        .and_then(|origin| origin.get("kind"))
+        .and_then(|kind| kind.as_str())
+        == Some("task-notification");
+
+    if has_origin {
+        return true;
+    }
+
+    match content {
+        serde_json::Value::String(s) => s.trim_start().starts_with("<task-notification>"),
+        serde_json::Value::Array(items) => items.iter().any(|item| {
+            item.get("type").and_then(|t| t.as_str()) == Some("text")
+                && item
+                    .get("text")
+                    .and_then(|text| text.as_str())
+                    .map(|text| text.trim_start().starts_with("<task-notification>"))
+                    .unwrap_or(false)
+        }),
+        _ => false,
+    }
+}
+
 pub fn parse_message(line: &str) -> Option<Message> {
     if line.trim().is_empty() {
         return None;
@@ -137,6 +162,10 @@ pub fn parse_message(line: &str) -> Option<Message> {
         .and_then(|m| m.get("content"))
         .cloned()
         .unwrap_or(serde_json::Value::Null);
+
+    if role == "user" && is_internal_task_notification(&v, &content_value) {
+        return None;
+    }
 
     let content = parse_content_blocks(&content_value);
 
@@ -329,6 +358,18 @@ mod tests {
     #[test]
     fn test_parse_message_ignores_meta_skill_context() {
         let line = r#"{"type":"user","isMeta":true,"sourceToolUseID":"call_skill","message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: C:\\Users\\me\\.claude\\skills\\graphify\n\n# /graphify"}]}}"#;
+        assert!(parse_message(line).is_none());
+    }
+
+    #[test]
+    fn test_parse_message_ignores_task_notification_origin() {
+        let line = r#"{"type":"user","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<task-id>a24c09786e84bbcda</task-id>\n<summary>Agent completed</summary>\n</task-notification>"}}"#;
+        assert!(parse_message(line).is_none());
+    }
+
+    #[test]
+    fn test_parse_message_ignores_task_notification_text_block() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<task-notification>\n<task-id>a24c09786e84bbcda</task-id>\n</task-notification>"}]}}"#;
         assert!(parse_message(line).is_none());
     }
 }
