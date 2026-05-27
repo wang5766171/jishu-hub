@@ -3,7 +3,7 @@ import "@/i18n";
 import { lazy, Suspense } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { useTranslation } from "react-i18next";
-import { Minus, Pin, PinOff, Settings, Square, Sun, Palette, Moon, Info, Type, X } from "lucide-react";
+import { Copy, Minus, Pin, PinOff, Settings, Square, Sun, Palette, Moon, Info, Type, X } from "lucide-react";
 import logo from "@/assets/logo.png";
 import { Github } from "@/components/icons/github";
 import { Gitee } from "@/components/icons/gitee";
@@ -16,7 +16,7 @@ import { useFontSize, type FontLevel } from "@/hooks/use-font-size";
 import { AgentProvider, useAgent } from "@/agents";
 import { AgentSwitcher } from "@/agents";
 import { FileViewerProvider } from "@/components/file-viewer";
-import type { Page, Project } from "@/types";
+import type { Page, Project, ProjectMeta } from "@/types";
 
 const ChatPage = lazy(() => import("@/pages/chat-page").then(m => ({ default: m.ChatPage })));
 const ManagePage = lazy(() => import("@/pages/manage-page").then(m => ({ default: m.ManagePage })));
@@ -143,8 +143,13 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
     if (!appWindow) return;
 
     try {
-      await appWindow.toggleMaximize();
-      setMaximized(await appWindow.isMaximized());
+      const wasMaximized = await appWindow.isMaximized();
+      if (wasMaximized) {
+        await appWindow.unmaximize();
+      } else {
+        await appWindow.maximize();
+      }
+      setMaximized(!wasMaximized);
     } catch (e) {
       console.error(e);
     }
@@ -298,7 +303,7 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
           title={maximized ? "Restore" : "Maximize"}
           aria-label={maximized ? "Restore" : "Maximize"}
         >
-          <Square className="h-3.5 w-3.5" />
+          {maximized ? <Copy className="h-3.5 w-3.5" /> : <Square className="h-3.5 w-3.5" />}
         </button>
         <button
           type="button"
@@ -321,6 +326,7 @@ function AppContent() {
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const { data: projects, loading: projectsLoading, refetch: refetchProjects } = useInvoke<Project[]>("scan_projects");
   const { data: sessionNames, loading: namesLoading, refetch: refetchNames } = useInvoke<Record<string, string>>("get_session_names");
+  const { data: projectMetas, refetch: refetchProjectMetas } = useInvoke<Record<string, ProjectMeta>>("load_project_metas");
 
   // Only show loading overlay on initial load, not on refresh
   const loading = projectsLoading || namesLoading;
@@ -345,14 +351,16 @@ function AppContent() {
       return newProjects.find(p => p.encoded_name === prev.encoded_name) ?? null;
     });
     await refetchNames(true);
+    await refetchProjectMetas(true);
     return Date.now();
-  }, [refetchProjects, refetchNames]);
+  }, [refetchProjects, refetchNames, refetchProjectMetas]);
 
-  const handleEnterProject = useCallback((project: Project) => {
+  const handleEnterProject = useCallback(async (project: Project) => {
+    refetchProjectMetas(true).catch(console.error);
     setCurrentProject(project);
     invokeCommand("save_last_project", { encodedName: project.encoded_name }).catch(console.error);
     setCurrentPage("chat");
-  }, []);
+  }, [refetchProjectMetas]);
 
   const [manageNavKey, setManageNavKey] = useState(0);
 
@@ -372,7 +380,10 @@ function AppContent() {
       })
       .catch(console.error);
     refetchNames(true).catch(console.error);
-  }, [activeId, refetchProjects, refetchNames]);
+    refetchProjectMetas(true).catch(console.error);
+  }, [activeId, refetchProjects, refetchNames, refetchProjectMetas]);
+
+  const currentProjectMeta = currentProject ? projectMetas?.[currentProject.encoded_name] : undefined;
 
   return (
     <div className="flex flex-col h-screen bg-background relative">
@@ -380,7 +391,7 @@ function AppContent() {
       <div className="flex-1 overflow-hidden">
         <Suspense fallback={<LoadingOverlay />}>
           {currentPage === "chat"
-            ? <ChatPage currentProject={currentProject} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} />
+            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} />
             : <ManagePage onBack={() => setCurrentPage("chat")} onEnterProject={handleEnterProject} navigateToProjects={manageNavKey} />}
         </Suspense>
       </div>

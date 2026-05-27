@@ -16,7 +16,7 @@ import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { searchSessions } from "@/lib/session-search";
 import { useAgent } from "@/agents";
-import type { Session, Project, Message, ContentBlock, AgentStreamChunk, SessionSearchResult } from "@/types";
+import type { Session, Project, ProjectMeta, Message, ContentBlock, AgentStreamChunk, SessionSearchResult } from "@/types";
 
 function TerminalIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -64,12 +64,14 @@ function extractRealSessionId(data: unknown): string | null {
 
 export function ChatPage({
   currentProject,
+  currentProjectMeta,
   onRefresh,
   sessionNames,
   refetchNames,
   onSwitchProject,
 }: {
   currentProject: Project | null;
+  currentProjectMeta?: ProjectMeta;
   onRefresh: () => Promise<number>;
   sessionNames: Record<string, string> | null;
   refetchNames: (silent?: boolean) => Promise<Record<string, string>>;
@@ -180,12 +182,28 @@ export function ChatPage({
     setSelectedSession(null);
     selectedSessionRef.current = null;
     setSessionMessages([]);
+    setOptimisticSessions([]);
     streamChunksRef.current = [];
     earlyChunksRef.current = [];
     setPendingUserMessage(null);
     pendingUserMsgRef.current = null;
     resolvedSessionIdRef.current = null;
   }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId || !activeId) return;
+    setSelectedSession(null);
+    selectedSessionRef.current = null;
+    setSessionMessages([]);
+    setOptimisticSessions([]);
+    streamChunksRef.current = [];
+    earlyChunksRef.current = [];
+    setPendingUserMessage(null);
+    pendingUserMsgRef.current = null;
+    resolvedSessionIdRef.current = null;
+    setListRefreshKey(Date.now());
+    refetchNames(true).catch(console.error);
+  }, [activeId, projectId, refetchNames]);
 
   const handleRefresh = async () => {
     const newKey = await onRefresh();
@@ -458,7 +476,7 @@ export function ChatPage({
   const displayName = selectedSession
     ? (sessionNames?.[selectedSession] || sessions?.find(s => s.id === selectedSession)?.display_name || optimisticSessions.find(s => s.id === selectedSession)?.display_name || selectedSession.slice(0, 8))
     : "";
-  const projectDisplayName = currentProject?.name ?? t("sessions.noProject");
+  const projectDisplayName = currentProjectMeta?.custom_name || currentProject?.name || t("sessions.noProject");
   const projectPath = currentProject?.path ?? "";
   const startComposerFooter = currentProject ? (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border/40 bg-muted/45 px-4 py-2.5 text-xs text-muted-foreground">
@@ -467,11 +485,11 @@ export function ChatPage({
         <span className="truncate font-medium text-foreground" title={projectDisplayName}>{projectDisplayName}</span>
       </span>
       <span className="inline-flex min-w-0 items-center gap-1.5" title={projectPath}>
-        <HardDrive className="h-3.5 w-3.5 shrink-0" />
+        <HardDrive className="h-3.5 w-3.5 shrink-0 text-[var(--icon-config)]" />
         <span className="truncate">{t("sessions.localMode")}</span>
       </span>
       <span className="inline-flex min-w-0 items-center gap-1.5" title={active?.display_name ?? ""}>
-        <Bot className="h-3.5 w-3.5 shrink-0" />
+        <Bot className="h-3.5 w-3.5 shrink-0 text-[var(--icon-message)]" />
         <span className="truncate">{active?.display_name ?? t("sessions.currentAgent")}</span>
       </span>
       {projectPath && (
@@ -497,7 +515,7 @@ export function ChatPage({
           {currentProject ? (
             <div className="flex items-center gap-2 px-3 h-10 border-b border-border/20">
               <FolderOpen className="h-5 w-5 shrink-0 ml-1 text-[var(--icon-folder)]" />
-              <span className="truncate text-sm font-semibold text-foreground flex-1 min-w-0 leading-none pt-[1px]" title={currentProject.name}>{currentProject.name}</span>
+              <span className="truncate text-sm font-semibold text-foreground flex-1 min-w-0 leading-none pt-[1px]" title={projectDisplayName}>{projectDisplayName}</span>
               <button
                 onClick={onSwitchProject}
                 className="shrink-0 px-1.5 h-6 flex items-center gap-0.5 rounded-md text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-fast"
@@ -706,7 +724,7 @@ export function ChatPage({
           </div>
         ) : showStartComposer ? (
           <div className="flex min-h-0 flex-1 items-center justify-center px-6 py-10">
-            <div className="flex w-full max-w-[960px] min-w-0 flex-col items-center">
+            <div className="flex w-full max-w-[760px] min-w-0 flex-col items-center">
               <h1 className="mb-14 max-w-full text-center text-[2rem] font-medium leading-tight tracking-normal text-foreground">
                 {t("sessions.startPrompt", { project: projectDisplayName })}
               </h1>
