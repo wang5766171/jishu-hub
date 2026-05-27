@@ -12,8 +12,8 @@ impl OpencodeAdapter {
 }
 
 pub fn normalize_stream_event(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    match event.get("type").and_then(|v| v.as_str()) {
-        Some("step_start") => normalize_opencode_session(event),
+    match event_type(event) {
+        Some("step_start") | Some("step-start") => normalize_opencode_session(event),
         Some("text") | Some("text_delta") | Some("message.delta") => {
             let delta = event
                 .get("text")
@@ -33,11 +33,18 @@ pub fn normalize_stream_event(event: &serde_json::Value) -> Vec<NormalizedEvent>
         Some("reasoning") => normalize_opencode_reasoning(event),
         Some("tool_use") => normalize_opencode_tool_use(event),
         Some("message") | Some("message.completed") => normalize_opencode_message(event),
-        Some("step_finish") => normalize_opencode_step_finish(event),
+        Some("step_finish") | Some("step-finish") => normalize_opencode_step_finish(event),
         Some("error") => normalize_opencode_error(event),
         Some("session.idle") | Some("result") => normalize_opencode_complete(event),
         _ => raw(event),
     }
+}
+
+fn event_type(event: &serde_json::Value) -> Option<&str> {
+    event
+        .get("type")
+        .or_else(|| event.get("part").and_then(|part| part.get("type")))
+        .and_then(|v| v.as_str())
 }
 
 fn normalize_opencode_session(event: &serde_json::Value) -> Vec<NormalizedEvent> {
@@ -373,10 +380,8 @@ impl AgentPlugin for OpencodeAdapter {
 
         #[cfg(target_os = "windows")]
         {
-            let mut full_args = vec!["/C".to_string(), "opencode".to_string()];
-            full_args.extend(args);
-            let mut cmd = tokio::process::Command::new("cmd");
-            cmd.args(&full_args).current_dir(&req.project_path);
+            let mut cmd = tokio::process::Command::new("opencode");
+            cmd.args(&args).current_dir(&req.project_path);
             cmd
         }
 
@@ -393,12 +398,12 @@ impl AgentPlugin for OpencodeAdapter {
     }
 
     fn parse_stream_event(&self, event: &serde_json::Value) -> String {
-        match event.get("type").and_then(|v| v.as_str()) {
-            Some("step_start") => "session",
+        match event_type(event) {
+            Some("step_start") | Some("step-start") => "session",
             Some("text") => "delta",
             Some("reasoning") => "thinking",
             Some("tool_use") => "tool",
-            Some("step_finish") => "result",
+            Some("step_finish") | Some("step-finish") => "result",
             Some("error") => "error",
             Some("text_delta") => "delta",
             Some("message") => "message",
@@ -554,6 +559,22 @@ mod tests {
         });
         assert_eq!(
             normalize_stream_event(&finish),
+            vec![NormalizedEvent::TurnComplete {
+                reason: TurnEndReason::Complete,
+                usage: None,
+            }]
+        );
+
+        let finish_hyphen = serde_json::json!({
+            "type": "step-finish",
+            "sessionID": "ses_abc",
+            "part": {
+                "type": "step-finish",
+                "reason": "stop"
+            }
+        });
+        assert_eq!(
+            normalize_stream_event(&finish_hyphen),
             vec![NormalizedEvent::TurnComplete {
                 reason: TurnEndReason::Complete,
                 usage: None,
