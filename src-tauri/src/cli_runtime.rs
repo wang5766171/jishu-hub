@@ -82,6 +82,7 @@ where
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
     let mut saw_terminal_event = false;
+    let mut saw_agent_output = false;
     let mut buf: Vec<StreamChunk> = Vec::with_capacity(32);
     let mut last_flush = std::time::Instant::now();
 
@@ -99,6 +100,9 @@ where
         };
 
         for event in events {
+            if is_agent_output(&event) {
+                saw_agent_output = true;
+            }
             if matches!(event, NormalizedEvent::TurnComplete { .. }) {
                 saw_terminal_event = true;
             }
@@ -132,16 +136,23 @@ where
     }
 
     if !saw_terminal_event {
-        let events = [
-            NormalizedEvent::Error {
-                message: "Process exited without a completion event".to_string(),
-                recoverable: false,
-            },
-            NormalizedEvent::TurnComplete {
-                reason: TurnEndReason::Error,
+        let events = if should_treat_eof_as_complete(&agent_id, saw_agent_output) {
+            vec![NormalizedEvent::TurnComplete {
+                reason: TurnEndReason::Complete,
                 usage: None,
-            },
-        ];
+            }]
+        } else {
+            vec![
+                NormalizedEvent::Error {
+                    message: "Process exited without a completion event".to_string(),
+                    recoverable: false,
+                },
+                NormalizedEvent::TurnComplete {
+                    reason: TurnEndReason::Error,
+                    usage: None,
+                },
+            ]
+        };
         let chunks: Vec<StreamChunk> = events
             .into_iter()
             .filter_map(|event| {
@@ -172,4 +183,46 @@ fn emit_stream_batch(app: &tauri::AppHandle, agent_id: &str, chunks: &[StreamChu
         })
         .collect();
     let _ = app.emit("agent-event", &agent_chunks);
+}
+
+fn is_agent_output(event: &NormalizedEvent) -> bool {
+    matches!(
+        event,
+        NormalizedEvent::TextDelta { .. }
+            | NormalizedEvent::Message { .. }
+            | NormalizedEvent::Thinking { .. }
+            | NormalizedEvent::ToolUseStart { .. }
+            | NormalizedEvent::ToolUseResult { .. }
+    )
+}
+
+fn should_treat_eof_as_complete(agent_id: &str, saw_agent_output: bool) -> bool {
+    agent_id == "opencode" && saw_agent_output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opencode_eof_after_output_is_complete() {
+        assert!(should_treat_eof_as_complete("opencode", true));
+    }
+
+    #[test]
+    fn eof_without_output_stays_strict() {
+        assert!(!should_treat_eof_as_complete("opencode", false));
+        assert!(!should_treat_eof_as_complete("claude-code", true));
+        assert!(!should_treat_eof_as_complete("codex", true));
+    }
+
+    #[test]
+    fn text_delta_counts_as_agent_output() {
+        assert!(is_agent_output(&NormalizedEvent::TextDelta {
+            delta: "hello".to_string(),
+        }));
+        assert!(!is_agent_output(&NormalizedEvent::SessionResolved {
+            session_id: "ses_1".to_string(),
+        }));
+    }
 }
