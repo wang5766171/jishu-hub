@@ -414,16 +414,16 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
-          className="w-full resize-none bg-transparent px-4 py-3 text-sm focus:outline-none min-h-[52px] max-h-[200px]"
+          className="w-full resize-none bg-transparent px-4 py-3 text-sm focus:outline-none min-h-[76px] max-h-[220px]"
           style={{ height: "auto", overflow: "hidden" }}
           onInput={(e) => {
             const target = e.target as HTMLTextAreaElement;
             target.style.height = "auto";
-            target.style.height = Math.min(target.scrollHeight, 200) + "px";
+            target.style.height = Math.min(target.scrollHeight, 220) + "px";
           }}
         />
 
-        <div className="flex items-end justify-between px-2.5 pb-2 pt-0">
+        <div className="flex items-end justify-between pl-2 pr-2.5 pb-2 pt-0">
           <div className="flex items-center gap-1">
             <div ref={toolbarRef} className="relative flex items-center gap-1">
               <Button
