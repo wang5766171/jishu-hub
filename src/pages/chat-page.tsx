@@ -758,7 +758,7 @@ export function ChatPage({
           </div>
         ) : showStartComposer ? (
           <div className="flex min-h-0 flex-1 items-center justify-center px-6 py-10">
-            <div className="flex w-full max-w-[760px] min-w-0 flex-col items-center">
+            <div className="flex w-full max-w-[var(--message-content-max-width)] min-w-0 flex-col items-center">
               <h1 className="mb-14 max-w-full text-center text-[2rem] font-medium leading-tight tracking-normal text-foreground">
                 {t("sessions.startPrompt", { project: projectDisplayName })}
               </h1>
