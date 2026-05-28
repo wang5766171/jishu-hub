@@ -537,15 +537,22 @@ export function ChatPage({
           // immediately. Otherwise the cache will be used the next time they
           // switch back to this session (without a JSONL reload).
           const viewed = selectedSessionRef.current;
+          const scrollEl = messageAreaRef.current;
+          const shouldStickToBottom = Boolean(
+            scrollEl
+            && (viewed === cid || viewed === finalKey)
+            && scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 120
+          );
           if (viewed === cid || viewed === finalKey) {
             setSessionMessages(updated);
           }
 
-          // Mark stream finished. Drop state shortly after so the bubble has
-          // a chance to flush its final paint and so a subsequent send for
-          // the *same* canonical id can start fresh.
-          streamStore.end(cid);
-          setTimeout(() => streamStore.drop(cid), 100);
+          // Convert the streaming bubble into the formal MessageView row in a
+          // single paint. Keeping the completed stream around briefly causes
+          // the same reply to be rendered twice, then removed, which looks
+          // like a vertical jump at the end of a turn.
+          streamStore.drop(cid);
+          streamStore.flushNow();
 
           if (isNewSessionStream) {
             newSessionStreamIdsRef.current.delete(cid);
@@ -554,6 +561,9 @@ export function ChatPage({
           }
 
           requestAnimationFrame(() => {
+            if (shouldStickToBottom && messageAreaRef.current) {
+              messageAreaRef.current.scrollTop = messageAreaRef.current.scrollHeight;
+            }
             chatInputRef.current?.focus();
           });
         }
