@@ -380,8 +380,8 @@ export function ChatPage({
     const name = sessionNames?.[sessionId]
       || sessions?.find(s => s.id === sessionId)?.display_name
       || sessionId.slice(0, 8);
-    openFloatingSession(sessionId, name, activeId || "", currentProject?.encoded_name || "");
-  }, [sessionNames, sessions, activeId, currentProject]);
+    openFloatingSession(sessionId, name, activeId || "", currentProject?.encoded_name || "", active?.display_name);
+  }, [sessionNames, sessions, activeId, active, currentProject]);
 
   const handleMessageSent = useCallback((sid: string, msg: string) => {
     // Register a new per-session stream entry. The store keys it by the
