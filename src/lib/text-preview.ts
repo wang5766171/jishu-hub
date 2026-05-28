@@ -27,7 +27,12 @@ function basename(path: string): string {
 }
 
 export function getToolPath(input: Record<string, unknown>): string {
-  const direct = asString(input.file_path) ?? asString(input.path) ?? asString(input.filename);
+  const direct =
+    asString(input.file_path) ??
+    asString(input.path) ??
+    asString(input.filename) ??
+    asString(input.dir_path) ??
+    asString(input.filePath);
   if (direct) return direct;
 
   const patch = asString(input.patch) ?? asString(input.command);
@@ -153,16 +158,32 @@ function rowsFromPairs(input: Record<string, unknown>): DiffRow[] {
     edits.forEach((edit, index) => {
       if (typeof edit !== "object" || edit === null) return;
       const record = edit as Record<string, unknown>;
-      const oldText = asString(record.old_string) ?? asString(record.oldText) ?? asString(record.old);
-      const newText = asString(record.new_string) ?? asString(record.newText) ?? asString(record.new);
+      const oldText =
+        asString(record.old_string) ??
+        asString(record.oldText) ??
+        asString(record.oldString) ??
+        asString(record.old);
+      const newText =
+        asString(record.new_string) ??
+        asString(record.newText) ??
+        asString(record.newString) ??
+        asString(record.new);
       if (oldText === null || newText === null) return;
       addPairRows(rows, oldText, newText, index + 1, index + 1);
     });
     return rows;
   }
 
-  const oldText = asString(input.old_string) ?? asString(input.oldText) ?? asString(input.old);
-  const newText = asString(input.new_string) ?? asString(input.newText) ?? asString(input.new);
+  const oldText =
+    asString(input.old_string) ??
+    asString(input.oldText) ??
+    asString(input.oldString) ??
+    asString(input.old);
+  const newText =
+    asString(input.new_string) ??
+    asString(input.newText) ??
+    asString(input.newString) ??
+    asString(input.new);
   if (oldText !== null && newText !== null) {
     addPairRows(rows, oldText, newText, 1, 1);
     return rows;
@@ -199,6 +220,7 @@ export function getReadableInputPreview(input: Record<string, unknown>): string 
     asString(input.text) ??
     asString(input.new_string) ??
     asString(input.newText) ??
+    asString(input.newString) ??
     null
   );
 }

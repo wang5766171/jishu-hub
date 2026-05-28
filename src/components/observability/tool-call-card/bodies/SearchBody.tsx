@@ -2,7 +2,7 @@ import { memo } from "react";
 
 export const SearchBody = memo(function SearchBody({ input, output }: { input: Record<string, unknown>; output?: string }) {
   const pattern = (input.pattern as string) || (input.glob as string) || "";
-  const path = (input.path as string) || "";
+  const path = (input.path as string) || (input.dir_path as string) || "";
 
   return (
     <div className="text-[0.95em] space-y-2">

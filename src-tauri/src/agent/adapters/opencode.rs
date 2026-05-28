@@ -421,6 +421,39 @@ fn parse_export_messages(raw: &str) -> Result<Vec<crate::session::Message>, Stri
                         }
                     }
                 }
+                "tool" => {
+                    let call_id = part
+                        .get("callID")
+                        .or_else(|| part.get("call_id"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let tool = part
+                        .get("tool")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("tool")
+                        .to_string();
+                    let state = part.get("state").unwrap_or(&part);
+                    let input = state
+                        .get("input")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+
+                    if !call_id.is_empty() {
+                        content.push(crate::session::ContentBlock::ToolUse {
+                            id: call_id.clone(),
+                            name: tool,
+                            input,
+                        });
+
+                        if let Some(output) = state.get("output").cloned() {
+                            content.push(crate::session::ContentBlock::ToolResult {
+                                tool_use_id: call_id,
+                                content: output,
+                            });
+                        }
+                    }
+                }
                 _ => {}
             }
         }
