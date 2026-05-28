@@ -30,7 +30,7 @@ export function KindIcon({ kind }: { kind: ToolKind }) {
   const Icon = config.icon;
   return (
     <span
-      className="inline-flex items-center justify-center rounded-md border border-border/45 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)]"
+      className="inline-flex items-center justify-center rounded-[4px] border border-border/45 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)]"
       style={{ background: `var(${config.bgVar})` }}
     >
       <Icon className="w-[1.05em] h-[1.05em] text-[var(--color-foreground)]" />

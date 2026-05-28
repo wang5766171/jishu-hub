@@ -22,7 +22,7 @@ export const ToolGroup = memo(function ToolGroup({ calls, defaultExpanded }: Too
     <div
       style={{ fontSize: "var(--font-size-prose)" }}
       className={cn(
-        "overflow-hidden rounded-lg border bg-[var(--tool-card-bg)] text-[1em] shadow-sm transition-colors",
+        "overflow-hidden rounded-[6px] border bg-[var(--tool-card-bg)] text-[1em] shadow-sm transition-colors",
         hasError
           ? "border-[var(--tool-error)] ring-1 ring-[var(--tool-error)]/30"
           : "border-[var(--tool-card-border)]",
