@@ -48,7 +48,7 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
     <div
       style={{ fontSize: "var(--font-size-prose)" }}
       className={cn(
-        "overflow-hidden rounded-[6px] border bg-[var(--tool-card-bg)] text-[1em] shadow-sm transition-colors",
+        "overflow-hidden rounded-[8px] border bg-[var(--tool-card-bg)] text-[1em] shadow-sm transition-colors",
         statusBorder[call.status],
       )}
     >
@@ -85,7 +85,7 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
                 openViewer({ kind: diff ? "diff" : "file", path, diff });
               }
             }}
-            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-muted-foreground hover:bg-[var(--color-accent)] hover:text-foreground"
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-[var(--color-accent)] hover:text-foreground"
           >
             <FileSearch className="h-3.5 w-3.5" />
           </span>

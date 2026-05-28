@@ -16,12 +16,12 @@ export const ShellExecBody = memo(function ShellExecBody({ input, output, error 
         </div>
       )}
       {output && (
-        <pre className={`font-mono text-[0.95em] bg-[var(--tool-card-code-bg)] border border-border/45 rounded-[4px] p-2.5 overflow-x-auto max-h-56 overflow-y-auto whitespace-pre ${error ? "text-[var(--tool-error)]" : ""}`}>
+        <pre className={`font-mono text-[0.95em] bg-[var(--tool-card-code-bg)] border border-border/45 rounded-[6px] p-2.5 overflow-x-auto max-h-56 overflow-y-auto whitespace-pre ${error ? "text-[var(--tool-error)]" : ""}`}>
           {output.length > 3000 ? output.slice(0, 3000) + "\n... (truncated)" : output}
         </pre>
       )}
       {error && (
-        <div className="text-[0.95em] text-[var(--tool-error)] font-mono bg-red-500/10 border border-[var(--tool-error)]/25 rounded-[4px] p-2.5">
+        <div className="text-[0.95em] text-[var(--tool-error)] font-mono bg-red-500/10 border border-[var(--tool-error)]/25 rounded-[6px] p-2.5">
           {error}
         </div>
       )}

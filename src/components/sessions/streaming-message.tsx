@@ -103,7 +103,7 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
               {hasContent && (
                 <div className="rounded-xl bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)] px-3 py-2 overflow-hidden min-w-0 max-w-full space-y-2">
                   {thinkingText && (
-                    <details className="rounded-[4px] border border-border/40 bg-[var(--message-thinking-bg)] px-2.5 py-1.5 text-xs text-muted-foreground">
+                    <details className="rounded-[6px] border border-border/40 bg-[var(--message-thinking-bg)] px-2.5 py-1.5 text-xs text-muted-foreground">
                       <summary className="cursor-pointer select-none hover:text-foreground">
                         {t("sessions.showThinking")}
                       </summary>
@@ -124,7 +124,7 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
                     </div>
                   )}
                   {errorText && (
-                    <div className="rounded-[4px] border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-sm text-destructive">
+                    <div className="rounded-[6px] border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-sm text-destructive">
                       {errorText}
                     </div>
                   )}
@@ -132,7 +132,7 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
                     <span className="inline-block w-1.5 h-4 bg-primary animate-pulse" />
                   )}
                   {streamToolCalls.length > 0 && (
-                    <div className="rounded-[6px]">
+                    <div className="rounded-[8px]">
                       <ToolGroup calls={streamToolCalls} />
                     </div>
                   )}

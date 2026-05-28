@@ -11,7 +11,7 @@ export const SearchBody = memo(function SearchBody({ input, output }: { input: R
         {path && <span className="text-muted-foreground">in: {path}</span>}
       </div>
       {output && (
-        <pre className="font-mono text-[0.95em] bg-[var(--tool-card-code-bg)] border border-border/45 rounded-[4px] p-2.5 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre">
+        <pre className="font-mono text-[0.95em] bg-[var(--tool-card-code-bg)] border border-border/45 rounded-[6px] p-2.5 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre">
           {output.length > 2000 ? output.slice(0, 2000) + "\n… (truncated)" : output}
         </pre>
       )}
