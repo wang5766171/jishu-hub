@@ -56,9 +56,11 @@ function InlineDiff({ diff }: { diff: DiffPreview }) {
         <span className="font-sans text-[0.95em] font-semibold text-red-600">-{diff.removed}</span>
       </div>
       <div className="max-h-72 overflow-auto font-mono text-[0.95em]">
-        {diff.rows.map((row, index) => (
-          <DiffLine key={index} row={row} />
-        ))}
+        <div className="inline-block min-w-full">
+          {diff.rows.map((row, index) => (
+            <DiffLine key={index} row={row} />
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -68,7 +70,7 @@ function DiffLine({ row }: { row: DiffRow }) {
   return (
     <div
       className={cn(
-        "grid grid-cols-[2.7rem_2.7rem_minmax(0,1fr)]",
+        "grid min-w-full grid-cols-[2.7rem_2.7rem_max-content]",
         row.kind === "add" && "bg-[var(--diff-added)] text-[var(--diff-added-fg)]",
         row.kind === "remove" && "bg-[var(--diff-removed)] text-[var(--diff-removed-fg)]",
       )}

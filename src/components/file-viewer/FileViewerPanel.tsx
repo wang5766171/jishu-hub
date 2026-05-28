@@ -177,9 +177,11 @@ function DiffTable({ diff }: { diff: DiffPreview }) {
         <span className="font-sans text-sm font-semibold text-green-600">+{diff.added}</span>
         <span className="font-sans text-sm font-semibold text-red-600">-{diff.removed}</span>
       </div>
-      {diff.rows.map((row, index) => (
-        <DiffLine key={index} row={row} />
-      ))}
+      <div className="inline-block min-w-full">
+        {diff.rows.map((row, index) => (
+          <DiffLine key={index} row={row} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -188,7 +190,7 @@ function DiffLine({ row }: { row: DiffRow }) {
   return (
     <div
       className={cn(
-        "grid grid-cols-[3rem_3rem_minmax(0,1fr)]",
+        "grid min-w-full grid-cols-[3rem_3rem_max-content]",
         row.kind === "add" && "bg-[var(--diff-added)] text-[var(--diff-added-fg)]",
         row.kind === "remove" && "bg-[var(--diff-removed)] text-[var(--diff-removed-fg)]",
       )}
