@@ -14,6 +14,16 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::Manager;
 
+const TEXT_PREVIEW_MAX_BYTES: usize = 512 * 1024;
+
+#[derive(serde::Serialize)]
+struct TextFilePreview {
+    path: String,
+    content: String,
+    truncated: bool,
+    size: usize,
+}
+
 pub struct AppState {
     pub registry: agent::AgentRegistry,
 }
@@ -66,6 +76,30 @@ fn get_session_messages(
     s.registry
         .active()
         .get_session_messages(&session_id, &encoded_name)
+}
+
+#[tauri::command]
+fn read_text_file(path: String) -> Result<TextFilePreview, String> {
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    if bytes.iter().take(TEXT_PREVIEW_MAX_BYTES).any(|b| *b == 0) {
+        return Err("Binary files cannot be previewed as text".to_string());
+    }
+
+    let size = bytes.len();
+    let truncated = size > TEXT_PREVIEW_MAX_BYTES;
+    let slice = if truncated {
+        &bytes[..TEXT_PREVIEW_MAX_BYTES]
+    } else {
+        &bytes
+    };
+    let content = String::from_utf8_lossy(slice).to_string();
+
+    Ok(TextFilePreview {
+        path,
+        content,
+        truncated,
+        size,
+    })
 }
 
 #[tauri::command]
@@ -503,6 +537,7 @@ pub fn run() {
             remove_project,
             list_sessions,
             get_session_messages,
+            read_text_file,
             get_session_names,
             rename_session,
             delete_session_name,
@@ -567,4 +602,24 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn reads_text_file_preview() {
+        let path = std::env::temp_dir().join(format!(
+            "jishu-hub-text-preview-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&path, "line 1\nline 2").unwrap();
+
+        let preview = super::read_text_file(path.to_string_lossy().to_string()).unwrap();
+
+        assert_eq!(preview.content, "line 1\nline 2");
+        assert!(!preview.truncated);
+        assert_eq!(preview.size, 13);
+
+        let _ = std::fs::remove_file(path);
+    }
 }
