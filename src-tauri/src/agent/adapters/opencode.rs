@@ -335,6 +335,23 @@ fn parse_export_messages(raw: &str) -> Result<Vec<crate::session::Message>, Stri
     Ok(messages)
 }
 
+fn hydrate_session_messages<F>(sessions: &mut [crate::session::Session], mut export_raw: F)
+where
+    F: FnMut(&str) -> Result<String, String>,
+{
+    for session in sessions {
+        if !session.messages.is_empty() {
+            continue;
+        }
+
+        if let Ok(raw) = export_raw(&session.id) {
+            if let Ok(messages) = parse_export_messages(&raw) {
+                session.messages = messages;
+            }
+        }
+    }
+}
+
 fn extract_json(raw: &str) -> Option<&str> {
     let start = raw.find(|ch| ch == '{' || ch == '[')?;
     let end = raw.rfind(|ch| ch == '}' || ch == ']')?;
@@ -854,7 +871,21 @@ impl AgentPlugin for OpencodeAdapter {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
         }
 
-        parse_session_list(&String::from_utf8_lossy(&output.stdout), &project_path)
+        let mut sessions = parse_session_list(&String::from_utf8_lossy(&output.stdout), &project_path)?;
+        hydrate_session_messages(&mut sessions, |session_id| {
+            let output = std::process::Command::new("opencode")
+                .args(["export", session_id])
+                .current_dir(&project_path)
+                .output()
+                .map_err(|e| format!("Failed to export opencode session: {e}"))?;
+
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+            }
+
+            Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        });
+        Ok(sessions)
     }
 
     fn get_session_messages(
@@ -1093,6 +1124,40 @@ mod tests {
             sessions[0].last_active.unwrap().timestamp_millis(),
             1779924225844
         );
+    }
+
+    #[test]
+    fn hydrates_list_sessions_with_exported_messages_for_search() {
+        let mut sessions = parse_session_list(
+            r#"[{
+                "id": "ses_search",
+                "title": "Search target",
+                "updated": 1779924225844,
+                "created": 1779924224291,
+                "directory": "D:\\MyCodes\\jishu-hub"
+            }]"#,
+            r"D:\MyCodes\jishu-hub",
+        )
+        .unwrap();
+
+        hydrate_session_messages(&mut sessions, |session_id| {
+            assert_eq!(session_id, "ses_search");
+            Ok(r#"{
+                "messages": [{
+                    "info": { "role": "assistant", "time": { "created": 1779924225844 } },
+                    "parts": [{ "type": "text", "text": "Open Code searchable history" }]
+                }]
+            }"#
+            .to_string())
+        });
+
+        assert_eq!(sessions[0].messages.len(), 1);
+        match &sessions[0].messages[0].content[0] {
+            crate::session::ContentBlock::Text { text } => {
+                assert_eq!(text, "Open Code searchable history");
+            }
+            _ => panic!("expected hydrated text block"),
+        }
     }
 
     #[test]
