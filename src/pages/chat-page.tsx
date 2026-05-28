@@ -939,6 +939,7 @@ export function ChatPage({
               projectPath={currentProject?.path ?? null}
               onMessageSent={handleMessageSent}
               allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
+              contextFooter={startComposerFooter}
               accessModeLabel={accessModeLabel}
               accessModeTitle={supportsAccessModeSwitch ? t("sessions.accessMode") : t("sessions.accessModeReadOnly")}
               accessModeReadOnly={!supportsAccessModeSwitch}

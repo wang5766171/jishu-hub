@@ -231,7 +231,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   );
 
   const handleFileSelect = async () => {
-    if (!allowFiles || !projectPath) return;
+    if (!allowFiles || !projectPath || disabled || sending || isStreaming) return;
     const selected = await open({ multiple: true, directory: false });
     if (!selected) return;
     const paths = Array.isArray(selected) ? selected : [selected];
@@ -278,7 +278,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   };
 
   const handleSend = async () => {
-    if (!projectPath || sending || isStreaming) return;
+    if (!projectPath || disabled || sending || isStreaming) return;
     if (!message.trim() && files.length === 0) return;
 
     setSending(true);
@@ -434,6 +434,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           placeholder={placeholder}
+          disabled={disabled}
           rows={1}
           className="w-full resize-none bg-transparent px-4 py-3 text-sm focus:outline-none min-h-[76px] max-h-[220px]"
           style={{ height: "auto", overflow: "hidden" }}
@@ -455,7 +456,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                   setToolMenuOpen((open) => !open);
                   setAccessMenuOpen(false);
                 }}
-                disabled={sending}
+                disabled={disabled || sending || isStreaming}
                 title={t("sessions.addContext")}
               >
                 <Plus className="h-4 w-4" strokeWidth={2.3} />
@@ -468,7 +469,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                       setToolMenuOpen(false);
                       handleFileSelect();
                     }}
-                    disabled={sending || !allowFiles}
+                    disabled={disabled || sending || isStreaming || !allowFiles}
                     className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-fast hover:bg-accent/60 disabled:cursor-not-allowed disabled:opacity-45"
                   >
                     <Paperclip className="h-4 w-4 text-[var(--icon-action)]" />
@@ -503,7 +504,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                       setAccessMenuOpen((open) => !open);
                       setToolMenuOpen(false);
                     }}
-                    disabled={sending}
+                    disabled={disabled || sending || isStreaming}
                     title={accessModeTitle ?? t("sessions.accessMode")}
                     className={cn(
                       "flex h-8 items-center gap-1.5 rounded-full border border-border/50 bg-background/80 px-2.5 text-xs text-muted-foreground transition-fast hover:bg-accent/45 hover:text-foreground",
@@ -553,7 +554,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                 }`}
                 style={(message.trim() || files.length > 0) ? { backgroundColor: 'var(--icon-send-bg)', color: 'var(--icon-send-fg)' } : undefined}
                 onClick={handleSend}
-                disabled={isStreaming || (!message.trim() && files.length === 0)}
+                disabled={disabled || isStreaming || (!message.trim() && files.length === 0)}
               >
                 <Send className="h-4 w-4 ml-[2px]" />
               </Button>

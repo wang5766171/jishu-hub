@@ -323,7 +323,6 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
 }
 
 function AppContent() {
-  const { t } = useTranslation();
   const { activeId, setActive } = useAgent();
   const [currentPage, setCurrentPage] = useState<Page>("chat");
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
@@ -334,7 +333,7 @@ function AppContent() {
 
   // Only show loading overlay on initial load, not on refresh
   const loading = projectsLoading || namesLoading;
-  const blockingLoading = loading;
+  const blockingLoading = loading || projectSessionsLoading;
 
   // Restore last project on startup
   useEffect(() => {
