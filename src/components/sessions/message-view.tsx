@@ -306,8 +306,8 @@ function AssistantBubble({
   const { t } = useTranslation();
 
   return (
-    <div className="flex gap-2 w-full justify-start">
-      <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--icon-avatar-bot-bg)] text-[var(--icon-avatar-bot)] mt-3.5">
+    <div className="relative w-full">
+      <div className="absolute -left-8 top-0 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--icon-avatar-bot-bg)] text-[var(--icon-avatar-bot)]">
         <Bot className="h-3 w-3" />
       </div>
       <div className="max-w-full min-w-0 flex flex-col">
@@ -365,7 +365,7 @@ function UserBubble({
   const copyText = extractMessageText(msg);
 
   return (
-    <div className="flex gap-2 w-full justify-end">
+    <div className="relative w-full flex justify-end">
       <div className="max-w-[88%] min-w-0 flex flex-col items-end">
         <div className="flex items-center gap-2 mb-0.5 text-[11px]">
           <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>
@@ -395,7 +395,7 @@ function UserBubble({
           <CopyButton text={copyText} />
         </div>
       </div>
-      <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--icon-avatar-user-bg)] text-[var(--icon-avatar-user)] mt-3.5">
+      <div className="absolute -right-8 top-0 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--icon-avatar-user-bg)] text-[var(--icon-avatar-user)]">
         <User className="h-3 w-3" />
       </div>
     </div>
@@ -539,7 +539,7 @@ export const MessageView = memo(function MessageView({
   }, [currentOcc, messages, renderingQuery, resultMap, searchState.offsets]);
 
   const fullMessageList = (
-    <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 overflow-hidden px-4 py-3">
+    <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
       {rows.map((row) => (
         <div key={rowKey(row, messages)}>{renderRow(row)}</div>
       ))}
