@@ -1,12 +1,11 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Collapsible, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { Bot, Check, ChevronDown, ChevronUp, Copy, User } from "lucide-react";
+import { Bot, Check, Copy, User } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
@@ -94,10 +93,6 @@ const TextBlock = memo(function TextBlock({
   matchOffset?: number;
   currentMatch?: number;
 }) {
-  const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
-  const needsCollapse = text.length > 800;
-
   if (dark) {
     const display = stripImagePrompt(text);
     return (
@@ -115,33 +110,12 @@ const TextBlock = memo(function TextBlock({
     );
   }
 
-  const content = (
+  return (
     <div className="markdown-prose overflow-hidden">
       <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
         {text}
       </ReactMarkdown>
     </div>
-  );
-
-  if (!needsCollapse) return content;
-
-  return (
-    <Collapsible open={expanded} onOpenChange={setExpanded} className="overflow-hidden">
-      <div className="relative">
-        <div className={cn("overflow-hidden", !expanded && "max-h-48")}>
-          {content}
-        </div>
-        {!expanded && (
-          <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-muted/90 to-transparent" />
-        )}
-      </div>
-      <CollapsibleTrigger asChild>
-        <button className="mt-1 inline-flex items-center gap-1 rounded-full px-3 py-0.5 text-xs text-foreground/60 hover:text-foreground hover:bg-muted transition-colors">
-          {expanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-          {expanded ? t("sessions.collapse") : t("sessions.expand")}
-        </button>
-      </CollapsibleTrigger>
-    </Collapsible>
   );
 });
 
@@ -302,7 +276,7 @@ function rowKey(row: RenderRow, messages: Message[]): string {
   if (row.kind === "user") {
     const msg = messages[row.messageIndex];
     const text = extractMessageText(msg);
-    return `user-${row.messageIndex}-${msg.timestamp ?? "no-ts"}-${text.length}-${text.slice(0, 16)}`;
+    return `user-${row.messageIndex}-${text.length}-${text.slice(0, 16)}`;
   }
 
   const text = extractMessagesText(messages, row.messageIndices);
@@ -312,10 +286,8 @@ function rowKey(row: RenderRow, messages: Message[]): string {
 function estimateRowSize(row: RenderRow, messages: Message[]): number {
   const textLength = rowTextLength(row, messages);
   const base = row.kind === "assistant" ? 96 : 76;
-  if (textLength < 80) return base;
-  if (textLength < 400) return base + 52;
-  if (textLength < 900) return base + 140;
-  return base + 240;
+  const estimatedTextHeight = Math.ceil(textLength * 0.4);
+  return base + estimatedTextHeight;
 }
 
 function AssistantBubble({
