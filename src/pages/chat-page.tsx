@@ -108,6 +108,8 @@ export function ChatPage({
   const visitedSessions = useRef(new Set<string>());
   const scrollMemory = useRef(new Map<string, number>());
   const scrollAction = useRef<{ type: "bottom" } | { type: "restore", top: number } | null>(null);
+  const newSessionStreamIdsRef = useRef<Set<string>>(new Set());
+  const refetchSessionsRef = useRef<((silent?: boolean) => Promise<Session[]>) | null>(null);
   /**
    * Per-session messages cache. Keyed by canonical session id (the id we
    * started the stream with) AND by resolvedId once known. While a session is
@@ -137,11 +139,15 @@ export function ChatPage({
 
   // Single hook for current project's sessions
   const [listRefreshKey, setListRefreshKey] = useState(0);
-  const { data: sessions, loading: sessionsLoading, setData: setSessions } = useInvoke<Session[]>(
+  const { data: sessions, loading: sessionsLoading, setData: setSessions, refetch: refetchSessions } = useInvoke<Session[]>(
     projectId ? "list_sessions" : "",
     projectId ? { encodedName: projectId } : undefined,
     activeId + "_" + listRefreshKey,
   );
+
+  useEffect(() => {
+    refetchSessionsRef.current = refetchSessions;
+  }, [refetchSessions]);
 
   useEffect(() => {
     // Clear sessions when switching agents to avoid showing stale data from previous agent
@@ -217,6 +223,7 @@ export function ChatPage({
     setSessionMessages([]);
     setOptimisticSessions([]);
     sessionMessagesCacheRef.current.clear();
+    newSessionStreamIdsRef.current.clear();
   }, [projectId]);
 
   useEffect(() => {
@@ -226,6 +233,7 @@ export function ChatPage({
     setSessionMessages([]);
     setOptimisticSessions([]);
     sessionMessagesCacheRef.current.clear();
+    newSessionStreamIdsRef.current.clear();
     setListRefreshKey(Date.now());
     refetchNames(true).catch(console.error);
   }, [activeId, projectId, refetchNames]);
@@ -407,7 +415,9 @@ export function ChatPage({
     // regardless of how the id is later resolved.
     streamStore.start(sid, msg);
 
-    if (!selectedSession || selectedSession === "new") {
+    const isNewSessionSend = !selectedSession || selectedSession === "new";
+    if (isNewSessionSend) {
+      newSessionStreamIdsRef.current.add(sid);
       const newOptSession: Session = {
         id: sid,
         path: currentProject?.path || "",
@@ -464,6 +474,9 @@ export function ChatPage({
 
           // Promote the optimistic session id to the real one in the UI.
           setOptimisticSessions(prev => prev.map(s => s.id === cid ? { ...s, id: realId } : s));
+          if (newSessionStreamIdsRef.current.has(cid)) {
+            newSessionStreamIdsRef.current.add(realId);
+          }
           // Move messages cache entry from pending id to real id (and keep
           // both keys pointing at the same array for safety).
           const cached = sessionMessagesCacheRef.current.get(cid);
@@ -481,6 +494,9 @@ export function ChatPage({
           // Build final assistant/user messages from the accumulated state.
           const state = streamStore.getState(cid);
           const finalKey = state?.resolvedId ?? cid;
+          const isNewSessionStream =
+            newSessionStreamIdsRef.current.has(cid)
+            || newSessionStreamIdsRef.current.has(finalKey);
           const newMessages: Message[] = [];
           if (state?.pendingUserMessage) {
             newMessages.push({
@@ -531,7 +547,11 @@ export function ChatPage({
           streamStore.end(cid);
           setTimeout(() => streamStore.drop(cid), 100);
 
-          setListRefreshKey(prev => prev + 1);
+          if (isNewSessionStream) {
+            newSessionStreamIdsRef.current.delete(cid);
+            newSessionStreamIdsRef.current.delete(finalKey);
+            refetchSessionsRef.current?.(true).catch(console.error);
+          }
 
           requestAnimationFrame(() => {
             chatInputRef.current?.focus();
