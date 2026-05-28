@@ -327,25 +327,37 @@ function AppContent() {
   const [currentPage, setCurrentPage] = useState<Page>("chat");
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [projectSessionsLoading, setProjectSessionsLoading] = useState(false);
+  const [initialProjectRestored, setInitialProjectRestored] = useState(false);
   const { data: projects, loading: projectsLoading, refetch: refetchProjects } = useInvoke<Project[]>("scan_projects");
   const { data: sessionNames, loading: namesLoading, refetch: refetchNames } = useInvoke<Record<string, string>>("get_session_names");
   const { data: projectMetas, refetch: refetchProjectMetas } = useInvoke<Record<string, ProjectMeta>>("load_project_metas");
+  const activeRefreshReadyRef = useRef(false);
 
   // Only show loading overlay on initial load, not on refresh
   const loading = projectsLoading || namesLoading;
-  const blockingLoading = loading || projectSessionsLoading;
+  const blockingLoading = loading || !initialProjectRestored || projectSessionsLoading;
 
   // Restore last project on startup
   useEffect(() => {
-    if (projects && !currentProject) {
-      invokeCommand<string | null>("load_last_project").then((lastEncoded) => {
+    if (!projects || initialProjectRestored) return;
+    let cancelled = false;
+    invokeCommand<string | null>("load_last_project")
+      .then((lastEncoded) => {
+        if (cancelled) return;
         if (lastEncoded) {
           const found = projects.find(p => p.encoded_name === lastEncoded);
-          if (found) setCurrentProject(found);
+          if (found) {
+            setProjectSessionsLoading(true);
+            setCurrentProject(found);
+          }
         }
-      }).catch(console.error);
-    }
-  }, [projects]);
+      })
+      .catch(console.error)
+      .finally(() => {
+        if (!cancelled) setInitialProjectRestored(true);
+      });
+    return () => { cancelled = true; };
+  }, [projects, initialProjectRestored]);
 
   // Refresh handler: directly await refetch Promises in the event handler
   const handleRefresh = useCallback(async (): Promise<number> => {
@@ -381,7 +393,9 @@ function AppContent() {
 
   useEffect(() => {
     if (!activeId) return;
-    refetchProjects()
+    const silent = !activeRefreshReadyRef.current;
+    activeRefreshReadyRef.current = true;
+    refetchProjects(silent)
       .then((newProjects) => {
         setCurrentProject((prev) => {
           if (!prev) return null;
