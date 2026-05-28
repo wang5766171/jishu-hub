@@ -22,20 +22,20 @@ export const ToolGroup = memo(function ToolGroup({ calls, defaultExpanded }: Too
     <div
       style={{ fontSize: "var(--font-size-prose)" }}
       className={cn(
-        "overflow-hidden rounded-xl border bg-[var(--tool-card-bg)] text-[0.85em] shadow-sm transition-colors",
+        "overflow-hidden rounded-xl border bg-[var(--tool-card-bg)] text-[1em] shadow-sm transition-colors",
         hasError
           ? "border-[var(--tool-error)] ring-1 ring-[var(--tool-error)]/30"
-          : "border-[var(--tool-card-border)] shadow-[inset_3px_0_0_var(--tool-success)]",
+          : "border-[var(--tool-card-border)]",
       )}
     >
       <button
         onClick={() => setExpanded(!expanded)}
         className="w-full flex items-center gap-2 bg-[var(--tool-card-header-bg)] px-3 py-2 text-left hover:bg-[var(--color-accent)]/45 transition-fast"
       >
-        <span className="text-[0.78em] font-semibold text-[var(--color-foreground)] truncate">
+        <span className="text-[0.95em] font-semibold text-[var(--color-foreground)] truncate">
           {summary}
         </span>
-        <span className="ml-auto rounded-full bg-background/70 px-1.5 py-0.5 text-[0.7em] text-muted-foreground shrink-0">
+        <span className="ml-auto rounded-full bg-background/70 px-1.5 py-0.5 text-[0.82em] text-muted-foreground shrink-0">
           {calls.length} {"\u9879"}
         </span>
         {expanded ? (

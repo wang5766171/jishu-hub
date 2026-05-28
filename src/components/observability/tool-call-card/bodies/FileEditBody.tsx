@@ -20,7 +20,7 @@ export const FileReadBody = memo(function FileReadBody({
   const readable = getReadableInputPreview(input);
 
   return (
-    <div className="space-y-2 text-[0.75em]">
+    <div className="space-y-2 text-[0.95em]">
       {path && (
         <div className="flex min-w-0 items-center gap-1.5 font-mono text-[var(--color-foreground)] opacity-80">
           <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
@@ -34,11 +34,11 @@ export const FileReadBody = memo(function FileReadBody({
       {diff ? (
         <InlineDiff diff={diff} />
       ) : readable ? (
-        <pre className="max-h-48 overflow-auto whitespace-pre rounded-lg border border-border/45 bg-[var(--tool-card-code-bg)] p-2 font-mono text-[0.73em]">
+        <pre className="max-h-56 overflow-auto whitespace-pre rounded-lg border border-border/45 bg-[var(--tool-card-code-bg)] p-2.5 font-mono text-[0.95em]">
           {readable.length > 2400 ? `${readable.slice(0, 2400)}\n... (truncated)` : readable}
         </pre>
       ) : output ? (
-        <pre className="max-h-40 overflow-auto whitespace-pre rounded-lg border border-border/45 bg-[var(--tool-card-code-bg)] p-2 font-mono text-[0.73em]">
+        <pre className="max-h-48 overflow-auto whitespace-pre rounded-lg border border-border/45 bg-[var(--tool-card-code-bg)] p-2.5 font-mono text-[0.95em]">
           {output.length > 2000 ? `${output.slice(0, 2000)}\n... (truncated)` : output}
         </pre>
       ) : null}
@@ -51,11 +51,11 @@ function InlineDiff({ diff }: { diff: DiffPreview }) {
     <div className="overflow-hidden rounded-lg border border-border/50 bg-background/45">
       <div className="flex items-center gap-2 border-b border-border/40 bg-[var(--tool-card-header-bg)] px-2.5 py-1.5">
         <FileText className="h-3.5 w-3.5 text-[var(--icon-action)]" />
-        <span className="min-w-0 flex-1 truncate font-sans text-[0.78em] font-medium">{diff.fileName}</span>
-        <span className="font-sans text-[0.78em] font-semibold text-green-600">+{diff.added}</span>
-        <span className="font-sans text-[0.78em] font-semibold text-red-600">-{diff.removed}</span>
+        <span className="min-w-0 flex-1 truncate font-sans text-[0.95em] font-medium">{diff.fileName}</span>
+        <span className="font-sans text-[0.95em] font-semibold text-green-600">+{diff.added}</span>
+        <span className="font-sans text-[0.95em] font-semibold text-red-600">-{diff.removed}</span>
       </div>
-      <div className="max-h-64 overflow-auto font-mono text-[0.72em]">
+      <div className="max-h-72 overflow-auto font-mono text-[0.95em]">
         {diff.rows.map((row, index) => (
           <DiffLine key={index} row={row} />
         ))}

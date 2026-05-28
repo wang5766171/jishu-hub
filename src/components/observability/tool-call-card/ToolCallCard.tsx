@@ -29,8 +29,8 @@ function ToolCallCardBody({ call }: { call: ToolCall }) {
 
 const statusBorder: Record<ToolCall["status"], string> = {
   pending: "border-dashed border-muted-foreground/35",
-  running: "border-solid border-[var(--tool-running)]/70 shadow-[inset_3px_0_0_var(--tool-running)]",
-  success: "border-solid border-[var(--tool-card-border)] shadow-[inset_3px_0_0_var(--tool-success)]",
+  running: "border-solid border-[var(--tool-card-border)]",
+  success: "border-solid border-[var(--tool-card-border)]",
   error: "border-solid border-[var(--tool-error)] ring-1 ring-[var(--tool-error)]/30",
   aborted: "border-solid border-muted-foreground/25 opacity-70",
 };
@@ -48,7 +48,7 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
     <div
       style={{ fontSize: "var(--font-size-prose)" }}
       className={cn(
-        "overflow-hidden rounded-xl border bg-[var(--tool-card-bg)] text-[0.85em] shadow-sm transition-colors",
+        "overflow-hidden rounded-xl border bg-[var(--tool-card-bg)] text-[1em] shadow-sm transition-colors",
         statusBorder[call.status],
       )}
     >
@@ -60,11 +60,11 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
         <span className="text-[0.73em] font-semibold text-muted-foreground uppercase tracking-wide">
           {kindLabel(call.kind)}
         </span>
-        <span className="flex-1 font-mono text-[0.75em] truncate text-[var(--color-foreground)]" title={path}>
+        <span className="flex-1 font-mono text-[0.95em] truncate text-[var(--color-foreground)]" title={path}>
           {shortPath}
         </span>
         {diff && (
-          <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[0.72em] font-semibold">
+          <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[0.9em] font-semibold">
             <span className="text-green-600">+{diff.added}</span>
             <span className="text-red-600">-{diff.removed}</span>
           </span>
@@ -91,7 +91,7 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
           </span>
         )}
         {duration && (
-          <span className="text-[0.67em] text-muted-foreground shrink-0">{duration}</span>
+          <span className="text-[0.82em] text-muted-foreground shrink-0">{duration}</span>
         )}
         <StatusBadge status={call.status} />
         {expanded ? (
