@@ -69,7 +69,7 @@ const ThinkingBlock = memo(function ThinkingBlock({ block }: { block: ContentBlo
   const { t } = useTranslation();
 
   return (
-    <details className="rounded-lg border border-border/40 bg-[var(--message-thinking-bg)] px-2.5 py-1.5 text-xs text-muted-foreground">
+    <details className="rounded-md border border-border/40 bg-[var(--message-thinking-bg)] px-2.5 py-1.5 text-xs text-muted-foreground">
       <summary className="cursor-pointer select-none hover:text-foreground">
         {t("sessions.showThinking")}
       </summary>

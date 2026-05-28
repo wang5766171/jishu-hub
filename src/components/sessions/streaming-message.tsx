@@ -103,7 +103,7 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
               {hasContent && (
                 <div className="rounded-xl bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)] px-3 py-2 overflow-hidden min-w-0 max-w-full space-y-2">
                   {thinkingText && (
-                    <details className="rounded-lg border border-border/40 bg-[var(--message-thinking-bg)] px-2.5 py-1.5 text-xs text-muted-foreground">
+                    <details className="rounded-md border border-border/40 bg-[var(--message-thinking-bg)] px-2.5 py-1.5 text-xs text-muted-foreground">
                       <summary className="cursor-pointer select-none hover:text-foreground">
                         {t("sessions.showThinking")}
                       </summary>

@@ -34,11 +34,11 @@ export const FileReadBody = memo(function FileReadBody({
       {diff ? (
         <InlineDiff diff={diff} />
       ) : readable ? (
-        <pre className="max-h-56 overflow-auto whitespace-pre rounded-lg border border-border/45 bg-[var(--tool-card-code-bg)] p-2.5 font-mono text-[0.95em]">
+        <pre className="max-h-56 overflow-auto whitespace-pre rounded-md border border-border/45 bg-[var(--tool-card-code-bg)] p-2.5 font-mono text-[0.95em]">
           {readable.length > 2400 ? `${readable.slice(0, 2400)}\n... (truncated)` : readable}
         </pre>
       ) : output ? (
-        <pre className="max-h-48 overflow-auto whitespace-pre rounded-lg border border-border/45 bg-[var(--tool-card-code-bg)] p-2.5 font-mono text-[0.95em]">
+        <pre className="max-h-48 overflow-auto whitespace-pre rounded-md border border-border/45 bg-[var(--tool-card-code-bg)] p-2.5 font-mono text-[0.95em]">
           {output.length > 2000 ? `${output.slice(0, 2000)}\n... (truncated)` : output}
         </pre>
       ) : null}
@@ -48,7 +48,7 @@ export const FileReadBody = memo(function FileReadBody({
 
 function InlineDiff({ diff }: { diff: DiffPreview }) {
   return (
-    <div className="overflow-hidden rounded-lg border border-border/50 bg-background/45">
+    <div className="overflow-hidden rounded-md border border-border/50 bg-background/45">
       <div className="flex items-center gap-2 border-b border-border/40 bg-[var(--tool-card-header-bg)] px-2.5 py-1.5">
         <FileText className="h-3.5 w-3.5 text-[var(--icon-action)]" />
         <span className="min-w-0 flex-1 truncate font-sans text-[0.95em] font-medium">{diff.fileName}</span>

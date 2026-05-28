@@ -48,7 +48,7 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
     <div
       style={{ fontSize: "var(--font-size-prose)" }}
       className={cn(
-        "overflow-hidden rounded-xl border bg-[var(--tool-card-bg)] text-[1em] shadow-sm transition-colors",
+        "overflow-hidden rounded-lg border bg-[var(--tool-card-bg)] text-[1em] shadow-sm transition-colors",
         statusBorder[call.status],
       )}
     >
