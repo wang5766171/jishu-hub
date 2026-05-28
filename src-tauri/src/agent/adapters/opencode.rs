@@ -1,7 +1,8 @@
 use chrono::{DateTime, Local, Utc};
+use rusqlite::{Connection, OpenFlags};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::agent::{
     normalized::{NormalizedEvent, TurnEndReason},
@@ -316,6 +317,71 @@ fn parse_project_list(raw: &str) -> Result<Vec<crate::project::Project>, String>
     Ok(projects)
 }
 
+fn scan_projects_from_db() -> Result<Vec<crate::project::Project>, String> {
+    let db_path = opencode_db_path()?;
+    scan_projects_from_db_path(&db_path)
+}
+
+fn scan_projects_from_db_path(db_path: &Path) -> Result<Vec<crate::project::Project>, String> {
+    if !db_path.is_file() {
+        return Ok(Vec::new());
+    }
+
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT directory, time_updated, time_created \
+             FROM session \
+             WHERE directory IS NOT NULL AND directory != ''",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut grouped: HashMap<String, (String, usize, Option<i64>)> = HashMap::new();
+    for row in rows {
+        let (directory, updated, created) = row.map_err(|e| e.to_string())?;
+        if !PathBuf::from(&directory).is_dir() {
+            continue;
+        }
+
+        let key = path_key(&directory);
+        let timestamp = updated.or(created);
+        let item = grouped.entry(key).or_insert((directory, 0, None));
+        item.1 += 1;
+        if timestamp > item.2 {
+            item.2 = timestamp;
+        }
+    }
+
+    let mut projects = grouped
+        .into_values()
+        .filter_map(|(directory, session_count, last_active_ms)| {
+            crate::project::project_from_agent_path(
+                &directory,
+                "opencode",
+                session_count,
+                last_active_ms.and_then(format_millis_local),
+            )
+        })
+        .collect::<Vec<_>>();
+    projects.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+    Ok(projects)
+}
+
 fn parse_export_messages(raw: &str) -> Result<Vec<crate::session::Message>, String> {
     let json = extract_json(raw).ok_or_else(|| "No JSON export found".to_string())?;
     let exported: OpencodeExport = serde_json::from_str(json).map_err(|e| e.to_string())?;
@@ -427,6 +493,15 @@ fn format_millis_local(value: i64) -> Option<String> {
 fn opencode_config_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
     Ok(home.join(".config").join("opencode"))
+}
+
+fn opencode_db_path() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or_else(|| "Cannot find home directory".to_string())?;
+    Ok(home
+        .join(".local")
+        .join("share")
+        .join("opencode")
+        .join("opencode.db"))
 }
 
 fn opencode_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -888,6 +963,11 @@ impl AgentPlugin for OpencodeAdapter {
     }
 
     fn scan_projects(&self) -> Vec<crate::project::Project> {
+        match scan_projects_from_db() {
+            Ok(projects) if !projects.is_empty() => return projects,
+            _ => {}
+        }
+
         let output = match std::process::Command::new("opencode")
             .args(["session", "list", "--format", "json", "--max-count", "500"])
             .output()
@@ -1218,6 +1298,51 @@ mod tests {
         assert!(projects[0].last_active.is_some());
 
         let _ = std::fs::remove_dir_all(&projects[0].path);
+    }
+
+    #[test]
+    fn scans_opencode_projects_from_sqlite_session_table() {
+        let root = std::env::temp_dir().join("jishu_opencode_db_project");
+        let db_dir = std::env::temp_dir().join("jishu_opencode_db_scan");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&db_dir);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let db_path = db_dir.join("opencode.db");
+
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                directory TEXT NOT NULL,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL
+            )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session (id, directory, time_created, time_updated) VALUES (?1, ?2, ?3, ?4)",
+            (&"ses_1", &root.to_string_lossy(), &1779924224000_i64, &1779924225000_i64),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session (id, directory, time_created, time_updated) VALUES (?1, ?2, ?3, ?4)",
+            (&"ses_2", &root.to_string_lossy(), &1779924225000_i64, &1779924226000_i64),
+        )
+        .unwrap();
+        drop(conn);
+
+        let projects = scan_projects_from_db_path(&db_path).unwrap();
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].path, root);
+        assert_eq!(projects[0].session_count, 2);
+        assert_eq!(projects[0].agent_ids, vec!["opencode".to_string()]);
+        assert!(projects[0].last_active.is_some());
+
+        let _ = std::fs::remove_dir_all(&projects[0].path);
+        let _ = std::fs::remove_dir_all(db_dir);
     }
 
     #[test]
