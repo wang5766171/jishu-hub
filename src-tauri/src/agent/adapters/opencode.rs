@@ -472,21 +472,8 @@ fn parse_export_messages(raw: &str) -> Result<Vec<crate::session::Message>, Stri
     Ok(messages)
 }
 
-fn hydrate_session_messages<F>(sessions: &mut [crate::session::Session], mut export_raw: F)
-where
-    F: FnMut(&str) -> Result<String, String>,
-{
-    for session in sessions {
-        if !session.messages.is_empty() {
-            continue;
-        }
-
-        if let Ok(raw) = export_raw(&session.id) {
-            if let Ok(messages) = parse_export_messages(&raw) {
-                session.messages = messages;
-            }
-        }
-    }
+fn datetime_from_millis(value: i64) -> Option<DateTime<Utc>> {
+    DateTime::from_timestamp_millis(value)
 }
 
 fn extract_json(raw: &str) -> Option<&str> {
@@ -508,10 +495,6 @@ fn path_key(value: &str) -> String {
         .replace('/', "\\")
         .trim_end_matches('\\')
         .to_ascii_lowercase()
-}
-
-fn datetime_from_millis(value: i64) -> Option<DateTime<Utc>> {
-    DateTime::from_timestamp_millis(value)
 }
 
 fn format_millis_local(value: i64) -> Option<String> {
@@ -1044,21 +1027,8 @@ impl AgentPlugin for OpencodeAdapter {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
         }
 
-        let mut sessions =
+        let sessions =
             parse_session_list(&String::from_utf8_lossy(&output.stdout), &project_path)?;
-        hydrate_session_messages(&mut sessions, |session_id| {
-            let output = std::process::Command::new("opencode")
-                .args(["export", session_id])
-                .current_dir(&project_path)
-                .output()
-                .map_err(|e| format!("Failed to export opencode session: {e}"))?;
-
-            if !output.status.success() {
-                return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-            }
-
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        });
         Ok(sessions)
     }
 

@@ -127,11 +127,16 @@ export function ChatPage({
 
   // Single hook for current project's sessions
   const [listRefreshKey, setListRefreshKey] = useState(0);
-  const { data: sessions, loading: sessionsLoading } = useInvoke<Session[]>(
+  const { data: sessions, loading: sessionsLoading, setData: setSessions } = useInvoke<Session[]>(
     projectId ? "list_sessions" : "",
     projectId ? { encodedName: projectId } : undefined,
-    listRefreshKey,
+    activeId + "_" + listRefreshKey,
   );
+
+  useEffect(() => {
+    // Clear sessions when switching agents to avoid showing stale data from previous agent
+    setSessions(null);
+  }, [activeId, setSessions]);
 
   useEffect(() => {
     onProjectSessionsLoadingChange?.(Boolean(projectId && sessionsLoading));

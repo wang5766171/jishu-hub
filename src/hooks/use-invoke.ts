@@ -6,9 +6,10 @@ interface UseInvokeResult<T> {
   loading: boolean;
   error: string | null;
   refetch: (silent?: boolean) => Promise<T>;
+  setData: (data: T | null) => void;
 }
 
-export function useInvoke<T>(command: string, args?: Record<string, unknown>, refreshKey?: number): UseInvokeResult<T> {
+export function useInvoke<T>(command: string, args?: Record<string, unknown>, refreshKey?: number | string): UseInvokeResult<T> {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -18,6 +19,7 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
     setError(null);
     if (!command) {
       setLoading(false);
+      setData(null);
       return Promise.resolve(null as unknown as T);
     }
     return invoke<T>(command, args)
@@ -37,7 +39,7 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
     fetch();
   }, [fetch, refreshKey]);
 
-  return { data, loading, error, refetch: fetch };
+  return { data, loading, error, refetch: fetch, setData };
 }
 
 export async function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
