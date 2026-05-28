@@ -492,17 +492,14 @@ export function ChatPage({
           pendingUserMsgRef.current = null;
 
           // Refresh session list directly
-          setListRefreshKey(prev => prev + 1);
+          if (resolvedSessionIdRef.current) {
+            setListRefreshKey(prev => prev + 1);
+          }
 
           requestAnimationFrame(() => {
-            if (messageAreaRef.current) {
-              messageAreaRef.current.scrollTop = messageAreaRef.current.scrollHeight;
-            }
             // Refocus input after assistant finishes responding
             chatInputRef.current?.focus();
           });
-
-          setTimeout(() => { refetchNames(true); }, 2000);
         }
       }
     }).then((fn) => {
