@@ -4,20 +4,33 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { User, Bot } from "lucide-react";
-import { useStreamStore } from "@/hooks/use-stream-store";
+import { useSessionStream } from "@/hooks/use-stream-store";
 import { InlineImages, stripImagePrompt } from "./inline-image";
 import { ToolGroup, classifyToolName } from "@/components/observability/tool-call-card";
 import type { ToolCall } from "@/components/observability/tool-call-card";
 
 interface StreamingMessageProps {
-  isComplete: boolean;
-  userMessage?: string;
+  /** Session id (pending or real) whose streaming state to render. */
+  sessionId: string | null;
+  isComplete?: boolean;
+  /**
+   * Optional override for the leading user message bubble.
+   * When omitted, falls back to the pending user message tracked in the store.
+   * Pass `null` to suppress the user bubble entirely (e.g., when the user
+   * message is already rendered by `MessageView`).
+   */
+  userMessage?: string | null;
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
 }
 
-export const StreamingMessage = memo(function StreamingMessage({ isComplete, userMessage, scrollContainerRef }: StreamingMessageProps) {
-  const { text: displayText, thinking: thinkingText, error: errorText, tools: toolUses } = useStreamStore();
+export const StreamingMessage = memo(function StreamingMessage({ sessionId, isComplete = false, userMessage, scrollContainerRef }: StreamingMessageProps) {
+  const state = useSessionStream(sessionId);
   const { t } = useTranslation();
+  const displayText = state?.text ?? "";
+  const thinkingText = state?.thinking ?? "";
+  const errorText = state?.error ?? "";
+  const toolUses = state?.tools ?? [];
+  const resolvedUserMessage = userMessage === undefined ? state?.pendingUserMessage ?? undefined : userMessage ?? undefined;
   const userScrolledRef = useRef(false);
 
   const isNearBottom = useCallback(() => {
@@ -65,15 +78,15 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
   return (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
       {/* User message bubble */}
-      {userMessage && (
+      {resolvedUserMessage && (
         <div className="flex gap-2 w-full justify-end">
           <div className="max-w-[88%] min-w-0 flex flex-col items-end">
             <div className="flex items-center gap-2 mb-0.5 text-[11px]">
               <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>
             </div>
             <div className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full" style={{ fontSize: "var(--font-size-prose)" }}>
-              <InlineImages text={userMessage} />
-              {stripImagePrompt(userMessage)}
+              <InlineImages text={resolvedUserMessage} />
+              {stripImagePrompt(resolvedUserMessage)}
             </div>
           </div>
           <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--icon-avatar-user-bg)] text-[var(--icon-avatar-user)] mt-3.5">

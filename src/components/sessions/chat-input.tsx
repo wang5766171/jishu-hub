@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHand
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
+import { streamStore, useIsSessionStreaming } from "@/hooks/use-stream-store";
 import { Button } from "@/components/ui/button";
 import { Check, ChevronDown, KeyRound, Paperclip, Plus, Send, Square, Sparkles, Blocks } from "lucide-react";
 import { FilePreview } from "./file-preview";
@@ -22,6 +23,7 @@ interface ChatInputProps {
   sessionId: string | null;
   projectPath: string | null;
   disabled?: boolean;
+  isSessionStreaming?: boolean;
   allowFiles?: boolean;
   onMessageSent?: (chatSessionId: string, userMessage: string) => void;
   containerClassName?: string;
@@ -45,6 +47,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   sessionId,
   projectPath,
   disabled = false,
+  isSessionStreaming: isSessionStreamingProp = false,
   allowFiles = true,
   onMessageSent,
   containerClassName,
@@ -69,13 +72,24 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
 
   useImperativeHandle(ref, () => textareaRef.current!, []);
 
-  // Reset sending state when parent clears disabled (stream finished)
+  // Derive whether current session is streaming (per-session, parallel-safe)
+  const isOwnStreaming = useIsSessionStreaming(sessionId);
+  const isOwnAbortStreaming = useIsSessionStreaming(activeSessionId);
+  const isStreaming = isSessionStreamingProp || isOwnStreaming || isOwnAbortStreaming;
+
+  // Reset sending state when stream finishes for this session
   useEffect(() => {
-    if (!disabled) {
+    if (!isStreaming && sending) {
       setSending(false);
       setActiveSessionId(null);
     }
-  }, [disabled]);
+  }, [isStreaming, sending]);
+
+  // When the user switches to a different session, clear the local "active" abort
+  // reference so the Stop button targets the new session, not the previous send.
+  useEffect(() => {
+    setActiveSessionId(null);
+  }, [sessionId]);
 
   useEffect(() => {
     const handler = (event: MouseEvent) => {
@@ -264,7 +278,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   };
 
   const handleSend = async () => {
-    if (!projectPath || sending) return;
+    if (!projectPath || sending || isStreaming) return;
     if (!message.trim() && files.length === 0) return;
 
     setSending(true);
@@ -336,8 +350,16 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   };
 
   const handleAbort = async () => {
-    if (activeSessionId) {
-      await invokeCommand("abort_chat", { sessionId: activeSessionId });
+    // Prefer the abortKey recorded by the store when we started the stream.
+    // It tracks the canonical id the backend registered the process under,
+    // even if a real session id was later resolved.
+    const abortKey =
+      streamStore.getState(sessionId)?.abortKey
+      ?? streamStore.getState(activeSessionId)?.abortKey
+      ?? activeSessionId
+      ?? sessionId;
+    if (abortKey) {
+      await invokeCommand("abort_chat", { sessionId: abortKey });
       setSending(false);
       setActiveSessionId(null);
     }
@@ -346,7 +368,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!allowFiles || !projectPath || disabled || sending) return;
+    if (!allowFiles || !projectPath || sending) return;
 
     const droppedFiles = Array.from(e.dataTransfer.files);
     if (droppedFiles.length === 0) return;
@@ -412,7 +434,6 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           placeholder={placeholder}
-          disabled={disabled}
           rows={1}
           className="w-full resize-none bg-transparent px-4 py-3 text-sm focus:outline-none min-h-[76px] max-h-[220px]"
           style={{ height: "auto", overflow: "hidden" }}
@@ -434,7 +455,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                   setToolMenuOpen((open) => !open);
                   setAccessMenuOpen(false);
                 }}
-                disabled={disabled || sending}
+                disabled={sending}
                 title={t("sessions.addContext")}
               >
                 <Plus className="h-4 w-4" strokeWidth={2.3} />
@@ -447,7 +468,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                       setToolMenuOpen(false);
                       handleFileSelect();
                     }}
-                    disabled={disabled || sending || !allowFiles}
+                    disabled={sending || !allowFiles}
                     className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-fast hover:bg-accent/60 disabled:cursor-not-allowed disabled:opacity-45"
                   >
                     <Paperclip className="h-4 w-4 text-[var(--icon-action)]" />
@@ -482,7 +503,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                       setAccessMenuOpen((open) => !open);
                       setToolMenuOpen(false);
                     }}
-                    disabled={disabled || sending}
+                    disabled={sending}
                     title={accessModeTitle ?? t("sessions.accessMode")}
                     className={cn(
                       "flex h-8 items-center gap-1.5 rounded-full border border-border/50 bg-background/80 px-2.5 text-xs text-muted-foreground transition-fast hover:bg-accent/45 hover:text-foreground",
@@ -517,7 +538,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
           </div>
 
           <div className="flex items-center gap-1">
-            {sending ? (
+            {(sending || isStreaming) ? (
               <Button variant="destructive" size="icon-sm" className="h-8 w-8 rounded-full" onClick={handleAbort}>
                 <Square className="h-4 w-4" />
               </Button>
@@ -532,7 +553,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                 }`}
                 style={(message.trim() || files.length > 0) ? { backgroundColor: 'var(--icon-send-bg)', color: 'var(--icon-send-fg)' } : undefined}
                 onClick={handleSend}
-                disabled={disabled || (!message.trim() && files.length === 0)}
+                disabled={isStreaming || (!message.trim() && files.length === 0)}
               >
                 <Send className="h-4 w-4 ml-[2px]" />
               </Button>

@@ -88,7 +88,9 @@ pub async fn send_message(
         .ok_or_else(|| format!("No stdout from {agent_id} process"))?;
     let stderr = child.stderr.take();
     let app_clone = app.clone();
+    let app_resolve = app.clone();
     let sid_clone = sid.clone();
+    let sid_resolve = sid.clone();
     cli_runtime::spawn_stream_reader(
         app.clone(),
         agent_id.clone(),
@@ -99,6 +101,20 @@ pub async fn send_message(
             let state = app_clone.state::<Mutex<ChatState>>();
             if let Ok(mut s) = state.lock() {
                 s.processes.remove(&sid_clone);
+            };
+        },
+        move |real_id: &str| {
+            // When the CLI reveals its real session id, mirror the process
+            // entry under that id too — so abort_chat works regardless of
+            // whether the caller still has the pending id or only the real id.
+            if real_id == sid_resolve {
+                return;
+            }
+            let state = app_resolve.state::<Mutex<ChatState>>();
+            if let Ok(mut s) = state.lock() {
+                if let Some(process) = s.processes.get(&sid_resolve).cloned() {
+                    s.processes.insert(real_id.to_string(), process);
+                }
             };
         },
     );

@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
-import { streamStore } from "@/hooks/use-stream-store";
+import { streamStore, useSessionStream } from "@/hooks/use-stream-store";
 import { MessageView, type MessageSearchNavigation, type MessageSearchStatus } from "@/components/sessions/message-view";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
 import { ChatInput } from "@/components/sessions/chat-input";
@@ -8,13 +8,15 @@ import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { StatusBar as ObservabilityStatusBar } from "@/components/observability";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
 import {
-  Bot, HardDrive, MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ChevronDown,
+  Bot, HardDrive, MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ChevronDown, PictureInPicture2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { searchSessions } from "@/lib/session-search";
+import { openFloatingSession } from "@/lib/floating-window";
 import { useAgent } from "@/agents";
 import type { Session, Project, ProjectMeta, ProjectSettings, Message, ContentBlock, AgentStreamChunk, SessionSearchResult } from "@/types";
 
@@ -70,6 +72,7 @@ export function ChatPage({
   refetchNames,
   onSwitchProject,
   onProjectSessionsLoadingChange,
+  navigateToSession,
 }: {
   currentProject: Project | null;
   currentProjectMeta?: ProjectMeta;
@@ -78,6 +81,7 @@ export function ChatPage({
   refetchNames: (silent?: boolean) => Promise<Record<string, string>>;
   onSwitchProject: () => void;
   onProjectSessionsLoadingChange?: (loading: boolean) => void;
+  navigateToSession?: string | null;
 }) {
   const { t } = useTranslation();
   const { activeId, active, capabilities } = useAgent();
@@ -92,24 +96,29 @@ export function ChatPage({
   const [searchQuery, setSearchQuery] = useState("");
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
-  const [pendingUserMessage, setPendingUserMessage] = useState<string | null>(null);
   const [messageSearchStatus, setMessageSearchStatus] = useState<MessageSearchStatus>({ current: 0, total: 0 });
   const [messageSearchNavigation, setMessageSearchNavigation] = useState<MessageSearchNavigation | null>(null);
   const [optimisticSessions, setOptimisticSessions] = useState<Session[]>([]);
 
   const messageAreaRef = useRef<HTMLDivElement>(null);
-  const streamChunksRef = useRef<AgentStreamChunk[]>([]);
-  const pendingUserMsgRef = useRef<string | null>(null);
-  const resolvedSessionIdRef = useRef<string | null>(null);
   const activeIdRef = useRef<string | null>(activeId);
-  const streamingAgentRef = useRef<string | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const selectedSessionRef = useRef<string | null>(null);
   const visitedSessions = useRef(new Set<string>());
   const scrollMemory = useRef(new Map<string, number>());
   const scrollAction = useRef<{ type: "bottom" } | { type: "restore", top: number } | null>(null);
-  // Buffer for early chunks arriving before handleMessageSent sets streamingSessionRef
-  const earlyChunksRef = useRef<AgentStreamChunk[]>([]);
+  /**
+   * Per-session messages cache. Keyed by canonical session id (the id we
+   * started the stream with) AND by resolvedId once known. While a session is
+   * streaming, we never re-fetch from JSONL on session switch — we use the
+   * cached snapshot to avoid duplicating the user message that has already
+   * been written to JSONL by the CLI but is also being rendered live by
+   * `<StreamingMessage>` from the pending state.
+   */
+  const sessionMessagesCacheRef = useRef<Map<string, Message[]>>(new Map());
+  // Subscribe to streaming state for the currently-selected session. Drives
+  // whether the streaming bubble is rendered and whether the input is in Stop mode.
+  const currentStream = useSessionStream(selectedSession);
 
   const fileToolCount = useMemo(() => {
     return sessionMessages.reduce((count, msg) => (
@@ -206,11 +215,7 @@ export function ChatPage({
     selectedSessionRef.current = null;
     setSessionMessages([]);
     setOptimisticSessions([]);
-    streamChunksRef.current = [];
-    earlyChunksRef.current = [];
-    setPendingUserMessage(null);
-    pendingUserMsgRef.current = null;
-    resolvedSessionIdRef.current = null;
+    sessionMessagesCacheRef.current.clear();
   }, [projectId]);
 
   useEffect(() => {
@@ -219,14 +224,17 @@ export function ChatPage({
     selectedSessionRef.current = null;
     setSessionMessages([]);
     setOptimisticSessions([]);
-    streamChunksRef.current = [];
-    earlyChunksRef.current = [];
-    setPendingUserMessage(null);
-    pendingUserMsgRef.current = null;
-    resolvedSessionIdRef.current = null;
+    sessionMessagesCacheRef.current.clear();
     setListRefreshKey(Date.now());
     refetchNames(true).catch(console.error);
   }, [activeId, projectId, refetchNames]);
+
+  // Navigate to a specific session (triggered by floating window restore)
+  useEffect(() => {
+    if (navigateToSession && projectId) {
+      handleSelectSession(navigateToSession);
+    }
+  }, [navigateToSession]);
 
   const handleRefresh = async () => {
     const newKey = await onRefresh();
@@ -280,14 +288,25 @@ export function ChatPage({
     setSelectedSession(sessionId);
     selectedSessionRef.current = sessionId;
 
-    try {
-      const messages = await invokeCommand<Message[]>("get_session_messages", {
-        sessionId,
-        encodedName: projectId,
-      });
-      setSessionMessages(messages);
-    } catch {
-      setSessionMessages([]);
+    // While a session is streaming we keep its message snapshot in
+    // `sessionMessagesCacheRef` and *do not* reload from JSONL — otherwise the
+    // user message that the CLI has already flushed to disk would appear twice
+    // (once from the JSONL, once from the live `<StreamingMessage>` bubble).
+    const cached = sessionMessagesCacheRef.current.get(sessionId);
+    const isStreaming = streamStore.isStreaming(sessionId);
+    if (cached && (isStreaming || streamStore.hasState(sessionId))) {
+      setSessionMessages(cached);
+    } else {
+      try {
+        const messages = await invokeCommand<Message[]>("get_session_messages", {
+          sessionId,
+          encodedName: projectId,
+        });
+        sessionMessagesCacheRef.current.set(sessionId, messages);
+        setSessionMessages(messages);
+      } catch {
+        setSessionMessages([]);
+      }
     }
 
     if (isFirstVisit) {
@@ -307,10 +326,6 @@ export function ChatPage({
     setSelectedSession("new");
     selectedSessionRef.current = "new";
     setSessionMessages([]);
-    streamStore.setSession(null);
-    setPendingUserMessage(null);
-    pendingUserMsgRef.current = null;
-    resolvedSessionIdRef.current = null;
 
     requestAnimationFrame(() => {
       chatInputRef.current?.focus();
@@ -353,6 +368,7 @@ export function ChatPage({
           sessionId: selectedSession,
           encodedName: projectId,
         });
+        sessionMessagesCacheRef.current.set(selectedSession, msgs);
         setSessionMessages(msgs);
       } catch (e) {
         console.error(e);
@@ -360,9 +376,18 @@ export function ChatPage({
     }
   }, [selectedSession, projectId]);
 
+  const handleFloatSession = useCallback((sessionId: string) => {
+    const name = sessionNames?.[sessionId]
+      || sessions?.find(s => s.id === sessionId)?.display_name
+      || sessionId.slice(0, 8);
+    openFloatingSession(sessionId, name, activeId || "", currentProject?.encoded_name || "");
+  }, [sessionNames, sessions, activeId, currentProject]);
+
   const handleMessageSent = useCallback((sid: string, msg: string) => {
-    streamChunksRef.current = [];
-    streamStore.setSession(sid);
+    // Register a new per-session stream entry. The store keys it by the
+    // canonical (pending) id and tracks the abortKey so handleAbort works
+    // regardless of how the id is later resolved.
+    streamStore.start(sid, msg);
 
     if (!selectedSession || selectedSession === "new") {
       const newOptSession: Session = {
@@ -376,140 +401,128 @@ export function ChatPage({
       setOptimisticSessions(prev => [newOptSession, ...prev]);
       setSelectedSession(sid);
       selectedSessionRef.current = sid;
+      // Seed the cache for this brand-new session with whatever the user is
+      // currently looking at (an empty list for a fresh session).
+      sessionMessagesCacheRef.current.set(sid, []);
+      setSessionMessages([]);
+    } else {
+      // Existing session: snapshot the currently displayed messages so we can
+      // append the assistant turn on completion without re-reading JSONL.
+      sessionMessagesCacheRef.current.set(sid, sessionMessages);
     }
-
-    setPendingUserMessage(msg);
-    pendingUserMsgRef.current = msg;
-    resolvedSessionIdRef.current = null;
-    streamingAgentRef.current = activeIdRef.current;
-
-    // Replay early chunks that arrived before this callback ran
-    const early = earlyChunksRef.current.filter(c => c.session_id === sid);
-    for (const chunk of early) {
-      streamStore.push(chunk);
-      streamChunksRef.current.push(chunk);
-      const realId = extractRealSessionId(chunk.data);
-      if (realId && realId !== sid) {
-        resolvedSessionIdRef.current = realId;
-        setOptimisticSessions(prev => prev.map(s => s.id === sid ? { ...s, id: realId } : s));
-        setSelectedSession(realId);
-        selectedSessionRef.current = realId;
-        visitedSessions.current.add(realId);
-      }
-    }
-    earlyChunksRef.current = [];
 
     requestAnimationFrame(() => {
       if (messageAreaRef.current) {
         messageAreaRef.current.scrollTop = messageAreaRef.current.scrollHeight;
       }
     });
-  }, [selectedSession, currentProject?.path, t]);
+  }, [selectedSession, sessionMessages, currentProject?.path, t]);
 
-  // Stream listener (mount-only, exact match on streaming session)
+  // Stream listener (mount-only). Each chunk is routed into the per-session
+  // store entry via streamStore.push, regardless of which session is currently
+  // selected — that's what makes parallel streaming work.
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
     listen<AgentStreamChunk[] | AgentStreamChunk>("agent-event", (event) => {
       const payload = event.payload;
       const chunks = Array.isArray(payload) ? payload : [payload];
-      const currentStreaming = streamStore.getSessionId();
 
       for (const chunk of chunks) {
-        if (streamingAgentRef.current && chunk.agent_id !== streamingAgentRef.current) continue;
-        if (!currentStreaming && chunk.agent_id !== activeIdRef.current) continue;
+        // Ignore chunks for agents we're not currently using.
+        if (chunk.agent_id !== activeIdRef.current) continue;
 
-        // Buffer early chunks that arrive before handleMessageSent sets the ref
-        if (!currentStreaming) {
-          earlyChunksRef.current.push(chunk);
-          continue;
-        }
+        const cid = chunk.session_id;
 
-        // Exact match only — prevents cross-session contamination
-        if (chunk.session_id !== currentStreaming) continue;
+        // Only push into the store if it knows about this session — otherwise
+        // we'd accidentally create state for a session we never started.
+        if (!streamStore.hasState(cid)) continue;
 
-        // Use streamStore for O(1) push instead of O(N²) useState spread
-        streamStore.push(chunk);
-        streamChunksRef.current.push(chunk);
-
-        // Extract real session_id from system init or result events
+        // Detect resolved session id and register it as an alias before pushing
+        // (so subsequent chunks under the real id route to the same entry).
         const realId = extractRealSessionId(chunk.data);
-        if (realId && realId !== currentStreaming && realId !== resolvedSessionIdRef.current) {
-          resolvedSessionIdRef.current = realId;
-          setOptimisticSessions(prev => prev.map(s => s.id === currentStreaming ? { ...s, id: realId } : s));
-          setSelectedSession(realId);
-          selectedSessionRef.current = realId;
-          visitedSessions.current.add(realId);
+        if (realId && realId !== cid) {
+          streamStore.alias(cid, realId);
+
+          // Promote the optimistic session id to the real one in the UI.
+          setOptimisticSessions(prev => prev.map(s => s.id === cid ? { ...s, id: realId } : s));
+          // Move messages cache entry from pending id to real id (and keep
+          // both keys pointing at the same array for safety).
+          const cached = sessionMessagesCacheRef.current.get(cid);
+          if (cached) sessionMessagesCacheRef.current.set(realId, cached);
+          if (selectedSessionRef.current === cid) {
+            setSelectedSession(realId);
+            selectedSessionRef.current = realId;
+            visitedSessions.current.add(realId);
+          }
         }
+
+        streamStore.push(cid, chunk);
 
         if (chunk.data.kind === "turn_complete") {
-          // Reconstruct text and tool_use from all accumulated chunks
-          let text = "";
-          let thinking = "";
-          const tools: Array<{ type: "tool_use"; id: string; name: string; input: unknown }> = [];
-          for (const c of streamChunksRef.current) {
-            if (c.data.kind === "text_delta") {
-              text += c.data.delta;
-            } else if (c.data.kind === "thinking") {
-              thinking += c.data.delta;
-            } else if (c.data.kind === "error") {
-              text += text ? `\n\n${c.data.message}` : c.data.message;
-            } else if (c.data.kind === "tool_use_start") {
-              tools.push({ type: "tool_use", id: c.data.call_id, name: c.data.tool, input: c.data.input });
-            } else if (c.data.kind === "message") {
-              for (const block of c.data.content) {
-                if (block.type === "tool_use") {
-                  tools.push({ type: "tool_use", id: block.id, name: block.name, input: block.input });
-                } else if (block.type === "text") {
-                  text += block.text;
-                } else if (block.type === "thinking") {
-                  thinking += block.thinking;
-                }
-              }
-            }
-          }
-
-          // Build final messages
+          // Build final assistant/user messages from the accumulated state.
+          const state = streamStore.getState(cid);
+          const finalKey = state?.resolvedId ?? cid;
           const newMessages: Message[] = [];
-          if (pendingUserMsgRef.current) {
-            newMessages.push({ role: "user", content: [{ type: "text", text: pendingUserMsgRef.current }], timestamp: Date.now() });
+          if (state?.pendingUserMessage) {
+            newMessages.push({
+              role: "user",
+              content: [{ type: "text", text: state.pendingUserMessage }],
+              timestamp: Date.now(),
+            });
           }
           const assistantContent: ContentBlock[] = [];
-          if (thinking) assistantContent.push({ type: "thinking", thinking });
-          assistantContent.push(...tools);
-          if (text) assistantContent.push({ type: "text", text });
+          if (state?.thinking) assistantContent.push({ type: "thinking", thinking: state.thinking });
+          state?.tools.forEach((tool, idx) => {
+            assistantContent.push({
+              type: "tool_use",
+              id: `stream-${idx}-${tool.name}`,
+              name: tool.name,
+              input: tool.input,
+            });
+          });
+          if (state?.text) assistantContent.push({ type: "text", text: state.text });
+          if (state?.error) {
+            // Append errors as visible text so the user sees them.
+            assistantContent.push({ type: "text", text: state.error });
+          }
           if (assistantContent.length > 0) {
             newMessages.push({ role: "assistant", content: assistantContent, timestamp: Date.now() });
           }
 
-          setSessionMessages((prev) => {
-            if (selectedSessionRef.current === (resolvedSessionIdRef.current || currentStreaming)) {
-              return [...prev, ...newMessages];
-            }
-            return prev;
-          });
+          // Resolve the base messages from the cache (preferring real id).
+          const baseMessages =
+            sessionMessagesCacheRef.current.get(finalKey)
+            ?? sessionMessagesCacheRef.current.get(cid)
+            ?? [];
+          const updated = [...baseMessages, ...newMessages];
+          sessionMessagesCacheRef.current.set(finalKey, updated);
+          if (cid !== finalKey) sessionMessagesCacheRef.current.set(cid, updated);
 
-          // Clear streaming state
-          streamStore.setSession(null);
-          streamingAgentRef.current = null;
-          streamChunksRef.current = [];
-          setPendingUserMessage(null);
-          pendingUserMsgRef.current = null;
-
-          // Refresh session list directly
-          if (resolvedSessionIdRef.current) {
-            setListRefreshKey(prev => prev + 1);
+          // If the user is currently viewing this session, reflect the update
+          // immediately. Otherwise the cache will be used the next time they
+          // switch back to this session (without a JSONL reload).
+          const viewed = selectedSessionRef.current;
+          if (viewed === cid || viewed === finalKey) {
+            setSessionMessages(updated);
           }
 
+          // Mark stream finished. Drop state shortly after so the bubble has
+          // a chance to flush its final paint and so a subsequent send for
+          // the *same* canonical id can start fresh.
+          streamStore.end(cid);
+          setTimeout(() => streamStore.drop(cid), 100);
+
+          setListRefreshKey(prev => prev + 1);
+
           requestAnimationFrame(() => {
-            // Refocus input after assistant finishes responding
             chatInputRef.current?.focus();
           });
         }
       }
     }).then((fn) => {
       if (cancelled) {
-        fn(); // Already unmounted — unregister immediately
+        fn();
       } else {
         unlistenFn = fn;
       }
@@ -713,38 +726,60 @@ export function ChatPage({
                 : null;
             const searchHit = searchResults.find((r: SessionSearchResult) => r.sessionId === session.id);
             return (
-              <button
-                key={session.id}
-                onClick={() => handleSelectSession(session.id)}
-                className={cn(
-                  "flex flex-col w-full items-start pl-5 pr-2 py-2 text-xs transition-fast border-b border-border/10",
-                  isActive
-                    ? "bg-primary/10 text-foreground font-medium"
-                    : "text-muted-foreground hover:bg-accent/30 hover:text-foreground"
-                )}
-              >
-                <div className="flex items-center gap-3 w-full">
-                  <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
-                  <span className="truncate flex-1 text-left min-w-0 leading-none pt-[1px]">{name}</span>
-                  {searchHit ? (
-                    <span className="shrink-0 rounded-full bg-primary/20 text-primary px-1.5 py-0.5 text-[9px] font-medium leading-none">
-                      {searchHit.matchCount}
-                    </span>
-                  ) : timeStr ? (
-                    <span className={cn(
-                      "text-[0.65em] shrink-0 tabular-nums",
-                      isActive ? "text-accent-foreground/40" : "text-muted-foreground/40"
-                    )}>{timeStr}</span>
-                  ) : null}
-                </div>
-                {searchHit && searchHit.previewText && (
-                  <div className="mt-1.5 pl-6 w-full text-left">
-                    <p className="text-[10px] text-muted-foreground/70 line-clamp-2 leading-tight break-all">
-                      {searchHit.previewText}
-                    </p>
-                  </div>
-                )}
-              </button>
+              <ContextMenu key={session.id}>
+                <ContextMenuTrigger asChild>
+                  <button
+                    onClick={() => handleSelectSession(session.id)}
+                    className={cn(
+                      "flex flex-col w-full items-start pl-5 pr-2 py-2 text-xs transition-fast border-b border-border/10",
+                      isActive
+                        ? "bg-primary/10 text-foreground font-medium"
+                        : "text-muted-foreground hover:bg-accent/30 hover:text-foreground"
+                    )}
+                  >
+                    <div className="flex items-center gap-3 w-full">
+                      <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
+                      <span className="truncate flex-1 text-left min-w-0 leading-none pt-[1px]">{name}</span>
+                      {searchHit ? (
+                        <span className="shrink-0 rounded-full bg-primary/20 text-primary px-1.5 py-0.5 text-[9px] font-medium leading-none">
+                          {searchHit.matchCount}
+                        </span>
+                      ) : timeStr ? (
+                        <span className={cn(
+                          "text-[0.65em] shrink-0 tabular-nums",
+                          isActive ? "text-accent-foreground/40" : "text-muted-foreground/40"
+                        )}>{timeStr}</span>
+                      ) : null}
+                    </div>
+                    {searchHit && searchHit.previewText && (
+                      <div className="mt-1.5 pl-6 w-full text-left">
+                        <p className="text-[10px] text-muted-foreground/70 line-clamp-2 leading-tight break-all">
+                          {searchHit.previewText}
+                        </p>
+                      </div>
+                    )}
+                  </button>
+                </ContextMenuTrigger>
+                <ContextMenuContent>
+                  <ContextMenuItem onClick={() => handleFloatSession(session.id)}>
+                    <PictureInPicture2 className="h-3.5 w-3.5 mr-2" />
+                    {t("sessions.float", "悬浮窗口")}
+                  </ContextMenuItem>
+                  <ContextMenuItem onClick={() => handleResumeSession(session.id)}>
+                    <TerminalIcon className="h-3.5 w-3.5 mr-2" />
+                    {t("sessions.openTerminal")}
+                  </ContextMenuItem>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem onClick={() => { handleSelectSession(session.id); setRenameOpen(true); }}>
+                    <Pencil className="h-3.5 w-3.5 mr-2" />
+                    {t("sessions.rename")}
+                  </ContextMenuItem>
+                  <ContextMenuItem onClick={() => handleRefreshMessages()}>
+                    <RotateCw className="h-3.5 w-3.5 mr-2" />
+                    {t("sessions.refresh")}
+                  </ContextMenuItem>
+                </ContextMenuContent>
+              </ContextMenu>
             );
           })}
         </div>
@@ -781,7 +816,6 @@ export function ChatPage({
                 ref={chatInputRef}
                 sessionId={null}
                 projectPath={currentProject?.path ?? null}
-                disabled={streamStore.getSessionId() !== null}
                 onMessageSent={handleMessageSent}
                 allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
                 containerClassName="max-w-full px-0 pb-0 pt-0"
@@ -811,6 +845,14 @@ export function ChatPage({
                   <span className="text-[11px] text-muted-foreground/50 font-mono shrink-0">{selectedSession.slice(0, 8)}</span>
                 </div>
                 <div className="flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={() => handleFloatSession(selectedSession)}
+                    title={t("sessions.float", "悬浮窗口")}
+                  >
+                    <PictureInPicture2 className="h-3.5 w-3.5" />
+                  </Button>
                   <Button
                     variant="ghost"
                     size="icon-xs"
@@ -850,13 +892,11 @@ export function ChatPage({
                   scrollContainerRef={messageAreaRef}
                 />
               )}
-              {streamStore.getSessionId() && 
-                (streamStore.getSessionId() === selectedSession || resolvedSessionIdRef.current === selectedSession) && 
-                selectedSession && selectedSession !== "new" && (
+              {currentStream && selectedSession && selectedSession !== "new" && (
                 <StreamingMessage
-                  key={streamStore.getSessionId()!}
-                  isComplete={false}
-                  userMessage={pendingUserMessage ?? undefined}
+                  key={selectedSession}
+                  sessionId={selectedSession}
+                  isComplete={!currentStream.isStreaming}
                   scrollContainerRef={messageAreaRef}
                 />
               )}
@@ -869,7 +909,6 @@ export function ChatPage({
             ref={chatInputRef}
             sessionId={selectedSession === "new" ? null : selectedSession}
             projectPath={currentProject?.path ?? null}
-            disabled={streamStore.getSessionId() !== null}
             onMessageSent={handleMessageSent}
             allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
             accessModeLabel={accessModeLabel}

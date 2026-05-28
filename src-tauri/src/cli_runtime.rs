@@ -21,16 +21,18 @@ pub struct AgentStreamChunk {
     pub data: serde_json::Value,
 }
 
-pub fn spawn_stream_reader<R, E>(
+pub fn spawn_stream_reader<R, E, F>(
     app: tauri::AppHandle,
     agent_id: String,
     session_id: String,
     stdout: R,
     stderr: Option<E>,
     on_finish: impl FnOnce() + Send + 'static,
+    on_session_resolved: F,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
     E: AsyncRead + Unpin + Send + 'static,
+    F: Fn(&str) + Send + Sync + 'static,
 {
     if let Some(stderr) = stderr {
         let stderr_agent_id = agent_id.clone();
@@ -42,7 +44,7 @@ pub fn spawn_stream_reader<R, E>(
     }
 
     tauri::async_runtime::spawn(async move {
-        stream_stdout(app, agent_id, session_id, stdout).await;
+        stream_stdout(app, agent_id, session_id, stdout, &on_session_resolved).await;
         on_finish();
     });
 }
@@ -75,9 +77,10 @@ where
     }
 }
 
-async fn stream_stdout<R>(app: tauri::AppHandle, agent_id: String, session_id: String, stdout: R)
+async fn stream_stdout<R, F>(app: tauri::AppHandle, agent_id: String, session_id: String, stdout: R, on_session_resolved: &F)
 where
     R: AsyncRead + Unpin,
+    F: Fn(&str) + Send + Sync,
 {
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
@@ -105,6 +108,9 @@ where
             }
             if matches!(event, NormalizedEvent::TurnComplete { .. }) {
                 saw_terminal_event = true;
+            }
+            if let NormalizedEvent::SessionResolved { session_id: real_id } = &event {
+                on_session_resolved(real_id);
             }
             let force = matches!(
                 event,
