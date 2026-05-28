@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, memo } from "react";
+import { useEffect, useCallback, memo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -16,18 +16,8 @@ interface StreamingMessageProps {
 }
 
 export const StreamingMessage = memo(function StreamingMessage({ isComplete, userMessage, scrollContainerRef }: StreamingMessageProps) {
-  const chunks = useStreamStore();
+  const { text: displayText, thinking: thinkingText, error: errorText, tools: toolUses } = useStreamStore();
   const { t } = useTranslation();
-  const [displayText, setDisplayText] = useState("");
-  const [thinkingText, setThinkingText] = useState("");
-  const [errorText, setErrorText] = useState("");
-  const [toolUses, setToolUses] = useState<Array<{ name: string; input: unknown }>>([]);
-  const textRef = useRef("");
-  const thinkingRef = useRef("");
-  const errorRef = useRef("");
-  const toolsRef = useRef<Array<{ name: string; input: unknown }>>([]);
-  const rafRef = useRef<number>(0);
-  const processedCount = useRef(0);
   const userScrolledRef = useRef(false);
 
   const isNearBottom = useCallback(() => {
@@ -55,45 +45,10 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
     return () => el.removeEventListener("scroll", onScroll);
   }, [scrollContainerRef, isNearBottom]);
 
-  // Batch text updates via ref + rAF for smooth streaming
+  // Scroll to bottom when content updates
   useEffect(() => {
-    const newChunks = chunks.slice(processedCount.current);
-    if (newChunks.length === 0) return;
-
-    for (const chunk of newChunks) {
-      if (chunk.data.kind === "text_delta") {
-        textRef.current += chunk.data.delta;
-      } else if (chunk.data.kind === "thinking") {
-        thinkingRef.current += chunk.data.delta;
-      } else if (chunk.data.kind === "error") {
-        errorRef.current = chunk.data.message;
-      } else if (chunk.data.kind === "tool_use_start") {
-        toolsRef.current.push({ name: chunk.data.tool, input: chunk.data.input });
-      } else if (chunk.data.kind === "message") {
-        for (const block of chunk.data.content) {
-          if (block.type === "tool_use") {
-            toolsRef.current.push({ name: block.name, input: block.input });
-          } else if (block.type === "text") {
-            textRef.current += block.text;
-          } else if (block.type === "thinking") {
-            thinkingRef.current += block.thinking;
-          }
-        }
-      }
-    }
-    processedCount.current = chunks.length;
-
-    cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(() => {
-      setDisplayText(textRef.current);
-      setThinkingText(thinkingRef.current);
-      setErrorText(errorRef.current);
-      setToolUses([...toolsRef.current]);
-      scrollToBottom();
-    });
-
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [chunks, scrollToBottom]);
+    scrollToBottom();
+  }, [displayText, thinkingText, errorText, toolUses.length, scrollToBottom]);
 
   const hasBubbleContent = displayText.length > 0 || thinkingText.length > 0 || errorText.length > 0;
   const hasContent = hasBubbleContent || toolUses.length > 0;
@@ -159,7 +114,10 @@ export const StreamingMessage = memo(function StreamingMessage({ isComplete, use
                   )}
                   {displayText && (
                     <div className="markdown-prose overflow-hidden">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                      <ReactMarkdown 
+                        remarkPlugins={[remarkGfm]} 
+                        rehypePlugins={isComplete ? [rehypeHighlight] : []}
+                      >
                         {displayText}
                       </ReactMarkdown>
                       {!isComplete && <span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5" />}
