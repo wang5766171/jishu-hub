@@ -118,7 +118,11 @@
     "currentAgent": "Current agent",
     "projectPath": "Project path",
     "loadingProjectSessions": "Loading project sessions...",
-    "streamError": "Stream terminated unexpectedly, image path format may not be supported"
+    "streamError": "Stream terminated unexpectedly, image path format may not be supported",
+    "float": "Float window",
+    "floatingIdle": "Waiting for task...",
+    "floatingComplete": "Task completed",
+    "floatingRestore": "Restore session"
   },
   "config": {
     "title": "Configuration",

@@ -9,6 +9,7 @@ import { Github } from "@/components/icons/github";
 import { Gitee } from "@/components/icons/gitee";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { useTheme, type Theme } from "@/hooks/use-theme";
@@ -323,7 +324,7 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
 
 function AppContent() {
   const { t } = useTranslation();
-  const { activeId } = useAgent();
+  const { activeId, setActive } = useAgent();
   const [currentPage, setCurrentPage] = useState<Page>("chat");
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [projectSessionsLoading, setProjectSessionsLoading] = useState(false);
@@ -333,7 +334,7 @@ function AppContent() {
 
   // Only show loading overlay on initial load, not on refresh
   const loading = projectsLoading || namesLoading;
-  const blockingLoading = loading || projectSessionsLoading;
+  const blockingLoading = loading;
 
   // Restore last project on startup
   useEffect(() => {
@@ -395,20 +396,54 @@ function AppContent() {
 
   const currentProjectMeta = currentProject ? projectMetas?.[currentProject.encoded_name] : undefined;
 
+  // Floating window restore: switch agent/project and navigate to session
+  const [navigateToSession, setNavigateToSession] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let unlistenFn: (() => void) | null = null;
+    listen<{ sessionId: string; agentId: string; projectEncoded: string }>("floating-restore", async (event) => {
+      if (cancelled) return;
+      const { sessionId, agentId, projectEncoded } = event.payload;
+      // Switch agent if needed
+      if (agentId && agentId !== activeId) {
+        await setActive(agentId);
+      }
+      // Switch project if needed
+      if (projectEncoded) {
+        const targetProject = projects?.find(p => p.encoded_name === projectEncoded);
+        if (targetProject) {
+          setCurrentProject(targetProject);
+          invokeCommand("save_last_project", { encodedName: projectEncoded }).catch(console.error);
+        }
+      }
+      setCurrentPage("chat");
+      // Use setTimeout to ensure project/agent switch effects run first
+      setTimeout(() => setNavigateToSession(sessionId), 100);
+      // Clear after navigation
+      setTimeout(() => setNavigateToSession(null), 500);
+      // Focus main window
+      getCurrentWindow().setFocus().catch(() => {});
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlistenFn = fn;
+    });
+    return () => { cancelled = true; unlistenFn?.(); };
+  }, [activeId, projects, setActive]);
+
   return (
     <div className="flex flex-col h-screen bg-background relative">
       <TitleBar currentPage={currentPage} onNavigate={setCurrentPage} disabled={blockingLoading} />
       <div className="flex-1 overflow-hidden">
         <Suspense fallback={<LoadingOverlay />}>
           {currentPage === "chat"
-            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} />
+            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} />
             : <ManagePage onBack={() => setCurrentPage("chat")} onEnterProject={handleEnterProject} navigateToProjects={manageNavKey} />}
         </Suspense>
       </div>
       <div className="h-6 flex items-center px-4 text-[10px] text-muted-foreground/50 border-t border-border/30">
         <span>{projects?.length ?? 0} projects</span>
       </div>
-      {blockingLoading && <LoadingOverlay label={projectSessionsLoading ? t("sessions.loadingProjectSessions") : undefined} />}
+      {blockingLoading && <LoadingOverlay />}
     </div>
   );
 }

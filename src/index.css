@@ -79,6 +79,7 @@
   --icon-pin: var(--color-muted-foreground);
   --icon-send-bg: var(--color-primary);
   --icon-send-fg: var(--color-primary-foreground);
+  --floating-indicator: hsl(240 5.9% 10%);
 
   /* Font size presets (default: small) */
   --font-size-base: 15px;
@@ -138,6 +139,7 @@
   --icon-pin: #ef4444;
   --icon-send-bg: #3b82f6;
   --icon-send-fg: #ffffff;
+  --floating-indicator: #10b981;
   --message-user-bg: #2f80ed;
   --message-user-fg: #ffffff;
   --message-assistant-bg: transparent;
@@ -189,6 +191,7 @@
   --icon-theme: #fb923c;
   --icon-about: #22d3ee;
   --icon-pin: #f87171;
+  --floating-indicator: #60a5fa;
   --message-user-bg: hsl(240 5% 20%);
   --message-user-fg: var(--color-foreground);
   --message-assistant-bg: transparent;

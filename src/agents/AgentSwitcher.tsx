@@ -46,19 +46,21 @@ export const AgentSwitcher = memo(function AgentSwitcher() {
         <span
           className={cn(
             "absolute h-2.5 w-2.5 rounded-full opacity-50 animate-ping",
-            activeInstalled ? "bg-emerald-500" : "bg-amber-400"
+            !activeInstalled && "bg-amber-400"
           )}
+          style={activeInstalled ? { backgroundColor: "var(--floating-indicator, #10b981)" } : undefined}
         />
         <span
           className={cn(
             "relative h-2.5 w-2.5 rounded-full ring-2 ring-background",
-            activeInstalled ? "bg-emerald-500" : "bg-amber-400"
+            !activeInstalled && "bg-amber-400"
           )}
+          style={activeInstalled ? { backgroundColor: "var(--floating-indicator, #10b981)" } : undefined}
         />
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1 w-64 rounded-lg border border-border bg-popover shadow-lg z-50 p-2">
+        <div className="absolute left-0 top-full mt-1 w-64 rounded-lg border border-border bg-popover shadow-lg z-50 p-2">
           <div className="px-2 pb-2 pt-1 border-b border-border/50">
             <div className="flex items-center gap-2">
               <span
