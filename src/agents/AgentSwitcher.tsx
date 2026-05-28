@@ -1,10 +1,14 @@
 import { useState, useRef, useEffect, memo } from "react";
 import { useAgent } from "./AgentContext";
 import { cn } from "@/lib/utils";
+import { InstallAgentDialog } from "./InstallAgentDialog";
+import type { AgentStatus } from "./types";
 
 export const AgentSwitcher = memo(function AgentSwitcher() {
   const { agents, activeId, active, setActive, refreshHealth } = useAgent();
   const [open, setOpen] = useState(false);
+  const [installDialogOpen, setInstallAgentDialogOpen] = useState(false);
+  const [agentToInstall, setInstallAgent] = useState<AgentStatus | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -24,6 +28,11 @@ export const AgentSwitcher = memo(function AgentSwitcher() {
     <div ref={ref} className="relative">
       <button
         onClick={() => {
+          if (!activeInstalled) {
+            setInstallAgent(active);
+            setInstallAgentDialogOpen(true);
+            return;
+          }
           setOpen(!open);
           if (!open) refreshHealth();
         }}
@@ -79,8 +88,9 @@ export const AgentSwitcher = memo(function AgentSwitcher() {
               key={agent.id}
               onClick={() => {
                 if (!agent.health.installed) {
-                  if (agent.install_hint) void navigator.clipboard?.writeText(agent.install_hint);
-                  window.alert(agent.install_hint ? `未安装：${agent.display_name}\n\n已复制安装命令：\n${agent.install_hint}` : `未安装：${agent.display_name}`);
+                  setInstallAgent(agent);
+                  setInstallAgentDialogOpen(true);
+                  setOpen(false);
                   return;
                 }
                 setActive(agent.id);
@@ -107,6 +117,13 @@ export const AgentSwitcher = memo(function AgentSwitcher() {
           ))}
         </div>
       )}
+
+      <InstallAgentDialog
+        agent={agentToInstall}
+        open={installDialogOpen}
+        onOpenChange={setInstallAgentDialogOpen}
+        onInstalled={refreshHealth}
+      />
     </div>
   );
 });

@@ -21,6 +21,7 @@ export interface AgentStatus {
   capabilities: string;
   health: AgentHealth;
   install_hint: string | null;
+  native_install_command: string | null;
 }
 
 export class CapabilitySet {

@@ -212,6 +212,10 @@ impl AgentPlugin for ClaudeCodeAgent {
         Some("npm install -g @anthropic-ai/claude-code".to_string())
     }
 
+    fn native_install_command(&self) -> Option<String> {
+        Some("winget install Anthropic.ClaudeCode".to_string())
+    }
+
     fn probe_sync(&self) -> AgentHealth {
         let candidates = super::discovery::default_candidates_for("claude");
         // Synchronous check: just verify binary exists

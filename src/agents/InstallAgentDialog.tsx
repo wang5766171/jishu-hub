@@ -1,0 +1,159 @@
+import { useState, useEffect } from "react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { invokeCommand } from "@/hooks/use-invoke";
+import { Terminal, Package, AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
+import type { AgentStatus } from "./types";
+
+interface InstallAgentDialogProps {
+  agent: AgentStatus | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onInstalled: () => void;
+}
+
+export function InstallAgentDialog({ agent, open, onOpenChange, onInstalled }: InstallAgentDialogProps) {
+  const [nodeExists, setNodeExists] = useState<boolean | null>(null);
+  const [nativePkgExists, setNativePkgExists] = useState<boolean | null>(null);
+  const [installing, setInstalling] = useState<string | null>(null); // 'npm' | 'native'
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+
+  useEffect(() => {
+    if (open && agent) {
+      setSuccess(false);
+      setError(null);
+      setInstalling(null);
+      
+      invokeCommand<boolean>("check_prerequisite", { command: "node" }).then(setNodeExists);
+      
+      const pkg = agent.id === "claude-code" ? "winget" : "choco";
+      invokeCommand<boolean>("check_prerequisite", { command: pkg }).then(setNativePkgExists);
+    }
+  }, [open, agent]);
+
+  if (!agent) return null;
+
+  const handleInstall = async (method: "npm" | "native") => {
+    const cmd = method === "npm" ? agent.install_hint : agent.native_install_command;
+    if (!cmd) return;
+
+    setInstalling(method);
+    setError(null);
+    try {
+      await invokeCommand("install_agent_command", { command: cmd });
+      setSuccess(true);
+      setTimeout(() => {
+        onInstalled();
+        onOpenChange(false);
+      }, 2000);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setInstalling(null);
+    }
+  };
+
+  const nativePkgName = agent.id === "claude-code" ? "winget" : "choco";
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Terminal className="h-5 w-5 text-primary" />
+            安装 {agent.display_name}
+          </DialogTitle>
+        </DialogHeader>
+        
+        <div className="py-6 space-y-6">
+          {success ? (
+            <div className="flex flex-col items-center justify-center py-4 space-y-3 text-center">
+              <CheckCircle2 className="h-12 w-12 text-emerald-500 animate-in zoom-in" />
+              <div className="space-y-1">
+                <p className="font-medium text-lg">安装成功</p>
+                <p className="text-sm text-muted-foreground">正在刷新状态...</p>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="space-y-4">
+                {/* NPM Method */}
+                <div className="p-4 rounded-xl border border-border bg-card/50 hover:bg-accent/5 transition-colors space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="p-1.5 rounded-md bg-red-500/10 text-red-500">
+                        <Package className="h-4 w-4" />
+                      </div>
+                      <span className="font-medium">通过 NPM 安装</span>
+                    </div>
+                    {nodeExists === false && (
+                      <span className="text-[10px] bg-amber-500/10 text-amber-600 px-2 py-0.5 rounded-full flex items-center gap-1">
+                        <AlertTriangle className="h-3 w-3" /> 需要 Node.js
+                      </span>
+                    )}
+                  </div>
+                  <code className="block text-[11px] font-mono p-2 bg-muted rounded border text-muted-foreground break-all">
+                    {agent.install_hint}
+                  </code>
+                  <Button 
+                    className="w-full" 
+                    variant={nodeExists ? "default" : "outline"}
+                    disabled={!!installing || nodeExists === false}
+                    onClick={() => handleInstall("npm")}
+                  >
+                    {installing === "npm" ? <Loader2 className="h-4 w-4 animate-spin" /> : "立即安装"}
+                  </Button>
+                </div>
+
+                {/* Native Method */}
+                {agent.native_install_command && (
+                  <div className="p-4 rounded-xl border border-border bg-card/50 hover:bg-accent/5 transition-colors space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="p-1.5 rounded-md bg-blue-500/10 text-blue-500">
+                          <Terminal className="h-4 w-4" />
+                        </div>
+                        <span className="font-medium">通过 {nativePkgName} 安装</span>
+                      </div>
+                      {nativePkgExists === false && (
+                        <span className="text-[10px] bg-amber-500/10 text-amber-600 px-2 py-0.5 rounded-full flex items-center gap-1">
+                          <AlertTriangle className="h-3 w-3" /> 需要 {nativePkgName}
+                        </span>
+                      )}
+                    </div>
+                    <code className="block text-[11px] font-mono p-2 bg-muted rounded border text-muted-foreground break-all">
+                      {agent.native_install_command}
+                    </code>
+                    <Button 
+                      className="w-full" 
+                      variant={nativePkgExists ? "default" : "outline"}
+                      disabled={!!installing || nativePkgExists === false}
+                      onClick={() => handleInstall("native")}
+                    >
+                      {installing === "native" ? <Loader2 className="h-4 w-4 animate-spin" /> : "立即安装"}
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              {error && (
+                <div className="p-3 rounded-lg bg-destructive/10 text-destructive text-xs font-mono whitespace-pre-wrap break-all border border-destructive/20 max-h-32 overflow-y-auto">
+                  {error}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {!success && (
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={!!installing}>
+              取消
+            </Button>
+          </DialogFooter>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}

@@ -32,6 +32,7 @@ pub struct AgentStatus {
     pub capabilities: String,
     pub health: AgentHealth,
     pub install_hint: Option<String>,
+    pub native_install_command: Option<String>,
 }
 
 pub struct AgentRegistry {
@@ -102,6 +103,7 @@ impl AgentRegistry {
                     capabilities: caps.bits().to_string(),
                     health,
                     install_hint: a.install_hint(),
+                    native_install_command: a.native_install_command(),
                 }
             })
             .collect()
@@ -174,6 +176,9 @@ pub trait AgentPlugin {
         AgentCapabilities::empty()
     }
     fn install_hint(&self) -> Option<String> {
+        None
+    }
+    fn native_install_command(&self) -> Option<String> {
         None
     }
 

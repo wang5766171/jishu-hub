@@ -509,6 +509,29 @@ fn get_app_dir() -> Result<String, String> {
     Ok(dir.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn check_prerequisite(command: String) -> bool {
+    std::process::Command::new("where")
+        .arg(&command)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+async fn install_agent_command(command: String) -> Result<String, String> {
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &command])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -593,6 +616,8 @@ pub fn run() {
             agent_set_active,
             agent_get_active,
             agent_refresh_health,
+            check_prerequisite,
+            install_agent_command,
             chat::send_message,
             chat::abort_chat,
             image::save_session_files,

@@ -936,6 +936,10 @@ impl AgentPlugin for OpencodeAdapter {
         Some("npm install -g opencode".to_string())
     }
 
+    fn native_install_command(&self) -> Option<String> {
+        Some("choco install opencode".to_string())
+    }
+
     fn probe_sync(&self) -> AgentHealth {
         let candidates = super::super::discovery::default_candidates_for("opencode");
         let runtime = tokio::runtime::Runtime::new();
