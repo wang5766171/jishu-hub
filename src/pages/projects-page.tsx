@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Plus, FolderOpen, Settings2, RotateCw, Search, ChevronDown, ChevronUp } from "lucide-react";
@@ -43,6 +43,25 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
   }, [projectMetas]);
 
   const TAG_COLLAPSE_LIMIT = 8;
+
+  const projectAgentIds = useMemo(() => {
+    const ids = new Set<string>();
+    (projects ?? []).forEach(project => {
+      (project.agent_ids ?? []).forEach(id => ids.add(id));
+    });
+    return ids;
+  }, [projects]);
+
+  const filterAgents = useMemo(
+    () => agents.filter(agent => agent.health.installed || projectAgentIds.has(agent.id)),
+    [agents, projectAgentIds]
+  );
+
+  useEffect(() => {
+    if (selectedAgent !== "all" && !filterAgents.some(agent => agent.id === selectedAgent)) {
+      setSelectedAgent("all");
+    }
+  }, [filterAgents, selectedAgent]);
 
   const handleProjectAdded = () => {
     refetch();
@@ -134,56 +153,58 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
       </div>
 
       {projects && projects.length > 0 && (
-        <div className="space-y-2">
-          <div className="relative max-w-sm">
-            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={t("projects.search")}
-              className="h-8 pl-8 text-sm"
-            />
-          </div>
-          {agents.length > 0 && (
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <button
-                onClick={() => setSelectedAgent("all")}
-                className={`inline-flex items-center px-2 py-0.5 text-xs rounded-full transition-colors ${
-                  selectedAgent === "all"
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-secondary text-secondary-foreground hover:bg-primary/20"
-                }`}
-              >
-                {t("projects.allAgents")}
-              </button>
-              {agents.map(agent => (
+        <div className="flex flex-col items-center gap-3 pt-1">
+          <div className="flex w-full max-w-4xl flex-wrap items-center justify-center gap-3">
+            <div className="relative min-w-[280px] flex-1 max-w-md">
+              <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={t("projects.search")}
+                className="h-9 rounded-[10px] border-border/70 bg-background/80 pl-8 text-sm shadow-sm"
+              />
+            </div>
+            {filterAgents.length > 0 && (
+              <div className="flex items-center justify-center gap-1.5 rounded-[10px] border border-border/70 bg-muted/35 p-1 shadow-sm">
                 <button
-                  key={agent.id}
-                  onClick={() => setSelectedAgent(selectedAgent === agent.id ? "all" : agent.id)}
-                  className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full transition-colors ${
-                    selectedAgent === agent.id
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-secondary text-secondary-foreground hover:bg-primary/20"
+                  onClick={() => setSelectedAgent("all")}
+                  className={`inline-flex h-7 items-center rounded-[7px] px-3 text-xs font-medium transition-colors ${
+                    selectedAgent === "all"
+                      ? "bg-foreground text-background shadow-sm"
+                      : "text-muted-foreground hover:bg-background/80 hover:text-foreground"
                   }`}
                 >
-                  {agent.id === activeId && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
-                  {agent.display_name}
+                  {t("projects.allAgents")}
                 </button>
-              ))}
-            </div>
-          )}
+                {filterAgents.map(agent => (
+                  <button
+                    key={agent.id}
+                    onClick={() => setSelectedAgent(selectedAgent === agent.id ? "all" : agent.id)}
+                    className={`inline-flex h-7 items-center gap-1.5 rounded-[7px] px-3 text-xs font-medium transition-colors ${
+                      selectedAgent === agent.id
+                        ? "bg-foreground text-background shadow-sm"
+                        : "text-muted-foreground hover:bg-background/80 hover:text-foreground"
+                    }`}
+                  >
+                    {agent.id === activeId && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
+                    {agent.display_name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           {allTags.length > 0 && (
-            <div className="flex items-center gap-1.5 flex-wrap">
+            <div className="flex max-w-4xl items-center justify-center gap-1.5 flex-wrap">
               {allTags
                 .slice(0, tagsExpanded ? undefined : TAG_COLLAPSE_LIMIT)
                 .map(tag => (
                   <button
                     key={tag}
                     onClick={() => setSelectedTag(selectedTag === tag ? null : tag)}
-                    className={`inline-flex items-center px-2 py-0.5 text-xs rounded-full transition-colors ${
+                    className={`inline-flex h-7 items-center rounded-[7px] px-2.5 text-xs font-medium transition-colors ${
                       selectedTag === tag
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-secondary text-secondary-foreground hover:bg-primary/20"
+                        ? "bg-foreground text-background"
+                        : "bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground"
                     }`}
                   >
                     {tag}
