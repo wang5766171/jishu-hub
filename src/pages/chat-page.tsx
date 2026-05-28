@@ -98,6 +98,7 @@ export function ChatPage({
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
   const [messageSearchStatus, setMessageSearchStatus] = useState<MessageSearchStatus>({ current: 0, total: 0 });
   const [messageSearchNavigation, setMessageSearchNavigation] = useState<MessageSearchNavigation | null>(null);
+  const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
   const [optimisticSessions, setOptimisticSessions] = useState<Session[]>([]);
 
   const messageAreaRef = useRef<HTMLDivElement>(null);
@@ -277,6 +278,23 @@ export function ChatPage({
       messageAreaRef.current.scrollTop = action.top;
     }
   }, [sessionMessages]);
+
+  // Track whether user has scrolled away from the bottom
+  useEffect(() => {
+    const el = messageAreaRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      setIsAwayFromBottom(el.scrollHeight - el.scrollTop - el.clientHeight > 100);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [selectedSession]);
+
+  const handleScrollToBottom = useCallback(() => {
+    if (messageAreaRef.current) {
+      messageAreaRef.current.scrollTo({ top: messageAreaRef.current.scrollHeight, behavior: "smooth" });
+    }
+  }, []);
 
   const handleSelectSession = async (sessionId: string) => {
     if (sessionId === selectedSession || !projectId) return;
@@ -903,21 +921,32 @@ export function ChatPage({
             </div>
           </>
         )}
-        {/* Chat input */}
+        {/* Chat input area with scroll-to-bottom overlay */}
         {projectId && !showStartComposer && (
-          <ChatInput
-            ref={chatInputRef}
-            sessionId={selectedSession === "new" ? null : selectedSession}
-            projectPath={currentProject?.path ?? null}
-            onMessageSent={handleMessageSent}
-            allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
-            accessModeLabel={accessModeLabel}
-            accessModeTitle={supportsAccessModeSwitch ? t("sessions.accessMode") : t("sessions.accessModeReadOnly")}
-            accessModeReadOnly={!supportsAccessModeSwitch}
-            accessModeOptions={accessModeOptions}
-            accessModeValue={accessModeValue}
-            onAccessModeChange={handleAccessModeChange}
-          />
+          <div className="relative">
+            {isAwayFromBottom && (
+              <button
+                onClick={handleScrollToBottom}
+                className="absolute -top-10 left-1/2 -translate-x-1/2 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-border/40 bg-background/80 text-muted-foreground shadow-sm backdrop-blur-sm transition-all hover:bg-accent hover:text-foreground hover:border-border/60 hover:shadow-md opacity-60 hover:opacity-100"
+                title={t("sessions.scrollToBottom", "滚动到底部")}
+              >
+                <ChevronDown className="h-4 w-4" strokeWidth={2.5} />
+              </button>
+            )}
+            <ChatInput
+              ref={chatInputRef}
+              sessionId={selectedSession === "new" ? null : selectedSession}
+              projectPath={currentProject?.path ?? null}
+              onMessageSent={handleMessageSent}
+              allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
+              accessModeLabel={accessModeLabel}
+              accessModeTitle={supportsAccessModeSwitch ? t("sessions.accessMode") : t("sessions.accessModeReadOnly")}
+              accessModeReadOnly={!supportsAccessModeSwitch}
+              accessModeOptions={accessModeOptions}
+              accessModeValue={accessModeValue}
+              onAccessModeChange={handleAccessModeChange}
+            />
+          </div>
         )}
       </div>
 
