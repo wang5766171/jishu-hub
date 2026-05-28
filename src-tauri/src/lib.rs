@@ -6,6 +6,7 @@ mod config;
 mod history;
 mod hub;
 mod image;
+mod process_control;
 mod project;
 mod project_config;
 mod session;

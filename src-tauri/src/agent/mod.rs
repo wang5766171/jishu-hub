@@ -248,6 +248,9 @@ pub trait AgentPlugin {
 
     // Chat
     fn build_chat_command(&self, args: ChatRequest) -> tokio::process::Command;
+    fn abort_chat_process(&self, process_id: u32) -> Result<(), String> {
+        crate::process_control::terminate_process_tree(process_id)
+    }
     fn build_resume_command(&self, session_id: &str) -> String;
     fn parse_stream_event(&self, event: &serde_json::Value) -> String;
 
@@ -311,6 +314,7 @@ mod tests {
                 last_checked_at: 1,
             },
             install_hint: None,
+            native_install_command: None,
         };
 
         let value = serde_json::to_value(status).unwrap();

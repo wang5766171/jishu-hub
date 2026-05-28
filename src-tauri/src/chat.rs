@@ -131,24 +131,44 @@ pub async fn send_message(
 
 #[tauri::command]
 pub async fn abort_chat(app: AppHandle, session_id: String) -> Result<(), String> {
-    let state = app.state::<Mutex<ChatState>>();
-    if let Ok(mut s) = state.lock() {
-        if let Some(process) = s.processes.get(&session_id).cloned() {
-            #[cfg(target_os = "windows")]
-            {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/PID", &process.process_id.to_string(), "/F"])
-                    .output();
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                let _ = std::process::Command::new("kill")
-                    .args(["-9", &process.process_id.to_string()])
-                    .output();
-            }
+    let chat_state = app.state::<Mutex<ChatState>>();
+    let process = {
+        let mut s = chat_state
+            .lock()
+            .map_err(|_| "Chat state lock poisoned".to_string())?;
+        let Some(process) = s.processes.get(&session_id).cloned() else {
+            return Ok(());
+        };
+        s.processes
+            .retain(|_, item| item.process_id != process.process_id);
+        process
+    };
+
+    let app_state = app.state::<Mutex<AppState>>();
+    let abort_result = {
+        let s = app_state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        if let Some(agent) = s.registry.get(&process.agent_id) {
+            agent.abort_chat_process(process.process_id)
+        } else {
+            crate::process_control::terminate_process_tree(process.process_id)
+        }
+    };
+
+    match abort_result {
+        Ok(()) => {
             log::info!("aborted {} chat session {}", process.agent_id, session_id);
-            s.processes.remove(&session_id);
+            Ok(())
+        }
+        Err(err) => {
+            log::warn!(
+                "failed to abort {} chat session {}: {}",
+                process.agent_id,
+                session_id,
+                err
+            );
+            Err(err)
         }
     }
-    Ok(())
 }

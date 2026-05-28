@@ -472,6 +472,24 @@ fn parse_export_messages(raw: &str) -> Result<Vec<crate::session::Message>, Stri
     Ok(messages)
 }
 
+#[cfg(test)]
+fn hydrate_session_messages<F>(sessions: &mut [crate::session::Session], mut export_raw: F)
+where
+    F: FnMut(&str) -> Result<String, String>,
+{
+    for session in sessions {
+        if !session.messages.is_empty() {
+            continue;
+        }
+
+        if let Ok(raw) = export_raw(&session.id) {
+            if let Ok(messages) = parse_export_messages(&raw) {
+                session.messages = messages;
+            }
+        }
+    }
+}
+
 fn datetime_from_millis(value: i64) -> Option<DateTime<Utc>> {
     DateTime::from_timestamp_millis(value)
 }
