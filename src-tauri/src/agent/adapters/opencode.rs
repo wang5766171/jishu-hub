@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -278,6 +278,44 @@ fn parse_session_list(
     Ok(sessions)
 }
 
+fn parse_project_list(raw: &str) -> Result<Vec<crate::project::Project>, String> {
+    let json = extract_json(raw).ok_or_else(|| "No JSON session list found".to_string())?;
+    let entries: Vec<OpencodeSessionListEntry> =
+        serde_json::from_str(json).map_err(|e| e.to_string())?;
+
+    let mut grouped: HashMap<String, (String, usize, Option<i64>)> = HashMap::new();
+    for entry in entries {
+        let Some(directory) = entry.directory.filter(|dir| !dir.trim().is_empty()) else {
+            continue;
+        };
+        if !PathBuf::from(&directory).is_dir() {
+            continue;
+        }
+
+        let key = path_key(&directory);
+        let timestamp = entry.updated.or(entry.created);
+        let item = grouped.entry(key).or_insert((directory, 0, None));
+        item.1 += 1;
+        if timestamp > item.2 {
+            item.2 = timestamp;
+        }
+    }
+
+    let mut projects = grouped
+        .into_values()
+        .filter_map(|(directory, session_count, last_active_ms)| {
+            crate::project::project_from_agent_path(
+                &directory,
+                "opencode",
+                session_count,
+                last_active_ms.and_then(format_millis_local),
+            )
+        })
+        .collect::<Vec<_>>();
+    projects.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+    Ok(projects)
+}
+
 fn parse_export_messages(raw: &str) -> Result<Vec<crate::session::Message>, String> {
     let json = extract_json(raw).ok_or_else(|| "No JSON export found".to_string())?;
     let exported: OpencodeExport = serde_json::from_str(json).map_err(|e| e.to_string())?;
@@ -363,17 +401,27 @@ fn extract_json(raw: &str) -> Option<&str> {
 }
 
 fn same_path(left: &str, right: &str) -> bool {
-    let normalize = |value: &str| {
-        value
-            .replace('/', "\\")
-            .trim_end_matches('\\')
-            .to_ascii_lowercase()
-    };
-    normalize(left) == normalize(right)
+    path_key(left) == path_key(right)
+}
+
+fn path_key(value: &str) -> String {
+    value
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
 }
 
 fn datetime_from_millis(value: i64) -> Option<DateTime<Utc>> {
     DateTime::from_timestamp_millis(value)
+}
+
+fn format_millis_local(value: i64) -> Option<String> {
+    DateTime::from_timestamp_millis(value).map(|datetime: DateTime<Utc>| {
+        datetime
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string()
+    })
 }
 
 fn opencode_config_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -840,7 +888,19 @@ impl AgentPlugin for OpencodeAdapter {
     }
 
     fn scan_projects(&self) -> Vec<crate::project::Project> {
-        crate::project::scan_projects()
+        let output = match std::process::Command::new("opencode")
+            .args(["session", "list", "--format", "json", "--max-count", "500"])
+            .output()
+        {
+            Ok(output) => output,
+            Err(_) => return Vec::new(),
+        };
+
+        if !output.status.success() {
+            return Vec::new();
+        }
+
+        parse_project_list(&String::from_utf8_lossy(&output.stdout)).unwrap_or_default()
     }
 
     fn add_project(&self, path: &str) -> Option<crate::project::Project> {
@@ -871,7 +931,8 @@ impl AgentPlugin for OpencodeAdapter {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
         }
 
-        let mut sessions = parse_session_list(&String::from_utf8_lossy(&output.stdout), &project_path)?;
+        let mut sessions =
+            parse_session_list(&String::from_utf8_lossy(&output.stdout), &project_path)?;
         hydrate_session_messages(&mut sessions, |session_id| {
             let output = std::process::Command::new("opencode")
                 .args(["export", session_id])
@@ -1124,6 +1185,39 @@ mod tests {
             sessions[0].last_active.unwrap().timestamp_millis(),
             1779924225844
         );
+    }
+
+    #[test]
+    fn parses_opencode_project_list_from_session_directories() {
+        let root = std::env::temp_dir().join("jishu_opencode_project_list");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.to_string_lossy().replace('\\', "\\\\");
+        let raw = format!(
+            r#"[{{
+                "id": "ses_1",
+                "title": "One",
+                "updated": 1779924225844,
+                "created": 1779924224291,
+                "directory": "{path}"
+            }}, {{
+                "id": "ses_2",
+                "title": "Two",
+                "updated": 1779924226000,
+                "created": 1779924225000,
+                "directory": "{path}"
+            }}]"#
+        );
+
+        let projects = parse_project_list(&raw).unwrap();
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].session_count, 2);
+        assert_eq!(projects[0].agent_ids, vec!["opencode".to_string()]);
+        assert_eq!(projects[0].path, root);
+        assert!(projects[0].last_active.is_some());
+
+        let _ = std::fs::remove_dir_all(&projects[0].path);
     }
 
     #[test]

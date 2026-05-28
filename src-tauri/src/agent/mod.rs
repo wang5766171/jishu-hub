@@ -148,6 +148,17 @@ impl AgentRegistry {
             .collect()
     }
 
+    pub fn scan_projects(&self) -> Vec<crate::project::Project> {
+        let mut projects = Vec::new();
+        for (id, agent) in self.agents_info() {
+            if id != "claude-code" && !agent.probe_sync().installed {
+                continue;
+            }
+            projects.extend(agent.scan_projects());
+        }
+        crate::project::merge_projects(projects)
+    }
+
     /// Update health cache with pre-computed results
     pub fn update_health_cache(&self, results: Vec<(String, AgentHealth)>) {
         let mut cache = self.health_cache.lock().unwrap_or_else(|e| e.into_inner());

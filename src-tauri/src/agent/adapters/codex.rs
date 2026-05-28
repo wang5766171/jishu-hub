@@ -158,7 +158,7 @@ impl AgentPlugin for CodexAdapter {
     }
 
     fn scan_projects(&self) -> Vec<crate::project::Project> {
-        crate::project::scan_projects()
+        Vec::new()
     }
 
     fn add_project(&self, path: &str) -> Option<crate::project::Project> {

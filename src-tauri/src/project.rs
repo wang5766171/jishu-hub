@@ -86,6 +86,67 @@ pub fn scan_projects() -> Vec<Project> {
     projects
 }
 
+pub fn merge_projects(projects: Vec<Project>) -> Vec<Project> {
+    let secondaries = crate::hub::get_all_secondaries().unwrap_or_default();
+    let mut merged: Vec<Project> = Vec::new();
+
+    for project in projects {
+        if crate::hub::is_project_hidden(&project.encoded_name).unwrap_or(false)
+            || secondaries.contains(&project.encoded_name)
+        {
+            continue;
+        }
+
+        if let Some(existing) = merged
+            .iter_mut()
+            .find(|item| item.encoded_name == project.encoded_name)
+        {
+            existing.session_count = existing.session_count.max(project.session_count);
+            existing.initialized = existing.initialized || project.initialized;
+            existing.has_claude_md = existing.has_claude_md || project.has_claude_md;
+            if project.last_active > existing.last_active {
+                existing.last_active = project.last_active.clone();
+            }
+            for agent_id in project.agent_ids {
+                if !existing.agent_ids.contains(&agent_id) {
+                    existing.agent_ids.push(agent_id);
+                }
+            }
+        } else {
+            merged.push(project);
+        }
+    }
+
+    merged.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+    merged
+}
+
+pub fn project_from_agent_path(
+    path: &str,
+    agent_id: &str,
+    session_count: usize,
+    last_active: Option<String>,
+) -> Option<Project> {
+    let project_path = Path::new(path);
+    if !project_path.is_dir() {
+        return None;
+    }
+
+    let name = project_path.file_name()?.to_string_lossy().to_string();
+    let encoded = encode_project_path(path);
+
+    Some(Project {
+        name,
+        path: project_path.to_path_buf(),
+        encoded_name: encoded,
+        session_count,
+        last_active,
+        has_claude_md: project_path.join(".claude").join("CLAUDE.md").exists(),
+        agent_ids: vec![agent_id.to_string()],
+        initialized: true,
+    })
+}
+
 /// Build a Project from a filesystem path (for manually added projects)
 fn build_project_from_path(path: &str) -> Option<Project> {
     let project_path = std::path::Path::new(path);
@@ -163,9 +224,6 @@ fn detect_project_agents(project_path: &Path, claude_project_dir: &Path) -> Vec<
     let mut agents = Vec::new();
     if claude_project_dir.is_dir() || project_path.join(".claude").join("CLAUDE.md").exists() {
         agents.push("claude-code".to_string());
-    }
-    if project_path.join("AGENTS.md").exists() || project_path.join(".codex").is_dir() {
-        agents.push("codex".to_string());
     }
     if project_path.join("opencode.json").exists()
         || project_path.join("opencode.jsonc").exists()
@@ -465,7 +523,10 @@ mod tests {
         let encoded = encode_project_path(&path);
 
         // Verify the encoding has triple dash for " - "
-        assert!(encoded.contains("TestProject---2"), "expected triple dash in: {encoded}");
+        assert!(
+            encoded.contains("TestProject---2"),
+            "expected triple dash in: {encoded}"
+        );
 
         let decoded = decode_project_path(&encoded);
         assert_eq!(decoded, path);

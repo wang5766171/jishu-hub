@@ -37,7 +37,7 @@ fn list_agents(state: tauri::State<'_, Mutex<AppState>>) -> Vec<agent::AgentInfo
 #[tauri::command]
 fn scan_projects(state: tauri::State<'_, Mutex<AppState>>) -> Vec<project::Project> {
     let s = state.lock().unwrap();
-    s.registry.active().scan_projects()
+    s.registry.scan_projects()
 }
 
 #[tauri::command]
@@ -430,7 +430,7 @@ fn get_mergeable_projects(
     encoded_name: String,
 ) -> Result<Vec<String>, String> {
     let s = state.lock().unwrap();
-    let projects = s.registry.active().scan_projects();
+    let projects = s.registry.scan_projects();
     let mergeable: Vec<String> = projects
         .iter()
         .filter(|p| p.encoded_name != encoded_name)
