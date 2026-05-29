@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod adapters;
 pub mod capability;
@@ -40,6 +41,8 @@ pub struct AgentRegistry {
     active_id: String,
     health_cache: Arc<Mutex<HashMap<String, AgentHealth>>>,
 }
+
+const HEALTH_CACHE_TTL_MS: i64 = 60_000;
 
 impl AgentRegistry {
     pub fn new() -> Self {
@@ -153,12 +156,35 @@ impl AgentRegistry {
     pub fn scan_projects(&self) -> Vec<crate::project::Project> {
         let mut projects = Vec::new();
         for (id, agent) in self.agents_info() {
-            if id != "claude-code" && !agent.probe_sync().installed {
+            if id != "claude-code" && !self.agent_installed_cached(&id, agent) {
                 continue;
             }
             projects.extend(agent.scan_projects());
         }
         crate::project::merge_projects(projects)
+    }
+
+    fn agent_installed_cached(&self, id: &str, agent: &(dyn AgentPlugin + Send + Sync)) -> bool {
+        let now = now_ms();
+        if let Some(health) = self
+            .health_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned()
+        {
+            if now.saturating_sub(health.last_checked_at) < HEALTH_CACHE_TTL_MS {
+                return health.installed;
+            }
+        }
+
+        let health = agent.probe_sync();
+        let installed = health.installed;
+        self.health_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.to_string(), health);
+        installed
     }
 
     /// Update health cache with pre-computed results
@@ -168,6 +194,13 @@ impl AgentRegistry {
             cache.insert(id, health);
         }
     }
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 pub trait AgentPlugin {

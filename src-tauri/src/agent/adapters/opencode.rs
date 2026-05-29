@@ -335,9 +335,10 @@ fn scan_projects_from_db_path(db_path: &Path) -> Result<Vec<crate::project::Proj
 
     let mut stmt = conn
         .prepare(
-            "SELECT directory, time_updated, time_created \
+            "SELECT directory, COUNT(*), MAX(COALESCE(time_updated, time_created)) \
              FROM session \
-             WHERE directory IS NOT NULL AND directory != ''",
+             WHERE directory IS NOT NULL AND directory != '' \
+             GROUP BY directory",
         )
         .map_err(|e| e.to_string())?;
 
@@ -345,7 +346,7 @@ fn scan_projects_from_db_path(db_path: &Path) -> Result<Vec<crate::project::Proj
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, i64>(1)?,
                 row.get::<_, Option<i64>>(2)?,
             ))
         })
@@ -353,15 +354,14 @@ fn scan_projects_from_db_path(db_path: &Path) -> Result<Vec<crate::project::Proj
 
     let mut grouped: HashMap<String, (String, usize, Option<i64>)> = HashMap::new();
     for row in rows {
-        let (directory, updated, created) = row.map_err(|e| e.to_string())?;
+        let (directory, session_count, timestamp) = row.map_err(|e| e.to_string())?;
         if !PathBuf::from(&directory).is_dir() {
             continue;
         }
 
         let key = path_key(&directory);
-        let timestamp = updated.or(created);
         let item = grouped.entry(key).or_insert((directory, 0, None));
-        item.1 += 1;
+        item.1 += session_count.max(0) as usize;
         if timestamp > item.2 {
             item.2 = timestamp;
         }
