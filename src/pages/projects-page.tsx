@@ -153,9 +153,9 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
       </div>
 
       {projects && projects.length > 0 && (
-        <div className="flex flex-col items-center gap-3 pt-1">
-          <div className="flex w-full max-w-4xl flex-wrap items-center justify-center gap-3">
-            <div className="relative min-w-[280px] flex-1 max-w-md">
+        <div className="flex flex-col items-center gap-4 pt-1">
+          <div className="flex w-full flex-col items-center gap-3">
+            <div className="relative w-full max-w-xl">
               <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={searchQuery}
@@ -165,7 +165,7 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
               />
             </div>
             {filterAgents.length > 0 && (
-              <div className="flex items-center justify-center gap-1.5 rounded-[10px] border border-border/70 bg-muted/35 p-1 shadow-sm">
+              <div className="flex max-w-3xl flex-wrap items-center justify-center gap-1.5 rounded-[10px] border border-border/70 bg-muted/35 p-1 shadow-sm">
                 <button
                   onClick={() => setSelectedAgent("all")}
                   className={`inline-flex h-7 items-center rounded-[7px] px-3 text-xs font-medium transition-colors ${
