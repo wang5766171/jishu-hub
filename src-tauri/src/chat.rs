@@ -50,21 +50,25 @@ pub async fn send_message(
         message.len()
     );
 
-    let (agent_id, mut command) = {
+    let (agent_id, mut command, pipe_stdin) = {
         let s = state
             .lock()
             .map_err(|_| "App state lock poisoned".to_string())?;
         let agent_id = s.registry.active_id().to_string();
-        let command = s.registry.active().build_chat_command(ChatRequest {
+        let active = s.registry.active();
+        let command = active.build_chat_command(ChatRequest {
             project_path: project_path.clone(),
             session_id: session_id.clone(),
             message,
         });
-        (agent_id, command)
+        (agent_id, command, active.pipe_chat_stdin())
     };
 
+    if pipe_stdin {
+        command.stdin(std::process::Stdio::piped());
+    }
+
     command
-        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 

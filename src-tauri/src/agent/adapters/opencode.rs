@@ -1173,6 +1173,10 @@ impl AgentPlugin for OpencodeAdapter {
         Some(b"\x1b\x1b")
     }
 
+    fn pipe_chat_stdin(&self) -> bool {
+        false
+    }
+
     fn build_resume_command(&self, session_id: &str) -> String {
         crate::agent::command_config::resume_command("opencode", session_id)
     }

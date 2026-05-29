@@ -248,6 +248,9 @@ pub trait AgentPlugin {
 
     // Chat
     fn build_chat_command(&self, args: ChatRequest) -> tokio::process::Command;
+    fn pipe_chat_stdin(&self) -> bool {
+        self.abort_chat_sequence().is_some()
+    }
     fn abort_chat_sequence(&self) -> Option<&'static [u8]> {
         None
     }
