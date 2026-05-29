@@ -214,19 +214,39 @@ pub async fn abort_chat(app: AppHandle, session_id: String) -> Result<(), String
         }
     }
 
-    if control_sent {
+    if control_sent && !crate::process_control::is_process_running(process.process_id) {
         log::info!(
-            "sent abort control sequence to {} chat session {}",
+            "aborted {} chat session {} via control sequence",
             process.agent_id,
             session_id
         );
         return Ok(());
     }
 
-    log::warn!(
-        "no abort control sequence was sent to {} chat session {}",
-        process.agent_id,
-        session_id
-    );
-    Ok(())
+    let abort_result = {
+        let s = app_state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        if let Some(agent) = s.registry.get(&process.agent_id) {
+            agent.abort_chat_process(process.process_id)
+        } else {
+            crate::process_control::terminate_process_tree(process.process_id)
+        }
+    };
+
+    match abort_result {
+        Ok(()) => {
+            log::info!("aborted {} chat session {}", process.agent_id, session_id);
+            Ok(())
+        }
+        Err(err) => {
+            log::warn!(
+                "failed to abort {} chat session {}: {}",
+                process.agent_id,
+                session_id,
+                err
+            );
+            Err(err)
+        }
+    }
 }
