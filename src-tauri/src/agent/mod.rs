@@ -248,6 +248,12 @@ pub trait AgentPlugin {
 
     // Chat
     fn build_chat_command(&self, args: ChatRequest) -> tokio::process::Command;
+    fn abort_chat_sequence(&self) -> Option<&'static [u8]> {
+        None
+    }
+    fn abort_chat_grace_period(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(1200)
+    }
     fn abort_chat_process(&self, process_id: u32) -> Result<(), String> {
         crate::process_control::terminate_process_tree(process_id)
     }

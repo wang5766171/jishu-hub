@@ -287,8 +287,10 @@ impl AgentPlugin for ClaudeCodeAgent {
             return Err(format!("Project directory not found: {}", encoded_name));
         }
 
-        let mut all_sessions =
-            crate::session::list_sessions_with_filter(&project_dir, is_claude_internal_jsonl_record);
+        let mut all_sessions = crate::session::list_sessions_with_filter(
+            &project_dir,
+            is_claude_internal_jsonl_record,
+        );
 
         if let Ok(secondaries) = crate::hub::get_merged_secondaries(encoded_name) {
             for sec in secondaries {
@@ -423,6 +425,10 @@ impl AgentPlugin for ClaudeCodeAgent {
         }
     }
 
+    fn abort_chat_sequence(&self) -> Option<&'static [u8]> {
+        Some(b"\x1b")
+    }
+
     fn build_resume_command(&self, session_id: &str) -> String {
         crate::agent::command_config::resume_command("claude-code", session_id)
     }
@@ -454,8 +460,8 @@ impl AgentPlugin for ClaudeCodeAgent {
         let command = resume_session_id
             .map(|sid| crate::agent::command_config::resume_command("claude-code", sid))
             .unwrap_or_else(|| crate::agent::command_config::launch_command("claude-code"));
-        let window_id =
-            resume_session_id.map(|sid| crate::agent::command_config::terminal_window_id("claude-code", sid));
+        let window_id = resume_session_id
+            .map(|sid| crate::agent::command_config::terminal_window_id("claude-code", sid));
         crate::command::open_agent_terminal(project_path, &command, window_id.as_deref())
     }
 

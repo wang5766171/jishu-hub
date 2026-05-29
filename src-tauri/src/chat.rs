@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
+use tokio::io::AsyncWriteExt;
+use tokio::process::ChildStdin;
 
 use crate::agent::ChatRequest;
 use crate::cli_runtime;
@@ -14,10 +16,11 @@ pub struct ChatSession {
     pub process_id: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ChatProcess {
     pub agent_id: String,
     pub process_id: u32,
+    pub stdin: Option<Arc<Mutex<Option<ChildStdin>>>>,
 }
 
 pub struct ChatState {
@@ -61,6 +64,7 @@ pub async fn send_message(
     };
 
     command
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
@@ -70,6 +74,10 @@ pub async fn send_message(
 
     let pid = child.id().unwrap_or(0);
     let sid = session_id.unwrap_or_else(|| format!("pending-{}", pid));
+    let stdin = child
+        .stdin
+        .take()
+        .map(|handle| Arc::new(Mutex::new(Some(handle))));
 
     let state = app.state::<Mutex<ChatState>>();
     if let Ok(mut s) = state.lock() {
@@ -78,6 +86,7 @@ pub async fn send_message(
             ChatProcess {
                 agent_id: agent_id.clone(),
                 process_id: pid,
+                stdin: stdin.clone(),
             },
         );
     }
@@ -145,30 +154,75 @@ pub async fn abort_chat(app: AppHandle, session_id: String) -> Result<(), String
     };
 
     let app_state = app.state::<Mutex<AppState>>();
-    let abort_result = {
+    let (abort_sequence, abort_grace) = {
         let s = app_state
             .lock()
             .map_err(|_| "App state lock poisoned".to_string())?;
         if let Some(agent) = s.registry.get(&process.agent_id) {
-            agent.abort_chat_process(process.process_id)
+            (
+                agent
+                    .abort_chat_sequence()
+                    .map(|sequence| sequence.to_vec()),
+                agent.abort_chat_grace_period(),
+            )
         } else {
-            crate::process_control::terminate_process_tree(process.process_id)
+            (None, std::time::Duration::from_millis(0))
         }
     };
 
-    match abort_result {
-        Ok(()) => {
-            log::info!("aborted {} chat session {}", process.agent_id, session_id);
-            Ok(())
-        }
-        Err(err) => {
-            log::warn!(
-                "failed to abort {} chat session {}: {}",
-                process.agent_id,
-                session_id,
-                err
-            );
-            Err(err)
+    let mut control_sent = false;
+    if let (Some(sequence), Some(stdin)) = (abort_sequence, process.stdin.as_ref()) {
+        let mut stdin_handle = stdin
+            .lock()
+            .map_err(|_| "Chat process stdin lock poisoned".to_string())?
+            .take();
+        if let Some(mut stdin_handle) = stdin_handle.take() {
+            match stdin_handle.write_all(&sequence).await {
+                Ok(()) => match stdin_handle.flush().await {
+                    Ok(()) => {
+                        control_sent = true;
+                        log::info!(
+                            "sent {} abort control bytes to {} chat process {}",
+                            sequence.len(),
+                            process.agent_id,
+                            process.process_id
+                        );
+                        tokio::time::sleep(abort_grace).await;
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "failed to flush abort control bytes to {} chat process {}: {}",
+                            process.agent_id,
+                            process.process_id,
+                            err
+                        );
+                    }
+                },
+                Err(err) => {
+                    log::warn!(
+                        "failed to write abort control bytes to {} chat process {}: {}",
+                        process.agent_id,
+                        process.process_id,
+                        err
+                    );
+                }
+            }
         }
     }
+
+    if control_sent {
+        log::info!(
+            "sent abort control sequence to {} chat session {}",
+            process.agent_id,
+            session_id
+        );
+        return Ok(());
+    }
+
+    log::warn!(
+        "no abort control sequence was sent to {} chat session {}",
+        process.agent_id,
+        session_id
+    );
+    Ok(())
 }

@@ -1049,8 +1049,7 @@ impl AgentPlugin for OpencodeAdapter {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
         }
 
-        let sessions =
-            parse_session_list(&String::from_utf8_lossy(&output.stdout), &project_path)?;
+        let sessions = parse_session_list(&String::from_utf8_lossy(&output.stdout), &project_path)?;
         Ok(sessions)
     }
 
@@ -1168,6 +1167,10 @@ impl AgentPlugin for OpencodeAdapter {
             cmd.args(&args).current_dir(&req.project_path);
             cmd
         }
+    }
+
+    fn abort_chat_sequence(&self) -> Option<&'static [u8]> {
+        Some(b"\x1b\x1b")
     }
 
     fn build_resume_command(&self, session_id: &str) -> String {
