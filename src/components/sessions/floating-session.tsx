@@ -26,18 +26,30 @@ export function FloatingSessionView() {
   const agentName = decodeURIComponent(params.get("agentName") || agentId);
   const projectEncoded = params.get("project") || "";
 
-  const handleRestore = useCallback(async () => {
-    await emit("floating-restore", { sessionId, agentId, projectEncoded });
-    getCurrentWindow().destroy();
-  }, [sessionId, agentId, projectEncoded]);
-
   const [status, setStatus] = useState<"idle" | "running" | "complete">("idle");
   const [lastText, setLastText] = useState("");
   const [toolName, setToolName] = useState("");
   const textRef = useRef("");
+  const acceptedSessionIdsRef = useRef(new Set(sessionId ? [sessionId] : []));
+  const [resolvedSessionId, setResolvedSessionId] = useState<string | null>(null);
+  const restoreSessionId = resolvedSessionId || sessionId;
+
+  const handleRestore = useCallback(async () => {
+    await emit("floating-restore", { sessionId: restoreSessionId, agentId, projectEncoded });
+    getCurrentWindow().destroy();
+  }, [restoreSessionId, agentId, projectEncoded]);
 
   // Apply theme on mount
   useEffect(() => { applyStoredTheme(); }, []);
+
+  useEffect(() => {
+    acceptedSessionIdsRef.current = new Set(sessionId ? [sessionId] : []);
+    setResolvedSessionId(null);
+  }, [sessionId]);
+
+  const acceptsSession = useCallback((id: string) => {
+    return acceptedSessionIdsRef.current.has(id);
+  }, []);
 
   // Enable window dragging on the title area
   const handleDrag = useCallback(async (e: React.MouseEvent) => {
@@ -55,10 +67,13 @@ export function FloatingSessionView() {
     listen<AgentStreamChunk[] | AgentStreamChunk>("agent-event", (event) => {
       const chunks = Array.isArray(event.payload) ? event.payload : [event.payload];
       for (const chunk of chunks) {
-        if (chunk.session_id !== sessionId) continue;
+        if (!acceptsSession(chunk.session_id)) continue;
         if (agentId && chunk.agent_id !== agentId) continue;
 
-        if (chunk.data.kind === "text_delta") {
+        if (chunk.data.kind === "session_resolved") {
+          acceptedSessionIdsRef.current.add(chunk.data.session_id);
+          setResolvedSessionId(chunk.data.session_id);
+        } else if (chunk.data.kind === "text_delta") {
           setStatus("running");
           textRef.current += chunk.data.delta;
           // Show last ~60 chars
@@ -85,7 +100,7 @@ export function FloatingSessionView() {
       cancelled = true;
       unlistenFn?.();
     };
-  }, [sessionId]);
+  }, [sessionId, agentId, acceptsSession]);
 
   // Also listen for new messages sent (reset to running)
   useEffect(() => {
@@ -94,7 +109,7 @@ export function FloatingSessionView() {
     let unlistenFn: (() => void) | null = null;
 
     listen<{ session_id: string }>("chat-message-sent", (event) => {
-      if (event.payload.session_id === sessionId) {
+      if (acceptsSession(event.payload.session_id)) {
         setStatus("running");
         textRef.current = "";
         setLastText("");
@@ -109,7 +124,7 @@ export function FloatingSessionView() {
       cancelled = true;
       unlistenFn?.();
     };
-  }, [sessionId]);
+  }, [sessionId, acceptsSession]);
 
   return (
     <div className="flex flex-col h-screen w-screen select-none overflow-hidden bg-background border border-border/50 rounded-lg">

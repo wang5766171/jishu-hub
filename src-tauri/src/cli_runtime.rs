@@ -77,8 +77,13 @@ where
     }
 }
 
-async fn stream_stdout<R, F>(app: tauri::AppHandle, agent_id: String, session_id: String, stdout: R, on_session_resolved: &F)
-where
+async fn stream_stdout<R, F>(
+    app: tauri::AppHandle,
+    agent_id: String,
+    session_id: String,
+    stdout: R,
+    on_session_resolved: &F,
+) where
     R: AsyncRead + Unpin,
     F: Fn(&str) + Send + Sync,
 {
@@ -88,6 +93,7 @@ where
     let mut saw_agent_output = false;
     let mut buf: Vec<StreamChunk> = Vec::with_capacity(32);
     let mut last_flush = std::time::Instant::now();
+    let mut current_session_id = session_id.clone();
 
     while let Ok(Some(line)) = lines.next_line().await {
         if line.trim().is_empty() {
@@ -109,9 +115,13 @@ where
             if matches!(event, NormalizedEvent::TurnComplete { .. }) {
                 saw_terminal_event = true;
             }
-            if let NormalizedEvent::SessionResolved { session_id: real_id } = &event {
+            if let NormalizedEvent::SessionResolved {
+                session_id: real_id,
+            } = &event
+            {
                 on_session_resolved(real_id);
             }
+            let chunk_session_id = chunk_session_id_for_event(&mut current_session_id, &event);
             let force = matches!(
                 event,
                 NormalizedEvent::SessionResolved { .. }
@@ -120,7 +130,7 @@ where
             );
             if let Ok(data) = serde_json::to_value(&event) {
                 buf.push(StreamChunk {
-                    session_id: session_id.clone(),
+                    session_id: chunk_session_id,
                     event_type: event.event_type().to_string(),
                     data,
                 });
@@ -164,7 +174,7 @@ where
             .filter_map(|event| {
                 let data = serde_json::to_value(&event).ok()?;
                 Some(StreamChunk {
-                    session_id: session_id.clone(),
+                    session_id: current_session_id.clone(),
                     event_type: event.event_type().to_string(),
                     data,
                 })
@@ -172,6 +182,16 @@ where
             .collect();
         emit_stream_batch(&app, &agent_id, &chunks);
     }
+}
+
+fn chunk_session_id_for_event(current_session_id: &mut String, event: &NormalizedEvent) -> String {
+    let emit_session_id = current_session_id.clone();
+    if let NormalizedEvent::SessionResolved { session_id } = event {
+        if !session_id.is_empty() {
+            *current_session_id = session_id.clone();
+        }
+    }
+    emit_session_id
 }
 
 fn emit_stream_batch(app: &tauri::AppHandle, agent_id: &str, chunks: &[StreamChunk]) {
@@ -230,5 +250,31 @@ mod tests {
         assert!(!is_agent_output(&NormalizedEvent::SessionResolved {
             session_id: "ses_1".to_string(),
         }));
+    }
+
+    #[test]
+    fn session_resolved_promotes_following_chunks_to_real_session_id() {
+        let mut current = "pending-42".to_string();
+
+        assert_eq!(
+            chunk_session_id_for_event(
+                &mut current,
+                &NormalizedEvent::SessionResolved {
+                    session_id: "real-session".to_string(),
+                }
+            ),
+            "pending-42"
+        );
+        assert_eq!(current, "real-session");
+
+        assert_eq!(
+            chunk_session_id_for_event(
+                &mut current,
+                &NormalizedEvent::TextDelta {
+                    delta: "hello".to_string(),
+                },
+            ),
+            "real-session"
+        );
     }
 }
