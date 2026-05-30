@@ -108,6 +108,8 @@ export function ChatPage({
   const visitedSessions = useRef(new Set<string>());
   const scrollMemory = useRef(new Map<string, number>());
   const scrollAction = useRef<{ type: "bottom" } | { type: "restore", top: number } | null>(null);
+  const sessionMessagesRef = useRef(sessionMessages);
+  sessionMessagesRef.current = sessionMessages;
   const newSessionStreamIdsRef = useRef<Set<string>>(new Set());
   const refetchSessionsRef = useRef<((silent?: boolean) => Promise<Session[]>) | null>(null);
   /**
@@ -436,7 +438,7 @@ export function ChatPage({
     } else {
       // Existing session: snapshot the currently displayed messages so we can
       // append the assistant turn on completion without re-reading JSONL.
-      sessionMessagesCacheRef.current.set(sid, sessionMessages);
+      sessionMessagesCacheRef.current.set(sid, sessionMessagesRef.current);
     }
 
     requestAnimationFrame(() => {
@@ -444,7 +446,7 @@ export function ChatPage({
         messageAreaRef.current.scrollTop = messageAreaRef.current.scrollHeight;
       }
     });
-  }, [selectedSession, sessionMessages, currentProject?.path, t]);
+  }, [selectedSession, currentProject?.path, t]);
 
   // Stream listener (mount-only). Each chunk is routed into the per-session
   // store entry via streamStore.push, regardless of which session is currently
