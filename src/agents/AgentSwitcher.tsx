@@ -4,9 +4,11 @@ import { cn } from "@/lib/utils";
 import { InstallAgentDialog } from "./InstallAgentDialog";
 import { AgentLogo } from "./AgentLogo";
 import { ChevronDown } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { AgentStatus } from "./types";
 
 export const AgentSwitcher = memo(function AgentSwitcher({ children }: { children?: React.ReactNode }) {
+  const { t } = useTranslation();
   const { agents, activeId, active, setActive, refreshHealth } = useAgent();
   const [open, setOpen] = useState(false);
   const [installDialogOpen, setInstallAgentDialogOpen] = useState(false);
@@ -60,7 +62,7 @@ export const AgentSwitcher = memo(function AgentSwitcher({ children }: { childre
               <AgentLogo agentId={active.id} size={18} />
               <span className="min-w-0 flex-1 truncate text-sm font-medium">{active.display_name}</span>
               <span className="text-[11px] text-muted-foreground">
-                {activeInstalled ? "已就绪" : "未安装"}
+                {activeInstalled ? t("env.installed") : t("env.notInstalled")}
               </span>
             </div>
             {active.health.error && (
@@ -96,7 +98,7 @@ export const AgentSwitcher = memo(function AgentSwitcher({ children }: { childre
                   </span>
                 )}
                 {!agent.health.installed && (
-                  <span className="text-xs text-amber-500">未安装</span>
+                  <span className="text-xs text-amber-500">{t("env.notInstalled")}</span>
                 )}
               </button>
             ))}

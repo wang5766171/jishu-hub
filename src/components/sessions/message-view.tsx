@@ -537,9 +537,7 @@ export const MessageView = memo(function MessageView({
     </div>
   );
 
-  const messageList = fullMessageList;
-
-  if (flat) return messageList;
+  if (flat) return fullMessageList;
 
   return (
     <div className="flex h-full flex-col">

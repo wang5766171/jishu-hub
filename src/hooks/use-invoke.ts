@@ -36,8 +36,8 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
   }, [command, JSON.stringify(args)]);
 
   useEffect(() => {
-    fetch().catch(() => {
-      // Consumers read `error`; avoid an unhandled rejection during effects.
+    fetch().catch((err) => {
+      if (import.meta.env.DEV) console.warn("[useInvoke] fetch failed:", err);
     });
   }, [fetch, refreshKey]);
 

@@ -107,7 +107,24 @@ fn read_text_file(path: String) -> Result<TextFilePreview, String> {
 
 #[tauri::command]
 fn write_text_file(path: String, content: String) -> Result<(), String> {
-    std::fs::write(path, content).map_err(|e| e.to_string())
+    let p = std::path::Path::new(&path);
+    // Only allow writing to regular files under user-writable locations
+    let home = dirs::home_dir().ok_or("Cannot resolve home directory")?;
+    let allowed = p.starts_with(&home)
+        || p.starts_with(std::path::Path::new("/tmp"))
+        || p.starts_with(std::path::Path::new("/var/folders"));
+    if !allowed {
+        return Err(format!("Path not allowed: {}", path));
+    }
+    // Prevent writing to hidden/system files
+    if p.file_name()
+        .map(|n| n.to_string_lossy().starts_with('.'))
+        .unwrap_or(false)
+        && !p.extension().map(|e| e == "json" || e == "toml" || e == "md").unwrap_or(false)
+    {
+        return Err(format!("Cannot write to hidden file: {}", path));
+    }
+    std::fs::write(p, content).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -585,8 +602,8 @@ async fn check_environment() -> Result<EnvStatus, String> {
         .output()
         .await;
 
-    let mut npm_cmd = tokio::process::Command::new("cmd");
-    npm_cmd.args(["/C", "npm", "--version"]);
+    let mut npm_cmd = tokio::process::Command::new("npm");
+    npm_cmd.arg("--version");
     let npm_out = crate::process_command::tokio_no_window(&mut npm_cmd)
         .output()
         .await;
@@ -646,9 +663,9 @@ async fn check_available_updates(packages: Vec<(String, String)>) -> Vec<LatestV
             continue;
         }
 
-        let mut cmd = tokio::process::Command::new("cmd");
+        let mut cmd = tokio::process::Command::new("npm");
         let output = crate::process_command::tokio_no_window(
-            cmd.args(["/C", "npm", "view", &pkg, "version", "--json"]),
+            cmd.args(["view", &pkg, "version", "--json"]),
         )
         .output()
         .await;
@@ -692,43 +709,76 @@ async fn check_available_updates(packages: Vec<(String, String)>) -> Vec<LatestV
 }
 
 async fn check_python_latest(id: &str) -> LatestVersion {
-    let script = r#"$r = Invoke-WebRequest -Uri 'https://endoflife.date/api/python.json' -UseBasicParsing; ($r.Content | ConvertFrom-Json)[0].latest"#;
-    let mut cmd = tokio::process::Command::new("powershell");
+    let url = "https://endoflife.date/api/python.json";
+
+    // Try curl first (available on all platforms)
+    let mut cmd = tokio::process::Command::new("curl");
     let output = crate::process_command::tokio_no_window(
-        cmd.args(["-NoProfile", "-Command", script]),
+        cmd.args(["-sf", url]),
     )
     .output()
     .await;
 
-    match output {
-        Ok(out) if out.status.success() => {
-            let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !version.is_empty() {
-                LatestVersion {
-                    id: id.to_string(),
-                    latest_version: Some(version),
-                    error: None,
+    let body = match output {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
+        _ => {
+            // Fallback: try PowerShell on Windows
+            #[cfg(target_os = "windows")]
+            {
+                let script = format!(
+                    "(Invoke-WebRequest -Uri '{}' -UseBasicParsing).Content",
+                    url
+                );
+                let mut ps_cmd = tokio::process::Command::new("powershell");
+                let ps_output = crate::process_command::tokio_no_window(
+                    ps_cmd.args(["-NoProfile", "-Command", &script]),
+                )
+                .output()
+                .await;
+                match ps_output {
+                    Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+                    Ok(o) => {
+                        return LatestVersion {
+                            id: id.to_string(),
+                            latest_version: None,
+                            error: Some(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+                        };
+                    }
+                    Err(e) => {
+                        return LatestVersion {
+                            id: id.to_string(),
+                            latest_version: None,
+                            error: Some(e.to_string()),
+                        };
+                    }
                 }
-            } else {
-                LatestVersion {
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                return LatestVersion {
                     id: id.to_string(),
                     latest_version: None,
-                    error: Some("empty response".into()),
-                }
+                    error: Some("curl not available".into()),
+                };
             }
         }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            LatestVersion {
-                id: id.to_string(),
-                latest_version: None,
-                error: Some(stderr),
-            }
-        }
-        Err(e) => LatestVersion {
+    };
+
+    // Parse JSON array and extract latest version from first entry
+    let version = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.as_array()?.first()?.get("latest")?.as_str().map(String::from));
+
+    match version {
+        Some(v) => LatestVersion {
+            id: id.to_string(),
+            latest_version: Some(v),
+            error: None,
+        },
+        None => LatestVersion {
             id: id.to_string(),
             latest_version: None,
-            error: Some(e.to_string()),
+            error: Some("could not parse version from API response".into()),
         },
     }
 }

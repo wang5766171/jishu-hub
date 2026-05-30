@@ -325,6 +325,14 @@ impl AgentPlugin for CodexAdapter {
         let config_path = codex_dir.join("config.toml");
         // Validate TOML before saving
         let _: toml::Value = toml::from_str(content).map_err(|e| format!("Invalid TOML: {}", e))?;
+        // Backup existing config before overwriting
+        if config_path.exists() {
+            let backup_dir = codex_dir.join("backups");
+            std::fs::create_dir_all(&backup_dir).map_err(|e| e.to_string())?;
+            let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+            let backup_path = backup_dir.join(format!("config_{}.toml", ts));
+            std::fs::copy(&config_path, &backup_path).map_err(|e| e.to_string())?;
+        }
         std::fs::write(&config_path, content).map_err(|e| e.to_string())
     }
 
