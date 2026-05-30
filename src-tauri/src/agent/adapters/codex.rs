@@ -2,6 +2,7 @@ use crate::agent::{
     normalized::{NormalizedEvent, TurnEndReason},
     AgentCapabilities, AgentHealth, AgentInfo, AgentPlugin, ChatRequest,
 };
+use std::io::BufRead;
 
 pub struct CodexAdapter;
 
@@ -158,7 +159,56 @@ impl AgentPlugin for CodexAdapter {
     }
 
     fn scan_projects(&self) -> Vec<crate::project::Project> {
-        Vec::new()
+        let home = match dirs::home_dir() {
+            Some(h) => h,
+            None => return Vec::new(),
+        };
+        let state_path = home.join(".codex").join(".codex-global-state.json");
+        if !state_path.exists() {
+            return Vec::new();
+        }
+
+        let content = std::fs::read_to_string(&state_path).unwrap_or_default();
+        let state: serde_json::Value =
+            serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+
+        let roots = state
+            .get("electron-saved-workspace-roots")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let mut projects = Vec::new();
+        for path_str in roots {
+            let path = std::path::Path::new(&path_str);
+            if !path.exists() {
+                continue;
+            }
+
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| path_str.clone());
+
+            let encoded = crate::project::encode_project_path(&path_str);
+
+            projects.push(crate::project::Project {
+                name,
+                path: path.to_path_buf(),
+                encoded_name: encoded,
+                session_count: self.count_sessions_for_path(&path_str),
+                last_active: None,
+                has_claude_md: path.join(".claude").join("CLAUDE.md").exists(),
+                agent_ids: vec!["codex".to_string()],
+                initialized: true,
+            });
+        }
+        projects
     }
 
     fn add_project(&self, path: &str) -> Option<crate::project::Project> {
@@ -177,18 +227,109 @@ impl AgentPlugin for CodexAdapter {
         crate::project::get_level1_dir(path)
     }
 
-    fn list_sessions(&self, _encoded_name: &str) -> Result<Vec<crate::session::Session>, String> {
-        // TODO: Read ~/.codex/sessions/ rollout files
-        Ok(vec![])
+    fn list_sessions(&self, encoded_name: &str) -> Result<Vec<crate::session::Session>, String> {
+        let decoded_path = crate::project::decode_project_path(encoded_name);
+        let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+        let index_path = home.join(".codex").join("session_index.jsonl");
+        if !index_path.exists() {
+            return Ok(vec![]);
+        }
+
+        let content = std::fs::read_to_string(&index_path).map_err(|e| e.to_string())?;
+        let mut sessions = Vec::new();
+
+        for line in content.lines().rev() {
+            if let Ok(item) = serde_json::from_str::<serde_json::Value>(line) {
+                let id = item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let thread_name = item
+                    .get("thread_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let updated_at_str = item
+                    .get("updated_at")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+
+                if id.is_empty() {
+                    continue;
+                }
+
+                if let Some(rollout_path) = self.find_rollout_file(&id, updated_at_str) {
+                    if let Ok(cwd) = self.get_rollout_cwd(&rollout_path) {
+                        if cwd == decoded_path {
+                            let last_active =
+                                chrono::DateTime::parse_from_rfc3339(updated_at_str)
+                                    .ok()
+                                    .map(|dt| dt.with_timezone(&chrono::Utc));
+
+                            sessions.push(crate::session::Session {
+                                id,
+                                path: rollout_path,
+                                messages: vec![],
+                                started_at: last_active, // Approximating
+                                display_name: Some(thread_name),
+                                last_active,
+                                project_path: Some(cwd),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(sessions)
     }
 
     fn get_session_messages(
         &self,
-        _session_id: &str,
+        session_id: &str,
         _encoded_name: &str,
     ) -> Result<Vec<crate::session::Message>, String> {
-        // TODO: Parse codex rollout files
-        Ok(vec![])
+        let rollout_path = self.search_rollout_file(session_id)?;
+        let file = std::fs::File::open(rollout_path).map_err(|e| e.to_string())?;
+        let reader = std::io::BufReader::new(file);
+        use std::io::BufRead;
+
+        let mut messages = Vec::new();
+        for line in reader.lines().flatten() {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+                if val.get("type").and_then(|v| v.as_str()) == Some("event_msg") {
+                    let payload = val.get("payload").ok_or("Missing payload")?;
+                    let p_type = payload.get("type").and_then(|v| v.as_str());
+                    let timestamp_str = val.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+                    let timestamp = chrono::DateTime::parse_from_rfc3339(timestamp_str)
+                        .ok()
+                        .map(|dt| dt.timestamp_millis());
+
+                    if p_type == Some("user_message") {
+                        if let Some(msg) = payload.get("message").and_then(|v| v.as_str()) {
+                            messages.push(crate::session::Message {
+                                role: "user".to_string(),
+                                content: vec![crate::session::ContentBlock::Text {
+                                    text: msg.to_string(),
+                                }],
+                                timestamp,
+                            });
+                        }
+                    } else if p_type == Some("agent_message") {
+                        if let Some(msg) = payload.get("message").and_then(|v| v.as_str()) {
+                            messages.push(crate::session::Message {
+                                role: "assistant".to_string(),
+                                content: vec![crate::session::ContentBlock::Text {
+                                    text: msg.to_string(),
+                                }],
+                                timestamp,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(messages)
     }
 
     fn load_config(&self) -> Result<crate::config::ClaudeConfig, String> {
@@ -321,9 +462,154 @@ impl AgentPlugin for CodexAdapter {
 
     fn init_project(&self, project_path: &str) -> Result<bool, String> {
         let command = crate::agent::command_config::init_command("codex");
-        crate::command::open_in_terminal_with_command(project_path, &command)
+        crate::command::open_agent_terminal(project_path, &command, None)
             .map(|_| true)
             .map_err(|e| e.to_string())
+    }
+}
+
+impl CodexAdapter {
+    fn count_sessions_for_path(&self, project_path: &str) -> usize {
+        self.list_sessions_all_internal()
+            .unwrap_or_default()
+            .iter()
+            .filter(|s| s.project_path.as_deref() == Some(project_path))
+            .count()
+    }
+
+    fn list_sessions_all_internal(&self) -> Result<Vec<crate::session::Session>, String> {
+        let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+        let index_path = home.join(".codex").join("session_index.jsonl");
+        if !index_path.exists() {
+            return Ok(vec![]);
+        }
+
+        let content = std::fs::read_to_string(&index_path).map_err(|e| e.to_string())?;
+        let mut sessions = Vec::new();
+
+        for line in content.lines().rev() {
+            if let Ok(item) = serde_json::from_str::<serde_json::Value>(line) {
+                let id = item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let thread_name = item
+                    .get("thread_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let updated_at_str = item
+                    .get("updated_at")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+
+                if id.is_empty() {
+                    continue;
+                }
+
+                if let Some(rollout_path) = self.find_rollout_file(&id, updated_at_str) {
+                    if let Ok(cwd) = self.get_rollout_cwd(&rollout_path) {
+                        let last_active = chrono::DateTime::parse_from_rfc3339(updated_at_str)
+                            .ok()
+                            .map(|dt| dt.with_timezone(&chrono::Utc));
+
+                        sessions.push(crate::session::Session {
+                            id,
+                            path: rollout_path,
+                            messages: vec![],
+                            started_at: last_active,
+                            display_name: Some(thread_name),
+                            last_active,
+                            project_path: Some(cwd),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(sessions)
+    }
+
+    fn find_rollout_file(&self, id: &str, updated_at: &str) -> Option<std::path::PathBuf> {
+        let home = dirs::home_dir()?;
+        let sessions_dir = home.join(".codex").join("sessions");
+
+        // updated_at is like "2026-05-25T12:36:33.5204339Z"
+        let parts: Vec<&str> = updated_at.split('T').collect();
+        if parts.is_empty() {
+            return None;
+        }
+        let date_parts: Vec<&str> = parts[0].split('-').collect();
+        if date_parts.len() < 3 {
+            return None;
+        }
+
+        let year = date_parts[0];
+        let month = date_parts[1];
+        let day = date_parts[2];
+
+        let target_dir = sessions_dir.join(year).join(month).join(day);
+        if !target_dir.exists() {
+            // Fallback: search recursively if date matching fails (unlikely but safe)
+            return self.recursive_search_id(&sessions_dir, id);
+        }
+
+        if let Ok(entries) = std::fs::read_dir(target_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.contains(id) && name.ends_with(".jsonl") {
+                    return Some(entry.path());
+                }
+            }
+        }
+
+        self.recursive_search_id(&sessions_dir, id)
+    }
+
+    fn recursive_search_id(&self, dir: &std::path::Path, id: &str) -> Option<std::path::PathBuf> {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Some(found) = self.recursive_search_id(&path, id) {
+                        return Some(found);
+                    }
+                } else if path.is_file() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.contains(id) && name.ends_with(".jsonl") {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn get_rollout_cwd(&self, path: &std::path::Path) -> Result<String, String> {
+        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        let reader = std::io::BufReader::new(file);
+        use std::io::BufRead;
+
+        if let Some(Ok(line)) = reader.lines().next() {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+                if let Some(cwd) = val
+                    .get("payload")
+                    .and_then(|p| p.get("cwd"))
+                    .and_then(|v| v.as_str())
+                {
+                    return Ok(cwd.to_string());
+                }
+            }
+        }
+        Err("CWD not found in rollout".to_string())
+    }
+
+    fn search_rollout_file(&self, id: &str) -> Result<std::path::PathBuf, String> {
+        let home = dirs::home_dir().ok_or("Home dir not found")?;
+        let sessions_dir = home.join(".codex").join("sessions");
+
+        self.recursive_search_id(&sessions_dir, id)
+            .ok_or_else(|| format!("Rollout file for session {} not found", id))
     }
 }
 
