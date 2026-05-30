@@ -39,6 +39,7 @@
     ],
     "windows": {
       "nsis": {
+        "installerHooks": "nsis/installer.nsh",
         "languages": [
           "English",
           "SimpChinese"
