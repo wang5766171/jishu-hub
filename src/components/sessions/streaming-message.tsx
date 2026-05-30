@@ -60,10 +60,11 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
     return () => el.removeEventListener("scroll", onScroll);
   }, [scrollContainerRef, isNearBottom]);
 
-  // Scroll to bottom when content updates
+  // Scroll to bottom when content updates (only while actively streaming)
   useEffect(() => {
+    if (isComplete) return;
     scrollToBottom();
-  }, [displayText, thinkingText, errorText, toolUses.length, scrollToBottom]);
+  }, [displayText, thinkingText, errorText, toolUses.length, content.length, scrollToBottom, isComplete]);
 
   const hasBubbleContent = content.length > 0 || displayText.length > 0 || thinkingText.length > 0 || errorText.length > 0;
   const hasContent = hasBubbleContent || toolUses.length > 0;
