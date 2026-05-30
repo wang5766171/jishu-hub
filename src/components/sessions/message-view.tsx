@@ -6,11 +6,19 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { Bot, Check, Copy, User } from "lucide-react";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
 import { ToolGroup, classifyToolName } from "@/components/observability/tool-call-card";
 import type { ToolCall } from "@/components/observability/tool-call-card";
+
+// Native "poor man's virtualization": the browser skips layout/paint for rows
+// outside the viewport while keeping them in the DOM (search/highlight/scroll
+// stay intact). `auto` lets the browser remember each row's real rendered size,
+// so the scrollbar stays accurate; 200px is only the never-yet-rendered guess.
+const ROW_STYLE: React.CSSProperties = {
+  contentVisibility: "auto",
+  containIntrinsicSize: "auto 200px",
+};
 
 interface MessageViewProps {
   messages: Message[];
@@ -262,16 +270,6 @@ function buildRenderItemsForMessages(messages: Message[], messageIndices: number
   return items;
 }
 
-function rowContainsMessage(row: RenderRow, messageIndex: number): boolean {
-  if (row.kind === "user") return row.messageIndex === messageIndex;
-  return row.messageIndices.includes(messageIndex);
-}
-
-function rowTextLength(row: RenderRow, messages: Message[]): number {
-  if (row.kind === "user") return extractMessageText(messages[row.messageIndex]).length;
-  return extractMessagesText(messages, row.messageIndices).length;
-}
-
 function rowKey(row: RenderRow, messages: Message[]): string {
   if (row.kind === "user") {
     const msg = messages[row.messageIndex];
@@ -281,13 +279,6 @@ function rowKey(row: RenderRow, messages: Message[]): string {
 
   const text = extractMessagesText(messages, row.messageIndices);
   return `assistant-${row.startIndex}-${row.endIndex}-${row.messageIndices.length}-${text.length}-${text.slice(0, 16)}`;
-}
-
-function estimateRowSize(row: RenderRow, messages: Message[]): number {
-  const textLength = rowTextLength(row, messages);
-  const base = row.kind === "assistant" ? 96 : 76;
-  const estimatedTextHeight = Math.ceil(textLength * 0.4);
-  return base + estimatedTextHeight;
 }
 
 function AssistantBubble({
@@ -459,14 +450,6 @@ export const MessageView = memo(function MessageView({
   const [currentOcc, setCurrentOcc] = useState(0);
   const [scrollTrigger, setScrollTrigger] = useState(0);
 
-  const virtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => scrollContainerRef?.current ?? null,
-    estimateSize: (i) => estimateRowSize(rows[i], messages),
-    overscan: 8,
-    getItemKey: (i) => rowKey(rows[i], messages),
-  });
-
   useEffect(() => {
     if (!renderingQuery.trim() || searchState.total === 0) {
       setCurrentOcc(0);
@@ -510,16 +493,13 @@ export const MessageView = memo(function MessageView({
       if (er.top >= cr.top && er.bottom <= cr.bottom) return;
     }
     const msgIdx = searchState.matchToMessage[currentOcc];
-    if (msgIdx !== undefined && flat) {
-      const rowIdx = rows.findIndex((row) => rowContainsMessage(row, msgIdx));
-      if (rowIdx !== -1) virtualizer.scrollToIndex(rowIdx, { align: "center" });
-    }
+    if (msgIdx === undefined) return;
     const timer = setTimeout(() => {
       const el = document.querySelector(`[data-match-idx="${currentOcc}"]`);
       el?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 120);
     return () => clearTimeout(timer);
-  }, [currentOcc, flat, rows, scrollTrigger, searchState.matchToMessage, searchState.total, virtualizer]);
+  }, [currentOcc, scrollTrigger, searchState.matchToMessage, searchState.total]);
 
   const renderRow = useCallback((row: RenderRow) => {
     if (row.kind === "assistant") {
@@ -552,39 +532,12 @@ export const MessageView = memo(function MessageView({
   const fullMessageList = (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
       {rows.map((row) => (
-        <div key={rowKey(row, messages)}>{renderRow(row)}</div>
+        <div key={rowKey(row, messages)} style={ROW_STYLE}>{renderRow(row)}</div>
       ))}
     </div>
   );
 
-  const virtualMessageList = (
-    <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4 py-3">
-      <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
-        {virtualizer.getVirtualItems().map((virtualItem) => {
-          const row = rows[virtualItem.index];
-          return (
-            <div
-              key={virtualItem.key}
-              data-index={virtualItem.index}
-              ref={virtualizer.measureElement}
-              style={{
-                position: "absolute",
-                top: 0,
-                transform: `translateY(${virtualItem.start}px)`,
-                left: 0,
-                right: 0,
-              }}
-              className="pb-1.5 max-w-full"
-            >
-              {renderRow(row)}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-
-  const messageList = flat && scrollContainerRef ? virtualMessageList : fullMessageList;
+  const messageList = fullMessageList;
 
   if (flat) return messageList;
 
