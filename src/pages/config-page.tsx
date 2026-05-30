@@ -13,7 +13,7 @@ import type { ClaudeConfig } from "@/types";
 
 export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "templates" | "backups" }) {
   const { t } = useTranslation();
-  const { activeId, active } = useAgent();
+  const { activeId } = useAgent();
   const agentRefreshKey = activeId ? Array.from(activeId).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) : 0;
   const { data: config, loading, refetch } = useInvoke<ClaudeConfig>("load_config", undefined, agentRefreshKey);
   const [activeTab, setActiveTab] = useState<"edit" | "templates" | "backups">(initialTab);

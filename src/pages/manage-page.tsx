@@ -5,7 +5,7 @@ import { ProjectsPage } from "./projects-page";
 import { ConfigPage } from "./config-page";
 import { CommandsPage } from "./commands-page";
 import { EnvCheckPage } from "./env-check-page";
-import { FolderOpen, Settings, Rocket, Archive, ArrowLeft, Activity } from "lucide-react";
+import { FolderOpen, Settings, Rocket, ArrowLeft, Activity } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ManageTab, Project } from "@/types";
 

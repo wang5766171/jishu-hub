@@ -12,7 +12,7 @@ const COOLDOWN_MS = 2000;
 
 export function CommandsPage() {
   const { t } = useTranslation();
-  const { activeId, active } = useAgent();
+  const { activeId } = useAgent();
   const { data: commands, loading, refetch } = useInvoke<CustomCommand[]>("list_custom_commands");
   const agentRefreshKey = activeId ? Array.from(activeId).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) : 0;
   const { data: builtInCommands } = useInvoke<AgentCommandPreset[]>("agent_command_presets", undefined, agentRefreshKey);
