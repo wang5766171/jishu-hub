@@ -122,13 +122,15 @@ pub fn read_file_as_base64(path: String) -> Result<String, String> {
 #[cfg(target_os = "windows")]
 #[tauri::command]
 pub fn get_clipboard_file_paths() -> Result<Vec<String>, String> {
-    let output = std::process::Command::new("powershell")
-        .args([
+    let mut command = std::process::Command::new("powershell");
+    let output = crate::process_command::std_no_window(
+        command.args([
             "-NoProfile",
             "-NonInteractive",
             "-Command",
             "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::GetFileDropList() | ForEach-Object { $_ }",
-        ])
+        ]),
+    )
         .output()
         .map_err(|e| format!("Failed to query clipboard: {}", e))?;
     let paths: Vec<String> = String::from_utf8_lossy(&output.stdout)

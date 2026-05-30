@@ -267,6 +267,7 @@ impl AgentPlugin for CodexAdapter {
             full_args.extend(args);
             let mut cmd = tokio::process::Command::new("cmd");
             cmd.args(&full_args).current_dir(&req.project_path);
+            crate::process_command::tokio_no_window(&mut cmd);
             cmd
         }
 
@@ -305,8 +306,8 @@ impl AgentPlugin for CodexAdapter {
         let command = resume_session_id
             .map(|sid| crate::agent::command_config::resume_command("codex", sid))
             .unwrap_or_else(|| crate::agent::command_config::launch_command("codex"));
-        let window_id =
-            resume_session_id.map(|sid| crate::agent::command_config::terminal_window_id("codex", sid));
+        let window_id = resume_session_id
+            .map(|sid| crate::agent::command_config::terminal_window_id("codex", sid));
         crate::command::open_agent_terminal(project_path, &command, window_id.as_deref())
     }
 

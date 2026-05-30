@@ -537,8 +537,14 @@ pub fn find_session_terminal(
                 .get(session_id)
                 .map(|s| s.started_at.clone())
                 .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-            agent_id: sessions.sessions.get(session_id).and_then(|s| s.agent_id.clone()),
-            window_id: sessions.sessions.get(session_id).and_then(|s| s.window_id.clone()),
+            agent_id: sessions
+                .sessions
+                .get(session_id)
+                .and_then(|s| s.agent_id.clone()),
+            window_id: sessions
+                .sessions
+                .get(session_id)
+                .and_then(|s| s.window_id.clone()),
         };
         sessions
             .sessions
@@ -606,22 +612,19 @@ fn find_process_by_resume(session_id: &str) -> Result<Option<u32>, Box<dyn std::
     {
         let marker_filter = crate::agent::command_config::resume_markers(session_id)
             .into_iter()
-            .map(|marker| {
-                format!(
-                    "$_.CommandLine -like '*{}*'",
-                    marker.replace('\'', "''")
-                )
-            })
+            .map(|marker| format!("$_.CommandLine -like '*{}*'", marker.replace('\'', "''")))
             .collect::<Vec<_>>()
             .join(" -or ");
-        let output = std::process::Command::new("powershell")
-            .args([
+        let mut command = std::process::Command::new("powershell");
+        let output = crate::process_command::std_no_window(
+            command.args([
                 "-NoProfile", "-NonInteractive", "-Command",
                 &format!(
                     "$p = Get-CimInstance Win32_Process | Where-Object {{ ({}) -and $_.Name -ne 'powershell.exe' -and $_.Name -ne 'bash.exe' }}; if ($p) {{ ($p | Select-Object -First 1).ProcessId }}",
                     marker_filter
                 ),
-            ])
+            ]),
+        )
             .output()?;
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();

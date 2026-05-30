@@ -6,12 +6,14 @@ use crate::agent::capability::AgentHealth;
 pub async fn probe_binary(name: &str, candidates: &[&str]) -> Option<PathBuf> {
     // 1. Try which/where on PATH
     #[cfg(target_os = "windows")]
-    let lookup_result = tokio::process::Command::new("where")
-        .arg(name)
-        .output()
-        .await
-        .ok()
-        .filter(|o| o.status.success());
+    let lookup_result = {
+        let mut command = tokio::process::Command::new("where");
+        crate::process_command::tokio_no_window(command.arg(name))
+            .output()
+            .await
+            .ok()
+            .filter(|o| o.status.success())
+    };
 
     #[cfg(not(target_os = "windows"))]
     let lookup_result = tokio::process::Command::new("which")
@@ -87,8 +89,8 @@ fn expand_env_vars(s: &str) -> String {
 
 /// Get version string from a binary
 pub async fn version_of(path: &PathBuf) -> Option<String> {
-    let output = tokio::process::Command::new(path)
-        .arg("--version")
+    let mut command = tokio::process::Command::new(path);
+    let output = crate::process_command::tokio_no_window(command.arg("--version"))
         .output()
         .await
         .ok()?;

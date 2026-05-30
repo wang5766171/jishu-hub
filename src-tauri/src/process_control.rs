@@ -9,10 +9,15 @@ pub fn terminate_process_tree(process_id: u32) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        let output = std::process::Command::new("taskkill")
-            .args(["/PID", &process_id.to_string(), "/T", "/F"])
-            .output()
-            .map_err(|e| format!("Failed to run taskkill: {e}"))?;
+        let mut command = std::process::Command::new("taskkill");
+        let output = crate::process_command::std_no_window(command.args([
+            "/PID",
+            &process_id.to_string(),
+            "/T",
+            "/F",
+        ]))
+        .output()
+        .map_err(|e| format!("Failed to run taskkill: {e}"))?;
 
         if output.status.success() {
             return Ok(());
@@ -57,10 +62,13 @@ pub fn is_process_running(process_id: u32) -> bool {
 
     #[cfg(target_os = "windows")]
     {
-        let Ok(output) = std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {process_id}"), "/NH"])
-            .output()
-        else {
+        let mut command = std::process::Command::new("tasklist");
+        let Ok(output) = crate::process_command::std_no_window(command.args([
+            "/FI",
+            &format!("PID eq {process_id}"),
+            "/NH",
+        ]))
+        .output() else {
             return false;
         };
         if !output.status.success() {

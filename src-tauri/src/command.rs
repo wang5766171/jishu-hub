@@ -1,9 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomCommand {
     pub id: String,
@@ -95,12 +92,12 @@ fn open_in_terminal_raw(
     window_id: Option<&str>,
 ) -> Result<u32, Box<dyn std::error::Error>> {
     if cfg!(target_os = "windows") {
-        let has_wt = std::process::Command::new("cmd")
-            .args(["/C", "where wt >nul 2>nul"])
-            .creation_flags(0x00000008)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+        let mut wt_lookup = std::process::Command::new("cmd");
+        let has_wt =
+            crate::process_command::std_no_window(wt_lookup.args(["/C", "where wt >nul 2>nul"]))
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
 
         if has_wt {
             // Spawn wt directly — avoids nested quoting issues with cmd /C
@@ -177,22 +174,33 @@ pub fn run_silent_command(
         let mut c = std::process::Command::new("powershell");
         c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]);
 
-        let args_joined = args.iter()
-            .map(|a| if a.contains(' ') { format!("'{}'", a.replace("'", "''")) } else { a.to_string() })
+        let args_joined = args
+            .iter()
+            .map(|a| {
+                if a.contains(' ') {
+                    format!("'{}'", a.replace("'", "''"))
+                } else {
+                    a.to_string()
+                }
+            })
             .collect::<Vec<_>>()
             .join(" ");
 
         let pwsh_cmd = match cwd {
             Some(dir) => {
                 // Use LiteralPath to support special characters like [ ] or Chinese
-                format!("Set-Location -LiteralPath '{}'; & {} {}", dir.replace("'", "''"), command, args_joined)
-            },
+                format!(
+                    "Set-Location -LiteralPath '{}'; & {} {}",
+                    dir.replace("'", "''"),
+                    command,
+                    args_joined
+                )
+            }
             None => format!("& {} {}", command, args_joined),
         };
 
         c.arg(pwsh_cmd);
-        #[cfg(target_os = "windows")]
-        c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        crate::process_command::std_no_window(&mut c);
         let status = c.status()?;
         Ok(status.success())
     } else {
@@ -212,12 +220,12 @@ pub fn run_in_terminal(
     cwd: Option<&str>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     if cfg!(target_os = "windows") {
-        let has_wt = std::process::Command::new("cmd")
-            .args(["/C", "where wt >nul 2>nul"])
-            .creation_flags(0x00000008)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+        let mut wt_lookup = std::process::Command::new("cmd");
+        let has_wt =
+            crate::process_command::std_no_window(wt_lookup.args(["/C", "where wt >nul 2>nul"]))
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
 
         if has_wt {
             let wrapped = format!("prompt $P$G& @echo %CD%^>{}& @echo.& {}", command, command);

@@ -414,6 +414,7 @@ impl AgentPlugin for ClaudeCodeAgent {
             full_args.extend(args);
             let mut cmd = tokio::process::Command::new("cmd");
             cmd.args(&full_args).current_dir(&req.project_path);
+            crate::process_command::tokio_no_window(&mut cmd);
             cmd
         }
 

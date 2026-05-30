@@ -6,6 +6,7 @@ mod config;
 mod history;
 mod hub;
 mod image;
+mod process_command;
 mod process_control;
 mod project;
 mod project_config;
@@ -512,8 +513,8 @@ fn get_app_dir() -> Result<String, String> {
 
 #[tauri::command]
 fn check_prerequisite(command: String) -> bool {
-    std::process::Command::new("where")
-        .arg(&command)
+    let mut lookup = std::process::Command::new("where");
+    crate::process_command::std_no_window(lookup.arg(&command))
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -521,10 +522,11 @@ fn check_prerequisite(command: String) -> bool {
 
 #[tauri::command]
 async fn install_agent_command(command: String) -> Result<String, String> {
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", &command])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut installer = std::process::Command::new("powershell");
+    let output =
+        crate::process_command::std_no_window(installer.args(["-NoProfile", "-Command", &command]))
+            .output()
+            .map_err(|e| e.to_string())?;
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -634,10 +636,8 @@ pub fn run() {
 mod tests {
     #[test]
     fn reads_text_file_preview() {
-        let path = std::env::temp_dir().join(format!(
-            "jishu-hub-text-preview-{}.txt",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("jishu-hub-text-preview-{}.txt", std::process::id()));
         std::fs::write(&path, "line 1\nline 2").unwrap();
 
         let preview = super::read_text_file(path.to_string_lossy().to_string()).unwrap();

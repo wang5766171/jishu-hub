@@ -1006,10 +1006,18 @@ impl AgentPlugin for OpencodeAdapter {
             _ => {}
         }
 
-        let output = match std::process::Command::new("opencode")
-            .args(["session", "list", "--format", "json", "--max-count", "500"])
+        let output = match {
+            let mut command = std::process::Command::new("opencode");
+            crate::process_command::std_no_window(command.args([
+                "session",
+                "list",
+                "--format",
+                "json",
+                "--max-count",
+                "500",
+            ]))
             .output()
-        {
+        } {
             Ok(output) => output,
             Err(_) => return Vec::new(),
         };
@@ -1039,11 +1047,14 @@ impl AgentPlugin for OpencodeAdapter {
 
     fn list_sessions(&self, encoded_name: &str) -> Result<Vec<crate::session::Session>, String> {
         let project_path = crate::project::decode_project_path(encoded_name);
-        let output = std::process::Command::new("opencode")
-            .args(["session", "list", "--format", "json", "--max-count", "500"])
-            .current_dir(&project_path)
-            .output()
-            .map_err(|e| format!("Failed to list opencode sessions: {e}"))?;
+        let mut command = std::process::Command::new("opencode");
+        let output = crate::process_command::std_no_window(
+            command
+                .args(["session", "list", "--format", "json", "--max-count", "500"])
+                .current_dir(&project_path),
+        )
+        .output()
+        .map_err(|e| format!("Failed to list opencode sessions: {e}"))?;
 
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
@@ -1059,11 +1070,14 @@ impl AgentPlugin for OpencodeAdapter {
         encoded_name: &str,
     ) -> Result<Vec<crate::session::Message>, String> {
         let project_path = crate::project::decode_project_path(encoded_name);
-        let output = std::process::Command::new("opencode")
-            .args(["export", session_id])
-            .current_dir(&project_path)
-            .output()
-            .map_err(|e| format!("Failed to export opencode session: {e}"))?;
+        let mut command = std::process::Command::new("opencode");
+        let output = crate::process_command::std_no_window(
+            command
+                .args(["export", session_id])
+                .current_dir(&project_path),
+        )
+        .output()
+        .map_err(|e| format!("Failed to export opencode session: {e}"))?;
 
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
@@ -1158,6 +1172,7 @@ impl AgentPlugin for OpencodeAdapter {
         {
             let mut cmd = tokio::process::Command::new("opencode");
             cmd.args(&args).current_dir(&req.project_path);
+            crate::process_command::tokio_no_window(&mut cmd);
             cmd
         }
 
