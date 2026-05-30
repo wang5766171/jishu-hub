@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+/* Fix dark mode issue for native select dropdowns */
+select option {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+}
+
 @property --font-size-prose {
   syntax: '<length>';
   initial-value: 19px;
