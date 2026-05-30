@@ -135,6 +135,17 @@ fn is_claude_internal_jsonl_record(v: &serde_json::Value) -> bool {
         return true;
     }
 
+    // Context continuation summaries injected by Claude Code on compaction.
+    if v.get("isVisibleInTranscriptOnly")
+        .and_then(|f| f.as_bool())
+        .unwrap_or(false)
+        || v.get("isCompactSummary")
+            .and_then(|f| f.as_bool())
+            .unwrap_or(false)
+    {
+        return true;
+    }
+
     if v.get("type").and_then(|t| t.as_str()) != Some("user") {
         return false;
     }
