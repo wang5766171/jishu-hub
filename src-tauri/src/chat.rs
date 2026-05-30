@@ -21,6 +21,7 @@ pub struct ChatProcess {
     pub agent_id: String,
     pub process_id: u32,
     pub stdin: Option<Arc<Mutex<Option<ChildStdin>>>>,
+    pub acp: Option<crate::acp_runtime::AcpControl>,
 }
 
 pub struct ChatState {
@@ -59,10 +60,22 @@ pub async fn send_message(
         let command = active.build_chat_command(ChatRequest {
             project_path: project_path.clone(),
             session_id: session_id.clone(),
-            message,
+            message: message.clone(),
         });
         (agent_id, command, active.pipe_chat_stdin())
     };
+
+    // Check if this agent uses ACP runtime
+    let uses_acp = {
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        s.registry.active().uses_acp()
+    };
+
+    if uses_acp {
+        return send_message_acp(app, agent_id, project_path, session_id, message).await;
+    }
 
     if pipe_stdin {
         command.stdin(std::process::Stdio::piped());
@@ -91,6 +104,7 @@ pub async fn send_message(
                 agent_id: agent_id.clone(),
                 process_id: pid,
                 stdin: stdin.clone(),
+                acp: None,
             },
         );
     }
@@ -142,6 +156,96 @@ pub async fn send_message(
     })
 }
 
+async fn send_message_acp(
+    app: AppHandle,
+    agent_id: String,
+    project_path: String,
+    session_id: Option<String>,
+    message: String,
+) -> Result<ChatSession, String> {
+    // Get ACP command from agent plugin
+    let (binary, args) = {
+        let app_state = app.state::<Mutex<AppState>>();
+        let s = app_state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        let agent = s
+            .registry
+            .get(&agent_id)
+            .ok_or_else(|| format!("Agent not found: {agent_id}"))?;
+        let (bin, a) = agent.acp_command();
+        (bin.to_string(), a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    };
+
+    let mut command = tokio::process::Command::new(&binary);
+    command.args(&args).current_dir(&project_path);
+    command.stdin(std::process::Stdio::piped());
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    {
+        crate::process_command::tokio_no_window(&mut command);
+    }
+
+    let child = command
+        .spawn()
+        .map_err(|e| format!("Failed to spawn opencode acp: {e}"))?;
+
+    let pid = child.id().unwrap_or(0);
+    let sid = session_id.unwrap_or_else(|| format!("pending-{}", pid));
+
+    let app_clone = app.clone();
+    let app_resolve = app.clone();
+    let sid_clone = sid.clone();
+    let sid_resolve = sid.clone();
+
+    let acp_control = crate::acp_runtime::spawn_acp_session(
+        app.clone(),
+        agent_id.clone(),
+        sid.clone(),
+        child,
+        project_path,
+        message,
+        move || {
+            let state = app_clone.state::<Mutex<ChatState>>();
+            if let Ok(mut s) = state.lock() {
+                s.processes.remove(&sid_clone);
+            };
+        },
+        move |real_id: &str| {
+            if real_id == sid_resolve {
+                return;
+            }
+            let state = app_resolve.state::<Mutex<ChatState>>();
+            if let Ok(mut s) = state.lock() {
+                if let Some(process) = s.processes.get(&sid_resolve).cloned() {
+                    s.processes.insert(real_id.to_string(), process);
+                }
+            };
+        },
+    );
+
+    let chat_state = app.state::<Mutex<ChatState>>();
+    if let Ok(mut s) = chat_state.lock() {
+        s.processes.insert(
+            sid.clone(),
+            ChatProcess {
+                agent_id: agent_id.clone(),
+                process_id: pid,
+                stdin: None,
+                acp: Some(acp_control),
+            },
+        );
+    }
+
+    Ok(ChatSession {
+        agent_id,
+        session_id: sid,
+        process_id: pid,
+    })
+}
+
 #[tauri::command]
 pub async fn abort_chat(app: AppHandle, session_id: String) -> Result<(), String> {
     let chat_state = app.state::<Mutex<ChatState>>();
@@ -158,6 +262,23 @@ pub async fn abort_chat(app: AppHandle, session_id: String) -> Result<(), String
     };
 
     let app_state = app.state::<Mutex<AppState>>();
+
+    // ACP cancel path: send session/cancel then fallback to kill
+    if let Some(acp) = &process.acp {
+        acp.send_cancel().await;
+        let grace = std::time::Duration::from_millis(2000);
+        tokio::time::sleep(grace).await;
+        if crate::process_control::is_process_running(process.process_id) {
+            let _ = crate::process_control::terminate_process_tree(process.process_id);
+        }
+        log::info!(
+            "aborted {} ACP chat session {} via session/cancel",
+            process.agent_id,
+            session_id
+        );
+        return Ok(());
+    }
+
     let (abort_sequence, abort_grace) = {
         let s = app_state
             .lock()

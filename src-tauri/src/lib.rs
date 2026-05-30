@@ -1,3 +1,4 @@
+mod acp_runtime;
 mod agent;
 mod chat;
 mod cli_runtime;

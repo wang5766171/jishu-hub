@@ -1184,8 +1184,16 @@ impl AgentPlugin for OpencodeAdapter {
         }
     }
 
+    fn uses_acp(&self) -> bool {
+        true
+    }
+
+    fn acp_command(&self) -> (&str, Vec<&str>) {
+        ("opencode", vec!["acp"])
+    }
+
     fn abort_chat_sequence(&self) -> Option<&'static [u8]> {
-        Some(b"\x1b\x1b")
+        None
     }
 
     fn pipe_chat_stdin(&self) -> bool {
