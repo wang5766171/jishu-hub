@@ -48,16 +48,17 @@ select option {
   --color-sidebar-accent-foreground: hsl(240 5.9% 10%);
   --color-sidebar-border: hsl(220 13% 91%);
   --color-sidebar-ring: hsl(217.2 91.2% 59.8%);
+}
 
-  @keyframes breathing {
-    0%, 100% { opacity: 0.3; transform: scale(0.85); }
-    50% { opacity: 1; transform: scale(1.25); }
-  }
-  .animate-breathing {
-    animation: breathing 2.5s ease-in-out infinite;
-  }
-  }
+@keyframes breathing {
+  0%, 100% { opacity: 0.3; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.25); }
+}
+.animate-breathing {
+  animation: breathing 2.5s ease-in-out infinite;
+}
 
+@theme {
   /* Material backgrounds — Z-axis layer hierarchy (darker = lower) */
   --color-layer-0: hsl(240 6% 90%);   /* sidebar base — deepest */
   --color-layer-1: hsl(240 6% 93%);   /* sidebar search bar */
