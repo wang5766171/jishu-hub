@@ -14,7 +14,26 @@
     "projects": "项目",
     "sessions": "会话",
     "config": "管理",
-    "commands": "命令"
+    "commands": "命令",
+    "environment": "环境"
+  },
+  "env": {
+    "title": "环境检测",
+    "desc": "确保你的系统具备运行智能体所需的依赖项。",
+    "nodeTitle": "Node.js",
+    "nodeDesc": "部分智能体 CLI（如 Claude Code）需要 Node.js 环境",
+    "pythonTitle": "Python",
+    "pythonDesc": "部分 Python 开发工具或脚本需要 Python 环境",
+    "agentsTitle": "智能体 CLI",
+    "notInstalled": "未安装",
+    "installed": "已安装",
+    "download": "下载",
+    "install": "安装",
+    "installing": "安装中...",
+    "installSuccess": "安装成功",
+    "installFailed": "安装失败",
+    "checking": "正在检测环境...",
+    "enterWorkspace": "进入工作区"
   },
   "status": {
     "model": "模型：{{model}}",

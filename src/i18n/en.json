@@ -14,7 +14,26 @@
     "projects": "Projects",
     "sessions": "Sessions",
     "config": "Manage",
-    "commands": "Commands"
+    "commands": "Commands",
+    "environment": "Environment"
+  },
+  "env": {
+    "title": "Environment Check",
+    "desc": "Ensure your system has the required dependencies for agents.",
+    "nodeTitle": "Node.js",
+    "nodeDesc": "Required for some agent CLIs (like Claude Code)",
+    "pythonTitle": "Python",
+    "pythonDesc": "Required for some Python-based tools",
+    "agentsTitle": "Agent CLIs",
+    "notInstalled": "Not installed",
+    "installed": "Installed",
+    "download": "Download",
+    "install": "Install",
+    "installing": "Installing...",
+    "installSuccess": "Success",
+    "installFailed": "Failed",
+    "checking": "Checking environment...",
+    "enterWorkspace": "Enter Workspace"
   },
   "status": {
     "model": "Model: {{model}}",

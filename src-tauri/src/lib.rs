@@ -536,6 +536,44 @@ async fn install_agent_command(command: String) -> Result<String, String> {
     }
 }
 
+#[derive(serde::Serialize)]
+pub struct EnvStatus {
+    pub node_installed: bool,
+    pub node_version: Option<String>,
+    pub python_installed: bool,
+    pub python_version: Option<String>,
+}
+
+#[tauri::command]
+async fn check_environment() -> Result<EnvStatus, String> {
+    let node_out = tokio::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .await;
+    
+    let python_out = tokio::process::Command::new("python")
+        .arg("--version")
+        .output()
+        .await;
+        
+    let (node_installed, node_version) = match node_out {
+        Ok(out) if out.status.success() => (true, Some(String::from_utf8_lossy(&out.stdout).trim().to_string())),
+        _ => (false, None),
+    };
+    
+    let (python_installed, python_version) = match python_out {
+        Ok(out) if out.status.success() => (true, Some(String::from_utf8_lossy(&out.stdout).trim().to_string())),
+        _ => (false, None),
+    };
+    
+    Ok(EnvStatus {
+        node_installed,
+        node_version,
+        python_installed,
+        python_version,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -622,6 +660,7 @@ pub fn run() {
             agent_refresh_health,
             check_prerequisite,
             install_agent_command,
+            check_environment,
             chat::send_message,
             chat::abort_chat,
             image::save_session_files,

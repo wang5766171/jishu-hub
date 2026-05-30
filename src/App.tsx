@@ -90,6 +90,7 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
   const [maximized, setMaximized] = useState(false);
   const { theme, setTheme } = useTheme();
   const { fontSizeBase, fontSizeProse, setFontSizeBase, setFontSizeProse } = useFontSize();
+  const { active } = useAgent();
   const aboutRef = useRef<HTMLDivElement>(null);
   const fontRef = useRef<HTMLDivElement>(null);
   const aboutTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -286,7 +287,11 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
           {pinned ? <PinOff className="h-3.5 w-3.5 text-[var(--icon-pin)]" /> : <Pin className="h-3.5 w-3.5 text-[var(--icon-pin)]" />}
           <span>{pinned ? t("about.unpin") : t("about.pin")}</span>
         </button>
-        <AgentSwitcher />
+        <div className="flex items-center ml-1 mr-2 px-1.5 py-0.5 rounded-full bg-accent/20 border border-border/30 hover:bg-accent/40 transition-colors">
+          <AgentSwitcher>
+            {active && <span className="text-[11px] font-medium text-muted-foreground pr-1">{active.display_name}</span>}
+          </AgentSwitcher>
+        </div>
       </div>
       <div className="min-w-8 flex-1 self-stretch" onDoubleClick={toggleMaximizeWindow} />
       <div className="ml-2 flex h-full items-stretch" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
@@ -461,11 +466,30 @@ function AppContent() {
   );
 }
 
+import { EnvCheckPage } from "@/pages/env-check-page";
+
+function AppContentWrapper() {
+  const [envChecked, setEnvChecked] = useState(!!localStorage.getItem("jishu-hub-env-checked"));
+
+  if (!envChecked) {
+    return (
+      <div className="flex flex-col h-screen w-screen bg-background text-foreground relative">
+        <TitleBar currentPage={"chat" as any} onNavigate={() => {}} disabled={true} />
+        <div className="flex-1 overflow-hidden bg-background">
+          <EnvCheckPage onComplete={() => { localStorage.setItem("jishu-hub-env-checked", "1"); setEnvChecked(true); }} />
+        </div>
+      </div>
+    );
+  }
+
+  return <AppContent />;
+}
+
 function App() {
   return (
     <AgentProvider>
       <FileViewerProvider>
-        <AppContent />
+        <AppContentWrapper />
       </FileViewerProvider>
     </AgentProvider>
   );

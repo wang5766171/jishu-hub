@@ -4,7 +4,8 @@ import { useTranslation } from "react-i18next";
 import { ProjectsPage } from "./projects-page";
 import { ConfigPage } from "./config-page";
 import { CommandsPage } from "./commands-page";
-import { FolderOpen, Settings, Rocket, Archive, ArrowLeft } from "lucide-react";
+import { EnvCheckPage } from "./env-check-page";
+import { FolderOpen, Settings, Rocket, Archive, ArrowLeft, Activity } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ManageTab, Project } from "@/types";
 
@@ -18,7 +19,7 @@ const tabs: { id: ManageTab; icon: typeof FolderOpen; labelKey: string; iconColo
   { id: "projects", icon: FolderOpen, labelKey: "nav.projects", iconColor: "text-[var(--icon-folder)]" },
   { id: "config", icon: Settings, labelKey: "config.configuration", iconColor: "text-[var(--icon-action)]" },
   { id: "commands", icon: Rocket, labelKey: "nav.commands", iconColor: "text-[var(--icon-action)]" },
-  { id: "backups", icon: Archive, labelKey: "config.backups", iconColor: "text-[var(--icon-folder)]" },
+  { id: "env", icon: Activity, labelKey: "nav.environment", iconColor: "text-emerald-500" },
 ];
 
 export function ManagePage({ onBack, onEnterProject, navigateToProjects }: ManagePageProps) {
@@ -74,7 +75,7 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects }: Manag
         {activeTab === "projects" && <ProjectsPage onEnterProject={onEnterProject} />}
         {activeTab === "config" && <ConfigPage initialTab="edit" />}
         {activeTab === "commands" && <CommandsPage />}
-        {activeTab === "backups" && <ConfigPage initialTab="backups" />}
+        {activeTab === "env" && <EnvCheckPage />}
       </div>
     </div>
   );

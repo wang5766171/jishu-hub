@@ -66,7 +66,6 @@ export function CommandsPage() {
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">{t("commands.title")}</h2>
         <div className="flex items-center gap-2">
-          {active && <span className="rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">{active.display_name}</span>}
           <Button size="sm" onClick={handleAddNew}>
             <Plus className="mr-2 h-4 w-4" />
             {t("commands.addCommand")}

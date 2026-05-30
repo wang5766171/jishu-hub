@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 import { InstallAgentDialog } from "./InstallAgentDialog";
 import type { AgentStatus } from "./types";
 
-export const AgentSwitcher = memo(function AgentSwitcher() {
+export const AgentSwitcher = memo(function AgentSwitcher({ children }: { children?: React.ReactNode }) {
   const { agents, activeId, active, setActive, refreshHealth } = useAgent();
   const [open, setOpen] = useState(false);
   const [installDialogOpen, setInstallAgentDialogOpen] = useState(false);
@@ -37,26 +37,30 @@ export const AgentSwitcher = memo(function AgentSwitcher() {
           if (!open) refreshHealth();
         }}
         className={cn(
-          "relative flex h-7 w-7 items-center justify-center rounded-md transition-fast hover:bg-accent/30",
-          open && "bg-accent/30"
+          "relative flex h-7 items-center gap-1.5 transition-fast",
+          !children && "w-7 justify-center rounded-md hover:bg-accent/30",
+          open && !children && "bg-accent/30"
         )}
         title={active.display_name}
         aria-label={active.display_name}
       >
-        <span
-          className={cn(
-            "absolute h-2.5 w-2.5 rounded-full opacity-50 animate-ping",
-            !activeInstalled && "bg-amber-400"
-          )}
-          style={activeInstalled ? { backgroundColor: "var(--floating-indicator, #10b981)" } : undefined}
-        />
-        <span
-          className={cn(
-            "relative h-2.5 w-2.5 rounded-full ring-2 ring-background",
-            !activeInstalled && "bg-amber-400"
-          )}
-          style={activeInstalled ? { backgroundColor: "var(--floating-indicator, #10b981)" } : undefined}
-        />
+        <div className="relative flex items-center justify-center h-4 w-4 shrink-0">
+          <span
+            className={cn(
+              "absolute h-2.5 w-2.5 rounded-full animate-breathing",
+              !activeInstalled && "bg-amber-400"
+            )}
+            style={activeInstalled ? { backgroundColor: "var(--floating-indicator, #10b981)" } : undefined}
+          />
+          <span
+            className={cn(
+              "relative h-2.5 w-2.5 rounded-full ring-2 ring-background",
+              !activeInstalled && "bg-amber-400"
+            )}
+            style={activeInstalled ? { backgroundColor: "var(--floating-indicator, #10b981)" } : undefined}
+          />
+        </div>
+        {children}
       </button>
 
       {open && (

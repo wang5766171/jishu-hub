@@ -135,7 +135,7 @@ export interface BackupEntry {
 
 export type Page = "chat" | "manage";
 
-export type ManageTab = "projects" | "config" | "commands" | "backups";
+export type ManageTab = "projects" | "config" | "commands" | "env";
 
 export interface AgentInfo {
   id: string;
