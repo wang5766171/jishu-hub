@@ -8,6 +8,7 @@ import { useSessionStream } from "@/hooks/use-stream-store";
 import { InlineImages, stripImagePrompt } from "./inline-image";
 import { ToolGroup, classifyToolName } from "@/components/observability/tool-call-card";
 import type { ToolCall } from "@/components/observability/tool-call-card";
+import type { ContentBlock } from "@/types";
 
 interface StreamingMessageProps {
   /** Session id (pending or real) whose streaming state to render. */
@@ -30,6 +31,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   const thinkingText = state?.thinking ?? "";
   const errorText = state?.error ?? "";
   const toolUses = state?.tools ?? [];
+  const content = state?.content ?? [];
   const resolvedUserMessage = userMessage === undefined ? state?.pendingUserMessage ?? undefined : userMessage ?? undefined;
   const userScrolledRef = useRef(false);
 
@@ -63,17 +65,21 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
     scrollToBottom();
   }, [displayText, thinkingText, errorText, toolUses.length, scrollToBottom]);
 
-  const hasBubbleContent = displayText.length > 0 || thinkingText.length > 0 || errorText.length > 0;
+  const hasBubbleContent = content.length > 0 || displayText.length > 0 || thinkingText.length > 0 || errorText.length > 0;
   const hasContent = hasBubbleContent || toolUses.length > 0;
 
-  // 把流式工具调用映射成 ToolCall（暂无 id/output，因为流式只有 input）
+  // Map streaming tool calls to the same card model used by persisted messages.
   const streamToolCalls: ToolCall[] = toolUses.map((tool, i) => ({
-    id: `stream-${i}-${tool.name}`,
+    id: tool.id || `stream-${i}-${tool.name}`,
     toolName: tool.name,
     kind: classifyToolName(tool.name),
-    status: isComplete ? "success" : "running",
+    status: tool.isError ? "error" : isComplete || tool.output !== undefined ? "success" : "running",
     input: (typeof tool.input === "object" && tool.input !== null) ? (tool.input as Record<string, unknown>) : {},
+    output: tool.output === undefined ? undefined : (
+      typeof tool.output === "string" ? tool.output : JSON.stringify(tool.output, null, 2)
+    ),
   }));
+  const renderItems = buildStreamRenderItems(content, streamToolCalls);
 
   return (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
@@ -106,47 +112,60 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
           </div>
           {!hasContent && !isComplete ? (
             <div className="rounded-xl px-3 py-2 bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)] overflow-hidden">
-              <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                <span className="inline-block w-1.5 h-4 bg-primary animate-pulse" />
-                <span>{t("sessions.thinkingDots")}</span>
+              <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm text-muted-foreground">
+                <span className="inline-block w-1.5 h-4 bg-primary animate-pulse shrink-0" />
+                <span className="processing-marquee">{t("sessions.thinkingDots")}</span>
               </div>
             </div>
           ) : (
             <div className="space-y-1.5">
               {hasContent && (
                 <div className="rounded-xl bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)] px-3 py-2 overflow-hidden min-w-0 max-w-full space-y-2">
-                  {thinkingText && (
-                    <details className="rounded-[6px] border border-border/40 bg-[var(--message-thinking-bg)] px-2.5 py-1.5 text-xs text-muted-foreground">
-                      <summary className="cursor-pointer select-none hover:text-foreground">
-                        {t("sessions.showThinking")}
-                      </summary>
-                      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
-                        {thinkingText}
-                      </pre>
-                    </details>
-                  )}
-                  {displayText && (
-                    <div className="markdown-prose overflow-hidden">
-                      <ReactMarkdown 
-                        remarkPlugins={[remarkGfm]} 
-                        rehypePlugins={isComplete ? [rehypeHighlight] : []}
-                      >
-                        {displayText}
-                      </ReactMarkdown>
-                      {!isComplete && <span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5" />}
-                    </div>
-                  )}
+                  {renderItems.map((item, idx) => {
+                    if (item.kind === "tools") {
+                      return (
+                        <div key={`tools-${idx}`} className="rounded-[8px]">
+                          <ToolGroup calls={item.calls} />
+                        </div>
+                      );
+                    }
+                    if (item.block.type === "thinking") {
+                      return (
+                        <details key={`thinking-${idx}`} className="rounded-[6px] border border-border/40 bg-[var(--message-thinking-bg)] px-2.5 py-1.5 text-xs text-muted-foreground">
+                          <summary className="cursor-pointer select-none hover:text-foreground">
+                            {t("sessions.showThinking")}
+                          </summary>
+                          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
+                            {item.block.thinking}
+                          </pre>
+                        </details>
+                      );
+                    }
+                    if (item.block.type === "text") {
+                      return (
+                        <div key={`text-${idx}`} className="markdown-prose overflow-hidden">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            rehypePlugins={isComplete ? [rehypeHighlight] : []}
+                          >
+                            {item.block.text}
+                          </ReactMarkdown>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })}
                   {errorText && (
                     <div className="rounded-[6px] border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-sm text-destructive">
                       {errorText}
                     </div>
                   )}
-                  {!displayText && !isComplete && (
-                    <span className="inline-block w-1.5 h-4 bg-primary animate-pulse" />
-                  )}
-                  {streamToolCalls.length > 0 && (
-                    <div className="rounded-[8px]">
-                      <ToolGroup calls={streamToolCalls} />
+                  {!isComplete && (
+                    <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm text-muted-foreground">
+                      <span className="inline-block w-1.5 h-4 bg-primary animate-pulse shrink-0" />
+                      <span className="processing-marquee">
+                        {toolUses.length > 0 ? t("sessions.toolCalling") : t("sessions.processing")}
+                      </span>
                     </div>
                   )}
                 </div>
@@ -158,3 +177,33 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
     </div>
   );
 });
+
+type StreamRenderItem =
+  | { kind: "block"; block: ContentBlock }
+  | { kind: "tools"; calls: ToolCall[] };
+
+function buildStreamRenderItems(content: ContentBlock[], calls: ToolCall[]): StreamRenderItem[] {
+  const callMap = new Map(calls.map((call) => [call.id, call]));
+  const items: StreamRenderItem[] = [];
+  let pendingTools: ToolCall[] = [];
+
+  const flushTools = () => {
+    if (pendingTools.length === 0) return;
+    items.push({ kind: "tools", calls: pendingTools });
+    pendingTools = [];
+  };
+
+  for (const block of content) {
+    if (block.type === "tool_use") {
+      const call = callMap.get(block.id);
+      if (call) pendingTools.push(call);
+      continue;
+    }
+    if (block.type === "tool_result") continue;
+    flushTools();
+    items.push({ kind: "block", block });
+  }
+
+  flushTools();
+  return items;
+}

@@ -329,6 +329,11 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         fullMessage += `\n\n<!--JISHU_HUB_IMAGES_BEGIN-->\n[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]\n${fileListStr}\n<!--JISHU_HUB_IMAGES_END-->`;
       }
 
+      // Pre-register the stream state so events from the backend process
+      // (which starts before the await resolves) aren't silently dropped.
+      const pendingId = sessionId || `pending-${Date.now()}`;
+      streamStore.start(pendingId, fullMessage);
+
       const chatSession = await invokeCommand<ChatSession>(
         "send_message",
         {
@@ -339,6 +344,11 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
       );
 
       setActiveSessionId(chatSession.session_id);
+      // If the backend assigned a different session id, register it as an alias
+      // so stream events under the real id route to the pre-registered entry.
+      if (chatSession.session_id !== pendingId) {
+        streamStore.alias(pendingId, chatSession.session_id);
+      }
       if (onMessageSent) onMessageSent(chatSession.session_id, fullMessage);
 
       setMessage("");

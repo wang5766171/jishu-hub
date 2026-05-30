@@ -36,7 +36,9 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
   }, [command, JSON.stringify(args)]);
 
   useEffect(() => {
-    fetch();
+    fetch().catch(() => {
+      // Consumers read `error`; avoid an unhandled rejection during effects.
+    });
   }, [fetch, refreshKey]);
 
   return { data, loading, error, refetch: fetch, setData };

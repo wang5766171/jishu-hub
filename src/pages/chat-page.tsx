@@ -506,16 +506,27 @@ export function ChatPage({
             });
           }
           const assistantContent: ContentBlock[] = [];
-          if (state?.thinking) assistantContent.push({ type: "thinking", thinking: state.thinking });
-          state?.tools.forEach((tool, idx) => {
-            assistantContent.push({
-              type: "tool_use",
-              id: `stream-${idx}-${tool.name}`,
-              name: tool.name,
-              input: tool.input,
+          if (state?.content.length) {
+            assistantContent.push(...state.content);
+          } else {
+            if (state?.thinking) assistantContent.push({ type: "thinking", thinking: state.thinking });
+            state?.tools.forEach((tool, idx) => {
+              assistantContent.push({
+                type: "tool_use",
+                id: tool.id || `stream-${idx}-${tool.name}`,
+                name: tool.name,
+                input: tool.input,
+              });
+              if (tool.output !== undefined) {
+                assistantContent.push({
+                  type: "tool_result",
+                  tool_use_id: tool.id || `stream-${idx}-${tool.name}`,
+                  content: tool.output,
+                });
+              }
             });
-          });
-          if (state?.text) assistantContent.push({ type: "text", text: state.text });
+            if (state?.text) assistantContent.push({ type: "text", text: state.text });
+          }
           if (state?.error) {
             // Append errors as visible text so the user sees them.
             assistantContent.push({ type: "text", text: state.error });

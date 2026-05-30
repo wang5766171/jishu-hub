@@ -1,11 +1,14 @@
 import { useSyncExternalStore } from "react";
-import type { StreamChunk } from "@/types";
+import type { ContentBlock, StreamChunk } from "@/types";
 
 type Listener = () => void;
 
 export interface StreamToolUse {
+  id: string;
   name: string;
   input: unknown;
+  output?: unknown;
+  isError?: boolean;
 }
 
 /**
@@ -20,6 +23,7 @@ export interface StreamToolUse {
  */
 export interface SessionStreamState {
   chunks: StreamChunk[];
+  content: ContentBlock[];
   text: string;
   thinking: string;
   error: string;
@@ -36,6 +40,7 @@ export interface SessionStreamState {
 function emptyState(abortKey: string, pendingUserMessage: string | null): SessionStreamState {
   return {
     chunks: [],
+    content: [],
     text: "",
     thinking: "",
     error: "",
@@ -62,6 +67,7 @@ class StreamStore {
   /** Begin tracking a session that we just sent a message to. */
   start(canonicalId: string, pendingUserMessage: string | null): void {
     const key = this.canonical(canonicalId);
+    if (this.sessions.has(key)) return; // already pre-registered
     this.sessions.set(key, emptyState(key, pendingUserMessage));
     this.scheduleFlush();
   }
@@ -79,35 +85,51 @@ class StreamStore {
     const key = this.canonical(sid);
     const prev = this.sessions.get(key) ?? emptyState(key, null);
 
-    let { text, thinking, error, tools, resolvedId } = prev;
+    let { content, text, thinking, error, tools, resolvedId } = prev;
     const { pendingUserMessage, abortKey, isStreaming } = prev;
     const chunks = [...prev.chunks, chunk];
 
     const data = chunk.data;
     if (data.kind === "text_delta") {
       text = text + data.delta;
+      content = appendTextBlock(content, data.delta);
     } else if (data.kind === "thinking") {
       thinking = thinking + data.delta;
+      content = appendThinkingBlock(content, data.delta);
     } else if (data.kind === "error") {
       error = data.message;
     } else if (data.kind === "tool_use_start") {
-      tools = [...tools, { name: data.tool, input: data.input }];
+      if (!tools.some((tool) => tool.id === data.call_id)) {
+        tools = [...tools, { id: data.call_id, name: data.tool, input: data.input }];
+        content = [...content, { type: "tool_use", id: data.call_id, name: data.tool, input: data.input }];
+      }
+    } else if (data.kind === "tool_use_result") {
+      tools = tools.map((tool) => (
+        tool.id === data.call_id ? { ...tool, output: data.output, isError: data.is_error } : tool
+      ));
+      if (!content.some((block) => block.type === "tool_result" && block.tool_use_id === data.call_id)) {
+        content = [...content, { type: "tool_result", tool_use_id: data.call_id, content: data.output }];
+      }
     } else if (data.kind === "message") {
       const newTools = [...tools];
-      let newText = text;
-      let newThinking = thinking;
+      let newContent = content;
       for (const block of data.content) {
         if (block.type === "tool_use") {
-          newTools.push({ name: block.name, input: block.input });
-        } else if (block.type === "text") {
-          newText += block.text;
-        } else if (block.type === "thinking") {
-          newThinking += block.thinking;
+          if (!newTools.some((tool) => tool.id === block.id)) {
+            newTools.push({ id: block.id, name: block.name, input: block.input });
+            newContent = [...newContent, block];
+          }
+        } else if (block.type === "tool_result") {
+          if (!newContent.some((item) => item.type === "tool_result" && item.tool_use_id === block.tool_use_id)) {
+            newContent = [...newContent, block];
+          }
         }
+        // Skip text/thinking blocks — they arrive via text_delta/thinking
+        // incremental events. Accepting them here causes duplicates when
+        // multiple text blocks are separated by tool calls.
       }
       tools = newTools;
-      text = newText;
-      thinking = newThinking;
+      content = newContent;
     } else if (data.kind === "session_resolved") {
       const realId = data.session_id;
       if (typeof realId === "string" && realId.length >= 8) {
@@ -120,6 +142,7 @@ class StreamStore {
 
     this.sessions.set(key, {
       chunks,
+      content,
       text,
       thinking,
       error,
@@ -200,6 +223,30 @@ class StreamStore {
 }
 
 export const streamStore = new StreamStore();
+
+function appendTextBlock(content: ContentBlock[], delta: string): ContentBlock[] {
+  if (!delta) return content;
+  const next = [...content];
+  const last = next[next.length - 1];
+  if (last?.type === "text") {
+    next[next.length - 1] = { ...last, text: last.text + delta };
+    return next;
+  }
+  next.push({ type: "text", text: delta });
+  return next;
+}
+
+function appendThinkingBlock(content: ContentBlock[], delta: string): ContentBlock[] {
+  if (!delta) return content;
+  const next = [...content];
+  const last = next[next.length - 1];
+  if (last?.type === "thinking") {
+    next[next.length - 1] = { ...last, thinking: last.thinking + delta };
+    return next;
+  }
+  next.push({ type: "thinking", thinking: delta });
+  return next;
+}
 
 export function useSessionStream(sid: string | null | undefined): SessionStreamState | null {
   return useSyncExternalStore(
