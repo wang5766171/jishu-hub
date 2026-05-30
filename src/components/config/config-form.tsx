@@ -39,9 +39,10 @@ const selectClass =
 interface ConfigFormProps {
   config: ClaudeConfig;
   onSaved: (config: ClaudeConfig) => void;
+  agentId?: string | null;
 }
 
-export function ConfigForm({ config: initialConfig, onSaved }: ConfigFormProps) {
+export function ConfigForm({ config: initialConfig, onSaved, agentId }: ConfigFormProps) {
   const { t } = useTranslation();
   const [config, setConfig] = useState<ClaudeConfig>(initialConfig);
   const [saving, setSaving] = useState(false);
@@ -198,6 +199,12 @@ export function ConfigForm({ config: initialConfig, onSaved }: ConfigFormProps) 
   };
 
   const hasChanges = JSON.stringify(config) !== JSON.stringify(initialConfig);
+  const isClaudeLike = !agentId || agentId === "claude-code";
+  const modelOptions = MODEL_OPTIONS.some((m) => m.value === config.model)
+    ? MODEL_OPTIONS
+    : config.model
+      ? [{ value: config.model, labelKey: "", label: config.model }, ...MODEL_OPTIONS]
+      : MODEL_OPTIONS;
 
   // Sections with content come first, empty ones last
   type SectionId = "env" | "plugins" | "mcp" | "permissions" | "model" | "advanced";
@@ -241,17 +248,28 @@ export function ConfigForm({ config: initialConfig, onSaved }: ConfigFormProps) 
                 <div className="space-y-4 pt-2">
                   <div className="space-y-2">
                     <Label htmlFor="model">{t("config.model")}</Label>
-                    <select
-                      id="model"
-                      value={config.model || ""}
-                      onChange={(e) => handleModelChange(e.target.value)}
-                      className={selectClass}
-                    >
-                      <option value="">{t("common.default")}</option>
-                      {MODEL_OPTIONS.map((m) => (
-                        <option key={m.value} value={m.value}>{t(`config.${m.labelKey}`)}</option>
-                      ))}
-                    </select>
+                    {isClaudeLike ? (
+                      <select
+                        id="model"
+                        value={config.model || ""}
+                        onChange={(e) => handleModelChange(e.target.value)}
+                        className={selectClass}
+                      >
+                        <option value="">{t("common.default")}</option>
+                        {modelOptions.map((m) => (
+                          <option key={m.value} value={m.value}>
+                            {"label" in m ? m.label : t(`config.${m.labelKey}`)}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <Input
+                        id="model"
+                        value={config.model || ""}
+                        onChange={(e) => handleModelChange(e.target.value)}
+                        placeholder="provider/model"
+                      />
+                    )}
                   </div>
 
                   <div className="space-y-2">

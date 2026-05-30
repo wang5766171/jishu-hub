@@ -8,7 +8,7 @@ import { BackupManager } from "@/components/config/backup-manager";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Download, Upload } from "lucide-react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { useAgent } from "@/agents";
 import type { ClaudeConfig } from "@/types";
 
@@ -38,7 +38,7 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
 
   const handleExport = async () => {
     if (!useRaw) {
-      const path = await open({
+      const path = await save({
         defaultPath: `${activeId || "agent"}-settings.json`,
         filters: [{ name: "JSON", extensions: ["json"] }],
       });
@@ -53,13 +53,13 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
       const raw = rawConfig;
       if (!raw) return;
       const ext = raw.format === "toml" ? "toml" : "json";
-      const path = await open({
+      const path = await save({
         defaultPath: `${activeId || "agent"}-config.${ext}`,
         filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
       });
       if (path) {
         try {
-          await invokeCommand("save_raw_config", { content: raw.content });
+          await invokeCommand("write_text_file", { path, content: raw.content });
         } catch (err) {
           console.error("Export failed:", err);
         }
@@ -155,7 +155,7 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
       {/* Tab content — scrollable */}
       <div className="flex-1 min-h-0 overflow-y-auto pt-4">
         {activeTab === "edit" && (
-          <ConfigForm config={config} onSaved={handleConfigSaved} />
+          <ConfigForm config={config} onSaved={handleConfigSaved} agentId={activeId} />
         )}
         {activeTab === "templates" && (
           <TemplateManager onApplied={refetch} />
