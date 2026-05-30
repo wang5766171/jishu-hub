@@ -267,10 +267,14 @@ impl AgentPlugin for CodexAdapter {
                                     .ok()
                                     .map(|dt| dt.with_timezone(&chrono::Utc));
 
+                            let messages = self
+                                .get_session_messages(&id, encoded_name)
+                                .unwrap_or_default();
+
                             sessions.push(crate::session::Session {
                                 id,
                                 path: rollout_path,
-                                messages: vec![],
+                                messages,
                                 started_at: last_active, // Approximating
                                 display_name: Some(thread_name),
                                 last_active,

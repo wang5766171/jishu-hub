@@ -1060,7 +1060,15 @@ impl AgentPlugin for OpencodeAdapter {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
         }
 
-        let sessions = parse_session_list(&String::from_utf8_lossy(&output.stdout), &project_path)?;
+        let mut sessions = parse_session_list(&String::from_utf8_lossy(&output.stdout), &project_path)?;
+
+        // Hydrate messages for searching in session list
+        for session in &mut sessions {
+            if let Ok(messages) = self.get_session_messages(&session.id, encoded_name) {
+                session.messages = messages;
+            }
+        }
+
         Ok(sessions)
     }
 
