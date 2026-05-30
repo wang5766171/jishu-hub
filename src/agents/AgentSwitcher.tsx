@@ -85,7 +85,7 @@ export const AgentSwitcher = memo(function AgentSwitcher() {
               </div>
             )}
           </div>
-          {agents.filter(a => a.id !== "codex").map((agent) => (
+          {agents.map((agent) => (
             <button
               key={agent.id}
               onClick={() => {
