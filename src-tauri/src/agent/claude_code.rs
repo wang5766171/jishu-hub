@@ -336,6 +336,27 @@ impl AgentPlugin for ClaudeCodeAgent {
         crate::config::save_config(config).map_err(|e| e.to_string())
     }
 
+    fn config_format(&self) -> Option<String> {
+        Some("json".to_string())
+    }
+
+    fn load_raw_config(&self) -> Result<String, String> {
+        let path = crate::config::config_path().map_err(|e| e.to_string())?;
+        if !path.exists() {
+            return Ok(String::new());
+        }
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    }
+
+    fn save_raw_config(&self, content: &str) -> Result<(), String> {
+        // Validate JSON before saving
+        let _: serde_json::Value =
+            serde_json::from_str(content).map_err(|e| format!("Invalid JSON: {}", e))?;
+        crate::config::backup_config().map_err(|e| e.to_string())?;
+        let path = crate::config::config_path().map_err(|e| e.to_string())?;
+        std::fs::write(&path, content).map_err(|e| e.to_string())
+    }
+
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
         crate::hub::list_config_templates()
     }

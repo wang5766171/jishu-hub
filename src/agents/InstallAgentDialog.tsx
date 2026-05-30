@@ -69,7 +69,7 @@ export function InstallAgentDialog({ agent, open, onOpenChange, onInstalled }: I
         <div className="py-6 space-y-6">
           {success ? (
             <div className="flex flex-col items-center justify-center py-4 space-y-3 text-center">
-              <CheckCircle2 className="h-12 w-12 text-emerald-500 animate-in zoom-in" />
+              <CheckCircle2 className="h-12 w-12 text-[var(--icon-success)] animate-in zoom-in" />
               <div className="space-y-1">
                 <p className="font-medium text-lg">安装成功</p>
                 <p className="text-sm text-muted-foreground">正在刷新状态...</p>

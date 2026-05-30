@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { ConfigForm } from "@/components/config/config-form";
+import { RawConfigEditor } from "@/components/config/raw-config-editor";
 import { TemplateManager } from "@/components/config/template-manager";
 import { BackupManager } from "@/components/config/backup-manager";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -11,32 +12,63 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useAgent } from "@/agents";
 import type { ClaudeConfig } from "@/types";
 
+interface RawConfigInfo {
+  content: string;
+  format: string;
+}
+
 export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "templates" | "backups" }) {
   const { t } = useTranslation();
   const { activeId } = useAgent();
   const agentRefreshKey = activeId ? Array.from(activeId).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) : 0;
-  const { data: config, loading, refetch } = useInvoke<ClaudeConfig>("load_config", undefined, agentRefreshKey);
+
+  // Try structured config first, fall back to raw if it fails
+  const { data: config, loading, error: configError, refetch } = useInvoke<ClaudeConfig>("load_config", undefined, agentRefreshKey);
+  const useRaw = !!configError;
+  const { data: rawConfig, refetch: refetchRaw } = useInvoke<RawConfigInfo>("load_raw_config", undefined, useRaw ? agentRefreshKey : 0);
   const [activeTab, setActiveTab] = useState<"edit" | "templates" | "backups">(initialTab);
 
   const handleConfigSaved = useCallback(() => {
     refetch();
   }, [refetch]);
 
+  const handleRawSaved = useCallback(() => {
+    refetchRaw();
+  }, [refetchRaw]);
+
   const handleExport = async () => {
-    const path = await open({
-      defaultPath: `${activeId || "agent"}-settings.json`,
-      filters: [{ name: "JSON", extensions: ["json"] }],
-    });
-    if (path) {
-      try {
-        await invokeCommand("export_config", { path });
-      } catch (err) {
-        console.error("Export failed:", err);
+    if (!useRaw) {
+      const path = await open({
+        defaultPath: `${activeId || "agent"}-settings.json`,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (path) {
+        try {
+          await invokeCommand("export_config", { path });
+        } catch (err) {
+          console.error("Export failed:", err);
+        }
+      }
+    } else {
+      const raw = rawConfig;
+      if (!raw) return;
+      const ext = raw.format === "toml" ? "toml" : "json";
+      const path = await open({
+        defaultPath: `${activeId || "agent"}-config.${ext}`,
+        filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
+      });
+      if (path) {
+        try {
+          await invokeCommand("save_raw_config", { content: raw.content });
+        } catch (err) {
+          console.error("Export failed:", err);
+        }
       }
     }
   };
 
   const handleImport = async () => {
+    if (useRaw) return;
     const path = await open({
       filters: [{ name: "JSON", extensions: ["json"] }],
       multiple: false,
@@ -51,10 +83,30 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
     }
   };
 
-  if (loading) {
+  if (loading || (useRaw && !rawConfig)) {
     return <Skeleton className="h-64" />;
   }
 
+  // Agents without structured config support: show native config editor
+  if (useRaw && rawConfig) {
+    return (
+      <div className="flex flex-col h-full p-6">
+        <div className="mb-4">
+          <h2 className="text-xl font-semibold">{t("config.title")}</h2>
+          <p className="text-sm text-muted-foreground mt-1">{t("config.nativeFormatHint")}</p>
+        </div>
+        <div className="flex-1 min-h-0">
+          <RawConfigEditor
+            initialContent={rawConfig.content}
+            format={rawConfig.format}
+            onSaved={handleRawSaved}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // Structured config (e.g. Claude Code, OpenCode): show form with templates & backups
   if (!config) {
     return <div className="text-muted-foreground">{t("config.loadFailed")}</div>;
   }

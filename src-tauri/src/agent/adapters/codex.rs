@@ -298,11 +298,34 @@ impl AgentPlugin for CodexAdapter {
     }
 
     fn load_config(&self) -> Result<crate::config::ClaudeConfig, String> {
-        Err("Codex config not yet supported".to_string())
+        Err("Codex uses native TOML config, use load_raw_config instead".to_string())
     }
 
     fn save_config(&self, _config: &crate::config::ClaudeConfig) -> Result<(), String> {
-        Err("Codex config not yet supported".to_string())
+        Err("Codex uses native TOML config, use save_raw_config instead".to_string())
+    }
+
+    fn config_format(&self) -> Option<String> {
+        Some("toml".to_string())
+    }
+
+    fn load_raw_config(&self) -> Result<String, String> {
+        let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+        let config_path = home.join(".codex").join("config.toml");
+        if !config_path.exists() {
+            return Ok(String::new());
+        }
+        std::fs::read_to_string(&config_path).map_err(|e| e.to_string())
+    }
+
+    fn save_raw_config(&self, content: &str) -> Result<(), String> {
+        let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+        let codex_dir = home.join(".codex");
+        std::fs::create_dir_all(&codex_dir).map_err(|e| e.to_string())?;
+        let config_path = codex_dir.join("config.toml");
+        // Validate TOML before saving
+        let _: toml::Value = toml::from_str(content).map_err(|e| format!("Invalid TOML: {}", e))?;
+        std::fs::write(&config_path, content).map_err(|e| e.to_string())
     }
 
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {

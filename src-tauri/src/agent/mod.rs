@@ -253,6 +253,22 @@ pub trait AgentPlugin {
     fn load_config(&self) -> Result<crate::config::ClaudeConfig, String>;
     fn save_config(&self, config: &crate::config::ClaudeConfig) -> Result<(), String>;
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate>;
+
+    /// Native config format for raw editing (e.g. "toml", "json").
+    /// Return None to indicate no raw config support (agent uses structured ClaudeConfig).
+    fn config_format(&self) -> Option<String> {
+        None
+    }
+
+    /// Load the raw config file content as a string.
+    fn load_raw_config(&self) -> Result<String, String> {
+        Err("Raw config not supported".to_string())
+    }
+
+    /// Save raw config content back to the native file.
+    fn save_raw_config(&self, _content: &str) -> Result<(), String> {
+        Err("Raw config not supported".to_string())
+    }
     fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String>;
     fn restore_backup(&self, path: &str) -> Result<(), String>;
     fn export_config(&self, path: &str) -> Result<(), String>;

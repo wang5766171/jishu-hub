@@ -56,7 +56,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       <div className="space-y-4">
         <div className="flex items-center justify-between p-4 border rounded-lg bg-card">
           <div className="flex items-center gap-3">
-            {env.node_installed ? <CheckCircle2 className="text-emerald-500" /> : <XCircle className="text-destructive" />}
+            {env.node_installed ? <CheckCircle2 className="text-[var(--icon-success)]" /> : <XCircle className="text-destructive" />}
             <div>
               <h3 className="font-semibold">{t("env.nodeTitle")}</h3>
               <p className="text-sm text-muted-foreground">{t("env.nodeDesc")}</p>
@@ -69,7 +69,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
         
         <div className="flex items-center justify-between p-4 border rounded-lg bg-card">
           <div className="flex items-center gap-3">
-            {env.python_installed ? <CheckCircle2 className="text-emerald-500" /> : <XCircle className="text-destructive" />}
+            {env.python_installed ? <CheckCircle2 className="text-[var(--icon-success)]" /> : <XCircle className="text-destructive" />}
             <div>
               <h3 className="font-semibold">{t("env.pythonTitle")}</h3>
               <p className="text-sm text-muted-foreground">{t("env.pythonDesc")}</p>
@@ -85,7 +85,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
            <div key={agent.id} className="flex flex-col border rounded-lg mb-4 bg-card overflow-hidden">
              <div className="flex items-center justify-between p-4">
                <div className="flex items-center gap-3">
-                 {agent.health.installed ? <CheckCircle2 className="text-emerald-500" /> : <XCircle className="text-destructive" />}
+                 {agent.health.installed ? <CheckCircle2 className="text-[var(--icon-success)]" /> : <XCircle className="text-destructive" />}
                  <div>
                    <h3 className="font-semibold">{agent.display_name}</h3>
                    <p className="text-sm text-muted-foreground">{getAgentStatusText(agent)}</p>

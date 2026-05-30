@@ -126,6 +126,32 @@ fn load_config(state: tauri::State<'_, Mutex<AppState>>) -> Result<config::Claud
     s.registry.active().load_config()
 }
 
+#[derive(serde::Serialize)]
+struct RawConfigInfo {
+    content: String,
+    format: String,
+}
+
+#[tauri::command]
+fn load_raw_config(state: tauri::State<'_, Mutex<AppState>>) -> Result<RawConfigInfo, String> {
+    let s = state.lock().unwrap();
+    let active = s.registry.active();
+    let format = active
+        .config_format()
+        .unwrap_or_else(|| "unknown".to_string());
+    let content = active.load_raw_config()?;
+    Ok(RawConfigInfo { content, format })
+}
+
+#[tauri::command]
+fn save_raw_config(
+    state: tauri::State<'_, Mutex<AppState>>,
+    content: String,
+) -> Result<(), String> {
+    let s = state.lock().unwrap();
+    s.registry.active().save_raw_config(&content)
+}
+
 #[tauri::command]
 fn load_history(state: tauri::State<'_, Mutex<AppState>>) -> Vec<history::HistoryEntry> {
     let s = state.lock().unwrap();
@@ -609,6 +635,8 @@ pub fn run() {
             rename_session,
             delete_session_name,
             load_config,
+            load_raw_config,
+            save_raw_config,
             load_history,
             save_config,
             list_presets,

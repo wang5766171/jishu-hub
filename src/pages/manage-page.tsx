@@ -19,7 +19,7 @@ const tabs: { id: ManageTab; icon: typeof FolderOpen; labelKey: string; iconColo
   { id: "projects", icon: FolderOpen, labelKey: "nav.projects", iconColor: "text-[var(--icon-folder)]" },
   { id: "config", icon: Settings, labelKey: "config.configuration", iconColor: "text-[var(--icon-action)]" },
   { id: "commands", icon: Rocket, labelKey: "nav.commands", iconColor: "text-[var(--icon-action)]" },
-  { id: "env", icon: Activity, labelKey: "nav.environment", iconColor: "text-emerald-500" },
+  { id: "env", icon: Activity, labelKey: "nav.environment", iconColor: "text-[var(--icon-env)]" },
 ];
 
 export function ManagePage({ onBack, onEnterProject, navigateToProjects }: ManagePageProps) {
