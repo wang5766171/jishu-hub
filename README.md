@@ -32,20 +32,38 @@ Currently running **Claude Code** as the first agent, with a plugin architecture
 
 ## Screenshots
 
+### Main Chat Interface
 <p align="center">
-  <img src="./docs/screenshots/会话-暗色.png" alt="Chat (Dark)" width="49%" />
-  <img src="./docs/screenshots/会话彩色.png" alt="Chat (Colorful)" width="49%" />
+  <img src="./docs/screenshots/会话-暗.png" alt="Chat (Dark)" width="100%" />
 </p>
+Experience a clean, focused, and immersive chat interface natively on your desktop. Jishu Hub replaces scattered terminal windows with a beautifully designed dark-mode workspace.
 
+### Multimodal Capabilities
 <p align="center">
-  <img src="./docs/screenshots/项目管理.png" alt="Projects" width="49%" />
-  <img src="./docs/screenshots/配置管理.png" alt="Config" width="49%" />
+  <img src="./docs/screenshots/图片会话.png" alt="Image Chat" width="49%" />
+  <img src="./docs/screenshots/图片发送支持标注.png" alt="Image Annotation" width="49%" />
 </p>
+Engage in rich multimodal conversations. Send images and files effortlessly, and use built-in image annotation tools to highlight exactly what you need the AI to focus on.
 
+### Multi-Agent Collaboration & Parallel Tasks
 <p align="center">
-  <img src="./docs/screenshots/会话内容搜索.png" alt="Search" width="49%" />
-  <img src="./docs/screenshots/快捷命令.png" alt="Commands" width="49%" />
+  <img src="./docs/screenshots/智能体切换.png" alt="Agent Switching" width="49%" />
+  <img src="./docs/screenshots/多任务的并行处理.png" alt="Parallel Tasks" width="49%" />
 </p>
+Switch smoothly between different CLI agents (like Claude Code) via our plugin architecture. Run multiple chat sessions in parallel across different projects without losing your context.
+
+### Project & Session Management
+<p align="center">
+  <img src="./docs/screenshots/项目管理.png" alt="Project Management" width="49%" />
+  <img src="./docs/screenshots/项目全局搜索.png" alt="Global Search" width="49%" />
+</p>
+Your projects are automatically discovered and organized. Instantly locate past conversations with the powerful global session search feature.
+
+### Configuration Editor
+<p align="center">
+  <img src="./docs/screenshots/配置管理.png" alt="Config Management" width="100%" />
+</p>
+Ditch the manual JSON edits. Use our visual, form-based configuration editor to manage models, environment variables, and agent presets with automatic backups.
 
 ## Features
 
