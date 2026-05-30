@@ -393,69 +393,8 @@ fn parse_export_messages(raw: &str) -> Result<Vec<crate::session::Message>, Stri
         }
 
         let mut content = Vec::new();
-        for part in message.parts {
-            let part_type = part
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            match part_type {
-                "text" => {
-                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                        if !text.trim().is_empty() {
-                            content.push(crate::session::ContentBlock::Text {
-                                text: text.to_string(),
-                            });
-                        }
-                    }
-                }
-                "thinking" | "reasoning" => {
-                    if let Some(text) = part
-                        .get("thinking")
-                        .or_else(|| part.get("text"))
-                        .and_then(|v| v.as_str())
-                    {
-                        if !text.trim().is_empty() {
-                            content.push(crate::session::ContentBlock::Thinking {
-                                thinking: text.to_string(),
-                            });
-                        }
-                    }
-                }
-                "tool" => {
-                    let call_id = part
-                        .get("callID")
-                        .or_else(|| part.get("call_id"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    let tool = part
-                        .get("tool")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("tool")
-                        .to_string();
-                    let state = part.get("state").unwrap_or(&part);
-                    let input = state
-                        .get("input")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Null);
-
-                    if !call_id.is_empty() {
-                        content.push(crate::session::ContentBlock::ToolUse {
-                            id: call_id.clone(),
-                            name: tool,
-                            input,
-                        });
-
-                        if let Some(output) = state.get("output").cloned() {
-                            content.push(crate::session::ContentBlock::ToolResult {
-                                tool_use_id: call_id,
-                                content: output,
-                            });
-                        }
-                    }
-                }
-                _ => {}
-            }
+        for part in &message.parts {
+            append_part_blocks(part, &mut content);
         }
 
         if content.is_empty() {
@@ -470,6 +409,186 @@ fn parse_export_messages(raw: &str) -> Result<Vec<crate::session::Message>, Stri
     }
 
     Ok(messages)
+}
+
+/// Map a single opencode message `part` JSON value into normalized content
+/// blocks. Shared by the CLI-export path and the SQLite path so both produce
+/// identical content (and therefore identical search results).
+fn append_part_blocks(part: &serde_json::Value, content: &mut Vec<crate::session::ContentBlock>) {
+    let part_type = part.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+    match part_type {
+        "text" => {
+            if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                if !text.trim().is_empty() {
+                    content.push(crate::session::ContentBlock::Text {
+                        text: text.to_string(),
+                    });
+                }
+            }
+        }
+        "thinking" | "reasoning" => {
+            if let Some(text) = part
+                .get("thinking")
+                .or_else(|| part.get("text"))
+                .and_then(|v| v.as_str())
+            {
+                if !text.trim().is_empty() {
+                    content.push(crate::session::ContentBlock::Thinking {
+                        thinking: text.to_string(),
+                    });
+                }
+            }
+        }
+        "tool" => {
+            let call_id = part
+                .get("callID")
+                .or_else(|| part.get("call_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let tool = part
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tool")
+                .to_string();
+            let state = part.get("state").unwrap_or(part);
+            let input = state
+                .get("input")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+
+            if !call_id.is_empty() {
+                content.push(crate::session::ContentBlock::ToolUse {
+                    id: call_id.clone(),
+                    name: tool,
+                    input,
+                });
+
+                if let Some(output) = state.get("output").cloned() {
+                    content.push(crate::session::ContentBlock::ToolResult {
+                        tool_use_id: call_id,
+                        content: output,
+                    });
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Read a session's messages directly from the opencode SQLite store, avoiding
+/// an `opencode export` subprocess spawn per session.
+fn read_session_messages_from_db(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Vec<crate::session::Message>, String> {
+    let msg_rows: Vec<(String, String)> = {
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT id, data FROM message WHERE session_id = ?1 ORDER BY time_created ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([session_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let mut part_stmt = conn
+        .prepare_cached("SELECT data FROM part WHERE message_id = ?1 ORDER BY time_created ASC")
+        .map_err(|e| e.to_string())?;
+
+    let mut messages = Vec::new();
+    for (msg_id, msg_data) in msg_rows {
+        let info: serde_json::Value = match serde_json::from_str(&msg_data) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let role = info.get("role").and_then(|v| v.as_str()).unwrap_or_default();
+        if role != "user" && role != "assistant" {
+            continue;
+        }
+        let timestamp = info
+            .get("time")
+            .and_then(|t| t.get("created"))
+            .and_then(|v| v.as_i64());
+
+        let mut content = Vec::new();
+        let part_rows = part_stmt
+            .query_map([&msg_id], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        for raw in part_rows.filter_map(|r| r.ok()) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                append_part_blocks(&value, &mut content);
+            }
+        }
+
+        if content.is_empty() {
+            continue;
+        }
+        messages.push(crate::session::Message {
+            role: role.to_string(),
+            content,
+            timestamp,
+        });
+    }
+    Ok(messages)
+}
+
+/// List sessions for a project directly from the opencode SQLite store,
+/// hydrating messages in the same pass without spawning any subprocess.
+fn list_sessions_from_db(
+    db_path: &Path,
+    project_path: &str,
+) -> Result<Vec<crate::session::Session>, String> {
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let session_rows: Vec<(String, String, i64, i64)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, title, directory, time_created, time_updated \
+                 FROM session WHERE directory IS NOT NULL AND directory != ''",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok())
+            .filter(|(_, _, dir, _, _)| same_path(dir, project_path))
+            .map(|(id, title, _, created, updated)| (id, title, created, updated))
+            .collect()
+    };
+
+    let mut sessions = Vec::new();
+    for (id, title, created, updated) in session_rows {
+        let messages = read_session_messages_from_db(&conn, &id).unwrap_or_default();
+        sessions.push(crate::session::Session {
+            path: PathBuf::from(project_path).join(format!("{}.opencode.json", id)),
+            id,
+            messages,
+            started_at: datetime_from_millis(created),
+            display_name: Some(title).filter(|t| !t.trim().is_empty()),
+            last_active: datetime_from_millis(updated),
+            project_path: Some(project_path.to_string()),
+        });
+    }
+
+    sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+    Ok(sessions)
 }
 
 #[cfg(test)]
@@ -1047,6 +1166,19 @@ impl AgentPlugin for OpencodeAdapter {
 
     fn list_sessions(&self, encoded_name: &str) -> Result<Vec<crate::session::Session>, String> {
         let project_path = crate::project::decode_project_path(encoded_name);
+
+        // Fast path: read sessions and their messages directly from the local
+        // SQLite store. This avoids spawning one `opencode export` subprocess
+        // per session, which made opening a project's session list very slow.
+        if let Ok(db_path) = opencode_db_path() {
+            if db_path.is_file() {
+                if let Ok(sessions) = list_sessions_from_db(&db_path, &project_path) {
+                    return Ok(sessions);
+                }
+            }
+        }
+
+        // Fallback for older installs without the SQLite store.
         let mut command = std::process::Command::new("opencode");
         let output = crate::process_command::std_no_window(
             command
@@ -1060,16 +1192,7 @@ impl AgentPlugin for OpencodeAdapter {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
         }
 
-        let mut sessions = parse_session_list(&String::from_utf8_lossy(&output.stdout), &project_path)?;
-
-        // Hydrate messages for searching in session list
-        for session in &mut sessions {
-            if let Ok(messages) = self.get_session_messages(&session.id, encoded_name) {
-                session.messages = messages;
-            }
-        }
-
-        Ok(sessions)
+        parse_session_list(&String::from_utf8_lossy(&output.stdout), &project_path)
     }
 
     fn get_session_messages(
@@ -1077,6 +1200,21 @@ impl AgentPlugin for OpencodeAdapter {
         session_id: &str,
         encoded_name: &str,
     ) -> Result<Vec<crate::session::Message>, String> {
+        // Fast path: read directly from the local SQLite store.
+        if let Ok(db_path) = opencode_db_path() {
+            if db_path.is_file() {
+                if let Ok(conn) = Connection::open_with_flags(
+                    &db_path,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                ) {
+                    if let Ok(messages) = read_session_messages_from_db(&conn, session_id) {
+                        return Ok(messages);
+                    }
+                }
+            }
+        }
+
+        // Fallback: opencode CLI export.
         let project_path = crate::project::decode_project_path(encoded_name);
         let mut command = std::process::Command::new("opencode");
         let output = crate::process_command::std_no_window(
@@ -1406,6 +1544,91 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&projects[0].path);
         let _ = std::fs::remove_dir_all(db_dir);
+    }
+
+    fn create_message_db(db_path: &Path, directory: &str) {
+        let conn = Connection::open(db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT NOT NULL, directory TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+             CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+             CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);",
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO session (id, title, directory, time_created, time_updated) VALUES (?1,?2,?3,?4,?5)",
+            ("ses_1", "Target", directory, 100_i64, 300_i64),
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?1,?2,?3,?4,?5)",
+            ("msg_1", "ses_1", 100_i64, 100_i64, r#"{"role":"user","time":{"created":100}}"#),
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?1,?2,?3,?4,?5)",
+            ("msg_2", "ses_1", 200_i64, 200_i64, r#"{"role":"assistant","time":{"created":200}}"#),
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?1,?2,?3,?4,?5,?6)",
+            ("prt_1", "msg_1", "ses_1", 100_i64, 100_i64, r#"{"type":"text","text":"hello world"}"#),
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?1,?2,?3,?4,?5,?6)",
+            ("prt_2", "msg_2", "ses_1", 201_i64, 201_i64, r#"{"type":"reasoning","text":"thinking deeply"}"#),
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?1,?2,?3,?4,?5,?6)",
+            ("prt_3", "msg_2", "ses_1", 202_i64, 202_i64, r#"{"type":"tool","tool":"read","callID":"call_1","state":{"input":{"filePath":"a.txt"},"output":"file body"}}"#),
+        ).unwrap();
+    }
+
+    #[test]
+    fn reads_session_messages_from_sqlite_store() {
+        let dir = std::env::temp_dir().join("jishu_opencode_msg_db");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("opencode.db");
+        create_message_db(&db_path, "D:\\proj");
+
+        let conn = Connection::open_with_flags(
+            &db_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .unwrap();
+        let messages = read_session_messages_from_db(&conn, "ses_1").unwrap();
+        drop(conn);
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].timestamp, Some(100));
+        assert!(matches!(&messages[0].content[0], crate::session::ContentBlock::Text { text } if text == "hello world"));
+
+        // reasoning -> thinking, tool -> tool_use + tool_result
+        assert_eq!(messages[1].content.len(), 3);
+        assert!(matches!(&messages[1].content[0], crate::session::ContentBlock::Thinking { thinking } if thinking == "thinking deeply"));
+        assert!(matches!(&messages[1].content[1], crate::session::ContentBlock::ToolUse { name, id, .. } if name == "read" && id == "call_1"));
+        assert!(matches!(&messages[1].content[2], crate::session::ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "call_1"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn lists_sessions_from_sqlite_with_directory_filter_and_messages() {
+        let dir = std::env::temp_dir().join("jishu_opencode_list_db");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("opencode.db");
+        create_message_db(&db_path, "D:\\proj");
+
+        // Matching directory (case/slash-insensitive) hydrates messages.
+        let sessions = list_sessions_from_db(&db_path, "d:/proj").unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "ses_1");
+        assert_eq!(sessions[0].display_name.as_deref(), Some("Target"));
+        assert_eq!(sessions[0].messages.len(), 2);
+
+        // Non-matching directory yields nothing.
+        let none = list_sessions_from_db(&db_path, "D:\\other").unwrap();
+        assert!(none.is_empty());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

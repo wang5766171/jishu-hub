@@ -546,13 +546,15 @@ pub struct EnvStatus {
 
 #[tauri::command]
 async fn check_environment() -> Result<EnvStatus, String> {
-    let node_out = tokio::process::Command::new("node")
-        .arg("--version")
+    let mut node_cmd = tokio::process::Command::new("node");
+    node_cmd.arg("--version");
+    let node_out = crate::process_command::tokio_no_window(&mut node_cmd)
         .output()
         .await;
-    
-    let python_out = tokio::process::Command::new("python")
-        .arg("--version")
+
+    let mut python_cmd = tokio::process::Command::new("python");
+    python_cmd.arg("--version");
+    let python_out = crate::process_command::tokio_no_window(&mut python_cmd)
         .output()
         .await;
         

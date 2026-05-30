@@ -31,29 +31,12 @@ export function searchSessions(sessions: Session[], query: string): SessionSearc
       const message = session.messages[i];
       let messageHasMatch = false;
 
+      // Only text blocks are searchable/navigable in the message view, so we
+      // count only text matches here to keep the sidebar match-count badge
+      // consistent with the in-session search total (avoids count mismatch).
       for (const block of message.content) {
         if (block.type === "text") {
           const m = block.text.match(regex);
-          if (m && m.length > 0) {
-            matchCount += m.length;
-            messageHasMatch = true;
-          }
-        } else if (block.type === "tool_use") {
-          const searchable = `${block.name} ${JSON.stringify(block.input)}`;
-          const m = searchable.match(regex);
-          if (m && m.length > 0) {
-            matchCount += m.length;
-            messageHasMatch = true;
-          }
-        } else if (block.type === "tool_result") {
-          const searchable = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
-          const m = searchable.match(regex);
-          if (m && m.length > 0) {
-            matchCount += m.length;
-            messageHasMatch = true;
-          }
-        } else if (block.type === "thinking") {
-          const m = block.thinking.match(regex);
           if (m && m.length > 0) {
             matchCount += m.length;
             messageHasMatch = true;

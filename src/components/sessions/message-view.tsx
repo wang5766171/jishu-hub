@@ -498,6 +498,17 @@ export const MessageView = memo(function MessageView({
 
   useEffect(() => {
     if (searchState.total === 0 || scrollTrigger === 0) return;
+    // If the target match is already rendered and fully inside the viewport,
+    // just let the highlight move (driven by currentOcc) without scrolling —
+    // avoids the jarring scroll-up-then-back jump when navigating between
+    // matches that are already visible together on screen.
+    const container = scrollContainerRef?.current;
+    const visibleEl = document.querySelector(`[data-match-idx="${currentOcc}"]`);
+    if (container && visibleEl) {
+      const er = visibleEl.getBoundingClientRect();
+      const cr = container.getBoundingClientRect();
+      if (er.top >= cr.top && er.bottom <= cr.bottom) return;
+    }
     const msgIdx = searchState.matchToMessage[currentOcc];
     if (msgIdx !== undefined && flat) {
       const rowIdx = rows.findIndex((row) => rowContainsMessage(row, msgIdx));

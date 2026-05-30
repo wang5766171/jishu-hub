@@ -184,6 +184,7 @@ impl AgentPlugin for CodexAdapter {
             .unwrap_or_default();
 
         let mut projects = Vec::new();
+        let session_counts = self.session_counts_by_cwd();
         for path_str in roots {
             let path = std::path::Path::new(&path_str);
             if !path.exists() {
@@ -201,7 +202,7 @@ impl AgentPlugin for CodexAdapter {
                 name,
                 path: path.to_path_buf(),
                 encoded_name: encoded,
-                session_count: self.count_sessions_for_path(&path_str),
+                session_count: session_counts.get(&path_str).copied().unwrap_or(0),
                 last_active: None,
                 has_claude_md: path.join(".claude").join("CLAUDE.md").exists(),
                 agent_ids: vec!["codex".to_string()],
@@ -267,8 +268,7 @@ impl AgentPlugin for CodexAdapter {
                                     .ok()
                                     .map(|dt| dt.with_timezone(&chrono::Utc));
 
-                            let messages = self
-                                .get_session_messages(&id, encoded_name)
+                            let messages = parse_rollout_messages(&rollout_path)
                                 .unwrap_or_default();
 
                             sessions.push(crate::session::Session {
@@ -294,46 +294,7 @@ impl AgentPlugin for CodexAdapter {
         _encoded_name: &str,
     ) -> Result<Vec<crate::session::Message>, String> {
         let rollout_path = self.search_rollout_file(session_id)?;
-        let file = std::fs::File::open(rollout_path).map_err(|e| e.to_string())?;
-        let reader = std::io::BufReader::new(file);
-        use std::io::BufRead;
-
-        let mut messages = Vec::new();
-        for line in reader.lines().flatten() {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
-                if val.get("type").and_then(|v| v.as_str()) == Some("event_msg") {
-                    let payload = val.get("payload").ok_or("Missing payload")?;
-                    let p_type = payload.get("type").and_then(|v| v.as_str());
-                    let timestamp_str = val.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
-                    let timestamp = chrono::DateTime::parse_from_rfc3339(timestamp_str)
-                        .ok()
-                        .map(|dt| dt.timestamp_millis());
-
-                    if p_type == Some("user_message") {
-                        if let Some(msg) = payload.get("message").and_then(|v| v.as_str()) {
-                            messages.push(crate::session::Message {
-                                role: "user".to_string(),
-                                content: vec![crate::session::ContentBlock::Text {
-                                    text: msg.to_string(),
-                                }],
-                                timestamp,
-                            });
-                        }
-                    } else if p_type == Some("agent_message") {
-                        if let Some(msg) = payload.get("message").and_then(|v| v.as_str()) {
-                            messages.push(crate::session::Message {
-                                role: "assistant".to_string(),
-                                content: vec![crate::session::ContentBlock::Text {
-                                    text: msg.to_string(),
-                                }],
-                                timestamp,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        Ok(messages)
+        parse_rollout_messages(&rollout_path)
     }
 
     fn load_config(&self) -> Result<crate::config::ClaudeConfig, String> {
@@ -473,12 +434,17 @@ impl AgentPlugin for CodexAdapter {
 }
 
 impl CodexAdapter {
-    fn count_sessions_for_path(&self, project_path: &str) -> usize {
-        self.list_sessions_all_internal()
-            .unwrap_or_default()
-            .iter()
-            .filter(|s| s.project_path.as_deref() == Some(project_path))
-            .count()
+    /// Count sessions per project cwd in a single pass over the global index,
+    /// avoiding an O(projects × sessions) rescan (the previous per-project
+    /// counter re-read the whole index and reopened every rollout file).
+    fn session_counts_by_cwd(&self) -> std::collections::HashMap<String, usize> {
+        let mut counts = std::collections::HashMap::new();
+        for session in self.list_sessions_all_internal().unwrap_or_default() {
+            if let Some(cwd) = session.project_path {
+                *counts.entry(cwd).or_insert(0) += 1;
+            }
+        }
+        counts
     }
 
     fn list_sessions_all_internal(&self) -> Result<Vec<crate::session::Session>, String> {
@@ -615,6 +581,52 @@ impl CodexAdapter {
         self.recursive_search_id(&sessions_dir, id)
             .ok_or_else(|| format!("Rollout file for session {} not found", id))
     }
+}
+
+/// Parse codex rollout JSONL at a known path into normalized messages.
+/// Used both when listing sessions (path already resolved) and when opening a
+/// session, so we never re-run a recursive filesystem search per session.
+fn parse_rollout_messages(
+    path: &std::path::Path,
+) -> Result<Vec<crate::session::Message>, String> {
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let reader = std::io::BufReader::new(file);
+
+    let mut messages = Vec::new();
+    for line in reader.lines().flatten() {
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if val.get("type").and_then(|v| v.as_str()) != Some("event_msg") {
+            continue;
+        }
+        let Some(payload) = val.get("payload") else {
+            continue;
+        };
+        let p_type = payload.get("type").and_then(|v| v.as_str());
+        let role = match p_type {
+            Some("user_message") => "user",
+            Some("agent_message") => "assistant",
+            _ => continue,
+        };
+        let Some(msg) = payload.get("message").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let timestamp = val
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.timestamp_millis());
+
+        messages.push(crate::session::Message {
+            role: role.to_string(),
+            content: vec![crate::session::ContentBlock::Text {
+                text: msg.to_string(),
+            }],
+            timestamp,
+        });
+    }
+    Ok(messages)
 }
 
 fn now_ms() -> i64 {

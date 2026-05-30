@@ -26,7 +26,7 @@ export function CommandsPage() {
     setRunningKey(key);
     try {
       await invokeCommand("run_in_terminal", {
-        command: cmd,
+        commandStr: cmd,
         cwd: cwd || undefined,
       });
     } catch (err) {
