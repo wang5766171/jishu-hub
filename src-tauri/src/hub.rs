@@ -685,30 +685,17 @@ pub struct ConfigTemplate {
 pub fn list_config_templates() -> Vec<ConfigTemplate> {
     vec![
         ConfigTemplate {
-            id: "anthropic-official".into(),
-            name: "Anthropic 官方 API".into(),
-            description: "使用 Anthropic 官方 API 直接访问 Claude，需要 API Key".into(),
+            id: "native-api".into(),
+            name: "原生 API (Native)".into(),
+            description: "使用 Anthropic 官方 API，直接触发原生授权引导。".into(),
             config: anthropic_official_config(),
         },
         ConfigTemplate {
-            id: "third-party-proxy".into(),
-            name: "第三方 API 代理".into(),
-            description: "使用第三方代理或中转服务（OpenRouter、国内中转等）访问 Claude 或兼容模型"
-                .into(),
+            id: "proxy-config".into(),
+            name: "中转配置 (Proxy)".into(),
+            description: "使用国内主流模型供应商（如智谱、阿里、Minimax）进行中转。".into(),
             config: third_party_proxy_config(),
-        },
-        ConfigTemplate {
-            id: "aws-bedrock".into(),
-            name: "AWS Bedrock".into(),
-            description: "通过 AWS Bedrock 访问 Claude，需要 AWS 凭证和区域".into(),
-            config: aws_bedrock_config(),
-        },
-        ConfigTemplate {
-            id: "google-vertex".into(),
-            name: "Google Vertex AI".into(),
-            description: "通过 Google Cloud Vertex AI 访问 Claude，需要 GCP 项目 ID".into(),
-            config: google_vertex_config(),
-        },
+        }
     ]
 }
 
@@ -730,54 +717,6 @@ fn third_party_proxy_config() -> crate::config::ClaudeConfig {
     env.insert("ANTHROPIC_MODEL".into(), String::new());
     crate::config::ClaudeConfig {
         api_provider: Some("anthropic".into()),
-        env: Some(env),
-        ..Default::default()
-    }
-}
-
-fn aws_bedrock_config() -> crate::config::ClaudeConfig {
-    let mut env = std::collections::HashMap::new();
-    env.insert("CLAUDE_CODE_USE_BEDROCK".into(), "1".into());
-    env.insert("AWS_ACCESS_KEY_ID".into(), String::new());
-    env.insert("AWS_SECRET_ACCESS_KEY".into(), String::new());
-    env.insert("AWS_REGION".into(), "us-east-1".into());
-    env.insert(
-        "ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
-        "us.anthropic.claude-sonnet-4-6".into(),
-    );
-    env.insert(
-        "ANTHROPIC_DEFAULT_OPUS_MODEL".into(),
-        "us.anthropic.claude-opus-4-7".into(),
-    );
-    env.insert(
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL".into(),
-        "us.anthropic.claude-haiku-4-5-20251001-v1:0".into(),
-    );
-    crate::config::ClaudeConfig {
-        api_provider: Some("bedrock".into()),
-        env: Some(env),
-        ..Default::default()
-    }
-}
-
-fn google_vertex_config() -> crate::config::ClaudeConfig {
-    let mut env = std::collections::HashMap::new();
-    env.insert("ANTHROPIC_VERTEX_PROJECT_ID".into(), String::new());
-    env.insert("CLOUD_ML_REGION".into(), "us-east5".into());
-    env.insert(
-        "ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
-        "claude-sonnet-4-6".into(),
-    );
-    env.insert(
-        "ANTHROPIC_DEFAULT_OPUS_MODEL".into(),
-        "claude-opus-4-7".into(),
-    );
-    env.insert(
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL".into(),
-        "claude-haiku-4-5-20251001".into(),
-    );
-    crate::config::ClaudeConfig {
-        api_provider: Some("vertex".into()),
         env: Some(env),
         ..Default::default()
     }

@@ -495,6 +495,14 @@ function NewTemplateDialog({ open, onOpenChange, onSave }: {
   );
 }
 
+const PROXY_PROVIDERS = [
+  { label: "智谱 (Zhipu)", url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-plus" },
+  { label: "阿里 (Aliyun)", url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-max" },
+  { label: "Minimax", url: "https://api.minimax.chat/v1", model: "abab6.5-chat" },
+  { label: "DeepSeek", url: "https://api.deepseek.com/v1", model: "deepseek-chat" },
+  { label: "自定义 (Custom)", url: "", model: "" }
+];
+
 /** Dialog to fill in empty env values and model before applying a system template */
 function FillAndApplyDialog({ open, onOpenChange, template, onApply }: {
   open: boolean;
@@ -550,6 +558,8 @@ function FillAndApplyDialog({ open, onOpenChange, template, onApply }: {
     return null;
   }
 
+  const selectClass = "flex h-8 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
   return (
     <Dialog open={open} onOpenChange={(v) => { onOpenChange(v); if (!v) { setEnvValues({}); setModelValue(""); } }}>
       <DialogContent className="max-w-md">
@@ -559,6 +569,24 @@ function FillAndApplyDialog({ open, onOpenChange, template, onApply }: {
         {template && (
           <div className="space-y-4 py-2">
             <p className="text-sm text-muted-foreground">{t("config.fillRequiredDesc")}</p>
+            {template.id === "proxy-config" && (
+              <div className="space-y-2 mb-4 p-4 border rounded bg-muted/30">
+                <Label>选择供应商 / Choose Provider</Label>
+                <select 
+                  className={selectClass} 
+                  onChange={(e) => {
+                    const p = PROXY_PROVIDERS.find(x => x.label === e.target.value);
+                    if (p && p.url) {
+                       setEnvValues(prev => ({ ...prev, "ANTHROPIC_BASE_URL": p.url, "ANTHROPIC_MODEL": p.model }));
+                       if (needModel) setModelValue(p.model);
+                    }
+                  }}
+                >
+                  <option value="">-- 选择供应商 --</option>
+                  {PROXY_PROVIDERS.map(p => <option key={p.label} value={p.label}>{p.label}</option>)}
+                </select>
+              </div>
+            )}
             {needModel && (
               <div className="space-y-1">
                 <Label className="text-xs">{t("config.modelId")}</Label>
