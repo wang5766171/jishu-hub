@@ -571,6 +571,8 @@ async fn install_agent_command(command: String) -> Result<String, String> {
 pub struct EnvStatus {
     pub node_installed: bool,
     pub node_version: Option<String>,
+    pub npm_installed: bool,
+    pub npm_version: Option<String>,
     pub python_installed: bool,
     pub python_version: Option<String>,
 }
@@ -583,28 +585,152 @@ async fn check_environment() -> Result<EnvStatus, String> {
         .output()
         .await;
 
+    let mut npm_cmd = tokio::process::Command::new("cmd");
+    npm_cmd.args(["/C", "npm", "--version"]);
+    let npm_out = crate::process_command::tokio_no_window(&mut npm_cmd)
+        .output()
+        .await;
+
     let mut python_cmd = tokio::process::Command::new("python");
     python_cmd.arg("--version");
     let python_out = crate::process_command::tokio_no_window(&mut python_cmd)
         .output()
         .await;
-        
+
     let (node_installed, node_version) = match node_out {
         Ok(out) if out.status.success() => (true, Some(String::from_utf8_lossy(&out.stdout).trim().to_string())),
         _ => (false, None),
     };
-    
-    let (python_installed, python_version) = match python_out {
+
+    let (npm_installed, npm_version) = match npm_out {
         Ok(out) if out.status.success() => (true, Some(String::from_utf8_lossy(&out.stdout).trim().to_string())),
         _ => (false, None),
     };
-    
+
+    let (python_installed, python_version) = match python_out {
+        Ok(out) if out.status.success() => {
+            let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let ver = if ver.is_empty() {
+                String::from_utf8_lossy(&out.stderr).trim().to_string()
+            } else {
+                ver
+            };
+            (true, Some(ver))
+        }
+        _ => (false, None),
+    };
+
     Ok(EnvStatus {
         node_installed,
         node_version,
+        npm_installed,
+        npm_version,
         python_installed,
         python_version,
     })
+}
+
+#[derive(serde::Serialize)]
+pub struct LatestVersion {
+    pub id: String,
+    pub latest_version: Option<String>,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+async fn check_available_updates(packages: Vec<(String, String)>) -> Vec<LatestVersion> {
+    let mut results = Vec::new();
+    for (id, pkg) in packages {
+        if pkg == "python" {
+            results.push(check_python_latest(&id).await);
+            continue;
+        }
+
+        let mut cmd = tokio::process::Command::new("cmd");
+        let output = crate::process_command::tokio_no_window(
+            cmd.args(["/C", "npm", "view", &pkg, "version", "--json"]),
+        )
+        .output()
+        .await;
+
+        match output {
+            Ok(out) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let version = stdout.trim_matches('"').trim().to_string();
+                if !version.is_empty() {
+                    results.push(LatestVersion {
+                        id,
+                        latest_version: Some(version),
+                        error: None,
+                    });
+                } else {
+                    results.push(LatestVersion {
+                        id,
+                        latest_version: None,
+                        error: Some("empty response".into()),
+                    });
+                }
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                results.push(LatestVersion {
+                    id,
+                    latest_version: None,
+                    error: Some(stderr),
+                });
+            }
+            Err(e) => {
+                results.push(LatestVersion {
+                    id,
+                    latest_version: None,
+                    error: Some(e.to_string()),
+                });
+            }
+        }
+    }
+    results
+}
+
+async fn check_python_latest(id: &str) -> LatestVersion {
+    let script = r#"$r = Invoke-WebRequest -Uri 'https://endoflife.date/api/python.json' -UseBasicParsing; ($r.Content | ConvertFrom-Json)[0].latest"#;
+    let mut cmd = tokio::process::Command::new("powershell");
+    let output = crate::process_command::tokio_no_window(
+        cmd.args(["-NoProfile", "-Command", script]),
+    )
+    .output()
+    .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !version.is_empty() {
+                LatestVersion {
+                    id: id.to_string(),
+                    latest_version: Some(version),
+                    error: None,
+                }
+            } else {
+                LatestVersion {
+                    id: id.to_string(),
+                    latest_version: None,
+                    error: Some("empty response".into()),
+                }
+            }
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            LatestVersion {
+                id: id.to_string(),
+                latest_version: None,
+                error: Some(stderr),
+            }
+        }
+        Err(e) => LatestVersion {
+            id: id.to_string(),
+            latest_version: None,
+            error: Some(e.to_string()),
+        },
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -697,6 +823,7 @@ pub fn run() {
             check_prerequisite,
             install_agent_command,
             check_environment,
+            check_available_updates,
             chat::send_message,
             chat::abort_chat,
             image::save_session_files,

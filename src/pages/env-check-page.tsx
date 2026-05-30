@@ -1,124 +1,452 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
-import { useAgent } from "@/agents";
+import { AgentLogo, RuntimeLogo, useAgent } from "@/agents";
 import { Button } from "@/components/ui/button";
-import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import {
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  RefreshCw,
+  ChevronDown,
+  ArrowUpCircle,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { AgentStatus } from "@/agents/types";
 
+interface EnvData {
+  node_installed: boolean;
+  node_version: string | null;
+  npm_installed: boolean;
+  npm_version: string | null;
+  python_installed: boolean;
+  python_version: string | null;
+}
+
+interface CheckItem {
+  id: string;
+  name: string;
+  desc: string;
+  installed: boolean;
+  version: string | null;
+  icon: React.ReactNode;
+  iconClassName?: string;
+  updateCommand?: string;
+  downloadUrl?: string;
+  npmPackage?: string;
+}
+
+interface LatestVersion {
+  id: string;
+  latest_version: string | null;
+  error: string | null;
+}
+
+function VersionBadge({ version }: { version: string | null }) {
+  if (!version) return null;
+  const v = version.startsWith("v") ? version : `v${version}`;
+  return (
+    <span className="text-xs font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+      {v}
+    </span>
+  );
+}
+
+function UpdateBadge({ latest }: { latest: string }) {
+  return (
+    <span className="text-xs font-mono text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 rounded flex items-center gap-1">
+      <ArrowUpCircle className="h-3 w-3" />
+      v{latest}
+    </span>
+  );
+}
+
+function StatusIndicator({
+  installed,
+  hasUpdate,
+  labelNormal,
+  labelNotInstalled,
+}: {
+  installed: boolean;
+  hasUpdate: boolean;
+  labelNormal: string;
+  labelNotInstalled: string;
+}) {
+  if (!installed) {
+    return (
+      <div className="flex items-center gap-1 text-destructive shrink-0 min-w-[60px] justify-end">
+        <XCircle className="h-4 w-4" />
+        <span className="text-xs font-medium">{labelNotInstalled}</span>
+      </div>
+    );
+  }
+  if (hasUpdate) {
+    return (
+      <div className="flex items-center gap-1 text-amber-600 dark:text-amber-400 shrink-0 min-w-[60px] justify-end">
+        <ArrowUpCircle className="h-4 w-4" />
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1 text-[var(--icon-success)] shrink-0 min-w-[60px] justify-end">
+      <CheckCircle2 className="h-4 w-4" />
+      <span className="text-xs font-medium">{labelNormal}</span>
+    </div>
+  );
+}
+
 export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
   const { t } = useTranslation();
-  const [env, setEnv] = useState<{node_installed: boolean; python_installed: boolean} | null>(null);
+  const [env, setEnv] = useState<EnvData | null>(null);
   const { agents, refreshHealth } = useAgent();
   const [installingId, setInstallingId] = useState<string | null>(null);
-  const [installError, setInstallError] = useState<Record<string, string>>({});
+  const [expandedAgents, setExpandedAgents] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [latestVersions, setLatestVersions] = useState<Map<string, string>>(
+    new Map()
+  );
 
   useEffect(() => {
-    invokeCommand<any>("check_environment").then(setEnv).catch(console.error);
+    invokeCommand<EnvData>("check_environment")
+      .then(setEnv)
+      .catch(console.error);
   }, []);
+
+  const runtimeItems: CheckItem[] = env
+    ? [
+        {
+          id: "node",
+          name: t("env.nodeTitle"),
+          desc: t("env.nodeDesc"),
+          installed: env.node_installed,
+          version: env.node_version,
+          icon: <RuntimeLogo runtimeId="node" size={18} />,
+          iconClassName: "bg-transparent",
+          downloadUrl: "https://nodejs.org/",
+          npmPackage: "node",
+        },
+        {
+          id: "npm",
+          name: t("env.npmTitle"),
+          desc: t("env.npmDesc"),
+          installed: env.npm_installed,
+          version: env.npm_version,
+          icon: <RuntimeLogo runtimeId="npm" size={18} />,
+          iconClassName: "bg-transparent",
+          updateCommand: "npm install -g npm@latest",
+          npmPackage: "npm",
+        },
+        {
+          id: "python",
+          name: t("env.pythonTitle"),
+          desc: t("env.pythonDesc"),
+          installed: env.python_installed,
+          version: env.python_version,
+          icon: <RuntimeLogo runtimeId="python" size={18} />,
+          iconClassName: "bg-transparent",
+          downloadUrl: "https://www.python.org/downloads/",
+          npmPackage: "python",
+        },
+      ]
+    : [];
+
+  const agentItems: CheckItem[] = agents.map((agent) => ({
+    id: `agent-${agent.id}`,
+    name: agent.display_name,
+    desc: agent.install_hint
+      ? agent.install_hint.replace("npm install -g ", "")
+      : "",
+    installed: agent.health.installed,
+    version: agent.health.version,
+    icon: <AgentLogo agentId={agent.id} size={18} />,
+    iconClassName: "bg-transparent",
+    updateCommand: agent.install_hint || undefined,
+    npmPackage: agent.install_hint
+      ?.replace("npm install -g ", "")
+      ?.trim(),
+  }));
+
+  const hasUpdate = useCallback(
+    (item: CheckItem): boolean => {
+      if (!item.installed || !item.version || !latestVersions.has(item.id))
+        return false;
+      const latest = latestVersions.get(item.id)!;
+      const current = item.version.replace(/^v/, "");
+      return latest !== current;
+    },
+    [latestVersions]
+  );
 
   const openUrl = (url: string) => {
     invokeCommand("open_url", { url }).catch(console.error);
   };
 
-  const handleInstallAgent = async (agent: AgentStatus) => {
-    const cmd = agent.install_hint;
-    if (!cmd) return;
-
-    setInstallingId(agent.id);
-    setInstallError(prev => ({ ...prev, [agent.id]: "" }));
-    
+  const handleInstall = async (item: CheckItem) => {
+    if (!item.updateCommand) return;
+    setInstallingId(item.id);
     try {
-      await invokeCommand("install_agent_command", { command: cmd });
-      // The health check might take a moment, refresh context
-      await refreshHealth();
+      await invokeCommand("install_agent_command", {
+        command: item.updateCommand,
+      });
+      if (item.id.startsWith("agent-")) {
+        await refreshHealth();
+      } else {
+        const newEnv = await invokeCommand<EnvData>("check_environment");
+        setEnv(newEnv);
+      }
     } catch (err) {
-      setInstallError(prev => ({ ...prev, [agent.id]: String(err) }));
+      console.error(err);
     } finally {
       setInstallingId(null);
     }
   };
 
-  const getAgentStatusText = (agent: AgentStatus) => {
-    if (agent.health.installed) {
-       return agent.health.version ? `v${agent.health.version}` : t("env.installed");
+  const handleRefresh = async () => {
+    setChecking(true);
+    try {
+      const newEnv = await invokeCommand<EnvData>("check_environment");
+      setEnv(newEnv);
+      await refreshHealth();
+
+      const packages: [string, string][] = [];
+      const currentAgents = await invokeCommand<AgentStatus[]>(
+        "agent_list_statuses"
+      );
+
+      for (const item of [...runtimeItems, ...agentItems]) {
+        if (item.npmPackage) {
+          packages.push([item.id, item.npmPackage]);
+        }
+      }
+      for (const agent of currentAgents || []) {
+        if (agent.install_hint) {
+          const pkg = agent.install_hint
+            .replace("npm install -g ", "")
+            .trim();
+          if (pkg) {
+            const id = `agent-${agent.id}`;
+            if (!packages.some((p) => p[0] === id)) {
+              packages.push([id, pkg]);
+            }
+          }
+        }
+      }
+
+      if (packages.length > 0) {
+        const results = await invokeCommand<LatestVersion[]>(
+          "check_available_updates",
+          { packages }
+        );
+        if (results) {
+          const map = new Map<string, string>();
+          for (const r of results) {
+            if (r.latest_version) {
+              map.set(r.id, r.latest_version);
+            }
+          }
+          setLatestVersions(map);
+        }
+      }
+    } finally {
+      setChecking(false);
     }
-    return t("env.notInstalled");
   };
 
   if (!env) return <div className="p-8">{t("env.checking")}</div>;
 
+  const visibleAgents = expandedAgents ? agentItems : agentItems.slice(0, 3);
+
+  const rowLabels = {
+    labelInstall: t("env.install"),
+    labelUpdateBtn: t("env.updateLabel"),
+    labelDownload: t("env.download"),
+    labelNormal: t("env.normal"),
+    labelNotInstalled: t("env.notInstalled"),
+  };
+
   return (
-    <div className="p-8 max-w-2xl mx-auto flex flex-col h-full overflow-y-auto">
-      <h1 className="text-2xl font-bold mb-2">{t("env.title")}</h1>
-      <p className="text-muted-foreground mb-6">{t("env.desc")}</p>
-      
-      <div className="space-y-4">
-        <div className="flex items-center justify-between p-4 border rounded-lg bg-card">
-          <div className="flex items-center gap-3">
-            {env.node_installed ? <CheckCircle2 className="text-[var(--icon-success)]" /> : <XCircle className="text-destructive" />}
-            <div>
-              <h3 className="font-semibold">{t("env.nodeTitle")}</h3>
-              <p className="text-sm text-muted-foreground">{t("env.nodeDesc")}</p>
-            </div>
+    <div className="p-6 max-w-2xl mx-auto flex flex-col h-full overflow-y-auto">
+      <div className="flex items-center justify-between mb-1">
+        <h1 className="text-2xl font-bold">{t("env.title")}</h1>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleRefresh}
+          disabled={checking}
+          className="text-muted-foreground"
+        >
+          <RefreshCw
+            className={`h-4 w-4 mr-1 ${checking ? "animate-spin" : ""}`}
+          />
+          {checking ? t("env.checkingUpdate") : t("env.checkUpdate")}
+        </Button>
+      </div>
+      <p className="text-muted-foreground mb-5 text-sm">{t("env.desc")}</p>
+
+      <div className="space-y-5 flex-1">
+        {/* Runtime section */}
+        <div>
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+            {t("env.runtimeTitle")}
+          </h2>
+          <div className="space-y-2">
+            {runtimeItems.map((item) => {
+              const downloadUrl = item.downloadUrl;
+              return (
+                <CheckItemRow
+                  key={item.id}
+                  item={item}
+                  installing={installingId === item.id}
+                  onInstall={() => handleInstall(item)}
+                  onDownload={downloadUrl ? () => openUrl(downloadUrl) : undefined}
+                  hasUpdate={hasUpdate(item)}
+                  latestVersion={latestVersions.get(item.id)}
+                  {...rowLabels}
+                />
+              );
+            })}
           </div>
-          {!env.node_installed && (
-            <Button onClick={() => openUrl("https://nodejs.org/")}>{t("env.download")}</Button>
-          )}
-        </div>
-        
-        <div className="flex items-center justify-between p-4 border rounded-lg bg-card">
-          <div className="flex items-center gap-3">
-            {env.python_installed ? <CheckCircle2 className="text-[var(--icon-success)]" /> : <XCircle className="text-destructive" />}
-            <div>
-              <h3 className="font-semibold">{t("env.pythonTitle")}</h3>
-              <p className="text-sm text-muted-foreground">{t("env.pythonDesc")}</p>
-            </div>
-          </div>
-          {!env.python_installed && (
-            <Button onClick={() => openUrl("https://www.python.org/downloads/")}>{t("env.download")}</Button>
-          )}
         </div>
 
-        <h2 className="text-xl font-bold mt-8 mb-4">{t("env.agentsTitle")}</h2>
-        {agents.map(agent => (
-           <div key={agent.id} className="flex flex-col border rounded-lg mb-4 bg-card overflow-hidden">
-             <div className="flex items-center justify-between p-4">
-               <div className="flex items-center gap-3">
-                 {agent.health.installed ? <CheckCircle2 className="text-[var(--icon-success)]" /> : <XCircle className="text-destructive" />}
-                 <div>
-                   <h3 className="font-semibold">{agent.display_name}</h3>
-                   <p className="text-sm text-muted-foreground">{getAgentStatusText(agent)}</p>
-                 </div>
-               </div>
-               {!agent.health.installed && (
-                 <Button 
-                   onClick={() => handleInstallAgent(agent)}
-                   disabled={installingId === agent.id}
-                   size="sm"
-                 >
-                   {installingId === agent.id ? (
-                     <>
-                       <Loader2 className="mr-2 h-3 w-3 animate-spin" />
-                       {t("env.installing")}
-                     </>
-                   ) : t("env.install")}
-                 </Button>
-               )}
-             </div>
-             {installError[agent.id] && (
-               <div className="px-4 pb-3">
-                 <p className="text-[11px] text-destructive bg-destructive/10 p-2 rounded border border-destructive/20 line-clamp-2">
-                   {installError[agent.id]}
-                 </p>
-               </div>
-             )}
-           </div>
-        ))}
+        {/* Agent CLI section */}
+        <div>
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+            {t("env.agentsTitle")}
+          </h2>
+          <div className="space-y-2">
+            {visibleAgents.map((item) => {
+              const downloadUrl = item.downloadUrl;
+              return (
+                <CheckItemRow
+                  key={item.id}
+                  item={item}
+                  installing={installingId === item.id}
+                  onInstall={() => handleInstall(item)}
+                  onDownload={downloadUrl ? () => openUrl(downloadUrl) : undefined}
+                  hasUpdate={hasUpdate(item)}
+                  latestVersion={latestVersions.get(item.id)}
+                  {...rowLabels}
+                />
+              );
+            })}
+            {agentItems.length > 3 && !expandedAgents && (
+              <button
+                onClick={() => setExpandedAgents(true)}
+                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mx-auto pt-1"
+              >
+                <ChevronDown className="h-3 w-3" />
+                {t("env.selectModule")}
+              </button>
+            )}
+          </div>
+        </div>
       </div>
-      
-      {onComplete && (
-        <Button className="mt-8 w-full" size="lg" onClick={onComplete}>{t("env.enterWorkspace")}</Button>
+
+      {/* Bottom action */}
+      <div className="mt-6 shrink-0">
+        {onComplete && (
+          <Button className="w-full" size="lg" onClick={onComplete}>
+            {t("env.enterWorkspace")}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CheckItemRow({
+  item,
+  installing,
+  onInstall,
+  onDownload,
+  hasUpdate,
+  latestVersion,
+  labelInstall,
+  labelUpdateBtn,
+  labelDownload,
+  labelNormal,
+  labelNotInstalled,
+}: {
+  item: CheckItem;
+  installing: boolean;
+  onInstall: () => void;
+  onDownload?: () => void;
+  hasUpdate: boolean;
+  latestVersion?: string;
+  labelInstall: string;
+  labelUpdateBtn: string;
+  labelDownload: string;
+  labelNormal: string;
+  labelNotInstalled: string;
+}) {
+  const showUpdateBtn = item.installed && hasUpdate && item.updateCommand;
+  const showDownloadUpdateBtn =
+    item.installed && hasUpdate && !item.updateCommand && onDownload;
+  const showInstallBtn = !item.installed && item.updateCommand;
+  const showDownloadBtn = !item.installed && !item.updateCommand && onDownload;
+
+  return (
+    <div className="flex items-center gap-3 p-3 border rounded-lg bg-card transition-colors">
+      <div
+        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${
+          item.iconClassName ?? (
+            item.installed
+              ? hasUpdate
+                ? "text-amber-600 dark:text-amber-400"
+                : "text-[var(--icon-success)]"
+              : "text-muted-foreground"
+          )
+        }`}
+      >
+        {item.icon}
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-sm">{item.name}</span>
+          <VersionBadge version={item.version} />
+          {hasUpdate && latestVersion && (
+            <UpdateBadge latest={latestVersion} />
+          )}
+        </div>
+        {item.desc && (
+          <p className="text-xs text-muted-foreground truncate">{item.desc}</p>
+        )}
+      </div>
+
+      <StatusIndicator
+        installed={item.installed}
+        hasUpdate={hasUpdate}
+        labelNormal={labelNormal}
+        labelNotInstalled={labelNotInstalled}
+      />
+
+      {(showUpdateBtn ||
+        showDownloadUpdateBtn ||
+        showInstallBtn ||
+        showDownloadBtn) && (
+        <div className="shrink-0">
+          {installing ? (
+            <Button size="sm" variant="outline" disabled>
+              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+            </Button>
+          ) : showUpdateBtn ? (
+            <Button size="sm" variant="outline" onClick={onInstall}>
+              {labelUpdateBtn}
+            </Button>
+          ) : showDownloadUpdateBtn ? (
+            <Button size="sm" variant="outline" onClick={onDownload!}>
+              {labelUpdateBtn}
+            </Button>
+          ) : showInstallBtn ? (
+            <Button size="sm" variant="outline" onClick={onInstall}>
+              {labelInstall}
+            </Button>
+          ) : showDownloadBtn ? (
+            <Button size="sm" variant="outline" onClick={onDownload!}>
+              {labelDownload}
+            </Button>
+          ) : null}
+        </div>
       )}
     </div>
   );

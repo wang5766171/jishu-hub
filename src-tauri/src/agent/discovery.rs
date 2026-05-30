@@ -25,10 +25,32 @@ pub async fn probe_binary(name: &str, candidates: &[&str]) -> Option<PathBuf> {
 
     if let Some(output) = lookup_result {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        if let Some(first_line) = stdout.lines().next() {
-            let path = PathBuf::from(first_line.trim());
-            if path.exists() {
+        #[cfg(target_os = "windows")]
+        {
+            // Prefer .cmd files on Windows (where returns shell script, .cmd, .ps1)
+            let mut first_valid = None;
+            for line in stdout.lines() {
+                let path = PathBuf::from(line.trim());
+                if path.exists() {
+                    if path.extension().map(|e| e == "cmd").unwrap_or(false) {
+                        return Some(path);
+                    }
+                    if first_valid.is_none() {
+                        first_valid = Some(path);
+                    }
+                }
+            }
+            if let Some(path) = first_valid {
                 return Some(path);
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            if let Some(first_line) = stdout.lines().next() {
+                let path = PathBuf::from(first_line.trim());
+                if path.exists() {
+                    return Some(path);
+                }
             }
         }
     }
@@ -89,22 +111,50 @@ fn expand_env_vars(s: &str) -> String {
 
 /// Get version string from a binary
 pub async fn version_of(path: &PathBuf) -> Option<String> {
-    let mut command = tokio::process::Command::new(path);
-    let output = crate::process_command::tokio_no_window(command.arg("--version"))
+    let output = run_version_command(path).await?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if let Some(v) = extract_version(&stdout) {
+        return Some(v);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    extract_version(&stderr)
+}
+
+async fn run_version_command(path: &PathBuf) -> Option<std::process::Output> {
+    let is_cmd = path.extension().map(|e| e == "cmd").unwrap_or(false);
+
+    #[cfg(target_os = "windows")]
+    if is_cmd {
+        let mut command = tokio::process::Command::new("cmd");
+        let output = crate::process_command::tokio_no_window(
+            command.args(["/C", &path.to_string_lossy(), "--version"]),
+        )
         .output()
         .await
         .ok()?;
+        return Some(output);
+    }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    extract_version(&stdout)
+    let mut command = tokio::process::Command::new(path);
+    crate::process_command::tokio_no_window(command.arg("--version"))
+        .output()
+        .await
+        .ok()
 }
 
 fn extract_version(s: &str) -> Option<String> {
     for word in s.split_whitespace() {
         let trimmed = word.trim_start_matches('v');
-        let parts: Vec<&str> = trimmed.split('.').collect();
+        // Handle formats like "codex/0.1.2505142015" — take the part after /
+        let version_part = if let Some(slash_pos) = trimmed.rfind('/') {
+            &trimmed[slash_pos + 1..]
+        } else {
+            trimmed
+        };
+        let parts: Vec<&str> = version_part.split('.').collect();
         if parts.len() >= 2 && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())) {
-            return Some(trimmed.to_string());
+            return Some(version_part.to_string());
         }
     }
     None

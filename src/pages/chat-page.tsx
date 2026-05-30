@@ -10,14 +10,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
 import {
-  Bot, HardDrive, MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ChevronDown, PictureInPicture2,
+  HardDrive, MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ChevronDown, PictureInPicture2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { searchSessions } from "@/lib/session-search";
 import { openFloatingSession } from "@/lib/floating-window";
-import { useAgent } from "@/agents";
+import { AgentLogo, useAgent } from "@/agents";
 import type { Session, Project, ProjectMeta, ProjectSettings, Message, ContentBlock, AgentStreamChunk, SessionSearchResult } from "@/types";
 
 function TerminalIcon(props: React.SVGProps<SVGSVGElement>) {
@@ -612,7 +612,7 @@ export function ChatPage({
         <span className="truncate">{t("sessions.localMode")}</span>
       </span>
       <span className="inline-flex min-w-0 items-center gap-1.5" title={active?.display_name ?? ""}>
-        <Bot className="h-3.5 w-3.5 shrink-0 text-[var(--icon-message)]" />
+        {active ? <AgentLogo agentId={active.id} size={14} /> : null}
         <span className="truncate">{active?.display_name ?? t("sessions.currentAgent")}</span>
       </span>
       {projectPath && (

@@ -90,7 +90,7 @@ impl AgentPlugin for CodexAdapter {
     fn info(&self) -> AgentInfo {
         AgentInfo {
             id: "codex".to_string(),
-            display_name: "OpenAI Codex".to_string(),
+            display_name: "Codex".to_string(),
             version: "1.0".to_string(),
             icon: "bot".to_string(),
             enabled: true,

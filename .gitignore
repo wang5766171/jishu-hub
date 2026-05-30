@@ -33,6 +33,9 @@ docs/superpowers/
 !src/assets/*.png
 !docs/screenshots/*.png
 
+# Runtime data
+.jishu_hub/
+
 # Claude Code project config
 .claude/
 

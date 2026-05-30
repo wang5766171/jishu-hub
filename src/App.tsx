@@ -14,7 +14,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { useTheme, type Theme } from "@/hooks/use-theme";
 import { useFontSize, type FontLevel } from "@/hooks/use-font-size";
-import { AgentProvider, useAgent } from "@/agents";
+import { AgentLogo, AgentProvider, useAgent } from "@/agents";
 import { AgentSwitcher } from "@/agents";
 import { FileViewerProvider } from "@/components/file-viewer";
 import type { Page, Project, ProjectMeta } from "@/types";
@@ -289,7 +289,9 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
         </button>
         <div className="flex items-center ml-1 mr-2 px-1.5 py-0.5 rounded-full bg-accent/20 border border-border/30 hover:bg-accent/40 transition-colors">
           <AgentSwitcher>
-            {active && <span className="text-[11px] font-medium text-muted-foreground pr-1">{active.display_name}</span>}
+            {active && (
+              <span className="text-[11px] font-medium text-muted-foreground">{active.display_name}</span>
+            )}
           </AgentSwitcher>
         </div>
       </div>
