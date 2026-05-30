@@ -199,7 +199,9 @@ pub fn backup_config() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let src = dir.join("settings.json");
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let dst = backup_dir.join(format!("settings_{}.json", timestamp));
-    std::fs::copy(&src, &dst)?;
+    if src.exists() {
+        std::fs::copy(&src, &dst)?;
+    }
     Ok(dst)
 }
 

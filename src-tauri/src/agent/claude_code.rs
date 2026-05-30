@@ -63,43 +63,29 @@ fn normalize_claude_assistant(event: &serde_json::Value) -> Vec<NormalizedEvent>
 
     let mut normalized = Vec::new();
     for block in content {
-        match block.get("type").and_then(|v| v.as_str()) {
-            Some("text") => {
-                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                    normalized.push(NormalizedEvent::TextDelta {
-                        delta: text.to_string(),
-                    });
-                }
-            }
-            Some("tool_use") => {
-                let call_id = block
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let tool = block
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("tool")
-                    .to_string();
-                let input = block
-                    .get("input")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null);
-                normalized.push(NormalizedEvent::ToolUseStart {
-                    call_id,
-                    tool,
-                    input,
-                });
-            }
-            Some("thinking") => {
-                if let Some(thinking) = block.get("thinking").and_then(|v| v.as_str()) {
-                    normalized.push(NormalizedEvent::Thinking {
-                        delta: thinking.to_string(),
-                    });
-                }
-            }
-            _ => {}
+        // Only extract tool_use from assistant snapshots.
+        // Text/thinking already arrive via stream_event deltas — emitting them
+        // here would duplicate every piece of text.
+        if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+            let call_id = block
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let tool = block
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tool")
+                .to_string();
+            let input = block
+                .get("input")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            normalized.push(NormalizedEvent::ToolUseStart {
+                call_id,
+                tool,
+                input,
+            });
         }
     }
 

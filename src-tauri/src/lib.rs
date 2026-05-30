@@ -106,6 +106,11 @@ fn read_text_file(path: String) -> Result<TextFilePreview, String> {
 }
 
 #[tauri::command]
+fn write_text_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(path, content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_session_names() -> Result<HashMap<String, String>, String> {
     hub::get_session_names().map_err(|e| e.to_string())
 }
@@ -631,6 +636,7 @@ pub fn run() {
             list_sessions,
             get_session_messages,
             read_text_file,
+            write_text_file,
             get_session_names,
             rename_session,
             delete_session_name,
