@@ -131,6 +131,8 @@
     "resuming": "正在打开终端...",
     "toolCalls": "工具调用 ({{count}})",
     "thinkingDots": "思考中...",
+    "processing": "处理中...",
+    "toolCalling": "工具调用中...",
     "newChat": "新对话",
     "startPrompt": "我们应该在 {{project}} 中构建什么？",
     "localMode": "本地模式",

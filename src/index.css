@@ -58,6 +58,24 @@ select option {
   animation: breathing 2.5s ease-in-out infinite;
 }
 
+@keyframes processing-marquee {
+  0%, 100% {
+    opacity: 0.35;
+    transform: translateX(-0.35rem);
+  }
+  50% {
+    opacity: 1;
+    transform: translateX(0.35rem);
+  }
+}
+.processing-marquee {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  animation: processing-marquee 1.35s ease-in-out infinite;
+}
+
 @theme {
   /* Material backgrounds — Z-axis layer hierarchy (darker = lower) */
   --color-layer-0: hsl(240 6% 90%);   /* sidebar base — deepest */

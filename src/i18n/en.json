@@ -131,6 +131,8 @@
     "resuming": "Opening terminal...",
     "toolCalls": "Tool Calls ({{count}})",
     "thinkingDots": "Thinking...",
+    "processing": "Processing...",
+    "toolCalling": "Running tools...",
     "newChat": "New Chat",
     "startPrompt": "What should we build in {{project}}?",
     "localMode": "Local mode",
