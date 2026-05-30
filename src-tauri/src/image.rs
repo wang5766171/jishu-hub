@@ -20,7 +20,7 @@ pub struct SavedFile {
 
 fn session_files_dir(project_path: &str) -> PathBuf {
     PathBuf::from(project_path)
-        .join(".claude_hub")
+        .join(".jishu_hub")
         .join("session_files")
 }
 

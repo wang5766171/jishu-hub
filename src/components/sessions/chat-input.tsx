@@ -326,7 +326,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
           fullMessage = t("projects.defaultFileMessage");
         }
         const fileListStr = allFileLines.join("\n");
-        fullMessage += `\n\n<!--CLAUDE_HUB_IMAGES_BEGIN-->\n[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]\n${fileListStr}\n<!--CLAUDE_HUB_IMAGES_END-->`;
+        fullMessage += `\n\n<!--JISHU_HUB_IMAGES_BEGIN-->\n[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]\n${fileListStr}\n<!--JISHU_HUB_IMAGES_END-->`;
       }
 
       const chatSession = await invokeCommand<ChatSession>(

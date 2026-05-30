@@ -17,8 +17,8 @@ function getExt(path: string): string {
   return dotIdx >= 0 ? filename.slice(dotIdx + 1).toLowerCase() : "";
 }
 
-// Matches paths in .claude_hub/session_files/ or session_pics/ (all file types)
-const FILE_PATH_RE = /[^\s"'<>]+\.claude_hub[/\\]session_(?:pics|files)[/\\]\d{8}_\d{6}[/\\]\d+_[^\s"'<>]+/gi;
+// Matches paths in .jishu_hub/session_files/ (all file types)
+const FILE_PATH_RE = /[^\s"'<>]+\.jishu_hub[/\\]session_(?:pics|files)[/\\]\d{8}_\d{6}[/\\]\d+_[^\s"'<>]+/gi;
 
 // Matches project-local file references: "标签: C:\path\to\file" or "标签: /path/to/file"
 const LOCAL_FILE_RE = /^[^\n:]+:\s*([A-Za-z]:[\\\/][^\n]+|[\/][^\n]+)$/gm;
@@ -124,7 +124,7 @@ export const InlineImages = memo(function InlineImages({ text }: { text: string 
 
 export function stripImagePrompt(text: string): string {
   let result = text
-    .replace(/<!--CLAUDE_HUB_IMAGES_BEGIN-->[\s\S]*?<!--CLAUDE_HUB_IMAGES_END-->/g, "")
-    .replace(/<!--CLAUDE_HUB_IMAGES_BEGIN-->.*?<!--CLAUDE_HUB_IMAGES_END-->/g, "");
+    .replace(/<!--JISHU_HUB_IMAGES_BEGIN-->[\s\S]*?<!--JISHU_HUB_IMAGES_END-->/g, "")
+    .replace(/<!--JISHU_HUB_IMAGES_BEGIN-->.*?<!--JISHU_HUB_IMAGES_END-->/g, "");
   return result.replace(/\\n/g, "\n").trim();
 }
