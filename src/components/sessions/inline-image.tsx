@@ -17,38 +17,28 @@ function getExt(path: string): string {
   return dotIdx >= 0 ? filename.slice(dotIdx + 1).toLowerCase() : "";
 }
 
-// Matches paths in .jishu_hub/session_files/ (all file types)
-const FILE_PATH_RE = /[^\s"'<>]+\.jishu_hub[/\\]session_(?:pics|files)[/\\]\d{8}_\d{6}[/\\]\d+_[^\s"'<>]+/gi;
-
-// Matches project-local file references: "标签: C:\path\to\file" or "标签: /path/to/file"
-const LOCAL_FILE_RE = /^[^\n:]+:\s*([A-Za-z]:[\\\/][^\n]+|[\/][^\n]+)$/gm;
+const MARKER_RE = /<!--JISHU_HUB_IMAGES_BEGIN-->([\s\S]*?)<!--JISHU_HUB_IMAGES_END-->/g;
+const PATH_RE = /[^\s"'<>]+\.jishu_hub[/\\]session_(?:pics|files)[/\\]\d{8}_\d{6}[/\\]\d+_[^\s"'<>]+/gi;
 
 export function parseFileRefs(text: string): FileRef[] {
   const refs: FileRef[] = [];
   const seen = new Set<string>();
 
-  // Session files
   let m: RegExpExecArray | null;
-  const re1 = new RegExp(FILE_PATH_RE.source, FILE_PATH_RE.flags);
-  while ((m = re1.exec(text)) !== null) {
-    const path = m[0];
-    if (seen.has(path)) continue;
-    seen.add(path);
-    const filename = path.split(/[/\\]/).pop() || "";
-    const label = filename.replace(/^\d+_/, "").replace(/\.\w+$/, "");
-    const ext = getExt(path);
-    refs.push({ label, path, fullMatch: m[0], isImage: IMAGE_EXTS.has(ext) });
-  }
-
-  // Local project files (from markers block)
-  const re2 = new RegExp(LOCAL_FILE_RE.source, LOCAL_FILE_RE.flags);
-  while ((m = re2.exec(text)) !== null) {
-    const path = m[1].trim();
-    if (seen.has(path)) continue;
-    seen.add(path);
-    const filename = path.split(/[/\\]/).pop() || "";
-    const ext = getExt(path);
-    refs.push({ label: filename, path, fullMatch: m[0], isImage: IMAGE_EXTS.has(ext) });
+  const markerRe = new RegExp(MARKER_RE.source, MARKER_RE.flags);
+  while ((m = markerRe.exec(text)) !== null) {
+    const block = m[1];
+    const pathRe = new RegExp(PATH_RE.source, PATH_RE.flags);
+    let pm: RegExpExecArray | null;
+    while ((pm = pathRe.exec(block)) !== null) {
+      const path = pm[0];
+      if (seen.has(path)) continue;
+      seen.add(path);
+      const filename = path.split(/[/\\]/).pop() || "";
+      const label = filename.replace(/^\d+_/, "").replace(/\.\w+$/, "");
+      const ext = getExt(path);
+      refs.push({ label, path, fullMatch: pm[0], isImage: IMAGE_EXTS.has(ext) });
+    }
   }
 
   return refs;
