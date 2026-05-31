@@ -1,4 +1,3 @@
-import openAiLogo from "@/assets/agents/openai.svg";
 import codexAppLogo from "@/assets/agents/codex-color.svg";
 import codexLightLogo from "@/assets/agents/codex-light.svg";
 import claudeLogo from "@/assets/agents/claude.svg";

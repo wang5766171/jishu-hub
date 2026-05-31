@@ -542,7 +542,7 @@ export const MessageView = memo(function MessageView({
   return (
     <div className="flex h-full flex-col">
       <ScrollArea className="flex-1 min-h-0 message-scroll">
-        {messageList}
+        {fullMessageList}
       </ScrollArea>
     </div>
   );

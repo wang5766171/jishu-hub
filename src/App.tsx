@@ -15,7 +15,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { useTheme, type Theme, ThemeProvider } from "@/hooks/use-theme";
 import { useFontSize, type FontLevel } from "@/hooks/use-font-size";
-import { AgentLogo, AgentProvider, useAgent } from "@/agents";
+import { AgentProvider, useAgent } from "@/agents";
 import { AgentSwitcher } from "@/agents";
 import { FileViewerProvider } from "@/components/file-viewer";
 import type { Page, Project, ProjectMeta } from "@/types";
