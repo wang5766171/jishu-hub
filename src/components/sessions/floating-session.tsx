@@ -73,22 +73,33 @@ export function FloatingSessionView() {
         if (chunk.data.kind === "session_resolved") {
           acceptedSessionIdsRef.current.add(chunk.data.session_id);
           setResolvedSessionId(chunk.data.session_id);
+        } else if (chunk.data.kind === "thinking") {
+          setStatus("running");
+          setToolName("");
+          textRef.current = "";
+          setLastText("");
+        } else if (chunk.data.kind === "tool_use_start") {
+          setStatus("running");
+          setToolName(chunk.data.tool);
+          textRef.current = "";
+          setLastText("");
+        } else if (chunk.data.kind === "tool_use_result") {
+          setToolName("");
         } else if (chunk.data.kind === "text_delta") {
           setStatus("running");
+          setToolName("");
           textRef.current += chunk.data.delta;
           // Show last ~60 chars
           const t = textRef.current;
           setLastText(t.length > 60 ? "..." + t.slice(-57) : t);
-        } else if (chunk.data.kind === "thinking") {
-          setStatus("running");
-        } else if (chunk.data.kind === "tool_use_start") {
-          setStatus("running");
-          setToolName(chunk.data.tool);
         } else if (chunk.data.kind === "turn_complete") {
           setStatus("complete");
           textRef.current = "";
+          setLastText("");
+          setToolName("");
         } else if (chunk.data.kind === "error") {
           setStatus("complete");
+          setToolName("");
         }
       }
     }).then((fn) => {
