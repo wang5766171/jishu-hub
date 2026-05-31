@@ -1,12 +1,19 @@
 import openAiLogo from "@/assets/agents/openai.svg";
 import codexAppLogo from "@/assets/agents/codex-color.svg";
+import codexLightLogo from "@/assets/agents/codex-light.svg";
 import claudeLogo from "@/assets/agents/claude.svg";
+import claudeLightLogo from "@/assets/agents/claude-light.svg";
 import openCodeLogo from "@/assets/agents/opencode.svg";
+import openCodeLightLogo from "@/assets/agents/opencode-light.svg";
 import nodeLogo from "@/assets/agents/nodejs.svg";
+import nodeLightLogo from "@/assets/agents/nodejs-light.svg";
 import npmLogo from "@/assets/agents/npm.svg";
+import npmLightLogo from "@/assets/agents/npm-light.svg";
 import pythonLogo from "@/assets/agents/python.svg";
+import pythonLightLogo from "@/assets/agents/python-light.svg";
 import { Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useTheme } from "@/hooks/use-theme";
 
 interface AgentLogoProps {
   agentId: string;
@@ -15,7 +22,10 @@ interface AgentLogoProps {
 }
 
 export function AgentLogo({ agentId, size = 16, className }: AgentLogoProps) {
-  const logo = agentLogos[agentId];
+  const { theme } = useTheme();
+  const isLight = theme === "light";
+  
+  const logo = isLight ? lightAgentLogos[agentId] || agentLogos[agentId] : agentLogos[agentId];
 
   if (logo) {
     return (
@@ -42,7 +52,10 @@ export function AgentLogo({ agentId, size = 16, className }: AgentLogoProps) {
 }
 
 export function RuntimeLogo({ runtimeId, size = 16, className }: { runtimeId: string; size?: number; className?: string }) {
-  const logo = runtimeLogos[runtimeId];
+  const { theme } = useTheme();
+  const isLight = theme === "light";
+  
+  const logo = isLight ? lightRuntimeLogos[runtimeId] || runtimeLogos[runtimeId] : runtimeLogos[runtimeId];
 
   if (!logo) return <AgentLogo agentId="" size={size} className={className} />;
 
@@ -65,8 +78,20 @@ const agentLogos: Record<string, { src: string }> = {
   opencode: { src: openCodeLogo },
 };
 
+const lightAgentLogos: Record<string, { src: string }> = {
+  "claude-code": { src: claudeLightLogo },
+  codex: { src: codexLightLogo },
+  opencode: { src: openCodeLightLogo },
+};
+
 const runtimeLogos: Record<string, { src: string }> = {
   node: { src: nodeLogo },
   npm: { src: npmLogo },
   python: { src: pythonLogo },
+};
+
+const lightRuntimeLogos: Record<string, { src: string }> = {
+  node: { src: nodeLightLogo },
+  npm: { src: npmLightLogo },
+  python: { src: pythonLightLogo },
 };

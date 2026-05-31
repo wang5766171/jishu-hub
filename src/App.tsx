@@ -4,7 +4,8 @@ import { lazy, Suspense } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { useTranslation } from "react-i18next";
 import { Copy, Minus, Pin, PinOff, Settings, Square, Sun, Palette, Moon, Info, Type, X } from "lucide-react";
-import logo from "@/assets/logo.png";
+import logoSvg from "@/assets/logo.svg";
+import logoLightSvg from "@/assets/logo-light.svg";
 import { Github } from "@/components/icons/github";
 import { Gitee } from "@/components/icons/gitee";
 import { getVersion } from "@tauri-apps/api/app";
@@ -12,7 +13,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { cn } from "@/lib/utils";
-import { useTheme, type Theme } from "@/hooks/use-theme";
+import { useTheme, type Theme, ThemeProvider } from "@/hooks/use-theme";
 import { useFontSize, type FontLevel } from "@/hooks/use-font-size";
 import { AgentLogo, AgentProvider, useAgent } from "@/agents";
 import { AgentSwitcher } from "@/agents";
@@ -62,13 +63,15 @@ function FontSizeRow({ label, value, onChange, t }: { label: string; value: Font
 }
 
 function LoadingOverlay({ label }: { label?: string }) {
+  const { theme } = useTheme();
+  const src = theme === "light" ? logoLightSvg : logoSvg;
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
       <div className="flex flex-col items-center gap-3">
         <div className="relative h-14 w-14">
           <div className="absolute inset-0 rounded-full border-2 border-muted-foreground/20" />
           <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-primary animate-spin" />
-          <img src={logo} alt="" className="absolute inset-2 h-10 w-10 rounded-lg" />
+          <img src={src} alt="" className="absolute inset-2 h-10 w-10 rounded-lg" />
         </div>
         {label && (
           <div className="rounded-full border border-border/60 bg-card/90 px-3 py-1.5 text-xs font-medium text-muted-foreground shadow-sm">
@@ -89,6 +92,7 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
   const [fontOpen, setFontOpen] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const { theme, setTheme } = useTheme();
+  const logo = theme === "light" ? logoLightSvg : logoSvg;
   const { fontSizeBase, fontSizeProse, setFontSizeBase, setFontSizeProse } = useFontSize();
   const { active } = useAgent();
   const aboutRef = useRef<HTMLDivElement>(null);
@@ -489,11 +493,13 @@ function AppContentWrapper() {
 
 function App() {
   return (
-    <AgentProvider>
-      <FileViewerProvider>
-        <AppContentWrapper />
-      </FileViewerProvider>
-    </AgentProvider>
+    <ThemeProvider>
+      <AgentProvider>
+        <FileViewerProvider>
+          <AppContentWrapper />
+        </FileViewerProvider>
+      </AgentProvider>
+    </ThemeProvider>
   );
 }
 
