@@ -75,6 +75,6 @@ pub fn export_raw_config_dialog(
 
     let path_ref = path.as_path()
         .ok_or_else(|| "Invalid file path".to_string())?;
-    std::fs::write(path_ref, &content).map_err(|e| e.to_string())?;
+    crate::util::atomic_write(path_ref, content.as_bytes()).map_err(|e| e.to_string())?;
     Ok(())
 }

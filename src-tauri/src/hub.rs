@@ -18,27 +18,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(
 
 fn write_json<T: Serialize>(path: &PathBuf, data: &T) -> Result<(), Box<dyn std::error::Error>> {
     let json = serde_json::to_string_pretty(data)?;
-    atomic_write(path, &json)
-}
-
-fn atomic_write(path: &PathBuf, content: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Unique temp name per write so concurrent writes to the same target file
-    // can't share one `*.tmp` and interleave into a corrupt state. (K-MED-3)
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let mut tmp_name = path
-        .file_name()
-        .map(|n| n.to_os_string())
-        .unwrap_or_default();
-    tmp_name.push(format!(".{}-{}.tmp", std::process::id(), nanos));
-    let tmp_path = path.with_file_name(tmp_name);
-    std::fs::write(&tmp_path, content)?;
-    if let Err(e) = std::fs::rename(&tmp_path, path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e.into());
-    }
+    crate::util::atomic_write(path, json.as_bytes())?;
     Ok(())
 }
 
@@ -628,6 +608,9 @@ pub fn focus_session_terminal(session_id: &str) -> Result<bool, Box<dyn std::err
 }
 
 fn find_process_by_resume(session_id: &str) -> Result<Option<u32>, Box<dyn std::error::Error>> {
+    if !crate::agent::command_config::is_safe_session_id(session_id) {
+        return Ok(None);
+    }
     #[cfg(target_os = "windows")]
     {
         let marker_filter = crate::agent::command_config::resume_markers(session_id)

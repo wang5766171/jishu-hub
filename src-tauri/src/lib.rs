@@ -13,6 +13,7 @@ mod process_control;
 mod project;
 mod project_config;
 mod session;
+mod util;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -33,9 +34,9 @@ pub struct AppState {
 }
 
 #[tauri::command]
-fn list_agents(state: tauri::State<'_, Mutex<AppState>>) -> Vec<agent::AgentInfo> {
-    let s = state.lock().unwrap();
-    s.registry.list_agents()
+fn list_agents(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<agent::AgentInfo>, String> {
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    Ok(s.registry.list_agents())
 }
 
 #[tauri::command]
@@ -49,7 +50,7 @@ fn add_project(
     state: tauri::State<'_, Mutex<AppState>>,
     path: String,
 ) -> Result<project::Project, String> {
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .active()
         .add_project(&path)
@@ -126,7 +127,7 @@ fn delete_session_name(session_id: String) -> Result<(), String> {
 
 #[tauri::command]
 fn load_config(state: tauri::State<'_, Mutex<AppState>>) -> Result<config::ClaudeConfig, String> {
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().load_config()
 }
 
@@ -138,7 +139,7 @@ struct RawConfigInfo {
 
 #[tauri::command]
 fn load_raw_config(state: tauri::State<'_, Mutex<AppState>>) -> Result<RawConfigInfo, String> {
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     let active = s.registry.active();
     let format = active
         .config_format()
@@ -152,7 +153,7 @@ fn save_raw_config(
     state: tauri::State<'_, Mutex<AppState>>,
     content: String,
 ) -> Result<(), String> {
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().save_raw_config(&content)
 }
 
@@ -169,7 +170,7 @@ fn save_config(
     state: tauri::State<'_, Mutex<AppState>>,
     config: config::ClaudeConfig,
 ) -> Result<(), String> {
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().save_config(&config)
 }
 
@@ -195,7 +196,7 @@ fn apply_preset(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<
         .into_iter()
         .find(|p| p.id == id)
         .ok_or("Preset not found")?;
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().save_config(&preset.config)
 }
 
@@ -203,7 +204,7 @@ fn apply_preset(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<
 fn list_backups(
     state: tauri::State<'_, Mutex<AppState>>,
 ) -> Result<Vec<config::BackupEntry>, String> {
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().list_backups()
 }
 
@@ -304,9 +305,9 @@ fn list_custom_commands() -> Result<Vec<command::CustomCommand>, String> {
 #[tauri::command]
 fn agent_command_presets(
     state: tauri::State<'_, Mutex<AppState>>,
-) -> Vec<agent::command_config::AgentCommandPreset> {
-    let s = state.lock().unwrap();
-    agent::command_config::built_in_commands(s.registry.active_id())
+) -> Result<Vec<agent::command_config::AgentCommandPreset>, String> {
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    Ok(agent::command_config::built_in_commands(s.registry.active_id()))
 }
 
 #[tauri::command]
@@ -330,7 +331,7 @@ fn open_in_terminal(
             return Err("Invalid session id".to_string());
         }
     }
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .active()
         .open_in_terminal(&project_path, resume_session_id.as_deref())
@@ -346,7 +347,7 @@ fn register_terminal_session(
     agent_id: Option<String>,
 ) -> Result<(), String> {
     let fallback_agent_id = {
-        let s = state.lock().unwrap();
+        let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
         s.registry.active_id().to_string()
     };
     let agent_id = agent_id.unwrap_or(fallback_agent_id);
@@ -375,7 +376,7 @@ fn init_project(
     state: tauri::State<'_, Mutex<AppState>>,
     project_path: String,
 ) -> Result<bool, String> {
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().init_project(&project_path)
 }
 
@@ -389,7 +390,7 @@ fn load_project_settings(
     state: tauri::State<'_, Mutex<AppState>>,
     project_path: String,
 ) -> Result<project_config::ProjectSettings, String> {
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().load_project_settings(&project_path)
 }
 
@@ -398,7 +399,7 @@ fn load_project_settings_local(
     state: tauri::State<'_, Mutex<AppState>>,
     project_path: String,
 ) -> Result<project_config::ProjectSettings, String> {
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .active()
         .load_project_settings_local(&project_path)
@@ -410,7 +411,7 @@ fn save_project_settings(
     project_path: String,
     settings: project_config::ProjectSettings,
 ) -> Result<(), String> {
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .active()
         .save_project_settings(&project_path, &settings)
@@ -422,7 +423,7 @@ fn save_project_settings_local(
     project_path: String,
     settings: project_config::ProjectSettings,
 ) -> Result<(), String> {
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .active()
         .save_project_settings_local(&project_path, &settings)
@@ -433,7 +434,7 @@ fn load_claude_md(
     state: tauri::State<'_, Mutex<AppState>>,
     project_path: String,
 ) -> Result<Option<String>, String> {
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().load_claude_md(&project_path)
 }
 
@@ -452,7 +453,7 @@ fn get_level1_dir_cmd(
     state: tauri::State<'_, Mutex<AppState>>,
     encoded_name: String,
 ) -> Result<Option<String>, String> {
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     let decoded = s.registry.active().decode_project_path(&encoded_name);
     Ok(s.registry.active().get_level1_dir(&decoded))
 }
@@ -462,7 +463,7 @@ fn get_mergeable_projects(
     state: tauri::State<'_, Mutex<AppState>>,
     encoded_name: String,
 ) -> Result<Vec<String>, String> {
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     let projects = s.registry.scan_projects();
     let mergeable: Vec<String> = projects
         .iter()
@@ -494,28 +495,28 @@ fn get_merged_secondaries(primary: String) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn list_config_templates(state: tauri::State<'_, Mutex<AppState>>) -> Vec<hub::ConfigTemplate> {
-    let s = state.lock().unwrap();
-    s.registry.active().config_templates()
+fn list_config_templates(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<hub::ConfigTemplate>, String> {
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    Ok(s.registry.active().config_templates())
 }
 
 #[tauri::command]
-fn agent_list_statuses(state: tauri::State<'_, Mutex<AppState>>) -> Vec<agent::AgentStatus> {
-    let s = state.lock().unwrap();
-    s.registry.list_agent_statuses()
+fn agent_list_statuses(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<agent::AgentStatus>, String> {
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    Ok(s.registry.list_agent_statuses())
 }
 
 #[tauri::command]
 fn agent_set_active(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
-    let mut s = state.lock().unwrap();
+    let mut s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.set_active(&id)?;
     hub::save_active_agent_id(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn agent_get_active(state: tauri::State<'_, Mutex<AppState>>) -> String {
-    let s = state.lock().unwrap();
-    s.registry.active_id().to_string()
+fn agent_get_active(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    Ok(s.registry.active_id().to_string())
 }
 
 #[tauri::command]
@@ -549,11 +550,22 @@ fn get_app_dir() -> Result<String, String> {
 
 #[tauri::command]
 fn check_prerequisite(command: String) -> bool {
-    let mut lookup = std::process::Command::new("where");
-    crate::process_command::std_no_window(lookup.arg(&command))
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    #[cfg(target_os = "windows")]
+    {
+        let mut lookup = std::process::Command::new("where");
+        crate::process_command::std_no_window(lookup.arg(&command))
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut lookup = std::process::Command::new("which");
+        lookup.arg(&command)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
 }
 
 /// Whitelist for `install_agent_command`. The frontend only ever sends the
@@ -1076,16 +1088,27 @@ async fn download_update() -> DownloadResult {
 #[tauri::command]
 fn install_update(app: tauri::AppHandle, installer_path: String) -> Result<(), String> {
     let p = std::path::Path::new(&installer_path);
-    let allowed_dir = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
     let is_installer = p
         .extension()
         .map(|e| e.eq_ignore_ascii_case("exe") || e.eq_ignore_ascii_case("msi"))
         .unwrap_or(false);
-    if !p.is_file()
-        || !is_installer
-        || !(p.starts_with(&allowed_dir) || p.starts_with(std::env::temp_dir()))
-    {
-        return Err("Invalid installer path".to_string());
+    if !is_installer {
+        return Err("Invalid installer: not .exe or .msi".to_string());
+    }
+
+    let canon_p = std::fs::canonicalize(p)
+        .map_err(|e| format!("Cannot resolve installer path: {}", e))?;
+    if !canon_p.is_file() {
+        return Err("Installer file not found".to_string());
+    }
+
+    let allowed_dir = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
+    let canon_dir = std::fs::canonicalize(&allowed_dir).unwrap_or(allowed_dir);
+    let temp_dir = std::env::temp_dir();
+    let canon_temp = std::fs::canonicalize(&temp_dir).unwrap_or(temp_dir);
+
+    if !(canon_p.starts_with(&canon_dir) || canon_p.starts_with(&canon_temp)) {
+        return Err("Installer path not in allowed directory".to_string());
     }
     #[cfg(target_os = "windows")]
     {
