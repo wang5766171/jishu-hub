@@ -89,6 +89,9 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
   const [version, setVersion] = useState("");
   const [aboutOpen, setAboutOpen] = useState(false);
   const [aboutHovered, setAboutHovered] = useState(false);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateResult, setUpdateResult] = useState<{ latest_version: string | null; has_update: boolean; release_url: string; error: string | null } | null>(null);
+  const [updateReady, setUpdateReady] = useState<{ version: string; path: string } | null>(null);
   const [fontOpen, setFontOpen] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const { theme, setTheme } = useTheme();
@@ -103,6 +106,12 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
     invokeCommand<boolean>("load_always_on_top").then(setPinned).catch(console.error);
     getVersion().then((v) => setVersion(v)).catch(() => setVersion(""));
     appWindow?.isMaximized().then(setMaximized).catch(() => {});
+    // Background auto-update: check + download a newer installer on startup.
+    invokeCommand<{ version: string | null; installer_path: string | null }>("download_update")
+      .then((r) => {
+        if (r.installer_path && r.version) setUpdateReady({ version: r.version, path: r.installer_path });
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -182,6 +191,21 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
     setAboutHovered(true);
   };
 
+  const handleCheckUpdate = async () => {
+    if (updateChecking) return;
+    setUpdateChecking(true);
+    setUpdateResult(null);
+    try {
+      setUpdateResult(
+        await invokeCommand<{ latest_version: string | null; has_update: boolean; release_url: string; error: string | null }>("check_for_update")
+      );
+    } catch {
+      setUpdateResult({ latest_version: null, has_update: false, release_url: "", error: "failed" });
+    } finally {
+      setUpdateChecking(false);
+    }
+  };
+
   const { icon: ThemeIcon, label: themeLabel } = themeConfig[theme];
 
   return (
@@ -189,6 +213,31 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
       className="flex h-11 items-center border-b border-border/30 pl-3 select-none"
       style={{ background: "var(--color-layer-0)", WebkitAppRegion: "drag" } as React.CSSProperties}
     >
+      {updateReady && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40"
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+        >
+          <div className="w-80 rounded-xl border border-border bg-card p-5 shadow-xl">
+            <h3 className="mb-1.5 text-sm font-semibold">{t("about.updateReadyTitle")}</h3>
+            <p className="mb-4 text-xs text-muted-foreground">{t("about.updateReadyDesc", { version: updateReady.version })}</p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setUpdateReady(null)}
+                className="h-8 px-3 rounded-md text-xs text-muted-foreground hover:bg-accent/50 transition-fast"
+              >
+                {t("about.later")}
+              </button>
+              <button
+                onClick={() => invokeCommand("install_update", { installerPath: updateReady.path }).catch(console.error)}
+                className="h-8 px-3 rounded-md text-xs bg-primary text-primary-foreground hover:opacity-90 transition-fast"
+              >
+                {t("about.restartNow")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div
         className="mr-1 flex h-full w-8 shrink-0 items-center justify-start"
         onDoubleClick={toggleMaximizeWindow}
@@ -256,11 +305,33 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
               onMouseEnter={cancelAboutClose}
               onMouseLeave={() => { setAboutHovered(false); setAboutOpen(false); }}
             >
-              <div className="flex items-center gap-2 mb-2">
+              <div
+                onClick={handleCheckUpdate}
+                title={t("about.checkUpdate")}
+                className="flex items-center gap-2 mb-2 -mx-1 px-1 py-0.5 rounded-md cursor-pointer hover:bg-accent/40 transition-fast"
+              >
                 <img src={logo} alt="" className="h-6 w-6 rounded" />
                 <span className="text-sm font-semibold">Jishu Hub</span>
                 {version && <span className="text-[0.7em] text-muted-foreground font-mono">v{version}</span>}
               </div>
+              {(updateChecking || updateResult) && (
+                <div className="-mt-1 mb-1 text-[11px]">
+                  {updateChecking ? (
+                    <span className="text-muted-foreground">{t("about.checking")}</span>
+                  ) : updateResult?.error ? (
+                    <span className="text-muted-foreground">{t("about.checkFailed")}</span>
+                  ) : updateResult?.has_update ? (
+                    <button
+                      onClick={() => invokeCommand("open_url", { url: updateResult.release_url }).catch(console.error)}
+                      className="text-left text-[var(--icon-about)] hover:underline"
+                    >
+                      {t("about.newVersion", { version: updateResult.latest_version })}
+                    </button>
+                  ) : (
+                    <span className="text-[var(--icon-success)]">{t("about.latest")}</span>
+                  )}
+                </div>
+              )}
               <div className="flex flex-col gap-1.5 mt-3">
                 <button
                   onClick={() => invokeCommand("open_url", { url: "https://github.com/wang5766171/jishu-hub" }).catch(console.error)}

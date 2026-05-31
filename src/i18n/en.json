@@ -331,7 +331,16 @@
   "about": {
     "title": "About",
     "pin": "Pin",
-    "unpin": "Unpin"
+    "unpin": "Unpin",
+    "checkUpdate": "Click to check for updates",
+    "checking": "Checking for updates...",
+    "latest": "You're on the latest version",
+    "newVersion": "New version {{version}} available — click to download",
+    "checkFailed": "Update check failed, please try again later",
+    "updateReadyTitle": "Update ready",
+    "updateReadyDesc": "Version {{version}} has been downloaded. Restart to upgrade.",
+    "restartNow": "Restart & upgrade",
+    "later": "Later"
   },
   "fontSize": {
     "title": "Font",

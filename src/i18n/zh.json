@@ -331,7 +331,16 @@
   "about": {
     "title": "关于",
     "pin": "置顶",
-    "unpin": "取消置顶"
+    "unpin": "取消置顶",
+    "checkUpdate": "点击检查更新",
+    "checking": "检查更新中...",
+    "latest": "已是最新版本",
+    "newVersion": "发现新版本 {{version}}，点击前往下载",
+    "checkFailed": "检查更新失败，请稍后重试",
+    "updateReadyTitle": "更新已就绪",
+    "updateReadyDesc": "新版本 {{version}} 已下载完成，重启即可升级。",
+    "restartNow": "立即重启升级",
+    "later": "稍后"
   },
   "fontSize": {
     "title": "字体",
