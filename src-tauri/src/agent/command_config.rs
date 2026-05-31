@@ -68,6 +68,17 @@ pub fn terminal_window_id(agent_id: &str, session_id: &str) -> String {
     format!("{safe_agent}-{session_id}")
 }
 
+/// Session ids from all supported agents are UUIDs / `ses_*` tokens, i.e. only
+/// `[A-Za-z0-9_-]`. Validating this set before a session id is interpolated
+/// into a terminal command line prevents shell metacharacters from being
+/// injected via the resume path. (K-MED-6)
+pub fn is_safe_session_id(session_id: &str) -> bool {
+    !session_id.is_empty()
+        && session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 pub fn resume_markers(session_id: &str) -> Vec<String> {
     vec![
         format!("--resume {session_id}"),

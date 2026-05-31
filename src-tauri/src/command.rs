@@ -125,12 +125,13 @@ fn open_in_terminal_raw(
             .spawn()?;
         // Small delay then run the agent command via AppleScript
         std::thread::sleep(std::time::Duration::from_millis(500));
+        let safe_path = project_path.replace('\'', "'\\''");
         std::process::Command::new("osascript")
             .args([
                 "-e",
                 &format!(
                     "tell application \"Terminal\" to do script \"cd '{}' && {}\"",
-                    project_path, terminal_command
+                    safe_path, terminal_command
                 ),
             ])
             .spawn()?;
@@ -138,12 +139,13 @@ fn open_in_terminal_raw(
     } else {
         // Linux: try common terminal emulators
         let terminal = which_terminal()?;
+        let safe_path = project_path.replace('\'', "'\\''");
         let child = std::process::Command::new(terminal)
             .args([
                 "-e",
                 "sh",
                 "-c",
-                &format!("cd '{}' && {}", project_path, terminal_command),
+                &format!("cd '{}' && {}", safe_path, terminal_command),
             ])
             .spawn()?;
         Ok(child.id())
