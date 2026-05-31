@@ -193,7 +193,7 @@ async fn send_message_acp(
         .map_err(|e| format!("Failed to spawn opencode acp: {e}"))?;
 
     let pid = child.id().unwrap_or(0);
-    let sid = session_id.unwrap_or_else(|| format!("pending-{}", pid));
+    let sid = session_id.clone().unwrap_or_else(|| format!("pending-{}", pid));
 
     let app_clone = app.clone();
     let app_resolve = app.clone();
@@ -204,6 +204,7 @@ async fn send_message_acp(
         app.clone(),
         agent_id.clone(),
         sid.clone(),
+        session_id.clone(),
         child,
         project_path,
         message,

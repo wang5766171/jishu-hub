@@ -179,9 +179,9 @@ pub async fn get_clipboard_file_paths() -> Result<Vec<String>, String> {
 pub async fn read_image_as_data_url(path: String) -> Result<String, String> {
     let p = PathBuf::from(&path);
     validate_path(&p)?;
+
     let bytes = fs::read(&path).map_err(|e| format!("Failed to read image: {}", e))?;
-    let pb = PathBuf::from(&path);
-    let ext = pb.extension().and_then(|e| e.to_str()).unwrap_or("png");
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("png");
     let mime = mime_for_ext(ext);
     let b64 = BASE64.encode(&bytes);
     Ok(format!("data:{};base64,{}", mime, b64))

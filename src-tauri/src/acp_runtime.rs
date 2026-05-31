@@ -79,6 +79,7 @@ pub fn spawn_acp_session(
     app: tauri::AppHandle,
     agent_id: String,
     pending_session_id: String,
+    existing_session_id: Option<String>,
     mut child: tokio::process::Child,
     project_path: String,
     message: String,
@@ -103,6 +104,7 @@ pub fn spawn_acp_session(
             app.clone(),
             &agent_id,
             &pending_session_id,
+            existing_session_id,
             stdin_arc,
             acp_session_id,
             stdout,
@@ -141,6 +143,7 @@ async fn run_acp_session(
     app: tauri::AppHandle,
     agent_id: &str,
     pending_session_id: &str,
+    existing_session_id: Option<String>,
     stdin_arc: Arc<TokioMutex<ChildStdin>>,
     acp_session_id: Arc<std::sync::Mutex<Option<String>>>,
     stdout: tokio::process::ChildStdout,
@@ -172,23 +175,39 @@ async fn run_acp_session(
     // Read until we get the initialize response
     wait_for_response(&mut reader, init_id).await?;
 
-    // 2. session/new
-    let new_id = writer
-        .request(
-            "session/new",
-            json!({
-                "cwd": project_path,
-                "mcpServers": []
-            }),
-        )
-        .await?;
-
-    let new_result = wait_for_response(&mut reader, new_id).await?;
-    let session_id = new_result
-        .get("sessionId")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "session/new did not return sessionId".to_string())?
-        .to_string();
+    // 2. session/new or session/resume
+    let session_id = if let Some(sid) = existing_session_id {
+        // Resume existing session via ACP session/resume method
+        let resume_id = writer
+            .request(
+                "session/resume",
+                json!({
+                    "sessionId": sid,
+                    "cwd": project_path,
+                    "mcpServers": []
+                }),
+            )
+            .await?;
+        // Drain replayed messages (session/update notifications) until the resume response
+        wait_for_response(&mut reader, resume_id).await?;
+        sid
+    } else {
+        let new_id = writer
+            .request(
+                "session/new",
+                json!({
+                    "cwd": project_path,
+                    "mcpServers": []
+                }),
+            )
+            .await?;
+        let new_result = wait_for_response(&mut reader, new_id).await?;
+        new_result
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "session/new did not return sessionId".to_string())?
+            .to_string()
+    };
 
     // Store session id for cancel
     {
@@ -197,10 +216,14 @@ async fn run_acp_session(
     }
 
     // Emit SessionResolved
-    let events = vec![NormalizedEvent::SessionResolved {
-        session_id: session_id.clone(),
-    }];
-    emit_events(&app, agent_id, pending_session_id, &events);
+    emit_events(
+        &app,
+        agent_id,
+        pending_session_id,
+        &[NormalizedEvent::SessionResolved {
+            session_id: session_id.clone(),
+        }],
+    );
     on_session_resolved(&session_id);
 
     // 3. session/prompt
@@ -214,16 +237,27 @@ async fn run_acp_session(
         )
         .await?;
 
-    // 4. Stream loop: read notifications and the final response
+    // 4. Stream loop
+    stream_prompt_response(app, agent_id, pending_session_id, reader, prompt_id, session_id).await
+}
+
+/// Read the stream of session/update notifications and the final prompt response.
+async fn stream_prompt_response(
+    app: tauri::AppHandle,
+    agent_id: &str,
+    _pending_session_id: &str,
+    mut reader: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    prompt_id: i64,
+    current_session_id: String,
+) -> Result<(), String> {
     let mut usage: Option<UsageStats> = None;
     let mut buf: Vec<StreamChunk> = Vec::with_capacity(32);
     let mut last_flush = std::time::Instant::now();
-    let current_session_id = session_id.clone();
 
     loop {
         let line = match reader.next_line().await {
             Ok(Some(line)) => line,
-            Ok(None) => break, // EOF
+            Ok(None) => break,
             Err(_) => break,
         };
 
@@ -238,7 +272,6 @@ async fn run_acp_session(
 
         // Check if this is the response to session/prompt
         if msg.get("id").and_then(|v| v.as_i64()) == Some(prompt_id) {
-            // Final response
             if let Some(err) = msg.get("error") {
                 let err_msg = err
                     .get("message")
@@ -265,7 +298,6 @@ async fn run_acp_session(
                     .and_then(|v| v.as_str())
                     .unwrap_or("end_turn");
 
-                // Extract usage from response if present
                 if let Some(u) = msg.get("result").and_then(|r| r.get("usage")) {
                     usage = Some(UsageStats {
                         input_tokens: u.get("inputTokens").and_then(|v| v.as_u64()),
@@ -314,7 +346,6 @@ async fn run_acp_session(
         }
     }
 
-    // Flush remaining
     if !buf.is_empty() {
         flush_buf(&app, agent_id, &mut buf);
     }

@@ -4,6 +4,7 @@ mod chat;
 mod cli_runtime;
 mod command;
 mod config;
+mod dialog_commands;
 mod history;
 mod hub;
 mod image;
@@ -109,48 +110,6 @@ async fn read_text_file(path: String) -> Result<TextFilePreview, String> {
 }
 
 #[tauri::command]
-fn write_text_file(path: String, content: String) -> Result<(), String> {
-    let p = std::path::Path::new(&path);
-    // Only allow writing to regular files under user-writable locations.
-    let home = dirs::home_dir().ok_or("Cannot resolve home directory")?;
-
-    // Canonicalize the *parent* directory before the prefix check so lexical
-    // traversal (e.g. `<home>\..\..\Windows\System32\x`) can't slip past a
-    // purely textual `starts_with(home)` test — the OS would otherwise resolve
-    // the `..` during the actual write. Both sides are canonicalized so the
-    // Windows `\\?\` verbatim prefix matches consistently.
-    let parent = p.parent().ok_or("Invalid path: no parent directory")?;
-    let canon_parent = std::fs::canonicalize(parent)
-        .map_err(|e| format!("Cannot resolve target directory: {}", e))?;
-
-    let home_ok = std::fs::canonicalize(&home)
-        .map(|h| canon_parent.starts_with(&h))
-        .unwrap_or(false);
-    #[cfg(not(target_os = "windows"))]
-    let temp_ok = std::fs::canonicalize("/tmp")
-        .map(|t| canon_parent.starts_with(&t))
-        .unwrap_or(false)
-        || std::fs::canonicalize("/var/folders")
-            .map(|t| canon_parent.starts_with(&t))
-            .unwrap_or(false);
-    #[cfg(target_os = "windows")]
-    let temp_ok = false;
-
-    if !(home_ok || temp_ok) {
-        return Err(format!("Path not allowed: {}", path));
-    }
-    // Prevent writing to hidden/system files
-    if p.file_name()
-        .map(|n| n.to_string_lossy().starts_with('.'))
-        .unwrap_or(false)
-        && !p.extension().map(|e| e == "json" || e == "toml" || e == "md").unwrap_or(false)
-    {
-        return Err(format!("Cannot write to hidden file: {}", path));
-    }
-    std::fs::write(p, content).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 fn get_session_names() -> Result<HashMap<String, String>, String> {
     hub::get_session_names().map_err(|e| e.to_string())
 }
@@ -253,23 +212,16 @@ fn restore_backup(
     state: tauri::State<'_, Mutex<AppState>>,
     backup_path: String,
 ) -> Result<(), String> {
-    let s = state.lock().unwrap();
+    {
+        let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+        let backups = s.registry.active().list_backups()?;
+        let valid = backups.iter().any(|b| b.path == backup_path);
+        if !valid {
+            return Err("Backup path not found in backup list".to_string());
+        }
+    }
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().restore_backup(&backup_path)
-}
-
-#[tauri::command]
-fn export_config(state: tauri::State<'_, Mutex<AppState>>, path: String) -> Result<(), String> {
-    let s = state.lock().unwrap();
-    s.registry.active().export_config(&path)
-}
-
-#[tauri::command]
-fn import_config(
-    state: tauri::State<'_, Mutex<AppState>>,
-    path: String,
-) -> Result<config::ClaudeConfig, String> {
-    let s = state.lock().unwrap();
-    s.registry.active().import_config(&path)
 }
 
 #[tauri::command]
@@ -1185,7 +1137,6 @@ pub fn run() {
             list_sessions,
             get_session_messages,
             read_text_file,
-            write_text_file,
             get_session_names,
             rename_session,
             delete_session_name,
@@ -1200,8 +1151,9 @@ pub fn run() {
             apply_preset,
             list_backups,
             restore_backup,
-            export_config,
-            import_config,
+            dialog_commands::export_config_dialog,
+            dialog_commands::import_config_dialog,
+            dialog_commands::export_raw_config_dialog,
             load_language,
             save_language,
             load_always_on_top,
