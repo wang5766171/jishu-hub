@@ -5,6 +5,7 @@ import { MessageView, type MessageSearchNavigation, type MessageSearchStatus } f
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
 import { ChatInput } from "@/components/sessions/chat-input";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
+import { clearImageCache } from "@/components/sessions/inline-image";
 import { StatusBar as ObservabilityStatusBar } from "@/components/observability";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -112,6 +113,10 @@ export function ChatPage({
   sessionMessagesRef.current = sessionMessages;
   const newSessionStreamIdsRef = useRef<Set<string>>(new Set());
   const refetchSessionsRef = useRef<((silent?: boolean) => Promise<Session[]>) | null>(null);
+  // Holds the latest handleSelectSession so the navigateToSession effect always
+  // invokes the freshest closure (current projectId/selectedSession) instead of
+  // a stale one captured when navigateToSession last changed. (K-MED-7)
+  const handleSelectSessionRef = useRef<(sessionId: string) => void>(() => {});
   /**
    * Per-session messages cache. Keyed by canonical session id (the id we
    * started the stream with) AND by resolvedId once known. While a session is
@@ -226,6 +231,7 @@ export function ChatPage({
     setOptimisticSessions([]);
     sessionMessagesCacheRef.current.clear();
     newSessionStreamIdsRef.current.clear();
+    clearImageCache();
   }, [projectId]);
 
   useEffect(() => {
@@ -242,8 +248,8 @@ export function ChatPage({
 
   // Navigate to a specific session (triggered by floating window restore)
   useEffect(() => {
-    if (navigateToSession && projectId) {
-      handleSelectSession(navigateToSession);
+    if (navigateToSession) {
+      handleSelectSessionRef.current(navigateToSession);
     }
   }, [navigateToSession]);
 
@@ -347,6 +353,7 @@ export function ChatPage({
         : { type: "bottom" };
     }
   };
+  handleSelectSessionRef.current = handleSelectSession;
 
   const handleNewSession = async () => {
     if (!projectId) return;

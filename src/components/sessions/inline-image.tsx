@@ -68,13 +68,25 @@ function evictCache() {
 }
 
 function loadImage(path: string): Promise<string> {
-  let p = imageCache.get(path);
-  if (!p) {
-    p = invokeCommand<string>("read_image_as_data_url", { path });
-    imageCache.set(path, p);
-    evictCache();
+  const existing = imageCache.get(path);
+  if (existing) {
+    // True LRU: a cache hit refreshes recency so hot images aren't evicted
+    // before cold ones (Map preserves insertion order).
+    imageCache.delete(path);
+    imageCache.set(path, existing);
+    return existing;
   }
+  const p = invokeCommand<string>("read_image_as_data_url", { path });
+  imageCache.set(path, p);
+  evictCache();
   return p;
+}
+
+/// Drop all cached image data URLs. Called on project switch so the module-level
+/// cache doesn't keep multi-MB data URLs from a previous project resident for
+/// the whole app lifetime. Evicted entries are reloaded on demand. (K-MED-4)
+export function clearImageCache() {
+  imageCache.clear();
 }
 
 export const InlineImageDisplay = memo(function InlineImageDisplay({ path }: { path: string }) {
