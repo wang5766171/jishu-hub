@@ -18,7 +18,15 @@ function getExt(path: string): string {
 }
 
 const MARKER_RE = /<!--JISHU_HUB_IMAGES_BEGIN-->([\s\S]*?)<!--JISHU_HUB_IMAGES_END-->/g;
-const PATH_RE = /[^\s"'<>]+\.jishu_hub[/\\]session_(?:pics|files)[/\\]\d{8}_\d{6}[/\\]\d+_[^\s"'<>]+/gi;
+
+function extractLabelFromLine(line: string): { label: string; path: string } | null {
+  const colonIdx = line.lastIndexOf(": ");
+  if (colonIdx < 0) return null;
+  const path = line.slice(colonIdx + 2).trim();
+  if (!path) return null;
+  const labelPart = line.slice(0, colonIdx).replace(/（批次\s*\S+\s*）/, "").trim();
+  return { label: labelPart, path };
+}
 
 export function parseFileRefs(text: string): FileRef[] {
   const refs: FileRef[] = [];
@@ -28,16 +36,17 @@ export function parseFileRefs(text: string): FileRef[] {
   const markerRe = new RegExp(MARKER_RE.source, MARKER_RE.flags);
   while ((m = markerRe.exec(text)) !== null) {
     const block = m[1];
-    const pathRe = new RegExp(PATH_RE.source, PATH_RE.flags);
-    let pm: RegExpExecArray | null;
-    while ((pm = pathRe.exec(block)) !== null) {
-      const path = pm[0];
+    const lines = block.split(/\\n|\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("[") && trimmed.endsWith("]")) continue;
+      const extracted = extractLabelFromLine(trimmed);
+      if (!extracted) continue;
+      const { label, path } = extracted;
       if (seen.has(path)) continue;
       seen.add(path);
-      const filename = path.split(/[/\\]/).pop() || "";
-      const label = filename.replace(/^\d+_/, "").replace(/\.\w+$/, "");
       const ext = getExt(path);
-      refs.push({ label, path, fullMatch: pm[0], isImage: IMAGE_EXTS.has(ext) });
+      refs.push({ label, path, fullMatch: path, isImage: IMAGE_EXTS.has(ext) });
     }
   }
 
@@ -113,8 +122,8 @@ export const InlineImages = memo(function InlineImages({ text }: { text: string 
 });
 
 export function stripImagePrompt(text: string): string {
-  let result = text
+  return text
     .replace(/<!--JISHU_HUB_IMAGES_BEGIN-->[\s\S]*?<!--JISHU_HUB_IMAGES_END-->/g, "")
-    .replace(/<!--JISHU_HUB_IMAGES_BEGIN-->.*?<!--JISHU_HUB_IMAGES_END-->/g, "");
-  return result.replace(/\\n/g, "\n").trim();
+    .replace(/\\n/g, "\n")
+    .trim();
 }
