@@ -145,16 +145,16 @@ export function ProjectDetail({ project, onClose, onViewSessions, onRemoved, pro
             )}
 
             <div className="space-y-2">
-              <Button className="w-full" onClick={() => onViewSessions(project.encoded_name)}>
-                <MessageSquare className="mr-2 h-4 w-4" />
+              <Button className="w-full justify-start gap-2" onClick={() => onViewSessions(project.encoded_name)}>
+                <MessageSquare className="h-4 w-4" />
                 {t("projects.viewSessions")}
               </Button>
-              <Button variant="outline" className="w-full" onClick={() => invokeCommand("open_in_terminal", { projectPath: project.path })}>
-                <ExternalLink className="mr-2 h-4 w-4" />
+              <Button variant="outline" className="w-full justify-start gap-2" onClick={() => invokeCommand("open_in_terminal", { projectPath: project.path })}>
+                <ExternalLink className="h-4 w-4" />
                 {t("projects.openInTerminal")}
               </Button>
-              <Button variant="ghost" className="w-full text-destructive hover:text-destructive" onClick={handleRemove}>
-                <Trash2 className="mr-2 h-4 w-4" />
+              <Button variant="ghost" className="w-full justify-start gap-2 text-destructive hover:text-destructive" onClick={handleRemove}>
+                <Trash2 className="h-4 w-4" />
                 {t("projects.removeProject")}
               </Button>
               {merges && merges[project.encoded_name] && merges[project.encoded_name].length > 0 && (
