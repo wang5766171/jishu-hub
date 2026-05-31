@@ -315,7 +315,7 @@ impl AgentPlugin for CodexAdapter {
             let backup_path = backup_dir.join(format!("config_{}.toml", ts));
             std::fs::copy(&config_path, &backup_path).map_err(|e| e.to_string())?;
         }
-        std::fs::write(&config_path, content).map_err(|e| e.to_string())
+        crate::util::atomic_write(&config_path, content.as_bytes()).map_err(|e| e.to_string())
     }
 
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {

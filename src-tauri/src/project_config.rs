@@ -90,7 +90,7 @@ pub fn save_project_settings(
     if let Some(obj) = val.as_object_mut() {
         obj.retain(|_, v| !v.is_null());
     }
-    std::fs::write(&path, serde_json::to_string_pretty(&val)?)?;
+    crate::util::atomic_write(&path, serde_json::to_string_pretty(&val)?.as_bytes())?;
     Ok(())
 }
 
@@ -104,7 +104,7 @@ pub fn save_project_settings_local(
     if let Some(obj) = val.as_object_mut() {
         obj.retain(|_, v| !v.is_null());
     }
-    std::fs::write(&path, serde_json::to_string_pretty(&val)?)?;
+    crate::util::atomic_write(&path, serde_json::to_string_pretty(&val)?.as_bytes())?;
     Ok(())
 }
 

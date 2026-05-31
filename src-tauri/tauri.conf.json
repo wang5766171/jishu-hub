@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Jishu Hub",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "identifier": "com.jishu-hub.app",
   "build": {
     "frontendDist": "../dist",
@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost http://asset.localhost; font-src 'self' asset: https://asset.localhost; connect-src ipc: http://ipc.localhost https://ipc.localhost"
     }
   },
   "bundle": {

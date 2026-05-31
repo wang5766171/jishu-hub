@@ -58,14 +58,12 @@ function extractConfigItems(config: ClaudeConfig, t: (k: string) => string): { l
 
   const allow = config.permissions?.allow;
   if (allow && allow.length > 0) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    items.push({ label: (t as any)("config.allowCount", { count: allow.length }), value: allow.join(", ") });
+    items.push({ label: t("config.allowCount", { count: allow.length } as Record<string, unknown>), value: allow.join(", ") });
   }
 
   const deny = config.permissions?.deny;
   if (deny && deny.length > 0) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    items.push({ label: (t as any)("config.denyCount", { count: deny.length }), value: deny.join(", ") });
+    items.push({ label: t("config.denyCount", { count: deny.length } as Record<string, unknown>), value: deny.join(", ") });
   }
 
   if (config.sandbox?.enabled) {

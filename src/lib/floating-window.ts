@@ -87,7 +87,7 @@ export async function openFloatingSession(
 export function closeFloatingSession(sessionId: string) {
   const win = floatingWindows.get(sessionId);
   if (win) {
-    win.close().catch(() => {});
+    win.close().catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
     floatingWindows.delete(sessionId);
   }
 }

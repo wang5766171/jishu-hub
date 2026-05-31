@@ -70,7 +70,7 @@ impl AgentRegistry {
         self.agents
             .get(&self.active_id)
             .map(|a| a.as_ref())
-            .unwrap()
+            .expect("AgentRegistry: active_id references a non-existent agent — this is a bug")
     }
 
     pub fn active_id(&self) -> &str {

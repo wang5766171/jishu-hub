@@ -18,6 +18,7 @@ import { useFontSize, type FontLevel } from "@/hooks/use-font-size";
 import { AgentProvider, useAgent } from "@/agents";
 import { AgentSwitcher } from "@/agents";
 import { FileViewerProvider } from "@/components/file-viewer";
+import { ErrorBoundary } from "@/components/error-boundary";
 import type { Page, Project, ProjectMeta } from "@/types";
 
 const ChatPage = lazy(() => import("@/pages/chat-page").then(m => ({ default: m.ChatPage })));
@@ -105,13 +106,13 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
   useEffect(() => {
     invokeCommand<boolean>("load_always_on_top").then(setPinned).catch(console.error);
     getVersion().then((v) => setVersion(v)).catch(() => setVersion(""));
-    appWindow?.isMaximized().then(setMaximized).catch(() => {});
+    appWindow?.isMaximized().then(setMaximized).catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
     // Background auto-update: check + download a newer installer on startup.
     invokeCommand<{ version: string | null; installer_path: string | null }>("download_update")
       .then((r) => {
         if (r.installer_path && r.version) setUpdateReady({ version: r.version, path: r.installer_path });
       })
-      .catch(() => {});
+      .catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
   }, []);
 
   useEffect(() => {
@@ -129,7 +130,7 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
       }, 200);
     }).then((fn) => {
       unlisten = fn;
-    }).catch(() => {});
+    }).catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
 
     return () => { unlisten?.(); if (timer) clearTimeout(timer); };
   }, []);
@@ -517,7 +518,7 @@ function AppContent() {
       // Clear after navigation
       setTimeout(() => setNavigateToSession(null), 500);
       // Focus main window
-      getCurrentWindow().setFocus().catch(() => {});
+      getCurrentWindow().setFocus().catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
     }).then((fn) => {
       if (cancelled) fn();
       else unlistenFn = fn;
@@ -551,7 +552,7 @@ function AppContentWrapper() {
   if (!envChecked) {
     return (
       <div className="flex flex-col h-screen w-screen bg-background text-foreground relative">
-        <TitleBar currentPage={"chat" as any} onNavigate={() => {}} disabled={true} />
+        <TitleBar currentPage={"chat"} onNavigate={() => {}} disabled={true} />
         <div className="flex-1 overflow-hidden bg-background">
           <EnvCheckPage onComplete={() => { localStorage.setItem("jishu-hub-env-checked", "1"); setEnvChecked(true); }} />
         </div>
@@ -567,7 +568,9 @@ function App() {
     <ThemeProvider>
       <AgentProvider>
         <FileViewerProvider>
-          <AppContentWrapper />
+          <ErrorBoundary>
+            <AppContentWrapper />
+          </ErrorBoundary>
         </FileViewerProvider>
       </AgentProvider>
     </ThemeProvider>

@@ -19,7 +19,8 @@ function applyTheme(theme: Theme) {
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(() => {
     const stored = localStorage.getItem(STORAGE_KEY);
-    return (stored as Theme) || "dark";
+    const validThemes: Theme[] = ["light", "colorful", "dark"];
+    return stored && validThemes.includes(stored as Theme) ? (stored as Theme) : "dark";
   });
 
   useEffect(() => {
@@ -33,13 +34,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         setThemeState(t as Theme);
         localStorage.setItem(STORAGE_KEY, t);
       }
-    }).catch(() => {});
+    }).catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
   }, []);
 
   const setTheme = useCallback((t: Theme) => {
     setThemeState(t);
     localStorage.setItem(STORAGE_KEY, t);
-    invokeCommand("save_theme", { theme: t }).catch(() => {});
+    invokeCommand("save_theme", { theme: t }).catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
   }, []);
 
   return (

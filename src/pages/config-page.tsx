@@ -8,7 +8,6 @@ import { BackupManager } from "@/components/config/backup-manager";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Download, Upload } from "lucide-react";
-import { open, save } from "@tauri-apps/plugin-dialog";
 import { useAgent } from "@/agents";
 import type { ClaudeConfig } from "@/types";
 
@@ -37,47 +36,26 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
   }, [refetchRaw]);
 
   const handleExport = async () => {
-    if (!useRaw) {
-      const path = await save({
-        defaultPath: `${activeId || "agent"}-settings.json`,
-        filters: [{ name: "JSON", extensions: ["json"] }],
-      });
-      if (path) {
-        try {
-          await invokeCommand("export_config", { path });
-        } catch (err) {
-          console.error("Export failed:", err);
-        }
+    try {
+      if (!useRaw) {
+        await invokeCommand("export_config_dialog");
+      } else {
+        await invokeCommand("export_raw_config_dialog");
       }
-    } else {
-      const raw = rawConfig;
-      if (!raw) return;
-      const ext = raw.format === "toml" ? "toml" : "json";
-      const path = await save({
-        defaultPath: `${activeId || "agent"}-config.${ext}`,
-        filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
-      });
-      if (path) {
-        try {
-          await invokeCommand("write_text_file", { path, content: raw.content });
-        } catch (err) {
-          console.error("Export failed:", err);
-        }
+    } catch (err) {
+      if (!String(err).includes("USER_CANCELLED")) {
+        console.error("Export failed:", err);
       }
     }
   };
 
   const handleImport = async () => {
     if (useRaw) return;
-    const path = await open({
-      filters: [{ name: "JSON", extensions: ["json"] }],
-      multiple: false,
-    });
-    if (path) {
-      try {
-        await invokeCommand("import_config", { path });
-        refetch();
-      } catch (err) {
+    try {
+      await invokeCommand("import_config_dialog");
+      refetch();
+    } catch (err) {
+      if (!String(err).includes("USER_CANCELLED")) {
         console.error("Import failed:", err);
       }
     }

@@ -628,10 +628,17 @@ fn same_path(left: &str, right: &str) -> bool {
 }
 
 fn path_key(value: &str) -> String {
-    value
-        .replace('/', "\\")
-        .trim_end_matches('\\')
-        .to_ascii_lowercase()
+    let path = std::path::Path::new(value);
+    std::fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_else(|_| {
+            let p = std::path::PathBuf::from(value);
+            let s = p.to_string_lossy().to_string();
+            // Normalize path separators so "/a/b" and "\a\b" compare equal
+            s.replace('/', std::path::MAIN_SEPARATOR_STR)
+                .trim_end_matches(std::path::MAIN_SEPARATOR)
+                .to_ascii_lowercase()
+        })
 }
 
 fn format_millis_local(value: i64) -> Option<String> {
@@ -948,7 +955,7 @@ fn save_opencode_config(
     backup_opencode_config()?;
     let existing = read_opencode_config_value()?;
     let merged = merge_opencode_config(existing, config).map_err(|e| e.to_string())?;
-    std::fs::write(path, serde_json::to_string_pretty(&merged)?)?;
+    crate::util::atomic_write(&path, serde_json::to_string_pretty(&merged)?.as_bytes())?;
     Ok(())
 }
 
@@ -1243,7 +1250,7 @@ impl AgentPlugin for OpencodeAdapter {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        std::fs::write(&path, content).map_err(|e| e.to_string())
+        crate::util::atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())
     }
 
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {

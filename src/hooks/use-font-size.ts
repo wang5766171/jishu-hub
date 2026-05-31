@@ -16,12 +16,18 @@ function applyFontSize(base: FontLevel, prose: FontLevel) {
   document.documentElement.style.setProperty("--font-size-prose", PROSE_MAP[prose]);
 }
 
+function isValidFontLevel(v: string | null): v is FontLevel {
+  return v !== null && ["s", "m", "l", "xl"].includes(v);
+}
+
 export function useFontSize() {
   const [fontSizeBase, setFontSizeBaseState] = useState<FontLevel>(() => {
-    return (localStorage.getItem(STORAGE_KEY_BASE) as FontLevel) || DEFAULT_FONT_LEVEL;
+    const stored = localStorage.getItem(STORAGE_KEY_BASE);
+    return isValidFontLevel(stored) ? stored : DEFAULT_FONT_LEVEL;
   });
   const [fontSizeProse, setFontSizeProseState] = useState<FontLevel>(() => {
-    return (localStorage.getItem(STORAGE_KEY_PROSE) as FontLevel) || DEFAULT_FONT_LEVEL;
+    const stored = localStorage.getItem(STORAGE_KEY_PROSE);
+    return isValidFontLevel(stored) ? stored : DEFAULT_FONT_LEVEL;
   });
 
   useEffect(() => {
@@ -38,19 +44,19 @@ export function useFontSize() {
         setFontSizeProseState(prose as FontLevel);
         localStorage.setItem(STORAGE_KEY_PROSE, prose);
       }
-    }).catch(() => {});
+    }).catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
   }, []);
 
   const setFontSizeBase = useCallback((level: FontLevel) => {
     setFontSizeBaseState(level);
     localStorage.setItem(STORAGE_KEY_BASE, level);
-    invokeCommand("save_font_sizes", { fontSizeBase: level, fontSizeProse: fontSizeProse }).catch(() => {});
+    invokeCommand("save_font_sizes", { fontSizeBase: level, fontSizeProse: fontSizeProse }).catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
   }, [fontSizeProse]);
 
   const setFontSizeProse = useCallback((level: FontLevel) => {
     setFontSizeProseState(level);
     localStorage.setItem(STORAGE_KEY_PROSE, level);
-    invokeCommand("save_font_sizes", { fontSizeBase: fontSizeBase, fontSizeProse: level }).catch(() => {});
+    invokeCommand("save_font_sizes", { fontSizeBase: fontSizeBase, fontSizeProse: level }).catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
   }, [fontSizeBase]);
 
   return { fontSizeBase, fontSizeProse, setFontSizeBase, setFontSizeProse };

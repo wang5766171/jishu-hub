@@ -33,7 +33,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(
 
 fn write_json<T: Serialize>(path: &PathBuf, data: &T) -> Result<(), Box<dyn std::error::Error>> {
     let json = serde_json::to_string_pretty(data)?;
-    std::fs::write(path, json)?;
+    crate::util::atomic_write(path, json.as_bytes())?;
     Ok(())
 }
 
