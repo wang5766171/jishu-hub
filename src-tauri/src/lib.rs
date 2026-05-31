@@ -594,23 +594,37 @@ pub struct EnvStatus {
     pub python_version: Option<String>,
 }
 
+/// Build a platform-aware command. On Windows, .cmd/.bat scripts (npm, npx, etc.)
+/// must be invoked via `cmd /C <command>` since `Command::new("npm")` won't resolve
+/// npm.cmd. On Unix, invoke the binary directly.
+fn shell_command(program: &str, args: Vec<String>) -> tokio::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = tokio::process::Command::new("cmd");
+        let mut full_args = vec!["/C".to_string(), program.to_string()];
+        full_args.extend(args);
+        cmd.args(&full_args);
+        cmd
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(&args);
+        cmd
+    }
+}
+
 #[tauri::command]
 async fn check_environment() -> Result<EnvStatus, String> {
-    let mut node_cmd = tokio::process::Command::new("node");
-    node_cmd.arg("--version");
-    let node_out = crate::process_command::tokio_no_window(&mut node_cmd)
+    let node_out = crate::process_command::tokio_no_window(&mut shell_command("node", vec!["--version".into()]))
         .output()
         .await;
 
-    let mut npm_cmd = tokio::process::Command::new("npm");
-    npm_cmd.arg("--version");
-    let npm_out = crate::process_command::tokio_no_window(&mut npm_cmd)
+    let npm_out = crate::process_command::tokio_no_window(&mut shell_command("npm", vec!["--version".into()]))
         .output()
         .await;
 
-    let mut python_cmd = tokio::process::Command::new("python");
-    python_cmd.arg("--version");
-    let python_out = crate::process_command::tokio_no_window(&mut python_cmd)
+    let python_out = crate::process_command::tokio_no_window(&mut shell_command("python", vec!["--version".into()]))
         .output()
         .await;
 
@@ -663,12 +677,10 @@ async fn check_available_updates(packages: Vec<(String, String)>) -> Vec<LatestV
             continue;
         }
 
-        let mut cmd = tokio::process::Command::new("npm");
-        let output = crate::process_command::tokio_no_window(
-            cmd.args(["view", &pkg, "version", "--json"]),
-        )
-        .output()
-        .await;
+        let mut cmd = shell_command("npm", vec!["view".into(), pkg.clone(), "version".into(), "--json".into()]);
+        let output = crate::process_command::tokio_no_window(&mut cmd)
+            .output()
+            .await;
 
         match output {
             Ok(out) if out.status.success() => {
@@ -711,56 +723,48 @@ async fn check_available_updates(packages: Vec<(String, String)>) -> Vec<LatestV
 async fn check_python_latest(id: &str) -> LatestVersion {
     let url = "https://endoflife.date/api/python.json";
 
-    // Try curl first (available on all platforms)
-    let mut cmd = tokio::process::Command::new("curl");
-    let output = crate::process_command::tokio_no_window(
-        cmd.args(["-sf", url]),
-    )
-    .output()
-    .await;
+    // Platform-adaptive HTTP fetch
+    #[cfg(target_os = "windows")]
+    let body: Result<String, String> = {
+        let script = format!(
+            "(Invoke-WebRequest -Uri '{}' -UseBasicParsing).Content",
+            url
+        );
+        let mut ps_cmd = tokio::process::Command::new("powershell");
+        let output = crate::process_command::tokio_no_window(
+            ps_cmd.args(["-NoProfile", "-Command", &script]),
+        )
+        .output()
+        .await;
+        match output {
+            Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).to_string()),
+            Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    };
+    #[cfg(not(target_os = "windows"))]
+    let body: Result<String, String> = {
+        let mut cmd = tokio::process::Command::new("curl");
+        let output = crate::process_command::tokio_no_window(
+            cmd.args(["-sf", url]),
+        )
+        .output()
+        .await;
+        match output {
+            Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).to_string()),
+            Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    };
 
-    let body = match output {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
-        _ => {
-            // Fallback: try PowerShell on Windows
-            #[cfg(target_os = "windows")]
-            {
-                let script = format!(
-                    "(Invoke-WebRequest -Uri '{}' -UseBasicParsing).Content",
-                    url
-                );
-                let mut ps_cmd = tokio::process::Command::new("powershell");
-                let ps_output = crate::process_command::tokio_no_window(
-                    ps_cmd.args(["-NoProfile", "-Command", &script]),
-                )
-                .output()
-                .await;
-                match ps_output {
-                    Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-                    Ok(o) => {
-                        return LatestVersion {
-                            id: id.to_string(),
-                            latest_version: None,
-                            error: Some(String::from_utf8_lossy(&o.stderr).trim().to_string()),
-                        };
-                    }
-                    Err(e) => {
-                        return LatestVersion {
-                            id: id.to_string(),
-                            latest_version: None,
-                            error: Some(e.to_string()),
-                        };
-                    }
-                }
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                return LatestVersion {
-                    id: id.to_string(),
-                    latest_version: None,
-                    error: Some("curl not available".into()),
-                };
-            }
+    let body = match body {
+        Ok(b) => b,
+        Err(e) => {
+            return LatestVersion {
+                id: id.to_string(),
+                latest_version: None,
+                error: Some(e),
+            };
         }
     };
 
