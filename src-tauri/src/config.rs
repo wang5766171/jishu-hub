@@ -151,6 +151,23 @@ pub fn config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(claude_dir()?.join("settings.json"))
 }
 
+/// Build a per-write unique temp path next to `path` so concurrent atomic
+/// writes to the same target never share one `*.tmp` file (which could
+/// interleave and produce a corrupt intermediate). The final `rename` stays
+/// atomic. (K-MED-3)
+fn unique_tmp_path(path: &std::path::Path) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(format!(".{}-{}.tmp", std::process::id(), nanos));
+    path.with_file_name(name)
+}
+
 pub fn load_config() -> Result<ClaudeConfig, Box<dyn std::error::Error>> {
     let path = config_path()?;
     let content = std::fs::read_to_string(&path)?;
@@ -185,9 +202,12 @@ pub fn save_config(config: &ClaudeConfig) -> Result<(), Box<dyn std::error::Erro
     }
 
     let json = serde_json::to_string_pretty(&new_value).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("tmp");
+    let tmp = unique_tmp_path(&path);
     std::fs::write(&tmp, &json).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.to_string().into());
+    }
 
     let written = std::fs::read_to_string(&path)?;
     let _: ClaudeConfig = serde_json::from_str(&written)?;
@@ -267,9 +287,12 @@ pub fn restore_backup(backup_path: &str) -> Result<(), Box<dyn std::error::Error
     let dst = config_path()?;
     let content = std::fs::read_to_string(backup_path)?;
     let _: ClaudeConfig = serde_json::from_str(&content)?;
-    let tmp = dst.with_extension("tmp");
+    let tmp = unique_tmp_path(&dst);
     std::fs::write(&tmp, &content)?;
-    std::fs::rename(&tmp, &dst)?;
+    if let Err(e) = std::fs::rename(&tmp, &dst) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(())
 }
 
@@ -285,8 +308,11 @@ pub fn import_config(import_path: &str) -> Result<ClaudeConfig, Box<dyn std::err
     let config: ClaudeConfig = serde_json::from_str(&content)?;
     let dst = config_path()?;
     backup_config()?;
-    let tmp = dst.with_extension("tmp");
+    let tmp = unique_tmp_path(&dst);
     std::fs::write(&tmp, &content)?;
-    std::fs::rename(&tmp, &dst)?;
+    if let Err(e) = std::fs::rename(&tmp, &dst) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(config)
 }

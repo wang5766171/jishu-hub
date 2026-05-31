@@ -22,9 +22,23 @@ fn write_json<T: Serialize>(path: &PathBuf, data: &T) -> Result<(), Box<dyn std:
 }
 
 fn atomic_write(path: &PathBuf, content: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let tmp_path = path.with_extension("tmp");
+    // Unique temp name per write so concurrent writes to the same target file
+    // can't share one `*.tmp` and interleave into a corrupt state. (K-MED-3)
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut tmp_name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    tmp_name.push(format!(".{}-{}.tmp", std::process::id(), nanos));
+    let tmp_path = path.with_file_name(tmp_name);
     std::fs::write(&tmp_path, content)?;
-    std::fs::rename(&tmp_path, path)?;
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
     Ok(())
 }
 
