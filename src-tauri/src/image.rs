@@ -18,6 +18,23 @@ pub struct SavedFile {
     pub batch_id: String,
 }
 
+fn validate_path(p: &PathBuf) -> Result<(), String> {
+    let s = p.to_string_lossy().to_lowercase();
+    if s.starts_with("\\\\") {
+        return Err("UNC paths are not allowed".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let forbidden = ["\\windows\\", "\\system32\\", "\\programdata\\"];
+        for f in &forbidden {
+            if s.contains(f) {
+                return Err(format!("Access denied: system path"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn sanitize_label(label: &str) -> String {
     label
         .chars()
@@ -125,10 +142,7 @@ pub fn save_session_files(
 #[tauri::command]
 pub fn read_file_as_base64(path: String) -> Result<String, String> {
     let p = PathBuf::from(&path);
-    let home = dirs::home_dir().ok_or("Cannot resolve home directory")?;
-    if !p.starts_with(&home) {
-        return Err("Access denied: path outside home directory".to_string());
-    }
+    validate_path(&p)?;
     let bytes = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
     Ok(BASE64.encode(&bytes))
 }
@@ -164,10 +178,7 @@ pub fn get_clipboard_file_paths() -> Result<Vec<String>, String> {
 #[tauri::command]
 pub fn read_image_as_data_url(path: String) -> Result<String, String> {
     let p = PathBuf::from(&path);
-    let home = dirs::home_dir().ok_or("Cannot resolve home directory")?;
-    if !p.starts_with(&home) {
-        return Err("Access denied: path outside home directory".to_string());
-    }
+    validate_path(&p)?;
     let bytes = fs::read(&path).map_err(|e| format!("Failed to read image: {}", e))?;
     let pb = PathBuf::from(&path);
     let ext = pb.extension().and_then(|e| e.to_str()).unwrap_or("png");
