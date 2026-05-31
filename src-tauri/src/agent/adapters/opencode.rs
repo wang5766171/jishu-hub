@@ -1079,44 +1079,26 @@ impl AgentPlugin for OpencodeAdapter {
 
     fn probe_sync(&self) -> AgentHealth {
         let candidates = super::super::discovery::default_candidates_for("opencode");
-        let runtime = tokio::runtime::Runtime::new();
-        let result = if let Ok(rt) = runtime {
-            rt.block_on(async {
-                let binary = super::super::discovery::probe_binary(
-                    "opencode",
-                    &candidates.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                )
-                .await;
-                match binary {
-                    Some(path) => {
-                        let version = super::super::discovery::version_of(&path).await;
-                        AgentHealth {
-                            installed: true,
-                            version,
-                            error: None,
-                            binary_path: Some(path.to_string_lossy().to_string()),
-                            last_checked_at: now_ms(),
-                        }
-                    }
-                    None => AgentHealth {
-                        installed: false,
-                        version: None,
-                        error: Some("opencode not found in PATH".to_string()),
-                        binary_path: None,
-                        last_checked_at: now_ms(),
-                    },
+        let cands: Vec<&str> = candidates.iter().map(|s| s.as_str()).collect();
+        match super::super::discovery::probe_binary_sync("opencode", &cands) {
+            Some(path) => {
+                let version = super::super::discovery::version_of_sync(&path);
+                AgentHealth {
+                    installed: true,
+                    version,
+                    error: None,
+                    binary_path: Some(path.to_string_lossy().to_string()),
+                    last_checked_at: now_ms(),
                 }
-            })
-        } else {
-            AgentHealth {
+            }
+            None => AgentHealth {
                 installed: false,
                 version: None,
-                error: Some("Failed to create tokio runtime".to_string()),
+                error: Some("opencode not found in PATH".to_string()),
                 binary_path: None,
                 last_checked_at: now_ms(),
-            }
-        };
-        result
+            },
+        }
     }
 
     fn scan_projects(&self) -> Vec<crate::project::Project> {
