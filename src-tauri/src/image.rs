@@ -18,7 +18,7 @@ pub struct SavedFile {
     pub batch_id: String,
 }
 
-fn validate_path(p: &PathBuf) -> Result<(), String> {
+pub(crate) fn validate_path(p: &PathBuf) -> Result<(), String> {
     let s = p.to_string_lossy().to_lowercase();
     if s.starts_with("\\\\") {
         return Err("UNC paths are not allowed".to_string());
@@ -28,7 +28,7 @@ fn validate_path(p: &PathBuf) -> Result<(), String> {
         let forbidden = ["\\windows\\", "\\system32\\", "\\programdata\\"];
         for f in &forbidden {
             if s.contains(f) {
-                return Err(format!("Access denied: system path"));
+                return Err("Access denied: system path".to_string());
             }
         }
     }
@@ -99,7 +99,7 @@ fn mime_for_ext(ext: &str) -> &'static str {
 }
 
 #[tauri::command]
-pub fn save_session_files(
+pub async fn save_session_files(
     project_path: String,
     files: Vec<InputFile>,
 ) -> Result<Vec<SavedFile>, String> {
@@ -140,7 +140,7 @@ pub fn save_session_files(
 }
 
 #[tauri::command]
-pub fn read_file_as_base64(path: String) -> Result<String, String> {
+pub async fn read_file_as_base64(path: String) -> Result<String, String> {
     let p = PathBuf::from(&path);
     validate_path(&p)?;
     let bytes = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
@@ -149,7 +149,7 @@ pub fn read_file_as_base64(path: String) -> Result<String, String> {
 
 #[cfg(target_os = "windows")]
 #[tauri::command]
-pub fn get_clipboard_file_paths() -> Result<Vec<String>, String> {
+pub async fn get_clipboard_file_paths() -> Result<Vec<String>, String> {
     let mut command = std::process::Command::new("powershell");
     let output = crate::process_command::std_no_window(
         command.args([
@@ -171,12 +171,12 @@ pub fn get_clipboard_file_paths() -> Result<Vec<String>, String> {
 
 #[cfg(not(target_os = "windows"))]
 #[tauri::command]
-pub fn get_clipboard_file_paths() -> Result<Vec<String>, String> {
+pub async fn get_clipboard_file_paths() -> Result<Vec<String>, String> {
     Ok(vec![])
 }
 
 #[tauri::command]
-pub fn read_image_as_data_url(path: String) -> Result<String, String> {
+pub async fn read_image_as_data_url(path: String) -> Result<String, String> {
     let p = PathBuf::from(&path);
     validate_path(&p)?;
     let bytes = fs::read(&path).map_err(|e| format!("Failed to read image: {}", e))?;

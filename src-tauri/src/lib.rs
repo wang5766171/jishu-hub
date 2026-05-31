@@ -38,9 +38,9 @@ fn list_agents(state: tauri::State<'_, Mutex<AppState>>) -> Vec<agent::AgentInfo
 }
 
 #[tauri::command]
-fn scan_projects(state: tauri::State<'_, Mutex<AppState>>) -> Vec<project::Project> {
-    let s = state.lock().unwrap();
-    s.registry.scan_projects()
+async fn scan_projects(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<project::Project>, String> {
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    Ok(s.registry.scan_projects())
 }
 
 #[tauri::command]
@@ -61,33 +61,31 @@ fn remove_project(encoded_name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_sessions(
+async fn list_sessions(
     state: tauri::State<'_, Mutex<AppState>>,
     encoded_name: String,
 ) -> Result<Vec<session::Session>, String> {
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().list_sessions(&encoded_name)
 }
 
 #[tauri::command]
-fn get_session_messages(
+async fn get_session_messages(
     state: tauri::State<'_, Mutex<AppState>>,
     session_id: String,
     encoded_name: String,
 ) -> Result<Vec<session::Message>, String> {
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .active()
         .get_session_messages(&session_id, &encoded_name)
 }
 
 #[tauri::command]
-fn read_text_file(path: String) -> Result<TextFilePreview, String> {
-    let p = std::path::Path::new(&path);
-    let s = p.to_string_lossy().to_lowercase();
-    if s.starts_with("\\\\") {
-        return Err("UNC paths are not allowed".to_string());
-    }
+async fn read_text_file(path: String) -> Result<TextFilePreview, String> {
+    // Use the same path validation as the other read commands so all three
+    // file-read entry points enforce identical rules (K-CRIT-1 consistency).
+    image::validate_path(&std::path::PathBuf::from(&path))?;
     let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
     if bytes.iter().take(TEXT_PREVIEW_MAX_BYTES).any(|b| *b == 0) {
         return Err("Binary files cannot be previewed as text".to_string());
@@ -113,12 +111,32 @@ fn read_text_file(path: String) -> Result<TextFilePreview, String> {
 #[tauri::command]
 fn write_text_file(path: String, content: String) -> Result<(), String> {
     let p = std::path::Path::new(&path);
-    // Only allow writing to regular files under user-writable locations
+    // Only allow writing to regular files under user-writable locations.
     let home = dirs::home_dir().ok_or("Cannot resolve home directory")?;
-    let allowed = p.starts_with(&home)
-        || p.starts_with(std::path::Path::new("/tmp"))
-        || p.starts_with(std::path::Path::new("/var/folders"));
-    if !allowed {
+
+    // Canonicalize the *parent* directory before the prefix check so lexical
+    // traversal (e.g. `<home>\..\..\Windows\System32\x`) can't slip past a
+    // purely textual `starts_with(home)` test — the OS would otherwise resolve
+    // the `..` during the actual write. Both sides are canonicalized so the
+    // Windows `\\?\` verbatim prefix matches consistently.
+    let parent = p.parent().ok_or("Invalid path: no parent directory")?;
+    let canon_parent = std::fs::canonicalize(parent)
+        .map_err(|e| format!("Cannot resolve target directory: {}", e))?;
+
+    let home_ok = std::fs::canonicalize(&home)
+        .map(|h| canon_parent.starts_with(&h))
+        .unwrap_or(false);
+    #[cfg(not(target_os = "windows"))]
+    let temp_ok = std::fs::canonicalize("/tmp")
+        .map(|t| canon_parent.starts_with(&t))
+        .unwrap_or(false)
+        || std::fs::canonicalize("/var/folders")
+            .map(|t| canon_parent.starts_with(&t))
+            .unwrap_or(false);
+    #[cfg(target_os = "windows")]
+    let temp_ok = false;
+
+    if !(home_ok || temp_ok) {
         return Err(format!("Path not allowed: {}", path));
     }
     // Prevent writing to hidden/system files
@@ -180,9 +198,11 @@ fn save_raw_config(
 }
 
 #[tauri::command]
-fn load_history(state: tauri::State<'_, Mutex<AppState>>) -> Vec<history::HistoryEntry> {
-    let s = state.lock().unwrap();
-    s.registry.active().load_history()
+async fn load_history(
+    state: tauri::State<'_, Mutex<AppState>>,
+) -> Result<Vec<history::HistoryEntry>, String> {
+    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    Ok(s.registry.active().load_history())
 }
 
 #[tauri::command]
@@ -353,6 +373,11 @@ fn open_in_terminal(
     project_path: String,
     resume_session_id: Option<String>,
 ) -> Result<u32, String> {
+    if let Some(sid) = resume_session_id.as_deref() {
+        if !agent::command_config::is_safe_session_id(sid) {
+            return Err("Invalid session id".to_string());
+        }
+    }
     let s = state.lock().unwrap();
     s.registry
         .active()
@@ -542,18 +567,23 @@ fn agent_get_active(state: tauri::State<'_, Mutex<AppState>>) -> String {
 }
 
 #[tauri::command]
-fn agent_refresh_health(state: tauri::State<'_, Mutex<AppState>>) -> Result<(), String> {
-    let s = state.lock().unwrap();
-    // Each agent's probe_sync() is synchronous — no await needed
-    let agents: Vec<_> = s.registry.agents_info();
-    let results: Vec<(String, agent::AgentHealth)> = agents
-        .iter()
-        .map(|(id, plugin)| (id.clone(), plugin.probe_sync()))
-        .collect();
-    drop(s);
+async fn agent_refresh_health(state: tauri::State<'_, Mutex<AppState>>) -> Result<(), String> {
+    let results: Vec<(String, agent::AgentHealth)> = {
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        // Each agent's probe_sync() is synchronous — no await needed
+        s.registry
+            .agents_info()
+            .iter()
+            .map(|(id, plugin)| (id.clone(), plugin.probe_sync()))
+            .collect()
+    };
 
     // Re-lock to update cache
-    let s = state.lock().unwrap();
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.update_health_cache(results);
     Ok(())
 }
@@ -574,8 +604,34 @@ fn check_prerequisite(command: String) -> bool {
         .unwrap_or(false)
 }
 
+/// Whitelist for `install_agent_command`. The frontend only ever sends the
+/// agents' built-in `install_hint` / `native_install_command` strings (and the
+/// `npm install -g npm@latest` runtime updater), all of which are fixed
+/// `npm/winget/choco install <pkg>` patterns. Restricting to these patterns
+/// closes the "execute arbitrary PowerShell" hole (K-HIGH-3 / original H1)
+/// without affecting any current install flow.
+fn is_allowed_install_command(cmd: &str) -> bool {
+    fn safe_pkg(s: &str) -> bool {
+        let s = s.trim();
+        !s.is_empty()
+            && !s.contains(char::is_whitespace)
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '/' | '.' | '_' | '-' | '+'))
+    }
+    let cmd = cmd.trim();
+    for prefix in ["npm install -g ", "winget install ", "choco install "] {
+        if let Some(rest) = cmd.strip_prefix(prefix) {
+            return safe_pkg(rest);
+        }
+    }
+    false
+}
+
 #[tauri::command]
 async fn install_agent_command(command: String) -> Result<String, String> {
+    if !is_allowed_install_command(&command) {
+        return Err(format!("Install command not allowed: {}", command));
+    }
     let mut installer = std::process::Command::new("powershell");
     let output =
         crate::process_command::std_no_window(installer.args(["-NoProfile", "-Command", &command]))
@@ -902,7 +958,10 @@ mod tests {
             std::env::temp_dir().join(format!("jishu-hub-text-preview-{}.txt", std::process::id()));
         std::fs::write(&path, "line 1\nline 2").unwrap();
 
-        let preview = super::read_text_file(path.to_string_lossy().to_string()).unwrap();
+        let preview = tauri::async_runtime::block_on(super::read_text_file(
+            path.to_string_lossy().to_string(),
+        ))
+        .unwrap();
 
         assert_eq!(preview.content, "line 1\nline 2");
         assert!(!preview.truncated);
