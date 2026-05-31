@@ -161,6 +161,9 @@ select option {
 
 /* === Colorful theme === */
 [data-theme="colorful"] {
+  --color-primary: hsl(221 83% 53%);
+  --color-primary-foreground: hsl(0 0% 100%);
+  --color-ring: hsl(221 83% 53%);
   --icon-search: #3b82f6;
   --icon-action: #3b82f6;
   --icon-folder: #f59e0b;
