@@ -163,7 +163,43 @@ async fn send_message_acp(
     session_id: Option<String>,
     message: String,
 ) -> Result<ChatSession, String> {
-    // Get ACP command from agent plugin
+    // Reuse existing ACP connection for subsequent messages in the same session
+    if let Some(ref sid) = session_id {
+        let chat_state = app.state::<Mutex<ChatState>>();
+        // Clone what we need while holding the lock, then release
+        let existing = chat_state
+            .lock()
+            .ok()
+            .and_then(|s| {
+                s.processes.get(sid).and_then(|p| {
+                    p.acp.as_ref().map(|acp| (acp.clone(), p.process_id))
+                })
+            });
+        if let Some((acp, pid)) = existing {
+            match acp.send_prompt(message.clone()).await {
+                Ok(()) => {
+                    return Ok(ChatSession {
+                        agent_id,
+                        session_id: sid.clone(),
+                        process_id: pid,
+                    });
+                }
+                Err(_) => {
+                    log::info!(
+                        "ACP connection closed for session {}, respawning",
+                        sid
+                    );
+                    let mut s = chat_state
+                        .lock()
+                        .map_err(|_| "Chat state lock poisoned".to_string())?;
+                    s.processes.retain(|_, p| p.process_id != pid);
+                    // fall through to spawn new process
+                }
+            }
+        }
+    }
+
+    // First message or reconnect: spawn new ACP process
     let (binary, args) = {
         let app_state = app.state::<Mutex<AppState>>();
         let s = app_state
@@ -174,7 +210,10 @@ async fn send_message_acp(
             .get(&agent_id)
             .ok_or_else(|| format!("Agent not found: {agent_id}"))?;
         let (bin, a) = agent.acp_command();
-        (bin.to_string(), a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        (
+            bin.to_string(),
+            a.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        )
     };
 
     let mut command = tokio::process::Command::new(&binary);
@@ -193,25 +232,26 @@ async fn send_message_acp(
         .map_err(|e| format!("Failed to spawn opencode acp: {e}"))?;
 
     let pid = child.id().unwrap_or(0);
-    let sid = session_id.clone().unwrap_or_else(|| format!("pending-{}", pid));
+    let sid = session_id.unwrap_or_else(|| format!("pending-{}", pid));
 
     let app_clone = app.clone();
     let app_resolve = app.clone();
-    let sid_clone = sid.clone();
     let sid_resolve = sid.clone();
+    let pid_for_cleanup = pid;
 
     let acp_control = crate::acp_runtime::spawn_acp_session(
         app.clone(),
         agent_id.clone(),
         sid.clone(),
-        session_id.clone(),
         child,
         project_path,
         message,
+        // on_finish: clean up all entries for this process
         move || {
             let state = app_clone.state::<Mutex<ChatState>>();
             if let Ok(mut s) = state.lock() {
-                s.processes.remove(&sid_clone);
+                s.processes
+                    .retain(|_, p| p.process_id != pid_for_cleanup);
             };
         },
         move |real_id: &str| {
@@ -251,34 +291,32 @@ async fn send_message_acp(
 pub async fn abort_chat(app: AppHandle, session_id: String) -> Result<(), String> {
     let chat_state = app.state::<Mutex<ChatState>>();
     let process = {
-        let mut s = chat_state
+        let s = chat_state
             .lock()
             .map_err(|_| "Chat state lock poisoned".to_string())?;
         let Some(process) = s.processes.get(&session_id).cloned() else {
             return Ok(());
         };
-        s.processes
-            .retain(|_, item| item.process_id != process.process_id);
         process
     };
 
-    let app_state = app.state::<Mutex<AppState>>();
-
-    // ACP cancel path: send session/cancel then fallback to kill
+    // ACP cancel path: send cancel only, keep connection alive
     if let Some(acp) = &process.acp {
         acp.send_cancel().await;
-        let grace = std::time::Duration::from_millis(2000);
-        tokio::time::sleep(grace).await;
-        if crate::process_control::is_process_running(process.process_id) {
-            let _ = crate::process_control::terminate_process_tree(process.process_id);
-        }
-        log::info!(
-            "aborted {} ACP chat session {} via session/cancel",
-            process.agent_id,
-            session_id
-        );
+        log::info!("cancelled ACP prompt in session {}", session_id);
         return Ok(());
     }
+
+    // Non-ACP path: remove process entry then abort
+    {
+        let mut s = chat_state
+            .lock()
+            .map_err(|_| "Chat state lock poisoned".to_string())?;
+        s.processes
+            .retain(|_, item| item.process_id != process.process_id);
+    }
+
+    let app_state = app.state::<Mutex<AppState>>();
 
     let (abort_sequence, abort_grace) = {
         let s = app_state

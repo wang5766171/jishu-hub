@@ -26,7 +26,7 @@ tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
-tokio = { version = "1", features = ["process", "io-util", "net", "time"] }
+tokio = { version = "1", features = ["process", "io-util", "net", "time", "macros", "sync"] }
 base64 = "0.22"
 open = "5"
 bitflags = "2"
