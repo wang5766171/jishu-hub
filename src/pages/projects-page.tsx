@@ -145,8 +145,8 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
             <Settings2 className="h-4 w-4 mr-1" />
             {managementMode ? "退出管理" : "管理"}
           </Button>
-          <Button onClick={() => setAddDialogOpen(true)}>
-            <Plus className="mr-2 h-4 w-4" />
+          <Button className="gap-2" onClick={() => setAddDialogOpen(true)}>
+            <Plus className="h-4 w-4" />
             {t("projects.addProject")}
           </Button>
         </div>
@@ -170,7 +170,7 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
                   onClick={() => setSelectedAgent("all")}
                   className={`inline-flex h-7 items-center rounded-[7px] px-3 text-xs font-medium transition-colors ${
                     selectedAgent === "all"
-                      ? "bg-foreground text-background shadow-sm"
+                      ? "bg-primary text-primary-foreground shadow-sm"
                       : "text-muted-foreground hover:bg-background/80 hover:text-foreground"
                   }`}
                 >
@@ -182,7 +182,7 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
                     onClick={() => setSelectedAgent(selectedAgent === agent.id ? "all" : agent.id)}
                     className={`inline-flex h-7 items-center gap-1.5 rounded-[7px] px-3 text-xs font-medium transition-colors ${
                       selectedAgent === agent.id
-                        ? "bg-foreground text-background shadow-sm"
+                        ? "bg-primary text-primary-foreground shadow-sm"
                         : "text-muted-foreground hover:bg-background/80 hover:text-foreground"
                     }`}
                   >
@@ -203,7 +203,7 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
                     onClick={() => setSelectedTag(selectedTag === tag ? null : tag)}
                     className={`inline-flex h-7 items-center rounded-[7px] px-2.5 text-xs font-medium transition-colors ${
                       selectedTag === tag
-                        ? "bg-foreground text-background"
+                        ? "bg-primary text-primary-foreground"
                         : "bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground"
                     }`}
                   >
