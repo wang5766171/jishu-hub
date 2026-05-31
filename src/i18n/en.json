@@ -30,6 +30,7 @@
     "agentsTitle": "Agent CLIs",
     "notInstalled": "Not installed",
     "installed": "Installed",
+    "ready": "Ready",
     "normal": "Normal",
     "abnormal": "Abnormal",
     "download": "Download",

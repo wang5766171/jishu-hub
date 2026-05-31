@@ -62,7 +62,7 @@ export const AgentSwitcher = memo(function AgentSwitcher({ children }: { childre
               <AgentLogo agentId={active.id} size={18} />
               <span className="min-w-0 flex-1 truncate text-sm font-medium">{active.display_name}</span>
               <span className="text-[11px] text-muted-foreground">
-                {activeInstalled ? t("env.installed") : t("env.notInstalled")}
+                {activeInstalled ? t("env.ready") : t("env.notInstalled")}
               </span>
             </div>
             {active.health.error && (
@@ -71,7 +71,7 @@ export const AgentSwitcher = memo(function AgentSwitcher({ children }: { childre
               </div>
             )}
           </div>
-          <div className="mt-2">
+          <div className="mt-3 border-t border-border/40 pt-2">
             {agents.map((agent) => (
               <button
                 key={agent.id}

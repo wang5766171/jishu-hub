@@ -30,6 +30,7 @@
     "agentsTitle": "智能体 CLI",
     "notInstalled": "未安装",
     "installed": "已安装",
+    "ready": "已就绪",
     "normal": "正常",
     "abnormal": "异常",
     "download": "下载",
