@@ -38,13 +38,13 @@ const MODEL_LABELS: Record<string, string> = {
   "claude-haiku-4-5-20251001": "config.modelHaiku45",
 };
 
-function resolveLabel(map: Record<string, string>, key: string | null | undefined, t: (k: string) => string): string | null {
+function resolveLabel(map: Record<string, string>, key: string | null | undefined, t: (k: string, opts?: Record<string, unknown>) => string): string | null {
   if (!key) return null;
   const i18nKey = map[key];
   return i18nKey ? t(i18nKey) : key;
 }
 
-function extractConfigItems(config: ClaudeConfig, t: (k: string) => string): { label: string; value: string; highlight?: boolean }[] {
+function extractConfigItems(config: ClaudeConfig, t: (k: string, opts?: Record<string, unknown>) => string): { label: string; value: string; highlight?: boolean }[] {
   const items: { label: string; value: string; highlight?: boolean }[] = [];
 
   const model = resolveLabel(MODEL_LABELS, config.model, t);
@@ -58,12 +58,12 @@ function extractConfigItems(config: ClaudeConfig, t: (k: string) => string): { l
 
   const allow = config.permissions?.allow;
   if (allow && allow.length > 0) {
-    items.push({ label: t("config.allowCount", { count: allow.length } as Record<string, unknown>), value: allow.join(", ") });
+    items.push({ label: t("config.allowCount", { count: allow.length }), value: allow.join(", ") });
   }
 
   const deny = config.permissions?.deny;
   if (deny && deny.length > 0) {
-    items.push({ label: t("config.denyCount", { count: deny.length } as Record<string, unknown>), value: deny.join(", ") });
+    items.push({ label: t("config.denyCount", { count: deny.length }), value: deny.join(", ") });
   }
 
   if (config.sandbox?.enabled) {
