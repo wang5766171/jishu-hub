@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { AddCommandDialog } from "@/components/commands/add-command-dialog";
