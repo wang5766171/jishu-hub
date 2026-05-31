@@ -46,5 +46,6 @@ docs/superpowers/
 .opencode
 CLAUDE.md
 AGENTS.md
-kiro-run.bat
+run-kiro.cmd
+run-kiro.ps1
 graphify.zh-CN.md
