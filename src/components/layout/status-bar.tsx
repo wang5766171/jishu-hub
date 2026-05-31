@@ -12,7 +12,7 @@ export function StatusBar({ projectCount }: StatusBarProps) {
   const toggleLanguage = async () => {
     const newLang = i18n.language === "zh" ? "en" : "zh";
     await i18n.changeLanguage(newLang);
-    invokeCommand("save_language", { lang: newLang }).catch(() => {});
+    invokeCommand("save_language", { lang: newLang }).catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
   };
 
   return (
