@@ -83,6 +83,11 @@ fn get_session_messages(
 
 #[tauri::command]
 fn read_text_file(path: String) -> Result<TextFilePreview, String> {
+    let p = std::path::Path::new(&path);
+    let home = dirs::home_dir().ok_or("Cannot resolve home directory")?;
+    if !p.starts_with(&home) {
+        return Err("Access denied: path outside home directory".to_string());
+    }
     let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
     if bytes.iter().take(TEXT_PREVIEW_MAX_BYTES).any(|b| *b == 0) {
         return Err("Binary files cannot be previewed as text".to_string());

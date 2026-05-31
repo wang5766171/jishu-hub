@@ -53,13 +53,26 @@ export function parseFileRefs(text: string): FileRef[] {
   return refs;
 }
 
+const MAX_CACHE_SIZE = 50;
+
 const imageCache = new Map<string, Promise<string>>();
+
+function evictCache() {
+  if (imageCache.size <= MAX_CACHE_SIZE) return;
+  const keys = imageCache.keys();
+  const excess = imageCache.size - MAX_CACHE_SIZE;
+  for (let i = 0; i < excess; i++) {
+    const key = keys.next().value;
+    if (key) imageCache.delete(key);
+  }
+}
 
 function loadImage(path: string): Promise<string> {
   let p = imageCache.get(path);
   if (!p) {
     p = invokeCommand<string>("read_image_as_data_url", { path });
     imageCache.set(path, p);
+    evictCache();
   }
   return p;
 }

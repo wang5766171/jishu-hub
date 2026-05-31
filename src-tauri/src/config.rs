@@ -185,7 +185,9 @@ pub fn save_config(config: &ClaudeConfig) -> Result<(), Box<dyn std::error::Erro
     }
 
     let json = serde_json::to_string_pretty(&new_value).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &json).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
 
     let written = std::fs::read_to_string(&path)?;
     let _: ClaudeConfig = serde_json::from_str(&written)?;
@@ -202,7 +204,27 @@ pub fn backup_config() -> Result<PathBuf, Box<dyn std::error::Error>> {
     if src.exists() {
         std::fs::copy(&src, &dst)?;
     }
+    cleanup_old_backups(&backup_dir, 10)?;
     Ok(dst)
+}
+
+fn cleanup_old_backups(backup_dir: &std::path::Path, keep: usize) -> Result<(), Box<dyn std::error::Error>> {
+    let mut backups: Vec<std::path::PathBuf> = std::fs::read_dir(backup_dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path().extension().map(|ext| ext == "json").unwrap_or(false)
+                && e.file_name().to_string_lossy().starts_with("settings_")
+        })
+        .map(|e| e.path())
+        .collect();
+    if backups.len() <= keep {
+        return Ok(());
+    }
+    backups.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    for old in backups.iter().skip(keep) {
+        let _ = std::fs::remove_file(old);
+    }
+    Ok(())
 }
 
 pub fn list_backups() -> Result<Vec<BackupEntry>, Box<dyn std::error::Error>> {
@@ -245,7 +267,9 @@ pub fn restore_backup(backup_path: &str) -> Result<(), Box<dyn std::error::Error
     let dst = config_path()?;
     let content = std::fs::read_to_string(backup_path)?;
     let _: ClaudeConfig = serde_json::from_str(&content)?;
-    std::fs::write(&dst, content)?;
+    let tmp = dst.with_extension("tmp");
+    std::fs::write(&tmp, &content)?;
+    std::fs::rename(&tmp, &dst)?;
     Ok(())
 }
 
@@ -261,6 +285,8 @@ pub fn import_config(import_path: &str) -> Result<ClaudeConfig, Box<dyn std::err
     let config: ClaudeConfig = serde_json::from_str(&content)?;
     let dst = config_path()?;
     backup_config()?;
-    std::fs::write(&dst, &content)?;
+    let tmp = dst.with_extension("tmp");
+    std::fs::write(&tmp, &content)?;
+    std::fs::rename(&tmp, &dst)?;
     Ok(config)
 }

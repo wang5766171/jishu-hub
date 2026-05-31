@@ -23,10 +23,8 @@ export function AddProjectDialog({ open, onOpenChange, onAdded }: AddProjectDial
   const handleBrowse = async (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
-    console.log("handleBrowse triggered");
     try {
       const selected = await openDialog({ directory: true, multiple: false });
-      console.log("selected:", selected);
       if (selected) {
         setPath(selected);
         setError(null);

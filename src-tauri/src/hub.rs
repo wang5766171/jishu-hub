@@ -18,7 +18,13 @@ fn read_json<T: for<'de> Deserialize<'de>>(
 
 fn write_json<T: Serialize>(path: &PathBuf, data: &T) -> Result<(), Box<dyn std::error::Error>> {
     let json = serde_json::to_string_pretty(data)?;
-    std::fs::write(path, json)?;
+    atomic_write(path, &json)
+}
+
+fn atomic_write(path: &PathBuf, content: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let tmp_path = path.with_extension("tmp");
+    std::fs::write(&tmp_path, content)?;
+    std::fs::rename(&tmp_path, path)?;
     Ok(())
 }
 
@@ -612,7 +618,10 @@ fn find_process_by_resume(session_id: &str) -> Result<Option<u32>, Box<dyn std::
     {
         let marker_filter = crate::agent::command_config::resume_markers(session_id)
             .into_iter()
-            .map(|marker| format!("$_.CommandLine -like '*{}*'", marker.replace('\'', "''")))
+            .map(|marker| {
+                let escaped = marker.replace('\'', "''").replace('[', "`[").replace(']', "`]").replace('*', "`*").replace('?', "`?");
+                format!("$_.CommandLine -like '*{}*'", escaped)
+            })
             .collect::<Vec<_>>()
             .join(" -or ");
         let mut command = std::process::Command::new("powershell");

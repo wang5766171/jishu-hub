@@ -18,6 +18,14 @@ pub struct SavedFile {
     pub batch_id: String,
 }
 
+fn sanitize_label(label: &str) -> String {
+    label
+        .chars()
+        .map(|c| if c == '/' || c == '\\' || c == '\0' { '_' } else { c })
+        .collect::<String>()
+        .replace("..", "_")
+}
+
 fn session_files_dir(project_path: &str) -> PathBuf {
     PathBuf::from(project_path)
         .join(".jishu_hub")
@@ -86,10 +94,11 @@ pub fn save_session_files(
 
     for (i, file) in files.iter().enumerate() {
         let index = (i + 1) as u32;
-        let label = file
+        let raw_label = file
             .label
             .clone()
             .unwrap_or_else(|| format!("文件{}", index));
+        let label = sanitize_label(&raw_label);
         let ext = PathBuf::from(&file.filename)
             .extension()
             .and_then(|e| e.to_str())
@@ -115,6 +124,11 @@ pub fn save_session_files(
 
 #[tauri::command]
 pub fn read_file_as_base64(path: String) -> Result<String, String> {
+    let p = PathBuf::from(&path);
+    let home = dirs::home_dir().ok_or("Cannot resolve home directory")?;
+    if !p.starts_with(&home) {
+        return Err("Access denied: path outside home directory".to_string());
+    }
     let bytes = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
     Ok(BASE64.encode(&bytes))
 }
@@ -149,6 +163,11 @@ pub fn get_clipboard_file_paths() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub fn read_image_as_data_url(path: String) -> Result<String, String> {
+    let p = PathBuf::from(&path);
+    let home = dirs::home_dir().ok_or("Cannot resolve home directory")?;
+    if !p.starts_with(&home) {
+        return Err("Access denied: path outside home directory".to_string());
+    }
     let bytes = fs::read(&path).map_err(|e| format!("Failed to read image: {}", e))?;
     let pb = PathBuf::from(&path);
     let ext = pb.extension().and_then(|e| e.to_str()).unwrap_or("png");

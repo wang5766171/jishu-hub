@@ -21,6 +21,10 @@ export function CommandsPage() {
   const [runningKey, setRunningKey] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
+  useEffect(() => {
+    return () => clearTimeout(timerRef.current);
+  }, []);
+
   const handleRun = useCallback(async (key: string, cmd: string, cwd?: string | null) => {
     if (runningKey) return;
     setRunningKey(key);
@@ -32,6 +36,7 @@ export function CommandsPage() {
     } catch (err) {
       console.error("Failed to run command:", err);
     }
+    clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => setRunningKey(null), COOLDOWN_MS);
   }, [runningKey]);
 

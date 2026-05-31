@@ -154,12 +154,18 @@ function extractMessagesText(messages: Message[], indices: number[]): string {
 function CopyButton({ text }: { text: string }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => {
+    return () => clearTimeout(timerRef.current);
+  }, []);
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
     await navigator.clipboard.writeText(text);
     setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setCopied(false), 1500);
   };
 
   return (
