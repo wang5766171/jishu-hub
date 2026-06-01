@@ -8,6 +8,7 @@ mod dialog_commands;
 mod history;
 mod hub;
 mod image;
+mod orchestrator;
 mod process_command;
 mod process_control;
 mod project;
