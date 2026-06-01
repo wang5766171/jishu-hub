@@ -228,3 +228,21 @@ export interface SavedFile {
   index: number;
   batch_id: string;
 }
+
+export interface ModelPreset {
+  id: string;
+  display_name: string;
+  protocol: string;
+  base_url: string;
+  model: string;
+  api_key_env: string;
+  max_tokens: number;
+  temperature: number;
+  supports_tools: boolean;
+  supports_thinking: boolean;
+}
+
+export interface ModelStore {
+  presets: ModelPreset[];
+  active: string | null;
+}

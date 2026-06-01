@@ -1137,6 +1137,98 @@ fn install_update(app: tauri::AppHandle, installer_path: String) -> Result<(), S
     Ok(())
 }
 
+// ── Model management IPC commands ────────────────────────────────────────────
+
+#[tauri::command]
+fn list_models() -> Result<serde_json::Value, String> {
+    let store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
+    Ok(serde_json::to_value(store).map_err(|e| e.to_string())?)
+}
+
+#[tauri::command]
+fn add_model(preset: serde_json::Value) -> Result<(), String> {
+    let mut store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
+    let preset: llm::config::ModelPreset =
+        serde_json::from_value(preset).map_err(|e| e.to_string())?;
+    store.add(preset).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_model(id: String) -> Result<(), String> {
+    let mut store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
+    store.remove(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_active_model(id: String) -> Result<(), String> {
+    let mut store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
+    store.set_active(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn test_model(id: String) -> Result<serde_json::Value, String> {
+    let store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
+    let preset = store
+        .presets
+        .iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| format!("Model '{id}' not found"))?
+        .clone();
+
+    llm::http::resolve_api_key(&preset).map_err(|e| format!("{e}"))?;
+
+    let provider = llm::create_provider(&preset).map_err(|e| e.to_string())?;
+    let req = llm::message::LlmRequest {
+        model: preset.model.clone(),
+        messages: vec![llm::message::LlmMessage {
+            role: llm::message::LlmRole::User,
+            content: Some("Say hello in one word.".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+        }],
+        tools: vec![],
+        stream: true,
+        max_tokens: Some(64),
+        temperature: Some(0.0),
+    };
+
+    let cancel = llm::CancelToken::new();
+    let response = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let usage = std::sync::Arc::new(std::sync::Mutex::new(None::<agent::normalized::UsageStats>));
+
+    let resp_clone = response.clone();
+    let usage_clone = usage.clone();
+    let emitter = Box::new(move |event| match event {
+        agent::NormalizedEvent::TextDelta { delta } => {
+            if let Ok(mut s) = resp_clone.lock() {
+                s.push_str(&delta);
+            }
+        }
+        agent::NormalizedEvent::TurnComplete {
+            usage: Some(u), ..
+        } => {
+            if let Ok(mut info) = usage_clone.lock() {
+                *info = Some(u);
+            }
+        }
+        _ => {}
+    });
+
+    let turn = provider
+        .stream_chat(req, emitter, &cancel)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let resp_text = response.lock().map_err(|e| e.to_string())?.clone();
+    let usage_val = usage.lock().map_err(|e| e.to_string())?.clone();
+
+    Ok(serde_json::json!({
+        "response": resp_text,
+        "stop_reason": format!("{:?}", turn.stop_reason),
+        "usage": usage_val,
+    }))
+}
+
 // ── Orchestrator IPC commands (feature-gated) ──────────────────────────────────
 
 #[cfg(feature = "orchestrator")]
@@ -1270,6 +1362,11 @@ pub fn run() {
             run_list,
             run_get,
             run_cancel,
+            list_models,
+            add_model,
+            remove_model,
+            set_active_model,
+            test_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

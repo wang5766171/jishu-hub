@@ -5,6 +5,7 @@ import { ConfigForm } from "@/components/config/config-form";
 import { RawConfigEditor } from "@/components/config/raw-config-editor";
 import { TemplateManager } from "@/components/config/template-manager";
 import { BackupManager } from "@/components/config/backup-manager";
+import { ModelManager } from "@/components/config/model-manager";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Download, Upload } from "lucide-react";
@@ -25,7 +26,7 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
   const { data: config, loading, error: configError, refetch } = useInvoke<ClaudeConfig>("load_config", undefined, agentRefreshKey);
   const useRaw = !!configError;
   const { data: rawConfig, refetch: refetchRaw } = useInvoke<RawConfigInfo>("load_raw_config", undefined, useRaw ? agentRefreshKey : 0);
-  const [activeTab, setActiveTab] = useState<"edit" | "templates" | "backups">(initialTab);
+  const [activeTab, setActiveTab] = useState<"edit" | "templates" | "models" | "backups">(initialTab === "edit" || initialTab === "templates" || initialTab === "backups" ? initialTab : "edit");
 
   const handleConfigSaved = useCallback(() => {
     refetch();
@@ -92,6 +93,7 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
   const tabs = [
     { key: "edit" as const, label: t("config.editConfig") },
     { key: "templates" as const, label: t("config.templates") },
+    { key: "models" as const, label: t("config.models") },
     { key: "backups" as const, label: t("config.backups") },
   ];
 
@@ -137,6 +139,9 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
         )}
         {activeTab === "templates" && (
           <TemplateManager onApplied={refetch} />
+        )}
+        {activeTab === "models" && (
+          <ModelManager onChanged={refetch} />
         )}
         {activeTab === "backups" && (
           <BackupManager onRestored={refetch} />

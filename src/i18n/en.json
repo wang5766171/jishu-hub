@@ -265,7 +265,22 @@
     "maxTurns": "Max Turns",
     "sandbox": "Sandbox",
     "enabled": "Enabled",
-    "disabled": "Disabled"
+    "disabled": "Disabled",
+    "models": "Models",
+    "modelManagerDesc": "Configure LLM model providers (OpenAI and Anthropic compatible). Used by jishu-self agent and task orchestration.",
+    "addModel": "Add Model",
+    "noModels": "No models configured",
+    "noModelsDesc": "Click 'Add Model' above to configure your first model",
+    "testModel": "Test connectivity",
+    "removeModel": "Remove model",
+    "activeModel": "Currently active",
+    "setActiveModel": "Set as active",
+    "active": "Active",
+    "protocol": "Protocol",
+    "baseUrl": "API Base URL",
+    "modelName": "Model Name",
+    "apiKeyHint": "Provide API key via env var: export {{env}}=sk-xxx",
+    "modelId": "ID"
   },
   "commands": {
     "title": "Commands",
