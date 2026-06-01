@@ -9,6 +9,7 @@ pub mod classify;
 pub mod claude_code;
 pub mod command_config;
 pub mod discovery;
+pub mod jishu_self;
 pub mod normalized;
 
 pub use capability::{AgentCapabilities, AgentHealth};
@@ -58,6 +59,10 @@ impl AgentRegistry {
         let opencode = adapters::opencode::OpencodeAdapter::new();
         let opencode_id = opencode.info().id.clone();
         agents.insert(opencode_id, Box::new(opencode));
+
+        let jishu_self = jishu_self::JishuSelfAgent::new();
+        let jishu_self_id = jishu_self.info().id.clone();
+        agents.insert(jishu_self_id, Box::new(jishu_self));
 
         Self {
             agents,
@@ -344,6 +349,7 @@ pub fn normalize_stream_event(agent_id: &str, event: &serde_json::Value) -> Vec<
         "claude-code" => claude_code::normalize_stream_event(event),
         "codex" => adapters::codex::normalize_stream_event(event),
         "opencode" => adapters::opencode::normalize_stream_event(event),
+        "jishu-self" => jishu_self::normalize_stream_event(event),
         _ => vec![NormalizedEvent::Raw {
             agent: agent_id.to_string(),
             raw: event.clone(),
