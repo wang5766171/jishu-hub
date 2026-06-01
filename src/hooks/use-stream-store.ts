@@ -11,6 +11,13 @@ export interface StreamToolUse {
   isError?: boolean;
 }
 
+export interface StepInfo {
+  runId: string;
+  stepId: string;
+  kind: string;
+  title: string;
+}
+
 /**
  * Per-session streaming state.
  *
@@ -35,6 +42,8 @@ export interface SessionStreamState {
   abortKey: string;
   /** True while the stream is open; flips to false on turn_complete. */
   isStreaming: boolean;
+  /** Step events from the orchestrator (v0.6.0). */
+  steps: StepInfo[];
 }
 
 function emptyState(abortKey: string, pendingUserMessage: string | null): SessionStreamState {
@@ -49,6 +58,7 @@ function emptyState(abortKey: string, pendingUserMessage: string | null): Sessio
     resolvedId: null,
     abortKey,
     isStreaming: true,
+    steps: [],
   };
 }
 
@@ -85,7 +95,7 @@ class StreamStore {
     const key = this.canonical(sid);
     const prev = this.sessions.get(key) ?? emptyState(key, null);
 
-    let { content, text, thinking, error, tools, resolvedId } = prev;
+    let { content, text, thinking, error, tools, resolvedId, steps } = prev;
     const { pendingUserMessage, abortKey, isStreaming } = prev;
     const chunks = [...prev.chunks, chunk];
 
@@ -138,7 +148,11 @@ class StreamStore {
           this.aliases.set(realId, key);
         }
       }
+    } else if (data.kind === "task_step") {
+      // v0.6.0: Store task_step events for debugging and potential future UI rendering
+      steps = [...steps, { runId: data.run_id, stepId: data.step_id, kind: data.step_kind, title: data.title }];
     }
+    // sub_agent_dispatch, sub_agent_event — stored in chunks only, no state mutation needed
 
     this.sessions.set(key, {
       chunks,
@@ -151,6 +165,7 @@ class StreamStore {
       resolvedId,
       abortKey,
       isStreaming,
+      steps,
     });
     this.scheduleFlush();
   }

@@ -10,7 +10,7 @@ import npmLogo from "@/assets/agents/npm.svg";
 import npmLightLogo from "@/assets/agents/npm-light.svg";
 import pythonLogo from "@/assets/agents/python.svg";
 import pythonLightLogo from "@/assets/agents/python-light.svg";
-import { Bot } from "lucide-react";
+import { Bot, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/hooks/use-theme";
 
@@ -37,6 +37,18 @@ export function AgentLogo({ agentId, size = 16, className }: AgentLogoProps) {
         className={cn("shrink-0 object-contain", className)}
         style={{ width: size, height: size }}
       />
+    );
+  }
+
+  // Special case: jishu-self uses Sparkles icon
+  if (agentId === "jishu-self") {
+    return (
+      <span
+        className={cn("inline-flex shrink-0 items-center justify-center rounded bg-primary/10 text-primary", className)}
+        style={{ width: size, height: size }}
+      >
+        <Sparkles style={{ width: Math.max(12, size - 4), height: Math.max(12, size - 4) }} />
+      </span>
     );
   }
 
