@@ -34,11 +34,7 @@ fn dispatch(cmd: Commands, ctx: &ExecutionContext) -> Result<(), CliError> {
         Commands::Agents { action } => commands::agents::run(action, ctx),
         Commands::Projects { action } => commands::projects::run(action, ctx),
         Commands::Sessions { action } => commands::sessions::run(action, ctx),
-        Commands::Chat {
-            agent,
-            session,
-            project,
-        } => commands::chat::run(agent, session, project, ctx),
+        Commands::Chat { action } => commands::chat::run(action, ctx),
         Commands::Config { action } => commands::config_cmd::run(action, ctx),
         Commands::Doctor { fix, format, only } => commands::doctor::run(fix, &format, only.as_deref(), ctx),
         Commands::Plan { action } => commands::plan::run(action, ctx),

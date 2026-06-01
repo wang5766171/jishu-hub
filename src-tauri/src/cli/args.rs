@@ -40,18 +40,10 @@ pub enum Commands {
         action: SessionAction,
     },
 
-    /// Start an interactive chat with an agent.
+    /// Chat with an agent.
     Chat {
-        /// Agent identifier.
-        agent: String,
-
-        /// Session ID to resume.
-        #[arg(long)]
-        session: Option<String>,
-
-        /// Project path.
-        #[arg(long, default_value = ".")]
-        project: String,
+        #[command(subcommand)]
+        action: ChatAction,
     },
 
     /// View or edit configuration.
@@ -219,6 +211,64 @@ pub enum SessionAction {
     Delete {
         /// Session ID.
         session_id: String,
+    },
+}
+
+// ── Chat ─────────────────────────────────────────────────────────────────────
+
+#[derive(Subcommand, Debug)]
+pub enum ChatAction {
+    /// Send a message to an agent.
+    Send {
+        /// Agent identifier.
+        #[arg(long, default_value = "claude-code")]
+        agent: String,
+
+        /// Project path.
+        #[arg(long, default_value = ".")]
+        project: String,
+
+        /// Message text.
+        #[arg(long)]
+        message: Option<String>,
+
+        /// Read message from file.
+        #[arg(long)]
+        message_file: Option<String>,
+
+        /// Read message from stdin.
+        #[arg(long)]
+        message_stdin: bool,
+
+        /// Session ID to resume.
+        #[arg(long)]
+        session: Option<String>,
+
+        /// Stream output as JSON-lines.
+        #[arg(long)]
+        stream_json: bool,
+
+        /// Don't wait for completion (print PID and exit).
+        #[arg(long)]
+        no_wait: bool,
+    },
+
+    /// Resume an interactive session.
+    Resume {
+        /// Session ID.
+        id: String,
+    },
+
+    /// Abort a running session.
+    Abort {
+        /// Session ID.
+        id: String,
+    },
+
+    /// Tail session output.
+    Tail {
+        /// Session ID.
+        id: String,
     },
 }
 
