@@ -1,4 +1,5 @@
 pub mod bus;
+pub mod planner;
 pub mod proposal;
 pub mod result;
 pub mod spec;
