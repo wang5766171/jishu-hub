@@ -33,7 +33,7 @@ impl AgentPlugin for JishuSelfAgent {
     fn info(&self) -> AgentInfo {
         AgentInfo {
             id: "jishu-self".to_string(),
-            display_name: "Jishu (\u{673a}\u{6927})".to_string(),
+            display_name: "Jishu".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             icon: "sparkles".to_string(),
             enabled: true,

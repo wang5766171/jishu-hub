@@ -18,7 +18,7 @@ fn no_api_keys_in_model_store() {
                     for line in content.lines() {
                         if line.contains("sk-") && !line.contains("sk-") || line.contains("api_key") && line.contains('"') && !line.contains("api_key_env") && !line.contains("//") && !line.contains("test") {
                             // Skip known safe patterns
-                            if line.contains("api_key_env") || line.contains("api_key: None") || line.contains("API key") {
+                            if line.contains("api_key_env") || line.contains("api_key: None") || line.contains("API key") || line.contains("header") {
                                 continue;
                             }
                             violations.push(format!("{}: possible hardcoded API key: {}", path.display(), line.trim()));

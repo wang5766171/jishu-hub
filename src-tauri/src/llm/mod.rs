@@ -1,11 +1,13 @@
 pub mod anthropic;
 pub mod config;
+pub mod http;
 pub mod message;
 pub mod openai;
 pub mod sse;
 
 use message::LlmRequest;
 
+#[derive(Clone)]
 pub struct CancelToken(pub std::sync::Arc<std::sync::atomic::AtomicBool>);
 
 impl CancelToken {
@@ -20,6 +22,7 @@ impl CancelToken {
     }
 }
 
+#[derive(Debug)]
 pub struct LlmTurn {
     pub stop_reason: message::StopReason,
     pub tool_calls: Vec<message::LlmToolCall>,
