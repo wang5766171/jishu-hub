@@ -1,8 +1,9 @@
-/// Verify that API keys and secrets are never logged or written to trace files
-/// in plaintext. Model presets store only the environment variable name, not
-/// the actual key value.
+/// Verify that API keys and secrets are never hardcoded in source code.
+/// ModelPreset stores api_key as Option<String> (user-provided, persisted to
+/// models.json) and api_key_env as fallback. Source code must not contain
+/// literal key values.
 #[test]
-fn no_api_keys_in_model_store() {
+fn no_api_keys_in_source() {
     let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut violations = Vec::new();
 
@@ -14,13 +15,10 @@ fn no_api_keys_in_model_store() {
                     check_dir(&path, violations);
                 } else if path.extension().map(|e| e == "rs").unwrap_or(false) {
                     let content = std::fs::read_to_string(&path).unwrap_or_default();
-                    // Check for patterns that look like hardcoded API keys
                     for line in content.lines() {
-                        if line.contains("sk-") && !line.contains("sk-") || line.contains("api_key") && line.contains('"') && !line.contains("api_key_env") && !line.contains("//") && !line.contains("test") {
-                            // Skip known safe patterns
-                            if line.contains("api_key_env") || line.contains("api_key: None") || line.contains("API key") || line.contains("header") {
-                                continue;
-                            }
+                        // Look for literal "sk-" key values (quoted string starting with sk-)
+                        // False positives from starts_with / task-notification / ask are excluded
+                        if line.contains("\"sk-") && !line.contains("test") && !line.contains("example") && !line.contains("placeholder") {
                             violations.push(format!("{}: possible hardcoded API key: {}", path.display(), line.trim()));
                         }
                     }
@@ -30,23 +28,23 @@ fn no_api_keys_in_model_store() {
     }
 
     check_dir(&src_dir, &mut violations);
-    // For now, this is a placeholder check — the real protection is that
-    // ModelPreset stores api_key_env (env var name) not the actual key.
     assert!(
         violations.is_empty(),
-        "Potential secret leaks:\n{}",
+        "Potential hardcoded secrets in source:\n{}",
         violations.join("\n")
     );
 }
 
 #[test]
-fn model_preset_uses_env_var_not_key() {
+fn model_preset_stores_key_safely() {
     use std::path::Path;
     let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("llm").join("config.rs");
     if config_path.exists() {
         let content = std::fs::read_to_string(&config_path).unwrap();
-        // ModelPreset should have api_key_env, not api_key
-        assert!(content.contains("api_key_env"), "ModelPreset must use api_key_env field");
-        assert!(!content.contains("api_key: String"), "ModelPreset must NOT store raw API keys");
+        // api_key is Option<String> (nullable, skip_serializing_if none)
+        assert!(
+            content.contains("skip_serializing_if") && content.contains("api_key"),
+            "api_key field must use skip_serializing_if to avoid writing nulls"
+        );
     }
 }

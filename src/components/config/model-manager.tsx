@@ -10,6 +10,9 @@ import {
   Loader2,
   Zap,
   Star,
+  Eye,
+  EyeOff,
+  Key,
 } from "lucide-react";
 import type { ModelPreset, ModelStore } from "@/types";
 
@@ -23,6 +26,8 @@ export function ModelManager({ onChanged }: ModelManagerProps) {
   const [testing, setTesting] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ id: string; ok: boolean; msg: string } | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editingKeyValue, setEditingKeyValue] = useState("");
 
   const handleRemove = async (id: string) => {
     try {
@@ -65,6 +70,23 @@ export function ModelManager({ onChanged }: ModelManagerProps) {
     }
   };
 
+  const handleSaveKey = async (id: string) => {
+    try {
+      await invokeCommand("set_model_key", { id, key: editingKeyValue });
+      setEditingKey(null);
+      setEditingKeyValue("");
+      refetch();
+    } catch (err) {
+      console.error("Failed to save key:", err);
+    }
+  };
+
+  const maskKey = (key: string | null | undefined): string => {
+    if (!key) return "";
+    if (key.length <= 12) return "*".repeat(key.length);
+    return key.slice(0, 4) + "*".repeat(key.length - 8) + key.slice(-4);
+  };
+
   if (loading) {
     return <div className="text-muted-foreground text-sm">...</div>;
   }
@@ -103,67 +125,107 @@ export function ModelManager({ onChanged }: ModelManagerProps) {
           {presets.map((preset) => (
             <div
               key={preset.id}
-              className="flex items-center gap-3 rounded-md border px-4 py-3"
+              className="rounded-md border px-4 py-3 space-y-2"
             >
-              <button
-                onClick={() => handleSetActive(preset.id)}
-                className="flex-shrink-0"
-                title={activeId === preset.id ? t("config.activeModel") : t("config.setActiveModel")}
-              >
-                <Star
-                  className={`h-4 w-4 ${
-                    activeId === preset.id
-                      ? "fill-yellow-400 text-yellow-400"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                />
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => handleSetActive(preset.id)}
+                  className="flex-shrink-0"
+                  title={activeId === preset.id ? t("config.activeModel") : t("config.setActiveModel")}
+                >
+                  <Star
+                    className={`h-4 w-4 ${
+                      activeId === preset.id
+                        ? "fill-yellow-400 text-yellow-400"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  />
+                </button>
 
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium">{preset.display_name}</span>
-                  <span className="text-xs text-muted-foreground">({preset.protocol})</span>
-                  {activeId === preset.id && (
-                    <span className="text-xs bg-accent text-accent-foreground px-1.5 py-0.5 rounded">
-                      {t("config.active")}
-                    </span>
-                  )}
-                </div>
-                <div className="text-xs text-muted-foreground truncate">
-                  {preset.model} · {preset.base_url}
-                </div>
-                {testResult && testResult.id === preset.id && (
-                  <div
-                    className={`text-xs mt-1 ${testResult.ok ? "text-green-500" : "text-red-500"}`}
-                  >
-                    {testResult.msg}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">{preset.display_name}</span>
+                    <span className="text-xs text-muted-foreground">({preset.protocol})</span>
+                    {activeId === preset.id && (
+                      <span className="text-xs bg-accent text-accent-foreground px-1.5 py-0.5 rounded">
+                        {t("config.active")}
+                      </span>
+                    )}
                   </div>
+                  <div className="text-xs text-muted-foreground truncate">
+                    {preset.model} · {preset.base_url}
+                  </div>
+                </div>
+
+                <div className="flex gap-1 flex-shrink-0">
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => handleTest(preset)}
+                    disabled={testing === preset.id}
+                    title={t("config.testModel")}
+                  >
+                    {testing === preset.id ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Zap className="h-4 w-4" />
+                    )}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => handleRemove(preset.id)}
+                    title={t("config.removeModel")}
+                  >
+                    <Trash2 className="h-4 w-4 text-muted-foreground hover:text-red-500" />
+                  </Button>
+                </div>
+              </div>
+
+              {/* API Key row */}
+              <div className="flex items-center gap-2 pl-7">
+                <Key className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                {editingKey === preset.id ? (
+                  <div className="flex items-center gap-2 flex-1">
+                    <Input
+                      type="password"
+                      value={editingKeyValue}
+                      onChange={(e) => setEditingKeyValue(e.target.value)}
+                      placeholder={t("config.apiKeyPlaceholder")}
+                      className="h-7 text-xs flex-1"
+                      autoFocus
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleSaveKey(preset.id);
+                        if (e.key === "Escape") { setEditingKey(null); setEditingKeyValue(""); }
+                      }}
+                    />
+                    <Button variant="ghost" size="icon-sm" onClick={() => handleSaveKey(preset.id)} title={t("config.save")}>
+                      <Check className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button variant="ghost" size="icon-sm" onClick={() => { setEditingKey(null); setEditingKeyValue(""); }} title={t("common.cancel")}>
+                      ×
+                    </Button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => { setEditingKey(preset.id); setEditingKeyValue(""); }}
+                    className="text-xs text-muted-foreground hover:text-foreground transition-fast"
+                  >
+                    {preset.api_key
+                      ? `${t("config.apiKeySet")}: ${maskKey(preset.api_key)}`
+                      : preset.api_key_env
+                        ? `${t("config.apiKeyFromEnv")}: ${preset.api_key_env}`
+                        : t("config.apiKeyNotSet")}
+                  </button>
                 )}
               </div>
 
-              <div className="flex gap-1 flex-shrink-0">
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => handleTest(preset)}
-                  disabled={testing === preset.id}
-                  title={t("config.testModel")}
-                >
-                  {testing === preset.id ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Zap className="h-4 w-4" />
-                  )}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => handleRemove(preset.id)}
-                  title={t("config.removeModel")}
-                >
-                  <Trash2 className="h-4 w-4 text-muted-foreground hover:text-red-500" />
-                </Button>
-              </div>
+              {/* Test result */}
+              {testResult && testResult.id === preset.id && (
+                <div className={`text-xs pl-7 ${testResult.ok ? "text-green-500" : "text-red-500"}`}>
+                  {testResult.msg}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -184,6 +246,8 @@ function AddModelForm({
   const [protocol, setProtocol] = useState("openai");
   const [baseUrl, setBaseUrl] = useState("");
   const [model, setModel] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -194,7 +258,6 @@ function AddModelForm({
     setSaving(true);
     setError(null);
 
-    const apiKeyEnv = `JISHU_MODEL_${id.toUpperCase().replace(/-/g, "_")}_KEY`;
     const resolvedBase =
       baseUrl.trim() ||
       (protocol === "openai"
@@ -209,7 +272,8 @@ function AddModelForm({
           protocol,
           base_url: resolvedBase,
           model: model.trim(),
-          api_key_env: apiKeyEnv,
+          api_key: apiKey.trim() || null,
+          api_key_env: `JISHU_MODEL_${id.trim().toUpperCase().replace(/-/g, "_")}_KEY`,
           max_tokens: 4096,
           temperature: 0.7,
           supports_tools: true,
@@ -273,9 +337,29 @@ function AddModelForm({
         </div>
       </div>
 
-      <p className="text-xs text-muted-foreground">
-        {t("config.apiKeyHint", { env: `JISHU_MODEL_${id.toUpperCase().replace(/-/g, "_") || "..."}.KEY` })}
-      </p>
+      {/* API Key input */}
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">{t("config.apiKeyLabel")}</label>
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <Input
+              type={showKey ? "text" : "password"}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={t("config.apiKeyPlaceholder")}
+              className="pr-9"
+            />
+            <button
+              type="button"
+              onClick={() => setShowKey(!showKey)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+        </div>
+        <p className="text-xs text-muted-foreground">{t("config.apiKeyStorageHint")}</p>
+      </div>
 
       {error && <p className="text-xs text-red-500">{error}</p>}
 

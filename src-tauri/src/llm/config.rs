@@ -7,7 +7,12 @@ pub struct ModelPreset {
     pub protocol: String,
     pub base_url: String,
     pub model: String,
-    pub api_key_env: String,
+    /// Stored API key (plaintext). If empty, falls back to api_key_env env var.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// Environment variable name to read the API key from as fallback.
+    #[serde(default)]
+    pub api_key_env: Option<String>,
     pub max_tokens: u32,
     pub temperature: f32,
     pub supports_tools: bool,

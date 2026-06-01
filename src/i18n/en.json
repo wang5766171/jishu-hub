@@ -280,7 +280,14 @@
     "baseUrl": "API Base URL",
     "modelName": "Model Name",
     "apiKeyHint": "Provide API key via env var: export {{env}}=sk-xxx",
-    "modelId": "ID"
+    "modelId": "ID",
+    "apiKeyLabel": "API Key",
+    "apiKeyPlaceholder": "sk-xxx...",
+    "apiKeyStorageHint": "Key is saved locally in config file. You can also override via environment variable. Click the key row on any model to edit.",
+    "apiKeySet": "Configured",
+    "apiKeyFromEnv": "From env var",
+    "apiKeyNotSet": "Click to set API Key",
+    "save": "Save"
   },
   "commands": {
     "title": "Commands",

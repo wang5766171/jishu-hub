@@ -235,7 +235,8 @@ export interface ModelPreset {
   protocol: string;
   base_url: string;
   model: string;
-  api_key_env: string;
+  api_key?: string | null;
+  api_key_env?: string | null;
   max_tokens: number;
   temperature: number;
   supports_tools: boolean;

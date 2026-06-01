@@ -280,7 +280,14 @@
     "baseUrl": "API 地址",
     "modelName": "模型名称",
     "apiKeyHint": "API Key 通过环境变量提供：export {{env}}=sk-xxx",
-    "modelId": "标识 ID"
+    "modelId": "标识 ID",
+    "apiKeyLabel": "API Key",
+    "apiKeyPlaceholder": "sk-xxx...",
+    "apiKeyStorageHint": "密钥保存在本地配置文件中，也可通过环境变量覆盖。点击已添加模型的密钥行可随时修改。",
+    "apiKeySet": "已配置",
+    "apiKeyFromEnv": "来自环境变量",
+    "apiKeyNotSet": "点击设置 API Key",
+    "save": "保存"
   },
   "commands": {
     "title": "快捷命令",

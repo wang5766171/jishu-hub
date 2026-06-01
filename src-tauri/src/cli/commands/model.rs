@@ -68,7 +68,8 @@ fn add(
         protocol,
         base_url,
         model: id.clone(),
-        api_key_env,
+        api_key: None,
+        api_key_env: Some(api_key_env.clone()),
         max_tokens: 4096,
         temperature: 0.7,
         supports_tools: true,
@@ -76,10 +77,8 @@ fn add(
     };
     store.add(preset).map_err(|e| CliError::Internal(e))?;
     println!("Model '{id}' added.");
-    println!(
-        "Set your API key: export {}=<your-key>",
-        id.to_uppercase().replace('-', "_")
-    );
+    println!("Set your API key via: jishu model set-key --id {id} --key <your-key>");
+    println!("Or via environment variable: export {api_key_env}=<your-key>");
     Ok(())
 }
 
@@ -101,14 +100,8 @@ fn test(id: &str, _ctx: &ExecutionContext) -> Result<(), CliError> {
 
     println!("Testing model '{}' ({})...", preset.display_name, preset.model);
 
-    let api_key = http::resolve_api_key(&preset).map_err(|e| {
-        CliError::Internal(format!(
-            "{}. Set it with: export {}=<your-key>",
-            e,
-            preset.api_key_env
-        ))
-    })?;
-    println!("API key found in {}", preset.api_key_env);
+    let api_key = http::resolve_api_key(&preset).map_err(|e| CliError::Internal(e.to_string()))?;
+    println!("API key resolved.");
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| CliError::Internal(e.to_string()))?;
     rt.block_on(async_test(&preset, &api_key))

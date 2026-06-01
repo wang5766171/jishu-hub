@@ -1229,6 +1229,23 @@ async fn test_model(id: String) -> Result<serde_json::Value, String> {
     }))
 }
 
+#[tauri::command]
+fn set_model_key(id: String, key: String) -> Result<(), String> {
+    let mut store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
+    let preset = store
+        .presets
+        .iter_mut()
+        .find(|p| p.id == id)
+        .ok_or_else(|| format!("Model '{id}' not found"))?;
+    preset.api_key = if key.is_empty() { None } else { Some(key) };
+    store.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn mask_model_key(key: String) -> String {
+    llm::http::mask_key(&key)
+}
+
 // ── Orchestrator IPC commands (feature-gated) ──────────────────────────────────
 
 #[cfg(feature = "orchestrator")]
@@ -1367,6 +1384,8 @@ pub fn run() {
             remove_model,
             set_active_model,
             test_model,
+            set_model_key,
+            mask_model_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
