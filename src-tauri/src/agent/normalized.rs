@@ -1,6 +1,17 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStepKind {
+    Plan,
+    Dispatch,
+    Reflect,
+    Verify,
+    Done,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NormalizedEvent {
     TextDelta {
@@ -38,6 +49,26 @@ pub enum NormalizedEvent {
         message: String,
         recoverable: bool,
     },
+    TaskStep {
+        run_id: String,
+        step_id: String,
+        #[serde(rename = "step_kind")]
+        kind: TaskStepKind,
+        title: String,
+        detail: Option<serde_json::Value>,
+    },
+    SubAgentDispatch {
+        run_id: String,
+        step_id: String,
+        target_agent: String,
+        sub_run_id: Option<String>,
+        request: serde_json::Value,
+    },
+    SubAgentEvent {
+        run_id: String,
+        step_id: String,
+        sub_event: Box<NormalizedEvent>,
+    },
     Raw {
         agent: String,
         raw: serde_json::Value,
@@ -56,6 +87,9 @@ impl NormalizedEvent {
             NormalizedEvent::SessionResolved { .. } => "session_resolved",
             NormalizedEvent::TurnComplete { .. } => "turn_complete",
             NormalizedEvent::Error { .. } => "error",
+            NormalizedEvent::TaskStep { .. } => "task_step",
+            NormalizedEvent::SubAgentDispatch { .. } => "sub_agent_dispatch",
+            NormalizedEvent::SubAgentEvent { .. } => "sub_agent_event",
             NormalizedEvent::Raw { .. } => "raw",
         }
     }
@@ -169,4 +203,50 @@ pub enum AgentError {
     Serialization(#[from] serde_json::Error),
     #[error("{0}")]
     Other(String),
+}
+
+#[cfg(test)]
+mod tests_v6 {
+    use super::*;
+
+    #[test]
+    fn task_step_roundtrip() {
+        let event = NormalizedEvent::TaskStep {
+            run_id: "r1".into(),
+            step_id: "s1".into(),
+            kind: TaskStepKind::Dispatch,
+            title: "Dispatch to codex".into(),
+            detail: Some(serde_json::json!({ "agent": "codex" })),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let de: NormalizedEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, de);
+    }
+
+    #[test]
+    fn sub_agent_dispatch_roundtrip() {
+        let event = NormalizedEvent::SubAgentDispatch {
+            run_id: "r1".into(),
+            step_id: "s1".into(),
+            target_agent: "codex".into(),
+            sub_run_id: None,
+            request: serde_json::json!({ "message": "hello" }),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let de: NormalizedEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, de);
+    }
+
+    #[test]
+    fn sub_agent_event_recursive_roundtrip() {
+        let inner = NormalizedEvent::TextDelta { delta: "hello".into() };
+        let event = NormalizedEvent::SubAgentEvent {
+            run_id: "r1".into(),
+            step_id: "s1".into(),
+            sub_event: Box::new(inner),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let de: NormalizedEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, de);
+    }
 }
