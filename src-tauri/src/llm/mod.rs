@@ -4,8 +4,6 @@ pub mod message;
 pub mod openai;
 pub mod sse;
 
-pub use config::ModelPreset;
-
 use message::LlmRequest;
 
 pub struct CancelToken(pub std::sync::Arc<std::sync::atomic::AtomicBool>);

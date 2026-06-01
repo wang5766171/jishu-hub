@@ -74,9 +74,17 @@ AI 编程智能体正在快速演进 —— Claude Code、OpenAI Codex、Open Co
 
 ### 多智能体平台
 - 插件化智能体注册与一键切换
-- 目前支持 **Claude Code**、**OpenAI Codex**、**Open Code**
+- 目前支持 **Claude Code**、**OpenAI Codex**、**Open Code**、**机枢自研（Jishu Self）**
 - AgentPlugin trait 抽象层，可轻松接入新智能体
 - 内置环境检测与智能体一键安装（npm / winget / choco）
+
+### CLI 与任务编排（v0.6.0）
+- `jishu` CLI 命令行工具，包含 15 个子命令，覆盖智能体、项目、会话、配置等
+- 编排引擎（Orchestrator）采用 planner/dispatcher 架构，支持多步骤任务执行
+- LLM 供应商抽象层（OpenAI / Anthropic），支持流式输出
+- ACP（智能体通信协议）服务器，通过 stdio JSON-RPC 通信
+- 守护进程模式，支持后台任务编排
+- 进化提案机制，支持自改进工作流
 
 ### 应用内对话
 - 无需打开终端，直接在 Hub 内与 AI 智能体对话
@@ -163,7 +171,9 @@ npm run tauri dev
 
 | 路径 | 说明 |
 |------|------|
-| `~/.jishu-hub/` | Hub 元数据（智能体注册、会话名称、预设、状态） |
+| `~/.jishu-hub/` | Hub 元数据（智能体注册、会话名称、预设、状态、模型配置） |
+| `~/.jishu-hub/models.json` | LLM 模型预设配置 |
+| `~/.jishu-hub/runs/` | 编排引擎运行追踪（JSONL） |
 | `~/.claude/` | Claude Code 智能体数据 |
 | `~/.codex/` | Codex 智能体数据 |
 

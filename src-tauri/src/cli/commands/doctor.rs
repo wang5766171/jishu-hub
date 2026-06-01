@@ -1,8 +1,6 @@
 use crate::cli::error::CliError;
 use crate::cli::output::ExecutionContext;
 use serde::Serialize;
-use std::path::PathBuf;
-
 #[derive(Serialize)]
 struct CheckResult {
     name: &'static str,

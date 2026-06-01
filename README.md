@@ -74,9 +74,17 @@ Ditch manual JSON edits. Use the visual form-based editor to manage models, envi
 
 ### Multi-Agent Platform
 - Plugin-based agent registration and one-click switching
-- Currently supports **Claude Code**, **OpenAI Codex**, **Open Code**
+- Currently supports **Claude Code**, **OpenAI Codex**, **Open Code**, **Jishu Self**
 - AgentPlugin trait abstraction — ready to onboard the next agent
 - Built-in environment detection and one-click agent installation (npm / winget / choco)
+
+### CLI & Orchestration (v0.6.0)
+- `jishu` CLI binary with 15 subcommands for agents, projects, sessions, config, and more
+- Orchestrator engine with planner/dispatcher architecture for multi-step task execution
+- LLM provider abstraction (OpenAI / Anthropic) with streaming support
+- ACP (Agent Communication Protocol) server over stdio JSON-RPC
+- Daemon mode for background task orchestration
+- Evolution proposals for self-improving workflows
 
 ### In-App Chat
 - Talk to AI agents directly inside Hub, no terminal required
@@ -163,7 +171,9 @@ npm run tauri dev
 
 | Path | Description |
 |------|-------------|
-| `~/.jishu-hub/` | Hub metadata (agents, session names, presets, state) |
+| `~/.jishu-hub/` | Hub metadata (agents, session names, presets, state, models) |
+| `~/.jishu-hub/models.json` | LLM model presets configuration |
+| `~/.jishu-hub/runs/` | Orchestrator run traces (JSONL) |
 | `~/.claude/` | Claude Code agent data |
 | `~/.codex/` | Codex agent data |
 

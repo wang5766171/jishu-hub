@@ -7,10 +7,15 @@ pub mod result;
 pub mod spec;
 pub mod trace;
 
+#[allow(unused_imports)]
 pub use bus::EventBus;
+#[allow(unused_imports)]
 pub use proposal::EvolutionProposal;
+#[allow(unused_imports)]
 pub use result::{RunResult, RunStatus, StepOutcome, UsageSummary};
+#[allow(unused_imports)]
 pub use spec::{Step, StepKind, TaskKind, TaskSpec};
+#[allow(unused_imports)]
 pub use trace::TraceRecorder;
 
 #[cfg(test)]
