@@ -1135,6 +1135,35 @@ fn install_update(app: tauri::AppHandle, installer_path: String) -> Result<(), S
     Ok(())
 }
 
+// ── Orchestrator IPC commands (feature-gated) ──────────────────────────────────
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn task_submit(spec: serde_json::Value) -> Result<serde_json::Value, String> {
+    let _ = spec; // TODO: wire to daemon / dispatcher
+    Ok(serde_json::json!({ "task_id": "stub", "run_id": "stub" }))
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn run_list() -> Result<Vec<serde_json::Value>, String> {
+    Ok(vec![])
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn run_get(run_id: String) -> Result<serde_json::Value, String> {
+    let _ = run_id; // TODO: wire to daemon / dispatcher
+    Ok(serde_json::json!({}))
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn run_cancel(run_id: String) -> Result<(), String> {
+    let _ = run_id; // TODO: wire to daemon / dispatcher
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1235,6 +1264,10 @@ pub fn run() {
             image::read_image_as_data_url,
             image::read_file_as_base64,
             image::get_clipboard_file_paths,
+            task_submit,
+            run_list,
+            run_get,
+            run_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

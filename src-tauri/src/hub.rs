@@ -1,3 +1,7 @@
+// Note: Key write operations (e.g., sessions.json update) should use advisory
+// file locking (e.g., fs2::FileLock) to prevent concurrent writes when the
+// daemon is running. This will be implemented in v0.7.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
