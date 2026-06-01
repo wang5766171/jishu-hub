@@ -15,6 +15,9 @@ mod project_config;
 mod session;
 mod util;
 
+#[cfg(feature = "cli")]
+pub mod cli;
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::Manager;
