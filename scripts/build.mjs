@@ -21,3 +21,14 @@ for (const [command, args] of steps) {
     process.exit(result.status ?? 1);
   }
 }
+
+// Build the CLI binary
+const cliBuild = spawnSync("cargo", ["build", "--release", "--bin", "jishu", "--features", "cli", "--manifest-path", "src-tauri/Cargo.toml"], {
+  cwd: root,
+  stdio: "inherit",
+  shell: false,
+});
+
+if (cliBuild.status !== 0) {
+  process.exit(cliBuild.status ?? 1);
+}
