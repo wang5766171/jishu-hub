@@ -144,6 +144,122 @@ fn build_tools(tools: &[crate::llm::message::LlmTool]) -> serde_json::Value {
     serde_json::Value::Array(out)
 }
 
+/// Process a non-streaming Anthropic Messages API JSON response and emit NormalizedEvents.
+/// Format: `{ id, type: "message", role: "assistant", content: [...], model, stop_reason, usage }`
+fn process_non_streaming_response(
+    resp: &serde_json::Value,
+    emitter: &mut dyn FnMut(NormalizedEvent),
+) -> Result<LlmTurn, LlmError> {
+    // Check for API-level error
+    if let Some(error) = resp.get("error") {
+        let msg = error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown API error");
+        emitter(NormalizedEvent::Error {
+            message: msg.to_string(),
+            recoverable: false,
+        });
+        return Err(LlmError::Request(msg.to_string()));
+    }
+
+    let mut stop_reason = StopReason::EndTurn;
+    let mut tool_calls: Vec<LlmToolCall> = Vec::new();
+    let mut input_tokens: Option<u64> = None;
+    let mut output_tokens: Option<u64> = None;
+
+    // Extract stop_reason
+    if let Some(reason) = resp.get("stop_reason").and_then(|v| v.as_str()) {
+        stop_reason = map_stop_reason(reason);
+    }
+
+    // Extract usage
+    if let Some(usage) = resp.get("usage") {
+        input_tokens = usage.get("input_tokens").and_then(|v| v.as_u64());
+        output_tokens = usage.get("output_tokens").and_then(|v| v.as_u64());
+    }
+
+    // Process content blocks
+    if let Some(content) = resp.get("content").and_then(|v| v.as_array()) {
+        for block in content {
+            let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+            match block_type {
+                "text" => {
+                    if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                        if !text.is_empty() {
+                            emitter(NormalizedEvent::TextDelta {
+                                delta: text.to_string(),
+                            });
+                        }
+                    }
+                }
+                "thinking" => {
+                    if let Some(thinking) = block.get("thinking").and_then(|v| v.as_str()) {
+                        if !thinking.is_empty() {
+                            emitter(NormalizedEvent::Thinking {
+                                delta: thinking.to_string(),
+                            });
+                        }
+                    }
+                }
+                "tool_use" => {
+                    let id = block
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = block
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let input = block
+                        .get("input")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+                    emitter(NormalizedEvent::ToolUseStart {
+                        call_id: id.clone(),
+                        tool: name.clone(),
+                        input: input.clone(),
+                    });
+
+                    tool_calls.push(LlmToolCall {
+                        id,
+                        name,
+                        arguments: input,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let usage = if input_tokens.is_some() || output_tokens.is_some() {
+        Some(UsageStats {
+            input_tokens,
+            output_tokens,
+            total_cost: None,
+            context_remaining: None,
+        })
+    } else {
+        None
+    };
+
+    let turn_reason = stop_to_turn_end(&stop_reason);
+    emitter(NormalizedEvent::TurnComplete {
+        reason: turn_reason,
+        usage: usage.clone(),
+    });
+
+    Ok(LlmTurn {
+        stop_reason,
+        tool_calls,
+        usage,
+    })
+}
+
 /// Track tool_use block accumulation state by content block index.
 struct ToolUseAccumulator {
     /// index -> (id, name, accumulated partial JSON string, is this a tool_use block)
@@ -471,11 +587,13 @@ impl LlmProvider for AnthropicProvider {
                 body["system"] = serde_json::Value::String(sys);
             }
 
-            // Add temperature if specified
-            if let Some(temperature) = req.temperature {
-                body["temperature"] = serde_json::json!(temperature);
-            } else if preset.temperature > 0.0 {
-                body["temperature"] = serde_json::json!(preset.temperature);
+            // Add temperature if specified. Round to 2 decimal places and convert to f64
+            // to avoid f32 precision artifacts (e.g. 0.7 becomes 0.699999988...) that
+            // some providers reject.
+            let temp = req.temperature.unwrap_or(preset.temperature);
+            if temp > 0.0 {
+                let rounded = ((temp as f64) * 100.0).round() / 100.0;
+                body["temperature"] = serde_json::json!(rounded);
             }
 
             // Add tools if present
@@ -483,9 +601,20 @@ impl LlmProvider for AnthropicProvider {
                 body["tools"] = build_tools(&req.tools);
             }
 
-            // Build URL
+            // Build URL — auto-detect path depth so users can paste any prefix:
+            //   https://api.anthropic.com         → /v1/messages
+            //   https://open.bigmodel.cn/api/anthropic → /v1/messages
+            //   https://example.com/v1            → /messages
+            //   https://example.com/v1/messages   → use as-is
+            //   https://example.com/messages      → use as-is
             let base_url = preset.base_url.trim_end_matches('/');
-            let url = format!("{}/v1/messages", base_url);
+            let url = if base_url.ends_with("/messages") {
+                base_url.to_string()
+            } else if base_url.ends_with("/v1") {
+                format!("{}/messages", base_url)
+            } else {
+                format!("{}/v1/messages", base_url)
+            };
 
             // Send request
             let client = http::shared_client();
@@ -515,30 +644,52 @@ impl LlmProvider for AnthropicProvider {
                 )));
             }
 
-            // Process SSE stream
-            let mut sse_buffer = SseLineBuffer::new();
-            let mut stream = response.bytes_stream();
-            let mut collected_lines: Vec<String> = Vec::new();
+            // Detect response type from content-type header.
+            // Some Anthropic-compatible providers (e.g. 智谱/ZhiPu) return plain JSON
+            // instead of SSE when they don't support streaming.
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
 
-            while let Some(chunk_result) = stream.next().await {
-                if cancel.is_canceled() {
-                    emitter(NormalizedEvent::TurnComplete {
-                        reason: TurnEndReason::Aborted,
-                        usage: None,
-                    });
-                    return Err(LlmError::Canceled);
+            if content_type.contains("text/event-stream") {
+                // Standard SSE streaming path
+                let mut sse_buffer = SseLineBuffer::new();
+                let mut stream = response.bytes_stream();
+                let mut collected_lines: Vec<String> = Vec::new();
+
+                while let Some(chunk_result) = stream.next().await {
+                    if cancel.is_canceled() {
+                        emitter(NormalizedEvent::TurnComplete {
+                            reason: TurnEndReason::Aborted,
+                            usage: None,
+                        });
+                        return Err(LlmError::Canceled);
+                    }
+
+                    let chunk = chunk_result
+                        .map_err(|e| LlmError::Request(format!("Stream read error: {e}")))?;
+
+                    let lines = sse_buffer.feed(&chunk);
+                    collected_lines.extend(lines);
                 }
 
-                let chunk = chunk_result
-                    .map_err(|e| LlmError::Request(format!("Stream read error: {e}")))?;
+                let result = process_sse_chunks(&collected_lines, &mut emitter)?;
+                Ok(result)
+            } else {
+                // Non-streaming JSON response — read full body and parse as a
+                // standard Anthropic Messages API response.
+                let body_bytes = response
+                    .bytes()
+                    .await
+                    .map_err(|e| LlmError::Request(format!("Failed to read response body: {e}")))?;
 
-                let lines = sse_buffer.feed(&chunk);
-                collected_lines.extend(lines);
+                let resp: serde_json::Value = serde_json::from_slice(&body_bytes)
+                    .map_err(|e| LlmError::Parse(format!("Failed to parse JSON response: {e}")))?;
+
+                process_non_streaming_response(&resp, &mut emitter)
             }
-
-            // Process collected SSE lines
-            let result = process_sse_chunks(&collected_lines, &mut emitter)?;
-            Ok(result)
         })
     }
 }
@@ -835,5 +986,93 @@ mod tests {
         assert_eq!(content[0]["type"], "tool_result");
         assert_eq!(content[0]["tool_use_id"], "toolu_1");
         assert_eq!(content[0]["content"], "file contents");
+    }
+
+    #[test]
+    fn test_non_streaming_text_response() {
+        let resp = serde_json::json!({
+            "id": "msg_test",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hello world"}],
+            "model": "claude-sonnet-4-6",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        });
+
+        let mut events: Vec<NormalizedEvent> = Vec::new();
+        let result = process_non_streaming_response(&resp, &mut |ev| {
+            events.push(ev);
+        });
+
+        assert!(result.is_ok());
+        let turn = result.unwrap();
+        assert_eq!(turn.stop_reason, StopReason::EndTurn);
+        assert!(turn.tool_calls.is_empty());
+        assert_eq!(turn.usage.as_ref().unwrap().input_tokens, Some(10));
+        assert_eq!(turn.usage.as_ref().unwrap().output_tokens, Some(5));
+
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            NormalizedEvent::TextDelta { delta } if delta == "Hello world"
+        ));
+        assert!(matches!(
+            &events[1],
+            NormalizedEvent::TurnComplete {
+                reason: TurnEndReason::Complete,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_non_streaming_tool_use_response() {
+        let resp = serde_json::json!({
+            "id": "msg_tool",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Let me check"},
+                {"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {"city": "Beijing"}}
+            ],
+            "model": "test",
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 8, "output_tokens": 12}
+        });
+
+        let mut events: Vec<NormalizedEvent> = Vec::new();
+        let result = process_non_streaming_response(&resp, &mut |ev| {
+            events.push(ev);
+        });
+
+        assert!(result.is_ok());
+        let turn = result.unwrap();
+        assert_eq!(turn.stop_reason, StopReason::ToolUse);
+        assert_eq!(turn.tool_calls.len(), 1);
+        assert_eq!(turn.tool_calls[0].name, "get_weather");
+
+        // Events: TextDelta, ToolUseStart, TurnComplete
+        assert_eq!(events.len(), 3);
+    }
+
+    #[test]
+    fn test_non_streaming_error_response() {
+        let resp = serde_json::json!({
+            "type": "error",
+            "error": {"type": "invalid_request_error", "message": "Bad request"}
+        });
+
+        let mut events: Vec<NormalizedEvent> = Vec::new();
+        let result = process_non_streaming_response(&resp, &mut |ev| {
+            events.push(ev);
+        });
+
+        assert!(result.is_err());
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            NormalizedEvent::Error { message, recoverable: false } if message == "Bad request"
+        ));
     }
 }

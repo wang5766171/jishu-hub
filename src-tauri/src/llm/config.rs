@@ -28,7 +28,7 @@ pub struct ModelStore {
 impl ModelStore {
     fn models_path() -> Result<std::path::PathBuf, String> {
         let home = dirs::home_dir().ok_or("Cannot find home directory")?;
-        Ok(home.join(".jishu-hub").join("models.json"))
+        Ok(home.join(".jishu-agent").join("models.json"))
     }
 
     pub fn load() -> Result<Self, String> {
@@ -43,6 +43,10 @@ impl ModelStore {
 
     pub fn save(&self) -> Result<(), String> {
         let path = Self::models_path()?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Cannot create directory {:?}: {e}", parent))?;
+        }
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Cannot serialize: {e}"))?;
         crate::util::atomic_write(&path, json.as_bytes())
@@ -54,6 +58,20 @@ impl ModelStore {
             return Err(format!("Model '{}' already exists", preset.id));
         }
         self.presets.push(preset);
+        self.save()
+    }
+
+    /// Update an existing preset in place. ID is matched on the existing entry;
+    /// the new preset's `id` field is ignored to prevent accidental re-keying.
+    pub fn update(&mut self, id: &str, preset: ModelPreset) -> Result<(), String> {
+        let idx = self
+            .presets
+            .iter()
+            .position(|p| p.id == id)
+            .ok_or_else(|| format!("Model '{id}' not found"))?;
+        let mut new_preset = preset;
+        new_preset.id = id.to_string();
+        self.presets[idx] = new_preset;
         self.save()
     }
 
@@ -70,6 +88,12 @@ impl ModelStore {
             return Err(format!("Model '{id}' not found"));
         }
         self.active = Some(id.to_string());
+        self.save()
+    }
+
+    /// Clear the active preset. The store keeps all presets; none is selected.
+    pub fn clear_active(&mut self) -> Result<(), String> {
+        self.active = None;
         self.save()
     }
 
