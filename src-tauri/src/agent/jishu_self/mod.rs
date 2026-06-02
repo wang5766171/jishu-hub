@@ -1,10 +1,10 @@
+mod config;
 mod probe;
 mod stream;
 mod store;
 
 use crate::agent::capability::AgentCapabilities;
 use crate::agent::{AgentInfo, AgentPlugin, ChatRequest};
-use crate::config::ClaudeConfig;
 use crate::project_config::ProjectSettings;
 use std::path::PathBuf;
 
@@ -33,9 +33,9 @@ impl AgentPlugin for JishuSelfAgent {
     fn info(&self) -> AgentInfo {
         AgentInfo {
             id: "jishu-self".to_string(),
-            display_name: "Jishu".to_string(),
+            display_name: "Jishu Agent".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            icon: "sparkles".to_string(),
+            icon: "jishu".to_string(),
             enabled: true,
         }
     }
@@ -82,32 +82,44 @@ impl AgentPlugin for JishuSelfAgent {
         Ok(Vec::new())
     }
 
-    fn load_config(&self) -> Result<ClaudeConfig, String> {
-        crate::config::load_config().map_err(|e| e.to_string())
+    fn load_config(&self) -> Result<serde_json::Value, String> {
+        config::load_jishu_config().map_err(|e| e.to_string())
     }
 
-    fn save_config(&self, config: &ClaudeConfig) -> Result<(), String> {
-        crate::config::save_config(config).map_err(|e| e.to_string())
+    fn save_config(&self, value: &serde_json::Value) -> Result<(), String> {
+        config::save_jishu_config(value).map_err(|e| e.to_string())
     }
 
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
         Vec::new()
     }
 
+    fn config_format(&self) -> Option<String> {
+        Some("json".to_string())
+    }
+
+    fn load_raw_config(&self) -> Result<String, String> {
+        config::load_raw_jishu_config().map_err(|e| e.to_string())
+    }
+
+    fn save_raw_config(&self, content: &str) -> Result<(), String> {
+        config::save_raw_jishu_config(content).map_err(|e| e.to_string())
+    }
+
     fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String> {
-        crate::config::list_backups().map_err(|e| e.to_string())
+        config::list_jishu_backups().map_err(|e| e.to_string())
     }
 
     fn restore_backup(&self, path: &str) -> Result<(), String> {
-        crate::config::restore_backup(path).map_err(|e| e.to_string())
+        config::restore_jishu_backup(path).map_err(|e| e.to_string())
     }
 
     fn export_config(&self, path: &str) -> Result<(), String> {
-        crate::config::export_config(path).map_err(|e| e.to_string())
+        config::export_jishu_config(path).map_err(|e| e.to_string())
     }
 
-    fn import_config(&self, path: &str) -> Result<ClaudeConfig, String> {
-        crate::config::import_config(path).map_err(|e| e.to_string())
+    fn import_config(&self, path: &str) -> Result<serde_json::Value, String> {
+        config::import_jishu_config(path).map_err(|e| e.to_string())
     }
 
     fn load_project_settings(&self, path: &str) -> Result<ProjectSettings, String> {
@@ -154,14 +166,14 @@ impl AgentPlugin for JishuSelfAgent {
         let mut cmd = tokio::process::Command::new(&bin);
         cmd.arg("agent-bridge")
             .arg("start")
-            .arg("--agent")
-            .arg("jishu-self");
+            .arg("jishu-self")
+            .arg("--project")
+            .arg(&req.project_path);
 
         if let Some(sid) = &req.session_id {
             cmd.arg("--session").arg(sid);
         }
 
-        cmd.arg("--").arg(&req.project_path);
         cmd.current_dir(&req.project_path);
 
         crate::process_command::tokio_no_window(&mut cmd);
@@ -190,7 +202,7 @@ impl AgentPlugin for JishuSelfAgent {
         #[cfg(not(target_os = "windows"))]
         let bin = format!("{exe}/jishu");
 
-        format!("{bin} agent-bridge start --session {session_id}")
+        format!("{bin} agent-bridge start jishu-self --session {session_id}")
     }
 
     fn parse_stream_event(&self, event: &serde_json::Value) -> String {
