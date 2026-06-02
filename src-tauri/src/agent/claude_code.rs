@@ -306,12 +306,15 @@ impl AgentPlugin for ClaudeCodeAgent {
             .ok_or_else(|| format!("Failed to parse session: {}", session_id))
     }
 
-    fn load_config(&self) -> Result<crate::config::ClaudeConfig, String> {
-        crate::config::load_config().map_err(|e| e.to_string())
+    fn load_config(&self) -> Result<serde_json::Value, String> {
+        let config = crate::config::load_config().map_err(|e| e.to_string())?;
+        serde_json::to_value(config).map_err(|e| e.to_string())
     }
 
-    fn save_config(&self, config: &crate::config::ClaudeConfig) -> Result<(), String> {
-        crate::config::save_config(config).map_err(|e| e.to_string())
+    fn save_config(&self, config: &serde_json::Value) -> Result<(), String> {
+        let typed: crate::config::ClaudeConfig =
+            serde_json::from_value(config.clone()).map_err(|e| format!("Invalid config: {}", e))?;
+        crate::config::save_config(&typed).map_err(|e| e.to_string())
     }
 
     fn config_format(&self) -> Option<String> {
@@ -351,8 +354,9 @@ impl AgentPlugin for ClaudeCodeAgent {
         crate::config::export_config(path).map_err(|e| e.to_string())
     }
 
-    fn import_config(&self, path: &str) -> Result<crate::config::ClaudeConfig, String> {
-        crate::config::import_config(path).map_err(|e| e.to_string())
+    fn import_config(&self, path: &str) -> Result<serde_json::Value, String> {
+        let config = crate::config::import_config(path).map_err(|e| e.to_string())?;
+        serde_json::to_value(config).map_err(|e| e.to_string())
     }
 
     fn load_project_settings(

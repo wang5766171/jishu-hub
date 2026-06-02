@@ -279,11 +279,11 @@ impl AgentPlugin for CodexAdapter {
         parse_rollout_messages(&rollout_path)
     }
 
-    fn load_config(&self) -> Result<crate::config::ClaudeConfig, String> {
+    fn load_config(&self) -> Result<serde_json::Value, String> {
         Err("Codex uses native TOML config, use load_raw_config instead".to_string())
     }
 
-    fn save_config(&self, _config: &crate::config::ClaudeConfig) -> Result<(), String> {
+    fn save_config(&self, _config: &serde_json::Value) -> Result<(), String> {
         Err("Codex uses native TOML config, use save_raw_config instead".to_string())
     }
 
@@ -334,7 +334,7 @@ impl AgentPlugin for CodexAdapter {
         Err("Not supported".to_string())
     }
 
-    fn import_config(&self, _path: &str) -> Result<crate::config::ClaudeConfig, String> {
+    fn import_config(&self, _path: &str) -> Result<serde_json::Value, String> {
         Err("Not supported".to_string())
     }
 

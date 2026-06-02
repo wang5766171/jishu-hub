@@ -11,6 +11,7 @@ pub fn launch_command(agent_id: &str) -> String {
         "claude-code" => "claude".to_string(),
         "codex" => "codex".to_string(),
         "opencode" => "opencode".to_string(),
+        "jishu-self" => "jishu".to_string(),
         other => other.to_string(),
     }
 }
@@ -20,6 +21,7 @@ pub fn resume_command(agent_id: &str, session_id: &str) -> String {
         "claude-code" => format!("claude --resume {session_id}"),
         "codex" => format!("codex resume {session_id}"),
         "opencode" => format!("opencode --session {session_id}"),
+        "jishu-self" => format!("jishu chat resume {session_id}"),
         other => format!("{other} {session_id}"),
     }
 }
@@ -30,6 +32,7 @@ pub fn init_command(agent_id: &str) -> String {
         "claude-code" => format!("claude \"{prompt}\""),
         "codex" => format!("codex \"{prompt}\""),
         "opencode" => format!("opencode \"{prompt}\""),
+        "jishu-self" => format!("jishu run \"{prompt}\""),
         other => format!("{other} \"{prompt}\""),
     }
 }
@@ -52,6 +55,12 @@ pub fn built_in_commands(agent_id: &str) -> Vec<AgentCommandPreset> {
             preset("opencode agent list", "opencode agent list"),
             preset("opencode debug config", "opencode debug config"),
             preset("opencode run", "opencode run \"Say hello\""),
+        ],
+        "jishu-self" => vec![
+            preset("jishu --version", "jishu --version"),
+            preset("jishu agents list", "jishu agents list"),
+            preset("jishu model list", "jishu model list"),
+            preset("jishu doctor", "jishu doctor"),
         ],
         other => vec![preset(
             format!("{other} --version"),

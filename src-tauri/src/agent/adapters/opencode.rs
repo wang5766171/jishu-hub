@@ -1221,12 +1221,15 @@ impl AgentPlugin for OpencodeAdapter {
         parse_export_messages(&String::from_utf8_lossy(&output.stdout))
     }
 
-    fn load_config(&self) -> Result<crate::config::ClaudeConfig, String> {
-        load_opencode_config().map_err(|e| e.to_string())
+    fn load_config(&self) -> Result<serde_json::Value, String> {
+        let config = load_opencode_config().map_err(|e| e.to_string())?;
+        serde_json::to_value(config).map_err(|e| e.to_string())
     }
 
-    fn save_config(&self, config: &crate::config::ClaudeConfig) -> Result<(), String> {
-        save_opencode_config(config).map_err(|e| e.to_string())
+    fn save_config(&self, config: &serde_json::Value) -> Result<(), String> {
+        let typed: crate::config::ClaudeConfig =
+            serde_json::from_value(config.clone()).map_err(|e| format!("Invalid config: {}", e))?;
+        save_opencode_config(&typed).map_err(|e| e.to_string())
     }
 
     fn config_format(&self) -> Option<String> {
@@ -1259,17 +1262,17 @@ impl AgentPlugin for OpencodeAdapter {
                 id: "opencode-default".to_string(),
                 name: "opencode 默认配置".to_string(),
                 description: "保留 opencode 默认模型与 MCP 设置，仅创建基础配置结构".to_string(),
-                config: crate::config::ClaudeConfig::default(),
+                config: serde_json::to_value(crate::config::ClaudeConfig::default()).unwrap_or_default(),
             },
             crate::hub::ConfigTemplate {
                 id: "opencode-glm".to_string(),
                 name: "opencode GLM 模型".to_string(),
                 description: "设置 opencode 的主模型与小模型为 GLM".to_string(),
-                config: crate::config::ClaudeConfig {
+                config: serde_json::to_value(crate::config::ClaudeConfig {
                     model: Some("zhipuai-coding-plan/glm-5.1".to_string()),
                     small_model: Some("zhipuai-coding-plan/glm-5.1".to_string()),
                     ..Default::default()
-                },
+                }).unwrap_or_default(),
             },
         ]
     }
@@ -1286,8 +1289,9 @@ impl AgentPlugin for OpencodeAdapter {
         export_opencode_config(path).map_err(|e| e.to_string())
     }
 
-    fn import_config(&self, path: &str) -> Result<crate::config::ClaudeConfig, String> {
-        import_opencode_config(path).map_err(|e| e.to_string())
+    fn import_config(&self, path: &str) -> Result<serde_json::Value, String> {
+        let config = import_opencode_config(path).map_err(|e| e.to_string())?;
+        serde_json::to_value(config).map_err(|e| e.to_string())
     }
 
     fn load_project_settings(

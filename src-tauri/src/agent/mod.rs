@@ -254,13 +254,13 @@ pub trait AgentPlugin {
         encoded_name: &str,
     ) -> Result<Vec<crate::session::Message>, String>;
 
-    // Config management
-    fn load_config(&self) -> Result<crate::config::ClaudeConfig, String>;
-    fn save_config(&self, config: &crate::config::ClaudeConfig) -> Result<(), String>;
+    // Config management — each agent owns its config format; the trait speaks JSON.
+    fn load_config(&self) -> Result<serde_json::Value, String>;
+    fn save_config(&self, config: &serde_json::Value) -> Result<(), String>;
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate>;
 
     /// Native config format for raw editing (e.g. "toml", "json").
-    /// Return None to indicate no raw config support (agent uses structured ClaudeConfig).
+    /// Return None to indicate no raw config support.
     fn config_format(&self) -> Option<String> {
         None
     }
@@ -277,7 +277,7 @@ pub trait AgentPlugin {
     fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String>;
     fn restore_backup(&self, path: &str) -> Result<(), String>;
     fn export_config(&self, path: &str) -> Result<(), String>;
-    fn import_config(&self, path: &str) -> Result<crate::config::ClaudeConfig, String>;
+    fn import_config(&self, path: &str) -> Result<serde_json::Value, String>;
 
     // Project config
     fn load_project_settings(

@@ -56,7 +56,7 @@ pub struct AgentHealth {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct AgentInfo {
+pub struct DetailedAgentInfo {
     pub id: String,
     pub manifest: AgentManifest,
     pub capabilities: AgentCapabilities,
