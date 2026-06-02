@@ -1,3 +1,13 @@
+/// Truncate a string to `max` characters, appending `~` if truncated.
+pub fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max - 1).collect();
+        format!("{}~", truncated)
+    }
+}
+
 /// Truncate a byte slice to `max` bytes, keeping `head` bytes from the start
 /// and `tail` bytes from the end, inserting a placeholder in between.
 ///

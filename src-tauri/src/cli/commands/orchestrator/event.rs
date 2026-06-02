@@ -39,6 +39,16 @@ pub fn run(action: EventAction, ctx: &ExecutionContext) -> Result<(), CliError> 
                     .filter(|l| !l.is_empty())
                 {
                     if let Ok(ev) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(ref t) = r#type {
+                            if ev.get("type").and_then(|v| v.as_str()) != Some(t.as_str()) {
+                                continue;
+                            }
+                        }
+                        if let Some(ref a) = agent {
+                            if ev.get("agent").and_then(|v| v.as_str()) != Some(a.as_str()) {
+                                continue;
+                            }
+                        }
                         events.push(ev);
                     }
                 }
@@ -56,7 +66,6 @@ pub fn run(action: EventAction, ctx: &ExecutionContext) -> Result<(), CliError> 
                     println!("{}", serde_json::to_string(ev).unwrap_or_default());
                 }
             }
-            let _ = (r#type, agent);
             Ok(())
         }
         EventAction::Tail { r#type } => {

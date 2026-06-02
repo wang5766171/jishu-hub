@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 
-/// Jishu Hub — multi-agent orchestrator CLI.
+/// Jishu — jishu-self agent + multi-agent orchestrator CLI.
 #[derive(Parser, Debug)]
-#[command(name = "jishu", version, about = "Jishu Hub multi-agent orchestrator")]
+#[command(name = "jishu", version, about = "Jishu agent and multi-agent orchestrator")]
 pub struct Cli {
     /// Output results as JSON-lines.
     #[arg(long, global = true)]
@@ -11,10 +11,6 @@ pub struct Cli {
     /// Set log level (trace, debug, info, warn, error).
     #[arg(long, global = true, value_name = "LEVEL")]
     pub log: Option<String>,
-
-    /// Override the Jishu home directory.
-    #[arg(long, global = true, env = "JISHU_HOME")]
-    pub home: Option<String>,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -28,28 +24,10 @@ pub enum Commands {
         action: AgentAction,
     },
 
-    /// Manage projects.
-    Projects {
-        #[command(subcommand)]
-        action: ProjectAction,
-    },
-
-    /// Manage sessions.
-    Sessions {
-        #[command(subcommand)]
-        action: SessionAction,
-    },
-
     /// Chat with an agent.
     Chat {
         #[command(subcommand)]
         action: ChatAction,
-    },
-
-    /// View or edit configuration.
-    Config {
-        #[command(subcommand)]
-        action: ConfigAction,
     },
 
     /// Run diagnostics.
@@ -99,7 +77,7 @@ pub enum Commands {
         project: String,
     },
 
-    /// Manage model configurations.
+    /// Manage model configurations (read-only — full CRUD via GUI).
     Model {
         #[command(subcommand)]
         action: ModelAction,
@@ -132,8 +110,8 @@ pub enum Commands {
         action: AcpAction,
     },
 
-    /// Bridge to external agent processes.
-    #[command(name = "agent-bridge")]
+    /// Internal: jishu-self subprocess entry point. Hidden from --help.
+    #[command(name = "agent-bridge", hide = true)]
     AgentBridge {
         #[command(subcommand)]
         action: AgentBridgeAction,
@@ -160,60 +138,6 @@ pub enum AgentAction {
     },
 }
 
-// ── Projects ─────────────────────────────────────────────────────────────────
-
-#[derive(Subcommand, Debug)]
-pub enum ProjectAction {
-    /// List known projects.
-    List,
-
-    /// Add a project by path.
-    Add {
-        /// Path to the project directory.
-        path: String,
-    },
-
-    /// Remove a project.
-    Remove {
-        /// Encoded project name or path.
-        project: String,
-    },
-
-    /// Show project details.
-    Info {
-        /// Project path or encoded name.
-        project: String,
-    },
-}
-
-// ── Sessions ─────────────────────────────────────────────────────────────────
-
-#[derive(Subcommand, Debug)]
-pub enum SessionAction {
-    /// List sessions for a project.
-    List {
-        /// Project path or encoded name.
-        #[arg(long, default_value = ".")]
-        project: String,
-    },
-
-    /// Show session messages.
-    Show {
-        /// Session ID.
-        session_id: String,
-
-        /// Project path or encoded name.
-        #[arg(long, default_value = ".")]
-        project: String,
-    },
-
-    /// Delete a session.
-    Delete {
-        /// Session ID.
-        session_id: String,
-    },
-}
-
 // ── Chat ─────────────────────────────────────────────────────────────────────
 
 #[derive(Subcommand, Debug)]
@@ -221,7 +145,7 @@ pub enum ChatAction {
     /// Send a message to an agent.
     Send {
         /// Agent identifier.
-        #[arg(long, default_value = "claude-code")]
+        #[arg(long, default_value = "jishu-self")]
         agent: String,
 
         /// Project path.
@@ -272,29 +196,6 @@ pub enum ChatAction {
     },
 }
 
-// ── Config ───────────────────────────────────────────────────────────────────
-
-#[derive(Subcommand, Debug)]
-pub enum ConfigAction {
-    /// Show current configuration.
-    Show,
-
-    /// Set a configuration key.
-    Set {
-        /// Key name.
-        key: String,
-
-        /// Value.
-        value: String,
-    },
-
-    /// Get a configuration value.
-    Get {
-        /// Key name.
-        key: String,
-    },
-}
-
 // ── Plan ─────────────────────────────────────────────────────────────────────
 
 #[derive(Subcommand, Debug)]
@@ -337,7 +238,6 @@ pub enum TaskAction {
 
         /// Task description.
         description: String,
-
     },
 
     /// Update task status.
@@ -390,31 +290,6 @@ pub enum EventAction {
 pub enum ModelAction {
     /// List configured models.
     List,
-
-    /// Add a model configuration.
-    Add {
-        /// Model identifier (e.g. "gpt-4o", "claude-sonnet-4").
-        #[arg(long)]
-        id: String,
-
-        /// Provider name.
-        #[arg(long)]
-        provider: String,
-
-        /// API base URL.
-        #[arg(long)]
-        base_url: Option<String>,
-
-        /// API key (or set via environment variable).
-        #[arg(long)]
-        api_key: Option<String>,
-    },
-
-    /// Remove a model configuration.
-    Remove {
-        /// Model identifier.
-        id: String,
-    },
 
     /// Test a model connection.
     Test {
@@ -473,18 +348,22 @@ pub enum AcpAction {
     List,
 }
 
-// ── AgentBridge ──────────────────────────────────────────────────────────────
+// ── AgentBridge (internal) ───────────────────────────────────────────────────
 
 #[derive(Subcommand, Debug)]
 pub enum AgentBridgeAction {
-    /// Start a bridge to an external agent.
+    /// Start a bridge: in-process LLM for jishu-self, subprocess for others.
     Start {
-        /// Agent identifier.
+        /// Agent identifier (e.g. "jishu-self", "claude-code").
         agent: String,
 
-        /// Bridge transport (stdio, tcp).
-        #[arg(long, default_value = "stdio")]
-        transport: String,
+        /// Session ID to resume.
+        #[arg(long)]
+        session: Option<String>,
+
+        /// Project working directory.
+        #[arg(long, default_value = ".")]
+        project: String,
     },
 
     /// List active bridges.

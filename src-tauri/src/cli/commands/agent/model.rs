@@ -10,13 +10,6 @@ use std::sync::{Arc, Mutex};
 pub fn run(action: ModelAction, ctx: &ExecutionContext) -> Result<(), CliError> {
     match action {
         ModelAction::List => list(ctx),
-        ModelAction::Add {
-            id,
-            provider,
-            base_url,
-            api_key,
-        } => add(id, provider, base_url, api_key, ctx),
-        ModelAction::Remove { id } => remove(&id),
         ModelAction::Test { id } => test(&id, ctx),
     }
 }
@@ -29,7 +22,7 @@ fn list(ctx: &ExecutionContext) -> Result<(), CliError> {
             serde_json::to_string_pretty(&store).map_err(CliError::Serde)?
         );
     } else if store.presets.is_empty() {
-        println!("No models configured. Use `jishu model add` to add one.");
+        println!("No models configured. Configure one in the jishu-hub GUI.");
     } else {
         for p in &store.presets {
             let marker = if store.active.as_deref() == Some(&p.id) {
@@ -40,52 +33,6 @@ fn list(ctx: &ExecutionContext) -> Result<(), CliError> {
             println!("{marker} {} ({}) — {}", p.display_name, p.id, p.model);
         }
     }
-    Ok(())
-}
-
-fn add(
-    id: String,
-    provider: String,
-    base_url: Option<String>,
-    _api_key: Option<String>,
-    _ctx: &ExecutionContext,
-) -> Result<(), CliError> {
-    let mut store = ModelStore::load().map_err(|e| CliError::Internal(e))?;
-    let protocol = provider.to_lowercase();
-    let base_url = base_url.unwrap_or_else(|| match protocol.as_str() {
-        "openai" => "https://api.openai.com/v1".to_string(),
-        "anthropic" => "https://api.anthropic.com".to_string(),
-        _ => "https://api.example.com/v1".to_string(),
-    });
-    let api_key_env = format!(
-        "JISHU_MODEL_{}_KEY",
-        id.to_uppercase().replace('-', "_")
-    );
-
-    let preset = ModelPreset {
-        id: id.clone(),
-        display_name: id.clone(),
-        protocol,
-        base_url,
-        model: id.clone(),
-        api_key: None,
-        api_key_env: Some(api_key_env.clone()),
-        max_tokens: 4096,
-        temperature: 0.7,
-        supports_tools: true,
-        supports_thinking: false,
-    };
-    store.add(preset).map_err(|e| CliError::Internal(e))?;
-    println!("Model '{id}' added.");
-    println!("Set your API key via: jishu model set-key --id {id} --key <your-key>");
-    println!("Or via environment variable: export {api_key_env}=<your-key>");
-    Ok(())
-}
-
-fn remove(id: &str) -> Result<(), CliError> {
-    let mut store = ModelStore::load().map_err(|e| CliError::Internal(e))?;
-    store.remove(id).map_err(|e| CliError::Internal(e))?;
-    println!("Model '{id}' removed.");
     Ok(())
 }
 

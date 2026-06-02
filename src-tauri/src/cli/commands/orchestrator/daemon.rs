@@ -23,18 +23,16 @@ pub fn run(action: DaemonAction, _ctx: &ExecutionContext) -> Result<(), CliError
             crate::orchestrator::daemon::run_daemon().map_err(|e| CliError::Daemon(e))
         }
         DaemonAction::Stop => {
-            // TODO: Connect to daemon and send daemon.shutdown
-            println!("Daemon stop: connect to running daemon and send shutdown");
-            Ok(())
+            eprintln!("daemon stop: not yet implemented (v0.7)");
+            Err(CliError::Internal("daemon stop is not yet implemented".to_string()))
         }
         DaemonAction::Status => {
-            // TODO: Connect to daemon and query status
-            println!("Daemon status: not yet connected");
-            Ok(())
+            eprintln!("daemon status: not yet implemented (v0.7)");
+            Err(CliError::Internal("daemon status is not yet implemented".to_string()))
         }
         DaemonAction::Restart => {
-            println!("Daemon restart: stop + start");
-            Ok(())
+            eprintln!("daemon restart: not yet implemented (v0.7)");
+            Err(CliError::Internal("daemon restart is not yet implemented".to_string()))
         }
     }
 }

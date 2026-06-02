@@ -5,10 +5,23 @@ use crate::cli::output::ExecutionContext;
 pub fn run(action: PlanAction, ctx: &ExecutionContext) -> Result<(), CliError> {
     match action {
         PlanAction::Create { name, description } => {
-            println!("Created plan: {name}");
-            if let Some(desc) = description {
-                println!("  Description: {desc}");
-            }
+            let home =
+                dirs::home_dir().ok_or_else(|| CliError::Internal("No home dir".to_string()))?;
+            let plan_id = name.to_lowercase().replace(' ', "-");
+            let run_dir = home.join(".jishu-hub").join("runs").join(&plan_id);
+            std::fs::create_dir_all(&run_dir).map_err(CliError::Io)?;
+            let plan = serde_json::json!({
+                "name": name,
+                "description": description,
+                "plan_id": plan_id,
+            });
+            let plan_path = run_dir.join("plan.json");
+            std::fs::write(
+                &plan_path,
+                serde_json::to_string_pretty(&plan).map_err(CliError::Serde)?,
+            )
+            .map_err(CliError::Io)?;
+            println!("Created plan: {name} (id: {plan_id})");
             Ok(())
         }
         PlanAction::List => {

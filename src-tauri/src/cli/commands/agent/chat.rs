@@ -53,20 +53,37 @@ fn send(
     let req = ChatRequest {
         project_path: project,
         session_id: session,
-        message: msg,
+        message: msg.clone(),
     };
 
     let mut cmd = agent.build_chat_command(req);
 
-    // Use a tokio runtime to drive the async process operations.
+    // Pipe stdin so we can write the message to the subprocess.
+    let needs_stdin = agent.pipe_chat_stdin();
+    if needs_stdin {
+        cmd.stdin(std::process::Stdio::piped());
+    }
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(CliError::Io)?;
 
     rt.block_on(async {
+        let mut child = cmd.spawn().map_err(CliError::Io)?;
+
+        // Write message to subprocess stdin and close it.
+        if needs_stdin {
+            if let Some(mut stdin) = child.stdin.take() {
+                use tokio::io::AsyncWriteExt;
+                stdin.write_all(msg.as_bytes()).await.map_err(CliError::Io)?;
+                stdin.shutdown().await.map_err(CliError::Io)?;
+            }
+        }
+
         if no_wait {
-            let child = cmd.spawn().map_err(CliError::Io)?;
             let pid = child.id().unwrap_or(0);
             println!("Started with PID: {pid}");
             return Ok(());
@@ -74,12 +91,6 @@ fn send(
 
         if stream_json {
             let writer = JsonlWriter::stdout();
-            let mut child = cmd
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .map_err(CliError::Io)?;
-
             if let Some(stdout) = child.stdout.take() {
                 use tokio::io::{AsyncBufReadExt, BufReader};
                 let reader = BufReader::new(stdout);
@@ -91,12 +102,10 @@ fn send(
                             .emit(&value)
                             .map_err(|e| CliError::Internal(e.to_string()))?;
                     } else {
-                        // Non-JSON line: print as-is
                         println!("{line}");
                     }
                 }
             }
-
             let status = child.wait().await.map_err(CliError::Io)?;
             if !status.success() {
                 return Err(CliError::Internal(format!(
@@ -105,7 +114,7 @@ fn send(
                 )));
             }
         } else {
-            let output = cmd.output().await.map_err(CliError::Io)?;
+            let output = child.wait_with_output().await.map_err(CliError::Io)?;
             print!("{}", String::from_utf8_lossy(&output.stdout));
             if !output.status.success() {
                 eprintln!("{}", String::from_utf8_lossy(&output.stderr));

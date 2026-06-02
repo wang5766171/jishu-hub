@@ -14,16 +14,30 @@ pub fn run(action: AgentAction, ctx: &ExecutionContext) -> Result<(), CliError> 
 fn list(ctx: &ExecutionContext) -> Result<(), CliError> {
     let registry = AgentRegistry::new();
     let active_id = registry.active_id().to_string();
-    let agents = registry.list_agents();
+
+    // Probe each agent so the version reflects the actually-installed CLI,
+    // not the static placeholder in AgentInfo.version.
+    let mut statuses = registry.list_agent_statuses();
+    for status in &mut statuses {
+        let plugin = registry
+            .agents_info()
+            .into_iter()
+            .find(|(id, _)| id == &status.id)
+            .map(|(_, p)| p);
+        if let Some(plugin) = plugin {
+            let health = plugin.probe_sync();
+            status.health = health;
+        }
+    }
 
     if ctx.json {
         let mut writer = crate::cli::jsonl::JsonlWriter::stdout();
-        for agent in &agents {
-            let mut entry = serde_json::to_value(agent)?;
-            let map = entry.as_object_mut().expect("AgentInfo serializes to object");
+        for status in &statuses {
+            let mut entry = serde_json::to_value(status)?;
+            let map = entry.as_object_mut().expect("AgentStatus serializes to object");
             map.insert(
                 "active".into(),
-                serde_json::Value::Bool(agent.id == active_id),
+                serde_json::Value::Bool(status.id == active_id),
             );
             writer.emit(&entry)?;
         }
@@ -31,11 +45,17 @@ fn list(ctx: &ExecutionContext) -> Result<(), CliError> {
     }
 
     // Human-readable table
-    for agent in &agents {
-        let marker = if agent.id == active_id { "*" } else { " " };
+    for status in &statuses {
+        let marker = if status.id == active_id { "*" } else { " " };
+        let version = status
+            .health
+            .version
+            .as_deref()
+            .filter(|v| !v.is_empty())
+            .unwrap_or("not installed");
         println!(
             "{} {:<20} ({})  v{}",
-            marker, agent.display_name, agent.id, agent.version
+            marker, status.display_name, status.id, version
         );
     }
     Ok(())
