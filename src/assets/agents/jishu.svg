@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="glow" x1="256" y1="448" x2="256" y2="80" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1e40af"/>
+      <stop offset="40%" stop-color="#0ea5e9"/>
+      <stop offset="100%" stop-color="#67e8f9"/>
+    </linearGradient>
+    <linearGradient id="arm-l" x1="40" y1="256" x2="160" y2="256" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0ea5e9" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0.6"/>
+    </linearGradient>
+    <linearGradient id="arm-r" x1="472" y1="256" x2="352" y2="256" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0ea5e9" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0.6"/>
+    </linearGradient>
+    <linearGradient id="pulse" x1="200" y1="32" x2="312" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+    <filter id="blur">
+      <feGaussianBlur stdDeviation="8"/>
+    </filter>
+    <filter id="glow-filter">
+      <feGaussianBlur stdDeviation="12" result="g"/>
+      <feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- 左臂：系统/终端工具 -->
+  <!-- 终端窗口图标 -->
+  <rect x="96" y="208" width="72" height="52" rx="8" stroke="#22d3ee" stroke-width="5" fill="none" opacity="0.7"/>
+  <polyline points="110,230 122,240 110,250" stroke="#67e8f9" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" opacity="0.8"/>
+  <line x1="130" y1="248" x2="148" y2="248" stroke="#67e8f9" stroke-width="4" stroke-linecap="round" opacity="0.5"/>
+  <!-- 右臂：浏览器/网络工具 -->
+  <!-- 浏览器窗口图标 -->
+  <rect x="344" y="208" width="72" height="52" rx="8" stroke="#22d3ee" stroke-width="5" fill="none" opacity="0.7"/>
+  <line x1="344" y1="224" x2="416" y2="224" stroke="#22d3ee" stroke-width="3" opacity="0.5"/>
+  <circle cx="356" cy="216" r="3" fill="#67e8f9" opacity="0.6"/>
+  <circle cx="366" cy="216" r="3" fill="#67e8f9" opacity="0.6"/>
+  <circle cx="376" cy="216" r="3" fill="#67e8f9" opacity="0.6"/>
+  <!-- 地球网格 -->
+  <circle cx="380" cy="242" r="14" stroke="#67e8f9" stroke-width="2.5" fill="none" opacity="0.6"/>
+  <ellipse cx="380" cy="242" rx="7" ry="14" stroke="#67e8f9" stroke-width="2" fill="none" opacity="0.4"/>
+  <line x1="366" y1="242" x2="394" y2="242" stroke="#67e8f9" stroke-width="2" opacity="0.4"/>
+  <!-- 底座光晕 -->
+  <path d="M112 370 Q256 420 400 370 L400 330 Q256 280 112 330 Z"
+        fill="#0ea5e9" opacity="0.08" filter="url(#blur)"/>
+
+  <!-- 底座 -->
+  <path d="M112 370 L256 432 L400 370 L400 330 L256 268 L112 330 Z"
+        stroke="url(#glow)" stroke-width="20" stroke-linejoin="round" stroke-linecap="round" fill="none"/>
+  <!-- 底座内线 -->
+  <path d="M160 355 L256 395 L352 355 L352 340 L256 300 L160 340 Z"
+        stroke="#0ea5e9" stroke-width="6" stroke-linejoin="round" stroke-linecap="round" fill="none" opacity="0.25"/>
+
+  <!-- 中心竖线 -->
+  <line x1="256" y1="268" x2="256" y2="168" stroke="url(#glow)" stroke-width="16" stroke-linecap="round"/>
+
+  <!-- 两侧调度通道 -->
+  <line x1="176" y1="350" x2="256" y2="168" stroke="#0ea5e9" stroke-width="10" stroke-linecap="round" opacity="0.3"/>
+  <line x1="336" y1="350" x2="256" y2="168" stroke="#0ea5e9" stroke-width="10" stroke-linecap="round" opacity="0.3"/>
+
+  <!-- 枢纽核心 -->
+  <circle cx="256" cy="148" r="28" fill="#0ea5e9" opacity="0.15" filter="url(#blur)"/>
+  <circle cx="256" cy="148" r="16" fill="url(#pulse)" filter="url(#glow-filter)"/>
+
+  <!-- 发散线 -->
+  <line x1="256" y1="124" x2="168" y2="68" stroke="#22d3ee" stroke-width="10" stroke-linecap="round"/>
+  <line x1="256" y1="124" x2="344" y2="68" stroke="#22d3ee" stroke-width="10" stroke-linecap="round"/>
+  <line x1="256" y1="124" x2="256" y2="44" stroke="#22d3ee" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- 智能体节点 -->
+  <circle cx="168" cy="58" r="16" fill="none" stroke="#22d3ee" stroke-width="6"/>
+  <circle cx="344" cy="58" r="16" fill="none" stroke="#22d3ee" stroke-width="6"/>
+  <circle cx="256" cy="34" r="16" fill="none" stroke="#22d3ee" stroke-width="6"/>
+  <circle cx="168" cy="58" r="5" fill="#67e8f9"/>
+  <circle cx="344" cy="58" r="5" fill="#67e8f9"/>
+  <circle cx="256" cy="34" r="5" fill="#67e8f9"/>
+</svg>

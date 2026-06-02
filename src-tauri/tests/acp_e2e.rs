@@ -32,7 +32,7 @@ fn acp_json_rpc_framing() {
         "result": {
             "protocolVersion": "0.1",
             "capabilities": { "tools": true, "streaming": true },
-            "serverInfo": { "name": "jishu-hub", "version": "0.5.6" }
+            "serverInfo": { "name": "jishu-hub", "version": "0.6.0" }
         }
     });
     assert!(response.get("result").is_some());
