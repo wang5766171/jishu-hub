@@ -276,7 +276,11 @@ pub struct Preset {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub config: crate::config::ClaudeConfig,
+    pub config: serde_json::Value,
+    /// Agent that owns this preset. Set at save-time from the active agent;
+    /// the active agent must match when applying the preset.
+    #[serde(rename = "agentId", default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     #[serde(rename = "createdAt")]
     pub created_at: String,
 }
@@ -290,13 +294,24 @@ fn presets_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(hub_dir()?.join("presets.json"))
 }
 
-pub fn list_presets() -> Result<Vec<Preset>, Box<dyn std::error::Error>> {
+/// List presets that belong to a specific agent. Pass `None` to list all presets
+/// (used by the templates tab which the user can browse by switching agents).
+pub fn list_presets_for(agent_id: Option<&str>) -> Result<Vec<Preset>, Box<dyn std::error::Error>> {
     let path = presets_path()?;
     if !path.exists() {
         return Ok(Vec::new());
     }
     let data: Presets = read_json(&path)?;
-    Ok(data.presets)
+    Ok(match agent_id {
+        Some(id) => data.presets.into_iter().filter(|p| p.agent_id.as_deref() == Some(id)).collect(),
+        None => data.presets,
+    })
+}
+
+/// Backwards-compatible list of all presets. New callers should use
+/// `list_presets_for` to scope by active agent.
+pub fn list_presets() -> Result<Vec<Preset>, Box<dyn std::error::Error>> {
+    list_presets_for(None)
 }
 
 pub fn save_preset(preset: Preset) -> Result<(), Box<dyn std::error::Error>> {
@@ -689,7 +704,7 @@ pub struct ConfigTemplate {
     pub id: String,
     pub name: String,
     pub description: String,
-    pub config: crate::config::ClaudeConfig,
+    pub config: serde_json::Value,
 }
 
 pub fn list_config_templates() -> Vec<ConfigTemplate> {
@@ -709,25 +724,31 @@ pub fn list_config_templates() -> Vec<ConfigTemplate> {
     ]
 }
 
-fn anthropic_official_config() -> crate::config::ClaudeConfig {
-    let mut env = std::collections::HashMap::new();
-    env.insert("ANTHROPIC_AUTH_TOKEN".into(), String::new());
-    crate::config::ClaudeConfig {
+fn anthropic_official_config() -> serde_json::Value {
+    let config = crate::config::ClaudeConfig {
         api_provider: Some("anthropic".into()),
         model: Some("claude-sonnet-4-6".into()),
-        env: Some(env),
+        env: Some({
+            let mut env = std::collections::HashMap::new();
+            env.insert("ANTHROPIC_AUTH_TOKEN".into(), String::new());
+            env
+        }),
         ..Default::default()
-    }
+    };
+    serde_json::to_value(config).unwrap_or_default()
 }
 
-fn third_party_proxy_config() -> crate::config::ClaudeConfig {
-    let mut env = std::collections::HashMap::new();
-    env.insert("ANTHROPIC_BASE_URL".into(), String::new());
-    env.insert("ANTHROPIC_AUTH_TOKEN".into(), String::new());
-    env.insert("ANTHROPIC_MODEL".into(), String::new());
-    crate::config::ClaudeConfig {
+fn third_party_proxy_config() -> serde_json::Value {
+    let config = crate::config::ClaudeConfig {
         api_provider: Some("anthropic".into()),
-        env: Some(env),
+        env: Some({
+            let mut env = std::collections::HashMap::new();
+            env.insert("ANTHROPIC_BASE_URL".into(), String::new());
+            env.insert("ANTHROPIC_AUTH_TOKEN".into(), String::new());
+            env.insert("ANTHROPIC_MODEL".into(), String::new());
+            env
+        }),
         ..Default::default()
-    }
+    };
+    serde_json::to_value(config).unwrap_or_default()
 }

@@ -1,3 +1,12 @@
+//! Tauri-internal ACP runtime: manages agent subprocess lifecycle within the
+//! desktop app. Uses mpsc channels for in-process communication between the
+//! Tauri webview and spawned agent CLIs.
+//!
+//! This is distinct from `acp/` which implements the stdio JSON-RPC 2.0
+//! **external** protocol (per `protocols-spec.md §7`) for editor integrations
+//! (Zed, JetBrains). This module is the **internal** consumer that spawns
+//! agents and relays their NormalizedEvent streams to the GUI.
+
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;

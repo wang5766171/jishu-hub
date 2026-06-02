@@ -132,7 +132,7 @@ fn delete_session_name(session_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn load_config(state: tauri::State<'_, Mutex<AppState>>) -> Result<config::ClaudeConfig, String> {
+fn load_config(state: tauri::State<'_, Mutex<AppState>>) -> Result<serde_json::Value, String> {
     let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().load_config()
 }
@@ -174,19 +174,34 @@ async fn load_history(
 #[tauri::command]
 fn save_config(
     state: tauri::State<'_, Mutex<AppState>>,
-    config: config::ClaudeConfig,
+    config: serde_json::Value,
 ) -> Result<(), String> {
     let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().save_config(&config)
 }
 
 #[tauri::command]
-fn list_presets() -> Result<Vec<hub::Preset>, String> {
-    hub::list_presets().map_err(|e| e.to_string())
+fn list_presets(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<hub::Preset>, String> {
+    let active_id = {
+        let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+        s.registry.active_id().to_string()
+    };
+    hub::list_presets_for(Some(&active_id)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn save_preset(preset: hub::Preset) -> Result<(), String> {
+fn save_preset(
+    state: tauri::State<'_, Mutex<AppState>>,
+    preset: hub::Preset,
+) -> Result<(), String> {
+    let active_id = {
+        let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+        s.registry.active_id().to_string()
+    };
+    let mut preset = preset;
+    if preset.agent_id.is_none() {
+        preset.agent_id = Some(active_id);
+    }
     hub::save_preset(preset).map_err(|e| e.to_string())
 }
 
@@ -197,11 +212,23 @@ fn delete_preset(id: String) -> Result<(), String> {
 
 #[tauri::command]
 fn apply_preset(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
+    let active_id = {
+        let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+        s.registry.active_id().to_string()
+    };
     let presets = hub::list_presets().map_err(|e| e.to_string())?;
     let preset = presets
         .into_iter()
         .find(|p| p.id == id)
-        .ok_or("Preset not found")?;
+        .ok_or_else(|| "Preset not found".to_string())?;
+    if let Some(preset_agent) = preset.agent_id.as_deref() {
+        if preset_agent != active_id {
+            return Err(format!(
+                "Preset '{}' was created for agent '{}' and cannot be applied to '{}'",
+                preset.name, preset_agent, active_id
+            ));
+        }
+    }
     let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().save_config(&preset.config)
 }
@@ -1142,7 +1169,18 @@ fn install_update(app: tauri::AppHandle, installer_path: String) -> Result<(), S
 #[tauri::command]
 fn list_models() -> Result<serde_json::Value, String> {
     let store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
-    Ok(serde_json::to_value(store).map_err(|e| e.to_string())?)
+    let mut val = serde_json::to_value(store).map_err(|e| e.to_string())?;
+    // Mask api_key before sending to frontend — plaintext never leaves the backend
+    if let Some(presets) = val.get_mut("presets").and_then(|p| p.as_array_mut()) {
+        for preset in presets {
+            if let Some(key) = preset.get("api_key").and_then(|k| k.as_str()) {
+                if !key.is_empty() {
+                    preset["api_key"] = serde_json::Value::String(llm::http::mask_key(key));
+                }
+            }
+        }
+    }
+    Ok(val)
 }
 
 #[tauri::command]
@@ -1151,6 +1189,14 @@ fn add_model(preset: serde_json::Value) -> Result<(), String> {
     let preset: llm::config::ModelPreset =
         serde_json::from_value(preset).map_err(|e| e.to_string())?;
     store.add(preset).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_model(id: String, preset: serde_json::Value) -> Result<(), String> {
+    let mut store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
+    let preset: llm::config::ModelPreset =
+        serde_json::from_value(preset).map_err(|e| e.to_string())?;
+    store.update(&id, preset).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1163,6 +1209,12 @@ fn remove_model(id: String) -> Result<(), String> {
 fn set_active_model(id: String) -> Result<(), String> {
     let mut store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
     store.set_active(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn deactivate_model() -> Result<(), String> {
+    let mut store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
+    store.clear_active().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1381,8 +1433,10 @@ pub fn run() {
             run_cancel,
             list_models,
             add_model,
+            update_model,
             remove_model,
             set_active_model,
+            deactivate_model,
             test_model,
             set_model_key,
             mask_model_key,
