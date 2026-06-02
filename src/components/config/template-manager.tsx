@@ -659,11 +659,12 @@ function cleanConfigForJson(config: ClaudeConfig): Record<string, unknown> {
 
 export function TemplateManager({ onApplied }: TemplateManagerProps) {
   const { t } = useTranslation();
-  const { activeId } = useAgent();
+  const { activeId, agents } = useAgent();
   const agentRefreshKey = activeId ? Array.from(activeId).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) : 0;
   const { data: systemTemplates, loading: loadingSystem } = useInvoke<ConfigTemplate[]>("list_config_templates", undefined, agentRefreshKey);
   const { data: userTemplates, loading: loadingUser, refetch } = useInvoke<Preset[]>("list_presets");
-  const { data: currentConfig } = useInvoke<ClaudeConfig>("load_config", undefined, agentRefreshKey);
+  const { data: currentConfig } = useInvoke<unknown>("load_config", undefined, agentRefreshKey);
+  const [applyError, setApplyError] = useState<string | null>(null);
 
   const [saveOpen, setSaveOpen] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
@@ -737,11 +738,13 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
   };
 
   const handleApplyUser = async (id: string) => {
+    setApplyError(null);
     try {
       await invokeCommand("apply_preset", { id });
       onApplied();
     } catch (err) {
       console.error("Failed to apply user template:", err);
+      setApplyError(String(err));
     }
   };
 
@@ -778,10 +781,18 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
     return <div className="text-muted-foreground">{t("config.loadingTemplates")}</div>;
   }
 
+  const activeAgent = agents.find((a) => a.id === activeId);
+  const activeAgentName = activeAgent?.display_name ?? activeId ?? "";
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">{t("config.templateDesc")}</p>
+        <div className="space-y-1">
+          <p className="text-sm text-muted-foreground">{t("config.templateDesc")}</p>
+          <p className="text-xs text-muted-foreground">
+            {t("config.templateAgentScope", { agent: activeAgentName })}
+          </p>
+        </div>
         <div className="flex gap-2">
           <Button size="sm" variant="outline" onClick={() => setNewOpen(true)}>
             <Plus className="h-4 w-4" />
@@ -792,6 +803,12 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
           </Button>
         </div>
       </div>
+
+      {applyError && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          {applyError}
+        </div>
+      )}
 
       {/* System Templates */}
       <section>

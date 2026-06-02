@@ -4,13 +4,15 @@ import claudeLogo from "@/assets/agents/claude.svg";
 import claudeLightLogo from "@/assets/agents/claude-light.svg";
 import openCodeLogo from "@/assets/agents/opencode.svg";
 import openCodeLightLogo from "@/assets/agents/opencode-light.svg";
+import jishuLogo from "@/assets/agents/jishu.svg";
+import jishuLightLogo from "@/assets/agents/jishu-light.svg";
 import nodeLogo from "@/assets/agents/nodejs.svg";
 import nodeLightLogo from "@/assets/agents/nodejs-light.svg";
 import npmLogo from "@/assets/agents/npm.svg";
 import npmLightLogo from "@/assets/agents/npm-light.svg";
 import pythonLogo from "@/assets/agents/python.svg";
 import pythonLightLogo from "@/assets/agents/python-light.svg";
-import { Bot, Sparkles } from "lucide-react";
+import { Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/hooks/use-theme";
 
@@ -37,18 +39,6 @@ export function AgentLogo({ agentId, size = 16, className }: AgentLogoProps) {
         className={cn("shrink-0 object-contain", className)}
         style={{ width: size, height: size }}
       />
-    );
-  }
-
-  // Special case: jishu-self uses Sparkles icon
-  if (agentId === "jishu-self") {
-    return (
-      <span
-        className={cn("inline-flex shrink-0 items-center justify-center rounded bg-primary/10 text-primary", className)}
-        style={{ width: size, height: size }}
-      >
-        <Sparkles style={{ width: Math.max(12, size - 4), height: Math.max(12, size - 4) }} />
-      </span>
     );
   }
 
@@ -87,12 +77,14 @@ const agentLogos: Record<string, { src: string }> = {
   "claude-code": { src: claudeLogo },
   codex: { src: codexAppLogo },
   opencode: { src: openCodeLogo },
+  "jishu-self": { src: jishuLogo },
 };
 
 const lightAgentLogos: Record<string, { src: string }> = {
   "claude-code": { src: claudeLightLogo },
   codex: { src: codexLightLogo },
   opencode: { src: openCodeLightLogo },
+  "jishu-self": { src: jishuLightLogo },
 };
 
 const runtimeLogos: Record<string, { src: string }> = {

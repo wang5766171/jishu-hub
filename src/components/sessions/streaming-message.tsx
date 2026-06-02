@@ -31,6 +31,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   const errorText = state?.error ?? "";
   const toolUses = state?.tools ?? [];
   const content = state?.content ?? [];
+  const steps = state?.steps ?? [];
   const resolvedUserMessage = userMessage === undefined ? state?.pendingUserMessage ?? undefined : userMessage ?? undefined;
   const userScrolledRef = useRef(false);
 
@@ -154,6 +155,22 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                       {errorText}
                     </div>
                   )}
+                  {steps.length > 0 && (
+                    <details open className="rounded-[6px] border border-border/40 bg-accent/30 px-2.5 py-1.5">
+                      <summary className="cursor-pointer select-none text-[11px] text-muted-foreground hover:text-foreground">
+                        {t("sessions.toolCalls", { count: steps.length })}
+                      </summary>
+                      <div className="mt-1.5 space-y-1">
+                        {steps.map((step, i) => (
+                          <div key={step.stepId ?? i} className="flex items-center gap-2 text-[11px]">
+                            <StepStatusIcon kind={step.kind} />
+                            <span className="text-muted-foreground font-mono">{step.kind}</span>
+                            <span className="truncate">{step.title}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
                   {!isComplete && (
                     <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm text-muted-foreground">
                       <span className="inline-block w-1.5 h-4 bg-primary animate-pulse shrink-0" />
@@ -200,4 +217,11 @@ function buildStreamRenderItems(content: ContentBlock[], calls: ToolCall[]): Str
 
   flushTools();
   return items;
+}
+
+function StepStatusIcon({ kind }: { kind: string }) {
+  const color = kind === "done" ? "text-[var(--icon-success)]"
+    : kind === "failed" ? "text-[var(--color-destructive)]"
+    : "text-[var(--icon-action)]";
+  return <span className={`inline-block h-1.5 w-1.5 rounded-full ${color}`} />;
 }

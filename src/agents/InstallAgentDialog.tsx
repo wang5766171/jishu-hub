@@ -34,6 +34,36 @@ export function InstallAgentDialog({ agent, open, onOpenChange, onInstalled }: I
 
   if (!agent) return null;
 
+  // jishu-self is always installed with the app — show a different message
+  if (agent.id === "jishu-self") {
+    return (
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Package className="h-5 w-5 text-primary" />
+              {agent.display_name}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-6">
+            <div className="flex flex-col items-center justify-center py-4 space-y-3 text-center">
+              <Package className="h-12 w-12 text-muted-foreground" />
+              <div className="space-y-1">
+                <p className="font-medium text-lg">Jishu Agent 随应用自动安装</p>
+                <p className="text-sm text-muted-foreground">如果检测异常，请重新安装 Jishu Hub 应用</p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => onOpenChange(false)}>
+              关闭
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
   const handleInstall = async (method: "npm" | "native") => {
     const cmd = method === "npm" ? agent.install_hint : agent.native_install_command;
     if (!cmd) return;

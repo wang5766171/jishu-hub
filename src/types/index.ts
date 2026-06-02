@@ -93,6 +93,34 @@ export interface ContextCompactionConfig {
   method: string | null;
 }
 
+export interface JishuPermissions {
+  allow: string[] | null;
+  deny: string[] | null;
+  defaultMode: string | null;
+}
+
+export interface JishuContextCompaction {
+  threshold: number | null;
+  method: string | null;
+}
+
+export interface JishuConfig {
+  activeModel: string | null;
+  temperature: number | null;
+  maxTokens: number | null;
+  thinkingEnabled: boolean | null;
+  env: Record<string, string> | null;
+  permissions: JishuPermissions | null;
+  skipDangerous: boolean | null;
+  mcpServers: Record<string, McpServerConfig> | null;
+  systemInstructions: string | null;
+  globalMemory: string | null;
+  contextCompaction: JishuContextCompaction | null;
+  verbose: boolean | null;
+  maxTurns: number | null;
+  theme: string | null;
+}
+
 export interface ClaudeConfig {
   model: string | null;
   env: Record<string, string> | null;
@@ -116,14 +144,15 @@ export interface ConfigTemplate {
   id: string;
   name: string;
   description: string;
-  config: ClaudeConfig;
+  config: unknown;
 }
 
 export interface Preset {
   id: string;
   name: string;
   description?: string;
-  config: ClaudeConfig;
+  config: unknown;
+  agentId?: string;
   createdAt: string;
 }
 

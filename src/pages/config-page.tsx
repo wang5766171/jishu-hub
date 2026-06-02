@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { ConfigForm } from "@/components/config/config-form";
+import { JishuConfigForm } from "@/components/config/jishu-config-form";
 import { RawConfigEditor } from "@/components/config/raw-config-editor";
 import { TemplateManager } from "@/components/config/template-manager";
 import { BackupManager } from "@/components/config/backup-manager";
@@ -10,23 +11,38 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Download, Upload } from "lucide-react";
 import { useAgent } from "@/agents";
-import type { ClaudeConfig } from "@/types";
+import type { ClaudeConfig, JishuConfig } from "@/types";
 
 interface RawConfigInfo {
   content: string;
   format: string;
 }
 
-export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "templates" | "backups" }) {
+export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "templates" | "models" | "backups" }) {
   const { t } = useTranslation();
   const { activeId } = useAgent();
+  const isJishuSelf = activeId === "jishu-self";
   const agentRefreshKey = activeId ? Array.from(activeId).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) : 0;
 
-  // Try structured config first, fall back to raw if it fails
-  const { data: config, loading, error: configError, refetch } = useInvoke<ClaudeConfig>("load_config", undefined, agentRefreshKey);
+  const { data: rawConfigValue, loading, error: configError, refetch } = useInvoke<unknown>(
+    "load_config",
+    undefined,
+    agentRefreshKey,
+  );
   const useRaw = !!configError;
   const { data: rawConfig, refetch: refetchRaw } = useInvoke<RawConfigInfo>("load_raw_config", undefined, useRaw ? agentRefreshKey : 0);
-  const [activeTab, setActiveTab] = useState<"edit" | "templates" | "models" | "backups">(initialTab === "edit" || initialTab === "templates" || initialTab === "backups" ? initialTab : "edit");
+  const [activeTab, setActiveTab] = useState<"edit" | "templates" | "models" | "backups">(
+    ["edit", "templates", "models", "backups"].includes(initialTab) ? initialTab : "edit"
+  );
+
+  // Coerce to a typed object based on the active agent. Frontend treats Value
+  // as opaque; jishu-self uses its own JishuConfig schema, others use ClaudeConfig.
+  const config: ClaudeConfig | null = isJishuSelf
+    ? null
+    : (rawConfigValue as ClaudeConfig | null | undefined) ?? null;
+  const jishuConfig: JishuConfig | null = isJishuSelf
+    ? ((rawConfigValue as JishuConfig | null | undefined) ?? null)
+    : null;
 
   const handleConfigSaved = useCallback(() => {
     refetch();
@@ -86,16 +102,21 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
   }
 
   // Structured config (e.g. Claude Code, OpenCode): show form with templates & backups
-  if (!config) {
+  if (!isJishuSelf && !config) {
+    return <div className="text-muted-foreground">{t("config.loadFailed")}</div>;
+  }
+  if (isJishuSelf && !jishuConfig) {
     return <div className="text-muted-foreground">{t("config.loadFailed")}</div>;
   }
 
-  const tabs = [
-    { key: "edit" as const, label: t("config.editConfig") },
-    { key: "templates" as const, label: t("config.templates") },
-    { key: "models" as const, label: t("config.models") },
-    { key: "backups" as const, label: t("config.backups") },
+  const tabs: Array<{ key: "edit" | "templates" | "models" | "backups"; label: string }> = [
+    { key: "edit", label: t("config.editConfig") },
+    { key: "templates", label: t("config.templates") },
   ];
+  if (!isJishuSelf) {
+    tabs.push({ key: "models", label: t("config.models") });
+  }
+  tabs.push({ key: "backups", label: t("config.backups") });
 
   return (
     <div className="flex flex-col h-full p-6">
@@ -135,7 +156,11 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
       {/* Tab content — scrollable */}
       <div className="flex-1 min-h-0 overflow-y-auto pt-4">
         {activeTab === "edit" && (
-          <ConfigForm config={config} onSaved={handleConfigSaved} agentId={activeId} />
+          isJishuSelf && jishuConfig ? (
+            <JishuConfigForm config={jishuConfig} onSaved={handleConfigSaved} />
+          ) : (
+            config && <ConfigForm config={config} onSaved={handleConfigSaved} agentId={activeId} />
+          )
         )}
         {activeTab === "templates" && (
           <TemplateManager onApplied={refetch} />

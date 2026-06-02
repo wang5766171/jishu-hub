@@ -149,10 +149,23 @@ class StreamStore {
         }
       }
     } else if (data.kind === "task_step") {
-      // v0.6.0: Store task_step events for debugging and potential future UI rendering
       steps = [...steps, { runId: data.run_id, stepId: data.step_id, kind: data.step_kind, title: data.title }];
+    } else if (data.kind === "sub_agent_event") {
+      // Recursively surface inner event content (text/thinking) from sub-agents
+      const inner = data.sub_event;
+      if (inner) {
+        if (inner.kind === "text_delta" && inner.delta) {
+          text = text + inner.delta;
+          content = appendTextBlock(content, inner.delta);
+        } else if (inner.kind === "thinking" && inner.delta) {
+          thinking = thinking + inner.delta;
+          content = appendThinkingBlock(content, inner.delta);
+        } else if (inner.kind === "error" && inner.message) {
+          error = inner.message;
+        }
+      }
     }
-    // sub_agent_dispatch, sub_agent_event — stored in chunks only, no state mutation needed
+    // sub_agent_dispatch — stored in chunks only
 
     this.sessions.set(key, {
       chunks,
