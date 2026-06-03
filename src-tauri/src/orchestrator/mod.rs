@@ -1,10 +1,11 @@
-pub mod bus;
 pub mod daemon;
 pub mod dispatcher;
 pub mod planner;
 pub mod proposal;
+pub mod rework;
 pub mod result;
 pub mod spec;
+pub mod store;
 pub mod trace;
 
 use crate::agent::normalized::{NormalizedEvent, TaskStepKind};
@@ -12,36 +13,26 @@ use crate::agent::AgentRegistry;
 use dispatcher::{DefaultDispatcher, DispatchContext, Dispatcher};
 use planner::PlanContext;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[allow(unused_imports)]
-pub use bus::EventBus;
-#[allow(unused_imports)]
+// Public re-exports for consumers (lib.rs, daemon, CLI)
 pub use proposal::EvolutionProposal;
-#[allow(unused_imports)]
-pub use result::{RunResult, RunStatus, StepOutcome, UsageSummary};
-#[allow(unused_imports)]
-pub use spec::{Step, StepKind, TaskKind, TaskSpec};
-#[allow(unused_imports)]
+pub use rework::ReworkItem;
+pub use result::{RunResult, RunStatus, StepOutcome, StepStatus, UsageSummary};
+pub use spec::{AssignmentMode, Step, StepKind, TaskKind, TaskSpec, VerifyCheck};
+pub use store::RunStore;
 pub use trace::TraceRecorder;
+
+// ── Public API types ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskSubmitResult {
     pub task_id: String,
     pub run_id: String,
     pub status: RunStatus,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunSummary {
-    pub run_id: String,
-    pub task_id: String,
-    pub status: RunStatus,
-    pub started_at: i64,
-    pub finished_at: Option<i64>,
-    pub title: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +45,20 @@ pub struct RunRecord {
     pub timeline: Vec<TaskTimelineEvent>,
     #[serde(default)]
     pub rework_routes: Vec<RoleContractRoute>,
+    #[serde(default)]
+    pub rework_items: Vec<ReworkItem>,
+    #[serde(default)]
+    pub children: Vec<RunSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunSummary {
+    pub run_id: String,
+    pub task_id: String,
+    pub status: RunStatus,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,32 +84,56 @@ pub struct TaskTimelineEvent {
     pub at: Option<i64>,
 }
 
+// ── Public functions ──────────────────────────────────────────────────────
+
+/// Submit a task and execute it synchronously (used by Tauri IPC and daemon).
+/// In v0.7+ this will be async with SupervisorWorker; for v0.6 it remains
+/// synchronous but uses the new data model.
 pub fn submit_task(spec: TaskSpec) -> Result<TaskSubmitResult, String> {
     let root = default_runs_root();
     submit_task_in_root(spec, &root)
 }
 
 pub fn list_runs() -> Result<Vec<RunSummary>, String> {
-    list_runs_in_root(&default_runs_root())
+    let store = RunStore::open()?;
+    let runs = store.list_runs()?;
+    // Convert store::RunSummary to our RunSummary (same struct, different module)
+    Ok(runs
+        .into_iter()
+        .map(|r| RunSummary {
+            run_id: r.run_id,
+            task_id: r.task_id,
+            status: r.status,
+            started_at: r.started_at,
+            finished_at: r.finished_at,
+            title: r.title,
+        })
+        .collect())
 }
 
 pub fn get_run(run_id: &str) -> Result<RunRecord, String> {
-    get_run_in_root(&default_runs_root(), run_id)
+    let root = default_runs_root();
+    get_run_in_root(&root, run_id)
 }
 
 pub fn cancel_run(run_id: &str) -> Result<RunResult, String> {
-    cancel_run_in_root(&default_runs_root(), run_id)
+    let root = default_runs_root();
+    cancel_run_in_root(&root, run_id)
 }
 
 pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmitResult, String> {
+    let store = RunStore::open_at(root.to_path_buf())?;
     let started_at = now_ms();
+
     if spec.task_id.trim().is_empty() {
         spec.task_id = format!("ts_{started_at}");
     }
     let run_id = format!("r_{}_{}", started_at, sanitize_id(&spec.task_id));
-    let trace = TraceRecorder::create_in_root(root, &run_id)?;
-    trace.write_spec(&spec)?;
 
+    // Create run directory + write spec
+    store.create_run(&run_id, &spec)?;
+
+    // Generate plan
     let registry = Arc::new(AgentRegistry::new());
     let plan_ctx = PlanContext {
         registry: registry.clone(),
@@ -112,33 +141,25 @@ pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmit
     };
     let planner = planner::create_planner(&spec.policy);
     let steps = planner.plan(&spec, &plan_ctx).map_err(|e| e.to_string())?;
-    trace.write_plan(&steps)?;
+    store.write_plan(&run_id, &steps)?;
+
+    // Trace plan generation
     let rework_routes = derive_rework_routes(&spec);
+    let trace = TraceRecorder::create_in_root(root, &run_id)?;
     trace.append_event(&NormalizedEvent::TaskStep {
         run_id: run_id.clone(),
         step_id: "sp_plan".to_string(),
         kind: TaskStepKind::Plan,
         title: "Plan generated".to_string(),
         detail: Some(serde_json::json!({
-            "roles": spec.roles.clone(),
+            "roles": spec.roles.len(),
             "steps": steps.len(),
-            "rework_routes": rework_routes.clone(),
+            "rework_routes": rework_routes.len(),
         })),
     })?;
-    for route in &rework_routes {
-        trace.append_event(&NormalizedEvent::TaskStep {
-            run_id: run_id.clone(),
-            step_id: format!("route_{}_to_{}", route.from_role_id, route.target_role_id),
-            kind: TaskStepKind::Reflect,
-            title: format!(
-                "Rework route: {} -> {}",
-                route.from_role_name, route.target_role_name
-            ),
-            detail: Some(serde_json::json!(route)),
-        })?;
-    }
 
-    let (status, outcomes, error) = if matches!(spec.kind, TaskKind::Plan) {
+    // Execute
+    let (status, outcomes, error) = if matches!(spec.kind, spec::TaskKind::Plan) {
         (RunStatus::Complete, Vec::new(), None)
     } else {
         execute_steps(&spec, &run_id, &steps, registry, &trace)
@@ -153,8 +174,9 @@ pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmit
         steps: outcomes,
         usage: UsageSummary::default(),
         error,
+        cost_usd: None,
     };
-    trace.write_result(&result)?;
+    store.write_result(&run_id, &result)?;
 
     Ok(TaskSubmitResult {
         task_id: spec.task_id,
@@ -162,6 +184,71 @@ pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmit
         status,
     })
 }
+
+pub fn list_runs_in_root(root: &Path) -> Result<Vec<RunSummary>, String> {
+    let store = RunStore::open_at(root.to_path_buf())?;
+    Ok(store
+        .list_runs()?
+        .into_iter()
+        .map(|r| RunSummary {
+            run_id: r.run_id,
+            task_id: r.task_id,
+            status: r.status,
+            started_at: r.started_at,
+            finished_at: r.finished_at,
+            title: r.title,
+        })
+        .collect())
+}
+
+pub fn get_run_in_root(root: &Path, run_id: &str) -> Result<RunRecord, String> {
+    let store = RunStore::open_at(root.to_path_buf())?;
+    let spec = store.read_spec(run_id)?;
+    let plan = store.read_plan(run_id)?;
+    let result = store.read_result(run_id)?;
+    let trace_events = store.read_trace(run_id)?;
+    let rework_routes = derive_rework_routes(&spec);
+    let rework_items = store.read_rework(run_id).unwrap_or_default();
+
+    // Find child runs (runs with parent_run_id == this run_id)
+    let children = store
+        .list_runs_with_parent(run_id)?
+        .into_iter()
+        .map(|c| RunSummary {
+            run_id: c.run_id,
+            task_id: c.task_id,
+            status: c.status,
+            started_at: c.started_at,
+            finished_at: c.finished_at,
+            title: c.title,
+        })
+        .collect();
+
+    let timeline = build_timeline(&spec, &plan, &result, &trace_events, &rework_routes);
+
+    Ok(RunRecord {
+        run_id: run_id.to_string(),
+        spec,
+        plan,
+        result,
+        timeline,
+        rework_routes,
+        rework_items,
+        children,
+    })
+}
+
+pub fn cancel_run_in_root(root: &Path, run_id: &str) -> Result<RunResult, String> {
+    let store = RunStore::open_at(root.to_path_buf())?;
+    let mut result = store.read_result(run_id)?;
+    result.status = RunStatus::Aborted;
+    result.finished_at = Some(now_ms());
+    result.error = Some("Cancelled by user".to_string());
+    store.write_result(run_id, &result)?;
+    Ok(result)
+}
+
+// ── Internal helpers ──────────────────────────────────────────────────────
 
 fn execute_steps(
     spec: &TaskSpec,
@@ -175,6 +262,7 @@ fn execute_steps(
     let mut first_error = None;
 
     for step in steps {
+        let step_started = now_ms();
         let _ = trace.append_event(&NormalizedEvent::TaskStep {
             run_id: run_id.to_string(),
             step_id: step.step_id.clone(),
@@ -188,13 +276,13 @@ fn execute_steps(
         let mut ctx = DispatchContext {
             registry: registry.clone(),
             run_id,
-            task_id: &spec.task_id,
+            spec,
             trace,
             emitter: &mut emitter,
         };
         match dispatcher.execute(step, &mut ctx) {
             Ok(outcome) => {
-                let failed = outcome.status != "complete";
+                let failed = outcome.status == StepStatus::Failed;
                 outcomes.push(outcome);
                 let _ = trace.append_event(&NormalizedEvent::TaskStep {
                     run_id: run_id.to_string(),
@@ -217,11 +305,16 @@ fn execute_steps(
             }
             Err(err) => {
                 let message = err.to_string();
+                let step_finished = now_ms();
                 outcomes.push(StepOutcome {
                     step_id: step.step_id.clone(),
+                    role_id: String::new(),
                     agent_id: "unknown".to_string(),
-                    status: "error".to_string(),
+                    status: StepStatus::Failed,
                     output: Some(serde_json::json!({ "error": message })),
+                    started_at: step_started,
+                    finished_at: step_finished,
+                    usage: UsageSummary::zero(),
                 });
                 let _ = trace.append_event(&NormalizedEvent::TaskStep {
                     run_id: run_id.to_string(),
@@ -243,90 +336,6 @@ fn execute_steps(
     }
 }
 
-pub fn list_runs_in_root(root: &Path) -> Result<Vec<RunSummary>, String> {
-    if !root.exists() {
-        return Ok(Vec::new());
-    }
-    let mut runs = Vec::new();
-    for entry in std::fs::read_dir(root).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let run_id = entry.file_name().to_string_lossy().to_string();
-        let spec_path = path.join("spec.json");
-        let result_path = path.join("result.json");
-        if !spec_path.exists() || !result_path.exists() {
-            continue;
-        }
-        let spec: TaskSpec = read_json(&spec_path)?;
-        let result: RunResult = read_json(&result_path)?;
-        runs.push(RunSummary {
-            run_id,
-            task_id: result.task_id,
-            status: result.status,
-            started_at: result.started_at,
-            finished_at: result.finished_at,
-            title: spec.message,
-        });
-    }
-    runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
-    Ok(runs)
-}
-
-pub fn get_run_in_root(root: &Path, run_id: &str) -> Result<RunRecord, String> {
-    let run_dir = root.join(run_id);
-    if !run_dir.exists() {
-        return Err(format!("Run not found: {run_id}"));
-    }
-    let spec: TaskSpec = read_json(&run_dir.join("spec.json"))?;
-    let plan: Vec<Step> = read_json(&run_dir.join("plan.json"))?;
-    let result: RunResult = read_json(&run_dir.join("result.json"))?;
-    let trace_events = read_trace_events(&run_dir.join("trace.jsonl"))?;
-    let rework_routes = derive_rework_routes(&spec);
-    let timeline = build_timeline(&spec, &plan, &result, &trace_events, &rework_routes);
-    Ok(RunRecord {
-        run_id: run_id.to_string(),
-        spec,
-        plan,
-        result,
-        timeline,
-        rework_routes,
-    })
-}
-
-pub fn cancel_run_in_root(root: &Path, run_id: &str) -> Result<RunResult, String> {
-    let mut record = get_run_in_root(root, run_id)?;
-    record.result.status = RunStatus::Aborted;
-    record.result.finished_at = Some(now_ms());
-    record.result.error = Some("Cancelled by user".to_string());
-    let json = serde_json::to_string_pretty(&record.result).map_err(|e| e.to_string())?;
-    std::fs::write(root.join(run_id).join("result.json"), json).map_err(|e| e.to_string())?;
-    Ok(record.result)
-}
-
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-    serde_json::from_str(&content).map_err(|e| format!("Cannot parse {}: {e}", path.display()))
-}
-
-fn read_trace_events(path: &Path) -> Result<Vec<NormalizedEvent>, String> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-    let mut events = Vec::new();
-    for line in content.lines().filter(|line| !line.trim().is_empty()) {
-        if let Ok(event) = serde_json::from_str::<NormalizedEvent>(line) {
-            events.push(event);
-        }
-    }
-    Ok(events)
-}
-
 fn build_timeline(
     spec: &TaskSpec,
     plan: &[Step],
@@ -342,11 +351,11 @@ fn build_timeline(
         detail: Some(serde_json::json!({
             "task_id": &spec.task_id,
             "message": &spec.message,
-            "roles": &spec.roles,
+            "roles": spec.roles.len(),
         })),
         step_id: None,
         role_id: None,
-        agent_id: spec.agent_hint.clone(),
+        agent_id: None,
         at: Some(spec.created_at),
     });
 
@@ -354,7 +363,11 @@ fn build_timeline(
         timeline.push(TaskTimelineEvent {
             event_id: format!("role_assigned_{idx}"),
             kind: "role_assigned".to_string(),
-            title: format!("{} assigned to {}", role.role_name, role.agent_id),
+            title: format!(
+                "{} assigned to {}",
+                role.role_name,
+                role.agent_id.as_deref().unwrap_or("(auto)")
+            ),
             detail: Some(serde_json::json!({
                 "responsibilities": &role.responsibilities,
                 "acceptance": &role.acceptance,
@@ -362,7 +375,7 @@ fn build_timeline(
             })),
             step_id: Some(format!("sp_{idx}")),
             role_id: Some(role.role_id.clone()),
-            agent_id: Some(role.agent_id.clone()),
+            agent_id: role.agent_id.clone(),
             at: Some(spec.created_at),
         });
     }
@@ -388,9 +401,13 @@ fn build_timeline(
 
     for (idx, step) in plan.iter().enumerate() {
         let (agent_id, role_id) = match &step.kind {
-            StepKind::Dispatch { agent, .. } => {
-                let role = spec.roles.get(idx);
-                (Some(agent.clone()), role.map(|role| role.role_id.clone()))
+            StepKind::Dispatch { role_id, .. } => {
+                let agent = spec
+                    .roles
+                    .iter()
+                    .find(|r| r.role_id == *role_id)
+                    .and_then(|r| r.agent_id.clone());
+                (agent, Some(role_id.clone()))
             }
             _ => (None, None),
         };
@@ -465,13 +482,12 @@ fn derive_rework_routes(spec: &TaskSpec) -> Vec<RoleContractRoute> {
                 routes.push(RoleContractRoute {
                     from_role_id: source.role_id.clone(),
                     from_role_name: source.role_name.clone(),
-                    from_agent_id: source.agent_id.clone(),
+                    from_agent_id: source.agent_id.clone().unwrap_or_default(),
                     target_role_id: target.role_id.clone(),
                     target_role_name: target.role_name.clone(),
-                    target_agent_id: target.agent_id.clone(),
-                    reason:
-                        "role contract mentions the target role and the target can receive rework"
-                            .to_string(),
+                    target_agent_id: target.agent_id.clone().unwrap_or_default(),
+                    reason: "role contract mentions the target role and the target can receive rework"
+                        .to_string(),
                 });
             }
         }
@@ -486,14 +502,14 @@ fn default_runs_root() -> PathBuf {
         .join("runs")
 }
 
-fn now_ms() -> i64 {
+pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
 }
 
-fn sanitize_id(id: &str) -> String {
+pub fn sanitize_id(id: &str) -> String {
     id.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
@@ -508,34 +524,29 @@ fn sanitize_id(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use crate::orchestrator::spec::RoleAssignment;
 
-    #[test]
-    fn hub_plan_task_submit_writes_spec_plan_and_result() {
-        let root = std::env::temp_dir().join(format!("jishu_core_test_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-
-        let spec = TaskSpec {
-            task_id: "ts_hub_roles".into(),
-            kind: TaskKind::Plan,
+    fn make_spec_with_roles(task_id: &str) -> TaskSpec {
+        TaskSpec {
+            task_id: task_id.into(),
+            kind: spec::TaskKind::Plan,
             message: "Implement the task".into(),
             project_path: Some("D:/project".into()),
-            agent_hint: None,
             roles: vec![
-                spec::RoleAssignment {
+                RoleAssignment {
                     role_id: "architect".into(),
                     role_name: "架构师".into(),
-                    agent_id: "claude1".into(),
+                    agent_id: Some("claude1".into()),
                     responsibilities: vec!["架构设计".into()],
                     acceptance: vec!["设计完成".into()],
                     can_edit_files: false,
                     can_run_commands: false,
                     can_receive_rework: true,
                 },
-                spec::RoleAssignment {
+                RoleAssignment {
                     role_id: "auditor".into(),
                     role_name: "审计员".into(),
-                    agent_id: "codex".into(),
+                    agent_id: Some("codex".into()),
                     responsibilities: vec!["最终审计".into()],
                     acceptance: vec!["无 P0/P1".into()],
                     can_edit_files: false,
@@ -543,14 +554,23 @@ mod tests {
                     can_receive_rework: false,
                 },
             ],
+            assignment_mode: AssignmentMode::Manual,
             policy: "default".into(),
+            parent_run_id: None,
+            epic_id: None,
             depth: 0,
-            parent_task_id: None,
             created_at: 1,
             deadline_ms: None,
             labels: HashMap::new(),
-        };
+        }
+    }
 
+    #[test]
+    fn hub_plan_task_submit_writes_spec_plan_and_result() {
+        let root = std::env::temp_dir().join(format!("jishu_core_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let spec = make_spec_with_roles("ts_hub_roles");
         let submitted = submit_task_in_root(spec.clone(), &root).unwrap();
         let run_dir = root.join(&submitted.run_id);
 
@@ -568,8 +588,15 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(run_dir.join("plan.json")).unwrap())
                 .unwrap();
         assert_eq!(plan.len(), 2);
-        assert!(matches!(&plan[0].kind, StepKind::Dispatch { agent, .. } if agent == "claude1"));
-        assert!(matches!(&plan[1].kind, StepKind::Dispatch { agent, .. } if agent == "codex"));
+        // Steps now use role_id, not agent
+        assert!(matches!(
+            &plan[0].kind,
+            StepKind::Dispatch { role_id, .. } if role_id == "architect"
+        ));
+        assert!(matches!(
+            &plan[1].kind,
+            StepKind::Dispatch { role_id, .. } if role_id == "auditor"
+        ));
 
         let result: RunResult =
             serde_json::from_str(&std::fs::read_to_string(run_dir.join("result.json")).unwrap())
@@ -587,14 +614,15 @@ mod tests {
 
         let spec = TaskSpec {
             task_id: "ts_query".into(),
-            kind: TaskKind::Plan,
+            kind: spec::TaskKind::Plan,
             message: "Track me".into(),
             project_path: Some("D:/project".into()),
-            agent_hint: None,
             roles: Vec::new(),
+            assignment_mode: AssignmentMode::Manual,
             policy: "default".into(),
+            parent_run_id: None,
+            epic_id: None,
             depth: 0,
-            parent_task_id: None,
             created_at: 1,
             deadline_ms: None,
             labels: HashMap::new(),
@@ -628,25 +656,24 @@ mod tests {
 
         let spec = TaskSpec {
             task_id: "ts_rework".into(),
-            kind: TaskKind::Plan,
+            kind: spec::TaskKind::Plan,
             message: "Audit implementation".into(),
             project_path: Some("D:/project".into()),
-            agent_hint: None,
             roles: vec![
-                spec::RoleAssignment {
+                RoleAssignment {
                     role_id: "developer".into(),
                     role_name: "Developer".into(),
-                    agent_id: "claude2".into(),
+                    agent_id: Some("claude2".into()),
                     responsibilities: vec!["Implement the feature".into()],
                     acceptance: vec!["Feature works".into()],
                     can_edit_files: true,
                     can_run_commands: true,
                     can_receive_rework: true,
                 },
-                spec::RoleAssignment {
+                RoleAssignment {
                     role_id: "auditor".into(),
                     role_name: "Auditor".into(),
-                    agent_id: "codex".into(),
+                    agent_id: Some("codex".into()),
                     responsibilities: vec!["Review [Developer] code quality".into()],
                     acceptance: vec!["Route defects to {[Developer]}".into()],
                     can_edit_files: false,
@@ -654,9 +681,11 @@ mod tests {
                     can_receive_rework: false,
                 },
             ],
+            assignment_mode: AssignmentMode::Manual,
             policy: "default".into(),
+            parent_run_id: None,
+            epic_id: None,
             depth: 0,
-            parent_task_id: None,
             created_at: 1,
             deadline_ms: None,
             labels: HashMap::new(),
@@ -680,14 +709,15 @@ mod tests {
     fn task_spec_roundtrip() {
         let spec = TaskSpec {
             task_id: "ts_1234_abcd".into(),
-            kind: TaskKind::Run,
+            kind: spec::TaskKind::Run,
             message: "Fix the bug".into(),
             project_path: Some("/tmp/proj".into()),
-            agent_hint: None,
             roles: Vec::new(),
+            assignment_mode: AssignmentMode::Manual,
             policy: "default".into(),
+            parent_run_id: None,
+            epic_id: None,
             depth: 0,
-            parent_task_id: None,
             created_at: 1700000000,
             deadline_ms: None,
             labels: HashMap::new(),
@@ -698,12 +728,12 @@ mod tests {
     }
 
     #[test]
-    fn step_kind_tagged_union() {
+    fn step_kind_dispatch_uses_role_id() {
         let step = Step {
             step_id: "sp_0".into(),
             kind: StepKind::Dispatch {
-                agent: "claude-code".into(),
-                message: "hello".into(),
+                role_id: "developer".into(),
+                prompt: "hello".into(),
                 project: "/tmp".into(),
                 session: None,
             },
@@ -712,6 +742,7 @@ mod tests {
         };
         let json = serde_json::to_string(&step).unwrap();
         assert!(json.contains("\"type\":\"dispatch\""));
+        assert!(json.contains("\"role_id\":\"developer\""));
         let de: Step = serde_json::from_str(&json).unwrap();
         assert_eq!(step.step_id, de.step_id);
     }
