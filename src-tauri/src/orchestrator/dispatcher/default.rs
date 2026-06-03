@@ -74,23 +74,28 @@ fn dispatch_to_agent(
     step: &Step,
     ctx: &mut DispatchContext,
 ) -> Result<StepOutcome, DispatchError> {
-    // Resolve role_id to agent_id from spec
-    let role = ctx
+    // Resolve role_id to agent_id from spec.
+    // Fallback: if no roles defined in spec, treat role_id as agent_id directly
+    // (allows running plans generated without explicit role assignments).
+    let agent_id = if let Some(role) = ctx
         .spec
         .roles
         .iter()
         .find(|r| r.role_id == role_id)
-        .ok_or_else(|| DispatchError::RoleNotFound(role_id.to_string()))?;
-
-    let agent_id = role
-        .agent_id
-        .as_deref()
-        .ok_or_else(|| DispatchError::NoAgentForRole(role_id.to_string()))?;
+    {
+        role.agent_id
+            .clone()
+            .unwrap_or_else(|| role_id.to_string())
+    } else if ctx.spec.roles.is_empty() {
+        role_id.to_string()
+    } else {
+        return Err(DispatchError::RoleNotFound(role_id.to_string()));
+    };
 
     let plugin = ctx
         .registry
-        .get(agent_id)
-        .ok_or_else(|| DispatchError::AgentNotFound(agent_id.to_string()))?;
+        .get(&agent_id)
+        .ok_or_else(|| DispatchError::AgentNotFound(agent_id.clone()))?;
 
     let req = ChatRequest {
         project_path: project.to_string(),
