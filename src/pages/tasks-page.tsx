@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAgent } from "@/agents";
 import { invokeCommand } from "@/hooks/use-invoke";
-import { ClipboardList, Download, Eye, History, MoreVertical, Plus, RefreshCw, Send, Sparkles, Trash2, Wand2, X, XCircle } from "lucide-react";
+import { ClipboardList, Download, Eye, History, Plus, RefreshCw, Send, Sparkles, Trash2, Wand2, X, XCircle } from "lucide-react";
 
 type TaskKind = "plan" | "run";
 type AssignmentMode = "manual" | "auto_suggest" | "auto_apply";
@@ -869,7 +869,10 @@ export function TasksPage({
                             <span className="text-xs text-muted-foreground">{step.step_id}</span>
                           </div>
                           <p className="mt-1 text-xs">
-                            {step.kind.dispatch?.prompt || step.kind.reflect?.question || step.kind.shell?.command || JSON.stringify(step.kind)}
+                            {(step.kind as { dispatch?: { prompt?: string }; reflect?: { question?: string }; shell?: { command?: string } }).dispatch?.prompt
+                              || (step.kind as { reflect?: { question?: string } }).reflect?.question
+                              || (step.kind as { shell?: { command?: string } }).shell?.command
+                              || JSON.stringify(step.kind)}
                           </p>
                         </div>
                       ))
