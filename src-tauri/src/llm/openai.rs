@@ -148,9 +148,7 @@ fn process_sse_chunks(
         }
 
         // Extract choices[0] if present
-        let choice = chunk
-            .get("choices")
-            .and_then(|c| c.get(0));
+        let choice = chunk.get("choices").and_then(|c| c.get(0));
 
         if let Some(choice) = choice {
             // Check finish_reason
@@ -174,14 +172,11 @@ fn process_sse_chunks(
                 // Tool calls - array with index
                 if let Some(tcs) = delta.get("tool_calls").and_then(|v| v.as_array()) {
                     for tc in tcs {
-                        let idx = tc
-                            .get("index")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as u32;
+                        let idx = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
-                        let entry = tool_calls.entry(idx).or_insert_with(|| {
-                            (String::new(), String::new(), String::new())
-                        });
+                        let entry = tool_calls
+                            .entry(idx)
+                            .or_insert_with(|| (String::new(), String::new(), String::new()));
 
                         // First chunk carries id and function.name
                         if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
@@ -211,9 +206,7 @@ fn process_sse_chunks(
         if let Some(u) = chunk.get("usage") {
             usage = Some(UsageStats {
                 input_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()),
-                output_tokens: u
-                    .get("completion_tokens")
-                    .and_then(|v| v.as_u64()),
+                output_tokens: u.get("completion_tokens").and_then(|v| v.as_u64()),
                 total_cost: None,
                 context_remaining: None,
             });
@@ -275,9 +268,8 @@ impl LlmProvider for OpenAiProvider {
         req: LlmRequest,
         mut emitter: Box<dyn FnMut(NormalizedEvent) + Send>,
         cancel: &CancelToken,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<LlmTurn, LlmError>> + Send + '_>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<LlmTurn, LlmError>> + Send + '_>>
+    {
         let preset = self.preset.clone();
         let cancel = cancel.clone();
         Box::pin(async move {
@@ -406,7 +398,13 @@ mod tests {
         assert_eq!(events.len(), 3);
         assert!(matches!(&events[0], NormalizedEvent::TextDelta { delta } if delta == "Hello"));
         assert!(matches!(&events[1], NormalizedEvent::TextDelta { delta } if delta == " world"));
-        assert!(matches!(&events[2], NormalizedEvent::TurnComplete { reason: TurnEndReason::Complete, .. }));
+        assert!(matches!(
+            &events[2],
+            NormalizedEvent::TurnComplete {
+                reason: TurnEndReason::Complete,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -435,10 +433,12 @@ mod tests {
 
         // Should have: ToolUseStart, TurnComplete
         assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], NormalizedEvent::ToolUseStart { call_id, tool, input }
-            if call_id == "call_abc" && tool == "get_weather"
-            && input == &serde_json::json!({"city": "Beijing"})
-        ));
+        assert!(
+            matches!(&events[0], NormalizedEvent::ToolUseStart { call_id, tool, input }
+                if call_id == "call_abc" && tool == "get_weather"
+                && input == &serde_json::json!({"city": "Beijing"})
+            )
+        );
     }
 
     #[test]
@@ -454,7 +454,10 @@ mod tests {
         assert_eq!(turn.stop_reason, StopReason::MaxTokens);
         assert!(matches!(
             &events.last(),
-            Some(NormalizedEvent::TurnComplete { reason: TurnEndReason::MaxTokens, .. })
+            Some(NormalizedEvent::TurnComplete {
+                reason: TurnEndReason::MaxTokens,
+                ..
+            })
         ));
 
         // Test "content_filter" -> Refusal
@@ -487,7 +490,10 @@ mod tests {
 
         // TurnComplete event should carry usage too
         let turn_event = &events[events.len() - 1];
-        assert!(matches!(turn_event, NormalizedEvent::TurnComplete { usage: Some(_), .. }));
+        assert!(matches!(
+            turn_event,
+            NormalizedEvent::TurnComplete { usage: Some(_), .. }
+        ));
     }
 
     #[test]
@@ -506,7 +512,10 @@ mod tests {
 
         assert_eq!(turn.tool_calls[0].id, "call_1");
         assert_eq!(turn.tool_calls[0].name, "read_file");
-        assert_eq!(turn.tool_calls[0].arguments, serde_json::json!({"path": "/a"}));
+        assert_eq!(
+            turn.tool_calls[0].arguments,
+            serde_json::json!({"path": "/a"})
+        );
 
         assert_eq!(turn.tool_calls[1].id, "call_2");
         assert_eq!(turn.tool_calls[1].name, "write_file");
@@ -526,7 +535,13 @@ mod tests {
         assert!(turn.usage.is_none());
         // Should still emit TurnComplete
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], NormalizedEvent::TurnComplete { reason: TurnEndReason::Complete, usage: None }));
+        assert!(matches!(
+            &events[0],
+            NormalizedEvent::TurnComplete {
+                reason: TurnEndReason::Complete,
+                usage: None
+            }
+        ));
     }
 
     #[test]

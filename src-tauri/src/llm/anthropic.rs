@@ -371,10 +371,7 @@ fn process_sse_chunks(
             }
         };
 
-        let event_type = chunk
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let event_type = chunk.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
         match event_type {
             "message_start" => {
@@ -386,10 +383,7 @@ fn process_sse_chunks(
                 }
             }
             "content_block_start" => {
-                let index = chunk
-                    .get("index")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
+                let index = chunk.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
                 if let Some(content_block) = chunk.get("content_block") {
                     let block_type = content_block
@@ -414,10 +408,7 @@ fn process_sse_chunks(
                 }
             }
             "content_block_delta" => {
-                let index = chunk
-                    .get("index")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
+                let index = chunk.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
                 if let Some(delta) = chunk.get("delta") {
                     let delta_type = delta.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -433,9 +424,7 @@ fn process_sse_chunks(
                             }
                         }
                         "thinking_delta" => {
-                            if let Some(thinking) =
-                                delta.get("thinking").and_then(|v| v.as_str())
-                            {
+                            if let Some(thinking) = delta.get("thinking").and_then(|v| v.as_str()) {
                                 if !thinking.is_empty() {
                                     emitter(NormalizedEvent::Thinking {
                                         delta: thinking.to_string(),
@@ -455,10 +444,7 @@ fn process_sse_chunks(
                 }
             }
             "content_block_stop" => {
-                let index = chunk
-                    .get("index")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
+                let index = chunk.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
                 // If this index has a tool_use accumulator, finalize it
                 if tool_accum.blocks.contains_key(&index) {
@@ -468,9 +454,7 @@ fn process_sse_chunks(
             "message_delta" => {
                 // Extract stop_reason and output_tokens
                 if let Some(delta) = chunk.get("delta") {
-                    if let Some(reason) =
-                        delta.get("stop_reason").and_then(|v| v.as_str())
-                    {
+                    if let Some(reason) = delta.get("stop_reason").and_then(|v| v.as_str()) {
                         stop_reason = map_stop_reason(reason);
                     }
                 }
@@ -513,9 +497,8 @@ fn process_sse_chunks(
             let args: serde_json::Value = if block.partial_json.is_empty() {
                 serde_json::Value::Object(serde_json::Map::new())
             } else {
-                serde_json::from_str(&block.partial_json).unwrap_or(serde_json::Value::Object(
-                    serde_json::Map::new(),
-                ))
+                serde_json::from_str(&block.partial_json)
+                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()))
             };
             final_tool_calls.push(LlmToolCall {
                 id: block.id.clone(),
@@ -557,9 +540,8 @@ impl LlmProvider for AnthropicProvider {
         req: LlmRequest,
         mut emitter: Box<dyn FnMut(NormalizedEvent) + Send>,
         cancel: &CancelToken,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<LlmTurn, LlmError>> + Send + '_>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<LlmTurn, LlmError>> + Send + '_>>
+    {
         let preset = self.preset.clone();
         let cancel = cancel.clone();
         Box::pin(async move {

@@ -206,11 +206,17 @@ pub fn backup_config() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(dst)
 }
 
-fn cleanup_old_backups(backup_dir: &std::path::Path, keep: usize) -> Result<(), Box<dyn std::error::Error>> {
+fn cleanup_old_backups(
+    backup_dir: &std::path::Path,
+    keep: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut backups: Vec<std::path::PathBuf> = std::fs::read_dir(backup_dir)?
         .filter_map(|e| e.ok())
         .filter(|e| {
-            e.path().extension().map(|ext| ext == "json").unwrap_or(false)
+            e.path()
+                .extension()
+                .map(|ext| ext == "json")
+                .unwrap_or(false)
                 && e.file_name().to_string_lossy().starts_with("settings_")
         })
         .map(|e| e.path())

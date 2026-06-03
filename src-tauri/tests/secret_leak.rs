@@ -18,8 +18,16 @@ fn no_api_keys_in_source() {
                     for line in content.lines() {
                         // Look for literal "sk-" key values (quoted string starting with sk-)
                         // False positives from starts_with / task-notification / ask are excluded
-                        if line.contains("\"sk-") && !line.contains("test") && !line.contains("example") && !line.contains("placeholder") {
-                            violations.push(format!("{}: possible hardcoded API key: {}", path.display(), line.trim()));
+                        if line.contains("\"sk-")
+                            && !line.contains("test")
+                            && !line.contains("example")
+                            && !line.contains("placeholder")
+                        {
+                            violations.push(format!(
+                                "{}: possible hardcoded API key: {}",
+                                path.display(),
+                                line.trim()
+                            ));
                         }
                     }
                 }
@@ -38,7 +46,10 @@ fn no_api_keys_in_source() {
 #[test]
 fn model_preset_stores_key_safely() {
     use std::path::Path;
-    let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("llm").join("config.rs");
+    let config_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("llm")
+        .join("config.rs");
     if config_path.exists() {
         let content = std::fs::read_to_string(&config_path).unwrap();
         // api_key is Option<String> (nullable, skip_serializing_if none)

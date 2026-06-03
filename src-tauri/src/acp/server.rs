@@ -75,7 +75,10 @@ fn handle_request(
 
         "session/create" => {
             let session_id = session.create();
-            Some(rpc::ok_response(id, serde_json::json!({ "sessionId": session_id })))
+            Some(rpc::ok_response(
+                id,
+                serde_json::json!({ "sessionId": session_id }),
+            ))
         }
 
         "session/prompt" => {

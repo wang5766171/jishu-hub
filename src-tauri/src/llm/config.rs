@@ -36,8 +36,8 @@ impl ModelStore {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| format!("Cannot read models.json: {e}"))?;
+        let content =
+            std::fs::read_to_string(&path).map_err(|e| format!("Cannot read models.json: {e}"))?;
         serde_json::from_str(&content).map_err(|e| format!("Invalid models.json: {e}"))
     }
 
@@ -47,8 +47,8 @@ impl ModelStore {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("Cannot create directory {:?}: {e}", parent))?;
         }
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("Cannot serialize: {e}"))?;
+        let json =
+            serde_json::to_string_pretty(self).map_err(|e| format!("Cannot serialize: {e}"))?;
         crate::util::atomic_write(&path, json.as_bytes())
             .map_err(|e| format!("Cannot write models.json: {e}"))
     }

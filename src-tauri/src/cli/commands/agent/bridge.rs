@@ -13,7 +13,11 @@ use crate::llm::{create_provider, CancelToken};
 
 pub fn run(action: AgentBridgeAction, ctx: &ExecutionContext) -> Result<(), CliError> {
     match action {
-        AgentBridgeAction::Start { agent, session, project } => start(agent, session, project, ctx),
+        AgentBridgeAction::Start {
+            agent,
+            session,
+            project,
+        } => start(agent, session, project, ctx),
         AgentBridgeAction::List => {
             println!("No active bridges.");
             Ok(())
@@ -24,13 +28,22 @@ pub fn run(action: AgentBridgeAction, ctx: &ExecutionContext) -> Result<(), CliE
     }
 }
 
-fn start(agent_id: String, session: Option<String>, project: String, _ctx: &ExecutionContext) -> Result<(), CliError> {
+fn start(
+    agent_id: String,
+    session: Option<String>,
+    project: String,
+    _ctx: &ExecutionContext,
+) -> Result<(), CliError> {
     let mut message = String::new();
-    std::io::stdin().read_to_string(&mut message).map_err(CliError::Io)?;
+    std::io::stdin()
+        .read_to_string(&mut message)
+        .map_err(CliError::Io)?;
     let message = message.trim_end().to_string();
 
     if message.is_empty() {
-        return Err(CliError::InvalidArg("No message provided on stdin".to_string()));
+        return Err(CliError::InvalidArg(
+            "No message provided on stdin".to_string(),
+        ));
     }
 
     if agent_id == "jishu-self" {
@@ -104,7 +117,12 @@ fn run_jishu_self(message: String, session: Option<String>) -> Result<(), CliErr
 }
 
 /// Spawn another agent's CLI and relay its stdout as NormalizedEvents.
-fn run_other_agent(agent_id: String, message: String, project_path: String, session_id: Option<String>) -> Result<(), CliError> {
+fn run_other_agent(
+    agent_id: String,
+    message: String,
+    project_path: String,
+    session_id: Option<String>,
+) -> Result<(), CliError> {
     let registry = AgentRegistry::new();
     let target = registry
         .agents_info()
@@ -131,7 +149,10 @@ fn run_other_agent(agent_id: String, message: String, project_path: String, sess
 
     let writer = Arc::new(Mutex::new(JsonlWriter::stdout()));
     let sid = format!("bridge-{}", std::process::id());
-    emit(&writer, &NormalizedEvent::SessionResolved { session_id: sid })?;
+    emit(
+        &writer,
+        &NormalizedEvent::SessionResolved { session_id: sid },
+    )?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

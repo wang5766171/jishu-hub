@@ -67,7 +67,9 @@ pub fn load_jishu_config() -> Result<serde_json::Value, Box<dyn std::error::Erro
     let value: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
         format!(
             "Failed to parse {}: {}",
-            path.file_name().and_then(|n| n.to_str()).unwrap_or("settings.json"),
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("settings.json"),
             e
         )
     })?;
@@ -133,7 +135,10 @@ fn cleanup_old_jishu_backups(
     let mut backups: Vec<std::path::PathBuf> = std::fs::read_dir(backup_dir)?
         .filter_map(|e| e.ok())
         .filter(|e| {
-            e.path().extension().map(|ext| ext == "json").unwrap_or(false)
+            e.path()
+                .extension()
+                .map(|ext| ext == "json")
+                .unwrap_or(false)
                 && e.file_name().to_string_lossy().starts_with("settings_")
         })
         .map(|e| e.path())
@@ -199,7 +204,9 @@ pub fn export_jishu_config(export_path: &str) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-pub fn import_jishu_config(import_path: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+pub fn import_jishu_config(
+    import_path: &str,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(import_path)?;
     let value: serde_json::Value = serde_json::from_str(&content)?;
     let _: JishuConfig = serde_json::from_value(value.clone())?;
@@ -263,7 +270,10 @@ mod tests {
         let restored: JishuConfig = serde_json::from_value(value).unwrap();
         assert_eq!(restored.active_model, cfg.active_model);
         assert_eq!(restored.temperature, cfg.temperature);
-        assert_eq!(restored.permissions.unwrap().default_mode, Some("acceptEdits".to_string()));
+        assert_eq!(
+            restored.permissions.unwrap().default_mode,
+            Some("acceptEdits".to_string())
+        );
     }
 
     #[test]

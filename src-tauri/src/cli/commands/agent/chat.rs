@@ -78,7 +78,10 @@ fn send(
         if needs_stdin {
             if let Some(mut stdin) = child.stdin.take() {
                 use tokio::io::AsyncWriteExt;
-                stdin.write_all(msg.as_bytes()).await.map_err(CliError::Io)?;
+                stdin
+                    .write_all(msg.as_bytes())
+                    .await
+                    .map_err(CliError::Io)?;
                 stdin.shutdown().await.map_err(CliError::Io)?;
             }
         }
@@ -149,7 +152,9 @@ fn resolve_message(
     }
     if message_stdin {
         let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf).map_err(CliError::Io)?;
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(CliError::Io)?;
         return Ok(buf);
     }
     Err(CliError::InvalidArg(
@@ -164,9 +169,7 @@ fn resume(_id: &str) -> Result<(), CliError> {
 }
 
 fn abort(_id: &str) -> Result<(), CliError> {
-    Err(CliError::Internal(
-        "abort: not yet implemented".to_string(),
-    ))
+    Err(CliError::Internal("abort: not yet implemented".to_string()))
 }
 
 fn tail(_id: &str) -> Result<(), CliError> {

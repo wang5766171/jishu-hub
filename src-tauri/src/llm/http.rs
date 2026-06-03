@@ -43,5 +43,10 @@ pub fn mask_key(key: &str) -> String {
     if key.len() <= 12 {
         return "*".repeat(key.len());
     }
-    format!("{}{}{}", &key[..4], "*".repeat(key.len() - 8), &key[key.len() - 4..])
+    format!(
+        "{}{}{}",
+        &key[..4],
+        "*".repeat(key.len() - 8),
+        &key[key.len() - 4..]
+    )
 }

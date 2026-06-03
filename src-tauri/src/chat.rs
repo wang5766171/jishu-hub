@@ -167,14 +167,11 @@ async fn send_message_acp(
     if let Some(ref sid) = session_id {
         let chat_state = app.state::<Mutex<ChatState>>();
         // Clone what we need while holding the lock, then release
-        let existing = chat_state
-            .lock()
-            .ok()
-            .and_then(|s| {
-                s.processes.get(sid).and_then(|p| {
-                    p.acp.as_ref().map(|acp| (acp.clone(), p.process_id))
-                })
-            });
+        let existing = chat_state.lock().ok().and_then(|s| {
+            s.processes
+                .get(sid)
+                .and_then(|p| p.acp.as_ref().map(|acp| (acp.clone(), p.process_id)))
+        });
         if let Some((acp, pid)) = existing {
             match acp.send_prompt(message.clone()).await {
                 Ok(()) => {
@@ -185,10 +182,7 @@ async fn send_message_acp(
                     });
                 }
                 Err(_) => {
-                    log::info!(
-                        "ACP connection closed for session {}, respawning",
-                        sid
-                    );
+                    log::info!("ACP connection closed for session {}, respawning", sid);
                     let mut s = chat_state
                         .lock()
                         .map_err(|_| "Chat state lock poisoned".to_string())?;
@@ -250,8 +244,7 @@ async fn send_message_acp(
         move || {
             let state = app_clone.state::<Mutex<ChatState>>();
             if let Ok(mut s) = state.lock() {
-                s.processes
-                    .retain(|_, p| p.process_id != pid_for_cleanup);
+                s.processes.retain(|_, p| p.process_id != pid_for_cleanup);
             };
         },
         move |real_id: &str| {

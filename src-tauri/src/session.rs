@@ -344,5 +344,4 @@ mod tests {
             other => panic!("Expected ToolResult, got {:?}", other),
         }
     }
-
 }

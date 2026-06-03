@@ -29,6 +29,7 @@ pub fn run(
         message: prompt.to_string(),
         project_path: Some(project.to_string()),
         agent_hint: agent.map(|s| s.to_string()),
+        roles: Vec::new(),
         policy: "default".to_string(),
         depth: 0,
         parent_task_id: None,
@@ -38,8 +39,7 @@ pub fn run(
     };
 
     let run_id = format!("r_{now_ms}_run");
-    let trace =
-        TraceRecorder::create(&run_id).map_err(|e| CliError::Internal(e.to_string()))?;
+    let trace = TraceRecorder::create(&run_id).map_err(|e| CliError::Internal(e.to_string()))?;
     trace
         .write_spec(&spec)
         .map_err(|e| CliError::Internal(e.to_string()))?;

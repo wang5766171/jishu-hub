@@ -10,9 +10,7 @@ pub fn run(cli: Cli) -> ExitCode {
     if let Some(level) = &cli.log {
         let filter = tracing_subscriber::EnvFilter::try_new(level)
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .init();
+        tracing_subscriber::fmt().with_env_filter(filter).init();
     }
 
     let ctx = ExecutionContext::new(cli.json);

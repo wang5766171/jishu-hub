@@ -67,11 +67,7 @@ impl AcpWriter {
         Self { stdin, next_id: 0 }
     }
 
-    async fn request(
-        &mut self,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<i64, String> {
+    async fn request(&mut self, method: &str, params: serde_json::Value) -> Result<i64, String> {
         let id = self.next_id;
         self.next_id += 1;
         let msg = json!({
@@ -100,7 +96,9 @@ impl AcpWriter {
 
 enum LoopState {
     Idle,
-    Prompting { prompt_id: i64 },
+    Prompting {
+        prompt_id: i64,
+    },
     CancelPending {
         old_prompt_id: i64,
         pending_prompt: Option<String>,
@@ -258,9 +256,7 @@ async fn acp_connection_loop(
 
     // Store session id
     {
-        let mut guard = acp_session_id
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut guard = acp_session_id.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(session_id.clone());
     }
 
@@ -460,10 +456,7 @@ async fn acp_connection_loop(
 // Internal: stdout reader sub-task
 // ---------------------------------------------------------------------------
 
-async fn stdout_reader(
-    stdout: tokio::process::ChildStdout,
-    tx: tokio::sync::mpsc::Sender<String>,
-) {
+async fn stdout_reader(stdout: tokio::process::ChildStdout, tx: tokio::sync::mpsc::Sender<String>) {
     let mut reader = BufReader::new(stdout).lines();
     while let Ok(Some(line)) = reader.next_line().await {
         if tx.send(line).await.is_err() {

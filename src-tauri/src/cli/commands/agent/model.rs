@@ -45,7 +45,10 @@ fn test(id: &str, _ctx: &ExecutionContext) -> Result<(), CliError> {
         .ok_or_else(|| CliError::NotFound(format!("Model '{id}' not found")))?
         .clone();
 
-    println!("Testing model '{}' ({})...", preset.display_name, preset.model);
+    println!(
+        "Testing model '{}' ({})...",
+        preset.display_name, preset.model
+    );
 
     let api_key = http::resolve_api_key(&preset).map_err(|e| CliError::Internal(e.to_string()))?;
     println!("API key resolved.");

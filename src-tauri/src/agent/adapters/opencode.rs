@@ -415,7 +415,10 @@ fn parse_export_messages(raw: &str) -> Result<Vec<crate::session::Message>, Stri
 /// blocks. Shared by the CLI-export path and the SQLite path so both produce
 /// identical content (and therefore identical search results).
 fn append_part_blocks(part: &serde_json::Value, content: &mut Vec<crate::session::ContentBlock>) {
-    let part_type = part.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+    let part_type = part
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     match part_type {
         "text" => {
             if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
@@ -506,7 +509,10 @@ fn read_session_messages_from_db(
             Ok(v) => v,
             Err(_) => continue,
         };
-        let role = info.get("role").and_then(|v| v.as_str()).unwrap_or_default();
+        let role = info
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
         if role != "user" && role != "assistant" {
             continue;
         }
@@ -1262,7 +1268,8 @@ impl AgentPlugin for OpencodeAdapter {
                 id: "opencode-default".to_string(),
                 name: "opencode 默认配置".to_string(),
                 description: "保留 opencode 默认模型与 MCP 设置，仅创建基础配置结构".to_string(),
-                config: serde_json::to_value(crate::config::ClaudeConfig::default()).unwrap_or_default(),
+                config: serde_json::to_value(crate::config::ClaudeConfig::default())
+                    .unwrap_or_default(),
             },
             crate::hub::ConfigTemplate {
                 id: "opencode-glm".to_string(),
@@ -1272,7 +1279,8 @@ impl AgentPlugin for OpencodeAdapter {
                     model: Some("zhipuai-coding-plan/glm-5.1".to_string()),
                     small_model: Some("zhipuai-coding-plan/glm-5.1".to_string()),
                     ..Default::default()
-                }).unwrap_or_default(),
+                })
+                .unwrap_or_default(),
             },
         ]
     }
@@ -1615,13 +1623,21 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[0].timestamp, Some(100));
-        assert!(matches!(&messages[0].content[0], crate::session::ContentBlock::Text { text } if text == "hello world"));
+        assert!(
+            matches!(&messages[0].content[0], crate::session::ContentBlock::Text { text } if text == "hello world")
+        );
 
         // reasoning -> thinking, tool -> tool_use + tool_result
         assert_eq!(messages[1].content.len(), 3);
-        assert!(matches!(&messages[1].content[0], crate::session::ContentBlock::Thinking { thinking } if thinking == "thinking deeply"));
-        assert!(matches!(&messages[1].content[1], crate::session::ContentBlock::ToolUse { name, id, .. } if name == "read" && id == "call_1"));
-        assert!(matches!(&messages[1].content[2], crate::session::ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "call_1"));
+        assert!(
+            matches!(&messages[1].content[0], crate::session::ContentBlock::Thinking { thinking } if thinking == "thinking deeply")
+        );
+        assert!(
+            matches!(&messages[1].content[1], crate::session::ContentBlock::ToolUse { name, id, .. } if name == "read" && id == "call_1")
+        );
+        assert!(
+            matches!(&messages[1].content[2], crate::session::ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "call_1")
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }

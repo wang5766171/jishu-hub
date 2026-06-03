@@ -1,7 +1,7 @@
 mod config;
 mod probe;
-mod stream;
 mod store;
+mod stream;
 
 use crate::agent::capability::AgentCapabilities;
 use crate::agent::{AgentInfo, AgentPlugin, ChatRequest};
@@ -18,8 +18,12 @@ impl JishuSelfAgent {
 
 /// Normalize a stream event from the jishu agent-bridge subprocess.
 /// The agent-bridge protocol speaks NormalizedEvent directly.
-pub fn normalize_stream_event(event: &serde_json::Value) -> Vec<crate::agent::normalized::NormalizedEvent> {
-    if let Ok(ne) = serde_json::from_value::<crate::agent::normalized::NormalizedEvent>(event.clone()) {
+pub fn normalize_stream_event(
+    event: &serde_json::Value,
+) -> Vec<crate::agent::normalized::NormalizedEvent> {
+    if let Ok(ne) =
+        serde_json::from_value::<crate::agent::normalized::NormalizedEvent>(event.clone())
+    {
         vec![ne]
     } else {
         vec![crate::agent::normalized::NormalizedEvent::Raw {
@@ -130,11 +134,7 @@ impl AgentPlugin for JishuSelfAgent {
         crate::project_config::load_project_settings_local(path).map_err(|e| e.to_string())
     }
 
-    fn save_project_settings(
-        &self,
-        path: &str,
-        settings: &ProjectSettings,
-    ) -> Result<(), String> {
+    fn save_project_settings(&self, path: &str, settings: &ProjectSettings) -> Result<(), String> {
         crate::project_config::save_project_settings(path, settings).map_err(|e| e.to_string())
     }
 
@@ -143,7 +143,8 @@ impl AgentPlugin for JishuSelfAgent {
         path: &str,
         settings: &ProjectSettings,
     ) -> Result<(), String> {
-        crate::project_config::save_project_settings_local(path, settings).map_err(|e| e.to_string())
+        crate::project_config::save_project_settings_local(path, settings)
+            .map_err(|e| e.to_string())
     }
 
     fn load_claude_md(&self, path: &str) -> Result<Option<String>, String> {
@@ -300,7 +301,10 @@ mod tests {
     #[test]
     fn get_session_messages_returns_empty() {
         let agent = JishuSelfAgent::new();
-        assert!(agent.get_session_messages("sid", "test").unwrap().is_empty());
+        assert!(agent
+            .get_session_messages("sid", "test")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

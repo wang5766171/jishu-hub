@@ -245,13 +245,12 @@ impl AgentPlugin for CodexAdapter {
                 if let Some(rollout_path) = self.find_rollout_file(&id, updated_at_str) {
                     if let Ok(cwd) = self.get_rollout_cwd(&rollout_path) {
                         if cwd == decoded_path {
-                            let last_active =
-                                chrono::DateTime::parse_from_rfc3339(updated_at_str)
-                                    .ok()
-                                    .map(|dt| dt.with_timezone(&chrono::Utc));
+                            let last_active = chrono::DateTime::parse_from_rfc3339(updated_at_str)
+                                .ok()
+                                .map(|dt| dt.with_timezone(&chrono::Utc));
 
-                            let messages = parse_rollout_messages(&rollout_path)
-                                .unwrap_or_default();
+                            let messages =
+                                parse_rollout_messages(&rollout_path).unwrap_or_default();
 
                             sessions.push(crate::session::Session {
                                 id,
@@ -599,9 +598,7 @@ impl CodexAdapter {
 /// Parse codex rollout JSONL at a known path into normalized messages.
 /// Used both when listing sessions (path already resolved) and when opening a
 /// session, so we never re-run a recursive filesystem search per session.
-fn parse_rollout_messages(
-    path: &std::path::Path,
-) -> Result<Vec<crate::session::Message>, String> {
+fn parse_rollout_messages(path: &std::path::Path) -> Result<Vec<crate::session::Message>, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let reader = std::io::BufReader::new(file);
 

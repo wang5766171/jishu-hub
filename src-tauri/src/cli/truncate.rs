@@ -19,7 +19,10 @@ pub fn truncate_head_tail(input: &str, max: usize, head: usize, tail: usize) -> 
         return input.to_string();
     }
     let head_end = head.min(max / 2);
-    let tail_start = bytes.len().saturating_sub(tail).max(max.saturating_sub(tail));
+    let tail_start = bytes
+        .len()
+        .saturating_sub(tail)
+        .max(max.saturating_sub(tail));
     if tail_start <= head_end {
         // Not enough room for both; just take the first `max` bytes.
         let s = String::from_utf8_lossy(&bytes[..max]).to_string();
@@ -28,7 +31,10 @@ pub fn truncate_head_tail(input: &str, max: usize, head: usize, tail: usize) -> 
     let head_str = String::from_utf8_lossy(&bytes[..head_end]);
     let tail_str = String::from_utf8_lossy(&bytes[tail_start..]);
     let omitted = bytes.len() - head_end - (bytes.len() - tail_start);
-    format!("{}\n... (truncated {} bytes)\n{}", head_str, omitted, tail_str)
+    format!(
+        "{}\n... (truncated {} bytes)\n{}",
+        head_str, omitted, tail_str
+    )
 }
 
 #[cfg(test)]

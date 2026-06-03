@@ -154,9 +154,11 @@ pub fn version_of_sync(path: &PathBuf) -> Option<String> {
     #[cfg(target_os = "windows")]
     let output = if is_cmd {
         let mut command = std::process::Command::new("cmd");
-        crate::process_command::std_no_window(
-            command.args(["/C", &path.to_string_lossy(), "--version"]),
-        )
+        crate::process_command::std_no_window(command.args([
+            "/C",
+            &path.to_string_lossy(),
+            "--version",
+        ]))
         .output()
         .ok()?
     } else {
@@ -236,9 +238,11 @@ async fn run_version_command(path: &PathBuf) -> Option<std::process::Output> {
     #[cfg(target_os = "windows")]
     if is_cmd {
         let mut command = tokio::process::Command::new("cmd");
-        let output = crate::process_command::tokio_no_window(
-            command.args(["/C", &path.to_string_lossy(), "--version"]),
-        )
+        let output = crate::process_command::tokio_no_window(command.args([
+            "/C",
+            &path.to_string_lossy(),
+            "--version",
+        ]))
         .output()
         .await
         .ok()?;

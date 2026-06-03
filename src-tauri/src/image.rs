@@ -38,7 +38,13 @@ pub(crate) fn validate_path(p: &PathBuf) -> Result<(), String> {
 fn sanitize_label(label: &str) -> String {
     label
         .chars()
-        .map(|c| if c == '/' || c == '\\' || c == '\0' { '_' } else { c })
+        .map(|c| {
+            if c == '/' || c == '\\' || c == '\0' {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect::<String>()
         .replace("..", "_")
 }

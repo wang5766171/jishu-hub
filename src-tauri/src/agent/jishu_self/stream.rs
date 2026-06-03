@@ -30,9 +30,7 @@ mod tests {
 
     #[test]
     fn parses_turn_complete() {
-        let event = normalize_line(
-            r#"{"kind":"turn_complete","reason":"Complete","usage":null}"#,
-        );
+        let event = normalize_line(r#"{"kind":"turn_complete","reason":"Complete","usage":null}"#);
         assert_eq!(
             event,
             Some(NormalizedEvent::TurnComplete {

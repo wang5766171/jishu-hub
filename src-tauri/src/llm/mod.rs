@@ -12,7 +12,9 @@ pub struct CancelToken(pub std::sync::Arc<std::sync::atomic::AtomicBool>);
 
 impl CancelToken {
     pub fn new() -> Self {
-        Self(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
+        Self(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            false,
+        )))
     }
     pub fn is_canceled(&self) -> bool {
         self.0.load(std::sync::atomic::Ordering::Relaxed)
@@ -47,9 +49,7 @@ pub trait LlmProvider: Send + Sync {
         req: LlmRequest,
         emitter: Box<dyn FnMut(crate::agent::NormalizedEvent) + Send>,
         cancel: &CancelToken,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<LlmTurn, LlmError>> + Send + '_>,
-    >;
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<LlmTurn, LlmError>> + Send + '_>>;
 }
 
 pub fn create_provider(preset: &config::ModelPreset) -> Result<Box<dyn LlmProvider>, String> {

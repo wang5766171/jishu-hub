@@ -11,7 +11,10 @@ impl Resolver {
 
     /// Resolve a project path from a user-supplied string.
     /// If `input` is `.`, resolves to the current working directory.
-    pub fn resolve_project_path(&self, input: &str) -> Result<PathBuf, crate::cli::error::CliError> {
+    pub fn resolve_project_path(
+        &self,
+        input: &str,
+    ) -> Result<PathBuf, crate::cli::error::CliError> {
         let path = PathBuf::from(input);
         let resolved = if input == "." {
             std::env::current_dir()?

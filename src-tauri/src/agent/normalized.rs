@@ -239,7 +239,9 @@ mod tests_v6 {
 
     #[test]
     fn sub_agent_event_recursive_roundtrip() {
-        let inner = NormalizedEvent::TextDelta { delta: "hello".into() };
+        let inner = NormalizedEvent::TextDelta {
+            delta: "hello".into(),
+        };
         let event = NormalizedEvent::SubAgentEvent {
             run_id: "r1".into(),
             step_id: "s1".into(),
