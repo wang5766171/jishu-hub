@@ -1720,6 +1720,12 @@ fn run_execute_plan(run_id: String) -> Result<serde_json::Value, String> {
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
+fn run_summarize(run_id: String, language: Option<String>) -> Result<(), String> {
+    orchestrator::regenerate_summary(&run_id, language.as_deref())
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
 fn run_delete(run_id: String) -> Result<(), String> {
     orchestrator::delete_run(&run_id)
 }
@@ -1853,6 +1859,7 @@ pub fn run() {
             run_cancel,
             run_execute_plan,
             run_delete,
+            run_summarize,
             task_plan_skill_list,
             task_plan_skill_install,
             task_plan_generate_roles,
