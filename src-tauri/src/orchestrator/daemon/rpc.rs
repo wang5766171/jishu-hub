@@ -57,10 +57,7 @@ pub fn error_response(id: serde_json::Value, code: i32, message: &str) -> JsonRp
     }
 }
 
-pub fn write_message<T: Serialize>(
-    stdout: &mut std::io::Stdout,
-    msg: &T,
-) -> Result<(), String> {
+pub fn write_message<T: Serialize>(stdout: &mut std::io::Stdout, msg: &T) -> Result<(), String> {
     let mut line = serde_json::to_string(msg).map_err(|e| e.to_string())?;
     line.push('\n');
     stdout.write_all(line.as_bytes()).map_err(|e| e.to_string())

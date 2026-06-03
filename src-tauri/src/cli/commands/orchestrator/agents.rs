@@ -34,7 +34,9 @@ fn list(ctx: &ExecutionContext) -> Result<(), CliError> {
         let mut writer = crate::cli::jsonl::JsonlWriter::stdout();
         for status in &statuses {
             let mut entry = serde_json::to_value(status)?;
-            let map = entry.as_object_mut().expect("AgentStatus serializes to object");
+            let map = entry
+                .as_object_mut()
+                .expect("AgentStatus serializes to object");
             map.insert(
                 "active".into(),
                 serde_json::Value::Bool(status.id == active_id),
@@ -66,10 +68,7 @@ fn health(agent_id: Option<&str>, ctx: &ExecutionContext) -> Result<(), CliError
     let statuses = registry.list_agent_statuses();
 
     let filtered: Vec<&AgentStatus> = if let Some(id) = agent_id {
-        statuses
-            .iter()
-            .filter(|s| s.id == id)
-            .collect::<Vec<_>>()
+        statuses.iter().filter(|s| s.id == id).collect::<Vec<_>>()
     } else {
         statuses.iter().collect()
     };

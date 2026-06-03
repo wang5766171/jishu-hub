@@ -2,7 +2,11 @@ use clap::{Parser, Subcommand};
 
 /// Jishu — jishu-self agent + multi-agent orchestrator CLI.
 #[derive(Parser, Debug)]
-#[command(name = "jishu", version, about = "Jishu agent and multi-agent orchestrator")]
+#[command(
+    name = "jishu",
+    version,
+    about = "Jishu agent and multi-agent orchestrator"
+)]
 pub struct Cli {
     /// Output results as JSON-lines.
     #[arg(long, global = true)]

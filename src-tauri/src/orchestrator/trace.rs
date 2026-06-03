@@ -12,6 +12,14 @@ pub struct TraceRecorder {
 impl TraceRecorder {
     pub fn create(run_id: &str) -> Result<Self, String> {
         let run_dir = Self::run_dir_for(run_id);
+        Self::create_at_dir(run_dir)
+    }
+
+    pub fn create_in_root(root: &std::path::Path, run_id: &str) -> Result<Self, String> {
+        Self::create_at_dir(root.join(run_id))
+    }
+
+    fn create_at_dir(run_dir: PathBuf) -> Result<Self, String> {
         fs::create_dir_all(&run_dir).map_err(|e| e.to_string())?;
         Ok(Self { run_dir })
     }
@@ -56,5 +64,23 @@ impl TraceRecorder {
             .join(".jishu-hub")
             .join("runs")
             .join(run_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn can_create_trace_recorder_under_explicit_root() {
+        let root = std::env::temp_dir().join(format!("jishu_trace_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let trace = TraceRecorder::create_in_root(&root, "r_test").unwrap();
+
+        assert_eq!(trace.run_dir(), &root.join("r_test"));
+        assert!(root.join("r_test").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -24,15 +24,21 @@ pub fn run(action: DaemonAction, _ctx: &ExecutionContext) -> Result<(), CliError
         }
         DaemonAction::Stop => {
             eprintln!("daemon stop: not yet implemented (v0.7)");
-            Err(CliError::Internal("daemon stop is not yet implemented".to_string()))
+            Err(CliError::Internal(
+                "daemon stop is not yet implemented".to_string(),
+            ))
         }
         DaemonAction::Status => {
             eprintln!("daemon status: not yet implemented (v0.7)");
-            Err(CliError::Internal("daemon status is not yet implemented".to_string()))
+            Err(CliError::Internal(
+                "daemon status is not yet implemented".to_string(),
+            ))
         }
         DaemonAction::Restart => {
             eprintln!("daemon restart: not yet implemented (v0.7)");
-            Err(CliError::Internal("daemon restart is not yet implemented".to_string()))
+            Err(CliError::Internal(
+                "daemon restart is not yet implemented".to_string(),
+            ))
         }
     }
 }

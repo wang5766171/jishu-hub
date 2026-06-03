@@ -10,10 +10,7 @@ impl Planner for RoutingPlanner {
 
     fn plan(&self, spec: &TaskSpec, _ctx: &PlanContext) -> Result<Vec<Step>, PlanError> {
         let message = &spec.message;
-        let project = spec
-            .project_path
-            .clone()
-            .unwrap_or_else(|| ".".to_string());
+        let project = spec.project_path.clone().unwrap_or_else(|| ".".to_string());
 
         // Parse @agent prefixes from message
         let parts = parse_agent_prefixes(message);

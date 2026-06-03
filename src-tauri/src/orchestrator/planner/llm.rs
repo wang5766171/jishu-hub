@@ -34,10 +34,7 @@ impl Planner for LlmPlanner {
             .unwrap_or("claude-code")
             .to_string();
 
-        let project = spec
-            .project_path
-            .clone()
-            .unwrap_or_else(|| ".".to_string());
+        let project = spec.project_path.clone().unwrap_or_else(|| ".".to_string());
 
         Ok(vec![Step {
             step_id: "sp_0".to_string(),

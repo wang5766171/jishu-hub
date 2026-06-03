@@ -1,8 +1,8 @@
 pub mod default;
 pub use default::DefaultDispatcher;
 
-use crate::agent::NormalizedEvent;
 use crate::agent::AgentRegistry;
+use crate::agent::NormalizedEvent;
 use crate::orchestrator::result::StepOutcome;
 use crate::orchestrator::spec::Step;
 use crate::orchestrator::trace::TraceRecorder;
@@ -32,9 +32,6 @@ pub struct DispatchContext<'a> {
 
 pub trait Dispatcher: Send + Sync {
     fn id(&self) -> &str;
-    fn execute(
-        &self,
-        step: &Step,
-        ctx: &mut DispatchContext,
-    ) -> Result<StepOutcome, DispatchError>;
+    fn execute(&self, step: &Step, ctx: &mut DispatchContext)
+        -> Result<StepOutcome, DispatchError>;
 }
