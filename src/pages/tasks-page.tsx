@@ -183,6 +183,7 @@ export function TasksPage({
   const [generatingRoles, setGeneratingRoles] = useState(false);
   const [executingPlan, setExecutingPlan] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ runId: string; x: number; y: number } | null>(null);
+  const [timelineExpanded, setTimelineExpanded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -770,14 +771,20 @@ export function TasksPage({
 
             <div className="flex-1 space-y-4 overflow-auto p-5">
               {/* AI Summary */}
-              <section className="rounded-lg border bg-gradient-to-br from-violet-500/5 to-blue-500/5 p-4">
+              <section className="rounded-lg border bg-gradient-to-br from-violet-500/10 to-blue-500/10 p-4">
                 <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase text-muted-foreground">
-                  <Sparkles className="h-3.5 w-3.5" />
+                  <Sparkles className="h-3.5 w-3.5 text-violet-500" />
                   {t("tasks.aiSummary")}
                 </h4>
-                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">
-                  {selectedRun.result.summary || t("tasks.noSummary")}
-                </p>
+                {selectedRun.result.summary ? (
+                  <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">
+                    {selectedRun.result.summary}
+                  </p>
+                ) : (
+                  <p className="mt-2 text-sm italic text-muted-foreground">
+                    {t("tasks.noSummary")}
+                  </p>
+                )}
               </section>
 
               {selectedRun.spec.parent_run_id && (
@@ -882,39 +889,49 @@ export function TasksPage({
               </div>
 
               <section>
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase text-muted-foreground">
+                <button
+                  onClick={() => setTimelineExpanded((v) => !v)}
+                  className="mb-2 flex w-full items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs font-semibold uppercase text-muted-foreground transition-colors hover:bg-muted/50"
+                >
+                  <span className="flex items-center gap-1.5">
                     <History className="h-3.5 w-3.5" />
                     {t("tasks.timeline")}
-                  </h4>
-                  <Badge variant="secondary">{selectedRun.timeline?.length ?? 0}</Badge>
-                </div>
-                {(selectedRun.timeline ?? []).length === 0 ? (
-                  <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
-                    {t("tasks.noTimeline")}
-                  </div>
-                ) : (
-                  <ol className="space-y-2 border-l-2 border-muted pl-4">
-                    {(selectedRun.timeline ?? []).map((event) => (
-                      <li key={event.event_id} className="relative">
-                        <span className="absolute -left-[21px] top-1.5 h-2.5 w-2.5 rounded-full bg-muted-foreground" />
-                        <div className="rounded-md bg-background/60 px-3 py-2">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="text-sm font-medium">{event.title}</div>
-                              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                                {event.step_id && <span>{event.step_id}</span>}
-                                {event.role_id && <span>{event.role_id}</span>}
-                                {event.agent_id && <span>{event.agent_id}</span>}
-                                {event.at && <span>{formatTime(event.at)}</span>}
+                    <Badge variant="secondary" className="ml-1 text-[10px]">{selectedRun.timeline?.length ?? 0}</Badge>
+                  </span>
+                  <span className="text-xs normal-case text-muted-foreground">
+                    {timelineExpanded ? "▼" : "▶"}
+                  </span>
+                </button>
+                {timelineExpanded && (
+                  <>
+                    {(selectedRun.timeline ?? []).length === 0 ? (
+                      <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
+                        {t("tasks.noTimeline")}
+                      </div>
+                    ) : (
+                      <ol className="space-y-2 border-l-2 border-muted pl-4">
+                        {(selectedRun.timeline ?? []).map((event) => (
+                          <li key={event.event_id} className="relative">
+                            <span className="absolute -left-[21px] top-1.5 h-2.5 w-2.5 rounded-full bg-muted-foreground" />
+                            <div className="rounded-md bg-background/60 px-3 py-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="text-sm font-medium">{event.title}</div>
+                                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                    {event.step_id && <span>{event.step_id}</span>}
+                                    {event.role_id && <span>{event.role_id}</span>}
+                                    {event.agent_id && <span>{event.agent_id}</span>}
+                                    {event.at && <span>{formatTime(event.at)}</span>}
+                                  </div>
+                                </div>
+                                <Badge variant="outline" className="text-[10px]">{event.kind}</Badge>
                               </div>
                             </div>
-                            <Badge variant="outline" className="text-[10px]">{event.kind}</Badge>
-                          </div>
-                        </div>
-                      </li>
-                    ))}
-                  </ol>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </>
                 )}
               </section>
 
