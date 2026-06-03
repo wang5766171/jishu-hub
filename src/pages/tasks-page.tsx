@@ -9,6 +9,7 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import { ClipboardList, Download, History, Plus, RefreshCw, Send, Trash2, Wand2, X, XCircle } from "lucide-react";
 
 type TaskKind = "plan" | "run";
+type AssignmentMode = "manual" | "auto_suggest" | "auto_apply";
 
 interface RoleDraft {
   roleId: string;
@@ -35,10 +36,12 @@ interface RunRecord {
   spec: {
     message: string;
     project_path?: string | null;
+    assignment_mode?: AssignmentMode | null;
+    parent_run_id?: string | null;
     roles?: Array<{
       role_id: string;
       role_name: string;
-      agent_id: string;
+      agent_id?: string | null;
       responsibilities?: string[];
       acceptance?: string[];
     }>;
@@ -47,11 +50,20 @@ interface RunRecord {
     step_id: string;
     title: string;
     depends_on: string[];
-    kind: { dispatch?: { agent: string; message: string; project: string } } | Record<string, unknown>;
+    kind: {
+      dispatch?: { role_id: string; prompt: string; project: string };
+      shell?: { command: string; cwd: string };
+      read?: { path: string };
+      write?: { path: string; requires_approval: boolean };
+      reflect?: { question: string };
+      verify?: { check: Record<string, unknown> };
+    } | Record<string, unknown>;
   }>;
   result: { status: string; error?: string | null };
   timeline?: TaskTimelineEvent[];
   rework_routes?: RoleContractRoute[];
+  rework_items?: ReworkItem[];
+  children?: RunSummary[];
 }
 
 interface TaskTimelineEvent {
@@ -73,6 +85,21 @@ interface RoleContractRoute {
   target_role_name: string;
   target_agent_id: string;
   reason: string;
+}
+
+interface ReworkItem {
+  item_id: string;
+  source_run_id: string;
+  source_step_id: string;
+  source_role_id: string;
+  responsible_role: string;
+  target_role_id?: string | null;
+  target_agent_id?: string | null;
+  target_run_id?: string | null;
+  reason: string;
+  evidence: string;
+  suggested_action: string;
+  severity?: string | null;
 }
 
 interface TaskPlanRole {
@@ -271,22 +298,23 @@ export function TasksPage({
         kind: taskKind,
         message: message.trim(),
         project_path: projectPath.trim() || null,
-        agent_hint: null,
         roles: roles
           .filter((role) => role.roleName.trim() && role.agentId.trim())
           .map((role) => ({
             role_id: role.roleId.trim() || role.roleName.trim().toLowerCase().replace(/\s+/g, "_"),
             role_name: role.roleName.trim(),
-            agent_id: role.agentId.trim(),
+            agent_id: role.agentId.trim() || null,
             responsibilities: splitLines(role.responsibilities),
             acceptance: splitLines(role.acceptance),
             can_edit_files: role.canEditFiles,
             can_run_commands: role.canRunCommands,
             can_receive_rework: role.canReceiveRework,
           })),
+        assignment_mode: "manual",
         policy: "default",
+        parent_run_id: null,
+        epic_id: null,
         depth: 0,
-        parent_task_id: null,
         created_at: now,
         deadline_ms: null,
         labels: { source: "hub", title: title.trim() || taskId, template: selectedTemplateId },
@@ -630,6 +658,62 @@ export function TasksPage({
             </div>
           </div>
 
+          {/* Parent run reference */}
+          {selectedRun.spec.parent_run_id && (
+            <div className="rounded-md border border-info/40 bg-info/5 px-3 py-2 text-xs">
+              {t("tasks.parentRun", { runId: selectedRun.spec.parent_run_id })}
+            </div>
+          )}
+
+          {/* Child runs */}
+          {(selectedRun.children?.length ?? 0) > 0 && (
+            <div className="rounded-md border bg-background/60 p-3">
+              <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">{t("tasks.childRuns")}</h4>
+              <div className="space-y-1">
+                {selectedRun.children!.map((child) => (
+                  <button
+                    key={child.run_id}
+                    onClick={() => loadRun(child.run_id)}
+                    className="w-full rounded border bg-background/60 px-2 py-1 text-left text-xs transition-colors hover:bg-accent/40"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate font-medium">{child.title || child.task_id}</span>
+                      <Badge variant={statusVariant(child.status)} className="text-[10px]">
+                        {translateStatus(child.status)}
+                      </Badge>
+                    </div>
+                    <span className="text-muted-foreground">{child.run_id}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Rework items */}
+          {(selectedRun.rework_items?.length ?? 0) > 0 && (
+            <div className="rounded-md border bg-background/60 p-3">
+              <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">{t("tasks.reworkItems")}</h4>
+              <div className="space-y-2">
+                {selectedRun.rework_items!.map((item) => (
+                  <div key={item.item_id} className="rounded border bg-background/60 px-3 py-2 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium">{item.responsible_role}</span>
+                      {item.severity && (
+                        <Badge variant={item.severity === "critical" || item.severity === "high" ? "destructive" : "secondary"} className="text-[10px]">
+                          {item.severity}
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="mt-1 text-muted-foreground">{item.reason}</p>
+                    {item.target_run_id && (
+                      <p className="mt-1 text-info">{t("tasks.reworkDispatchedTo", { runId: item.target_run_id })}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="grid gap-3 md:grid-cols-2">
             <div>
               <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">{t("tasks.assignedRoles")}</h4>
@@ -643,7 +727,7 @@ export function TasksPage({
                     <div key={role.role_id} className="rounded-md border bg-background/60 px-3 py-2">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-sm font-medium">{role.role_name}</span>
-                        <Badge variant="secondary">{role.agent_id}</Badge>
+                        <Badge variant="secondary">{role.agent_id || t("tasks.unassigned")}</Badge>
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">{role.responsibilities?.join("; ")}</p>
                     </div>

@@ -389,6 +389,20 @@
     "noTimeline": "暂无执行时间线。",
     "dependsOn": "依赖 {{steps}}",
     "startedAt": "开始时间 {{time}}",
+    "parentRun": "父任务运行：{{runId}}",
+    "childRuns": "子任务运行",
+    "reworkItems": "返工项",
+    "reworkDispatchedTo": "已派发至运行 {{runId}}",
+    "unassigned": "未分配",
+    "status": {
+      "queued": "排队中",
+      "running": "运行中",
+      "awaiting_rework": "等待返工",
+      "awaiting_approval": "等待审批",
+      "complete": "已完成",
+      "aborted": "已取消",
+      "error": "错误"
+    },
     "templates": {
       "jishuDefault": {
         "label": "默认编排",

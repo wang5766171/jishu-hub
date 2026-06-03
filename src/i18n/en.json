@@ -389,6 +389,20 @@
     "noTimeline": "No timeline yet.",
     "dependsOn": "Depends on {{steps}}",
     "startedAt": "Started {{time}}",
+    "parentRun": "Parent run: {{runId}}",
+    "childRuns": "Child runs",
+    "reworkItems": "Rework items",
+    "reworkDispatchedTo": "Dispatched to run {{runId}}",
+    "unassigned": "Unassigned",
+    "status": {
+      "queued": "Queued",
+      "running": "Running",
+      "awaiting_rework": "Awaiting rework",
+      "awaiting_approval": "Awaiting approval",
+      "complete": "Complete",
+      "aborted": "Aborted",
+      "error": "Error"
+    },
     "templates": {
       "jishuDefault": {
         "label": "Default orchestration",
