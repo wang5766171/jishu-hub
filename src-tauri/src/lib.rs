@@ -16,6 +16,7 @@ mod process_control;
 mod project;
 mod project_config;
 mod session;
+mod task_plan;
 mod util;
 
 #[cfg(feature = "cli")]
@@ -41,13 +42,19 @@ pub struct AppState {
 
 #[tauri::command]
 fn list_agents(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<agent::AgentInfo>, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     Ok(s.registry.list_agents())
 }
 
 #[tauri::command]
-async fn scan_projects(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<project::Project>, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+async fn scan_projects(
+    state: tauri::State<'_, Mutex<AppState>>,
+) -> Result<Vec<project::Project>, String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     Ok(s.registry.scan_projects())
 }
 
@@ -56,7 +63,9 @@ fn add_project(
     state: tauri::State<'_, Mutex<AppState>>,
     path: String,
 ) -> Result<project::Project, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .active()
         .add_project(&path)
@@ -73,7 +82,9 @@ async fn list_sessions(
     state: tauri::State<'_, Mutex<AppState>>,
     encoded_name: String,
 ) -> Result<Vec<session::Session>, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().list_sessions(&encoded_name)
 }
 
@@ -83,7 +94,9 @@ async fn get_session_messages(
     session_id: String,
     encoded_name: String,
 ) -> Result<Vec<session::Message>, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .active()
         .get_session_messages(&session_id, &encoded_name)
@@ -133,7 +146,9 @@ fn delete_session_name(session_id: String) -> Result<(), String> {
 
 #[tauri::command]
 fn load_config(state: tauri::State<'_, Mutex<AppState>>) -> Result<serde_json::Value, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().load_config()
 }
 
@@ -145,7 +160,9 @@ struct RawConfigInfo {
 
 #[tauri::command]
 fn load_raw_config(state: tauri::State<'_, Mutex<AppState>>) -> Result<RawConfigInfo, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     let active = s.registry.active();
     let format = active
         .config_format()
@@ -159,7 +176,9 @@ fn save_raw_config(
     state: tauri::State<'_, Mutex<AppState>>,
     content: String,
 ) -> Result<(), String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().save_raw_config(&content)
 }
 
@@ -167,7 +186,9 @@ fn save_raw_config(
 async fn load_history(
     state: tauri::State<'_, Mutex<AppState>>,
 ) -> Result<Vec<history::HistoryEntry>, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     Ok(s.registry.active().load_history())
 }
 
@@ -176,14 +197,18 @@ fn save_config(
     state: tauri::State<'_, Mutex<AppState>>,
     config: serde_json::Value,
 ) -> Result<(), String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().save_config(&config)
 }
 
 #[tauri::command]
 fn list_presets(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<hub::Preset>, String> {
     let active_id = {
-        let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
         s.registry.active_id().to_string()
     };
     hub::list_presets_for(Some(&active_id)).map_err(|e| e.to_string())
@@ -195,7 +220,9 @@ fn save_preset(
     preset: hub::Preset,
 ) -> Result<(), String> {
     let active_id = {
-        let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
         s.registry.active_id().to_string()
     };
     let mut preset = preset;
@@ -213,7 +240,9 @@ fn delete_preset(id: String) -> Result<(), String> {
 #[tauri::command]
 fn apply_preset(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
     let active_id = {
-        let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
         s.registry.active_id().to_string()
     };
     let presets = hub::list_presets().map_err(|e| e.to_string())?;
@@ -229,7 +258,9 @@ fn apply_preset(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<
             ));
         }
     }
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().save_config(&preset.config)
 }
 
@@ -237,7 +268,9 @@ fn apply_preset(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<
 fn list_backups(
     state: tauri::State<'_, Mutex<AppState>>,
 ) -> Result<Vec<config::BackupEntry>, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().list_backups()
 }
 
@@ -247,14 +280,18 @@ fn restore_backup(
     backup_path: String,
 ) -> Result<(), String> {
     {
-        let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
         let backups = s.registry.active().list_backups()?;
         let valid = backups.iter().any(|b| b.path == backup_path);
         if !valid {
             return Err("Backup path not found in backup list".to_string());
         }
     }
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().restore_backup(&backup_path)
 }
 
@@ -339,8 +376,12 @@ fn list_custom_commands() -> Result<Vec<command::CustomCommand>, String> {
 fn agent_command_presets(
     state: tauri::State<'_, Mutex<AppState>>,
 ) -> Result<Vec<agent::command_config::AgentCommandPreset>, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
-    Ok(agent::command_config::built_in_commands(s.registry.active_id()))
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
+    Ok(agent::command_config::built_in_commands(
+        s.registry.active_id(),
+    ))
 }
 
 #[tauri::command]
@@ -364,7 +405,9 @@ fn open_in_terminal(
             return Err("Invalid session id".to_string());
         }
     }
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .active()
         .open_in_terminal(&project_path, resume_session_id.as_deref())
@@ -380,7 +423,9 @@ fn register_terminal_session(
     agent_id: Option<String>,
 ) -> Result<(), String> {
     let fallback_agent_id = {
-        let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
         s.registry.active_id().to_string()
     };
     let agent_id = agent_id.unwrap_or(fallback_agent_id);
@@ -409,7 +454,9 @@ fn init_project(
     state: tauri::State<'_, Mutex<AppState>>,
     project_path: String,
 ) -> Result<bool, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().init_project(&project_path)
 }
 
@@ -423,7 +470,9 @@ fn load_project_settings(
     state: tauri::State<'_, Mutex<AppState>>,
     project_path: String,
 ) -> Result<project_config::ProjectSettings, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().load_project_settings(&project_path)
 }
 
@@ -432,7 +481,9 @@ fn load_project_settings_local(
     state: tauri::State<'_, Mutex<AppState>>,
     project_path: String,
 ) -> Result<project_config::ProjectSettings, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .active()
         .load_project_settings_local(&project_path)
@@ -444,7 +495,9 @@ fn save_project_settings(
     project_path: String,
     settings: project_config::ProjectSettings,
 ) -> Result<(), String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .active()
         .save_project_settings(&project_path, &settings)
@@ -456,7 +509,9 @@ fn save_project_settings_local(
     project_path: String,
     settings: project_config::ProjectSettings,
 ) -> Result<(), String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .active()
         .save_project_settings_local(&project_path, &settings)
@@ -467,7 +522,9 @@ fn load_claude_md(
     state: tauri::State<'_, Mutex<AppState>>,
     project_path: String,
 ) -> Result<Option<String>, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.active().load_claude_md(&project_path)
 }
 
@@ -486,7 +543,9 @@ fn get_level1_dir_cmd(
     state: tauri::State<'_, Mutex<AppState>>,
     encoded_name: String,
 ) -> Result<Option<String>, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     let decoded = s.registry.active().decode_project_path(&encoded_name);
     Ok(s.registry.active().get_level1_dir(&decoded))
 }
@@ -496,7 +555,9 @@ fn get_mergeable_projects(
     state: tauri::State<'_, Mutex<AppState>>,
     encoded_name: String,
 ) -> Result<Vec<String>, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     let projects = s.registry.scan_projects();
     let mergeable: Vec<String> = projects
         .iter()
@@ -528,27 +589,39 @@ fn get_merged_secondaries(primary: String) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn list_config_templates(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<hub::ConfigTemplate>, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+fn list_config_templates(
+    state: tauri::State<'_, Mutex<AppState>>,
+) -> Result<Vec<hub::ConfigTemplate>, String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     Ok(s.registry.active().config_templates())
 }
 
 #[tauri::command]
-fn agent_list_statuses(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<agent::AgentStatus>, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+fn agent_list_statuses(
+    state: tauri::State<'_, Mutex<AppState>>,
+) -> Result<Vec<agent::AgentStatus>, String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     Ok(s.registry.list_agent_statuses())
 }
 
 #[tauri::command]
 fn agent_set_active(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
-    let mut s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let mut s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry.set_active(&id)?;
     hub::save_active_agent_id(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn agent_get_active(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     Ok(s.registry.active_id().to_string())
 }
 
@@ -594,7 +667,8 @@ fn check_prerequisite(command: String) -> bool {
     #[cfg(not(target_os = "windows"))]
     {
         let mut lookup = std::process::Command::new("which");
-        lookup.arg(&command)
+        lookup
+            .arg(&command)
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
@@ -603,8 +677,8 @@ fn check_prerequisite(command: String) -> bool {
 
 /// Whitelist for `install_agent_command`. The frontend only ever sends the
 /// agents' built-in `install_hint` / `native_install_command` strings (and the
-/// `npm install -g npm@latest` runtime updater), all of which are fixed
-/// `npm/winget/choco install <pkg>` patterns. Restricting to these patterns
+/// runtime install/update commands), all of which are fixed
+/// `npm/winget/choco install <pkg>` or `winget upgrade <pkg>` patterns. Restricting to these patterns
 /// closes the "execute arbitrary PowerShell" hole (K-HIGH-3 / original H1)
 /// without affecting any current install flow.
 fn is_allowed_install_command(cmd: &str) -> bool {
@@ -612,11 +686,23 @@ fn is_allowed_install_command(cmd: &str) -> bool {
         let s = s.trim();
         !s.is_empty()
             && !s.contains(char::is_whitespace)
-            && s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '/' | '.' | '_' | '-' | '+'))
+            && s.chars().all(|c| {
+                c.is_ascii_alphanumeric() || matches!(c, '@' | '/' | '.' | '_' | '-' | '+')
+            })
     }
     let cmd = cmd.trim();
-    for prefix in ["npm install -g ", "winget install ", "choco install "] {
+    if runtime_registry()
+        .iter()
+        .any(|runtime| runtime.install_command == Some(cmd) || runtime.update_command == Some(cmd))
+    {
+        return true;
+    }
+    for prefix in [
+        "npm install -g ",
+        "winget install ",
+        "winget upgrade ",
+        "choco install ",
+    ] {
         if let Some(rest) = cmd.strip_prefix(prefix) {
             return safe_pkg(rest);
         }
@@ -650,6 +736,89 @@ pub struct EnvStatus {
     pub npm_version: Option<String>,
     pub python_installed: bool,
     pub python_version: Option<String>,
+    pub git_installed: bool,
+    pub git_version: Option<String>,
+    pub runtimes: Vec<RuntimeStatus>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RuntimeStatus {
+    pub id: String,
+    pub installed: bool,
+    pub version: Option<String>,
+    pub install_command: Option<String>,
+    pub update_command: Option<String>,
+    pub download_url: Option<String>,
+    pub latest_package: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RuntimeLatestSource {
+    Npm { package: &'static str },
+    Python,
+    GitForWindows,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeDefinition {
+    id: &'static str,
+    program: &'static str,
+    version_args: &'static [&'static str],
+    version_prefixes: &'static [&'static str],
+    install_command: Option<&'static str>,
+    update_command: Option<&'static str>,
+    download_url: Option<&'static str>,
+    latest: Option<RuntimeLatestSource>,
+}
+
+const GIT_INSTALL_COMMAND: &str =
+    "winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements";
+const GIT_UPDATE_COMMAND: &str =
+    "winget upgrade --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements";
+
+fn runtime_registry() -> &'static [RuntimeDefinition] {
+    &[
+        RuntimeDefinition {
+            id: "node",
+            program: "node",
+            version_args: &["--version"],
+            version_prefixes: &["v"],
+            install_command: None,
+            update_command: None,
+            download_url: Some("https://nodejs.org/"),
+            latest: Some(RuntimeLatestSource::Npm { package: "node" }),
+        },
+        RuntimeDefinition {
+            id: "npm",
+            program: "npm",
+            version_args: &["--version"],
+            version_prefixes: &[],
+            install_command: None,
+            update_command: Some("npm install -g npm@latest"),
+            download_url: None,
+            latest: Some(RuntimeLatestSource::Npm { package: "npm" }),
+        },
+        RuntimeDefinition {
+            id: "python",
+            program: "python",
+            version_args: &["--version"],
+            version_prefixes: &["Python "],
+            install_command: None,
+            update_command: None,
+            download_url: Some("https://www.python.org/downloads/"),
+            latest: Some(RuntimeLatestSource::Python),
+        },
+        RuntimeDefinition {
+            id: "git",
+            program: "git",
+            version_args: &["--version"],
+            version_prefixes: &["git version "],
+            install_command: Some(GIT_INSTALL_COMMAND),
+            update_command: Some(GIT_UPDATE_COMMAND),
+            download_url: Some("https://git-scm.com/downloads/win"),
+            latest: Some(RuntimeLatestSource::GitForWindows),
+        },
+    ]
 }
 
 /// Build a platform-aware command. On Windows, .cmd/.bat scripts (npm, npx, etc.)
@@ -672,50 +841,86 @@ fn shell_command(program: &str, args: Vec<String>) -> tokio::process::Command {
     }
 }
 
+fn normalize_version_output(stdout: &[u8], stderr: &[u8], prefixes: &[&str]) -> Option<String> {
+    let stdout = String::from_utf8_lossy(stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+    let raw = if stdout.is_empty() { stderr } else { stdout };
+    let mut version = raw.trim().to_string();
+    for prefix in prefixes {
+        if let Some(rest) = version.strip_prefix(prefix) {
+            version = rest.trim().to_string();
+            break;
+        }
+    }
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    }
+}
+
+async fn check_runtime(definition: &RuntimeDefinition) -> RuntimeStatus {
+    let args = definition
+        .version_args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
+    let output =
+        crate::process_command::tokio_no_window(&mut shell_command(definition.program, args))
+            .output()
+            .await;
+    let (installed, version) = match output {
+        Ok(out) if out.status.success() => (
+            true,
+            normalize_version_output(&out.stdout, &out.stderr, definition.version_prefixes),
+        ),
+        _ => (false, None),
+    };
+    RuntimeStatus {
+        id: definition.id.to_string(),
+        installed,
+        version,
+        install_command: definition.install_command.map(str::to_string),
+        update_command: definition.update_command.map(str::to_string),
+        download_url: definition.download_url.map(str::to_string),
+        latest_package: runtime_latest_package(definition).map(str::to_string),
+    }
+}
+
+fn runtime_latest_package(definition: &RuntimeDefinition) -> Option<&'static str> {
+    match definition.latest {
+        Some(RuntimeLatestSource::Npm { package }) => Some(package),
+        Some(RuntimeLatestSource::Python) => Some("python"),
+        Some(RuntimeLatestSource::GitForWindows) => Some("git"),
+        None => None,
+    }
+}
+
+fn runtime_status<'a>(runtimes: &'a [RuntimeStatus], id: &str) -> Option<&'a RuntimeStatus> {
+    runtimes.iter().find(|runtime| runtime.id == id)
+}
+
 #[tauri::command]
 async fn check_environment() -> Result<EnvStatus, String> {
-    let node_out = crate::process_command::tokio_no_window(&mut shell_command("node", vec!["--version".into()]))
-        .output()
-        .await;
-
-    let npm_out = crate::process_command::tokio_no_window(&mut shell_command("npm", vec!["--version".into()]))
-        .output()
-        .await;
-
-    let python_out = crate::process_command::tokio_no_window(&mut shell_command("python", vec!["--version".into()]))
-        .output()
-        .await;
-
-    let (node_installed, node_version) = match node_out {
-        Ok(out) if out.status.success() => (true, Some(String::from_utf8_lossy(&out.stdout).trim().to_string())),
-        _ => (false, None),
-    };
-
-    let (npm_installed, npm_version) = match npm_out {
-        Ok(out) if out.status.success() => (true, Some(String::from_utf8_lossy(&out.stdout).trim().to_string())),
-        _ => (false, None),
-    };
-
-    let (python_installed, python_version) = match python_out {
-        Ok(out) if out.status.success() => {
-            let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let ver = if ver.is_empty() {
-                String::from_utf8_lossy(&out.stderr).trim().to_string()
-            } else {
-                ver
-            };
-            (true, Some(ver))
-        }
-        _ => (false, None),
-    };
+    let mut runtimes = Vec::new();
+    for definition in runtime_registry() {
+        runtimes.push(check_runtime(definition).await);
+    }
+    let node = runtime_status(&runtimes, "node");
+    let npm = runtime_status(&runtimes, "npm");
+    let python = runtime_status(&runtimes, "python");
+    let git = runtime_status(&runtimes, "git");
 
     Ok(EnvStatus {
-        node_installed,
-        node_version,
-        npm_installed,
-        npm_version,
-        python_installed,
-        python_version,
+        node_installed: node.is_some_and(|runtime| runtime.installed),
+        node_version: node.and_then(|runtime| runtime.version.clone()),
+        npm_installed: npm.is_some_and(|runtime| runtime.installed),
+        npm_version: npm.and_then(|runtime| runtime.version.clone()),
+        python_installed: python.is_some_and(|runtime| runtime.installed),
+        python_version: python.and_then(|runtime| runtime.version.clone()),
+        git_installed: git.is_some_and(|runtime| runtime.installed),
+        git_version: git.and_then(|runtime| runtime.version.clone()),
+        runtimes,
     })
 }
 
@@ -730,12 +935,22 @@ pub struct LatestVersion {
 async fn check_available_updates(packages: Vec<(String, String)>) -> Vec<LatestVersion> {
     let mut results = Vec::new();
     for (id, pkg) in packages {
-        if pkg == "python" {
-            results.push(check_python_latest(&id).await);
+        if let Some(definition) = runtime_registry().iter().find(|runtime| {
+            runtime.id == id || runtime_latest_package(runtime) == Some(pkg.as_str())
+        }) {
+            results.push(check_runtime_latest(&id, definition).await);
             continue;
         }
 
-        let mut cmd = shell_command("npm", vec!["view".into(), pkg.clone(), "version".into(), "--json".into()]);
+        let mut cmd = shell_command(
+            "npm",
+            vec![
+                "view".into(),
+                pkg.clone(),
+                "version".into(),
+                "--json".into(),
+            ],
+        );
         let output = crate::process_command::tokio_no_window(&mut cmd)
             .output()
             .await;
@@ -778,20 +993,77 @@ async fn check_available_updates(packages: Vec<(String, String)>) -> Vec<LatestV
     results
 }
 
-async fn check_python_latest(id: &str) -> LatestVersion {
-    let url = "https://endoflife.date/api/python.json";
+async fn check_runtime_latest(id: &str, definition: &RuntimeDefinition) -> LatestVersion {
+    match definition.latest {
+        Some(RuntimeLatestSource::Npm { package }) => check_npm_latest(id, package).await,
+        Some(RuntimeLatestSource::Python) => check_python_latest(id).await,
+        Some(RuntimeLatestSource::GitForWindows) => check_git_latest(id).await,
+        None => LatestVersion {
+            id: id.to_string(),
+            latest_version: None,
+            error: Some("runtime has no latest-version source".to_string()),
+        },
+    }
+}
 
-    // Platform-adaptive HTTP fetch
+async fn check_npm_latest(id: &str, package: &str) -> LatestVersion {
+    let mut cmd = shell_command(
+        "npm",
+        vec![
+            "view".into(),
+            package.to_string(),
+            "version".into(),
+            "--json".into(),
+        ],
+    );
+    let output = crate::process_command::tokio_no_window(&mut cmd)
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let version = stdout.trim_matches('"').trim().to_string();
+            if !version.is_empty() {
+                LatestVersion {
+                    id: id.to_string(),
+                    latest_version: Some(version),
+                    error: None,
+                }
+            } else {
+                LatestVersion {
+                    id: id.to_string(),
+                    latest_version: None,
+                    error: Some("empty response".into()),
+                }
+            }
+        }
+        Ok(out) => LatestVersion {
+            id: id.to_string(),
+            latest_version: None,
+            error: Some(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+        },
+        Err(e) => LatestVersion {
+            id: id.to_string(),
+            latest_version: None,
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+async fn fetch_text_url(url: &str) -> Result<String, String> {
     #[cfg(target_os = "windows")]
-    let body: Result<String, String> = {
+    {
         let script = format!(
             "(Invoke-WebRequest -Uri '{}' -UseBasicParsing).Content",
             url
         );
         let mut ps_cmd = tokio::process::Command::new("powershell");
-        let output = crate::process_command::tokio_no_window(
-            ps_cmd.args(["-NoProfile", "-Command", &script]),
-        )
+        let output = crate::process_command::tokio_no_window(ps_cmd.args([
+            "-NoProfile",
+            "-Command",
+            &script,
+        ]))
         .output()
         .await;
         match output {
@@ -799,13 +1071,16 @@ async fn check_python_latest(id: &str) -> LatestVersion {
             Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
             Err(e) => Err(e.to_string()),
         }
-    };
+    }
     #[cfg(not(target_os = "windows"))]
-    let body: Result<String, String> = {
+    {
         let mut cmd = tokio::process::Command::new("curl");
-        let output = crate::process_command::tokio_no_window(
-            cmd.args(["-sf", url]),
-        )
+        let output = crate::process_command::tokio_no_window(cmd.args([
+            "-sfL",
+            "-H",
+            "User-Agent: jishu-hub",
+            url,
+        ]))
         .output()
         .await;
         match output {
@@ -813,9 +1088,13 @@ async fn check_python_latest(id: &str) -> LatestVersion {
             Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
             Err(e) => Err(e.to_string()),
         }
-    };
+    }
+}
 
-    let body = match body {
+async fn check_python_latest(id: &str) -> LatestVersion {
+    let url = "https://endoflife.date/api/python.json";
+
+    let body = match fetch_text_url(url).await {
         Ok(b) => b,
         Err(e) => {
             return LatestVersion {
@@ -829,7 +1108,13 @@ async fn check_python_latest(id: &str) -> LatestVersion {
     // Parse JSON array and extract latest version from first entry
     let version = serde_json::from_str::<serde_json::Value>(&body)
         .ok()
-        .and_then(|v| v.as_array()?.first()?.get("latest")?.as_str().map(String::from));
+        .and_then(|v| {
+            v.as_array()?
+                .first()?
+                .get("latest")?
+                .as_str()
+                .map(String::from)
+        });
 
     match version {
         Some(v) => LatestVersion {
@@ -841,6 +1126,39 @@ async fn check_python_latest(id: &str) -> LatestVersion {
             id: id.to_string(),
             latest_version: None,
             error: Some("could not parse version from API response".into()),
+        },
+    }
+}
+
+async fn check_git_latest(id: &str) -> LatestVersion {
+    let url = "https://api.github.com/repos/git-for-windows/git/releases/latest";
+
+    let body = match fetch_text_url(url).await {
+        Ok(b) => b,
+        Err(e) => {
+            return LatestVersion {
+                id: id.to_string(),
+                latest_version: None,
+                error: Some(e),
+            };
+        }
+    };
+
+    let version = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("tag_name")?.as_str().map(String::from))
+        .map(|tag| tag.trim_start_matches('v').to_string());
+
+    match version {
+        Some(v) if !v.is_empty() => LatestVersion {
+            id: id.to_string(),
+            latest_version: Some(v),
+            error: None,
+        },
+        _ => LatestVersion {
+            id: id.to_string(),
+            latest_version: None,
+            error: Some("could not parse version from GitHub response".into()),
         },
     }
 }
@@ -871,9 +1189,12 @@ async fn http_get_text(url: &str, timeout_secs: u32) -> Result<String, String> {
             url, timeout_secs
         );
         let mut cmd = tokio::process::Command::new("powershell");
-        let output = crate::process_command::tokio_no_window(
-            cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]),
-        )
+        let output = crate::process_command::tokio_no_window(cmd.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &script,
+        ]))
         .output()
         .await
         .map_err(|e| e.to_string())?;
@@ -887,7 +1208,14 @@ async fn http_get_text(url: &str, timeout_secs: u32) -> Result<String, String> {
     {
         let mut cmd = tokio::process::Command::new("curl");
         let output = cmd
-            .args(["-sfL", "--max-time", &timeout_secs.to_string(), "-A", "jishu-hub", url])
+            .args([
+                "-sfL",
+                "--max-time",
+                &timeout_secs.to_string(),
+                "-A",
+                "jishu-hub",
+                url,
+            ])
             .output()
             .await
             .map_err(|e| e.to_string())?;
@@ -924,7 +1252,10 @@ fn version_parts(v: &str) -> Vec<u64> {
 fn is_newer(latest: &str, current: &str) -> bool {
     let (a, b) = (version_parts(latest), version_parts(current));
     for i in 0..a.len().max(b.len()) {
-        let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
+        let (x, y) = (
+            a.get(i).copied().unwrap_or(0),
+            b.get(i).copied().unwrap_or(0),
+        );
         if x != y {
             return x > y;
         }
@@ -937,9 +1268,15 @@ fn is_newer(latest: &str, current: &str) -> bool {
 async fn fetch_latest_release() -> Result<(String, String, serde_json::Value), String> {
     let overseas = is_overseas_network().await;
     let order = if overseas {
-        [("github", GH_API, GH_PAGE), ("gitee", GITEE_API, GITEE_PAGE)]
+        [
+            ("github", GH_API, GH_PAGE),
+            ("gitee", GITEE_API, GITEE_PAGE),
+        ]
     } else {
-        [("gitee", GITEE_API, GITEE_PAGE), ("github", GH_API, GH_PAGE)]
+        [
+            ("gitee", GITEE_API, GITEE_PAGE),
+            ("github", GH_API, GH_PAGE),
+        ]
     };
     let mut last_err = String::from("network unavailable");
     for (source, api, page) in order {
@@ -1004,9 +1341,12 @@ $p='HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\S
 $e=Get-ItemProperty $p | Where-Object { $_.DisplayName -like '*Jishu Hub*' } | Select-Object -First 1;\
 if ($e -and ($e.WindowsInstaller -eq 1 -or $e.UninstallString -match 'msiexec')) { 'msi' } else { 'nsis' }";
     let mut cmd = tokio::process::Command::new("powershell");
-    let out = crate::process_command::tokio_no_window(
-        cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]),
-    )
+    let out = crate::process_command::tokio_no_window(cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        script,
+    ]))
     .output()
     .await;
     matches!(out, Ok(o) if String::from_utf8_lossy(&o.stdout).trim() == "msi")
@@ -1052,9 +1392,12 @@ async fn download_to_file(url: &str, dest: &std::path::Path) -> Result<(), Strin
             dest.to_string_lossy().replace('\'', "''")
         );
         let mut cmd = tokio::process::Command::new("powershell");
-        let out = crate::process_command::tokio_no_window(
-            cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]),
-        )
+        let out = crate::process_command::tokio_no_window(cmd.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &script,
+        ]))
         .output()
         .await
         .map_err(|e| e.to_string())?;
@@ -1087,7 +1430,11 @@ async fn download_update() -> DownloadResult {
     let release = match fetch_latest_release().await {
         Ok((_, _, r)) => r,
         Err(e) => {
-            return DownloadResult { version: None, installer_path: None, error: Some(e) }
+            return DownloadResult {
+                version: None,
+                installer_path: None,
+                error: Some(e),
+            }
         }
     };
     let tag = release
@@ -1097,7 +1444,11 @@ async fn download_update() -> DownloadResult {
         .trim()
         .to_string();
     if tag.is_empty() || !is_newer(&tag, &current) {
-        return DownloadResult { version: None, installer_path: None, error: None };
+        return DownloadResult {
+            version: None,
+            installer_path: None,
+            error: None,
+        };
     }
     let Some((name, url)) = pick_installer_asset(&release, installed_via_msi().await) else {
         return DownloadResult {
@@ -1106,14 +1457,20 @@ async fn download_update() -> DownloadResult {
             error: Some("no matching installer asset".into()),
         };
     };
-    let dest = dirs::download_dir().unwrap_or_else(std::env::temp_dir).join(&name);
+    let dest = dirs::download_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(&name);
     match download_to_file(&url, &dest).await {
         Ok(()) => DownloadResult {
             version: Some(tag),
             installer_path: Some(dest.to_string_lossy().to_string()),
             error: None,
         },
-        Err(e) => DownloadResult { version: Some(tag), installer_path: None, error: Some(e) },
+        Err(e) => DownloadResult {
+            version: Some(tag),
+            installer_path: None,
+            error: Some(e),
+        },
     }
 }
 
@@ -1129,8 +1486,8 @@ fn install_update(app: tauri::AppHandle, installer_path: String) -> Result<(), S
         return Err("Invalid installer: not .exe or .msi".to_string());
     }
 
-    let canon_p = std::fs::canonicalize(p)
-        .map_err(|e| format!("Cannot resolve installer path: {}", e))?;
+    let canon_p =
+        std::fs::canonicalize(p).map_err(|e| format!("Cannot resolve installer path: {}", e))?;
     if !canon_p.is_file() {
         return Err("Installer file not found".to_string());
     }
@@ -1145,7 +1502,10 @@ fn install_update(app: tauri::AppHandle, installer_path: String) -> Result<(), S
     }
     #[cfg(target_os = "windows")]
     {
-        if p.extension().map(|e| e.eq_ignore_ascii_case("msi")).unwrap_or(false) {
+        if p.extension()
+            .map(|e| e.eq_ignore_ascii_case("msi"))
+            .unwrap_or(false)
+        {
             let mut cmd = std::process::Command::new("msiexec");
             crate::process_command::std_no_window(cmd.args(["/i", &installer_path]))
                 .spawn()
@@ -1256,9 +1616,7 @@ async fn test_model(id: String) -> Result<serde_json::Value, String> {
                 s.push_str(&delta);
             }
         }
-        agent::NormalizedEvent::TurnComplete {
-            usage: Some(u), ..
-        } => {
+        agent::NormalizedEvent::TurnComplete { usage: Some(u), .. } => {
             if let Ok(mut info) = usage_clone.lock() {
                 *info = Some(u);
             }
@@ -1303,28 +1661,78 @@ fn mask_model_key(key: String) -> String {
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
 fn task_submit(spec: serde_json::Value) -> Result<serde_json::Value, String> {
-    let _ = spec; // TODO: wire to daemon / dispatcher
-    Ok(serde_json::json!({ "task_id": "stub", "run_id": "stub" }))
+    let spec: orchestrator::TaskSpec =
+        serde_json::from_value(spec).map_err(|err| err.to_string())?;
+    serde_json::to_value(orchestrator::submit_task(spec)?).map_err(|err| err.to_string())
+}
+
+#[cfg(all(feature = "orchestrator", test))]
+fn task_submit_with_root(
+    spec: serde_json::Value,
+    root: &std::path::Path,
+) -> Result<serde_json::Value, String> {
+    let spec: orchestrator::TaskSpec =
+        serde_json::from_value(spec).map_err(|err| err.to_string())?;
+    serde_json::to_value(orchestrator::submit_task_in_root(spec, root)?)
+        .map_err(|err| err.to_string())
 }
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
 fn run_list() -> Result<Vec<serde_json::Value>, String> {
-    Ok(vec![])
+    orchestrator::list_runs()?
+        .into_iter()
+        .map(|run| serde_json::to_value(run).map_err(|err| err.to_string()))
+        .collect()
+}
+
+#[cfg(all(feature = "orchestrator", test))]
+fn run_list_with_root(root: &std::path::Path) -> Result<Vec<serde_json::Value>, String> {
+    orchestrator::list_runs_in_root(root)?
+        .into_iter()
+        .map(|run| serde_json::to_value(run).map_err(|err| err.to_string()))
+        .collect()
 }
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
 fn run_get(run_id: String) -> Result<serde_json::Value, String> {
-    let _ = run_id; // TODO: wire to daemon / dispatcher
-    Ok(serde_json::json!({}))
+    serde_json::to_value(orchestrator::get_run(&run_id)?).map_err(|err| err.to_string())
+}
+
+#[cfg(all(feature = "orchestrator", test))]
+fn run_get_with_root(run_id: String, root: &std::path::Path) -> Result<serde_json::Value, String> {
+    serde_json::to_value(orchestrator::get_run_in_root(root, &run_id)?)
+        .map_err(|err| err.to_string())
 }
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
 fn run_cancel(run_id: String) -> Result<(), String> {
-    let _ = run_id; // TODO: wire to daemon / dispatcher
-    Ok(())
+    orchestrator::cancel_run(&run_id).map(|_| ())
+}
+
+#[cfg(all(feature = "orchestrator", test))]
+fn run_cancel_with_root(run_id: String, root: &std::path::Path) -> Result<(), String> {
+    orchestrator::cancel_run_in_root(root, &run_id).map(|_| ())
+}
+
+#[tauri::command]
+fn task_plan_skill_list() -> Result<Vec<task_plan::TaskPlanSkill>, String> {
+    task_plan::list_task_plan_skills()
+}
+
+#[tauri::command]
+fn task_plan_skill_install(skill_id: String) -> Result<task_plan::TaskPlanSkill, String> {
+    task_plan::install_builtin_skill(&skill_id)
+}
+
+#[tauri::command]
+fn task_plan_generate_roles(
+    skill_id: String,
+    message: String,
+) -> Result<Vec<task_plan::TaskPlanRole>, String> {
+    task_plan::generate_roles(&skill_id, &message)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1431,6 +1839,9 @@ pub fn run() {
             run_list,
             run_get,
             run_cancel,
+            task_plan_skill_list,
+            task_plan_skill_install,
+            task_plan_generate_roles,
             list_models,
             add_model,
             update_model,
@@ -1447,6 +1858,9 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use crate::orchestrator::{RunStatus, TaskKind, TaskSpec};
+    use std::collections::HashMap;
+
     #[test]
     fn reads_text_file_preview() {
         let path =
@@ -1463,5 +1877,78 @@ mod tests {
         assert_eq!(preview.size, 13);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn normalizes_runtime_version_outputs() {
+        assert_eq!(
+            super::normalize_version_output(b"Python 3.12.4\r\n", b"", &["Python "]),
+            Some("3.12.4".to_string())
+        );
+        assert_eq!(
+            super::normalize_version_output(
+                b"git version 2.50.1.windows.1\n",
+                b"",
+                &["git version "]
+            ),
+            Some("2.50.1.windows.1".to_string())
+        );
+    }
+
+    #[test]
+    fn allows_git_winget_update_command() {
+        assert!(super::is_allowed_install_command(
+            "winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements"
+        ));
+        assert!(super::is_allowed_install_command(
+            "winget upgrade --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements"
+        ));
+        assert!(!super::is_allowed_install_command(
+            "winget upgrade Git.Git; whoami"
+        ));
+    }
+
+    #[cfg(feature = "orchestrator")]
+    #[test]
+    fn task_ipc_helpers_submit_list_get_and_cancel_real_runs() {
+        let root = std::env::temp_dir().join(format!("jishu_ipc_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let spec = TaskSpec {
+            task_id: "ts_ipc".into(),
+            kind: TaskKind::Plan,
+            message: "HUB task".into(),
+            project_path: Some("D:/project".into()),
+            agent_hint: None,
+            roles: Vec::new(),
+            policy: "default".into(),
+            depth: 0,
+            parent_task_id: None,
+            created_at: 1,
+            deadline_ms: None,
+            labels: HashMap::new(),
+        };
+
+        let submitted =
+            super::task_submit_with_root(serde_json::to_value(spec).unwrap(), &root).unwrap();
+        assert_ne!(submitted["run_id"], "stub");
+        let run_id = submitted["run_id"].as_str().unwrap().to_string();
+
+        let runs = super::run_list_with_root(&root).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["task_id"], "ts_ipc");
+
+        let record = super::run_get_with_root(run_id.clone(), &root).unwrap();
+        assert_eq!(record["spec"]["task_id"], "ts_ipc");
+        assert_eq!(record["result"]["status"], "complete");
+
+        super::run_cancel_with_root(run_id.clone(), &root).unwrap();
+        let record = super::run_get_with_root(run_id, &root).unwrap();
+        assert_eq!(
+            record["result"]["status"],
+            serde_json::to_value(RunStatus::Aborted).unwrap()
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

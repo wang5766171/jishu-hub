@@ -7,11 +7,12 @@ import { ChatInput } from "@/components/sessions/chat-input";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { clearImageCache } from "@/components/sessions/inline-image";
 import { StatusBar as ObservabilityStatusBar } from "@/components/observability";
+import { TasksPage } from "@/pages/tasks-page";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
 import {
-  HardDrive, MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ChevronDown, PictureInPicture2,
+  HardDrive, MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ChevronDown, PictureInPicture2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
@@ -101,6 +102,7 @@ export function ChatPage({
   const [messageSearchNavigation, setMessageSearchNavigation] = useState<MessageSearchNavigation | null>(null);
   const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
   const [optimisticSessions, setOptimisticSessions] = useState<Session[]>([]);
+  const [taskPanelOpen, setTaskPanelOpen] = useState(false);
 
   const messageAreaRef = useRef<HTMLDivElement>(null);
   const activeIdRef = useRef<string | null>(activeId);
@@ -229,6 +231,7 @@ export function ChatPage({
     selectedSessionRef.current = null;
     setSessionMessages([]);
     setOptimisticSessions([]);
+    setTaskPanelOpen(false);
     sessionMessagesCacheRef.current.clear();
     newSessionStreamIdsRef.current.clear();
     clearImageCache();
@@ -240,6 +243,7 @@ export function ChatPage({
     selectedSessionRef.current = null;
     setSessionMessages([]);
     setOptimisticSessions([]);
+    setTaskPanelOpen(false);
     sessionMessagesCacheRef.current.clear();
     newSessionStreamIdsRef.current.clear();
     setListRefreshKey(Date.now());
@@ -313,6 +317,7 @@ export function ChatPage({
   }, []);
 
   const handleSelectSession = async (sessionId: string) => {
+    setTaskPanelOpen(false);
     if (sessionId === selectedSession || !projectId) return;
 
     if (selectedSession && messageAreaRef.current) {
@@ -358,6 +363,7 @@ export function ChatPage({
   const handleNewSession = async () => {
     if (!projectId) return;
 
+    setTaskPanelOpen(false);
     setSelectedSession("new");
     selectedSessionRef.current = "new";
     setSessionMessages([]);
@@ -695,6 +701,19 @@ export function ChatPage({
               <PanelLeftClose className="h-3.5 w-3.5" />
             </button>
           </div>
+          <div className="px-3 pb-2">
+            <button
+              onClick={projectId ? () => { setTaskPanelOpen(true); setSelectedSession(null); selectedSessionRef.current = null; } : undefined}
+              title={projectId ? t("tasks.startTask") : t("sessions.selectProject")}
+              className={cn(
+                "flex h-8 w-full items-center gap-2.5 rounded-lg pl-2 pr-2 text-sm text-foreground transition-fast",
+                projectId ? taskPanelOpen ? "bg-primary/10 font-medium" : "hover:bg-accent" : "opacity-40 cursor-not-allowed"
+              )}
+            >
+              <ClipboardList className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
+              <span className="truncate leading-none pt-[1px]">{t("tasks.startTask")}</span>
+            </button>
+          </div>
           {/* Search */}
           <div className="px-3 h-10 pb-2">
             <div className="relative h-8">
@@ -778,6 +797,18 @@ export function ChatPage({
               )}
             >
               <SquarePen className="h-4 w-4 text-[var(--icon-action)]" />
+            </button>
+          </div>
+          <div className="flex items-center justify-center h-10 pb-2">
+            <button
+              onClick={projectId ? () => { setTaskPanelOpen(true); setSelectedSession(null); selectedSessionRef.current = null; } : undefined}
+              title={projectId ? t("tasks.startTask") : t("sessions.selectProject")}
+              className={cn(
+                "flex h-8 w-8 items-center justify-center rounded-lg transition-fast",
+                projectId ? taskPanelOpen ? "bg-primary/10" : "hover:bg-accent" : "opacity-40 cursor-not-allowed"
+              )}
+            >
+              <ClipboardList className="h-4 w-4 text-[var(--icon-action)]" />
             </button>
           </div>
         </div>
@@ -874,6 +905,11 @@ export function ChatPage({
               </button>
             </div>
           </div>
+        ) : taskPanelOpen ? (
+          <TasksPage
+            initialProjectPath={currentProject?.path ?? null}
+            onClose={() => setTaskPanelOpen(false)}
+          />
         ) : showStartComposer ? (
           <div className="flex min-h-0 flex-1 items-center justify-center px-6 py-10">
             <div className="flex w-full max-w-[var(--message-content-max-width)] min-w-0 flex-col items-center">
@@ -972,7 +1008,7 @@ export function ChatPage({
           </>
         )}
         {/* Chat input area with scroll-to-bottom overlay */}
-        {projectId && !showStartComposer && (
+        {projectId && !showStartComposer && !taskPanelOpen && (
           <div className="relative">
             {isAwayFromBottom && (
               <button

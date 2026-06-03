@@ -15,11 +15,11 @@ interface ManagePageProps {
   navigateToProjects?: number;
 }
 
-const tabs: { id: ManageTab; icon: typeof FolderOpen; labelKey: string; iconColor: string }[] = [
-  { id: "projects", icon: FolderOpen, labelKey: "nav.projects", iconColor: "text-[var(--icon-folder)]" },
-  { id: "config", icon: Settings, labelKey: "config.configuration", iconColor: "text-[var(--icon-action)]" },
-  { id: "commands", icon: Rocket, labelKey: "nav.commands", iconColor: "text-[var(--icon-action)]" },
-  { id: "env", icon: Activity, labelKey: "nav.environment", iconColor: "text-[var(--icon-env)]" },
+const tabs: { id: ManageTab; icon: typeof FolderOpen; labelKey: string; fallback: string; iconColor: string }[] = [
+  { id: "projects", icon: FolderOpen, labelKey: "nav.projects", fallback: "Projects", iconColor: "text-[var(--icon-folder)]" },
+  { id: "config", icon: Settings, labelKey: "config.configuration", fallback: "Config", iconColor: "text-[var(--icon-action)]" },
+  { id: "commands", icon: Rocket, labelKey: "nav.commands", fallback: "Commands", iconColor: "text-[var(--icon-action)]" },
+  { id: "env", icon: Activity, labelKey: "nav.environment", fallback: "Env", iconColor: "text-[var(--icon-env)]" },
 ];
 
 export function ManagePage({ onBack, onEnterProject, navigateToProjects }: ManagePageProps) {
@@ -52,7 +52,9 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects }: Manag
         >
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        {tabs.map(({ id, icon: Icon, labelKey, iconColor }) => (
+        {tabs.map(({ id, icon: Icon, labelKey, fallback, iconColor }) => {
+          const label = t(labelKey) === labelKey ? fallback : t(labelKey);
+          return (
           <button
             key={id}
             onClick={() => setActiveTab(id)}
@@ -62,12 +64,13 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects }: Manag
                 ? "bg-accent/80 text-accent-foreground font-medium"
                 : "text-muted-foreground hover:bg-accent/30 hover:text-foreground"
             )}
-            title={t(labelKey)}
+            title={label}
           >
             <Icon className={cn("h-4 w-4", activeTab !== id && iconColor)} />
-            <span className="truncate w-full text-center">{t(labelKey)}</span>
+            <span className="truncate w-full text-center">{label}</span>
           </button>
-        ))}
+          );
+        })}
       </div>
 
       {/* Right: Content */}

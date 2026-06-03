@@ -303,7 +303,11 @@ pub fn list_presets_for(agent_id: Option<&str>) -> Result<Vec<Preset>, Box<dyn s
     }
     let data: Presets = read_json(&path)?;
     Ok(match agent_id {
-        Some(id) => data.presets.into_iter().filter(|p| p.agent_id.as_deref() == Some(id)).collect(),
+        Some(id) => data
+            .presets
+            .into_iter()
+            .filter(|p| p.agent_id.as_deref() == Some(id))
+            .collect(),
         None => data.presets,
     })
 }
@@ -635,7 +639,12 @@ fn find_process_by_resume(session_id: &str) -> Result<Option<u32>, Box<dyn std::
         let marker_filter = crate::agent::command_config::resume_markers(session_id)
             .into_iter()
             .map(|marker| {
-                let escaped = marker.replace('\'', "''").replace('[', "`[").replace(']', "`]").replace('*', "`*").replace('?', "`?");
+                let escaped = marker
+                    .replace('\'', "''")
+                    .replace('[', "`[")
+                    .replace(']', "`]")
+                    .replace('*', "`*")
+                    .replace('?', "`?");
                 format!("$_.CommandLine -like '*{}*'", escaped)
             })
             .collect::<Vec<_>>()
@@ -720,7 +729,7 @@ pub fn list_config_templates() -> Vec<ConfigTemplate> {
             name: "中转配置 (Proxy)".into(),
             description: "使用国内主流模型供应商（如智谱、阿里、Minimax）进行中转。".into(),
             config: third_party_proxy_config(),
-        }
+        },
     ]
 }
 

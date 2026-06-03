@@ -1,0 +1,45 @@
+{
+  "skills": [
+    {
+      "id": "jishu-task-planner",
+      "adapter_key": "jishu-task-planner",
+      "source": { "type": "bundled" }
+    },
+    {
+      "id": "gstack",
+      "adapter_key": "gstack",
+      "source": {
+        "type": "git_sparse",
+        "repo": "https://github.com/garrytan/gstack.git",
+        "path": "."
+      }
+    },
+    {
+      "id": "superpowers",
+      "adapter_key": "superpowers",
+      "source": {
+        "type": "git_sparse",
+        "repo": "https://github.com/obra/superpowers.git",
+        "path": "skills"
+      }
+    },
+    {
+      "id": "openspec",
+      "adapter_key": "openspec",
+      "source": {
+        "type": "git_sparse",
+        "repo": "https://github.com/partme-ai/full-stack-skills.git",
+        "path": "skills/openspec-skills/openspec-apply"
+      }
+    },
+    {
+      "id": "compound-engineering",
+      "adapter_key": "compound-engineering",
+      "source": {
+        "type": "git_sparse",
+        "repo": "https://github.com/EveryInc/compound-engineering-plugin.git",
+        "path": "plugins/compound-engineering/skills/ce-compound"
+      }
+    }
+  ]
+}

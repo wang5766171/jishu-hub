@@ -27,6 +27,8 @@
     "npmDesc": "Node.js package manager",
     "pythonTitle": "Python",
     "pythonDesc": "Python runtime",
+    "gitTitle": "Git",
+    "gitDesc": "Version control runtime",
     "agentsTitle": "Agent CLIs",
     "notInstalled": "Not installed",
     "installed": "Installed",
@@ -325,6 +327,240 @@
     "noOutput": "No output",
     "builtIn": "Built-in Commands",
     "custom": "Custom Commands"
+  },
+  "tasks": {
+    "title": "Tasks",
+    "startTask": "Start task",
+    "description": "Submit HUB tasks to jishu agent and supervise the orchestration plan.",
+    "refreshRuns": "Refresh runs",
+    "close": "Close",
+    "hubTask": "HUB task",
+    "taskTitle": "Title",
+    "taskTitlePlaceholder": "Optional task title",
+    "projectPath": "Project path",
+    "projectPathPlaceholder": "Leave empty when no project is selected",
+    "taskGoal": "Task goal",
+    "taskGoalPlaceholder": "Describe the task for jishu agent.",
+    "kind": {
+      "plan": "Plan",
+      "run": "Run"
+    },
+    "submit": "Submit to jishu",
+    "submitting": "Submitting...",
+    "runs": "Runs",
+    "loadingRuns": "Loading runs...",
+    "noRuns": "No task runs yet.",
+    "manualRoles": "Manual role assignment",
+    "roleAssignments": "Role assignment",
+    "templateSection": "Skill template",
+    "templateLabel": "Task template",
+    "templateHint": "Task templates are discovered from ~/.jishu-agent/task-plan. Install one, then generate standard role contracts.",
+    "templateRequiresGoal": "Fill in the task goal first",
+    "installSkillFirst": "Install this skill first",
+    "generateBreakdown": "Generate breakdown",
+    "generatingBreakdown": "Generating...",
+    "installSkill": "Install",
+    "repairSkill": "Repair install",
+    "installingSkill": "Installing...",
+    "installed": "Installed",
+    "notInstalled": "Not installed",
+    "invalidSkill": "Invalid skill",
+    "skillBytes": "{{count}} bytes",
+    "builtinSkill": "Built-in",
+    "noTaskPlanSkills": "No task-plan skills found",
+    "noSkillDescription": "No description.",
+    "agentAssignmentHint": "Generated roles stay unassigned until you choose agents.",
+    "rolesGenerated": "{{count}} roles",
+    "addPresetRole": "Add preset role",
+    "addRole": "Add role",
+    "noRoles": "No roles assigned. Add a role when the task needs manual agent assignment.",
+    "role": "Role",
+    "agent": "Agent",
+    "selectAgent": "Select",
+    "responsibilities": "Responsibilities",
+    "acceptance": "Acceptance",
+    "removeRole": "Remove role",
+    "cancel": "Cancel",
+    "assignedRoles": "Assigned roles",
+    "noAssignedRoles": "No assigned roles.",
+    "planSteps": "Plan steps",
+    "noPlanSteps": "No plan steps.",
+    "timeline": "Timeline",
+    "noTimeline": "No timeline yet.",
+    "dependsOn": "Depends on {{steps}}",
+    "startedAt": "Started {{time}}",
+    "templates": {
+      "jishuDefault": {
+        "label": "Default orchestration",
+        "description": "Architecture, development, testing, and audit roles for common HUB tasks.",
+        "roles": {
+          "architect": {
+            "name": "Architect",
+            "responsibility1": "Clarify architecture boundaries, dependencies, and implementation approach.",
+            "responsibility2": "Produce the design constraints that downstream roles must follow.",
+            "acceptance1": "Architecture decisions are explicit and actionable.",
+            "acceptance2": "Risks and integration points are identified."
+          },
+          "developer": {
+            "name": "Developer",
+            "responsibility1": "Implement the required changes according to the architecture direction.",
+            "responsibility2": "Keep changes scoped and compatible with existing project conventions.",
+            "acceptance1": "Code paths needed by the task are implemented.",
+            "acceptance2": "Local verification evidence is available."
+          },
+          "tester": {
+            "name": "Tester",
+            "responsibility1": "Design and run focused validation for the delivered changes.",
+            "responsibility2": "Report regressions, missing coverage, and reproducible failures.",
+            "acceptance1": "Critical task paths are verified.",
+            "acceptance2": "Failures include reproduction context."
+          },
+          "auditor": {
+            "name": "Auditor",
+            "responsibility1": "Review the final implementation for correctness, risk, and missing tests.",
+            "responsibility2": "Feed actionable rework items back to the responsible role.",
+            "acceptance1": "Findings are tied to concrete files or behavior.",
+            "acceptance2": "Residual risks are documented."
+          }
+        }
+      },
+      "gstack": {
+        "label": "GStack",
+        "description": "Goal-first decomposition with solution build and feedback validation.",
+        "roles": {
+          "goalOwner": {
+            "name": "Goal owner",
+            "responsibility1": "Clarify goal, scope, constraints, and success signals.",
+            "responsibility2": "Convert the task description into measurable work slices.",
+            "acceptance1": "Goal and non-goals are explicit.",
+            "acceptance2": "Work slices map back to the original task."
+          },
+          "solutionBuilder": {
+            "name": "Solution builder",
+            "responsibility1": "Build the solution that satisfies the selected goal slices.",
+            "responsibility2": "Record decisions and dependencies that affect later validation.",
+            "acceptance1": "Implemented output covers the selected slices.",
+            "acceptance2": "Tradeoffs are visible to reviewers."
+          },
+          "feedbackValidator": {
+            "name": "Feedback validator",
+            "responsibility1": "Validate output against goal signals and user expectations.",
+            "responsibility2": "Convert gaps into precise follow-up work.",
+            "acceptance1": "Validation result is tied to goal signals.",
+            "acceptance2": "Follow-up work is assigned clearly."
+          }
+        }
+      },
+      "superpowers": {
+        "label": "Superpowers",
+        "description": "Brainstorm, plan, implement, and verify with evidence before completion.",
+        "roles": {
+          "brainstormer": {
+            "name": "Brainstormer",
+            "responsibility1": "Explore intent, constraints, and possible approaches before implementation.",
+            "responsibility2": "Surface key decisions that need to be fixed in the plan.",
+            "acceptance1": "User intent is reflected in the chosen approach.",
+            "acceptance2": "Open decisions are explicit."
+          },
+          "planner": {
+            "name": "Planner",
+            "responsibility1": "Turn the chosen approach into ordered implementation steps.",
+            "responsibility2": "Define checkpoints and verification commands.",
+            "acceptance1": "Plan has clear sequence and scope.",
+            "acceptance2": "Verification is concrete."
+          },
+          "implementer": {
+            "name": "Implementer",
+            "responsibility1": "Execute the plan in scoped changes.",
+            "responsibility2": "Keep the implementation aligned with existing code style.",
+            "acceptance1": "Planned changes are complete.",
+            "acceptance2": "No unrelated changes are introduced."
+          },
+          "verifier": {
+            "name": "Verifier",
+            "responsibility1": "Run the agreed verification and inspect failures systematically.",
+            "responsibility2": "Approve completion only with evidence.",
+            "acceptance1": "Verification commands have passing output or documented blockers.",
+            "acceptance2": "Completion claims cite evidence."
+          }
+        }
+      },
+      "openspec": {
+        "label": "OpenSpec",
+        "description": "Spec-first change flow with implementation and conformance validation.",
+        "roles": {
+          "specAuthor": {
+            "name": "Spec author",
+            "responsibility1": "Write the capability intent, requirements, and acceptance criteria.",
+            "responsibility2": "Separate current behavior from requested behavior.",
+            "acceptance1": "Spec captures the requested change clearly.",
+            "acceptance2": "Acceptance criteria are testable."
+          },
+          "changeDesigner": {
+            "name": "Change designer",
+            "responsibility1": "Map spec requirements to affected modules and interfaces.",
+            "responsibility2": "Define the minimal implementation path.",
+            "acceptance1": "Affected surfaces are identified.",
+            "acceptance2": "Implementation path respects the spec."
+          },
+          "implementationOwner": {
+            "name": "Implementation owner",
+            "responsibility1": "Implement the spec-backed change.",
+            "responsibility2": "Keep traceability from requirements to code changes.",
+            "acceptance1": "Implementation satisfies the spec.",
+            "acceptance2": "Traceability is inspectable."
+          },
+          "specValidator": {
+            "name": "Spec validator",
+            "responsibility1": "Validate implementation against the written spec.",
+            "responsibility2": "Report conformance gaps for rework.",
+            "acceptance1": "Each acceptance criterion is checked.",
+            "acceptance2": "Gaps are assigned to an owner."
+          }
+        }
+      },
+      "compound": {
+        "label": "Compound Engineering",
+        "description": "Parallel engineering flow with orchestration, integration, and quality audit.",
+        "roles": {
+          "orchestrator": {
+            "name": "Orchestrator",
+            "responsibility1": "Split the task into parallel-safe work packages and assign ownership.",
+            "responsibility2": "Monitor progress and resolve dependency conflicts.",
+            "acceptance1": "Work packages have owners and boundaries.",
+            "acceptance2": "Dependencies are visible."
+          },
+          "parallelEngineer": {
+            "name": "Parallel engineer",
+            "responsibility1": "Deliver an assigned work package independently.",
+            "responsibility2": "Expose integration requirements early.",
+            "acceptance1": "Assigned package is complete.",
+            "acceptance2": "Integration notes are provided."
+          },
+          "integrator": {
+            "name": "Integrator",
+            "responsibility1": "Merge parallel outputs into one coherent result.",
+            "responsibility2": "Resolve conflicts and preserve cross-role intent.",
+            "acceptance1": "Integrated result is coherent.",
+            "acceptance2": "Conflicts are resolved or escalated."
+          },
+          "qualityAuditor": {
+            "name": "Quality auditor",
+            "responsibility1": "Audit integrated output for correctness, consistency, and regressions.",
+            "responsibility2": "Route rework to the responsible role.",
+            "acceptance1": "Quality risks are documented.",
+            "acceptance2": "Rework is assigned precisely."
+          }
+        }
+      }
+    },
+    "status": {
+      "pending": "Pending",
+      "running": "Running",
+      "complete": "Complete",
+      "error": "Error",
+      "aborted": "Aborted"
+    }
   },
   "projectConfig": {
     "title": "Project Configuration",

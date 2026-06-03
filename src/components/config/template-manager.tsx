@@ -505,7 +505,7 @@ const PROXY_PROVIDERS = [
 function FillAndApplyDialog({ open, onOpenChange, template, onApply }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  template: ConfigTemplate | null;
+  template: ConfigTemplateView | null;
   onApply: (config: ClaudeConfig) => void;
 }) {
   const { t } = useTranslation();
@@ -657,6 +657,71 @@ function cleanConfigForJson(config: ClaudeConfig): Record<string, unknown> {
   return val;
 }
 
+type ConfigTemplateView = Omit<ConfigTemplate, "config"> & { config: ClaudeConfig };
+type PresetView = Omit<Preset, "config"> & { config: ClaudeConfig };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function booleanOrNull(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function stringArrayOrNull(value: unknown): string[] | null {
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? value
+    : null;
+}
+
+function stringRecordOrNull(value: unknown): Record<string, string> | null {
+  if (!isRecord(value)) return null;
+  const entries = Object.entries(value).filter(([, val]) => typeof val === "string") as [string, string][];
+  return Object.fromEntries(entries);
+}
+
+function objectOrNull<T>(value: unknown): T | null {
+  return isRecord(value) ? (value as T) : null;
+}
+
+function normalizeClaudeConfig(value: unknown): ClaudeConfig {
+  const config = isRecord(value) ? value : {};
+  return {
+    model: stringOrNull(config.model),
+    env: stringRecordOrNull(config.env),
+    enabledPlugins: objectOrNull<Record<string, boolean>>(config.enabledPlugins),
+    skipDangerousModePermissionPrompt: booleanOrNull(config.skipDangerousModePermissionPrompt),
+    permissions: objectOrNull<ClaudeConfig["permissions"]>(config.permissions),
+    mcpServers: objectOrNull<ClaudeConfig["mcpServers"]>(config.mcpServers),
+    apiProvider: stringOrNull(config.apiProvider),
+    smallModel: stringOrNull(config.smallModel),
+    largeModel: stringOrNull(config.largeModel),
+    allowedTools: stringArrayOrNull(config.allowedTools),
+    disallowedTools: stringArrayOrNull(config.disallowedTools),
+    hooks: objectOrNull<ClaudeConfig["hooks"]>(config.hooks),
+    sandbox: objectOrNull<ClaudeConfig["sandbox"]>(config.sandbox),
+    verbose: booleanOrNull(config.verbose),
+    maxTurns: numberOrNull(config.maxTurns),
+    contextCompaction: objectOrNull<ClaudeConfig["contextCompaction"]>(config.contextCompaction),
+  };
+}
+
+function toConfigTemplateView(template: ConfigTemplate): ConfigTemplateView {
+  return { ...template, config: normalizeClaudeConfig(template.config) };
+}
+
+function toPresetView(preset: Preset): PresetView {
+  return { ...preset, config: normalizeClaudeConfig(preset.config) };
+}
+
 export function TemplateManager({ onApplied }: TemplateManagerProps) {
   const { t } = useTranslation();
   const { activeId, agents } = useAgent();
@@ -680,7 +745,7 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
 
   // Fill & Apply dialog
   const [fillOpen, setFillOpen] = useState(false);
-  const [fillTemplate, setFillTemplate] = useState<ConfigTemplate | null>(null);
+  const [fillTemplate, setFillTemplate] = useState<ConfigTemplateView | null>(null);
 
   const handleSaveCurrent = async () => {
     if (!saveName.trim() || !currentConfig) return;
@@ -717,7 +782,7 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
     refetch();
   };
 
-  const handleApplySystem = (template: ConfigTemplate) => {
+  const handleApplySystem = (template: ConfigTemplateView) => {
     const hasEmptyEnv = Object.values(template.config.env ?? {}).some((v) => !v);
     const needsModel = !template.config.model;
     if (hasEmptyEnv || needsModel) {
@@ -783,6 +848,8 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
 
   const activeAgent = agents.find((a) => a.id === activeId);
   const activeAgentName = activeAgent?.display_name ?? activeId ?? "";
+  const visibleSystemTemplates = (systemTemplates ?? []).map(toConfigTemplateView);
+  const visibleUserTemplates = (userTemplates ?? []).map(toPresetView);
 
   return (
     <div className="space-y-6">
@@ -817,7 +884,7 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
           <h3 className="text-sm font-semibold">{t("config.systemTemplates")}</h3>
         </div>
         <div className="grid grid-cols-2 gap-3 items-stretch">
-          {(systemTemplates ?? []).map((tpl) => (
+          {visibleSystemTemplates.map((tpl) => (
             <TemplateCard
               key={tpl.id}
               name={tpl.name}
@@ -837,14 +904,14 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
           <User className="h-4 w-4 text-muted-foreground" />
           <h3 className="text-sm font-semibold">{t("config.userTemplates")}</h3>
         </div>
-        {!userTemplates || userTemplates.length === 0 ? (
+        {visibleUserTemplates.length === 0 ? (
           <div className="rounded-md border border-dashed p-6 text-center text-muted-foreground">
             <p className="text-sm">{t("config.noUserTemplates")}</p>
             <p className="text-xs mt-1">{t("config.noUserTemplatesDesc")}</p>
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-3 items-stretch">
-            {userTemplates.map((tpl) => (
+            {visibleUserTemplates.map((tpl) => (
               <TemplateCard
                 key={tpl.id}
                 name={tpl.name}

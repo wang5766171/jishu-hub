@@ -27,6 +27,8 @@
     "npmDesc": "Node.js 包管理器",
     "pythonTitle": "Python",
     "pythonDesc": "Python 运行时",
+    "gitTitle": "Git",
+    "gitDesc": "版本控制运行时",
     "agentsTitle": "智能体 CLI",
     "notInstalled": "未安装",
     "installed": "已安装",
@@ -325,6 +327,240 @@
     "noOutput": "无输出",
     "builtIn": "内置命令",
     "custom": "自定义命令"
+  },
+  "tasks": {
+    "title": "任务",
+    "startTask": "发起任务",
+    "description": "将 HUB 任务提交给 jishu agent，并监督编排计划。",
+    "refreshRuns": "刷新运行记录",
+    "close": "关闭",
+    "hubTask": "HUB 任务",
+    "taskTitle": "标题",
+    "taskTitlePlaceholder": "可选任务标题",
+    "projectPath": "项目路径",
+    "projectPathPlaceholder": "未选择项目时可留空",
+    "taskGoal": "任务目标",
+    "taskGoalPlaceholder": "描述要交给 jishu agent 的任务。",
+    "kind": {
+      "plan": "规划",
+      "run": "执行"
+    },
+    "submit": "提交给 jishu",
+    "submitting": "提交中...",
+    "runs": "运行记录",
+    "loadingRuns": "正在加载运行记录...",
+    "noRuns": "暂无任务运行记录。",
+    "manualRoles": "人工角色分配",
+    "roleAssignments": "角色分配",
+    "templateSection": "Skill 模版",
+    "templateLabel": "任务模版",
+    "templateHint": "任务模版从 ~/.jishu-agent/task-plan 识别。先安装 skill，再生成标准角色契约。",
+    "templateRequiresGoal": "请先填写任务目标",
+    "installSkillFirst": "请先安装此 skill",
+    "generateBreakdown": "生成分解",
+    "generatingBreakdown": "生成中...",
+    "installSkill": "安装",
+    "repairSkill": "修复安装",
+    "installingSkill": "安装中...",
+    "installed": "已安装",
+    "notInstalled": "未安装",
+    "invalidSkill": "无效 skill",
+    "skillBytes": "{{count}} 字节",
+    "builtinSkill": "内置",
+    "noTaskPlanSkills": "未发现 task-plan skills",
+    "noSkillDescription": "暂无描述。",
+    "agentAssignmentHint": "生成的角色不会自动分配智能体，需要你手动选择。",
+    "rolesGenerated": "{{count}} 个角色",
+    "addPresetRole": "添加预设角色",
+    "addRole": "添加角色",
+    "noRoles": "暂无角色分配。需要人工指定智能体时再添加角色。",
+    "role": "角色",
+    "agent": "智能体",
+    "selectAgent": "选择",
+    "responsibilities": "职责",
+    "acceptance": "验收标准",
+    "removeRole": "移除角色",
+    "cancel": "取消",
+    "assignedRoles": "已分配角色",
+    "noAssignedRoles": "暂无已分配角色。",
+    "planSteps": "计划步骤",
+    "noPlanSteps": "暂无计划步骤。",
+    "timeline": "执行时间线",
+    "noTimeline": "暂无执行时间线。",
+    "dependsOn": "依赖 {{steps}}",
+    "startedAt": "开始时间 {{time}}",
+    "templates": {
+      "jishuDefault": {
+        "label": "默认编排",
+        "description": "面向常规 HUB 任务的架构、开发、测试、审计角色分工。",
+        "roles": {
+          "architect": {
+            "name": "架构师",
+            "responsibility1": "澄清架构边界、依赖关系和实现路径。",
+            "responsibility2": "产出下游角色需要遵循的设计约束。",
+            "acceptance1": "架构决策明确且可执行。",
+            "acceptance2": "风险和集成点已识别。"
+          },
+          "developer": {
+            "name": "开发工程师",
+            "responsibility1": "按照架构方向实现必要变更。",
+            "responsibility2": "保持变更范围收敛并符合项目既有约定。",
+            "acceptance1": "任务所需代码路径已实现。",
+            "acceptance2": "具备本地验证证据。"
+          },
+          "tester": {
+            "name": "测试工程师",
+            "responsibility1": "为交付变更设计并执行聚焦验证。",
+            "responsibility2": "报告回归、覆盖缺口和可复现失败。",
+            "acceptance1": "关键任务路径已验证。",
+            "acceptance2": "失败包含复现上下文。"
+          },
+          "auditor": {
+            "name": "审计员",
+            "responsibility1": "审查最终实现的正确性、风险和测试缺口。",
+            "responsibility2": "将可执行返工项反馈给对应角色。",
+            "acceptance1": "发现的问题绑定到具体文件或行为。",
+            "acceptance2": "剩余风险已记录。"
+          }
+        }
+      },
+      "gstack": {
+        "label": "GStack",
+        "description": "以目标为先进行任务拆解，随后完成方案构建和反馈验证。",
+        "roles": {
+          "goalOwner": {
+            "name": "目标负责人",
+            "responsibility1": "澄清目标、范围、约束和成功信号。",
+            "responsibility2": "将任务描述转化为可衡量的工作切片。",
+            "acceptance1": "目标和非目标明确。",
+            "acceptance2": "工作切片能映射回原始任务。"
+          },
+          "solutionBuilder": {
+            "name": "方案构建者",
+            "responsibility1": "构建满足目标切片的解决方案。",
+            "responsibility2": "记录影响后续验证的决策和依赖。",
+            "acceptance1": "实现结果覆盖选定工作切片。",
+            "acceptance2": "权衡取舍对评审者可见。"
+          },
+          "feedbackValidator": {
+            "name": "反馈验证者",
+            "responsibility1": "根据目标信号和用户预期验证输出。",
+            "responsibility2": "将缺口转化为精确的后续工作。",
+            "acceptance1": "验证结果绑定目标信号。",
+            "acceptance2": "后续工作分配清晰。"
+          }
+        }
+      },
+      "superpowers": {
+        "label": "Superpowers",
+        "description": "按照头脑风暴、计划、实现、验证的节奏推进，并用证据确认完成。",
+        "roles": {
+          "brainstormer": {
+            "name": "探索者",
+            "responsibility1": "在实现前探索意图、约束和可选方案。",
+            "responsibility2": "暴露需要在计划中固定的关键决策。",
+            "acceptance1": "选定方案体现用户意图。",
+            "acceptance2": "未决事项清晰可见。"
+          },
+          "planner": {
+            "name": "计划者",
+            "responsibility1": "将选定方案转化为有顺序的实施步骤。",
+            "responsibility2": "定义检查点和验证命令。",
+            "acceptance1": "计划顺序和范围清晰。",
+            "acceptance2": "验证方式具体。"
+          },
+          "implementer": {
+            "name": "实施者",
+            "responsibility1": "按计划完成范围内变更。",
+            "responsibility2": "保持实现符合既有代码风格。",
+            "acceptance1": "计划中的变更已完成。",
+            "acceptance2": "没有引入无关变更。"
+          },
+          "verifier": {
+            "name": "验证者",
+            "responsibility1": "运行约定验证并系统性检查失败。",
+            "responsibility2": "只在有证据时确认完成。",
+            "acceptance1": "验证命令通过或阻塞点已记录。",
+            "acceptance2": "完成结论附带证据。"
+          }
+        }
+      },
+      "openspec": {
+        "label": "OpenSpec",
+        "description": "以规格为先定义变更，再完成实现和一致性验证。",
+        "roles": {
+          "specAuthor": {
+            "name": "规格作者",
+            "responsibility1": "编写能力意图、需求和验收标准。",
+            "responsibility2": "区分当前行为和目标行为。",
+            "acceptance1": "规格清晰描述请求变更。",
+            "acceptance2": "验收标准可测试。"
+          },
+          "changeDesigner": {
+            "name": "变更设计者",
+            "responsibility1": "将规格需求映射到受影响模块和接口。",
+            "responsibility2": "定义最小实现路径。",
+            "acceptance1": "受影响面已识别。",
+            "acceptance2": "实现路径符合规格。"
+          },
+          "implementationOwner": {
+            "name": "实现负责人",
+            "responsibility1": "实现由规格支撑的变更。",
+            "responsibility2": "保持需求到代码变更的可追踪性。",
+            "acceptance1": "实现满足规格要求。",
+            "acceptance2": "追踪关系可检查。"
+          },
+          "specValidator": {
+            "name": "规格验证者",
+            "responsibility1": "根据书面规格验证实现。",
+            "responsibility2": "将一致性缺口反馈为返工项。",
+            "acceptance1": "每条验收标准都已检查。",
+            "acceptance2": "缺口已分配责任人。"
+          }
+        }
+      },
+      "compound": {
+        "label": "Compound Engineering",
+        "description": "面向并行工程的编排、集成和质量审计流程。",
+        "roles": {
+          "orchestrator": {
+            "name": "编排者",
+            "responsibility1": "将任务拆成可并行的工作包并分配归属。",
+            "responsibility2": "监督进度并处理依赖冲突。",
+            "acceptance1": "工作包具备负责人和边界。",
+            "acceptance2": "依赖关系清晰可见。"
+          },
+          "parallelEngineer": {
+            "name": "并行工程师",
+            "responsibility1": "独立交付被分配的工作包。",
+            "responsibility2": "尽早暴露集成要求。",
+            "acceptance1": "分配的工作包已完成。",
+            "acceptance2": "已提供集成说明。"
+          },
+          "integrator": {
+            "name": "集成者",
+            "responsibility1": "将并行输出整合为一致结果。",
+            "responsibility2": "解决冲突并保留跨角色意图。",
+            "acceptance1": "集成结果一致。",
+            "acceptance2": "冲突已解决或升级。"
+          },
+          "qualityAuditor": {
+            "name": "质量审计员",
+            "responsibility1": "审计集成结果的正确性、一致性和回归风险。",
+            "responsibility2": "将返工路由给对应角色。",
+            "acceptance1": "质量风险已记录。",
+            "acceptance2": "返工分配精确。"
+          }
+        }
+      }
+    },
+    "status": {
+      "pending": "待处理",
+      "running": "运行中",
+      "complete": "已完成",
+      "error": "错误",
+      "aborted": "已中止"
+    }
   },
   "projectConfig": {
     "title": "项目配置",
