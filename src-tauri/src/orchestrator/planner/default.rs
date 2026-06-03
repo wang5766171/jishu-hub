@@ -18,8 +18,8 @@ impl Planner for DefaultPlanner {
                 .map(|(idx, role)| Step {
                     step_id: format!("sp_{idx}"),
                     kind: StepKind::Dispatch {
-                        agent: role.agent_id.clone(),
-                        message: build_role_dispatch_message(spec, role),
+                        role_id: role.role_id.clone(),
+                        prompt: build_role_dispatch_message(spec, role),
                         project: project.clone(),
                         session: None,
                     },
@@ -29,10 +29,10 @@ impl Planner for DefaultPlanner {
                 .collect());
         }
 
-        let agent = spec
-            .agent_hint
+        // No roles: single-step dispatch. Use agent_id from previous_active_agent as role_id hint.
+        let agent = ctx
+            .previous_active_agent
             .as_deref()
-            .or(ctx.previous_active_agent.as_deref())
             .unwrap_or("claude-code")
             .to_string();
 
@@ -41,8 +41,8 @@ impl Planner for DefaultPlanner {
         Ok(vec![Step {
             step_id: "sp_0".to_string(),
             kind: StepKind::Dispatch {
-                agent,
-                message: spec.message.clone(),
+                role_id: agent,
+                prompt: spec.message.clone(),
                 project,
                 session: None,
             },
@@ -60,8 +60,8 @@ fn build_role_dispatch_message(spec: &TaskSpec, role: &RoleAssignment) -> String
         .filter(|candidate| role_mentions(role, candidate))
         .map(|candidate| {
             format!(
-                "- {} ({}) via agent {}",
-                candidate.role_name, candidate.role_id, candidate.agent_id
+                "- {} ({})",
+                candidate.role_name, candidate.role_id
             )
         })
         .collect::<Vec<_>>();

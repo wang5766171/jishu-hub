@@ -16,15 +16,16 @@ impl Planner for RoutingPlanner {
         let parts = parse_agent_prefixes(message);
         if parts.is_empty() {
             // No @agent prefix found, fall back to single dispatch
+            let role_id = spec
+                .roles
+                .first()
+                .map(|r| r.role_id.clone())
+                .unwrap_or_else(|| "claude-code".into());
             return Ok(vec![Step {
                 step_id: "sp_0".to_string(),
                 kind: StepKind::Dispatch {
-                    agent: spec
-                        .agent_hint
-                        .as_deref()
-                        .unwrap_or("claude-code")
-                        .to_string(),
-                    message: message.clone(),
+                    role_id,
+                    prompt: message.clone(),
                     project,
                     session: None,
                 },
@@ -36,11 +37,11 @@ impl Planner for RoutingPlanner {
         let steps: Vec<Step> = parts
             .into_iter()
             .enumerate()
-            .map(|(i, (agent, msg))| Step {
+            .map(|(i, (role_id, msg))| Step {
                 step_id: format!("sp_{i}"),
                 kind: StepKind::Dispatch {
-                    agent,
-                    message: msg,
+                    role_id,
+                    prompt: msg,
                     project: project.clone(),
                     session: None,
                 },
@@ -58,7 +59,8 @@ impl Planner for RoutingPlanner {
 }
 
 /// Parse @agent prefixes from a message string.
-/// Returns pairs of (agent_id, remainder_message).
+/// Returns pairs of (role_id, remainder_message).
+/// Maps @claude → "claude-code", @codex → "codex", etc.
 fn parse_agent_prefixes(message: &str) -> Vec<(String, String)> {
     let agent_map = [
         ("@claude", "claude-code"),

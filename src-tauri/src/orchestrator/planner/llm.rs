@@ -25,22 +25,23 @@ impl Planner for LlmPlanner {
             ));
         }
 
-        // v0.6.0 stub: delegate to default planner behavior
-        // Full LLM-driven planning with tool loop comes in v0.7
-        let agent = spec
-            .agent_hint
-            .as_deref()
-            .or(ctx.previous_active_agent.as_deref())
-            .unwrap_or("claude-code")
-            .to_string();
+        // v0.6: delegate to default planner behavior with role_id-based dispatch.
+        // Full LLM-driven planning with tool loop comes in v0.7.
+        // LLM planner uses roles from spec; if no roles, use previous_active_agent.
+        let role_id = spec
+            .roles
+            .first()
+            .map(|r| r.role_id.clone())
+            .or_else(|| ctx.previous_active_agent.clone())
+            .unwrap_or_else(|| "claude-code".into());
 
         let project = spec.project_path.clone().unwrap_or_else(|| ".".to_string());
 
         Ok(vec![Step {
             step_id: "sp_0".to_string(),
             kind: StepKind::Dispatch {
-                agent,
-                message: spec.message.clone(),
+                role_id,
+                prompt: spec.message.clone(),
                 project,
                 session: None,
             },
