@@ -306,6 +306,7 @@ mod tests {
             usage: crate::orchestrator::result::UsageSummary::zero(),
             error: None,
             cost_usd: None,
+            summary: None,
         };
         store.write_result("r_result", &result).unwrap();
         let read_back = store.read_result("r_result").unwrap();
@@ -357,6 +358,7 @@ mod tests {
                 usage: crate::orchestrator::result::UsageSummary::zero(),
                 error: None,
                 cost_usd: None,
+                summary: None,
             };
             store
                 .write_result(&format!("r_list_{i}"), &result)
@@ -390,6 +392,7 @@ mod tests {
                     usage: crate::orchestrator::result::UsageSummary::zero(),
                     error: None,
                     cost_usd: None,
+                    summary: None,
                 },
             )
             .unwrap();
@@ -410,6 +413,7 @@ mod tests {
                     usage: crate::orchestrator::result::UsageSummary::zero(),
                     error: None,
                     cost_usd: None,
+                    summary: None,
                 },
             )
             .unwrap();

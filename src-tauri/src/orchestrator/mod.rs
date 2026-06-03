@@ -164,7 +164,7 @@ pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmit
         let llm_steps = generate_plan_with_llm(&spec, &steps);
         let (final_steps, source) = match llm_steps {
             Some(refined) => (refined, "llm"),
-            None => (steps, "template"),
+            None => (steps.clone(), "template"),
         };
         store.write_plan(&run_id, &final_steps)?;
         trace.append_event(&NormalizedEvent::TaskStep {
@@ -181,6 +181,7 @@ pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmit
     } else {
         execute_steps(&spec, &run_id, &steps, registry, &trace)
     };
+    let steps_for_summary = steps.clone();
 
     let result = RunResult {
         run_id: run_id.clone(),
@@ -192,8 +193,22 @@ pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmit
         usage: UsageSummary::default(),
         error,
         cost_usd: None,
+        summary: None,
     };
     store.write_result(&run_id, &result)?;
+
+    // Generate LLM summary for terminal runs (best-effort, non-blocking on failure)
+    if matches!(
+        status,
+        RunStatus::Complete | RunStatus::Aborted | RunStatus::Error
+    ) {
+        if let Ok(summary) = generate_run_summary(&spec, &result, &steps_for_summary) {
+            if let Ok(mut r) = store.read_result(&run_id) {
+                r.summary = Some(summary);
+                let _ = store.write_result(&run_id, &r);
+            }
+        }
+    }
 
     Ok(TaskSubmitResult {
         task_id: spec.task_id,
@@ -318,6 +333,19 @@ pub fn execute_plan_in_root(root: &Path, run_id: &str) -> Result<RunResult, Stri
     })?;
 
     store.write_result(run_id, &result)?;
+
+    // LLM summary for completed plan executions
+    if matches!(status, RunStatus::Complete | RunStatus::Error) {
+        if let Ok(spec) = store.read_spec(run_id) {
+            if let Ok(summary) = generate_run_summary(&spec, &result, &plan) {
+                if let Ok(mut r) = store.read_result(run_id) {
+                    r.summary = Some(summary);
+                    let _ = store.write_result(run_id, &r);
+                }
+            }
+        }
+    }
+
     Ok(result)
 }
 
@@ -521,6 +549,150 @@ struct RawLlmStep {
     role_id: String,
     #[serde(default)]
     prompt: String,
+}
+
+/// Use LLM to generate a human-readable summary of a completed run.
+/// Returns the summary string, or empty string on failure.
+fn generate_run_summary(
+    spec: &TaskSpec,
+    result: &RunResult,
+    steps: &[Step],
+) -> Result<String, String> {
+    let store = crate::llm::config::ModelStore::load()?;
+    let preset = store
+        .get_active()
+        .ok_or_else(|| "No active model".to_string())?
+        .clone();
+    let provider = crate::llm::create_provider(&preset)?;
+
+    let status_label = match result.status {
+        RunStatus::Complete => "已完成",
+        RunStatus::Aborted => "已取消",
+        RunStatus::Error => "失败",
+        RunStatus::Running => "运行中",
+        RunStatus::Queued => "排队中",
+        RunStatus::AwaitingRework => "等待返工",
+        RunStatus::AwaitingApproval => "等待审批",
+    };
+
+    let step_descs: Vec<String> = steps
+        .iter()
+        .take(20)
+        .enumerate()
+        .map(|(i, s)| {
+            let kind_str = match &s.kind {
+                StepKind::Dispatch { role_id, prompt, .. } => {
+                    format!("派发给 [{}]：{}", role_id, prompt.chars().take(60).collect::<String>())
+                }
+                StepKind::Reflect { question } => {
+                    format!("反思：{}", question.chars().take(60).collect::<String>())
+                }
+                StepKind::Shell { command, .. } => format!("执行命令：{}", command),
+                StepKind::Read { path, .. } => format!("读取：{}", path.display()),
+                StepKind::Write { path, requires_approval, .. } => {
+                    format!("写入：{}{}", path.display(), if *requires_approval { "（需审批）" } else { "" })
+                }
+                StepKind::Verify { check } => format!("验证：{:?}", check),
+            };
+            format!("{}. {}", i + 1, kind_str)
+        })
+        .collect();
+
+    let role_count = spec.roles.len();
+    let step_count = steps.len();
+    let error_info = result
+        .error
+        .as_deref()
+        .map(|e| format!("\n错误信息：{}", e.chars().take(200).collect::<String>()))
+        .unwrap_or_default();
+
+    let system_prompt = "你是 jishu agent 任务总结助手。请根据任务信息生成一段简洁、易读的中文运行总结（150 字以内）。要求：\n- 用 1-3 句话概述任务目标和结果\n- 提及实际执行的步骤数量和涉及的角色\n- 如有错误或重要产出，请说明\n- 不要重复机械日志（不要写 'plan generated' 这种），要说人话\n- 用 markdown 不需要，输出纯文本";
+
+    let user_prompt = format!(
+        "任务目标：{}\n任务状态：{}\n项目路径：{}\n涉及角色：{} 个\n执行步骤：{} 个\n\n步骤内容：\n{}{}",
+        spec.message,
+        status_label,
+        spec.project_path.as_deref().unwrap_or("（未指定）"),
+        role_count,
+        step_count,
+        step_descs.join("\n"),
+        error_info,
+    );
+
+    let req = crate::llm::message::LlmRequest {
+        model: preset.model.clone(),
+        messages: vec![
+            crate::llm::message::LlmMessage {
+                role: crate::llm::message::LlmRole::System,
+                content: Some(system_prompt.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            crate::llm::message::LlmMessage {
+                role: crate::llm::message::LlmRole::User,
+                content: Some(user_prompt),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ],
+        tools: vec![],
+        stream: false,
+        max_tokens: Some(500),
+        temperature: Some(0.5),
+    };
+
+    let cancel = crate::llm::CancelToken::new();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("Runtime: {e}"))?;
+
+    let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let text_clone = text.clone();
+    let cancel_for_async = cancel.clone();
+    let result_call = rt.block_on(async {
+        use tokio::time::{timeout, Duration};
+        let inner = provider.stream_chat(
+            req,
+            Box::new(move |event| {
+                if let NormalizedEvent::TextDelta { delta } = event {
+                    if let Ok(mut t) = text_clone.lock() {
+                        t.push_str(&delta);
+                    }
+                }
+            }),
+            &cancel_for_async,
+        );
+        // 8s timeout — summary is best-effort
+        match timeout(Duration::from_secs(8), inner).await {
+            Ok(r) => r,
+            Err(_) => {
+                cancel.cancel();
+                Err(crate::llm::LlmError::Request("LLM timed out (8s)".into()))
+            }
+        }
+    });
+
+    result_call.map_err(|e| format!("LLM summary failed: {e}"))?;
+    let summary = text.lock().map_err(|e| e.to_string())?.clone();
+    if summary.trim().is_empty() {
+        return Err("Empty summary from LLM".into());
+    }
+    Ok(summary.trim().to_string())
+}
+
+/// Delete a run directory entirely. Returns Ok(()) if removed.
+pub fn delete_run(run_id: &str) -> Result<(), String> {
+    let root = default_runs_root();
+    delete_run_in_root(&root, run_id)
+}
+
+pub fn delete_run_in_root(root: &Path, run_id: &str) -> Result<(), String> {
+    let run_dir = root.join(run_id);
+    if !run_dir.exists() {
+        return Err(format!("Run not found: {run_id}"));
+    }
+    std::fs::remove_dir_all(&run_dir).map_err(|e| e.to_string())
 }
 
 fn execute_steps(

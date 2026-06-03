@@ -143,6 +143,7 @@ pub fn run(
         usage: UsageSummary::default(),
         error: None,
         cost_usd: None,
+        summary: None,
     };
     trace
         .write_result(&result)

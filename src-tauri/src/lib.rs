@@ -1718,6 +1718,12 @@ fn run_execute_plan(run_id: String) -> Result<serde_json::Value, String> {
     serde_json::to_value(orchestrator::execute_plan(&run_id)?).map_err(|err| err.to_string())
 }
 
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn run_delete(run_id: String) -> Result<(), String> {
+    orchestrator::delete_run(&run_id)
+}
+
 #[cfg(all(feature = "orchestrator", test))]
 fn run_cancel_with_root(run_id: String, root: &std::path::Path) -> Result<(), String> {
     orchestrator::cancel_run_in_root(root, &run_id).map(|_| ())
@@ -1846,6 +1852,7 @@ pub fn run() {
             run_get,
             run_cancel,
             run_execute_plan,
+            run_delete,
             task_plan_skill_list,
             task_plan_skill_install,
             task_plan_generate_roles,
