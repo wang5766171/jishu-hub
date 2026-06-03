@@ -1858,7 +1858,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use crate::orchestrator::{RunStatus, TaskKind, TaskSpec};
+    use crate::orchestrator::{AssignmentMode, RunStatus, TaskKind, TaskSpec};
     use std::collections::HashMap;
 
     #[test]
@@ -1919,11 +1919,12 @@ mod tests {
             kind: TaskKind::Plan,
             message: "HUB task".into(),
             project_path: Some("D:/project".into()),
-            agent_hint: None,
             roles: Vec::new(),
+            assignment_mode: crate::orchestrator::AssignmentMode::Manual,
             policy: "default".into(),
+            parent_run_id: None,
+            epic_id: None,
             depth: 0,
-            parent_task_id: None,
             created_at: 1,
             deadline_ms: None,
             labels: HashMap::new(),

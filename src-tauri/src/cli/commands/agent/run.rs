@@ -5,8 +5,8 @@ use crate::cli::jsonl::JsonlWriter;
 use crate::cli::output::ExecutionContext;
 use crate::orchestrator::dispatcher::{DefaultDispatcher, DispatchContext, Dispatcher};
 use crate::orchestrator::planner;
-use crate::orchestrator::result::{RunResult, RunStatus, StepOutcome, UsageSummary};
-use crate::orchestrator::spec::{TaskKind, TaskSpec};
+use crate::orchestrator::result::{RunResult, RunStatus, StepOutcome, StepStatus, UsageSummary};
+use crate::orchestrator::spec::{AssignmentMode, TaskKind, TaskSpec};
 use crate::orchestrator::trace::TraceRecorder;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,11 +28,12 @@ pub fn run(
         kind: TaskKind::Run,
         message: prompt.to_string(),
         project_path: Some(project.to_string()),
-        agent_hint: agent.map(|s| s.to_string()),
         roles: Vec::new(),
+        assignment_mode: AssignmentMode::Manual,
         policy: "default".to_string(),
+        parent_run_id: None,
+        epic_id: None,
         depth: 0,
-        parent_task_id: None,
         created_at: now_ms,
         deadline_ms: None,
         labels: HashMap::new(),
@@ -47,7 +48,7 @@ pub fn run(
     let registry = Arc::new(AgentRegistry::new());
     let plan_ctx = planner::PlanContext {
         registry: registry.clone(),
-        previous_active_agent: None,
+        previous_active_agent: agent.map(|s| s.to_string()),
     };
 
     let p = planner::create_planner(&spec.policy);
@@ -89,7 +90,7 @@ pub fn run(
         let mut dctx = DispatchContext {
             registry: registry.clone(),
             run_id: &run_id,
-            task_id: &spec.task_id,
+            spec: &spec,
             trace: &trace,
             emitter: &mut emitter,
         };
@@ -115,29 +116,33 @@ pub fn run(
                 )?;
                 step_outcomes.push(StepOutcome {
                     step_id: step.step_id.clone(),
+                    role_id: String::new(),
                     agent_id: "unknown".to_string(),
-                    status: "error".to_string(),
+                    status: StepStatus::Failed,
                     output: Some(serde_json::json!({ "error": e.to_string() })),
+                    started_at: now_ms,
+                    finished_at: now_ms,
+                    usage: UsageSummary::zero(),
                 });
             }
         }
     }
 
     // Write result
+    let finished = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
     let result = RunResult {
         run_id: run_id.clone(),
         task_id: spec.task_id.clone(),
         status: RunStatus::Complete,
         started_at: now_ms,
-        finished_at: Some(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as i64,
-        ),
+        finished_at: Some(finished),
         steps: step_outcomes,
         usage: UsageSummary::default(),
         error: None,
+        cost_usd: None,
     };
     trace
         .write_result(&result)
