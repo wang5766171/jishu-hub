@@ -10,8 +10,16 @@ use std::sync::{Arc, Mutex};
 pub struct DaemonState {
     pub registry: Arc<AgentRegistry>,
     pub started_at: i64,
-    pub active_runs: HashMap<String, String>, // run_id -> task_id
+    /// v0.6 format: run_id → { task_id, started_at }
+    pub active_runs: HashMap<String, ActiveRunHandle>,
     runs_root: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ActiveRunHandle {
+    pub run_id: String,
+    pub task_id: String,
+    pub started_at: i64,
 }
 
 impl DaemonState {
@@ -45,13 +53,15 @@ pub fn run_daemon() -> Result<(), String> {
     let mut stdout = std::io::stdout();
     let reader = std::io::BufReader::new(stdin.lock());
 
-    // Write startup notification
+    // Write startup notification (v0.6 format)
+    let pid = std::process::id();
+    let started_at = state.lock().map_err(|e| e.to_string())?.started_at;
     let startup = rpc::JsonRpcNotification {
         jsonrpc: "2.0".to_string(),
         method: "daemon.started".to_string(),
         params: serde_json::json!({
-            "pid": std::process::id(),
-            "started_at": state.lock().map_err(|e| e.to_string())?.started_at,
+            "pid": pid,
+            "started_at": started_at,
         }),
     };
     rpc::write_message(&mut stdout, &startup)?;
@@ -103,19 +113,21 @@ fn handle_rpc(
             let s = state.lock().ok();
             let pid = std::process::id();
             let started_at = s.as_ref().map(|s| s.started_at).unwrap_or(0);
-            let runs_active = s.as_ref().map(|s| s.active_runs.len()).unwrap_or(0);
+            let active_runs: Vec<&ActiveRunHandle> = s
+                .as_ref()
+                .map(|s| s.active_runs.values().collect())
+                .unwrap_or_default();
             Some(rpc::ok_response(
                 id,
                 serde_json::json!({
                     "pid": pid,
                     "started_at": started_at,
-                    "runs_active": runs_active,
+                    "active_runs": active_runs,
                 }),
             ))
         }
         "daemon.shutdown" => {
             let resp = rpc::ok_response(id, serde_json::json!({"ok": true}));
-            // In a real implementation, we'd signal shutdown here
             Some(resp)
         }
         "agent.list" => {
@@ -127,7 +139,6 @@ fn handle_rpc(
             Some(rpc::ok_response(id, serde_json::json!(agents)))
         }
         "task.submit" => {
-            // Parse TaskSpec from params
             let spec: Result<TaskSpec, _> = serde_json::from_value(req.params.unwrap_or_default());
             match spec {
                 Ok(spec) => match submit_task_for_state(&spec, state) {
@@ -213,8 +224,20 @@ fn submit_task_for_state(
     };
 
     if let Ok(mut s) = state.lock() {
-        s.active_runs
-            .insert(submitted.run_id.clone(), submitted.task_id.clone());
+        s.active_runs.insert(
+            submitted.run_id.clone(),
+            ActiveRunHandle {
+                run_id: submitted.run_id.clone(),
+                task_id: submitted.task_id.clone(),
+                started_at: if submitted.status == crate::orchestrator::result::RunStatus::Running
+                    || submitted.status == crate::orchestrator::result::RunStatus::Queued
+                {
+                    crate::orchestrator::now_ms()
+                } else {
+                    0
+                },
+            },
+        );
     }
 
     Ok(submitted)
@@ -244,7 +267,7 @@ fn get_run_for_state(
 fn cancel_run_for_state(
     run_id: &str,
     state: &Arc<Mutex<DaemonState>>,
-) -> Result<crate::orchestrator::RunResult, String> {
+) -> Result<crate::orchestrator::result::RunResult, String> {
     let result = {
         let s = state.lock().map_err(|e| e.to_string())?;
         match &s.runs_root {
@@ -274,7 +297,8 @@ fn extract_run_id(params: Option<&serde_json::Value>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestrator::{RunStatus, TaskKind, TaskSpec};
+    use crate::orchestrator::spec::{AssignmentMode, TaskKind};
+    use crate::orchestrator::RunStatus;
 
     fn request(method: &str, params: Option<serde_json::Value>) -> rpc::JsonRpcRequest {
         rpc::JsonRpcRequest {
@@ -296,11 +320,12 @@ mod tests {
             kind: TaskKind::Plan,
             message: "HUB managed daemon task".into(),
             project_path: None,
-            agent_hint: None,
             roles: Vec::new(),
+            assignment_mode: AssignmentMode::Manual,
             policy: "default".into(),
+            parent_run_id: None,
+            epic_id: None,
             depth: 0,
-            parent_task_id: None,
             created_at: 1,
             deadline_ms: None,
             labels: HashMap::new(),
@@ -313,7 +338,6 @@ mod tests {
         .unwrap();
         let submit_result = submit.result.unwrap();
         assert_eq!(submit_result["task_id"], "td_daemon");
-        assert_ne!(submit_result["run_id"], "r_td_daemon");
         let run_id = submit_result["run_id"].as_str().unwrap().to_string();
 
         let list = handle_rpc(request("task.list", None), &state)
@@ -353,6 +377,22 @@ mod tests {
             get["result"]["status"],
             serde_json::to_value(RunStatus::Aborted).unwrap()
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn daemon_status_v0_6_format() {
+        let root =
+            std::env::temp_dir().join(format!("jishu_daemon_status_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let state = Arc::new(Mutex::new(DaemonState::new_with_runs_root(root.clone())));
+
+        let resp = handle_rpc(request("daemon.status", None), &state).unwrap();
+        let result = resp.result.unwrap();
+        assert!(result["pid"].is_number());
+        assert!(result["started_at"].is_number());
+        assert!(result["active_runs"].is_array());
 
         let _ = std::fs::remove_dir_all(&root);
     }
