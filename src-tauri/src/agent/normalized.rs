@@ -64,11 +64,6 @@ pub enum NormalizedEvent {
         sub_run_id: Option<String>,
         request: serde_json::Value,
     },
-    SubAgentEvent {
-        run_id: String,
-        step_id: String,
-        sub_event: Box<NormalizedEvent>,
-    },
     Raw {
         agent: String,
         raw: serde_json::Value,
@@ -89,7 +84,6 @@ impl NormalizedEvent {
             NormalizedEvent::Error { .. } => "error",
             NormalizedEvent::TaskStep { .. } => "task_step",
             NormalizedEvent::SubAgentDispatch { .. } => "sub_agent_dispatch",
-            NormalizedEvent::SubAgentEvent { .. } => "sub_agent_event",
             NormalizedEvent::Raw { .. } => "raw",
         }
     }
@@ -237,18 +231,4 @@ mod tests_v6 {
         assert_eq!(event, de);
     }
 
-    #[test]
-    fn sub_agent_event_recursive_roundtrip() {
-        let inner = NormalizedEvent::TextDelta {
-            delta: "hello".into(),
-        };
-        let event = NormalizedEvent::SubAgentEvent {
-            run_id: "r1".into(),
-            step_id: "s1".into(),
-            sub_event: Box::new(inner),
-        };
-        let json = serde_json::to_string(&event).unwrap();
-        let de: NormalizedEvent = serde_json::from_str(&json).unwrap();
-        assert_eq!(event, de);
-    }
 }
