@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAgent } from "@/agents";
 import { invokeCommand } from "@/hooks/use-invoke";
-import { ClipboardList, Download, History, Plus, RefreshCw, Send, Trash2, Wand2, X, XCircle } from "lucide-react";
+import { ClipboardList, Download, Eye, History, MoreVertical, Plus, RefreshCw, Send, Sparkles, Trash2, Wand2, X, XCircle } from "lucide-react";
 
 type TaskKind = "plan" | "run";
 type AssignmentMode = "manual" | "auto_suggest" | "auto_apply";
@@ -59,7 +59,7 @@ interface RunRecord {
       verify?: { check: Record<string, unknown> };
     } | Record<string, unknown>;
   }>;
-  result: { status: string; error?: string | null };
+  result: { status: string; error?: string | null; summary?: string | null; cost_usd?: number | null };
   timeline?: TaskTimelineEvent[];
   rework_routes?: RoleContractRoute[];
   rework_items?: ReworkItem[];
@@ -182,6 +182,7 @@ export function TasksPage({
   const [installingSkillId, setInstallingSkillId] = useState<string | null>(null);
   const [generatingRoles, setGeneratingRoles] = useState(false);
   const [executingPlan, setExecutingPlan] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ runId: string; x: number; y: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -277,6 +278,14 @@ export function TasksPage({
     refreshTaskPlanSkills().catch(console.error);
   }, []);
 
+  // Close context menu on any click
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handler = () => setContextMenu(null);
+    window.addEventListener("click", handler);
+    return () => window.removeEventListener("click", handler);
+  }, [contextMenu]);
+
   const loadRun = async (runId: string) => {
     setError(null);
     try {
@@ -352,6 +361,18 @@ export function TasksPage({
       setError(String(err));
     } finally {
       setExecutingPlan(false);
+    }
+  };
+
+  const deleteRun = async (runId: string) => {
+    if (!window.confirm(t("tasks.confirmDelete"))) return;
+    setError(null);
+    try {
+      await invokeCommand("run_delete", { runId });
+      setSelectedRun(null);
+      await refreshRuns();
+    } catch (err) {
+      setError(String(err));
     }
   };
 
@@ -558,7 +579,15 @@ export function TasksPage({
                 <button
                   key={run.run_id}
                   onClick={() => loadRun(run.run_id)}
-                  className="w-full rounded-md border bg-background/60 px-3 py-2 text-left transition-colors hover:bg-accent/40"
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setContextMenu({ runId: run.run_id, x: e.clientX, y: e.clientY });
+                  }}
+                  className={`w-full rounded-md border px-3 py-2 text-left transition-colors hover:bg-accent/40 ${
+                    selectedRun?.run_id === run.run_id
+                      ? "bg-accent/60 border-primary"
+                      : "bg-background/60"
+                  }`}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="truncate text-sm font-medium">{run.title || run.task_id}</span>
@@ -657,17 +686,71 @@ export function TasksPage({
         )}
       </section>
 
+      {/* Context menu for run rows */}
+      {contextMenu && (
+        <div
+          className="fixed z-50 min-w-[180px] rounded-md border bg-popover p-1 shadow-md"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+            onClick={() => {
+              setContextMenu(null);
+              loadRun(contextMenu.runId);
+            }}
+          >
+            <Eye className="h-4 w-4" />
+            {t("tasks.viewDetails")}
+          </button>
+          <button
+            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+            onClick={() => {
+              setContextMenu(null);
+              executePlan(contextMenu.runId);
+            }}
+            disabled={executingPlan}
+          >
+            <Send className="h-4 w-4" />
+            {t("tasks.executePlan")}
+          </button>
+          <div className="my-1 h-px bg-border" />
+          <button
+            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-destructive hover:bg-destructive/10"
+            onClick={() => {
+              setContextMenu(null);
+              deleteRun(contextMenu.runId);
+            }}
+          >
+            <Trash2 className="h-4 w-4" />
+            {t("tasks.delete")}
+          </button>
+        </div>
+      )}
+
+      {/* Right-side detail drawer */}
       {selectedRun && (
-        <section className="space-y-3 rounded-lg border bg-card p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <h3 className="truncate text-sm font-semibold">{selectedRun.run_id}</h3>
-              <p className="truncate text-xs text-muted-foreground">{selectedRun.spec.message}</p>
+        <div className="fixed inset-0 z-40 flex justify-end bg-black/30 backdrop-blur-sm" onClick={() => setSelectedRun(null)}>
+          <div
+            className="flex h-full w-full max-w-2xl flex-col overflow-hidden border-l bg-card shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b px-5 py-4">
+              <div className="min-w-0 flex-1">
+                <h3 className="truncate text-base font-semibold">{selectedRun.spec.message}</h3>
+                <p className="mt-0.5 truncate text-xs text-muted-foreground">{selectedRun.run_id}</p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Badge variant={statusVariant(selectedRun.result.status)}>{translateStatus(selectedRun.result.status)}</Badge>
+                <Button variant="ghost" size="icon" onClick={() => setSelectedRun(null)}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <Badge variant={statusVariant(selectedRun.result.status)}>{translateStatus(selectedRun.result.status)}</Badge>
+
+            <div className="flex items-center gap-2 border-b bg-muted/30 px-5 py-2">
               {selectedRun.result.status === "complete" && selectedRun.plan.length > 0 && (
-                <Button variant="default" size="sm" onClick={() => executePlan(selectedRun.run_id)} disabled={executingPlan}>
+                <Button size="sm" onClick={() => executePlan(selectedRun.run_id)} disabled={executingPlan}>
                   <Send className="h-4 w-4" />
                   {executingPlan ? t("tasks.executingPlan") : t("tasks.executePlan")}
                 </Button>
@@ -678,150 +761,166 @@ export function TasksPage({
                   {t("tasks.cancel")}
                 </Button>
               )}
+              <div className="flex-1" />
+              <Button variant="ghost" size="sm" onClick={() => deleteRun(selectedRun.run_id)} className="text-destructive">
+                <Trash2 className="h-4 w-4" />
+                {t("tasks.delete")}
+              </Button>
             </div>
-          </div>
 
-          {/* Parent run reference */}
-          {selectedRun.spec.parent_run_id && (
-            <div className="rounded-md border border-info/40 bg-info/5 px-3 py-2 text-xs">
-              {t("tasks.parentRun", { runId: selectedRun.spec.parent_run_id })}
-            </div>
-          )}
+            <div className="flex-1 space-y-4 overflow-auto p-5">
+              {/* AI Summary */}
+              <section className="rounded-lg border bg-gradient-to-br from-violet-500/5 to-blue-500/5 p-4">
+                <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase text-muted-foreground">
+                  <Sparkles className="h-3.5 w-3.5" />
+                  {t("tasks.aiSummary")}
+                </h4>
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">
+                  {selectedRun.result.summary || t("tasks.noSummary")}
+                </p>
+              </section>
 
-          {/* Child runs */}
-          {(selectedRun.children?.length ?? 0) > 0 && (
-            <div className="rounded-md border bg-background/60 p-3">
-              <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">{t("tasks.childRuns")}</h4>
-              <div className="space-y-1">
-                {selectedRun.children!.map((child) => (
-                  <button
-                    key={child.run_id}
-                    onClick={() => loadRun(child.run_id)}
-                    className="w-full rounded border bg-background/60 px-2 py-1 text-left text-xs transition-colors hover:bg-accent/40"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate font-medium">{child.title || child.task_id}</span>
-                      <Badge variant={statusVariant(child.status)} className="text-[10px]">
-                        {translateStatus(child.status)}
-                      </Badge>
-                    </div>
-                    <span className="text-muted-foreground">{child.run_id}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+              {selectedRun.spec.parent_run_id && (
+                <div className="rounded-md border border-info/40 bg-info/5 px-3 py-2 text-xs">
+                  {t("tasks.parentRun", { runId: selectedRun.spec.parent_run_id })}
+                </div>
+              )}
 
-          {/* Rework items */}
-          {(selectedRun.rework_items?.length ?? 0) > 0 && (
-            <div className="rounded-md border bg-background/60 p-3">
-              <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">{t("tasks.reworkItems")}</h4>
-              <div className="space-y-2">
-                {selectedRun.rework_items!.map((item) => (
-                  <div key={item.item_id} className="rounded border bg-background/60 px-3 py-2 text-xs">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium">{item.responsible_role}</span>
-                      {item.severity && (
-                        <Badge variant={item.severity === "critical" || item.severity === "high" ? "destructive" : "secondary"} className="text-[10px]">
-                          {item.severity}
-                        </Badge>
-                      )}
-                    </div>
-                    <p className="mt-1 text-muted-foreground">{item.reason}</p>
-                    {item.target_run_id && (
-                      <p className="mt-1 text-info">{t("tasks.reworkDispatchedTo", { runId: item.target_run_id })}</p>
+              {(selectedRun.children?.length ?? 0) > 0 && (
+                <section>
+                  <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">{t("tasks.childRuns")}</h4>
+                  <div className="space-y-1">
+                    {selectedRun.children!.map((child) => (
+                      <button
+                        key={child.run_id}
+                        onClick={() => loadRun(child.run_id)}
+                        className="w-full rounded border bg-background/60 px-2 py-1 text-left text-xs transition-colors hover:bg-accent/40"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate font-medium">{child.title || child.task_id}</span>
+                          <Badge variant={statusVariant(child.status)} className="text-[10px]">
+                            {translateStatus(child.status)}
+                          </Badge>
+                        </div>
+                        <span className="text-muted-foreground">{child.run_id}</span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {(selectedRun.rework_items?.length ?? 0) > 0 && (
+                <section>
+                  <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">{t("tasks.reworkItems")}</h4>
+                  <div className="space-y-2">
+                    {selectedRun.rework_items!.map((item) => (
+                      <div key={item.item_id} className="rounded border bg-background/60 px-3 py-2 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium">{item.responsible_role}</span>
+                          {item.severity && (
+                            <Badge variant={item.severity === "critical" || item.severity === "high" ? "destructive" : "secondary"} className="text-[10px]">
+                              {item.severity}
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="mt-1 text-muted-foreground">{item.reason}</p>
+                        {item.target_run_id && (
+                          <p className="mt-1 text-info">{t("tasks.reworkDispatchedTo", { runId: item.target_run_id })}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <section>
+                  <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">{t("tasks.assignedRoles")}</h4>
+                  <div className="space-y-2">
+                    {(selectedRun.spec.roles ?? []).length === 0 ? (
+                      <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
+                        {t("tasks.noAssignedRoles")}
+                      </div>
+                    ) : (
+                      (selectedRun.spec.roles ?? []).map((role) => (
+                        <div key={role.role_id} className="rounded-md border bg-background/60 px-3 py-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-medium">{role.role_name}</span>
+                            <Badge variant="secondary">{role.agent_id || t("tasks.unassigned")}</Badge>
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground">{role.responsibilities?.join("; ")}</p>
+                        </div>
+                      ))
                     )}
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className="grid gap-3 md:grid-cols-2">
-            <div>
-              <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">{t("tasks.assignedRoles")}</h4>
-              <div className="space-y-2">
-                {(selectedRun.spec.roles ?? []).length === 0 ? (
-                  <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
-                    {t("tasks.noAssignedRoles")}
-                  </div>
-                ) : (
-                  (selectedRun.spec.roles ?? []).map((role) => (
-                    <div key={role.role_id} className="rounded-md border bg-background/60 px-3 py-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-sm font-medium">{role.role_name}</span>
-                        <Badge variant="secondary">{role.agent_id || t("tasks.unassigned")}</Badge>
+                </section>
+                <section>
+                  <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">{t("tasks.planSteps")}</h4>
+                  <div className="space-y-2">
+                    {selectedRun.plan.length === 0 ? (
+                      <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
+                        {t("tasks.noPlanSteps")}
                       </div>
-                      <p className="mt-1 text-xs text-muted-foreground">{role.responsibilities?.join("; ")}</p>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-            <div>
-              <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">{t("tasks.planSteps")}</h4>
-              <div className="space-y-2">
-                {selectedRun.plan.length === 0 ? (
-                  <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
-                    {t("tasks.noPlanSteps")}
-                  </div>
-                ) : (
-                  selectedRun.plan.map((step) => (
-                    <div key={step.step_id} className="rounded-md border bg-background/60 px-3 py-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-sm font-medium">{step.title}</span>
-                        <span className="text-xs text-muted-foreground">{step.step_id}</span>
-                      </div>
-                      {step.depends_on.length > 0 && (
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {t("tasks.dependsOn", { steps: step.depends_on.join(", ") })}
-                        </p>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase text-muted-foreground">
-                <History className="h-3.5 w-3.5" />
-                {t("tasks.timeline")}
-              </h4>
-              <Badge variant="secondary">{selectedRun.timeline?.length ?? 0}</Badge>
-            </div>
-            {(selectedRun.timeline ?? []).length === 0 ? (
-              <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
-                {t("tasks.noTimeline")}
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {(selectedRun.timeline ?? []).map((event) => (
-                  <div key={event.event_id} className="rounded-md border bg-background/60 px-3 py-2">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium">{event.title}</div>
-                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                          {event.step_id && <span>{event.step_id}</span>}
-                          {event.role_id && <span>{event.role_id}</span>}
-                          {event.agent_id && <span>{event.agent_id}</span>}
-                          {event.at && <span>{formatTime(event.at)}</span>}
+                    ) : (
+                      selectedRun.plan.map((step, index) => (
+                        <div key={step.step_id} className="rounded-md border bg-background/60 px-3 py-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-medium">{t("tasks.stepOf", { index: index + 1 })}</span>
+                            <span className="text-xs text-muted-foreground">{step.step_id}</span>
+                          </div>
+                          <p className="mt-1 text-xs">
+                            {step.kind.dispatch?.prompt || step.kind.reflect?.question || step.kind.shell?.command || JSON.stringify(step.kind)}
+                          </p>
                         </div>
-                      </div>
-                      <Badge variant="outline">{event.kind}</Badge>
-                    </div>
+                      ))
+                    )}
                   </div>
-                ))}
+                </section>
               </div>
-            )}
-          </div>
 
-          <div className="text-xs text-muted-foreground">
-            {t("tasks.startedAt", { time: formatTime(runs.find((run) => run.run_id === selectedRun.run_id)?.started_at) })}
+              <section>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase text-muted-foreground">
+                    <History className="h-3.5 w-3.5" />
+                    {t("tasks.timeline")}
+                  </h4>
+                  <Badge variant="secondary">{selectedRun.timeline?.length ?? 0}</Badge>
+                </div>
+                {(selectedRun.timeline ?? []).length === 0 ? (
+                  <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
+                    {t("tasks.noTimeline")}
+                  </div>
+                ) : (
+                  <ol className="space-y-2 border-l-2 border-muted pl-4">
+                    {(selectedRun.timeline ?? []).map((event) => (
+                      <li key={event.event_id} className="relative">
+                        <span className="absolute -left-[21px] top-1.5 h-2.5 w-2.5 rounded-full bg-muted-foreground" />
+                        <div className="rounded-md bg-background/60 px-3 py-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="text-sm font-medium">{event.title}</div>
+                              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                {event.step_id && <span>{event.step_id}</span>}
+                                {event.role_id && <span>{event.role_id}</span>}
+                                {event.agent_id && <span>{event.agent_id}</span>}
+                                {event.at && <span>{formatTime(event.at)}</span>}
+                              </div>
+                            </div>
+                            <Badge variant="outline" className="text-[10px]">{event.kind}</Badge>
+                          </div>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </section>
+
+              <div className="text-xs text-muted-foreground">
+                {t("tasks.startedAt", { time: formatTime(runs.find((run) => run.run_id === selectedRun.run_id)?.started_at) })}
+              </div>
+            </div>
           </div>
-        </section>
+        </div>
       )}
     </div>
   );
