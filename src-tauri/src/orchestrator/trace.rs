@@ -5,6 +5,10 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
+/// Records raw events to `trace.jsonl` within a run directory.
+///
+/// v0.6 redesign: only writes raw events, no SubAgentEvent wrapping.
+/// Each line is one JSON-serialized `NormalizedEvent`.
 pub struct TraceRecorder {
     run_dir: PathBuf,
 }
@@ -36,6 +40,8 @@ impl TraceRecorder {
         fs::write(&path, json).map_err(|e| e.to_string())
     }
 
+    /// Append a single raw event to trace.jsonl.
+    /// One event per line — no wrapping, no SubAgentEvent.
     pub fn append_event(&self, event: &NormalizedEvent) -> Result<(), String> {
         let path = self.run_dir.join("trace.jsonl");
         let mut file = fs::OpenOptions::new()
@@ -48,9 +54,36 @@ impl TraceRecorder {
         file.write_all(line.as_bytes()).map_err(|e| e.to_string())
     }
 
+    /// Append multiple events in a single I/O operation.
+    pub fn append_events(&self, events: &[NormalizedEvent]) -> Result<(), String> {
+        let path = self.run_dir.join("trace.jsonl");
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|e| e.to_string())?;
+        for event in events {
+            let mut line = serde_json::to_string(event).map_err(|e| e.to_string())?;
+            line.push('\n');
+            file.write_all(line.as_bytes())
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     pub fn write_result(&self, result: &RunResult) -> Result<(), String> {
         let path = self.run_dir.join("result.json");
         let json = serde_json::to_string_pretty(result).map_err(|e| e.to_string())?;
+        fs::write(&path, json).map_err(|e| e.to_string())
+    }
+
+    /// Write rework items to `rework.json` for parent run recovery.
+    pub fn write_rework(
+        &self,
+        items: &[crate::orchestrator::rework::ReworkItem],
+    ) -> Result<(), String> {
+        let path = self.run_dir.join("rework.json");
+        let json = serde_json::to_string_pretty(items).map_err(|e| e.to_string())?;
         fs::write(&path, json).map_err(|e| e.to_string())
     }
 
@@ -80,6 +113,55 @@ mod tests {
 
         assert_eq!(trace.run_dir(), &root.join("r_test"));
         assert!(root.join("r_test").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn append_event_writes_one_line_per_event() {
+        let root =
+            std::env::temp_dir().join(format!("jishu_trace_lines_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let trace = TraceRecorder::create_in_root(&root, "r_lines").unwrap();
+        let event = NormalizedEvent::TextDelta {
+            delta: "hello".into(),
+        };
+        trace.append_event(&event).unwrap();
+        trace.append_event(&event).unwrap();
+
+        let content =
+            std::fs::read_to_string(root.join("r_lines/trace.jsonl")).unwrap();
+        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn append_events_batch_writes_all() {
+        let root =
+            std::env::temp_dir().join(format!("jishu_trace_batch_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let trace = TraceRecorder::create_in_root(&root, "r_batch").unwrap();
+        let events = vec![
+            NormalizedEvent::TextDelta {
+                delta: "first".into(),
+            },
+            NormalizedEvent::TextDelta {
+                delta: "second".into(),
+            },
+            NormalizedEvent::TextDelta {
+                delta: "third".into(),
+            },
+        ];
+        trace.append_events(&events).unwrap();
+
+        let content =
+            std::fs::read_to_string(root.join("r_batch/trace.jsonl")).unwrap();
+        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines.len(), 3);
 
         let _ = std::fs::remove_dir_all(&root);
     }
