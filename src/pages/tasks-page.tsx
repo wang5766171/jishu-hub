@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import i18n from "@/i18n";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -59,7 +60,15 @@ interface RunRecord {
       verify?: { check: Record<string, unknown> };
     } | Record<string, unknown>;
   }>;
-  result: { status: string; error?: string | null; summary?: string | null; cost_usd?: number | null };
+  result: {
+    status: string;
+    error?: string | null;
+    summary?: string | null;
+    cost_usd?: number | null;
+    started_at: number;
+    finished_at?: number | null;
+    steps: StepOutcome[];
+  };
   timeline?: TaskTimelineEvent[];
   rework_routes?: RoleContractRoute[];
   rework_items?: ReworkItem[];
@@ -75,6 +84,17 @@ interface TaskTimelineEvent {
   role_id?: string | null;
   agent_id?: string | null;
   at?: number | null;
+}
+
+interface StepOutcome {
+  step_id: string;
+  role_id: string;
+  agent_id: string;
+  status: "complete" | "failed" | "skipped" | "awaiting_approval";
+  output?: unknown;
+  started_at: number;
+  finished_at: number;
+  usage: { input_tokens: number; output_tokens: number; cost_usd: number };
 }
 
 interface RoleContractRoute {
@@ -183,7 +203,9 @@ export function TasksPage({
   const [generatingRoles, setGeneratingRoles] = useState(false);
   const [executingPlan, setExecutingPlan] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ runId: string; x: number; y: number } | null>(null);
-  const [timelineExpanded, setTimelineExpanded] = useState(false);
+  const [timelineExpanded, setTimelineExpanded] = useState(true);
+  const [timelineView, setTimelineView] = useState<"list" | "parallel">("list");
+  const [timelineFilter, setTimelineFilter] = useState<string>("all");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -287,6 +309,21 @@ export function TasksPage({
     return () => window.removeEventListener("click", handler);
   }, [contextMenu]);
 
+  // Poll active runs every 2s
+  useEffect(() => {
+    const hasActive = runs.some((r) =>
+      ["running", "queued", "awaiting_rework", "awaiting_approval"].includes(r.status)
+    );
+    if (!hasActive) return;
+    const interval = setInterval(() => {
+      refreshRuns().catch(console.error);
+      if (selectedRun && ["running", "queued"].includes(selectedRun.result.status)) {
+        loadRun(selectedRun.run_id).catch(console.error);
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [runs, selectedRun?.run_id, selectedRun?.result.status]);
+
   const loadRun = async (runId: string) => {
     setError(null);
     try {
@@ -372,6 +409,17 @@ export function TasksPage({
       await invokeCommand("run_delete", { runId });
       setSelectedRun(null);
       await refreshRuns();
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  const regenerateSummary = async (runId: string) => {
+    const lang = i18n.language?.startsWith("en") ? "en" : "zh";
+    setError(null);
+    try {
+      await invokeCommand("run_summarize", { runId, language: lang });
+      await loadRun(runId);
     } catch (err) {
       setError(String(err));
     }
@@ -772,10 +820,20 @@ export function TasksPage({
             <div className="flex-1 space-y-4 overflow-auto p-5">
               {/* AI Summary */}
               <section className="rounded-lg border bg-gradient-to-br from-violet-500/10 to-blue-500/10 p-4">
-                <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase text-muted-foreground">
-                  <Sparkles className="h-3.5 w-3.5 text-violet-500" />
-                  {t("tasks.aiSummary")}
-                </h4>
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase text-muted-foreground">
+                    <Sparkles className="h-3.5 w-3.5 text-violet-500" />
+                    {t("tasks.aiSummary")}
+                  </h4>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => regenerateSummary(selectedRun.run_id)}
+                    title={t("tasks.regenerateSummary")}
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
                 {selectedRun.result.summary ? (
                   <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">
                     {selectedRun.result.summary}
@@ -786,6 +844,13 @@ export function TasksPage({
                   </p>
                 )}
               </section>
+
+              {/* Running indicator */}
+              {["running", "queued"].includes(selectedRun.result.status) && (
+                <div className="rounded-md border border-blue-500/40 bg-blue-500/5 px-3 py-2 text-xs text-blue-700 dark:text-blue-300">
+                  ⏳ {t("tasks.running")}
+                </div>
+              )}
 
               {selectedRun.spec.parent_run_id && (
                 <div className="rounded-md border border-info/40 bg-info/5 px-3 py-2 text-xs">
@@ -896,7 +961,9 @@ export function TasksPage({
                   <span className="flex items-center gap-1.5">
                     <History className="h-3.5 w-3.5" />
                     {t("tasks.timeline")}
-                    <Badge variant="secondary" className="ml-1 text-[10px]">{selectedRun.timeline?.length ?? 0}</Badge>
+                    <Badge variant="secondary" className="ml-1 text-[10px]">
+                      {selectedRun.result.steps?.length ?? 0}
+                    </Badge>
                   </span>
                   <span className="text-xs normal-case text-muted-foreground">
                     {timelineExpanded ? "▼" : "▶"}
@@ -904,32 +971,101 @@ export function TasksPage({
                 </button>
                 {timelineExpanded && (
                   <>
-                    {(selectedRun.timeline ?? []).length === 0 ? (
-                      <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
-                        {t("tasks.noTimeline")}
+                    {/* View switcher + role filter */}
+                    <div className="mb-2 flex flex-wrap items-center gap-1">
+                      <div className="inline-flex rounded-md border bg-muted/30 p-0.5 text-xs">
+                        <button
+                          onClick={() => setTimelineView("list")}
+                          className={`rounded px-2 py-0.5 ${timelineView === "list" ? "bg-background shadow-sm" : "text-muted-foreground"}`}
+                        >
+                          {t("tasks.listView")}
+                        </button>
+                        <button
+                          onClick={() => setTimelineView("parallel")}
+                          className={`rounded px-2 py-0.5 ${timelineView === "parallel" ? "bg-background shadow-sm" : "text-muted-foreground"}`}
+                        >
+                          {t("tasks.parallelView")}
+                        </button>
                       </div>
-                    ) : (
-                      <ol className="space-y-2 border-l-2 border-muted pl-4">
-                        {(selectedRun.timeline ?? []).map((event) => (
-                          <li key={event.event_id} className="relative">
-                            <span className="absolute -left-[21px] top-1.5 h-2.5 w-2.5 rounded-full bg-muted-foreground" />
-                            <div className="rounded-md bg-background/60 px-3 py-2">
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="min-w-0">
-                                  <div className="text-sm font-medium">{event.title}</div>
-                                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                                    {event.step_id && <span>{event.step_id}</span>}
-                                    {event.role_id && <span>{event.role_id}</span>}
-                                    {event.agent_id && <span>{event.agent_id}</span>}
-                                    {event.at && <span>{formatTime(event.at)}</span>}
+                      {timelineView === "list" && (() => {
+                        const roles = new Set<string>();
+                        (selectedRun.result.steps ?? []).forEach((s) => roles.add(s.role_id || "default"));
+                        return (
+                          <div className="inline-flex flex-wrap rounded-md border bg-muted/30 p-0.5 text-xs">
+                            <button
+                              onClick={() => setTimelineFilter("all")}
+                              className={`rounded px-2 py-0.5 ${timelineFilter === "all" ? "bg-background shadow-sm" : "text-muted-foreground"}`}
+                            >
+                              {t("tasks.all")} ({selectedRun.result.steps?.length ?? 0})
+                            </button>
+                            {Array.from(roles).map((r) => {
+                              const count = (selectedRun.result.steps ?? []).filter((s) => (s.role_id || "default") === r).length;
+                              return (
+                                <button
+                                  key={r}
+                                  onClick={() => setTimelineFilter(r)}
+                                  className={`rounded px-2 py-0.5 ${timelineFilter === r ? "bg-background shadow-sm" : "text-muted-foreground"}`}
+                                >
+                                  {r} ({count})
+                                </button>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
+                    </div>
+
+                    {timelineView === "list" ? (
+                      /* List view: filtered step outcomes */
+                      (selectedRun.result.steps ?? []).filter((s) =>
+                        timelineFilter === "all" || (s.role_id || "default") === timelineFilter
+                      ).length === 0 ? (
+                        <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
+                          {t("tasks.noTimeline")}
+                        </div>
+                      ) : (
+                        <ol className="space-y-2 border-l-2 border-muted pl-4">
+                          {(selectedRun.result.steps ?? [])
+                            .filter((s) => timelineFilter === "all" || (s.role_id || "default") === timelineFilter)
+                            .map((step) => {
+                              const variant = step.status === "complete" ? "default" :
+                                step.status === "failed" ? "destructive" : "secondary";
+                              return (
+                                <li key={step.step_id} className="relative">
+                                  <span className={`absolute -left-[21px] top-1.5 h-2.5 w-2.5 rounded-full ${
+                                    step.status === "complete" ? "bg-green-500" :
+                                    step.status === "failed" ? "bg-red-500" :
+                                    "bg-muted-foreground"
+                                  }`} />
+                                  <div className="rounded-md bg-background/60 px-3 py-2">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <div className="min-w-0">
+                                        <div className="text-sm font-medium">{step.step_id}</div>
+                                        <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                          <Badge variant="outline" className="text-[10px]">{step.role_id || "default"}</Badge>
+                                          <Badge variant="secondary" className="text-[10px]">{step.agent_id}</Badge>
+                                          <span>{formatTime(step.started_at)} → {formatTime(step.finished_at)}</span>
+                                          <span>({Math.max(1, Math.round((step.finished_at - step.started_at) / 1000))}s)</span>
+                                        </div>
+                                        {step.usage && (step.usage.input_tokens > 0 || step.usage.output_tokens > 0) && (
+                                          <p className="mt-1 text-[10px] text-muted-foreground">
+                                            {step.usage.input_tokens} in / {step.usage.output_tokens} out
+                                          </p>
+                                        )}
+                                      </div>
+                                      <Badge variant={variant as "default" | "destructive" | "secondary"} className="text-[10px]">
+                                        {step.status}
+                                      </Badge>
+                                    </div>
                                   </div>
-                                </div>
-                                <Badge variant="outline" className="text-[10px]">{event.kind}</Badge>
-                              </div>
-                            </div>
-                          </li>
-                        ))}
-                      </ol>
+                                </li>
+                              );
+                            })}
+                        </ol>
+                      )
+                    ) : (
+                      /* Parallel Gantt view: rows = roles, columns = time */
+                      <ParallelGantt steps={selectedRun.result.steps ?? []} runStartedAt={selectedRun.result.started_at} />
                     )}
                   </>
                 )}
@@ -942,6 +1078,116 @@ export function TasksPage({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Simple parallel Gantt chart for visualizing multi-step, multi-role execution.
+ * Each row is a role; horizontal bars show each step's start/duration.
+ * Steps without started_at/finished_at are shown as pending.
+ */
+function ParallelGantt({
+  steps,
+  runStartedAt,
+}: {
+  steps: StepOutcome[];
+  runStartedAt: number;
+}) {
+  // Group steps by role, preserving order
+  const roleOrder: string[] = [];
+  const byRole: Record<string, StepOutcome[]> = {};
+  for (const step of steps) {
+    const role = step.role_id || "default";
+    if (!byRole[role]) {
+      byRole[role] = [];
+      roleOrder.push(role);
+    }
+    byRole[role].push(step);
+  }
+
+  // Time bounds
+  const minTime = Math.min(
+    runStartedAt,
+    ...steps.map((s) => s.started_at || runStartedAt)
+  );
+  const maxTime = Math.max(
+    runStartedAt + 1,
+    ...steps.map((s) => s.finished_at || s.started_at || runStartedAt + 1)
+  );
+  const totalMs = Math.max(1, maxTime - minTime);
+
+  const roleColor: Record<string, string> = {};
+  const palette = [
+    "bg-blue-500",
+    "bg-emerald-500",
+    "bg-amber-500",
+    "bg-purple-500",
+    "bg-pink-500",
+    "bg-cyan-500",
+  ];
+  roleOrder.forEach((role, i) => {
+    roleColor[role] = palette[i % palette.length];
+  });
+
+  if (steps.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
+        暂无步骤
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {roleOrder.map((role) => {
+        const roleSteps = byRole[role];
+        return (
+          <div key={role} className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className={`h-2 w-2 rounded-full ${roleColor[role]}`} />
+              <span className="text-xs font-medium">{role}</span>
+              <span className="text-[10px] text-muted-foreground">({roleSteps.length} 步)</span>
+            </div>
+            <div className="relative h-7 rounded bg-muted/30">
+              {/* time gridlines every 25% */}
+              {[0.25, 0.5, 0.75].map((p) => (
+                <div
+                  key={p}
+                  className="absolute top-0 h-full w-px bg-border/50"
+                  style={{ left: `${p * 100}%` }}
+                />
+              ))}
+              {roleSteps.map((step, idx) => {
+                const startMs = step.started_at || minTime;
+                const endMs = step.finished_at || startMs + 1000;
+                const leftPct = ((startMs - minTime) / totalMs) * 100;
+                const widthPct = Math.max(2, ((endMs - startMs) / totalMs) * 100);
+                const colorClass =
+                  step.status === "complete"
+                    ? roleColor[role]
+                    : step.status === "failed"
+                    ? "bg-red-500"
+                    : "bg-muted-foreground/50";
+                return (
+                  <div
+                    key={step.step_id}
+                    className={`absolute top-1 h-5 rounded ${colorClass} flex items-center justify-center text-[10px] font-medium text-white shadow-sm`}
+                    style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                    title={`${step.step_id} · ${step.role_id} · ${step.agent_id} · ${formatTime(startMs)} → ${formatTime(endMs)}`}
+                  >
+                    {widthPct > 12 && <span className="truncate px-1">{idx + 1}. {step.step_id}</span>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+      <div className="flex justify-between text-[10px] text-muted-foreground">
+        <span>{formatTime(minTime)}</span>
+        <span>{formatTime(maxTime)}</span>
+      </div>
     </div>
   );
 }
