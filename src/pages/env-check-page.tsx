@@ -9,6 +9,7 @@ import {
   RefreshCw,
   ChevronDown,
   ArrowUpCircle,
+  GitBranch,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { AgentStatus } from "@/agents/types";
@@ -20,6 +21,19 @@ interface EnvData {
   npm_version: string | null;
   python_installed: boolean;
   python_version: string | null;
+  git_installed: boolean;
+  git_version: string | null;
+  runtimes?: RuntimeStatus[];
+}
+
+interface RuntimeStatus {
+  id: string;
+  installed: boolean;
+  version: string | null;
+  install_command?: string | null;
+  update_command?: string | null;
+  download_url?: string | null;
+  latest_package?: string | null;
 }
 
 interface CheckItem {
@@ -30,6 +44,7 @@ interface CheckItem {
   version: string | null;
   icon: React.ReactNode;
   iconClassName?: string;
+  installCommand?: string;
   updateCommand?: string;
   downloadUrl?: string;
   npmPackage?: string;
@@ -111,42 +126,90 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       .catch(console.error);
   }, []);
 
-  const runtimeItems: CheckItem[] = env
+  const runtimeMeta: Record<
+    string,
+    { name: string; desc: string; icon: React.ReactNode; iconClassName?: string }
+  > = {
+    node: {
+      name: t("env.nodeTitle"),
+      desc: t("env.nodeDesc"),
+      icon: <RuntimeLogo runtimeId="node" size={18} />,
+      iconClassName: "bg-transparent",
+    },
+    npm: {
+      name: t("env.npmTitle"),
+      desc: t("env.npmDesc"),
+      icon: <RuntimeLogo runtimeId="npm" size={18} />,
+      iconClassName: "bg-transparent",
+    },
+    python: {
+      name: t("env.pythonTitle"),
+      desc: t("env.pythonDesc"),
+      icon: <RuntimeLogo runtimeId="python" size={18} />,
+      iconClassName: "bg-transparent",
+    },
+    git: {
+      name: t("env.gitTitle"),
+      desc: t("env.gitDesc"),
+      icon: <GitBranch className="h-[18px] w-[18px]" />,
+    },
+  };
+
+  const fallbackRuntimes: RuntimeStatus[] = env
     ? [
         {
           id: "node",
-          name: t("env.nodeTitle"),
-          desc: t("env.nodeDesc"),
           installed: env.node_installed,
           version: env.node_version,
-          icon: <RuntimeLogo runtimeId="node" size={18} />,
-          iconClassName: "bg-transparent",
-          downloadUrl: "https://nodejs.org/",
-          npmPackage: "node",
+          download_url: "https://nodejs.org/",
+          latest_package: "node",
         },
         {
           id: "npm",
-          name: t("env.npmTitle"),
-          desc: t("env.npmDesc"),
           installed: env.npm_installed,
           version: env.npm_version,
-          icon: <RuntimeLogo runtimeId="npm" size={18} />,
-          iconClassName: "bg-transparent",
-          updateCommand: "npm install -g npm@latest",
-          npmPackage: "npm",
+          update_command: "npm install -g npm@latest",
+          latest_package: "npm",
         },
         {
           id: "python",
-          name: t("env.pythonTitle"),
-          desc: t("env.pythonDesc"),
           installed: env.python_installed,
           version: env.python_version,
-          icon: <RuntimeLogo runtimeId="python" size={18} />,
-          iconClassName: "bg-transparent",
-          downloadUrl: "https://www.python.org/downloads/",
-          npmPackage: "python",
+          download_url: "https://www.python.org/downloads/",
+          latest_package: "python",
+        },
+        {
+          id: "git",
+          installed: env.git_installed,
+          version: env.git_version,
+          download_url: "https://git-scm.com/downloads/win",
+          latest_package: "git",
         },
       ]
+    : [];
+
+  const runtimeItems: CheckItem[] = env
+    ? (env.runtimes?.length ? env.runtimes : fallbackRuntimes).map((runtime) => {
+        const meta = runtimeMeta[runtime.id] ?? {
+          name: runtime.id,
+          desc: "",
+          icon: <RuntimeLogo runtimeId={runtime.id} size={18} />,
+          iconClassName: "bg-transparent",
+        };
+        return {
+          id: runtime.id,
+          name: meta.name,
+          desc: meta.desc,
+          installed: runtime.installed,
+          version: runtime.version,
+          icon: meta.icon,
+          iconClassName: meta.iconClassName,
+          installCommand: runtime.install_command ?? undefined,
+          updateCommand: runtime.update_command ?? undefined,
+          downloadUrl: runtime.download_url ?? undefined,
+          npmPackage: runtime.latest_package ?? undefined,
+        };
+      })
     : [];
 
   const agentItems: CheckItem[] = agents.map((agent) => ({
@@ -181,11 +244,14 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
   };
 
   const handleInstall = async (item: CheckItem) => {
-    if (!item.updateCommand) return;
+    const command = item.installed
+      ? item.updateCommand
+      : item.installCommand ?? item.updateCommand;
+    if (!command) return;
     setInstallingId(item.id);
     try {
       await invokeCommand("install_agent_command", {
-        command: item.updateCommand,
+        command,
       });
       if (item.id.startsWith("agent-")) {
         await refreshHealth();
@@ -381,8 +447,8 @@ function CheckItemRow({
   const showUpdateBtn = item.installed && hasUpdate && item.updateCommand;
   const showDownloadUpdateBtn =
     item.installed && hasUpdate && !item.updateCommand && onDownload;
-  const showInstallBtn = !item.installed && item.updateCommand;
-  const showDownloadBtn = !item.installed && !item.updateCommand && onDownload;
+  const showInstallBtn = !item.installed && (item.installCommand || item.updateCommand);
+  const showDownloadBtn = !item.installed && !(item.installCommand || item.updateCommand) && onDownload;
 
   return (
     <div className="flex items-center gap-3 p-3 border rounded-lg bg-card transition-colors">

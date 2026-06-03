@@ -8,12 +8,13 @@ struct CheckResult {
     detail: Option<String>,
 }
 
-pub fn run(fix: bool, format: &str, only: Option<&str>, ctx: &ExecutionContext) -> Result<(), CliError> {
-    let mut checks = vec![
-        check_hub_dir(fix)?,
-        check_agents(),
-        check_config(),
-    ];
+pub fn run(
+    fix: bool,
+    format: &str,
+    only: Option<&str>,
+    ctx: &ExecutionContext,
+) -> Result<(), CliError> {
+    let mut checks = vec![check_hub_dir(fix)?, check_agents(), check_config()];
 
     if let Some(filter) = only {
         checks.retain(|c| c.name == filter);
@@ -23,7 +24,10 @@ pub fn run(fix: bool, format: &str, only: Option<&str>, ctx: &ExecutionContext) 
 
     match format {
         "json" => {
-            println!("{}", serde_json::to_string_pretty(&checks).map_err(CliError::Serde)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&checks).map_err(CliError::Serde)?
+            );
         }
         _ => {
             for c in &checks {
@@ -53,7 +57,11 @@ fn check_hub_dir(fix: bool) -> Result<CheckResult, CliError> {
     let hub_dir = home.join(".jishu-hub");
 
     if hub_dir.exists() {
-        Ok(CheckResult { name: "paths.hub_dir", pass: true, detail: None })
+        Ok(CheckResult {
+            name: "paths.hub_dir",
+            pass: true,
+            detail: None,
+        })
     } else if fix {
         std::fs::create_dir_all(&hub_dir).map_err(CliError::Io)?;
         Ok(CheckResult {
@@ -93,7 +101,11 @@ fn check_config() -> CheckResult {
         Ok(path) => {
             if path.exists() {
                 match crate::config::load_config() {
-                    Ok(_) => CheckResult { name: "config.file", pass: true, detail: None },
+                    Ok(_) => CheckResult {
+                        name: "config.file",
+                        pass: true,
+                        detail: None,
+                    },
                     Err(e) => CheckResult {
                         name: "config.file",
                         pass: false,
