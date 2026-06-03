@@ -181,6 +181,7 @@ export function TasksPage({
   const [submitting, setSubmitting] = useState(false);
   const [installingSkillId, setInstallingSkillId] = useState<string | null>(null);
   const [generatingRoles, setGeneratingRoles] = useState(false);
+  const [executingPlan, setExecutingPlan] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -337,6 +338,20 @@ export function TasksPage({
       await loadRun(runId);
     } catch (err) {
       setError(String(err));
+    }
+  };
+
+  const executePlan = async (runId: string) => {
+    setExecutingPlan(true);
+    setError(null);
+    try {
+      await invokeCommand("run_execute_plan", { runId });
+      await refreshRuns();
+      await loadRun(runId);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setExecutingPlan(false);
     }
   };
 
@@ -651,10 +666,18 @@ export function TasksPage({
             </div>
             <div className="flex items-center gap-2">
               <Badge variant={statusVariant(selectedRun.result.status)}>{translateStatus(selectedRun.result.status)}</Badge>
-              <Button variant="outline" size="sm" onClick={() => cancelRun(selectedRun.run_id)}>
-                <XCircle className="h-4 w-4" />
-                {t("tasks.cancel")}
-              </Button>
+              {selectedRun.result.status === "complete" && selectedRun.plan.length > 0 && (
+                <Button variant="default" size="sm" onClick={() => executePlan(selectedRun.run_id)} disabled={executingPlan}>
+                  <Send className="h-4 w-4" />
+                  {executingPlan ? t("tasks.executingPlan") : t("tasks.executePlan")}
+                </Button>
+              )}
+              {!["complete", "error"].includes(selectedRun.result.status) && (
+                <Button variant="outline" size="sm" onClick={() => cancelRun(selectedRun.run_id)}>
+                  <XCircle className="h-4 w-4" />
+                  {t("tasks.cancel")}
+                </Button>
+              )}
             </div>
           </div>
 

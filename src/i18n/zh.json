@@ -381,6 +381,8 @@
     "acceptance": "验收标准",
     "removeRole": "移除角色",
     "cancel": "取消",
+    "executePlan": "执行此计划",
+    "executingPlan": "执行中...",
     "assignedRoles": "已分配角色",
     "noAssignedRoles": "暂无已分配角色。",
     "planSteps": "计划步骤",

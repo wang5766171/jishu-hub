@@ -381,6 +381,8 @@
     "acceptance": "Acceptance",
     "removeRole": "Remove role",
     "cancel": "Cancel",
+    "executePlan": "Execute this plan",
+    "executingPlan": "Executing...",
     "assignedRoles": "Assigned roles",
     "noAssignedRoles": "No assigned roles.",
     "planSteps": "Plan steps",
