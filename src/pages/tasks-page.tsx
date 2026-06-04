@@ -92,7 +92,7 @@ interface StepOutcome {
   role_id: string;
   agent_id: string;
   agent_display_name?: string | null;
-  status: "complete" | "failed" | "skipped" | "awaiting_approval";
+  status: "running" | "complete" | "failed" | "skipped" | "awaiting_approval";
   output?: unknown;
   session_id?: string | null;
   started_at: number;
