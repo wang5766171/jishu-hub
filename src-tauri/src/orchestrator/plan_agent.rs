@@ -465,3 +465,76 @@ pub fn start(
 
     Ok(agent)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Regression test: PlanAgent::start() must work when called from a
+    /// sync context with no tokio runtime entered. This is the path
+    /// exercised by Tauri sync commands.
+    ///
+    /// Before the fix, start() would internally call
+    /// `tokio::runtime::Handle::try_current()` which returns
+    /// "No tokio runtime: there is no reactor running, must be called
+    /// from the context of a Tokio 1.x runtime" when invoked from
+    /// a Tauri sync command thread.
+    #[test]
+    fn start_works_from_sync_context_without_tokio_runtime() {
+        // We're on a regular test thread with no tokio runtime entered.
+        // If start() tries `tokio::runtime::Handle::try_current()` it
+        // will fail. The fix uses a dedicated thread + own runtime.
+
+        let run_id = format!("test_run_{}", now_ms());
+        let result = start(
+            run_id.clone(),
+            "jishu-task-planner".to_string(),
+            "Test task".to_string(),
+        );
+
+        let agent = result.expect("start() must succeed from sync context");
+        assert_eq!(snapshot_state(&agent.state).run_id, run_id);
+
+        // The agent must be registered in the global registry.
+        assert!(get(&run_id).is_some(), "agent must be registered");
+
+        // The state must be a valid initial state (Pending or further).
+        let state = snapshot_state(&agent.state);
+        assert!(matches!(
+            state.status,
+            PlanStatus::Pending | PlanStatus::Generating | PlanStatus::Failed
+        ));
+
+        // Give the background thread a moment to start (or fail fast
+        // because no LLM key in test env), then cancel + clean up.
+        std::thread::sleep(Duration::from_millis(200));
+        cancel_agent(&run_id);
+        unregister(&run_id);
+    }
+
+    /// start() must work even if called multiple times in a row
+    /// (regression: each call must not pollute another agent's state).
+    #[test]
+    fn start_works_multiple_times_in_a_row() {
+        let run_id_a = format!("test_run_a_{}", now_ms());
+        let run_id_b = format!("test_run_b_{}", now_ms());
+
+        let agent_a = start(run_id_a.clone(), "skill-a".into(), "task a".into())
+            .expect("first start() must succeed");
+        let agent_b = start(run_id_b.clone(), "skill-b".into(), "task b".into())
+            .expect("second start() must succeed");
+
+        assert_eq!(snapshot_state(&agent_a.state).skill_id, Some("skill-a".into()));
+        assert_eq!(snapshot_state(&agent_b.state).skill_id, Some("skill-b".into()));
+
+        // Each must be in its own registry entry.
+        assert!(get(&run_id_a).is_some());
+        assert!(get(&run_id_b).is_some());
+
+        cancel_agent(&run_id_a);
+        cancel_agent(&run_id_b);
+        unregister(&run_id_a);
+        unregister(&run_id_b);
+    }
+}
