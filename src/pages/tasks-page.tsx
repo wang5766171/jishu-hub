@@ -428,6 +428,65 @@ export function TasksPage({
     }
   };
 
+  const [pendingApprovals, setPendingApprovals] = useState<Record<string, {
+    request_id: string;
+    kind: string;
+    question: string;
+    options: string[];
+    context?: string;
+  }>>({});
+
+  const [replyText, setReplyText] = useState<Record<string, string>>({});
+
+  // Poll for pending approvals on the currently-selected run
+  useEffect(() => {
+    if (!selectedRun) return;
+    const runId = selectedRun.run_id;
+    const fetchApprovals = async () => {
+      const updates: typeof pendingApprovals = { ...pendingApprovals };
+      let changed = false;
+      for (const step of selectedRun.result.steps ?? []) {
+        try {
+          const approval = await invokeCommand<{
+            request_id: string; kind: string; question: string;
+            options: string[]; context?: string;
+          } | null>("run_get_approval", { runId, stepId: step.step_id });
+          const key = `${runId}::${step.step_id}`;
+          if (approval) {
+            updates[key] = approval;
+            changed = true;
+          } else if (updates[key]) {
+            // Was previously pending, now resolved
+            delete updates[key];
+            changed = true;
+          }
+        } catch {
+          // ignore
+        }
+      }
+      if (changed) setPendingApprovals(updates);
+    };
+    fetchApprovals();
+    const interval = setInterval(fetchApprovals, 2000);
+    return () => clearInterval(interval);
+  }, [selectedRun?.run_id, selectedRun?.result.steps]);
+
+  const sendReply = async (stepId: string, message: string) => {
+    if (!selectedRun || !message.trim()) return;
+    try {
+      await invokeCommand("run_send_message", {
+        runId: selectedRun.run_id,
+        stepId,
+        message,
+      });
+      setReplyText((prev) => ({ ...prev, [`${selectedRun.run_id}::${stepId}`]: "" }));
+      // Refresh the run to pick up new step outcome
+      await loadRun(selectedRun.run_id);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
   const updateRole = (index: number, patch: Partial<RoleDraft>) => {
     setRoles((current) => current.map((role, i) => (i === index ? { ...role, ...patch } : role)));
   };
@@ -854,6 +913,81 @@ export function TasksPage({
                   ⏳ {t("tasks.running")}
                 </div>
               )}
+
+              {/* Pending approvals — one card per agent question */}
+              {(selectedRun.result.steps ?? []).map((step) => {
+                const key = `${selectedRun.run_id}::${step.step_id}`;
+                const approval = pendingApprovals[key];
+                if (!approval) return null;
+                return (
+                  <section
+                    key={key}
+                    className="rounded-lg border-2 border-amber-500/60 bg-amber-500/5 p-4 shadow-sm"
+                  >
+                    <div className="mb-2 flex items-center gap-2">
+                      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-amber-500/20 text-amber-700 dark:text-amber-300">
+                        ❓
+                      </span>
+                      <h4 className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+                        {t("tasks.agentAsking")} · {step.agent_display_name || step.agent_id}
+                      </h4>
+                    </div>
+                    {approval.context && (
+                      <p className="mb-2 whitespace-pre-wrap text-xs text-muted-foreground">
+                        {approval.context}
+                      </p>
+                    )}
+                    <p className="mb-3 text-sm font-medium">{approval.question}</p>
+
+                    {/* Quick-reply options */}
+                    {approval.options.length > 0 && (
+                      <div className="mb-3 flex flex-wrap gap-2">
+                        {approval.options.map((opt, i) => (
+                          <Button
+                            key={i}
+                            variant="outline"
+                            size="sm"
+                            onClick={() => sendReply(step.step_id, opt)}
+                            className="text-xs"
+                          >
+                            {opt}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Custom reply */}
+                    <div className="flex gap-2">
+                      <Input
+                        value={replyText[key] ?? ""}
+                        onChange={(e) =>
+                          setReplyText((prev) => ({ ...prev, [key]: e.target.value }))
+                        }
+                        placeholder={t("tasks.replyPlaceholder")}
+                        className="h-8 text-xs"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            sendReply(step.step_id, replyText[key] ?? "");
+                          }
+                        }}
+                      />
+                      <Button
+                        size="sm"
+                        onClick={() => sendReply(step.step_id, replyText[key] ?? "")}
+                        disabled={!(replyText[key] ?? "").trim()}
+                      >
+                        {t("tasks.sendReply")}
+                      </Button>
+                    </div>
+                    {approval.options.length === 0 && (
+                      <p className="mt-2 text-[10px] text-muted-foreground">
+                        {t("tasks.noOptions")}
+                      </p>
+                    )}
+                  </section>
+                );
+              })}
 
               {selectedRun.spec.parent_run_id && (
                 <div className="rounded-md border border-info/40 bg-info/5 px-3 py-2 text-xs">
