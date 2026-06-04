@@ -193,21 +193,11 @@ pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmit
             let initial_user_prompt = spec.message.clone();
             let run_id_for_plan = run_id.clone();
 
-            let plan_agent_result = tokio::runtime::Handle::try_current()
-                .map_err(|e| format!("No tokio runtime: {e}"))
-                .and_then(|h| {
-                    let skill_id_inner = skill_id.clone();
-                    tokio::task::block_in_place(move || {
-                        h.block_on(async {
-                            plan_agent::start(
-                                run_id_for_plan,
-                                skill_id_inner,
-                                initial_user_prompt,
-                            )
-                            .await
-                        })
-                    })
-                });
+            let plan_agent_result = plan_agent::start(
+                run_id_for_plan,
+                skill_id.clone(),
+                initial_user_prompt,
+            );
             match plan_agent_result {
                 Ok(_agent) => {
                     trace.append_event(&NormalizedEvent::TaskStep {
