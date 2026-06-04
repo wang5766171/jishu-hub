@@ -423,10 +423,23 @@ fn generate_plan_with_llm(spec: &TaskSpec, template_steps: &[Step]) -> Option<Ve
     let system_prompt = r#"You are a task execution planner for the jishu orchestrator. Generate a refined execution plan as a JSON array.
 
 CRITICAL RULES for the `prompt` field of each step:
-- The prompt must be the INSTRUCTION for the agent, NOT a copy of the original task
-- Do NOT repeat the task description verbatim — the agent will receive the role contract + your prompt
-- Do NOT concatenate the task message to itself
-- Write the prompt as if explaining to the agent "here is what YOU should do for this step"
+- The prompt is the INSTRUCTION for the agent — NOT a copy of the user's task message
+- The dispatcher auto-injects the original task message as context, so your
+  step prompt must NOT repeat, paraphrase, or truncate the original task
+- Do NOT begin your prompt with the task message itself, even partially
+- Do NOT include "[Role Name] {task message}" headers — just write the
+  direct instructions to the agent
+- The orchestrator wraps every step with: role contract + role contract
+  preamble + the original task as "Task context" + your step prompt
+
+Examples of GOOD step prompts:
+  "Investigate the project structure, identify the authentication modules,
+   and produce a written assessment of current implementation gaps."
+  "Implement the proposed OAuth2 flow. Run the existing test suite when done."
+
+Examples of BAD step prompts (do NOT do this):
+  "设计前后端分离的统一登录系统"  ← never re-state the original task
+  "Implement: design a unified login system"  ← never paraphrase the task
 
 Agents in this system are fully interactive. If an agent needs user input,
 it will emit an approval_request event and the HUB will surface the
@@ -444,11 +457,11 @@ Output schema (return ONLY a JSON array, no markdown fences):
 ]
 
 Rules:
-- First dispatch step: scope clarification + concrete work
-- Middle steps: actual implementation/output
-- Last step: type="reflect" with a question to summarize the run
+- role_id MUST be one of: the assigned role_id, or "default" if no roles
 - Each prompt is at least 2 sentences, specific and actionable
-- role_id must match one of the assigned roles or "default" if no roles"#;
+- First dispatch step: scope clarification + concrete work
+- Last step: type="reflect" with a question to summarize the run
+- Keep each prompt under 600 characters to avoid token waste"#;
 
     let user_prompt = format!(
         "Task: {}\nProject: {}\n\nAssigned roles:\n{}\n\nTemplate plan:\n{}",
@@ -549,10 +562,16 @@ Rules:
 
                 let kind = match raw.r#type.as_str() {
                     "dispatch" => {
-                        let role_id = if raw.role_id.is_empty() {
-                            spec.roles.first()?.role_id.clone()
-                        } else {
+                        // Resolve role_id. Prefer LLM's choice, then first
+                        // spec role, then "default" fallback. The dispatcher
+                        // treats "default" (or any role_id) as agent_id
+                        // when spec.roles is empty.
+                        let role_id = if !raw.role_id.is_empty() {
                             raw.role_id.clone()
+                        } else if let Some(first) = spec.roles.first() {
+                            first.role_id.clone()
+                        } else {
+                            "default".to_string()
                         };
                         StepKind::Dispatch {
                             role_id,
@@ -747,6 +766,18 @@ fn generate_run_summary_with_lang(
         return Err("Empty summary from LLM".into());
     }
     Ok(summary.trim().to_string())
+}
+
+/// Read new trace events for a run since the given byte offset.
+/// Used by the HUB for live streaming of agent output.
+pub fn trace_tail(run_id: &str, byte_offset: u64) -> Result<(Vec<serde_json::Value>, u64), String> {
+    let store = RunStore::open()?;
+    let (events, new_offset) = store.read_trace_since(run_id, byte_offset)?;
+    let values: Vec<serde_json::Value> = events
+        .into_iter()
+        .map(|e| serde_json::to_value(e).unwrap_or(serde_json::Value::Null))
+        .collect();
+    Ok((values, new_offset))
 }
 
 /// Delete a run directory entirely. Returns Ok(()) if removed.

@@ -1761,6 +1761,16 @@ fn run_step_cancel(run_id: String, step_id: String) -> Result<(), String> {
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
+fn trace_tail(run_id: String, byte_offset: u64) -> Result<serde_json::Value, String> {
+    let (events, new_offset) = orchestrator::trace_tail(&run_id, byte_offset)?;
+    Ok(serde_json::json!({
+        "events": events,
+        "offset": new_offset,
+    }))
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
 fn run_delete(run_id: String) -> Result<(), String> {
     orchestrator::delete_run(&run_id)
 }
@@ -1898,6 +1908,7 @@ pub fn run() {
             run_send_message,
             run_get_approval,
             run_step_cancel,
+            trace_tail,
             task_plan_skill_list,
             task_plan_skill_install,
             task_plan_generate_roles,

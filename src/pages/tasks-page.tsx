@@ -922,7 +922,8 @@ export function TasksPage({
                 return (
                   <section
                     key={key}
-                    className="rounded-lg border-2 border-amber-500/60 bg-amber-500/5 p-4 shadow-sm"
+                    id={`approval-${step.step_id}`}
+                    className="rounded-lg border-2 border-amber-500/60 bg-amber-500/5 p-4 shadow-sm transition-all"
                   >
                     <div className="mb-2 flex items-center gap-2">
                       <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-amber-500/20 text-amber-700 dark:text-amber-300">
@@ -1153,7 +1154,7 @@ export function TasksPage({
                     </div>
 
                     {timelineView === "list" ? (
-                      /* List view: filtered step outcomes */
+                      /* List view: filtered step outcomes with meaningful labels */
                       (selectedRun.result.steps ?? []).filter((s) =>
                         timelineFilter === "all" || (s.role_id || "default") === timelineFilter
                       ).length === 0 ? (
@@ -1165,26 +1166,55 @@ export function TasksPage({
                           {(selectedRun.result.steps ?? [])
                             .filter((s) => timelineFilter === "all" || (s.role_id || "default") === timelineFilter)
                             .map((step) => {
-                              const variant = step.status === "complete" ? "default" :
-                                step.status === "failed" ? "destructive" : "secondary";
+                              // Map role_id → human-readable action label
+                              const actionKey = step.role_id || "default";
+                              const actionLabel = t(`tasks.actions.${actionKey}`) !== `tasks.actions.${actionKey}`
+                                ? t(`tasks.actions.${actionKey}`)
+                                : t("tasks.actions.default");
+                              const isRunning = step.status === "running";
+                              const isAwaiting = step.status === "awaiting_approval";
+                              const isComplete = step.status === "complete";
+                              const isFailed = step.status === "failed";
+                              const durationSec = isRunning
+                                ? Math.round((Date.now() - step.started_at) / 1000)
+                                : Math.max(0, Math.round((step.finished_at - step.started_at) / 1000));
+
                               return (
                                 <li key={step.step_id} className="relative">
-                                  <span className={`absolute -left-[21px] top-1.5 h-2.5 w-2.5 rounded-full ${
-                                    step.status === "complete" ? "bg-green-500" :
-                                    step.status === "failed" ? "bg-red-500" :
-                                    "bg-muted-foreground"
-                                  }`} />
+                                  <span
+                    className={`absolute -left-[21px] top-1.5 h-2.5 w-2.5 rounded-full ${
+                                      isComplete ? "bg-green-500" :
+                                      isFailed ? "bg-red-500" :
+                                      isAwaiting ? "bg-amber-500" :
+                                      isRunning ? "bg-blue-500 animate-pulse" :
+                                      "bg-muted-foreground"
+                                    }`}
+                                  />
                                   <div className="rounded-md bg-background/60 px-3 py-2">
                                     <div className="flex flex-wrap items-center justify-between gap-2">
-                                      <div className="min-w-0">
+                                      <div className="min-w-0 flex-1">
                                         <div className="text-sm font-medium">
-                                          {step.agent_display_name || step.agent_id} · {step.role_id || "default"}
+                                          {step.agent_display_name || step.agent_id} · {actionLabel}
                                         </div>
                                         <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                                          <span>{formatTime(step.started_at)} → {formatTime(step.finished_at)}</span>
-                                          <span>({Math.max(1, Math.round((step.finished_at - step.started_at) / 1000))}s)</span>
+                                          {isRunning && (
+                                            <span className="font-medium text-blue-600 dark:text-blue-400">
+                                              ⏳ {t("tasks.runningFor", { seconds: durationSec })}
+                                            </span>
+                                          )}
+                                          {isAwaiting && (
+                                            <span className="font-medium text-amber-600 dark:text-amber-400">
+                                              ⚠ {t("tasks.pending")}
+                                            </span>
+                                          )}
+                                          {isComplete && (
+                                            <span>✓ {t("tasks.ago", { seconds: durationSec })}</span>
+                                          )}
+                                          {isFailed && <span>✗ {t("tasks.status.failed")}</span>}
                                           {step.usage && (step.usage.input_tokens > 0 || step.usage.output_tokens > 0) && (
-                                            <span>{step.usage.input_tokens} in / {step.usage.output_tokens} out</span>
+                                            <span className="text-[10px]">
+                                              {step.usage.input_tokens}/{step.usage.output_tokens} tokens
+                                            </span>
                                           )}
                                         </div>
                                         {step.session_id && (
@@ -1192,7 +1222,6 @@ export function TasksPage({
                                             <button
                                               onClick={() => {
                                                 try {
-                                                  // Stash the session id for ChatPage to pick up
                                                   localStorage.setItem("jishu:open-session", JSON.stringify({
                                                     sessionId: step.session_id,
                                                     agentId: step.agent_id,
@@ -1200,7 +1229,6 @@ export function TasksPage({
                                                     stepId: step.step_id,
                                                     at: Date.now(),
                                                   }));
-                                                  // Navigate to chat page by clicking the nav item
                                                   const chatNav = document.querySelector('[data-page="chat"]') as HTMLElement;
                                                   chatNav?.click();
                                                 } catch (e) {
@@ -1236,9 +1264,34 @@ export function TasksPage({
                                           </div>
                                         )}
                                       </div>
-                                      <Badge variant={variant as "default" | "destructive" | "secondary"} className="text-[10px]">
-                                        {t(`tasks.status.${step.status}`)}
-                                      </Badge>
+                                      {/* Status pill — clickable for AwaitingApproval */}
+                                      {isAwaiting ? (
+                                        <button
+                                          onClick={() => {
+                                            // Scroll to the pending approval card at the top of the drawer
+                                            const card = document.getElementById(`approval-${step.step_id}`);
+                                            card?.scrollIntoView({ behavior: "smooth", block: "center" });
+                                            card?.classList.add("ring-2", "ring-amber-500");
+                                            setTimeout(() => card?.classList.remove("ring-2", "ring-amber-500"), 1500);
+                                          }}
+                                          className="inline-flex animate-pulse items-center gap-1 rounded-full border-2 border-amber-500 bg-amber-500/20 px-3 py-1 text-xs font-bold uppercase text-amber-700 transition-colors hover:bg-amber-500/30 dark:text-amber-300"
+                                          title={t("tasks.expanded")}
+                                        >
+                                          ⚠ {t("tasks.pending")}
+                                        </button>
+                                      ) : (
+                                        <Badge
+                                          variant={
+                                            isComplete ? "default" :
+                                            isFailed ? "destructive" :
+                                            isRunning ? "default" :
+                                            "secondary"
+                                          }
+                                          className={`text-[10px] ${isRunning ? "animate-pulse" : ""}`}
+                                        >
+                                          {t(`tasks.status.${step.status}`)}
+                                        </Badge>
+                                      )}
                                     </div>
                                   </div>
                                 </li>

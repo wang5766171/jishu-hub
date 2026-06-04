@@ -115,6 +115,34 @@ impl RunStore {
         Ok(events)
     }
 
+    /// Read trace events from a byte offset. Used by the HUB for live
+    /// streaming — the frontend passes the last offset it has, and we
+    /// return only the new events appended since then. Returns
+    /// (events, new_offset).
+    pub fn read_trace_since(
+        &self,
+        run_id: &str,
+        byte_offset: u64,
+    ) -> Result<(Vec<NormalizedEvent>, u64), String> {
+        let path = self.run_dir(run_id).join("trace.jsonl");
+        if !path.exists() {
+            return Ok((Vec::new(), 0));
+        }
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        if byte_offset >= bytes.len() as u64 {
+            return Ok((Vec::new(), bytes.len() as u64));
+        }
+        let slice = &bytes[byte_offset as usize..];
+        let slice_str = String::from_utf8_lossy(slice);
+        let mut events = Vec::new();
+        for line in slice_str.lines().filter(|l| !l.trim().is_empty()) {
+            if let Ok(event) = serde_json::from_str::<NormalizedEvent>(line) {
+                events.push(event);
+            }
+        }
+        Ok((events, bytes.len() as u64))
+    }
+
     /// Check whether a run directory exists.
     pub fn run_exists(&self, run_id: &str) -> bool {
         self.run_dir(run_id).join("spec.json").exists()
