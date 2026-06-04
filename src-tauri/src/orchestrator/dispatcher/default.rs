@@ -161,26 +161,35 @@ fn dispatch_to_agent(
     let (events, exit_status) = result?;
 
     // Emit collected events through trace + emitter (raw, no SubAgentEvent wrapping)
+    let mut captured_session_id: Option<String> = None;
     for event in events {
+        if let NormalizedEvent::SessionResolved { session_id } = &event {
+            captured_session_id = Some(session_id.clone());
+        }
         let _ = ctx.trace.append_event(&event);
         (ctx.emitter)(&event);
     }
+
+    // Resolve display name from registry (e.g., "claude-code" -> "Claude Code")
+    let display_name = ctx.registry.get(&agent_id_owned).map(|p| p.info().display_name);
 
     let step_finished = now_ms();
     Ok(StepOutcome {
         step_id,
         role_id: role_id_owned,
         agent_id: agent_id_owned,
+        agent_display_name: display_name,
         status: if exit_status.success() {
             StepStatus::Complete
         } else {
             StepStatus::Failed
         },
         output: None,
+        session_id: captured_session_id,
         started_at: step_finished, // will be overwritten by execute()
         finished_at: step_finished,
         usage: UsageSummary::zero(),
-    })
+    ..Default::default()})
 }
 
 /// Execute a shell command within the project directory.
@@ -275,7 +284,7 @@ fn execute_shell(
             started_at: started,
             finished_at: finished,
             usage: UsageSummary::zero(),
-        }),
+        ..Default::default()}),
         Err(e) => Ok(StepOutcome {
             step_id: step.step_id.clone(),
             role_id: String::new(),
@@ -285,7 +294,7 @@ fn execute_shell(
             started_at: started,
             finished_at: finished,
             usage: UsageSummary::zero(),
-        }),
+        ..Default::default()}),
     }
 }
 
@@ -335,7 +344,7 @@ fn execute_read(
                 started_at: started,
                 finished_at: finished,
                 usage: UsageSummary::zero(),
-            })
+            ..Default::default()})
         }
         Err(e) => Ok(StepOutcome {
             step_id: step.step_id.clone(),
@@ -346,7 +355,7 @@ fn execute_read(
             started_at: started,
             finished_at: finished,
             usage: UsageSummary::zero(),
-        }),
+        ..Default::default()}),
     }
 }
 
@@ -376,7 +385,7 @@ fn execute_write(
             started_at: started,
             finished_at: now_ms(),
             usage: UsageSummary::zero(),
-        });
+        ..Default::default()});
     }
 
     // Actually write the file
@@ -416,7 +425,7 @@ fn execute_write(
             started_at: started,
             finished_at: finished,
             usage: UsageSummary::zero(),
-        }),
+        ..Default::default()}),
         Err(e) => Ok(StepOutcome {
             step_id: step.step_id.clone(),
             role_id: String::new(),
@@ -426,7 +435,7 @@ fn execute_write(
             started_at: started,
             finished_at: finished,
             usage: UsageSummary::zero(),
-        }),
+        ..Default::default()}),
     }
 }
 
@@ -450,7 +459,7 @@ fn execute_reflect(
         started_at: now_ms(),
         finished_at: now_ms(),
         usage: UsageSummary::zero(),
-    })
+    ..Default::default()})
 }
 
 /// Verify step — strongly typed check execution.
@@ -534,7 +543,7 @@ fn execute_verify(
         started_at: started,
         finished_at: finished,
         usage: UsageSummary::zero(),
-    })
+    ..Default::default()})
 }
 
 #[cfg(test)]

@@ -419,21 +419,36 @@ fn generate_plan_with_llm(spec: &TaskSpec, template_steps: &[Step]) -> Option<Ve
         .collect::<Vec<_>>()
         .join("\n");
 
-    let system_prompt = r#"You are a task execution planner. Given a task description, assigned roles, and a template plan, generate a refined execution plan.
+    let system_prompt = r#"You are a task execution planner for the jishu orchestrator. Generate a refined execution plan as a JSON array.
 
-Return ONLY a JSON array of step objects. Each object must have:
-- step_id: "sp_0", "sp_1", etc.
-- type: "dispatch" (for agent steps) or "reflect" (for review/reflection steps)
-- role_id: must match one of the assigned roles
-- prompt: detailed instruction for the agent in Chinese
-- project: the project path
+CRITICAL RULES for the `prompt` field of each step:
+- The prompt must be the INSTRUCTION for the agent, NOT a copy of the original task
+- Do NOT repeat the task description verbatim — the agent will receive the role contract + your prompt
+- Do NOT concatenate the task message to itself
+- Write the prompt as if explaining to the agent "here is what YOU should do for this step"
+
+Execution mode constraints (must include in every dispatch prompt):
+- Single-shot, non-interactive delivery
+- Do not ask follow-up questions
+- Do not propose browser-based tools
+- Make reasonable assumptions and state them
+
+Output schema (return ONLY a JSON array, no markdown fences):
+[
+  {
+    "step_id": "sp_0",
+    "type": "dispatch",
+    "role_id": "...",
+    "prompt": "..."
+  }
+]
 
 Rules:
-- First step should analyze the task and clarify scope
-- Middle steps should execute the actual work in role order
-- Last step should be a Reflect step for the supervisor to review outcomes
-- Make prompts specific and actionable, not generic
-- Return ONLY the JSON array, no markdown fences"#;
+- First dispatch step: scope clarification + concrete work
+- Middle steps: actual implementation/output
+- Last step: type="reflect" with a question to summarize the run
+- Each prompt is at least 2 sentences, specific and actionable
+- role_id must match one of the assigned roles or "default" if no roles"#;
 
     let user_prompt = format!(
         "Task: {}\nProject: {}\n\nAssigned roles:\n{}\n\nTemplate plan:\n{}",
@@ -832,7 +847,7 @@ fn execute_steps(
                     started_at: step_started,
                     finished_at: step_finished,
                     usage: UsageSummary::zero(),
-                });
+                ..Default::default()});
                 let _ = trace.append_event(&NormalizedEvent::TaskStep {
                     run_id: run_id.to_string(),
                     step_id: step.step_id.clone(),

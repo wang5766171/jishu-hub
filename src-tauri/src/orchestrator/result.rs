@@ -62,17 +62,47 @@ impl RunStatus {
 }
 
 /// Per-step execution outcome — worker writes this, not the agent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StepOutcome {
     pub step_id: String,
     pub role_id: String,
     pub agent_id: String,
+    /// Display name of the agent (e.g., "Claude Code" not "claude-code") — for UI
+    #[serde(default)]
+    pub agent_display_name: Option<String>,
     pub status: StepStatus,
     /// Worker-populated from agent output / trace.
     pub output: Option<serde_json::Value>,
+    /// Session ID returned by the agent subprocess (if any) — clickable link
+    #[serde(default)]
+    pub session_id: Option<String>,
     pub started_at: i64,
     pub finished_at: i64,
     pub usage: UsageSummary,
+}
+
+impl StepOutcome {
+    /// Minimal constructor for tests / placeholders.
+    pub fn minimal(step_id: impl Into<String>, agent_id: impl Into<String>) -> Self {
+        Self {
+            step_id: step_id.into(),
+            role_id: String::new(),
+            agent_id: agent_id.into(),
+            agent_display_name: None,
+            status: StepStatus::Complete,
+            output: None,
+            session_id: None,
+            started_at: 0,
+            finished_at: 0,
+            usage: UsageSummary::zero(),
+        }
+    }
+}
+
+impl Default for StepStatus {
+    fn default() -> Self {
+        StepStatus::Complete
+    }
 }
 
 /// Strongly typed step status — replaces stringly-typed status.
@@ -160,7 +190,7 @@ mod tests {
                 output_tokens: 500,
                 cost_usd: 0.05,
             },
-        };
+        ..Default::default()};
         let json = serde_json::to_string(&outcome).unwrap();
         let de: StepOutcome = serde_json::from_str(&json).unwrap();
         assert_eq!(outcome.step_id, de.step_id);
@@ -204,6 +234,7 @@ mod tests {
                 started_at: 1700000000,
                 finished_at: 1700000060,
                 usage: UsageSummary::zero(),
+                ..Default::default()
             }],
             usage: UsageSummary::zero(),
             error: None,

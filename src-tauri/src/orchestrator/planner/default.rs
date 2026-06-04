@@ -29,7 +29,10 @@ impl Planner for DefaultPlanner {
                 .collect());
         }
 
-        // No roles: single-step dispatch. Use agent_id from previous_active_agent as role_id hint.
+        // No roles: single-step dispatch with a SYNTHETIC role contract.
+        // Without explicit roles, we still inject a default role contract so
+        // the agent gets clear constraints (no interactive back-and-forth,
+        // single-shot delivery, no browser-based tools).
         let agent = ctx
             .previous_active_agent
             .as_deref()
@@ -38,11 +41,29 @@ impl Planner for DefaultPlanner {
 
         let project = spec.project_path.clone().unwrap_or_else(|| ".".to_string());
 
+        let synthetic_role = RoleAssignment {
+            role_id: "default_worker".into(),
+            role_name: "Default Worker".into(),
+            agent_id: Some(agent.clone()),
+            responsibilities: vec![
+                "Read and understand the task end-to-end.".into(),
+                "Execute the work and produce concrete deliverables in a single response.".into(),
+                "Document any assumptions or tradeoffs you make.".into(),
+            ],
+            acceptance: vec![
+                "Output is complete and actionable — no placeholder, no 'let me ask...' prompts.".into(),
+                "All claims are backed by code references, file paths, or specific evidence.".into(),
+            ],
+            can_edit_files: true,
+            can_run_commands: true,
+            can_receive_rework: true,
+        };
+
         Ok(vec![Step {
             step_id: "sp_0".to_string(),
             kind: StepKind::Dispatch {
                 role_id: agent,
-                prompt: spec.message.clone(),
+                prompt: build_role_dispatch_message(spec, &synthetic_role),
                 project,
                 session: None,
             },
@@ -72,7 +93,21 @@ fn build_role_dispatch_message(spec: &TaskSpec, role: &RoleAssignment) -> String
     };
 
     format!(
-        "[{}] {}\n\nRole contract:\nResponsibilities:\n- {}\n\nAcceptance:\n- {}\n\nCollaboration and rework rules:\n- Read responsibilities and acceptance as a structured contract.\n- If you consume or audit another role's output, name that role in your conclusion.\n- If you find an issue, return a rework item with: responsible_role, reason, evidence, suggested_action.\n- jishu agent should route rework to:\n{}",
+        "[{}] {}\n\n\
+Execution mode (read carefully):\n\
+- This is a single-shot, non-interactive dispatch from the jishu orchestrator.\n\
+- Deliver your final answer in ONE response. Do NOT ask the user follow-up questions.\n\
+- Do NOT propose browser-based visualization, MCP tools, or interactive workflows.\n\
+- Do NOT request clarification — make reasonable assumptions and state them explicitly.\n\
+- All output must be text, suitable for an automated report.\n\n\
+Role contract:\n\
+Responsibilities:\n- {}\n\n\
+Acceptance:\n- {}\n\n\
+Collaboration and rework rules:\n\
+- Read responsibilities and acceptance as a structured contract.\n\
+- If you consume or audit another role's output, name that role in your conclusion.\n\
+- If you find an issue, return a rework item with: responsible_role, reason, evidence, suggested_action.\n\
+- jishu agent should route rework to:\n{}",
         role.role_name,
         spec.message,
         role.responsibilities.join("\n- "),
