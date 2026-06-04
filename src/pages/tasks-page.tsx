@@ -1079,6 +1079,7 @@ export function TasksPage({
                                             </button>
                                             <button
                                               onClick={() => {
+                                                if (!step.session_id) return;
                                                 try {
                                                   const name = step.agent_display_name || step.agent_id;
                                                   const projectEncoded = selectedRun.spec.project_path ?? "";
