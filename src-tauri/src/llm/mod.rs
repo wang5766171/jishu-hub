@@ -1,3 +1,4 @@
+pub mod agent_loop;
 pub mod anthropic;
 pub mod config;
 pub mod http;
@@ -6,6 +7,8 @@ pub mod openai;
 pub mod sse;
 
 use message::LlmRequest;
+pub use message::LlmTool;
+pub use message::StopReason;
 
 #[derive(Clone)]
 pub struct CancelToken(pub std::sync::Arc<std::sync::atomic::AtomicBool>);

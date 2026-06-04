@@ -105,7 +105,7 @@ fn jishu_agent_dir() -> Result<PathBuf, String> {
     Ok(home.join(".jishu-agent"))
 }
 
-fn task_plan_dir() -> Result<PathBuf, String> {
+pub fn task_plan_dir() -> Result<PathBuf, String> {
     Ok(jishu_agent_dir()?.join("task-plan"))
 }
 
@@ -453,7 +453,7 @@ fn install_builtin_skill_in_dir(skill_id: &str, dir: &Path) -> Result<TaskPlanSk
     Ok(skill)
 }
 
-fn read_installed_skill(dir: &Path, skill_id: &str) -> Result<Option<TaskPlanSkill>, String> {
+pub fn read_installed_skill(dir: &Path, skill_id: &str) -> Result<Option<TaskPlanSkill>, String> {
     let skill_path = dir.join(skill_id).join("SKILL.md");
     if !skill_path.exists() {
         return Ok(None);

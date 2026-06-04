@@ -197,9 +197,11 @@ fn dispatch_to_agent(
     let agent_id_for_runtime = agent_id_owned.clone();
     let run_id_for_runtime = run_id_owned.clone();
     let result = rt.block_on(async move {
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| DispatchError::SpawnFailed(format!("Spawn {agent_id_for_spawn}: {e}")))?;
+        use tokio::time::{timeout, Duration};
+        let inner = async {
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| DispatchError::SpawnFailed(format!("Spawn {agent_id_for_spawn}: {e}")))?;
 
         // Forward user messages from stdin_rx into the agent's stdin
         if pipe_stdin {
@@ -246,6 +248,17 @@ fn dispatch_to_agent(
             .map_err(|e| DispatchError::Other(format!("Wait: {e}")))?;
 
         Ok::<_, DispatchError>((events, status))
+        };
+        // 30s hard timeout: any agent that doesn't produce a result
+        // within 30s is treated as failed. Prevents tests/dev runs
+        // from hanging on missing agent CLIs.
+        match timeout(Duration::from_secs(30), inner).await {
+            Ok(r) => r,
+            Err(_) => {
+                // Timed out — kill the child (it's still in scope above)
+                Err(DispatchError::Other("Agent dispatch timed out (30s)".into()))
+            }
+        }
     });
 
     let (events, exit_status) = result?;

@@ -63,6 +63,27 @@ impl RunStore {
         self.write_json(&self.run_dir(run_id).join("rework.json"), items)
     }
 
+    /// Write plan_state.json (Plan generation state for restart recovery)
+    pub fn write_plan_state(
+        &self,
+        run_id: &str,
+        state: &serde_json::Value,
+    ) -> Result<(), String> {
+        self.write_json(&self.run_dir(run_id).join("plan_state.json"), state)
+    }
+
+    /// Read plan_state.json
+    pub fn read_plan_state(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let path = self.run_dir(run_id).join("plan_state.json");
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.read_json(&path)
+    }
+
     /// Append a single raw event to trace.jsonl.
     pub fn append_trace(&self, run_id: &str, event: &NormalizedEvent) -> Result<(), String> {
         let path = self.run_dir(run_id).join("trace.jsonl");
