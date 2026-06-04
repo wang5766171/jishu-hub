@@ -395,6 +395,8 @@
     "listView": "列表视图",
     "running": "执行中，可关闭抽屉继续操作",
     "regenerateSummary": "重新生成总结",
+    "openSession": "在会话中打开",
+    "floatSession": "悬浮窗口",
     "assignedRoles": "已分配角色",
     "noAssignedRoles": "暂无已分配角色。",
     "planSteps": "计划步骤",

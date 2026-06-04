@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAgent } from "@/agents";
 import { invokeCommand } from "@/hooks/use-invoke";
+import { openFloatingSession } from "@/lib/floating-window";
 import { ClipboardList, Download, Eye, History, Plus, RefreshCw, Send, Sparkles, Trash2, Wand2, X, XCircle } from "lucide-react";
 
 type TaskKind = "plan" | "run";
@@ -90,8 +91,10 @@ interface StepOutcome {
   step_id: string;
   role_id: string;
   agent_id: string;
+  agent_display_name?: string | null;
   status: "complete" | "failed" | "skipped" | "awaiting_approval";
   output?: unknown;
+  session_id?: string | null;
   started_at: number;
   finished_at: number;
   usage: { input_tokens: number; output_tokens: number; cost_usd: number };
@@ -1040,21 +1043,66 @@ export function TasksPage({
                                   <div className="rounded-md bg-background/60 px-3 py-2">
                                     <div className="flex flex-wrap items-center justify-between gap-2">
                                       <div className="min-w-0">
-                                        <div className="text-sm font-medium">{step.step_id}</div>
+                                        <div className="text-sm font-medium">
+                                          {step.agent_display_name || step.agent_id} · {step.role_id || "default"}
+                                        </div>
                                         <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                                          <Badge variant="outline" className="text-[10px]">{step.role_id || "default"}</Badge>
-                                          <Badge variant="secondary" className="text-[10px]">{step.agent_id}</Badge>
                                           <span>{formatTime(step.started_at)} → {formatTime(step.finished_at)}</span>
                                           <span>({Math.max(1, Math.round((step.finished_at - step.started_at) / 1000))}s)</span>
+                                          {step.usage && (step.usage.input_tokens > 0 || step.usage.output_tokens > 0) && (
+                                            <span>{step.usage.input_tokens} in / {step.usage.output_tokens} out</span>
+                                          )}
                                         </div>
-                                        {step.usage && (step.usage.input_tokens > 0 || step.usage.output_tokens > 0) && (
-                                          <p className="mt-1 text-[10px] text-muted-foreground">
-                                            {step.usage.input_tokens} in / {step.usage.output_tokens} out
-                                          </p>
+                                        {step.session_id && (
+                                          <div className="mt-1 inline-flex items-center gap-1">
+                                            <button
+                                              onClick={() => {
+                                                try {
+                                                  // Stash the session id for ChatPage to pick up
+                                                  localStorage.setItem("jishu:open-session", JSON.stringify({
+                                                    sessionId: step.session_id,
+                                                    agentId: step.agent_id,
+                                                    runId: selectedRun.run_id,
+                                                    stepId: step.step_id,
+                                                    at: Date.now(),
+                                                  }));
+                                                  // Navigate to chat page by clicking the nav item
+                                                  const chatNav = document.querySelector('[data-page="chat"]') as HTMLElement;
+                                                  chatNav?.click();
+                                                } catch (e) {
+                                                  console.error("Failed to open session", e);
+                                                }
+                                              }}
+                                              className="inline-flex items-center gap-1 rounded bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/20"
+                                            >
+                                              💬 {t("tasks.openSession")} ({step.session_id.slice(0, 12)})
+                                            </button>
+                                            <button
+                                              onClick={() => {
+                                                try {
+                                                  const name = step.agent_display_name || step.agent_id;
+                                                  const projectEncoded = selectedRun.spec.project_path ?? "";
+                                                  openFloatingSession(
+                                                    step.session_id,
+                                                    name,
+                                                    step.agent_id,
+                                                    projectEncoded,
+                                                    step.agent_display_name ?? undefined,
+                                                  ).catch(console.error);
+                                                } catch (e) {
+                                                  console.error("Failed to float session", e);
+                                                }
+                                              }}
+                                              title={t("tasks.floatSession")}
+                                              className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted/70"
+                                            >
+                                              ⤴ {t("tasks.floatSession")}
+                                            </button>
+                                          </div>
                                         )}
                                       </div>
                                       <Badge variant={variant as "default" | "destructive" | "secondary"} className="text-[10px]">
-                                        {step.status}
+                                        {t(`tasks.status.${step.status}`)}
                                       </Badge>
                                     </div>
                                   </div>
@@ -1174,9 +1222,9 @@ function ParallelGantt({
                     key={step.step_id}
                     className={`absolute top-1 h-5 rounded ${colorClass} flex items-center justify-center text-[10px] font-medium text-white shadow-sm`}
                     style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
-                    title={`${step.step_id} · ${step.role_id} · ${step.agent_id} · ${formatTime(startMs)} → ${formatTime(endMs)}`}
+                    title={`${step.agent_display_name || step.agent_id} · ${step.role_id} · ${formatTime(startMs)} → ${formatTime(endMs)}`}
                   >
-                    {widthPct > 12 && <span className="truncate px-1">{idx + 1}. {step.step_id}</span>}
+                    {widthPct > 12 && <span className="truncate px-1">{idx + 1}. {step.agent_display_name || step.agent_id}</span>}
                   </div>
                 );
               })}

@@ -360,6 +360,31 @@ export function ChatPage({
   };
   handleSelectSessionRef.current = handleSelectSession;
 
+  // Listen for cross-page session open requests (from TasksPage)
+  useEffect(() => {
+    const onStorage = () => {
+      try {
+        const raw = localStorage.getItem("jishu:open-session");
+        if (!raw) return;
+        localStorage.removeItem("jishu:open-session");
+        const { sessionId } = JSON.parse(raw) as { sessionId: string };
+        if (sessionId && handleSelectSessionRef.current) {
+          handleSelectSessionRef.current(sessionId);
+        }
+      } catch (e) {
+        console.error("Failed to handle open-session event", e);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    // Also poll on mount (storage event only fires on OTHER windows)
+    onStorage();
+    const interval = setInterval(onStorage, 500);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      clearInterval(interval);
+    };
+  }, []);
+
   const handleNewSession = async () => {
     if (!projectId) return;
 

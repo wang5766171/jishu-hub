@@ -395,6 +395,8 @@
     "listView": "List view",
     "running": "Running — you can close this drawer and continue working",
     "regenerateSummary": "Regenerate summary",
+    "openSession": "Open in session",
+    "floatSession": "Float",
     "assignedRoles": "Assigned roles",
     "noAssignedRoles": "No assigned roles.",
     "planSteps": "Plan steps",
