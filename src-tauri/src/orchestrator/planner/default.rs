@@ -94,12 +94,6 @@ fn build_role_dispatch_message(spec: &TaskSpec, role: &RoleAssignment) -> String
 
     format!(
         "[{}] {}\n\n\
-Execution mode (read carefully):\n\
-- This is a single-shot, non-interactive dispatch from the jishu orchestrator.\n\
-- Deliver your final answer in ONE response. Do NOT ask the user follow-up questions.\n\
-- Do NOT propose browser-based visualization, MCP tools, or interactive workflows.\n\
-- Do NOT request clarification — make reasonable assumptions and state them explicitly.\n\
-- All output must be text, suitable for an automated report.\n\n\
 Role contract:\n\
 Responsibilities:\n- {}\n\n\
 Acceptance:\n- {}\n\n\
@@ -107,6 +101,8 @@ Collaboration and rework rules:\n\
 - Read responsibilities and acceptance as a structured contract.\n\
 - If you consume or audit another role's output, name that role in your conclusion.\n\
 - If you find an issue, return a rework item with: responsible_role, reason, evidence, suggested_action.\n\
+- If you need user input to make progress, emit an approval_request event\n\
+  (see the jishu agent integration spec) — the HUB will surface it and relay your reply.\n\
 - jishu agent should route rework to:\n{}",
         role.role_name,
         spec.message,

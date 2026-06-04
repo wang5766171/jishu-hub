@@ -5,6 +5,7 @@ use crate::orchestrator::spec::{Step, StepKind, VerifyCheck};
 use crate::orchestrator::now_ms;
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 pub struct DefaultDispatcher;
 
@@ -121,19 +122,55 @@ fn dispatch_to_agent(
     let message_owned = prompt.to_string();
     let pipe_stdin = plugin.pipe_chat_stdin();
     let agent_id_for_spawn = agent_id_owned.clone();
+    let run_id_owned = ctx.run_id.to_string();
+
+    // Register an ActiveAgent BEFORE spawning so the user can send messages
+    // into the stdin channel as soon as the subprocess is up.
+    let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let active_agent = Arc::new(crate::orchestrator::agent_runs::ActiveAgent {
+        run_id: run_id_owned.clone(),
+        step_id: step_id.clone(),
+        started_at: now_ms(),
+        session_id: None,
+        stdin_tx: stdin_tx.clone(),
+        pending_approval: Arc::new(Mutex::new(None)),
+        cancelled: Arc::new(Mutex::new(false)),
+    });
+    crate::orchestrator::agent_runs::register(crate::orchestrator::agent_runs::global(), active_agent.clone());
 
     // Run the subprocess inside the tokio runtime.
+    let active_for_runtime = active_agent.clone();
+    let step_id_for_runtime = step_id.clone();
+    let agent_id_for_runtime = agent_id_owned.clone();
+    let run_id_for_runtime = run_id_owned.clone();
     let result = rt.block_on(async move {
         let mut child = cmd
             .spawn()
             .map_err(|e| DispatchError::SpawnFailed(format!("Spawn {agent_id_for_spawn}: {e}")))?;
 
-        // Write the message to stdin if the agent expects it
+        // Forward user messages from stdin_rx into the agent's stdin
         if pipe_stdin {
             if let Some(mut stdin) = child.stdin.take() {
                 use tokio::io::AsyncWriteExt;
+                // Write the initial message + newline
                 let _ = stdin.write_all(message_owned.as_bytes()).await;
-                let _ = stdin.shutdown().await;
+                let _ = stdin.write_all(b"\n").await;
+                let _ = stdin.flush().await;
+
+                // Pump messages from stdin_rx in a background task
+                let cancelled = active_for_runtime.cancelled.clone();
+                tokio::spawn(async move {
+                    use tokio::io::AsyncWriteExt as _;
+                    let mut stdin = stdin;
+                    while let Some(msg) = stdin_rx.recv().await {
+                        if *cancelled.lock().unwrap() {
+                            break;
+                        }
+                        let _ = stdin.write_all(msg.as_bytes()).await;
+                        let _ = stdin.write_all(b"\n").await;
+                        let _ = stdin.flush().await;
+                    }
+                });
             }
         }
 
@@ -162,16 +199,84 @@ fn dispatch_to_agent(
 
     // Emit collected events through trace + emitter (raw, no SubAgentEvent wrapping)
     let mut captured_session_id: Option<String> = None;
+    let mut last_approval: Option<crate::orchestrator::agent_runs::PendingApproval> = None;
     for event in events {
-        if let NormalizedEvent::SessionResolved { session_id } = &event {
-            captured_session_id = Some(session_id.clone());
+        match &event {
+            NormalizedEvent::SessionResolved { session_id } => {
+                captured_session_id = Some(session_id.clone());
+            }
+            NormalizedEvent::ApprovalRequest {
+                request_id,
+                approval_kind,
+                payload,
+            } => {
+                // Parse the question + options from the agent's payload
+                let question = payload
+                    .get("question")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| payload.get("prompt").and_then(|v| v.as_str()))
+                    .unwrap_or("Agent needs your input")
+                    .to_string();
+                let options: Vec<String> = payload
+                    .get("options")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let context = payload
+                    .get("context")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let approval = crate::orchestrator::agent_runs::PendingApproval {
+                    request_id: request_id.clone(),
+                    kind: format!("{:?}", approval_kind),
+                    question,
+                    options,
+                    context,
+                    raw_payload: payload.clone(),
+                };
+                last_approval = Some(approval.clone());
+                crate::orchestrator::agent_runs::set_approval(
+                    crate::orchestrator::agent_runs::global(),
+                    &run_id_for_runtime,
+                    &step_id_for_runtime,
+                    approval,
+                );
+            }
+            _ => {}
         }
         let _ = ctx.trace.append_event(&event);
         (ctx.emitter)(&event);
     }
 
+    // Unregister the active agent — the subprocess has exited
+    crate::orchestrator::agent_runs::unregister(
+        crate::orchestrator::agent_runs::global(),
+        &run_id_for_runtime,
+        &step_id_for_runtime,
+    );
+
     // Resolve display name from registry (e.g., "claude-code" -> "Claude Code")
     let display_name = ctx.registry.get(&agent_id_owned).map(|p| p.info().display_name);
+
+    // If the agent exited while there was a pending approval that wasn't
+    // answered, that's still a Completed subprocess exit. The HUB can
+    // surface the unanswered question via get_approval() before/after.
+    let status = if exit_status.success() {
+        StepStatus::Complete
+    } else {
+        StepStatus::Failed
+    };
+
+    // Always include the most recent pending_approval in output so the
+    // HUB can show the question even if the agent exited before the
+    // user replied.
+    let output = last_approval.map(|pa| serde_json::json!({
+        "approval": pa,
+    }));
 
     let step_finished = now_ms();
     Ok(StepOutcome {
@@ -179,17 +284,14 @@ fn dispatch_to_agent(
         role_id: role_id_owned,
         agent_id: agent_id_owned,
         agent_display_name: display_name,
-        status: if exit_status.success() {
-            StepStatus::Complete
-        } else {
-            StepStatus::Failed
-        },
-        output: None,
+        status,
+        output,
         session_id: captured_session_id,
         started_at: step_finished, // will be overwritten by execute()
         finished_at: step_finished,
         usage: UsageSummary::zero(),
-    ..Default::default()})
+        ..Default::default()
+    })
 }
 
 /// Execute a shell command within the project directory.

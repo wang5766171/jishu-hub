@@ -1726,6 +1726,41 @@ fn run_summarize(run_id: String, language: Option<String>) -> Result<(), String>
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
+fn run_send_message(run_id: String, step_id: String, message: String) -> Result<(), String> {
+    orchestrator::agent_runs::send_message(
+        orchestrator::agent_runs::global(),
+        &run_id,
+        &step_id,
+        &message,
+    )
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn run_get_approval(
+    run_id: String,
+    step_id: String,
+) -> Result<Option<serde_json::Value>, String> {
+    Ok(orchestrator::agent_runs::get_approval(
+        orchestrator::agent_runs::global(),
+        &run_id,
+        &step_id,
+    )
+    .and_then(|a| serde_json::to_value(a).ok()))
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn run_step_cancel(run_id: String, step_id: String) -> Result<(), String> {
+    orchestrator::agent_runs::cancel(
+        orchestrator::agent_runs::global(),
+        &run_id,
+        &step_id,
+    )
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
 fn run_delete(run_id: String) -> Result<(), String> {
     orchestrator::delete_run(&run_id)
 }
@@ -1860,6 +1895,9 @@ pub fn run() {
             run_execute_plan,
             run_delete,
             run_summarize,
+            run_send_message,
+            run_get_approval,
+            run_step_cancel,
             task_plan_skill_list,
             task_plan_skill_install,
             task_plan_generate_roles,

@@ -1,3 +1,4 @@
+pub mod agent_runs;
 pub mod daemon;
 pub mod dispatcher;
 pub mod planner;
@@ -427,11 +428,10 @@ CRITICAL RULES for the `prompt` field of each step:
 - Do NOT concatenate the task message to itself
 - Write the prompt as if explaining to the agent "here is what YOU should do for this step"
 
-Execution mode constraints (must include in every dispatch prompt):
-- Single-shot, non-interactive delivery
-- Do not ask follow-up questions
-- Do not propose browser-based tools
-- Make reasonable assumptions and state them
+Agents in this system are fully interactive. If an agent needs user input,
+it will emit an approval_request event and the HUB will surface the
+question. Do NOT add prompt instructions to suppress that — we want
+the user to be able to respond naturally through the HUB.
 
 Output schema (return ONLY a JSON array, no markdown fences):
 [
