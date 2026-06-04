@@ -307,25 +307,51 @@ pub async fn start(
         };
 
         // Bridge AgentEvent → PlanAgentEvent
+        // Also mirror the events into trace.jsonl so the HUB can
+        // tail the run via trace_tail() (or via plan_state.json
+        // for plan-only events).
         let events_tx_bridge = events_tx_for_task.clone();
-        let emit_bridge = move |event: AgentEvent| match event {
-            AgentEvent::TextDelta(d) => {
-                let _ = events_tx_bridge.send(PlanAgentEvent::TextDelta(d));
+        let run_id_trace = run_id_for_task.clone();
+        let emit_bridge = move |event: AgentEvent| {
+            // Trace to disk for tailing
+            if let Ok(store) = crate::orchestrator::RunStore::open() {
+                let trace_event = match &event {
+                    AgentEvent::TextDelta(d) => Some(crate::agent::normalized::NormalizedEvent::TextDelta { delta: d.clone() }),
+                    AgentEvent::ToolCallStarted { name, arguments } => Some(crate::agent::normalized::NormalizedEvent::ToolUseStart {
+                        call_id: uuid::Uuid::new_v4().to_string(),
+                        tool: name.clone(),
+                        input: arguments.clone(),
+                    }),
+                    AgentEvent::ToolCallFinished { name, result, is_error } => Some(crate::agent::normalized::NormalizedEvent::ToolUseResult {
+                        call_id: uuid::Uuid::new_v4().to_string(),
+                        output: serde_json::json!({ "tool": name, "result": result, "is_error": is_error }),
+                        is_error: *is_error,
+                    }),
+                    _ => None,
+                };
+                if let Some(ev) = trace_event {
+                    let _ = store.append_trace(&run_id_trace, &ev);
+                }
             }
-            AgentEvent::ToolCallStarted { name, arguments } => {
-                let _ = events_tx_bridge.send(PlanAgentEvent::ToolCallStarted { name, arguments });
+            match event {
+                AgentEvent::TextDelta(d) => {
+                    let _ = events_tx_bridge.send(PlanAgentEvent::TextDelta(d));
+                }
+                AgentEvent::ToolCallStarted { name, arguments } => {
+                    let _ = events_tx_bridge.send(PlanAgentEvent::ToolCallStarted { name, arguments });
+                }
+                AgentEvent::ToolCallFinished { name, result, is_error } => {
+                    let _ = events_tx_bridge.send(PlanAgentEvent::ToolCallFinished {
+                        name,
+                        result,
+                        is_error,
+                    });
+                }
+                AgentEvent::PlanReady(plan) => {
+                    let _ = events_tx_bridge.send(PlanAgentEvent::PlanReady(plan));
+                }
+                AgentEvent::Done => {}
             }
-            AgentEvent::ToolCallFinished { name, result, is_error } => {
-                let _ = events_tx_bridge.send(PlanAgentEvent::ToolCallFinished {
-                    name,
-                    result,
-                    is_error,
-                });
-            }
-            AgentEvent::PlanReady(plan) => {
-                let _ = events_tx_bridge.send(PlanAgentEvent::PlanReady(plan));
-            }
-            AgentEvent::Done => {}
         };
 
         let result = run_tool_loop(cfg, cancel_for_task.clone(), Box::new(emit_bridge)).await;

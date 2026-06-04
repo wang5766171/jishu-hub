@@ -209,6 +209,7 @@ export function TasksPage({
   const [timelineExpanded, setTimelineExpanded] = useState(true);
   const [timelineView, setTimelineView] = useState<"list" | "parallel">("list");
   const [timelineFilter, setTimelineFilter] = useState<string>("all");
+  const [planStatus, setPlanStatus] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -486,6 +487,46 @@ export function TasksPage({
       setError(String(err));
     }
   };
+
+  // Poll plan_state.json when the run is in Plan mode (status=Running,
+  // plan_state.status ∈ {pending, generating, plan_ready, ...}).
+  // This is how the HUB "sees" the LLM streaming — the LLM events
+  // land in plan_state.json via the PlanAgent's persistence step.
+  useEffect(() => {
+    if (!selectedRun) return;
+    if (selectedRun.result.status !== "running") return;
+    // Cheap heuristic: if the task is Plan kind and there are no
+    // step outcomes yet, treat it as plan generation in progress.
+    const isPlan = selectedRun.plan.length === 0 &&
+      (selectedRun.result as { summary?: string | null }).summary === undefined;
+    if (!isPlan) return;
+    const runId = selectedRun.run_id;
+    let cancelled = false;
+    const fetchState = async () => {
+      try {
+        const state = await invokeCommand<{
+          status: string;
+          plan: unknown;
+        } | null>("plan_get_state", { runId });
+        if (cancelled) return;
+        if (state) {
+          setPlanStatus(state.status);
+          if (state.plan) {
+            // Plan just got committed — reload the run to pick it up
+            loadRun(runId).catch(console.error);
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
+    fetchState();
+    const interval = setInterval(fetchState, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [selectedRun?.run_id, selectedRun?.result.status]);
 
   const updateRole = (index: number, patch: Partial<RoleDraft>) => {
     setRoles((current) => current.map((role, i) => (i === index ? { ...role, ...patch } : role)));
@@ -912,6 +953,39 @@ export function TasksPage({
                 <div className="rounded-md border border-blue-500/40 bg-blue-500/5 px-3 py-2 text-xs text-blue-700 dark:text-blue-300">
                   ⏳ {t("tasks.running")}
                 </div>
+              )}
+
+              {/* Plan Generation View — visible when run is in Plan mode
+                  and still running. Shows live status from the
+                  PlanAgent (LLM streaming + tool calls). */}
+              {selectedRun.result.status === "running" &&
+                selectedRun.plan.length === 0 && (
+                <section className="rounded-lg border-2 border-violet-500/40 bg-violet-500/5 p-4">
+                  <h4 className="flex items-center gap-2 text-sm font-semibold text-violet-700 dark:text-violet-300">
+                    <Sparkles className="h-4 w-4" />
+                    {t("tasks.planGenerating")}
+                  </h4>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {planStatus
+                      ? `${t("tasks.status." + planStatus)}…`
+                      : t("tasks.awaitingLLM")}
+                  </p>
+                  <div className="mt-3 flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        invokeCommand("plan_cancel", { runId: selectedRun.run_id })
+                          .then(() => {
+                            loadRun(selectedRun.run_id).catch(console.error);
+                          })
+                          .catch(console.error);
+                      }}
+                    >
+                      {t("tasks.cancelPlan")}
+                    </Button>
+                  </div>
+                </section>
               )}
 
               {/* Pending approvals — one card per agent question */}

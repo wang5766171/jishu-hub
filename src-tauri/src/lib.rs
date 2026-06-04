@@ -1771,6 +1771,29 @@ fn trace_tail(run_id: String, byte_offset: u64) -> Result<serde_json::Value, Str
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
+fn plan_get_state(run_id: String) -> Result<serde_json::Value, String> {
+    use orchestrator::plan_agent;
+    // 1. In-memory live agent (currently running)
+    if let Some(agent) = plan_agent::get(&run_id) {
+        let state = plan_agent::snapshot_state(&agent.state);
+        return Ok(serde_json::to_value(&state).map_err(|e| e.to_string())?);
+    }
+    // 2. Persisted state (restart-attached)
+    if let Some(state) = plan_agent::read_state_from_disk(&run_id) {
+        return Ok(serde_json::to_value(&state).map_err(|e| e.to_string())?);
+    }
+    Ok(serde_json::Value::Null)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn plan_cancel(run_id: String) -> Result<(), String> {
+    orchestrator::plan_agent::cancel_agent(&run_id);
+    Ok(())
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
 fn run_delete(run_id: String) -> Result<(), String> {
     orchestrator::delete_run(&run_id)
 }
@@ -1909,6 +1932,8 @@ pub fn run() {
             run_get_approval,
             run_step_cancel,
             trace_tail,
+            plan_get_state,
+            plan_cancel,
             task_plan_skill_list,
             task_plan_skill_install,
             task_plan_generate_roles,
