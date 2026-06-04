@@ -109,13 +109,15 @@ impl Default for StepStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StepStatus {
+    /// Step is currently running (interim state written incrementally).
+    Running,
     /// Step completed successfully.
     Complete,
     /// Step failed (agent error, non-zero exit, verification failed).
     Failed,
     /// Step skipped (dependency failed, or cancelled before execution).
     Skipped,
-    /// Write step with `requires_approval=true` — paused for user review.
+    /// Step is paused waiting for user approval / clarification.
     AwaitingApproval,
 }
 

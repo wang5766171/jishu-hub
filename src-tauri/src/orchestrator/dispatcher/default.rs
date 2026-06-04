@@ -1,8 +1,9 @@
 use super::{DispatchContext, DispatchError, Dispatcher};
 use crate::agent::{ChatRequest, NormalizedEvent};
-use crate::orchestrator::result::{StepOutcome, StepStatus, UsageSummary};
+use crate::orchestrator::result::{RunResult, RunStatus, StepOutcome, StepStatus, UsageSummary};
 use crate::orchestrator::spec::{Step, StepKind, VerifyCheck};
 use crate::orchestrator::now_ms;
+use crate::orchestrator::RunStore;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -66,7 +67,22 @@ impl Dispatcher for DefaultDispatcher {
     }
 }
 
-/// Resolve role_id → agent_id from spec, then dispatch to agent subprocess.
+/// Persist a partial step outcome so the HUB can show real-time progress
+/// (currently-running step, awaiting-approval, etc.) via its 2s poll.
+fn persist_step_outcome(run_id: &str, outcome: &StepOutcome) {
+    let Ok(store) = RunStore::open() else { return };
+    let mut result = match store.read_result(run_id) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    // Replace or append this step's outcome
+    if let Some(existing) = result.steps.iter_mut().find(|s| s.step_id == outcome.step_id) {
+        *existing = outcome.clone();
+    } else {
+        result.steps.push(outcome.clone());
+    }
+    let _ = store.write_result(run_id, &result);
+}
 fn dispatch_to_agent(
     role_id: &str,
     prompt: &str,
@@ -98,10 +114,30 @@ fn dispatch_to_agent(
         .get(&agent_id)
         .ok_or_else(|| DispatchError::AgentNotFound(agent_id.clone()))?;
 
+    // Compose the final message sent to the agent:
+    //   1. Always prepend the original task message as context (so the
+    //      agent knows what to work on, even if the LLM plan's prompt
+    //      forgot to include it or got truncated).
+    //   2. Then the step prompt from the plan.
+    //   3. Skip duplication if the step prompt already starts with the
+    //      task message verbatim.
+    let composed_message = if prompt.trim_start().starts_with(ctx.spec.message.trim_start()) {
+        // Step prompt already contains the task — use as-is
+        prompt.to_string()
+    } else if prompt.trim().is_empty() {
+        // Defensive: empty step prompt — fall back to task message
+        ctx.spec.message.clone()
+    } else {
+        format!(
+            "Task context (the user originally asked):\n{}\n\nStep instructions:\n{}",
+            ctx.spec.message, prompt,
+        )
+    };
+
     let req = ChatRequest {
         project_path: project.to_string(),
         session_id: session.clone(),
-        message: prompt.to_string(),
+        message: composed_message,
     };
 
     let mut cmd = plugin.build_chat_command(req);
@@ -137,6 +173,23 @@ fn dispatch_to_agent(
         cancelled: Arc::new(Mutex::new(false)),
     });
     crate::orchestrator::agent_runs::register(crate::orchestrator::agent_runs::global(), active_agent.clone());
+
+    // Persist a "Running" partial outcome immediately so the HUB's 2s poll
+    // can show this step as in-progress (instead of just "Running" for the
+    // whole run with no per-step visibility).
+    let display_name = ctx.registry.get(&agent_id_owned).map(|p| p.info().display_name);
+    persist_step_outcome(&run_id_owned, &StepOutcome {
+        step_id: step_id.clone(),
+        role_id: role_id_owned.clone(),
+        agent_id: agent_id_owned.clone(),
+        agent_display_name: display_name.clone(),
+        status: StepStatus::Running,
+        output: None,
+        session_id: None,
+        started_at: now_ms(),
+        finished_at: 0,
+        usage: UsageSummary::zero(),
+    ..Default::default()});
 
     // Run the subprocess inside the tokio runtime.
     let active_for_runtime = active_agent.clone();
@@ -243,8 +296,23 @@ fn dispatch_to_agent(
                     crate::orchestrator::agent_runs::global(),
                     &run_id_for_runtime,
                     &step_id_for_runtime,
-                    approval,
+                    approval.clone(),
                 );
+                // Persist partial step outcome so HUB shows AwaitingApproval
+                // status (with question + options) while agent waits.
+                let approval_json = serde_json::to_value(&approval).unwrap_or(serde_json::Value::Null);
+                persist_step_outcome(&run_id_for_runtime, &StepOutcome {
+                    step_id: step_id_for_runtime.clone(),
+                    role_id: role_id_owned.clone(),
+                    agent_id: agent_id_for_runtime.clone(),
+                    agent_display_name: display_name.clone(),
+                    status: StepStatus::AwaitingApproval,
+                    output: Some(serde_json::json!({ "approval": approval_json })),
+                    session_id: captured_session_id.clone(),
+                    started_at: now_ms(),
+                    finished_at: 0,
+                    usage: UsageSummary::zero(),
+                ..Default::default()});
             }
             _ => {}
         }
