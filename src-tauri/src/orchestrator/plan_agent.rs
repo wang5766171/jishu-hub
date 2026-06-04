@@ -244,9 +244,11 @@ pub fn build_tools(skill_id: &str) -> Vec<ToolDef> {
     ]
 }
 
-/// Start a PlanAgent for a run. Spawns background task, returns
-/// immediately with a handle.
-pub async fn start(
+/// Start a PlanAgent for a run. Spawns a dedicated background thread
+/// (with its own tokio runtime) so it can be invoked from any caller —
+/// sync Tauri command, test, CLI, daemon — without depending on the
+/// caller's thread having a tokio runtime entered.
+pub fn start(
     run_id: String,
     skill_id: String,
     initial_user_prompt: String,
@@ -271,14 +273,24 @@ pub async fn start(
         events_tx: events_tx.clone(),
     });
 
+    // Persist initial state via a one-shot current_thread runtime so we
+    // don't depend on a tokio runtime being entered here.
     {
-        let g = state.lock().await;
-        persist_state(&run_id, &*g);
+        let state_for_persist = state.clone();
+        let run_id_for_persist = run_id.clone();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("Failed to build tokio runtime: {e}"))?;
+        rt.block_on(async move {
+            let g = state_for_persist.lock().await;
+            persist_state(&run_id_for_persist, &*g);
+        });
     }
 
     register(agent.clone());
 
-    // Spawn background task
+    // Spawn dedicated background thread with its own tokio runtime.
     let state_for_task = state.clone();
     let events_tx_for_task = events_tx.clone();
     let cancel_for_task = cancel.clone();
@@ -286,7 +298,29 @@ pub async fn start(
     let skill_id_for_task = skill_id.clone();
     let initial_user_prompt_for_task = initial_user_prompt.clone();
 
-    tokio::spawn(async move {
+    std::thread::Builder::new()
+        .name(format!("plan-agent-{}", run_id_for_task))
+        .spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                let err_msg = "Failed to build tokio runtime".to_string();
+                {
+                    let mut g = state_for_task.blocking_lock();
+                    g.status = PlanStatus::Failed;
+                    g.error = Some(err_msg.clone());
+                    g.last_event_ms = now_ms();
+                    persist_state(&run_id_for_task, &*g);
+                }
+                let _ = events_tx_for_task.send(PlanAgentEvent::Done {
+                    status: PlanStatus::Failed,
+                    error: Some(err_msg),
+                });
+                unregister(&run_id_for_task);
+                return;
+            };
+            rt.block_on(async move {
         // Update status
         {
             let mut g = state_for_task.lock().await;
@@ -423,9 +457,11 @@ pub async fn start(
                     error: Some(e),
                 });
             }
-        }
-        unregister(&run_id_for_task);
-    });
+            }
+            unregister(&run_id_for_task);
+        });
+    })
+    .map_err(|e| format!("Failed to spawn plan-agent thread: {e}"))?;
 
     Ok(agent)
 }
