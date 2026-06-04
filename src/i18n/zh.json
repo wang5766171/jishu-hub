@@ -418,6 +418,8 @@
     "planGenerating": "Plan 生成中（LLM 调用中）",
     "awaitingLLM": "正在等待 LLM 响应…",
     "cancelPlan": "停止 Plan 生成",
+    "errorDetail": "错误详情",
+    "errorDetailHint": "复制错误信息以便排查。可参考 ~/.jishu-hub/runs/<run_id>/trace.jsonl 查看完整事件流。",
     "assignedRoles": "已分配角色",
     "noAssignedRoles": "暂无已分配角色。",
     "planSteps": "计划步骤",

@@ -948,6 +948,21 @@ export function TasksPage({
                 )}
               </section>
 
+              {/* Error detail — shown ABOVE AI summary when run failed */}
+              {selectedRun.result.status === "error" && selectedRun.result.error && (
+                <section className="rounded-lg border-2 border-red-500/60 bg-red-500/5 p-4">
+                  <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase text-red-700 dark:text-red-300">
+                    ⚠ {t("tasks.errorDetail")}
+                  </h4>
+                  <pre className="mt-2 whitespace-pre-wrap break-all text-xs text-red-700 dark:text-red-300 font-mono">
+                    {selectedRun.result.error}
+                  </pre>
+                  <p className="mt-2 text-[10px] text-muted-foreground">
+                    {t("tasks.errorDetailHint")}
+                  </p>
+                </section>
+              )}
+
               {/* Running indicator */}
               {["running", "queued"].includes(selectedRun.result.status) && (
                 <div className="rounded-md border border-blue-500/40 bg-blue-500/5 px-3 py-2 text-xs text-blue-700 dark:text-blue-300">

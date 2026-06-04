@@ -418,6 +418,8 @@
     "planGenerating": "Plan generating (LLM calling)",
     "awaitingLLM": "Awaiting LLM response…",
     "cancelPlan": "Stop Plan generation",
+    "errorDetail": "Error detail",
+    "errorDetailHint": "Copy the error for debugging. Check ~/.jishu-hub/runs/<run_id>/trace.jsonl for the full event stream.",
     "assignedRoles": "Assigned roles",
     "noAssignedRoles": "No assigned roles.",
     "planSteps": "Plan steps",
