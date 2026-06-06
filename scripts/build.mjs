@@ -1,9 +1,19 @@
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, copyFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+// 1. Build pi_agent_rust runtime
+const piAgentRustDir = resolve(root, "third_party", "pi_agent_rust");
+if (existsSync(piAgentRustDir)) {
+  const cargoBuild = spawnSync("cargo", ["build", "--release", "--bin", "pi"], { cwd: piAgentRustDir, stdio: "inherit", shell: process.platform === "win32" });
+  if (cargoBuild.status !== 0) process.exit(cargoBuild.status ?? 1);
+  const source = resolve(piAgentRustDir, "target", "release", "pi.exe");
+  const target = resolve(root, "src-tauri", "bin", "pi-x86_64-pc-windows-msvc.exe");
+  copyFileSync(source, target);
+}
 
 const steps = [
   ["node", ["./node_modules/typescript/bin/tsc", "-p", "tsconfig.app.json", "--noEmit", "--incremental", "false"]],

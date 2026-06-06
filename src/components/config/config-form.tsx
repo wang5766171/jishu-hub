@@ -39,10 +39,10 @@ const selectClass =
 interface ConfigFormProps {
   config: ClaudeConfig;
   onSaved: (config: ClaudeConfig) => void;
-  agentId?: string | null;
+  schemaId: string;
 }
 
-export function ConfigForm({ config: initialConfig, onSaved, agentId }: ConfigFormProps) {
+export function ConfigForm({ config: initialConfig, onSaved, schemaId }: ConfigFormProps) {
   const { t } = useTranslation();
   const [config, setConfig] = useState<ClaudeConfig>(initialConfig);
   const [saving, setSaving] = useState(false);
@@ -199,7 +199,7 @@ export function ConfigForm({ config: initialConfig, onSaved, agentId }: ConfigFo
   };
 
   const hasChanges = JSON.stringify(config) !== JSON.stringify(initialConfig);
-  const isClaudeLike = !agentId || agentId === "claude-code";
+  const isClaudeLike = schemaId === "claude-config";
   const modelOptions = MODEL_OPTIONS.some((m) => m.value === config.model)
     ? MODEL_OPTIONS
     : config.model
