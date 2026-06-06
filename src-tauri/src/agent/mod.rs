@@ -26,6 +26,7 @@ pub struct AgentInfo {
     pub display_name: String,
     pub version: String,
     pub icon: String,
+    pub logo_path: Option<String>,
     pub enabled: bool,
 }
 
@@ -161,6 +162,7 @@ impl AgentRegistry {
                     id: info.id.clone(),
                     display_name: info.display_name.clone(),
                     icon: info.icon.clone(),
+                    logo_path: info.logo_path.clone(),
                     capabilities: caps.bits().to_string(),
                     health,
                     install_hint: a.install_hint(),

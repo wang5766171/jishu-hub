@@ -3,6 +3,7 @@ export interface AgentInfo {
   display_name: string;
   version: string;
   icon: string;
+  logo_path: string | null;
   enabled: boolean;
 }
 
