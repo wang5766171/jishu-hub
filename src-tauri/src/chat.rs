@@ -51,7 +51,7 @@ pub async fn send_message(
         message.len()
     );
 
-    let (agent_id, mut command, pipe_stdin) = {
+    let (agent_id, mut command, pipe_stdin, consumes_stdin) = {
         let s = state
             .lock()
             .map_err(|_| "App state lock poisoned".to_string())?;
@@ -62,7 +62,12 @@ pub async fn send_message(
             session_id: session_id.clone(),
             message: message.clone(),
         });
-        (agent_id, command, active.pipe_chat_stdin())
+        (
+            agent_id,
+            command,
+            active.pipe_chat_stdin(),
+            active.consumes_stdin_message(),
+        )
     };
 
     // Check if this agent uses ACP runtime
@@ -91,6 +96,23 @@ pub async fn send_message(
 
     let pid = child.id().unwrap_or(0);
     let sid = session_id.unwrap_or_else(|| format!("pending-{}", pid));
+
+    // For agents whose protocol reads the prompt from stdin to EOF
+    // (e.g. jishu-self's agent-bridge), write the message and close
+    // stdin before returning. Without this the child sits forever in
+    // stdin.read and the GUI shows "thinking" with no output.
+    if consumes_stdin {
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            if let Err(e) = stdin.write_all(message.as_bytes()).await {
+                return Err(format!("Failed to write prompt to {agent_id} stdin: {e}"));
+            }
+            if let Err(e) = stdin.shutdown().await {
+                log::warn!("Failed to shutdown {agent_id} stdin: {e}");
+            }
+        }
+    }
+
     let stdin = child
         .stdin
         .take()
