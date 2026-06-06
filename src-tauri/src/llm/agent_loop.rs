@@ -26,8 +26,7 @@ pub use crate::llm::message::LlmTool as _LlmTool;
 pub type AsyncToolHandler = Arc<
     dyn Fn(
             serde_json::Value,
-        )
-            -> Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
         + Send
         + Sync,
 >;
@@ -62,9 +61,16 @@ pub enum AgentEvent {
     /// LLM is generating prose. HUB shows this in the "thinking" area.
     TextDelta(String),
     /// LLM decided to call a tool. HUB shows "calling X with Y".
-    ToolCallStarted { name: String, arguments: serde_json::Value },
+    ToolCallStarted {
+        name: String,
+        arguments: serde_json::Value,
+    },
     /// Tool returned a result. HUB shows "X returned: Y".
-    ToolCallFinished { name: String, result: String, is_error: bool },
+    ToolCallFinished {
+        name: String,
+        result: String,
+        is_error: bool,
+    },
     /// Plan generation completed (LLM emitted finish_plan tool).
     PlanReady(serde_json::Value),
     /// Run finished — either plan was set or user cancelled or error.
@@ -97,7 +103,8 @@ pub async fn run_tool_loop(
         .get_active()
         .ok_or_else(|| "No active model configured".to_string())?
         .clone();
-    let provider = create_provider(&preset).map_err(|e| format!("Cannot create LLM provider: {e}"))?;
+    let provider =
+        create_provider(&preset).map_err(|e| format!("Cannot create LLM provider: {e}"))?;
 
     // Build LLM tools from the defs
     let llm_tools: Vec<LlmTool> = cfg
@@ -168,36 +175,38 @@ pub async fn run_tool_loop(
         let emit_arc_for_call = emit_arc.clone();
 
         let result = {
-            let local_emitter = move |event: NormalizedEvent| {
-                match &event {
-                    NormalizedEvent::TextDelta { delta } => {
-                        if let Ok(mut t) = text_buf_clone.try_lock() {
-                            t.push_str(delta);
-                        }
-                        if let Ok(mut g) = emit_arc_for_call.lock() {
-                            (g)(AgentEvent::TextDelta(delta.clone()));
-                        }
+            let local_emitter = move |event: NormalizedEvent| match &event {
+                NormalizedEvent::TextDelta { delta } => {
+                    if let Ok(mut t) = text_buf_clone.try_lock() {
+                        t.push_str(delta);
                     }
-                    NormalizedEvent::ToolUseStart { call_id, tool, input } => {
-                        if let Ok(mut g) = tool_calls_buf_clone.try_lock() {
-                            g.push(LlmToolCall {
-                                id: call_id.clone(),
-                                name: tool.clone(),
-                                arguments: input.clone(),
-                            });
-                        }
-                        if let Ok(mut g) = emit_arc_for_call.lock() {
-                            (g)(AgentEvent::ToolCallStarted {
-                                name: tool.clone(),
-                                arguments: input.clone(),
-                            });
-                        }
+                    if let Ok(mut g) = emit_arc_for_call.lock() {
+                        (g)(AgentEvent::TextDelta(delta.clone()));
                     }
-                    NormalizedEvent::Error { message, .. } => {
-                        eprintln!("[llm_agent] LLM error: {message}");
-                    }
-                    _ => {}
                 }
+                NormalizedEvent::ToolUseStart {
+                    call_id,
+                    tool,
+                    input,
+                } => {
+                    if let Ok(mut g) = tool_calls_buf_clone.try_lock() {
+                        g.push(LlmToolCall {
+                            id: call_id.clone(),
+                            name: tool.clone(),
+                            arguments: input.clone(),
+                        });
+                    }
+                    if let Ok(mut g) = emit_arc_for_call.lock() {
+                        (g)(AgentEvent::ToolCallStarted {
+                            name: tool.clone(),
+                            arguments: input.clone(),
+                        });
+                    }
+                }
+                NormalizedEvent::Error { message, .. } => {
+                    eprintln!("[llm_agent] LLM error: {message}");
+                }
+                _ => {}
             };
             provider
                 .stream_chat(req, Box::new(local_emitter), &cancel_for_emit)
