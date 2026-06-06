@@ -2,47 +2,51 @@ import { useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { ConfigForm } from "@/components/config/config-form";
-import { JishuConfigForm } from "@/components/config/jishu-config-form";
-import { RawConfigEditor } from "@/components/config/raw-config-editor";
 import { TemplateManager } from "@/components/config/template-manager";
 import { BackupManager } from "@/components/config/backup-manager";
 import { ModelManager } from "@/components/config/model-manager";
+import { RawConfigEditor } from "@/components/config/raw-config-editor";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Download, Upload } from "lucide-react";
 import { useAgent } from "@/agents";
-import type { ClaudeConfig, JishuConfig } from "@/types";
+import type { ClaudeConfig } from "@/types";
 
 interface RawConfigInfo {
   content: string;
   format: string;
 }
 
-export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "templates" | "models" | "backups" }) {
+export function ConfigPage({
+  initialTab = "edit",
+}: {
+  initialTab?: "edit" | "templates" | "backups";
+}) {
   const { t } = useTranslation();
-  const { activeId } = useAgent();
+  const { activeId, active } = useAgent();
   const isJishuSelf = activeId === "jishu-self";
   const agentRefreshKey = activeId ? Array.from(activeId).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) : 0;
 
-  const { data: rawConfigValue, loading, error: configError, refetch } = useInvoke<unknown>(
+  // jishu-self: configuration is `~/.jishu-agent/models.json` and is
+  // edited via ModelManager. Codex uses a native TOML config (not a
+  // typed JSON config), so it goes through the raw editor. Other
+  // agents: load_config returns their own typed config (ClaudeConfig,
+  // …) which ConfigForm renders as a structured form.
+  const isCodex = activeId === "codex";
+  const useRawEditor = isCodex && !isJishuSelf;
+  const { data: config, loading, refetch } = useInvoke<ClaudeConfig>(
     "load_config",
     undefined,
-    agentRefreshKey,
+    isJishuSelf || useRawEditor ? 0 : agentRefreshKey,
   );
-  const useRaw = !!configError;
-  const { data: rawConfig, refetch: refetchRaw } = useInvoke<RawConfigInfo>("load_raw_config", undefined, useRaw ? agentRefreshKey : 0);
-  const [activeTab, setActiveTab] = useState<"edit" | "templates" | "models" | "backups">(
-    ["edit", "templates", "models", "backups"].includes(initialTab) ? initialTab : "edit"
+  const { data: rawConfig, refetch: refetchRaw } = useInvoke<RawConfigInfo>(
+    "load_raw_config",
+    undefined,
+    useRawEditor ? agentRefreshKey : 0,
   );
-
-  // Coerce to a typed object based on the active agent. Frontend treats Value
-  // as opaque; jishu-self uses its own JishuConfig schema, others use ClaudeConfig.
-  const config: ClaudeConfig | null = isJishuSelf
-    ? null
-    : (rawConfigValue as ClaudeConfig | null | undefined) ?? null;
-  const jishuConfig: JishuConfig | null = isJishuSelf
-    ? ((rawConfigValue as JishuConfig | null | undefined) ?? null)
-    : null;
+  const [activeTab, setActiveTab] = useState<
+    "edit" | "templates" | "backups"
+  >(initialTab);
 
   const handleConfigSaved = useCallback(() => {
     refetch();
@@ -54,11 +58,7 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
 
   const handleExport = async () => {
     try {
-      if (!useRaw) {
-        await invokeCommand("export_config_dialog");
-      } else {
-        await invokeCommand("export_raw_config_dialog");
-      }
+      await invokeCommand("export_config_dialog");
     } catch (err) {
       if (!String(err).includes("USER_CANCELLED")) {
         console.error("Export failed:", err);
@@ -67,7 +67,6 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
   };
 
   const handleImport = async () => {
-    if (useRaw) return;
     try {
       await invokeCommand("import_config_dialog");
       refetch();
@@ -78,17 +77,35 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
     }
   };
 
-  if (loading || (useRaw && !rawConfig)) {
-    return <Skeleton className="h-64" />;
+  // jishu-self path: render the unified Models editor directly (it
+  // already exposes a JSON editor + active picker, which is the full
+  // configuration surface for this agent).
+  if (isJishuSelf) {
+    return (
+      <div className="flex flex-col h-full p-6">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-semibold">{t("config.title")}</h2>
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto pt-4">
+          <ModelManager onChanged={refreshAfterModelChange} />
+        </div>
+      </div>
+    );
   }
 
-  // Agents without structured config support: show native config editor
-  if (useRaw && rawConfig) {
+  // Codex uses a native TOML config — show it in the raw editor
+  // with a `set_raw_config` save path.
+  if (useRawEditor) {
+    if (!rawConfig) {
+      return <Skeleton className="h-64" />;
+    }
     return (
       <div className="flex flex-col h-full p-6">
         <div className="mb-4">
           <h2 className="text-xl font-semibold">{t("config.title")}</h2>
-          <p className="text-sm text-muted-foreground mt-1">{t("config.nativeFormatHint")}</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            {t("config.nativeFormatHint")}
+          </p>
         </div>
         <div className="flex-1 min-h-0">
           <RawConfigEditor
@@ -101,28 +118,33 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
     );
   }
 
-  // Structured config (e.g. Claude Code, OpenCode): show form with templates & backups
-  if (!isJishuSelf && !config) {
-    return <div className="text-muted-foreground">{t("config.loadFailed")}</div>;
+  // Other agents: load_config returns the agent's own typed config
+  // (ClaudeConfig, etc.) which ConfigForm renders as a structured
+  // form. If the load hasn't finished yet, show a skeleton.
+  if (loading) {
+    return <Skeleton className="h-64" />;
   }
-  if (isJishuSelf && !jishuConfig) {
+
+  if (!config) {
     return <div className="text-muted-foreground">{t("config.loadFailed")}</div>;
   }
 
-  const tabs: Array<{ key: "edit" | "templates" | "models" | "backups"; label: string }> = [
+  const tabs: Array<{ key: "edit" | "templates" | "backups"; label: string }> = [
     { key: "edit", label: t("config.editConfig") },
     { key: "templates", label: t("config.templates") },
+    { key: "backups", label: t("config.backups") },
   ];
-  if (!isJishuSelf) {
-    tabs.push({ key: "models", label: t("config.models") });
-  }
-  tabs.push({ key: "backups", label: t("config.backups") });
 
   return (
     <div className="flex flex-col h-full p-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-semibold">{t("config.title")}</h2>
+          {active && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {active.display_name}
+            </p>
+          )}
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={handleExport}>
@@ -156,17 +178,10 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
       {/* Tab content — scrollable */}
       <div className="flex-1 min-h-0 overflow-y-auto pt-4">
         {activeTab === "edit" && (
-          isJishuSelf && jishuConfig ? (
-            <JishuConfigForm config={jishuConfig} onSaved={handleConfigSaved} />
-          ) : (
-            config && <ConfigForm config={config} onSaved={handleConfigSaved} agentId={activeId} />
-          )
+          <ConfigForm config={config} onSaved={handleConfigSaved} />
         )}
         {activeTab === "templates" && (
           <TemplateManager onApplied={refetch} />
-        )}
-        {activeTab === "models" && (
-          <ModelManager onChanged={refetch} />
         )}
         {activeTab === "backups" && (
           <BackupManager onRestored={refetch} />
@@ -174,4 +189,10 @@ export function ConfigPage({ initialTab = "edit" }: { initialTab?: "edit" | "tem
       </div>
     </div>
   );
+}
+
+function refreshAfterModelChange() {
+  // Models are loaded by ModelManager from the Rust side directly via
+  // get_models_config / set_models_config / get_active / set_active.
+  // Nothing in this page needs to refetch — the change is local.
 }

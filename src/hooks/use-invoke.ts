@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 interface UseInvokeResult<T> {
   data: T | null;
@@ -13,8 +13,14 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Bumped on every fetch invocation. Old in-flight promises that
+  // resolve after a newer one started are ignored, so a slow
+  // claude-code fetch can't overwrite a faster codex fetch's result
+  // when the user switches agents.
+  const runIdRef = useRef(0);
 
   const fetch = useCallback((silent?: boolean): Promise<T> => {
+    const runId = ++runIdRef.current;
     if (!silent) setLoading(true);
     setError(null);
     if (!command) {
@@ -24,11 +30,13 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
     }
     return invoke<T>(command, args)
       .then((result) => {
+        if (runId !== runIdRef.current) return result;
         setData(result);
         setLoading(false);
         return result;
       })
       .catch((err) => {
+        if (runId !== runIdRef.current) throw err;
         setError(String(err));
         setLoading(false);
         throw err;
