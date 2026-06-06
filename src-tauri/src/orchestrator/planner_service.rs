@@ -56,7 +56,7 @@ pub enum PlanStatus {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum PlanAgentEvent {
+pub enum PlannerEvent {
     TextDelta(String),
     ToolCallStarted {
         name: String,
@@ -74,16 +74,16 @@ pub enum PlanAgentEvent {
     },
 }
 
-/// Live PlanAgent for one run. Holds shared state + cancel token +
+/// Live JishuPlannerService for one run. Holds shared state + cancel token +
 /// an events channel the HUB subscribes to.
-pub struct PlanAgent {
+pub struct JishuPlannerService {
     pub state: Arc<Mutex<PlanState>>,
     pub cancel: CancelToken,
-    pub events_tx: mpsc::UnboundedSender<PlanAgentEvent>,
+    pub events_tx: mpsc::UnboundedSender<PlannerEvent>,
 }
 
 /// Global registry of live plan agents, keyed by run_id.
-pub type PlanRegistry = Arc<std::sync::Mutex<HashMap<String, Arc<PlanAgent>>>>;
+pub type PlanRegistry = Arc<std::sync::Mutex<HashMap<String, Arc<JishuPlannerService>>>>;
 
 static GLOBAL_PLANS: std::sync::OnceLock<PlanRegistry> = std::sync::OnceLock::new();
 
@@ -91,7 +91,7 @@ pub fn global_plans() -> &'static PlanRegistry {
     GLOBAL_PLANS.get_or_init(|| Arc::new(std::sync::Mutex::new(HashMap::new())))
 }
 
-pub fn register(plan: Arc<PlanAgent>) {
+pub fn register(plan: Arc<JishuPlannerService>) {
     let key = plan.state.clone();
     // The state is a tokio Mutex; use blocking snapshot to extract run_id.
     let key_id = snapshot_state(&key).run_id;
@@ -102,7 +102,7 @@ pub fn unregister(run_id: &str) {
     global_plans().lock().unwrap().remove(run_id);
 }
 
-pub fn get(run_id: &str) -> Option<Arc<PlanAgent>> {
+pub fn get(run_id: &str) -> Option<Arc<JishuPlannerService>> {
     global_plans().lock().unwrap().get(run_id).cloned()
 }
 
@@ -209,6 +209,7 @@ pub fn build_tools(skill_id: &str) -> Vec<ToolDef> {
                 "skill_id": skill_id_inner,
                 "name": skill.name,
                 "description": skill.description,
+                "workflow_hints": skill.workflow_hints,
                 "roles": skill.roles,
             });
             serde_json::to_string_pretty(&manifest).map_err(|e| format!("Serialize: {e}"))
@@ -320,7 +321,7 @@ fn update_run_result_with_store(
     store.write_result(run_id, &result)
 }
 
-/// Start a PlanAgent for a run. Spawns a dedicated background thread
+/// Start a JishuPlannerService for a run. Spawns a dedicated background thread
 /// (with its own tokio runtime) so it can be invoked from any caller —
 /// sync Tauri command, test, CLI, daemon — without depending on the
 /// caller's thread having a tokio runtime entered.
@@ -328,7 +329,7 @@ pub fn start(
     run_id: String,
     skill_id: String,
     initial_user_prompt: String,
-) -> Result<Arc<PlanAgent>, String> {
+) -> Result<Arc<JishuPlannerService>, String> {
     let store = RunStore::open()?;
     start_in_root(
         run_id,
@@ -343,7 +344,7 @@ pub fn start_in_root(
     skill_id: String,
     initial_user_prompt: String,
     store_root: PathBuf,
-) -> Result<Arc<PlanAgent>, String> {
+) -> Result<Arc<JishuPlannerService>, String> {
     let plan_session_id = format!("plan_{}", now_ms());
     let state = Arc::new(Mutex::new(PlanState {
         run_id: run_id.clone(),
@@ -356,9 +357,9 @@ pub fn start_in_root(
     }));
 
     let cancel = CancelToken::new();
-    let (events_tx, _events_rx) = mpsc::unbounded_channel::<PlanAgentEvent>();
+    let (events_tx, _events_rx) = mpsc::unbounded_channel::<PlannerEvent>();
 
-    let agent = Arc::new(PlanAgent {
+    let agent = Arc::new(JishuPlannerService {
         state: state.clone(),
         cancel: cancel.clone(),
         events_tx: events_tx.clone(),
@@ -412,7 +413,7 @@ pub fn start_in_root(
                     RunStatus::Error,
                     Some(err_msg.clone()),
                 );
-                let _ = events_tx_for_task.send(PlanAgentEvent::Done {
+                let _ = events_tx_for_task.send(PlannerEvent::Done {
                     status: PlanStatus::Failed,
                     error: Some(err_msg),
                 });
@@ -439,7 +440,7 @@ pub fn start_in_root(
             max_iterations: 16,
         };
 
-        // Bridge AgentEvent → PlanAgentEvent
+        // Bridge AgentEvent → PlannerEvent
         // Also mirror the events into trace.jsonl so the HUB can
         // tail the run via trace_tail() (or via plan_state.json
         // for plan-only events).
@@ -469,20 +470,20 @@ pub fn start_in_root(
             }
             match event {
                 AgentEvent::TextDelta(d) => {
-                    let _ = events_tx_bridge.send(PlanAgentEvent::TextDelta(d));
+                    let _ = events_tx_bridge.send(PlannerEvent::TextDelta(d));
                 }
                 AgentEvent::ToolCallStarted { name, arguments } => {
-                    let _ = events_tx_bridge.send(PlanAgentEvent::ToolCallStarted { name, arguments });
+                    let _ = events_tx_bridge.send(PlannerEvent::ToolCallStarted { name, arguments });
                 }
                 AgentEvent::ToolCallFinished { name, result, is_error } => {
-                    let _ = events_tx_bridge.send(PlanAgentEvent::ToolCallFinished {
+                    let _ = events_tx_bridge.send(PlannerEvent::ToolCallFinished {
                         name,
                         result,
                         is_error,
                     });
                 }
                 AgentEvent::PlanReady(plan) => {
-                    let _ = events_tx_bridge.send(PlanAgentEvent::PlanReady(plan));
+                    let _ = events_tx_bridge.send(PlannerEvent::PlanReady(plan));
                 }
                 AgentEvent::Done => {}
             }
@@ -511,8 +512,8 @@ pub fn start_in_root(
                             g.last_event_ms = now_ms();
                             persist_state_in_root(&store_root_for_task, &run_id_for_task, &*g);
                         }
-                        let _ = events_tx_for_task.send(PlanAgentEvent::PlanReady(plan_value));
-                        let _ = events_tx_for_task.send(PlanAgentEvent::Done {
+                        let _ = events_tx_for_task.send(PlannerEvent::PlanReady(plan_value));
+                        let _ = events_tx_for_task.send(PlannerEvent::Done {
                             status: PlanStatus::PlanReady,
                             error: None,
                         });
@@ -531,7 +532,7 @@ pub fn start_in_root(
                             g.last_event_ms = now_ms();
                             persist_state_in_root(&store_root_for_task, &run_id_for_task, &*g);
                         }
-                        let _ = events_tx_for_task.send(PlanAgentEvent::Done {
+                        let _ = events_tx_for_task.send(PlannerEvent::Done {
                             status: PlanStatus::Failed,
                             error: Some(e),
                         });
@@ -567,7 +568,7 @@ pub fn start_in_root(
                     g.last_event_ms = now_ms();
                     persist_state_in_root(&store_root_for_task, &run_id_for_task, &*g);
                 }
-                let _ = events_tx_for_task.send(PlanAgentEvent::Done {
+                let _ = events_tx_for_task.send(PlannerEvent::Done {
                     status,
                     error,
                 });
@@ -586,7 +587,7 @@ pub fn start_in_root(
                     g.last_event_ms = now_ms();
                     persist_state_in_root(&store_root_for_task, &run_id_for_task, &*g);
                 }
-                let _ = events_tx_for_task.send(PlanAgentEvent::Done {
+                let _ = events_tx_for_task.send(PlannerEvent::Done {
                     status: PlanStatus::Failed,
                     error: Some(e),
                 });
@@ -616,7 +617,7 @@ mod tests {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "jishu_plan_agent_{label}_{}_{}",
+            "jishu_planner_service_{label}_{}_{}",
             std::process::id(),
             id
         ));
@@ -626,7 +627,7 @@ mod tests {
 
     fn plan_spec() -> TaskSpec {
         TaskSpec {
-            task_id: "ts_plan_agent_commit".into(),
+            task_id: "ts_planner_service_commit".into(),
             kind: TaskKind::Plan,
             message: "Create an executable plan".into(),
             project_path: Some("/project".into()),
@@ -701,7 +702,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Regression test: PlanAgent::start() must work when called from a
+    /// Regression test: JishuPlannerService::start() must work when called from a
     /// sync context with no tokio runtime entered. This is the path
     /// exercised by Tauri sync commands.
     ///

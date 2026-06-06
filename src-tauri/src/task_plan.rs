@@ -49,6 +49,8 @@ pub struct TaskPlanSkill {
     pub error: Option<String>,
     pub content_bytes: u64,
     #[serde(default)]
+    pub workflow_hints: Option<String>,
+    #[serde(default)]
     pub roles: Vec<TaskPlanRole>,
 }
 
@@ -70,6 +72,8 @@ pub struct TaskPlanRole {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct SkillManifest {
+    #[serde(default)]
+    workflow_hints: Option<String>,
     #[serde(default)]
     roles: Vec<RoleManifest>,
 }
@@ -203,7 +207,7 @@ pub fn generate_roles(skill_id: &str, message: &str) -> Result<Vec<TaskPlanRole>
     }
 
     // Try LLM-powered role generation first; fall back to template roles
-    match generate_roles_with_llm(message, &skill.roles) {
+    match generate_roles_with_llm(message, &skill.roles, skill.workflow_hints.as_deref()) {
         Ok(roles) if !roles.is_empty() => Ok(roles),
         _ => Ok(skill.roles),
     }
@@ -214,6 +218,7 @@ pub fn generate_roles(skill_id: &str, message: &str) -> Result<Vec<TaskPlanRole>
 fn generate_roles_with_llm(
     message: &str,
     template_roles: &[TaskPlanRole],
+    workflow_hints: Option<&str>,
 ) -> Result<Vec<TaskPlanRole>, String> {
     let store = crate::llm::config::ModelStore::load()?;
     let preset = store
@@ -257,9 +262,15 @@ Rules:
 - can_receive_rework should be false for auditor roles
 - Return ONLY the JSON array, no markdown fences, no explanation"#;
 
+    let hints_section = if let Some(hints) = workflow_hints {
+        format!("\n\nWorkflow hints:\n{}", hints)
+    } else {
+        String::new()
+    };
+
     let user_prompt = format!(
-        "Task: {}\n\nAvailable role patterns:\n{}",
-        message, template_desc
+        "Task: {}\n\nAvailable role patterns:\n{}{}",
+        message, template_desc, hints_section
     );
 
     let req = crate::llm::message::LlmRequest {
@@ -667,7 +678,7 @@ fn parse_skill_markdown(
     let name = meta.get("name").cloned().unwrap_or_else(|| id.clone());
     let description = meta.get("description").cloned().unwrap_or_default();
     let content_bytes = content.as_bytes().len() as u64;
-    let (valid, error, roles) = match parse_manifest(content) {
+    let (valid, error, roles, workflow_hints) = match parse_manifest(content) {
         Ok(manifest) => {
             let roles = normalize_roles(&manifest.roles);
             if roles.is_empty() {
@@ -677,12 +688,13 @@ fn parse_skill_markdown(
                         "Task plan skill manifest must define at least one valid role".to_string(),
                     ),
                     Vec::new(),
+                    None,
                 )
             } else {
-                (true, None, roles)
+                (true, None, roles, manifest.workflow_hints)
             }
         }
-        Err(err) => (false, Some(err), Vec::new()),
+        Err(err) => (false, Some(err), Vec::new(), None),
     };
 
     TaskPlanSkill {
@@ -696,6 +708,7 @@ fn parse_skill_markdown(
         valid,
         error,
         content_bytes,
+        workflow_hints,
         roles,
     }
 }

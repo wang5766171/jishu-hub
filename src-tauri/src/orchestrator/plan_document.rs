@@ -108,7 +108,7 @@ impl PlanDocument {
             draft: Some(PlanDraft {
                 raw_finish_plan_args,
                 visible_text: String::new(),
-                source: PlanDraftSource::PlanAgent,
+                source: PlanDraftSource::PlannerService,
             }),
             validation,
             updated_at,
@@ -138,7 +138,7 @@ pub struct PlanDraft {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanDraftSource {
-    PlanAgent,
+    PlannerService,
     UserPatch,
     Regenerate,
 }
