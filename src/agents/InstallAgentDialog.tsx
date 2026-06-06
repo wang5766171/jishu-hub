@@ -27,15 +27,15 @@ export function InstallAgentDialog({ agent, open, onOpenChange, onInstalled }: I
       
       invokeCommand<boolean>("check_prerequisite", { command: "node" }).then(setNodeExists);
       
-      const pkg = agent.id === "claude-code" ? "winget" : "choco";
+      const pkg = agent.install_package_manager ?? "choco";
       invokeCommand<boolean>("check_prerequisite", { command: pkg }).then(setNativePkgExists);
     }
   }, [open, agent]);
 
   if (!agent) return null;
 
-  // jishu-self is always installed with the app — show a different message
-  if (agent.id === "jishu-self") {
+  // Auto-installed agents (e.g. jishu-self) — show a different message
+  if (agent.auto_installed) {
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="max-w-md">
@@ -84,7 +84,7 @@ export function InstallAgentDialog({ agent, open, onOpenChange, onInstalled }: I
     }
   };
 
-  const nativePkgName = agent.id === "claude-code" ? "winget" : "choco";
+  const nativePkgName = agent.install_package_manager ?? "choco";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
