@@ -177,7 +177,11 @@ fn is_claude_internal_jsonl_record(v: &serde_json::Value) -> bool {
     }
 }
 
-impl AgentPlugin for ClaudeCodeAgent {
+use crate::agent::traits::{
+    AgentManifest, ConfigAdapter, EventNormalizer, ProjectAdapter, SessionAdapter, TerminalAdapter,
+    TransportAdapter,
+};
+impl AgentManifest for ClaudeCodeAgent {
     fn info(&self) -> AgentInfo {
         AgentInfo {
             id: "claude-code".to_string(),
@@ -213,6 +217,10 @@ impl AgentPlugin for ClaudeCodeAgent {
         Some("winget install Anthropic.ClaudeCode".to_string())
     }
 
+    fn install_package_manager(&self) -> Option<String> {
+        Some("winget".to_string())
+    }
+
     fn probe_sync(&self) -> AgentHealth {
         let candidates = super::discovery::default_candidates_for("claude");
         let cands: Vec<&str> = candidates.iter().map(|s| s.as_str()).collect();
@@ -236,27 +244,115 @@ impl AgentPlugin for ClaudeCodeAgent {
             },
         }
     }
+}
 
-    fn scan_projects(&self) -> Vec<crate::project::Project> {
-        crate::project::scan_projects()
+impl TransportAdapter for ClaudeCodeAgent {
+    fn transport_surface(&self) -> crate::agent::TransportSurface {
+        crate::agent::TransportSurface::Cli
     }
 
-    fn add_project(&self, path: &str) -> Option<crate::project::Project> {
-        crate::project::add_project(path)
+    fn build_chat_command(&self, req: ChatRequest) -> tokio::process::Command {
+        let escaped_message = req.message.replace('\r', "").replace('\n', "\\n");
+
+        let mut args: Vec<String> = vec![
+            "-p".into(),
+            escaped_message,
+            "--output-format".into(),
+            "stream-json".into(),
+            "--verbose".into(),
+            "--include-partial-messages".into(),
+        ];
+
+        if let Some(ref sid) = req.session_id {
+            args.push("--resume".into());
+            args.push(sid.clone());
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let mut full_args = vec!["/C".to_string(), "claude".to_string()];
+            full_args.extend(args);
+            let mut cmd = tokio::process::Command::new("cmd");
+            cmd.args(&full_args).current_dir(&req.project_path);
+            crate::process_command::tokio_no_window(&mut cmd);
+            cmd
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut cmd = tokio::process::Command::new("claude");
+            cmd.args(&args).current_dir(&req.project_path);
+            cmd
+        }
     }
 
-    fn decode_project_path(&self, encoded: &str) -> String {
-        crate::project::decode_project_path(encoded)
+    fn abort_chat_sequence(&self) -> Option<&'static [u8]> {
+        Some(b"\x1b")
+    }
+}
+
+impl ConfigAdapter for ClaudeCodeAgent {
+    fn config_surface(&self) -> crate::agent::ConfigSurface {
+        crate::agent::ConfigSurface::Structured {
+            schema_id: "claude-config".to_string(),
+        }
     }
 
-    fn encode_project_path(&self, path: &str) -> String {
-        crate::project::encode_project_path(path)
+    fn load_config(&self) -> Result<serde_json::Value, String> {
+        let config = crate::config::load_config().map_err(|e| e.to_string())?;
+        serde_json::to_value(config).map_err(|e| e.to_string())
     }
 
-    fn get_level1_dir(&self, path: &str) -> Option<String> {
-        crate::project::get_level1_dir(path)
+    fn save_config(&self, config: &serde_json::Value) -> Result<(), String> {
+        let typed: crate::config::ClaudeConfig =
+            serde_json::from_value(config.clone()).map_err(|e| format!("Invalid config: {}", e))?;
+        crate::config::save_config(&typed).map_err(|e| e.to_string())
     }
 
+    fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
+        crate::hub::list_config_templates()
+    }
+
+    fn config_format(&self) -> Option<String> {
+        Some("json".to_string())
+    }
+
+    fn load_raw_config(&self) -> Result<String, String> {
+        let path = crate::config::config_path().map_err(|e| e.to_string())?;
+        if !path.exists() {
+            return Ok(String::new());
+        }
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    }
+
+    fn save_raw_config(&self, content: &str) -> Result<(), String> {
+        // Validate JSON before saving
+        let _: serde_json::Value =
+            serde_json::from_str(content).map_err(|e| format!("Invalid JSON: {}", e))?;
+        crate::config::backup_config().map_err(|e| e.to_string())?;
+        let path = crate::config::config_path().map_err(|e| e.to_string())?;
+        crate::util::atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())
+    }
+
+    fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String> {
+        crate::config::list_backups().map_err(|e| e.to_string())
+    }
+
+    fn restore_backup(&self, path: &str) -> Result<(), String> {
+        crate::config::restore_backup(path).map_err(|e| e.to_string())
+    }
+
+    fn export_config(&self, path: &str) -> Result<(), String> {
+        crate::config::export_config(path).map_err(|e| e.to_string())
+    }
+
+    fn import_config(&self, path: &str) -> Result<serde_json::Value, String> {
+        let config = crate::config::import_config(path).map_err(|e| e.to_string())?;
+        serde_json::to_value(config).map_err(|e| e.to_string())
+    }
+}
+
+impl SessionAdapter for ClaudeCodeAgent {
     fn list_sessions(&self, encoded_name: &str) -> Result<Vec<crate::session::Session>, String> {
         let home = dirs::home_dir().ok_or("Cannot find home directory")?;
         let projects_dir = home.join(".claude").join("projects");
@@ -306,57 +402,90 @@ impl AgentPlugin for ClaudeCodeAgent {
             .ok_or_else(|| format!("Failed to parse session: {}", session_id))
     }
 
-    fn load_config(&self) -> Result<serde_json::Value, String> {
-        let config = crate::config::load_config().map_err(|e| e.to_string())?;
-        serde_json::to_value(config).map_err(|e| e.to_string())
+    fn load_history(&self) -> Vec<crate::history::HistoryEntry> {
+        crate::history::load_history()
+    }
+}
+
+impl TerminalAdapter for ClaudeCodeAgent {
+    fn open_in_terminal(
+        &self,
+        project_path: &str,
+        resume_session_id: Option<&str>,
+    ) -> Result<u32, Box<dyn std::error::Error>> {
+        let command = resume_session_id
+            .map(|sid| self.build_resume_command(sid))
+            .unwrap_or_else(|| self.build_launch_command());
+        let window_id = resume_session_id
+            .map(|sid| crate::agent::command_config::terminal_window_id("claude-code", sid));
+        crate::command::open_agent_terminal(project_path, &command, window_id.as_deref())
     }
 
-    fn save_config(&self, config: &serde_json::Value) -> Result<(), String> {
-        let typed: crate::config::ClaudeConfig =
-            serde_json::from_value(config.clone()).map_err(|e| format!("Invalid config: {}", e))?;
-        crate::config::save_config(&typed).map_err(|e| e.to_string())
+    fn open_in_terminal_with_command(
+        &self,
+        project_path: &str,
+        command: &str,
+    ) -> Result<u32, Box<dyn std::error::Error>> {
+        crate::command::open_in_terminal_with_command(project_path, &command)
     }
 
-    fn config_format(&self) -> Option<String> {
-        Some("json".to_string())
+    fn build_resume_command(&self, session_id: &str) -> String {
+        format!("claude --resume {session_id}")
     }
 
-    fn load_raw_config(&self) -> Result<String, String> {
-        let path = crate::config::config_path().map_err(|e| e.to_string())?;
-        if !path.exists() {
-            return Ok(String::new());
+    fn build_launch_command(&self) -> String {
+        "claude".to_string()
+    }
+
+    fn built_in_commands(&self) -> Vec<crate::agent::command_config::AgentCommandPreset> {
+        use crate::agent::command_config::AgentCommandPreset;
+        vec![
+            AgentCommandPreset { name: "claude --version".into(), command: "claude --version".into() },
+            AgentCommandPreset { name: "claude mcp list".into(), command: "claude mcp list".into() },
+        ]
+    }
+}
+
+impl ProjectAdapter for ClaudeCodeAgent {
+    fn project_settings_surface(&self) -> crate::agent::ProjectSettingsSurface {
+        crate::agent::ProjectSettingsSurface::Supported {
+            scopes: vec![
+                crate::agent::ProjectSettingsScope::Shared,
+                crate::agent::ProjectSettingsScope::Local,
+            ],
+            access_modes: vec![
+                "default".to_string(),
+                "bypassPermissions".to_string(),
+                "plan".to_string(),
+            ],
         }
-        std::fs::read_to_string(&path).map_err(|e| e.to_string())
     }
 
-    fn save_raw_config(&self, content: &str) -> Result<(), String> {
-        // Validate JSON before saving
-        let _: serde_json::Value =
-            serde_json::from_str(content).map_err(|e| format!("Invalid JSON: {}", e))?;
-        crate::config::backup_config().map_err(|e| e.to_string())?;
-        let path = crate::config::config_path().map_err(|e| e.to_string())?;
-        crate::util::atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())
+    fn scan_projects(&self) -> Vec<crate::project::Project> {
+        crate::project::scan_projects()
     }
 
-    fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
-        crate::hub::list_config_templates()
+    fn add_project(&self, path: &str) -> Option<crate::project::Project> {
+        crate::project::add_project(path)
     }
 
-    fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String> {
-        crate::config::list_backups().map_err(|e| e.to_string())
+    fn decode_project_path(&self, encoded: &str) -> String {
+        crate::project::decode_project_path(encoded)
     }
 
-    fn restore_backup(&self, path: &str) -> Result<(), String> {
-        crate::config::restore_backup(path).map_err(|e| e.to_string())
+    fn encode_project_path(&self, path: &str) -> String {
+        crate::project::encode_project_path(path)
     }
 
-    fn export_config(&self, path: &str) -> Result<(), String> {
-        crate::config::export_config(path).map_err(|e| e.to_string())
+    fn get_level1_dir(&self, path: &str) -> Option<String> {
+        crate::project::get_level1_dir(path)
     }
 
-    fn import_config(&self, path: &str) -> Result<serde_json::Value, String> {
-        let config = crate::config::import_config(path).map_err(|e| e.to_string())?;
-        serde_json::to_value(config).map_err(|e| e.to_string())
+    fn init_project(&self, project_path: &str) -> Result<bool, String> {
+        let command = self.build_init_command();
+        crate::command::open_in_terminal_with_command(project_path, &command)
+            .map(|_| true)
+            .map_err(|e| e.to_string())
     }
 
     fn load_project_settings(
@@ -393,50 +522,9 @@ impl AgentPlugin for ClaudeCodeAgent {
     fn load_claude_md(&self, path: &str) -> Result<Option<String>, String> {
         crate::project_config::load_claude_md(path).map_err(|e| e.to_string())
     }
+}
 
-    fn build_chat_command(&self, req: ChatRequest) -> tokio::process::Command {
-        let escaped_message = req.message.replace('\r', "").replace('\n', "\\n");
-
-        let mut args: Vec<String> = vec![
-            "-p".into(),
-            escaped_message,
-            "--output-format".into(),
-            "stream-json".into(),
-            "--verbose".into(),
-            "--include-partial-messages".into(),
-        ];
-
-        if let Some(ref sid) = req.session_id {
-            args.push("--resume".into());
-            args.push(sid.clone());
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let mut full_args = vec!["/C".to_string(), "claude".to_string()];
-            full_args.extend(args);
-            let mut cmd = tokio::process::Command::new("cmd");
-            cmd.args(&full_args).current_dir(&req.project_path);
-            crate::process_command::tokio_no_window(&mut cmd);
-            cmd
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            let mut cmd = tokio::process::Command::new("claude");
-            cmd.args(&args).current_dir(&req.project_path);
-            cmd
-        }
-    }
-
-    fn abort_chat_sequence(&self) -> Option<&'static [u8]> {
-        Some(b"\x1b")
-    }
-
-    fn build_resume_command(&self, session_id: &str) -> String {
-        crate::agent::command_config::resume_command("claude-code", session_id)
-    }
-
+impl EventNormalizer for ClaudeCodeAgent {
     fn parse_stream_event(&self, event: &serde_json::Value) -> String {
         match event.get("type").and_then(|v| v.as_str()) {
             Some("system") => event
@@ -451,45 +539,10 @@ impl AgentPlugin for ClaudeCodeAgent {
         }
         .to_string()
     }
-
-    fn load_history(&self) -> Vec<crate::history::HistoryEntry> {
-        crate::history::load_history()
-    }
-
-    fn open_in_terminal(
-        &self,
-        project_path: &str,
-        resume_session_id: Option<&str>,
-    ) -> Result<u32, Box<dyn std::error::Error>> {
-        let command = resume_session_id
-            .map(|sid| crate::agent::command_config::resume_command("claude-code", sid))
-            .unwrap_or_else(|| crate::agent::command_config::launch_command("claude-code"));
-        let window_id = resume_session_id
-            .map(|sid| crate::agent::command_config::terminal_window_id("claude-code", sid));
-        crate::command::open_agent_terminal(project_path, &command, window_id.as_deref())
-    }
-
-    fn open_in_terminal_with_command(
-        &self,
-        project_path: &str,
-        command: &str,
-    ) -> Result<u32, Box<dyn std::error::Error>> {
-        crate::command::open_in_terminal_with_command(project_path, &command)
-    }
-
-    fn init_project(&self, project_path: &str) -> Result<bool, String> {
-        let command = crate::agent::command_config::init_command("claude-code");
-        crate::command::open_in_terminal_with_command(project_path, &command)
-            .map(|_| true)
-            .map_err(|e| e.to_string())
-    }
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
+    crate::util::now_ms()
 }
 
 #[cfg(test)]

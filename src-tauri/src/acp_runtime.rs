@@ -119,6 +119,7 @@ pub fn spawn_acp_session(
     pending_session_id: String,
     mut child: tokio::process::Child,
     project_path: String,
+    requested_session_id: Option<String>,
     first_message: String,
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
@@ -146,6 +147,7 @@ pub fn spawn_acp_session(
             acp_session_id,
             stdout,
             project_path,
+            requested_session_id,
             cmd_rx,
             first_message,
             &on_session_resolved,
@@ -203,6 +205,7 @@ async fn acp_connection_loop(
     acp_session_id: Arc<std::sync::Mutex<Option<String>>>,
     stdout: tokio::process::ChildStdout,
     project_path: String,
+    requested_session_id: Option<String>,
     mut command_rx: tokio::sync::mpsc::Receiver<AcpCommand>,
     first_message: String,
     on_session_resolved: &(dyn Fn(&str) + Send + Sync),
@@ -232,20 +235,34 @@ async fn acp_connection_loop(
         .await?;
     wait_for_response(&mut stdout_rx, init_id).await?;
 
-    let new_id = writer
-        .request(
-            "session/new",
-            json!({
-                "cwd": project_path,
-                "mcpServers": []
-            }),
-        )
-        .await?;
-    let new_result = wait_for_response(&mut stdout_rx, new_id).await?;
-    let session_id = new_result
+    let session_result = if let Some(session_id) = requested_session_id.as_deref() {
+        let resume_id = writer
+            .request(
+                "session/resume",
+                json!({
+                    "sessionId": session_id,
+                    "cwd": project_path,
+                    "mcpServers": []
+                }),
+            )
+            .await?;
+        wait_for_response(&mut stdout_rx, resume_id).await?
+    } else {
+        let new_id = writer
+            .request(
+                "session/new",
+                json!({
+                    "cwd": project_path,
+                    "mcpServers": []
+                }),
+            )
+            .await?;
+        wait_for_response(&mut stdout_rx, new_id).await?
+    };
+    let session_id = session_result
         .get("sessionId")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "session/new did not return sessionId".to_string())?
+        .ok_or_else(|| "ACP session creation/resume did not return sessionId".to_string())?
         .to_string();
 
     log::info!(
@@ -574,7 +591,7 @@ async fn wait_for_response(
 // Event helpers (unchanged from original)
 // ---------------------------------------------------------------------------
 
-fn normalize_acp_update(
+pub(crate) fn normalize_acp_update(
     params: &serde_json::Value,
     usage_acc: &mut Option<UsageStats>,
 ) -> Vec<NormalizedEvent> {

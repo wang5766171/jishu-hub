@@ -11,10 +11,14 @@ pub mod command_config;
 pub mod discovery;
 pub mod jishu_self;
 pub mod normalized;
+pub mod traits;
 
 pub use capability::{AgentCapabilities, AgentHealth};
 pub use claude_code::ClaudeCodeAgent;
 pub use normalized::NormalizedEvent;
+pub use traits::*;
+
+pub type StreamEventNormalizer = fn(&serde_json::Value) -> Vec<NormalizedEvent>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
@@ -35,6 +39,55 @@ pub struct AgentStatus {
     pub health: AgentHealth,
     pub install_hint: Option<String>,
     pub native_install_command: Option<String>,
+    pub install_package_manager: Option<String>,
+    pub auto_installed: bool,
+    pub config_surface: ConfigSurface,
+    pub project_settings_surface: ProjectSettingsSurface,
+    pub terminal_surface: TerminalSurface,
+    pub transport: TransportSurface,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConfigSurface {
+    Structured { schema_id: String },
+    Raw { format: String },
+    ModelStore { provider: String, supports_picker: bool },
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProjectSettingsSurface {
+    Supported {
+        scopes: Vec<ProjectSettingsScope>,
+        access_modes: Vec<String>,
+    },
+    Unsupported {
+        reason: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectSettingsScope {
+    Shared,
+    Local,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TerminalSurface {
+    Supported,
+    Unsupported { reason: Option<String> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportSurface {
+    AcpPreferred,
+    Cli,
+    Embedded,
 }
 
 pub struct AgentRegistry {
@@ -112,6 +165,12 @@ impl AgentRegistry {
                     health,
                     install_hint: a.install_hint(),
                     native_install_command: a.native_install_command(),
+                    install_package_manager: a.install_package_manager(),
+                    auto_installed: a.auto_installed(),
+                    config_surface: a.config_surface(),
+                    project_settings_surface: a.project_settings_surface(),
+                    terminal_surface: a.terminal_surface(),
+                    transport: a.transport_surface(),
                 }
             })
             .collect()
@@ -161,7 +220,9 @@ impl AgentRegistry {
     pub fn scan_projects(&self) -> Vec<crate::project::Project> {
         let mut projects = Vec::new();
         for (id, agent) in self.agents_info() {
-            if id != "claude-code" && !self.agent_installed_cached(&id, agent) {
+            if agent.requires_installation_for_project_scan()
+                && !self.agent_installed_cached(&id, agent)
+            {
                 continue;
             }
             projects.extend(agent.scan_projects());
@@ -202,168 +263,14 @@ impl AgentRegistry {
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
+    crate::util::now_ms()
 }
 
-pub trait AgentPlugin {
-    fn info(&self) -> AgentInfo;
-    fn capabilities(&self) -> AgentCapabilities {
-        AgentCapabilities::empty()
-    }
-    fn install_hint(&self) -> Option<String> {
-        None
-    }
-    fn native_install_command(&self) -> Option<String> {
-        None
-    }
-
-    /// Probe agent health (binary detection, version check)
-    fn probe_sync(&self) -> AgentHealth {
-        AgentHealth {
-            installed: false,
-            version: None,
-            error: None,
-            binary_path: None,
-            last_checked_at: 0,
-        }
-    }
-
-    /// Async probe (default delegates to sync)
-    fn probe(
-        &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = AgentHealth> + Send + '_>> {
-        let health = self.probe_sync();
-        Box::pin(async move { health })
-    }
-
-    // Project management
-    fn scan_projects(&self) -> Vec<crate::project::Project>;
-    fn add_project(&self, path: &str) -> Option<crate::project::Project>;
-    fn decode_project_path(&self, encoded: &str) -> String;
-    fn encode_project_path(&self, path: &str) -> String;
-    fn get_level1_dir(&self, path: &str) -> Option<String>;
-
-    // Session management
-    fn list_sessions(&self, encoded_name: &str) -> Result<Vec<crate::session::Session>, String>;
-    fn get_session_messages(
-        &self,
-        session_id: &str,
-        encoded_name: &str,
-    ) -> Result<Vec<crate::session::Message>, String>;
-
-    // Config management — each agent owns its config format; the trait speaks JSON.
-    fn load_config(&self) -> Result<serde_json::Value, String>;
-    fn save_config(&self, config: &serde_json::Value) -> Result<(), String>;
-    fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate>;
-
-    /// Native config format for raw editing (e.g. "toml", "json").
-    /// Return None to indicate no raw config support.
-    fn config_format(&self) -> Option<String> {
-        None
-    }
-
-    /// Load the raw config file content as a string.
-    fn load_raw_config(&self) -> Result<String, String> {
-        Err("Raw config not supported".to_string())
-    }
-
-    /// Save raw config content back to the native file.
-    fn save_raw_config(&self, _content: &str) -> Result<(), String> {
-        Err("Raw config not supported".to_string())
-    }
-    fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String>;
-    fn restore_backup(&self, path: &str) -> Result<(), String>;
-    fn export_config(&self, path: &str) -> Result<(), String>;
-    fn import_config(&self, path: &str) -> Result<serde_json::Value, String>;
-
-    // Project config
-    fn load_project_settings(
-        &self,
-        path: &str,
-    ) -> Result<crate::project_config::ProjectSettings, String>;
-    fn load_project_settings_local(
-        &self,
-        path: &str,
-    ) -> Result<crate::project_config::ProjectSettings, String>;
-    fn save_project_settings(
-        &self,
-        path: &str,
-        settings: &crate::project_config::ProjectSettings,
-    ) -> Result<(), String>;
-    fn save_project_settings_local(
-        &self,
-        path: &str,
-        settings: &crate::project_config::ProjectSettings,
-    ) -> Result<(), String>;
-    fn load_claude_md(&self, path: &str) -> Result<Option<String>, String>;
-
-    // Chat
-    fn build_chat_command(&self, args: ChatRequest) -> tokio::process::Command;
-    fn uses_acp(&self) -> bool {
-        false
-    }
-    /// Returns (binary, args) for launching the ACP subprocess.
-    /// Only called when uses_acp() is true.
-    fn acp_command(&self) -> (&str, Vec<&str>) {
-        ("", vec![])
-    }
-    fn pipe_chat_stdin(&self) -> bool {
-        self.abort_chat_sequence().is_some()
-    }
-    /// When true, the Tauri side will write the user message to the
-    /// child's stdin and close it before returning. This is needed for
-    /// agent bridges that read the prompt from stdin to EOF (e.g.
-    /// `jishu agent-bridge start jishu-self`). Agents that pass the
-    /// message via CLI args (e.g. `claude -p <msg>`) should leave this
-    /// false so the abort `stdin` handle stays available.
-    fn consumes_stdin_message(&self) -> bool {
-        false
-    }
-    fn abort_chat_sequence(&self) -> Option<&'static [u8]> {
-        None
-    }
-    fn abort_chat_grace_period(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(1200)
-    }
-    fn abort_chat_process(&self, process_id: u32) -> Result<(), String> {
-        crate::process_control::terminate_process_tree(process_id)
-    }
-    fn build_resume_command(&self, session_id: &str) -> String;
-    fn parse_stream_event(&self, event: &serde_json::Value) -> String;
-
-    // History
-    fn load_history(&self) -> Vec<crate::history::HistoryEntry>;
-
-    // Terminal
-    fn open_in_terminal(
-        &self,
-        project_path: &str,
-        resume_session_id: Option<&str>,
-    ) -> Result<u32, Box<dyn std::error::Error>>;
-
-    fn open_in_terminal_with_command(
-        &self,
-        project_path: &str,
-        command: &str,
-    ) -> Result<u32, Box<dyn std::error::Error>>;
-
-    fn init_project(&self, project_path: &str) -> Result<bool, String>;
-}
-
-pub fn normalize_stream_event(agent_id: &str, event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    match agent_id {
-        "claude-code" => claude_code::normalize_stream_event(event),
-        "codex" => adapters::codex::normalize_stream_event(event),
-        "opencode" => adapters::opencode::normalize_stream_event(event),
-        "jishu-self" => jishu_self::normalize_stream_event(event),
-        _ => vec![NormalizedEvent::Raw {
-            agent: agent_id.to_string(),
-            raw: event.clone(),
-        }],
-    }
+fn default_stream_event_normalizer(event: &serde_json::Value) -> Vec<NormalizedEvent> {
+    vec![NormalizedEvent::Raw {
+        agent: "unknown".to_string(),
+        raw: event.clone(),
+    }]
 }
 
 #[derive(Debug, Clone)]
@@ -371,6 +278,13 @@ pub struct ChatRequest {
     pub project_path: String,
     pub session_id: Option<String>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpCommandSpec {
+    pub program: String,
+    pub args: Vec<String>,
+    pub envs: Vec<(String, String)>,
 }
 
 #[cfg(test)]
@@ -396,12 +310,73 @@ mod tests {
             },
             install_hint: None,
             native_install_command: None,
+            install_package_manager: None,
+            auto_installed: false,
+            config_surface: ConfigSurface::Raw {
+                format: "toml".to_string(),
+            },
+            project_settings_surface: ProjectSettingsSurface::Unsupported { reason: None },
+            terminal_surface: TerminalSurface::Supported,
+            transport: TransportSurface::Cli,
         };
 
         let value = serde_json::to_value(status).unwrap();
         assert_eq!(
             value["capabilities"],
             serde_json::Value::String("1152921506754330624".to_string())
+        );
+    }
+
+    #[test]
+    fn registry_exposes_adapter_surfaces_without_agent_id_branching() {
+        let registry = AgentRegistry::new();
+        let statuses = registry.list_agent_statuses();
+
+        let jishu = statuses
+            .iter()
+            .find(|status| status.id == "jishu-self")
+            .expect("jishu-self status should exist");
+        assert_eq!(
+            jishu.config_surface,
+            ConfigSurface::ModelStore {
+                provider: "pi".to_string(),
+                supports_picker: true,
+            }
+        );
+        assert_eq!(jishu.terminal_surface, TerminalSurface::Supported);
+        assert_eq!(jishu.transport, TransportSurface::AcpPreferred);
+
+        let codex = statuses
+            .iter()
+            .find(|status| status.id == "codex")
+            .expect("codex status should exist");
+        assert_eq!(
+            codex.config_surface,
+            ConfigSurface::Raw {
+                format: "toml".to_string()
+            }
+        );
+
+        let opencode = statuses
+            .iter()
+            .find(|status| status.id == "opencode")
+            .expect("opencode status should exist");
+        assert_eq!(opencode.transport, TransportSurface::AcpPreferred);
+
+        let claude = statuses
+            .iter()
+            .find(|status| status.id == "claude-code")
+            .expect("claude-code status should exist");
+        assert_eq!(
+            claude.project_settings_surface,
+            ProjectSettingsSurface::Supported {
+                scopes: vec![ProjectSettingsScope::Shared, ProjectSettingsScope::Local],
+                access_modes: vec![
+                    "default".to_string(),
+                    "bypassPermissions".to_string(),
+                    "plan".to_string()
+                ],
+            }
         );
     }
 }

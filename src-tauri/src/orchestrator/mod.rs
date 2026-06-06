@@ -1,9 +1,9 @@
 pub mod agent_runs;
 pub mod daemon;
 pub mod dispatcher;
-pub mod plan_agent;
 pub mod plan_document;
 pub mod planner;
+pub mod planner_service;
 pub mod proposal;
 pub mod result;
 pub mod rework;
@@ -191,10 +191,10 @@ pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmit
     })?;
 
     // Execute
-    let mut plan_agent_to_start: Option<(String, String, String)> = None;
+    let mut planner_service_to_start: Option<(String, String, String)> = None;
     let (status, outcomes, error) = if matches!(spec.kind, spec::TaskKind::Plan) {
         // Plan mode: if no active model, fall back to default planner
-        // (test / no-config path). Otherwise spawn PlanAgent for
+        // (test / no-config path). Otherwise spawn PlannerService for
         // streaming tool-call plan generation.
         let has_active_model = llm::config::ModelStore::load()
             .ok()
@@ -222,7 +222,7 @@ pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmit
                 .unwrap_or_else(|| "jishu-task-planner".to_string());
             let initial_user_prompt = spec.message.clone();
             let run_id_for_plan = run_id.clone();
-            plan_agent_to_start = Some((run_id_for_plan, skill_id, initial_user_prompt));
+            planner_service_to_start = Some((run_id_for_plan, skill_id, initial_user_prompt));
             (RunStatus::Running, Vec::new(), None)
         }
     } else {
@@ -233,8 +233,8 @@ pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmit
     let mut result = build_initial_run_result(&run_id, &spec, status, outcomes, error, started_at);
     store.write_result(&run_id, &result)?;
 
-    if let Some((run_id_for_plan, skill_id, initial_user_prompt)) = plan_agent_to_start {
-        match plan_agent::start_in_root(
+    if let Some((run_id_for_plan, skill_id, initial_user_prompt)) = planner_service_to_start {
+        match planner_service::start_in_root(
             run_id_for_plan,
             skill_id.clone(),
             initial_user_prompt,
@@ -243,7 +243,7 @@ pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmit
             Ok(_agent) => {
                 trace.append_event(&NormalizedEvent::TaskStep {
                     run_id: run_id.clone(),
-                    step_id: "sp_plan_agent".to_string(),
+                    step_id: "sp_planner_service".to_string(),
                     kind: TaskStepKind::Plan,
                     title: "Plan generation started (LLM)".to_string(),
                     detail: Some(serde_json::json!({
@@ -258,7 +258,7 @@ pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmit
                 store.write_result(&run_id, &result)?;
                 trace.append_event(&NormalizedEvent::TaskStep {
                     run_id: run_id.clone(),
-                    step_id: "sp_plan_agent_failed".to_string(),
+                    step_id: "sp_planner_service_failed".to_string(),
                     kind: TaskStepKind::Failed,
                     title: format!("Plan agent failed: {e}"),
                     detail: None,
@@ -730,7 +730,7 @@ Rules:
             Ok(r) => r,
             Err(_) => {
                 cancel.cancel();
-                Err(crate::llm::LlmError::Request("LLM timed out (15s)".into()))
+                Err(crate::llm::LlmError::Request("LLM timed out (5s)".into()))
             }
         }
     });
@@ -1296,10 +1296,7 @@ fn default_runs_root() -> PathBuf {
 }
 
 pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
+    crate::util::now_ms()
 }
 
 pub fn sanitize_id(id: &str) -> String {
@@ -1369,7 +1366,7 @@ mod tests {
 
     #[test]
     fn hub_run_task_submit_writes_spec_plan_and_result() {
-        // v0.6: Plan mode is async (spawns PlanAgent). Run mode is
+        // v0.6: Plan mode is async (spawns PlannerService). Run mode is
         // still sync (executes steps immediately). This test exercises
         // the Run mode path.
         let root = unique_root("core_test");

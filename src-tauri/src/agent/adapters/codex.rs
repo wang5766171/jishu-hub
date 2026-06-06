@@ -86,7 +86,11 @@ fn raw(event: &serde_json::Value) -> Vec<NormalizedEvent> {
     }]
 }
 
-impl AgentPlugin for CodexAdapter {
+use crate::agent::traits::{
+    AgentManifest, ConfigAdapter, EventNormalizer, ProjectAdapter, SessionAdapter, TerminalAdapter,
+    TransportAdapter,
+};
+impl AgentManifest for CodexAdapter {
     fn info(&self) -> AgentInfo {
         AgentInfo {
             id: "codex".to_string(),
@@ -116,6 +120,10 @@ impl AgentPlugin for CodexAdapter {
         Some("npm install -g @openai/codex".to_string())
     }
 
+    fn install_package_manager(&self) -> Option<String> {
+        Some("choco".to_string())
+    }
+
     fn probe_sync(&self) -> AgentHealth {
         let candidates = super::super::discovery::default_candidates_for("codex");
         let cands: Vec<&str> = candidates.iter().map(|s| s.as_str()).collect();
@@ -139,7 +147,221 @@ impl AgentPlugin for CodexAdapter {
             },
         }
     }
+}
 
+impl TransportAdapter for CodexAdapter {
+    fn transport_surface(&self) -> crate::agent::TransportSurface {
+        crate::agent::TransportSurface::Cli
+    }
+
+    fn build_chat_command(&self, req: ChatRequest) -> tokio::process::Command {
+        let mut args: Vec<String> = vec!["exec".into(), "--json".into(), req.message];
+
+        if let Some(ref sid) = req.session_id {
+            args.push("--resume".into());
+            args.push(sid.clone());
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let mut full_args = vec!["/C".to_string(), "codex".to_string()];
+            full_args.extend(args);
+            let mut cmd = tokio::process::Command::new("cmd");
+            cmd.args(&full_args).current_dir(&req.project_path);
+            crate::process_command::tokio_no_window(&mut cmd);
+            cmd
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut cmd = tokio::process::Command::new("codex");
+            cmd.args(&args).current_dir(&req.project_path);
+            cmd
+        }
+    }
+}
+
+impl ConfigAdapter for CodexAdapter {
+    fn config_surface(&self) -> crate::agent::ConfigSurface {
+        crate::agent::ConfigSurface::Raw {
+            format: "toml".to_string(),
+        }
+    }
+
+    fn load_config(&self) -> Result<serde_json::Value, String> {
+        Err("Codex uses native TOML config, use load_raw_config instead".to_string())
+    }
+
+    fn save_config(&self, _config: &serde_json::Value) -> Result<(), String> {
+        Err("Codex uses native TOML config, use save_raw_config instead".to_string())
+    }
+
+    fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
+        vec![]
+    }
+
+    fn config_format(&self) -> Option<String> {
+        Some("toml".to_string())
+    }
+
+    fn load_raw_config(&self) -> Result<String, String> {
+        let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+        let config_path = home.join(".codex").join("config.toml");
+        if !config_path.exists() {
+            return Ok(String::new());
+        }
+        std::fs::read_to_string(&config_path).map_err(|e| e.to_string())
+    }
+
+    fn save_raw_config(&self, content: &str) -> Result<(), String> {
+        let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+        let codex_dir = home.join(".codex");
+        std::fs::create_dir_all(&codex_dir).map_err(|e| e.to_string())?;
+        let config_path = codex_dir.join("config.toml");
+        // Validate TOML before saving
+        let _: toml::Value = toml::from_str(content).map_err(|e| format!("Invalid TOML: {}", e))?;
+        // Backup existing config before overwriting
+        if config_path.exists() {
+            let backup_dir = codex_dir.join("backups");
+            std::fs::create_dir_all(&backup_dir).map_err(|e| e.to_string())?;
+            let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+            let backup_path = backup_dir.join(format!("config_{}.toml", ts));
+            std::fs::copy(&config_path, &backup_path).map_err(|e| e.to_string())?;
+        }
+        crate::util::atomic_write(&config_path, content.as_bytes()).map_err(|e| e.to_string())
+    }
+
+    fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String> {
+        Ok(vec![])
+    }
+
+    fn restore_backup(&self, _path: &str) -> Result<(), String> {
+        Err("Not supported".to_string())
+    }
+
+    fn export_config(&self, _path: &str) -> Result<(), String> {
+        Err("Not supported".to_string())
+    }
+
+    fn import_config(&self, _path: &str) -> Result<serde_json::Value, String> {
+        Err("Not supported".to_string())
+    }
+}
+
+impl SessionAdapter for CodexAdapter {
+    fn list_sessions(&self, encoded_name: &str) -> Result<Vec<crate::session::Session>, String> {
+        let decoded_path = crate::project::decode_project_path(encoded_name);
+        let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+        let index_path = home.join(".codex").join("session_index.jsonl");
+        if !index_path.exists() {
+            return Ok(vec![]);
+        }
+
+        let content = std::fs::read_to_string(&index_path).map_err(|e| e.to_string())?;
+        let mut sessions = Vec::new();
+
+        for line in content.lines().rev() {
+            if let Ok(item) = serde_json::from_str::<serde_json::Value>(line) {
+                let id = item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let thread_name = item
+                    .get("thread_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let updated_at_str = item
+                    .get("updated_at")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+
+                if id.is_empty() {
+                    continue;
+                }
+
+                if let Some(rollout_path) = self.find_rollout_file(&id, updated_at_str) {
+                    if let Ok(cwd) = self.get_rollout_cwd(&rollout_path) {
+                        if cwd == decoded_path {
+                            let last_active = chrono::DateTime::parse_from_rfc3339(updated_at_str)
+                                .ok()
+                                .map(|dt| dt.with_timezone(&chrono::Utc));
+
+                            let messages =
+                                parse_rollout_messages(&rollout_path).unwrap_or_default();
+
+                            sessions.push(crate::session::Session {
+                                id,
+                                path: rollout_path,
+                                messages,
+                                started_at: last_active, // Approximating
+                                display_name: Some(thread_name),
+                                last_active,
+                                project_path: Some(cwd),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(sessions)
+    }
+
+    fn get_session_messages(
+        &self,
+        session_id: &str,
+        _encoded_name: &str,
+    ) -> Result<Vec<crate::session::Message>, String> {
+        let rollout_path = self.search_rollout_file(session_id)?;
+        parse_rollout_messages(&rollout_path)
+    }
+
+    fn load_history(&self) -> Vec<crate::history::HistoryEntry> {
+        vec![]
+    }
+}
+
+impl TerminalAdapter for CodexAdapter {
+    fn open_in_terminal(
+        &self,
+        project_path: &str,
+        resume_session_id: Option<&str>,
+    ) -> Result<u32, Box<dyn std::error::Error>> {
+        let command = resume_session_id
+            .map(|sid| self.build_resume_command(sid))
+            .unwrap_or_else(|| self.build_launch_command());
+        let window_id = resume_session_id
+            .map(|sid| crate::agent::command_config::terminal_window_id("codex", sid));
+        crate::command::open_agent_terminal(project_path, &command, window_id.as_deref())
+    }
+
+    fn open_in_terminal_with_command(
+        &self,
+        project_path: &str,
+        command: &str,
+    ) -> Result<u32, Box<dyn std::error::Error>> {
+        crate::command::open_in_terminal_with_command(project_path, command)
+    }
+
+    fn build_resume_command(&self, session_id: &str) -> String {
+        format!("codex resume {session_id}")
+    }
+
+    fn build_launch_command(&self) -> String {
+        "codex".to_string()
+    }
+
+    fn built_in_commands(&self) -> Vec<crate::agent::command_config::AgentCommandPreset> {
+        use crate::agent::command_config::AgentCommandPreset;
+        vec![
+            AgentCommandPreset { name: "codex --version".into(), command: "codex --version".into() },
+            AgentCommandPreset { name: "codex exec".into(), command: "codex exec \"Say hello\"".into() },
+        ]
+    }
+}
+
+impl ProjectAdapter for CodexAdapter {
     fn scan_projects(&self) -> Vec<crate::project::Project> {
         let home = match dirs::home_dir() {
             Some(h) => h,
@@ -210,131 +432,11 @@ impl AgentPlugin for CodexAdapter {
         crate::project::get_level1_dir(path)
     }
 
-    fn list_sessions(&self, encoded_name: &str) -> Result<Vec<crate::session::Session>, String> {
-        let decoded_path = crate::project::decode_project_path(encoded_name);
-        let home = dirs::home_dir().ok_or("Cannot find home directory")?;
-        let index_path = home.join(".codex").join("session_index.jsonl");
-        if !index_path.exists() {
-            return Ok(vec![]);
-        }
-
-        let content = std::fs::read_to_string(&index_path).map_err(|e| e.to_string())?;
-        let mut sessions = Vec::new();
-
-        for line in content.lines().rev() {
-            if let Ok(item) = serde_json::from_str::<serde_json::Value>(line) {
-                let id = item
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let thread_name = item
-                    .get("thread_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let updated_at_str = item
-                    .get("updated_at")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-
-                if id.is_empty() {
-                    continue;
-                }
-
-                if let Some(rollout_path) = self.find_rollout_file(&id, updated_at_str) {
-                    if let Ok(cwd) = self.get_rollout_cwd(&rollout_path) {
-                        if cwd == decoded_path {
-                            let last_active = chrono::DateTime::parse_from_rfc3339(updated_at_str)
-                                .ok()
-                                .map(|dt| dt.with_timezone(&chrono::Utc));
-
-                            let messages =
-                                parse_rollout_messages(&rollout_path).unwrap_or_default();
-
-                            sessions.push(crate::session::Session {
-                                id,
-                                path: rollout_path,
-                                messages,
-                                started_at: last_active, // Approximating
-                                display_name: Some(thread_name),
-                                last_active,
-                                project_path: Some(cwd),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        Ok(sessions)
-    }
-
-    fn get_session_messages(
-        &self,
-        session_id: &str,
-        _encoded_name: &str,
-    ) -> Result<Vec<crate::session::Message>, String> {
-        let rollout_path = self.search_rollout_file(session_id)?;
-        parse_rollout_messages(&rollout_path)
-    }
-
-    fn load_config(&self) -> Result<serde_json::Value, String> {
-        Err("Codex uses native TOML config, use load_raw_config instead".to_string())
-    }
-
-    fn save_config(&self, _config: &serde_json::Value) -> Result<(), String> {
-        Err("Codex uses native TOML config, use save_raw_config instead".to_string())
-    }
-
-    fn config_format(&self) -> Option<String> {
-        Some("toml".to_string())
-    }
-
-    fn load_raw_config(&self) -> Result<String, String> {
-        let home = dirs::home_dir().ok_or("Cannot find home directory")?;
-        let config_path = home.join(".codex").join("config.toml");
-        if !config_path.exists() {
-            return Ok(String::new());
-        }
-        std::fs::read_to_string(&config_path).map_err(|e| e.to_string())
-    }
-
-    fn save_raw_config(&self, content: &str) -> Result<(), String> {
-        let home = dirs::home_dir().ok_or("Cannot find home directory")?;
-        let codex_dir = home.join(".codex");
-        std::fs::create_dir_all(&codex_dir).map_err(|e| e.to_string())?;
-        let config_path = codex_dir.join("config.toml");
-        // Validate TOML before saving
-        let _: toml::Value = toml::from_str(content).map_err(|e| format!("Invalid TOML: {}", e))?;
-        // Backup existing config before overwriting
-        if config_path.exists() {
-            let backup_dir = codex_dir.join("backups");
-            std::fs::create_dir_all(&backup_dir).map_err(|e| e.to_string())?;
-            let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-            let backup_path = backup_dir.join(format!("config_{}.toml", ts));
-            std::fs::copy(&config_path, &backup_path).map_err(|e| e.to_string())?;
-        }
-        crate::util::atomic_write(&config_path, content.as_bytes()).map_err(|e| e.to_string())
-    }
-
-    fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
-        vec![]
-    }
-
-    fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String> {
-        Ok(vec![])
-    }
-
-    fn restore_backup(&self, _path: &str) -> Result<(), String> {
-        Err("Not supported".to_string())
-    }
-
-    fn export_config(&self, _path: &str) -> Result<(), String> {
-        Err("Not supported".to_string())
-    }
-
-    fn import_config(&self, _path: &str) -> Result<serde_json::Value, String> {
-        Err("Not supported".to_string())
+    fn init_project(&self, project_path: &str) -> Result<bool, String> {
+        let command = self.build_init_command();
+        crate::command::open_agent_terminal(project_path, &command, None)
+            .map(|_| true)
+            .map_err(|e| e.to_string())
     }
 
     fn load_project_settings(
@@ -370,37 +472,9 @@ impl AgentPlugin for CodexAdapter {
     fn load_claude_md(&self, _path: &str) -> Result<Option<String>, String> {
         Ok(None)
     }
+}
 
-    fn build_chat_command(&self, req: ChatRequest) -> tokio::process::Command {
-        let mut args: Vec<String> = vec!["exec".into(), "--json".into(), req.message];
-
-        if let Some(ref sid) = req.session_id {
-            args.push("--resume".into());
-            args.push(sid.clone());
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let mut full_args = vec!["/C".to_string(), "codex".to_string()];
-            full_args.extend(args);
-            let mut cmd = tokio::process::Command::new("cmd");
-            cmd.args(&full_args).current_dir(&req.project_path);
-            crate::process_command::tokio_no_window(&mut cmd);
-            cmd
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            let mut cmd = tokio::process::Command::new("codex");
-            cmd.args(&args).current_dir(&req.project_path);
-            cmd
-        }
-    }
-
-    fn build_resume_command(&self, session_id: &str) -> String {
-        crate::agent::command_config::resume_command("codex", session_id)
-    }
-
+impl EventNormalizer for CodexAdapter {
     fn parse_stream_event(&self, event: &serde_json::Value) -> String {
         match event.get("type").and_then(|v| v.as_str()) {
             Some("message_delta") => "delta",
@@ -410,38 +484,6 @@ impl AgentPlugin for CodexAdapter {
             None => "unknown",
         }
         .to_string()
-    }
-
-    fn load_history(&self) -> Vec<crate::history::HistoryEntry> {
-        vec![]
-    }
-
-    fn open_in_terminal(
-        &self,
-        project_path: &str,
-        resume_session_id: Option<&str>,
-    ) -> Result<u32, Box<dyn std::error::Error>> {
-        let command = resume_session_id
-            .map(|sid| crate::agent::command_config::resume_command("codex", sid))
-            .unwrap_or_else(|| crate::agent::command_config::launch_command("codex"));
-        let window_id = resume_session_id
-            .map(|sid| crate::agent::command_config::terminal_window_id("codex", sid));
-        crate::command::open_agent_terminal(project_path, &command, window_id.as_deref())
-    }
-
-    fn open_in_terminal_with_command(
-        &self,
-        project_path: &str,
-        command: &str,
-    ) -> Result<u32, Box<dyn std::error::Error>> {
-        crate::command::open_in_terminal_with_command(project_path, command)
-    }
-
-    fn init_project(&self, project_path: &str) -> Result<bool, String> {
-        let command = crate::agent::command_config::init_command("codex");
-        crate::command::open_agent_terminal(project_path, &command, None)
-            .map(|_| true)
-            .map_err(|e| e.to_string())
     }
 }
 
@@ -640,10 +682,7 @@ fn parse_rollout_messages(path: &std::path::Path) -> Result<Vec<crate::session::
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
+    crate::util::now_ms()
 }
 
 #[cfg(test)]

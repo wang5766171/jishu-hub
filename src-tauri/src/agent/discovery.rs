@@ -288,10 +288,7 @@ pub fn build_health(
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
+    crate::util::now_ms()
 }
 
 /// Default candidate paths for known agents

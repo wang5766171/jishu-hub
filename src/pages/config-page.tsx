@@ -24,29 +24,21 @@ export function ConfigPage({
 }) {
   const { t } = useTranslation();
   const { activeId, active } = useAgent();
-  const isJishuSelf = activeId === "jishu-self";
   const agentRefreshKey = activeId ? Array.from(activeId).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) : 0;
+  const configSurface = active?.config_surface ?? { kind: "unsupported" as const };
+  const surfaceKind = configSurface.kind;
 
-  // jishu-self: configuration is `~/.jishu-agent/models.json` and is
-  // edited via ModelManager. Codex uses a native TOML config (not a
-  // typed JSON config), so it goes through the raw editor. Other
-  // agents: load_config returns their own typed config (ClaudeConfig,
-  // …) which ConfigForm renders as a structured form.
-  const isCodex = activeId === "codex";
-  const useRawEditor = isCodex && !isJishuSelf;
   const { data: config, loading, refetch } = useInvoke<ClaudeConfig>(
-    "load_config",
+    surfaceKind === "structured" ? "load_config" : "",
     undefined,
-    isJishuSelf || useRawEditor ? 0 : agentRefreshKey,
+    surfaceKind === "structured" ? agentRefreshKey : 0,
   );
-  const { data: rawConfig, refetch: refetchRaw } = useInvoke<RawConfigInfo>(
-    "load_raw_config",
+  const { data: rawConfig, loading: rawLoading, refetch: refetchRaw } = useInvoke<RawConfigInfo>(
+    surfaceKind === "raw" ? "load_raw_config" : "",
     undefined,
-    useRawEditor ? agentRefreshKey : 0,
+    surfaceKind === "raw" ? agentRefreshKey : 0,
   );
-  const [activeTab, setActiveTab] = useState<
-    "edit" | "templates" | "backups"
-  >(initialTab);
+  const [activeTab, setActiveTab] = useState<"edit" | "templates" | "backups">(initialTab);
 
   const handleConfigSaved = useCallback(() => {
     refetch();
@@ -77,33 +69,36 @@ export function ConfigPage({
     }
   };
 
-  // jishu-self path: render the unified Models editor directly (it
-  // already exposes a JSON editor + active picker, which is the full
-  // configuration surface for this agent).
-  if (isJishuSelf) {
+  if (surfaceKind === "model_store") {
     return (
       <div className="flex flex-col h-full p-6">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-4">
           <h2 className="text-xl font-semibold">{t("config.title")}</h2>
+          {active && <p className="text-xs text-muted-foreground">{active.display_name}</p>}
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto pt-4">
-          <ModelManager onChanged={refreshAfterModelChange} />
+          <ModelManager />
         </div>
       </div>
     );
   }
 
-  // Codex uses a native TOML config — show it in the raw editor
-  // with a `set_raw_config` save path.
-  if (useRawEditor) {
-    if (!rawConfig) {
+  if (surfaceKind === "raw") {
+    if (rawLoading || !rawConfig) {
       return <Skeleton className="h-64" />;
     }
     return (
       <div className="flex flex-col h-full p-6">
-        <div className="mb-4">
-          <h2 className="text-xl font-semibold">{t("config.title")}</h2>
-          <p className="text-sm text-muted-foreground mt-1">
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-semibold">{t("config.title")}</h2>
+            {active && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {active.display_name}
+              </p>
+            )}
+          </div>
+          <p className="text-sm text-muted-foreground">
             {t("config.nativeFormatHint")}
           </p>
         </div>
@@ -118,9 +113,10 @@ export function ConfigPage({
     );
   }
 
-  // Other agents: load_config returns the agent's own typed config
-  // (ClaudeConfig, etc.) which ConfigForm renders as a structured
-  // form. If the load hasn't finished yet, show a skeleton.
+  if (surfaceKind === "none") {
+    return <div className="text-muted-foreground">{t("config.loadFailed")}</div>;
+  }
+
   if (loading) {
     return <Skeleton className="h-64" />;
   }
@@ -158,7 +154,6 @@ export function ConfigPage({
         </div>
       </div>
 
-      {/* Tab bar */}
       <div className="flex gap-1 border-b border-border pb-0">
         {tabs.map((tab) => (
           <button
@@ -175,10 +170,13 @@ export function ConfigPage({
         ))}
       </div>
 
-      {/* Tab content — scrollable */}
       <div className="flex-1 min-h-0 overflow-y-auto pt-4">
         {activeTab === "edit" && (
-          <ConfigForm config={config} onSaved={handleConfigSaved} />
+          <ConfigForm
+            config={config}
+            onSaved={handleConfigSaved}
+            schemaId={configSurface.kind === "structured" ? configSurface.schema_id : ""}
+          />
         )}
         {activeTab === "templates" && (
           <TemplateManager onApplied={refetch} />
@@ -191,8 +189,3 @@ export function ConfigPage({
   );
 }
 
-function refreshAfterModelChange() {
-  // Models are loaded by ModelManager from the Rust side directly via
-  // get_models_config / set_models_config / get_active / set_active.
-  // Nothing in this page needs to refetch — the change is local.
-}

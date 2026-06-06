@@ -1,7 +1,8 @@
-use super::{DispatchContext, DispatchError, Dispatcher};
-use crate::agent::{ChatRequest, NormalizedEvent};
+﻿use super::{DispatchContext, DispatchError, Dispatcher};
+use crate::agent::NormalizedEvent;
+use crate::agent_runtime::{AgentTurnRequest, RuntimeStdinBridge};
 use crate::orchestrator::now_ms;
-use crate::orchestrator::result::{RunResult, RunStatus, StepOutcome, StepStatus, UsageSummary};
+use crate::orchestrator::result::{StepOutcome, StepStatus, UsageSummary};
 use crate::orchestrator::spec::{Step, StepKind, VerifyCheck};
 use crate::orchestrator::RunStore;
 use crate::process_command;
@@ -123,10 +124,10 @@ fn dispatch_to_agent(
         .trim_start()
         .starts_with(ctx.spec.message.trim_start())
     {
-        // Step prompt already contains the task — use as-is
+        // Step prompt already contains the task 鈥?use as-is
         prompt.to_string()
     } else if prompt.trim().is_empty() {
-        // Defensive: empty step prompt — fall back to task message
+        // Defensive: empty step prompt 鈥?fall back to task message
         ctx.spec.message.clone()
     } else {
         format!(
@@ -135,35 +136,14 @@ fn dispatch_to_agent(
         )
     };
 
-    let req = ChatRequest {
-        project_path: project.to_string(),
-        session_id: session.clone(),
-        message: composed_message.clone(),
-    };
-
-    let mut cmd = plugin.build_chat_command(req);
-    if plugin.pipe_chat_stdin() {
-        cmd.stdin(std::process::Stdio::piped());
-    }
-    cmd.stdout(std::process::Stdio::piped());
-
-    // Build a single-threaded tokio runtime for the async child process.
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| DispatchError::Other(format!("Runtime: {e}")))?;
-
     let agent_id_owned = agent_id.to_string();
     let role_id_owned = role_id.to_string();
     let step_id = step.step_id.clone();
-    let message_owned = composed_message.clone();
-    let pipe_stdin = plugin.pipe_chat_stdin();
-    let agent_id_for_spawn = agent_id_owned.clone();
     let run_id_owned = ctx.run_id.to_string();
 
     // Register an ActiveAgent BEFORE spawning so the user can send messages
     // into the stdin channel as soon as the subprocess is up.
-    let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (stdin_tx, stdin_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let active_agent = Arc::new(crate::orchestrator::agent_runs::ActiveAgent {
         run_id: run_id_owned.clone(),
         step_id: step_id.clone(),
@@ -202,79 +182,34 @@ fn dispatch_to_agent(
         },
     );
 
-    // Run the subprocess inside the tokio runtime.
-    let active_for_runtime = active_agent.clone();
     let step_id_for_runtime = step_id.clone();
     let agent_id_for_runtime = agent_id_owned.clone();
     let run_id_for_runtime = run_id_owned.clone();
-    let result = rt.block_on(async move {
-        use tokio::time::{timeout, Duration};
-        let inner = async {
-            let mut child = cmd.spawn().map_err(|e| {
-                DispatchError::SpawnFailed(format!("Spawn {agent_id_for_spawn}: {e}"))
-            })?;
+    let stdin_bridge = if plugin.pipe_chat_stdin() && !plugin.consumes_stdin_message() {
+        Some(RuntimeStdinBridge {
+            receiver: stdin_rx,
+            cancelled: active_agent.cancelled.clone(),
+        })
+    } else {
+        None
+    };
 
-            // Forward user messages from stdin_rx into the agent's stdin
-            if pipe_stdin {
-                if let Some(mut stdin) = child.stdin.take() {
-                    use tokio::io::AsyncWriteExt;
-                    // Write the initial message + newline
-                    let _ = stdin.write_all(message_owned.as_bytes()).await;
-                    let _ = stdin.write_all(b"\n").await;
-                    let _ = stdin.flush().await;
+    let runtime_output = crate::agent_runtime::run_turn_blocking(
+        ctx.registry.as_ref(),
+        AgentTurnRequest {
+            agent_id: agent_id_owned.clone(),
+            project_path: project.to_string(),
+            session_id: session.clone(),
+            message: composed_message,
+            timeout_secs: 30,
+        },
+        stdin_bridge,
+    )
+    .map_err(DispatchError::Other)?;
 
-                    // Pump messages from stdin_rx in a background task
-                    let cancelled = active_for_runtime.cancelled.clone();
-                    tokio::spawn(async move {
-                        use tokio::io::AsyncWriteExt as _;
-                        let mut stdin = stdin;
-                        while let Some(msg) = stdin_rx.recv().await {
-                            if *cancelled.lock().unwrap() {
-                                break;
-                            }
-                            let _ = stdin.write_all(msg.as_bytes()).await;
-                            let _ = stdin.write_all(b"\n").await;
-                            let _ = stdin.flush().await;
-                        }
-                    });
-                }
-            }
-
-            // Read stdout line-by-line, parsing NormalizedEvent JSON
-            let mut events: Vec<NormalizedEvent> = Vec::new();
-            if let Some(stdout) = child.stdout.take() {
-                use tokio::io::AsyncBufReadExt;
-                let reader = tokio::io::BufReader::new(stdout);
-                let mut lines = reader.lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if let Ok(event) = serde_json::from_str::<NormalizedEvent>(&line) {
-                        events.push(event);
-                    }
-                }
-            }
-
-            let status = child
-                .wait()
-                .await
-                .map_err(|e| DispatchError::Other(format!("Wait: {e}")))?;
-
-            Ok::<_, DispatchError>((events, status))
-        };
-        // 30s hard timeout: any agent that doesn't produce a result
-        // within 30s is treated as failed. Prevents tests/dev runs
-        // from hanging on missing agent CLIs.
-        match timeout(Duration::from_secs(30), inner).await {
-            Ok(r) => r,
-            Err(_) => {
-                // Timed out — kill the child (it's still in scope above)
-                Err(DispatchError::Other(
-                    "Agent dispatch timed out (30s)".into(),
-                ))
-            }
-        }
-    });
-
-    let (events, exit_status) = result?;
+    let exit_success = runtime_output.exit_success;
+    let exit_code = runtime_output.exit_code;
+    let events = runtime_output.events;
 
     // Emit collected events through trace + emitter (raw, no SubAgentEvent wrapping)
     let mut captured_session_id: Option<String> = None;
@@ -351,7 +286,7 @@ fn dispatch_to_agent(
         (ctx.emitter)(&event);
     }
 
-    // Unregister the active agent — the subprocess has exited
+    // Unregister the active agent 鈥?the subprocess has exited
     crate::orchestrator::agent_runs::unregister(
         crate::orchestrator::agent_runs::global(),
         &run_id_for_runtime,
@@ -367,7 +302,7 @@ fn dispatch_to_agent(
     // If the agent exited while there was a pending approval that wasn't
     // answered, that's still a Completed subprocess exit. The HUB can
     // surface the unanswered question via get_approval() before/after.
-    let status = if exit_status.success() {
+    let status = if exit_success {
         StepStatus::Complete
     } else {
         StepStatus::Failed
@@ -376,11 +311,17 @@ fn dispatch_to_agent(
     // Always include the most recent pending_approval in output so the
     // HUB can show the question even if the agent exited before the
     // user replied.
-    let output = last_approval.map(|pa| {
-        serde_json::json!({
+    let output = match (last_approval, exit_success) {
+        (Some(pa), true) => Some(serde_json::json!({ "approval": pa })),
+        (Some(pa), false) => Some(serde_json::json!({
             "approval": pa,
-        })
-    });
+            "exit_code": exit_code,
+        })),
+        (None, false) => Some(serde_json::json!({
+            "exit_code": exit_code,
+        })),
+        (None, true) => None,
+    };
 
     let step_finished = now_ms();
     Ok(StepOutcome {
@@ -587,7 +528,7 @@ fn execute_write(
 ) -> Result<StepOutcome, DispatchError> {
     let started = now_ms();
 
-    // If approval required, don't write the file — just return AwaitingApproval
+    // If approval required, don't write the file 鈥?just return AwaitingApproval
     if requires_approval {
         return Ok(StepOutcome {
             step_id: step.step_id.clone(),
@@ -660,7 +601,7 @@ fn execute_write(
     }
 }
 
-/// Reflect step — stub for v0.6, will use DecisionEngine in Stage 6.
+/// Reflect step 鈥?stub for v0.6, will use DecisionEngine in Stage 6.
 fn execute_reflect(
     question: &str,
     step: &Step,
@@ -675,7 +616,7 @@ fn execute_reflect(
         status: StepStatus::Complete,
         output: Some(serde_json::json!({
             "question": question,
-            "note": "reflect stub — DecisionEngine not yet wired",
+            "note": "reflect stub 鈥?DecisionEngine not yet wired",
         })),
         started_at: now_ms(),
         finished_at: now_ms(),
@@ -684,7 +625,7 @@ fn execute_reflect(
     })
 }
 
-/// Verify step — strongly typed check execution.
+/// Verify step 鈥?strongly typed check execution.
 fn execute_verify(
     check: &VerifyCheck,
     step: &Step,

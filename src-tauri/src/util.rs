@@ -1,4 +1,14 @@
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Returns the current time in milliseconds since Unix epoch.
+/// Shared utility to avoid duplicating this in every module.
+pub fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
 
 /// Atomically write content to a file by writing to a unique temp file
 /// then renaming. Prevents corruption on crash/power-loss.

@@ -22,7 +22,31 @@ export interface AgentStatus {
   health: AgentHealth;
   install_hint: string | null;
   native_install_command: string | null;
+  install_package_manager: string | null;
+  auto_installed: boolean;
+  config_surface: ConfigSurface;
+  project_settings_surface: ProjectSettingsSurface;
+  terminal_surface: TerminalSurface;
+  transport: TransportSurface;
 }
+
+export type ConfigSurface =
+  | { kind: "structured"; schema_id: string }
+  | { kind: "raw"; format: string }
+  | { kind: "model_store"; provider: string; supports_picker: boolean }
+  | { kind: "unsupported" };
+
+export type ProjectSettingsSurface =
+  | { kind: "supported"; scopes: ProjectSettingsScope[]; access_modes: string[] }
+  | { kind: "unsupported"; reason: string | null };
+
+export type ProjectSettingsScope = "shared" | "local";
+
+export type TerminalSurface =
+  | { kind: "supported" }
+  | { kind: "unsupported"; reason: string | null };
+
+export type TransportSurface = "acp_preferred" | "cli" | "embedded";
 
 export class CapabilitySet {
   private flags: bigint;

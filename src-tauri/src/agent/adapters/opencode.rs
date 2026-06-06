@@ -1053,7 +1053,11 @@ fn import_opencode_config(
     Ok(config)
 }
 
-impl AgentPlugin for OpencodeAdapter {
+use crate::agent::traits::{
+    AgentManifest, ConfigAdapter, EventNormalizer, ProjectAdapter, SessionAdapter, TerminalAdapter,
+    TransportAdapter,
+};
+impl AgentManifest for OpencodeAdapter {
     fn info(&self) -> AgentInfo {
         AgentInfo {
             id: "opencode".to_string(),
@@ -1090,6 +1094,10 @@ impl AgentPlugin for OpencodeAdapter {
         Some("choco install opencode".to_string())
     }
 
+    fn install_package_manager(&self) -> Option<String> {
+        Some("choco".to_string())
+    }
+
     fn probe_sync(&self) -> AgentHealth {
         let candidates = super::super::discovery::default_candidates_for("opencode");
         let cands: Vec<&str> = candidates.iter().map(|s| s.as_str()).collect();
@@ -1113,52 +1121,144 @@ impl AgentPlugin for OpencodeAdapter {
             },
         }
     }
+}
 
-    fn scan_projects(&self) -> Vec<crate::project::Project> {
-        match scan_projects_from_db() {
-            Ok(projects) if !projects.is_empty() => return projects,
-            _ => {}
+impl TransportAdapter for OpencodeAdapter {
+    fn transport_surface(&self) -> crate::agent::TransportSurface {
+        crate::agent::TransportSurface::AcpPreferred
+    }
+
+    fn build_chat_command(&self, req: ChatRequest) -> tokio::process::Command {
+        let args = build_run_args(&req);
+
+        #[cfg(target_os = "windows")]
+        {
+            let mut cmd = tokio::process::Command::new("opencode");
+            cmd.args(&args).current_dir(&req.project_path);
+            crate::process_command::tokio_no_window(&mut cmd);
+            cmd
         }
 
-        let output = match {
-            let mut command = std::process::Command::new("opencode");
-            crate::process_command::std_no_window(command.args([
-                "session",
-                "list",
-                "--format",
-                "json",
-                "--max-count",
-                "500",
-            ]))
-            .output()
-        } {
-            Ok(output) => output,
-            Err(_) => return Vec::new(),
-        };
-
-        if !output.status.success() {
-            return Vec::new();
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut cmd = tokio::process::Command::new("opencode");
+            cmd.args(&args).current_dir(&req.project_path);
+            cmd
         }
-
-        parse_project_list(&String::from_utf8_lossy(&output.stdout)).unwrap_or_default()
     }
 
-    fn add_project(&self, path: &str) -> Option<crate::project::Project> {
-        crate::project::add_project(path)
+    fn build_acp_command(
+        &self,
+        _req: &crate::agent::ChatRequest,
+    ) -> Result<crate::agent::AcpCommandSpec, String> {
+        Ok(crate::agent::AcpCommandSpec {
+            program: "opencode".to_string(),
+            args: vec!["acp".to_string()],
+            envs: Vec::new(),
+        })
     }
 
-    fn decode_project_path(&self, encoded: &str) -> String {
-        crate::project::decode_project_path(encoded)
+    fn pipe_chat_stdin(&self) -> bool {
+        false
     }
 
-    fn encode_project_path(&self, path: &str) -> String {
-        crate::project::encode_project_path(path)
+    fn abort_chat_sequence(&self) -> Option<&'static [u8]> {
+        None
     }
 
-    fn get_level1_dir(&self, path: &str) -> Option<String> {
-        crate::project::get_level1_dir(path)
+    fn stderr_relay_as_events(&self) -> bool {
+        true
     }
 
+    fn treat_eof_as_complete_after_output(&self) -> bool {
+        true
+    }
+}
+
+impl ConfigAdapter for OpencodeAdapter {
+    fn config_surface(&self) -> crate::agent::ConfigSurface {
+        crate::agent::ConfigSurface::Structured {
+            schema_id: "opencode-config".to_string(),
+        }
+    }
+
+    fn load_config(&self) -> Result<serde_json::Value, String> {
+        let config = load_opencode_config().map_err(|e| e.to_string())?;
+        serde_json::to_value(config).map_err(|e| e.to_string())
+    }
+
+    fn save_config(&self, config: &serde_json::Value) -> Result<(), String> {
+        let typed: crate::config::ClaudeConfig =
+            serde_json::from_value(config.clone()).map_err(|e| format!("Invalid config: {}", e))?;
+        save_opencode_config(&typed).map_err(|e| e.to_string())
+    }
+
+    fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
+        vec![
+            crate::hub::ConfigTemplate {
+                id: "opencode-default".to_string(),
+                name: "opencode 默认配置".to_string(),
+                description: "保留 opencode 默认模型与 MCP 设置，仅创建基础配置结构".to_string(),
+                config: serde_json::to_value(crate::config::ClaudeConfig::default())
+                    .unwrap_or_default(),
+            },
+            crate::hub::ConfigTemplate {
+                id: "opencode-glm".to_string(),
+                name: "opencode GLM 模型".to_string(),
+                description: "设置 opencode 的主模型与小模型为 GLM".to_string(),
+                config: serde_json::to_value(crate::config::ClaudeConfig {
+                    model: Some("zhipuai-coding-plan/glm-5.1".to_string()),
+                    small_model: Some("zhipuai-coding-plan/glm-5.1".to_string()),
+                    ..Default::default()
+                })
+                .unwrap_or_default(),
+            },
+        ]
+    }
+
+    fn config_format(&self) -> Option<String> {
+        Some("json".to_string())
+    }
+
+    fn load_raw_config(&self) -> Result<String, String> {
+        let path = opencode_config_path().map_err(|e| e.to_string())?;
+        if !path.exists() {
+            return Ok(String::new());
+        }
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    }
+
+    fn save_raw_config(&self, content: &str) -> Result<(), String> {
+        let cleaned = strip_json_comments(content);
+        let _: serde_json::Value =
+            serde_json::from_str(&cleaned).map_err(|e| format!("Invalid JSON: {}", e))?;
+        backup_opencode_config().map_err(|e| e.to_string())?;
+        let path = opencode_config_path().map_err(|e| e.to_string())?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        crate::util::atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())
+    }
+
+    fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String> {
+        list_opencode_backups().map_err(|e| e.to_string())
+    }
+
+    fn restore_backup(&self, path: &str) -> Result<(), String> {
+        restore_opencode_backup(path).map_err(|e| e.to_string())
+    }
+
+    fn export_config(&self, path: &str) -> Result<(), String> {
+        export_opencode_config(path).map_err(|e| e.to_string())
+    }
+
+    fn import_config(&self, path: &str) -> Result<serde_json::Value, String> {
+        let config = import_opencode_config(path).map_err(|e| e.to_string())?;
+        serde_json::to_value(config).map_err(|e| e.to_string())
+    }
+}
+
+impl SessionAdapter for OpencodeAdapter {
     fn list_sessions(&self, encoded_name: &str) -> Result<Vec<crate::session::Session>, String> {
         let project_path = crate::project::decode_project_path(encoded_name);
 
@@ -1227,79 +1327,106 @@ impl AgentPlugin for OpencodeAdapter {
         parse_export_messages(&String::from_utf8_lossy(&output.stdout))
     }
 
-    fn load_config(&self) -> Result<serde_json::Value, String> {
-        let config = load_opencode_config().map_err(|e| e.to_string())?;
-        serde_json::to_value(config).map_err(|e| e.to_string())
+    fn load_history(&self) -> Vec<crate::history::HistoryEntry> {
+        vec![]
+    }
+}
+
+impl TerminalAdapter for OpencodeAdapter {
+    fn open_in_terminal(
+        &self,
+        project_path: &str,
+        resume_session_id: Option<&str>,
+    ) -> Result<u32, Box<dyn std::error::Error>> {
+        let command = resume_session_id
+            .map(|sid| self.build_resume_command(sid))
+            .unwrap_or_else(|| self.build_launch_command());
+        let window_id = resume_session_id
+            .map(|sid| crate::agent::command_config::terminal_window_id("opencode", sid));
+        crate::command::open_agent_terminal(project_path, &command, window_id.as_deref())
     }
 
-    fn save_config(&self, config: &serde_json::Value) -> Result<(), String> {
-        let typed: crate::config::ClaudeConfig =
-            serde_json::from_value(config.clone()).map_err(|e| format!("Invalid config: {}", e))?;
-        save_opencode_config(&typed).map_err(|e| e.to_string())
+    fn open_in_terminal_with_command(
+        &self,
+        project_path: &str,
+        command: &str,
+    ) -> Result<u32, Box<dyn std::error::Error>> {
+        crate::command::open_in_terminal_with_command(project_path, command)
     }
 
-    fn config_format(&self) -> Option<String> {
-        Some("json".to_string())
+    fn build_resume_command(&self, session_id: &str) -> String {
+        format!("opencode --session {session_id}")
     }
 
-    fn load_raw_config(&self) -> Result<String, String> {
-        let path = opencode_config_path().map_err(|e| e.to_string())?;
-        if !path.exists() {
-            return Ok(String::new());
-        }
-        std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    fn build_launch_command(&self) -> String {
+        "opencode".to_string()
     }
 
-    fn save_raw_config(&self, content: &str) -> Result<(), String> {
-        let cleaned = strip_json_comments(content);
-        let _: serde_json::Value =
-            serde_json::from_str(&cleaned).map_err(|e| format!("Invalid JSON: {}", e))?;
-        backup_opencode_config().map_err(|e| e.to_string())?;
-        let path = opencode_config_path().map_err(|e| e.to_string())?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        crate::util::atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())
-    }
-
-    fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
+    fn built_in_commands(&self) -> Vec<crate::agent::command_config::AgentCommandPreset> {
+        use crate::agent::command_config::AgentCommandPreset;
         vec![
-            crate::hub::ConfigTemplate {
-                id: "opencode-default".to_string(),
-                name: "opencode 默认配置".to_string(),
-                description: "保留 opencode 默认模型与 MCP 设置，仅创建基础配置结构".to_string(),
-                config: serde_json::to_value(crate::config::ClaudeConfig::default())
-                    .unwrap_or_default(),
-            },
-            crate::hub::ConfigTemplate {
-                id: "opencode-glm".to_string(),
-                name: "opencode GLM 模型".to_string(),
-                description: "设置 opencode 的主模型与小模型为 GLM".to_string(),
-                config: serde_json::to_value(crate::config::ClaudeConfig {
-                    model: Some("zhipuai-coding-plan/glm-5.1".to_string()),
-                    small_model: Some("zhipuai-coding-plan/glm-5.1".to_string()),
-                    ..Default::default()
-                })
-                .unwrap_or_default(),
-            },
+            AgentCommandPreset { name: "opencode --version".into(), command: "opencode --version".into() },
+            AgentCommandPreset { name: "opencode session list".into(), command: "opencode session list".into() },
+            AgentCommandPreset { name: "opencode models".into(), command: "opencode models".into() },
+            AgentCommandPreset { name: "opencode mcp list".into(), command: "opencode mcp list".into() },
+            AgentCommandPreset { name: "opencode agent list".into(), command: "opencode agent list".into() },
+            AgentCommandPreset { name: "opencode debug config".into(), command: "opencode debug config".into() },
+            AgentCommandPreset { name: "opencode run".into(), command: "opencode run \"Say hello\"".into() },
         ]
     }
+}
 
-    fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String> {
-        list_opencode_backups().map_err(|e| e.to_string())
+impl ProjectAdapter for OpencodeAdapter {
+    fn scan_projects(&self) -> Vec<crate::project::Project> {
+        match scan_projects_from_db() {
+            Ok(projects) if !projects.is_empty() => return projects,
+            _ => {}
+        }
+
+        let output = match {
+            let mut command = std::process::Command::new("opencode");
+            crate::process_command::std_no_window(command.args([
+                "session",
+                "list",
+                "--format",
+                "json",
+                "--max-count",
+                "500",
+            ]))
+            .output()
+        } {
+            Ok(output) => output,
+            Err(_) => return Vec::new(),
+        };
+
+        if !output.status.success() {
+            return Vec::new();
+        }
+
+        parse_project_list(&String::from_utf8_lossy(&output.stdout)).unwrap_or_default()
     }
 
-    fn restore_backup(&self, path: &str) -> Result<(), String> {
-        restore_opencode_backup(path).map_err(|e| e.to_string())
+    fn add_project(&self, path: &str) -> Option<crate::project::Project> {
+        crate::project::add_project(path)
     }
 
-    fn export_config(&self, path: &str) -> Result<(), String> {
-        export_opencode_config(path).map_err(|e| e.to_string())
+    fn decode_project_path(&self, encoded: &str) -> String {
+        crate::project::decode_project_path(encoded)
     }
 
-    fn import_config(&self, path: &str) -> Result<serde_json::Value, String> {
-        let config = import_opencode_config(path).map_err(|e| e.to_string())?;
-        serde_json::to_value(config).map_err(|e| e.to_string())
+    fn encode_project_path(&self, path: &str) -> String {
+        crate::project::encode_project_path(path)
+    }
+
+    fn get_level1_dir(&self, path: &str) -> Option<String> {
+        crate::project::get_level1_dir(path)
+    }
+
+    fn init_project(&self, project_path: &str) -> Result<bool, String> {
+        let command = self.build_init_command();
+        crate::command::open_in_terminal_with_command(project_path, &command)
+            .map(|_| true)
+            .map_err(|e| e.to_string())
     }
 
     fn load_project_settings(
@@ -1335,46 +1462,9 @@ impl AgentPlugin for OpencodeAdapter {
     fn load_claude_md(&self, _path: &str) -> Result<Option<String>, String> {
         Ok(None)
     }
+}
 
-    fn build_chat_command(&self, req: ChatRequest) -> tokio::process::Command {
-        let args = build_run_args(&req);
-
-        #[cfg(target_os = "windows")]
-        {
-            let mut cmd = tokio::process::Command::new("opencode");
-            cmd.args(&args).current_dir(&req.project_path);
-            crate::process_command::tokio_no_window(&mut cmd);
-            cmd
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            let mut cmd = tokio::process::Command::new("opencode");
-            cmd.args(&args).current_dir(&req.project_path);
-            cmd
-        }
-    }
-
-    fn uses_acp(&self) -> bool {
-        true
-    }
-
-    fn acp_command(&self) -> (&str, Vec<&str>) {
-        ("opencode", vec!["acp"])
-    }
-
-    fn abort_chat_sequence(&self) -> Option<&'static [u8]> {
-        None
-    }
-
-    fn pipe_chat_stdin(&self) -> bool {
-        false
-    }
-
-    fn build_resume_command(&self, session_id: &str) -> String {
-        crate::agent::command_config::resume_command("opencode", session_id)
-    }
-
+impl EventNormalizer for OpencodeAdapter {
     fn parse_stream_event(&self, event: &serde_json::Value) -> String {
         match event_type(event) {
             Some("step_start") | Some("step-start") => "session",
@@ -1390,38 +1480,6 @@ impl AgentPlugin for OpencodeAdapter {
             None => "unknown",
         }
         .to_string()
-    }
-
-    fn load_history(&self) -> Vec<crate::history::HistoryEntry> {
-        vec![]
-    }
-
-    fn open_in_terminal(
-        &self,
-        project_path: &str,
-        resume_session_id: Option<&str>,
-    ) -> Result<u32, Box<dyn std::error::Error>> {
-        let command = resume_session_id
-            .map(|sid| crate::agent::command_config::resume_command("opencode", sid))
-            .unwrap_or_else(|| crate::agent::command_config::launch_command("opencode"));
-        let window_id = resume_session_id
-            .map(|sid| crate::agent::command_config::terminal_window_id("opencode", sid));
-        crate::command::open_agent_terminal(project_path, &command, window_id.as_deref())
-    }
-
-    fn open_in_terminal_with_command(
-        &self,
-        project_path: &str,
-        command: &str,
-    ) -> Result<u32, Box<dyn std::error::Error>> {
-        crate::command::open_in_terminal_with_command(project_path, command)
-    }
-
-    fn init_project(&self, project_path: &str) -> Result<bool, String> {
-        let command = crate::agent::command_config::init_command("opencode");
-        crate::command::open_in_terminal_with_command(project_path, &command)
-            .map(|_| true)
-            .map_err(|e| e.to_string())
     }
 }
 
@@ -1440,10 +1498,7 @@ fn build_run_args(req: &ChatRequest) -> Vec<String> {
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
+    crate::util::now_ms()
 }
 
 #[cfg(test)]
