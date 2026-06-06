@@ -40,6 +40,7 @@ bitflags::bitflags! {
 pub struct AgentManifest {
     pub display_name: String,
     pub icon: String,
+    pub logo_path: Option<String>,
     pub description: String,
     pub homepage: Option<String>,
     pub install_hint: Option<String>,

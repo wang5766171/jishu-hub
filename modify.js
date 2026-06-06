@@ -1,4 +1,5 @@
-import nodeLogo from "@/assets/agents/nodejs.svg";
+const fs = require('fs');
+const content = import nodeLogo from "@/assets/agents/nodejs.svg";
 import nodeLightLogo from "@/assets/agents/nodejs-light.svg";
 import npmLogo from "@/assets/agents/npm.svg";
 import npmLightLogo from "@/assets/agents/npm-light.svg";
@@ -20,9 +21,9 @@ function getDynamicLogo(path: string | null, isLight: boolean): string | null {
   try {
     if (isLight) {
       const lightPath = path.replace('.svg', '-light.svg').replace('-color-light.svg', '-light.svg');
-      return new URL(`../assets/agents/${lightPath}`, import.meta.url).href;
+      return new URL(\../assets/agents/\\, import.meta.url).href;
     }
-    return new URL(`../assets/agents/${path}`, import.meta.url).href;
+    return new URL(\../assets/agents/\\, import.meta.url).href;
   } catch {
     return null;
   }
@@ -48,7 +49,7 @@ export function AgentLogo({ agentId, size = 16, className }: AgentLogoProps) {
         style={{ width: size, height: size }}
         onError={(e) => {
           if (isLight && agent?.logo_path) {
-            e.currentTarget.src = new URL(`../assets/agents/${agent.logo_path}`, import.meta.url).href;
+            e.currentTarget.src = new URL(\../assets/agents/\\, import.meta.url).href;
           }
         }}
       />
@@ -97,3 +98,5 @@ const lightRuntimeLogos: Record<string, { src: string }> = {
   npm: { src: npmLightLogo },
   python: { src: pythonLightLogo },
 };
+;
+fs.writeFileSync('src/agents/AgentLogo.tsx', content);
