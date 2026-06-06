@@ -36,6 +36,7 @@ pub struct AgentStatus {
     pub id: String,
     pub display_name: String,
     pub icon: String,
+    pub logo_path: Option<String>,
     pub capabilities: String,
     pub health: AgentHealth,
     pub install_hint: Option<String>,
@@ -299,6 +300,7 @@ mod tests {
             id: "codex".to_string(),
             display_name: "Codex".to_string(),
             icon: "bot".to_string(),
+            logo_path: None,
             capabilities: (AgentCapabilities::RPC_BIDIRECTIONAL
                 | AgentCapabilities::APPROVAL_REQUEST)
                 .bits()

@@ -80,6 +80,7 @@ impl AgentManifest for JishuSelfAgent {
             display_name: "Jishu Agent".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             icon: "jishu".to_string(),
+            logo_path: None,
             enabled: true,
         }
     }

@@ -1064,6 +1064,7 @@ impl AgentManifest for OpencodeAdapter {
             display_name: "Open Code".to_string(),
             version: "1.0".to_string(),
             icon: "code".to_string(),
+            logo_path: None,
             enabled: true,
         }
     }
