@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Jishu Hub",
-  "version": "0.6.7",
+  "version": "0.6.14",
   "identifier": "com.jishu-hub.app",
   "build": {
     "frontendDist": "../dist",
@@ -30,6 +30,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": [
+      "bin/pi"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
