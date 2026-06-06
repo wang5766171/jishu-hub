@@ -19,9 +19,6 @@
     "hoursAgo": "{{count}} 小时前",
     "daysAgo": "{{count}} 天前"
   },
-  "sessions": {
-    "startNewChat": "发起新对话"
-  },
   "projects": {
     "exitManagement": "退出管理",
     "management": "管理",
@@ -118,6 +115,7 @@
     "collapseAgents": "收起"
   },
   "sessions": {
+    "startNewChat": "发起新对话",
     "projects": "项目",
     "selectProject": "选择一个项目",
     "switchProject": "切换",

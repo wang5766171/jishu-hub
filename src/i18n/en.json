@@ -19,9 +19,6 @@
     "hoursAgo": "{{count}} hours ago",
     "daysAgo": "{{count}} days ago"
   },
-  "sessions": {
-    "startNewChat": "New Chat"
-  },
   "projects": {
     "exitManagement": "Exit Management",
     "management": "Management",
@@ -118,6 +115,7 @@
     "collapseAgents": "Collapse"
   },
   "sessions": {
+    "startNewChat": "New Chat",
     "projects": "Projects",
     "selectProject": "Select a project",
     "switchProject": "Switch",
