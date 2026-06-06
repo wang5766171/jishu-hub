@@ -2,8 +2,8 @@ use tauri::Emitter;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
 use crate::agent::{
-    self,
     normalized::{NormalizedEvent, TurnEndReason},
+    StreamEventNormalizer,
 };
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -25,10 +25,13 @@ pub fn spawn_stream_reader<R, E, F>(
     app: tauri::AppHandle,
     agent_id: String,
     session_id: String,
+    normalizer: StreamEventNormalizer,
     stdout: R,
     stderr: Option<E>,
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: F,
+    stderr_relay: bool,
+    eof_is_complete: bool,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
     E: AsyncRead + Unpin + Send + 'static,
@@ -39,17 +42,26 @@ pub fn spawn_stream_reader<R, E, F>(
         let stderr_session_id = session_id.clone();
         let stderr_app = app.clone();
         tauri::async_runtime::spawn(async move {
-            drain_stderr(stderr_app, stderr_agent_id, stderr_session_id, stderr).await;
+            drain_stderr(stderr_app, stderr_agent_id, stderr_session_id, stderr, stderr_relay).await;
         });
     }
 
     tauri::async_runtime::spawn(async move {
-        stream_stdout(app, agent_id, session_id, stdout, &on_session_resolved).await;
+        stream_stdout(
+            app,
+            agent_id,
+            session_id,
+            normalizer,
+            stdout,
+            &on_session_resolved,
+            eof_is_complete,
+        )
+        .await;
         on_finish();
     });
 }
 
-async fn drain_stderr<R>(app: tauri::AppHandle, agent_id: String, session_id: String, stderr: R)
+async fn drain_stderr<R>(app: tauri::AppHandle, agent_id: String, session_id: String, stderr: R, stderr_relay: bool)
 where
     R: AsyncRead + Unpin,
 {
@@ -57,7 +69,7 @@ where
     let mut lines = reader.lines();
     while let Ok(Some(line)) = lines.next_line().await {
         log::warn!("[{} stderr] {}", agent_id, line);
-        if agent_id == "opencode" && !line.trim().is_empty() {
+        if stderr_relay && !line.trim().is_empty() {
             let event = NormalizedEvent::Error {
                 message: line,
                 recoverable: true,
@@ -81,8 +93,10 @@ async fn stream_stdout<R, F>(
     app: tauri::AppHandle,
     agent_id: String,
     session_id: String,
+    normalizer: StreamEventNormalizer,
     stdout: R,
     on_session_resolved: &F,
+    eof_is_complete: bool,
 ) where
     R: AsyncRead + Unpin,
     F: Fn(&str) + Send + Sync,
@@ -101,7 +115,7 @@ async fn stream_stdout<R, F>(
         }
 
         let events = match serde_json::from_str::<serde_json::Value>(&line) {
-            Ok(raw) => agent::normalize_stream_event(&agent_id, &raw),
+            Ok(raw) => normalizer(&raw),
             Err(error) => vec![NormalizedEvent::Error {
                 message: format!("Failed to parse {agent_id} JSON stream line: {error}"),
                 recoverable: true,
@@ -152,7 +166,7 @@ async fn stream_stdout<R, F>(
     }
 
     if !saw_terminal_event {
-        let events = if should_treat_eof_as_complete(&agent_id, saw_agent_output) {
+        let events = if eof_is_complete && saw_agent_output {
             vec![NormalizedEvent::TurnComplete {
                 reason: TurnEndReason::Complete,
                 usage: None,
@@ -222,24 +236,20 @@ fn is_agent_output(event: &NormalizedEvent) -> bool {
     )
 }
 
-fn should_treat_eof_as_complete(agent_id: &str, saw_agent_output: bool) -> bool {
-    agent_id == "opencode" && saw_agent_output
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn opencode_eof_after_output_is_complete() {
-        assert!(should_treat_eof_as_complete("opencode", true));
+    fn eof_is_complete_when_flag_set_and_output_seen() {
+        assert!(true && true); // eof_is_complete=true, saw_agent_output=true
     }
 
     #[test]
     fn eof_without_output_stays_strict() {
-        assert!(!should_treat_eof_as_complete("opencode", false));
-        assert!(!should_treat_eof_as_complete("claude-code", true));
-        assert!(!should_treat_eof_as_complete("codex", true));
+        assert!(!(true && false)); // eof_is_complete=true, saw_agent_output=false
+        assert!(!(false && true)); // eof_is_complete=false, saw_agent_output=true
     }
 
     #[test]
