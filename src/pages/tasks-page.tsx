@@ -302,18 +302,18 @@ function draftToPlanStep(draft: PlanStepDraft, fallbackProject: string): Seriali
   };
 }
 
-function validatePlanDrafts(drafts: PlanStepDraft[]): string | null {
-  if (drafts.length === 0) return "计划至少需要一个步骤";
+function validatePlanDrafts(drafts: PlanStepDraft[], t: (key: string, opts?: Record<string, unknown>) => string): string | null {
+  if (drafts.length === 0) return t("tasks.validation.needOneStep");
   const ids = new Set<string>();
   for (const [index, draft] of drafts.entries()) {
-    const label = `第 ${index + 1} 步`;
-    if (!draft.stepId.trim()) return `${label} 缺少 step_id`;
-    if (ids.has(draft.stepId.trim())) return `${label} 的 step_id 重复`;
+    const idx = String(index + 1);
+    if (!draft.stepId.trim()) return t("tasks.validation.stepMissingId", { index: idx });
+    if (ids.has(draft.stepId.trim())) return t("tasks.validation.stepDuplicateId", { index: idx });
     ids.add(draft.stepId.trim());
-    if (!draft.prompt.trim()) return `${label} 缺少执行说明`;
-    if (draft.type === "dispatch" && !draft.roleId.trim()) return `${label} 缺少角色`;
+    if (!draft.prompt.trim()) return t("tasks.validation.stepMissingPrompt", { index: idx });
+    if (draft.type === "dispatch" && !draft.roleId.trim()) return t("tasks.validation.stepMissingRole", { index: idx });
     if (draft.timeoutMs.trim() && !Number.isFinite(Number(draft.timeoutMs.trim()))) {
-      return `${label} 的超时时间必须是数字`;
+      return t("tasks.validation.stepTimeoutNaN", { index: idx });
     }
   }
   return null;
@@ -438,21 +438,8 @@ export function TasksPage({
 
   const translateStatus = (status: string) => t(`tasks.status.${status}`, { defaultValue: status });
   const translatePlanDocumentStatus = (status?: string | null) => {
-    const labels: Record<string, string> = {
-      pending: "等待中",
-      generating: "生成中",
-      draft: "草案",
-      ready: "可执行",
-      plan_ready: "计划已生成",
-      editing: "编辑中",
-      updating: "更新中",
-      executing: "执行中",
-      committed: "已提交",
-      cancelled: "已取消",
-      complete: "已完成",
-      failed: "失败",
-    };
-    return status ? labels[status] ?? status : "未生成";
+    if (!status) return t("tasks.planStatus.none");
+    return t(`tasks.planStatus.${status}`, { defaultValue: status });
   };
 
   const refreshTaskPlanSkills = async () => {
@@ -642,7 +629,7 @@ export function TasksPage({
 
   const executePlan = async (runId: string) => {
     if (planEditing) {
-      setPlanEditError("请先保存或取消计划编辑，再执行。");
+      setPlanEditError(t("tasks.planEdit.saveOrCancelFirst"));
       return;
     }
     setExecutingPlan(true);
@@ -772,7 +759,7 @@ export function TasksPage({
 
   const savePlanDraft = async () => {
     if (!selectedRun) return;
-    const localError = validatePlanDrafts(planDrafts);
+    const localError = validatePlanDrafts(planDrafts, t);
     if (localError) {
       setPlanEditError(localError);
       return;
@@ -1328,7 +1315,7 @@ export function TasksPage({
                   <p className="mt-2 text-xs text-muted-foreground">
                     {planStatus
                       ? translatePlanDocumentStatus(planStatus)
-                      : t("tasks.awaitingLLM", { defaultValue: "正在等待模型响应" })}
+                      : t("tasks.awaitingLLM", { defaultValue: "..." })}
                   </p>
                   <div className="mt-3 flex items-center gap-2">
                     <Button
@@ -1348,7 +1335,7 @@ export function TasksPage({
                   <div className="mt-3 space-y-2">
                     {planTraceItems.length === 0 ? (
                       <div className="rounded-md border border-dashed bg-background/50 p-3 text-xs text-muted-foreground">
-                        正在等待 jishu agent 输出规划过程。
+                        {t("tasks.planGen.waitingAgent")}
                       </div>
                     ) : (
                       planTraceItems.map((item) => (
@@ -1553,22 +1540,22 @@ export function TasksPage({
                             setPlanEditError(null);
                           }}>
                             <X className="h-4 w-4" />
-                            取消编辑
+                            {t("tasks.planEdit.cancelEdit")}
                           </Button>
                           <Button size="sm" onClick={savePlanDraft} disabled={savingPlan}>
                             <Save className="h-4 w-4" />
-                            {savingPlan ? "保存中" : "保存计划"}
+                            {savingPlan ? t("tasks.planEdit.saving") : t("tasks.planEdit.savePlan")}
                           </Button>
                         </>
                       ) : (
                         <>
                           <Button variant="outline" size="sm" onClick={beginPlanEdit} disabled={selectedRun.plan.length === 0}>
                             <Pencil className="h-4 w-4" />
-                            编辑定稿
+                            {t("tasks.planEdit.editFinal")}
                           </Button>
                           <Button variant="outline" size="sm" onClick={addPlanDraftStep}>
                             <Plus className="h-4 w-4" />
-                            添加步骤
+                            {t("tasks.planEdit.addStep")}
                           </Button>
                         </>
                       )}
@@ -1677,7 +1664,7 @@ export function TasksPage({
                               className="text-destructive"
                             >
                               <Trash2 className="h-4 w-4" />
-                              移除步骤
+                              {t("tasks.planEdit.removeStep")}
                             </Button>
                           </div>
                         </div>
@@ -2005,7 +1992,7 @@ function ParallelGantt({
   if (steps.length === 0) {
     return (
       <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
-        暂无步骤
+        {t("tasks.noPlanSteps")}
       </div>
     );
   }

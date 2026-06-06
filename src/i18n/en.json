@@ -13,6 +13,23 @@
     "reload": "Reload",
     "delete": "Delete"
   },
+  "time": {
+    "justNow": "just now",
+    "minutesAgo": "{{count}} minutes ago",
+    "hoursAgo": "{{count}} hours ago",
+    "daysAgo": "{{count}} days ago"
+  },
+  "sessions": {
+    "startNewChat": "New Chat"
+  },
+  "projects": {
+    "exitManagement": "Exit Management",
+    "management": "Management",
+    "clearFilter": "Clear Filter",
+    "selected": "{{count}} projects selected",
+    "deselect": "Deselect",
+    "merge": "Merge Projects"
+  },
   "nav": {
     "projects": "Projects",
     "sessions": "Sessions",
@@ -241,6 +258,7 @@
     "saveAsTemplate": "Save Current as Template",
     "noUserTemplates": "No user templates yet",
     "noUserTemplatesDesc": "Save your current configuration as a template to reuse",
+    "noTemplates": "No templates available for this agent",
     "loadingTemplates": "Loading templates...",
     "saveTemplateTitle": "Save Template",
     "templateName": "Template Name",
@@ -482,6 +500,50 @@
     "reworkItems": "Rework items",
     "reworkDispatchedTo": "Dispatched to run {{runId}}",
     "unassigned": "Unassigned",
+    "validation": {
+      "needOneStep": "Plan needs at least one step",
+      "stepMissingId": "Step {{index}} missing step_id",
+      "stepDuplicateId": "Step {{index}} has duplicate step_id",
+      "stepMissingPrompt": "Step {{index}} missing prompt",
+      "stepMissingRole": "Step {{index}} missing role",
+      "stepTimeoutNaN": "Step {{index}} timeout must be a number"
+    },
+    "planStatus": {
+      "pending": "Pending",
+      "generating": "Generating",
+      "draft": "Draft",
+      "ready": "Ready",
+      "plan_ready": "Plan ready",
+      "editing": "Editing",
+      "updating": "Updating",
+      "executing": "Executing",
+      "committed": "Committed",
+      "cancelled": "Cancelled",
+      "complete": "Complete",
+      "failed": "Failed",
+      "none": "Not generated"
+    },
+    "planEdit": {
+      "cancelEdit": "Cancel Edit",
+      "saving": "Saving",
+      "savePlan": "Save Plan",
+      "editFinal": "Edit Final",
+      "addStep": "Add Step",
+      "removeStep": "Remove Step",
+      "saveOrCancelFirst": "Save or cancel plan edit before executing."
+    },
+    "planGen": {
+      "waitingAgent": "Waiting for jishu agent to output planning process.",
+      "stepLabel": "Step {{index}}"
+    },
+    "timelineLabels": {
+      "toolCall": "Tool Call",
+      "toolReturn": "Tool Return",
+      "taskEvent": "Task Event",
+      "type": "Type",
+      "role": "Role",
+      "timeout": "Timeout ms"
+    },
     "status": {
       "queued": "Queued",
       "running": "Running",

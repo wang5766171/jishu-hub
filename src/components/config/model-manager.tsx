@@ -144,7 +144,7 @@ export function ModelManager({
   onChanged,
   onActiveModelChange,
 }: {
-  onChanged: () => void;
+  onChanged?: () => void;
   onActiveModelChange?: (modelId: string | null) => void;
 }) {
   const { t } = useTranslation();
@@ -203,7 +203,7 @@ export function ModelManager({
       setActive(null);
       onActiveModelChange?.(null);
     }
-    onChanged();
+    onChanged?.();
   };
 
   // -------------------- Provider ops --------------------
@@ -328,6 +328,7 @@ export function ModelManager({
     }
     setSaving(true);
     try {
+      const previousModelId = modelForm?.mode === "edit" ? modelForm.modelId : null;
       const nextModels =
         modelForm?.mode === "edit"
           ? models.map((m) => (m.id === modelForm.modelId ? model : m))
@@ -340,7 +341,7 @@ export function ModelManager({
       next.providers[providerName] = nextProvider;
       await persistConfig(
         next,
-        active?.provider === providerName && active.model === modelForm?.modelId
+        active?.provider === providerName && active.model === previousModelId
           ? { provider: providerName, model: model.id }
           : undefined,
       );
@@ -389,7 +390,7 @@ export function ModelManager({
     try {
       await invokeCommand("set_active", { active: next });
       onActiveModelChange?.(`${provider}/${model}`);
-      onChanged();
+      onChanged?.();
     } catch (e) {
       setError(String(e));
     }

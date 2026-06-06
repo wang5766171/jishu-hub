@@ -44,13 +44,6 @@ export interface SessionSearchResult {
   firstMatchIndex: number;
 }
 
-export interface HistoryEntry {
-  display: string;
-  timestamp: number | null;
-  project: string | null;
-  sessionId: string | null;
-}
-
 export interface PermissionsConfig {
   allow: string[] | null;
   deny: string[] | null;
@@ -93,34 +86,6 @@ export interface ContextCompactionConfig {
   method: string | null;
 }
 
-export interface JishuPermissions {
-  allow: string[] | null;
-  deny: string[] | null;
-  defaultMode: string | null;
-}
-
-export interface JishuContextCompaction {
-  threshold: number | null;
-  method: string | null;
-}
-
-export interface JishuConfig {
-  activeModel: string | null;
-  temperature: number | null;
-  maxTokens: number | null;
-  thinkingEnabled: boolean | null;
-  env: Record<string, string> | null;
-  permissions: JishuPermissions | null;
-  skipDangerous: boolean | null;
-  mcpServers: Record<string, McpServerConfig> | null;
-  systemInstructions: string | null;
-  globalMemory: string | null;
-  contextCompaction: JishuContextCompaction | null;
-  verbose: boolean | null;
-  maxTurns: number | null;
-  theme: string | null;
-}
-
 export interface ClaudeConfig {
   model: string | null;
   env: Record<string, string> | null;
@@ -147,15 +112,6 @@ export interface ConfigTemplate {
   config: unknown;
 }
 
-export interface Preset {
-  id: string;
-  name: string;
-  description?: string;
-  config: unknown;
-  agentId?: string;
-  createdAt: string;
-}
-
 export interface BackupEntry {
   name: string;
   path: string;
@@ -165,14 +121,6 @@ export interface BackupEntry {
 export type Page = "chat" | "manage";
 
 export type ManageTab = "projects" | "config" | "commands" | "env";
-
-export interface AgentInfo {
-  id: string;
-  display_name: string;
-  version: string;
-  icon: string;
-  enabled: boolean;
-}
 
 export interface CustomCommand {
   id: string;
@@ -256,23 +204,4 @@ export interface SavedFile {
   label: string;
   index: number;
   batch_id: string;
-}
-
-export interface ModelPreset {
-  id: string;
-  display_name: string;
-  protocol: string;
-  base_url: string;
-  model: string;
-  api_key?: string | null;
-  api_key_env?: string | null;
-  max_tokens: number;
-  temperature: number;
-  supports_tools: boolean;
-  supports_thinking: boolean;
-}
-
-export interface ModelStore {
-  presets: ModelPreset[];
-  active: string | null;
 }

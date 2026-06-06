@@ -13,6 +13,23 @@
     "reload": "重新加载",
     "delete": "删除"
   },
+  "time": {
+    "justNow": "刚刚",
+    "minutesAgo": "{{count}} 分钟前",
+    "hoursAgo": "{{count}} 小时前",
+    "daysAgo": "{{count}} 天前"
+  },
+  "sessions": {
+    "startNewChat": "发起新对话"
+  },
+  "projects": {
+    "exitManagement": "退出管理",
+    "management": "管理",
+    "clearFilter": "清除筛选",
+    "selected": "已选择 {{count}} 个项目",
+    "deselect": "取消选择",
+    "merge": "合并项目"
+  },
   "nav": {
     "projects": "项目",
     "sessions": "会话",
@@ -482,6 +499,50 @@
     "reworkItems": "返工项",
     "reworkDispatchedTo": "已派发至运行 {{runId}}",
     "unassigned": "未分配",
+    "validation": {
+      "needOneStep": "计划至少需要一个步骤",
+      "stepMissingId": "第 {{index}} 步缺少 step_id",
+      "stepDuplicateId": "第 {{index}} 步的 step_id 重复",
+      "stepMissingPrompt": "第 {{index}} 步缺少执行说明",
+      "stepMissingRole": "第 {{index}} 步缺少角色",
+      "stepTimeoutNaN": "第 {{index}} 步的超时时间必须是数字"
+    },
+    "planStatus": {
+      "pending": "等待中",
+      "generating": "生成中",
+      "draft": "草案",
+      "ready": "可执行",
+      "plan_ready": "计划已生成",
+      "editing": "编辑中",
+      "updating": "更新中",
+      "executing": "执行中",
+      "committed": "已提交",
+      "cancelled": "已取消",
+      "complete": "已完成",
+      "failed": "失败",
+      "none": "未生成"
+    },
+    "planEdit": {
+      "cancelEdit": "取消编辑",
+      "saving": "保存中",
+      "savePlan": "保存计划",
+      "editFinal": "编辑定稿",
+      "addStep": "添加步骤",
+      "removeStep": "移除步骤",
+      "saveOrCancelFirst": "请先保存或取消计划编辑，再执行。"
+    },
+    "planGen": {
+      "waitingAgent": "正在等待 jishu agent 输出规划过程。",
+      "stepLabel": "第 {{index}} 步"
+    },
+    "timelineLabels": {
+      "toolCall": "调用工具",
+      "toolReturn": "工具返回",
+      "taskEvent": "任务事件",
+      "type": "类型",
+      "role": "角色",
+      "timeout": "超时 ms"
+    },
     "status": {
       "queued": "排队中",
       "running": "运行中",

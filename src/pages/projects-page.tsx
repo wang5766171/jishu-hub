@@ -143,7 +143,7 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
           </Button>
           <Button variant="outline" size="sm" onClick={toggleManagementMode}>
             <Settings2 className="h-4 w-4 mr-1" />
-            {managementMode ? "退出管理" : "管理"}
+            {managementMode ? t("projects.exitManagement") : t("projects.management")}
           </Button>
           <Button className="gap-2" onClick={() => setAddDialogOpen(true)}>
             <Plus className="h-4 w-4" />
@@ -227,7 +227,7 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
                   onClick={() => setSelectedTag(null)}
                   className="text-xs text-muted-foreground hover:text-foreground ml-1"
                 >
-                  清除筛选
+                  {t("projects.clearFilter")}
                 </button>
               )}
             </div>
@@ -290,10 +290,10 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
 
       {managementMode && checkedProjects.size >= 2 && (
         <div className="fixed bottom-0 left-0 right-0 border-t bg-background p-3 flex items-center justify-between z-50">
-          <span className="text-sm">已选择 {checkedProjects.size} 个项目</span>
+          <span className="text-sm">{t("projects.selected", { count: checkedProjects.size })}</span>
           <div className="flex gap-2">
-            <Button variant="outline" onClick={clearSelection}>取消选择</Button>
-            <Button onClick={() => setMergeDialogOpen(true)}>合并项目</Button>
+            <Button variant="outline" onClick={clearSelection}>{t("projects.deselect")}</Button>
+            <Button onClick={() => setMergeDialogOpen(true)}>{t("projects.merge")}</Button>
           </div>
         </div>
       )}
