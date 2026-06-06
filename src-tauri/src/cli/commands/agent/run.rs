@@ -123,7 +123,8 @@ pub fn run(
                     started_at: now_ms,
                     finished_at: now_ms,
                     usage: UsageSummary::zero(),
-                ..Default::default()});
+                    ..Default::default()
+                });
             }
         }
     }
