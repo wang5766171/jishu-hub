@@ -39,6 +39,22 @@ docs/superpowers/
 # Claude Code project config
 .claude/
 
+# Architecture guidance document (local reference only)
+DEVELOP_READ.MD
+pi_agent_rust_readme.md
+
+# Scratch / test artifacts
+scratch/
+test_*.py
+test_*.exe
+test_*.pdb
+test_*.rs
+test_msg.json
+test_session.jsonl
+
+# Binaries / native artifacts
+src-tauri/bin/
+
 # Gemini local config
 .gemini/
 .kiro/
