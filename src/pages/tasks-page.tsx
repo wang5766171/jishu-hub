@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { useAgent } from "@/agents";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { openFloatingSession } from "@/lib/floating-window";
-import { ClipboardList, Download, Eye, History, Plus, RefreshCw, Send, Sparkles, Trash2, Wand2, X, XCircle } from "lucide-react";
+import { AlertTriangle, ClipboardList, Download, Eye, History, Pencil, Plus, RefreshCw, Save, Send, Sparkles, Trash2, Wand2, X, XCircle } from "lucide-react";
 
 type TaskKind = "plan" | "run";
 type AssignmentMode = "manual" | "auto_suggest" | "auto_apply";
@@ -48,19 +48,8 @@ interface RunRecord {
       acceptance?: string[];
     }>;
   };
-  plan: Array<{
-    step_id: string;
-    title: string;
-    depends_on: string[];
-    kind: {
-      dispatch?: { role_id: string; prompt: string; project: string };
-      shell?: { command: string; cwd: string };
-      read?: { path: string };
-      write?: { path: string; requires_approval: boolean };
-      reflect?: { question: string };
-      verify?: { check: Record<string, unknown> };
-    } | Record<string, unknown>;
-  }>;
+  plan: SerializedPlanStep[];
+  plan_document?: PlanDocument | null;
   result: {
     status: string;
     error?: string | null;
@@ -74,6 +63,41 @@ interface RunRecord {
   rework_routes?: RoleContractRoute[];
   rework_items?: ReworkItem[];
   children?: RunSummary[];
+}
+
+interface SerializedPlanStep {
+  step_id: string;
+  depends_on?: string[];
+  timeout_ms?: number | null;
+  title?: string;
+  kind: Record<string, unknown>;
+}
+
+interface PlanDocument {
+  schema_version: number;
+  run_id: string;
+  skill_id?: string | null;
+  revision: number;
+  status: string;
+  steps: SerializedPlanStep[];
+  validation: {
+    valid: boolean;
+    errors: Array<{ code: string; message: string; step_id?: string | null }>;
+    warnings: Array<{ code: string; message: string; step_id?: string | null }>;
+  };
+  updated_at: number;
+}
+
+type EditablePlanStepType = "dispatch" | "reflect";
+
+interface PlanStepDraft {
+  stepId: string;
+  type: EditablePlanStepType;
+  roleId: string;
+  prompt: string;
+  project: string;
+  dependsOn: string;
+  timeoutMs: string;
 }
 
 interface TaskTimelineEvent {
@@ -149,6 +173,14 @@ interface TaskPlanSkill {
   roles: TaskPlanRole[];
 }
 
+interface PlanTraceItem {
+  id: string;
+  kind: string;
+  title: string;
+  detail?: string;
+  isError?: boolean;
+}
+
 function roleDraftFromPlanRole(role: TaskPlanRole): RoleDraft {
   return {
     roleId: role.role_id,
@@ -181,6 +213,157 @@ function formatTime(value?: number | null): string {
   return new Date(value).toLocaleString();
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+function textValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function unwrapStepKind(kind: unknown): { type: string; data: Record<string, unknown> } {
+  const record = asRecord(kind);
+  const taggedType = textValue(record.type);
+  if (taggedType) {
+    return { type: taggedType, data: record };
+  }
+
+  const nestedType = Object.keys(record).find((key) => key !== "title") ?? "unknown";
+  return { type: nestedType, data: asRecord(record[nestedType]) };
+}
+
+function planStepPrompt(step: SerializedPlanStep): string {
+  const { type, data } = unwrapStepKind(step.kind);
+  if (type === "dispatch") return textValue(data.prompt);
+  if (type === "reflect") return textValue(data.question) || textValue(data.prompt);
+  if (type === "shell") return textValue(data.command);
+  if (type === "read") return textValue(data.path);
+  if (type === "write") return textValue(data.path);
+  return JSON.stringify(step.kind);
+}
+
+function planStepRoleId(step: SerializedPlanStep): string {
+  const { type, data } = unwrapStepKind(step.kind);
+  return type === "dispatch" ? textValue(data.role_id) : "";
+}
+
+function planStepProject(step: SerializedPlanStep): string {
+  const { type, data } = unwrapStepKind(step.kind);
+  if (type === "dispatch") return textValue(data.project);
+  return "";
+}
+
+function planStepToDraft(step: SerializedPlanStep, fallbackProject: string): PlanStepDraft {
+  const { type, data } = unwrapStepKind(step.kind);
+  const editableType: EditablePlanStepType = type === "reflect" ? "reflect" : "dispatch";
+  return {
+    stepId: step.step_id,
+    type: editableType,
+    roleId: editableType === "dispatch" ? textValue(data.role_id) : "",
+    prompt: editableType === "reflect"
+      ? textValue(data.question) || textValue(data.prompt)
+      : textValue(data.prompt),
+    project: editableType === "dispatch" ? textValue(data.project, fallbackProject) : "",
+    dependsOn: (step.depends_on ?? []).join(", "),
+    timeoutMs: step.timeout_ms == null ? "" : String(step.timeout_ms),
+  };
+}
+
+function draftToPlanStep(draft: PlanStepDraft, fallbackProject: string): SerializedPlanStep {
+  const timeout = draft.timeoutMs.trim() ? Number(draft.timeoutMs.trim()) : null;
+  const base = {
+    step_id: draft.stepId.trim(),
+    depends_on: splitLines(draft.dependsOn),
+    timeout_ms: Number.isFinite(timeout) ? timeout : null,
+  };
+
+  if (draft.type === "reflect") {
+    return {
+      ...base,
+      kind: {
+        type: "reflect",
+        question: draft.prompt.trim(),
+      },
+    };
+  }
+
+  return {
+    ...base,
+    kind: {
+      type: "dispatch",
+      role_id: draft.roleId.trim(),
+      prompt: draft.prompt.trim(),
+      project: draft.project.trim() || fallbackProject || ".",
+      session: null,
+    },
+  };
+}
+
+function validatePlanDrafts(drafts: PlanStepDraft[]): string | null {
+  if (drafts.length === 0) return "计划至少需要一个步骤";
+  const ids = new Set<string>();
+  for (const [index, draft] of drafts.entries()) {
+    const label = `第 ${index + 1} 步`;
+    if (!draft.stepId.trim()) return `${label} 缺少 step_id`;
+    if (ids.has(draft.stepId.trim())) return `${label} 的 step_id 重复`;
+    ids.add(draft.stepId.trim());
+    if (!draft.prompt.trim()) return `${label} 缺少执行说明`;
+    if (draft.type === "dispatch" && !draft.roleId.trim()) return `${label} 缺少角色`;
+    if (draft.timeoutMs.trim() && !Number.isFinite(Number(draft.timeoutMs.trim()))) {
+      return `${label} 的超时时间必须是数字`;
+    }
+  }
+  return null;
+}
+
+function traceEventToItem(event: unknown, index: number): PlanTraceItem {
+  const record = asRecord(event);
+  const kind = textValue(record.kind, "unknown");
+  if (kind === "text_delta") {
+    return {
+      id: `trace_text_${index}`,
+      kind,
+      title: "jishu agent",
+      detail: textValue(record.delta),
+    };
+  }
+  if (kind === "tool_use_start") {
+    return {
+      id: `trace_tool_start_${index}`,
+      kind,
+      title: `调用工具 ${textValue(record.tool, "tool")}`,
+      detail: JSON.stringify(record.input ?? {}, null, 2),
+    };
+  }
+  if (kind === "tool_use_result") {
+    const output = asRecord(record.output);
+    return {
+      id: `trace_tool_result_${index}`,
+      kind,
+      title: `工具返回 ${textValue(output.tool, "tool")}`,
+      detail: textValue(output.result) || JSON.stringify(record.output ?? {}, null, 2),
+      isError: Boolean(record.is_error),
+    };
+  }
+  if (kind === "task_step") {
+    return {
+      id: `trace_task_${index}`,
+      kind,
+      title: textValue(record.title, "任务事件"),
+      detail: record.detail ? JSON.stringify(record.detail, null, 2) : undefined,
+    };
+  }
+  return {
+    id: `trace_${index}`,
+    kind,
+    title: kind,
+    detail: JSON.stringify(event),
+  };
+}
+
 export function TasksPage({
   initialProjectPath,
   onClose,
@@ -210,6 +393,12 @@ export function TasksPage({
   const [timelineView, setTimelineView] = useState<"list" | "parallel">("list");
   const [timelineFilter, setTimelineFilter] = useState<string>("all");
   const [planStatus, setPlanStatus] = useState<string>("");
+  const [planEditing, setPlanEditing] = useState(false);
+  const [planDrafts, setPlanDrafts] = useState<PlanStepDraft[]>([]);
+  const [savingPlan, setSavingPlan] = useState(false);
+  const [planEditError, setPlanEditError] = useState<string | null>(null);
+  const [planTraceOffset, setPlanTraceOffset] = useState(0);
+  const [planTraceItems, setPlanTraceItems] = useState<PlanTraceItem[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -223,6 +412,21 @@ export function TasksPage({
     [agents]
   );
   const selectedTemplate = taskPlanSkills.find((template) => template.id === selectedTemplateId) ?? taskPlanSkills[0] ?? null;
+  const defaultGeneratedAgentId = agentOptions.length === 1 ? agentOptions[0].id : "";
+  const selectedRunProject = selectedRun?.spec.project_path?.trim() || projectPath.trim() || ".";
+  const roleAssignmentError =
+    selectedTemplate?.installed && selectedTemplate.valid
+      ? roles.length === 0
+        ? t("tasks.generateRolesBeforeSubmit")
+        : roles.some((role) => !role.roleName.trim() || !role.agentId.trim())
+          ? t("tasks.assignRoleAgentsFirst")
+          : null
+      : selectedTemplate && !selectedTemplate.installed
+        ? t("tasks.installSkillFirst")
+        : selectedTemplate && !selectedTemplate.valid
+          ? t("tasks.invalidSkill")
+          : null;
+  const submitDisabled = !message.trim() || submitting || Boolean(roleAssignmentError);
 
   useEffect(() => {
     if (!taskPlanSkills.length) return;
@@ -233,6 +437,23 @@ export function TasksPage({
   }, [selectedTemplateId, taskPlanSkills]);
 
   const translateStatus = (status: string) => t(`tasks.status.${status}`, { defaultValue: status });
+  const translatePlanDocumentStatus = (status?: string | null) => {
+    const labels: Record<string, string> = {
+      pending: "等待中",
+      generating: "生成中",
+      draft: "草案",
+      ready: "可执行",
+      plan_ready: "计划已生成",
+      editing: "编辑中",
+      updating: "更新中",
+      executing: "执行中",
+      committed: "已提交",
+      cancelled: "已取消",
+      complete: "已完成",
+      failed: "失败",
+    };
+    return status ? labels[status] ?? status : "未生成";
+  };
 
   const refreshTaskPlanSkills = async () => {
     setLoadingSkills(true);
@@ -272,7 +493,12 @@ export function TasksPage({
         skillId: selectedTemplate.id,
         message: message.trim(),
       });
-      setRoles(generatedRoles.map(roleDraftFromPlanRole));
+      setRoles(
+        generatedRoles.map((role) => ({
+          ...roleDraftFromPlanRole(role),
+          agentId: defaultGeneratedAgentId,
+        }))
+      );
       setSelectedRun(null);
     } catch (err) {
       setError(String(err));
@@ -338,8 +564,30 @@ export function TasksPage({
     }
   };
 
+  useEffect(() => {
+    if (!selectedRun) {
+      setPlanEditing(false);
+      setPlanDrafts([]);
+      setPlanTraceOffset(0);
+      setPlanTraceItems([]);
+      setPlanStatus("");
+      setPlanEditError(null);
+      return;
+    }
+    setPlanTraceOffset(0);
+    setPlanTraceItems([]);
+    setPlanEditError(null);
+    if (!planEditing) {
+      setPlanDrafts(selectedRun.plan.map((step) => planStepToDraft(step, selectedRunProject)));
+    }
+  }, [selectedRun?.run_id, selectedRun?.plan.length, selectedRun?.plan_document?.revision]);
+
   const submitTask = async () => {
     if (!message.trim()) return;
+    if (roleAssignmentError) {
+      setError(roleAssignmentError);
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
@@ -393,6 +641,10 @@ export function TasksPage({
   };
 
   const executePlan = async (runId: string) => {
+    if (planEditing) {
+      setPlanEditError("请先保存或取消计划编辑，再执行。");
+      return;
+    }
     setExecutingPlan(true);
     setError(null);
     try {
@@ -488,6 +740,63 @@ export function TasksPage({
     }
   };
 
+  const beginPlanEdit = () => {
+    if (!selectedRun) return;
+    setPlanDrafts(selectedRun.plan.map((step) => planStepToDraft(step, selectedRunProject)));
+    setPlanEditError(null);
+    setPlanEditing(true);
+  };
+
+  const updatePlanDraft = (index: number, patch: Partial<PlanStepDraft>) => {
+    setPlanDrafts((current) =>
+      current.map((draft, i) => (i === index ? { ...draft, ...patch } : draft))
+    );
+  };
+
+  const addPlanDraftStep = () => {
+    const rolesForRun = selectedRun?.spec.roles ?? [];
+    setPlanDrafts((current) => [
+      ...current,
+      {
+        stepId: `step_${current.length + 1}`,
+        type: "dispatch",
+        roleId: rolesForRun[0]?.role_id ?? "default",
+        prompt: "",
+        project: selectedRunProject,
+        dependsOn: current.length > 0 ? current[current.length - 1].stepId : "",
+        timeoutMs: "",
+      },
+    ]);
+    setPlanEditing(true);
+  };
+
+  const savePlanDraft = async () => {
+    if (!selectedRun) return;
+    const localError = validatePlanDrafts(planDrafts);
+    if (localError) {
+      setPlanEditError(localError);
+      return;
+    }
+
+    setSavingPlan(true);
+    setPlanEditError(null);
+    setError(null);
+    try {
+      const steps = planDrafts.map((draft) => draftToPlanStep(draft, selectedRunProject));
+      await invokeCommand<PlanDocument>("plan_update_steps", {
+        runId: selectedRun.run_id,
+        steps,
+      });
+      setPlanEditing(false);
+      await loadRun(selectedRun.run_id);
+      await refreshRuns();
+    } catch (err) {
+      setPlanEditError(String(err));
+    } finally {
+      setSavingPlan(false);
+    }
+  };
+
   // Poll plan_state.json when the run is in Plan mode (status=Running,
   // plan_state.status ∈ {pending, generating, plan_ready, ...}).
   // This is how the HUB "sees" the LLM streaming — the LLM events
@@ -527,6 +836,37 @@ export function TasksPage({
       clearInterval(interval);
     };
   }, [selectedRun?.run_id, selectedRun?.result.status]);
+
+  useEffect(() => {
+    if (!selectedRun) return;
+    if (selectedRun.result.status !== "running" || selectedRun.plan.length > 0) return;
+    const runId = selectedRun.run_id;
+    let cancelled = false;
+    const fetchTrace = async () => {
+      try {
+        const response = await invokeCommand<{ events: unknown[]; offset: number }>("trace_tail", {
+          runId,
+          byteOffset: planTraceOffset,
+        });
+        if (cancelled) return;
+        setPlanTraceOffset(response.offset);
+        if (response.events.length > 0) {
+          setPlanTraceItems((current) => [
+            ...current,
+            ...response.events.map((event, index) => traceEventToItem(event, current.length + index)),
+          ].slice(-60));
+        }
+      } catch {
+        // Best-effort live trace; run polling still refreshes the final plan.
+      }
+    };
+    fetchTrace();
+    const interval = setInterval(fetchTrace, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [selectedRun?.run_id, selectedRun?.result.status, selectedRun?.plan.length, planTraceOffset]);
 
   const updateRole = (index: number, patch: Partial<RoleDraft>) => {
     setRoles((current) => current.map((role, i) => (i === index ? { ...role, ...patch } : role)));
@@ -709,7 +1049,12 @@ export function TasksPage({
                 </button>
               ))}
             </div>
-            <Button onClick={submitTask} disabled={!message.trim() || submitting} className="gap-2">
+            <Button
+              onClick={submitTask}
+              disabled={submitDisabled}
+              className="gap-2"
+              title={!message.trim() ? t("tasks.templateRequiresGoal") : roleAssignmentError ?? t("tasks.submit")}
+            >
               <Send className="h-4 w-4" />
               {submitting ? t("tasks.submitting") : t("tasks.submit")}
             </Button>
@@ -902,7 +1247,7 @@ export function TasksPage({
 
             <div className="flex items-center gap-2 border-b bg-muted/30 px-5 py-2">
               {selectedRun.result.status === "complete" && selectedRun.plan.length > 0 && (
-                <Button size="sm" onClick={() => executePlan(selectedRun.run_id)} disabled={executingPlan}>
+                <Button size="sm" onClick={() => executePlan(selectedRun.run_id)} disabled={executingPlan || planEditing}>
                   <Send className="h-4 w-4" />
                   {executingPlan ? t("tasks.executingPlan") : t("tasks.executePlan")}
                 </Button>
@@ -982,8 +1327,8 @@ export function TasksPage({
                   </h4>
                   <p className="mt-2 text-xs text-muted-foreground">
                     {planStatus
-                      ? `${t("tasks.status." + planStatus)}…`
-                      : t("tasks.awaitingLLM")}
+                      ? translatePlanDocumentStatus(planStatus)
+                      : t("tasks.awaitingLLM", { defaultValue: "正在等待模型响应" })}
                   </p>
                   <div className="mt-3 flex items-center gap-2">
                     <Button
@@ -999,6 +1344,32 @@ export function TasksPage({
                     >
                       {t("tasks.cancelPlan")}
                     </Button>
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {planTraceItems.length === 0 ? (
+                      <div className="rounded-md border border-dashed bg-background/50 p-3 text-xs text-muted-foreground">
+                        正在等待 jishu agent 输出规划过程。
+                      </div>
+                    ) : (
+                      planTraceItems.map((item) => (
+                        <div
+                          key={item.id}
+                          className={`rounded-md border bg-background/70 px-3 py-2 text-xs ${
+                            item.isError ? "border-destructive/50 text-destructive" : ""
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-medium">{item.title}</span>
+                            <Badge variant="outline" className="text-[10px]">{item.kind}</Badge>
+                          </div>
+                          {item.detail && (
+                            <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-muted-foreground">
+                              {item.detail}
+                            </pre>
+                          )}
+                        </div>
+                      ))
+                    )}
                   </div>
                 </section>
               )}
@@ -1153,30 +1524,206 @@ export function TasksPage({
                     )}
                   </div>
                 </section>
-                <section>
-                  <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">{t("tasks.planSteps")}</h4>
-                  <div className="space-y-2">
-                    {selectedRun.plan.length === 0 ? (
-                      <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
-                        {t("tasks.noPlanSteps")}
-                      </div>
-                    ) : (
-                      selectedRun.plan.map((step, index) => (
-                        <div key={step.step_id} className="rounded-md border bg-background/60 px-3 py-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-sm font-medium">{t("tasks.stepOf", { index: index + 1 })}</span>
-                            <span className="text-xs text-muted-foreground">{step.step_id}</span>
-                          </div>
-                          <p className="mt-1 text-xs">
-                            {(step.kind as { dispatch?: { prompt?: string }; reflect?: { question?: string }; shell?: { command?: string } }).dispatch?.prompt
-                              || (step.kind as { reflect?: { question?: string } }).reflect?.question
-                              || (step.kind as { shell?: { command?: string } }).shell?.command
-                              || JSON.stringify(step.kind)}
-                          </p>
-                        </div>
-                      ))
-                    )}
+                <section className="md:col-span-2">
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h4 className="text-xs font-semibold uppercase text-muted-foreground">{t("tasks.planSteps")}</h4>
+                      {selectedRun.plan_document && (
+                        <>
+                          <Badge variant="outline" className="text-[10px]">
+                            rev {selectedRun.plan_document.revision}
+                          </Badge>
+                          <Badge variant={selectedRun.plan_document.validation.valid ? "secondary" : "destructive"} className="text-[10px]">
+                            {translatePlanDocumentStatus(selectedRun.plan_document.status)}
+                          </Badge>
+                          {selectedRun.plan_document.skill_id && (
+                            <Badge variant="secondary" className="text-[10px]">
+                              {selectedRun.plan_document.skill_id}
+                            </Badge>
+                          )}
+                        </>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {planEditing ? (
+                        <>
+                          <Button variant="outline" size="sm" onClick={() => {
+                            setPlanEditing(false);
+                            setPlanDrafts(selectedRun.plan.map((step) => planStepToDraft(step, selectedRunProject)));
+                            setPlanEditError(null);
+                          }}>
+                            <X className="h-4 w-4" />
+                            取消编辑
+                          </Button>
+                          <Button size="sm" onClick={savePlanDraft} disabled={savingPlan}>
+                            <Save className="h-4 w-4" />
+                            {savingPlan ? "保存中" : "保存计划"}
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button variant="outline" size="sm" onClick={beginPlanEdit} disabled={selectedRun.plan.length === 0}>
+                            <Pencil className="h-4 w-4" />
+                            编辑定稿
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={addPlanDraftStep}>
+                            <Plus className="h-4 w-4" />
+                            添加步骤
+                          </Button>
+                        </>
+                      )}
+                    </div>
                   </div>
+
+                  {planEditError && (
+                    <div className="mb-2 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      <span>{planEditError}</span>
+                    </div>
+                  )}
+
+                  {(selectedRun.plan_document?.validation.errors.length ?? 0) > 0 && (
+                    <div className="mb-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                      {selectedRun.plan_document!.validation.errors.map((issue) => (
+                        <div key={`${issue.step_id ?? "plan"}-${issue.code}`}>
+                          {issue.step_id ? `${issue.step_id}: ` : ""}{issue.message}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {planEditing ? (
+                    <div className="space-y-3">
+                      {planDrafts.map((draft, index) => (
+                        <div key={`${draft.stepId}-${index}`} className="rounded-md border bg-background/60 p-3">
+                          <div className="grid gap-2 md:grid-cols-[120px_110px_minmax(0,1fr)_120px]">
+                            <div className="space-y-1">
+                              <Label className="text-xs">step_id</Label>
+                              <Input
+                                value={draft.stepId}
+                                onChange={(event) => updatePlanDraft(index, { stepId: event.target.value })}
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">类型</Label>
+                              <select
+                                value={draft.type}
+                                onChange={(event) => updatePlanDraft(index, { type: event.target.value as EditablePlanStepType })}
+                                className="h-8 w-full rounded-md border border-input bg-transparent px-2 text-xs"
+                              >
+                                <option value="dispatch">dispatch</option>
+                                <option value="reflect">reflect</option>
+                              </select>
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">角色</Label>
+                              <select
+                                value={draft.roleId}
+                                onChange={(event) => updatePlanDraft(index, { roleId: event.target.value })}
+                                disabled={draft.type !== "dispatch"}
+                                className="h-8 w-full rounded-md border border-input bg-transparent px-2 text-xs disabled:opacity-50"
+                              >
+                                {(selectedRun.spec.roles ?? []).length === 0 && <option value="default">default</option>}
+                                {(selectedRun.spec.roles ?? []).map((role) => (
+                                  <option key={role.role_id} value={role.role_id}>
+                                    {role.role_name} ({role.agent_id || "unassigned"})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">超时 ms</Label>
+                              <Input
+                                value={draft.timeoutMs}
+                                onChange={(event) => updatePlanDraft(index, { timeoutMs: event.target.value })}
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                          </div>
+                          <div className="mt-2 grid gap-2 md:grid-cols-2">
+                            <div className="space-y-1">
+                              <Label className="text-xs">依赖步骤</Label>
+                              <Input
+                                value={draft.dependsOn}
+                                onChange={(event) => updatePlanDraft(index, { dependsOn: event.target.value })}
+                                placeholder="scope, design"
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">项目路径</Label>
+                              <Input
+                                value={draft.project}
+                                onChange={(event) => updatePlanDraft(index, { project: event.target.value })}
+                                disabled={draft.type !== "dispatch"}
+                                className="h-8 text-xs disabled:opacity-50"
+                              />
+                            </div>
+                          </div>
+                          <div className="mt-2 space-y-1">
+                            <Label className="text-xs">执行说明</Label>
+                            <textarea
+                              value={draft.prompt}
+                              onChange={(event) => updatePlanDraft(index, { prompt: event.target.value })}
+                              className="h-20 w-full resize-none rounded-md border border-input bg-transparent px-2 py-1.5 text-xs"
+                            />
+                          </div>
+                          <div className="mt-2 flex justify-end">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setPlanDrafts((current) => current.filter((_, i) => i !== index))}
+                              className="text-destructive"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                              移除步骤
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {selectedRun.plan.length === 0 ? (
+                        <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
+                          {t("tasks.noPlanSteps")}
+                        </div>
+                      ) : (
+                        selectedRun.plan.map((step, index) => {
+                          const type = unwrapStepKind(step.kind).type;
+                          const roleId = planStepRoleId(step);
+                          const role = (selectedRun.spec.roles ?? []).find((item) => item.role_id === roleId);
+                          return (
+                            <div key={step.step_id} className="rounded-md border bg-background/60 px-3 py-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-sm font-medium">{t("tasks.stepOf", { index: index + 1 })}</span>
+                                  <Badge variant="outline" className="text-[10px]">{type}</Badge>
+                                  {roleId && (
+                                    <Badge variant="secondary" className="text-[10px]">
+                                      {role?.role_name ?? roleId}
+                                    </Badge>
+                                  )}
+                                  {role?.agent_id && (
+                                    <Badge variant="outline" className="text-[10px]">{role.agent_id}</Badge>
+                                  )}
+                                </div>
+                                <span className="text-xs text-muted-foreground">{step.step_id}</span>
+                              </div>
+                              <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed">
+                                {planStepPrompt(step)}
+                              </p>
+                              <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-muted-foreground">
+                                {(step.depends_on ?? []).length > 0 && <span>depends: {(step.depends_on ?? []).join(", ")}</span>}
+                                {planStepProject(step) && <span>project: {planStepProject(step)}</span>}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
                 </section>
               </div>
 
