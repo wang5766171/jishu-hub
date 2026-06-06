@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -32,3 +33,9 @@ const cliBuild = spawnSync("cargo", ["build", "--release", "--bin", "jishu", "--
 if (cliBuild.status !== 0) {
   process.exit(cliBuild.status ?? 1);
 }
+
+const cliName = process.platform === "win32" ? "jishu.exe" : "jishu";
+const cliSource = resolve(root, "src-tauri", "target", "release", cliName);
+const nsisCliSource = resolve(root, "src-tauri", "nsis", "cli-source.nsh");
+
+writeFileSync(nsisCliSource, `!define JISHU_CLI_SOURCE "${cliSource}"\n`);
