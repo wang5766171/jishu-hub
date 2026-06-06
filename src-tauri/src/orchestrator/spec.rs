@@ -106,13 +106,9 @@ pub enum StepKind {
         requires_approval: bool,
     },
     /// Ask the DecisionEngine (jishu-self LLM) a question about run state.
-    Reflect {
-        question: String,
-    },
+    Reflect { question: String },
     /// Verify a condition — strongly typed, no string parsing.
-    Verify {
-        check: VerifyCheck,
-    },
+    Verify { check: VerifyCheck },
 }
 
 /// Strongly typed verification checks — replaces stringly-typed check/expect.
@@ -232,8 +228,12 @@ mod tests {
     #[test]
     fn verify_check_strong_typing() {
         let checks = vec![
-            VerifyCheck::FileExists { path: PathBuf::from("/project/src/main.rs") },
-            VerifyCheck::CommandSuccess { command: "cargo test".into() },
+            VerifyCheck::FileExists {
+                path: PathBuf::from("/project/src/main.rs"),
+            },
+            VerifyCheck::CommandSuccess {
+                command: "cargo test".into(),
+            },
             VerifyCheck::OutputContains {
                 command: "cargo clippy".into(),
                 substring: "error".into(),

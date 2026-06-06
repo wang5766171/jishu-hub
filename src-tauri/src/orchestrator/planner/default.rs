@@ -51,8 +51,10 @@ impl Planner for DefaultPlanner {
                 "Document any assumptions or tradeoffs you make.".into(),
             ],
             acceptance: vec![
-                "Output is complete and actionable — no placeholder, no 'let me ask...' prompts.".into(),
-                "All claims are backed by code references, file paths, or specific evidence.".into(),
+                "Output is complete and actionable — no placeholder, no 'let me ask...' prompts."
+                    .into(),
+                "All claims are backed by code references, file paths, or specific evidence."
+                    .into(),
             ],
             can_edit_files: true,
             can_run_commands: true,
@@ -79,12 +81,7 @@ fn build_role_dispatch_message(spec: &TaskSpec, role: &RoleAssignment) -> String
         .iter()
         .filter(|candidate| candidate.role_id != role.role_id && candidate.can_receive_rework)
         .filter(|candidate| role_mentions(role, candidate))
-        .map(|candidate| {
-            format!(
-                "- {} ({})",
-                candidate.role_name, candidate.role_id
-            )
-        })
+        .map(|candidate| format!("- {} ({})", candidate.role_name, candidate.role_id))
         .collect::<Vec<_>>();
     let rework_targets = if rework_targets.is_empty() {
         "- No explicit rework target. Report blockers to jishu agent with the responsible role if you can infer it.".to_string()

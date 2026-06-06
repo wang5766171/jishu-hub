@@ -1,9 +1,10 @@
 use super::{DispatchContext, DispatchError, Dispatcher};
 use crate::agent::{ChatRequest, NormalizedEvent};
+use crate::orchestrator::now_ms;
 use crate::orchestrator::result::{RunResult, RunStatus, StepOutcome, StepStatus, UsageSummary};
 use crate::orchestrator::spec::{Step, StepKind, VerifyCheck};
-use crate::orchestrator::now_ms;
 use crate::orchestrator::RunStore;
+use crate::process_command;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -76,7 +77,11 @@ fn persist_step_outcome(run_id: &str, outcome: &StepOutcome) {
         Err(_) => return,
     };
     // Replace or append this step's outcome
-    if let Some(existing) = result.steps.iter_mut().find(|s| s.step_id == outcome.step_id) {
+    if let Some(existing) = result
+        .steps
+        .iter_mut()
+        .find(|s| s.step_id == outcome.step_id)
+    {
         *existing = outcome.clone();
     } else {
         result.steps.push(outcome.clone());
@@ -94,15 +99,8 @@ fn dispatch_to_agent(
     // Resolve role_id to agent_id from spec.
     // Fallback: if no roles defined in spec, treat role_id as agent_id directly
     // (allows running plans generated without explicit role assignments).
-    let agent_id = if let Some(role) = ctx
-        .spec
-        .roles
-        .iter()
-        .find(|r| r.role_id == role_id)
-    {
-        role.agent_id
-            .clone()
-            .unwrap_or_else(|| role_id.to_string())
+    let agent_id = if let Some(role) = ctx.spec.roles.iter().find(|r| r.role_id == role_id) {
+        role.agent_id.clone().unwrap_or_else(|| role_id.to_string())
     } else if ctx.spec.roles.is_empty() {
         role_id.to_string()
     } else {
@@ -121,7 +119,10 @@ fn dispatch_to_agent(
     //   2. Then the step prompt from the plan.
     //   3. Skip duplication if the step prompt already starts with the
     //      task message verbatim.
-    let composed_message = if prompt.trim_start().starts_with(ctx.spec.message.trim_start()) {
+    let composed_message = if prompt
+        .trim_start()
+        .starts_with(ctx.spec.message.trim_start())
+    {
         // Step prompt already contains the task — use as-is
         prompt.to_string()
     } else if prompt.trim().is_empty() {
@@ -137,7 +138,7 @@ fn dispatch_to_agent(
     let req = ChatRequest {
         project_path: project.to_string(),
         session_id: session.clone(),
-        message: composed_message,
+        message: composed_message.clone(),
     };
 
     let mut cmd = plugin.build_chat_command(req);
@@ -155,7 +156,7 @@ fn dispatch_to_agent(
     let agent_id_owned = agent_id.to_string();
     let role_id_owned = role_id.to_string();
     let step_id = step.step_id.clone();
-    let message_owned = prompt.to_string();
+    let message_owned = composed_message.clone();
     let pipe_stdin = plugin.pipe_chat_stdin();
     let agent_id_for_spawn = agent_id_owned.clone();
     let run_id_owned = ctx.run_id.to_string();
@@ -172,24 +173,34 @@ fn dispatch_to_agent(
         pending_approval: Arc::new(Mutex::new(None)),
         cancelled: Arc::new(Mutex::new(false)),
     });
-    crate::orchestrator::agent_runs::register(crate::orchestrator::agent_runs::global(), active_agent.clone());
+    crate::orchestrator::agent_runs::register(
+        crate::orchestrator::agent_runs::global(),
+        active_agent.clone(),
+    );
 
     // Persist a "Running" partial outcome immediately so the HUB's 2s poll
     // can show this step as in-progress (instead of just "Running" for the
     // whole run with no per-step visibility).
-    let display_name = ctx.registry.get(&agent_id_owned).map(|p| p.info().display_name);
-    persist_step_outcome(&run_id_owned, &StepOutcome {
-        step_id: step_id.clone(),
-        role_id: role_id_owned.clone(),
-        agent_id: agent_id_owned.clone(),
-        agent_display_name: display_name.clone(),
-        status: StepStatus::Running,
-        output: None,
-        session_id: None,
-        started_at: now_ms(),
-        finished_at: 0,
-        usage: UsageSummary::zero(),
-    ..Default::default()});
+    let display_name = ctx
+        .registry
+        .get(&agent_id_owned)
+        .map(|p| p.info().display_name);
+    persist_step_outcome(
+        &run_id_owned,
+        &StepOutcome {
+            step_id: step_id.clone(),
+            role_id: role_id_owned.clone(),
+            agent_id: agent_id_owned.clone(),
+            agent_display_name: display_name.clone(),
+            status: StepStatus::Running,
+            output: None,
+            session_id: None,
+            started_at: now_ms(),
+            finished_at: 0,
+            usage: UsageSummary::zero(),
+            ..Default::default()
+        },
+    );
 
     // Run the subprocess inside the tokio runtime.
     let active_for_runtime = active_agent.clone();
@@ -199,55 +210,55 @@ fn dispatch_to_agent(
     let result = rt.block_on(async move {
         use tokio::time::{timeout, Duration};
         let inner = async {
-            let mut child = cmd
-                .spawn()
-                .map_err(|e| DispatchError::SpawnFailed(format!("Spawn {agent_id_for_spawn}: {e}")))?;
+            let mut child = cmd.spawn().map_err(|e| {
+                DispatchError::SpawnFailed(format!("Spawn {agent_id_for_spawn}: {e}"))
+            })?;
 
-        // Forward user messages from stdin_rx into the agent's stdin
-        if pipe_stdin {
-            if let Some(mut stdin) = child.stdin.take() {
-                use tokio::io::AsyncWriteExt;
-                // Write the initial message + newline
-                let _ = stdin.write_all(message_owned.as_bytes()).await;
-                let _ = stdin.write_all(b"\n").await;
-                let _ = stdin.flush().await;
+            // Forward user messages from stdin_rx into the agent's stdin
+            if pipe_stdin {
+                if let Some(mut stdin) = child.stdin.take() {
+                    use tokio::io::AsyncWriteExt;
+                    // Write the initial message + newline
+                    let _ = stdin.write_all(message_owned.as_bytes()).await;
+                    let _ = stdin.write_all(b"\n").await;
+                    let _ = stdin.flush().await;
 
-                // Pump messages from stdin_rx in a background task
-                let cancelled = active_for_runtime.cancelled.clone();
-                tokio::spawn(async move {
-                    use tokio::io::AsyncWriteExt as _;
-                    let mut stdin = stdin;
-                    while let Some(msg) = stdin_rx.recv().await {
-                        if *cancelled.lock().unwrap() {
-                            break;
+                    // Pump messages from stdin_rx in a background task
+                    let cancelled = active_for_runtime.cancelled.clone();
+                    tokio::spawn(async move {
+                        use tokio::io::AsyncWriteExt as _;
+                        let mut stdin = stdin;
+                        while let Some(msg) = stdin_rx.recv().await {
+                            if *cancelled.lock().unwrap() {
+                                break;
+                            }
+                            let _ = stdin.write_all(msg.as_bytes()).await;
+                            let _ = stdin.write_all(b"\n").await;
+                            let _ = stdin.flush().await;
                         }
-                        let _ = stdin.write_all(msg.as_bytes()).await;
-                        let _ = stdin.write_all(b"\n").await;
-                        let _ = stdin.flush().await;
-                    }
-                });
-            }
-        }
-
-        // Read stdout line-by-line, parsing NormalizedEvent JSON
-        let mut events: Vec<NormalizedEvent> = Vec::new();
-        if let Some(stdout) = child.stdout.take() {
-            use tokio::io::AsyncBufReadExt;
-            let reader = tokio::io::BufReader::new(stdout);
-            let mut lines = reader.lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if let Ok(event) = serde_json::from_str::<NormalizedEvent>(&line) {
-                    events.push(event);
+                    });
                 }
             }
-        }
 
-        let status = child
-            .wait()
-            .await
-            .map_err(|e| DispatchError::Other(format!("Wait: {e}")))?;
+            // Read stdout line-by-line, parsing NormalizedEvent JSON
+            let mut events: Vec<NormalizedEvent> = Vec::new();
+            if let Some(stdout) = child.stdout.take() {
+                use tokio::io::AsyncBufReadExt;
+                let reader = tokio::io::BufReader::new(stdout);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if let Ok(event) = serde_json::from_str::<NormalizedEvent>(&line) {
+                        events.push(event);
+                    }
+                }
+            }
 
-        Ok::<_, DispatchError>((events, status))
+            let status = child
+                .wait()
+                .await
+                .map_err(|e| DispatchError::Other(format!("Wait: {e}")))?;
+
+            Ok::<_, DispatchError>((events, status))
         };
         // 30s hard timeout: any agent that doesn't produce a result
         // within 30s is treated as failed. Prevents tests/dev runs
@@ -256,7 +267,9 @@ fn dispatch_to_agent(
             Ok(r) => r,
             Err(_) => {
                 // Timed out — kill the child (it's still in scope above)
-                Err(DispatchError::Other("Agent dispatch timed out (30s)".into()))
+                Err(DispatchError::Other(
+                    "Agent dispatch timed out (30s)".into(),
+                ))
             }
         }
     });
@@ -313,19 +326,24 @@ fn dispatch_to_agent(
                 );
                 // Persist partial step outcome so HUB shows AwaitingApproval
                 // status (with question + options) while agent waits.
-                let approval_json = serde_json::to_value(&approval).unwrap_or(serde_json::Value::Null);
-                persist_step_outcome(&run_id_for_runtime, &StepOutcome {
-                    step_id: step_id_for_runtime.clone(),
-                    role_id: role_id_owned.clone(),
-                    agent_id: agent_id_for_runtime.clone(),
-                    agent_display_name: display_name.clone(),
-                    status: StepStatus::AwaitingApproval,
-                    output: Some(serde_json::json!({ "approval": approval_json })),
-                    session_id: captured_session_id.clone(),
-                    started_at: now_ms(),
-                    finished_at: 0,
-                    usage: UsageSummary::zero(),
-                ..Default::default()});
+                let approval_json =
+                    serde_json::to_value(&approval).unwrap_or(serde_json::Value::Null);
+                persist_step_outcome(
+                    &run_id_for_runtime,
+                    &StepOutcome {
+                        step_id: step_id_for_runtime.clone(),
+                        role_id: role_id_owned.clone(),
+                        agent_id: agent_id_for_runtime.clone(),
+                        agent_display_name: display_name.clone(),
+                        status: StepStatus::AwaitingApproval,
+                        output: Some(serde_json::json!({ "approval": approval_json })),
+                        session_id: captured_session_id.clone(),
+                        started_at: now_ms(),
+                        finished_at: 0,
+                        usage: UsageSummary::zero(),
+                        ..Default::default()
+                    },
+                );
             }
             _ => {}
         }
@@ -341,7 +359,10 @@ fn dispatch_to_agent(
     );
 
     // Resolve display name from registry (e.g., "claude-code" -> "Claude Code")
-    let display_name = ctx.registry.get(&agent_id_owned).map(|p| p.info().display_name);
+    let display_name = ctx
+        .registry
+        .get(&agent_id_owned)
+        .map(|p| p.info().display_name);
 
     // If the agent exited while there was a pending approval that wasn't
     // answered, that's still a Completed subprocess exit. The HUB can
@@ -355,9 +376,11 @@ fn dispatch_to_agent(
     // Always include the most recent pending_approval in output so the
     // HUB can show the question even if the agent exited before the
     // user replied.
-    let output = last_approval.map(|pa| serde_json::json!({
-        "approval": pa,
-    }));
+    let output = last_approval.map(|pa| {
+        serde_json::json!({
+            "approval": pa,
+        })
+    });
 
     let step_finished = now_ms();
     Ok(StepOutcome {
@@ -396,51 +419,38 @@ fn execute_shell(
     let timeout = timeout_ms.copied();
 
     let result = rt.block_on(async move {
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c").arg(&command_owned).current_dir(&cwd_owned);
+        let mut cmd = default_shell_command(&command_owned);
+        cmd.current_dir(&cwd_owned);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        cmd.kill_on_drop(true);
+        process_command::tokio_no_window(&mut cmd);
 
-        let mut child = cmd
+        let child = cmd
             .spawn()
             .map_err(|e| DispatchError::SpawnFailed(format!("Shell spawn: {e}")))?;
 
-        let exit_status = if let Some(timeout_ms) = timeout {
+        let output_result = if let Some(timeout_ms) = timeout {
             use tokio::time::{timeout, Duration};
-            match timeout(Duration::from_millis(timeout_ms), child.wait()).await {
-                Ok(Ok(status)) => Ok(status),
+            match timeout(Duration::from_millis(timeout_ms), child.wait_with_output()).await {
+                Ok(Ok(output)) => Ok(output),
                 Ok(Err(e)) => Err(DispatchError::Other(format!("Shell wait: {e}"))),
-                Err(_) => {
-                    let _ = child.kill().await;
-                    Err(DispatchError::Other("Shell command timed out".into()))
-                }
+                Err(_) => Err(DispatchError::Other("Shell command timed out".into())),
             }
         } else {
             child
-                .wait()
+                .wait_with_output()
                 .await
                 .map_err(|e| DispatchError::Other(format!("Shell wait: {e}")))
         };
 
-        // Read stdout/stderr
-        let stdout = if let Some(out) = child.stdout.take() {
-            use tokio::io::AsyncReadExt;
-            let mut buf = Vec::new();
-            let mut reader = tokio::io::BufReader::new(out);
-            let _ = reader.read_to_end(&mut buf).await;
-            String::from_utf8_lossy(&buf).to_string()
-        } else {
-            String::new()
-        };
-
-        let stderr = if let Some(err) = child.stderr.take() {
-            use tokio::io::AsyncReadExt;
-            let mut buf = Vec::new();
-            let mut reader = tokio::io::BufReader::new(err);
-            let _ = reader.read_to_end(&mut buf).await;
-            String::from_utf8_lossy(&buf).to_string()
-        } else {
-            String::new()
+        let (exit_status, stdout, stderr) = match output_result {
+            Ok(output) => (
+                Ok(output.status),
+                String::from_utf8_lossy(&output.stdout).to_string(),
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ),
+            Err(e) => (Err(e), String::new(), String::new()),
         };
 
         Ok::<_, DispatchError>((exit_status, stdout, stderr))
@@ -467,7 +477,8 @@ fn execute_shell(
             started_at: started,
             finished_at: finished,
             usage: UsageSummary::zero(),
-        ..Default::default()}),
+            ..Default::default()
+        }),
         Err(e) => Ok(StepOutcome {
             step_id: step.step_id.clone(),
             role_id: String::new(),
@@ -477,7 +488,29 @@ fn execute_shell(
             started_at: started,
             finished_at: finished,
             usage: UsageSummary::zero(),
-        ..Default::default()}),
+            ..Default::default()
+        }),
+    }
+}
+
+fn default_shell_command(command: &str) -> tokio::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = tokio::process::Command::new("powershell.exe");
+        cmd.arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-ExecutionPolicy")
+            .arg("Bypass")
+            .arg("-Command")
+            .arg(command);
+        cmd
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = tokio::process::Command::new("/bin/sh");
+        cmd.arg("-c").arg(command);
+        cmd
     }
 }
 
@@ -527,7 +560,8 @@ fn execute_read(
                 started_at: started,
                 finished_at: finished,
                 usage: UsageSummary::zero(),
-            ..Default::default()})
+                ..Default::default()
+            })
         }
         Err(e) => Ok(StepOutcome {
             step_id: step.step_id.clone(),
@@ -538,7 +572,8 @@ fn execute_read(
             started_at: started,
             finished_at: finished,
             usage: UsageSummary::zero(),
-        ..Default::default()}),
+            ..Default::default()
+        }),
     }
 }
 
@@ -568,7 +603,8 @@ fn execute_write(
             started_at: started,
             finished_at: now_ms(),
             usage: UsageSummary::zero(),
-        ..Default::default()});
+            ..Default::default()
+        });
     }
 
     // Actually write the file
@@ -608,7 +644,8 @@ fn execute_write(
             started_at: started,
             finished_at: finished,
             usage: UsageSummary::zero(),
-        ..Default::default()}),
+            ..Default::default()
+        }),
         Err(e) => Ok(StepOutcome {
             step_id: step.step_id.clone(),
             role_id: String::new(),
@@ -618,7 +655,8 @@ fn execute_write(
             started_at: started,
             finished_at: finished,
             usage: UsageSummary::zero(),
-        ..Default::default()}),
+            ..Default::default()
+        }),
     }
 }
 
@@ -642,7 +680,8 @@ fn execute_reflect(
         started_at: now_ms(),
         finished_at: now_ms(),
         usage: UsageSummary::zero(),
-    ..Default::default()})
+        ..Default::default()
+    })
 }
 
 /// Verify step — strongly typed check execution.
@@ -655,7 +694,14 @@ fn execute_verify(
     let result = match check {
         VerifyCheck::FileExists { path } => {
             let exists = path.exists();
-            (exists, if exists { "File exists" } else { "File not found" })
+            (
+                exists,
+                if exists {
+                    "File exists"
+                } else {
+                    "File not found"
+                },
+            )
         }
         VerifyCheck::CommandSuccess { command } => {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -664,9 +710,9 @@ fn execute_verify(
                 .map_err(|e| DispatchError::Other(format!("Runtime: {e}")))?;
             let cmd = command.clone();
             let exit_result = rt.block_on(async move {
-                tokio::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&cmd)
+                let mut command = default_shell_command(&cmd);
+                process_command::tokio_no_window(&mut command);
+                command
                     .output()
                     .await
                     .map_err(|e| DispatchError::Other(format!("Verify command: {e}")))
@@ -691,9 +737,9 @@ fn execute_verify(
             let cmd = command.clone();
             let sub = substring.clone();
             let exit_result = rt.block_on(async move {
-                tokio::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&cmd)
+                let mut command = default_shell_command(&cmd);
+                process_command::tokio_no_window(&mut command);
+                command
                     .output()
                     .await
                     .map_err(|e| DispatchError::Other(format!("Verify command: {e}")))
@@ -701,7 +747,14 @@ fn execute_verify(
             match exit_result {
                 Ok(output) => {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    (stdout.contains(&sub), if stdout.contains(&sub) { "Substring found" } else { "Substring not found" })
+                    (
+                        stdout.contains(&sub),
+                        if stdout.contains(&sub) {
+                            "Substring found"
+                        } else {
+                            "Substring not found"
+                        },
+                    )
                 }
                 Err(_) => (false, "Command execution error"),
             }
@@ -726,7 +779,8 @@ fn execute_verify(
         started_at: started,
         finished_at: finished,
         usage: UsageSummary::zero(),
-    ..Default::default()})
+        ..Default::default()
+    })
 }
 
 #[cfg(test)]
@@ -877,10 +931,8 @@ mod tests {
             emitter: &mut |e: &NormalizedEvent| emitted.push(e.clone()),
         };
 
-        let tmp_path = std::env::temp_dir().join(format!(
-            "jishu_write_approval_test_{}",
-            std::process::id()
-        ));
+        let tmp_path =
+            std::env::temp_dir().join(format!("jishu_write_approval_test_{}", std::process::id()));
         let step = make_test_step(StepKind::Write {
             path: tmp_path.clone(),
             content: "should not be written".to_string(),
@@ -911,7 +963,9 @@ mod tests {
 
         // Test with a path that does not exist
         let step = make_test_step(StepKind::Verify {
-            check: VerifyCheck::FileExists { path: PathBuf::from("/nonexistent/file.txt") },
+            check: VerifyCheck::FileExists {
+                path: PathBuf::from("/nonexistent/file.txt"),
+            },
         });
         let outcome = d.execute(&step, &mut ctx).unwrap();
         assert_eq!(outcome.status, StepStatus::Failed);

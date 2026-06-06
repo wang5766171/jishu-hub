@@ -230,5 +230,4 @@ mod tests_v6 {
         let de: NormalizedEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(event, de);
     }
-
 }

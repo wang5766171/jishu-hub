@@ -72,10 +72,14 @@ pub fn get(registry: &AgentRegistry, run_id: &str, step_id: &str) -> Option<Arc<
 
 /// Send a user message to a running agent's stdin.
 /// Returns Ok(()) if delivered, Err if no such active agent or send failed.
-pub fn send_message(registry: &AgentRegistry, run_id: &str, step_id: &str, message: &str) -> Result<(), String> {
-    let agent = get(registry, run_id, step_id).ok_or_else(|| {
-        format!("No active agent for run={run_id} step={step_id}")
-    })?;
+pub fn send_message(
+    registry: &AgentRegistry,
+    run_id: &str,
+    step_id: &str,
+    message: &str,
+) -> Result<(), String> {
+    let agent = get(registry, run_id, step_id)
+        .ok_or_else(|| format!("No active agent for run={run_id} step={step_id}"))?;
     agent
         .stdin_tx
         .send(message.to_string())
@@ -90,22 +94,29 @@ pub fn send_message(registry: &AgentRegistry, run_id: &str, step_id: &str, messa
 /// Mark an active agent as cancelled. The dispatcher will pick this up
 /// on its next iteration and terminate the subprocess.
 pub fn cancel(registry: &AgentRegistry, run_id: &str, step_id: &str) -> Result<(), String> {
-    let agent = get(registry, run_id, step_id).ok_or_else(|| {
-        format!("No active agent for run={run_id} step={step_id}")
-    })?;
+    let agent = get(registry, run_id, step_id)
+        .ok_or_else(|| format!("No active agent for run={run_id} step={step_id}"))?;
     *agent.cancelled.lock().unwrap() = true;
     Ok(())
 }
 
 /// Get the current pending approval for an active agent, if any.
-pub fn get_approval(registry: &AgentRegistry, run_id: &str, step_id: &str) -> Option<PendingApproval> {
-    get(registry, run_id, step_id)
-        .and_then(|a| a.pending_approval.lock().unwrap().clone())
+pub fn get_approval(
+    registry: &AgentRegistry,
+    run_id: &str,
+    step_id: &str,
+) -> Option<PendingApproval> {
+    get(registry, run_id, step_id).and_then(|a| a.pending_approval.lock().unwrap().clone())
 }
 
 /// Set the pending approval for an active agent (called by dispatcher
 /// when it sees an approval_request event from the subprocess).
-pub fn set_approval(registry: &AgentRegistry, run_id: &str, step_id: &str, approval: PendingApproval) {
+pub fn set_approval(
+    registry: &AgentRegistry,
+    run_id: &str,
+    step_id: &str,
+    approval: PendingApproval,
+) {
     if let Some(agent) = get(registry, run_id, step_id) {
         *agent.pending_approval.lock().unwrap() = Some(approval);
     }

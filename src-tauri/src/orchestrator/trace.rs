@@ -65,8 +65,7 @@ impl TraceRecorder {
         for event in events {
             let mut line = serde_json::to_string(event).map_err(|e| e.to_string())?;
             line.push('\n');
-            file.write_all(line.as_bytes())
-                .map_err(|e| e.to_string())?;
+            file.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -119,8 +118,7 @@ mod tests {
 
     #[test]
     fn append_event_writes_one_line_per_event() {
-        let root =
-            std::env::temp_dir().join(format!("jishu_trace_lines_{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("jishu_trace_lines_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
 
         let trace = TraceRecorder::create_in_root(&root, "r_lines").unwrap();
@@ -130,8 +128,7 @@ mod tests {
         trace.append_event(&event).unwrap();
         trace.append_event(&event).unwrap();
 
-        let content =
-            std::fs::read_to_string(root.join("r_lines/trace.jsonl")).unwrap();
+        let content = std::fs::read_to_string(root.join("r_lines/trace.jsonl")).unwrap();
         let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
         assert_eq!(lines.len(), 2);
 
@@ -140,8 +137,7 @@ mod tests {
 
     #[test]
     fn append_events_batch_writes_all() {
-        let root =
-            std::env::temp_dir().join(format!("jishu_trace_batch_{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("jishu_trace_batch_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
 
         let trace = TraceRecorder::create_in_root(&root, "r_batch").unwrap();
@@ -158,8 +154,7 @@ mod tests {
         ];
         trace.append_events(&events).unwrap();
 
-        let content =
-            std::fs::read_to_string(root.join("r_batch/trace.jsonl")).unwrap();
+        let content = std::fs::read_to_string(root.join("r_batch/trace.jsonl")).unwrap();
         let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
         assert_eq!(lines.len(), 3);
 

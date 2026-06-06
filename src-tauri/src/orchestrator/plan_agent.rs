@@ -12,9 +12,13 @@
 use crate::llm::agent_loop::{run_tool_loop, AgentEvent, AgentLoopConfig, ToolDef};
 use crate::llm::CancelToken;
 use crate::orchestrator::now_ms;
+use crate::orchestrator::plan_document::PlanDocument;
+use crate::orchestrator::result::RunStatus;
+use crate::orchestrator::RunStore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -22,8 +26,7 @@ use tokio::sync::{mpsc, Mutex};
 pub type AsyncToolHandler = Arc<
     dyn Fn(
             serde_json::Value,
-        )
-            -> Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
         + Send
         + Sync,
 >;
@@ -55,10 +58,20 @@ pub enum PlanStatus {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PlanAgentEvent {
     TextDelta(String),
-    ToolCallStarted { name: String, arguments: serde_json::Value },
-    ToolCallFinished { name: String, result: String, is_error: bool },
+    ToolCallStarted {
+        name: String,
+        arguments: serde_json::Value,
+    },
+    ToolCallFinished {
+        name: String,
+        result: String,
+        is_error: bool,
+    },
     PlanReady(serde_json::Value),
-    Done { status: PlanStatus, error: Option<String> },
+    Done {
+        status: PlanStatus,
+        error: Option<String>,
+    },
 }
 
 /// Live PlanAgent for one run. Holds shared state + cancel token +
@@ -113,7 +126,7 @@ pub fn snapshot_state(state: &Arc<Mutex<PlanState>>) -> PlanState {
 
 /// Read plan_state.json from disk (for restart-attached state).
 pub fn read_state_from_disk(run_id: &str) -> Option<PlanState> {
-    if let Ok(store) = crate::orchestrator::RunStore::open() {
+    if let Ok(store) = RunStore::open() {
         store
             .read_plan_state(run_id)
             .ok()
@@ -126,10 +139,20 @@ pub fn read_state_from_disk(run_id: &str) -> Option<PlanState> {
 
 /// Write current PlanState to plan_state.json
 pub fn persist_state(run_id: &str, state: &PlanState) {
-    if let Ok(store) = crate::orchestrator::RunStore::open() {
-        if let Ok(val) = serde_json::to_value(state) {
-            let _ = store.write_plan_state(run_id, &val);
-        }
+    if let Ok(store) = RunStore::open() {
+        persist_state_with_store(&store, run_id, state);
+    }
+}
+
+pub fn persist_state_in_root(root: &Path, run_id: &str, state: &PlanState) {
+    if let Ok(store) = RunStore::open_at(root.to_path_buf()) {
+        persist_state_with_store(&store, run_id, state);
+    }
+}
+
+fn persist_state_with_store(store: &RunStore, run_id: &str, state: &PlanState) {
+    if let Ok(val) = serde_json::to_value(state) {
+        let _ = store.write_plan_state(run_id, &val);
     }
 }
 
@@ -157,9 +180,10 @@ pub fn system_prompt(task: &str, skill_id: &str) -> String {
          Rules:\n\
          - Use only the roles defined by the loaded skill.\n\
          - Each step has: step_id, type (dispatch|reflect), role_id, prompt, depends_on.\n\
+         - `project` is optional and means execution working directory only. Omit it unless you know an exact path under the task project. Never put a business/product/system name in `project`.\n\
          - First step should be scope/clarification. Last step should be a Reflect.\n\
-         - Stream your plan as prose (text_delta events). When the plan structure is complete, call `finish_plan` with the plan JSON array as the argument.\n\
-         - The plan JSON must be an array: [{{step_id, type, role_id, prompt, depends_on, project}}].\n\n\
+         - Stream your plan as prose (text_delta events). When the plan structure is complete, call `finish_plan` with an object containing the full plan.\n\
+         - The finish_plan argument must be: {{\"plan\": [{{step_id, type, role_id, prompt, depends_on, project}}]}}.\n\n\
          User's task:\n\n{task}\n"
     )
 }
@@ -187,16 +211,13 @@ pub fn build_tools(skill_id: &str) -> Vec<ToolDef> {
                 "description": skill.description,
                 "roles": skill.roles,
             });
-            serde_json::to_string_pretty(&manifest)
-                .map_err(|e| format!("Serialize: {e}"))
+            serde_json::to_string_pretty(&manifest).map_err(|e| format!("Serialize: {e}"))
         })
     });
 
     let finish_plan_handler: AsyncToolHandler = Arc::new(move |args: serde_json::Value| {
         let _args = args;
-        Box::pin(async move {
-            Ok(serde_json::to_string(&_args).unwrap_or_default())
-        })
+        Box::pin(async move { Ok(serde_json::to_string(&_args).unwrap_or_default()) })
     });
 
     vec![
@@ -217,7 +238,7 @@ pub fn build_tools(skill_id: &str) -> Vec<ToolDef> {
         ToolDef {
             name: "finish_plan".to_string(),
             description: "Commit the final plan. Call this with the complete plan \
-                         JSON (array of step objects) when done drafting."
+                         object when done drafting."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -232,7 +253,10 @@ pub fn build_tools(skill_id: &str) -> Vec<ToolDef> {
                                 "role_id": { "type": "string" },
                                 "prompt": { "type": "string" },
                                 "depends_on": { "type": "array", "items": { "type": "string" } },
-                                "project": { "type": "string" }
+                                "project": {
+                                    "type": "string",
+                                    "description": "Optional execution working directory. Omit unless it is an exact path under the task project; do not use business/product/system names."
+                                }
                             }
                         }
                     }
@@ -244,6 +268,58 @@ pub fn build_tools(skill_id: &str) -> Vec<ToolDef> {
     ]
 }
 
+pub fn commit_finished_plan_in_root(
+    root: &Path,
+    run_id: &str,
+    skill_id: Option<String>,
+    raw_finish_plan_args: serde_json::Value,
+) -> Result<PlanDocument, String> {
+    let store = RunStore::open_at(root.to_path_buf())?;
+    let spec = store.read_spec(run_id)?;
+    let revision = store
+        .read_plan_document(run_id)?
+        .map(|document| document.revision + 1)
+        .unwrap_or(1);
+    let fallback_project = spec.project_path.as_deref().unwrap_or(".");
+    let document = PlanDocument::ready_from_finish_plan(
+        run_id.to_string(),
+        skill_id,
+        revision,
+        raw_finish_plan_args,
+        &spec,
+        fallback_project,
+        now_ms(),
+    )
+    .map_err(|err| err.to_string())?;
+
+    store.write_plan(run_id, &document.steps)?;
+    if let Some(draft) = &document.draft {
+        store.write_plan_draft(run_id, draft)?;
+    }
+    store.write_plan_document(run_id, &document)?;
+    update_run_result_with_store(&store, run_id, RunStatus::Complete, None)?;
+    Ok(document)
+}
+
+fn update_run_result_in_root(root: &Path, run_id: &str, status: RunStatus, error: Option<String>) {
+    if let Ok(store) = RunStore::open_at(root.to_path_buf()) {
+        let _ = update_run_result_with_store(&store, run_id, status, error);
+    }
+}
+
+fn update_run_result_with_store(
+    store: &RunStore,
+    run_id: &str,
+    status: RunStatus,
+    error: Option<String>,
+) -> Result<(), String> {
+    let mut result = store.read_result(run_id)?;
+    result.status = status;
+    result.finished_at = Some(now_ms());
+    result.error = error;
+    store.write_result(run_id, &result)
+}
+
 /// Start a PlanAgent for a run. Spawns a dedicated background thread
 /// (with its own tokio runtime) so it can be invoked from any caller —
 /// sync Tauri command, test, CLI, daemon — without depending on the
@@ -252,6 +328,21 @@ pub fn start(
     run_id: String,
     skill_id: String,
     initial_user_prompt: String,
+) -> Result<Arc<PlanAgent>, String> {
+    let store = RunStore::open()?;
+    start_in_root(
+        run_id,
+        skill_id,
+        initial_user_prompt,
+        store.root().to_path_buf(),
+    )
+}
+
+pub fn start_in_root(
+    run_id: String,
+    skill_id: String,
+    initial_user_prompt: String,
+    store_root: PathBuf,
 ) -> Result<Arc<PlanAgent>, String> {
     let plan_session_id = format!("plan_{}", now_ms());
     let state = Arc::new(Mutex::new(PlanState {
@@ -278,13 +369,14 @@ pub fn start(
     {
         let state_for_persist = state.clone();
         let run_id_for_persist = run_id.clone();
+        let store_root_for_persist = store_root.clone();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| format!("Failed to build tokio runtime: {e}"))?;
         rt.block_on(async move {
             let g = state_for_persist.lock().await;
-            persist_state(&run_id_for_persist, &*g);
+            persist_state_in_root(&store_root_for_persist, &run_id_for_persist, &*g);
         });
     }
 
@@ -297,6 +389,7 @@ pub fn start(
     let run_id_for_task = run_id.clone();
     let skill_id_for_task = skill_id.clone();
     let initial_user_prompt_for_task = initial_user_prompt.clone();
+    let store_root_for_task = store_root.clone();
 
     std::thread::Builder::new()
         .name(format!("plan-agent-{}", run_id_for_task))
@@ -311,8 +404,14 @@ pub fn start(
                     g.status = PlanStatus::Failed;
                     g.error = Some(err_msg.clone());
                     g.last_event_ms = now_ms();
-                    persist_state(&run_id_for_task, &*g);
+                    persist_state_in_root(&store_root_for_task, &run_id_for_task, &*g);
                 }
+                update_run_result_in_root(
+                    &store_root_for_task,
+                    &run_id_for_task,
+                    RunStatus::Error,
+                    Some(err_msg.clone()),
+                );
                 let _ = events_tx_for_task.send(PlanAgentEvent::Done {
                     status: PlanStatus::Failed,
                     error: Some(err_msg),
@@ -329,7 +428,7 @@ pub fn start(
         }
         {
             let g = state_for_task.lock().await;
-            persist_state(&run_id_for_task, &*g);
+            persist_state_in_root(&store_root_for_task, &run_id_for_task, &*g);
         }
 
         let tools = build_tools(&skill_id_for_task);
@@ -346,9 +445,10 @@ pub fn start(
         // for plan-only events).
         let events_tx_bridge = events_tx_for_task.clone();
         let run_id_trace = run_id_for_task.clone();
+        let store_root_trace = store_root_for_task.clone();
         let emit_bridge = move |event: AgentEvent| {
             // Trace to disk for tailing
-            if let Ok(store) = crate::orchestrator::RunStore::open() {
+            if let Ok(store) = RunStore::open_at(store_root_trace.clone()) {
                 let trace_event = match &event {
                     AgentEvent::TextDelta(d) => Some(crate::agent::normalized::NormalizedEvent::TextDelta { delta: d.clone() }),
                     AgentEvent::ToolCallStarted { name, arguments } => Some(crate::agent::normalized::NormalizedEvent::ToolUseStart {
@@ -393,64 +493,98 @@ pub fn start(
         // Persist final plan if any
         match result {
             Ok(r) if r.plan.is_some() => {
-                let plan = r.plan.clone().unwrap();
-                // Write plan.json (raw serde_json::Value, not [Step]).
-                // Use std::fs directly to avoid needing a new RunStore method.
-                if let Ok(store) = crate::orchestrator::RunStore::open() {
-                    let dir = store.root().join(&run_id_for_task);
-                    if let Ok(json) = serde_json::to_string_pretty(&plan) {
-                        let _ = std::fs::write(dir.join("plan.json"), json);
+                let raw_plan = r.plan.clone().unwrap();
+                match commit_finished_plan_in_root(
+                    &store_root_for_task,
+                    &run_id_for_task,
+                    Some(skill_id_for_task.clone()),
+                    raw_plan,
+                ) {
+                    Ok(document) => {
+                        let plan_value =
+                            serde_json::to_value(&document).unwrap_or(serde_json::Value::Null);
+                        {
+                            let mut g = state_for_task.lock().await;
+                            g.plan = Some(plan_value.clone());
+                            g.status = PlanStatus::PlanReady;
+                            g.error = None;
+                            g.last_event_ms = now_ms();
+                            persist_state_in_root(&store_root_for_task, &run_id_for_task, &*g);
+                        }
+                        let _ = events_tx_for_task.send(PlanAgentEvent::PlanReady(plan_value));
+                        let _ = events_tx_for_task.send(PlanAgentEvent::Done {
+                            status: PlanStatus::PlanReady,
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        update_run_result_in_root(
+                            &store_root_for_task,
+                            &run_id_for_task,
+                            RunStatus::Error,
+                            Some(e.clone()),
+                        );
+                        {
+                            let mut g = state_for_task.lock().await;
+                            g.status = PlanStatus::Failed;
+                            g.error = Some(e.clone());
+                            g.last_event_ms = now_ms();
+                            persist_state_in_root(&store_root_for_task, &run_id_for_task, &*g);
+                        }
+                        let _ = events_tx_for_task.send(PlanAgentEvent::Done {
+                            status: PlanStatus::Failed,
+                            error: Some(e),
+                        });
                     }
                 }
-                {
-                    let mut g = state_for_task.lock().await;
-                    g.plan = Some(plan);
-                    g.status = PlanStatus::PlanReady;
-                    g.last_event_ms = now_ms();
-                    persist_state(&run_id_for_task, &*g);
-                }
-                let _ = events_tx_for_task.send(PlanAgentEvent::Done {
-                    status: PlanStatus::PlanReady,
-                    error: None,
-                });
             }
             Ok(_) => {
                 let cancelled = cancel_for_task.is_canceled();
+                let status = if cancelled {
+                    PlanStatus::Cancelled
+                } else {
+                    PlanStatus::Failed
+                };
+                let error = if !cancelled {
+                    Some("LLM ended without finish_plan".into())
+                } else {
+                    None
+                };
+                update_run_result_in_root(
+                    &store_root_for_task,
+                    &run_id_for_task,
+                    if cancelled {
+                        RunStatus::Aborted
+                    } else {
+                        RunStatus::Error
+                    },
+                    error.clone(),
+                );
                 {
                     let mut g = state_for_task.lock().await;
-                    g.status = if cancelled {
-                        PlanStatus::Cancelled
-                    } else {
-                        PlanStatus::Failed
-                    };
-                    g.error = if !cancelled {
-                        Some("LLM ended without finish_plan".into())
-                    } else {
-                        None
-                    };
+                    g.status = status.clone();
+                    g.error = error.clone();
                     g.last_event_ms = now_ms();
-                    persist_state(&run_id_for_task, &*g);
+                    persist_state_in_root(&store_root_for_task, &run_id_for_task, &*g);
                 }
                 let _ = events_tx_for_task.send(PlanAgentEvent::Done {
-                    status: if cancelled {
-                        PlanStatus::Cancelled
-                    } else {
-                        PlanStatus::Failed
-                    },
-                    error: if !cancelled {
-                        Some("LLM ended without finish_plan".into())
-                    } else {
-                        None
-                    },
+                    status,
+                    error,
                 });
             }
             Err(e) => {
+                update_run_result_in_root(
+                    &store_root_for_task,
+                    &run_id_for_task,
+                    RunStatus::Error,
+                    Some(e.clone()),
+                );
                 {
                     let mut g = state_for_task.lock().await;
                     g.status = PlanStatus::Failed;
                     g.error = Some(e.clone());
                     g.last_event_ms = now_ms();
-                    persist_state(&run_id_for_task, &*g);
+                    persist_state_in_root(&store_root_for_task, &run_id_for_task, &*g);
                 }
                 let _ = events_tx_for_task.send(PlanAgentEvent::Done {
                     status: PlanStatus::Failed,
@@ -469,7 +603,103 @@ pub fn start(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestrator::result::{RunResult, RunStatus, UsageSummary};
+    use crate::orchestrator::spec::{AssignmentMode, TaskKind, TaskSpec};
+    use crate::orchestrator::RunStore;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
     use std::time::Duration;
+
+    fn unique_root(label: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "jishu_plan_agent_{label}_{}_{}",
+            std::process::id(),
+            id
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        path
+    }
+
+    fn plan_spec() -> TaskSpec {
+        TaskSpec {
+            task_id: "ts_plan_agent_commit".into(),
+            kind: TaskKind::Plan,
+            message: "Create an executable plan".into(),
+            project_path: Some("/project".into()),
+            roles: Vec::new(),
+            assignment_mode: AssignmentMode::Manual,
+            policy: "default".into(),
+            parent_run_id: None,
+            epic_id: None,
+            depth: 0,
+            deadline_ms: None,
+            labels: HashMap::new(),
+            created_at: 1,
+        }
+    }
+
+    #[test]
+    fn commit_finished_plan_writes_typed_plan_document_and_complete_result() {
+        let root = unique_root("commit");
+        let store = RunStore::open_at(root.clone()).unwrap();
+        let spec = plan_spec();
+        store.create_run("r_commit", &spec).unwrap();
+        store
+            .write_result(
+                "r_commit",
+                &RunResult {
+                    run_id: "r_commit".into(),
+                    task_id: spec.task_id.clone(),
+                    status: RunStatus::Running,
+                    started_at: 1,
+                    finished_at: None,
+                    steps: Vec::new(),
+                    usage: UsageSummary::zero(),
+                    error: None,
+                    cost_usd: None,
+                    summary: None,
+                },
+            )
+            .unwrap();
+
+        let document = commit_finished_plan_in_root(
+            &root,
+            "r_commit",
+            Some("jishu-task-planner".into()),
+            json!({
+                "plan": [
+                    {
+                        "step_id": "sp_0",
+                        "type": "dispatch",
+                        "role_id": "default",
+                        "prompt": "Turn the user request into implementation steps",
+                        "depends_on": []
+                    }
+                ]
+            }),
+        )
+        .expect("finished plan should commit");
+
+        let plan = store.read_plan("r_commit").unwrap();
+        let stored_document = store
+            .read_plan_document("r_commit")
+            .unwrap()
+            .expect("plan_document.json should exist");
+        let result = store.read_result("r_commit").unwrap();
+
+        assert_eq!(document.revision, 1);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(stored_document.steps.len(), 1);
+        assert_eq!(result.status, RunStatus::Complete);
+        assert!(result.finished_at.is_some());
+        assert_eq!(result.error, None);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// Regression test: PlanAgent::start() must work when called from a
     /// sync context with no tokio runtime entered. This is the path
@@ -525,8 +755,14 @@ mod tests {
         let agent_b = start(run_id_b.clone(), "skill-b".into(), "task b".into())
             .expect("second start() must succeed");
 
-        assert_eq!(snapshot_state(&agent_a.state).skill_id, Some("skill-a".into()));
-        assert_eq!(snapshot_state(&agent_b.state).skill_id, Some("skill-b".into()));
+        assert_eq!(
+            snapshot_state(&agent_a.state).skill_id,
+            Some("skill-a".into())
+        );
+        assert_eq!(
+            snapshot_state(&agent_b.state).skill_id,
+            Some("skill-b".into())
+        );
 
         // Each must be in its own registry entry.
         assert!(get(&run_id_a).is_some());

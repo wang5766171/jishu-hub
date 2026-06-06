@@ -385,8 +385,7 @@ mod tests {
 
     #[test]
     fn daemon_status_v0_6_format() {
-        let root =
-            std::env::temp_dir().join(format!("jishu_daemon_status_{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("jishu_daemon_status_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let state = Arc::new(Mutex::new(DaemonState::new_with_runs_root(root.clone())));
 

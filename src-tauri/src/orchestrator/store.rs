@@ -1,6 +1,7 @@
 use crate::agent::NormalizedEvent;
-use crate::orchestrator::rework::ReworkItem;
+use crate::orchestrator::plan_document::{PlanDocument, PlanDraft};
 use crate::orchestrator::result::{RunResult, RunStatus};
+use crate::orchestrator::rework::ReworkItem;
 use crate::orchestrator::spec::{Step, TaskSpec};
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
@@ -55,6 +56,14 @@ impl RunStore {
         self.write_json(&self.run_dir(run_id).join("plan.json"), steps)
     }
 
+    pub fn write_plan_document(&self, run_id: &str, document: &PlanDocument) -> Result<(), String> {
+        self.write_json(&self.run_dir(run_id).join("plan_document.json"), document)
+    }
+
+    pub fn write_plan_draft(&self, run_id: &str, draft: &PlanDraft) -> Result<(), String> {
+        self.write_json(&self.run_dir(run_id).join("plan_draft.json"), draft)
+    }
+
     pub fn write_result(&self, run_id: &str, result: &RunResult) -> Result<(), String> {
         self.write_json(&self.run_dir(run_id).join("result.json"), result)
     }
@@ -64,19 +73,12 @@ impl RunStore {
     }
 
     /// Write plan_state.json (Plan generation state for restart recovery)
-    pub fn write_plan_state(
-        &self,
-        run_id: &str,
-        state: &serde_json::Value,
-    ) -> Result<(), String> {
+    pub fn write_plan_state(&self, run_id: &str, state: &serde_json::Value) -> Result<(), String> {
         self.write_json(&self.run_dir(run_id).join("plan_state.json"), state)
     }
 
     /// Read plan_state.json
-    pub fn read_plan_state(
-        &self,
-        run_id: &str,
-    ) -> Result<Option<serde_json::Value>, String> {
+    pub fn read_plan_state(&self, run_id: &str) -> Result<Option<serde_json::Value>, String> {
         let path = self.run_dir(run_id).join("plan_state.json");
         if !path.exists() {
             return Ok(None);
@@ -108,6 +110,14 @@ impl RunStore {
         self.read_json(&self.run_dir(run_id).join("plan.json"))
     }
 
+    pub fn read_plan_document(&self, run_id: &str) -> Result<Option<PlanDocument>, String> {
+        let path = self.run_dir(run_id).join("plan_document.json");
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.read_json(&path)
+    }
+
     pub fn read_result(&self, run_id: &str) -> Result<RunResult, String> {
         self.read_json(&self.run_dir(run_id).join("result.json"))
     }
@@ -125,8 +135,7 @@ impl RunStore {
         if !path.exists() {
             return Ok(Vec::new());
         }
-        let content =
-            std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let mut events = Vec::new();
         for line in content.lines().filter(|l| !l.trim().is_empty()) {
             if let Ok(event) = serde_json::from_str::<NormalizedEvent>(line) {
@@ -245,7 +254,11 @@ impl RunStore {
         self.root.join(run_id)
     }
 
-    fn write_json<T: serde::Serialize + ?Sized>(&self, path: &Path, data: &T) -> Result<(), String> {
+    fn write_json<T: serde::Serialize + ?Sized>(
+        &self,
+        path: &Path,
+        data: &T,
+    ) -> Result<(), String> {
         let json = serde_json::to_string_pretty(data).map_err(|e| e.to_string())?;
         std::fs::write(path, json).map_err(|e| e.to_string())
     }
@@ -253,8 +266,7 @@ impl RunStore {
     fn read_json<T: DeserializeOwned>(&self, path: &Path) -> Result<T, String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Cannot parse {}: {e}", path.display()))
+        serde_json::from_str(&content).map_err(|e| format!("Cannot parse {}: {e}", path.display()))
     }
 }
 
@@ -340,6 +352,52 @@ mod tests {
     }
 
     #[test]
+    fn write_and_read_plan_document() {
+        let (store, root) = test_store();
+        let spec = make_spec("ts_plan_document");
+        store.create_run("r_plan_document", &spec).unwrap();
+
+        let raw_args = serde_json::json!([
+            {
+                "step_id": "sp_0",
+                "type": "dispatch",
+                "role_id": "default",
+                "prompt": "Plan and implement the task",
+                "depends_on": []
+            }
+        ]);
+        let document = crate::orchestrator::plan_document::PlanDocument::ready_from_finish_plan(
+            "r_plan_document".into(),
+            Some("jishu-task-planner".into()),
+            1,
+            raw_args,
+            &spec,
+            "/project",
+            123,
+        )
+        .unwrap();
+
+        store
+            .write_plan_document("r_plan_document", &document)
+            .unwrap();
+        store
+            .write_plan("r_plan_document", &document.steps)
+            .unwrap();
+
+        let read_doc = store
+            .read_plan_document("r_plan_document")
+            .unwrap()
+            .expect("plan_document.json should exist");
+        let read_steps = store.read_plan("r_plan_document").unwrap();
+
+        assert_eq!(read_doc.revision, 1);
+        assert_eq!(read_doc.steps.len(), 1);
+        assert_eq!(read_steps.len(), 1);
+        assert_eq!(read_steps[0].step_id, "sp_0");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn write_and_read_result() {
         let (store, root) = test_store();
         let spec = make_spec("ts_result");
@@ -409,9 +467,7 @@ mod tests {
                 cost_usd: None,
                 summary: None,
             };
-            store
-                .write_result(&format!("r_list_{i}"), &result)
-                .unwrap();
+            store.write_result(&format!("r_list_{i}"), &result).unwrap();
         }
 
         let runs = store.list_runs().unwrap();

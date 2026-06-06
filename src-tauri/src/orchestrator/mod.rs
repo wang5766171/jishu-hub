@@ -2,10 +2,11 @@ pub mod agent_runs;
 pub mod daemon;
 pub mod dispatcher;
 pub mod plan_agent;
+pub mod plan_document;
 pub mod planner;
 pub mod proposal;
-pub mod rework;
 pub mod result;
+pub mod rework;
 pub mod spec;
 pub mod store;
 pub mod trace;
@@ -23,8 +24,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 // Public re-exports for consumers (lib.rs, daemon, CLI)
 pub use proposal::EvolutionProposal;
-pub use rework::ReworkItem;
 pub use result::{RunResult, RunStatus, StepOutcome, StepStatus, UsageSummary};
+pub use rework::ReworkItem;
 pub use spec::{AssignmentMode, Step, StepKind, TaskKind, TaskSpec, VerifyCheck};
 pub use store::RunStore;
 pub use trace::TraceRecorder;
@@ -43,6 +44,8 @@ pub struct RunRecord {
     pub run_id: String,
     pub spec: TaskSpec,
     pub plan: Vec<Step>,
+    #[serde(default)]
+    pub plan_document: Option<plan_document::PlanDocument>,
     pub result: RunResult,
     #[serde(default)]
     pub timeline: Vec<TaskTimelineEvent>,
@@ -124,6 +127,32 @@ pub fn cancel_run(run_id: &str) -> Result<RunResult, String> {
     cancel_run_in_root(&root, run_id)
 }
 
+fn build_initial_run_result(
+    run_id: &str,
+    spec: &TaskSpec,
+    status: RunStatus,
+    outcomes: Vec<StepOutcome>,
+    error: Option<String>,
+    started_at: i64,
+) -> RunResult {
+    RunResult {
+        run_id: run_id.to_string(),
+        task_id: spec.task_id.clone(),
+        finished_at: if status.is_active() {
+            None
+        } else {
+            Some(now_ms())
+        },
+        status,
+        started_at,
+        steps: outcomes,
+        usage: UsageSummary::default(),
+        error,
+        cost_usd: None,
+        summary: None,
+    }
+}
+
 pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmitResult, String> {
     let store = RunStore::open_at(root.to_path_buf())?;
     let started_at = now_ms();
@@ -162,6 +191,7 @@ pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmit
     })?;
 
     // Execute
+    let mut plan_agent_to_start: Option<(String, String, String)> = None;
     let (status, outcomes, error) = if matches!(spec.kind, spec::TaskKind::Plan) {
         // Plan mode: if no active model, fall back to default planner
         // (test / no-config path). Otherwise spawn PlanAgent for
@@ -192,62 +222,53 @@ pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmit
                 .unwrap_or_else(|| "jishu-task-planner".to_string());
             let initial_user_prompt = spec.message.clone();
             let run_id_for_plan = run_id.clone();
-
-            let plan_agent_result = plan_agent::start(
-                run_id_for_plan,
-                skill_id.clone(),
-                initial_user_prompt,
-            );
-            match plan_agent_result {
-                Ok(_agent) => {
-                    trace.append_event(&NormalizedEvent::TaskStep {
-                        run_id: run_id.clone(),
-                        step_id: "sp_plan_agent".to_string(),
-                        kind: TaskStepKind::Plan,
-                        title: "Plan generation started (LLM)".to_string(),
-                        detail: Some(serde_json::json!({
-                            "skill_id": skill_id,
-                        })),
-                    })?;
-                    (RunStatus::Running, Vec::new(), None)
-                }
-                Err(e) => {
-                    trace.append_event(&NormalizedEvent::TaskStep {
-                        run_id: run_id.clone(),
-                        step_id: "sp_plan_agent_failed".to_string(),
-                        kind: TaskStepKind::Failed,
-                        title: format!("Plan agent failed: {e}"),
-                        detail: None,
-                    })?;
-                    (RunStatus::Error, Vec::new(), Some(e))
-                }
-            }
+            plan_agent_to_start = Some((run_id_for_plan, skill_id, initial_user_prompt));
+            (RunStatus::Running, Vec::new(), None)
         }
     } else {
         execute_steps(&spec, &run_id, &steps, registry, &trace)
     };
     let steps_for_summary = steps.clone();
 
-
-    let result = RunResult {
-        run_id: run_id.clone(),
-        task_id: spec.task_id.clone(),
-        status: status.clone(),
-        started_at,
-        finished_at: Some(now_ms()),
-        steps: outcomes,
-        usage: UsageSummary::default(),
-        error,
-        cost_usd: None,
-        summary: None,
-    };
+    let mut result = build_initial_run_result(&run_id, &spec, status, outcomes, error, started_at);
     store.write_result(&run_id, &result)?;
 
+    if let Some((run_id_for_plan, skill_id, initial_user_prompt)) = plan_agent_to_start {
+        match plan_agent::start_in_root(
+            run_id_for_plan,
+            skill_id.clone(),
+            initial_user_prompt,
+            root.to_path_buf(),
+        ) {
+            Ok(_agent) => {
+                trace.append_event(&NormalizedEvent::TaskStep {
+                    run_id: run_id.clone(),
+                    step_id: "sp_plan_agent".to_string(),
+                    kind: TaskStepKind::Plan,
+                    title: "Plan generation started (LLM)".to_string(),
+                    detail: Some(serde_json::json!({
+                        "skill_id": skill_id,
+                    })),
+                })?;
+            }
+            Err(e) => {
+                result.status = RunStatus::Error;
+                result.finished_at = Some(now_ms());
+                result.error = Some(e.clone());
+                store.write_result(&run_id, &result)?;
+                trace.append_event(&NormalizedEvent::TaskStep {
+                    run_id: run_id.clone(),
+                    step_id: "sp_plan_agent_failed".to_string(),
+                    kind: TaskStepKind::Failed,
+                    title: format!("Plan agent failed: {e}"),
+                    detail: None,
+                })?;
+            }
+        }
+    }
+
     // Generate LLM summary for terminal runs (best-effort, non-blocking on failure)
-    if matches!(
-        status,
-        RunStatus::Complete | RunStatus::Aborted | RunStatus::Error
-    ) {
+    if result.status.is_terminal() {
         if let Ok(summary) = generate_run_summary(&spec, &result, &steps_for_summary) {
             if let Ok(mut r) = store.read_result(&run_id) {
                 r.summary = Some(summary);
@@ -259,7 +280,7 @@ pub fn submit_task_in_root(mut spec: TaskSpec, root: &Path) -> Result<TaskSubmit
     Ok(TaskSubmitResult {
         task_id: spec.task_id,
         run_id,
-        status,
+        status: result.status,
     })
 }
 
@@ -283,6 +304,7 @@ pub fn get_run_in_root(root: &Path, run_id: &str) -> Result<RunRecord, String> {
     let store = RunStore::open_at(root.to_path_buf())?;
     let spec = store.read_spec(run_id)?;
     let plan = store.read_plan(run_id)?;
+    let plan_document = store.read_plan_document(run_id)?;
     let result = store.read_result(run_id)?;
     let trace_events = store.read_trace(run_id)?;
     let rework_routes = derive_rework_routes(&spec);
@@ -308,6 +330,7 @@ pub fn get_run_in_root(root: &Path, run_id: &str) -> Result<RunRecord, String> {
         run_id: run_id.to_string(),
         spec,
         plan,
+        plan_document,
         result,
         timeline,
         rework_routes,
@@ -336,8 +359,6 @@ pub fn execute_plan(run_id: &str) -> Result<RunResult, String> {
 
 pub fn execute_plan_in_root(root: &Path, run_id: &str) -> Result<RunResult, String> {
     let store = RunStore::open_at(root.to_path_buf())?;
-    let spec = store.read_spec(run_id)?;
-    let plan = store.read_plan(run_id)?;
     let mut result = store.read_result(run_id)?;
 
     // Only allow executing plans that are currently in Complete (Plan mode output)
@@ -356,6 +377,11 @@ pub fn execute_plan_in_root(root: &Path, run_id: &str) -> Result<RunResult, Stri
     result.steps.clear();
     result.error = None;
     store.write_result(run_id, &result)?;
+    update_plan_document_status_with_store(
+        &store,
+        run_id,
+        plan_document::PlanDocumentStatus::Executing,
+    )?;
 
     // Spawn background task — non-blocking
     let root_owned = root.to_path_buf();
@@ -365,6 +391,117 @@ pub fn execute_plan_in_root(root: &Path, run_id: &str) -> Result<RunResult, Stri
     });
 
     Ok(result)
+}
+
+pub fn get_plan_document(run_id: &str) -> Result<Option<plan_document::PlanDocument>, String> {
+    let root = default_runs_root();
+    get_plan_document_in_root(&root, run_id)
+}
+
+pub fn get_plan_document_in_root(
+    root: &Path,
+    run_id: &str,
+) -> Result<Option<plan_document::PlanDocument>, String> {
+    let store = RunStore::open_at(root.to_path_buf())?;
+    store.read_plan_document(run_id)
+}
+
+pub fn update_plan_steps(
+    run_id: &str,
+    steps: Vec<Step>,
+) -> Result<plan_document::PlanDocument, String> {
+    let root = default_runs_root();
+    update_plan_steps_in_root(&root, run_id, steps)
+}
+
+pub fn update_plan_steps_in_root(
+    root: &Path,
+    run_id: &str,
+    mut steps: Vec<Step>,
+) -> Result<plan_document::PlanDocument, String> {
+    let store = RunStore::open_at(root.to_path_buf())?;
+    if !store.run_exists(run_id) {
+        return Err(format!("Run not found: {run_id}"));
+    }
+
+    if steps.is_empty() {
+        return Err("plan must contain at least one step".to_string());
+    }
+
+    let spec = store.read_spec(run_id)?;
+    let fallback_project = spec.project_path.as_deref().unwrap_or(".");
+    for step in &mut steps {
+        if step.timeout_ms.is_none() {
+            step.timeout_ms = spec.deadline_ms;
+        }
+        if let StepKind::Dispatch { project, .. } = &mut step.kind {
+            if project.trim().is_empty() {
+                *project = fallback_project.to_string();
+            }
+        }
+    }
+
+    let validation = plan_document::validate_plan_steps(&steps, &spec, fallback_project);
+    if !validation.valid {
+        return Err(validation.summary());
+    }
+
+    let existing = store.read_plan_document(run_id)?;
+    let revision = existing
+        .as_ref()
+        .map(|document| document.revision + 1)
+        .unwrap_or(1);
+    let skill_id = existing
+        .as_ref()
+        .and_then(|document| document.skill_id.clone())
+        .or_else(|| spec.labels.get("template").cloned());
+    let visible_text = serde_json::to_string_pretty(&steps).unwrap_or_default();
+    let document = plan_document::PlanDocument {
+        schema_version: 1,
+        run_id: run_id.to_string(),
+        skill_id,
+        revision,
+        status: plan_document::PlanDocumentStatus::Ready,
+        steps: steps.clone(),
+        draft: Some(plan_document::PlanDraft {
+            raw_finish_plan_args: serde_json::json!({ "steps": steps }),
+            visible_text,
+            source: plan_document::PlanDraftSource::UserPatch,
+        }),
+        validation,
+        updated_at: now_ms(),
+    };
+
+    store.write_plan(run_id, &document.steps)?;
+    if let Some(draft) = &document.draft {
+        store.write_plan_draft(run_id, draft)?;
+    }
+    store.write_plan_document(run_id, &document)?;
+
+    let mut result = store.read_result(run_id)?;
+    if !matches!(result.status, RunStatus::Running) {
+        result.status = RunStatus::Complete;
+        result.finished_at = Some(now_ms());
+        result.error = None;
+        result.steps.clear();
+        store.write_result(run_id, &result)?;
+    }
+
+    let _ = store.append_trace(
+        run_id,
+        &NormalizedEvent::TaskStep {
+            run_id: run_id.to_string(),
+            step_id: "sp_plan_user_update".to_string(),
+            kind: TaskStepKind::Plan,
+            title: "Plan updated by user".to_string(),
+            detail: Some(serde_json::json!({
+                "revision": document.revision,
+                "steps": document.steps.len(),
+            })),
+        },
+    );
+
+    Ok(document)
 }
 
 /// Blocking version of plan execution. Runs in background thread.
@@ -393,6 +530,15 @@ fn execute_plan_blocking(root: &Path, run_id: &str) -> Result<(), String> {
     result.steps = outcomes;
     result.error = error;
     store.write_result(run_id, &result)?;
+    update_plan_document_status_with_store(
+        &store,
+        run_id,
+        if status == RunStatus::Complete {
+            plan_document::PlanDocumentStatus::Complete
+        } else {
+            plan_document::PlanDocumentStatus::Failed
+        },
+    )?;
 
     trace.append_event(&NormalizedEvent::TaskStep {
         run_id: run_id.to_string(),
@@ -417,6 +563,19 @@ fn execute_plan_blocking(root: &Path, run_id: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn update_plan_document_status_with_store(
+    store: &RunStore,
+    run_id: &str,
+    status: plan_document::PlanDocumentStatus,
+) -> Result<(), String> {
+    let Some(mut document) = store.read_plan_document(run_id)? else {
+        return Ok(());
+    };
+    document.status = status;
+    document.updated_at = now_ms();
+    store.write_plan_document(run_id, &document)
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────
@@ -452,7 +611,9 @@ fn generate_plan_with_llm(spec: &TaskSpec, template_steps: &[Step]) -> Option<Ve
         .iter()
         .map(|s| {
             let kind_desc = match &s.kind {
-                StepKind::Dispatch { role_id, prompt, .. } => {
+                StepKind::Dispatch {
+                    role_id, prompt, ..
+                } => {
                     // Truncate at char boundary to handle multi-byte UTF-8
                     let truncated: String = prompt.chars().take(100).collect();
                     format!("Dispatch to role '{}' with prompt: {}", role_id, truncated)
@@ -634,7 +795,11 @@ Rules:
                 Some(Step {
                     step_id,
                     kind,
-                    depends_on: if i > 0 { vec![format!("sp_{}", i - 1)] } else { vec![] },
+                    depends_on: if i > 0 {
+                        vec![format!("sp_{}", i - 1)]
+                    } else {
+                        vec![]
+                    },
                     timeout_ms: spec.deadline_ms,
                 })
             })
@@ -713,16 +878,34 @@ fn generate_run_summary_with_lang(
         .enumerate()
         .map(|(i, s)| {
             let kind_str = match &s.kind {
-                StepKind::Dispatch { role_id, prompt, .. } => {
-                    format!("派发给 [{}]：{}", role_id, prompt.chars().take(60).collect::<String>())
+                StepKind::Dispatch {
+                    role_id, prompt, ..
+                } => {
+                    format!(
+                        "派发给 [{}]：{}",
+                        role_id,
+                        prompt.chars().take(60).collect::<String>()
+                    )
                 }
                 StepKind::Reflect { question } => {
                     format!("反思：{}", question.chars().take(60).collect::<String>())
                 }
                 StepKind::Shell { command, .. } => format!("执行命令：{}", command),
                 StepKind::Read { path, .. } => format!("读取：{}", path.display()),
-                StepKind::Write { path, requires_approval, .. } => {
-                    format!("写入：{}{}", path.display(), if *requires_approval { "（需审批）" } else { "" })
+                StepKind::Write {
+                    path,
+                    requires_approval,
+                    ..
+                } => {
+                    format!(
+                        "写入：{}{}",
+                        path.display(),
+                        if *requires_approval {
+                            "（需审批）"
+                        } else {
+                            ""
+                        }
+                    )
                 }
                 StepKind::Verify { check } => format!("验证：{:?}", check),
             };
@@ -923,7 +1106,8 @@ fn execute_steps(
                     started_at: step_started,
                     finished_at: step_finished,
                     usage: UsageSummary::zero(),
-                ..Default::default()});
+                    ..Default::default()
+                });
                 let _ = trace.append_event(&NormalizedEvent::TaskStep {
                     run_id: run_id.to_string(),
                     step_id: step.step_id.clone(),
@@ -1094,8 +1278,9 @@ fn derive_rework_routes(spec: &TaskSpec) -> Vec<RoleContractRoute> {
                     target_role_id: target.role_id.clone(),
                     target_role_name: target.role_name.clone(),
                     target_agent_id: target.agent_id.clone().unwrap_or_default(),
-                    reason: "role contract mentions the target role and the target can receive rework"
-                        .to_string(),
+                    reason:
+                        "role contract mentions the target role and the target can receive rework"
+                            .to_string(),
                 });
             }
         }
@@ -1138,8 +1323,7 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir()
-            .join(format!("jishu_{label}_{}_{id}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("jishu_{label}_{}_{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         path
     }
@@ -1323,6 +1507,131 @@ mod tests {
             .any(|event| event.kind == "rework_route"));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn update_plan_steps_validates_and_revisions_user_final_plan() {
+        let root = unique_root("plan_update_test");
+        let _ = std::fs::remove_dir_all(&root);
+        let store = RunStore::open_at(root.clone()).unwrap();
+
+        let spec = make_spec_with_roles("ts_plan_update");
+        store.create_run("r_plan_update", &spec).unwrap();
+        store
+            .write_result(
+                "r_plan_update",
+                &RunResult {
+                    run_id: "r_plan_update".into(),
+                    task_id: spec.task_id.clone(),
+                    status: RunStatus::Complete,
+                    started_at: 1,
+                    finished_at: Some(2),
+                    steps: Vec::new(),
+                    usage: UsageSummary::zero(),
+                    error: None,
+                    cost_usd: None,
+                    summary: None,
+                },
+            )
+            .unwrap();
+
+        let steps = vec![
+            Step {
+                step_id: "scope".into(),
+                kind: StepKind::Dispatch {
+                    role_id: "architect".into(),
+                    prompt: "Clarify the target architecture and risks.".into(),
+                    project: "D:/project".into(),
+                    session: None,
+                },
+                depends_on: vec![],
+                timeout_ms: None,
+            },
+            Step {
+                step_id: "audit".into(),
+                kind: StepKind::Reflect {
+                    question: "Summarize the agreed final plan.".into(),
+                },
+                depends_on: vec!["scope".into()],
+                timeout_ms: None,
+            },
+        ];
+
+        let document = update_plan_steps_in_root(&root, "r_plan_update", steps.clone()).unwrap();
+        assert_eq!(document.revision, 1);
+        assert_eq!(document.steps.len(), 2);
+        assert_eq!(document.status, plan_document::PlanDocumentStatus::Ready);
+        assert_eq!(
+            document.draft.as_ref().unwrap().source,
+            plan_document::PlanDraftSource::UserPatch
+        );
+
+        let stored_steps = store.read_plan("r_plan_update").unwrap();
+        let stored_document = store
+            .read_plan_document("r_plan_update")
+            .unwrap()
+            .expect("plan document should be stored");
+        let result = store.read_result("r_plan_update").unwrap();
+        assert_eq!(stored_steps.len(), 2);
+        assert_eq!(stored_document.revision, 1);
+        assert_eq!(result.status, RunStatus::Complete);
+        assert_eq!(result.error, None);
+
+        let revised = vec![Step {
+            step_id: "scope".into(),
+            kind: StepKind::Dispatch {
+                role_id: "architect".into(),
+                prompt: "Revise the scope before implementation.".into(),
+                project: "D:/project/submodule".into(),
+                session: None,
+            },
+            depends_on: vec![],
+            timeout_ms: None,
+        }];
+        let revised_document = update_plan_steps_in_root(&root, "r_plan_update", revised).unwrap();
+        assert_eq!(revised_document.revision, 2);
+
+        let invalid = vec![Step {
+            step_id: "outside".into(),
+            kind: StepKind::Dispatch {
+                role_id: "architect".into(),
+                prompt: "Work elsewhere.".into(),
+                project: "D:/other".into(),
+                session: None,
+            },
+            depends_on: vec![],
+            timeout_ms: None,
+        }];
+        let err = update_plan_steps_in_root(&root, "r_plan_update", invalid)
+            .expect_err("outside project must be rejected");
+        assert!(err.contains("outside task project"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn initial_run_result_keeps_active_runs_unfinished() {
+        let spec = TaskSpec {
+            task_id: "ts_running_result".into(),
+            kind: spec::TaskKind::Plan,
+            message: "Generate plan".into(),
+            project_path: Some("/tmp/proj".into()),
+            roles: Vec::new(),
+            assignment_mode: AssignmentMode::Manual,
+            policy: "default".into(),
+            parent_run_id: None,
+            epic_id: None,
+            depth: 0,
+            created_at: 1,
+            deadline_ms: None,
+            labels: HashMap::new(),
+        };
+
+        let result =
+            build_initial_run_result("r_running", &spec, RunStatus::Running, Vec::new(), None, 10);
+
+        assert_eq!(result.status, RunStatus::Running);
+        assert_eq!(result.finished_at, None);
     }
 
     #[test]

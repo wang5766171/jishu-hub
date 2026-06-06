@@ -192,7 +192,8 @@ mod tests {
                 output_tokens: 500,
                 cost_usd: 0.05,
             },
-        ..Default::default()};
+            ..Default::default()
+        };
         let json = serde_json::to_string(&outcome).unwrap();
         let de: StepOutcome = serde_json::from_str(&json).unwrap();
         assert_eq!(outcome.step_id, de.step_id);

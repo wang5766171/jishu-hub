@@ -229,7 +229,10 @@ fn generate_roles_with_llm(
                 "- {} ({}): {}",
                 r.role_name,
                 r.role_id,
-                r.responsibilities.first().map(|s| s.as_str()).unwrap_or("N/A")
+                r.responsibilities
+                    .first()
+                    .map(|s| s.as_str())
+                    .unwrap_or("N/A")
             )
         })
         .collect::<Vec<_>>()
