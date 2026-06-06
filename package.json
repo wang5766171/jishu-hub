@@ -1,7 +1,7 @@
 {
   "name": "jishu-hub",
   "private": false,
-  "version": "0.6.7",
+  "version": "0.6.14",
   "description": "A desktop hub for managing AI agent projects, sessions, and configuration",
   "license": "MIT",
   "repository": {
@@ -18,7 +18,7 @@
   ],
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node ./scripts/dev-server.mjs",
     "build": "node ./scripts/build.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
@@ -49,7 +49,10 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.4.0",
+    "concurrently": "^10.0.3",
+    "kill-port": "^2.0.1",
     "typescript": "~5.7.2",
-    "vite": "^6.3.0"
+    "vite": "^6.3.0",
+    "wait-on": "^9.0.10"
   }
 }

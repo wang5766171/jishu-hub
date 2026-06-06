@@ -27,7 +27,11 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      ignored: ["**/src-tauri/**"],
+      ignored: ["**/src-tauri/**", "**/third_party/**"],
     },
+  },
+  optimizeDeps: {
+    entries: ["index.html"],
+    exclude: ["third_party", "src-tauri"],
   },
 }));

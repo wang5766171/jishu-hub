@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@source "./src";
+@source "../index.html";
 
 /* Fix dark mode issue for native select dropdowns */
 select option {
