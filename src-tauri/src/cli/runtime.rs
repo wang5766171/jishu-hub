@@ -48,6 +48,5 @@ fn dispatch(cmd: Commands, ctx: &ExecutionContext) -> Result<(), CliError> {
             dry_run,
         } => commands::orchestrator::evolve::run(plan.as_deref(), &project, dry_run, ctx),
         Commands::Acp { action } => commands::acp::run(action, ctx),
-        Commands::AgentBridge { action } => commands::agent::bridge::run(action, ctx),
     }
 }

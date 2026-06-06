@@ -113,13 +113,6 @@ pub enum Commands {
         #[command(subcommand)]
         action: AcpAction,
     },
-
-    /// Internal: jishu-self subprocess entry point. Hidden from --help.
-    #[command(name = "agent-bridge", hide = true)]
-    AgentBridge {
-        #[command(subcommand)]
-        action: AgentBridgeAction,
-    },
 }
 
 // ── Agent ────────────────────────────────────────────────────────────────────
@@ -146,6 +139,17 @@ pub enum AgentAction {
 
 #[derive(Subcommand, Debug)]
 pub enum ChatAction {
+    /// Start an interactive chat session.
+    Start {
+        /// Agent identifier.
+        #[arg(long, default_value = "jishu-self")]
+        agent: String,
+
+        /// Project path.
+        #[arg(long, default_value = ".")]
+        project: String,
+    },
+
     /// Send a message to an agent.
     Send {
         /// Agent identifier.
@@ -350,32 +354,4 @@ pub enum AcpAction {
 
     /// List active ACP sessions.
     List,
-}
-
-// ── AgentBridge (internal) ───────────────────────────────────────────────────
-
-#[derive(Subcommand, Debug)]
-pub enum AgentBridgeAction {
-    /// Start a bridge: in-process LLM for jishu-self, subprocess for others.
-    Start {
-        /// Agent identifier (e.g. "jishu-self", "claude-code").
-        agent: String,
-
-        /// Session ID to resume.
-        #[arg(long)]
-        session: Option<String>,
-
-        /// Project working directory.
-        #[arg(long, default_value = ".")]
-        project: String,
-    },
-
-    /// List active bridges.
-    List,
-
-    /// Stop a bridge.
-    Stop {
-        /// Bridge ID.
-        bridge_id: String,
-    },
 }

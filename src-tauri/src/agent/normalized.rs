@@ -151,38 +151,6 @@ pub struct NormalizedMessage {
     pub timestamp: Option<i64>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ChatRequest {
-    pub project_path: String,
-    pub session_id: Option<String>,
-    pub message: String,
-    pub attachments: Vec<Attachment>,
-    pub model_override: Option<String>,
-    pub thinking: bool,
-}
-
-#[derive(Debug, Clone)]
-pub enum Attachment {
-    LocalPath {
-        path: String,
-        label: String,
-        is_image: bool,
-    },
-    Inline {
-        data_base64: String,
-        filename: String,
-        label: String,
-        mime: String,
-    },
-}
-
-pub struct ChatHandle {
-    pub session_id: String,
-    pub abort: Box<dyn Fn() + Send + Sync>,
-}
-
-pub type ChatEmitter = Box<dyn Fn(NormalizedEvent) + Send + Sync>;
-
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
     #[error("Agent not found: {0}")]
