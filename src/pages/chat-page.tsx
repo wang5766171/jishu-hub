@@ -104,6 +104,43 @@ export function ChatPage({
   const [optimisticSessions, setOptimisticSessions] = useState<Session[]>([]);
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
 
+  // Quick model picker for jishu-self agent: lists all (provider, model)
+  // pairs from ~/.jishu-agent/models.json and writes the active selection
+  // to ~/.jishu-hub/settings.json. When the active agent is not
+  // jishu-self, this stays empty.
+  const [modelOptions, setModelOptions] = useState<{ provider: string; model: string }[]>([]);
+  const [activeModel, setActiveModel] = useState<{ provider: string; model: string } | null>(null);
+  const refreshModelPicker = useCallback(async () => {
+    if (activeId !== "jishu-self") {
+      setModelOptions([]);
+      setActiveModel(null);
+      return;
+    }
+    try {
+      const [config, act] = await Promise.all([
+        invokeCommand<{ providers?: Record<string, { models?: { id: string }[] }> }>(
+          "get_models_config",
+        ),
+        invokeCommand<{ provider: string; model: string } | null>("get_active"),
+      ]);
+      const opts: { provider: string; model: string }[] = [];
+      for (const [provider, value] of Object.entries(config?.providers ?? {})) {
+        for (const m of value.models ?? []) {
+          if (typeof m.id === "string") {
+            opts.push({ provider, model: m.id });
+          }
+        }
+      }
+      setModelOptions(opts);
+      setActiveModel(act);
+    } catch (e) {
+      console.warn("Model picker refresh failed:", e);
+    }
+  }, [activeId]);
+  useEffect(() => {
+    void refreshModelPicker();
+  }, [refreshModelPicker]);
+
   const messageAreaRef = useRef<HTMLDivElement>(null);
   const activeIdRef = useRef<string | null>(activeId);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
@@ -645,10 +682,49 @@ export function ChatPage({
         <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[var(--icon-folder)]" />
         <span className="truncate font-medium text-foreground" title={projectDisplayName}>{projectDisplayName}</span>
       </span>
-      <span className="inline-flex min-w-0 items-center gap-1.5" title={projectPath}>
-        <HardDrive className="h-3.5 w-3.5 shrink-0 text-[var(--icon-config)]" />
-        <span className="truncate">{t("sessions.localMode")}</span>
-      </span>
+      {activeId === "jishu-self" ? (
+        <span className="inline-flex min-w-0 items-center gap-1.5">
+          <HardDrive className="h-3.5 w-3.5 shrink-0 text-[var(--icon-config)]" />
+          {modelOptions.length === 0 ? (
+            <span className="truncate text-amber-400">
+              {t("sessions.modelNotConfigured") || "No models — open 管理-配置"}
+            </span>
+          ) : (
+            <select
+              aria-label={t("sessions.activeModel") || "Active model"}
+              className="h-6 rounded-md border border-input bg-transparent px-2 text-xs font-mono max-w-[260px] truncate"
+              value={
+                activeModel
+                  ? `${activeModel.provider}/${activeModel.model}`
+                  : ""
+              }
+              onChange={async (e) => {
+                const value = e.target.value;
+                if (!value) return;
+                const [provider, ...rest] = value.split("/");
+                const model = rest.join("/");
+                const next = { provider, model };
+                setActiveModel(next);
+                try {
+                  await invokeCommand("set_active", { active: next });
+                } catch (err) {
+                  console.warn("set_active failed:", err);
+                }
+              }}
+            >
+              {!activeModel && <option value="">— pick model —</option>}
+              {modelOptions.map((o) => (
+                <option
+                  key={`${o.provider}/${o.model}`}
+                  value={`${o.provider}/${o.model}`}
+                >
+                  {o.provider}/{o.model}
+                </option>
+              ))}
+            </select>
+          )}
+        </span>
+      ) : null}
       <span className="inline-flex min-w-0 items-center gap-1.5" title={active?.display_name ?? ""}>
         {active ? <AgentLogo agentId={active.id} size={14} /> : null}
         <span className="truncate">{active?.display_name ?? t("sessions.currentAgent")}</span>
