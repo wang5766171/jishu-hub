@@ -393,7 +393,7 @@ mod tests {
         assert_eq!(
             dir,
             PathBuf::from(
-                r"C:\Users\tester\.jishu-agent\sessions\--D-MyCodes-unified-auth-system--"
+                r"C:\Users\tester\.jishu-agent\sessions\--D--MyCodes-unified-auth-system--"
             )
         );
     }
@@ -516,7 +516,7 @@ mod tests {
             pi_session_dir_for_home(home, project_path),
             home.join(".jishu-agent")
                 .join("sessions")
-                .join("--D-My Codes-app--")
+                .join("--D--My Codes-app--")
         );
     }
 
