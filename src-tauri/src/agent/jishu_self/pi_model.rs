@@ -16,16 +16,16 @@ use crate::agent::jishu_self::pi_models_config;
 /// provider isn't in `~/.jishu-agent/models.json`.
 pub fn build_pi_model_args_from_active() -> Result<Vec<String>, String> {
     let active = jishu_settings::get_active()?.ok_or_else(|| {
-        "No active model — set one in the GUI (Models page) or write ~/.jishu-hub/settings.json".to_string()
+        "No active model — set one in the GUI (Models page) or write ~/.jishu-hub/settings.json"
+            .to_string()
     })?;
 
-    let provider = pi_models_config::get_provider(&active.provider)?
-        .ok_or_else(|| {
-            format!(
-                "Active provider '{}' is not in ~/.jishu-agent/models.json. Add it on the Models page.",
-                active.provider
-            )
-        })?;
+    let provider = pi_models_config::get_provider(&active.provider)?.ok_or_else(|| {
+        format!(
+            "Active provider '{}' is not in ~/.jishu-agent/models.json. Add it on the Models page.",
+            active.provider
+        )
+    })?;
 
     let has_model = provider
         .models
@@ -46,7 +46,12 @@ pub fn build_pi_model_args_from_active() -> Result<Vec<String>, String> {
         active.model.clone(),
     ];
 
-    if let Some(api_key) = provider.api_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(api_key) = provider
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         args.push("--api-key".to_string());
         args.push(api_key.to_string());
     }

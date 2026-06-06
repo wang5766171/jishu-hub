@@ -3,17 +3,28 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub(crate) fn pi_session_dir_for_home(home: &Path, project_path: &str) -> PathBuf {
-    // Pi reads sessions from `<getAgentDir()>/sessions/`. We set
-    // `PI_CODING_AGENT_DIR=~/.jishu-agent` when spawning Pi, so the
-    // session tree lives under `~/.jishu-agent/sessions/<encoded-project>`.
-    home.join(".jishu-agent")
-        .join("sessions")
-        .join(crate::project::encode_project_path(project_path))
+    pi_sessions_root_for_home(home).join(pi_encode_cwd(Path::new(project_path)))
+}
+
+pub(crate) fn pi_sessions_root_for_home(home: &Path) -> PathBuf {
+    home.join(".jishu-agent").join("sessions")
+}
+
+pub(crate) fn pi_sessions_root() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+    Ok(pi_sessions_root_for_home(&home))
 }
 
 pub(crate) fn pi_session_dir(project_path: &str) -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
     Ok(pi_session_dir_for_home(&home, project_path))
+}
+
+pub(crate) fn pi_encode_cwd(path: &Path) -> String {
+    let value = path.display().to_string();
+    let value = value.trim_start_matches(['/', '\\']);
+    let value = value.replace(['/', '\\', ':'], "-");
+    format!("--{value}--")
 }
 
 pub(crate) fn list_pi_sessions(encoded_name: &str) -> Result<Vec<crate::session::Session>, String> {
@@ -64,6 +75,63 @@ pub(crate) fn load_pi_session_messages(
             }
         }
     }
+    Err(format!("Pi session not found: {session_id}"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PiSessionLocation {
+    pub(crate) session_id: String,
+    pub(crate) session_dir: PathBuf,
+    pub(crate) project_path: String,
+    pub(crate) path: PathBuf,
+}
+
+pub(crate) fn find_pi_session_location(session_id: &str) -> Result<PiSessionLocation, String> {
+    let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+    find_pi_session_location_in_agent_dir(&home.join(".jishu-agent"), session_id)
+}
+
+pub(crate) fn find_pi_session_location_in_agent_dir(
+    agent_dir: &Path,
+    session_id: &str,
+) -> Result<PiSessionLocation, String> {
+    let sessions_root = agent_dir.join("sessions");
+    if !sessions_root.is_dir() {
+        return Err(format!("Pi session not found: {session_id}"));
+    }
+
+    for project_entry in fs::read_dir(&sessions_root).map_err(|e| e.to_string())? {
+        let project_dir = project_entry.map_err(|e| e.to_string())?.path();
+        if !project_dir.is_dir() {
+            continue;
+        }
+
+        for entry in fs::read_dir(&project_dir).map_err(|e| e.to_string())? {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if !path.extension().map(|ext| ext == "jsonl").unwrap_or(false) {
+                continue;
+            }
+
+            if let Some(session) = load_pi_session(&path) {
+                if session.id == session_id {
+                    let project_path = session.project_path.unwrap_or_else(|| {
+                        project_dir
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .map(crate::project::decode_project_path)
+                            .unwrap_or_default()
+                    });
+                    return Ok(PiSessionLocation {
+                        session_id: session.id,
+                        session_dir: project_dir.clone(),
+                        project_path,
+                        path,
+                    });
+                }
+            }
+        }
+    }
+
     Err(format!("Pi session not found: {session_id}"))
 }
 
@@ -324,7 +392,9 @@ mod tests {
 
         assert_eq!(
             dir,
-            PathBuf::from(r"C:\Users\tester\.jishu-agent\sessions\D--MyCodes-unified-auth-system")
+            PathBuf::from(
+                r"C:\Users\tester\.jishu-agent\sessions\--D-MyCodes-unified-auth-system--"
+            )
         );
     }
 
@@ -376,6 +446,40 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn finds_pi_session_location_by_inner_session_id() {
+        let root = std::env::temp_dir().join(format!(
+            "jishu-pi-session-location-test-{}",
+            std::process::id()
+        ));
+        let agent_dir = root.join(".jishu-agent");
+        let project_path = r"D:\Work\app";
+        let session_dir = agent_dir
+            .join("sessions")
+            .join(pi_encode_cwd(Path::new(project_path)));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&session_dir).unwrap();
+        let path = session_dir.join("20260601_sid-real.jsonl");
+        fs::write(
+            &path,
+            [
+                r#"{"type":"session","version":3,"id":"sid-real","timestamp":"2026-06-01T00:00:00.000Z","cwd":"D:\\Work\\app"}"#,
+                r#"{"type":"message_start","id":"u1","parentId":null,"timestamp":"2026-06-01T00:00:01.000Z","message":{"role":"user","content":"hello","timestamp":1780272001000}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let location = find_pi_session_location_in_agent_dir(&agent_dir, "sid-real").unwrap();
+
+        assert_eq!(location.session_id, "sid-real");
+        assert_eq!(location.session_dir, session_dir);
+        assert_eq!(location.project_path, project_path);
+        assert_eq!(location.path, path);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// Regression test against an actual JSONL that `pi --mode json`
     /// produced on a real run. Captures a snapshot at
     /// `tests/fixtures/pi_session_real.jsonl`; the test loads and
@@ -402,5 +506,27 @@ mod tests {
                     && m.content.iter().any(|b| matches!(b, crate::session::ContentBlock::Text { text } if text.contains("jishu")))),
             "real fixture must contain an assistant reply mentioning jishu",
         );
+    }
+
+    #[test]
+    fn uses_pi_cwd_encoding_for_session_directories() {
+        let home = Path::new(r"C:\Users\tester");
+        let project_path = r"D:\My Codes\app";
+        assert_eq!(
+            pi_session_dir_for_home(home, project_path),
+            home.join(".jishu-agent")
+                .join("sessions")
+                .join("--D-My Codes-app--")
+        );
+    }
+
+    #[test]
+    fn test_parse_real_file() {
+        let path = std::path::Path::new("C:\\Users\\51743\\.jishu-agent\\sessions\\E--Claude-test\\2026-06-06T01-14-06-927Z_019e9a7e-92cf-7e5b-a24d-8d333432e821.jsonl");
+        let session = crate::agent::jishu_self::pi_session::load_pi_session(path);
+        println!("Session parsed: {}", session.is_some());
+        if let Some(s) = session {
+            println!("Messages count: {}", s.messages.len());
+        }
     }
 }

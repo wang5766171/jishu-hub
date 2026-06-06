@@ -42,11 +42,7 @@ pub struct PiProviderConfig {
     #[serde(rename = "api", skip_serializing_if = "Option::is_none", default)]
     pub api: Option<String>,
 
-    #[serde(
-        rename = "headers",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "headers", skip_serializing_if = "Option::is_none", default)]
     pub headers: Option<BTreeMap<String, String>>,
 
     /// Kept as raw JSON to preserve whatever shape Pi's ProviderCompat
@@ -55,7 +51,11 @@ pub struct PiProviderConfig {
     #[serde(rename = "compat", skip_serializing_if = "Option::is_none", default)]
     pub compat: Option<serde_json::Value>,
 
-    #[serde(rename = "authHeader", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "authHeader",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub auth_header: Option<bool>,
 
     #[serde(rename = "models", skip_serializing_if = "Option::is_none", default)]
@@ -161,7 +161,11 @@ pub struct PiModelOverride {
 
     pub cost: Option<PiModelCost>,
 
-    #[serde(rename = "contextWindow", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "contextWindow",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub context_window: Option<u64>,
 
     #[serde(rename = "maxTokens", skip_serializing_if = "Option::is_none", default)]
@@ -313,13 +317,15 @@ mod tests {
         let dir = unique_tmp("roundtrip");
         let path = dir.join("models.json");
         let mut cfg = PiModelsConfig::default();
-        cfg.providers
-            .insert("zhipu".to_string(), sample_zhipu());
+        cfg.providers.insert("zhipu".to_string(), sample_zhipu());
         save_to(&path, &cfg).unwrap();
 
         let loaded = load_from(&path).unwrap();
         let p = loaded.providers.get("zhipu").expect("zhipu provider");
-        assert_eq!(p.base_url.as_deref(), Some("https://open.bigmodel.cn/api/anthropic"));
+        assert_eq!(
+            p.base_url.as_deref(),
+            Some("https://open.bigmodel.cn/api/anthropic")
+        );
         assert_eq!(p.api.as_deref(), Some("anthropic-messages"));
         assert_eq!(p.api_key.as_deref(), Some("sk-zhipu-test"));
         assert_eq!(p.models.as_ref().unwrap().len(), 1);
