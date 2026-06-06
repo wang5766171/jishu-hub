@@ -32,17 +32,17 @@ function TerminalIcon(props: React.SVGProps<SVGSVGElement>) {
   );
 }
 
-function formatRelativeTime(date: Date | string): string {
+function formatRelativeTime(date: Date | string, t: (key: string) => string): string {
   const d = typeof date === "string" ? new Date(date) : date;
   const now = new Date();
   const diffMs = now.getTime() - d.getTime();
   const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return "刚刚";
-  if (diffMin < 60) return `${diffMin}分钟前`;
+  if (diffMin < 1) return t("time.justNow");
+  if (diffMin < 60) return t("time.minutesAgo", { count: String(diffMin) });
   const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}小时前`;
+  if (diffHr < 24) return t("time.hoursAgo", { count: String(diffHr) });
   const diffDay = Math.floor(diffHr / 24);
-  if (diffDay < 7) return `${diffDay}天前`;
+  if (diffDay < 7) return t("time.daysAgo", { count: String(diffDay) });
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   const hh = String(d.getHours()).padStart(2, "0");
@@ -89,6 +89,13 @@ export function ChatPage({
   const { activeId, active, capabilities } = useAgent();
   const projectId = currentProject?.encoded_name ?? null;
   const projectPathForSettings = currentProject?.path ?? null;
+  const supportsModelPicker = active?.config_surface.kind === "model_store"
+    ? (active.config_surface.supports_picker ?? false)
+    : false;
+  const projectSettingsSurface = active?.project_settings_surface;
+  const supportsAccessModeSwitch = projectSettingsSurface?.kind === "supported"
+    && projectSettingsSurface.scopes.includes("local")
+    && projectSettingsSurface.access_modes.length > 0;
 
   // selectedSession: null or real backend UUID — never fake IDs
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
@@ -104,14 +111,12 @@ export function ChatPage({
   const [optimisticSessions, setOptimisticSessions] = useState<Session[]>([]);
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
 
-  // Quick model picker for jishu-self agent: lists all (provider, model)
-  // pairs from ~/.jishu-agent/models.json and writes the active selection
-  // to ~/.jishu-hub/settings.json. When the active agent is not
-  // jishu-self, this stays empty.
+  // Quick model picker for Pi-backed model stores. The adapter declares
+  // this surface; the page does not inspect the agent id.
   const [modelOptions, setModelOptions] = useState<{ provider: string; model: string }[]>([]);
   const [activeModel, setActiveModel] = useState<{ provider: string; model: string } | null>(null);
   const refreshModelPicker = useCallback(async () => {
-    if (activeId !== "jishu-self") {
+    if (!supportsModelPicker) {
       setModelOptions([]);
       setActiveModel(null);
       return;
@@ -136,7 +141,7 @@ export function ChatPage({
     } catch (e) {
       console.warn("Model picker refresh failed:", e);
     }
-  }, [activeId]);
+  }, [supportsModelPicker]);
   useEffect(() => {
     void refreshModelPicker();
   }, [refreshModelPicker]);
@@ -224,7 +229,6 @@ export function ChatPage({
   const hasSearchQuery = searchQuery.trim().length > 0;
   const showMessageSearchControls = hasSearchQuery && !!selectedSession && selectedSession !== "new";
   const showStartComposer = !!projectId && (!selectedSession || selectedSession === "new");
-  const supportsAccessModeSwitch = activeId === "claude-code";
   const [accessRefreshKey, setAccessRefreshKey] = useState(0);
   const { data: projectSettings } = useInvoke<ProjectSettings>(
     supportsAccessModeSwitch && projectPathForSettings ? "load_project_settings_local" : "",
@@ -300,11 +304,18 @@ export function ChatPage({
     setAccessRefreshKey(Date.now());
   };
 
-  const accessModeOptions = useMemo(() => ([
-    { value: "default", label: t("sessions.accessDefault") },
-    { value: "bypassPermissions", label: t("sessions.accessBypass") },
-    { value: "plan", label: t("sessions.accessPlan") },
-  ]), [t]);
+  const accessModeOptions = useMemo(() => {
+    if (projectSettingsSurface?.kind !== "supported") return [];
+    const labels: Record<string, string> = {
+      default: t("sessions.accessDefault"),
+      bypassPermissions: t("sessions.accessBypass"),
+      plan: t("sessions.accessPlan"),
+    };
+    return projectSettingsSurface.access_modes.map((value) => ({
+      value,
+      label: labels[value] ?? value,
+    }));
+  }, [projectSettingsSurface, t]);
 
   const accessModeValue = projectSettings?.permissions?.defaultMode || "default";
   const accessModeLabel = accessModeOptions.find((option) => option.value === accessModeValue)?.label ?? t("sessions.accessDefault");
@@ -682,7 +693,7 @@ export function ChatPage({
         <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[var(--icon-folder)]" />
         <span className="truncate font-medium text-foreground" title={projectDisplayName}>{projectDisplayName}</span>
       </span>
-      {activeId === "jishu-self" ? (
+      {supportsModelPicker ? (
         <span className="inline-flex min-w-0 items-center gap-1.5">
           <HardDrive className="h-3.5 w-3.5 shrink-0 text-[var(--icon-config)]" />
           {modelOptions.length === 0 ? (
@@ -786,7 +797,7 @@ export function ChatPage({
               )}
             >
               <SquarePen className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
-              <span className="truncate leading-none pt-[1px]">发起新对话</span>
+              <span className="truncate leading-none pt-[1px]">{t("sessions.startNewChat")}</span>
             </button>
             <button
               onClick={handleRefresh}
@@ -920,9 +931,9 @@ export function ChatPage({
             const isActive = session.id === selectedSession;
             const name = sessionNames?.[session.id] || session.display_name || session.id.slice(0, 8);
             const timeStr = session.last_active
-              ? formatRelativeTime(session.last_active)
+              ? formatRelativeTime(session.last_active, t)
               : session.started_at
-                ? formatRelativeTime(session.started_at)
+                ? formatRelativeTime(session.started_at, t)
                 : null;
             const searchHit = searchResults.find((r: SessionSearchResult) => r.sessionId === session.id);
             return (
