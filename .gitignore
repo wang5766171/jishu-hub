@@ -40,7 +40,6 @@ docs/superpowers/
 .claude/
 
 # Architecture guidance document (local reference only)
-DEVELOP_READ.MD
 pi_agent_rust_readme.md
 
 # Scratch / test artifacts
