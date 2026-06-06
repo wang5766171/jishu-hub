@@ -146,10 +146,52 @@ fn delete_session_name(session_id: String) -> Result<(), String> {
 
 #[tauri::command]
 fn load_config(state: tauri::State<'_, Mutex<AppState>>) -> Result<serde_json::Value, String> {
+    // Each agent returns its own typed config (ClaudeConfig,
+    // JishuConfig, etc.); the frontend renders them as structured
+    // forms. jishu-self does NOT use this path — its configuration
+    // is `~/.jishu-agent/models.json` and is handled by ModelManager
+    // via `get_models_config` / `set_models_config`.
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
+    if s.registry.active_id() == "jishu-self" {
+        return Err("load_config is not used for jishu-self; use get_models_config.".to_string());
+    }
     s.registry.active().load_config()
+}
+
+/// Read the entire `~/.jishu-agent/models.json` as a JSON value so the
+/// Models page can edit it without going through per-field IPC.
+#[tauri::command]
+fn get_models_config() -> Result<serde_json::Value, String> {
+    let config = agent::jishu_self::pi_models_config::load()?;
+    serde_json::to_value(&config).map_err(|e| format!("Cannot serialize models config: {e}"))
+}
+
+/// Overwrite `~/.jishu-agent/models.json` with the provided JSON value.
+/// Caller (Models page) is responsible for the schema — this just
+/// round-trips the file.
+#[tauri::command]
+fn set_models_config(config: serde_json::Value) -> Result<(), String> {
+    let parsed: agent::jishu_self::pi_models_config::PiModelsConfig =
+        serde_json::from_value(config)
+            .map_err(|e| format!("Invalid models config payload: {e}"))?;
+    agent::jishu_self::pi_models_config::save(&parsed)
+}
+
+/// Read jishu's active (provider, model) selection from
+/// `~/.jishu-hub/settings.json`. None if nothing is selected yet.
+#[tauri::command]
+fn get_active() -> Result<Option<agent::jishu_self::jishu_settings::ActiveModel>, String> {
+    agent::jishu_self::jishu_settings::get_active()
+}
+
+/// Persist the active (provider, model) selection. Pass `null` to
+/// clear it. Pi is launched with `--provider/--model` CLI args using
+/// whatever this returns.
+#[tauri::command]
+fn set_active(active: Option<agent::jishu_self::jishu_settings::ActiveModel>) -> Result<(), String> {
+    agent::jishu_self::jishu_settings::set_active(active)
 }
 
 #[derive(serde::Serialize)]
@@ -200,18 +242,18 @@ fn save_config(
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
+    if s.registry.active_id() == "jishu-self" {
+        return Err("save_config is not used for jishu-self; use set_models_config.".to_string());
+    }
     s.registry.active().save_config(&config)
 }
 
 #[tauri::command]
 fn list_presets(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<hub::Preset>, String> {
-    let active_id = {
-        let s = state
-            .lock()
-            .map_err(|_| "App state lock poisoned".to_string())?;
-        s.registry.active_id().to_string()
-    };
-    hub::list_presets_for(Some(&active_id)).map_err(|e| e.to_string())
+    // Removed: jishu no longer maintains its own preset store. The
+    // Models page reads `~/.jishu-agent/models.json` directly via
+    // `get_models_config` and the active selection via `get_active`.
+    Err("list_presets is removed. Use get_models_config + get_active.".to_string())
 }
 
 #[tauri::command]
@@ -219,49 +261,21 @@ fn save_preset(
     state: tauri::State<'_, Mutex<AppState>>,
     preset: hub::Preset,
 ) -> Result<(), String> {
-    let active_id = {
-        let s = state
-            .lock()
-            .map_err(|_| "App state lock poisoned".to_string())?;
-        s.registry.active_id().to_string()
-    };
-    let mut preset = preset;
-    if preset.agent_id.is_none() {
-        preset.agent_id = Some(active_id);
-    }
-    hub::save_preset(preset).map_err(|e| e.to_string())
+    let _ = preset;
+    Err("save_preset is removed. Use set_models_config.".to_string())
 }
 
 #[tauri::command]
 fn delete_preset(id: String) -> Result<(), String> {
-    hub::delete_preset(&id).map_err(|e| e.to_string())
+    let _ = id;
+    Err("delete_preset is removed. Use set_models_config (drop the provider).".to_string())
 }
 
 #[tauri::command]
 fn apply_preset(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
-    let active_id = {
-        let s = state
-            .lock()
-            .map_err(|_| "App state lock poisoned".to_string())?;
-        s.registry.active_id().to_string()
-    };
-    let presets = hub::list_presets().map_err(|e| e.to_string())?;
-    let preset = presets
-        .into_iter()
-        .find(|p| p.id == id)
-        .ok_or_else(|| "Preset not found".to_string())?;
-    if let Some(preset_agent) = preset.agent_id.as_deref() {
-        if preset_agent != active_id {
-            return Err(format!(
-                "Preset '{}' was created for agent '{}' and cannot be applied to '{}'",
-                preset.name, preset_agent, active_id
-            ));
-        }
-    }
-    let s = state
-        .lock()
-        .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.active().save_config(&preset.config)
+    let _ = state;
+    let _ = id;
+    Err("apply_preset is removed. Use set_active.".to_string())
 }
 
 #[tauri::command]
@@ -1737,10 +1751,7 @@ fn run_send_message(run_id: String, step_id: String, message: String) -> Result<
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
-fn run_get_approval(
-    run_id: String,
-    step_id: String,
-) -> Result<Option<serde_json::Value>, String> {
+fn run_get_approval(run_id: String, step_id: String) -> Result<Option<serde_json::Value>, String> {
     Ok(orchestrator::agent_runs::get_approval(
         orchestrator::agent_runs::global(),
         &run_id,
@@ -1752,11 +1763,7 @@ fn run_get_approval(
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
 fn run_step_cancel(run_id: String, step_id: String) -> Result<(), String> {
-    orchestrator::agent_runs::cancel(
-        orchestrator::agent_runs::global(),
-        &run_id,
-        &step_id,
-    )
+    orchestrator::agent_runs::cancel(orchestrator::agent_runs::global(), &run_id, &step_id)
 }
 
 #[cfg(feature = "orchestrator")]
@@ -1783,6 +1790,24 @@ fn plan_get_state(run_id: String) -> Result<serde_json::Value, String> {
         return Ok(serde_json::to_value(&state).map_err(|e| e.to_string())?);
     }
     Ok(serde_json::Value::Null)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn plan_get_document(run_id: String) -> Result<serde_json::Value, String> {
+    serde_json::to_value(orchestrator::get_plan_document(&run_id)?).map_err(|err| err.to_string())
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn plan_update_steps(
+    run_id: String,
+    steps: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let steps: Vec<orchestrator::Step> =
+        serde_json::from_value(steps).map_err(|err| err.to_string())?;
+    serde_json::to_value(orchestrator::update_plan_steps(&run_id, steps)?)
+        .map_err(|err| err.to_string())
 }
 
 #[cfg(feature = "orchestrator")]
@@ -1858,6 +1883,10 @@ pub fn run() {
             save_raw_config,
             load_history,
             save_config,
+            get_models_config,
+            set_models_config,
+            get_active,
+            set_active,
             list_presets,
             save_preset,
             delete_preset,
@@ -1933,6 +1962,8 @@ pub fn run() {
             run_step_cancel,
             trace_tail,
             plan_get_state,
+            plan_get_document,
+            plan_update_steps,
             plan_cancel,
             task_plan_skill_list,
             task_plan_skill_install,
