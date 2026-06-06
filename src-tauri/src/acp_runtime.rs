@@ -68,26 +68,75 @@ impl AcpWriter {
     }
 
     async fn request(&mut self, method: &str, params: serde_json::Value) -> Result<i64, String> {
-        let id = self.next_id;
-        self.next_id += 1;
-        let msg = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params
-        });
-        let line = format!("{}\n", msg);
         let mut stdin = self.stdin.lock().await;
-        stdin
-            .write_all(line.as_bytes())
-            .await
-            .map_err(|e| format!("ACP write error: {e}"))?;
-        stdin
-            .flush()
-            .await
-            .map_err(|e| format!("ACP flush error: {e}"))?;
-        Ok(id)
+        write_jsonrpc_request(&mut *stdin, &mut self.next_id, method, params).await
     }
+}
+
+pub enum AcpResponse {
+    Update(Vec<NormalizedEvent>),
+    Result(serde_json::Value),
+    Error(String),
+    Ignored,
+}
+
+pub async fn write_jsonrpc_request(
+    stdin: &mut (impl tokio::io::AsyncWrite + Unpin),
+    next_id: &mut i64,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<i64, String> {
+    let id = *next_id;
+    *next_id += 1;
+    let msg = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": method,
+        "params": params
+    });
+    let line = format!("{}\n", msg);
+    stdin
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| format!("ACP write error: {e}"))?;
+    stdin
+        .flush()
+        .await
+        .map_err(|e| format!("ACP flush error: {e}"))?;
+    Ok(id)
+}
+
+pub fn handle_acp_response_line(
+    line: &str,
+    target_id: i64,
+    usage: &mut Option<UsageStats>,
+) -> Result<AcpResponse, String> {
+    if line.trim().is_empty() {
+        return Ok(AcpResponse::Ignored);
+    }
+    let msg: serde_json::Value =
+        serde_json::from_str(line).map_err(|e| format!("ACP JSON parse error: {e}"))?;
+
+    if msg.get("method").and_then(|v| v.as_str()) == Some("session/update") {
+        if let Some(params) = msg.get("params") {
+            let events = normalize_acp_update(params, usage);
+            return Ok(AcpResponse::Update(events));
+        }
+    } else if msg.get("id").and_then(|v| v.as_i64()) == Some(target_id) {
+        if let Some(err) = msg.get("error") {
+            return Ok(AcpResponse::Error(
+                err.get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+            ));
+        }
+        if let Some(res) = msg.get("result") {
+            return Ok(AcpResponse::Result(res.clone()));
+        }
+        return Err("ACP response missing result or error".to_string());
+    }
+    Ok(AcpResponse::Ignored)
 }
 
 // ---------------------------------------------------------------------------
@@ -552,6 +601,7 @@ async fn wait_for_response(
     expected_id: i64,
 ) -> Result<serde_json::Value, String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut dummy_usage = None;
     loop {
         let line = tokio::select! {
             line = stdout_rx.recv() => {
@@ -562,28 +612,11 @@ async fn wait_for_response(
             }
         };
 
-        if line.trim().is_empty() {
-            continue;
+        match handle_acp_response_line(&line, expected_id, &mut dummy_usage)? {
+            AcpResponse::Result(val) => return Ok(val),
+            AcpResponse::Error(err) => return Err(format!("ACP error: {}", err)),
+            _ => continue, // Ignore updates or other messages during handshake
         }
-
-        let msg: serde_json::Value =
-            serde_json::from_str(&line).map_err(|e| format!("ACP JSON parse error: {e}"))?;
-
-        if msg.get("id").and_then(|v| v.as_i64()) == Some(expected_id) {
-            if let Some(err) = msg.get("error") {
-                return Err(format!(
-                    "ACP error: {}",
-                    err.get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                ));
-            }
-            return msg
-                .get("result")
-                .cloned()
-                .ok_or_else(|| "ACP response missing result".to_string());
-        }
-        // Skip notifications during handshake
     }
 }
 

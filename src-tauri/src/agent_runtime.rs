@@ -455,7 +455,7 @@ fn run_acp_turn_blocking(
             let mut events = Vec::new();
             let mut usage: Option<UsageStats> = None;
 
-            let init_id = acp_request(
+            let init_id = crate::acp_runtime::write_jsonrpc_request(
                 &mut stdin,
                 &mut next_id,
                 "initialize",
@@ -487,7 +487,7 @@ fn run_acp_turn_blocking(
                 session_params["sessionId"] = json!(session_id);
             }
             let session_request_id =
-                acp_request(&mut stdin, &mut next_id, session_method, session_params).await?;
+                crate::acp_runtime::write_jsonrpc_request(&mut stdin, &mut next_id, session_method, session_params).await?;
             let session_result =
                 acp_wait_for_response(&mut lines, session_request_id, &mut events, &mut usage)
                     .await?;
@@ -500,7 +500,7 @@ fn run_acp_turn_blocking(
                 session_id: acp_session_id.clone(),
             });
 
-            let prompt_id = acp_request(
+            let prompt_id = crate::acp_runtime::write_jsonrpc_request(
                 &mut stdin,
                 &mut next_id,
                 "session/prompt",
@@ -557,28 +557,7 @@ fn run_acp_turn_blocking(
     })
 }
 
-async fn acp_request(
-    stdin: &mut tokio::process::ChildStdin,
-    next_id: &mut i64,
-    method: &str,
-    params: serde_json::Value,
-) -> Result<i64, String> {
-    let id = *next_id;
-    *next_id += 1;
-    let msg = json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params
-    });
-    let line = format!("{msg}\n");
-    stdin
-        .write_all(line.as_bytes())
-        .await
-        .map_err(|e| format!("ACP write: {e}"))?;
-    stdin.flush().await.map_err(|e| format!("ACP flush: {e}"))?;
-    Ok(id)
-}
+
 
 async fn acp_wait_for_response(
     lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
@@ -592,27 +571,12 @@ async fn acp_wait_for_response(
             .await
             .map_err(|e| format!("ACP read: {e}"))?
             .ok_or_else(|| "ACP stdout closed".to_string())?;
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        let msg: serde_json::Value =
-            serde_json::from_str(&line).map_err(|e| format!("ACP JSON parse: {e}"))?;
-        if msg.get("method").and_then(|v| v.as_str()) == Some("session/update") {
-            if let Some(params) = msg.get("params") {
-                events.extend(crate::acp_runtime::normalize_acp_update(params, usage));
-            }
-            continue;
-        }
-
-        if msg.get("id").and_then(|v| v.as_i64()) == Some(target_id) {
-            if let Some(error) = msg.get("error") {
-                return Err(format!("ACP response error: {error}"));
-            }
-            return Ok(msg
-                .get("result")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null));
+            
+        match crate::acp_runtime::handle_acp_response_line(&line, target_id, usage)? {
+            crate::acp_runtime::AcpResponse::Update(new_events) => events.extend(new_events),
+            crate::acp_runtime::AcpResponse::Result(val) => return Ok(val),
+            crate::acp_runtime::AcpResponse::Error(err) => return Err(format!("ACP response error: {}", err)),
+            crate::acp_runtime::AcpResponse::Ignored => continue,
         }
     }
 }
