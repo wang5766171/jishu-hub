@@ -313,6 +313,15 @@ pub trait AgentPlugin {
     fn pipe_chat_stdin(&self) -> bool {
         self.abort_chat_sequence().is_some()
     }
+    /// When true, the Tauri side will write the user message to the
+    /// child's stdin and close it before returning. This is needed for
+    /// agent bridges that read the prompt from stdin to EOF (e.g.
+    /// `jishu agent-bridge start jishu-self`). Agents that pass the
+    /// message via CLI args (e.g. `claude -p <msg>`) should leave this
+    /// false so the abort `stdin` handle stays available.
+    fn consumes_stdin_message(&self) -> bool {
+        false
+    }
     fn abort_chat_sequence(&self) -> Option<&'static [u8]> {
         None
     }

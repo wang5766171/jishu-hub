@@ -1,4 +1,10 @@
 mod config;
+pub(crate) mod jishu_settings;
+pub(crate) mod pi_events;
+pub(crate) mod pi_model;
+pub(crate) mod pi_models_config;
+pub(crate) mod pi_runtime;
+pub(crate) mod pi_session;
 mod probe;
 mod store;
 mod stream;
@@ -14,6 +20,45 @@ impl JishuSelfAgent {
     pub fn new() -> Self {
         Self
     }
+}
+
+pub(crate) fn resolve_jishu_cli_binary() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("JISHU_CLI_BIN") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+
+    let exe = std::env::current_exe().map_err(|e| format!("Cannot determine current exe: {e}"))?;
+    let parent = exe
+        .parent()
+        .ok_or_else(|| "No parent directory for current exe".to_string())?;
+
+    #[cfg(target_os = "windows")]
+    let binary_name = "jishu.exe";
+
+    #[cfg(not(target_os = "windows"))]
+    let binary_name = "jishu";
+
+    let candidates = [
+        parent.join(binary_name),
+        parent.join("resources").join(binary_name),
+        parent.join("..").join("resources").join(binary_name),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("release")
+            .join(binary_name),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("debug")
+            .join(binary_name),
+    ];
+
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| format!("jishu CLI binary not found: {binary_name}"))
 }
 
 /// Normalize a stream event from the jishu agent-bridge subprocess.
@@ -46,8 +91,13 @@ impl AgentPlugin for JishuSelfAgent {
 
     fn capabilities(&self) -> AgentCapabilities {
         AgentCapabilities::STREAM_TEXT_DELTA
+            | AgentCapabilities::STREAM_TOOL_CALLS
+            | AgentCapabilities::STDIN_PROMPT
             | AgentCapabilities::RESUME_BY_ID
             | AgentCapabilities::ABORT
+            | AgentCapabilities::APPROVAL_REQUEST
+            | AgentCapabilities::CONFIG_GLOBAL
+            | AgentCapabilities::CONFIG_PROJECT
     }
 
     fn probe_sync(&self) -> crate::agent::capability::AgentHealth {
@@ -74,16 +124,16 @@ impl AgentPlugin for JishuSelfAgent {
         crate::project::get_level1_dir(path)
     }
 
-    fn list_sessions(&self, _encoded_name: &str) -> Result<Vec<crate::session::Session>, String> {
-        Ok(Vec::new())
+    fn list_sessions(&self, encoded_name: &str) -> Result<Vec<crate::session::Session>, String> {
+        pi_session::list_pi_sessions(encoded_name)
     }
 
     fn get_session_messages(
         &self,
-        _session_id: &str,
-        _encoded_name: &str,
+        session_id: &str,
+        encoded_name: &str,
     ) -> Result<Vec<crate::session::Message>, String> {
-        Ok(Vec::new())
+        pi_session::load_pi_session_messages(session_id, encoded_name)
     }
 
     fn load_config(&self) -> Result<serde_json::Value, String> {
@@ -152,17 +202,7 @@ impl AgentPlugin for JishuSelfAgent {
     }
 
     fn build_chat_command(&self, req: ChatRequest) -> tokio::process::Command {
-        let exe = std::env::current_exe()
-            .expect("Cannot determine current exe")
-            .parent()
-            .expect("No parent dir")
-            .to_path_buf();
-
-        #[cfg(target_os = "windows")]
-        let bin = exe.join("jishu.exe");
-
-        #[cfg(not(target_os = "windows"))]
-        let bin = exe.join("jishu");
+        let bin = resolve_jishu_cli_binary().expect("Cannot locate jishu CLI binary");
 
         let mut cmd = tokio::process::Command::new(&bin);
         cmd.arg("agent-bridge")
@@ -186,27 +226,26 @@ impl AgentPlugin for JishuSelfAgent {
         true
     }
 
+    fn consumes_stdin_message(&self) -> bool {
+        // jishu agent-bridge reads the prompt from stdin to EOF in
+        // bridge.rs::start, so the Tauri side must write + close stdin
+        // before the child can do any work.
+        true
+    }
+
     fn build_resume_command(&self, session_id: &str) -> String {
-        let exe = std::env::current_exe()
-            .map(|e| {
-                e.parent()
-                    .unwrap()
-                    .to_path_buf()
-                    .to_string_lossy()
-                    .to_string()
-            })
-            .unwrap_or_else(|_| ".".to_string());
-
-        #[cfg(target_os = "windows")]
-        let bin = format!("{exe}\\jishu.exe");
-
-        #[cfg(not(target_os = "windows"))]
-        let bin = format!("{exe}/jishu");
+        let bin = resolve_jishu_cli_binary()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "jishu".to_string());
 
         format!("{bin} agent-bridge start jishu-self --session {session_id}")
     }
 
     fn parse_stream_event(&self, event: &serde_json::Value) -> String {
+        if let Some(kind) = event.get("kind").and_then(|v| v.as_str()) {
+            return kind.to_string();
+        }
+
         // Try to extract the event_type from the NormalizedEvent variant name
         if let Some(obj) = event.as_object() {
             if let Some(kind) = obj.keys().next() {
@@ -301,10 +340,7 @@ mod tests {
     #[test]
     fn get_session_messages_returns_empty() {
         let agent = JishuSelfAgent::new();
-        assert!(agent
-            .get_session_messages("sid", "test")
-            .unwrap()
-            .is_empty());
+        assert!(agent.get_session_messages("sid", "test").is_err());
     }
 
     #[test]
@@ -316,7 +352,7 @@ mod tests {
     #[test]
     fn parse_stream_event_extracts_type() {
         let agent = JishuSelfAgent::new();
-        let event = serde_json::json!({"TextDelta": {"delta": "hi"}});
+        let event = serde_json::json!({"kind": "text_delta", "delta": "hi"});
         assert_eq!(agent.parse_stream_event(&event), "text_delta");
     }
 
