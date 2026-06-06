@@ -87,8 +87,8 @@ Agent Adapter -> AcpCommandSpec -> AgentRuntime -> ACP Transport Runtime -> 目�
 
 当前实现锚点：
 
-- `src-tauri/src/agent_runtime.rs`：统一选择 ACP/CLI transport。
-- `src-tauri/src/acp_runtime.rs`：GUI 长会话 ACP client runtime。
+- `src-tauri/src/agent_runtime.rs`：统一选择 ACP/CLI transport。其中的 `run_acp_turn_blocking` 等阻塞执行路径必须调用 `acp_runtime.rs` 提供的底层纯函数（如 `write_jsonrpc_request`），严禁重复实现 JSON-RPC 解析封装逻辑。
+- `src-tauri/src/acp_runtime.rs`：GUI 长会话 ACP client runtime（也是 ACP 底层通信解析函数的唯一信任源）。
 - `src-tauri/src/agent/mod.rs`：`AcpCommandSpec` 和 agent surface 状态。
 - `src-tauri/src/agent/traits.rs`：`build_acp_command` adapter contract。
 - `src-tauri/src/agent/jishu_self/mod.rs`：Jishu Agent 只是一个 ACP adapter 实例。
@@ -112,9 +112,9 @@ CLI transport 用于两类场景：
 
 所有涉及智能体差异的逻辑必须由 adapter contract 或 adapter 之上的统一应用服务表达。
 
-必须由 adapter 或 adapter surface 提供的能力：
+必须由 adapter 或 adapter surface 提供的能力（具体通过 `TerminalAdapter`、`TransportAdapter`、`ConfigAdapter`、`AgentManifest` 四大核心 Trait 承载）：
 
-- agent 基础信息、健康检查、安装提示。
+- agent 基础信息、健康检查、安装提示（含 `install_package_manager` 和 `auto_installed` 等标识）、动态 Logo 路径（`logo_path`）。
 - transport 声明：ACP 优先、CLI、Embedded、未来 Remote。
 - 配置 surface：raw、structured、model-store、unsupported。
 - 项目设置 surface。
@@ -165,7 +165,7 @@ CLI transport 用于两类场景：
 
 - `Raw { format }`：适合 Codex 这类原生配置文件。
 - `Structured { schema_id }`：适合 Claude/OpenCode 等可结构化编辑的 agent。
-- `ModelStore { provider }`：适合 Jishu/Pi 模型库。
+- `ModelStore { provider, supports_picker }`：适合 Jishu/Pi 模型库。前端必须严格依赖 `supports_picker` 来决定是否渲染模型选择器，绝对禁止前端写 `activeId === "pi"` 这类的嗅探逻辑。
 - `Unsupported { reason }`：明确不可配置。
 
 规则：
@@ -261,6 +261,7 @@ cargo test --manifest-path third_party\pi_agent_rust\Cargo.toml acp --lib
 3. 新增大的任务编排能力，例如 Harmes 自学习架构、远程调度会话能力、跨机器执行。
 4. 新增影响权限、审批、工具调用、模型路由、session broker 的能力。
 5. 推翻某个临时实现或移除历史设计。
+6. 前端文案变动时：所有涉及用户感知的文案与状态文本，禁止包含具体引擎的代号（如 Pi、jishu-self 等），必须全部接入 i18n 系统并使用统一泛化名词。
 
 每次 v0.6.x 交付还应在 `docs/v0.6.0/final-goal/codex` 下补充：
 

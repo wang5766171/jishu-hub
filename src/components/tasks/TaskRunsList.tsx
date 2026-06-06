@@ -1,6 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { t } from "i18next";
-import { RunSummary, RunRecord } from "@/pages/tasks-page";
+import type { RunSummary, RunRecord } from "@/pages/tasks-page";
 
 export function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
   if (status === "complete") return "default";
