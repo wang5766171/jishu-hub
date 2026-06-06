@@ -6,69 +6,6 @@ pub struct AgentCommandPreset {
     pub command: String,
 }
 
-pub fn launch_command(agent_id: &str) -> String {
-    match agent_id {
-        "claude-code" => "claude".to_string(),
-        "codex" => "codex".to_string(),
-        "opencode" => "opencode".to_string(),
-        "jishu-self" => "jishu".to_string(),
-        other => other.to_string(),
-    }
-}
-
-pub fn resume_command(agent_id: &str, session_id: &str) -> String {
-    match agent_id {
-        "claude-code" => format!("claude --resume {session_id}"),
-        "codex" => format!("codex resume {session_id}"),
-        "opencode" => format!("opencode --session {session_id}"),
-        "jishu-self" => format!("jishu chat resume {session_id}"),
-        other => format!("{other} {session_id}"),
-    }
-}
-
-pub fn init_command(agent_id: &str) -> String {
-    let prompt = "Please initialize this project and tell me when it's done.";
-    match agent_id {
-        "claude-code" => format!("claude \"{prompt}\""),
-        "codex" => format!("codex \"{prompt}\""),
-        "opencode" => format!("opencode \"{prompt}\""),
-        "jishu-self" => format!("jishu run \"{prompt}\""),
-        other => format!("{other} \"{prompt}\""),
-    }
-}
-
-pub fn built_in_commands(agent_id: &str) -> Vec<AgentCommandPreset> {
-    match agent_id {
-        "claude-code" => vec![
-            preset("claude --version", "claude --version"),
-            preset("claude mcp list", "claude mcp list"),
-        ],
-        "codex" => vec![
-            preset("codex --version", "codex --version"),
-            preset("codex exec", "codex exec \"Say hello\""),
-        ],
-        "opencode" => vec![
-            preset("opencode --version", "opencode --version"),
-            preset("opencode session list", "opencode session list"),
-            preset("opencode models", "opencode models"),
-            preset("opencode mcp list", "opencode mcp list"),
-            preset("opencode agent list", "opencode agent list"),
-            preset("opencode debug config", "opencode debug config"),
-            preset("opencode run", "opencode run \"Say hello\""),
-        ],
-        "jishu-self" => vec![
-            preset("jishu --version", "jishu --version"),
-            preset("jishu agents list", "jishu agents list"),
-            preset("jishu model list", "jishu model list"),
-            preset("jishu doctor", "jishu doctor"),
-        ],
-        other => vec![preset(
-            format!("{other} --version"),
-            format!("{other} --version"),
-        )],
-    }
-}
-
 pub fn terminal_window_id(agent_id: &str, session_id: &str) -> String {
     let safe_agent = agent_id
         .chars()
@@ -88,6 +25,10 @@ pub fn is_safe_session_id(session_id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+pub fn is_transient_session_id(session_id: &str) -> bool {
+    session_id.starts_with("pending-") || session_id.starts_with("new_session_")
+}
+
 pub fn resume_markers(session_id: &str) -> Vec<String> {
     vec![
         format!("--resume {session_id}"),
@@ -95,11 +36,4 @@ pub fn resume_markers(session_id: &str) -> Vec<String> {
         format!("--session {session_id}"),
         format!("-s {session_id}"),
     ]
-}
-
-fn preset(name: impl Into<String>, command: impl Into<String>) -> AgentCommandPreset {
-    AgentCommandPreset {
-        name: name.into(),
-        command: command.into(),
-    }
 }
