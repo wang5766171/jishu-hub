@@ -25,6 +25,7 @@ interface ChatInputProps {
   disabled?: boolean;
   isSessionStreaming?: boolean;
   allowFiles?: boolean;
+  agentDisplayName?: string;
   onMessageSent?: (chatSessionId: string, userMessage: string) => void;
   containerClassName?: string;
   panelClassName?: string;
@@ -49,6 +50,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   disabled = false,
   isSessionStreaming: isSessionStreamingProp = false,
   allowFiles = true,
+  agentDisplayName,
   onMessageSent,
   containerClassName,
   panelClassName,
@@ -106,7 +108,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     files.length === 0
       ? t("sessions.chatPlaceholder")
       : files.length === 1
-        ? t("sessions.chatPlaceholderSingleFile")
+        ? t("sessions.chatPlaceholderSingleFile", { agent: agentDisplayName ?? t("sessions.currentAgent") })
         : t("sessions.chatPlaceholderMultiFile");
 
   const handlePaste = useCallback(

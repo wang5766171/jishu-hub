@@ -109,6 +109,7 @@ impl AgentManifest for CodexAdapter {
             | C::SESSION_FORK
             | C::SESSION_LIST
             | C::IMAGE_INPUT
+            | C::FILE_INPUT
             | C::STREAM_TEXT_DELTA
             | C::STREAM_TOOL_CALLS
             | C::ABORT

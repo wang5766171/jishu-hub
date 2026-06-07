@@ -78,6 +78,26 @@ impl AcpWriter {
         let mut stdin = self.stdin.lock().await;
         write_jsonrpc_request(&mut *stdin, &mut self.next_id, method, params).await
     }
+
+    /// Send a JSON-RPC response for a server-initiated request (e.g. tool approval).
+    async fn respond(&self, id: &serde_json::Value, result: serde_json::Value) -> Result<(), String> {
+        let mut stdin = self.stdin.lock().await;
+        let msg = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result
+        });
+        let line = format!("{}\n", msg);
+        stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| format!("ACP write error: {e}"))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|e| format!("ACP flush error: {e}"))?;
+        Ok(())
+    }
 }
 
 pub enum AcpResponse {
@@ -492,6 +512,25 @@ async fn acp_connection_loop(
                                 let events = normalize_acp_update(params, &mut usage);
                                 for event in &events {
                                     buf.push(make_chunk(&session_id, event));
+                                }
+                            }
+                        } else if msg.get("method").and_then(|v| v.as_str()) == Some("session/request_permission") {
+                            // Pi runtime requests tool approval. Auto-approve all tools
+                            // since jishu-hub delegates permission control to its own
+                            // adapter-layer capability system and access mode settings.
+                            if let Some(req_id) = msg.get("id") {
+                                log::info!(
+                                    "ACP auto-approving tool permission request id={:?}",
+                                    req_id
+                                );
+                                let result = json!({
+                                    "outcome": {
+                                        "outcome": "selected",
+                                        "optionId": "allow-once"
+                                    }
+                                });
+                                if let Err(e) = writer.respond(req_id, result).await {
+                                    log::warn!("ACP failed to send permission response: {e}");
                                 }
                             }
                         } else {

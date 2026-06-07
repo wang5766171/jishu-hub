@@ -146,7 +146,7 @@
     "copy": "复制",
     "copied": "已复制",
     "chatPlaceholder": "输入消息发送到当前会话...",
-    "chatPlaceholderSingleFile": "描述你希望 Claude 对这个文件做什么，或直接发送",
+    "chatPlaceholderSingleFile": "描述你希望 {{agent}} 对这个文件做什么，或直接发送",
     "chatPlaceholderMultiFile": "已按上传顺序标注文件（文件1、文件2...），建议简要说明各文件用途，以便 AI 准确理解",
     "send": "发送",
     "stop": "停止",

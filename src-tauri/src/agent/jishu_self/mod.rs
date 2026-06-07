@@ -94,6 +94,8 @@ impl AgentManifest for JishuSelfAgent {
             | AgentCapabilities::APPROVAL_REQUEST
             | AgentCapabilities::CONFIG_GLOBAL
             | AgentCapabilities::CONFIG_PROJECT
+            | AgentCapabilities::IMAGE_INPUT
+            | AgentCapabilities::FILE_INPUT
     }
 
     fn probe_sync(&self) -> crate::agent::capability::AgentHealth {

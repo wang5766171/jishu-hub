@@ -1077,6 +1077,7 @@ impl AgentManifest for OpencodeAdapter {
             | C::SESSION_DELETE
             | C::SESSION_EXPORT
             | C::SESSION_IMPORT
+            | C::IMAGE_INPUT
             | C::FILE_INPUT
             | C::STREAM_TEXT_DELTA
             | C::STREAM_THINKING

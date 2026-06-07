@@ -1054,6 +1054,7 @@ export function ChatPage({
                 projectPath={currentProject?.path ?? null}
                 onMessageSent={handleMessageSent}
                 allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
+                agentDisplayName={active?.display_name}
                 containerClassName="max-w-full px-0 pb-0 pt-0"
                 panelClassName="rounded-[22px] border-border/70 bg-card/98 shadow-[0_18px_48px_rgba(0,0,0,0.10)]"
                 contextFooter={startComposerFooter}
@@ -1157,6 +1158,7 @@ export function ChatPage({
               projectPath={currentProject?.path ?? null}
               onMessageSent={handleMessageSent}
               allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
+              agentDisplayName={active?.display_name}
               contextFooter={startComposerFooter}
               accessModeLabel={accessModeLabel}
               accessModeTitle={supportsAccessModeSwitch ? t("sessions.accessMode") : t("sessions.accessModeReadOnly")}

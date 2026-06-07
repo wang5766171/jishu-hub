@@ -146,7 +146,7 @@
     "copy": "Copy",
     "copied": "Copied",
     "chatPlaceholder": "Type a message to send to the current session...",
-    "chatPlaceholderSingleFile": "Describe what you want Claude to do with this file, or just send",
+    "chatPlaceholderSingleFile": "Describe what you want {{agent}} to do with this file, or just send",
     "chatPlaceholderMultiFile": "Files are labeled in upload order (File 1, File 2...). Briefly describe each for accurate AI understanding",
     "send": "Send",
     "stop": "Stop",
