@@ -134,45 +134,51 @@ export function ConfigPage({
 
         <div className="flex-1 min-h-0 overflow-y-auto pt-4">
           {activeTab === "edit" && (
-            <Accordion type="multiple" defaultValue={["model", ...(supportsMcp ? ["mcp"] : [])]}>
-              <AccordionItem value="model">
-                <AccordionTrigger className="group">
-                  <span>{t("config.modelAccess")}</span>
-                </AccordionTrigger>
-                <AccordionContent>
-                  <ModelManager />
-                </AccordionContent>
-              </AccordionItem>
-              {supportsMcp && (
-                <AccordionItem value="mcp">
+            <>
+              {/* Configuration header — mirrors claude code's ConfigForm */}
+              <div className="flex items-center gap-2 mb-4">
+                <h3 className="text-lg font-semibold">{t("config.configuration")}</h3>
+                <SectionHelp content={t("config.fieldMapJishuConfig")} />
+              </div>
+              <Accordion type="multiple" defaultValue={["model", ...(supportsMcp ? ["mcp"] : [])]}>
+                <AccordionItem value="model">
                   <AccordionTrigger className="group">
-                    <span>{t("config.mcpServers")}<SectionHelp content={t("config.fieldMapMcp")} /></span>
+                    <span>{t("config.modelAccess")}</span>
                   </AccordionTrigger>
                   <AccordionContent>
-                    <McpEditor
-                      key={agentConfig ? "loaded" : "empty"}
-                      value={mcpServers}
-                    >
-                      {({ value, hasError }) => (
-                        <Button
-                          size="sm"
-                          disabled={hasError || !agentConfig}
-                          onClick={async () => {
-                            if (!agentConfig) return;
-                            const merged = { ...agentConfig, mcpServers: value };
-                            await invokeCommand("save_config", { config: merged });
-                            refetchAgentConfig();
-                          }}
-                        >
-                          <Save className="mr-1.5 h-4 w-4" />
-                          {t("common.save")}
-                        </Button>
-                      )}
-                    </McpEditor>
+                    <ModelManager />
                   </AccordionContent>
                 </AccordionItem>
-              )}
-            </Accordion>
+                {supportsMcp && (
+                  <AccordionItem value="mcp">
+                    <AccordionTrigger className="group">
+                      <span>{t("config.mcpServers")}<SectionHelp content={t("config.fieldMapMcp")} /></span>
+                    </AccordionTrigger>
+                    <AccordionContent>
+                      <McpEditor
+                        key={agentConfig ? "loaded" : "empty"}
+                        value={mcpServers}
+                        actions={({ value, hasError }) => (
+                          <Button
+                            size="sm"
+                            disabled={hasError || !agentConfig}
+                            onClick={async () => {
+                              if (!agentConfig) return;
+                              const merged = { ...agentConfig, mcpServers: value };
+                              await invokeCommand("save_config", { config: merged });
+                              refetchAgentConfig();
+                            }}
+                          >
+                            <Save className="mr-1.5 h-4 w-4" />
+                            {t("common.save")}
+                          </Button>
+                        )}
+                      />
+                    </AccordionContent>
+                  </AccordionItem>
+                )}
+              </Accordion>
+            </>
           )}
           {activeTab === "templates" && (
             <TemplateManager onApplied={refetch} />

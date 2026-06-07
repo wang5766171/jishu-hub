@@ -320,6 +320,7 @@
     "fieldMapEnv": "env — Environment Settings (key-value pairs)",
     "fieldMapPlugins": "enabledPlugins — Enabled Plugins",
     "fieldMapMcp": "mcpServers — MCP server JSON. opencode stores this as mcp.",
+    "fieldMapJishuConfig": "Config file: ~/.jishu-agent/settings.json\nContains model selection, permissions, MCP servers, environment variables, etc.\nModel provider config is stored in ~/.jishu-agent/models.json.",
     "fieldMapAdvanced": "verbose — Verbose Logging\nmaxTurns — Max Turns",
     "mcpServers": "MCP Servers",
     "mcpJsonHint": "Edit MCP server definitions as JSON. For opencode, command arrays and environment are preserved.",
