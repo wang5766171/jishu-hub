@@ -188,7 +188,7 @@ impl AgentManifest for ClaudeCodeAgent {
             display_name: "Claude Code".to_string(),
             version: "1.0".to_string(),
             icon: "terminal".to_string(),
-            logo_path: None,
+            logo_path: Some("claude.svg".to_string()),
             enabled: true,
         }
     }
