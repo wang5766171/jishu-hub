@@ -112,6 +112,14 @@ export interface ConfigTemplate {
   config: unknown;
 }
 
+export interface Preset {
+  id: string;
+  name: string;
+  description?: string;
+  config: unknown;
+  createdAt: string;
+}
+
 export interface BackupEntry {
   name: string;
   path: string;

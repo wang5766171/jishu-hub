@@ -688,3 +688,67 @@ fn third_party_proxy_config() -> serde_json::Value {
     };
     serde_json::to_value(config).unwrap_or_default()
 }
+
+// --- User Presets (per-agent) ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Preset {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub config: serde_json::Value,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct Presets {
+    presets: Vec<Preset>,
+}
+
+fn presets_path(agent_id: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    Ok(hub_dir()?.join("presets").join(format!("{agent_id}.json")))
+}
+
+pub fn list_presets(agent_id: &str) -> Result<Vec<Preset>, Box<dyn std::error::Error>> {
+    let path = presets_path(agent_id)?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data: Presets = read_json(&path)?;
+    Ok(data.presets)
+}
+
+pub fn save_preset(agent_id: &str, preset: Preset) -> Result<(), Box<dyn std::error::Error>> {
+    let path = presets_path(agent_id)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut data = if path.exists() {
+        read_json::<Presets>(&path)?
+    } else {
+        Presets::default()
+    };
+    if let Some(idx) = data.presets.iter().position(|p| p.id == preset.id) {
+        data.presets[idx] = preset;
+    } else {
+        data.presets.push(preset);
+    }
+    let json = serde_json::to_string_pretty(&data)?;
+    std::fs::write(&path, json)?;
+    Ok(())
+}
+
+pub fn delete_preset(agent_id: &str, id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let path = presets_path(agent_id)?;
+    let mut data = if path.exists() {
+        read_json::<Presets>(&path)?
+    } else {
+        return Ok(());
+    };
+    data.presets.retain(|p| p.id != id);
+    let json = serde_json::to_string_pretty(&data)?;
+    std::fs::write(&path, json)?;
+    Ok(())
+}

@@ -613,6 +613,58 @@ fn list_config_templates(
 }
 
 #[tauri::command]
+fn list_presets(
+    state: tauri::State<'_, Mutex<AppState>>,
+) -> Result<Vec<hub::Preset>, String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
+    let agent_id = s.registry.active_id().to_string();
+    hub::list_presets(&agent_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_preset(
+    state: tauri::State<'_, Mutex<AppState>>,
+    preset: hub::Preset,
+) -> Result<(), String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
+    let agent_id = s.registry.active_id().to_string();
+    hub::save_preset(&agent_id, preset).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_preset(
+    state: tauri::State<'_, Mutex<AppState>>,
+    id: String,
+) -> Result<(), String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
+    let agent_id = s.registry.active_id().to_string();
+    hub::delete_preset(&agent_id, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn apply_preset(
+    state: tauri::State<'_, Mutex<AppState>>,
+    id: String,
+) -> Result<(), String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
+    let agent_id = s.registry.active_id().to_string();
+    let presets = hub::list_presets(&agent_id).map_err(|e| e.to_string())?;
+    let preset = presets
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or("Preset not found")?;
+    s.registry.active().save_config(&preset.config)
+}
+
+#[tauri::command]
 fn agent_list_statuses(
     state: tauri::State<'_, Mutex<AppState>>,
 ) -> Result<Vec<agent::AgentStatus>, String> {
@@ -1928,6 +1980,10 @@ pub fn run() {
             get_project_merges,
             get_merged_secondaries,
             list_config_templates,
+            list_presets,
+            save_preset,
+            delete_preset,
+            apply_preset,
             get_app_dir,
             agent_list_statuses,
             agent_set_active,

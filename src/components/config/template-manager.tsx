@@ -12,9 +12,9 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { Trash2, Sparkles, Pencil, Eye } from "lucide-react";
+import { Trash2, Sparkles, Pencil, Eye, User, Plus } from "lucide-react";
 import { useAgent } from "@/agents";
-import type { ConfigTemplate, ClaudeConfig } from "@/types";
+import type { ConfigTemplate, ClaudeConfig, Preset } from "@/types";
 
 interface TemplateManagerProps {
   onApplied: () => void;
@@ -531,12 +531,24 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
   const { activeId, active } = useAgent();
   const agentRefreshKey = activeId ? Array.from(activeId).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) : 0;
   const { data: systemTemplates, loading: loadingSystem } = useInvoke<ConfigTemplate[]>("list_config_templates", undefined, agentRefreshKey);
+  const { data: userPresets, loading: loadingUser, refetch: refetchPresets } = useInvoke<Preset[]>("list_presets", undefined, agentRefreshKey);
+  const { data: currentConfig } = useInvoke<ClaudeConfig>(activeId ? "load_config" : "", undefined, agentRefreshKey);
   const [applyError, setApplyError] = useState<string | null>(null);
+
+  // Save current as preset dialog
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveName, setSaveName] = useState("");
+  const [saveDesc, setSaveDesc] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  // New blank template dialog
+  const [newOpen, setNewOpen] = useState(false);
 
   // Detail / Edit dialog
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailTarget, setDetailTarget] = useState<{ name: string; description?: string; config: ClaudeConfig; createdAt?: string } | null>(null);
   const [detailEditable, setDetailEditable] = useState(false);
+  const [detailPresetId, setDetailPresetId] = useState<string | null>(null);
 
   // Fill & Apply dialog
   const [fillOpen, setFillOpen] = useState(false);
@@ -549,33 +561,102 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
       setFillTemplate(template);
       setFillOpen(true);
     } else {
-      doApplySystemConfig(template.config);
+      doApplyConfig(template.config);
     }
   };
 
-  const doApplySystemConfig = async (config: ClaudeConfig) => {
+  const doApplyConfig = async (config: ClaudeConfig) => {
     setApplyError(null);
     try {
       await invokeCommand("save_config", { config });
       onApplied();
     } catch (err) {
-      console.error("Failed to apply system template:", err);
+      console.error("Failed to apply template:", err);
       setApplyError(String(err));
     }
   };
 
-  const openDetail = (tpl: { name: string; description?: string; config: ClaudeConfig; createdAt?: string }, editable: boolean) => {
+  const handleSaveCurrent = async () => {
+    if (!saveName.trim() || !currentConfig) return;
+    setSaving(true);
+    try {
+      const preset: Preset = {
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        name: saveName.trim(),
+        description: saveDesc.trim() || undefined,
+        config: currentConfig,
+        createdAt: new Date().toISOString(),
+      };
+      await invokeCommand("save_preset", { preset });
+      setSaveOpen(false);
+      setSaveName("");
+      setSaveDesc("");
+      refetchPresets();
+    } catch (err) {
+      console.error("Failed to save preset:", err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleNewTemplate = async (name: string, description: string, config: ClaudeConfig) => {
+    const preset: Preset = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      name,
+      description: description || undefined,
+      config,
+      createdAt: new Date().toISOString(),
+    };
+    await invokeCommand("save_preset", { preset });
+    refetchPresets();
+  };
+
+  const handleApplyUser = async (id: string) => {
+    try {
+      await invokeCommand("apply_preset", { id });
+      onApplied();
+    } catch (err) {
+      console.error("Failed to apply user template:", err);
+      setApplyError(String(err));
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await invokeCommand("delete_preset", { id });
+      refetchPresets();
+    } catch (err) {
+      console.error("Failed to delete template:", err);
+    }
+  };
+
+  const handleUpdateUserTemplate = async (name: string, description: string, config: ClaudeConfig) => {
+    if (!detailPresetId) return;
+    const preset: Preset = {
+      id: detailPresetId,
+      name,
+      description: description || undefined,
+      config,
+      createdAt: detailTarget?.createdAt ?? new Date().toISOString(),
+    };
+    await invokeCommand("save_preset", { preset });
+    refetchPresets();
+  };
+
+  const openDetail = (tpl: { name: string; description?: string; config: ClaudeConfig; createdAt?: string }, editable: boolean, presetId?: string) => {
     setDetailTarget(tpl);
     setDetailEditable(editable);
+    setDetailPresetId(presetId ?? null);
     setDetailOpen(true);
   };
 
-  if (loadingSystem) {
+  if (loadingSystem || loadingUser) {
     return <div className="text-muted-foreground">{t("config.loadingTemplates")}</div>;
   }
 
   const activeAgentName = active?.display_name ?? activeId ?? "";
   const visibleSystemTemplates = (systemTemplates ?? []).map(toConfigTemplateView);
+  const visibleUserPresets = userPresets ?? [];
 
   return (
     <div className="space-y-6">
@@ -585,6 +666,15 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
           <p className="text-xs text-muted-foreground">
             {t("config.templateAgentScope", { agent: activeAgentName })}
           </p>
+        </div>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={() => setNewOpen(true)}>
+            <Plus className="h-4 w-4" />
+            {t("config.newTemplate")}
+          </Button>
+          <Button size="sm" onClick={() => setSaveOpen(true)}>
+            {t("config.saveAsTemplate")}
+          </Button>
         </div>
       </div>
 
@@ -614,11 +704,80 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
           ))}
           {visibleSystemTemplates.length === 0 && (
             <div className="col-span-2 rounded-md border border-dashed p-6 text-center text-muted-foreground">
-              <p className="text-sm">{t("config.noUserTemplates")}</p>
+              <p className="text-sm">{t("config.noSystemTemplates")}</p>
             </div>
           )}
         </div>
       </section>
+
+      {/* User Templates */}
+      <section>
+        <div className="flex items-center gap-2 mb-3">
+          <User className="h-4 w-4 text-muted-foreground" />
+          <h3 className="text-sm font-semibold">{t("config.userTemplates")}</h3>
+        </div>
+        {visibleUserPresets.length === 0 ? (
+          <div className="rounded-md border border-dashed p-6 text-center text-muted-foreground">
+            <p className="text-sm">{t("config.noUserTemplates")}</p>
+            <p className="text-xs mt-1">{t("config.noUserTemplatesDesc")}</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 items-stretch">
+            {visibleUserPresets.map((tpl) => (
+              <TemplateCard
+                key={tpl.id}
+                name={tpl.name}
+                description={tpl.description}
+                config={normalizeClaudeConfig(tpl.config)}
+                createdAt={tpl.createdAt}
+                onApply={() => handleApplyUser(tpl.id)}
+                onEdit={() => openDetail(
+                  { name: tpl.name, description: tpl.description, config: normalizeClaudeConfig(tpl.config), createdAt: tpl.createdAt },
+                  true,
+                  tpl.id,
+                )}
+                onDelete={() => handleDelete(tpl.id)}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Save Current Config Dialog */}
+      <Dialog open={saveOpen} onOpenChange={setSaveOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("config.saveTemplateTitle")}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="save-tpl-name">{t("config.templateName")}</Label>
+              <Input id="save-tpl-name" value={saveName} onChange={(e) => setSaveName(e.target.value)} placeholder={t("config.templateNamePlaceholder")} onKeyDown={(e) => e.key === "Enter" && handleSaveCurrent()} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="save-tpl-desc">{t("config.templateDescLabel")}</Label>
+              <Input id="save-tpl-desc" value={saveDesc} onChange={(e) => setSaveDesc(e.target.value)} placeholder={t("config.templateDescPlaceholder")} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setSaveOpen(false); setSaveName(""); setSaveDesc(""); }}>
+              {t("common.cancel")}
+            </Button>
+            <Button onClick={handleSaveCurrent} disabled={!saveName.trim() || saving}>
+              {saving ? t("common.saving") : t("common.save")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* New Template Dialog (reuses TemplateDetailDialog) */}
+      <TemplateDetailDialog
+        open={newOpen}
+        onOpenChange={setNewOpen}
+        template={{ name: "", description: "", config: {} as ClaudeConfig }}
+        editable
+        onSave={handleNewTemplate}
+      />
 
       {/* Detail / Edit Dialog */}
       <TemplateDetailDialog
@@ -626,6 +785,7 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
         onOpenChange={setDetailOpen}
         template={detailTarget}
         editable={detailEditable}
+        onSave={detailEditable ? handleUpdateUserTemplate : undefined}
       />
 
       {/* Fill & Apply Dialog */}
@@ -633,7 +793,7 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
         open={fillOpen}
         onOpenChange={setFillOpen}
         template={fillTemplate}
-        onApply={doApplySystemConfig}
+        onApply={doApplyConfig}
       />
     </div>
   );
