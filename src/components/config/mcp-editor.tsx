@@ -78,6 +78,20 @@ export function McpEditor(props: McpEditorProps) {
 
   return (
     <div className="space-y-2 pt-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-1">
+        <div className="flex-1">
+          {error ? (
+            <p className="text-xs text-destructive">{error}</p>
+          ) : (
+            <p className="text-xs text-muted-foreground">{t("config.mcpJsonHint")}</p>
+          )}
+        </div>
+        {actions && (
+          <div className="flex-shrink-0">
+            {actions({ value: parsedValue, hasError: !!error })}
+          </div>
+        )}
+      </div>
       <textarea
         className="h-56 w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         value={json}
@@ -85,16 +99,7 @@ export function McpEditor(props: McpEditorProps) {
         spellCheck={false}
         placeholder='{"server-name":{"type":"local","command":["npx","-y","@example/mcp"]}}'
       />
-      {error ? (
-        <p className="text-xs text-destructive">{error}</p>
-      ) : (
-        <p className="text-xs text-muted-foreground">{t("config.mcpJsonHint")}</p>
-      )}
-      {actions && (
-        <div className="flex items-center gap-2 pt-1">
-          {actions({ value: parsedValue, hasError: !!error })}
-        </div>
-      )}
+      <div className="h-2" />
     </div>
   );
 }

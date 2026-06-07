@@ -322,7 +322,7 @@
     "fieldMapJishuConfig": "配置文件：~/.jishu-agent/settings.json\n包含模型选择、权限、MCP 服务、环境变量等设置。\n模型供应商配置位于 ~/.jishu-agent/models.json。",
     "fieldMapAdvanced": "verbose — 详细日志\nmaxTurns — 最大对话轮次",
     "mcpServers": "MCP 服务",
-    "mcpJsonHint": "以 JSON 方式编辑 MCP 服务定义。opencode 的 command 数组和 environment 会被保留。",
+    "mcpJsonHint": "以 JSON 方式编辑 MCP 服务定义。",
     "allowList": "允许列表",
     "denyList": "拒绝列表",
     "addPattern": "添加",

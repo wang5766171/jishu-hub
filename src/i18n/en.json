@@ -323,7 +323,7 @@
     "fieldMapJishuConfig": "Config file: ~/.jishu-agent/settings.json\nContains model selection, permissions, MCP servers, environment variables, etc.\nModel provider config is stored in ~/.jishu-agent/models.json.",
     "fieldMapAdvanced": "verbose — Verbose Logging\nmaxTurns — Max Turns",
     "mcpServers": "MCP Servers",
-    "mcpJsonHint": "Edit MCP server definitions as JSON. For opencode, command arrays and environment are preserved.",
+    "mcpJsonHint": "Edit MCP server definitions as JSON.",
     "allowList": "Allow List",
     "denyList": "Deny List",
     "addPattern": "Add",

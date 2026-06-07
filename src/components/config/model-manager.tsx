@@ -399,23 +399,9 @@ export function ModelManager({
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <Popover>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              className="text-muted-foreground hover:text-foreground"
-              aria-label={t("config.modelsHintTitle")}
-            >
-              <HelpCircle className="h-4 w-4" />
-            </button>
-          </PopoverTrigger>
-          <PopoverContent className="max-w-sm text-xs leading-relaxed">
-            {t("config.modelsHint")}
-          </PopoverContent>
-        </Popover>
         <div className="flex-1" />
-        <Button size="sm" onClick={startAddProvider} disabled={loading}>
-          <Plus className="h-3.5 w-3.5 mr-1" />
+        <Button size="sm" className="h-6 text-xs mr-3" onClick={startAddProvider} disabled={loading}>
+          <Plus className="h-3 w-3 mr-1" />
           {t("config.addProvider")}
         </Button>
       </div>
@@ -424,6 +410,38 @@ export function ModelManager({
         <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
           {error}
         </div>
+      )}
+
+      {providerForm && (
+        <ProviderForm
+          existingName={
+            providerForm.mode === "edit" ? providerForm.name : null
+          }
+          existingProvider={
+            providerForm.mode === "edit"
+              ? config.providers[providerForm.name]
+              : undefined
+          }
+          saving={saving}
+          onCancel={() => setProviderForm(null)}
+          onSubmit={submitProvider}
+        />
+      )}
+
+      {modelForm && (
+        <ModelForm
+          providerName={modelForm.providerName}
+          existingModel={
+            modelForm.mode === "edit"
+              ? config.providers[modelForm.providerName]?.models?.find(
+                  (m) => m.id === modelForm.modelId,
+                )
+              : undefined
+          }
+          saving={saving}
+          onCancel={() => setModelForm(null)}
+          onSubmit={submitModel}
+        />
       )}
 
       {loading ? (
@@ -464,37 +482,7 @@ export function ModelManager({
         </div>
       )}
 
-      {providerForm && (
-        <ProviderForm
-          existingName={
-            providerForm.mode === "edit" ? providerForm.name : null
-          }
-          existingProvider={
-            providerForm.mode === "edit"
-              ? config.providers[providerForm.name]
-              : undefined
-          }
-          saving={saving}
-          onCancel={() => setProviderForm(null)}
-          onSubmit={submitProvider}
-        />
-      )}
 
-      {modelForm && (
-        <ModelForm
-          providerName={modelForm.providerName}
-          existingModel={
-            modelForm.mode === "edit"
-              ? config.providers[modelForm.providerName]?.models?.find(
-                  (m) => m.id === modelForm.modelId,
-                )
-              : undefined
-          }
-          saving={saving}
-          onCancel={() => setModelForm(null)}
-          onSubmit={submitModel}
-        />
-      )}
     </div>
   );
 }
@@ -596,7 +584,7 @@ function ProviderCard({
           <Button
             size="sm"
             variant="outline"
-            className="h-6 text-xs"
+            className="h-6 text-xs bg-primary/10 hover:bg-primary/20 text-primary border-transparent"
             onClick={onAddModel}
           >
             <Plus className="h-3 w-3 mr-1" />
