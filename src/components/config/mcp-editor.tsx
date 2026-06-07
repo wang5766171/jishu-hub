@@ -1,51 +1,78 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { McpServerConfig } from "@/types";
 
-interface McpEditorProps {
+interface McpEditorBaseProps {
   value: Record<string, McpServerConfig> | null;
-  onChange: (value: Record<string, McpServerConfig> | null) => void;
-  /** Called when parse error state changes (for external save button enable/disable) */
-  onErrorChange?: (hasError: boolean) => void;
 }
 
 /**
- * Reusable JSON textarea editor for MCP server definitions.
- * Controlled component: fires onChange on every valid parse.
+ * Render-props mode: exposes parsed value and error state so the parent
+ * can control when to save. Actions render in a row below the textarea.
  */
-export function McpEditor({ value, onChange, onErrorChange }: McpEditorProps) {
+interface McpEditorActionsProps extends McpEditorBaseProps {
+  actions: (state: { value: Record<string, McpServerConfig> | null; hasError: boolean }) => ReactNode;
+  onChange?: never;
+}
+
+/**
+ * Controlled mode: calls onChange on every valid edit (used by ConfigForm).
+ */
+interface McpEditorControlledProps extends McpEditorBaseProps {
+  onChange: (value: Record<string, McpServerConfig> | null) => void;
+  actions?: never;
+}
+
+type McpEditorProps = McpEditorActionsProps | McpEditorControlledProps;
+
+/**
+ * Reusable JSON textarea editor for MCP server definitions.
+ *
+ * Supports two modes:
+ * - **Controlled** (onChange): fires on every valid parse (for ConfigForm).
+ * - **Actions** (actions render prop): exposes `{ value, hasError }` so
+ *   the parent renders its own save button.
+ */
+export function McpEditor(props: McpEditorProps) {
+  const { value } = props;
+  const isControlled = "onChange" in props && !!props.onChange;
+  const onChange = isControlled ? (props as McpEditorControlledProps).onChange : undefined;
+  const actions = !isControlled ? (props as McpEditorActionsProps).actions : undefined;
+
   const { t } = useTranslation();
   const [json, setJson] = useState(() => JSON.stringify(value ?? {}, null, 2));
   const [error, setError] = useState("");
+  const [parsedValue, setParsedValue] = useState<Record<string, McpServerConfig> | null>(value ?? null);
 
   // Sync when the external value changes (e.g. template applied, saved)
   useEffect(() => {
     setJson(JSON.stringify(value ?? {}, null, 2));
     setError("");
-    onErrorChange?.(false);
+    setParsedValue(value ?? null);
   }, [value]);
 
   const handleChange = (text: string) => {
     setJson(text);
     if (!text.trim()) {
       setError("");
-      onErrorChange?.(false);
-      onChange(null);
+      setParsedValue(null);
+      onChange?.(null);
       return;
     }
     try {
       const parsed = JSON.parse(text);
       if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
         setError(t("config.invalidJson"));
-        onErrorChange?.(true);
+        setParsedValue(null);
         return;
       }
       setError("");
-      onErrorChange?.(false);
-      onChange(parsed as Record<string, McpServerConfig>);
+      const result = parsed as Record<string, McpServerConfig>;
+      setParsedValue(result);
+      onChange?.(result);
     } catch {
       setError(t("config.invalidJson"));
-      onErrorChange?.(true);
+      setParsedValue(null);
     }
   };
 
@@ -62,6 +89,11 @@ export function McpEditor({ value, onChange, onErrorChange }: McpEditorProps) {
         <p className="text-xs text-destructive">{error}</p>
       ) : (
         <p className="text-xs text-muted-foreground">{t("config.mcpJsonHint")}</p>
+      )}
+      {actions && (
+        <div className="flex items-center gap-2 pt-1">
+          {actions({ value: parsedValue, hasError: !!error })}
+        </div>
       )}
     </div>
   );
