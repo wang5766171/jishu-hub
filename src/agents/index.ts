@@ -11,3 +11,4 @@ export type {
   TerminalSurface,
   TransportSurface,
 } from "./types";
+export { getAdapterConfigPage, type AdapterConfigPageProps } from "./config-pages";
