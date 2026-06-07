@@ -500,7 +500,7 @@ async fn acp_connection_loop(
 
                         // Periodic flush
                         if buf.len() >= 32
-                            || last_flush.elapsed() >= Duration::from_millis(16)
+                            || last_flush.elapsed() >= Duration::from_millis(8)
                         {
                             flush_buf(&app, &agent_id, &mut buf);
                             last_flush = std::time::Instant::now();

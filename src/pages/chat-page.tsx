@@ -561,10 +561,8 @@ export function ChatPage({
       const chunks = Array.isArray(payload) ? payload : [payload];
 
       for (const chunk of chunks) {
-        console.log("Received chunk:", chunk.session_id, chunk.agent_id, chunk.event_type, chunk.data?.kind);
         // Ignore chunks for agents we're not currently using.
         if (chunk.agent_id !== activeIdRef.current) {
-          console.log("Ignored chunk due to agent_id mismatch. activeId:", activeIdRef.current);
           continue;
         }
 
@@ -573,7 +571,6 @@ export function ChatPage({
         // Only push into the store if it knows about this session — otherwise
         // we'd accidentally create state for a session we never started.
         if (!streamStore.hasState(cid)) {
-          console.log("Ignored chunk because streamStore has no state for", cid);
           continue;
         }
 

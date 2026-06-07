@@ -240,10 +240,10 @@ class StreamStore {
   private scheduleFlush(): void {
     if (this.flushScheduled) return;
     this.flushScheduled = true;
-    setTimeout(() => {
+    requestAnimationFrame(() => {
       this.flushScheduled = false;
       this.notify();
-    }, 50);
+    });
   }
 
   private notify(): void {

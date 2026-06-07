@@ -164,7 +164,7 @@ async fn stream_stdout<R, F>(
 
             if force
                 || buf.len() >= 32
-                || last_flush.elapsed() >= std::time::Duration::from_millis(16)
+                || last_flush.elapsed() >= std::time::Duration::from_millis(8)
             {
                 emit_stream_batch(&app, &agent_id, &buf);
                 buf.clear();

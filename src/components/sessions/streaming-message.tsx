@@ -11,7 +11,6 @@ import type { ContentBlock } from "@/types";
 
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS_COMPLETE = [rehypeHighlight];
-const REHYPE_PLUGINS_STREAMING: any[] = [];
 
 interface StreamingMessageProps {
   /** Session id (pending or real) whose streaming state to render. */
@@ -140,14 +139,18 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                       );
                     }
                     if (item.block.type === "text") {
-                      return (
+                      return isComplete ? (
                         <div key={`text-${idx}`} className="markdown-prose overflow-hidden">
                           <ReactMarkdown
                             remarkPlugins={REMARK_PLUGINS}
-                            rehypePlugins={isComplete ? REHYPE_PLUGINS_COMPLETE : REHYPE_PLUGINS_STREAMING}
+                            rehypePlugins={REHYPE_PLUGINS_COMPLETE}
                           >
                             {item.block.text}
                           </ReactMarkdown>
+                        </div>
+                      ) : (
+                        <div key={`text-${idx}`} className="markdown-prose overflow-hidden whitespace-pre-wrap break-words">
+                          {item.block.text}
                         </div>
                       );
                     }
