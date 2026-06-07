@@ -52,9 +52,16 @@ pub struct AgentStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConfigSurface {
-    Structured { schema_id: String },
-    Raw { format: String },
-    ModelStore { provider: String, supports_picker: bool },
+    Structured {
+        schema_id: String,
+    },
+    Raw {
+        format: String,
+    },
+    ModelStore {
+        provider: String,
+        supports_picker: bool,
+    },
     Unsupported,
 }
 

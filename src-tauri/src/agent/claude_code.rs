@@ -441,8 +441,14 @@ impl TerminalAdapter for ClaudeCodeAgent {
     fn built_in_commands(&self) -> Vec<crate::agent::command_config::AgentCommandPreset> {
         use crate::agent::command_config::AgentCommandPreset;
         vec![
-            AgentCommandPreset { name: "claude --version".into(), command: "claude --version".into() },
-            AgentCommandPreset { name: "claude mcp list".into(), command: "claude mcp list".into() },
+            AgentCommandPreset {
+                name: "claude --version".into(),
+                command: "claude --version".into(),
+            },
+            AgentCommandPreset {
+                name: "claude mcp list".into(),
+                command: "claude mcp list".into(),
+            },
         ]
     }
 }

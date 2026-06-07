@@ -1366,13 +1366,34 @@ impl TerminalAdapter for OpencodeAdapter {
     fn built_in_commands(&self) -> Vec<crate::agent::command_config::AgentCommandPreset> {
         use crate::agent::command_config::AgentCommandPreset;
         vec![
-            AgentCommandPreset { name: "opencode --version".into(), command: "opencode --version".into() },
-            AgentCommandPreset { name: "opencode session list".into(), command: "opencode session list".into() },
-            AgentCommandPreset { name: "opencode models".into(), command: "opencode models".into() },
-            AgentCommandPreset { name: "opencode mcp list".into(), command: "opencode mcp list".into() },
-            AgentCommandPreset { name: "opencode agent list".into(), command: "opencode agent list".into() },
-            AgentCommandPreset { name: "opencode debug config".into(), command: "opencode debug config".into() },
-            AgentCommandPreset { name: "opencode run".into(), command: "opencode run \"Say hello\"".into() },
+            AgentCommandPreset {
+                name: "opencode --version".into(),
+                command: "opencode --version".into(),
+            },
+            AgentCommandPreset {
+                name: "opencode session list".into(),
+                command: "opencode session list".into(),
+            },
+            AgentCommandPreset {
+                name: "opencode models".into(),
+                command: "opencode models".into(),
+            },
+            AgentCommandPreset {
+                name: "opencode mcp list".into(),
+                command: "opencode mcp list".into(),
+            },
+            AgentCommandPreset {
+                name: "opencode agent list".into(),
+                command: "opencode agent list".into(),
+            },
+            AgentCommandPreset {
+                name: "opencode debug config".into(),
+                command: "opencode debug config".into(),
+            },
+            AgentCommandPreset {
+                name: "opencode run".into(),
+                command: "opencode run \"Say hello\"".into(),
+            },
         ]
     }
 }

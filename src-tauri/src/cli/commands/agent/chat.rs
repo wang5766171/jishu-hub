@@ -155,13 +155,11 @@ fn start(agent_id: String, project: String) -> Result<(), CliError> {
     let agent = registry
         .get(&agent_id)
         .ok_or_else(|| CliError::NotFound(format!("Agent not found: {agent_id}")))?;
-    if matches!(
-        agent.config_surface(),
-        ConfigSurface::ModelStore { .. }
-    ) {
+    if matches!(agent.config_surface(), ConfigSurface::ModelStore { .. }) {
         return run_jishu_self_interactive(&project, None);
     }
-    run_native_interactive(agent, &project, None)}
+    run_native_interactive(agent, &project, None)
+}
 
 fn resume(id: &str) -> Result<(), CliError> {
     let location = pi_session::find_pi_session_location(id).map_err(CliError::Internal)?;

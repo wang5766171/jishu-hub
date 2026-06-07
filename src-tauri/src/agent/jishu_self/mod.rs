@@ -241,9 +241,8 @@ impl ConfigAdapter for JishuSelfAgent {
     }
 
     fn save_model_store(&self, config: &serde_json::Value) -> Result<(), String> {
-        let parsed: pi_models_config::PiModelsConfig =
-            serde_json::from_value(config.clone())
-                .map_err(|e| format!("Invalid models config payload: {e}"))?;
+        let parsed: pi_models_config::PiModelsConfig = serde_json::from_value(config.clone())
+            .map_err(|e| format!("Invalid models config payload: {e}"))?;
         pi_models_config::save(&parsed)
     }
 
@@ -254,7 +253,9 @@ impl ConfigAdapter for JishuSelfAgent {
 
     fn set_active_model(&self, active: Option<&serde_json::Value>) -> Result<(), String> {
         let parsed: Option<jishu_settings::ActiveModel> = active
-            .map(|v| serde_json::from_value(v.clone()).map_err(|e| format!("Invalid active model: {e}")))
+            .map(|v| {
+                serde_json::from_value(v.clone()).map_err(|e| format!("Invalid active model: {e}"))
+            })
             .transpose()?;
         jishu_settings::set_active(parsed)
     }
@@ -365,10 +366,22 @@ impl TerminalAdapter for JishuSelfAgent {
     fn built_in_commands(&self) -> Vec<crate::agent::command_config::AgentCommandPreset> {
         use crate::agent::command_config::AgentCommandPreset;
         vec![
-            AgentCommandPreset { name: "jishu --version".into(), command: "jishu --version".into() },
-            AgentCommandPreset { name: "jishu agents list".into(), command: "jishu agents list".into() },
-            AgentCommandPreset { name: "jishu model list".into(), command: "jishu model list".into() },
-            AgentCommandPreset { name: "jishu doctor".into(), command: "jishu doctor".into() },
+            AgentCommandPreset {
+                name: "jishu --version".into(),
+                command: "jishu --version".into(),
+            },
+            AgentCommandPreset {
+                name: "jishu agents list".into(),
+                command: "jishu agents list".into(),
+            },
+            AgentCommandPreset {
+                name: "jishu model list".into(),
+                command: "jishu model list".into(),
+            },
+            AgentCommandPreset {
+                name: "jishu doctor".into(),
+                command: "jishu doctor".into(),
+            },
         ]
     }
 }

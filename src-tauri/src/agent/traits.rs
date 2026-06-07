@@ -1,11 +1,11 @@
 use serde_json::Value;
 
+use super::command_config::AgentCommandPreset;
 use super::{
     AcpCommandSpec, AgentCapabilities, AgentHealth, AgentInfo, ChatRequest, ConfigSurface,
     NormalizedEvent, ProjectSettingsSurface, StreamEventNormalizer, TerminalSurface,
     TransportSurface,
 };
-use super::command_config::AgentCommandPreset;
 use crate::history::HistoryEntry;
 use crate::project::Project;
 use crate::project_config::ProjectSettings;

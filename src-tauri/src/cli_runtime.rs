@@ -42,7 +42,14 @@ pub fn spawn_stream_reader<R, E, F>(
         let stderr_session_id = session_id.clone();
         let stderr_app = app.clone();
         tauri::async_runtime::spawn(async move {
-            drain_stderr(stderr_app, stderr_agent_id, stderr_session_id, stderr, stderr_relay).await;
+            drain_stderr(
+                stderr_app,
+                stderr_agent_id,
+                stderr_session_id,
+                stderr,
+                stderr_relay,
+            )
+            .await;
         });
     }
 
@@ -61,8 +68,13 @@ pub fn spawn_stream_reader<R, E, F>(
     });
 }
 
-async fn drain_stderr<R>(app: tauri::AppHandle, agent_id: String, session_id: String, stderr: R, stderr_relay: bool)
-where
+async fn drain_stderr<R>(
+    app: tauri::AppHandle,
+    agent_id: String,
+    session_id: String,
+    stderr: R,
+    stderr_relay: bool,
+) where
     R: AsyncRead + Unpin,
 {
     let reader = BufReader::new(stderr);
@@ -235,7 +247,6 @@ fn is_agent_output(event: &NormalizedEvent) -> bool {
             | NormalizedEvent::ToolUseResult { .. }
     )
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -356,8 +356,14 @@ impl TerminalAdapter for CodexAdapter {
     fn built_in_commands(&self) -> Vec<crate::agent::command_config::AgentCommandPreset> {
         use crate::agent::command_config::AgentCommandPreset;
         vec![
-            AgentCommandPreset { name: "codex --version".into(), command: "codex --version".into() },
-            AgentCommandPreset { name: "codex exec".into(), command: "codex exec \"Say hello\"".into() },
+            AgentCommandPreset {
+                name: "codex --version".into(),
+                command: "codex --version".into(),
+            },
+            AgentCommandPreset {
+                name: "codex exec".into(),
+                command: "codex exec \"Say hello\"".into(),
+            },
         ]
     }
 }

@@ -486,8 +486,13 @@ fn run_acp_turn_blocking(
             if let Some(session_id) = native_session_id.as_deref() {
                 session_params["sessionId"] = json!(session_id);
             }
-            let session_request_id =
-                crate::acp_runtime::write_jsonrpc_request(&mut stdin, &mut next_id, session_method, session_params).await?;
+            let session_request_id = crate::acp_runtime::write_jsonrpc_request(
+                &mut stdin,
+                &mut next_id,
+                session_method,
+                session_params,
+            )
+            .await?;
             let session_result =
                 acp_wait_for_response(&mut lines, session_request_id, &mut events, &mut usage)
                     .await?;
@@ -557,8 +562,6 @@ fn run_acp_turn_blocking(
     })
 }
 
-
-
 async fn acp_wait_for_response(
     lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
     target_id: i64,
@@ -571,11 +574,13 @@ async fn acp_wait_for_response(
             .await
             .map_err(|e| format!("ACP read: {e}"))?
             .ok_or_else(|| "ACP stdout closed".to_string())?;
-            
+
         match crate::acp_runtime::handle_acp_response_line(&line, target_id, usage)? {
             crate::acp_runtime::AcpResponse::Update(new_events) => events.extend(new_events),
             crate::acp_runtime::AcpResponse::Result(val) => return Ok(val),
-            crate::acp_runtime::AcpResponse::Error(err) => return Err(format!("ACP response error: {}", err)),
+            crate::acp_runtime::AcpResponse::Error(err) => {
+                return Err(format!("ACP response error: {}", err))
+            }
             crate::acp_runtime::AcpResponse::Ignored => continue,
         }
     }

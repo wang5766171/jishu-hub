@@ -157,10 +157,17 @@ fn load_config(state: tauri::State<'_, Mutex<AppState>>) -> Result<serde_json::V
 
 /// Read the active agent's model store config (routes through adapter).
 #[tauri::command]
-fn get_models_config(state: tauri::State<'_, Mutex<AppState>>) -> Result<serde_json::Value, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+fn get_models_config(
+    state: tauri::State<'_, Mutex<AppState>>,
+) -> Result<serde_json::Value, String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     let agent = s.registry.active();
-    if !matches!(agent.config_surface(), agent::ConfigSurface::ModelStore { .. }) {
+    if !matches!(
+        agent.config_surface(),
+        agent::ConfigSurface::ModelStore { .. }
+    ) {
         return Err("Active agent does not support model store".to_string());
     }
     agent.load_model_store()
@@ -168,10 +175,18 @@ fn get_models_config(state: tauri::State<'_, Mutex<AppState>>) -> Result<serde_j
 
 /// Write the active agent's model store config (routes through adapter).
 #[tauri::command]
-fn set_models_config(state: tauri::State<'_, Mutex<AppState>>, config: serde_json::Value) -> Result<(), String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+fn set_models_config(
+    state: tauri::State<'_, Mutex<AppState>>,
+    config: serde_json::Value,
+) -> Result<(), String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     let agent = s.registry.active();
-    if !matches!(agent.config_surface(), agent::ConfigSurface::ModelStore { .. }) {
+    if !matches!(
+        agent.config_surface(),
+        agent::ConfigSurface::ModelStore { .. }
+    ) {
         return Err("Active agent does not support model store".to_string());
     }
     agent.save_model_store(&config)
@@ -179,10 +194,17 @@ fn set_models_config(state: tauri::State<'_, Mutex<AppState>>, config: serde_jso
 
 /// Read the active agent's active model selection (routes through adapter).
 #[tauri::command]
-fn get_active(state: tauri::State<'_, Mutex<AppState>>) -> Result<Option<serde_json::Value>, String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+fn get_active(
+    state: tauri::State<'_, Mutex<AppState>>,
+) -> Result<Option<serde_json::Value>, String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     let agent = s.registry.active();
-    if !matches!(agent.config_surface(), agent::ConfigSurface::ModelStore { .. }) {
+    if !matches!(
+        agent.config_surface(),
+        agent::ConfigSurface::ModelStore { .. }
+    ) {
         return Ok(None);
     }
     agent.get_active_model()
@@ -190,10 +212,18 @@ fn get_active(state: tauri::State<'_, Mutex<AppState>>) -> Result<Option<serde_j
 
 /// Persist the active model selection (routes through adapter).
 #[tauri::command]
-fn set_active(state: tauri::State<'_, Mutex<AppState>>, active: Option<serde_json::Value>) -> Result<(), String> {
-    let s = state.lock().map_err(|_| "App state lock poisoned".to_string())?;
+fn set_active(
+    state: tauri::State<'_, Mutex<AppState>>,
+    active: Option<serde_json::Value>,
+) -> Result<(), String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
     let agent = s.registry.active();
-    if !matches!(agent.config_surface(), agent::ConfigSurface::ModelStore { .. }) {
+    if !matches!(
+        agent.config_surface(),
+        agent::ConfigSurface::ModelStore { .. }
+    ) {
         return Err("Active agent does not support model store".to_string());
     }
     agent.set_active_model(active.as_ref())
