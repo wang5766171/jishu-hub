@@ -1,4 +1,0 @@
-[submodule "third_party/pi_agent_rust"]
-	path = third_party/pi_agent_rust
-	url = https://github.com/wang5766171/pi_agent_rust
-	branch = release_v0.1.18_change
