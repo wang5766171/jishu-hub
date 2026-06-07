@@ -61,21 +61,25 @@ select option {
 }
 
 @keyframes processing-marquee {
-  0%, 100% {
-    opacity: 0.35;
-    transform: translateX(-0.35rem);
-  }
-  50% {
-    opacity: 1;
-    transform: translateX(0.35rem);
-  }
+  0% { background-position: 200% center; }
+  100% { background-position: -200% center; }
 }
 .processing-marquee {
   display: inline-block;
   max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
-  animation: processing-marquee 1.35s ease-in-out infinite;
+  background: linear-gradient(
+    110deg,
+    var(--color-muted-foreground) 20%,
+    var(--color-foreground) 50%,
+    var(--color-muted-foreground) 80%
+  );
+  background-size: 200% auto;
+  color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: processing-marquee 2s linear infinite;
 }
 
 @theme {

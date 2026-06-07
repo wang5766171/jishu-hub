@@ -9,6 +9,10 @@ import { ToolGroup, classifyToolName } from "@/components/observability/tool-cal
 import type { ToolCall } from "@/components/observability/tool-call-card";
 import type { ContentBlock } from "@/types";
 
+const REMARK_PLUGINS = [remarkGfm];
+const REHYPE_PLUGINS_COMPLETE = [rehypeHighlight];
+const REHYPE_PLUGINS_STREAMING: any[] = [];
+
 interface StreamingMessageProps {
   /** Session id (pending or real) whose streaming state to render. */
   sessionId: string | null;
@@ -107,8 +111,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
           </div>
           {!hasContent && !isComplete ? (
             <div className="rounded-xl px-3 py-2 bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)] overflow-hidden">
-              <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm text-muted-foreground">
-                <span className="inline-block w-1.5 h-4 bg-primary animate-pulse shrink-0" />
+              <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm font-medium">
                 <span className="processing-marquee">{t("sessions.thinkingDots")}</span>
               </div>
             </div>
@@ -140,8 +143,8 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                       return (
                         <div key={`text-${idx}`} className="markdown-prose overflow-hidden">
                           <ReactMarkdown
-                            remarkPlugins={[remarkGfm]}
-                            rehypePlugins={isComplete ? [rehypeHighlight] : []}
+                            remarkPlugins={REMARK_PLUGINS}
+                            rehypePlugins={isComplete ? REHYPE_PLUGINS_COMPLETE : REHYPE_PLUGINS_STREAMING}
                           >
                             {item.block.text}
                           </ReactMarkdown>
@@ -172,8 +175,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                     </details>
                   )}
                   {!isComplete && (
-                    <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm text-muted-foreground">
-                      <span className="inline-block w-1.5 h-4 bg-primary animate-pulse shrink-0" />
+                    <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm font-medium">
                       <span className="processing-marquee">
                         {toolUses.length > 0 ? t("sessions.toolCalling") : t("sessions.processing")}
                       </span>

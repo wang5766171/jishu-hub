@@ -11,6 +11,9 @@ import { InlineImages, stripImagePrompt } from "./inline-image";
 import { ToolGroup, classifyToolName } from "@/components/observability/tool-call-card";
 import type { ToolCall } from "@/components/observability/tool-call-card";
 
+const REMARK_PLUGINS = [remarkGfm];
+const REHYPE_PLUGINS = [rehypeHighlight];
+
 // Native "poor man's virtualization": the browser skips layout/paint for rows
 // outside the viewport while keeping them in the DOM (search/highlight/scroll
 // stay intact). `auto` lets the browser remember each row's real rendered size,
@@ -120,7 +123,7 @@ const TextBlock = memo(function TextBlock({
 
   return (
     <div className="markdown-prose overflow-hidden">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
         {text}
       </ReactMarkdown>
     </div>
