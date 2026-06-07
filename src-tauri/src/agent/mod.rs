@@ -228,16 +228,42 @@ impl AgentRegistry {
     }
 
     pub fn scan_projects(&self) -> Vec<crate::project::Project> {
-        let mut projects = Vec::new();
-        for (id, agent) in self.agents_info() {
-            if agent.requires_installation_for_project_scan()
-                && !self.agent_installed_cached(&id, agent)
-            {
-                continue;
-            }
-            projects.extend(agent.scan_projects());
-        }
-        crate::project::merge_projects(projects)
+        // Phase 1 (main thread): determine which agents are eligible,
+        // then spawn one thread per eligible agent via scoped threads.
+        let agents = &self.agents;
+        let health_cache = &self.health_cache;
+
+        let per_agent: Vec<Vec<crate::project::Project>> =
+            std::thread::scope(|scope| {
+                agents
+                    .iter()
+                    .filter(|(id, agent)| {
+                        if agent.requires_installation_for_project_scan() {
+                            let now = now_ms();
+                            let installed = health_cache
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .get(*id)
+                                .map(|h| now.saturating_sub(h.last_checked_at) < HEALTH_CACHE_TTL_MS && h.installed)
+                                .unwrap_or(false);
+                            if !installed {
+                                let health = agent.probe_sync();
+                                let inst = health.installed;
+                                health_cache
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .insert((*id).to_string(), health);
+                                return inst;
+                            }
+                        }
+                        true
+                    })
+                    .map(|(_, agent)| scope.spawn(move || agent.scan_projects()))
+                    .map(|handle| handle.join().unwrap_or_default())
+                    .collect()
+            });
+
+        crate::project::merge_projects(per_agent.into_iter().flatten().collect())
     }
 
     fn agent_installed_cached(&self, id: &str, agent: &(dyn AgentPlugin + Send + Sync)) -> bool {

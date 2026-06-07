@@ -370,6 +370,128 @@ fn parse_rfc3339_millis(value: &str) -> Option<i64> {
     parse_rfc3339_utc(value).map(|dt| dt.timestamp_millis())
 }
 
+/// Scan `~/.jishu-agent/sessions/` directories and return discovered projects.
+/// Reads the `cwd` from session JSONL headers for reliable path decoding.
+pub(crate) fn scan_pi_projects() -> Vec<crate::project::Project> {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return Vec::new(),
+    };
+    let sessions_root = pi_sessions_root_for_home(&home);
+    if !sessions_root.is_dir() {
+        return Vec::new();
+    }
+
+    let mut projects = Vec::new();
+    let mut seen_paths = std::collections::HashSet::new();
+
+    let entries = match fs::read_dir(&sessions_root) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+
+        // Read cwd from first JSONL session header — avoids encoding ambiguity
+        let project_path = match read_cwd_from_session_dir(&dir) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        if !Path::new(&project_path).is_dir() {
+            continue;
+        }
+        if !seen_paths.insert(project_path.clone()) {
+            continue;
+        }
+
+        let session_count = count_pi_sessions_in_dir(&dir);
+        let last_active = last_modified_in_dir(&dir);
+
+        if let Some(project) = crate::project::project_from_agent_path(
+            &project_path,
+            "jishu-self",
+            session_count,
+            last_active,
+        ) {
+            projects.push(project);
+        }
+    }
+
+    projects.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+    projects
+}
+
+/// Read the `cwd` field from the first JSONL session header in a directory.
+fn read_cwd_from_session_dir(dir: &Path) -> Option<String> {
+    for entry in fs::read_dir(dir).ok()? {
+        let path = entry.ok()?.path();
+        if path.extension().map(|ext| ext == "jsonl").unwrap_or(false) {
+            if let Some(cwd) = read_cwd_from_jsonl(&path) {
+                return Some(cwd);
+            }
+        }
+    }
+    None
+}
+
+/// Extract `cwd` from the `{"type":"session","cwd":"..."}` header line.
+fn read_cwd_from_jsonl(path: &Path) -> Option<String> {
+    let content = fs::read_to_string(path).ok()?;
+    for line in content.lines() {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+            if value.get("type").and_then(|v| v.as_str()) == Some("session") {
+                if let Some(cwd) = value.get("cwd").and_then(|v| v.as_str()) {
+                    let cwd = cwd.to_string();
+                    if !cwd.is_empty() {
+                        return Some(cwd);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn count_pi_sessions_in_dir(dir: &Path) -> usize {
+    fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .map(|ext| ext == "jsonl")
+                        .unwrap_or(false)
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn last_modified_in_dir(dir: &Path) -> Option<String> {
+    fs::read_dir(dir).ok().and_then(|entries| {
+        entries
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "jsonl")
+                    .unwrap_or(false)
+            })
+            .filter_map(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
+            .max()
+            .map(|t| {
+                let dt: DateTime<Utc> = t.into();
+                dt.format("%Y-%m-%dT%H:%M:%S").to_string()
+            })
+    })
+}
+
 fn file_modified_utc(path: &Path) -> Option<DateTime<Utc>> {
     path.metadata()
         .ok()

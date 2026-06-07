@@ -107,11 +107,19 @@ impl AgentManifest for JishuSelfAgent {
 
 impl ProjectAdapter for JishuSelfAgent {
     fn scan_projects(&self) -> Vec<crate::project::Project> {
-        Vec::new()
+        pi_session::scan_pi_projects()
     }
 
-    fn add_project(&self, _path: &str) -> Option<crate::project::Project> {
-        None
+    fn add_project(&self, path: &str) -> Option<crate::project::Project> {
+        let project_path = std::path::Path::new(path);
+        if !project_path.is_dir() {
+            return None;
+        }
+        // Ensure the session directory exists to "register" the project
+        if let Ok(session_dir) = pi_session::pi_session_dir(path) {
+            let _ = std::fs::create_dir_all(&session_dir);
+        }
+        crate::project::project_from_agent_path(path, "jishu-self", 0, None)
     }
 
     fn decode_project_path(&self, encoded: &str) -> String {
