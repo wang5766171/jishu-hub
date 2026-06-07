@@ -221,6 +221,7 @@ export function ConfigPage({
             config={config}
             onSaved={handleConfigSaved}
             schemaId={configSurface.kind === "structured" ? configSurface.schema_id : ""}
+            surface={configSurface.kind === "structured" ? configSurface : undefined}
           />
         )}
         {activeTab === "templates" && (

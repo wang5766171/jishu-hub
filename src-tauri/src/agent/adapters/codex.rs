@@ -184,17 +184,150 @@ impl TransportAdapter for CodexAdapter {
 
 impl ConfigAdapter for CodexAdapter {
     fn config_surface(&self) -> crate::agent::ConfigSurface {
-        crate::agent::ConfigSurface::Raw {
-            format: "toml".to_string(),
+        crate::agent::ConfigSurface::Structured {
+            schema_id: "codex-config".to_string(),
+            supports_model_picker: false,
+            supports_small_model: false,
+            supports_large_model: false,
+            supports_api_provider: false,
         }
     }
 
     fn load_config(&self) -> Result<serde_json::Value, String> {
-        Err("Codex uses native TOML config, use load_raw_config instead".to_string())
+        let raw = self.load_raw_config()?;
+        let mut config_json = serde_json::json!({});
+        if raw.is_empty() {
+            return Ok(config_json);
+        }
+        let toml_val: toml::Value = toml::from_str(&raw).map_err(|e| format!("Invalid TOML: {}", e))?;
+
+        if let Some(model) = toml_val.get("model").and_then(|v| v.as_str()) {
+            config_json["model"] = serde_json::Value::String(model.to_string());
+        }
+
+        if let Some(env) = toml_val
+            .get("shell_environment_policy")
+            .and_then(|v| v.get("set"))
+            .and_then(|v| v.as_table())
+        {
+            let mut env_map = serde_json::Map::new();
+            for (k, v) in env {
+                if let Some(s) = v.as_str() {
+                    env_map.insert(k.clone(), serde_json::Value::String(s.to_string()));
+                }
+            }
+            config_json["env"] = serde_json::Value::Object(env_map);
+        }
+
+        if let Some(plugins) = toml_val.get("plugins").and_then(|v| v.as_table()) {
+            let mut pl_map = serde_json::Map::new();
+            for (k, v) in plugins {
+                if let Some(enabled) = v.get("enabled").and_then(|e| e.as_bool()) {
+                    pl_map.insert(k.clone(), serde_json::Value::Bool(enabled));
+                }
+            }
+            config_json["enabledPlugins"] = serde_json::Value::Object(pl_map);
+        }
+
+        if let Some(mcp) = toml_val.get("mcp_servers").and_then(|v| v.as_table()) {
+            let mut mcp_map = serde_json::Map::new();
+            for (k, v) in mcp {
+                if let Ok(json_v) = serde_json::to_value(v) {
+                    mcp_map.insert(k.clone(), json_v);
+                }
+            }
+            config_json["mcpServers"] = serde_json::Value::Object(mcp_map);
+        }
+
+        Ok(config_json)
     }
 
-    fn save_config(&self, _config: &serde_json::Value) -> Result<(), String> {
-        Err("Codex uses native TOML config, use save_raw_config instead".to_string())
+    fn save_config(&self, config: &serde_json::Value) -> Result<(), String> {
+        let raw = self.load_raw_config()?;
+        let mut toml_val: toml::Value = if raw.is_empty() {
+            toml::Value::Table(toml::map::Map::new())
+        } else {
+            toml::from_str(&raw).map_err(|e| format!("Invalid TOML: {}", e))?
+        };
+
+        if let Some(table) = toml_val.as_table_mut() {
+            if let Some(model) = config.get("model").and_then(|v| v.as_str()) {
+                table.insert("model".to_string(), toml::Value::String(model.to_string()));
+            }
+
+            if let Some(env_obj) = config.get("env").and_then(|v| v.as_object()) {
+                let sep = table
+                    .entry("shell_environment_policy".to_string())
+                    .or_insert_with(|| {
+                        let mut m = toml::map::Map::new();
+                        m.insert("inherit".to_string(), toml::Value::String("core".to_string()));
+                        toml::Value::Table(m)
+                    });
+                if let Some(sep_table) = sep.as_table_mut() {
+                    let set = sep_table
+                        .entry("set".to_string())
+                        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+                    if let Some(set_table) = set.as_table_mut() {
+                        let mut new_set = toml::map::Map::new();
+                        for (k, v) in env_obj {
+                            if let Some(s) = v.as_str() {
+                                new_set.insert(k.clone(), toml::Value::String(s.to_string()));
+                            }
+                        }
+                        *set_table = new_set;
+                    }
+                }
+            } else if config.get("env").unwrap_or(&serde_json::Value::Null).is_null() {
+                if let Some(sep) = table.get_mut("shell_environment_policy").and_then(|v| v.as_table_mut()) {
+                    sep.remove("set");
+                }
+            }
+
+            if let Some(plugins_obj) = config.get("enabledPlugins").and_then(|v| v.as_object()) {
+                let plugins = table
+                    .entry("plugins".to_string())
+                    .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+                if let Some(plugins_table) = plugins.as_table_mut() {
+                    for (k, v) in plugins_obj {
+                        if let Some(enabled) = v.as_bool() {
+                            let pl = plugins_table
+                                .entry(k.clone())
+                                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+                            if let Some(pl_table) = pl.as_table_mut() {
+                                pl_table.insert("enabled".to_string(), toml::Value::Boolean(enabled));
+                            }
+                        }
+                    }
+                    let to_remove: Vec<String> = plugins_table
+                        .keys()
+                        .filter(|k| !plugins_obj.contains_key(*k))
+                        .cloned()
+                        .collect();
+                    for k in to_remove {
+                        plugins_table.remove(&k);
+                    }
+                }
+            }
+
+            if let Some(mcp_obj) = config.get("mcpServers").and_then(|v| v.as_object()) {
+                let mut new_mcp = toml::map::Map::new();
+                for (k, v) in mcp_obj {
+                    if let Ok(mcp_server) = serde_json::from_value::<crate::config::McpServerConfig>(v.clone()) {
+                        if let Ok(toml_str) = toml::to_string(&mcp_server) {
+                            if let Ok(toml_val) = toml::from_str::<toml::Value>(&toml_str) {
+                                new_mcp.insert(k.clone(), toml_val);
+                            }
+                        }
+                    }
+                }
+                table.insert("mcp_servers".to_string(), toml::Value::Table(new_mcp));
+            } else if config.get("mcpServers").unwrap_or(&serde_json::Value::Null).is_null() {
+                table.remove("mcp_servers");
+            }
+        }
+
+        let new_content = toml::to_string_pretty(&toml_val).map_err(|e| format!("Serialization error: {}", e))?;
+        self.save_raw_config(&new_content)
     }
 
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {

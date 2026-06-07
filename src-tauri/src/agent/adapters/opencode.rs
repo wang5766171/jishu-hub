@@ -1180,6 +1180,10 @@ impl ConfigAdapter for OpencodeAdapter {
     fn config_surface(&self) -> crate::agent::ConfigSurface {
         crate::agent::ConfigSurface::Structured {
             schema_id: "opencode-config".to_string(),
+            supports_model_picker: false,
+            supports_small_model: false,
+            supports_large_model: false,
+            supports_api_provider: false,
         }
     }
 

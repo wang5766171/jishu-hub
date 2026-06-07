@@ -54,6 +54,10 @@ pub struct AgentStatus {
 pub enum ConfigSurface {
     Structured {
         schema_id: String,
+        supports_model_picker: bool,
+        supports_small_model: bool,
+        supports_large_model: bool,
+        supports_api_provider: bool,
     },
     Raw {
         format: String,

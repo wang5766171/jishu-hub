@@ -296,6 +296,10 @@ impl ConfigAdapter for ClaudeCodeAgent {
     fn config_surface(&self) -> crate::agent::ConfigSurface {
         crate::agent::ConfigSurface::Structured {
             schema_id: "claude-config".to_string(),
+            supports_model_picker: true,
+            supports_small_model: true,
+            supports_large_model: true,
+            supports_api_provider: true,
         }
     }
 

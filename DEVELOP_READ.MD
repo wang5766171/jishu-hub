@@ -163,8 +163,8 @@ CLI transport 用于两类场景：
 
 推荐 surface：
 
-- `Raw { format }`：适合 Codex 这类原生配置文件。
-- `Structured { schema_id }`：适合 Claude/OpenCode 等可结构化编辑的 agent。
+- `Raw { format }`：适合纯文本原生配置文件（例如没有强类型支持或纯文本手写的 agent）。
+- `Structured { schema_id }`：适合 Claude/OpenCode/Codex 等可结构化编辑的 agent。
 - `ModelStore { provider, supports_picker }`：适合 Jishu/Pi 模型库。前端必须严格依赖 `supports_picker` 来决定是否渲染模型选择器，绝对禁止前端写 `activeId === "pi"` 这类的嗅探逻辑。
 - `Unsupported { reason }`：明确不可配置。
 

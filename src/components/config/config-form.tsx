@@ -36,16 +36,33 @@ const PERMISSION_MODES = [
 const selectClass =
   "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-interface ConfigFormProps {
+export function ConfigForm({
+  config: initialConfig,
+  onSaved,
+  schemaId,
+  surface,
+}: {
   config: ClaudeConfig;
   onSaved: (config: ClaudeConfig) => void;
-  schemaId: string;
-}
-
-export function ConfigForm({ config: initialConfig, onSaved, schemaId }: ConfigFormProps) {
+  schemaId?: string;
+  surface?: {
+    supports_model_picker: boolean;
+    supports_small_model: boolean;
+    supports_large_model: boolean;
+    supports_api_provider: boolean;
+  };
+}) {
   const { t } = useTranslation();
   const [config, setConfig] = useState<ClaudeConfig>(initialConfig);
   const [saving, setSaving] = useState(false);
+
+  // Use capability flags from surface, default to true for backward compatibility if undefined
+  const supportsModelPicker = surface?.supports_model_picker ?? true;
+  const supportsSmallModel = surface?.supports_small_model ?? true;
+  const supportsLargeModel = surface?.supports_large_model ?? true;
+  const supportsApiProvider = surface?.supports_api_provider ?? true;
+  const showAdvancedModels = supportsSmallModel || supportsLargeModel || supportsApiProvider;
+
   const [mcpJson, setMcpJson] = useState(() => JSON.stringify(initialConfig.mcpServers ?? {}, null, 2));
   const [mcpJsonError, setMcpJsonError] = useState("");
 
@@ -199,7 +216,6 @@ export function ConfigForm({ config: initialConfig, onSaved, schemaId }: ConfigF
   };
 
   const hasChanges = JSON.stringify(config) !== JSON.stringify(initialConfig);
-  const isClaudeLike = schemaId === "claude-config";
   const modelOptions = MODEL_OPTIONS.some((m) => m.value === config.model)
     ? MODEL_OPTIONS
     : config.model
@@ -248,7 +264,7 @@ export function ConfigForm({ config: initialConfig, onSaved, schemaId }: ConfigF
                 <div className="space-y-4 pt-2">
                   <div className="space-y-2">
                     <Label htmlFor="model">{t("config.model")}</Label>
-                    {isClaudeLike ? (
+                    {supportsModelPicker ? (
                       <select
                         id="model"
                         value={config.model || ""}
@@ -272,42 +288,52 @@ export function ConfigForm({ config: initialConfig, onSaved, schemaId }: ConfigF
                     )}
                   </div>
 
-                  <div className="space-y-2">
-                    <Label htmlFor="smallModel">{t("config.smallModel")}</Label>
-                    <Input
-                      id="smallModel"
-                      value={config.smallModel || ""}
-                      onChange={(e) => handleSmallModelChange(e.target.value)}
-                      placeholder="e.g., claude-haiku-4-5-20251001"
-                    />
-                  </div>
+                  {showAdvancedModels && (
+                    <>
+                      {supportsSmallModel && (
+                        <div className="space-y-2">
+                          <Label htmlFor="smallModel">{t("config.smallModel")}</Label>
+                          <Input
+                            id="smallModel"
+                            value={config.smallModel || ""}
+                            onChange={(e) => handleSmallModelChange(e.target.value)}
+                            placeholder="e.g., claude-haiku-4-5-20251001"
+                          />
+                        </div>
+                      )}
 
-                  <div className="space-y-2">
-                    <Label htmlFor="largeModel">{t("config.largeModel")}</Label>
-                    <Input
-                      id="largeModel"
-                      value={config.largeModel || ""}
-                      onChange={(e) => handleLargeModelChange(e.target.value)}
-                      placeholder="e.g., claude-opus-4-7"
-                    />
-                  </div>
+                      {supportsLargeModel && (
+                        <div className="space-y-2">
+                          <Label htmlFor="largeModel">{t("config.largeModel")}</Label>
+                          <Input
+                            id="largeModel"
+                            value={config.largeModel || ""}
+                            onChange={(e) => handleLargeModelChange(e.target.value)}
+                            placeholder="e.g., claude-opus-4-7"
+                          />
+                        </div>
+                      )}
 
-                  <div className="space-y-2">
-                    <Label htmlFor="apiProvider">{t("config.apiProvider")}</Label>
-                    <select
-                      id="apiProvider"
-                      value={config.apiProvider || ""}
-                      onChange={(e) => handleApiProviderChange(e.target.value)}
-                      className={selectClass}
-                    >
-                      <option value="">{t("common.default")}</option>
-                      {API_PROVIDERS.map((p) => (
-                        <option key={p.value} value={p.value}>
-                          {t(`config.${p.labelKey}`)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                      {supportsApiProvider && (
+                        <div className="space-y-2">
+                          <Label htmlFor="apiProvider">{t("config.apiProvider")}</Label>
+                          <select
+                            id="apiProvider"
+                            value={config.apiProvider || ""}
+                            onChange={(e) => handleApiProviderChange(e.target.value)}
+                            className={selectClass}
+                          >
+                            <option value="">{t("common.default")}</option>
+                            {API_PROVIDERS.map((p) => (
+                              <option key={p.value} value={p.value}>
+                                {t(`config.${p.labelKey}`)}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               </AccordionContent>
             </AccordionItem>
