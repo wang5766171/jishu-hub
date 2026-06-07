@@ -19,14 +19,6 @@
     "hoursAgo": "{{count}} hours ago",
     "daysAgo": "{{count}} days ago"
   },
-  "projects": {
-    "exitManagement": "Exit Management",
-    "management": "Management",
-    "clearFilter": "Clear Filter",
-    "selected": "{{count}} projects selected",
-    "deselect": "Deselect",
-    "merge": "Merge Projects"
-  },
   "nav": {
     "projects": "Projects",
     "sessions": "Sessions",
@@ -112,7 +104,12 @@
     "allAgents": "All agents",
     "agents": "Agents",
     "viewAllAgents": "View all agents",
-    "collapseAgents": "Collapse"
+    "collapseAgents": "Collapse",
+    "exitManagement": "Exit Management",
+    "management": "Management",
+    "clearFilter": "Clear Filter",
+    "selected": "{{count}} projects selected",
+    "deselect": "Deselect"
   },
   "sessions": {
     "startNewChat": "New Chat",

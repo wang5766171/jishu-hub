@@ -19,14 +19,6 @@
     "hoursAgo": "{{count}} 小时前",
     "daysAgo": "{{count}} 天前"
   },
-  "projects": {
-    "exitManagement": "退出管理",
-    "management": "管理",
-    "clearFilter": "清除筛选",
-    "selected": "已选择 {{count}} 个项目",
-    "deselect": "取消选择",
-    "merge": "合并项目"
-  },
   "nav": {
     "projects": "项目",
     "sessions": "会话",
@@ -112,7 +104,12 @@
     "allAgents": "全部智能体",
     "agents": "归属智能体",
     "viewAllAgents": "查看全部智能体",
-    "collapseAgents": "收起"
+    "collapseAgents": "收起",
+    "exitManagement": "退出管理",
+    "management": "管理",
+    "clearFilter": "清除筛选",
+    "selected": "已选择 {{count}} 个项目",
+    "deselect": "取消选择"
   },
   "sessions": {
     "startNewChat": "发起新对话",
