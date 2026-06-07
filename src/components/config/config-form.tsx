@@ -14,6 +14,7 @@ import {
 import { Save, Plus, Trash2 } from "lucide-react";
 import type { ClaudeConfig } from "@/types";
 import { SectionHelp } from "./section-help";
+import { McpEditor } from "./mcp-editor";
 
 const MODEL_OPTIONS = [
   { value: "claude-sonnet-4-6", labelKey: "modelSonnet46" },
@@ -63,9 +64,6 @@ export function ConfigForm({
   const supportsApiProvider = surface?.supports_api_provider ?? true;
   const showAdvancedModels = supportsSmallModel || supportsLargeModel || supportsApiProvider;
 
-  const [mcpJson, setMcpJson] = useState(() => JSON.stringify(initialConfig.mcpServers ?? {}, null, 2));
-  const [mcpJsonError, setMcpJsonError] = useState("");
-
   // List pattern inputs
   const [newAllowPattern, setNewAllowPattern] = useState("");
   const [newDenyPattern, setNewDenyPattern] = useState("");
@@ -75,8 +73,6 @@ export function ConfigForm({
 
   useEffect(() => {
     setConfig(initialConfig);
-    setMcpJson(JSON.stringify(initialConfig.mcpServers ?? {}, null, 2));
-    setMcpJsonError("");
   }, [initialConfig]);
 
   // --- Field handlers ---
@@ -175,26 +171,6 @@ export function ConfigForm({
     updateConfig({ enabledPlugins: plugins });
   };
 
-  const handleMcpJsonChange = (value: string) => {
-    setMcpJson(value);
-    if (!value.trim()) {
-      setMcpJsonError("");
-      updateConfig({ mcpServers: null });
-      return;
-    }
-    try {
-      const parsed = JSON.parse(value);
-      if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
-        setMcpJsonError(t("config.invalidJson"));
-        return;
-      }
-      setMcpJsonError("");
-      updateConfig({ mcpServers: parsed as ClaudeConfig["mcpServers"] });
-    } catch {
-      setMcpJsonError(t("config.invalidJson"));
-    }
-  };
-
   // Advanced
   const handleVerbose = (checked: boolean) => updateConfig({ verbose: checked || null });
   const handleMaxTurns = (val: string) => {
@@ -246,7 +222,7 @@ export function ConfigForm({
       <div className="sticky top-0 z-10 bg-background pb-3 border-b border-border mb-3">
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-semibold">{t("config.configuration")}</h3>
-          <Button onClick={handleSave} disabled={!hasChanges || saving || !!mcpJsonError} size="sm">
+          <Button onClick={handleSave} disabled={!hasChanges || saving} size="sm">
             <Save className="h-4 w-4" />
             {saving ? t("common.saving") : t("common.save")}
           </Button>
@@ -508,20 +484,7 @@ export function ConfigForm({
             <AccordionItem key="mcp" value="mcp">
               <AccordionTrigger className="group"><span>{t("config.mcpServers")}<SectionHelp content={t("config.fieldMapMcp")} /></span></AccordionTrigger>
               <AccordionContent>
-                <div className="space-y-2 pt-2">
-                  <textarea
-                    className="h-56 w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    value={mcpJson}
-                    onChange={(e) => handleMcpJsonChange(e.target.value)}
-                    spellCheck={false}
-                    placeholder='{"server-name":{"type":"local","command":["npx","-y","@example/mcp"]}}'
-                  />
-                  {mcpJsonError ? (
-                    <p className="text-xs text-destructive">{mcpJsonError}</p>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">{t("config.mcpJsonHint")}</p>
-                  )}
-                </div>
+                <McpEditor value={config.mcpServers} onChange={(v) => updateConfig({ mcpServers: v })} />
               </AccordionContent>
             </AccordionItem>
           );

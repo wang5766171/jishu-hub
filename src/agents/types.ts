@@ -35,7 +35,7 @@ export interface AgentStatus {
 export type ConfigSurface =
   | { kind: "structured"; schema_id: string; supports_model_picker: boolean; supports_small_model: boolean; supports_large_model: boolean; supports_api_provider: boolean }
   | { kind: "raw"; format: string }
-  | { kind: "model_store"; provider: string; supports_picker: boolean }
+  | { kind: "model_store"; provider: string; supports_picker: boolean; supports_mcp: boolean }
   | { kind: "unsupported" };
 
 export type ProjectSettingsSurface =

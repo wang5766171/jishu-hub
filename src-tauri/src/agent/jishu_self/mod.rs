@@ -202,6 +202,7 @@ impl ConfigAdapter for JishuSelfAgent {
         crate::agent::ConfigSurface::ModelStore {
             provider: "pi".to_string(),
             supports_picker: true,
+            supports_mcp: true,
         }
     }
 

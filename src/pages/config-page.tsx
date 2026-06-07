@@ -6,6 +6,7 @@ import { TemplateManager } from "@/components/config/template-manager";
 import { BackupManager } from "@/components/config/backup-manager";
 import { ModelManager } from "@/components/config/model-manager";
 import { RawConfigEditor } from "@/components/config/raw-config-editor";
+import { McpEditor } from "@/components/config/mcp-editor";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Download, Upload } from "lucide-react";
@@ -38,7 +39,13 @@ export function ConfigPage({
     undefined,
     surfaceKind === "raw" ? agentRefreshKey : 0,
   );
-  const [activeTab, setActiveTab] = useState<"edit" | "templates" | "backups">(initialTab);
+  const supportsMcp = surfaceKind === "model_store" && (configSurface as { kind: "model_store"; supports_mcp: boolean }).supports_mcp;
+  const { data: agentConfig, refetch: refetchAgentConfig } = useInvoke<Record<string, unknown>>(
+    supportsMcp ? "load_config" : "",
+    undefined,
+    supportsMcp ? agentRefreshKey : 0,
+  );
+  const [activeTab, setActiveTab] = useState<"edit" | "mcp" | "templates" | "backups">(initialTab);
 
   const handleConfigSaved = useCallback(() => {
     refetch();
@@ -62,6 +69,7 @@ export function ConfigPage({
     try {
       await invokeCommand("import_config_dialog");
       refetch();
+      refetchAgentConfig();
     } catch (err) {
       if (!String(err).includes("USER_CANCELLED")) {
         console.error("Import failed:", err);
@@ -70,11 +78,20 @@ export function ConfigPage({
   };
 
   if (surfaceKind === "model_store") {
-    const tabs: Array<{ key: "edit" | "templates" | "backups"; label: string }> = [
+    type MsTab = "edit" | "mcp" | "templates" | "backups";
+    const tabs: Array<{ key: MsTab; label: string }> = [
       { key: "edit", label: t("config.modelManager") },
+      ...(supportsMcp ? [{ key: "mcp" as const, label: t("config.mcpServers") }] : []),
       { key: "templates", label: t("config.templates") },
       { key: "backups", label: t("config.backups") },
     ];
+
+    const handleMcpChange = async (mcpServers: Record<string, unknown> | null) => {
+      if (!agentConfig) return;
+      const merged = { ...agentConfig, mcpServers };
+      await invokeCommand("save_config", { config: merged });
+      refetchAgentConfig();
+    };
 
     return (
       <div className="flex flex-col h-full p-6">
@@ -117,6 +134,13 @@ export function ConfigPage({
 
         <div className="flex-1 min-h-0 overflow-y-auto pt-4">
           {activeTab === "edit" && <ModelManager />}
+          {activeTab === "mcp" && agentConfig && (
+            <McpEditor
+              value={(agentConfig as Record<string, unknown> & { mcpServers?: Record<string, unknown> | null }).mcpServers ?? null}
+              onChange={handleMcpChange}
+              standalone
+            />
+          )}
           {activeTab === "templates" && (
             <TemplateManager onApplied={refetch} />
           )}

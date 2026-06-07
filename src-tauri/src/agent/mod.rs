@@ -65,6 +65,8 @@ pub enum ConfigSurface {
     ModelStore {
         provider: String,
         supports_picker: bool,
+        #[serde(default)]
+        supports_mcp: bool,
     },
     Unsupported,
 }
@@ -382,6 +384,7 @@ mod tests {
             ConfigSurface::ModelStore {
                 provider: "pi".to_string(),
                 supports_picker: true,
+                supports_mcp: true,
             }
         );
         assert_eq!(jishu.terminal_surface, TerminalSurface::Supported);
