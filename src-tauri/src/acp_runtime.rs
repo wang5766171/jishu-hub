@@ -44,6 +44,13 @@ impl AcpControl {
             .map_err(|_| "ACP connection closed".to_string())
     }
 
+    pub fn resolved_session_id(&self) -> Option<String> {
+        self.acp_session_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     pub async fn send_cancel(&self) {
         let _ = self.tx.send(AcpCommand::Cancel).await;
     }
@@ -364,6 +371,11 @@ async fn acp_connection_loop(
             cmd = cmd_future => {
                 match cmd {
                     Some(AcpCommand::Prompt(msg)) => {
+                        log::info!("ACP loop received Prompt command, current state={}", match &state {
+                            LoopState::Idle => "Idle",
+                            LoopState::Prompting { .. } => "Prompting",
+                            LoopState::CancelPending { .. } => "CancelPending",
+                        });
                         match &mut state {
                             LoopState::Idle => {
                                 usage = None;
@@ -371,7 +383,7 @@ async fn acp_connection_loop(
                                     "sessionId": session_id,
                                     "prompt": [{ "type": "text", "text": msg }]
                                 })).await?;
-                                log::debug!("ACP sent prompt, id={}", id);
+                                log::info!("ACP sent prompt to pi, id={}", id);
                                 state = LoopState::Prompting { prompt_id: id };
                             }
                             LoopState::Prompting { .. } => {
@@ -432,6 +444,11 @@ async fn acp_connection_loop(
 
                         if let Some(pid) = current_prompt_id {
                             if msg.get("id").and_then(|v| v.as_i64()) == Some(pid) {
+                                log::info!("ACP got prompt response for id={}, state={}", pid, match &state {
+                                    LoopState::Idle => "Idle",
+                                    LoopState::Prompting { .. } => "Prompting",
+                                    LoopState::CancelPending { .. } => "CancelPending",
+                                });
                                 // Suppress cancel response events when a pending prompt exists
                                 // to prevent the TurnComplete from killing the new message's
                                 // streamStore state in the frontend.
@@ -458,9 +475,11 @@ async fn acp_connection_loop(
                                         log::info!("ACP sent buffered prompt after cancel, id={}", new_id);
                                         LoopState::Prompting { prompt_id: new_id }
                                     } else {
+                                        log::info!("ACP state -> Idle after prompt response");
                                         LoopState::Idle
                                     }
                                 } else {
+                                    log::info!("ACP state -> Idle after prompt response");
                                     LoopState::Idle
                                 };
                                 continue;
@@ -475,6 +494,8 @@ async fn acp_connection_loop(
                                     buf.push(make_chunk(&session_id, event));
                                 }
                             }
+                        } else {
+                            log::debug!("ACP stdout ignored msg (no matching id, not session/update): method={:?}", msg.get("method"));
                         }
 
                         // Periodic flush

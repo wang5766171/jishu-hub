@@ -80,6 +80,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   // Reset sending state when stream finishes for this session
   useEffect(() => {
     if (!isStreaming && sending) {
+      console.log("Stream complete, setting sending to false");
       setSending(false);
       setActiveSessionId(null);
     }
@@ -332,13 +333,16 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
       // Pre-register the stream state so events from the backend process
       // (which starts before the await resolves) aren't silently dropped.
       const pendingId = sessionId || `pending-${Date.now()}`;
+      console.log("Starting message send. pendingId:", pendingId, "sessionId:", sessionId);
+      setActiveSessionId(pendingId);
       streamStore.start(pendingId, fullMessage);
+      if (onMessageSent) onMessageSent(pendingId, fullMessage);
 
       const chatSession = await invokeCommand<ChatSession>(
         "send_message",
         {
           projectPath,
-          sessionId: sessionId,
+          sessionId: pendingId,
           message: fullMessage,
         }
       );
@@ -349,7 +353,6 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
       if (chatSession.session_id !== pendingId) {
         streamStore.alias(pendingId, chatSession.session_id);
       }
-      if (onMessageSent) onMessageSent(chatSession.session_id, fullMessage);
 
       setMessage("");
       setFiles([]);

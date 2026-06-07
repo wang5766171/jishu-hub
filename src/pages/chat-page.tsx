@@ -32,7 +32,10 @@ function TerminalIcon(props: React.SVGProps<SVGSVGElement>) {
   );
 }
 
-function formatRelativeTime(date: Date | string, t: (key: string) => string): string {
+function formatRelativeTime(
+  date: Date | string,
+  t: (key: string, options?: Record<string, string>) => string,
+): string {
   const d = typeof date === "string" ? new Date(date) : date;
   const now = new Date();
   const diffMs = now.getTime() - d.getTime();
@@ -48,6 +51,17 @@ function formatRelativeTime(date: Date | string, t: (key: string) => string): st
   const hh = String(d.getHours()).padStart(2, "0");
   const mi = String(d.getMinutes()).padStart(2, "0");
   return `${mm}-${dd} ${hh}:${mi}`;
+}
+
+function uniqueSessionsById(items: Session[]): Session[] {
+  const seen = new Set<string>();
+  const unique: Session[] = [];
+  for (const item of items) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    unique.push(item);
+  }
+  return unique;
 }
 
 function extractRealSessionId(data: unknown): string | null {
@@ -221,9 +235,9 @@ export function ChatPage({
   // Build display session list with optimistic sessions prepended
   let displaySessions = sessions ?? [];
   if (deferredSearchQuery.trim() && sessions) {
-    displaySessions = searchResults.map((r: SessionSearchResult) => sessions.find(s => s.id === r.sessionId)!).filter(Boolean) as Session[];
+    displaySessions = uniqueSessionsById(searchResults.map((r: SessionSearchResult) => sessions.find(s => s.id === r.sessionId)!).filter(Boolean) as Session[]);
   } else if (!deferredSearchQuery.trim()) {
-    displaySessions = [...optimisticSessions, ...displaySessions];
+    displaySessions = uniqueSessionsById([...optimisticSessions, ...displaySessions]);
   }
 
   const hasSearchQuery = searchQuery.trim().length > 0;
@@ -498,10 +512,12 @@ export function ChatPage({
   }, [sessionNames, sessions, activeId, active, currentProject]);
 
   const handleMessageSent = useCallback((sid: string, msg: string) => {
-    // Register a new per-session stream entry. The store keys it by the
-    // canonical (pending) id and tracks the abortKey so handleAbort works
-    // regardless of how the id is later resolved.
-    streamStore.start(sid, msg);
+    // For new sessions, register a stream entry here. For existing sessions,
+    // chat-input.tsx already called streamStore.start() before invoking
+    // send_message, so we skip to avoid resetting accumulated chunks.
+    if (!streamStore.hasState(sid)) {
+      streamStore.start(sid, msg);
+    }
 
     const isNewSessionSend = !selectedSession || selectedSession === "new";
     if (isNewSessionSend) {
@@ -545,14 +561,21 @@ export function ChatPage({
       const chunks = Array.isArray(payload) ? payload : [payload];
 
       for (const chunk of chunks) {
+        console.log("Received chunk:", chunk.session_id, chunk.agent_id, chunk.event_type, chunk.data?.kind);
         // Ignore chunks for agents we're not currently using.
-        if (chunk.agent_id !== activeIdRef.current) continue;
+        if (chunk.agent_id !== activeIdRef.current) {
+          console.log("Ignored chunk due to agent_id mismatch. activeId:", activeIdRef.current);
+          continue;
+        }
 
         const cid = chunk.session_id;
 
         // Only push into the store if it knows about this session — otherwise
         // we'd accidentally create state for a session we never started.
-        if (!streamStore.hasState(cid)) continue;
+        if (!streamStore.hasState(cid)) {
+          console.log("Ignored chunk because streamStore has no state for", cid);
+          continue;
+        }
 
         // Detect resolved session id and register it as an alias before pushing
         // (so subsequent chunks under the real id route to the same entry).
@@ -561,7 +584,7 @@ export function ChatPage({
           streamStore.alias(cid, realId);
 
           // Promote the optimistic session id to the real one in the UI.
-          setOptimisticSessions(prev => prev.map(s => s.id === cid ? { ...s, id: realId } : s));
+          setOptimisticSessions(prev => uniqueSessionsById(prev.map(s => s.id === cid ? { ...s, id: realId } : s)));
           if (newSessionStreamIdsRef.current.has(cid)) {
             newSessionStreamIdsRef.current.add(realId);
           }

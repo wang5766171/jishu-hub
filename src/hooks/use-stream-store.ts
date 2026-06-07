@@ -77,7 +77,8 @@ class StreamStore {
   /** Begin tracking a session that we just sent a message to. */
   start(canonicalId: string, pendingUserMessage: string | null): void {
     const key = this.canonical(canonicalId);
-    if (this.sessions.has(key)) return; // already pre-registered
+    // Reset the state for a new turn, even if the key already exists
+    // (e.g. second message in the same session).
     this.sessions.set(key, emptyState(key, pendingUserMessage));
     this.scheduleFlush();
   }

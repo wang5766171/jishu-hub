@@ -134,15 +134,23 @@ pub async fn send_message(
 
     let chat_state = app.state::<Mutex<ChatState>>();
     if let Ok(mut s) = chat_state.lock() {
-        s.processes.insert(
-            handle.session_id.clone(),
-            ChatProcess {
-                agent_id: handle.agent_id.clone(),
-                process_id: handle.process_id,
-                stdin: handle.stdin.clone(),
-                acp: handle.acp.clone(),
-            },
-        );
+        let process = ChatProcess {
+            agent_id: handle.agent_id.clone(),
+            process_id: handle.process_id,
+            stdin: handle.stdin.clone(),
+            acp: handle.acp.clone(),
+        };
+        s.processes
+            .insert(handle.session_id.clone(), process.clone());
+        if let Some(real_id) = handle
+            .acp
+            .as_ref()
+            .and_then(|acp| acp.resolved_session_id())
+        {
+            if real_id != handle.session_id {
+                s.processes.insert(real_id, process);
+            }
+        }
     }
 
     Ok(ChatSession {
