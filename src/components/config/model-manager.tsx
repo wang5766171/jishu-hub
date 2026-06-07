@@ -24,7 +24,6 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Plus,
   Trash2,
@@ -32,7 +31,6 @@ import {
   Loader2,
   Pencil,
   Power,
-  HelpCircle,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";

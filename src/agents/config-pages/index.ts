@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import type { ConfigSurface } from "../types";
+import type { ConfigSurface, AgentStatus } from "../types";
 import { StructuredConfigPage } from "./structured";
 import { ModelStoreConfigPage } from "./model-store";
 import { RawConfigPage } from "./raw";
@@ -12,12 +12,10 @@ import { UnsupportedConfigPage } from "./unsupported";
  */
 export interface AdapterConfigPageProps {
   configSurface: ConfigSurface;
-  activeAgent: AgentInfo | null;
+  activeAgent: AgentStatus | null;
   agentRefreshKey: number;
   initialTab?: "edit" | "templates" | "backups";
 }
-
-import type { AgentInfo } from "../types";
 
 type ConfigSurfaceKind = ConfigSurface["kind"];
 
@@ -35,4 +33,4 @@ export function getAdapterConfigPage(kind: ConfigSurfaceKind) {
   return registry[kind];
 }
 
-export type { AdapterConfigPageProps };
+// AdapterConfigPageProps is already exported via `export interface` above.

@@ -1,10 +1,9 @@
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { ModelManager } from "@/components/config/model-manager";
 import { TemplateManager } from "@/components/config/template-manager";
 import { BackupManager } from "@/components/config/backup-manager";
-import { McpEditor } from "@/components/config/mcp-editor";
 import { SectionHelp } from "@/components/config/section-help";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,33 +12,28 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import { Download, Upload, Save, Check, X, Loader2 } from "lucide-react";
+import { Download, Upload } from "lucide-react";
 import type { AdapterConfigPageProps } from "./index";
 
 /**
  * Config page for agents with ModelStore configuration surface.
- * Renders model provider management + optional MCP server editor.
+ * Renders model provider management.
  * Used by: jishu-self.
  */
 export function ModelStoreConfigPage({
-  configSurface,
   activeAgent,
   agentRefreshKey,
   initialTab = "edit",
 }: AdapterConfigPageProps) {
   const { t } = useTranslation();
-  const supportsMcp =
-    configSurface.kind === "model_store" && configSurface.supports_mcp;
 
-  const { data: agentConfig, refetch: refetchAgentConfig } = useInvoke<Record<string, unknown>>(
-    supportsMcp ? "load_config" : "",
+  const { refetch: refetchAgentConfig } = useInvoke<Record<string, unknown>>(
+    "load_config",
     undefined,
-    supportsMcp ? agentRefreshKey : 0,
+    agentRefreshKey,
   );
 
   const [activeTab, setActiveTab] = useState<"edit" | "templates" | "backups">(initialTab);
-  const [mcpSaveStatus, setMcpSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
-  const [mcpSaveError, setMcpSaveError] = useState<string>("");
 
   const handleExport = async () => {
     try {
@@ -61,10 +55,6 @@ export function ModelStoreConfigPage({
       }
     }
   };
-
-  const mcpServers =
-    (agentConfig as (Record<string, unknown> & { mcpServers?: Record<string, unknown> | null }) | null)
-      ?.mcpServers ?? null;
 
   const tabs: Array<{ key: "edit" | "templates" | "backups"; label: string }> = [
     { key: "edit", label: t("config.editConfig") },
@@ -119,7 +109,7 @@ export function ModelStoreConfigPage({
               <h3 className="text-lg font-semibold">{t("config.configuration")}</h3>
               <SectionHelp content={t("config.fieldMapJishuConfig")} />
             </div>
-            <Accordion type="multiple" defaultValue={["model", ...(supportsMcp ? ["mcp"] : [])]}>
+            <Accordion type="multiple" defaultValue={["model"]}>
               <AccordionItem value="model">
                 <AccordionTrigger className="group">
                   <span>{t("config.modelAccess")}</span>
@@ -128,49 +118,6 @@ export function ModelStoreConfigPage({
                   <ModelManager />
                 </AccordionContent>
               </AccordionItem>
-              {supportsMcp && (
-                <AccordionItem value="mcp">
-                  <AccordionTrigger className="group">
-                    <span>{t("config.mcpServers")}<SectionHelp content={t("config.fieldMapMcp")} /></span>
-                  </AccordionTrigger>
-                  <AccordionContent>
-                    <McpEditor
-                      key={agentConfig ? "loaded" : "empty"}
-                      value={mcpServers}
-                      actions={({ value, hasError }) => (
-                        <div className="flex items-center gap-2">
-                          {mcpSaveStatus === "success" && <span className="text-xs text-green-500 flex items-center"><Check className="h-3 w-3 mr-1"/>{t("config.saveSuccess", "保存成功")}</span>}
-                          {mcpSaveStatus === "error" && <span className="text-xs text-red-500 flex items-center"><X className="h-3 w-3 mr-1"/>{mcpSaveError || t("config.saveFailed", "保存失败")}</span>}
-                          {mcpSaveStatus === "saving" && <span className="text-xs text-muted-foreground flex items-center"><Loader2 className="h-3 w-3 mr-1 animate-spin"/>{t("common.saving", "保存中...")}</span>}
-                          <Button
-                            size="sm"
-                            className="h-6 text-xs mr-3"
-                            disabled={hasError || !agentConfig || mcpSaveStatus === "saving"}
-                            onClick={async () => {
-                              if (!agentConfig) return;
-                              setMcpSaveStatus("saving");
-                              try {
-                                const merged = { ...agentConfig, mcpServers: value };
-                                await invokeCommand("save_config", { config: merged });
-                                await refetchAgentConfig();
-                                setMcpSaveStatus("success");
-                                setTimeout(() => setMcpSaveStatus("idle"), 2000);
-                              } catch (e) {
-                                setMcpSaveError(String(e));
-                                setMcpSaveStatus("error");
-                                setTimeout(() => setMcpSaveStatus("idle"), 4000);
-                              }
-                            }}
-                          >
-                            <Save className="mr-1 h-3 w-3" />
-                            {t("common.save")}
-                          </Button>
-                        </div>
-                      )}
-                    />
-                  </AccordionContent>
-                </AccordionItem>
-              )}
             </Accordion>
           </>
         )}

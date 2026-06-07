@@ -40,7 +40,7 @@ const selectClass =
 export function ConfigForm({
   config: initialConfig,
   onSaved,
-  schemaId,
+  schemaId: _schemaId,
   surface,
 }: {
   config: ClaudeConfig;

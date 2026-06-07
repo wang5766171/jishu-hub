@@ -9,7 +9,6 @@ import {
   RefreshCw,
   ChevronDown,
   ArrowUpCircle,
-  GitBranch,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { AgentStatus } from "@/agents/types";
