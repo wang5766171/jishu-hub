@@ -40,6 +40,7 @@
     "gitDesc": "Version control runtime",
     "agentsTitle": "Agent CLIs",
     "agentsDesc": "Agent CLIs are not all required, please install based on your needs.",
+    "jishuAgentImportance": "Jishu Agent is the core engine of this application. Installing it unlocks full file system operations, native command execution, and powerful MCP services. Highly recommended.",
     "notInstalled": "Not installed",
     "installed": "Installed",
     "ready": "Ready",
@@ -179,7 +180,8 @@
     "float": "Float window",
     "floatingIdle": "Waiting for task...",
     "floatingComplete": "Task completed",
-    "floatingRestore": "Restore session"
+    "floatingRestore": "Restore session",
+    "saveSuccess": "Saved successfully"
   },
   "config": {
     "title": "Configuration",
@@ -266,6 +268,7 @@
     "applyTemplate": "Apply",
     "applied": "Applied",
     "deleteTemplate": "Delete",
+    "saveSuccess": "Saved successfully",
     "modelLabel": "Model",
     "modeLabel": "Permission Mode",
     "sandboxLabel": "Sandbox",

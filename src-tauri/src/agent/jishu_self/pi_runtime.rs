@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PiRuntimeSource {
     BinEnv,
-    WorkspaceSubmodule,
+    NodeModule,
     Path,
 }
 
@@ -45,42 +45,35 @@ where
         ));
     }
 
-    // 2. Bundled sidecar
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let bundled_win = parent.join("pi.exe");
-            if file_exists(&bundled_win) {
-                return Ok(PiRuntimeCommand {
-                    program: bundled_win,
-                    base_args: Vec::new(),
-                    source: PiRuntimeSource::BinEnv,
-                });
-            }
-            let bundled_unix = parent.join("pi");
-            if file_exists(&bundled_unix) {
-                return Ok(PiRuntimeCommand {
-                    program: bundled_unix,
-                    base_args: Vec::new(),
-                    source: PiRuntimeSource::BinEnv,
-                });
-            }
+    // 2. Bundled Node Module
+    if let Some(agent_dir) = crate::agent::jishu_self::pi_agent_dir() {
+        let entry = PathBuf::from(&agent_dir).join("dist").join("index.js");
+        if file_exists(&entry) {
+            let mut base_args = vec![entry.to_string_lossy().to_string()];
+            let node_bin = path_lookup("node").unwrap_or_else(|| PathBuf::from("node"));
+            return Ok(PiRuntimeCommand {
+                program: node_bin,
+                base_args,
+                source: PiRuntimeSource::NodeModule,
+            });
         }
     }
 
-    // 3. Workspace built binary (during development)
-    let workspace_bin_win = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    // 3. Workspace development Node Module
+    let workspace_js = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("third_party")
-        .join("pi_agent_rust")
-        .join("target")
-        .join("release")
-        .join("pi.exe");
-    if file_exists(&workspace_bin_win) {
+        .join("pi")
+        .join("dist")
+        .join("index.js");
+    if file_exists(&workspace_js) {
+        let mut base_args = vec![workspace_js.to_string_lossy().to_string()];
+        let node_bin = path_lookup("node").unwrap_or_else(|| PathBuf::from("node"));
         return Ok(PiRuntimeCommand {
-            program: workspace_bin_win,
-            base_args: Vec::new(),
-            source: PiRuntimeSource::WorkspaceSubmodule,
+            program: node_bin,
+            base_args,
+            source: PiRuntimeSource::NodeModule,
         });
     }
 
@@ -93,7 +86,7 @@ where
         });
     }
 
-    Err("Cannot find Pi agent. Ensure pi_agent_rust is built or sidecar is bundled.".to_string())
+    Err("Cannot find Pi agent. Ensure Jishu Agent is installed or pi submodule is built.".to_string())
 }
 
 pub(crate) fn build_pi_interactive_args(

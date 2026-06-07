@@ -756,7 +756,9 @@ fn is_allowed_install_command(cmd: &str) -> bool {
                 c.is_ascii_alphanumeric() || matches!(c, '@' | '/' | '.' | '_' | '-' | '+')
             })
     }
-    let cmd = cmd.trim();
+    if cmd == "jishu-hub-internal-install" {
+        return true;
+    }
     if runtime_registry()
         .iter()
         .any(|runtime| runtime.install_command == Some(cmd) || runtime.update_command == Some(cmd))
@@ -777,9 +779,12 @@ fn is_allowed_install_command(cmd: &str) -> bool {
 }
 
 #[tauri::command]
-async fn install_agent_command(command: String) -> Result<String, String> {
+async fn install_agent_command(app: tauri::AppHandle, command: String) -> Result<String, String> {
     if !is_allowed_install_command(&command) {
         return Err(format!("Install command not allowed: {}", command));
+    }
+    if command == "jishu-hub-internal-install" {
+        return install_internal_jishu_agent(app).await;
     }
     let mut installer = std::process::Command::new("powershell");
     let output =
@@ -787,6 +792,73 @@ async fn install_agent_command(command: String) -> Result<String, String> {
             .output()
             .map_err(|e| e.to_string())?;
 
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+    let res_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("Failed to resolve resource directory: {}", e))?;
+    let mut source = res_dir.join("third_party").join("pi");
+    if !source.exists() {
+        source = res_dir.join("_up_").join("third_party").join("pi");
+    }
+    
+    let target = crate::agent::jishu_self::pi_agent_dir().ok_or("Failed to get target dir")?;
+    
+    if !source.exists() {
+        return Err(format!("Source pi directory not found: {:?}", source));
+    }
+    
+    // Ensure target directory exists to prevent xcopy from asking F/D
+    if let Err(e) = std::fs::create_dir_all(&target) {
+        return Err(format!("Failed to create target directory: {}", e));
+    }
+    
+    // Copy files
+    #[cfg(target_os = "windows")]
+    {
+        let source_path = format!("{}\\*", source.to_string_lossy());
+        let output = std::process::Command::new("xcopy")
+            .args([
+                &source_path,
+                &target,
+                "/E", "/I", "/Y",
+            ])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(format!("Failed to copy bundled pi agent. stdout: {}, stderr: {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)));
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let status = std::process::Command::new("cp")
+            .args([
+                "-r",
+                &format!("{}/.", source.to_string_lossy()),
+                &target,
+            ])
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err("Failed to copy bundled pi agent".into());
+        }
+    }
+    
+    // Run npm install --production
+    let mut cmd = shell_command("npm", vec!["install".to_string(), "--production".to_string()]);
+    let mut installer = crate::process_command::tokio_no_window(&mut cmd);
+    installer.current_dir(&target);
+    
+    let output = installer.output().await.map_err(|e| e.to_string())?;
+    
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {

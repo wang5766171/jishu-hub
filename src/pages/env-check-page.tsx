@@ -212,21 +212,33 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       })
     : [];
 
-  const agentItems: CheckItem[] = agents.map((agent) => ({
-    id: `agent-${agent.id}`,
-    name: agent.display_name,
-    desc: agent.install_hint
-      ? agent.install_hint.replace("npm install -g ", "")
-      : "",
-    installed: agent.health.installed,
-    version: agent.health.version,
-    icon: <AgentLogo agentId={agent.id} size={18} />,
-    iconClassName: "bg-transparent",
-    updateCommand: agent.install_hint || undefined,
-    npmPackage: agent.install_hint
-      ?.replace("npm install -g ", "")
-      ?.trim(),
-  }));
+  const sortedAgents = [...agents].sort((a, b) => {
+    if (a.id === "jishu-self") return -1;
+    if (b.id === "jishu-self") return 1;
+    return 0;
+  });
+
+  const agentItems: CheckItem[] = sortedAgents.map((agent) => {
+    let desc = agent.install_hint?.replace("npm install -g ", "") || "";
+    if (agent.id === "jishu-self") {
+      desc = t("env.jishuAgentImportance", "Jishu Agent 是本应用的核心智能体引擎。安装它能解锁完整的文件系统操作、原生命令行执行以及强大的 MCP 服务支持，强烈建议安装。");
+    }
+    
+    return {
+      id: `agent-${agent.id}`,
+      name: agent.display_name,
+      desc,
+      installed: agent.health.installed,
+      version: agent.health.version,
+      icon: <AgentLogo agentId={agent.id} size={18} />,
+      iconClassName: "bg-transparent",
+      updateCommand: agent.native_install_command || agent.install_hint || undefined,
+      installCommand: agent.native_install_command || agent.install_hint || undefined,
+      npmPackage: agent.install_hint
+        ?.replace("npm install -g ", "")
+        ?.trim(),
+    };
+  });
 
   const hasUpdate = useCallback(
     (item: CheckItem): boolean => {
@@ -261,6 +273,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       }
     } catch (err) {
       console.error(err);
+      window.alert(`安装失败: ${String(err)}`);
     } finally {
       setInstallingId(null);
     }
@@ -480,7 +493,7 @@ function CheckItemRow({
           )}
         </div>
         {item.desc && (
-          <p className="text-xs text-muted-foreground truncate">{item.desc}</p>
+          <p className="text-xs text-muted-foreground truncate" title={item.desc}>{item.desc}</p>
         )}
       </div>
 

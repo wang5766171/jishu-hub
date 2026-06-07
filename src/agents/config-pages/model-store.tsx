@@ -5,6 +5,7 @@ import { ModelManager } from "@/components/config/model-manager";
 import { TemplateManager } from "@/components/config/template-manager";
 import { BackupManager } from "@/components/config/backup-manager";
 import { SectionHelp } from "@/components/config/section-help";
+import { McpEditor } from "@/components/config/mcp-editor";
 import { Button } from "@/components/ui/button";
 import {
   Accordion,
@@ -12,7 +13,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import { Download, Upload } from "lucide-react";
+import { Download, Upload, Save } from "lucide-react";
 import type { AdapterConfigPageProps } from "./index";
 
 /**
@@ -21,19 +22,25 @@ import type { AdapterConfigPageProps } from "./index";
  * Used by: jishu-self.
  */
 export function ModelStoreConfigPage({
+  configSurface,
   activeAgent,
   agentRefreshKey,
   initialTab = "edit",
 }: AdapterConfigPageProps) {
   const { t } = useTranslation();
 
-  const { refetch: refetchAgentConfig } = useInvoke<Record<string, unknown>>(
+  const { data: agentConfig, refetch: refetchAgentConfig } = useInvoke<Record<string, unknown>>(
     "load_config",
     undefined,
     agentRefreshKey,
   );
 
+  const supportsMcp = configSurface.kind === "model_store" && configSurface.supports_mcp;
+
   const [activeTab, setActiveTab] = useState<"edit" | "templates" | "backups">(initialTab);
+  const [mcpSaving, setMcpSaving] = useState(false);
+  const [mcpError, setMcpError] = useState<string | null>(null);
+  const [mcpSuccess, setMcpSuccess] = useState<string | null>(null);
 
   const handleExport = async () => {
     try {
@@ -118,6 +125,53 @@ export function ModelStoreConfigPage({
                   <ModelManager />
                 </AccordionContent>
               </AccordionItem>
+              {supportsMcp && (
+                <AccordionItem value="mcp">
+                  <AccordionTrigger className="group">
+                    <span>{t("config.mcpServers")}</span>
+                  </AccordionTrigger>
+                  <AccordionContent>
+                    {mcpError && (
+                      <div className="mb-2 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                        {mcpError}
+                      </div>
+                    )}
+                    <McpEditor 
+                      value={(agentConfig?.mcpServers as any) || null} 
+                      actions={({ value, hasError }) => (
+                        <div className="flex items-center gap-3 mr-3">
+                          {mcpSuccess && (
+                            <span className="text-xs text-green-500">{mcpSuccess}</span>
+                          )}
+                          <Button 
+                            size="sm" 
+                            className="h-6 text-xs" 
+                            disabled={hasError || mcpSaving}
+                            onClick={async () => {
+                              setMcpSaving(true);
+                              setMcpError(null);
+                              setMcpSuccess(null);
+                              try {
+                                await invokeCommand("save_config", { config: { mcpServers: value } });
+                                refetchAgentConfig();
+                                setMcpSuccess(t("config.saveSuccess"));
+                                setTimeout(() => setMcpSuccess(null), 3000);
+                              } catch (err) {
+                                setMcpError(String(err));
+                              } finally {
+                                setMcpSaving(false);
+                              }
+                            }}
+                          >
+                            <Save className="mr-1 h-3 w-3" />
+                            {t("common.save")}
+                          </Button>
+                        </div>
+                      )}
+                    />
+                  </AccordionContent>
+                </AccordionItem>
+              )}
             </Accordion>
           </>
         )}

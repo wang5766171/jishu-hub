@@ -5,14 +5,12 @@ import { dirname, resolve } from "node:path";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-// 1. Build pi_agent_rust runtime
-const piAgentRustDir = resolve(root, "third_party", "pi_agent_rust");
-if (existsSync(piAgentRustDir)) {
-  const cargoBuild = spawnSync("cargo", ["build", "--release", "--bin", "pi"], { cwd: piAgentRustDir, stdio: "inherit", shell: process.platform === "win32" });
-  if (cargoBuild.status !== 0) process.exit(cargoBuild.status ?? 1);
-  const source = resolve(piAgentRustDir, "target", "release", "pi.exe");
-  const target = resolve(root, "src-tauri", "bin", "pi-x86_64-pc-windows-msvc.exe");
-  copyFileSync(source, target);
+// 1. Build third_party/pi (Native Node Agent)
+const piRoot = resolve(root, "third_party", "pi");
+if (existsSync(piRoot)) {
+  console.log("Building bundled pi agent...");
+  spawnSync("npm", ["install"], { cwd: piRoot, stdio: "inherit", shell: true });
+  spawnSync("npm", ["run", "build"], { cwd: piRoot, stdio: "inherit", shell: true });
 }
 
 const steps = [

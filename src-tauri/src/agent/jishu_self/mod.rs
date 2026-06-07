@@ -103,7 +103,15 @@ impl AgentManifest for JishuSelfAgent {
     }
 
     fn auto_installed(&self) -> bool {
-        true
+        false
+    }
+
+    fn native_install_command(&self) -> Option<String> {
+        Some("jishu-hub-internal-install".to_string())
+    }
+
+    fn install_package_manager(&self) -> Option<String> {
+        Some("Jishu Hub 内置 Node 环境".to_string())
     }
 }
 

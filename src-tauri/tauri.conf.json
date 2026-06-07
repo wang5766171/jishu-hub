@@ -30,8 +30,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": [
-      "bin/pi"
+    "resources": [
+      "../third_party/pi/**/*"
     ],
     "icon": [
       "icons/32x32.png",
