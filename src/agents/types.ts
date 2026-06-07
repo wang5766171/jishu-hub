@@ -19,6 +19,7 @@ export interface AgentStatus {
   id: string;
   display_name: string;
   icon: string;
+  logo_path: string | null;
   capabilities: string;
   health: AgentHealth;
   install_hint: string | null;

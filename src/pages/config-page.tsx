@@ -113,7 +113,7 @@ export function ConfigPage({
     );
   }
 
-  if (surfaceKind === "none") {
+  if (surfaceKind === "unsupported") {
     return <div className="text-muted-foreground">{t("config.loadFailed")}</div>;
   }
 
@@ -188,4 +188,3 @@ export function ConfigPage({
     </div>
   );
 }
-
