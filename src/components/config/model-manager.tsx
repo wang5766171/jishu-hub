@@ -11,7 +11,7 @@
 //   - Forms are split: ProviderForm handles provider-level fields;
 //     ModelForm handles per-model fields. The two never mix.
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, forwardRef, useImperativeHandle } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { Button } from "@/components/ui/button";
@@ -24,7 +24,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+
 import {
   Plus,
   Trash2,
@@ -32,7 +32,6 @@ import {
   Loader2,
   Pencil,
   Power,
-  HelpCircle,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -140,13 +139,17 @@ function valueToModel(v: ModelFormValue): PiModelEntry {
   return entry;
 }
 
-export function ModelManager({
-  onChanged,
-  onActiveModelChange,
-}: {
+export interface ModelManagerHandle {
+  addProvider: () => void;
+}
+
+export const ModelManager = forwardRef<ModelManagerHandle, {
   onChanged?: () => void;
   onActiveModelChange?: (modelId: string | null) => void;
-}) {
+}>(function ModelManager({
+  onChanged,
+  onActiveModelChange,
+}, ref) {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -212,6 +215,9 @@ export function ModelManager({
     setModelForm(null);
     setError(null);
   };
+
+  useImperativeHandle(ref, () => ({ addProvider: startAddProvider }), []);
+
   const startEditProvider = (name: string) => {
     setProviderForm({ mode: "edit", name });
     setModelForm(null);
@@ -398,28 +404,6 @@ export function ModelManager({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <Popover>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              className="text-muted-foreground hover:text-foreground"
-              aria-label={t("config.modelsHintTitle")}
-            >
-              <HelpCircle className="h-4 w-4" />
-            </button>
-          </PopoverTrigger>
-          <PopoverContent className="max-w-sm text-xs leading-relaxed">
-            {t("config.modelsHint")}
-          </PopoverContent>
-        </Popover>
-        <div className="flex-1" />
-        <Button size="sm" onClick={startAddProvider} disabled={loading}>
-          <Plus className="h-3.5 w-3.5 mr-1" />
-          {t("config.addProvider")}
-        </Button>
-      </div>
-
       {error && (
         <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
           {error}
@@ -497,7 +481,7 @@ export function ModelManager({
       )}
     </div>
   );
-}
+});
 
 function ProviderCard({
   name,

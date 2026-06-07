@@ -1,10 +1,10 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { ConfigForm } from "@/components/config/config-form";
 import { TemplateManager } from "@/components/config/template-manager";
 import { BackupManager } from "@/components/config/backup-manager";
-import { ModelManager } from "@/components/config/model-manager";
+import { ModelManager, type ModelManagerHandle } from "@/components/config/model-manager";
 import { RawConfigEditor } from "@/components/config/raw-config-editor";
 import { McpEditor } from "@/components/config/mcp-editor";
 import { SectionHelp } from "@/components/config/section-help";
@@ -16,7 +16,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import { Download, Upload, Save } from "lucide-react";
+import { Download, Upload, Save, Plus } from "lucide-react";
 import { useAgent } from "@/agents";
 import type { ClaudeConfig } from "@/types";
 
@@ -53,6 +53,26 @@ export function ConfigPage({
     supportsMcp ? agentRefreshKey : 0,
   );
   const [activeTab, setActiveTab] = useState<"edit" | "templates" | "backups">(initialTab);
+  const modelManagerRef = useRef<ModelManagerHandle>(null);
+
+  // MCP editor state — lifted so save button in AccordionTrigger can access it
+  const [pendingMcp, setPendingMcp] = useState<Record<string, unknown> | null>(null);
+  const [mcpHasError, setMcpHasError] = useState(false);
+  const [savingMcp, setSavingMcp] = useState(false);
+
+  const handleSaveMcp = useCallback(async () => {
+    if (!agentConfig || mcpHasError) return;
+    setSavingMcp(true);
+    try {
+      const merged = { ...agentConfig, mcpServers: pendingMcp };
+      await invokeCommand("save_config", { config: merged });
+      refetchAgentConfig();
+    } catch (err) {
+      console.error("Failed to save MCP config:", err);
+    } finally {
+      setSavingMcp(false);
+    }
+  }, [agentConfig, mcpHasError, pendingMcp, refetchAgentConfig]);
 
   const handleConfigSaved = useCallback(() => {
     refetch();
@@ -144,35 +164,41 @@ export function ConfigPage({
                 <AccordionItem value="model">
                   <AccordionTrigger className="group">
                     <span>{t("config.modelAccess")}</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="mr-auto ml-2 h-6 text-xs"
+                      onClick={(e) => { e.stopPropagation(); modelManagerRef.current?.addProvider(); }}
+                    >
+                      <Plus className="h-3.5 w-3.5 mr-1" />
+                      {t("config.addProvider")}
+                    </Button>
                   </AccordionTrigger>
                   <AccordionContent>
-                    <ModelManager />
+                    <ModelManager ref={modelManagerRef} />
                   </AccordionContent>
                 </AccordionItem>
                 {supportsMcp && (
                   <AccordionItem value="mcp">
                     <AccordionTrigger className="group">
                       <span>{t("config.mcpServers")}<SectionHelp content={t("config.fieldMapMcp")} /></span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="mr-auto ml-2 h-6 text-xs"
+                        disabled={mcpHasError || !agentConfig || savingMcp}
+                        onClick={(e) => { e.stopPropagation(); handleSaveMcp(); }}
+                      >
+                        <Save className="h-3.5 w-3.5 mr-1" />
+                        {savingMcp ? t("common.saving") : t("common.save")}
+                      </Button>
                     </AccordionTrigger>
                     <AccordionContent>
                       <McpEditor
                         key={agentConfig ? "loaded" : "empty"}
                         value={mcpServers}
-                        actions={({ value, hasError }) => (
-                          <Button
-                            size="sm"
-                            disabled={hasError || !agentConfig}
-                            onClick={async () => {
-                              if (!agentConfig) return;
-                              const merged = { ...agentConfig, mcpServers: value };
-                              await invokeCommand("save_config", { config: merged });
-                              refetchAgentConfig();
-                            }}
-                          >
-                            <Save className="mr-1.5 h-4 w-4" />
-                            {t("common.save")}
-                          </Button>
-                        )}
+                        onChange={(v) => { setPendingMcp(v); setMcpHasError(false); }}
+                        onErrorChange={setMcpHasError}
                       />
                     </AccordionContent>
                   </AccordionItem>
