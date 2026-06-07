@@ -185,6 +185,7 @@
     "title": "配置管理",
     "editConfig": "编辑配置",
     "modelManager": "模型管理",
+    "modelAccess": "模型接入",
     "templates": "模板",
     "backups": "备份",
     "export": "导出",

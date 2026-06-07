@@ -185,6 +185,7 @@
     "title": "Configuration",
     "editConfig": "Edit Config",
     "modelManager": "Model Manager",
+    "modelAccess": "Model Access",
     "templates": "Templates",
     "backups": "Backups",
     "export": "Export",

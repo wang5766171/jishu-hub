@@ -7,9 +7,16 @@ import { BackupManager } from "@/components/config/backup-manager";
 import { ModelManager } from "@/components/config/model-manager";
 import { RawConfigEditor } from "@/components/config/raw-config-editor";
 import { McpEditor } from "@/components/config/mcp-editor";
+import { SectionHelp } from "@/components/config/section-help";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { Download, Upload } from "lucide-react";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { Download, Upload, Save } from "lucide-react";
 import { useAgent } from "@/agents";
 import type { ClaudeConfig } from "@/types";
 
@@ -79,17 +86,12 @@ export function ConfigPage({
 
   if (surfaceKind === "model_store") {
     const tabs: Array<{ key: "edit" | "templates" | "backups"; label: string }> = [
-      { key: "edit", label: t("config.modelManager") },
+      { key: "edit", label: t("config.editConfig") },
       { key: "templates", label: t("config.templates") },
       { key: "backups", label: t("config.backups") },
     ];
 
-    const handleMcpChange = async (mcpServers: Record<string, unknown> | null) => {
-      if (!agentConfig) return;
-      const merged = { ...agentConfig, mcpServers };
-      await invokeCommand("save_config", { config: merged });
-      refetchAgentConfig();
-    };
+    const mcpServers = (agentConfig as (Record<string, unknown> & { mcpServers?: Record<string, unknown> | null }) | null)?.mcpServers ?? null;
 
     return (
       <div className="flex flex-col h-full p-6">
@@ -132,18 +134,45 @@ export function ConfigPage({
 
         <div className="flex-1 min-h-0 overflow-y-auto pt-4">
           {activeTab === "edit" && (
-            <>
-              <ModelManager />
-              {supportsMcp && agentConfig && (
-                <div className="mt-6">
-                  <McpEditor
-                    value={(agentConfig as Record<string, unknown> & { mcpServers?: Record<string, unknown> | null }).mcpServers ?? null}
-                    onChange={handleMcpChange}
-                    standalone
-                  />
-                </div>
+            <Accordion type="multiple" defaultValue={["model", ...(supportsMcp ? ["mcp"] : [])]}>
+              <AccordionItem value="model">
+                <AccordionTrigger className="group">
+                  <span>{t("config.modelAccess")}</span>
+                </AccordionTrigger>
+                <AccordionContent>
+                  <ModelManager />
+                </AccordionContent>
+              </AccordionItem>
+              {supportsMcp && (
+                <AccordionItem value="mcp">
+                  <AccordionTrigger className="group">
+                    <span>{t("config.mcpServers")}<SectionHelp content={t("config.fieldMapMcp")} /></span>
+                  </AccordionTrigger>
+                  <AccordionContent>
+                    <McpEditor
+                      key={agentConfig ? "loaded" : "empty"}
+                      value={mcpServers}
+                    >
+                      {({ value, hasError }) => (
+                        <Button
+                          size="sm"
+                          disabled={hasError || !agentConfig}
+                          onClick={async () => {
+                            if (!agentConfig) return;
+                            const merged = { ...agentConfig, mcpServers: value };
+                            await invokeCommand("save_config", { config: merged });
+                            refetchAgentConfig();
+                          }}
+                        >
+                          <Save className="mr-1.5 h-4 w-4" />
+                          {t("common.save")}
+                        </Button>
+                      )}
+                    </McpEditor>
+                  </AccordionContent>
+                </AccordionItem>
               )}
-            </>
+            </Accordion>
           )}
           {activeTab === "templates" && (
             <TemplateManager onApplied={refetch} />
