@@ -212,7 +212,58 @@ impl ConfigAdapter for JishuSelfAgent {
     }
 
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
-        Vec::new()
+        vec![
+            crate::hub::ConfigTemplate {
+                id: "jishu-default".into(),
+                name: "默认配置 (Default)".into(),
+                description: "标准配置：开启思考模式，默认 token 限制。".into(),
+                config: serde_json::json!({
+                    "activeModel": null,
+                    "temperature": 0.7,
+                    "maxTokens": 8192,
+                    "thinkingEnabled": true,
+                    "permissions": {
+                        "allow": ["Read", "Bash", "Edit", "Write", "Grep", "Find"],
+                        "deny": [],
+                        "defaultMode": "acceptEdits"
+                    }
+                }),
+            },
+            crate::hub::ConfigTemplate {
+                id: "jishu-safe".into(),
+                name: "安全模式 (Safe)".into(),
+                description: "限制危险操作，每次修改需确认。适合新手或不熟悉的代码库。".into(),
+                config: serde_json::json!({
+                    "activeModel": null,
+                    "temperature": 0.5,
+                    "maxTokens": 4096,
+                    "thinkingEnabled": true,
+                    "permissions": {
+                        "allow": ["Read", "Grep", "Find"],
+                        "deny": ["Bash"],
+                        "defaultMode": "default"
+                    },
+                    "skipDangerous": true
+                }),
+            },
+            crate::hub::ConfigTemplate {
+                id: "jishu-power".into(),
+                name: "高效模式 (Power)".into(),
+                description: "宽松权限，跳过确认，适合快速迭代。".into(),
+                config: serde_json::json!({
+                    "activeModel": null,
+                    "temperature": 0.7,
+                    "maxTokens": 16384,
+                    "thinkingEnabled": true,
+                    "permissions": {
+                        "allow": ["Read", "Bash", "Edit", "Write", "Grep", "Find"],
+                        "deny": [],
+                        "defaultMode": "bypassPermissions"
+                    },
+                    "skipDangerous": false
+                }),
+            },
+        ]
     }
 
     fn config_format(&self) -> Option<String> {

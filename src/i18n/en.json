@@ -183,6 +183,7 @@
   "config": {
     "title": "Configuration",
     "editConfig": "Edit Config",
+    "modelManager": "Model Manager",
     "templates": "Templates",
     "backups": "Backups",
     "export": "Export",

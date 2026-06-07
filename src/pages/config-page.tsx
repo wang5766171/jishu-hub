@@ -70,14 +70,59 @@ export function ConfigPage({
   };
 
   if (surfaceKind === "model_store") {
+    const tabs: Array<{ key: "edit" | "templates" | "backups"; label: string }> = [
+      { key: "edit", label: t("config.modelManager") },
+      { key: "templates", label: t("config.templates") },
+      { key: "backups", label: t("config.backups") },
+    ];
+
     return (
       <div className="flex flex-col h-full p-6">
-        <div className="flex items-center justify-between gap-4">
-          <h2 className="text-xl font-semibold">{t("config.title")}</h2>
-          {active && <p className="text-xs text-muted-foreground">{active.display_name}</p>}
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-semibold">{t("config.title")}</h2>
+            {active && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {active.display_name}
+              </p>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={handleExport}>
+              <Download className="mr-2 h-4 w-4" />
+              {t("config.export")}
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleImport}>
+              <Upload className="mr-2 h-4 w-4" />
+              {t("config.import")}
+            </Button>
+          </div>
         </div>
+
+        <div className="flex gap-1 border-b border-border pb-0">
+          {tabs.map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+                activeTab === tab.key
+                  ? "border-primary text-foreground"
+                  : "border-transparent text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
         <div className="flex-1 min-h-0 overflow-y-auto pt-4">
-          <ModelManager />
+          {activeTab === "edit" && <ModelManager />}
+          {activeTab === "templates" && (
+            <TemplateManager onApplied={refetch} />
+          )}
+          {activeTab === "backups" && (
+            <BackupManager onRestored={refetch} />
+          )}
         </div>
       </div>
     );
