@@ -532,6 +532,10 @@ impl ProjectAdapter for ClaudeCodeAgent {
 }
 
 impl EventNormalizer for ClaudeCodeAgent {
+    fn stream_event_normalizer(&self) -> super::StreamEventNormalizer {
+        normalize_stream_event
+    }
+
     fn parse_stream_event(&self, event: &serde_json::Value) -> String {
         match event.get("type").and_then(|v| v.as_str()) {
             Some("system") => event
