@@ -1,4 +1,3 @@
-import { Badge } from "@/components/ui/badge";
 import { t } from "i18next";
 
 export interface StepOutcome {
