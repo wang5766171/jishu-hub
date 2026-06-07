@@ -4,6 +4,8 @@ import npmLogo from "@/assets/agents/npm.svg";
 import npmLightLogo from "@/assets/agents/npm-light.svg";
 import pythonLogo from "@/assets/agents/python.svg";
 import pythonLightLogo from "@/assets/agents/python-light.svg";
+import gitLogo from "@/assets/agents/git.svg";
+import gitLightLogo from "@/assets/agents/git-light.svg";
 import { Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/hooks/use-theme";
@@ -90,10 +92,12 @@ const runtimeLogos: Record<string, { src: string }> = {
   node: { src: nodeLogo },
   npm: { src: npmLogo },
   python: { src: pythonLogo },
+  git: { src: gitLogo },
 };
 
 const lightRuntimeLogos: Record<string, { src: string }> = {
   node: { src: nodeLightLogo },
   npm: { src: npmLightLogo },
   python: { src: pythonLightLogo },
+  git: { src: gitLightLogo },
 };

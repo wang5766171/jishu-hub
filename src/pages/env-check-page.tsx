@@ -151,7 +151,8 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
     git: {
       name: t("env.gitTitle"),
       desc: t("env.gitDesc"),
-      icon: <GitBranch className="h-[18px] w-[18px]" />,
+      icon: <RuntimeLogo runtimeId="git" size={18} />,
+      iconClassName: "bg-transparent",
     },
   };
 
@@ -375,9 +376,14 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
 
         {/* Agent CLI section */}
         <div>
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-            {t("env.agentsTitle")}
-          </h2>
+          <div className="mb-3">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-1">
+              {t("env.agentsTitle")}
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              {t("env.agentsDesc")}
+            </p>
+          </div>
           <div className="space-y-2">
             {visibleAgents.map((item) => {
               const downloadUrl = item.downloadUrl;
