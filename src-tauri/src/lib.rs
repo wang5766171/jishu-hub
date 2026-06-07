@@ -799,6 +799,23 @@ async fn install_agent_command(app: tauri::AppHandle, command: String) -> Result
     }
 }
 
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    if !dst.exists() {
+        std::fs::create_dir_all(dst)?;
+    }
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst_path)?;
+        } else {
+            std::fs::copy(&entry.path(), &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
 async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, String> {
     use tauri::Manager;
     let res_dir = app
@@ -822,34 +839,8 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
     }
     
     // Copy files
-    #[cfg(target_os = "windows")]
-    {
-        let source_path = format!("{}\\*", source.to_string_lossy());
-        let output = std::process::Command::new("xcopy")
-            .args([
-                &source_path,
-                &target,
-                "/E", "/I", "/Y",
-            ])
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !output.status.success() {
-            return Err(format!("Failed to copy bundled pi agent. stdout: {}, stderr: {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)));
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let status = std::process::Command::new("cp")
-            .args([
-                "-r",
-                &format!("{}/.", source.to_string_lossy()),
-                &target,
-            ])
-            .status()
-            .map_err(|e| e.to_string())?;
-        if !status.success() {
-            return Err("Failed to copy bundled pi agent".into());
-        }
+    if let Err(e) = copy_dir_recursive(&source, std::path::Path::new(&target)) {
+        return Err(format!("Failed to copy bundled pi agent files: {}", e));
     }
     
     // Run npm install --production
