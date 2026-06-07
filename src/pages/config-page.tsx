@@ -45,7 +45,7 @@ export function ConfigPage({
     undefined,
     supportsMcp ? agentRefreshKey : 0,
   );
-  const [activeTab, setActiveTab] = useState<"edit" | "mcp" | "templates" | "backups">(initialTab);
+  const [activeTab, setActiveTab] = useState<"edit" | "templates" | "backups">(initialTab);
 
   const handleConfigSaved = useCallback(() => {
     refetch();
@@ -78,10 +78,8 @@ export function ConfigPage({
   };
 
   if (surfaceKind === "model_store") {
-    type MsTab = "edit" | "mcp" | "templates" | "backups";
-    const tabs: Array<{ key: MsTab; label: string }> = [
+    const tabs: Array<{ key: "edit" | "templates" | "backups"; label: string }> = [
       { key: "edit", label: t("config.modelManager") },
-      ...(supportsMcp ? [{ key: "mcp" as const, label: t("config.mcpServers") }] : []),
       { key: "templates", label: t("config.templates") },
       { key: "backups", label: t("config.backups") },
     ];
@@ -133,13 +131,19 @@ export function ConfigPage({
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto pt-4">
-          {activeTab === "edit" && <ModelManager />}
-          {activeTab === "mcp" && agentConfig && (
-            <McpEditor
-              value={(agentConfig as Record<string, unknown> & { mcpServers?: Record<string, unknown> | null }).mcpServers ?? null}
-              onChange={handleMcpChange}
-              standalone
-            />
+          {activeTab === "edit" && (
+            <>
+              <ModelManager />
+              {supportsMcp && agentConfig && (
+                <div className="mt-6">
+                  <McpEditor
+                    value={(agentConfig as Record<string, unknown> & { mcpServers?: Record<string, unknown> | null }).mcpServers ?? null}
+                    onChange={handleMcpChange}
+                    standalone
+                  />
+                </div>
+              )}
+            </>
           )}
           {activeTab === "templates" && (
             <TemplateManager onApplied={refetch} />
