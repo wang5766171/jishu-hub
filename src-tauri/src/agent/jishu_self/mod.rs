@@ -341,7 +341,7 @@ impl TransportAdapter for JishuSelfAgent {
             .build_acp_command(&req)
             .unwrap_or_else(|_| crate::agent::AcpCommandSpec {
                 program: "pi".to_string(),
-                args: vec!["--acp".to_string()],
+                args: vec!["--mode".to_string(), "rpc".to_string()],
                 envs: Vec::new(),
             });
         let mut cmd = tokio::process::Command::new(&spec.program);
@@ -359,7 +359,11 @@ impl TransportAdapter for JishuSelfAgent {
     ) -> Result<crate::agent::AcpCommandSpec, String> {
         let runtime = pi_runtime::resolve_pi_runtime()?;
         let mut args = runtime.base_args;
-        args.push("--acp".to_string());
+        // Use Pi's native --mode rpc (JSON-line protocol) instead of the
+        // non-existent --acp flag. The Pi RPC runtime module handles the
+        // protocol translation (prompt/abort commands, AgentEvent normalization).
+        args.push("--mode".to_string());
+        args.push("rpc".to_string());
         args.push("--append-system-prompt".to_string());
         args.push(JISHU_AGENT_IDENTITY_PROMPT.to_string());
         args.extend(pi_model::build_pi_model_args_from_active()?);

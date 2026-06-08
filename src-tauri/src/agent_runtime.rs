@@ -239,6 +239,8 @@ where
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
 
+    // Jishu-self uses Pi's native --mode rpc protocol.
+    let is_pi_rpc = turn.agent_id == "jishu-self";
     #[cfg(target_os = "windows")]
     {
         crate::process_command::tokio_no_window(&mut command);
@@ -253,17 +255,37 @@ where
         .clone()
         .unwrap_or_else(|| format!("pending-{pid}"));
 
-    let acp = crate::acp_runtime::spawn_acp_session(
-        app,
-        turn.agent_id.clone(),
-        sid.clone(),
-        child,
-        turn.project_path,
-        turn.native_session_id,
-        turn.message,
-        on_finish,
-        on_session_resolved,
+    log::info!(
+        "Spawning ACP session: agent={}, pid={}, project_path={}, is_pi_rpc={}",
+        turn.agent_id, pid, turn.project_path, is_pi_rpc
     );
+
+    // Jishu-self uses Pi's native --mode rpc protocol instead of ACP JSON-RPC 2.0
+    let acp = if is_pi_rpc {
+        crate::pi_rpc_runtime::spawn_pi_rpc_session(
+            app,
+            turn.agent_id.clone(),
+            sid.clone(),
+            child,
+            turn.project_path,
+            turn.native_session_id,
+            turn.message,
+            on_finish,
+            on_session_resolved,
+        )
+    } else {
+        crate::acp_runtime::spawn_acp_session(
+            app,
+            turn.agent_id.clone(),
+            sid.clone(),
+            child,
+            turn.project_path,
+            turn.native_session_id,
+            turn.message,
+            on_finish,
+            on_session_resolved,
+        )
+    };
 
     Ok(GuiTurnHandle {
         agent_id: turn.agent_id,

@@ -32,8 +32,8 @@ pub enum AcpCommand {
 /// Handle stored in `ChatProcess.acp` for communicating with the connection task.
 #[derive(Clone)]
 pub struct AcpControl {
-    tx: tokio::sync::mpsc::Sender<AcpCommand>,
-    acp_session_id: Arc<std::sync::Mutex<Option<String>>>,
+    pub(crate) tx: tokio::sync::mpsc::Sender<AcpCommand>,
+    pub(crate) acp_session_id: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl AcpControl {

@@ -13,6 +13,7 @@ mod image;
 mod llm;
 mod orchestrator;
 mod process_command;
+mod pi_rpc_runtime;
 mod process_control;
 mod project;
 mod project_config;
