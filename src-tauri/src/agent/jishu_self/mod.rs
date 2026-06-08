@@ -1,4 +1,4 @@
-mod config;
+pub(crate) mod config;
 pub(crate) mod jishu_settings;
 pub(crate) mod pi_model;
 pub(crate) mod pi_models_config;
@@ -17,6 +17,42 @@ pub struct JishuSelfAgent;
 impl JishuSelfAgent {
     pub fn new() -> Self {
         Self
+    }
+
+    /// Standalone async MCP install — does not borrow &self, so it can be
+    /// awaited without holding the AgentRegistry MutexGuard.
+    pub async fn install_mcp_standalone() -> Result<String, String> {
+        let runtime = pi_runtime::resolve_pi_runtime()
+            .map_err(|e| format!("Failed to resolve Pi runtime: {e}"))?;
+
+        let mut args = runtime.base_args.clone();
+        args.push("install".to_string());
+        args.push("npm:pi-mcp-adapter".to_string());
+
+        let mut cmd = tokio::process::Command::new(&runtime.program);
+        cmd.args(&args)
+            .current_dir(std::env::current_dir().unwrap_or_default());
+
+        #[cfg(target_os = "windows")]
+        crate::process_command::tokio_no_window(&mut cmd);
+
+        if let Some(dir) = pi_agent_dir() {
+            cmd.env("PI_CODING_AGENT_DIR", &dir);
+        }
+
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| format!("Failed to run pi install: {e}"))?;
+
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        } else {
+            Err(format!(
+                "pi install failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ))
+        }
     }
 }
 
@@ -328,6 +364,96 @@ impl ConfigAdapter for JishuSelfAgent {
             })
             .transpose()?;
         jishu_settings::set_active(parsed)
+    }
+
+    // ── MCP adapter methods ──
+
+    fn supports_mcp(&self) -> bool {
+        true
+    }
+
+    fn check_mcp(&self) -> Result<serde_json::Value, String> {
+        // Auto-migrate on check (idempotent).
+        self.migrate_mcp_if_needed();
+
+        let agent_dir =
+            pi_agent_dir().ok_or_else(|| "Cannot resolve ~/.jishu-agent directory".to_string())?;
+        // pi install <npm:pkg> stores the package in
+        // <PI_CODING_AGENT_DIR>/npm/node_modules/<pkg>, not under packages/.
+        let adapter_dir = std::path::Path::new(&agent_dir)
+            .join("npm")
+            .join("node_modules")
+            .join("pi-mcp-adapter");
+
+        if !adapter_dir.exists() {
+            return Ok(serde_json::json!({"installed": false, "version": null}));
+        }
+
+        // Try reading version from package.json
+        let pkg_json = adapter_dir.join("package.json");
+        let version = if pkg_json.exists() {
+            std::fs::read_to_string(&pkg_json)
+                .ok()
+                .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+                .and_then(|v| {
+                    v.get("version")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+        } else {
+            None
+        };
+
+        Ok(serde_json::json!({"installed": true, "version": version}))
+    }
+
+    fn install_mcp(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+    {
+        Box::pin(async {
+            let runtime = pi_runtime::resolve_pi_runtime()
+                .map_err(|e| format!("Failed to resolve Pi runtime: {e}"))?;
+
+            let mut args = runtime.base_args.clone();
+            args.push("install".to_string());
+            args.push("npm:pi-mcp-adapter".to_string());
+
+            let mut cmd = tokio::process::Command::new(&runtime.program);
+            cmd.args(&args)
+                .current_dir(std::env::current_dir().unwrap_or_default());
+
+            #[cfg(target_os = "windows")]
+            crate::process_command::tokio_no_window(&mut cmd);
+
+            // Set PI_CODING_AGENT_DIR so pi writes to ~/.jishu-agent
+            if let Some(dir) = pi_agent_dir() {
+                cmd.env("PI_CODING_AGENT_DIR", &dir);
+            }
+
+            let output = cmd
+                .output()
+                .await
+                .map_err(|e| format!("Failed to run pi install: {e}"))?;
+
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                Ok(stdout)
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                Err(format!("pi install failed: {stderr}"))
+            }
+        })
+    }
+
+    fn migrate_mcp_if_needed(&self) {
+        let Ok(value) = config::load_jishu_config() else {
+            return;
+        };
+        let Ok(typed) = serde_json::from_value::<config::JishuConfig>(value) else {
+            return;
+        };
+        let _ = config::sync_mcp_json(&typed);
     }
 }
 

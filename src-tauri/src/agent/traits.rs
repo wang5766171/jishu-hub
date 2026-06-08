@@ -125,6 +125,27 @@ pub trait ConfigAdapter {
     fn set_active_model(&self, _active: Option<&Value>) -> Result<(), String> {
         Err("Active model not supported".to_string())
     }
+
+    // MCP adapter methods — only meaningful when config_surface is ModelStore
+    // with supports_mcp = true.
+
+    /// Whether this agent supports MCP tool integration.
+    fn supports_mcp(&self) -> bool {
+        false
+    }
+    /// Check MCP adapter installation status.
+    fn check_mcp(&self) -> Result<Value, String> {
+        Ok(serde_json::json!({"installed": false, "version": null}))
+    }
+    /// Install the MCP adapter for this agent.
+    fn install_mcp(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+    {
+        Box::pin(async { Err("MCP not supported".to_string()) })
+    }
+    /// Run one-time migration of MCP config if needed (idempotent).
+    fn migrate_mcp_if_needed(&self) {}
 }
 
 pub trait SessionAdapter {

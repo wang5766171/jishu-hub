@@ -47,6 +47,9 @@ pub struct AgentStatus {
     pub project_settings_surface: ProjectSettingsSurface,
     pub terminal_surface: TerminalSurface,
     pub transport: TransportSurface,
+    /// MCP adapter installation status (only populated when config_surface declares supports_mcp).
+    pub mcp_installed: bool,
+    pub mcp_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -185,6 +188,21 @@ impl AgentRegistry {
                         binary_path: None,
                         last_checked_at: 0,
                     });
+                let (mcp_installed, mcp_version) = if a.supports_mcp() {
+                    // Auto-migrate on first status check.
+                    a.migrate_mcp_if_needed();
+                    match a.check_mcp() {
+                        Ok(v) => (
+                            v.get("installed")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
+                            v.get("version").and_then(|v| v.as_str()).map(String::from),
+                        ),
+                        Err(_) => (false, None),
+                    }
+                } else {
+                    (false, None)
+                };
                 AgentStatus {
                     id: info.id.clone(),
                     display_name: info.display_name.clone(),
@@ -200,6 +218,8 @@ impl AgentRegistry {
                     project_settings_surface: a.project_settings_surface(),
                     terminal_surface: a.terminal_surface(),
                     transport: a.transport_surface(),
+                    mcp_installed,
+                    mcp_version,
                 }
             })
             .collect()
@@ -376,6 +396,8 @@ mod tests {
             project_settings_surface: ProjectSettingsSurface::Unsupported { reason: None },
             terminal_surface: TerminalSurface::Supported,
             transport: TransportSurface::Cli,
+            mcp_installed: false,
+            mcp_version: None,
         };
 
         let value = serde_json::to_value(status).unwrap();
@@ -425,6 +447,12 @@ mod tests {
             .find(|status| status.id == "opencode")
             .expect("opencode status should exist");
         assert_eq!(opencode.transport, TransportSurface::AcpPreferred);
+
+        // MCP: only jishu-self declares supports_mcp; others should have defaults.
+        assert!(!codex.mcp_installed);
+        assert!(codex.mcp_version.is_none());
+        assert!(!opencode.mcp_installed);
+        assert!(opencode.mcp_version.is_none());
 
         let claude = statuses
             .iter()

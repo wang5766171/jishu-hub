@@ -587,6 +587,14 @@ fn normalize_pi_agent_event(event: &serde_json::Value) -> Vec<NormalizedEvent> {
                 .and_then(|m| m.get("stopReason"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("end_turn");
+            // When stopReason is "toolUse", the turn ended because the LLM
+            // requested a tool call.  Pi will execute the tool and continue
+            // the conversation (generating more text_delta events).  We must
+            // NOT emit TurnComplete here — otherwise the frontend drops the
+            // streaming state and discards all subsequent events.
+            if stop_reason == "toolUse" {
+                return vec![];
+            }
             let reason = match stop_reason {
                 "aborted" => TurnEndReason::Aborted,
                 "max_tokens" => TurnEndReason::MaxTokens,

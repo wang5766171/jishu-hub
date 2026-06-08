@@ -30,6 +30,8 @@ export interface AgentStatus {
   project_settings_surface: ProjectSettingsSurface;
   terminal_surface: TerminalSurface;
   transport: TransportSurface;
+  mcp_installed: boolean;
+  mcp_version: string | null;
 }
 
 export type ConfigSurface =
@@ -48,7 +50,7 @@ export type TerminalSurface =
   | { kind: "supported" }
   | { kind: "unsupported"; reason: string | null };
 
-export type TransportSurface = "acp_preferred" | "cli" | "embedded";
+export type TransportSurface = "acp_preferred" | "pi_rpc" | "cli" | "embedded";
 
 export class CapabilitySet {
   private flags: bigint;

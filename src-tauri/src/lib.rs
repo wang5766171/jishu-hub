@@ -853,6 +853,46 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
     }
 }
 
+/// Check MCP adapter installation status for a specific agent (routed through adapter contract).
+#[tauri::command]
+fn check_mcp_adapter(
+    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
+) -> Result<serde_json::Value, String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
+    let agent = s
+        .registry
+        .get(&agent_id)
+        .ok_or_else(|| format!("Agent not found: {}", agent_id))?;
+    agent.check_mcp()
+}
+
+/// Install MCP adapter for a specific agent (routed through adapter contract).
+/// The MutexGuard is released before .await to keep the future Send-safe.
+#[tauri::command]
+async fn install_mcp_adapter(
+    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
+) -> Result<String, String> {
+    // Validate agent supports MCP under the lock (synchronous), then release.
+    {
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        let agent = s
+            .registry
+            .get(&agent_id)
+            .ok_or_else(|| format!("Agent not found: {}", agent_id))?;
+        if !agent.supports_mcp() {
+            return Err(format!("Agent {} does not support MCP", agent_id));
+        }
+    }
+    // Lock released — delegate to adapter's standalone install helper.
+    crate::agent::jishu_self::JishuSelfAgent::install_mcp_standalone().await
+}
+
 #[derive(serde::Serialize)]
 pub struct EnvStatus {
     pub node_installed: bool,
@@ -2051,6 +2091,8 @@ pub fn run() {
             check_prerequisite,
             install_agent_command,
             check_environment,
+            check_mcp_adapter,
+            install_mcp_adapter,
             check_available_updates,
             check_for_update,
             download_update,

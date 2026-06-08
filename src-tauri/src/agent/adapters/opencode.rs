@@ -829,6 +829,7 @@ fn opencode_value_to_shared_config(
                             .get("url")
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string()),
+                        headers: None,
                     },
                 );
             }

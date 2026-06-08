@@ -58,6 +58,8 @@ export interface McpServerConfig {
   cwd: string | null;
   type: string | null;
   url: string | null;
+  /** HTTP headers for url-based MCP servers. Supports ${ENV_VAR} interpolation. */
+  headers: Record<string, string> | null;
 }
 
 export interface HookAction {

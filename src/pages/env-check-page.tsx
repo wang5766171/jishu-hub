@@ -9,6 +9,7 @@ import {
   RefreshCw,
   ChevronDown,
   ArrowUpCircle,
+  Puzzle,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { AgentStatus } from "@/agents/types";
@@ -47,6 +48,8 @@ interface CheckItem {
   updateCommand?: string;
   downloadUrl?: string;
   npmPackage?: string;
+  /** Original agent ID for MCP status lookup (only for agent items). */
+  agentId?: string;
 }
 
 interface LatestVersion {
@@ -118,6 +121,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
   const [latestVersions, setLatestVersions] = useState<Map<string, string>>(
     new Map()
   );
+  const [installingMcpId, setInstallingMcpId] = useState<string | null>(null);
 
   useEffect(() => {
     invokeCommand<EnvData>("check_environment")
@@ -237,6 +241,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       npmPackage: agent.install_hint
         ?.replace("npm install -g ", "")
         ?.trim(),
+      agentId: agent.id,
     };
   });
 
@@ -285,6 +290,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       const newEnv = await invokeCommand<EnvData>("check_environment");
       setEnv(newEnv);
       await refreshHealth();
+      await refreshMcpStatus();
 
       const packages: [string, string][] = [];
       const currentAgents = await invokeCommand<AgentStatus[]>(
@@ -399,17 +405,86 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
           <div className="space-y-2">
             {visibleAgents.map((item) => {
               const downloadUrl = item.downloadUrl;
+              // Resolve MCP support from adapter's config_surface (no agent_id hardcode).
+              const originalAgent = item.agentId
+                ? agents.find((a) => a.id === item.agentId)
+                : undefined;
+              const supportsMcp =
+                originalAgent?.config_surface?.kind === "model_store" &&
+                (originalAgent.config_surface as { supports_mcp?: boolean }).supports_mcp;
+              const mcpInstalled = originalAgent?.mcp_installed ?? false;
+              const mcpVersion = originalAgent?.mcp_version ?? null;
               return (
-                <CheckItemRow
-                  key={item.id}
-                  item={item}
-                  installing={installingId === item.id}
-                  onInstall={() => handleInstall(item)}
-                  onDownload={downloadUrl ? () => openUrl(downloadUrl) : undefined}
-                  hasUpdate={hasUpdate(item)}
-                  latestVersion={latestVersions.get(item.id)}
-                  {...rowLabels}
-                />
+                <div key={item.id}>
+                  <CheckItemRow
+                    item={item}
+                    installing={installingId === item.id}
+                    onInstall={() => handleInstall(item)}
+                    onDownload={downloadUrl ? () => openUrl(downloadUrl) : undefined}
+                    hasUpdate={hasUpdate(item)}
+                    latestVersion={latestVersions.get(item.id)}
+                    {...rowLabels}
+                  />
+                  {/* MCP adapter sub-item — shown only when adapter declares supports_mcp */}
+                  {supportsMcp && item.installed && (
+                    <div className="ml-9 mt-1.5 flex items-center gap-2.5 py-1.5 px-1">
+                      <Puzzle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-medium leading-tight">
+                            MCP {t("env.adapter", "适配器")}
+                          </span>
+                          {mcpVersion && (
+                            <span className="text-[10px] font-mono text-muted-foreground bg-muted px-1 py-0.5 rounded">
+                              v{mcpVersion}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-muted-foreground leading-tight mt-0.5 truncate">
+                          {t("env.mcpDesc", "为 Jishu Agent 提供 MCP 服务调用能力（Web 搜索、网页读取等）")}
+                        </p>
+                      </div>
+                      {mcpInstalled ? (
+                        <div className="flex items-center gap-1 text-[var(--icon-success)] shrink-0">
+                          <CheckCircle2 className="h-3 w-3" />
+                          <span className="text-[10px] font-medium">{t("env.normal", "已就绪")}</span>
+                        </div>
+                      ) : (
+                        <div className="shrink-0 flex items-center gap-1.5">
+                          <span className="text-[10px] font-medium text-destructive">
+                            {t("env.notInstalled", "未安装")}
+                          </span>
+                          {installingMcpId === item.agentId ? (
+                            <Button size="sm" variant="outline" disabled className="h-6 px-2 text-[10px]">
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-6 px-2 text-[10px]"
+                              onClick={async () => {
+                                if (!item.agentId) return;
+                                setInstallingMcpId(item.agentId);
+                                try {
+                                  await invokeCommand("install_mcp_adapter", { agentId: item.agentId });
+                                  await refreshHealth();
+                                } catch (err) {
+                                  console.error(err);
+                                  window.alert(`MCP ${t("env.installFailed", "安装失败")}: ${String(err)}`);
+                                } finally {
+                                  setInstallingMcpId(null);
+                                }
+                              }}
+                            >
+                              {t("env.install", "安装")}
+                            </Button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               );
             })}
             {agentItems.length > 3 && !expandedAgents && (

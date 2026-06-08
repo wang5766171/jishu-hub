@@ -48,6 +48,10 @@ pub struct McpServerConfig {
     pub server_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// HTTP headers (e.g. Authorization) for url-based MCP servers.
+    /// pi-mcp-adapter supports ${ENV_VAR} and $env:ENV_VAR interpolation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

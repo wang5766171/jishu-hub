@@ -58,6 +58,32 @@ fn jishu_backup_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(jishu_dir()?.join("backups"))
 }
 
+/// Sync mcpServers from JishuConfig to ~/.jishu-agent/mcp.json.
+/// pi-mcp-adapter reads MCP server definitions from <Pi agent dir>/mcp.json,
+/// not from settings.json's mcpServers field.
+pub fn sync_mcp_json(config: &JishuConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = jishu_dir()?;
+    let mcp_path = dir.join("mcp.json");
+
+    let mcp_content = if let Some(servers) = &config.mcp_servers {
+        // Pass through all fields including `headers` for url-based servers.
+        // Full ServerEntry is preserved so any pi-mcp-adapter field works.
+        let entries: serde_json::Map<String, serde_json::Value> = servers
+            .iter()
+            .filter_map(|(name, entry)| serde_json::to_value(entry).ok().map(|v| (name.clone(), v)))
+            .collect();
+        let mut obj = serde_json::Map::new();
+        obj.insert("mcpServers".to_string(), serde_json::Value::Object(entries));
+        serde_json::to_string_pretty(&obj)?
+    } else {
+        // No mcpServers configured — write empty object so adapter sees no servers
+        serde_json::to_string_pretty(&serde_json::json!({"mcpServers": {}}))?
+    };
+
+    crate::util::atomic_write(&mcp_path, mcp_content.as_bytes())?;
+    Ok(())
+}
+
 pub fn load_jishu_config() -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let path = jishu_config_path()?;
     if !path.exists() {
@@ -110,6 +136,10 @@ pub fn save_jishu_config(config: &serde_json::Value) -> Result<(), Box<dyn std::
 
     let written = std::fs::read_to_string(&path)?;
     let _: JishuConfig = serde_json::from_str(&written)?;
+
+    // Sync mcpServers to ~/.jishu-agent/mcp.json for pi-mcp-adapter
+    sync_mcp_json(&typed)?;
+
     Ok(())
 }
 
