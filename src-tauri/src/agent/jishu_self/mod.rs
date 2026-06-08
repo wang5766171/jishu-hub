@@ -333,7 +333,7 @@ impl ConfigAdapter for JishuSelfAgent {
 
 impl TransportAdapter for JishuSelfAgent {
     fn transport_surface(&self) -> crate::agent::TransportSurface {
-        crate::agent::TransportSurface::AcpPreferred
+        crate::agent::TransportSurface::PiRpc
     }
 
     fn build_chat_command(&self, req: ChatRequest) -> tokio::process::Command {

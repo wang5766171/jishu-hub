@@ -92,7 +92,10 @@ where
         });
     }
 
-    Err("Cannot find Pi agent. Ensure Jishu Agent is installed or pi submodule is built.".to_string())
+    Err(
+        "Cannot find Pi agent. Ensure Jishu Agent is installed or pi submodule is built."
+            .to_string(),
+    )
 }
 
 pub(crate) fn build_pi_interactive_args(

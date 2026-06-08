@@ -80,7 +80,11 @@ impl AcpWriter {
     }
 
     /// Send a JSON-RPC response for a server-initiated request (e.g. tool approval).
-    async fn respond(&self, id: &serde_json::Value, result: serde_json::Value) -> Result<(), String> {
+    async fn respond(
+        &self,
+        id: &serde_json::Value,
+        result: serde_json::Value,
+    ) -> Result<(), String> {
         let mut stdin = self.stdin.lock().await;
         let msg = json!({
             "jsonrpc": "2.0",

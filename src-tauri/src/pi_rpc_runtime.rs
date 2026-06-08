@@ -39,7 +39,10 @@ pub fn spawn_pi_rpc_session(
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
 ) -> AcpControl {
     let stdin = child.stdin.take().expect("Pi RPC process must have stdin");
-    let stdout = child.stdout.take().expect("Pi RPC process must have stdout");
+    let stdout = child
+        .stdout
+        .take()
+        .expect("Pi RPC process must have stdout");
     let stderr = child.stderr.take();
 
     let stdin_arc = Arc::new(TokioMutex::new(stdin));
@@ -141,9 +144,7 @@ pub fn spawn_pi_rpc_session(
 enum LoopState {
     Idle,
     Prompting,
-    CancelPending {
-        pending_prompt: Option<String>,
-    },
+    CancelPending { pending_prompt: Option<String> },
 }
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
@@ -206,9 +207,7 @@ async fn pi_rpc_connection_loop(
 
     // Store session id
     {
-        let mut guard = acp_session_id
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut guard = acp_session_id.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(session_id.clone());
     }
 
@@ -469,10 +468,7 @@ fn is_pi_response(msg: &serde_json::Value, command: &str) -> bool {
         && msg.get("command").and_then(|v| v.as_str()) == Some(command)
 }
 
-async fn stdout_reader(
-    stdout: tokio::process::ChildStdout,
-    tx: tokio::sync::mpsc::Sender<String>,
-) {
+async fn stdout_reader(stdout: tokio::process::ChildStdout, tx: tokio::sync::mpsc::Sender<String>) {
     let mut reader = BufReader::new(stdout).lines();
     while let Ok(Some(line)) = reader.next_line().await {
         if tx.send(line).await.is_err() {
@@ -508,7 +504,10 @@ fn normalize_pi_agent_event(event: &serde_json::Value) -> Vec<NormalizedEvent> {
             let sub_type = ame.get("type").and_then(|v| v.as_str()).unwrap_or_default();
             match sub_type {
                 "text_delta" => {
-                    let delta = ame.get("delta").and_then(|v| v.as_str()).unwrap_or_default();
+                    let delta = ame
+                        .get("delta")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
                     if delta.is_empty() {
                         vec![]
                     } else {
@@ -518,7 +517,10 @@ fn normalize_pi_agent_event(event: &serde_json::Value) -> Vec<NormalizedEvent> {
                     }
                 }
                 "thinking_delta" => {
-                    let delta = ame.get("delta").and_then(|v| v.as_str()).unwrap_or_default();
+                    let delta = ame
+                        .get("delta")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
                     if delta.is_empty() {
                         vec![]
                     } else {
@@ -563,7 +565,10 @@ fn normalize_pi_agent_event(event: &serde_json::Value) -> Vec<NormalizedEvent> {
                 .get("isError")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let result = event.get("result").cloned().unwrap_or(serde_json::Value::Null);
+            let result = event
+                .get("result")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             if call_id.is_empty() {
                 vec![]
             } else {

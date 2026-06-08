@@ -12,8 +12,8 @@ mod hub;
 mod image;
 mod llm;
 mod orchestrator;
-mod process_command;
 mod pi_rpc_runtime;
+mod process_command;
 mod process_control;
 mod project;
 mod project_config;
@@ -614,9 +614,7 @@ fn list_config_templates(
 }
 
 #[tauri::command]
-fn list_presets(
-    state: tauri::State<'_, Mutex<AppState>>,
-) -> Result<Vec<hub::Preset>, String> {
+fn list_presets(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<hub::Preset>, String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
@@ -637,10 +635,7 @@ fn save_preset(
 }
 
 #[tauri::command]
-fn delete_preset(
-    state: tauri::State<'_, Mutex<AppState>>,
-    id: String,
-) -> Result<(), String> {
+fn delete_preset(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
@@ -649,10 +644,7 @@ fn delete_preset(
 }
 
 #[tauri::command]
-fn apply_preset(
-    state: tauri::State<'_, Mutex<AppState>>,
-    id: String,
-) -> Result<(), String> {
+fn apply_preset(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
@@ -827,30 +819,33 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
     if !source.exists() {
         source = res_dir.join("_up_").join("third_party").join("pi");
     }
-    
+
     let target = crate::agent::jishu_self::pi_agent_dir().ok_or("Failed to get target dir")?;
-    
+
     if !source.exists() {
         return Err(format!("Source pi directory not found: {:?}", source));
     }
-    
+
     // Ensure target directory exists to prevent xcopy from asking F/D
     if let Err(e) = std::fs::create_dir_all(&target) {
         return Err(format!("Failed to create target directory: {}", e));
     }
-    
+
     // Copy files
     if let Err(e) = copy_dir_recursive(&source, std::path::Path::new(&target)) {
         return Err(format!("Failed to copy bundled pi agent files: {}", e));
     }
-    
+
     // Run npm install --production
-    let mut cmd = shell_command("npm", vec!["install".to_string(), "--production".to_string()]);
+    let mut cmd = shell_command(
+        "npm",
+        vec!["install".to_string(), "--production".to_string()],
+    );
     let mut installer = crate::process_command::tokio_no_window(&mut cmd);
     installer.current_dir(&target);
-    
+
     let output = installer.output().await.map_err(|e| e.to_string())?;
-    
+
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {

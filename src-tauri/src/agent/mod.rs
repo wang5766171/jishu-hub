@@ -101,8 +101,21 @@ pub enum TerminalSurface {
 #[serde(rename_all = "snake_case")]
 pub enum TransportSurface {
     AcpPreferred,
+    /// Pi's native --mode rpc protocol (JSON-line, distinct from ACP JSON-RPC 2.0).
+    PiRpc,
     Cli,
     Embedded,
+}
+
+impl TransportSurface {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::AcpPreferred => "ACP",
+            Self::PiRpc => "PiRPC",
+            Self::Cli => "CLI",
+            Self::Embedded => "Embedded",
+        }
+    }
 }
 
 pub struct AgentRegistry {
@@ -239,35 +252,37 @@ impl AgentRegistry {
         let agents = &self.agents;
         let health_cache = &self.health_cache;
 
-        let per_agent: Vec<Vec<crate::project::Project>> =
-            std::thread::scope(|scope| {
-                agents
-                    .iter()
-                    .filter(|(id, agent)| {
-                        if agent.requires_installation_for_project_scan() {
-                            let now = now_ms();
-                            let installed = health_cache
+        let per_agent: Vec<Vec<crate::project::Project>> = std::thread::scope(|scope| {
+            agents
+                .iter()
+                .filter(|(id, agent)| {
+                    if agent.requires_installation_for_project_scan() {
+                        let now = now_ms();
+                        let installed = health_cache
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .get(*id)
+                            .map(|h| {
+                                now.saturating_sub(h.last_checked_at) < HEALTH_CACHE_TTL_MS
+                                    && h.installed
+                            })
+                            .unwrap_or(false);
+                        if !installed {
+                            let health = agent.probe_sync();
+                            let inst = health.installed;
+                            health_cache
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
-                                .get(*id)
-                                .map(|h| now.saturating_sub(h.last_checked_at) < HEALTH_CACHE_TTL_MS && h.installed)
-                                .unwrap_or(false);
-                            if !installed {
-                                let health = agent.probe_sync();
-                                let inst = health.installed;
-                                health_cache
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .insert((*id).to_string(), health);
-                                return inst;
-                            }
+                                .insert((*id).to_string(), health);
+                            return inst;
                         }
-                        true
-                    })
-                    .map(|(_, agent)| scope.spawn(move || agent.scan_projects()))
-                    .map(|handle| handle.join().unwrap_or_default())
-                    .collect()
-            });
+                    }
+                    true
+                })
+                .map(|(_, agent)| scope.spawn(move || agent.scan_projects()))
+                .map(|handle| handle.join().unwrap_or_default())
+                .collect()
+        });
 
         crate::project::merge_projects(per_agent.into_iter().flatten().collect())
     }
@@ -388,7 +403,7 @@ mod tests {
             }
         );
         assert_eq!(jishu.terminal_surface, TerminalSurface::Supported);
-        assert_eq!(jishu.transport, TransportSurface::AcpPreferred);
+        assert_eq!(jishu.transport, TransportSurface::PiRpc);
 
         let codex = statuses
             .iter()
@@ -396,8 +411,12 @@ mod tests {
             .expect("codex status should exist");
         assert_eq!(
             codex.config_surface,
-            ConfigSurface::Raw {
-                format: "toml".to_string()
+            ConfigSurface::Structured {
+                schema_id: "codex-config".to_string(),
+                supports_model_picker: false,
+                supports_small_model: false,
+                supports_large_model: false,
+                supports_api_provider: false,
             }
         );
 

@@ -200,7 +200,8 @@ impl ConfigAdapter for CodexAdapter {
         if raw.is_empty() {
             return Ok(config_json);
         }
-        let toml_val: toml::Value = toml::from_str(&raw).map_err(|e| format!("Invalid TOML: {}", e))?;
+        let toml_val: toml::Value =
+            toml::from_str(&raw).map_err(|e| format!("Invalid TOML: {}", e))?;
 
         if let Some(model) = toml_val.get("model").and_then(|v| v.as_str()) {
             config_json["model"] = serde_json::Value::String(model.to_string());
@@ -261,7 +262,10 @@ impl ConfigAdapter for CodexAdapter {
                     .entry("shell_environment_policy".to_string())
                     .or_insert_with(|| {
                         let mut m = toml::map::Map::new();
-                        m.insert("inherit".to_string(), toml::Value::String("core".to_string()));
+                        m.insert(
+                            "inherit".to_string(),
+                            toml::Value::String("core".to_string()),
+                        );
                         toml::Value::Table(m)
                     });
                 if let Some(sep_table) = sep.as_table_mut() {
@@ -278,8 +282,15 @@ impl ConfigAdapter for CodexAdapter {
                         *set_table = new_set;
                     }
                 }
-            } else if config.get("env").unwrap_or(&serde_json::Value::Null).is_null() {
-                if let Some(sep) = table.get_mut("shell_environment_policy").and_then(|v| v.as_table_mut()) {
+            } else if config
+                .get("env")
+                .unwrap_or(&serde_json::Value::Null)
+                .is_null()
+            {
+                if let Some(sep) = table
+                    .get_mut("shell_environment_policy")
+                    .and_then(|v| v.as_table_mut())
+                {
                     sep.remove("set");
                 }
             }
@@ -295,7 +306,8 @@ impl ConfigAdapter for CodexAdapter {
                                 .entry(k.clone())
                                 .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
                             if let Some(pl_table) = pl.as_table_mut() {
-                                pl_table.insert("enabled".to_string(), toml::Value::Boolean(enabled));
+                                pl_table
+                                    .insert("enabled".to_string(), toml::Value::Boolean(enabled));
                             }
                         }
                     }
@@ -313,7 +325,9 @@ impl ConfigAdapter for CodexAdapter {
             if let Some(mcp_obj) = config.get("mcpServers").and_then(|v| v.as_object()) {
                 let mut new_mcp = toml::map::Map::new();
                 for (k, v) in mcp_obj {
-                    if let Ok(mcp_server) = serde_json::from_value::<crate::config::McpServerConfig>(v.clone()) {
+                    if let Ok(mcp_server) =
+                        serde_json::from_value::<crate::config::McpServerConfig>(v.clone())
+                    {
                         if let Ok(toml_str) = toml::to_string(&mcp_server) {
                             if let Ok(toml_val) = toml::from_str::<toml::Value>(&toml_str) {
                                 new_mcp.insert(k.clone(), toml_val);
@@ -322,12 +336,17 @@ impl ConfigAdapter for CodexAdapter {
                     }
                 }
                 table.insert("mcp_servers".to_string(), toml::Value::Table(new_mcp));
-            } else if config.get("mcpServers").unwrap_or(&serde_json::Value::Null).is_null() {
+            } else if config
+                .get("mcpServers")
+                .unwrap_or(&serde_json::Value::Null)
+                .is_null()
+            {
                 table.remove("mcp_servers");
             }
         }
 
-        let new_content = toml::to_string_pretty(&toml_val).map_err(|e| format!("Serialization error: {}", e))?;
+        let new_content =
+            toml::to_string_pretty(&toml_val).map_err(|e| format!("Serialization error: {}", e))?;
         self.save_raw_config(&new_content)
     }
 

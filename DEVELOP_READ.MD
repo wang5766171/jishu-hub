@@ -38,12 +38,13 @@ flowchart TD
     Adapter --> TransportSpec["Transport Spec"]
 
     TransportSpec --> AcpRuntime["ACP Transport Runtime"]
+    TransportSpec --> PiRpcRuntime["Pi RPC Transport Runtime"]
     TransportSpec --> CliRuntime["CLI Transport Runtime"]
     TransportSpec --> RemoteRuntime["未来远程会话 / Broker Runtime"]
 
     AcpRuntime --> ClaudeAcp["支持 ACP 的 agent"]
     AcpRuntime --> OpenCode["OpenCode ACP"]
-    AcpRuntime --> JishuSelf["Jishu Agent Adapter"]
+    PiRpcRuntime --> JishuSelf["Jishu Agent Adapter"]
     CliRuntime --> Claude["Claude Code CLI"]
     CliRuntime --> Codex["Codex CLI"]
     CliRuntime --> OtherCli["其他原生 CLI agent"]
@@ -59,14 +60,17 @@ flowchart TD
 | --- | --- | --- |
 | GUI 控制面 | 渲染页面、交互、状态展示、人工审批输入 | 不拼 agent 命令，不解析 agent 私有配置/会话 |
 | 应用服务 / IPC | 接收 GUI 请求，调用领域服务，做参数校验 | 不写 `activeId === "xxx"` 业务分支 |
-| AgentRuntime | 选择 transport，管理进程、ACP 会话、取消、事件流、完成状态 | 不承载某个 agent 私有业务 |
-| Agent Adapter | 声明能力与 surface，生成原生命令，解析私有配置/会话，归一化事件 | 不承载 GUI 页面逻辑，不做任务规划 |
-| ACP Transport Runtime | 通用 ACP client，实现握手、session、prompt、update、resume、取消 | 不写成 `jishu-self` 专属逻辑 |
+| AgentRuntime | 通过 adapter surface 选择 transport，管理进程、会话、取消、事件流 | 不承载某个 agent 私有业务，不用 agent_id 分支选择 transport |
+| Agent Adapter | 声明能力与 surface（含 TransportSurface），生成原生命令，解析私有配置/会话 | 不承载 GUI 页面逻辑，不做任务规划 |
+| ACP Transport Runtime | 通用 ACP JSON-RPC 2.0 client，实现握手、session、prompt、update、resume、取消 | 不写成 `jishu-self` 专属逻辑 |
+| Pi RPC Transport Runtime | Pi 原生 --mode rpc 协议适配器，处理 get_state/prompt/abort、AgentEvent 归一化 | 不写成 `jishu-self` 专属逻辑，未来其他 Pi-based agent 可复用 |
 | CLI Transport Runtime | 执行原生 CLI 命令，读取 stdout/stderr/stdin，交给 adapter normalizer | 不把所有 agent 强制包进 Jishu 命令 |
 | Jishu Planner/Supervisor | 任务规划、角色分配、执行监督、返工判断、技能模板调度 | 不取代 agent adapter 层 |
 | Pi runtime fork | 提供 Jishu Agent 的底层 agent loop、工具、会话能力 | 不散落复制到 Hub 主代码 |
 
-## 3. ACP 是一等通用 transport
+## 3. Transport 层设计
+
+### 3.1 ACP 是一等通用 transport
 
 ACP 必须在架构中独立存在。它不是 `jishu-self` 的私有实现，也不是适配某个 agent 的特例。
 
@@ -81,17 +85,36 @@ Agent Adapter -> AcpCommandSpec -> AgentRuntime -> ACP Transport Runtime -> 目�
 1. `ACP Transport Runtime` 负责通用协议交互：`initialize`、`session/new`、`session/resume`、`session/load`、`session/prompt`、`session/update`、完成事件、错误事件、usage、取消和 session id 解析。
 2. 每个支持 ACP 的 agent 只通过 adapter 声明 `TransportSurface::AcpPreferred`，并实现 `build_acp_command(ChatRequest) -> AcpCommandSpec`。
 3. `AcpCommandSpec` 只描述要启动哪个 ACP server，包括 program、args、envs。它不应包含 GUI 业务，也不应包含 Jishu 任务编排语义。
-4. `jishu-self`、OpenCode、未来 Claude ACP、远程 ACP agent 都应复用同一个 ACP runtime。
-5. 任何新增 ACP agent 都不能复制 `jishu-self` 的 ACP loop，也不能在页面或 IPC 中直接写 JSON-RPC 帧。
+4. OpenCode、未来 Claude ACP、远程 ACP agent 都应复用同一个 ACP runtime。
+5. 任何新增 ACP agent 都不能复制其他 agent 的 ACP loop，也不能在页面或 IPC 中直接写 JSON-RPC 帧。
 6. ACP 事件必须统一归一化成 `NormalizedEvent`，由 GUI 和 Task Orchestrator 共同消费。
+
+### 3.2 Pi RPC 是独立 transport
+
+Jishu Agent 底层 Pi 引擎不支持 ACP 协议，而是使用 Pi 原生 `--mode rpc` 协议（JSON-line，不同于 ACP 的 JSON-RPC 2.0）。
+
+正确模型：
+
+```text
+Agent Adapter -> AcpCommandSpec -> AgentRuntime -> Pi RPC Transport Runtime -> Pi --mode rpc
+```
+
+约束：
+
+1. `Pi RPC Transport Runtime`（`pi_rpc_runtime.rs`）负责 Pi 原生协议交互：`get_state`、`prompt`、`abort`、`AgentEvent` 流式事件归一化。
+2. Jishu Agent adapter 声明 `TransportSurface::PiRpc`，通过 `build_acp_command` 生成启动命令（`pi --mode rpc`）。
+3. `PiRpc` 与 `AcpPreferred` 是并列的 transport 选项，AgentRuntime 通过 adapter 的 `TransportSurface` 声明选择对应 runtime，禁止用 agent_id 硬编码判断。
+4. 未来其他基于 Pi 的 agent 可复用同一个 Pi RPC runtime。
+5. 所有 transport 的事件必须统一归一化成 `NormalizedEvent`。
 
 当前实现锚点：
 
-- `src-tauri/src/agent_runtime.rs`：统一选择 ACP/CLI transport。其中的 `run_acp_turn_blocking` 等阻塞执行路径必须调用 `acp_runtime.rs` 提供的底层纯函数（如 `write_jsonrpc_request`），严禁重复实现 JSON-RPC 解析封装逻辑。
-- `src-tauri/src/acp_runtime.rs`：GUI 长会话 ACP client runtime（也是 ACP 底层通信解析函数的唯一信任源）。
-- `src-tauri/src/agent/mod.rs`：`AcpCommandSpec` 和 agent surface 状态。
+- `src-tauri/src/agent_runtime.rs`：通过 adapter 的 `TransportSurface` 选择 transport（ACP/PiRPC/CLI）。
+- `src-tauri/src/acp_runtime.rs`：通用 ACP JSON-RPC 2.0 client runtime。
+- `src-tauri/src/pi_rpc_runtime.rs`：Pi 原生 RPC 协议 runtime。
+- `src-tauri/src/agent/mod.rs`：`TransportSurface` 枚举（`AcpPreferred`、`PiRpc`、`Cli`、`Embedded`）。
 - `src-tauri/src/agent/traits.rs`：`build_acp_command` adapter contract。
-- `src-tauri/src/agent/jishu_self/mod.rs`：Jishu Agent 只是一个 ACP adapter 实例。
+- `src-tauri/src/agent/jishu_self/mod.rs`：Jishu Agent adapter，声明 `PiRpc` transport。
 - `src-tauri/src/agent/adapters/opencode.rs`：OpenCode ACP adapter 实例。
 
 ## 4. CLI 是原生入口，不是通用包裹层
@@ -151,7 +174,7 @@ CLI transport 用于两类场景：
 当前 Jishu Agent runtime 约束：
 
 - 使用 `pi_agent_rust` 作为 fork/runtime，后续通过 Git 同步上游。
-- 由 `JishuSelfAgent` adapter 生成 ACP command。
+- 由 `JishuSelfAgent` adapter 声明 `TransportSurface::PiRpc`，通过 Pi 原生 `--mode rpc` 协议交互（Pi 不支持 ACP 协议）。
 - 通过 `PI_CODING_AGENT_DIR=~/.jishu-agent` 隔离 Jishu 自有 runtime 数据。
 - 通过 identity prompt 明确对用户呈现为 `jishu agent`，不是 Pi。
 - 会话保存走 Pi session 机制，Hub 保存 GUI session 与 native session 的映射。
@@ -311,7 +334,7 @@ Harmes 或类似自学习能力应作为学习/evaluation/policy 层接入，不
 
 1. 这是 GUI 展示问题、应用服务问题、AgentRuntime 问题、adapter 问题、transport 问题，还是 Task Orchestrator 问题。
 2. 是否需要新 surface/capability，而不是写 agent id 分支。
-3. 是否需要 ACP，若需要，是否复用通用 ACP runtime。
+3. 需要哪种 transport（ACP、PiRPC、CLI），是否复用已有 runtime。
 4. 是否影响配置页、会话页、终端跳转、任务执行四条路径。
 5. 是否影响 Jishu Agent 的普通 agent 身份或任务中枢身份。
 6. 是否需要更新 `DEVELOP_READ.MD` 和 codex 完成报告。
@@ -321,8 +344,8 @@ Harmes 或类似自学习能力应作为学习/evaluation/policy 层接入，不
 
 当前架构基准已经明确：
 
-1. ACP 已提升为通用 transport，不是 `jishu-self` 私有逻辑。
-2. Jishu Agent 通过 adapter 生成 ACP command，对接 `pi_agent_rust`。
+1. Transport 层已拆分为 ACP、Pi RPC、CLI 三种独立 runtime，通过 adapter 的 `TransportSurface` 声明选择，禁止 agent_id 硬编码分支。
+2. Jishu Agent 声明 `PiRpc` transport，通过 Pi 原生 `--mode rpc` 协议对接 `pi_agent_rust`（Pi 不支持 ACP）。
 3. GUI chat、task dispatch、CLI send 都应通过 AgentRuntime 选择 transport。
 4. 配置页、会话页、终端跳转必须通过 adapter surface。
 5. 临时 RPC/bridge 主路径已经不再作为正式方向。

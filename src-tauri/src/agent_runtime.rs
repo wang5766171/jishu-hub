@@ -54,6 +54,7 @@ pub struct PreparedAcpTurn {
     pub native_session_id: Option<String>,
     pub message: String,
     pub command: AcpCommandSpec,
+    pub transport: TransportSurface,
 }
 
 pub struct GuiTurnHandle {
@@ -89,7 +90,7 @@ pub fn prepare_gui_turn(
         .filter(|session_id| !crate::agent::command_config::is_transient_session_id(session_id));
 
     match transport {
-        TransportSurface::AcpPreferred => {
+        TransportSurface::AcpPreferred | TransportSurface::PiRpc => {
             let req = ChatRequest {
                 project_path: request.project_path.clone(),
                 session_id: native_session_id.clone(),
@@ -103,6 +104,7 @@ pub fn prepare_gui_turn(
                 native_session_id,
                 message: request.message,
                 command,
+                transport,
             }))
         }
         TransportSurface::Cli | TransportSurface::Embedded => {
@@ -239,16 +241,20 @@ where
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
 
-    // Jishu-self uses Pi's native --mode rpc protocol.
-    let is_pi_rpc = turn.agent_id == "jishu-self";
+    // Transport selection based on adapter surface, not hardcoded agent id.
+    let is_pi_rpc = turn.transport == TransportSurface::PiRpc;
     #[cfg(target_os = "windows")]
     {
         crate::process_command::tokio_no_window(&mut command);
     }
 
-    let child = command
-        .spawn()
-        .map_err(|e| format!("Failed to spawn {} ACP: {e}", turn.agent_id))?;
+    let child = command.spawn().map_err(|e| {
+        format!(
+            "Failed to spawn {} {}: {e}",
+            turn.agent_id,
+            turn.transport.as_str()
+        )
+    })?;
     let pid = child.id().unwrap_or(0);
     let sid = turn
         .gui_session_id
@@ -256,11 +262,14 @@ where
         .unwrap_or_else(|| format!("pending-{pid}"));
 
     log::info!(
-        "Spawning ACP session: agent={}, pid={}, project_path={}, is_pi_rpc={}",
-        turn.agent_id, pid, turn.project_path, is_pi_rpc
+        "Spawning {} session: agent={}, pid={}, project_path={}",
+        turn.transport.as_str(),
+        turn.agent_id,
+        pid,
+        turn.project_path
     );
 
-    // Jishu-self uses Pi's native --mode rpc protocol instead of ACP JSON-RPC 2.0
+    // PiRpc uses Pi's native --mode rpc protocol; AcpPreferred uses ACP JSON-RPC 2.0.
     let acp = if is_pi_rpc {
         crate::pi_rpc_runtime::spawn_pi_rpc_session(
             app,
@@ -308,6 +317,10 @@ pub fn run_turn_blocking(
 
     match transport {
         TransportSurface::AcpPreferred => run_acp_turn_blocking(agent, request),
+        TransportSurface::PiRpc => Err(
+            "PiRpc transport requires async GUI runtime; blocking CLI path not yet implemented"
+                .to_string(),
+        ),
         TransportSurface::Cli | TransportSurface::Embedded => {
             run_cli_turn_blocking(agent, request, stdin_bridge)
         }
@@ -626,7 +639,7 @@ mod tests {
         );
         assert_eq!(
             super::transport_for_agent(&registry, "jishu-self").unwrap(),
-            TransportSurface::AcpPreferred
+            TransportSurface::PiRpc
         );
     }
 }
