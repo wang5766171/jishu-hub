@@ -843,13 +843,6 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
         return Err(format!("Failed to copy bundled pi agent files: {}", e));
     }
     
-    // Patch package.json to remove husky prepare script which breaks npm install --production
-    let pkg_path = std::path::Path::new(&target).join("package.json");
-    if let Ok(content) = std::fs::read_to_string(&pkg_path) {
-        let new_content = content.replace("\"prepare\": \"husky\"", "\"prepare\": \"node -e \\\"\\\"\"");
-        let _ = std::fs::write(&pkg_path, new_content);
-    }
-    
     // Run npm install --production
     let mut cmd = shell_command("npm", vec!["install".to_string(), "--production".to_string()]);
     let mut installer = crate::process_command::tokio_no_window(&mut cmd);
