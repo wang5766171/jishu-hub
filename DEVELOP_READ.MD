@@ -180,7 +180,64 @@ CLI transport 用于两类场景：
 - 会话保存走 Pi session 机制，Hub 保存 GUI session 与 native session 的映射。
 - 不再使用临时 JSON-RPC/RPC bridge 作为 GUI 对话主路径。
 
-## 7. 配置系统
+## 7. Jishu Agent 的 MCP 扩展层
+
+Jishu Agent 在 Pi 原生 RPC 协议之上扩展了 MCP（Model Context Protocol）工具发现与执行能力。该扩展由独立的 `pi-mcp-adapter` 包实现，不属于上游 Pi 核心；Hub 只负责配置同步与生命周期入口，协议层不参与。
+
+### 7.1 路径隔离
+
+通过 `PI_CODING_AGENT_DIR` 环境变量隔离 Jishu 自有 runtime：
+
+- 上游 Pi 默认：`~/.pi/agent`
+- Jishu Agent 覆盖：`~/.jishu-agent`
+
+派生路径：
+
+- MCP 服务器配置：`<PI_CODING_AGENT_DIR>/mcp.json`
+- Adapter npm 包：`<PI_CODING_AGENT_DIR>/npm/node_modules/pi-mcp-adapter`
+
+fork 重命名时需保持 `configDir` 与 `PI_CODING_AGENT_DIR` 对齐。
+
+### 7.2 配置 schema 与读取
+
+`mcp.json` 形如：
+
+```json
+{
+  "mcpServers": {
+    "<name>": {
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ${MCP_TOKEN}" },
+      "transport": "streamable-http"
+    }
+  }
+}
+```
+
+字段名是 `headers`（不是 `http_headers`），并支持 `${ENV_VAR}` / `$env:ENV_VAR` 插值。
+
+Jishu Hub 在用户保存配置时把 `settings.json` 的 `mcpServers` 镜像到 `mcp.json`，adapter 始终读到最新配置。Adapter 启动后只读 `mcp.json`，不直接读 Hub 的 `settings.json`。
+
+### 7.3 Adapter Contract
+
+Hub 与 MCP 子系统的交互必须通过 `ConfigAdapter` trait，禁止在页面或 IPC 中写 `agent_id` 分支：
+
+- `supports_mcp()` — 能力声明
+- `check_mcp()` — 返回 `{ installed, version }`
+- `install_mcp()` — 异步安装
+- `migrate_mcp_if_needed()` — 幂等地把 `mcpServers` 从 `settings.json` 同步到 `mcp.json`
+
+`AgentStatus` 暴露 `mcp_installed` / `mcp_version` 字段，`list_agent_statuses()` 自动为声明 `supports_mcp = true` 的 adapter 调用 `check_mcp()`，GUI 从单一数据源渲染状态徽章。
+
+### 7.4 生命周期模式
+
+`pi-mcp-adapter` 支持三种服务器生命周期（默认 `lazy`）：
+
+- `lazy` — 首次工具调用时连接
+- `keep-alive` — 启动时连接并跨会话保持
+- `eager` — 每个会话启动都重连
+
+## 8. 配置系统
 
 配置页必须由 adapter 的 `ConfigSurface` 驱动。
 
@@ -198,7 +255,7 @@ CLI transport 用于两类场景：
 3. 新增 agent 配置时，先定义 schema 或 model-store contract，再接页面。
 4. 配置错误要返回结构化错误，页面只负责展示，不解析 agent 私有文件。
 
-## 8. 会话系统
+## 9. 会话系统
 
 会话是 agent 私有数据，Hub 只持有统一索引和展示模型。
 
@@ -217,7 +274,7 @@ Jishu/Pi 会话特别约束：
 - `jishu-self` 恢复会话时要找到 native Pi session，而不是拿 GUI 临时 id 恢复。
 - 对话历史保存失败时，优先检查 ACP session result、Pi session root、native session id 映射。
 
-## 9. 任务规划与 skill/template
+## 10. 任务规划与 skill/template
 
 任务能力是 v0.6.x 的核心，不是临时功能。
 
@@ -238,7 +295,7 @@ skill/template 规则：
 - 不同 skill 的目标效果要可测试：plan 是否体现方法论、执行是否按模板拆分、结果是否展示。
 - 新增 skill 时，应先定义输入、适用场景、预期 plan 结构、验收方式。
 
-## 10. 权限与人工干预
+## 11. 权限与人工干预
 
 权限不是 adapter 私有判断，也不是 GUI 文案。
 
@@ -252,7 +309,7 @@ skill/template 规则：
 
 ACP 场景下，审批应优先通过 ACP 的 tool/update/approval 能力表达。若某个 agent 暂不支持执行前拦截，必须在能力声明中体现，不能假装已经完整支持。
 
-## 11. 版本与验证纪律
+## 12. 版本与验证纪律
 
 每次交付给用户测试前都要递增版本号，便于用户确认是否安装了最新构建。当前测试版为 `0.6.14`。用户最终确认后，再按发布要求改为正式 `v0.6.0`。
 
@@ -275,7 +332,7 @@ cargo test --manifest-path third_party\pi_agent_rust\Cargo.toml acp --lib
 
 用户主要做 GUI 功能验证，开发者负责打包、基础命令检查、Rust/前端构建检查和测试文档。
 
-## 12. 文档维护规则
+## 13. 文档维护规则
 
 以下场景必须更新本文档：
 
@@ -293,7 +350,7 @@ cargo test --manifest-path third_party\pi_agent_rust\Cargo.toml acp --lib
 - 架构差异或问题闭环说明。
 - 可能问题和后续风险。
 
-## 13. 后续大版本预留
+## 14. 后续大版本预留
 
 ### Harmes 自学习架构
 
@@ -328,7 +385,7 @@ Harmes 或类似自学习能力应作为学习/evaluation/policy 层接入，不
 5. 权限如何拦截。
 6. GUI 是否无需新增 agent id 分支。
 
-## 14. 开发决策清单
+## 15. 开发决策清单
 
 实现任何 agent 相关需求前，先回答：
 
@@ -340,7 +397,7 @@ Harmes 或类似自学习能力应作为学习/evaluation/policy 层接入，不
 6. 是否需要更新 `DEVELOP_READ.MD` 和 codex 完成报告。
 7. 是否需要给用户递增版本号并说明测试步骤。
 
-## 15. 当前优先修复方向
+## 16. 当前优先修复方向
 
 当前架构基准已经明确：
 
