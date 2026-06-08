@@ -14,9 +14,13 @@ pub fn probe_self() -> AgentHealth {
         }
     };
 
+    // Jishu Agent is the built-in agent of Jishu Hub. The version shown in
+    // the GUI (env-check page, agent switcher) should be the Jishu Hub
+    // package version, not the underlying pi runtime version. The pi runtime
+    // is an internal implementation detail that the user should not see.
     AgentHealth {
         installed: true,
-        version: Some("Node.js (v0.78.1)".to_string()),
+        version: Some(env!("CARGO_PKG_VERSION").to_string()),
         error: None,
         binary_path: Some(pi_cmd.program.to_string_lossy().to_string()),
         last_checked_at: now_ms(),
