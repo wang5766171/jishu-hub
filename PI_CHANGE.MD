@@ -1,7 +1,6 @@
 # PI_CHANGE.MD
 
 本文档管理 `third_party/pi` 的 fork 仓库规则与改动记录。
-
 ---
 
 # 第一部分：通用管理规则
@@ -10,38 +9,37 @@
 
 ```
 ┌─────────────────────────────────┐
-│  jishu-hub（本项目）              │
-│  submodule: third_party/         │
-│            pi                    │
-│          ↓ 指向自有 fork         │
+│ jishu-hub（本项目）             │
+│ submodule: third_party/         │
+│           pi                    │
+│         │指向自有 fork         │
 └──────────────┬──────────────────┘
-               │ git submodule
+               │git submodule
                ▼
 ┌─────────────────────────────────┐
-│  wang5766171/pi                 │
-│  （自有 fork 仓库）               │
-│  分支: main / tag: v0.78.1       │
+│ wang5766171/pi                 │
+│ （自有 fork 仓库）              │
+│ 分支: release_v0.78.1_change    │
 └──────────────┬──────────────────┘
-               │ fork from
+               │fork from
                ▼
 ┌─────────────────────────────────┐
-│  Dicklesworthstone/pi           │
-│  （上游开源仓库）                 │
-│  tags: v0.78.1, ...             │
+│ Dicklesworthstone/pi           │
+│ （上游开源仓库）                 │
+│ tags: v0.78.1, ...             │
 └─────────────────────────────────┘
 ```
 
-**核心流程**：jishu-hub 通过 submodule 引用自有 fork 仓库的特定 tag 或分支；自有 fork 基于上游开源仓库进行同步，并在其上叠加 jishu-hub 所需的可能改动。
+**核心流程**：jishu-hub 通过 submodule 引用自有 fork 仓库的特定分支（命名规则为 `release_<tag版本>_change`）；自有 fork 基于上游开源仓库的 Tag 进行同步，并在其上叠加 jishu-hub 所需的改动。
 
 ## 1.2 当前状态
-
 | 项目 | 值 |
 |------|-----|
 | 上游仓库 | `https://github.com/Dicklesworthstone/pi` |
 | 自有 fork | `https://github.com/wang5766171/pi` |
-| 当前维护分支/Tag | `v0.78.1` |
+| 当前维护分支 | `release_v0.78.1_change` |
 | `.gitmodules` URL | `https://github.com/wang5766171/pi` |
-| `.gitmodules` branch | `main` |
+| `.gitmodules` branch | `release_v0.78.1_change` |
 
 ## 1.3 日常源码变动流程
 
@@ -50,6 +48,7 @@
 1. **在子模块内直接修改代码**：
    ```bash
    cd third_party/pi
+   # 确保处于当前对应的 release_vX.X.X_change 分支
    # 修改文件...
    ```
 
@@ -57,7 +56,7 @@
    ```bash
    git add -A
    git commit -m "feat: 描述本次改动"
-   git push origin main
+   git push origin release_v0.78.1_change
    ```
 
 3. **回到 jishu-hub 主仓库，提交 submodule 指针更新**：
@@ -69,31 +68,46 @@
 
 ## 1.4 上游版本升级流程
 
-当上游发布新版本时：
+当上游开源仓库发布了新版本（例如 `v0.78.2`）时，需更新分支并合并代码：
 
-1. 在自有 fork 仓库中 fetch 上游分支/tags：
+1. **获取最新的上游 tags 并创建新分支**：
    ```bash
+   cd third_party/pi
    git fetch upstream
-   git merge upstream/main  # 或者 fetch tags 后合并
+   # 基于上游的新 tag 创建对应的新分支
+   git checkout -b release_v0.78.2_change v0.78.2
    ```
 
-2. 解决可能存在的冲突，保留 Jishu 需要的定制改动。
-
-3. 验证通过后推送：
+2. **合并旧版本分支中的自有改动（例如定制规则和依赖修复等）**：
    ```bash
-   git push origin main
+   git merge release_v0.78.1_change
+   ```
+   *注意：如果在合并时产生冲突，请手动解决冲突，保留 Jishu 的定制改动。*
+
+3. **验证通过后推送到远端自有 fork**：
+   ```bash
+   git push -u origin release_v0.78.2_change
    ```
 
-4. 更新 jishu-hub submodule 指向新的提交或分支：
+4. **更新 jishu-hub 仓库的子模块指向**：
+   - 记得同时更新 `.gitmodules` 文件里的 `branch` 字段为新的 `release_v0.78.2_change`。
    ```bash
-   # 主仓库更新 submodule 指针
-   git add third_party/pi
-   git commit -m "chore: upgrade pi submodule"
+   cd ../..
+   git add third_party/pi .gitmodules
+   git commit -m "chore: upgrade pi submodule to v0.78.2"
    ```
 
 ---
 
 # 第二部分：改动记录
+
+## 2026-06-08 | 原生 Node.js 版本兼容性适配
+
+### 改动总览
+
+| 模块 | 改动说明 |
+|------|---------|
+| `package.json` | 移除了强制要求的 `husky` 钩子报错逻辑。将 `"prepare": "husky"` 替换为忽略错误的方式，解决在用户机器部署时由于缺少 husky 依赖导致整个 npm 安装失败的问题。 |
 
 ## 2026-06-07 | 迁移至原生 Node.js 版本的 Pi
 
@@ -102,24 +116,9 @@
 | 模块 | 改动说明 |
 |------|---------|
 | Jishu Agent 集成方式 | 移除 `pi_agent_rust`，改为通过 `git submodule` 引入原生的 `wang5766171/pi@0.78.1` |
-| 运行时 | 放弃构建内嵌的 `pi.exe`，转为依赖用户机器环境中的 Node.js 运行捆绑下发的 Javascript 代码 |
-| 安装逻辑 | 改进了 `Jishu Hub` 的环境检测界面，通过后台执行 `npm install --production` 自动在本地部署 Jishu Agent 及其依赖 |
-| `pi_runtime.rs` | 调整运行时探测逻辑，使其直接启动 `~/.jishu-agent/pi/dist/index.js` 而不是寻找 `.exe` 文件 |
-| MCP 服务 | 现已直接依赖原生 Pi 提供的 TypeScript/Node 能力，解决了之前在 Rust 移植版中对 QuickJS 引擎的依赖和功能缺失问题 |
+| 运行方式 | 放弃构建内嵌的 `pi.exe`，转为依赖用户机器环境中的 Node.js 运行捆绑下发的 Javascript 代码 |
 
 **上游基线**：`v0.78.1` tag
 
 **改动背景**：
-
-之前由于 `pi_agent_rust` 是参考原始 Pi 的 Rust 版本移植，并没有经过详细的调研，导致其能力（如 MCP 服务扩展支持）与原生 Node 版 Pi 存在差异。因此决定切换回原生项目以确保后续代码技术匹配及各项能力的完整支持。
-
-## 2026-06-08 | 解决安装包路径问题与探针适配
-
-### 改动总览
-
-| 模块 | 改动说明 |
-|------|---------|
-| package.json (pi submodule) | 移除了强制要求的 husky 钩子报错逻辑，解决在用户机器执行 
-pm install --production 时由于缺少 husky 依赖导致整个安装失败的问题。 |
-| lib.rs (Jishu Hub) | 废弃了 Windows 平台原有的 xcopy 方案，改用 Rust 原生编写的 copy_dir_recursive 递归复制逻辑，彻底解决路径中存在空格和通配符解析导致的复制失败问题。 |
-| pi_runtime.rs (Jishu Hub) | 修复了内置探针探测机制，使其适配 Pi 升级为 Monorepo 后的最新入口路径 (packages/coding-agent/dist/cli.js)。 |
+之前由于 `pi_agent_rust` 是参考原生 Pi 的 Rust 版本移植，并没有经过详细的调研，导致其能力（如 MCP 服务扩展支持）与原生 Node 的 Pi 存在差异。因此决定切换回原生项目以确保后续代码技术匹配及各项能力的完整支持。
