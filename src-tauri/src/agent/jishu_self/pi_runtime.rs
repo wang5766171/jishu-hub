@@ -47,7 +47,11 @@ where
 
     // 2. Bundled Node Module
     if let Some(agent_dir) = crate::agent::jishu_self::pi_agent_dir() {
-        let entry = PathBuf::from(&agent_dir).join("dist").join("index.js");
+        let entry = PathBuf::from(&agent_dir)
+            .join("packages")
+            .join("coding-agent")
+            .join("dist")
+            .join("cli.js");
         if file_exists(&entry) {
             let mut base_args = vec![entry.to_string_lossy().to_string()];
             let node_bin = path_lookup("node").unwrap_or_else(|| PathBuf::from("node"));
@@ -65,8 +69,10 @@ where
         .unwrap_or_else(|| Path::new("."))
         .join("third_party")
         .join("pi")
+        .join("packages")
+        .join("coding-agent")
         .join("dist")
-        .join("index.js");
+        .join("cli.js");
     if file_exists(&workspace_js) {
         let mut base_args = vec![workspace_js.to_string_lossy().to_string()];
         let node_bin = path_lookup("node").unwrap_or_else(|| PathBuf::from("node"));
