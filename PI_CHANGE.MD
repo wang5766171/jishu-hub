@@ -112,3 +112,14 @@
 **改动背景**：
 
 之前由于 `pi_agent_rust` 是参考原始 Pi 的 Rust 版本移植，并没有经过详细的调研，导致其能力（如 MCP 服务扩展支持）与原生 Node 版 Pi 存在差异。因此决定切换回原生项目以确保后续代码技术匹配及各项能力的完整支持。
+
+## 2026-06-08 | 解决安装包路径问题与探针适配
+
+### 改动总览
+
+| 模块 | 改动说明 |
+|------|---------|
+| package.json (pi submodule) | 移除了强制要求的 husky 钩子报错逻辑，解决在用户机器执行 
+pm install --production 时由于缺少 husky 依赖导致整个安装失败的问题。 |
+| lib.rs (Jishu Hub) | 废弃了 Windows 平台原有的 xcopy 方案，改用 Rust 原生编写的 copy_dir_recursive 递归复制逻辑，彻底解决路径中存在空格和通配符解析导致的复制失败问题。 |
+| pi_runtime.rs (Jishu Hub) | 修复了内置探针探测机制，使其适配 Pi 升级为 Monorepo 后的最新入口路径 (packages/coding-agent/dist/cli.js)。 |
