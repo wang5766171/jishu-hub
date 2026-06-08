@@ -98,13 +98,13 @@ function StatusIndicator({
   }
   if (hasUpdate) {
     return (
-      <div className="flex items-center gap-1 text-amber-600 dark:text-amber-400 shrink-0 min-w-[60px] justify-end">
+      <div className="flex items-center gap-1 text-amber-600 dark:text-amber-400 shrink-0 min-w-[60px] justify-start">
         <ArrowUpCircle className="h-4 w-4" />
       </div>
     );
   }
   return (
-    <div className="flex items-center gap-1 text-[var(--icon-success)] shrink-0 min-w-[60px] justify-end">
+    <div className="flex items-center gap-1 text-[var(--icon-success)] shrink-0 min-w-[60px] justify-start">
       <CheckCircle2 className="h-4 w-4" />
       <span className="text-xs font-medium">{labelNormal}</span>
     </div>
@@ -427,8 +427,8 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                   />
                   {/* MCP adapter sub-item — shown only when adapter declares supports_mcp */}
                   {supportsMcp && item.installed && (
-                    <div className="ml-9 mt-1.5 flex items-center gap-2.5 py-1.5 px-1">
-                      <Puzzle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    <div className="ml-9 mt-1.5 flex items-start gap-2.5 py-1.5 px-1">
+                      <Puzzle className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5">
                           <span className="text-xs font-medium leading-tight">
@@ -443,45 +443,45 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                         <p className="text-[10px] text-muted-foreground leading-tight mt-0.5 truncate">
                           {t("env.mcpDesc", "为 Jishu Agent 提供 MCP 服务调用能力（Web 搜索、网页读取等）")}
                         </p>
+                        {mcpInstalled ? (
+                          <div className="mt-1 flex items-center gap-1 text-[var(--icon-success)] justify-start">
+                            <CheckCircle2 className="h-3 w-3" />
+                            <span className="text-[10px] font-medium">{t("env.normal", "已就绪")}</span>
+                          </div>
+                        ) : (
+                          <div className="mt-1 flex items-center gap-1.5 justify-start">
+                            <span className="text-[10px] font-medium text-destructive">
+                              {t("env.notInstalled", "未安装")}
+                            </span>
+                            {installingMcpId === item.agentId ? (
+                              <Button size="sm" variant="outline" disabled className="h-6 px-2 text-[10px]">
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-6 px-2 text-[10px]"
+                                onClick={async () => {
+                                  if (!item.agentId) return;
+                                  setInstallingMcpId(item.agentId);
+                                  try {
+                                    await invokeCommand("install_mcp_adapter", { agentId: item.agentId });
+                                    await refreshHealth();
+                                  } catch (err) {
+                                    console.error(err);
+                                    window.alert(`MCP ${t("env.installFailed", "安装失败")}: ${String(err)}`);
+                                  } finally {
+                                    setInstallingMcpId(null);
+                                  }
+                                }}
+                              >
+                                {t("env.install", "安装")}
+                              </Button>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      {mcpInstalled ? (
-                        <div className="flex items-center gap-1 text-[var(--icon-success)] shrink-0">
-                          <CheckCircle2 className="h-3 w-3" />
-                          <span className="text-[10px] font-medium">{t("env.normal", "已就绪")}</span>
-                        </div>
-                      ) : (
-                        <div className="shrink-0 flex items-center gap-1.5">
-                          <span className="text-[10px] font-medium text-destructive">
-                            {t("env.notInstalled", "未安装")}
-                          </span>
-                          {installingMcpId === item.agentId ? (
-                            <Button size="sm" variant="outline" disabled className="h-6 px-2 text-[10px]">
-                              <Loader2 className="h-3 w-3 animate-spin" />
-                            </Button>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-6 px-2 text-[10px]"
-                              onClick={async () => {
-                                if (!item.agentId) return;
-                                setInstallingMcpId(item.agentId);
-                                try {
-                                  await invokeCommand("install_mcp_adapter", { agentId: item.agentId });
-                                  await refreshHealth();
-                                } catch (err) {
-                                  console.error(err);
-                                  window.alert(`MCP ${t("env.installFailed", "安装失败")}: ${String(err)}`);
-                                } finally {
-                                  setInstallingMcpId(null);
-                                }
-                              }}
-                            >
-                              {t("env.install", "安装")}
-                            </Button>
-                          )}
-                        </div>
-                      )}
                     </div>
                   )}
                 </div>

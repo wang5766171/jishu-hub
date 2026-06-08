@@ -91,12 +91,14 @@ export const AgentSwitcher = memo(function AgentSwitcher({ children }: { childre
                 )}
               >
                 <AgentLogo agentId={agent.id} size={16} />
-                <span className="flex-1 truncate text-left">{agent.display_name}</span>
-                {agent.health.version && (
-                  <span className="text-xs text-[var(--color-muted-foreground)]">
-                    v{agent.health.version}
-                  </span>
-                )}
+                <div className="flex-1 min-w-0 flex items-center gap-1.5 truncate text-left">
+                  <span className="truncate">{agent.display_name}</span>
+                  {agent.health.version && (
+                    <span className="shrink-0 text-xs text-[var(--color-muted-foreground)]">
+                      v{agent.health.version}
+                    </span>
+                  )}
+                </div>
                 {!agent.health.installed && (
                   <span className="text-xs text-amber-500">{t("env.notInstalled")}</span>
                 )}
