@@ -407,3 +407,55 @@ Harmes 或类似自学习能力应作为学习/evaluation/policy 层接入，不
 4. 配置页、会话页、终端跳转必须通过 adapter surface。
 5. 临时 RPC/bridge 主路径已经不再作为正式方向。
 6. 后续若发现旧代码仍绕过 adapter contract，应直接按本文档重构，不为兼容旧实验路径让步。
+
+## 17. 跨平台操作系统适配架构设计 (OS Adapter Architecture)
+
+由于 Jishu Hub 涉及底层环境操作、依赖安装、独立 CLI 分发及控制台调用，强行在业务层使用条件编译宏（如 `#[cfg(target_os = "windows")]`）会导致代码严重碎片化。必须引入统一的 **OS Adapter 抽象层**（建议剥离至 `src-tauri/src/os_adapter/` 模块），用来隔离操作系统的底层命令差异，并对无 Mac 测试环境提供充分的安全容错保障。
+
+### 17.1 底层命令与 Shell 执行封装 (Command Execution)
+
+所有涉及外部命令调用的地方，禁止在业务逻辑中直接写死 `Command::new("powershell")` 或 `Command::new("cmd")`。
+
+**设计准则：**
+- 抽象统一的 `ShellExecutor` Trait，提供跨平台的命令执行入口。
+- **Windows 实现**：常规命令使用 `cmd /c` 代理；安装或复杂脚本交互统一使用 `powershell -NoProfile -NonInteractive -Command` 封装保障路径。
+- **macOS/Unix 实现**：常规命令使用 `sh -c` 代理；依赖安装根据上下文直接调用系统级包管理器（如 `brew` 或直接调用二进制）。
+- 兜底保障：遇到失败必须捕获完整的 stdout/stderr 以结构化 Error 的形式返回到上层，而不是让进程直接 panic。
+
+### 17.2 环境检测与一键安装能力下推 (Environment & Installation)
+
+当前环境检测逻辑和一键安装命令（如 Git 的安装）严重依赖 Windows 特性（如 `winget`、`choco`）。应将该逻辑抽象为基于 OS 策略的适配器，同时保持前端的纯粹性。
+
+**设计准则：**
+- **包管理器抽象 (PackageManager Adapter)**：
+  - 定义 `PackageManager` 统一接口：`install(package)`, `upgrade(package)`, `check_installed(package)`。
+  - Windows 端实现 `WingetAdapter`、`ChocoAdapter`。
+  - macOS 端强制映射系统级依赖为 `BrewAdapter`，将前端意图转义为对应的 `brew install <pkg>` 逻辑。
+- **动态控制面下发**：
+  - 后端的 `check_environment` 接口，应承担起识别当前 OS 的职责，动态构造对应平台的操作配置（比如将 `download_url` 分为 `/win` 或 `/mac` 发给前端）。
+  - 前端页面（如 `env-check-page.tsx`）只做无状态的视图渲染层，**坚决禁止在前端包含硬编码的系统平台链接嗅探或命令嗅探**。
+
+### 17.3 独立 CLI 的系统级软链接注入 (CLI Path Registration)
+
+在 Windows 平台，CLI 的 `PATH` 变量注入可以通过打包工具的安装向导 (`installer.nsh`) 自动完成。但在 macOS 的 `.app` 拖拽安装模式下，不存在这个步骤，必须实现“应用内按需授权安装”。
+
+**设计准则：**
+- **手动按需激活模式**：在前端设置页或环境检测页提供一个 `[安装 jishu 命令行工具至 PATH]` 的用户引导交互。
+- **macOS/Unix 适配策略**：后台提供 IPC 方法 `os_adapter::install_cli_symlink()`，利用 Rust 原生 API `std::os::unix::fs::symlink`，在 `/usr/local/bin/jishu` 建立软链接，源路径指向 macOS 规范中内部的 `Contents/MacOS/jishu` 二进制文件。
+- **状态探测回环**：后端需侦测系统 `PATH` 或该路径下的文件指针链接，向前端回传当前系统的 CLI 正确安装状态以渲染状态徽章。
+
+### 17.4 跳转控制台与终端沙箱隔离 (Terminal Jump)
+
+业务中“打开系统原生终端工具（Terminal Surface）”对于两种系统行为差异极大。
+
+**设计准则：**
+- 定义跨平台动作：`open_system_terminal(cwd: &Path, command: Option<&str>)`
+- **Windows 实现**：调用 `cmd.exe /K "cd /d {cwd} && {command}"` 或者是 `powershell.exe -NoExit -Command "Set-Location '{cwd}'; {command}"`。
+- **macOS 实现**：通过系统命令 `open -a Terminal {cwd}` 唤起原生终端，如果需要注入前置命令，则应生成 AppleScript 语句（利用 `osascript` 临时执行注入键盘按键），从而规避繁杂的沙箱限制。
+
+### 17.5 盲端跨平台开发安全准则 (No-Mac Blind Test Protocols)
+
+为了在只有 Windows 实机的情况下，保证 macOS 平台代码不会发生致命崩溃：
+1. **沙箱与容错原则**：所有 macOS 下调用的 Shell 命令或路径操作，必须有 `Err()` 的兜底匹配。比如在遇到没有安装 Homebrew 时，`brew install` 执行会失败，不可令线程直接崩溃，须结构化地将无环境警告透传到前端界面。
+2. **拒绝字符串拼装路径**：跨平台文件路径全程必须使用 `std::path::PathBuf` 和 `.join()` 进行构建，严格禁止在代码中拼凑使用硬编码的 `/` 或反斜杠 `\`。
+3. **原生抽象优先**：只要需求能够通过 Rust 标准库解决（例如创建目录 `std::fs::create_dir_all`、跨系统读取环境变量 `std::env::var`），坚决不能为了图省事而借助 `shell_command` 调用 OS 底层指令（如执行系统级 `mkdir` 或 `echo`），从而最大化抹平平台的命令语义差异。

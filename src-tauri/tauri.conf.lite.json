@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "node ./scripts/build.mjs"
+    "beforeBuildCommand": "node ./scripts/build.mjs --lite"
   },
   "app": {
     "windows": [
@@ -37,9 +37,7 @@
       "rpm",
       "appimage"
     ],
-    "resources": [
-      "../third_party/pi/**/*"
-    ],
+    "resources": [],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

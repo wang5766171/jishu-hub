@@ -100,3 +100,12 @@ Section -un.RemoveFromPath
   WriteRegExpandStr HKCU "Environment" "Path" "$2"
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 SectionEnd
+
+!macro NSIS_HOOK_POSTUNINSTALL
+  ${If} $DeleteAppDataCheckboxState = 1
+  ${AndIf} $UpdateMode <> 1
+    ; Remove ~/.jishu-hub and ~/.jishu-agent when "Delete user data" is selected
+    RMDir /r "$PROFILE\.jishu-hub"
+    RMDir /r "$PROFILE\.jishu-agent"
+  ${EndIf}
+!macroend

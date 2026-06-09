@@ -91,80 +91,10 @@ fn open_in_terminal_raw(
     terminal_command: &str,
     window_id: Option<&str>,
 ) -> Result<u32, Box<dyn std::error::Error>> {
-    if cfg!(target_os = "windows") {
-        let mut wt_lookup = std::process::Command::new("cmd");
-        let has_wt =
-            crate::process_command::std_no_window(wt_lookup.args(["/C", "where wt >nul 2>nul"]))
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-
-        if has_wt {
-            // Spawn wt directly — avoids nested quoting issues with cmd /C
-            let mut cmd = std::process::Command::new("wt");
-            // Named window per session so we can focus the correct one later
-            if let Some(id) = window_id {
-                cmd.args(["-w", id]);
-            }
-            let child = cmd
-                .args(["-d", project_path])
-                .args(["--", "cmd", "/K", terminal_command])
-                .spawn()?;
-            Ok(child.id())
-        } else {
-            // Use .current_dir() instead of cd /D to avoid quoting issues
-            let child = std::process::Command::new("cmd")
-                .args(["/K", terminal_command])
-                .current_dir(project_path)
-                .spawn()?;
-            Ok(child.id())
-        }
-    } else if cfg!(target_os = "macos") {
-        let child = std::process::Command::new("open")
-            .args(["-a", "Terminal", project_path])
-            .spawn()?;
-        // Small delay then run the agent command via AppleScript
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        let safe_path = project_path.replace('\'', "'\\''");
-        std::process::Command::new("osascript")
-            .args([
-                "-e",
-                &format!(
-                    "tell application \"Terminal\" to do script \"cd '{}' && {}\"",
-                    safe_path, terminal_command
-                ),
-            ])
-            .spawn()?;
-        Ok(child.id())
-    } else {
-        // Linux: try common terminal emulators
-        let terminal = which_terminal()?;
-        let safe_path = project_path.replace('\'', "'\\''");
-        let child = std::process::Command::new(terminal)
-            .args([
-                "-e",
-                "sh",
-                "-c",
-                &format!("cd '{}' && {}", safe_path, terminal_command),
-            ])
-            .spawn()?;
-        Ok(child.id())
-    }
+    crate::os_adapter::terminal::open_in_terminal_raw(project_path, terminal_command, window_id)
 }
 
-fn which_terminal() -> Result<&'static str, Box<dyn std::error::Error>> {
-    for term in &["gnome-terminal", "konsole", "xfce4-terminal", "xterm"] {
-        if std::process::Command::new("which")
-            .arg(term)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
-            return Ok(term);
-        }
-    }
-    Ok("xterm")
-}
+
 
 /// Run a command silently in the background (no window) and wait for it to finish.
 pub fn run_silent_command(
@@ -221,65 +151,5 @@ pub fn run_in_terminal(
     command: &str,
     cwd: Option<&str>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    if cfg!(target_os = "windows") {
-        let mut wt_lookup = std::process::Command::new("cmd");
-        let has_wt =
-            crate::process_command::std_no_window(wt_lookup.args(["/C", "where wt >nul 2>nul"]))
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-
-        if has_wt {
-            let wrapped = format!("prompt $P$G& @echo %CD%^>{}& @echo.& {}", command, command);
-            let mut cmd = std::process::Command::new("wt");
-            if let Some(dir) = cwd {
-                cmd.args(["-d", dir]);
-            }
-            cmd.args(["--", "cmd", "/K", &wrapped]).spawn()?;
-        } else {
-            let wrapped = format!("prompt $P$G& @echo %CD%^>{}& @echo.& {}", command, command);
-            let mut cmd = std::process::Command::new("cmd");
-            cmd.args(["/K", &wrapped]);
-            if let Some(dir) = cwd {
-                cmd.current_dir(dir);
-            }
-            cmd.spawn()?;
-        }
-    } else if cfg!(target_os = "macos") {
-        let escaped = command.replace('\'', "'\\''");
-        let shell_cmd = match cwd {
-            Some(dir) => format!(
-                "cd '{}' && echo '> {}'; echo; {}; exec bash",
-                dir, escaped, command
-            ),
-            None => format!("echo '> {}'; echo; {}; exec bash", escaped, command),
-        };
-        std::process::Command::new("open")
-            .args(["-a", "Terminal"])
-            .spawn()?;
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        std::process::Command::new("osascript")
-            .args([
-                "-e",
-                &format!(
-                    "tell application \"Terminal\" to do script \"{}\"",
-                    shell_cmd
-                ),
-            ])
-            .spawn()?;
-    } else {
-        let terminal = which_terminal()?;
-        let escaped = command.replace('\'', "'\\''");
-        let shell_cmd = match cwd {
-            Some(dir) => format!(
-                "cd '{}' && echo '> {}'; echo; {}; exec sh",
-                dir, escaped, command
-            ),
-            None => format!("echo '> {}'; echo; {}; exec sh", escaped, command),
-        };
-        std::process::Command::new(terminal)
-            .args(["-e", "sh", "-c", &shell_cmd])
-            .spawn()?;
-    }
-    Ok(true)
+    crate::os_adapter::terminal::run_in_terminal(command, cwd)
 }

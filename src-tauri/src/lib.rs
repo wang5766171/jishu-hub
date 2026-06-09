@@ -20,6 +20,8 @@ mod project_config;
 mod session;
 mod task_plan;
 mod util;
+pub mod os_adapter;
+
 
 #[cfg(feature = "cli")]
 pub mod cli;
@@ -779,17 +781,7 @@ async fn install_agent_command(app: tauri::AppHandle, command: String) -> Result
     if command == "jishu-hub-internal-install" {
         return install_internal_jishu_agent(app).await;
     }
-    let mut installer = std::process::Command::new("powershell");
-    let output =
-        crate::process_command::std_no_window(installer.args(["-NoProfile", "-Command", &command]))
-            .output()
-            .map_err(|e| e.to_string())?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
-    }
+    crate::os_adapter::shell::run_install_command(&command, None).await
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
@@ -823,7 +815,24 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
     let target = crate::agent::jishu_self::pi_agent_dir().ok_or("Failed to get target dir")?;
 
     if !source.exists() {
-        return Err(format!("Source pi directory not found: {:?}", source));
+        // LITE MODE: If bundled pi is missing, fallback to installing from NPM globally
+        // This is safe because if we get here, it means the user clicked install and we are in lite build
+        // JISHU_AGENT_BINDING_START
+        let mut cmd = shell_command(
+            "npm",
+            vec!["install".to_string(), "-g".to_string(), "@jishu-hub/jishu-agent@0.78.1-2".to_string()],
+        );
+        // JISHU_AGENT_BINDING_END
+        let mut installer = crate::process_command::tokio_no_window(&mut cmd);
+        
+        let output = installer.output().await.map_err(|e| e.to_string())?;
+
+        if output.status.success() {
+            return Ok("Pi agent installed globally from NPM (Lite version).".to_string());
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("NPM installation failed: {}", stderr));
+        }
     }
 
     // Ensure target directory exists to prevent xcopy from asking F/D
@@ -936,74 +945,58 @@ struct RuntimeDefinition {
     latest: Option<RuntimeLatestSource>,
 }
 
-const GIT_INSTALL_COMMAND: &str =
-    "winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements";
-const GIT_UPDATE_COMMAND: &str =
-    "winget upgrade --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements";
+const RUNTIME_REGISTRY: &[RuntimeDefinition] = &[
+    RuntimeDefinition {
+        id: "node",
+        program: "node",
+        version_args: &["--version"],
+        version_prefixes: &["v"],
+        install_command: None,
+        update_command: None,
+        download_url: Some("https://nodejs.org/"),
+        latest: Some(RuntimeLatestSource::Npm { package: "node" }),
+    },
+    RuntimeDefinition {
+        id: "npm",
+        program: "npm",
+        version_args: &["--version"],
+        version_prefixes: &[],
+        install_command: None,
+        update_command: Some("npm install -g npm@latest"),
+        download_url: None,
+        latest: Some(RuntimeLatestSource::Npm { package: "npm" }),
+    },
+    RuntimeDefinition {
+        id: "python",
+        program: "python",
+        version_args: &["--version"],
+        version_prefixes: &["Python "],
+        install_command: None,
+        update_command: None,
+        download_url: Some("https://www.python.org/downloads/"),
+        latest: Some(RuntimeLatestSource::Python),
+    },
+    RuntimeDefinition {
+        id: "git",
+        program: "git",
+        version_args: &["--version"],
+        version_prefixes: &["git version "],
+        install_command: crate::os_adapter::package_manager::get_git_install_command(),
+        update_command: crate::os_adapter::package_manager::get_git_update_command(),
+        download_url: crate::os_adapter::package_manager::get_git_download_url(),
+        latest: Some(RuntimeLatestSource::GitForWindows),
+    },
+];
 
 fn runtime_registry() -> &'static [RuntimeDefinition] {
-    &[
-        RuntimeDefinition {
-            id: "node",
-            program: "node",
-            version_args: &["--version"],
-            version_prefixes: &["v"],
-            install_command: None,
-            update_command: None,
-            download_url: Some("https://nodejs.org/"),
-            latest: Some(RuntimeLatestSource::Npm { package: "node" }),
-        },
-        RuntimeDefinition {
-            id: "npm",
-            program: "npm",
-            version_args: &["--version"],
-            version_prefixes: &[],
-            install_command: None,
-            update_command: Some("npm install -g npm@latest"),
-            download_url: None,
-            latest: Some(RuntimeLatestSource::Npm { package: "npm" }),
-        },
-        RuntimeDefinition {
-            id: "python",
-            program: "python",
-            version_args: &["--version"],
-            version_prefixes: &["Python "],
-            install_command: None,
-            update_command: None,
-            download_url: Some("https://www.python.org/downloads/"),
-            latest: Some(RuntimeLatestSource::Python),
-        },
-        RuntimeDefinition {
-            id: "git",
-            program: "git",
-            version_args: &["--version"],
-            version_prefixes: &["git version "],
-            install_command: Some(GIT_INSTALL_COMMAND),
-            update_command: Some(GIT_UPDATE_COMMAND),
-            download_url: Some("https://git-scm.com/downloads/win"),
-            latest: Some(RuntimeLatestSource::GitForWindows),
-        },
-    ]
+    RUNTIME_REGISTRY
 }
 
 /// Build a platform-aware command. On Windows, .cmd/.bat scripts (npm, npx, etc.)
 /// must be invoked via `cmd /C <command>` since `Command::new("npm")` won't resolve
 /// npm.cmd. On Unix, invoke the binary directly.
 fn shell_command(program: &str, args: Vec<String>) -> tokio::process::Command {
-    #[cfg(target_os = "windows")]
-    {
-        let mut cmd = tokio::process::Command::new("cmd");
-        let mut full_args = vec!["/C".to_string(), program.to_string()];
-        full_args.extend(args);
-        cmd.args(&full_args);
-        cmd
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let mut cmd = tokio::process::Command::new(program);
-        cmd.args(&args);
-        cmd
-    }
+    crate::os_adapter::shell::shell_command(program, args)
 }
 
 fn normalize_version_output(stdout: &[u8], stderr: &[u8], prefixes: &[&str]) -> Option<String> {
@@ -2096,6 +2089,8 @@ pub fn run() {
             check_available_updates,
             check_for_update,
             download_update,
+            os_adapter::cli_link::check_cli_symlink,
+            os_adapter::cli_link::install_cli_symlink,
             install_update,
             chat::send_message,
             chat::abort_chat,

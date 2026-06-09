@@ -5,12 +5,18 @@ import { dirname, resolve } from "node:path";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+const isLite = process.argv.includes("--lite");
+
 // 1. Build third_party/pi (Native Node Agent)
 const piRoot = resolve(root, "third_party", "pi");
-if (existsSync(piRoot)) {
+if (!isLite && existsSync(piRoot)) {
   console.log("Building bundled pi agent...");
   spawnSync("npm", ["install"], { cwd: piRoot, stdio: "inherit", shell: true });
   spawnSync("npm", ["run", "build"], { cwd: piRoot, stdio: "inherit", shell: true });
+  console.log("Pruning dev dependencies to reduce installer size...");
+  spawnSync("npm", ["prune", "--omit=dev"], { cwd: piRoot, stdio: "inherit", shell: true });
+} else if (isLite) {
+  console.log("Lite mode enabled. Skipping bundled pi agent build.");
 }
 
 const steps = [

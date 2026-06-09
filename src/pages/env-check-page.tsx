@@ -123,9 +123,14 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
   );
   const [installingMcpId, setInstallingMcpId] = useState<string | null>(null);
 
+  const [cliInstalled, setCliInstalled] = useState<boolean | null>(null);
+
   useEffect(() => {
     invokeCommand<EnvData>("check_environment")
       .then(setEnv)
+      .catch(console.error);
+    invokeCommand<boolean>("check_cli_symlink")
+      .then(setCliInstalled)
       .catch(console.error);
   }, []);
 
@@ -186,7 +191,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
           id: "git",
           installed: env.git_installed,
           version: env.git_version,
-          download_url: "https://git-scm.com/downloads/win",
+          download_url: "https://git-scm.com/downloads",
           latest_package: "git",
         },
       ]
@@ -290,7 +295,6 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       const newEnv = await invokeCommand<EnvData>("check_environment");
       setEnv(newEnv);
       await refreshHealth();
-      await refreshMcpStatus();
 
       const packages: [string, string][] = [];
       const currentAgents = await invokeCommand<AgentStatus[]>(
@@ -368,6 +372,34 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       <p className="text-muted-foreground mb-5 text-sm">{t("env.desc")}</p>
 
       <div className="space-y-5 flex-1">
+        {cliInstalled === false && (
+          <div className="p-3 border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/30 rounded-lg flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                {t("env.cliNotInstalled", "未安装命令行工具")}
+              </h3>
+              <p className="text-xs text-amber-700 dark:text-amber-300 mt-1">
+                {t("env.cliDesc", "为了在外部终端中便捷唤起 Jishu Hub，强烈建议安装 jishu 命令 (需授权)。")}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="shrink-0 ml-4 border-amber-300 text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-900/50"
+              onClick={async () => {
+                try {
+                  await invokeCommand("install_cli_symlink");
+                  setCliInstalled(true);
+                } catch (e) {
+                  window.alert(`安装失败:\n${String(e)}`);
+                }
+              }}
+            >
+              {t("env.install", "安装")}
+            </Button>
+          </div>
+        )}
+
         {/* Runtime section */}
         <div>
           <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">

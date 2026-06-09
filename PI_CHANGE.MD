@@ -13,46 +13,60 @@
 
 ```
 ┌─────────────────────────────────┐
-│ jishu-hub（本项目）             │
-│ submodule: third_party/         │
-│           pi                    │
-│         │指向自有 fork         │
+│jishu-hub（本项目）              │
+│  submodule: third_party/        │
+│          pi                     │
+│        │指向自有 fork           │
 └──────────────┬──────────────────┘
                │git submodule
                ▼
 ┌─────────────────────────────────┐
-│ wang5766171/pi                 │
-│ （自有 fork 仓库）              │
-│ 分支: release_v0.78.1_change    │
+│wang5766171/pi                   │
+│（自有 fork 仓库）               │
+│分支: release_v0.78.1-2          │
 └──────────────┬──────────────────┘
                │fork from
                ▼
 ┌─────────────────────────────────┐
-│ Dicklesworthstone/pi           │
-│ （上游开源仓库）                 │
-│ tags: v0.78.1, ...             │
+│Dicklesworthstone/pi             │
+│（上游开源仓库）                 │
+│tags: v0.78.1, ...               │
 └─────────────────────────────────┘
 ```
 
-**核心流程**：jishu-hub 通过 submodule 引用自有 fork 仓库的特定分支（命名规则为 `release_<tag版本>_change`）；自有 fork 基于上游开源仓库的 Tag 进行同步，并在其上叠加 jishu-hub 所需的改动。
+**核心流程**：jishu-hub 通过 submodule 引用自有 fork 仓库的特定分支（命名规则为 `release_v<pi版本>-<自研版本>`）；自有 fork 基于上游开源仓库的 Tag 进行同步，并在其上叠加 jishu-hub 所需的改动。
 
-## 1.3 当前状态
-| 项目 | 值 |
+## 1.3 版本管理规则（带有横杠后缀的版本机制）
+
+为了让上游 Pi 版本与我们的自研迭代独立发展、互不干扰，并且完美兼容 NPM 官方的 Semantic Versioning 规范，我们采用 **<Pi版本号>-<自研版本号>** 的统一版本管理逻辑：
+
+- **自研版本号**为横杠后面的纯数字递增。当前第一版的完整版本号为 `0.78.1-1`。
+- **顺延与升级规则**：
+  - 如果只有自研内容升级，只需更新尾号：`0.78.1-1` -> `0.78.1-2`。
+  - 如果合并了上游的更新（如 Pi 升级到了 `0.78.2`），自研尾号保持顺延不变。即：`0.78.1-2` 合并新版 Pi 后，完整版本号自动变为 `0.78.2-2`。
+- **展示与发布的格式统一**：
+  - **界面展示 (UI)**：展示为 `0.78.1-1`。
+  - **代码分支 (Branch)**：命名为 `release_v0.78.1-2`。
+  - **NPM 发布包 (package.json)**：使用 `0.78.1-1`（在 NPM 生态中完美支持，属于预发布版本变体机制）。
+
+## 1.4 当前状态
+
+| 项目 | 地址 |
 |------|-----|
 | 上游仓库 | `https://github.com/Dicklesworthstone/pi` |
 | 自有 fork | `https://github.com/wang5766171/pi` |
-| 当前维护分支 | `release_v0.78.1_change` |
+| 当前维护分支 | `release_v0.78.1-2` |
 | `.gitmodules` URL | `https://github.com/wang5766171/pi` |
-| `.gitmodules` branch | `release_v0.78.1_change` |
+| `.gitmodules` branch | `release_v0.78.1-2` |
 
-## 1.4 日常源码变动流程
+## 1.5 日常源码变动流程
 
 后续涉及 `pi` 源码的任何修改，按以下步骤操作：
 
 1. **在子模块内直接修改代码**：
    ```bash
    cd third_party/pi
-   # 确保处于当前对应的 release_vX.X.X_change 分支
+   # 确保处于当前对应的 release_vX.X.X-X 分支
    # 修改文件...
    ```
 
@@ -60,7 +74,7 @@
    ```bash
    git add -A
    git commit -m "feat: 描述本次改动"
-   git push origin release_v0.78.1_change
+   git push origin release_v0.78.1-2
    ```
 
 3. **回到 jishu-hub 主仓库，提交 submodule 指针更新**：
@@ -70,7 +84,7 @@
    git commit -m "chore: update pi submodule"
    ```
 
-## 1.5 上游版本升级流程
+## 1.6 上游版本升级流程
 
 当上游开源仓库发布了新版本（例如 `v0.78.2`）时，需更新分支并合并代码：
 
@@ -78,34 +92,47 @@
    ```bash
    cd third_party/pi
    git fetch upstream
-   # 基于上游的新 tag 创建对应的新分支
-   git checkout -b release_v0.78.2_change v0.78.2
+   # 基于上游的新 tag 创建对应的新分支（保留当前的自研尾号，如 -1）
+   git checkout -b release_v0.78.1-2 v0.78.2
    ```
 
 2. **合并旧版本分支中的自有改动（例如定制规则和依赖修复等）**：
    ```bash
-   git merge release_v0.78.1_change
+   git merge release_v0.78.1-2
    ```
    *注意：如果在合并时产生冲突，请手动解决冲突，保留 Jishu 的定制改动。*
 
 3. **验证通过后推送到远端自有 fork**：
    ```bash
-   git push -u origin release_v0.78.2_change
+   git push -u origin release_v0.78.1-2
    ```
 
 4. **更新 jishu-hub 仓库的子模块指向**：
-   - 记得同时更新 `.gitmodules` 文件里的 `branch` 字段为新的 `release_v0.78.2_change`。
+   - 记得同时更新 `.gitmodules` 文件里的 `branch` 字段为新的 `release_v0.78.1-2`。
    ```bash
    cd ../..
    git add third_party/pi .gitmodules
-   git commit -m "chore: upgrade pi submodule to v0.78.2"
+   git commit -m "chore: upgrade pi submodule to v0.78.2-1"
    ```
 
 ---
 
 # 第二部分：改动记录
 
-## 2026-06-08 | 原生 Node.js 版本兼容性适配
+## 第 2 版 (自研尾号 -2)
+
+### 2026-06-09 | NPM Alias 无侵入式发布架构升级
+
+### 改动总览
+
+| 模块 | 改动说明 |
+|------|---------|
+| 打包发布机制 | **重大架构升级**：彻底废弃了在源码层面通过 Regex 批量替换 `@earendil-works` 为 `@jishu-hub` 的方案。因为这种方式破坏了与上游的同步兼容性。**新方案采用了 NPM 官方的 Alias（别名映射）机制**，保证本地所有的 TypeScript 源码 100% 保持上游原样（0 冲突），仅在 `scripts/publish-pi.mjs` 发布时刻，在临时目录的 `package.json` 中配置 NPM 原生别名。此版本（0.78.1-2）是首个完全无侵入、源码级 100% 兼容上游开源库发布的纯净版本！ |
+| `packages/ai` | 移除了 `package.json` 中 `build` 阶段绑定的 `generate-models` 脚本。因为该脚本依赖海外网络获取最新大模型 API 数据，网络超时会导致编译所需的类型文件残缺（如缺少 nvidia 等 provider），从而直接导致后续的 NPM Publish 彻底失败。现恢复使用 git 历史中完好的模型结构文件以保证持续集成的稳定性。 |
+
+## 第 1 版 (自研尾号 -1)
+
+### 2026-06-08 | 原生 Node.js 版本兼容性适配
 
 ### 改动总览
 
