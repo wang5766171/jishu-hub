@@ -45,7 +45,7 @@ where
         ));
     }
 
-    // 2. Bundled Node Module
+    // 2. User-installed Node Module (from UI updates)
     if let Some(agent_dir) = crate::agent::jishu_self::pi_agent_dir() {
         let entry = PathBuf::from(&agent_dir)
             .join("packages")
@@ -63,24 +63,40 @@ where
         }
     }
 
-    // 3. Workspace development Node Module
-    let workspace_js = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("third_party")
-        .join("pi")
-        .join("packages")
-        .join("coding-agent")
-        .join("dist")
-        .join("cli.js");
-    if file_exists(&workspace_js) {
-        let mut base_args = vec![workspace_js.to_string_lossy().to_string()];
-        let node_bin = path_lookup("node").unwrap_or_else(|| PathBuf::from("node"));
-        return Ok(PiRuntimeCommand {
-            program: node_bin,
-            base_args,
-            source: PiRuntimeSource::NodeModule,
-        });
+    // 3. Tauri App Bundled Resources (Full Version)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let relative_pi_path = PathBuf::from("third_party")
+                .join("pi")
+                .join("packages")
+                .join("coding-agent")
+                .join("dist")
+                .join("cli.js");
+
+            let candidates = [
+                // Windows standard resource layout
+                parent.join(&relative_pi_path),
+                // Alternative nested layout
+                parent.join("resources").join(&relative_pi_path),
+                // macOS app bundle layout (Contents/MacOS -> Contents/Resources)
+                parent.join("..").join("Resources").join(&relative_pi_path),
+                parent.join("..").join("resources").join(&relative_pi_path),
+                // Development mode layout (src-tauri/target/debug/ -> project root)
+                parent.join("..").join("..").join("..").join(&relative_pi_path),
+            ];
+
+            for candidate in candidates {
+                if file_exists(&candidate) {
+                    let mut base_args = vec![candidate.to_string_lossy().to_string()];
+                    let node_bin = path_lookup("node").unwrap_or_else(|| PathBuf::from("node"));
+                    return Ok(PiRuntimeCommand {
+                        program: node_bin,
+                        base_args,
+                        source: PiRuntimeSource::NodeModule,
+                    });
+                }
+            }
+        }
     }
 
     // 4. PATH

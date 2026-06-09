@@ -14,13 +14,28 @@ pub fn probe_self() -> AgentHealth {
         }
     };
 
-    // Jishu Agent is the built-in agent of Jishu Hub. The version shown in
-    // the GUI (env-check page, agent switcher) should be the Jishu Hub
-    // package version, not the underlying pi runtime version. The pi runtime
-    // is an internal implementation detail that the user should not see.
+    let mut version = env!("CARGO_PKG_VERSION").to_string();
+
+    let mut args = pi_cmd.base_args.clone();
+    args.push("--version".to_string());
+    
+    let mut cmd = std::process::Command::new(&pi_cmd.program);
+    cmd.args(&args);
+    crate::process_command::std_no_window(&mut cmd);
+    
+    if let Ok(output) = cmd.output() {
+        if output.status.success() {
+            let out_str = String::from_utf8_lossy(&output.stdout);
+            let parsed = out_str.trim().to_string();
+            if !parsed.is_empty() {
+                version = parsed;
+            }
+        }
+    }
+
     AgentHealth {
         installed: true,
-        version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        version: Some(version),
         error: None,
         binary_path: Some(pi_cmd.program.to_string_lossy().to_string()),
         last_checked_at: now_ms(),
