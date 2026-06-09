@@ -108,36 +108,64 @@ export function InstallAgentDialog({ agent, open, onOpenChange, onInstalled }: I
           ) : (
             <>
               <div className="space-y-4">
-                {/* NPM Method */}
-                <div className="p-4 rounded-xl border border-border bg-card/50 hover:bg-accent/5 transition-colors space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="p-1.5 rounded-md bg-red-500/10 text-red-500">
-                        <Package className="h-4 w-4" />
+                {agent.id === "jishu_self" ? (
+                  <div className="p-4 rounded-xl border border-border bg-card/50 hover:bg-accent/5 transition-colors space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="p-1.5 rounded-md bg-blue-500/10 text-blue-500">
+                          <Package className="h-4 w-4" />
+                        </div>
+                        <span className="font-medium">通过本地 Node 环境运行安装</span>
                       </div>
-                      <span className="font-medium">通过 NPM 安装</span>
+                      {nodeExists === false && (
+                        <span className="text-[10px] bg-amber-500/10 text-amber-600 px-2 py-0.5 rounded-full flex items-center gap-1">
+                          <AlertTriangle className="h-3 w-3" /> 需要 Node.js
+                        </span>
+                      )}
                     </div>
-                    {nodeExists === false && (
-                      <span className="text-[10px] bg-amber-500/10 text-amber-600 px-2 py-0.5 rounded-full flex items-center gap-1">
-                        <AlertTriangle className="h-3 w-3" /> 需要 Node.js
-                      </span>
-                    )}
+                    <code className="block text-[11px] font-mono p-2 bg-muted rounded border text-muted-foreground break-all">
+                      npm install && npm run build
+                    </code>
+                    <Button 
+                      className="w-full" 
+                      variant={nodeExists ? "default" : "outline"}
+                      disabled={!!installing || nodeExists === false}
+                      onClick={() => handleInstall("native")}
+                    >
+                      {installing === "native" ? <Loader2 className="h-4 w-4 animate-spin" /> : "一键安装"}
+                    </Button>
                   </div>
-                  <code className="block text-[11px] font-mono p-2 bg-muted rounded border text-muted-foreground break-all">
-                    {agent.install_hint}
-                  </code>
-                  <Button 
-                    className="w-full" 
-                    variant={nodeExists ? "default" : "outline"}
-                    disabled={!!installing || nodeExists === false}
-                    onClick={() => handleInstall("npm")}
-                  >
-                    {installing === "npm" ? <Loader2 className="h-4 w-4 animate-spin" /> : "立即安装"}
-                  </Button>
-                </div>
+                ) : (
+                  <div className="p-4 rounded-xl border border-border bg-card/50 hover:bg-accent/5 transition-colors space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="p-1.5 rounded-md bg-red-500/10 text-red-500">
+                          <Package className="h-4 w-4" />
+                        </div>
+                        <span className="font-medium">通过 NPM 安装</span>
+                      </div>
+                      {nodeExists === false && (
+                        <span className="text-[10px] bg-amber-500/10 text-amber-600 px-2 py-0.5 rounded-full flex items-center gap-1">
+                          <AlertTriangle className="h-3 w-3" /> 需要 Node.js
+                        </span>
+                      )}
+                    </div>
+                    <code className="block text-[11px] font-mono p-2 bg-muted rounded border text-muted-foreground break-all">
+                      {agent.install_hint}
+                    </code>
+                    <Button 
+                      className="w-full" 
+                      variant={nodeExists ? "default" : "outline"}
+                      disabled={!!installing || nodeExists === false}
+                      onClick={() => handleInstall("npm")}
+                    >
+                      {installing === "npm" ? <Loader2 className="h-4 w-4 animate-spin" /> : "立即安装"}
+                    </Button>
+                  </div>
+                )}
 
                 {/* Native Method */}
-                {agent.native_install_command && (
+                {agent.native_install_command && agent.id !== "jishu_self" && (
                   <div className="p-4 rounded-xl border border-border bg-card/50 hover:bg-accent/5 transition-colors space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
