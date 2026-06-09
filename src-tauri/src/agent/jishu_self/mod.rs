@@ -109,12 +109,16 @@ use crate::agent::traits::{
     AgentManifest, ConfigAdapter, EventNormalizer, ProjectAdapter, SessionAdapter, TerminalAdapter,
     TransportAdapter,
 };
+// JISHU_AGENT_VERSION_START (auto-updated by upgrade-version.mjs)
+pub const PI_AGENT_VERSION: &str = "0.78.1-2";
+// JISHU_AGENT_VERSION_END
+
 impl AgentManifest for JishuSelfAgent {
     fn info(&self) -> AgentInfo {
         AgentInfo {
             id: "jishu-self".to_string(),
             display_name: "Jishu Agent".to_string(),
-            version: option_env!("PI_AGENT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")).to_string(),
+            version: PI_AGENT_VERSION.to_string(),
             icon: "jishu".to_string(),
             logo_path: Some("jishu.svg".to_string()),
             enabled: true,

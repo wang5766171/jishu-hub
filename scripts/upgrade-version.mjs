@@ -80,6 +80,22 @@ if (fs.existsSync(libRsPath)) {
   }
 }
 
+// 4.5 Update Jishu Agent Version Constant
+console.log(`\n[4.5] Updating Jishu Agent Version constant in Rust...`);
+const modRsPath = path.resolve(process.cwd(), "src-tauri", "src", "agent", "jishu_self", "mod.rs");
+if (fs.existsSync(modRsPath)) {
+  let content = fs.readFileSync(modRsPath, "utf-8");
+  const regex = /(\/\/\s*JISHU_AGENT_VERSION_START[\s\S]*?pub const PI_AGENT_VERSION:\s*&str\s*=\s*")[^"]+("\s*;[\s\S]*?\/\/\s*JISHU_AGENT_VERSION_END)/m;
+  const match = content.match(regex);
+  if (match) {
+    content = content.replace(regex, `$1${newVersion}$2`);
+    fs.writeFileSync(modRsPath, content);
+    console.log(`  - Successfully updated src-tauri/src/agent/jishu_self/mod.rs`);
+  } else {
+    console.warn(`  ⚠️ Could not find PI_AGENT_VERSION marker in mod.rs. Please update it manually.`);
+  }
+}
+
 // 5. Update PI_CHANGE.MD Branch Mention
 console.log(`\n[5] Updating PI_CHANGE.MD documentation...`);
 const piChangePath = path.resolve(process.cwd(), "PI_CHANGE.MD");
