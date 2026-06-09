@@ -114,7 +114,7 @@ impl AgentManifest for JishuSelfAgent {
         AgentInfo {
             id: "jishu-self".to_string(),
             display_name: "Jishu Agent".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: option_env!("PI_AGENT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")).to_string(),
             icon: "jishu".to_string(),
             logo_path: Some("jishu.svg".to_string()),
             enabled: true,

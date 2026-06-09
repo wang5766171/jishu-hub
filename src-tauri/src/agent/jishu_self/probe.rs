@@ -14,7 +14,7 @@ pub fn probe_self() -> AgentHealth {
         }
     };
 
-    let mut version = env!("CARGO_PKG_VERSION").to_string();
+    let mut version = option_env!("PI_AGENT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")).to_string();
 
     let mut args = pi_cmd.base_args.clone();
     args.push("--version".to_string());

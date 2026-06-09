@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser, Debug)]
 #[command(
     name = "jishu",
-    version,
+    version = option_env!("PI_AGENT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
     about = "Jishu agent and multi-agent orchestrator"
 )]
 pub struct Cli {
