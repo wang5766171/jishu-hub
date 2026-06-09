@@ -108,7 +108,7 @@ export function InstallAgentDialog({ agent, open, onOpenChange, onInstalled }: I
           ) : (
             <>
               <div className="space-y-4">
-                {agent.id === "jishu_self" ? (
+                {agent.id === "jishu-self" ? (
                   <div className="p-4 rounded-xl border border-border bg-card/50 hover:bg-accent/5 transition-colors space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
@@ -165,7 +165,7 @@ export function InstallAgentDialog({ agent, open, onOpenChange, onInstalled }: I
                 )}
 
                 {/* Native Method */}
-                {agent.native_install_command && agent.id !== "jishu_self" && (
+                {agent.native_install_command && agent.id !== "jishu-self" && (
                   <div className="p-4 rounded-xl border border-border bg-card/50 hover:bg-accent/5 transition-colors space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
