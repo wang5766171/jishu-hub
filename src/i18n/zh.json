@@ -177,6 +177,7 @@
     "projectPath": "项目路径",
     "loadingProjectSessions": "正在加载项目会话...",
     "streamError": "流式响应异常终止，图片路径格式可能不受支持",
+    "modelNotConfigured": "未配置模型 — 请点击「管理」-「模型」进行配置",
     "float": "悬浮窗口",
     "floatingIdle": "等待任务...",
     "floatingComplete": "任务已完成",

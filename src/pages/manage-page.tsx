@@ -5,7 +5,7 @@ import { ProjectsPage } from "./projects-page";
 import { ConfigPage } from "./config-page";
 import { CommandsPage } from "./commands-page";
 import { EnvCheckPage } from "./env-check-page";
-import { FolderOpen, Settings, Rocket, ArrowLeft, Activity } from "lucide-react";
+import { FolderOpen, Settings, Rocket, ArrowLeft, Activity, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ManageTab, Project } from "@/types";
 
@@ -23,7 +23,7 @@ const tabs: { id: ManageTab; icon: typeof FolderOpen; labelKey: string; fallback
 ];
 
 export function ManagePage({ onBack, onEnterProject, navigateToProjects }: ManagePageProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<ManageTab>("projects");
   const prevNavRef = useRef(0);
 
@@ -71,6 +71,21 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects }: Manag
           </button>
           );
         })}
+
+        <div className="flex-1" />
+        <button
+          onClick={() => {
+            const newLang = i18n.language.startsWith('zh') ? 'en' : 'zh';
+            i18n.changeLanguage(newLang);
+          }}
+          className="flex flex-col items-center gap-1 w-12 py-2 rounded-lg text-xs transition-fast text-muted-foreground hover:bg-accent/30 hover:text-foreground mt-2"
+          title={i18n.language.startsWith('zh') ? "Switch to English" : "切换到中文"}
+        >
+          <Globe className="h-4 w-4" />
+          <span className="truncate w-full text-center">
+            {i18n.language.startsWith('zh') ? "En" : "中"}
+          </span>
+        </button>
       </div>
 
       {/* Right: Content */}
