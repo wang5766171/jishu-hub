@@ -37,6 +37,9 @@
       "rpm",
       "appimage"
     ],
+    "externalBin": [
+      "target/release/jishu"
+    ],
     "resources": [
       "../third_party/pi/**/*"
     ],

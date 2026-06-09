@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { writeFileSync, copyFileSync, existsSync } from "node:fs";
+import { writeFileSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -37,6 +37,24 @@ for (const [command, args] of steps) {
   }
 }
 
+// For macOS/Linux Tauri externalBin support, create a dummy file to satisfy tauri_build, then overwrite it
+const rustInfo = spawnSync("rustc", ["-vV"], { encoding: "utf8" }).stdout;
+const targetTripleMatch = rustInfo.match(/host: (.+)/);
+let sidecarTarget = null;
+let sidecarName = null;
+
+if (targetTripleMatch) {
+  const targetTriple = targetTripleMatch[1].trim();
+  sidecarName = process.platform === "win32" ? `jishu-${targetTriple}.exe` : `jishu-${targetTriple}`;
+  sidecarTarget = resolve(root, "src-tauri", "target", "release", sidecarName);
+  
+  // Ensure directory exists and write a dummy file to satisfy build.rs externalBin check
+  mkdirSync(resolve(root, "src-tauri", "target", "release"), { recursive: true });
+  if (!existsSync(sidecarTarget)) {
+    writeFileSync(sidecarTarget, "");
+  }
+}
+
 // Build the CLI binary
 const cliBuild = spawnSync("cargo", ["build", "--release", "--bin", "jishu", "--features", "cli", "--manifest-path", "src-tauri/Cargo.toml"], {
   cwd: root,
@@ -53,3 +71,8 @@ const cliSource = resolve(root, "src-tauri", "target", "release", cliName);
 const nsisCliSource = resolve(root, "src-tauri", "nsis", "cli-source.nsh");
 
 writeFileSync(nsisCliSource, `!define JISHU_CLI_SOURCE "${cliSource}"\n`);
+
+if (sidecarTarget) {
+  copyFileSync(cliSource, sidecarTarget);
+  console.log(`Copied sidecar for externalBin: ${sidecarName}`);
+}
