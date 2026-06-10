@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { writeFileSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { writeFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, renameSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -81,21 +81,24 @@ if (sidecarTarget) {
 // ---------------------------------------------------------
 // 2. Run Tauri Build
 // ---------------------------------------------------------
-console.log("Running tauri build...");
-import { readdirSync, renameSync } from "node:fs";
+if (!process.env.IS_BUILD_MJS) {
+  console.log("Running tauri build...");
+  const tauriArgs = isLite 
+    ? ["run", "tauri", "build", "--config", "src-tauri/tauri.conf.lite.json"] 
+    : ["run", "tauri", "build"];
 
-const tauriArgs = isLite 
-  ? ["run", "tauri", "build", "--config", "src-tauri/tauri.conf.lite.json"] 
-  : ["run", "tauri", "build"];
+  const tauriBuild = spawnSync("npm", tauriArgs, {
+    cwd: root,
+    stdio: "inherit",
+    shell: true,
+    env: { ...process.env, IS_BUILD_MJS: "1" }
+  });
 
-const tauriBuild = spawnSync("npm", tauriArgs, {
-  cwd: root,
-  stdio: "inherit",
-  shell: true,
-});
-
-if (tauriBuild.status !== 0) {
-  process.exit(tauriBuild.status ?? 1);
+  if (tauriBuild.status !== 0) {
+    process.exit(tauriBuild.status ?? 1);
+  }
+} else {
+  console.log("Skipping nested tauri build...");
 }
 
 // ---------------------------------------------------------
