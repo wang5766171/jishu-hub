@@ -76,3 +76,42 @@ if (sidecarTarget) {
   copyFileSync(cliSource, sidecarTarget);
   console.log(`Copied sidecar for externalBin: ${sidecarName}`);
 }
+
+
+// ---------------------------------------------------------
+// 2. Run Tauri Build
+// ---------------------------------------------------------
+console.log("Running tauri build...");
+import { readdirSync, renameSync } from "node:fs";
+
+const tauriArgs = isLite 
+  ? ["run", "tauri", "build", "--config", "src-tauri/tauri.conf.lite.json"] 
+  : ["run", "tauri", "build"];
+
+const tauriBuild = spawnSync("npm", tauriArgs, {
+  cwd: root,
+  stdio: "inherit",
+  shell: true,
+});
+
+if (tauriBuild.status !== 0) {
+  process.exit(tauriBuild.status ?? 1);
+}
+
+// ---------------------------------------------------------
+// 3. Post-build Rename
+// ---------------------------------------------------------
+const nsisDir = resolve(root, "src-tauri", "target", "release", "bundle", "nsis");
+if (existsSync(nsisDir)) {
+  const files = readdirSync(nsisDir);
+  for (const file of files) {
+    if (file.startsWith("Jishu Hub_") && file.endsWith("-setup.exe")) {
+      const newName = isLite 
+        ? file.replace("Jishu Hub_", "Jishu Hub Lite_")
+        : file.replace("Jishu Hub_", "Jishu Hub Full_");
+      renameSync(resolve(nsisDir, file), resolve(nsisDir, newName));
+      console.log(`Renamed installer to: ${newName}`);
+    }
+  }
+}
+

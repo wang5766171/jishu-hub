@@ -100,7 +100,12 @@ pub fn spawn_pi_rpc_session(
                 err.clone()
             };
             log::warn!("Pi RPC connection loop exited with error: {}", enriched_err);
+            // Emit SessionResolved using the pending_session_id so the UI stops "loading"
+            // and actually displays the error message.
             let events = vec![
+                NormalizedEvent::SessionResolved {
+                    session_id: pending_session_id.clone(),
+                },
                 NormalizedEvent::Error {
                     message: enriched_err,
                     recoverable: false,
@@ -111,6 +116,7 @@ pub fn spawn_pi_rpc_session(
                 },
             ];
             emit_events(&app, &agent_id, &pending_session_id, &events);
+            on_session_resolved(&pending_session_id);
         } else {
             log::info!(
                 "Pi RPC connection loop exited normally for session {}",
@@ -303,8 +309,28 @@ async fn pi_rpc_connection_loop(
 
                                 match response_cmd {
                                     "prompt" | "steer" | "follow_up" => {
-                                        // Prompt accepted, events will follow
-                                        log::debug!("Pi RPC response for {}: success={}", response_cmd, success);
+                                        if success {
+                                            // Prompt accepted, events will follow
+                                            log::debug!("Pi RPC response for {}: success=true", response_cmd);
+                                        } else {
+                                            log::error!("Pi RPC response for {}: success=false", response_cmd);
+                                            let err_msg = msg
+                                                .get("error")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("Unknown prompt error");
+                                            
+                                            buf.push(make_chunk(&session_id, &NormalizedEvent::Error {
+                                                message: err_msg.to_string(),
+                                                recoverable: false,
+                                            }));
+                                            buf.push(make_chunk(&session_id, &NormalizedEvent::TurnComplete {
+                                                reason: TurnEndReason::Error,
+                                                usage: None,
+                                            }));
+                                            flush_buf(&app, &agent_id, &mut buf);
+                                            
+                                            state = LoopState::Idle;
+                                        }
                                     }
                                     "abort" => {
                                         log::info!("Pi RPC abort acknowledged");
