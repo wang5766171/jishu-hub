@@ -40,6 +40,36 @@
 
 ---
 
+## 3. Lite 版前置依赖：发布 NPM 核心包
+
+精简版 (Lite) 不内置核心的 Agent 引擎代码。如果底层逻辑（如 `third_party/pi` 子模块）发生了更新，或者你想向外发布一个全新的 Agent 引擎版本供 Lite 版云端拉取安装，你必须将最新的底层代码发布到 NPM 官方仓库：
+
+> **重要前提（针对国内开发者）**：如果你平时配置了淘宝镜像等代理源，发布和登录时**必须显式指定官方 registry**，否则会报错 403 或 401！
+
+1. 进入 `pi` 子模块目录：
+   ```bash
+   cd third_party/pi
+   ```
+2. 登录 NPM 官方仓库（如果你还没有登录过）：
+   ```bash
+   npm login --registry=https://registry.npmjs.org/
+   ```
+3. （可选）如果你需要更新版本号（例如修复 Bug 发布一个小版本），可以执行：
+   ```bash
+   npm run release:patch
+   ```
+4. 执行发布命令（因为发布脚本限制了传参，推荐直接临时修改配置发布，发完再改回来）：
+   ```bash
+   npm config set registry https://registry.npmjs.org/
+   npm run publish
+   npm config set registry https://registry.npmmirror.com/ # 发布完切回国内源
+   ```
+   > **注意**：你需要拥有 `@jishu-hub` NPM 组织的发布权限。该发布脚本会自动进行 NPM Alias 别名映射等无侵入式处理，最终将无冲突地发布 `@jishu-hub/jishu-agent` 等系列核心包。
+
+发布成功后，全球范围内的 Lite 客户端即可在界面一键拉取安装你刚刚上线的最新核心代码！
+
+---
+
 ## 3. macOS 平台打包 (GitHub Actions 自动构建)
 
 由于跨平台编译 macOS 原生应用（`.app` / `.dmg`）较为困难，我们已配置好了 GitHub Actions 流水线，完全免除了本地配置苹果环境的烦恼。
