@@ -42,29 +42,23 @@
 
 ## 3. Lite 版前置依赖：发布 NPM 核心包
 
-精简版 (Lite) 不内置核心的 Agent 引擎代码。如果底层逻辑（如 `third_party/pi` 子模块）发生了更新，或者你想向外发布一个全新的 Agent 引擎版本供 Lite 版云端拉取安装，你必须将最新的底层代码发布到 NPM 官方仓库：
+精简版 (Lite) 不内置核心的 Agent 引擎代码。如果底层逻辑（如 `third_party/pi` 子模块）发生了更新，或者你想向外发布一个全新的 Agent 引擎版本供 Lite 版云端拉取安装，你必须将最新的底层代码发布到 NPM 官方仓库。
 
-> **重要前提（针对国内开发者）**：如果你平时配置了淘宝镜像等代理源，发布和登录时**必须显式指定官方 registry**，否则会报错 403 或 401！
+由于我们在架构中实现了 **“无侵入式别名发布”**（将 `@earendil-works` 原生无缝映射为 `@jishu-hub` 下的私有包），因此发布流程不再使用 `pi` 目录下的命令，而是使用主仓库提供的专属构建流水线脚本。
 
-1. 进入 `pi` 子模块目录：
+1. **回到 `jishu-hub` 根目录**（不要进入 `third_party/pi`！）：
    ```bash
-   cd third_party/pi
+   cd D:/MyCodes/jishu-hub
    ```
-2. 登录 NPM 官方仓库（如果你还没有登录过）：
+2. 登录 NPM 官方仓库（如果你还没有登录过，确保登入 `@jishu-hub` 权限账号）：
    ```bash
    npm login --registry=https://registry.npmjs.org/
    ```
-3. （可选）如果你需要更新版本号（例如修复 Bug 发布一个小版本），可以执行：
+3. 运行一键发布脚本：
    ```bash
-   npm run release:patch
+   node scripts/publish-pi.mjs
    ```
-4. 执行发布命令（因为发布脚本限制了传参，推荐直接临时修改配置发布，发完再改回来）：
-   ```bash
-   npm config set registry https://registry.npmjs.org/
-   npm run publish
-   npm config set registry https://registry.npmmirror.com/ # 发布完切回国内源
-   ```
-   > **注意**：你需要拥有 `@jishu-hub` NPM 组织的发布权限。该发布脚本会自动进行 NPM Alias 别名映射等无侵入式处理，最终将无冲突地发布 `@jishu-hub/jishu-agent` 等系列核心包。
+   > **原理解释**：此脚本会自动在后台跑 `npm install` 与 `npm run build`，随后在临时目录 `.publish-stage` 中使用 NPM Alias 特性将包的引用于发布前替换为 `@jishu-hub/jishu-agent` 等系列名称。该脚本内部已经强制绑定了 `https://registry.npmjs.org/` 作为发布源，所以即便你配置了淘宝镜像等，也完全不必担心报错 403 权限异常！
 
 发布成功后，全球范围内的 Lite 客户端即可在界面一键拉取安装你刚刚上线的最新核心代码！
 
