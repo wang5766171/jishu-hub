@@ -23,7 +23,7 @@
 ┌─────────────────────────────────┐
 │wang5766171/pi                   │
 │（自有 fork 仓库）               │
-│分支: release_v0.78.1-2          │
+│分支: release_v0.79.1-3          │
 └──────────────┬──────────────────┘
                │fork from
                ▼
@@ -46,7 +46,7 @@
   - 如果合并了上游的更新（如 Pi 升级到了 `0.78.2`），自研尾号保持顺延不变。即：`0.78.1-2` 合并新版 Pi 后，完整版本号自动变为 `0.78.2-2`。
 - **展示与发布的格式统一**：
   - **界面展示 (UI)**：展示为 `0.78.1-1`。
-  - **代码分支 (Branch)**：命名为 `release_v0.78.1-2`。
+  - **代码分支 (Branch)**：命名为 `release_v0.79.1-3`。
   - **NPM 发布包 (package.json)**：使用 `0.78.1-1`（在 NPM 生态中完美支持，属于预发布版本变体机制）。
 
 ## 1.4 当前状态
@@ -55,9 +55,9 @@
 |------|-----|
 | 上游仓库 | `https://github.com/Dicklesworthstone/pi` |
 | 自有 fork | `https://github.com/wang5766171/pi` |
-| 当前维护分支 | `release_v0.79.1-2` |
+| 当前维护分支 | `release_v0.79.1-3` |
 | `.gitmodules` URL | `https://github.com/wang5766171/pi` |
-| `.gitmodules` branch | `release_v0.79.1-2` |
+| `.gitmodules` branch | `release_v0.79.1-3` |
 
 ## 1.5 日常源码变动流程
 
@@ -74,7 +74,7 @@
    ```bash
    git add -A
    git commit -m "feat: 描述本次改动"
-   git push origin release_v0.79.1-2
+   git push origin release_v0.79.1-3
    ```
 
 3. **回到 jishu-hub 主仓库，提交 submodule 指针更新**：
@@ -93,22 +93,22 @@
    cd third_party/pi
    git fetch upstream
    # 基于上游的新 tag 创建对应的新分支（保留当前的自研尾号，如 -1）
-   git checkout -b release_v0.78.1-2 v0.78.2
+   git checkout -b release_v0.79.1-3 v0.78.2
    ```
 
 2. **合并旧版本分支中的自有改动（例如定制规则和依赖修复等）**：
    ```bash
-   git merge release_v0.78.1-2
+   git merge release_v0.79.1-3
    ```
    *注意：如果在合并时产生冲突，请手动解决冲突，保留 Jishu 的定制改动。*
 
 3. **验证通过后推送到远端自有 fork**：
    ```bash
-   git push -u origin release_v0.78.1-2
+   git push -u origin release_v0.79.1-3
    ```
 
 4. **更新 jishu-hub 仓库的子模块指向**：
-   - 记得同时更新 `.gitmodules` 文件里的 `branch` 字段为新的 `release_v0.78.1-2`。
+   - 记得同时更新 `.gitmodules` 文件里的 `branch` 字段为新的 `release_v0.79.1-3`。
    ```bash
    cd ../..
    git add third_party/pi .gitmodules

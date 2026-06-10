@@ -820,7 +820,7 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
         // JISHU_AGENT_BINDING_START
         let mut cmd = shell_command(
             "npm",
-            vec!["install".to_string(), "-g".to_string(), "@jishu-hub/jishu-agent@0.79.1-2".to_string()],
+            vec!["install".to_string(), "-g".to_string(), "@jishu-hub/jishu-agent@0.79.1-3".to_string()],
         );
         // JISHU_AGENT_BINDING_END
         let mut installer = crate::process_command::tokio_no_window(&mut cmd);
