@@ -28,7 +28,12 @@ pub fn probe_self() -> AgentHealth {
             let out_str = String::from_utf8_lossy(&output.stdout);
             let parsed = out_str.trim().to_string();
             if !parsed.is_empty() {
-                version = parsed;
+                // clap outputs "<name> <version>" (e.g. "jishu 0.79.1-3").
+                // Extract just the version part.
+                version = parsed
+                    .rsplit_once(' ')
+                    .map(|(_, v)| v.to_string())
+                    .unwrap_or(parsed);
             }
         }
     }

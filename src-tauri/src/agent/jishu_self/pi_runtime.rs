@@ -89,13 +89,26 @@ where
     }
 
 
-    // 4. PATH
+    // 4. PATH — but skip our own install directory to avoid false-matching the
+    //    bundled Rust CLI wrapper (`jishu.exe`), which does NOT support the
+    //    `--mode rpc` flag required by the Pi Node.js agent transport.
     if let Some(path) = path_lookup("jishu") {
-        return Ok(PiRuntimeCommand {
-            program: path,
-            base_args: Vec::new(),
-            source: PiRuntimeSource::Path,
-        });
+        let is_own_binary = std::env::current_exe()
+            .ok()
+            .and_then(|exe| {
+                let exe_dir = exe.parent()?.canonicalize().ok()?;
+                let found_dir = path.parent()?.canonicalize().ok()?;
+                Some(exe_dir == found_dir)
+            })
+            .unwrap_or(false);
+
+        if !is_own_binary {
+            return Ok(PiRuntimeCommand {
+                program: path,
+                base_args: Vec::new(),
+                source: PiRuntimeSource::Path,
+            });
+        }
     }
 
     Err(
