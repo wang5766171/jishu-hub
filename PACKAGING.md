@@ -4,8 +4,8 @@
 
 ## 1. 概念说明
 
-- **Full 版 (全量版)**：内置了底层的 `pi-agent` Node 运行时环境及依赖。用户安装后真正“开箱即用”，无需自行配置 npm 或环境变量。体积较大。
-- **Lite 版 (精简版)**：仅包含 Jishu Hub 界面和原生的 `jishu` CLI 命令行工具。依赖系统上已有的环境，适合开发者使用。体积较小（约十几兆）。
+- **Full 版 (全量版)**：内置了底层的 `pi` 源码。安装后需在检测页点击“一键安装”，应用会自动将其提取至 `~/.jishu-agent/pi` 并在用户的 Node.js 环境下编译安装。此举是为了保证 Native 模块的 ABI 兼容并规避系统目录只读权限问题。
+- **Lite 版 (精简版)**：仅包含 Jishu Hub 界面和原生的 `jishu` CLI 命令行工具。用户点击安装时，会通过系统全局的 `npm install -g` 等包管理器在线下载并安装底层 Agent。体积较小（约十几兆）。
 
 ---
 
@@ -15,27 +15,26 @@
 
 ### 第一步：打包全量版 (Full)
 
-1. 在项目根目录执行默认打包命令：
+1. 在项目根目录执行打包命令：
    ```bash
-   npm run tauri build
+   npm run build
    ```
-2. 构建脚本会自动执行前端编译、内置 Pi 引擎打包、Rust 后端及 CLI 编译，最终通过 NSIS 生成安装包。
-3. 构建完成后，安装包将生成在以下路径：
-   `src-tauri/target/release/bundle/nsis/Jishu Hub_<版本号>_x64-setup.exe`
-4. **⚠️ 重要操作**：为了防止被精简版覆盖，请将刚刚生成的包**重命名**为：
-   `Jishu Hub Full_<版本号>_x64-setup.exe`
+2. 构建脚本会自动执行前端编译、内置 Pi 引擎打包、Rust 后端编译，以及 Tauri 安装包生成。
+3. 打包完成后，脚本会**自动**重命名输出文件，最终的安装包将生成在以下路径：
+   `src-tauri/target/release/bundle/nsis/Jishu Hub Full_<版本号>_x64-setup.exe`
 
 ### 第二步：打包精简版 (Lite)
 
-1. 紧接着全量版打包完成后，执行精简版打包命令（指定精简版配置文件）：
+1. 全量版打包完成后，接着执行精简版打包命令：
    ```bash
-   npm run tauri build -- --config src-tauri/tauri.conf.lite.json
+   npm run build -- --lite
    ```
-2. 构建脚本会自动跳过 Pi 引擎的打包，仅打包界面和 `jishu` CLI 命令行工具。
-3. 构建完成后，安装包会再次生成在同一路径：
-   `src-tauri/target/release/bundle/nsis/Jishu Hub_<版本号>_x64-setup.exe`
-4. **⚠️ 重要操作**：请将该生成的包重命名为：
-   `Jishu Hub Lite_<版本号>_x64-setup.exe`
+2. 构建脚本会自动跳过 Pi 引擎的打包，仅打包界面和 `jishu` CLI 命令行工具，并**自动**重命名输出包。
+3. 最终的安装包会生成在同一路径：
+   `src-tauri/target/release/bundle/nsis/Jishu Hub Lite_<版本号>_x64-setup.exe`
+
+> **原理解释（为何不直接改 Tauri 配置里的 productName）**：
+> Tauri 的安装包文件名是由配置中的 `productName` 决定的。如果直接在配置文件把名字设为 "Jishu Hub Full"，会导致用户最终安装时的默认路径、开始菜单名、卸载列表全变成 "Jishu Hub Full"，使得 Full 版和 Lite 版不再能无缝互相覆盖更新。因此，业界标准做法是保持安装后的应用名为 "Jishu Hub" 不变，并在打包结束后由自动化脚本去重命名带有后缀的 `.exe` 安装包文件。
 
 至此，你的 Windows 全量版和精简版安装包就都准备就绪了。
 
