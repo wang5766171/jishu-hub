@@ -55,9 +55,9 @@
 |------|-----|
 | 上游仓库 | `https://github.com/Dicklesworthstone/pi` |
 | 自有 fork | `https://github.com/wang5766171/pi` |
-| 当前维护分支 | `release_v0.78.1-2` |
+| 当前维护分支 | `release_v0.79.1-2` |
 | `.gitmodules` URL | `https://github.com/wang5766171/pi` |
-| `.gitmodules` branch | `release_v0.78.1-2` |
+| `.gitmodules` branch | `release_v0.79.1-2` |
 
 ## 1.5 日常源码变动流程
 
@@ -74,7 +74,7 @@
    ```bash
    git add -A
    git commit -m "feat: 描述本次改动"
-   git push origin release_v0.78.1-2
+   git push origin release_v0.79.1-2
    ```
 
 3. **回到 jishu-hub 主仓库，提交 submodule 指针更新**：
@@ -112,7 +112,7 @@
    ```bash
    cd ../..
    git add third_party/pi .gitmodules
-   git commit -m "chore: upgrade pi submodule to v0.78.2-1"
+   git commit -m "chore: upgrade pi submodule to v0.79.1-2"
    ```
 
 ---
@@ -120,6 +120,15 @@
 # 第二部分：改动记录
 
 ## 第 2 版 (自研尾号 -2)
+
+### 2026-06-10 | 同步上游开源库版本 v0.79.1
+
+### 改动总览
+
+| 模块 | 改动说明 |
+|------|---------|
+| 全局 | 同步上游 `v0.79.1` 最新代码，顺延保持 Jishu Hub 的自研特例逻辑（如移除 husky 依赖、去除 generate-models 构建卡点、以及将全局 `pi` CLI 命令重命名为 `jishu`）。 |
+| 版本号 | 将各个内部包的 version 从 `0.78.1-2` 升级至 `0.79.1-2`。 |
 
 ### 2026-06-09 | NPM Alias 无侵入式发布架构升级
 
