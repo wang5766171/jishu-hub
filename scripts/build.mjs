@@ -44,7 +44,7 @@ let sidecarName = null;
 
 if (targetTripleMatch) {
   const targetTriple = targetTripleMatch[1].trim();
-  sidecarName = process.platform === "win32" ? `jishu-${targetTriple}.exe` : `jishu-${targetTriple}`;
+  sidecarName = process.platform === "win32" ? `jishu-cli-${targetTriple}.exe` : `jishu-cli-${targetTriple}`;
   sidecarTarget = resolve(root, "src-tauri", "target", "release", sidecarName);
   
   // Ensure directory exists and write a dummy file to satisfy build.rs externalBin check
@@ -55,7 +55,7 @@ if (targetTripleMatch) {
 }
 
 // Build the CLI binary
-const cliBuild = spawnSync("cargo", ["build", "--release", "--bin", "jishu", "--features", "cli", "--manifest-path", "src-tauri/Cargo.toml"], {
+const cliBuild = spawnSync("cargo", ["build", "--release", "--bin", "jishu-cli", "--features", "cli", "--manifest-path", "src-tauri/Cargo.toml"], {
   cwd: root,
   stdio: "inherit",
   shell: false,
@@ -65,7 +65,7 @@ if (cliBuild.status !== 0) {
   process.exit(cliBuild.status ?? 1);
 }
 
-const cliName = process.platform === "win32" ? "jishu.exe" : "jishu";
+const cliName = process.platform === "win32" ? "jishu-cli.exe" : "jishu-cli";
 const cliSource = resolve(root, "src-tauri", "target", "release", cliName);
 const nsisCliSource = resolve(root, "src-tauri", "nsis", "cli-source.nsh");
 

@@ -3,8 +3,8 @@ use clap::{Parser, Subcommand};
 /// Jishu — jishu-self agent + multi-agent orchestrator CLI.
 #[derive(Parser, Debug)]
 #[command(
-    name = "jishu",
-    version = crate::agent::jishu_self::PI_AGENT_VERSION,
+    name = "jishu-cli",
+    version = env!("CARGO_PKG_VERSION"),
     about = "Jishu agent and multi-agent orchestrator"
 )]
 pub struct Cli {

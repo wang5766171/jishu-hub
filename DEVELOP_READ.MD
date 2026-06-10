@@ -117,7 +117,37 @@ Agent Adapter -> AcpCommandSpec -> AgentRuntime -> Pi RPC Transport Runtime -> P
 - `src-tauri/src/agent/jishu_self/mod.rs`：Jishu Agent adapter，声明 `PiRpc` transport。
 - `src-tauri/src/agent/adapters/opencode.rs`：OpenCode ACP adapter 实例。
 
-## 4. CLI 是原生入口，不是通用包裹层
+## 4. CLI 架构：`jishu-cli` 与 `jishu` 的职责分离
+
+系统中有两个独立的命令行程序，名称不同、来源不同、职责不同：
+
+| 命令名 | 语言 | 安装方式 | 版本号来源 | 职责 |
+|--------|------|---------|-----------|------|
+| `jishu-cli` | Rust | 随 Jishu Hub 安装包捆绑，NSIS 自动放入 PATH | `CARGO_PKG_VERSION`（与 Jishu Hub 一致） | CLI 编排器：会话管理、agent 列表、doctor 诊断、终端交互入口 |
+| `jishu` | Node.js | 用户在环境检测页手动点击安装（`npm install -g @jishu-hub/jishu-agent`） | `PI_AGENT_VERSION`（与上游 Pi 一致） | Pi Agent 运行时：实际执行 AI 对话、工具调用、MCP 扩展 |
+
+### 4.1 为什么必须分开命名
+
+早期二者共用 `jishu` 命名，导致以下严重问题：
+
+1. **安装状态误判**：环境检测探测 `jishu` 命令时，找到了安装包捆绑的 Rust CLI 外壳，误报 Agent “已安装”。
+2. **运行时崩溃**：GUI 对话时实际调用的是 Rust CLI（不支持 `--mode rpc`），导致 `unexpected argument '--mode'` 崩溃。
+3. **版本号混乱**：Rust CLI 输出 `jishu 0.79.1-3`，UI 加前缀后显示为 `vjishu 0.79.1-3`。
+
+### 4.2 运行时解析优先级
+
+`pi_runtime.rs` 中 `resolve_pi_runtime()` 按以下顺序查找 Node.js Agent（注意：它查找的是 `jishu`，不是 `jishu-cli`）：
+
+```text
+1. JISHU_PI_BIN 环境变量      -> 开发/调试覆盖
+2. ~/.jishu-agent/.../cli.js  -> 用户通过 UI 安装的版本
+3. 安装目录/third_party/pi-bundle/.../cli.js -> Full 版捆绑的 Node.js Agent
+4. PATH 中查找 "jishu"        -> npm 全局安装的版本（Lite 版走此路径）
+```
+
+由于 Rust CLI 已改名为 `jishu-cli`，第 4 步在 PATH 中查找 `jishu` 时不会再误匹配到 Rust 外壳。
+
+### 4.3 CLI transport 使用规则
 
 CLI transport 用于两类场景：
 
@@ -126,10 +156,9 @@ CLI transport 用于两类场景：
 
 原则：
 
-- 用户可见命令必须是正式命令，例如 `jishu chat start --agent jishu-self --project .`、`jishu chat resume <session-id>`、`claude --resume`、`codex ...`。
+- 用户可见命令必须是正式命令，例如 `jishu-cli chat start --agent jishu-self --project .`、`jishu-cli chat resume <session-id>`、`claude --resume`、`codex ...`。
 - GUI 的“跳转控制台”只能调用 adapter 的 terminal surface，不允许页面拼接命令。
-- Jishu Agent 对外就是 `jishu xxx`。底层是否复用 Pi、是否通过 ACP、是否设置 env，都是 adapter/runtime 内部职责。
-- 不允许把外部 agent 统一包装成 `jishu agent-bridge`。当前正式路线已经移除临时 bridge/RPC 主路径。
+- 不允许把外部 agent 统一包装成 `jishu-cli agent-bridge`。当前正式路线已经移除临时 bridge/RPC 主路径。
 
 ## 5. Adapter 是硬边界
 
@@ -437,11 +466,11 @@ Harmes 或类似自学习能力应作为学习/evaluation/policy 层接入，不
 
 ### 17.3 独立 CLI 的系统级软链接注入 (CLI Path Registration)
 
-在 Windows 平台，CLI 的 `PATH` 变量注入可以通过打包工具的安装向导 (`installer.nsh`) 自动完成。但在 macOS 的 `.app` 拖拽安装模式下，不存在这个步骤，必须实现“应用内按需授权安装”。
+在 Windows 平台，CLI 的 `PATH` 变量注入可以通过打包工具的安装向导 (`installer.nsh`) 自动完成（安装 `jishu-cli.exe` 到 `$INSTDIR` 并加入 PATH）。但在 macOS 的 `.app` 拖拽安装模式下，不存在这个步骤，必须实现“应用内按需授权安装”。
 
 **设计准则：**
-- **手动按需激活模式**：在前端设置页或环境检测页提供一个 `[安装 jishu 命令行工具至 PATH]` 的用户引导交互。
-- **macOS/Unix 适配策略**：后台提供 IPC 方法 `os_adapter::install_cli_symlink()`，利用 Rust 原生 API `std::os::unix::fs::symlink`，在 `/usr/local/bin/jishu` 建立软链接，源路径指向 macOS 规范中内部的 `Contents/MacOS/jishu` 二进制文件。
+- **手动按需激活模式**：在前端设置页或环境检测页提供一个 `[安装 jishu-cli 命令行工具至 PATH]` 的用户引导交互。
+- **macOS/Unix 适配策略**：后台提供 IPC 方法 `os_adapter::install_cli_symlink()`，利用 Rust 原生 API `std::os::unix::fs::symlink`，在 `/usr/local/bin/jishu-cli` 建立软链接，源路径指向 macOS 规范中内部的 `Contents/MacOS/jishu-cli` 二进制文件。
 - **状态探测回环**：后端需侦测系统 `PATH` 或该路径下的文件指针链接，向前端回传当前系统的 CLI 正确安装状态以渲染状态徽章。
 
 ### 17.4 跳转控制台与终端沙箱隔离 (Terminal Jump)

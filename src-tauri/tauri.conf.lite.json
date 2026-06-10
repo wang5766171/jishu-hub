@@ -38,7 +38,7 @@
       "appimage"
     ],
     "externalBin": [
-      "target/release/jishu"
+      "target/release/jishu-cli"
     ],
     "resources": [],
     "icon": [

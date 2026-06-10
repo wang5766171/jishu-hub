@@ -7,7 +7,7 @@ pub fn check_cli_symlink() -> Result<bool, String> {
     }
     #[cfg(target_os = "macos")]
     {
-        let link_path = std::path::Path::new("/usr/local/bin/jishu");
+        let link_path = std::path::Path::new("/usr/local/bin/jishu-cli");
         if !link_path.exists() {
             return Ok(false);
         }
@@ -36,13 +36,13 @@ pub fn install_cli_symlink() -> Result<(), String> {
         let exe_path = std::env::current_exe().map_err(|e| format!("Could not get current exe: {}", e))?;
         // exe is likely in Jishu Hub.app/Contents/MacOS/jishu-hub
         let app_dir = exe_path.parent().ok_or("No parent dir")?;
-        let cli_bin = app_dir.join("jishu");
+        let cli_bin = app_dir.join("jishu-cli");
         
         if !cli_bin.exists() {
-            return Err("jishu CLI binary not found in app bundle. It needs to be bundled as an externalBin.".into());
+            return Err("jishu-cli binary not found in app bundle. It needs to be bundled as an externalBin.".into());
         }
 
-        let link_path = std::path::Path::new("/usr/local/bin/jishu");
+        let link_path = std::path::Path::new("/usr/local/bin/jishu-cli");
         
         // Ensure /usr/local/bin exists
         let bin_dir = std::path::Path::new("/usr/local/bin");
@@ -60,7 +60,7 @@ pub fn install_cli_symlink() -> Result<(), String> {
             if e.kind() == std::io::ErrorKind::PermissionDenied {
                 // Elevate via osascript
                 let script = format!(
-                    "do shell script \"mkdir -p /usr/local/bin && rm -f /usr/local/bin/jishu && ln -sf '{}' /usr/local/bin/jishu\" with administrator privileges",
+                    "do shell script \"mkdir -p /usr/local/bin && rm -f /usr/local/bin/jishu-cli && ln -sf '{}' /usr/local/bin/jishu-cli\" with administrator privileges",
                     cli_bin.display()
                 );
                 let output = std::process::Command::new("osascript")

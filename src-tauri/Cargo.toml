@@ -16,8 +16,8 @@ name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "jishu"
-path = "src/bin/jishu.rs"
+name = "jishu-cli"
+path = "src/bin/jishu-cli.rs"
 
 [features]
 default = ["cli", "orchestrator"]

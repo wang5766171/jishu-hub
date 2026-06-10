@@ -20,7 +20,7 @@ Section -InstallJishuCli
   ; this binary for the jishu-self agent bridge.
   !ifdef JISHU_CLI_SOURCE
     SetOutPath "$INSTDIR"
-    File "/oname=jishu.exe" "${JISHU_CLI_SOURCE}"
+    File "/oname=jishu-cli.exe" "${JISHU_CLI_SOURCE}"
   !endif
 SectionEnd
 

@@ -82,10 +82,10 @@ pub(crate) fn resolve_jishu_cli_binary() -> Result<PathBuf, String> {
         .ok_or_else(|| "No parent directory for current exe".to_string())?;
 
     #[cfg(target_os = "windows")]
-    let binary_name = "jishu.exe";
+    let binary_name = "jishu-cli.exe";
 
     #[cfg(not(target_os = "windows"))]
-    let binary_name = "jishu";
+    let binary_name = "jishu-cli";
 
     let candidates = [
         parent.join(binary_name),
@@ -559,36 +559,36 @@ impl TerminalAdapter for JishuSelfAgent {
     }
 
     fn build_resume_command(&self, session_id: &str) -> String {
-        format!("jishu chat resume {session_id}")
+        format!("jishu-cli chat resume {session_id}")
     }
 
     fn build_launch_command(&self) -> String {
-        "jishu chat start --agent jishu-self --project .".to_string()
+        "jishu-cli chat start --agent jishu-self --project .".to_string()
     }
 
     fn build_init_command(&self) -> String {
         let prompt = "Please initialize this project and tell me when it's done.";
-        format!("jishu run \"{prompt}\"")
+        format!("jishu-cli run \"{prompt}\"")
     }
 
     fn built_in_commands(&self) -> Vec<crate::agent::command_config::AgentCommandPreset> {
         use crate::agent::command_config::AgentCommandPreset;
         vec![
             AgentCommandPreset {
-                name: "jishu --version".into(),
-                command: "jishu --version".into(),
+                name: "jishu-cli --version".into(),
+                command: "jishu-cli --version".into(),
             },
             AgentCommandPreset {
-                name: "jishu agents list".into(),
-                command: "jishu agents list".into(),
+                name: "jishu-cli agents list".into(),
+                command: "jishu-cli agents list".into(),
             },
             AgentCommandPreset {
-                name: "jishu model list".into(),
-                command: "jishu model list".into(),
+                name: "jishu-cli model list".into(),
+                command: "jishu-cli model list".into(),
             },
             AgentCommandPreset {
-                name: "jishu doctor".into(),
-                command: "jishu doctor".into(),
+                name: "jishu-cli doctor".into(),
+                command: "jishu-cli doctor".into(),
             },
         ]
     }
