@@ -107,5 +107,7 @@ SectionEnd
     ; Remove ~/.jishu-hub and ~/.jishu-agent when "Delete user data" is selected
     RMDir /r "$PROFILE\.jishu-hub"
     RMDir /r "$PROFILE\.jishu-agent"
+    ; Also uninstall the global npm package for the Lite version
+    nsExec::ExecToLog 'cmd.exe /c "npm uninstall -g @jishu-hub/jishu-agent"'
   ${EndIf}
 !macroend

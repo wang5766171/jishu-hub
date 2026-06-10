@@ -90,7 +90,7 @@ where
 
 
     // 4. PATH
-    if let Some(path) = path_lookup("pi") {
+    if let Some(path) = path_lookup("jishu") {
         return Ok(PiRuntimeCommand {
             program: path,
             base_args: Vec::new(),
