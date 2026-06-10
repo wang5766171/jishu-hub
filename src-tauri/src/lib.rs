@@ -807,9 +807,9 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
         .path()
         .resource_dir()
         .map_err(|e| format!("Failed to resolve resource directory: {}", e))?;
-    let mut source = res_dir.join("third_party").join("pi");
+    let mut source = res_dir.join("third_party").join("pi-bundle");
     if !source.exists() {
-        source = res_dir.join("_up_").join("third_party").join("pi");
+        source = res_dir.join("_up_").join("third_party").join("pi-bundle");
     }
 
     let target = crate::agent::jishu_self::pi_agent_dir().ok_or("Failed to get target dir")?;
@@ -820,7 +820,7 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
         // JISHU_AGENT_BINDING_START
         let mut cmd = shell_command(
             "npm",
-            vec!["install".to_string(), "-g".to_string(), "@jishu-hub/jishu-agent@0.78.1-2".to_string()],
+            vec!["install".to_string(), "-g".to_string(), "@jishu-hub/jishu-agent@0.79.1-2".to_string()],
         );
         // JISHU_AGENT_BINDING_END
         let mut installer = crate::process_command::tokio_no_window(&mut cmd);
