@@ -29,9 +29,11 @@ impl JishuSelfAgent {
         args.push("install".to_string());
         args.push("npm:pi-mcp-adapter".to_string());
 
-        let mut cmd = tokio::process::Command::new(&runtime.program);
-        cmd.args(&args)
-            .current_dir(std::env::current_dir().unwrap_or_default());
+        let mut cmd = crate::os_adapter::shell::shell_command(
+            &runtime.program.to_string_lossy(),
+            args,
+        );
+        cmd.current_dir(std::env::current_dir().unwrap_or_default());
 
         #[cfg(target_os = "windows")]
         crate::process_command::tokio_no_window(&mut cmd);
@@ -423,9 +425,11 @@ impl ConfigAdapter for JishuSelfAgent {
             args.push("install".to_string());
             args.push("npm:pi-mcp-adapter".to_string());
 
-            let mut cmd = tokio::process::Command::new(&runtime.program);
-            cmd.args(&args)
-                .current_dir(std::env::current_dir().unwrap_or_default());
+            let mut cmd = crate::os_adapter::shell::shell_command(
+                &runtime.program.to_string_lossy(),
+                args,
+            );
+            cmd.current_dir(std::env::current_dir().unwrap_or_default());
 
             #[cfg(target_os = "windows")]
             crate::process_command::tokio_no_window(&mut cmd);
@@ -474,8 +478,8 @@ impl TransportAdapter for JishuSelfAgent {
                 args: vec!["--mode".to_string(), "rpc".to_string()],
                 envs: Vec::new(),
             });
-        let mut cmd = tokio::process::Command::new(&spec.program);
-        cmd.args(&spec.args).current_dir(&req.project_path);
+        let mut cmd = crate::os_adapter::shell::shell_command(&spec.program, spec.args);
+        cmd.current_dir(&req.project_path);
         for (key, value) in spec.envs {
             cmd.env(key, value);
         }
