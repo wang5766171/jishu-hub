@@ -112,12 +112,22 @@
    ```bash
    cd ../..
    git add third_party/pi .gitmodules
-   git commit -m "chore: upgrade pi submodule to v0.79.1-2"
+   git commit -m "chore: upgrade pi submodule to v0.79.1-3"
    ```
 
 ---
 
 # 第二部分：改动记录
+
+## 第 3 版 (自研尾号 -3)
+
+### 2026-06-10 | 修复内部依赖锁定错误与硬编码版本显示
+
+### 改动总览
+
+| 模块 | 改动说明 |
+|------|---------|
+| 全局版本同步 | 由于发布 `-2` 版本时遗漏了根目录 `package.json` 的版本更新，导致 npm 别名发布脚本将内部依赖错误地指回了旧版，导致实际执行包损坏。此版本利用新的 `upgrade-version.mjs` 脚本实现了跨全仓库（包括 Rust 后端的 `PI_AGENT_VERSION`、所有子包以及脱机资源包）的 100% 同步升级至 `0.79.1-3`。 |
 
 ## 第 2 版 (自研尾号 -2)
 
