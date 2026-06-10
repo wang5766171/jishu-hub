@@ -63,6 +63,31 @@ where
         }
     }
 
+    // 3. Embedded Node Module (from Tauri bundle)
+    let internal_pi_dir = if let Ok(mut install_dir) = std::env::current_exe() {
+        install_dir.pop();
+        install_dir.join("third_party").join("pi-bundle")
+    } else {
+        PathBuf::from("")
+    };
+
+    if let Some(agent_dir) = Some(internal_pi_dir) {
+        let entry = PathBuf::from(&agent_dir)
+            .join("packages")
+            .join("coding-agent")
+            .join("dist")
+            .join("cli.js");
+        if file_exists(&entry) {
+            let mut base_args = vec![entry.to_string_lossy().to_string()];
+            let node_bin = path_lookup("node").unwrap_or_else(|| PathBuf::from("node"));
+            return Ok(PiRuntimeCommand {
+                program: node_bin,
+                base_args,
+                source: PiRuntimeSource::NodeModule,
+            });
+        }
+    }
+
 
     // 4. PATH
     if let Some(path) = path_lookup("pi") {

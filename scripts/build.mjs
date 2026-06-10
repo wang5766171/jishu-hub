@@ -9,14 +9,13 @@ const isLite = process.argv.includes("--lite");
 
 // 1. Build third_party/pi (Native Node Agent)
 const piRoot = resolve(root, "third_party", "pi");
-if (!isLite && existsSync(piRoot)) {
-  console.log("Building bundled pi agent...");
-  spawnSync("npm", ["install"], { cwd: piRoot, stdio: "inherit", shell: true });
-  spawnSync("npm", ["run", "build"], { cwd: piRoot, stdio: "inherit", shell: true });
-  console.log("Pruning dev dependencies to reduce installer size...");
-  spawnSync("npm", ["prune", "--omit=dev"], { cwd: piRoot, stdio: "inherit", shell: true });
-} else if (isLite) {
-  console.log("Lite mode enabled. Skipping bundled pi agent build.");
+const isNestedBuild = !!process.env.IS_BUILD_MJS;
+
+if (!isLite && existsSync(piRoot) && !isNestedBuild) {
+  console.log("Building bundled pi agent via pack-pi.mjs...");
+  spawnSync("node", ["./scripts/pack-pi.mjs"], { cwd: root, stdio: "inherit", shell: false });
+} else if (isLite || isNestedBuild) {
+  console.log("Skipping bundled pi agent build (Lite mode or nested build).");
 }
 
 const steps = [
@@ -84,7 +83,7 @@ if (sidecarTarget) {
 if (!process.env.IS_BUILD_MJS) {
   console.log("Running tauri build...");
   const tauriArgs = isLite 
-    ? ["run", "tauri", "build", "--config", "src-tauri/tauri.conf.lite.json"] 
+    ? ["run", "tauri", "build", "--", "--config", "src-tauri/tauri.conf.lite.json"] 
     : ["run", "tauri", "build"];
 
   const tauriBuild = spawnSync("npm", tauriArgs, {
@@ -109,8 +108,24 @@ if (!process.env.IS_BUILD_MJS) {
         const newName = isLite 
           ? file.replace("Jishu Hub_", "Jishu Hub Lite_")
           : file.replace("Jishu Hub_", "Jishu Hub Full_");
-        renameSync(resolve(nsisDir, file), resolve(nsisDir, newName));
-        console.log(`Renamed installer to: ${newName}`);
+        
+        let retries = 5;
+        while (retries > 0) {
+          try {
+            renameSync(resolve(nsisDir, file), resolve(nsisDir, newName));
+            console.log(`Renamed installer to: ${newName}`);
+            break;
+          } catch (e) {
+            if (e.code === 'EPERM' || e.code === 'EBUSY') {
+              console.log(`Failed to rename, retrying in 2 seconds... (${retries} attempts left)`);
+              spawnSync("node", ["-e", "setTimeout(() => {}, 2000)"]); // simple wait
+              retries--;
+              if (retries === 0) throw e;
+            } else {
+              throw e;
+            }
+          }
+        }
       }
     }
   }
