@@ -128,6 +128,64 @@ for (const pkg of packagesToPublish) {
 
   fs.writeFileSync(stagePkgJsonPath, JSON.stringify(json, null, "\t") + "\n");
 
+  // Transform npm-shrinkwrap.json: replace @earendil-works/* references with @jishu-hub/* equivalents
+  const stageShrinkwrapPath = path.join(stageDir, "npm-shrinkwrap.json");
+  if (fs.existsSync(stageShrinkwrapPath)) {
+    const shrinkwrap = JSON.parse(fs.readFileSync(stageShrinkwrapPath, "utf-8"));
+    const oldPrefix = "@earendil-works/pi-";
+    const shrinkwrapNameMapping = {
+      "coding-agent": `${SCOPE_NEW}/jishu-agent`,
+      "ai": `${SCOPE_NEW}/jishu-agent-ai`,
+      "agent": `${SCOPE_NEW}/jishu-agent-core`,
+      "tui": `${SCOPE_NEW}/jishu-agent-tui`,
+    };
+
+    if (shrinkwrap.name && shrinkwrap.name.startsWith(oldPrefix)) {
+      const shortName = shrinkwrap.name.slice(oldPrefix.length);
+      if (shrinkwrapNameMapping[shortName]) {
+        shrinkwrap.name = shrinkwrapNameMapping[shortName];
+      }
+    }
+
+    if (shrinkwrap.packages) {
+      const keysToRename = [];
+      for (const key of Object.keys(shrinkwrap.packages)) {
+        if (key === "") continue; // root package handled separately
+        for (const [oldShort, newName] of Object.entries(shrinkwrapNameMapping)) {
+          const oldNodeModulesKey = `node_modules/${SCOPE_OLD.slice(1)}/pi-${oldShort}`;
+          if (key === oldNodeModulesKey) {
+            keysToRename.push({ oldKey: key, newKey: `node_modules/${newName}`, newName });
+          }
+        }
+      }
+      for (const { oldKey, newKey, newName } of keysToRename) {
+        const entry = shrinkwrap.packages[oldKey];
+        // Update the resolved URL to point to the new package name on npmjs.org
+        if (entry.resolved) {
+          entry.resolved = entry.resolved.replace(
+            /registry\.npmjs\.org\/@earendil-works\/pi-[^/]+\//,
+            `registry.npmjs.org/${newName}/-/${newName.split('/')[1]}-`
+          );
+          // Rebuild the resolved URL properly: https://registry.npmjs.org/@scope/name/-/name-version.tgz
+          const v = entry.version;
+          const nameSlug = newName.split('/')[1];
+          entry.resolved = `https://registry.npmjs.org/${newName}/-/${nameSlug}-${v}.tgz`;
+        }
+        delete shrinkwrap.packages[oldKey];
+        shrinkwrap.packages[newKey] = entry;
+      }
+    }
+
+    // Replace all @earendil-works/pi-* string occurrences in the shrinkwrap with @jishu-hub/* equivalents
+    let shrinkwrapStr = JSON.stringify(shrinkwrap, null, "\t");
+    for (const [oldShort, newName] of Object.entries(shrinkwrapNameMapping)) {
+      const oldFullName = `${SCOPE_OLD}/pi-${oldShort}`;
+      shrinkwrapStr = shrinkwrapStr.split(oldFullName).join(newName);
+    }
+    fs.writeFileSync(stageShrinkwrapPath, shrinkwrapStr + "\n");
+    console.log(`Transformed npm-shrinkwrap.json aliases.`);
+  }
+
   console.log(`Configured NPM aliases in package.json (no code modified!).`);
 
   if (DRY_RUN) {

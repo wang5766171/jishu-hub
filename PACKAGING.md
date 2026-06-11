@@ -58,7 +58,7 @@
    ```bash
    node scripts/publish-pi.mjs
    ```
-   > **原理解释**：此脚本会自动在后台跑 `npm install` 与 `npm run build`，随后在临时目录 `.publish-stage` 中使用 NPM Alias 特性将包的引用于发布前替换为 `@jishu-hub/jishu-agent` 等系列名称。该脚本内部已经强制绑定了 `https://registry.npmjs.org/` 作为发布源，所以即便你配置了淘宝镜像等，也完全不必担心报错 403 权限异常！
+   > **原理解释**：此脚本会自动在后台跑 `npm install` 与 `npm run build`，随后在临时目录 `.publish-stage` 中使用 NPM Alias 特性将包的引用于发布前替换为 `@jishu-hub/jishu-agent` 等系列名称。脚本不仅会变换 `package.json` 中的依赖声明，还会同步变换 `npm-shrinkwrap.json` 中的包名和 tarball 解析地址，确保 npm 在安装时优先使用 shrinkwrap 中的正确 URL，而不会错误地尝试拉取原始的 `@earendil-works/*` 包。该脚本内部已经强制绑定了 `https://registry.npmjs.org/` 作为发布源，所以即便你配置了淘宝镜像等，也完全不必担心报错 403 权限异常！
 
 发布成功后，全球范围内的 Lite 客户端即可在界面一键拉取安装你刚刚上线的最新核心代码！
 
