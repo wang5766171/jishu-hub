@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 pub(crate) enum PiRuntimeSource {
     BinEnv,
     NodeModule,
-    Path,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,14 +88,34 @@ where
     }
 
 
-    // 4. PATH — looks for the Node.js Pi agent installed globally via npm.
-    //    This will NOT match the bundled Rust CLI (now named `jishu-cli`).
-    if let Some(path) = path_lookup("jishu") {
-        return Ok(PiRuntimeCommand {
-            program: path,
-            base_args: Vec::new(),
-            source: PiRuntimeSource::Path,
+    // 4. PATH — Node.js Pi agent installed globally via npm
+    //    (`@jishu-hub/jishu-agent`). The npm `jishu` bin is a batch/posix shim
+    //    that must be invoked via `cmd /C`, which relays the `--mode rpc`
+    //    JSON-line stream through an extra cmd.exe layer and breaks the
+    //    stdin/stdout handshake (the GUI then hangs forever on "thinking...").
+    //    So instead of running the shim, resolve the package's `dist/cli.js`
+    //    that npm installs next to it and launch `node` directly — the same
+    //    clean-pipe launch the embedded bundle uses (step 3) — so Lite launches
+    //    the agent identically to Full. If the `jishu` on PATH is NOT the npm
+    //    agent (e.g. a stray pre-rename `jishu.exe` Rust binary, with no
+    //    adjacent npm package), the `cli.js` check fails and we fall through to
+    //    the error below instead of executing the wrong binary.
+    if let Some(shim) = path_lookup("jishu") {
+        let cli = shim.parent().map(|dir| {
+            dir.join("node_modules")
+                .join("@jishu-hub")
+                .join("jishu-agent")
+                .join("dist")
+                .join("cli.js")
         });
+        if let Some(cli) = cli.filter(|c| file_exists(c)) {
+            let node_bin = path_lookup("node").unwrap_or_else(|| PathBuf::from("node"));
+            return Ok(PiRuntimeCommand {
+                program: node_bin,
+                base_args: vec![cli.to_string_lossy().to_string()],
+                source: PiRuntimeSource::NodeModule,
+            });
+        }
     }
 
     Err(
