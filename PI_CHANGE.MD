@@ -139,6 +139,19 @@
 
 **验证（2026-06-11，端到端）**：清单含 25 个运行时依赖，覆盖全部 provider SDK（`openai`、`@anthropic-ai/sdk`、`@google/genai`、`@mistralai/mistralai`、`@aws-sdk/client-bedrock-runtime`、`@smithy/node-http-handler` 等）。Full 断言通过（“All 25 runtime dependencies present”），Lite 暂存的 `package.json` 0 缺失，打包产物 `cli.js --version/--help` 均正常。Full/Lite 现共享同一份 esbuild 产物、同一份清单、同一 shebang 处理，结构上不再可能漂移。
 
+### 2026-06-11 | 将 `.publish-stage/` 移出版本控制（gitignore）
+
+**根因与背景**：`packages/*/.publish-stage/` 是主仓 `publish-pi.mjs` 发布时**清空重建**的临时 staging 目录（每次 `npm publish` 前 `rmSync` + `mkdirSync` 重做），属纯临时产物。但历史上它被提交进了 fork，导致每次升版本后 `.publish-stage/*` 快照都停留在旧版本——本次升 0.79.1-6 时，3 个 package.json 仍停在 0.79.1-5，且 coding-agent 快照还缺第6版新增的 11 个 provider/网络依赖，制造“仓库里有一份旧/残缺草稿”的误导。npm registry 本身就是“发布了什么”的权威来源，git 里再存一份既冗余又必然漂移。
+
+### 改动总览
+
+| 模块 | 改动说明 |
+|------|---------|
+| `.gitignore` | 新增 `.publish-stage/`（匹配任意层级的同名目录）。 |
+| `packages/*/.publish-stage/` | `git rm -r --cached` 移除已跟踪的 9 个文件（4 个包各 `README.md` + `package.json`，外加 coding-agent 的 `npm-shrinkwrap.json`）；工作树副本一并清理，发布时由 `publish-pi.mjs` 现场重生成。 |
+
+**验证**：全仓 grep 确认除 `publish-pi.mjs`（写入方）与 `PACKAGING.md`（文档）外，无任何代码/测试把 `.publish-stage` 当数据读；husky pre-commit 全套检查（biome / pinned-deps / ts-imports / shrinkwrap / tsgo / browser-smoke）通过。此后升版本不再需要同步 `.publish-stage`，从结构上消除该漂移源。
+
 ## 第 3 版 (自研尾号 -3)
 
 ### 2026-06-10 | 修复内部依赖锁定错误与硬编码版本显示
