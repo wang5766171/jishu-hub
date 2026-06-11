@@ -54,11 +54,27 @@ for (const pkgPath of pkgsToUpdate) {
 }
 
 // 3. Update NPM Lockfile
-console.log(`\n[3] Running npm install to sync package-lock.json and npm-shrinkwrap.json...`);
+console.log(`\n[3] Running npm install to sync the root package-lock.json...`);
 try {
   execSync("npm install", { cwd: ROOT_DIR, stdio: "inherit" });
 } catch (e) {
   console.error("❌ npm install failed");
+  process.exit(1);
+}
+
+// 3.5 Regenerate coding-agent npm-shrinkwrap.json
+// `npm install` above only syncs the root package-lock.json. It does NOT touch
+// packages/coding-agent/npm-shrinkwrap.json — that is a separate file regenerated from
+// coding-agent/package.json + the root lock by generate-coding-agent-shrinkwrap.mjs.
+// Without this step the shrinkwrap keeps the OLD version while package.json moves ahead.
+// npm-shrinkwrap overrides package.json at install time, so a stale shrinkwrap makes the
+// published Lite package resolve its internal deps (@earendil-works/pi-*) to the
+// nonexistent previous version (404 / ERR_MODULE_NOT_FOUND). Regenerate it in lockstep.
+console.log(`\n[3.5] Regenerating packages/coding-agent/npm-shrinkwrap.json...`);
+try {
+  execSync("npm run shrinkwrap:coding-agent", { cwd: ROOT_DIR, stdio: "inherit" });
+} catch (e) {
+  console.error("❌ Failed to regenerate coding-agent npm-shrinkwrap.json");
   process.exit(1);
 }
 
