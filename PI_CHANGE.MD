@@ -23,7 +23,7 @@
 ┌─────────────────────────────────┐
 │wang5766171/pi                   │
 │（自有 fork 仓库）               │
-│分支: release_v0.79.1-6          │
+│分支: release_v0.79.1-7          │
 └──────────────┬──────────────────┘
                │fork from
                ▼
@@ -46,7 +46,7 @@
   - 如果合并了上游的更新（如 Pi 升级到了 `0.78.2`），自研尾号保持顺延不变。即：`0.78.1-2` 合并新版 Pi 后，完整版本号自动变为 `0.78.2-2`。
 - **展示与发布的格式统一**：
   - **界面展示 (UI)**：展示为 `0.78.1-1`。
-  - **代码分支 (Branch)**：命名为 `release_v0.79.1-6`。
+  - **代码分支 (Branch)**：命名为 `release_v0.79.1-7`。
   - **NPM 发布包 (package.json)**：使用 `0.78.1-1`（在 NPM 生态中完美支持，属于预发布版本变体机制）。
 
 ## 1.4 当前状态
@@ -55,9 +55,9 @@
 |------|-----|
 | 上游仓库 | `https://github.com/Dicklesworthstone/pi` |
 | 自有 fork | `https://github.com/wang5766171/pi` |
-| 当前维护分支 | `release_v0.79.1-6` |
+| 当前维护分支 | `release_v0.79.1-7` |
 | `.gitmodules` URL | `https://github.com/wang5766171/pi` |
-| `.gitmodules` branch | `release_v0.79.1-6` |
+| `.gitmodules` branch | `release_v0.79.1-7` |
 
 ## 1.5 日常源码变动流程
 
@@ -74,7 +74,7 @@
    ```bash
    git add -A
    git commit -m "feat: 描述本次改动"
-   git push origin release_v0.79.1-6
+   git push origin release_v0.79.1-7
    ```
 
 3. **回到 jishu-hub 主仓库，提交 submodule 指针更新**：
@@ -93,22 +93,22 @@
    cd third_party/pi
    git fetch upstream
    # 基于上游的新 tag 创建对应的新分支（保留当前的自研尾号，如 -1）
-   git checkout -b release_v0.79.1-6 v0.78.2
+   git checkout -b release_v0.79.1-7 v0.78.2
    ```
 
 2. **合并旧版本分支中的自有改动（例如定制规则和依赖修复等）**：
    ```bash
-   git merge release_v0.79.1-6
+   git merge release_v0.79.1-7
    ```
    *注意：如果在合并时产生冲突，请手动解决冲突，保留 Jishu 的定制改动。*
 
 3. **验证通过后推送到远端自有 fork**：
    ```bash
-   git push -u origin release_v0.79.1-6
+   git push -u origin release_v0.79.1-7
    ```
 
 4. **更新 jishu-hub 仓库的子模块指向**：
-   - 记得同时更新 `.gitmodules` 文件里的 `branch` 字段为新的 `release_v0.79.1-6`。
+   - 记得同时更新 `.gitmodules` 文件里的 `branch` 字段为新的 `release_v0.79.1-7`。
    ```bash
    cd ../..
    git add third_party/pi .gitmodules
@@ -118,6 +118,27 @@
 ---
 
 # 第二部分：改动记录
+
+## 第 7 版 (自研尾号 -7)
+
+### 2026-06-12 | 修复 Lite 发布版 npm-shrinkwrap.json 转换 bug（别名依赖 404 → Lite 对话卡死）
+
+**根因与背景**：-6 版发布的 `@jishu-hub/jishu-agent@0.79.1-6`（Lite）启动对话时卡在 "thinking" 无响应，根因是 `publish-pi.mjs` 里**新加的 shrinkwrap 转换逻辑**（提交 `46d6766`，-6 时期引入、此前未入档）有两处致命错误，导致包内的 `npm-shrinkwrap.json` 让 3 个内部别名依赖一个都装不上，MCP 扩展 `import '@earendil-works/pi-agent-core'` 找不到包而崩：
+
+1. **Phase 1 形同空操作**：拼 shrinkwrap key 时误用 `SCOPE_OLD.slice(1)` 去掉了 `@`（得到 `earendil-works` 而非 `@earendil-works`），与真实 key `node_modules/@earendil-works/pi-*` 永远匹配不上 → key 重命名与 `resolved` 重写从未生效。
+2. **Phase 2 双重错误**：
+   - **key 被错改名**：`node_modules/@earendil-works/pi-agent-core` → `node_modules/@jishu-hub/jishu-agent-core-core`。但发布版 `package.json` 的别名 key 是 `@earendil-works/pi-agent-core`（npm 据此装到 `node_modules/@earendil-works/pi-agent-core`）。shrinkwrap key 与别名 key 对不上 → npm 在 shrinkwrap 里查不到该条目 → 当作新依赖去 registry 解析 `@earendil-works/pi-agent-core@0.79.1-6` → fork 从不发布该名 → **404**。4 个内部包全部中招。
+   - **double-core**：`pi-agent` 是 `pi-agent-core` 的前缀，Phase 2 的全局字符串替换把 `@earendil-works/pi-agent-core` 变成 `@jishu-hub/jishu-agent-core-core`（同样 404）。
+
+### 改动总览
+
+| 模块 | 改动说明 |
+|------|---------|
+| `scripts/publish-pi.mjs`（主仓） | **重写 shrinkwrap 转换逻辑**。核心原则：别名机制下 npm 把每个内部包装在 `node_modules/@earendil-works/pi-X`（别名 key 决定安装位置），因此 shrinkwrap 的 **package key 必须保持 `@earendil-works/*` 原样不动**——唯一要改的是内部包的 `resolved` 字段：上游 `generate-coding-agent-shrinkwrap.mjs` 把它指向 `@earendil-works/*` tarball（fork 从不发布），改指向别名真正解析到的 `@jishu-hub/*` tarball。其余字段（key、integrity、**经审计的外部依赖树**）原样继承，保住上游的供应链硬化。映射改为按 **npm 包名**（非目录名），杜绝 `pi-agent` vs `pi-agent-core` 的前缀误配。新增**守卫断言**：若任何 key 被误改成 `@jishu-hub/*` 直接抛错，防止本 bug 回潮。 |
+
+**设计依据**：查阅上游 `earendil-works/pi`，其 `packages/coding-agent/npm-shrinkwrap.json` 是**刻意随包发布的供应链硬化产物**（由 `scripts/generate-coding-agent-shrinkwrap.mjs` 生成，带依赖白名单 + install-script 审计 + 完整性校验），上游文档明确其"overrides any lockfile behavior during npm install for end users"。故本修复选择**保留并正确转换** shrinkwrap（仅改 `resolved`），而非丢弃（丢则失去间接依赖锁定）或全量重生成（`npm install --package-lock-only` 会丢掉上游的审计裁剪）。fork 需要转换是因为它以 `@jishu-hub/*` 别名重发，而上游以本名 `@earendil-works/*` 发布、shrinkwrap 名字天然正确无需转换。
+
+**验证（2026-06-12，端到端本地模拟）**：`npm pack` 出发布原物 tarball（`npm notice` 确认内含修正后的 `npm-shrinkwrap.json` 60.7kB）→ 干净临时目录 `npm install` → 3 个别名内部包（pi-agent-core / pi-ai / pi-tui）正确落到 `node_modules/@earendil-works/`，共 133 包无报错；`cli.js --version` 输出 `0.79.1-6`；pi-agent-core 为真包（`@jishu-hub/jishu-agent-core@0.79.1-6`，main `./dist/index.js`，非空壳）。全局安装该 tarball 后 `tauri dev` 实际对话恢复正常（用户确认）。注：`pi-coding-agent` 不在自身 shrinkwrap 的依赖里（它是 root 包），故只有 3 个被引用的内部包需要转换。
 
 ## 第 6 版 (自研尾号 -6)
 

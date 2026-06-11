@@ -146,62 +146,67 @@ for (const pkg of packagesToPublish) {
 
   fs.writeFileSync(stagePkgJsonPath, JSON.stringify(json, null, "\t") + "\n");
 
-  // Transform npm-shrinkwrap.json: replace @earendil-works/* references with @jishu-hub/* equivalents
+  // Transform npm-shrinkwrap.json for the alias publish. (Lite/npm path only —
+  // Full via pack-pi.mjs installs from the workspace and never touches this.)
+  //
+  // The published package.json keeps the @earendil-works/* import KEYS and only
+  // rewrites their VALUES to npm aliases (npm:@jishu-hub/...@version). npm
+  // therefore installs each internal package at node_modules/@earendil-works/pi-X,
+  // so the shrinkwrap package KEYS must stay @earendil-works/* — they are the
+  // install locations, and renaming them breaks resolution (every aliased dep
+  // then 404s, the Lite crash this fixes).
+  //
+  // The ONLY field that must change is `resolved`: generate-coding-agent-shrinkwrap.mjs
+  // points internal packages at the @earendil-works/* tarball, which the fork
+  // never publishes. Repoint it at the @jishu-hub/* tarball the alias resolves to.
+  // Everything else — keys, integrity, the curated/allowlisted external tree — is
+  // inherited verbatim, preserving upstream's supply-chain hardening.
   const stageShrinkwrapPath = path.join(stageDir, "npm-shrinkwrap.json");
   if (fs.existsSync(stageShrinkwrapPath)) {
     const shrinkwrap = JSON.parse(fs.readFileSync(stageShrinkwrapPath, "utf-8"));
-    const oldPrefix = "@earendil-works/pi-";
-    const shrinkwrapNameMapping = {
-      "coding-agent": `${SCOPE_NEW}/jishu-agent`,
-      "ai": `${SCOPE_NEW}/jishu-agent-ai`,
-      "agent": `${SCOPE_NEW}/jishu-agent-core`,
-      "tui": `${SCOPE_NEW}/jishu-agent-tui`,
+
+    // @earendil-works npm name → @jishu-hub npm name. Must mirror replaceDepWithAlias.
+    const earendilToJishu = {
+      "@earendil-works/pi-coding-agent": `${SCOPE_NEW}/jishu-agent`,
+      "@earendil-works/pi-ai": `${SCOPE_NEW}/jishu-agent-ai`,
+      "@earendil-works/pi-agent-core": `${SCOPE_NEW}/jishu-agent-core`,
+      "@earendil-works/pi-tui": `${SCOPE_NEW}/jishu-agent-tui`,
+    };
+    const tarballUrl = (jishuName, ver) => {
+      const slug = jishuName.split("/")[1];
+      return `https://registry.npmjs.org/${jishuName}/-/${slug}-${ver}.tgz`;
     };
 
-    if (shrinkwrap.name && shrinkwrap.name.startsWith(oldPrefix)) {
-      const shortName = shrinkwrap.name.slice(oldPrefix.length);
-      if (shrinkwrapNameMapping[shortName]) {
-        shrinkwrap.name = shrinkwrapNameMapping[shortName];
-      }
+    // Top-level name mirrors the published package name.
+    if (shrinkwrap.name && earendilToJishu[shrinkwrap.name]) {
+      shrinkwrap.name = earendilToJishu[shrinkwrap.name];
     }
 
     if (shrinkwrap.packages) {
-      const keysToRename = [];
-      for (const key of Object.keys(shrinkwrap.packages)) {
-        if (key === "") continue; // root package handled separately
-        for (const [oldShort, newName] of Object.entries(shrinkwrapNameMapping)) {
-          const oldNodeModulesKey = `node_modules/${SCOPE_OLD.slice(1)}/pi-${oldShort}`;
-          if (key === oldNodeModulesKey) {
-            keysToRename.push({ oldKey: key, newKey: `node_modules/${newName}`, newName });
+      for (const [key, entry] of Object.entries(shrinkwrap.packages)) {
+        if (key === "") {
+          // Root entry: align its name with the published package name.
+          if (entry.name && earendilToJishu[entry.name]) {
+            entry.name = earendilToJishu[entry.name];
           }
+          continue;
+        }
+        const jishuName = earendilToJishu[key.replace(/^node_modules\//, "")];
+        if (jishuName && entry.version) {
+          entry.resolved = tarballUrl(jishuName, entry.version);
         }
       }
-      for (const { oldKey, newKey, newName } of keysToRename) {
-        const entry = shrinkwrap.packages[oldKey];
-        // Update the resolved URL to point to the new package name on npmjs.org
-        if (entry.resolved) {
-          entry.resolved = entry.resolved.replace(
-            /registry\.npmjs\.org\/@earendil-works\/pi-[^/]+\//,
-            `registry.npmjs.org/${newName}/-/${newName.split('/')[1]}-`
-          );
-          // Rebuild the resolved URL properly: https://registry.npmjs.org/@scope/name/-/name-version.tgz
-          const v = entry.version;
-          const nameSlug = newName.split('/')[1];
-          entry.resolved = `https://registry.npmjs.org/${newName}/-/${nameSlug}-${v}.tgz`;
-        }
-        delete shrinkwrap.packages[oldKey];
-        shrinkwrap.packages[newKey] = entry;
+      // Guard: keys must stay @earendil-works/* (the alias install locations).
+      // A @jishu-hub key here means the old rename bug regressed — fail loudly
+      // rather than shipping a broken shrinkwrap that 404s on install.
+      const renamed = Object.keys(shrinkwrap.packages).filter(k => k.includes("@jishu-hub"));
+      if (renamed.length > 0) {
+        throw new Error(`Shrinkwrap keys must not be renamed to @jishu-hub/* (found: ${renamed.join(", ")}).`);
       }
     }
 
-    // Replace all @earendil-works/pi-* string occurrences in the shrinkwrap with @jishu-hub/* equivalents
-    let shrinkwrapStr = JSON.stringify(shrinkwrap, null, "\t");
-    for (const [oldShort, newName] of Object.entries(shrinkwrapNameMapping)) {
-      const oldFullName = `${SCOPE_OLD}/pi-${oldShort}`;
-      shrinkwrapStr = shrinkwrapStr.split(oldFullName).join(newName);
-    }
-    fs.writeFileSync(stageShrinkwrapPath, shrinkwrapStr + "\n");
-    console.log(`Transformed npm-shrinkwrap.json aliases.`);
+    fs.writeFileSync(stageShrinkwrapPath, JSON.stringify(shrinkwrap, null, "\t") + "\n");
+    console.log(`Rewrote internal-package resolved URLs in npm-shrinkwrap.json (keys preserved, curated tree inherited).`);
   }
 
   // Fix double shebang in entry points (shared implementation with pack-pi.mjs)
