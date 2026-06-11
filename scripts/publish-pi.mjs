@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
+import { fixShebang, readRuntimeDeps } from "./lib/pi-common.mjs";
 
 const SCOPE_OLD = "@earendil-works";
 const SCOPE_NEW = process.argv.includes("--scope")
@@ -118,23 +119,19 @@ for (const pkg of packagesToPublish) {
     }
   }
 
-  // coding-agent is the esbuild entry point that bundles sibling packages. build-bundle.mjs
-  // externalizes every non-@earendil-works dependency declared across the bundled packages, so
-  // the published package.json must list all of them (e.g. LLM provider SDKs from the ai package)
-  // — otherwise runtime `import "openai"` fails with ERR_MODULE_NOT_FOUND.
+  // coding-agent is the esbuild entry point. build-bundle.mjs emits
+  // dist/runtime-deps.json listing exactly the non-@earendil-works dependencies
+  // it externalized. The published package.json must declare all of them —
+  // otherwise runtime `import "openai"` fails with ERR_MODULE_NOT_FOUND. Reading
+  // the manifest (rather than re-deriving the set here) keeps Lite's declared
+  // deps identical to what esbuild left unresolved AND to what pack-pi.mjs
+  // (Full) installs: one source of truth, no drift between the two paths.
   if (pkg === "coding-agent") {
     if (!json.dependencies) json.dependencies = {};
-    const bundledPackages = ["coding-agent", "agent-core", "ai", "tui"];
-    for (const sibling of bundledPackages) {
-      const siblingPkgPath = path.join(PACKAGES_DIR, sibling, "package.json");
-      if (!fs.existsSync(siblingPkgPath)) continue; // agent-core dir may not exist
-      const siblingPkg = JSON.parse(fs.readFileSync(siblingPkgPath, "utf-8"));
-      if (!siblingPkg.dependencies) continue;
-      for (const [dep, ver] of Object.entries(siblingPkg.dependencies)) {
-        if (dep.startsWith("@earendil-works/")) continue;
-        if (!(dep in json.dependencies)) {
-          json.dependencies[dep] = ver;
-        }
+    const runtimeDeps = readRuntimeDeps(path.join(PACKAGES_DIR, "coding-agent", "dist"));
+    for (const [dep, ver] of Object.entries(runtimeDeps)) {
+      if (!(dep in json.dependencies)) {
+        json.dependencies[dep] = ver;
       }
     }
   }
@@ -207,24 +204,8 @@ for (const pkg of packagesToPublish) {
     console.log(`Transformed npm-shrinkwrap.json aliases.`);
   }
 
-  // Fix double shebang in entry points (esbuild banner + source shebang)
-  for (const entry of ["dist/cli.js", "dist/index.js"]) {
-    const entryPath = path.join(stageDir, entry);
-    if (!fs.existsSync(entryPath)) continue;
-    let content = fs.readFileSync(entryPath, "utf8");
-    if (entry === "dist/cli.js") {
-      if (content.startsWith("#!/usr/bin/env node\n#!/usr/bin/env node\n")) {
-        content = content.replace(/^#!\/usr\/bin\/env node\n#!\/usr\/bin\/env node\n/, "#!/usr/bin/env node\n");
-        fs.writeFileSync(entryPath, content);
-      }
-    } else {
-      // index.js is a library entry, not a CLI — strip any leading shebang
-      if (content.startsWith("#!/usr/bin/env node\n")) {
-        content = content.replace(/^#!\/usr\/bin\/env node\n/, "");
-        fs.writeFileSync(entryPath, content);
-      }
-    }
-  }
+  // Fix double shebang in entry points (shared implementation with pack-pi.mjs)
+  fixShebang(path.join(stageDir, "dist"));
 
   console.log(`Configured NPM aliases in package.json (no code modified!).`);
 

@@ -119,6 +119,16 @@
 
 # 第二部分：改动记录
 
+## 第 5 版 (自研尾号 -5)
+
+### 2026-06-11 | 统一 Full/Lite 构建流水线：build-bundle 输出运行时依赖清单
+
+### 改动总览
+
+| 模块 | 改动说明 |
+|------|---------|
+| `packages/coding-agent/build-bundle.mjs` | esbuild 构建后**新增输出 `dist/runtime-deps.json`**，记录所有被 externalize 的非 `@earendil-works` 运行时依赖（名称→版本；同一依赖在多包出现时取最高 semver，与 npm 解析一致）。该清单作为 Full（`pack-pi.mjs`）与 Lite（`publish-pi.mjs`）共同的**单一依赖真相**，消除两脚本各自维护依赖集导致的漂移（曾导致 Lite 缺失 provider SDK、`ERR_MODULE_NOT_FOUND`）。esbuild 的 `external` 列表改为由该清单的键派生，保证“打包时 external 的”与“清单声明的”永远一致。配套主仓改动（共享库 `scripts/lib/pi-common.mjs`、`pack-pi.mjs` 断言、`publish-pi.mjs` 读 manifest）见主仓。 |
+
 ## 第 3 版 (自研尾号 -3)
 
 ### 2026-06-10 | 修复内部依赖锁定错误与硬编码版本显示

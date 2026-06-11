@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, rmSync, existsSync, readdirSync, statSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, rmSync, existsSync, readdirSync, statSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { fixShebang, readRuntimeDeps } from "./lib/pi-common.mjs";
 
 const root = resolve(process.cwd());
 const piRoot = resolve(root, "third_party", "pi");
@@ -67,27 +68,9 @@ function cleanDirectory(dir) {
 
 cleanDirectory(piBundle);
 
-// 6.5 Fix double shebang in entry points
+// 6.5 Fix double shebang in entry points (shared implementation with publish-pi.mjs)
 console.log("Fixing double shebangs...");
-const cliJsPath = join(piBundle, "packages", "coding-agent", "dist", "cli.js");
-if (existsSync(cliJsPath)) {
-  let content = readFileSync(cliJsPath, "utf8");
-  if (content.startsWith("#!/usr/bin/env node\n#!/usr/bin/env node\n")) {
-    content = content.replace(/^#!\/usr\/bin\/env node\n#!\/usr\/bin\/env node\n/, "#!/usr/bin/env node\n");
-    writeFileSync(cliJsPath, content);
-  }
-}
-const indexJsPath = join(piBundle, "packages", "coding-agent", "dist", "index.js");
-if (existsSync(indexJsPath)) {
-  let content = readFileSync(indexJsPath, "utf8");
-  if (content.startsWith("#!/usr/bin/env node\n#!/usr/bin/env node\n")) {
-    content = content.replace(/^#!\/usr\/bin\/env node\n#!\/usr\/bin\/env node\n/, "#!/usr/bin/env node\n");
-    writeFileSync(indexJsPath, content);
-  } else if (content.startsWith("#!/usr/bin/env node\n")) {
-    content = content.replace(/^#!\/usr\/bin\/env node\n/, "");
-    writeFileSync(indexJsPath, content);
-  }
-}
+fixShebang(join(piBundle, "packages", "coding-agent", "dist"));
 
 // 7. Clean broken symlinks in node_modules
 console.log("Cleaning broken symlinks in node_modules...");
@@ -107,5 +90,26 @@ if (existsSync(nodeModulesPath)) {
     }
   }
 }
+
+// 8. Assert every runtime dependency in build-bundle's manifest is physically
+// present in pi-bundle's node_modules. The manifest is the single source of
+// truth shared with publish-pi.mjs (Lite): Full satisfies it by baking the deps
+// in locally, Lite satisfies it by declaring the same set in package.json. This
+// guard fails the build loudly if a runtime dep is missing — the exact failure
+// mode that previously broke Lite (ERR_MODULE_NOT_FOUND) but was silently masked
+// in Full by the workspace over-install.
+console.log("Verifying runtime dependency manifest against node_modules...");
+const runtimeDeps = readRuntimeDeps(join(piBundle, "packages", "coding-agent", "dist"));
+const missing = Object.keys(runtimeDeps).filter(
+  (dep) => !existsSync(join(piBundle, "node_modules", dep))
+);
+if (missing.length > 0) {
+  console.error(
+    `pi-bundle is missing ${missing.length} runtime dependencies declared in runtime-deps.json:\n  ${missing.join(", ")}\n` +
+      `The bundled cli.js will fail at runtime with ERR_MODULE_NOT_FOUND.`
+  );
+  process.exit(1);
+}
+console.log(`All ${Object.keys(runtimeDeps).length} runtime dependencies present.`);
 
 console.log("pi-bundle preparation complete!");
