@@ -64,7 +64,11 @@
     "checkingUpdate": "Checking...",
     "updateLabel": "Update",
     "noUpdateNeeded": "Already up to date",
-    "newVersionAvailable": "New version available: {{version}}"
+    "newVersionAvailable": "New version available: {{version}}",
+    "adapter": "Adapter",
+    "mcpDesc": "Provides Jishu Agent with MCP service capabilities (web search, web reading, etc.)",
+    "cliNotInstalled": "Command-line tool not installed",
+    "cliDesc": "To conveniently launch Jishu Hub from external terminals, installing the jishu command is strongly recommended (requires authorization)."
   },
   "status": {
     "model": "Model: {{model}}",
@@ -788,5 +792,10 @@
     "medium": "M",
     "large": "L",
     "xlarge": "XL"
+  },
+  "theme": {
+    "light": "Light",
+    "colorful": "Colorful",
+    "dark": "Dark"
   }
 }

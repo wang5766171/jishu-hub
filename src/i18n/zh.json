@@ -64,7 +64,11 @@
     "checkingUpdate": "检查中...",
     "updateLabel": "更新",
     "noUpdateNeeded": "已是最新版本",
-    "newVersionAvailable": "发现新版本：{{version}}"
+    "newVersionAvailable": "发现新版本：{{version}}",
+    "adapter": "适配器",
+    "mcpDesc": "为 Jishu Agent 提供 MCP 服务调用能力（Web 搜索、网页读取等）",
+    "cliNotInstalled": "未安装命令行工具",
+    "cliDesc": "为了在外部终端中便捷唤起 Jishu Hub，强烈建议安装 jishu 命令 (需授权)。"
   },
   "status": {
     "model": "模型：{{model}}",
@@ -786,5 +790,10 @@
     "medium": "中",
     "large": "大",
     "xlarge": "特大"
+  },
+  "theme": {
+    "light": "浅色",
+    "colorful": "色彩",
+    "dark": "暗色"
   }
 }

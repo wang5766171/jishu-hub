@@ -24,10 +24,10 @@ import type { Page, Project, ProjectMeta } from "@/types";
 const ChatPage = lazy(() => import("@/pages/chat-page").then(m => ({ default: m.ChatPage })));
 const ManagePage = lazy(() => import("@/pages/manage-page").then(m => ({ default: m.ManagePage })));
 
-const themeConfig: Record<Theme, { icon: typeof Sun; label: string }> = {
-  light: { icon: Sun, label: "浅色" },
-  colorful: { icon: Palette, label: "色彩" },
-  dark: { icon: Moon, label: "暗色" },
+const themeConfig: Record<Theme, { icon: typeof Sun; labelKey: string }> = {
+  light: { icon: Sun, labelKey: "theme.light" },
+  colorful: { icon: Palette, labelKey: "theme.colorful" },
+  dark: { icon: Moon, labelKey: "theme.dark" },
 };
 const themeOrder: Theme[] = ["light", "colorful", "dark"];
 const appWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? getCurrentWindow() : null;
@@ -207,7 +207,8 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
     }
   };
 
-  const { icon: ThemeIcon, label: themeLabel } = themeConfig[theme];
+  const { icon: ThemeIcon, labelKey: themeLabelKey } = themeConfig[theme];
+  const themeLabel = t(themeLabelKey);
 
   return (
     <div
