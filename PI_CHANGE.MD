@@ -119,15 +119,25 @@
 
 # 第二部分：改动记录
 
-## 第 5 版 (自研尾号 -5)
+## 第 6 版 (自研尾号 -6)
 
-### 2026-06-11 | 统一 Full/Lite 构建流水线：build-bundle 输出运行时依赖清单
+### 2026-06-11 | 统一 Full/Lite 构建流水线：build-bundle 输出运行时依赖清单（runtime-deps.json）
+
+**根因与背景**：Full（主仓 `pack-pi.mjs`）与 Lite（主仓 `publish-pi.mjs`）历史上是两套独立脚本，各自维护运行时依赖集合。本仓库的 `build-bundle.mjs` 内部其实已计算出 esbuild 需要 externalize 的依赖，但结果从未导出，导致 publish-pi.mjs 不得不在主仓**重新推导**一份（不完整），pack-pi.mjs 则靠 workspace 全量安装**掩盖**了缺失。三方各自为政，漂移使 Lite 连环翻车（缺 provider SDK → `ERR_MODULE_NOT_FOUND`；双 shebang → Node `SyntaxError`）。本次把 build-bundle 计算出的依赖集落盘为清单，作为 Full/Lite 唯一共同的依赖真相。
 
 ### 改动总览
 
 | 模块 | 改动说明 |
 |------|---------|
-| `packages/coding-agent/build-bundle.mjs` | esbuild 构建后**新增输出 `dist/runtime-deps.json`**，记录所有被 externalize 的非 `@earendil-works` 运行时依赖（名称→版本；同一依赖在多包出现时取最高 semver，与 npm 解析一致）。该清单作为 Full（`pack-pi.mjs`）与 Lite（`publish-pi.mjs`）共同的**单一依赖真相**，消除两脚本各自维护依赖集导致的漂移（曾导致 Lite 缺失 provider SDK、`ERR_MODULE_NOT_FOUND`）。esbuild 的 `external` 列表改为由该清单的键派生，保证“打包时 external 的”与“清单声明的”永远一致。配套主仓改动（共享库 `scripts/lib/pi-common.mjs`、`pack-pi.mjs` 断言、`publish-pi.mjs` 读 manifest）见主仓。 |
+| `packages/coding-agent/build-bundle.mjs` | esbuild 构建后**新增输出 `dist/runtime-deps.json`**，记录所有被 externalize 的非 `@earendil-works` 运行时依赖（名称→版本；同一依赖在多包出现时取最高 semver，与 npm 解析一致）。esbuild 的 `external` 列表改为由该清单的键派生，保证“打包时 external 的”与“清单声明的”永远一致。 |
+
+**消费该清单的主仓配套改动（跨仓引用，详见主仓 `PACKAGING.md` §4）**：
+
+- `scripts/lib/pi-common.mjs`（新增）：共享 `fixShebang()`（消除双 shebang）与 `readRuntimeDeps()`（读取清单），Full/Lite 共用同一实现。
+- `scripts/pack-pi.mjs`（Full）：打包末尾**断言**清单中每个依赖都物理存在于 `pi-bundle/node_modules`，缺失即构建失败、大声报错——取代过去被 workspace 安静掩盖的行为。
+- `scripts/publish-pi.mjs`（Lite）：把清单中的依赖**声明**进发布的 `package.json` 的 `dependencies`，由用户 `npm install` 时拉取——取代主仓内重新推导依赖集的旧逻辑。
+
+**验证（2026-06-11，端到端）**：清单含 25 个运行时依赖，覆盖全部 provider SDK（`openai`、`@anthropic-ai/sdk`、`@google/genai`、`@mistralai/mistralai`、`@aws-sdk/client-bedrock-runtime`、`@smithy/node-http-handler` 等）。Full 断言通过（“All 25 runtime dependencies present”），Lite 暂存的 `package.json` 0 缺失，打包产物 `cli.js --version/--help` 均正常。Full/Lite 现共享同一份 esbuild 产物、同一份清单、同一 shebang 处理，结构上不再可能漂移。
 
 ## 第 3 版 (自研尾号 -3)
 

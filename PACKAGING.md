@@ -64,7 +64,49 @@
 
 ---
 
-## 3. macOS 平台打包 (GitHub Actions 自动构建)
+## 4. Full/Lite 统一打包流水线（单一依赖真相）
+
+> 本节说明 Full 与 Lite 打包脚本的共享逻辑。Full（`scripts/pack-pi.mjs`）与 Lite（`scripts/publish-pi.mjs`）历史上是**两套独立脚本**，各自维护运行时依赖集合，长期漂移导致 Lite 连环翻车（缺 provider SDK → `ERR_MODULE_NOT_FOUND`；双 shebang → Node `SyntaxError`）。现已统一为**共享同一份依赖清单**，唯一的差别只在依赖的交付方式。
+
+### 4.1 单一真相：runtime-deps.json
+
+`third_party/pi/packages/coding-agent/build-bundle.mjs` 在 esbuild 打包后会输出 `dist/runtime-deps.json`，记录**所有被 esbuild externalize（未打进 bundle、需运行时提供）的非 `@earendil-works` 依赖**：
+
+- 键为依赖名、值为版本；同一依赖在多个子包出现时取最高 semver，与 npm 解析一致。
+- esbuild 的 `external` 列表本身也由这份清单的键派生，保证“打包时留在外部的”与“清单声明的”永远一致。
+
+这份清单是 Full 与 Lite **唯一共同的依赖真相**——任何一方都不再自行推导依赖集。
+
+### 4.2 共享脚本库：scripts/lib/pi-common.mjs
+
+两个打包脚本共用同一份工具库：
+
+- `fixShebang(distDir)`：esbuild 的 banner 会给每个入口注入 shebang，而 `src/cli.ts` 自身也带一个，导致 `dist/cli.js` 出现双 shebang（Node 报 `SyntaxError`）。该函数确定性地折叠所有重复 shebang——CLI 入口 `cli.js` 保留恰好一个，库入口 `index.js` 不保留。
+- `readRuntimeDeps(distDir)`：读取并解析 `runtime-deps.json`，缺失则直接报错（提示先跑 coding-agent 构建以生成它）。
+
+### 4.3 两条路径如何消费同一份清单
+
+| 路径 | 脚本 | 如何满足清单 | 缺失时的行为 |
+|------|------|-------------|-------------|
+| **Full** | `pack-pi.mjs` | 把依赖**烘焙**进 `pi-bundle/node_modules`（`npm install` 后 `npm prune --omit=dev`） | 打包末尾**断言**每个依赖都物理存在，缺失即构建失败、大声报错 |
+| **Lite** | `publish-pi.mjs` | 把依赖**声明**进发布 `package.json` 的 `dependencies`，由用户 `npm install` 在线拉取 | npm 安装时若拉取不到才报错（声明集与 esbuild 实际需要的一致，故不会缺） |
+
+### 4.4 唯一的区别：依赖的交付方式
+
+```
+                 ┌─ 同一份 esbuild bundle（cli.js）
+Full / Lite 共享 ─┼─ 同一份 runtime-deps.json（单一真相）
+                 └─ 同一个 fixShebang 处理
+        │
+        ├─ Full：依赖烘焙进 pi-bundle/node_modules ─→ 离线运行，开箱即用
+        └─ Lite：依赖声明进 package.json ─→ 用户 npm install 在线拉取
+```
+
+构建、混淆、shebang 处理逻辑完全一致，二者在结构上不再可能漂移。Full 打包时新增的**清单断言**（4.3 节）正是过去 Lite 翻车、却被 Full 的 workspace 全量安装安静掩盖的那个失败点——现在 Full 也会在同样的问题上立即失败，从而在本地就能提前暴露。
+
+---
+
+## 5. macOS 平台打包 (GitHub Actions 自动构建)
 
 由于跨平台编译 macOS 原生应用（`.app` / `.dmg`）较为困难，我们已配置好了 GitHub Actions 流水线，完全免除了本地配置苹果环境的烦恼。
 
