@@ -118,6 +118,27 @@ for (const pkg of packagesToPublish) {
     }
   }
 
+  // coding-agent is the esbuild entry point that bundles sibling packages. build-bundle.mjs
+  // externalizes every non-@earendil-works dependency declared across the bundled packages, so
+  // the published package.json must list all of them (e.g. LLM provider SDKs from the ai package)
+  // — otherwise runtime `import "openai"` fails with ERR_MODULE_NOT_FOUND.
+  if (pkg === "coding-agent") {
+    if (!json.dependencies) json.dependencies = {};
+    const bundledPackages = ["coding-agent", "agent-core", "ai", "tui"];
+    for (const sibling of bundledPackages) {
+      const siblingPkgPath = path.join(PACKAGES_DIR, sibling, "package.json");
+      if (!fs.existsSync(siblingPkgPath)) continue; // agent-core dir may not exist
+      const siblingPkg = JSON.parse(fs.readFileSync(siblingPkgPath, "utf-8"));
+      if (!siblingPkg.dependencies) continue;
+      for (const [dep, ver] of Object.entries(siblingPkg.dependencies)) {
+        if (dep.startsWith("@earendil-works/")) continue;
+        if (!(dep in json.dependencies)) {
+          json.dependencies[dep] = ver;
+        }
+      }
+    }
+  }
+
   // Remove lifecycle scripts that would fail inside the staging directory
   if (json.scripts) {
     delete json.scripts.prepublishOnly;
@@ -184,6 +205,25 @@ for (const pkg of packagesToPublish) {
     }
     fs.writeFileSync(stageShrinkwrapPath, shrinkwrapStr + "\n");
     console.log(`Transformed npm-shrinkwrap.json aliases.`);
+  }
+
+  // Fix double shebang in entry points (esbuild banner + source shebang)
+  for (const entry of ["dist/cli.js", "dist/index.js"]) {
+    const entryPath = path.join(stageDir, entry);
+    if (!fs.existsSync(entryPath)) continue;
+    let content = fs.readFileSync(entryPath, "utf8");
+    if (entry === "dist/cli.js") {
+      if (content.startsWith("#!/usr/bin/env node\n#!/usr/bin/env node\n")) {
+        content = content.replace(/^#!\/usr\/bin\/env node\n#!\/usr\/bin\/env node\n/, "#!/usr/bin/env node\n");
+        fs.writeFileSync(entryPath, content);
+      }
+    } else {
+      // index.js is a library entry, not a CLI — strip any leading shebang
+      if (content.startsWith("#!/usr/bin/env node\n")) {
+        content = content.replace(/^#!\/usr\/bin\/env node\n/, "");
+        fs.writeFileSync(entryPath, content);
+      }
+    }
   }
 
   console.log(`Configured NPM aliases in package.json (no code modified!).`);
