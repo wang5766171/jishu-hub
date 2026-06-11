@@ -104,7 +104,7 @@ pub(crate) fn resolve_jishu_cli_binary() -> Result<PathBuf, String> {
     candidates
         .into_iter()
         .find(|path| path.is_file())
-        .ok_or_else(|| format!("jishu CLI binary not found: {binary_name}"))
+        .ok_or_else(|| format!("jishu-cli binary not found: {binary_name}"))
 }
 
 use crate::agent::traits::{

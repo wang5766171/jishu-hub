@@ -21,7 +21,7 @@ impl Planner for LlmPlanner {
 
         if store.get_active().is_none() {
             return Err(PlanError::Other(
-                "No active model configured. Use `jishu model use <id>` to set one.".to_string(),
+                "No active model configured. Please configure one in the jishu-hub settings page.".to_string(),
             ));
         }
 
