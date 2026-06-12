@@ -18,7 +18,7 @@ use crate::util::{gen_id, now_ms};
 
 /// Application-level service that coordinates domain, commands, events and store.
 pub struct TaskService {
-    store: Arc<Mutex<TaskStore>>,
+    store: Arc<TaskStore>,
     planner: Option<crate::orchestrator::planner::PlannerService>,
     _engine: Option<crate::orchestrator::daemon::engine::EngineHandle>,
 }
@@ -134,7 +134,7 @@ impl TaskService {
             })?;
         }
         let store = TaskStore::open(&db_path)?;
-        let store_arc = Arc::new(Mutex::new(store));
+        let store_arc = Arc::new(store);
         let runtime = Arc::new(DefaultTaskAgentRuntime::new(registry.clone()));
         let planner = Some(crate::orchestrator::planner::PlannerService::new(
             store_arc.clone(),
@@ -158,7 +158,7 @@ impl TaskService {
         registry: Arc<crate::agent::AgentRegistry>,
     ) -> Result<Self, TaskServiceError> {
         let store = TaskStore::open(db_path)?;
-        let store_arc = Arc::new(Mutex::new(store));
+        let store_arc = Arc::new(store);
         let runtime = Arc::new(DefaultTaskAgentRuntime::new(registry.clone()));
         let planner = Some(crate::orchestrator::planner::PlannerService::new(
             store_arc.clone(),
@@ -179,7 +179,7 @@ impl TaskService {
     /// Open an in-memory store (for testing).
     pub fn open_in_memory() -> Result<Self, TaskServiceError> {
         let store = TaskStore::open_in_memory()?;
-        let store_arc = Arc::new(Mutex::new(store));
+        let store_arc = Arc::new(store);
         Ok(Self {
             store: store_arc,
             planner: None,
@@ -192,7 +192,7 @@ impl TaskService {
         runtime: Arc<dyn TaskAgentRuntime>,
     ) -> Result<Self, TaskServiceError> {
         let store = TaskStore::open_in_memory()?;
-        let store_arc = Arc::new(Mutex::new(store));
+        let store_arc = Arc::new(store);
         let engine = Some(
             crate::orchestrator::daemon::engine::ExecutionEngine::new(store_arc.clone(), runtime)
                 .start(),
@@ -219,10 +219,7 @@ impl TaskService {
         &self,
         input: &CreateGraphInput,
     ) -> Result<(TaskGraph, GraphRevision), TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
 
         let now = now_ms();
         let graph_id = gen_id("graph");
@@ -265,10 +262,7 @@ impl TaskService {
 
     /// Get a graph by id.
     pub fn get_graph(&self, graph_id: &str) -> Result<TaskGraph, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
         Ok(store.get_graph(graph_id)?)
     }
 
@@ -276,19 +270,13 @@ impl TaskService {
         &self,
         project_root: &std::path::Path,
     ) -> Result<Option<TaskGraph>, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
         Ok(store.latest_graph_for_project(project_root)?)
     }
 
     /// Get a revision by id, optionally deserializing the snapshot.
     pub fn get_revision(&self, revision_id: &str) -> Result<GraphRevision, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
         Ok(store.get_revision(revision_id)?)
     }
 
@@ -300,10 +288,7 @@ impl TaskService {
         commands: &[GraphCommand],
         author: &str,
     ) -> Result<RevisionResult, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
 
         // Load the expected revision.
         let base_revision = store.get_revision(expected_revision_id)?;
@@ -379,10 +364,7 @@ impl TaskService {
         revision_id: &str,
         commands: &[GraphCommand],
     ) -> Result<Vec<String>, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
 
         let revision = store.get_revision(revision_id)?;
         let snapshot = revision.snapshot()?;
@@ -393,10 +375,7 @@ impl TaskService {
 
     /// List all revisions for a graph.
     pub fn list_revisions(&self, graph_id: &str) -> Result<Vec<GraphRevision>, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
         Ok(store.list_revisions(graph_id)?)
     }
 
@@ -406,10 +385,7 @@ impl TaskService {
         expected_revision_id: &str,
         target_revision_id: &str,
     ) -> Result<GraphRevision, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
         let target = store.get_revision(target_revision_id)?;
         if target.graph_id != graph_id {
             return Err(TaskServiceError::Conflict(format!(
@@ -442,10 +418,7 @@ impl TaskService {
         revision_id: &str,
         mut budget_state: BudgetState,
     ) -> Result<GraphRun, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
         if budget_state.token_limit == Some(0)
             || budget_state
                 .cost_limit_usd
@@ -518,10 +491,7 @@ impl TaskService {
         run_id: &str,
         candidate_revision_id: &str,
     ) -> Result<RunRevisionProposal, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
         let run = store.get_run(run_id)?;
         if run.status.is_terminal() {
             return Err(TaskServiceError::Conflict(
@@ -618,10 +588,7 @@ impl TaskService {
         proposal_id: &str,
         expected_run_seq: u64,
     ) -> Result<GraphRun, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
         let proposal = store.get_run_revision_proposal(proposal_id)?;
         if proposal.run_id != run_id {
             return Err(TaskServiceError::Conflict(format!(
@@ -728,37 +695,25 @@ impl TaskService {
 
     /// Get a run by id.
     pub fn get_run(&self, run_id: &str) -> Result<GraphRun, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
         Ok(store.get_run(run_id)?)
     }
 
     /// Get node runs for a graph run.
     pub fn get_node_runs(&self, run_id: &str) -> Result<Vec<NodeRun>, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
         Ok(store.get_node_runs(run_id)?)
     }
 
     /// List runs for a graph.
     pub fn list_runs(&self, graph_id: &str) -> Result<Vec<GraphRun>, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
         Ok(store.list_runs(graph_id)?)
     }
 
     /// Pause a run.
     pub fn pause_run(&self, run_id: &str) -> Result<(), TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
 
         let run = store.get_run(run_id)?;
         crate::orchestrator::domain::state_machine::validate_run_transition(
@@ -785,10 +740,7 @@ impl TaskService {
 
     /// Resume a run.
     pub fn resume_run(&self, run_id: &str) -> Result<(), TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
 
         let run = store.get_run(run_id)?;
         crate::orchestrator::domain::state_machine::validate_run_transition(
@@ -815,10 +767,7 @@ impl TaskService {
 
     /// Cancel a run.
     pub fn cancel_run(&self, run_id: &str) -> Result<(), TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
 
         let run = store.get_run(run_id)?;
         crate::orchestrator::domain::state_machine::validate_run_transition(
@@ -881,18 +830,12 @@ impl TaskService {
         &self,
         run_id: &str,
     ) -> Result<Vec<ApprovalRequest>, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|error| TaskServiceError::Internal(format!("store lock: {error}")))?;
+        let store = &self.store;
         Ok(store.pending_approvals(run_id)?)
     }
 
     pub fn list_artifacts(&self, run_id: &str) -> Result<Vec<ArtifactRef>, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|error| TaskServiceError::Internal(format!("store lock: {error}")))?;
+        let store = &self.store;
         Ok(store.list_artifacts(run_id)?)
     }
 
@@ -902,10 +845,7 @@ impl TaskService {
         approved: bool,
         resolver: &str,
     ) -> Result<ApprovalRequest, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|error| TaskServiceError::Internal(format!("store lock: {error}")))?;
+        let store = &self.store;
         let mut approval = store.get_approval(approval_id)?;
         if approval.resolved {
             return Err(TaskServiceError::Conflict(format!(
@@ -1007,10 +947,7 @@ impl TaskService {
         strategy: &crate::orchestrator::recovery::RecoveryStrategy,
         reason: &str,
     ) -> Result<NodeRun, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|error| TaskServiceError::Internal(format!("store lock: {error}")))?;
+        let store = &self.store;
         let mut node_run = store.get_node_run(node_run_id)?;
         let run = store.get_run(&node_run.run_id)?;
         if run.status.is_terminal() {
@@ -1076,10 +1013,7 @@ impl TaskService {
         run_id: &str,
         after_seq: u64,
     ) -> Result<Vec<TaskEvent>, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
         Ok(store.events_after(run_id, after_seq, 500)?)
     }
 
@@ -1088,10 +1022,7 @@ impl TaskService {
         &self,
         run_id: &str,
     ) -> Result<crate::orchestrator::events::RunProjection, TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
         let events = store.all_events(run_id)?;
         if events.is_empty() {
             return Err(TaskServiceError::NotFound(format!("run {run_id}")));
@@ -1103,10 +1034,7 @@ impl TaskService {
 
     /// Run a WAL checkpoint.
     pub fn checkpoint(&self) -> Result<(), TaskServiceError> {
-        let store = self
-            .store
-            .lock()
-            .map_err(|e| TaskServiceError::Internal(format!("store lock: {e}")))?;
+        let store = &self.store;
         store.checkpoint()?;
         Ok(())
     }
@@ -1484,7 +1412,7 @@ mod tests {
             .unwrap();
         let mut node_run = NodeRun::new("nr-n1", &run.run_id, "n1", &active_revision.revision_id);
         node_run.status = NodeRunStatus::Running;
-        svc.store.lock().unwrap().save_node_run(&node_run).unwrap();
+        svc.store.save_node_run(&node_run).unwrap();
 
         let candidate = svc
             .apply_commands(
@@ -1548,7 +1476,7 @@ mod tests {
         completed.finished_at = Some(now_ms());
         let pending = NodeRun::new("nr-n2", &run.run_id, "n2", &active_revision.revision_id);
         {
-            let store = svc.store.lock().unwrap();
+            let store = &svc.store;
             store.save_node_run(&completed).unwrap();
             store.save_node_run(&pending).unwrap();
         }
@@ -1638,7 +1566,7 @@ mod tests {
         let mut node_run = NodeRun::new("node-run-1", &run.run_id, "node-1", &revision.revision_id);
         node_run.status = crate::orchestrator::domain::run::NodeRunStatus::Running;
         node_run.started_at = Some(now_ms());
-        svc.store.lock().unwrap().save_node_run(&node_run).unwrap();
+        svc.store.save_node_run(&node_run).unwrap();
 
         svc.cancel_run(&run.run_id).unwrap();
 
@@ -1784,8 +1712,6 @@ mod tests {
             ),
         ];
         svc.store
-            .lock()
-            .unwrap()
             .save_approval_execution_update(&node_run, &approval, &events)
             .unwrap();
 

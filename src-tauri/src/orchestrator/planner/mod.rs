@@ -46,14 +46,14 @@ pub struct GraphProposal {
 
 #[derive(Clone)]
 pub struct PlannerService {
-    store: Arc<Mutex<TaskStore>>,
+    store: Arc<TaskStore>,
     runtime: Arc<dyn TaskAgentRuntime>,
     registry: Arc<AgentRegistry>,
 }
 
 impl PlannerService {
     pub fn new(
-        store: Arc<Mutex<TaskStore>>,
+        store: Arc<TaskStore>,
         runtime: Arc<dyn TaskAgentRuntime>,
         registry: Arc<AgentRegistry>,
     ) -> Self {
@@ -69,14 +69,12 @@ impl PlannerService {
             return Err("planning instruction cannot be empty".into());
         }
         let (graph, revision, snapshot) = {
-            let store = self
+            let graph = self
                 .store
-                .lock()
-                .map_err(|error| format!("task store lock: {error}"))?;
-            let graph = store
                 .get_graph(&request.graph_id)
                 .map_err(|error| error.to_string())?;
-            let revision = store
+            let revision = self
+                .store
                 .get_revision(&request.base_revision_id)
                 .map_err(|error| error.to_string())?;
             if revision.graph_id != request.graph_id {

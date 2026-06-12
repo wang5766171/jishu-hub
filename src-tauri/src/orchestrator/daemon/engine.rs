@@ -41,13 +41,13 @@ impl Drop for EngineHandle {
 }
 
 pub struct ExecutionEngine {
-    store: Arc<Mutex<TaskStore>>,
+    store: Arc<TaskStore>,
     runtime: Arc<dyn TaskAgentRuntime>,
     resource_arbiter: Arc<ResourceArbiter>,
 }
 
 impl ExecutionEngine {
-    pub fn new(store: Arc<Mutex<TaskStore>>, runtime: Arc<dyn TaskAgentRuntime>) -> Self {
+    pub fn new(store: Arc<TaskStore>, runtime: Arc<dyn TaskAgentRuntime>) -> Self {
         Self {
             store,
             runtime,
@@ -73,22 +73,14 @@ impl ExecutionEngine {
 }
 
 async fn tick(
-    store: &Arc<Mutex<TaskStore>>,
+    store: &Arc<TaskStore>,
     runtime: &Arc<dyn TaskAgentRuntime>,
     resource_arbiter: &Arc<ResourceArbiter>,
 ) -> Result<(), String> {
-    let active_runs = {
-        let store = store
-            .lock()
-            .map_err(|error| format!("store lock: {error}"))?;
-        store.get_active_runs().map_err(|error| error.to_string())?
-    };
+    let active_runs = { store.get_active_runs().map_err(|error| error.to_string())? };
 
     for run in active_runs {
         let (snapshot, node_runs, project_root) = {
-            let store = store
-                .lock()
-                .map_err(|error| format!("store lock: {error}"))?;
             let graph = store
                 .get_graph(&run.graph_id)
                 .map_err(|error| error.to_string())?;
@@ -244,7 +236,7 @@ fn loop_body_ids(snapshot: &GraphSnapshot) -> std::collections::HashSet<String> 
 }
 
 fn recover_lost_lease(
-    store: &Arc<Mutex<TaskStore>>,
+    store: &Arc<TaskStore>,
     resource_arbiter: &ResourceArbiter,
     run: &crate::orchestrator::domain::run::GraphRun,
     snapshot: &GraphSnapshot,
@@ -258,9 +250,6 @@ fn recover_lost_lease(
         )
     }) {
         let mut attempt = {
-            let store = store
-                .lock()
-                .map_err(|error| format!("store lock: {error}"))?;
             store
                 .latest_attempt(&node_run.node_run_id)
                 .map_err(|error| error.to_string())?
@@ -290,9 +279,6 @@ fn recover_lost_lease(
         attempt.lease = None;
         let mut recovered = node_run.clone();
         recovered.error = Some(error.message.clone());
-        let store = store
-            .lock()
-            .map_err(|error| format!("store lock: {error}"))?;
         let current_run = store
             .get_run(&run.run_id)
             .map_err(|error| error.to_string())?;
@@ -363,7 +349,7 @@ fn recover_lost_lease(
 }
 
 async fn drive_loops(
-    store: &Arc<Mutex<TaskStore>>,
+    store: &Arc<TaskStore>,
     run: &crate::orchestrator::domain::run::GraphRun,
     snapshot: &GraphSnapshot,
     node_runs: &[NodeRun],
@@ -459,10 +445,7 @@ async fn drive_loops(
             };
         }
 
-        let store_guard = store
-            .lock()
-            .map_err(|error| format!("store lock: {error}"))?;
-        let current_run = store_guard
+        let current_run = store
             .get_run(&run.run_id)
             .map_err(|error| error.to_string())?;
         let mut events = vec![build_event(
@@ -499,7 +482,7 @@ async fn drive_loops(
                     next_iteration,
                     now,
                 )?);
-                store_guard
+                store
                     .save_node_runs_with_events(&updates, &events, None)
                     .map_err(|error| error.to_string())?;
             }
@@ -521,7 +504,7 @@ async fn drive_loops(
                     })
                     .map_err(|error| error.to_string())?,
                 ));
-                store_guard
+                store
                     .save_node_runs_with_events(&[loop_run], &events, None)
                     .map_err(|error| error.to_string())?;
             }
@@ -549,7 +532,7 @@ async fn drive_loops(
                     &loop_run,
                     now,
                 )?);
-                store_guard
+                store
                     .save_node_runs_with_events(&[loop_run], &events, None)
                     .map_err(|error| error.to_string())?;
             }
@@ -566,7 +549,7 @@ async fn drive_loops(
                     now,
                     serde_json::Value::Null,
                 ));
-                store_guard
+                store
                     .save_node_runs_with_events(
                         &[loop_run],
                         &events,
@@ -584,7 +567,7 @@ async fn drive_loops(
                     &loop_run,
                     now,
                 )?);
-                store_guard
+                store
                     .save_node_runs_with_events(&[loop_run], &events, None)
                     .map_err(|error| error.to_string())?;
             }
@@ -595,7 +578,7 @@ async fn drive_loops(
 }
 
 fn start_loop_iteration(
-    store: &Arc<Mutex<TaskStore>>,
+    store: &Arc<TaskStore>,
     run: &crate::orchestrator::domain::run::GraphRun,
     _snapshot: &GraphSnapshot,
     loop_node: &GraphNode,
@@ -623,10 +606,7 @@ fn start_loop_iteration(
     loop_run.wake_at = None;
     loop_run.error = None;
 
-    let store_guard = store
-        .lock()
-        .map_err(|error| format!("store lock: {error}"))?;
-    let current_run = store_guard
+    let current_run = store
         .get_run(&run.run_id)
         .map_err(|error| error.to_string())?;
     let mut events = Vec::new();
@@ -673,7 +653,7 @@ fn start_loop_iteration(
         config,
         iteration,
     ));
-    store_guard
+    store
         .save_node_runs_with_events(&updates, &events, None)
         .map_err(|error| error.to_string())?;
     Ok(())
@@ -741,12 +721,9 @@ fn node_resolved_event(
 }
 
 fn read_evaluator_output(
-    store: &Arc<Mutex<TaskStore>>,
+    store: &Arc<TaskStore>,
     node_run_id: &str,
 ) -> Result<serde_json::Value, String> {
-    let store = store
-        .lock()
-        .map_err(|error| format!("store lock: {error}"))?;
     let attempt = store
         .latest_attempt(node_run_id)
         .map_err(|error| error.to_string())?
@@ -761,7 +738,7 @@ fn read_evaluator_output(
 }
 
 async fn schedule_node(
-    store: Arc<Mutex<TaskStore>>,
+    store: Arc<TaskStore>,
     run_id: String,
     revision_id: String,
     node: GraphNode,
@@ -778,9 +755,6 @@ async fn schedule_node(
 
     if let Some(requirement) = approval_requirement(&node, attempt_number) {
         let approved = {
-            let store = store
-                .lock()
-                .map_err(|error| format!("store lock: {error}"))?;
             store
                 .has_approved_request(&run_id, &node_run_id, &requirement.scope_marker)
                 .map_err(|error| error.to_string())?
@@ -803,9 +777,6 @@ async fn schedule_node(
                 created_at: now,
                 resolved_at: None,
             };
-            let store = store
-                .lock()
-                .map_err(|error| format!("store lock: {error}"))?;
             let run = store.get_run(&run_id).map_err(|error| error.to_string())?;
             if run.status != RunStatus::Running || run.active_revision_id != revision_id {
                 return Ok(());
@@ -897,9 +868,6 @@ async fn schedule_node(
     };
 
     {
-        let store = store
-            .lock()
-            .map_err(|error| format!("store lock: {error}"))?;
         let run = store.get_run(&run_id).map_err(|error| error.to_string())?;
         if run.status != RunStatus::Running || run.active_revision_id != revision_id {
             return Ok(());
@@ -989,17 +957,7 @@ async fn schedule_node(
         attempt.finished_at = Some(finished_at);
         attempt.lease = None;
 
-        let store_guard = match store.lock() {
-            Ok(store) => store,
-            Err(error) => {
-                tracing::error!(
-                    "store lock failed while completing node {}: {error}",
-                    node.node_id
-                );
-                return;
-            }
-        };
-        let run = match store_guard.get_run(&run_id) {
+        let run = match store.get_run(&run_id) {
             Ok(run) => run,
             Err(error) => {
                 tracing::error!("failed to reload run {run_id}: {error}");
@@ -1223,7 +1181,7 @@ async fn schedule_node(
             ));
         }
 
-        if let Err(error) = store_guard.save_execution_update(
+        if let Err(error) = store.save_execution_update(
             &node_run,
             Some(&attempt),
             &artifacts,
@@ -1591,13 +1549,10 @@ async fn execute_agent(
 }
 
 async fn finish_run(
-    store: &Arc<Mutex<TaskStore>>,
+    store: &Arc<TaskStore>,
     run_id: &str,
     final_status: &RunStatus,
 ) -> Result<(), String> {
-    let store = store
-        .lock()
-        .map_err(|error| format!("store lock: {error}"))?;
     let run = store.get_run(run_id).map_err(|error| error.to_string())?;
     if run.status != RunStatus::Running {
         return Ok(());
@@ -1723,13 +1678,10 @@ fn budget_violation(
 }
 
 async fn fail_run_for_budget(
-    store: &Arc<Mutex<TaskStore>>,
+    store: &Arc<TaskStore>,
     run: &crate::orchestrator::domain::run::GraphRun,
     violation: BudgetViolation,
 ) -> Result<(), String> {
-    let store = store
-        .lock()
-        .map_err(|error| format!("store lock: {error}"))?;
     let current = store
         .get_run(&run.run_id)
         .map_err(|error| error.to_string())?;
@@ -1802,19 +1754,13 @@ async fn fail_run_for_budget(
         .map_err(|error| error.to_string())
 }
 
-async fn wait_for_terminal_run(store: &Arc<Mutex<TaskStore>>, run_id: &str) {
+async fn wait_for_terminal_run(store: &Arc<TaskStore>, run_id: &str) {
     loop {
         sleep(Duration::from_millis(100)).await;
-        let status = match store.lock() {
-            Ok(store) => match store.get_run(run_id) {
-                Ok(run) => run.status,
-                Err(error) => {
-                    tracing::error!("failed to inspect run {run_id} during execution: {error}");
-                    continue;
-                }
-            },
+        let status = match store.get_run(run_id) {
+            Ok(run) => run.status,
             Err(error) => {
-                tracing::error!("store lock failed while inspecting run {run_id}: {error}");
+                tracing::error!("failed to inspect run {run_id} during execution: {error}");
                 continue;
             }
         };
@@ -1955,7 +1901,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_executes_shell_and_completes_run() {
-        let store = Arc::new(Mutex::new(TaskStore::open_in_memory().unwrap()));
+        let store = Arc::new(TaskStore::open_in_memory().unwrap());
         let mut policy = NodePolicy::default();
         policy.permission_scope.can_run_commands = true;
         policy.approval_policy = ApprovalPolicy::Never;
@@ -2042,7 +1988,6 @@ mod tests {
             .unwrap(),
         );
         {
-            let store = store.lock().unwrap();
             store.create_graph_with_revision(&graph, &revision).unwrap();
             store.create_run_with_event(&run, &started).unwrap();
         }
@@ -2054,7 +1999,6 @@ mod tests {
         tick(&store, &runtime, &arbiter).await.unwrap();
         for _ in 0..40 {
             let finished = {
-                let store = store.lock().unwrap();
                 store
                     .get_node_runs("run1")
                     .unwrap()
@@ -2068,7 +2012,7 @@ mod tests {
         }
         tick(&store, &runtime, &arbiter).await.unwrap();
 
-        let store = store.lock().unwrap();
+        let store = store;
         assert_eq!(store.get_run("run1").unwrap().status, RunStatus::Completed);
         let events = store.all_events("run1").unwrap();
         assert!(events
@@ -2085,7 +2029,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_dispatches_agent_through_runtime_and_records_assignment() {
-        let store = Arc::new(Mutex::new(TaskStore::open_in_memory().unwrap()));
+        let store = Arc::new(TaskStore::open_in_memory().unwrap());
         let snapshot = GraphSnapshot {
             nodes: vec![GraphNode {
                 node_id: "dispatch".into(),
@@ -2158,7 +2102,6 @@ mod tests {
             .unwrap(),
         );
         {
-            let store = store.lock().unwrap();
             store.create_graph_with_revision(&graph, &revision).unwrap();
             store.create_run_with_event(&run, &started).unwrap();
         }
@@ -2168,8 +2111,6 @@ mod tests {
         tick(&store, &runtime, &arbiter).await.unwrap();
         for _ in 0..40 {
             let finished = store
-                .lock()
-                .unwrap()
                 .get_node_runs("run-agent")
                 .unwrap()
                 .iter()
@@ -2181,7 +2122,7 @@ mod tests {
         }
         tick(&store, &runtime, &arbiter).await.unwrap();
 
-        let store = store.lock().unwrap();
+        let store = store;
         assert_eq!(
             store.get_run("run-agent").unwrap().status,
             RunStatus::Completed
@@ -2210,7 +2151,7 @@ mod tests {
 
     #[tokio::test]
     async fn durable_loop_runs_body_and_completes_from_inline_evaluator() {
-        let store = Arc::new(Mutex::new(TaskStore::open_in_memory().unwrap()));
+        let store = Arc::new(TaskStore::open_in_memory().unwrap());
         let mut shell_policy = NodePolicy::default();
         shell_policy.permission_scope.can_run_commands = true;
         shell_policy.approval_policy = ApprovalPolicy::Never;
@@ -2332,7 +2273,6 @@ mod tests {
             .unwrap(),
         );
         {
-            let store = store.lock().unwrap();
             store.create_graph_with_revision(&graph, &revision).unwrap();
             store.create_run_with_event(&run, &started).unwrap();
         }
@@ -2343,8 +2283,6 @@ mod tests {
         tick(&store, &runtime, &arbiter).await.unwrap();
         for _ in 0..40 {
             if store
-                .lock()
-                .unwrap()
                 .get_node_runs("run-loop")
                 .unwrap()
                 .iter()
@@ -2359,7 +2297,7 @@ mod tests {
         tick(&store, &runtime, &arbiter).await.unwrap();
         tick(&store, &runtime, &arbiter).await.unwrap();
 
-        let store = store.lock().unwrap();
+        let store = store;
         assert_eq!(
             store.get_run("run-loop").unwrap().status,
             RunStatus::Completed

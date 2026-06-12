@@ -65,6 +65,8 @@ impl From<serde_json::Error> for StoreError {
 pub struct TaskStore {
     /// Writer connection — serialized via Mutex.
     writer: Mutex<Connection>,
+    /// Reader connection — for SELECT queries, does not block writer.
+    reader: Mutex<Connection>,
     /// Database file path.
     db_path: PathBuf,
 }
@@ -73,30 +75,50 @@ impl TaskStore {
     /// Open or create a task store at the given path.
     /// Enables WAL mode and creates tables if needed.
     pub fn open(db_path: &Path) -> Result<Self, StoreError> {
-        let conn = Connection::open(db_path)?;
+        let writer_conn = Connection::open(db_path)?;
 
         // Enable WAL mode for concurrent read / single write.
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.pragma_update(None, "busy_timeout", 5000)?;
+        writer_conn.pragma_update(None, "journal_mode", "WAL")?;
+        writer_conn.pragma_update(None, "synchronous", "NORMAL")?;
+        writer_conn.pragma_update(None, "foreign_keys", "ON")?;
+        writer_conn.pragma_update(None, "busy_timeout", 5000)?;
 
-        Self::create_schema(&conn)?;
+        Self::create_schema(&writer_conn)?;
+
+        // Open a separate read connection.
+        let reader_conn = Connection::open(db_path)?;
+        reader_conn.pragma_update(None, "busy_timeout", 5000)?;
 
         Ok(Self {
-            writer: Mutex::new(conn),
+            writer: Mutex::new(writer_conn),
+            reader: Mutex::new(reader_conn),
             db_path: db_path.to_path_buf(),
         })
     }
 
     /// Open an in-memory store for testing.
+    /// Uses a unique named in-memory database for each call to avoid interference.
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = Connection::open_in_memory()?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.pragma_update(None, "busy_timeout", 5000)?;
-        Self::create_schema(&conn)?;
+        // Use a thread-local counter or random ID to ensure each test gets a fresh database
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static TEST_DB_COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let db_id = TEST_DB_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let db_name = format!(
+            "file:taskstore_test_{:?}_memdb?mode=memory&cache=shared",
+            std::thread::current().id()
+        );
+
+        let writer_conn = Connection::open(&db_name)?;
+        writer_conn.pragma_update(None, "foreign_keys", "ON")?;
+        writer_conn.pragma_update(None, "busy_timeout", 5000)?;
+        Self::create_schema(&writer_conn)?;
+
+        let reader_conn = Connection::open(&db_name)?;
+        reader_conn.pragma_update(None, "busy_timeout", 5000)?;
+
         Ok(Self {
-            writer: Mutex::new(conn),
+            writer: Mutex::new(writer_conn),
+            reader: Mutex::new(reader_conn),
             db_path: PathBuf::from(":memory:"),
         })
     }
@@ -367,7 +389,7 @@ impl TaskStore {
 
     pub fn get_graph(&self, graph_id: &str) -> Result<TaskGraph, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         let graph = conn
@@ -398,7 +420,7 @@ impl TaskStore {
         project_root: &Path,
     ) -> Result<Option<TaskGraph>, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         let graph = conn
@@ -563,7 +585,7 @@ impl TaskStore {
 
     pub fn get_revision(&self, revision_id: &str) -> Result<GraphRevision, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         let rev = conn
@@ -605,7 +627,7 @@ impl TaskStore {
 
     pub fn list_revisions(&self, graph_id: &str) -> Result<Vec<GraphRevision>, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         let mut stmt = conn.prepare(
@@ -708,7 +730,7 @@ impl TaskStore {
 
     pub fn get_run(&self, run_id: &str) -> Result<GraphRun, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         let run = conn
@@ -741,7 +763,7 @@ impl TaskStore {
 
     pub fn get_active_runs(&self) -> Result<Vec<GraphRun>, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         let running_status = serde_json::to_string(&RunStatus::Running)?;
@@ -775,7 +797,7 @@ impl TaskStore {
 
     pub fn list_runs(&self, graph_id: &str) -> Result<Vec<GraphRun>, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         let mut stmt = conn.prepare(
@@ -906,7 +928,7 @@ impl TaskStore {
         proposal_id: &str,
     ) -> Result<RunRevisionProposal, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         conn.query_row(
@@ -1180,7 +1202,7 @@ impl TaskStore {
         limit: u64,
     ) -> Result<Vec<TaskEvent>, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         let mut stmt = conn.prepare(
@@ -1217,7 +1239,7 @@ impl TaskStore {
     /// Get all events for a run (for replay).
     pub fn all_events(&self, run_id: &str) -> Result<Vec<TaskEvent>, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         let mut stmt = conn.prepare(
@@ -1277,7 +1299,7 @@ impl TaskStore {
         run_id: &str,
     ) -> Result<Option<(u64, String)>, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         let result = conn
@@ -1577,7 +1599,7 @@ impl TaskStore {
 
     pub fn get_node_runs(&self, run_id: &str) -> Result<Vec<NodeRun>, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         let mut stmt = conn.prepare(
@@ -1611,7 +1633,7 @@ impl TaskStore {
 
     pub fn get_node_run(&self, node_run_id: &str) -> Result<NodeRun, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         conn.query_row(
@@ -1690,7 +1712,7 @@ impl TaskStore {
 
     pub fn latest_attempt(&self, node_run_id: &str) -> Result<Option<NodeAttempt>, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         conn.query_row(
@@ -1838,7 +1860,7 @@ impl TaskStore {
 
     pub fn get_approval(&self, approval_id: &str) -> Result<ApprovalRequest, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         conn.query_row(
@@ -1859,7 +1881,7 @@ impl TaskStore {
         scope_marker: &str,
     ) -> Result<bool, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         let mut stmt = conn.prepare(
@@ -1881,7 +1903,7 @@ impl TaskStore {
 
     pub fn pending_approvals(&self, run_id: &str) -> Result<Vec<ApprovalRequest>, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         let mut stmt = conn.prepare(
@@ -1927,7 +1949,7 @@ impl TaskStore {
 
     pub fn list_artifacts(&self, run_id: &str) -> Result<Vec<ArtifactRef>, StoreError> {
         let conn = self
-            .writer
+            .reader
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         let mut stmt = conn.prepare(
