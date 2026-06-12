@@ -1482,6 +1482,71 @@ impl TaskStore {
             insert_event(&tx, event)?;
         }
 
+        // ── Incremental projection checkpoint update (in-transaction) ─────────
+        // Try to keep the checkpoint fresh within the same transaction that appended events.
+        // Only update if we can load a checkpoint that's exactly one seq before the first new event.
+        if let Some(first_event) = events.first() {
+            let starting_seq = first_event.run_seq;
+            if starting_seq > 1 {
+                let checkpoint_result: Result<Option<(u64, String)>, _> = tx
+                    .query_row(
+                        "SELECT last_seq, projection_json FROM projection_checkpoint WHERE run_id = ?1",
+                        params![node_run.run_id],
+                        |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, String>(1)?)),
+                    )
+                    .optional();
+
+                if let Ok(Some((last_seq, proj_json))) = checkpoint_result {
+                    // Check if checkpoint is contiguous with the new events.
+                    if last_seq == starting_seq - 1 {
+                        // Deserialize and apply the delta events.
+                        match serde_json::from_str::<crate::orchestrator::events::RunProjection>(
+                            &proj_json,
+                        ) {
+                            Ok(mut proj) => {
+                                match crate::orchestrator::events::apply_events_to_projection(
+                                    &mut proj,
+                                    events,
+                                    starting_seq,
+                                ) {
+                                    Ok(()) => {
+                                        // Checkpoint is valid and delta applied - save updated checkpoint.
+                                        if let Ok(updated_json) = serde_json::to_string(&proj) {
+                                            let _ = tx.execute(
+                                                "INSERT OR REPLACE INTO projection_checkpoint
+                                                 (run_id, last_seq, projection_json, updated_at)
+                                                 VALUES (?1, ?2, ?3, ?4)",
+                                                params![
+                                                    node_run.run_id,
+                                                    proj.run_seq,
+                                                    updated_json,
+                                                    crate::util::now_ms(),
+                                                ],
+                                            );
+                                            // If the checkpoint update fails, we don't fail the transaction.
+                                            // The next compute_incremental will self-heal via cold-start.
+                                        }
+                                    }
+                                    Err(_) => {
+                                        // Delta application failed - skip checkpoint update.
+                                        // Next compute_incremental will self-heal.
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                // Deserialization failed - skip checkpoint update.
+                                // Next compute_incremental will self-heal.
+                            }
+                        }
+                    }
+                    // Checkpoint seq doesn't line up - stale or gapped.
+                    // Skip update; next compute_incremental will self-heal.
+                }
+                // No checkpoint exists - skip update.
+                // Next compute_incremental will cold-start.
+            }
+        }
+
         let max_seq = events
             .last()
             .map(|event| event.run_seq)

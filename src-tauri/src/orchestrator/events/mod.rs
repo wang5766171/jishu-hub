@@ -348,6 +348,28 @@ pub fn rebuild_projection(
     Ok(proj)
 }
 
+/// Apply a contiguous delta of events to an existing projection.
+/// Checks that the first event's run_seq == starting_seq and each subsequent is +1.
+pub fn apply_events_to_projection(
+    proj: &mut RunProjection,
+    events: &[TaskEvent],
+    starting_seq: u64,
+) -> Result<(), ProjectionError> {
+    let mut expected = starting_seq;
+    for event in events {
+        if event.run_seq != expected {
+            return Err(ProjectionError::Sequence {
+                expected,
+                actual: event.run_seq,
+            });
+        }
+        expected += 1;
+        proj.run_seq = event.run_seq;
+        apply_event_to_projection(proj, event)?;
+    }
+    Ok(())
+}
+
 fn apply_event_to_projection(
     proj: &mut RunProjection,
     event: &TaskEvent,
@@ -558,7 +580,15 @@ fn apply_event_to_projection(
 pub enum ProjectionError {
     PayloadDecode(String),
     MissingNodeRun(String),
-    Sequence { expected: u64, actual: u64 },
+    Sequence {
+        expected: u64,
+        actual: u64,
+    },
+    #[allow(dead_code)]
+    InconsistentDelta {
+        checkpoint_seq: u64,
+        first_event_seq: u64,
+    },
 }
 
 impl std::fmt::Display for ProjectionError {
@@ -572,6 +602,15 @@ impl std::fmt::Display for ProjectionError {
                 write!(
                     f,
                     "projection expected run sequence {expected}, got {actual}"
+                )
+            }
+            Self::InconsistentDelta {
+                checkpoint_seq,
+                first_event_seq,
+            } => {
+                write!(
+                    f,
+                    "projection delta inconsistent: checkpoint at {checkpoint_seq}, first event seq {first_event_seq}"
                 )
             }
         }

@@ -1022,14 +1022,12 @@ impl TaskService {
         &self,
         run_id: &str,
     ) -> Result<crate::orchestrator::events::RunProjection, TaskServiceError> {
-        let store = &self.store;
-        let events = store.all_events(run_id)?;
-        if events.is_empty() {
-            return Err(TaskServiceError::NotFound(format!("run {run_id}")));
-        }
-        let proj = crate::orchestrator::events::rebuild_projection(run_id, &events)
-            .map_err(|e| TaskServiceError::Internal(e.to_string()))?;
-        Ok(proj)
+        let ps = crate::orchestrator::projections::checkpoint::ProjectionStore::new(&self.store);
+        let now = crate::util::now_ms();
+        ps.compute_incremental(run_id, now).map_err(|e| match e {
+            StoreError::NotFound(msg) => TaskServiceError::NotFound(msg),
+            other => TaskServiceError::Internal(other.to_string()),
+        })
     }
 
     /// Run a WAL checkpoint.
