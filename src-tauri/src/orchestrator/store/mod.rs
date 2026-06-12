@@ -10,6 +10,7 @@ use crate::orchestrator::domain::run::{
     RunPlanningSnapshot, RunRevisionProposal, RunStatus,
 };
 use crate::orchestrator::events::TaskEvent;
+use crate::orchestrator::projections::checkpoint::ProjectionReadModel;
 
 const TASK_STORE_SCHEMA_VERSION: i64 = 3;
 
@@ -1318,6 +1319,8 @@ impl TaskStore {
 
     // ── NodeRun operations ────────────────────────────────────────────
 
+    // ── NodeRun operations ────────────────────────────────────────────
+
     pub fn save_node_run(&self, node_run: &NodeRun) -> Result<(), StoreError> {
         let conn = self
             .writer
@@ -1482,69 +1485,15 @@ impl TaskStore {
             insert_event(&tx, event)?;
         }
 
-        // ── Incremental projection checkpoint update (in-transaction) ─────────
-        // Try to keep the checkpoint fresh within the same transaction that appended events.
-        // Only update if we can load a checkpoint that's exactly one seq before the first new event.
-        if let Some(first_event) = events.first() {
-            let starting_seq = first_event.run_seq;
-            if starting_seq > 1 {
-                let checkpoint_result: Result<Option<(u64, String)>, _> = tx
-                    .query_row(
-                        "SELECT last_seq, projection_json FROM projection_checkpoint WHERE run_id = ?1",
-                        params![node_run.run_id],
-                        |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, String>(1)?)),
-                    )
-                    .optional();
-
-                if let Ok(Some((last_seq, proj_json))) = checkpoint_result {
-                    // Check if checkpoint is contiguous with the new events.
-                    if last_seq == starting_seq - 1 {
-                        // Deserialize and apply the delta events.
-                        match serde_json::from_str::<crate::orchestrator::events::RunProjection>(
-                            &proj_json,
-                        ) {
-                            Ok(mut proj) => {
-                                match crate::orchestrator::events::apply_events_to_projection(
-                                    &mut proj,
-                                    events,
-                                    starting_seq,
-                                ) {
-                                    Ok(()) => {
-                                        // Checkpoint is valid and delta applied - save updated checkpoint.
-                                        if let Ok(updated_json) = serde_json::to_string(&proj) {
-                                            let _ = tx.execute(
-                                                "INSERT OR REPLACE INTO projection_checkpoint
-                                                 (run_id, last_seq, projection_json, updated_at)
-                                                 VALUES (?1, ?2, ?3, ?4)",
-                                                params![
-                                                    node_run.run_id,
-                                                    proj.run_seq,
-                                                    updated_json,
-                                                    crate::util::now_ms(),
-                                                ],
-                                            );
-                                            // If the checkpoint update fails, we don't fail the transaction.
-                                            // The next compute_incremental will self-heal via cold-start.
-                                        }
-                                    }
-                                    Err(_) => {
-                                        // Delta application failed - skip checkpoint update.
-                                        // Next compute_incremental will self-heal.
-                                    }
-                                }
-                            }
-                            Err(_) => {
-                                // Deserialization failed - skip checkpoint update.
-                                // Next compute_incremental will self-heal.
-                            }
-                        }
-                    }
-                    // Checkpoint seq doesn't line up - stale or gapped.
-                    // Skip update; next compute_incremental will self-heal.
-                }
-                // No checkpoint exists - skip update.
-                // Next compute_incremental will cold-start.
-            }
+        // Try to advance the projection checkpoint within the same transaction.
+        // Legitimate skips (no checkpoint, stale/gapped) return Ok silently.
+        // Genuine anomalies (deserialize/apply failures) are logged but don't fail the tx.
+        if let Err(error) = try_advance_projection_checkpoint(&tx, &node_run.run_id, events) {
+            tracing::warn!(
+                run_id = %node_run.run_id,
+                error = %error,
+                "in-tx projection checkpoint advance skipped; will self-heal on next read"
+            );
         }
 
         let max_seq = events
@@ -2168,6 +2117,149 @@ pub fn default_data_dir() -> PathBuf {
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."));
     base.join("jishu-hub")
+}
+
+/// Error when attempting to advance a projection checkpoint in-transaction.
+/// Only real anomalies (deserialize/apply failures) surface as errors;
+/// legitimate skips (no checkpoint, stale/gapped checkpoint) return Ok.
+#[derive(Debug)]
+enum CheckpointAdvanceError {
+    Deserialize(serde_json::Error),
+    Apply(crate::orchestrator::events::ProjectionError),
+}
+
+impl std::fmt::Display for CheckpointAdvanceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Deserialize(e) => write!(f, "checkpoint deserialize error: {e}"),
+            Self::Apply(e) => write!(f, "checkpoint apply error: {e}"),
+        }
+    }
+}
+
+/// Try to advance the projection checkpoint within the same transaction that
+/// appended events. Returns Ok(()) for legitimate skips (no checkpoint, stale/gapped),
+/// Err only for genuine anomalies (deserialize/apply failures).
+fn try_advance_projection_checkpoint(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    events: &[TaskEvent],
+) -> Result<(), CheckpointAdvanceError> {
+    use crate::orchestrator::events::{apply_events_to_projection, RunProjection};
+
+    let Some(first_event) = events.first() else {
+        return Ok(());
+    };
+    let starting_seq = first_event.run_seq;
+    if starting_seq <= 1 {
+        return Ok(());
+    }
+
+    let checkpoint_result: Result<Option<(u64, String)>, _> = tx
+        .query_row(
+            "SELECT last_seq, projection_json FROM projection_checkpoint WHERE run_id = ?1",
+            params![run_id],
+            |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, String>(1)?)),
+        )
+        .optional();
+
+    let Some((last_seq, proj_json)) = checkpoint_result.map_err(|e| {
+        CheckpointAdvanceError::Deserialize(serde_json::Error::io(
+            std::io::Error::new(std::io::ErrorKind::Other, format!("db query failed: {e}")),
+        ))
+    })?
+    else {
+        return Ok(());
+    };
+
+    // Check if checkpoint is contiguous with the new events.
+    if last_seq != starting_seq - 1 {
+        return Ok(());
+    }
+
+    // Deserialize and apply the delta events.
+    let mut proj: RunProjection =
+        serde_json::from_str(&proj_json).map_err(CheckpointAdvanceError::Deserialize)?;
+
+    apply_events_to_projection(&mut proj, events, starting_seq)
+        .map_err(CheckpointAdvanceError::Apply)?;
+
+    // Save updated checkpoint (best-effort).
+    if let Ok(updated_json) = serde_json::to_string(&proj) {
+        let _ = tx.execute(
+            "INSERT OR REPLACE INTO projection_checkpoint
+             (run_id, last_seq, projection_json, updated_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![run_id, proj.run_seq, updated_json, crate::util::now_ms(),],
+        );
+    }
+
+    Ok(())
+}
+
+impl ProjectionReadModel for TaskStore {
+    fn events_after(
+        &self,
+        run_id: &str,
+        after_seq: u64,
+        limit: u64,
+    ) -> Result<Vec<crate::orchestrator::events::TaskEvent>, StoreError> {
+        self.events_after(run_id, after_seq, limit)
+    }
+
+    fn all_events(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<crate::orchestrator::events::TaskEvent>, StoreError> {
+        self.all_events(run_id)
+    }
+
+    fn get_projection_checkpoint(&self, run_id: &str) -> Result<Option<(u64, String)>, StoreError> {
+        self.get_projection_checkpoint(run_id)
+    }
+
+    fn save_projection_checkpoint(
+        &self,
+        run_id: &str,
+        last_seq: u64,
+        projection_json: &str,
+        updated_at: i64,
+    ) -> Result<(), StoreError> {
+        self.save_projection_checkpoint(run_id, last_seq, projection_json, updated_at)
+    }
+}
+
+// Also implement for Arc<TaskStore> since service.rs holds an Arc
+impl ProjectionReadModel for std::sync::Arc<TaskStore> {
+    fn events_after(
+        &self,
+        run_id: &str,
+        after_seq: u64,
+        limit: u64,
+    ) -> Result<Vec<crate::orchestrator::events::TaskEvent>, StoreError> {
+        self.as_ref().events_after(run_id, after_seq, limit)
+    }
+
+    fn all_events(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<crate::orchestrator::events::TaskEvent>, StoreError> {
+        self.as_ref().all_events(run_id)
+    }
+
+    fn get_projection_checkpoint(&self, run_id: &str) -> Result<Option<(u64, String)>, StoreError> {
+        self.as_ref().get_projection_checkpoint(run_id)
+    }
+
+    fn save_projection_checkpoint(
+        &self,
+        run_id: &str,
+        last_seq: u64,
+        projection_json: &str,
+        updated_at: i64,
+    ) -> Result<(), StoreError> {
+        self.as_ref().save_projection_checkpoint(run_id, last_seq, projection_json, updated_at)
+    }
 }
 
 #[cfg(test)]

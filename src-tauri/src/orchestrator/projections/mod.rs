@@ -3,7 +3,7 @@ pub mod checkpoint;
 pub use checkpoint::ProjectionStore;
 
 use crate::orchestrator::domain::run::{NodeRunStatus, RunStatus};
-use crate::orchestrator::events::{rebuild_projection, RunProjection};
+use crate::orchestrator::events::RunProjection;
 use crate::orchestrator::store::{StoreError, TaskStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -21,13 +21,11 @@ impl<'a> ProjectionService<'a> {
 
     /// Get the current run projection by combining checkpoint + event replay.
     pub fn run_projection(&self, run_id: &str) -> Result<RunProjection, StoreError> {
-        let events = self.store.all_events(run_id)?;
-        if events.is_empty() {
-            return Err(StoreError::NotFound(format!("no events for run {run_id}")));
-        }
-        let proj = rebuild_projection(run_id, &events)
-            .map_err(|e| StoreError::Conflict(format!("projection error: {e}")))?;
-        Ok(proj)
+        use crate::orchestrator::projections::checkpoint::ProjectionStore;
+
+        let ps = ProjectionStore::new(self.store);
+        let now = crate::util::now_ms();
+        ps.compute_incremental(run_id, now)
     }
 
     /// Get events after a sequence number (for incremental client updates).

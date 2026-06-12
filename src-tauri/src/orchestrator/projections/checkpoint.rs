@@ -1,23 +1,47 @@
 use crate::orchestrator::events::{apply_events_to_projection, rebuild_projection};
 use crate::orchestrator::store::{StoreError, TaskStore};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Maximum number of delta events to fetch in one incremental batch.
 const DELTA_LIMIT: u64 = 100_000;
 
+/// Read-model contract used by [`ProjectionStore`]. Abstracted so tests can
+/// assert the warm path reads via `events_after` (not `all_events`).
+pub trait ProjectionReadModel {
+    fn events_after(
+        &self,
+        run_id: &str,
+        after_seq: u64,
+        limit: u64,
+    ) -> Result<Vec<crate::orchestrator::events::TaskEvent>, StoreError>;
+    fn all_events(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<crate::orchestrator::events::TaskEvent>, StoreError>;
+    fn get_projection_checkpoint(&self, run_id: &str) -> Result<Option<(u64, String)>, StoreError>;
+    fn save_projection_checkpoint(
+        &self,
+        run_id: &str,
+        last_seq: u64,
+        projection_json: &str,
+        updated_at: i64,
+    ) -> Result<(), StoreError>;
+}
+
 /// Manages projection checkpoints for incremental rebuild.
 pub struct ProjectionStore<'a> {
-    store: &'a TaskStore,
+    read_model: &'a dyn ProjectionReadModel,
 }
 
 impl<'a> ProjectionStore<'a> {
-    pub fn new(store: &'a TaskStore) -> Self {
-        Self { store }
+    pub fn new(read_model: &'a dyn ProjectionReadModel) -> Self {
+        Self { read_model }
     }
 
     /// Load the last checkpoint for a run.
     /// Returns (last_seq, projection_json).
     pub fn load(&self, run_id: &str) -> Result<Option<(u64, String)>, StoreError> {
-        self.store.get_projection_checkpoint(run_id)
+        self.read_model.get_projection_checkpoint(run_id)
     }
 
     /// Save a new checkpoint.
@@ -28,7 +52,7 @@ impl<'a> ProjectionStore<'a> {
         projection_json: &str,
         updated_at: i64,
     ) -> Result<(), StoreError> {
-        self.store
+        self.read_model
             .save_projection_checkpoint(run_id, last_seq, projection_json, updated_at)
     }
 
@@ -44,7 +68,9 @@ impl<'a> ProjectionStore<'a> {
             // Warm start: load checkpoint and apply delta.
             let mut proj: crate::orchestrator::events::RunProjection =
                 serde_json::from_str(&proj_json).map_err(StoreError::Serde)?;
-            let delta = self.store.events_after(run_id, last_seq, DELTA_LIMIT)?;
+            let delta = self
+                .read_model
+                .events_after(run_id, last_seq, DELTA_LIMIT)?;
 
             if !delta.is_empty() {
                 apply_events_to_projection(&mut proj, &delta, last_seq + 1)
@@ -56,7 +82,7 @@ impl<'a> ProjectionStore<'a> {
             Ok(proj)
         } else {
             // Cold start: full rebuild + checkpoint.
-            let events = self.store.all_events(run_id)?;
+            let events = self.read_model.all_events(run_id)?;
             if events.is_empty() {
                 return Err(StoreError::NotFound(format!("no events for run {run_id}")));
             }
@@ -76,6 +102,71 @@ mod tests {
     use crate::orchestrator::domain::run::{BudgetState, GraphRun, RunStatus};
     use crate::orchestrator::events::{build_event, payloads, TaskEventType};
     use std::path::PathBuf;
+    use std::sync::Arc;
+
+    /// A wrapper around TaskStore that counts calls to events_after and all_events.
+    /// Used to prove the warm path reads via events_after (not all_events).
+    struct CountingReadModel {
+        inner: TaskStore,
+        events_after_calls: Arc<AtomicU64>,
+        all_events_calls: Arc<AtomicU64>,
+    }
+
+    impl CountingReadModel {
+        fn new(inner: TaskStore) -> Self {
+            Self {
+                inner,
+                events_after_calls: Arc::new(AtomicU64::new(0)),
+                all_events_calls: Arc::new(AtomicU64::new(0)),
+            }
+        }
+
+        fn events_after_calls(&self) -> u64 {
+            self.events_after_calls.load(Ordering::SeqCst)
+        }
+
+        fn all_events_calls(&self) -> u64 {
+            self.all_events_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl ProjectionReadModel for CountingReadModel {
+        fn events_after(
+            &self,
+            run_id: &str,
+            after_seq: u64,
+            limit: u64,
+        ) -> Result<Vec<crate::orchestrator::events::TaskEvent>, StoreError> {
+            self.events_after_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.events_after(run_id, after_seq, limit)
+        }
+
+        fn all_events(
+            &self,
+            run_id: &str,
+        ) -> Result<Vec<crate::orchestrator::events::TaskEvent>, StoreError> {
+            self.all_events_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.all_events(run_id)
+        }
+
+        fn get_projection_checkpoint(
+            &self,
+            run_id: &str,
+        ) -> Result<Option<(u64, String)>, StoreError> {
+            self.inner.get_projection_checkpoint(run_id)
+        }
+
+        fn save_projection_checkpoint(
+            &self,
+            run_id: &str,
+            last_seq: u64,
+            projection_json: &str,
+            updated_at: i64,
+        ) -> Result<(), StoreError> {
+            self.inner
+                .save_projection_checkpoint(run_id, last_seq, projection_json, updated_at)
+        }
+    }
 
     #[test]
     fn checkpoint_save_and_load() {
@@ -360,5 +451,118 @@ mod tests {
                 actual: 7
             }
         ));
+    }
+
+    /// Test that the warm path reads via events_after, not all_events.
+    /// Uses a CountingReadModel to prove the warm path calls events_after
+    /// (incremental read) and does NOT call all_events (full replay).
+    #[test]
+    fn compute_incremental_warm_path_reads_only_delta() {
+        use crate::orchestrator::events::{build_event, payloads, TaskEventType};
+
+        let store = TaskStore::open_in_memory().unwrap();
+        let counting = CountingReadModel::new(store);
+        let ps = ProjectionStore::new(&counting);
+
+        // Setup graph and run.
+        let graph = TaskGraph {
+            graph_id: "g1".into(),
+            title: "T".into(),
+            goal: "G".into(),
+            project_root: PathBuf::from("/p"),
+            owner: "u".into(),
+            current_draft_revision: None,
+            created_at: 1000,
+            updated_at: 1000,
+        };
+        counting.inner.create_graph(&graph).unwrap();
+
+        let run = GraphRun {
+            run_id: "run1".into(),
+            graph_id: "g1".into(),
+            active_revision_id: "rev1".into(),
+            status: RunStatus::Running,
+            run_seq: 0,
+            budget_state: BudgetState::default(),
+            planning_snapshot: Default::default(),
+            started_at: 1000,
+            finished_at: None,
+        };
+        counting.inner.create_run(&run).unwrap();
+
+        // Phase 1: Cold start with initial events (seq 1-5).
+        let cold_events: Vec<_> = (1..=5)
+            .map(|i| {
+                build_event(
+                    &format!("e{}", i),
+                    "run1",
+                    i,
+                    TaskEventType::NodeReady,
+                    "system",
+                    1000 + i as i64,
+                    serde_json::to_value(&payloads::NodeReadyPayload {
+                        node_run_id: format!("nr{}", i),
+                        node_id: format!("n{}", i),
+                    })
+                    .unwrap(),
+                )
+            })
+            .collect();
+
+        counting.inner.append_events(&cold_events).unwrap();
+
+        // Cold start: should call all_events (not events_after).
+        let _proj_cold = ps.compute_incremental("run1", 2000).unwrap();
+        let cold_all_calls = counting.all_events_calls();
+        let cold_after_calls = counting.events_after_calls();
+
+        // Assert cold path used all_events
+        assert!(
+            cold_all_calls >= 1,
+            "cold path should call all_events at least once, got {}",
+            cold_all_calls
+        );
+        // Assert cold path did NOT use events_after
+        assert_eq!(
+            cold_after_calls, 0,
+            "cold path should not call events_after, got {}",
+            cold_after_calls
+        );
+
+        // Phase 2: Warm start - append more events (seq 6-10).
+        let warm_events: Vec<_> = (6..=10)
+            .map(|i| {
+                build_event(
+                    &format!("e{}", i),
+                    "run1",
+                    i,
+                    TaskEventType::NodeReady,
+                    "system",
+                    1000 + i as i64,
+                    serde_json::to_value(&payloads::NodeReadyPayload {
+                        node_run_id: format!("nr{}", i),
+                        node_id: format!("n{}", i),
+                    })
+                    .unwrap(),
+                )
+            })
+            .collect();
+
+        counting.inner.append_events(&warm_events).unwrap();
+
+        // Warm start: should call events_after (not all_events).
+        let _proj_warm = ps.compute_incremental("run1", 3000).unwrap();
+        let warm_all_calls = counting.all_events_calls();
+        let warm_after_calls = counting.events_after_calls();
+
+        // Assert warm path called events_after
+        assert_eq!(warm_after_calls, cold_after_calls + 1, "warm path should call events_after exactly once more than cold; cold_after={}, warm_after={}", cold_after_calls, warm_after_calls);
+
+        // Assert warm path did NOT call all_events (count unchanged from cold)
+        assert_eq!(
+            warm_all_calls, cold_all_calls,
+            "warm path should not call all_events; count should stay at {}",
+            cold_all_calls
+        );
     }
 }

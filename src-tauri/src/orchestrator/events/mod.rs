@@ -580,15 +580,7 @@ fn apply_event_to_projection(
 pub enum ProjectionError {
     PayloadDecode(String),
     MissingNodeRun(String),
-    Sequence {
-        expected: u64,
-        actual: u64,
-    },
-    #[allow(dead_code)]
-    InconsistentDelta {
-        checkpoint_seq: u64,
-        first_event_seq: u64,
-    },
+    Sequence { expected: u64, actual: u64 },
 }
 
 impl std::fmt::Display for ProjectionError {
@@ -602,15 +594,6 @@ impl std::fmt::Display for ProjectionError {
                 write!(
                     f,
                     "projection expected run sequence {expected}, got {actual}"
-                )
-            }
-            Self::InconsistentDelta {
-                checkpoint_seq,
-                first_event_seq,
-            } => {
-                write!(
-                    f,
-                    "projection delta inconsistent: checkpoint at {checkpoint_seq}, first event seq {first_event_seq}"
                 )
             }
         }
