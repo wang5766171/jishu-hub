@@ -18,11 +18,11 @@ pub fn probe_self() -> AgentHealth {
 
     let mut args = pi_cmd.base_args.clone();
     args.push("--version".to_string());
-    
+
     let mut cmd = std::process::Command::new(&pi_cmd.program);
     cmd.args(&args);
     crate::process_command::std_no_window(&mut cmd);
-    
+
     if let Ok(output) = cmd.output() {
         if output.status.success() {
             let out_str = String::from_utf8_lossy(&output.stdout);

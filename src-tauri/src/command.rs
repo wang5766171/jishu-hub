@@ -94,8 +94,6 @@ fn open_in_terminal_raw(
     crate::os_adapter::terminal::open_in_terminal_raw(project_path, terminal_command, window_id)
 }
 
-
-
 /// Run a command silently in the background (no window) and wait for it to finish.
 pub fn run_silent_command(
     command: &str,

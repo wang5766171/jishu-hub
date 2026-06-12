@@ -16,7 +16,7 @@ pub fn check_cli_symlink() -> Result<bool, String> {
                 // check if it points to an app bundle
                 Ok(target.to_string_lossy().contains("Jishu Hub.app"))
             }
-            Err(_) => Ok(false)
+            Err(_) => Ok(false),
         }
     }
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
@@ -33,17 +33,18 @@ pub fn install_cli_symlink() -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        let exe_path = std::env::current_exe().map_err(|e| format!("Could not get current exe: {}", e))?;
+        let exe_path =
+            std::env::current_exe().map_err(|e| format!("Could not get current exe: {}", e))?;
         // exe is likely in Jishu Hub.app/Contents/MacOS/jishu-hub
         let app_dir = exe_path.parent().ok_or("No parent dir")?;
         let cli_bin = app_dir.join("jishu-cli");
-        
+
         if !cli_bin.exists() {
             return Err("jishu-cli binary not found in app bundle. It needs to be bundled as an externalBin.".into());
         }
 
         let link_path = std::path::Path::new("/usr/local/bin/jishu-cli");
-        
+
         // Ensure /usr/local/bin exists
         let bin_dir = std::path::Path::new("/usr/local/bin");
         if !bin_dir.exists() {
@@ -52,7 +53,9 @@ pub fn install_cli_symlink() -> Result<(), String> {
 
         // Remove existing if any
         if link_path.exists() || std::fs::symlink_metadata(link_path).is_ok() {
-            std::fs::remove_file(link_path).map_err(|e| format!("Failed to remove existing symlink: {}. Might need sudo.", e))?;
+            std::fs::remove_file(link_path).map_err(|e| {
+                format!("Failed to remove existing symlink: {}. Might need sudo.", e)
+            })?;
         }
 
         // Try to create the symlink
@@ -67,9 +70,12 @@ pub fn install_cli_symlink() -> Result<(), String> {
                     .args(["-e", &script])
                     .output()
                     .map_err(|e| format!("Failed to spawn osascript: {}", e))?;
-                
+
                 if !output.status.success() {
-                    return Err(format!("Failed to elevate permissions: {}", String::from_utf8_lossy(&output.stderr)));
+                    return Err(format!(
+                        "Failed to elevate permissions: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    ));
                 }
             } else {
                 return Err(format!("Failed to create symlink: {}", e));

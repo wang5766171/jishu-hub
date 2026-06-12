@@ -87,7 +87,6 @@ where
         }
     }
 
-
     // 4. PATH — Node.js Pi agent installed globally via npm
     //    (`@jishu-hub/jishu-agent`). The npm `jishu` bin is a batch/posix shim
     //    that must be invoked via `cmd /C`, which relays the `--mode rpc`

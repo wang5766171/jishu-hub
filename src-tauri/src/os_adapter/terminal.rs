@@ -108,9 +108,7 @@ pub fn run_in_terminal(
             ),
             None => format!("echo '> {}'; echo; {}; exec bash", escaped, command),
         };
-        Command::new("open")
-            .args(["-a", "Terminal"])
-            .spawn()?;
+        Command::new("open").args(["-a", "Terminal"]).spawn()?;
         std::thread::sleep(std::time::Duration::from_millis(500));
         let safe_shell_cmd = shell_cmd.replace('"', "\\\"");
         Command::new("osascript")
