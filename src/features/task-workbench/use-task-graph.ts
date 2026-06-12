@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { planPoll } from "./polling-delta";
+import { planPoll, filterUnseenEvents } from "./polling-delta";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -277,7 +277,10 @@ export function useTaskGraph() {
     ]);
     if (nextEvents.length > 0) {
       eventCursorRef.current = nextEvents[nextEvents.length - 1].run_seq;
-      setEvents((current) => [...current, ...nextEvents]);
+      setEvents((current) => {
+        const unseen = filterUnseenEvents(current, nextEvents);
+        return unseen.length === 0 ? current : [...current, ...unseen];
+      });
     }
     setApprovals(nextApprovals);
     setArtifacts(nextArtifacts);
@@ -596,7 +599,10 @@ export function useTaskGraph() {
       // 3. If there are new events, advance cursor and append
       if (nextEvents.length > 0) {
         eventCursorRef.current = nextEvents[nextEvents.length - 1].run_seq;
-        setEvents((current) => [...current, ...nextEvents]);
+        setEvents((current) => {
+          const unseen = filterUnseenEvents(current, nextEvents);
+          return unseen.length === 0 ? current : [...current, ...unseen];
+        });
       }
 
       // 4. Re-fetch projection only if there are new events

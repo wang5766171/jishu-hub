@@ -1,6 +1,19 @@
 import { describe, it, expect } from "vitest";
-import { planPoll, hasApprovalDelta, hasArtifactDelta } from "./polling-delta";
+import { planPoll, hasApprovalDelta, hasArtifactDelta, filterUnseenEvents } from "./polling-delta";
 import type { TaskEvent } from "./use-task-graph";
+
+/** Helper to build a minimal TaskEvent for tests */
+function mkEvent(event_id: string, run_seq: number): TaskEvent {
+  return {
+    event_id,
+    run_id: "run1",
+    run_seq,
+    event_type: "test",
+    occurred_at: 1000 + run_seq,
+    actor: "system",
+    payload: null,
+  };
+}
 
 describe("polling-delta", () => {
   describe("planPoll", () => {
@@ -215,6 +228,53 @@ describe("polling-delta", () => {
         },
       ];
       expect(hasArtifactDelta(events)).toBe(true);
+    });
+  });
+
+  describe("filterUnseenEvents", () => {
+    it("all incoming new → returns all, order preserved", () => {
+      const existing: TaskEvent[] = [mkEvent("e1", 1), mkEvent("e2", 2)];
+      const incoming: TaskEvent[] = [mkEvent("e3", 3), mkEvent("e4", 4)];
+      const result = filterUnseenEvents(existing, incoming);
+      expect(result).toHaveLength(2);
+      expect(result.map((e) => e.event_id)).toEqual(["e3", "e4"]);
+    });
+
+    it("all incoming already seen → returns empty", () => {
+      const existing: TaskEvent[] = [mkEvent("e1", 1), mkEvent("e2", 2)];
+      const incoming: TaskEvent[] = [mkEvent("e1", 1), mkEvent("e2", 2)];
+      const result = filterUnseenEvents(existing, incoming);
+      expect(result).toHaveLength(0);
+    });
+
+    it("partial overlap → only unseen returned, order preserved", () => {
+      const existing: TaskEvent[] = [mkEvent("e1", 1), mkEvent("e2", 2)];
+      const incoming: TaskEvent[] = [mkEvent("e2", 2), mkEvent("e3", 3), mkEvent("e1", 1), mkEvent("e4", 4)];
+      const result = filterUnseenEvents(existing, incoming);
+      expect(result).toHaveLength(2);
+      expect(result.map((e) => e.event_id)).toEqual(["e3", "e4"]);
+    });
+
+    it("empty existing → returns all incoming", () => {
+      const existing: TaskEvent[] = [];
+      const incoming: TaskEvent[] = [mkEvent("e1", 1), mkEvent("e2", 2)];
+      const result = filterUnseenEvents(existing, incoming);
+      expect(result).toHaveLength(2);
+      expect(result.map((e) => e.event_id)).toEqual(["e1", "e2"]);
+    });
+
+    it("empty incoming → returns empty", () => {
+      const existing: TaskEvent[] = [mkEvent("e1", 1), mkEvent("e2", 2)];
+      const incoming: TaskEvent[] = [];
+      const result = filterUnseenEvents(existing, incoming);
+      expect(result).toHaveLength(0);
+    });
+
+    it("order preservation is explicit", () => {
+      const existing: TaskEvent[] = [mkEvent("e1", 1), mkEvent("e2", 2)];
+      const incoming: TaskEvent[] = [mkEvent("e5", 5), mkEvent("e3", 3), mkEvent("e4", 4)];
+      const result = filterUnseenEvents(existing, incoming);
+      expect(result.map((e) => e.event_id)).toEqual(["e5", "e3", "e4"]);
     });
   });
 });

@@ -32,3 +32,13 @@ export function planPoll(deltaEvents: TaskEvent[]): PollPlan {
     refreshArtifacts: hasArtifactDelta(deltaEvents),
   };
 }
+
+/** Deduplicate incoming events against existing events by event_id.
+ *  Returns only incoming events whose event_id is NOT already in the existing list.
+ *  Preserves the original order of the incoming array. Used before appending events
+ *  to state to prevent double-rendering when the same event_id appears in multiple
+ *  fetch batches (e.g., cursor overlap or race during run-switch). */
+export function filterUnseenEvents(existing: TaskEvent[], incoming: TaskEvent[]): TaskEvent[] {
+  const seenIds = new Set(existing.map((e) => e.event_id));
+  return incoming.filter((e) => !seenIds.has(e.event_id));
+}
