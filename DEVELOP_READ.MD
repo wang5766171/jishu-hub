@@ -12,13 +12,13 @@
 
 1. 通过 GUI 管理多个智能体的配置、会话、任务、运行状态、工具事件和人工审批。
 2. 通过统一运行时对接多种 agent transport，其中 ACP 优先，CLI 作为 fallback 或原生交互入口。
-3. 系统内置 `jishu agent`，它既是普通可对话 agent，也是任务规划、任务调度、职责分配、过程监督和返工决策的智能中枢。
+3. 系统内置 `jishu agent`，它既是普通可对话 agent，也是任务规划、职责分配建议、过程监督、语义评估和返工建议的智能中枢；确定性调度、状态机和运行裁决归 Task Orchestrator。
 4. 所有 agent 对 GUI 表现为统一能力模型，但每个 agent 的命令、配置、会话、事件格式由自己的 adapter 负责。
 
 一句话架构：
 
 ```text
-Jishu Hub = GUI 控制面 + AgentRuntime + Agent Adapter Contract + 通用 ACP/CLI Transport + Jishu Planner/Supervisor
+Jishu Hub = GUI 控制面 + Task Orchestrator + AgentRuntime + Agent Adapter Contract + 通用 ACP/Pi RPC/CLI Transport + Jishu Planner/Supervisor
 ```
 
 ## 2. 总体分层
@@ -29,6 +29,8 @@ flowchart TD
     AppSvc --> AgentRuntime["AgentRuntime 统一运行时"]
     AppSvc --> TaskOrch["Task Orchestrator 任务编排"]
     TaskOrch --> AgentRuntime
+    TaskOrch --> PlannerSvc["Planner / Supervisor 应用服务"]
+    PlannerSvc --> AgentRuntime
 
     AgentRuntime --> Adapter["Agent Adapter Contract"]
     Adapter --> Cap["Capability / Surface 声明"]
@@ -50,8 +52,7 @@ flowchart TD
     CliRuntime --> OtherCli["其他原生 CLI agent"]
 
     JishuSelf --> PiRust["pi_agent_rust fork/runtime"]
-    TaskOrch --> JishuPlanner["Jishu Planner / Supervisor"]
-    JishuPlanner --> SkillTpl["Skill / Template / Policy"]
+    PlannerSvc --> SkillTpl["Skill / Template / Policy"]
 ```
 
 分层职责：
@@ -65,7 +66,7 @@ flowchart TD
 | ACP Transport Runtime | 通用 ACP JSON-RPC 2.0 client，实现握手、session、prompt、update、resume、取消 | 不写成 `jishu-self` 专属逻辑 |
 | Pi RPC Transport Runtime | Pi 原生 --mode rpc 协议适配器，处理 get_state/prompt/abort、AgentEvent 归一化 | 不写成 `jishu-self` 专属逻辑，未来其他 Pi-based agent 可复用 |
 | CLI Transport Runtime | 执行原生 CLI 命令，读取 stdout/stderr/stdin，交给 adapter normalizer | 不把所有 agent 强制包进 Jishu 命令 |
-| Jishu Planner/Supervisor | 任务规划、角色分配、执行监督、返工判断、技能模板调度 | 不取代 agent adapter 层 |
+| Jishu Planner/Supervisor | 生成任务图提案、角色与能力建议、应用 skill/template、语义评估和返工建议 | 不取代 agent adapter，不直接写任务状态，不持有确定性调度权 |
 | Pi runtime fork | 提供 Jishu Agent 的底层 agent loop、工具、会话能力 | 不散落复制到 Hub 主代码 |
 
 ## 3. Transport 层设计
@@ -191,13 +192,13 @@ CLI transport 用于两类场景：
 `jishu-self` 是系统内置 agent，必须同时满足两种身份：
 
 1. 普通 agent：可在智能体列表中选择，可聊天、可配置、可查看会话、可跳转终端。
-2. 任务智能中枢：在任务维度负责规划、分解、选择 skill/template、分派其他 agent、监督执行、触发人工干预、判断返工和收敛。
+2. 任务智能中枢：在任务维度负责规划、分解、选择 skill/template、提出角色与 agent 能力要求、监督执行、触发人工干预建议、判断返工和收敛。
 
 边界：
 
 - Jishu Agent 不是 Hub 的通用适配层。
 - Jishu Agent 不负责替其他 agent 解析配置、生成终端命令、读取会话文件。
-- Jishu Agent 的任务调度能力通过 Task Orchestrator 和 Planner/Supervisor 使用。
+- Jishu Agent 的任务智能能力通过 Task Orchestrator 调用 Planner/Supervisor 使用；Jishu Agent 只返回结构化提案和评估结果，Task Orchestrator 负责校验、持久化、调度和状态转换。
 - Jishu Agent 的底层 agent loop 当前复用 `pi_agent_rust` fork，但 GUI 和用户不应看到 Pi 身份。
 
 当前 Jishu Agent runtime 约束：
@@ -303,26 +304,127 @@ Jishu/Pi 会话特别约束：
 - `jishu-self` 恢复会话时要找到 native Pi session，而不是拿 GUI 临时 id 恢复。
 - 对话历史保存失败时，优先检查 ACP session result、Pi session root、native session id 映射。
 
-## 10. 任务规划与 skill/template
+## 10. 统一任务图、规划与 skill/template
 
-任务能力是 v0.6.x 的核心，不是临时功能。
+任务能力是 v0.6.x 的核心，不是临时功能。任务系统的权威模型是统一任务图，不再以可变 `plan document` 或线性 `step[]` 作为最终领域真相。
 
-任务流程：
+### 10.1 权威对象
 
-1. 用户发起任务。
-2. Jishu Planner 根据目标、项目、已选 skill/template、可用 agent、权限策略生成 plan。
-3. GUI 展示 plan，支持交互修改、补充约束、重新规划、最终确认。
-4. Task Orchestrator 执行 plan。
-5. 每个 step 通过 AgentRuntime 派发到目标 agent。
-6. GUI 展示每个 agent 的执行状态、工具事件、输出、错误、审批请求。
-7. Jishu Supervisor 汇总结果，判断是否返工、继续、停止或请求人工决策。
+任务系统必须区分以下对象：
 
-skill/template 规则：
+- `TaskGraph`：长期任务身份，保存目标、项目根目录和当前草稿版本。
+- `GraphRevision`：经过完整校验的不可变任务图快照，包含节点、依赖、策略、角色要求以及规划输入。
+- `GraphRun`：绑定某个 Revision 的一次执行。
+- `NodeRun / NodeAttempt`：节点在一次 Run 中的逻辑状态与实际执行尝试。
+- `TaskEvent`：Task Orchestrator 产生的追加式运行事实。
+- `Projection`：工作台画布、列表、时间线、审批队列和统计等可重建视图。
 
-- `superpowers`、`gstack`、其他 task template 都应作为声明式能力输入，影响规划和执行策略。
-- skill 选择不能只停留在 UI 标签，必须进入 plan document 和 run trace。
-- 不同 skill 的目标效果要可测试：plan 是否体现方法论、执行是否按模板拆分、结果是否展示。
-- 新增 skill 时，应先定义输入、适用场景、预期 plan 结构、验收方式。
+约束：
+
+1. `GraphRevision` 不等于 `GraphRun`，运行状态不得回写并污染计划快照。
+2. 图编辑必须创建新 Revision，不得原地覆盖已执行版本。
+3. 列表、甘特图、时间线和画布不得各自维护独立任务模型。
+4. 纯视觉坐标、缩放、折叠和视口属于 Workbench Layout，不进入 Revision；改变阶段归属、依赖、优先级或策略的操作必须转换为明确的领域命令。
+5. 运行事实来自 `TaskEvent`，GUI 不得通过轮询结果和临时事件自行拼装另一套权威状态。
+
+### 10.2 任务生命周期
+
+1. 用户输入目标、项目、约束、预算、权限偏好，并可选择 skill/template。
+2. Task Orchestrator 通过 Planner/Supervisor 应用服务准备规划输入，并经 AgentRuntime 调用 Jishu Agent，传入可用 agent capability、项目上下文和允许使用的规划输入。
+3. Jishu Planner 返回结构化 `GraphProposal`，包括 GraphCommand、角色与能力要求、验收条件、理由和风险；Planner 不直接写数据库或启动节点。
+4. Task Orchestrator 校验提案的 schema、DAG、权限、预算、资源声明和输入输出契约，生成候选 GraphRevision。
+5. GUI 在任务主工作台展示任务图和 Revision Diff，支持手工修改、补充约束、接受部分提案、重新规划和最终确认。
+6. 用户与 AI 的编辑都使用同一 GraphCommand 协议；后端校验通过后原子创建不可变 Revision。
+7. Task Orchestrator 启动 GraphRun，按依赖、资源、权限、预算和审批约束进行最大安全并行调度。
+8. 可执行节点通过 AgentRuntime 派发。AgentRuntime 根据 Adapter 的 `TransportSurface` 选择 ACP、PiRpc、CLI 或 Embedded Runtime，并统一输出 `NormalizedEvent`。
+9. Task Orchestrator 将与 Run/Attempt 可靠关联的 `NormalizedEvent` 转为 `TaskEvent`，再更新任务投影；GUI 只消费投影和结构化审批请求。
+10. Jishu Supervisor 在需要语义判断时评估进展、产物和目标，返回 `EvaluationResult` 或 `RecoveryProposal`。确定性重试、Lease、超时和状态转换仍由 Task Orchestrator 处理。
+11. 返工、Repair Subgraph、持久化 Loop 或运行中改图必须形成结构化提案，经 Task Orchestrator 校验后创建或应用新 Revision。
+12. Run 完成后保存最终验收、Artifact、usage、审批、实际 agent 绑定和事件轨迹，用于复盘与后续 evaluation/policy。
+
+### 10.3 Planner/Supervisor 与 Task Orchestrator 边界
+
+Jishu Planner/Supervisor 提供智能判断，Task Orchestrator 提供确定性控制。
+
+Jishu Planner/Supervisor 负责：
+
+- 将目标和约束转为 GraphProposal。
+- 建议阶段、节点、依赖、角色、能力要求和验收条件。
+- 应用 skill/template 方法论。
+- 评估执行是否取得语义进展。
+- 提出返工、Repair、Loop、继续、停止或人工介入建议。
+
+Jishu Planner/Supervisor 禁止：
+
+- 直接修改 TaskStore、GraphRun 或 NodeRun。
+- 直接发放 Lease、选择 Transport 或控制进程。
+- 绕过 Revision、权限、预算、审批或状态机校验。
+- 通过 agent id 硬编码任务行为。
+- 替代 Agent Adapter 解析其他 agent 的私有协议、配置或会话。
+
+Task Orchestrator 负责：
+
+- GraphCommand、GraphRevision 和领域校验。
+- 依赖释放、资源仲裁、Lease、取消、超时和最大安全并行。
+- 权限策略、人工审批、预算和幂等约束。
+- TaskEvent、状态机、崩溃恢复和投影。
+- 对 Planner/Supervisor 提案做最终裁决并形成可审计事实。
+
+### 10.4 skill/template/policy 契约
+
+`superpowers`、`gstack` 和其他 task template 都属于声明式规划与执行输入，不是 Agent Adapter，也不能只作为 UI 标签。
+
+每个 skill/template 至少定义：
+
+```text
+id
+version_or_content_hash
+inputs_schema
+applicable_when
+planning_rules
+execution_constraints
+expected_graph_shape
+evaluation_rules
+```
+
+规则：
+
+1. 选中的 skill/template/policy 及其版本、内容 hash 和输入必须写入 GraphRevision。
+2. GraphRun 必须记录实际解析到的版本、有效输入和运行期 policy 快照，不能只引用一个可能变化的本地名称。
+3. skill/template 可以影响图结构、节点策略、审批点、Loop、评估器和恢复策略，但不能隐式修改 Adapter 行为。
+4. skill/template 不得自行持有 Agent ID 特例；只能声明角色、所需 capability、偏好和约束。
+5. 新增 skill/template 前必须定义适用场景、输入、预期图结构、执行约束、验收规则和失败行为。
+6. 删除或升级 skill/template 后，历史 Revision 和 Run 仍必须能解释其当时使用的版本或内容 hash。
+7. 敏感输入只能保存 SecretRef 或脱敏摘要，不得把 token、密码或私钥写入 GraphRevision、TaskEvent 或 Planner prompt trace。
+
+### 10.5 角色与 agent 分配
+
+- GraphRevision 保存 `RoleRequirement` 和 capability 要求，不保存由页面猜测的 Transport。
+- 用户可以明确锁定某个 agent，但该锁定是结构化的 `AgentAssignmentConstraint`，不是业务代码中的 agent id 分支。
+- GraphRun 保存实际 `AgentAssignment`、Adapter capability 快照和 native session 映射。
+- Task Orchestrator 根据用户约束、Adapter capability、Agent 健康状态、并发额度和资源策略解析实际绑定。
+- AgentRuntime 只根据 Adapter surface 启动对应 Transport Runtime，不解释任务角色。
+
+### 10.6 Loop、返工与运行中修改
+
+- Agent 内部模型/工具循环属于单次 NodeAttempt，由目标 agent 的原生 loop 和 Transport Runtime 承载。
+- 跨 Attempt、可休眠、可重启恢复的循环必须建模为任务图中的持久化 Loop Controller。
+- Loop 必须有退出条件，并至少配置次数、时间、Token 或成本中的一种硬预算。
+- 返工和 Repair 必须生成受限子图或 Revision Proposal，不允许静默覆盖失败节点的历史。
+- 运行中只允许修改未启动子图；已租赁、运行中、等待审批和已完成节点保持冻结。
+- Revision 切换只能由 Task Orchestrator 在安全点应用，并写入 TaskEvent。
+
+### 10.7 可测试性
+
+不同 skill/template 和 Planner/Supervisor 策略必须可通过固定输入验证：
+
+- 是否生成符合约束的 GraphRevision。
+- 是否体现声明的方法论、阶段和验收点。
+- 是否只使用满足 capability 的角色要求。
+- 是否生成正确的审批、预算、Loop 和恢复策略。
+- 相同输入、固定模型响应或 Golden Proposal 下是否得到确定性校验结果。
+- TaskEvent 重放后是否得到一致投影。
+- Planner/Supervisor 返回非法、越权或超预算提案时，Task Orchestrator 是否拒绝且不改变运行事实。
 
 ## 11. 权限与人工干预
 
@@ -340,7 +442,7 @@ ACP 场景下，审批应优先通过 ACP 的 tool/update/approval 能力表达�
 
 ## 12. 版本与验证纪律
 
-每次交付给用户测试前都要递增版本号，便于用户确认是否安装了最新构建。当前测试版为 `0.6.14`。用户最终确认后，再按发布要求改为正式 `v0.6.0`。
+每次交付给用户测试前都要递增版本号，便于用户确认是否安装了最新构建。当前仓库测试版为 `0.6.17`。用户最终确认后，再按发布要求改为正式 `v0.6.0`。
 
 修改范围涉及 agent、adapter、ACP、任务编排、配置页时，至少执行：
 
@@ -387,7 +489,7 @@ Harmes 或类似自学习能力应作为学习/evaluation/policy 层接入，不
 
 原则：
 
-- 学习输入来自 run trace、plan document、agent result、人工反馈。
+- 学习输入来自 GraphRevision、TaskEvent、Artifact、EvaluationResult、usage、审批结果和人工反馈。
 - 学习输出只能通过 policy、prompt pack、skill、planner hint、evaluation rule 影响任务。
 - 不允许隐式修改 agent adapter 行为。
 - 所有自学习影响必须可追踪、可回滚、可解释。
@@ -425,6 +527,16 @@ Harmes 或类似自学习能力应作为学习/evaluation/policy 层接入，不
 5. 是否影响 Jishu Agent 的普通 agent 身份或任务中枢身份。
 6. 是否需要更新 `DEVELOP_READ.MD` 和 codex 完成报告。
 7. 是否需要给用户递增版本号并说明测试步骤。
+
+实现任务编排相关需求还必须回答：
+
+1. 这是 TaskGraph/Revision、GraphRun、TaskEvent、Projection、Planner/Supervisor，还是 AgentRuntime 的职责。
+2. 变更是否通过 GraphCommand 和不可变 Revision 表达，纯布局状态是否与任务语义分离。
+3. Planner/Supervisor 返回的是提案还是在越权修改确定性状态。
+4. skill/template/policy 的版本、输入和效果是否进入 Revision、Run 事实与测试。
+5. Agent 选择是否基于 capability 和结构化约束，而不是 agent id 业务分支。
+6. `NormalizedEvent -> TaskEvent` 的关联、幂等、重放和丢失恢复是否明确。
+7. 是否影响权限、审批、预算、Loop、崩溃恢复或运行中 Revision 切换。
 
 ## 16. 当前优先修复方向
 
