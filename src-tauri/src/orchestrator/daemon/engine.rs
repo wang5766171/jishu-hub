@@ -31,6 +31,10 @@ const MAX_PARALLEL_NODES_PER_RUN: usize = 4;
 const EVENT_MESSAGE_LIMIT: usize = 4096;
 // Checkpoint every ~30 seconds (120 ticks * 250ms = 30s)
 const CHECKPOINT_INTERVAL_TICKS: u64 = 120;
+/// Refresh the lease heartbeat while a node is executing (every 5s).
+const LEASE_HEARTBEAT_INTERVAL_MS: u64 = 5_000;
+/// A lease is considered live if its heartbeat is within this window (30s).
+const LEASE_HEARTBEAT_TTL_MS: i64 = 30_000;
 
 pub struct EngineHandle {
     task: tauri::async_runtime::JoinHandle<()>,
@@ -314,6 +318,7 @@ fn recover_lost_lease(
         let Some(lease) = attempt.lease.clone() else {
             continue;
         };
+        // Lease is live if the resource is still held in-process OR the heartbeat was refreshed within the TTL.
         if resource_arbiter.is_held(&lease.lease_id) || lease.heartbeat_deadline > now {
             continue;
         }
@@ -880,7 +885,7 @@ async fn schedule_node(
         return Ok(());
     };
     let leased_resources = resource_permit.resources().to_vec();
-    node_run.status = NodeRunStatus::Running;
+    node_run.status = NodeRunStatus::Leased;
     node_run.started_at.get_or_insert(now);
     node_run.finished_at = None;
     node_run.error = None;
@@ -895,7 +900,7 @@ async fn schedule_node(
         owner: "local_execution_engine".into(),
         resources: leased_resources.clone(),
         expires_at: now + 60_000,
-        heartbeat_deadline: now + 30_000,
+        heartbeat_deadline: now + LEASE_HEARTBEAT_TTL_MS,
     };
     let prepared_agent = prepare_agent_execution(runtime.as_ref(), &node, &project_root);
     let mut attempt = NodeAttempt {
@@ -959,23 +964,6 @@ async fn schedule_node(
                 })
                 .map_err(|error| error.to_string())?,
             ),
-            build_event(
-                gen_id("evt"),
-                &run_id,
-                run.run_seq + 3,
-                TaskEventType::AttemptStarted,
-                "task_orchestrator",
-                now,
-                serde_json::to_value(payloads::AttemptStartedPayload {
-                    attempt_id: attempt_id.clone(),
-                    node_run_id: node_run_id.clone(),
-                    attempt_number,
-                    agent_assignment: attempt.agent_assignment.clone(),
-                    transport: attempt.transport.clone(),
-                    idempotency_key: attempt.idempotency_key.clone(),
-                })
-                .map_err(|error| error.to_string())?,
-            ),
         ];
         store
             .save_execution_update(&node_run, Some(&attempt), &[], &events, None, None)
@@ -984,7 +972,66 @@ async fn schedule_node(
 
     tokio::spawn(async move {
         let _resource_permit = resource_permit;
+
+        // Transition Leased -> Running now that execution is actually starting.
+        {
+            let run = match store.get_run(&run_id) {
+                Ok(run) => run,
+                Err(error) => {
+                    tracing::error!("failed to reload run {run_id} for start: {error}");
+                    return;
+                }
+            };
+            if run.status.is_terminal() {
+                return;
+            }
+            let mut node_run = match store.get_node_run(&node_run_id) {
+                Ok(run) => run,
+                Err(error) => {
+                    tracing::error!("failed to reload node_run {node_run_id} for start: {error}");
+                    return;
+                }
+            };
+            if node_run.status.is_terminal() {
+                return;
+            }
+            node_run.status = NodeRunStatus::Running;
+            let started_at = now_ms();
+            let running_events = vec![build_event(
+                gen_id("evt"),
+                &run_id,
+                run.run_seq + 1,
+                TaskEventType::AttemptStarted,
+                "task_orchestrator",
+                started_at,
+                serde_json::to_value(payloads::AttemptStartedPayload {
+                    attempt_id: attempt_id.clone(),
+                    node_run_id: node_run_id.clone(),
+                    attempt_number,
+                    agent_assignment: attempt.agent_assignment.clone(),
+                    transport: attempt.transport.clone(),
+                    idempotency_key: attempt.idempotency_key.clone(),
+                })
+                .unwrap_or(serde_json::Value::Null),
+            )];
+            if let Err(error) = store.save_execution_update(
+                &node_run,
+                Some(&attempt),
+                &[],
+                &running_events,
+                None,
+                None,
+            ) {
+                tracing::error!("failed to persist Running transition for {node_run_id}: {error}");
+                return;
+            }
+        }
+
         let cancellation = Arc::new(AtomicBool::new(false));
+
+        // Spawn heartbeat task and abort it when execution ends
+        let heartbeat = tokio::spawn(heartbeat_loop(store.clone(), node_run_id.clone()));
+
         let result = tokio::select! {
             result = execute_node(
                 &node,
@@ -1003,6 +1050,8 @@ async fn schedule_node(
                 None
             },
         };
+        heartbeat.abort(); // Stop heartbeat refreshes
+
         let Some(result) = result else {
             return;
         };
@@ -1808,6 +1857,17 @@ async fn fail_run_for_budget(
         .map_err(|error| error.to_string())
 }
 
+/// Periodically refresh the execution lease's heartbeat deadline while a node runs.
+async fn heartbeat_loop(store: Arc<TaskStore>, node_run_id: String) {
+    loop {
+        sleep(Duration::from_millis(LEASE_HEARTBEAT_INTERVAL_MS)).await;
+        let deadline = now_ms() + LEASE_HEARTBEAT_TTL_MS;
+        if let Err(error) = store.refresh_lease_heartbeat(&node_run_id, deadline) {
+            tracing::warn!("lease heartbeat refresh failed for {node_run_id}: {error}");
+        }
+    }
+}
+
 async fn wait_for_terminal_run(store: &Arc<TaskStore>, run_id: &str) {
     loop {
         sleep(Duration::from_millis(100)).await;
@@ -2447,5 +2507,369 @@ mod tests {
             &attempt,
             &attempt_error(ErrorCategory::Deterministic, "bad input", false)
         ));
+    }
+
+    #[test]
+    fn recover_lost_lease_recovers_expired_leased_node() {
+        let store = Arc::new(TaskStore::open_in_memory().unwrap());
+        let snapshot = GraphSnapshot {
+            nodes: vec![GraphNode {
+                node_id: "n1".into(),
+                parent_id: None,
+                title: "Node 1".into(),
+                description: None,
+                node_kind: NodeKind::Executable,
+                input_contract: Default::default(),
+                output_contract: Default::default(),
+                role_requirement: None,
+                capability_requirements: vec![],
+                agent_assignment_constraint: None,
+                policy: Default::default(),
+                metadata: HashMap::new(),
+                executable_payload: Some(ExecutablePayload::Shell {
+                    command: "echo test".into(),
+                    cwd: None,
+                    timeout_ms: Some(5_000),
+                }),
+                loop_config: None,
+                approval_gate_config: None,
+            }],
+            edges: vec![],
+        };
+        let graph = TaskGraph {
+            graph_id: "g1".into(),
+            title: "Test".into(),
+            goal: "Test lease recovery".into(),
+            project_root: PathBuf::from("."),
+            owner: "test".into(),
+            current_draft_revision: Some("r1".into()),
+            created_at: 1,
+            updated_at: 1,
+        };
+        let revision =
+            GraphRevision::from_snapshot("r1", "g1", None, &snapshot, "test", 1).unwrap();
+        let run = GraphRun {
+            run_id: "run1".into(),
+            graph_id: "g1".into(),
+            active_revision_id: "r1".into(),
+            status: RunStatus::Running,
+            run_seq: 1,
+            budget_state: BudgetState::default(),
+            planning_snapshot: Default::default(),
+            started_at: 1,
+            finished_at: None,
+        };
+        let started = build_event(
+            "e1",
+            "run1",
+            1,
+            TaskEventType::RunStarted,
+            "test",
+            1,
+            serde_json::to_value(payloads::RunStartedPayload {
+                run_id: "run1".into(),
+                graph_id: "g1".into(),
+                revision_id: "r1".into(),
+                initial_status: RunStatus::Running,
+                budget_state: BudgetState::default(),
+            })
+            .unwrap(),
+        );
+        store.create_graph_with_revision(&graph, &revision).unwrap();
+        store.create_run_with_event(&run, &started).unwrap();
+
+        // Create a Leased node_run with an expired lease
+        let mut node_run = NodeRun::new("nr1", "run1", "n1", "r1");
+        node_run.status = NodeRunStatus::Leased;
+        let past_deadline = now_ms() - 10_000;
+        let attempt = NodeAttempt {
+            attempt_id: "att1".into(),
+            node_run_id: "nr1".into(),
+            attempt_number: 0,
+            agent_assignment: None,
+            transport: None,
+            session_id: None,
+            lease: Some(Lease {
+                lease_id: "lease1".into(),
+                node_run_id: "nr1".into(),
+                attempt_id: "att1".into(),
+                owner: "local_execution_engine".into(),
+                resources: vec![],
+                expires_at: past_deadline,
+                heartbeat_deadline: past_deadline,
+            }),
+            usage: AttemptUsage::default(),
+            error: None,
+            idempotency_key: None,
+            checkpoint: None,
+            started_at: 1,
+            finished_at: None,
+        };
+        let node_ready = build_event(
+            "evt1",
+            "run1",
+            2,
+            TaskEventType::NodeReady,
+            "test",
+            2,
+            serde_json::to_value(payloads::NodeReadyPayload {
+                node_run_id: "nr1".into(),
+                node_id: "n1".into(),
+            })
+            .unwrap(),
+        );
+        store
+            .save_execution_update(&node_run, Some(&attempt), &[], &[node_ready], None, None)
+            .unwrap();
+
+        // Use a fresh ResourceArbiter (lease not registered)
+        let arbiter = ResourceArbiter::new(ResourceLimits::default());
+
+        // First recovery should succeed
+        let recovered = recover_lost_lease(&store, &arbiter, &run, &snapshot, &[node_run.clone()])
+            .expect("recovery should succeed");
+        assert!(recovered, "expired leased node should be recovered");
+
+        // Check events were emitted
+        let events = store.all_events("run1").unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.event_type == TaskEventType::LeaseExpired),
+            "should emit LeaseExpired event"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.event_type == TaskEventType::AttemptFailed),
+            "should emit AttemptFailed event"
+        );
+
+        // Check status is no longer Leased
+        let latest_runs = store.get_node_runs("run1").unwrap();
+        let latest = latest_runs
+            .iter()
+            .find(|nr| nr.node_run_id == "nr1")
+            .expect("node_run should exist");
+        assert_ne!(latest.status, NodeRunStatus::Leased);
+
+        // Idempotency: second recovery should return false (no longer eligible)
+        let recovered_again =
+            recover_lost_lease(&store, &arbiter, &run, &snapshot, &[latest.clone()])
+                .expect("recovery should succeed");
+        assert!(
+            !recovered_again,
+            "already recovered node should not be recovered again"
+        );
+
+        // Negative case: Leased node with live heartbeat should not be recovered
+        let mut node_run_live = NodeRun::new("nr2", "run1", "n1", "r1");
+        node_run_live.status = NodeRunStatus::Leased;
+        let future_deadline = now_ms() + 60_000;
+        let attempt_live = NodeAttempt {
+            attempt_id: "att2".into(),
+            node_run_id: "nr2".into(),
+            attempt_number: 0,
+            agent_assignment: None,
+            transport: None,
+            session_id: None,
+            lease: Some(Lease {
+                lease_id: "lease2".into(),
+                node_run_id: "nr2".into(),
+                attempt_id: "att2".into(),
+                owner: "local_execution_engine".into(),
+                resources: vec![],
+                expires_at: future_deadline,
+                heartbeat_deadline: future_deadline,
+            }),
+            usage: AttemptUsage::default(),
+            error: None,
+            idempotency_key: None,
+            checkpoint: None,
+            started_at: 1,
+            finished_at: None,
+        };
+        // Get the current run_seq to avoid conflicts
+        let current_run = store.get_run("run1").unwrap();
+        let next_run_seq = current_run.run_seq + 1;
+        let next_occurred_at = next_run_seq as i64;
+        let node_ready_live = build_event(
+            "evt2",
+            "run1",
+            next_run_seq,
+            TaskEventType::NodeReady,
+            "test",
+            next_occurred_at,
+            serde_json::to_value(payloads::NodeReadyPayload {
+                node_run_id: "nr2".into(),
+                node_id: "n1".into(),
+            })
+            .unwrap(),
+        );
+        store
+            .save_execution_update(
+                &node_run_live,
+                Some(&attempt_live),
+                &[],
+                &[node_ready_live],
+                None,
+                None,
+            )
+            .unwrap();
+
+        let recovered_live =
+            recover_lost_lease(&store, &arbiter, &run, &snapshot, &[node_run_live.clone()])
+                .expect("recovery should succeed");
+        assert!(
+            !recovered_live,
+            "node with live heartbeat should not be recovered"
+        );
+
+        // Verify no LeaseExpired was emitted for the live case
+        let events_after = store.all_events("run1").unwrap();
+        let lease_expired_count = events_after
+            .iter()
+            .filter(|e| e.event_type == TaskEventType::LeaseExpired)
+            .count();
+        assert_eq!(
+            lease_expired_count, 1,
+            "should only have one LeaseExpired (from the first recovery)"
+        );
+    }
+
+    #[test]
+    fn refresh_lease_heartbeat_updates_deadline() {
+        let store = Arc::new(TaskStore::open_in_memory().unwrap());
+        let snapshot = GraphSnapshot {
+            nodes: vec![GraphNode {
+                node_id: "n1".into(),
+                parent_id: None,
+                title: "Node 1".into(),
+                description: None,
+                node_kind: NodeKind::Executable,
+                input_contract: Default::default(),
+                output_contract: Default::default(),
+                role_requirement: None,
+                capability_requirements: vec![],
+                agent_assignment_constraint: None,
+                policy: Default::default(),
+                metadata: HashMap::new(),
+                executable_payload: Some(ExecutablePayload::Shell {
+                    command: "echo test".into(),
+                    cwd: None,
+                    timeout_ms: Some(5_000),
+                }),
+                loop_config: None,
+                approval_gate_config: None,
+            }],
+            edges: vec![],
+        };
+        let graph = TaskGraph {
+            graph_id: "g1".into(),
+            title: "Test".into(),
+            goal: "Test heartbeat refresh".into(),
+            project_root: PathBuf::from("."),
+            owner: "test".into(),
+            current_draft_revision: Some("r1".into()),
+            created_at: 1,
+            updated_at: 1,
+        };
+        let revision =
+            GraphRevision::from_snapshot("r1", "g1", None, &snapshot, "test", 1).unwrap();
+        let run = GraphRun {
+            run_id: "run1".into(),
+            graph_id: "g1".into(),
+            active_revision_id: "r1".into(),
+            status: RunStatus::Running,
+            run_seq: 1,
+            budget_state: BudgetState::default(),
+            planning_snapshot: Default::default(),
+            started_at: 1,
+            finished_at: None,
+        };
+        let started = build_event(
+            "e1",
+            "run1",
+            1,
+            TaskEventType::RunStarted,
+            "test",
+            1,
+            serde_json::to_value(payloads::RunStartedPayload {
+                run_id: "run1".into(),
+                graph_id: "g1".into(),
+                revision_id: "r1".into(),
+                initial_status: RunStatus::Running,
+                budget_state: BudgetState::default(),
+            })
+            .unwrap(),
+        );
+        store.create_graph_with_revision(&graph, &revision).unwrap();
+        store.create_run_with_event(&run, &started).unwrap();
+
+        // Create a Leased node_run with an attempt that has a lease
+        let mut node_run = NodeRun::new("nr1", "run1", "n1", "r1");
+        node_run.status = NodeRunStatus::Leased;
+        let attempt = NodeAttempt {
+            attempt_id: "att1".into(),
+            node_run_id: "nr1".into(),
+            attempt_number: 0,
+            agent_assignment: None,
+            transport: None,
+            session_id: None,
+            lease: Some(Lease {
+                lease_id: "lease1".into(),
+                node_run_id: "nr1".into(),
+                attempt_id: "att1".into(),
+                owner: "local_execution_engine".into(),
+                resources: vec![],
+                expires_at: 5000,
+                heartbeat_deadline: 1000,
+            }),
+            usage: AttemptUsage::default(),
+            error: None,
+            idempotency_key: None,
+            checkpoint: None,
+            started_at: 1,
+            finished_at: None,
+        };
+        let node_ready = build_event(
+            "evt1",
+            "run1",
+            2,
+            TaskEventType::NodeReady,
+            "test",
+            2,
+            serde_json::to_value(payloads::NodeReadyPayload {
+                node_run_id: "nr1".into(),
+                node_id: "n1".into(),
+            })
+            .unwrap(),
+        );
+        store
+            .save_execution_update(&node_run, Some(&attempt), &[], &[node_ready], None, None)
+            .unwrap();
+
+        // Refresh the heartbeat
+        store
+            .refresh_lease_heartbeat("nr1", 99_999)
+            .expect("refresh should succeed");
+
+        // Verify the heartbeat was updated
+        let updated_attempt = store
+            .latest_attempt("nr1")
+            .unwrap()
+            .expect("attempt should exist");
+        let updated_lease = updated_attempt.lease.as_ref().expect("lease should exist");
+        assert_eq!(updated_lease.heartbeat_deadline, 99_999);
+
+        // No-op safety: refreshing a nonexistent node_run should not error
+        store
+            .refresh_lease_heartbeat("nonexistent_node_run", 5)
+            .expect("refresh on nonexistent should be ok (no-op)");
+
+        // Refreshing a node_run with no attempt should not error
+        store
+            .refresh_lease_heartbeat("nr_no_attempt", 10)
+            .expect("refresh on node_run with no attempt should be ok (no-op)");
     }
 }

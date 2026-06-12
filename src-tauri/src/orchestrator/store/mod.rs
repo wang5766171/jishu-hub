@@ -1779,6 +1779,42 @@ impl TaskStore {
         .map_err(Into::into)
     }
 
+    /// Refresh the heartbeat deadline on the latest attempt's lease for a node run.
+    /// Used by the execution heartbeat loop to keep an in-flight lease alive.
+    pub fn refresh_lease_heartbeat(
+        &self,
+        node_run_id: &str,
+        heartbeat_deadline: i64,
+    ) -> Result<(), StoreError> {
+        let conn = self
+            .writer
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        let row: Option<(String, Option<String>)> = conn
+            .query_row(
+                "SELECT attempt_id, lease FROM node_attempt
+                 WHERE node_run_id = ?1 ORDER BY attempt_number DESC LIMIT 1",
+                params![node_run_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?;
+        let Some((attempt_id, lease_json)) = row else {
+            return Ok(());
+        };
+        let Some(lease_json) = lease_json else {
+            return Ok(());
+        };
+        let mut lease: crate::orchestrator::domain::run::Lease =
+            serde_json::from_str(&lease_json).map_err(|e| StoreError::Serde(e.into()))?;
+        lease.heartbeat_deadline = heartbeat_deadline;
+        let updated = serde_json::to_string(&lease).map_err(|e| StoreError::Serde(e.into()))?;
+        conn.execute(
+            "UPDATE node_attempt SET lease = ?1 WHERE attempt_id = ?2",
+            params![updated, attempt_id],
+        )?;
+        Ok(())
+    }
+
     // ── Approval operations ───────────────────────────────────────────
 
     pub fn save_approval(&self, approval: &ApprovalRequest) -> Result<(), StoreError> {
@@ -2164,9 +2200,10 @@ fn try_advance_projection_checkpoint(
         .optional();
 
     let Some((last_seq, proj_json)) = checkpoint_result.map_err(|e| {
-        CheckpointAdvanceError::Deserialize(serde_json::Error::io(
-            std::io::Error::new(std::io::ErrorKind::Other, format!("db query failed: {e}")),
-        ))
+        CheckpointAdvanceError::Deserialize(serde_json::Error::io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("db query failed: {e}"),
+        )))
     })?
     else {
         return Ok(());
@@ -2258,7 +2295,8 @@ impl ProjectionReadModel for std::sync::Arc<TaskStore> {
         projection_json: &str,
         updated_at: i64,
     ) -> Result<(), StoreError> {
-        self.as_ref().save_projection_checkpoint(run_id, last_seq, projection_json, updated_at)
+        self.as_ref()
+            .save_projection_checkpoint(run_id, last_seq, projection_json, updated_at)
     }
 }
 
