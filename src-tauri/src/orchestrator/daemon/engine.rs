@@ -22,7 +22,7 @@ use crate::orchestrator::runtime_bridge::{
     map_normalized_event, RuntimeEventContext, RuntimeFact, RuntimeInvocationRequest,
     TaskAgentRuntime,
 };
-use crate::orchestrator::scheduler::compute_ready_set;
+use crate::orchestrator::scheduler::ReadySetComputer;
 use crate::orchestrator::store::TaskStore;
 use crate::util::{gen_id, now_ms, redact_sensitive_text};
 
@@ -47,6 +47,7 @@ pub struct ExecutionEngine {
     runtime: Arc<dyn TaskAgentRuntime>,
     resource_arbiter: Arc<ResourceArbiter>,
     tick_counter: Arc<AtomicU64>,
+    ready_caches: Arc<std::sync::Mutex<std::collections::HashMap<String, ReadySetComputer>>>,
 }
 
 impl ExecutionEngine {
@@ -56,6 +57,7 @@ impl ExecutionEngine {
             runtime,
             resource_arbiter: Arc::new(ResourceArbiter::new(ResourceLimits::default())),
             tick_counter: Arc::new(AtomicU64::new(0)),
+            ready_caches: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -64,11 +66,18 @@ impl ExecutionEngine {
         let runtime = self.runtime.clone();
         let resource_arbiter = self.resource_arbiter.clone();
         let tick_counter = self.tick_counter.clone();
+        let ready_caches = self.ready_caches.clone();
         EngineHandle {
             task: tauri::async_runtime::spawn(async move {
                 loop {
-                    if let Err(error) =
-                        tick(&store, &runtime, &resource_arbiter, &tick_counter).await
+                    if let Err(error) = tick(
+                        &store,
+                        &runtime,
+                        &resource_arbiter,
+                        &tick_counter,
+                        &ready_caches,
+                    )
+                    .await
                     {
                         tracing::error!("task execution engine tick failed: {error}");
                     }
@@ -84,6 +93,7 @@ async fn tick(
     runtime: &Arc<dyn TaskAgentRuntime>,
     resource_arbiter: &Arc<ResourceArbiter>,
     tick_counter: &Arc<AtomicU64>,
+    ready_caches: &Arc<std::sync::Mutex<std::collections::HashMap<String, ReadySetComputer>>>,
 ) -> Result<(), String> {
     // Increment tick counter and check if we should checkpoint. Skip tick 0
     // (startup): the WAL is empty then, so the first checkpoint lands at tick
@@ -98,6 +108,10 @@ async fn tick(
     }
 
     let active_runs = { store.get_active_runs().map_err(|error| error.to_string())? };
+
+    // Collect active run IDs for cache pruning after the loop
+    let active_run_ids: std::collections::HashSet<String> =
+        active_runs.iter().map(|run| run.run_id.clone()).collect();
 
     for run in active_runs {
         let (snapshot, node_runs, project_root) = {
@@ -190,7 +204,21 @@ async fn tick(
             continue;
         }
 
-        let ready_nodes = compute_ready_set(&snapshot, &node_runs, now_ms());
+        let now = now_ms();
+        let ready_nodes = {
+            let mut caches = ready_caches.lock().map_err(|e| e.to_string())?;
+            let computer = caches
+                .entry(run.run_id.clone())
+                .and_modify(|c| {
+                    if !c.revision_matches(&run.active_revision_id) {
+                        *c = ReadySetComputer::for_revision(&snapshot, &run.active_revision_id);
+                    }
+                })
+                .or_insert_with(|| {
+                    ReadySetComputer::for_revision(&snapshot, &run.active_revision_id)
+                });
+            computer.update(&snapshot, &latest_runs, now)
+        };
         for node_id in ready_nodes.into_iter().take(capacity) {
             let Some(node) = snapshot.node_by_id(&node_id).cloned() else {
                 tracing::error!("scheduler returned missing node {node_id}");
@@ -219,6 +247,12 @@ async fn tick(
             .await?;
         }
     }
+
+    // Prune ready-set caches for finished runs
+    if let Ok(mut caches) = ready_caches.lock() {
+        caches.retain(|run_id, _| active_run_ids.contains(run_id));
+    }
+
     Ok(())
 }
 
@@ -2017,7 +2051,10 @@ mod tests {
         )));
         let arbiter = Arc::new(ResourceArbiter::new(ResourceLimits::default()));
         let tick_counter = Arc::new(AtomicU64::new(0));
-        tick(&store, &runtime, &arbiter, &tick_counter)
+        let ready_caches: Arc<
+            std::sync::Mutex<std::collections::HashMap<String, ReadySetComputer>>,
+        > = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        tick(&store, &runtime, &arbiter, &tick_counter, &ready_caches)
             .await
             .unwrap();
         for _ in 0..40 {
@@ -2032,10 +2069,10 @@ mod tests {
                 break;
             }
             sleep(Duration::from_millis(25)).await;
+            tick(&store, &runtime, &arbiter, &tick_counter, &ready_caches)
+                .await
+                .unwrap();
         }
-        tick(&store, &runtime, &arbiter, &tick_counter)
-            .await
-            .unwrap();
 
         let store = store;
         assert_eq!(store.get_run("run1").unwrap().status, RunStatus::Completed);
@@ -2134,7 +2171,10 @@ mod tests {
         let runtime: Arc<dyn TaskAgentRuntime> = Arc::new(FakeAgentRuntime);
         let arbiter = Arc::new(ResourceArbiter::new(ResourceLimits::default()));
         let tick_counter = Arc::new(AtomicU64::new(0));
-        tick(&store, &runtime, &arbiter, &tick_counter)
+        let ready_caches: Arc<
+            std::sync::Mutex<std::collections::HashMap<String, ReadySetComputer>>,
+        > = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        tick(&store, &runtime, &arbiter, &tick_counter, &ready_caches)
             .await
             .unwrap();
         for _ in 0..40 {
@@ -2147,10 +2187,10 @@ mod tests {
                 break;
             }
             sleep(Duration::from_millis(25)).await;
+            tick(&store, &runtime, &arbiter, &tick_counter, &ready_caches)
+                .await
+                .unwrap();
         }
-        tick(&store, &runtime, &arbiter, &tick_counter)
-            .await
-            .unwrap();
 
         let store = store;
         assert_eq!(
@@ -2309,11 +2349,14 @@ mod tests {
         let runtime: Arc<dyn TaskAgentRuntime> = Arc::new(FakeAgentRuntime);
         let arbiter = Arc::new(ResourceArbiter::new(ResourceLimits::default()));
         let tick_counter = Arc::new(AtomicU64::new(0));
+        let ready_caches: Arc<
+            std::sync::Mutex<std::collections::HashMap<String, ReadySetComputer>>,
+        > = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
 
-        tick(&store, &runtime, &arbiter, &tick_counter)
+        tick(&store, &runtime, &arbiter, &tick_counter, &ready_caches)
             .await
             .unwrap();
-        tick(&store, &runtime, &arbiter, &tick_counter)
+        tick(&store, &runtime, &arbiter, &tick_counter, &ready_caches)
             .await
             .unwrap();
         for _ in 0..40 {
@@ -2328,11 +2371,14 @@ mod tests {
                 break;
             }
             sleep(Duration::from_millis(25)).await;
+            tick(&store, &runtime, &arbiter, &tick_counter, &ready_caches)
+                .await
+                .unwrap();
         }
-        tick(&store, &runtime, &arbiter, &tick_counter)
+        tick(&store, &runtime, &arbiter, &tick_counter, &ready_caches)
             .await
             .unwrap();
-        tick(&store, &runtime, &arbiter, &tick_counter)
+        tick(&store, &runtime, &arbiter, &tick_counter, &ready_caches)
             .await
             .unwrap();
 
