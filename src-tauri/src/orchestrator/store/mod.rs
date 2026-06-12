@@ -2417,4 +2417,54 @@ mod tests {
             Err(StoreError::NotFound(_))
         ));
     }
+
+    #[test]
+    fn reader_and_writer_are_independent_connections() {
+        // Prove that reader and writer are separate SQLite connections.
+        // Before the fix (single shared connection), holding the writer lock
+        // would prevent any reader operations. With independent connections,
+        // both can proceed concurrently.
+        let store = make_test_store();
+
+        // Create a graph via the writer
+        let graph = TaskGraph {
+            graph_id: "g1".into(),
+            title: "Test Graph".into(),
+            goal: "Test goal".into(),
+            project_root: PathBuf::from("/test"),
+            owner: "test_user".into(),
+            current_draft_revision: None,
+            created_at: now(),
+            updated_at: now(),
+        };
+        store.create_graph(&graph).unwrap();
+
+        // Prove we can read via the reader immediately after writing
+        let retrieved = store.get_graph("g1").unwrap();
+        assert_eq!(retrieved.graph_id, "g1");
+        assert_eq!(retrieved.title, "Test Graph");
+
+        // Prove we can perform multiple read operations without writer interference
+        let _ = store.get_graph("g1").unwrap();
+        let _ = store.get_graph("g1").unwrap();
+
+        // Prove writer and reader can be locked independently
+        let w_lock = store.writer.lock().unwrap();
+        // Reader should still be accessible even though writer is locked
+        let r_lock = store.reader.lock().unwrap();
+
+        // Both connections are independently usable
+        let count: i64 = r_lock
+            .query_row("SELECT COUNT(*) FROM task_graph", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let writer_count: i64 = w_lock
+            .query_row("SELECT COUNT(*) FROM task_graph", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(writer_count, 1);
+
+        drop(r_lock);
+        drop(w_lock);
+    }
 }
