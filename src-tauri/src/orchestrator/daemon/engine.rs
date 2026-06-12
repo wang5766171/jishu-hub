@@ -1,5 +1,5 @@
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 use std::time::Duration;
@@ -29,6 +29,8 @@ use crate::util::{gen_id, now_ms, redact_sensitive_text};
 const ENGINE_INTERVAL_MS: u64 = 250;
 const MAX_PARALLEL_NODES_PER_RUN: usize = 4;
 const EVENT_MESSAGE_LIMIT: usize = 4096;
+// Checkpoint every ~30 seconds (120 ticks * 250ms = 30s)
+const CHECKPOINT_INTERVAL_TICKS: u64 = 120;
 
 pub struct EngineHandle {
     task: tauri::async_runtime::JoinHandle<()>,
@@ -44,6 +46,7 @@ pub struct ExecutionEngine {
     store: Arc<TaskStore>,
     runtime: Arc<dyn TaskAgentRuntime>,
     resource_arbiter: Arc<ResourceArbiter>,
+    tick_counter: Arc<AtomicU64>,
 }
 
 impl ExecutionEngine {
@@ -52,6 +55,7 @@ impl ExecutionEngine {
             store,
             runtime,
             resource_arbiter: Arc::new(ResourceArbiter::new(ResourceLimits::default())),
+            tick_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -59,10 +63,13 @@ impl ExecutionEngine {
         let store = self.store.clone();
         let runtime = self.runtime.clone();
         let resource_arbiter = self.resource_arbiter.clone();
+        let tick_counter = self.tick_counter.clone();
         EngineHandle {
             task: tauri::async_runtime::spawn(async move {
                 loop {
-                    if let Err(error) = tick(&store, &runtime, &resource_arbiter).await {
+                    if let Err(error) =
+                        tick(&store, &runtime, &resource_arbiter, &tick_counter).await
+                    {
                         tracing::error!("task execution engine tick failed: {error}");
                     }
                     sleep(Duration::from_millis(ENGINE_INTERVAL_MS)).await;
@@ -76,7 +83,20 @@ async fn tick(
     store: &Arc<TaskStore>,
     runtime: &Arc<dyn TaskAgentRuntime>,
     resource_arbiter: &Arc<ResourceArbiter>,
+    tick_counter: &Arc<AtomicU64>,
 ) -> Result<(), String> {
+    // Increment tick counter and check if we should checkpoint. Skip tick 0
+    // (startup): the WAL is empty then, so the first checkpoint lands at tick
+    // CHECKPOINT_INTERVAL_TICKS (~30s), matching the documented cadence.
+    let tick_count = tick_counter.fetch_add(1, Ordering::Relaxed);
+    if tick_count > 0 && tick_count % CHECKPOINT_INTERVAL_TICKS == 0 {
+        // Periodically checkpoint the WAL to prevent unbounded growth
+        if let Err(error) = store.checkpoint() {
+            tracing::warn!("WAL checkpoint failed: {error}");
+            // Non-fatal: continue the tick loop
+        }
+    }
+
     let active_runs = { store.get_active_runs().map_err(|error| error.to_string())? };
 
     for run in active_runs {
@@ -1996,7 +2016,10 @@ mod tests {
             crate::agent::AgentRegistry::new(),
         )));
         let arbiter = Arc::new(ResourceArbiter::new(ResourceLimits::default()));
-        tick(&store, &runtime, &arbiter).await.unwrap();
+        let tick_counter = Arc::new(AtomicU64::new(0));
+        tick(&store, &runtime, &arbiter, &tick_counter)
+            .await
+            .unwrap();
         for _ in 0..40 {
             let finished = {
                 store
@@ -2010,7 +2033,9 @@ mod tests {
             }
             sleep(Duration::from_millis(25)).await;
         }
-        tick(&store, &runtime, &arbiter).await.unwrap();
+        tick(&store, &runtime, &arbiter, &tick_counter)
+            .await
+            .unwrap();
 
         let store = store;
         assert_eq!(store.get_run("run1").unwrap().status, RunStatus::Completed);
@@ -2108,7 +2133,10 @@ mod tests {
 
         let runtime: Arc<dyn TaskAgentRuntime> = Arc::new(FakeAgentRuntime);
         let arbiter = Arc::new(ResourceArbiter::new(ResourceLimits::default()));
-        tick(&store, &runtime, &arbiter).await.unwrap();
+        let tick_counter = Arc::new(AtomicU64::new(0));
+        tick(&store, &runtime, &arbiter, &tick_counter)
+            .await
+            .unwrap();
         for _ in 0..40 {
             let finished = store
                 .get_node_runs("run-agent")
@@ -2120,7 +2148,9 @@ mod tests {
             }
             sleep(Duration::from_millis(25)).await;
         }
-        tick(&store, &runtime, &arbiter).await.unwrap();
+        tick(&store, &runtime, &arbiter, &tick_counter)
+            .await
+            .unwrap();
 
         let store = store;
         assert_eq!(
@@ -2278,9 +2308,14 @@ mod tests {
         }
         let runtime: Arc<dyn TaskAgentRuntime> = Arc::new(FakeAgentRuntime);
         let arbiter = Arc::new(ResourceArbiter::new(ResourceLimits::default()));
+        let tick_counter = Arc::new(AtomicU64::new(0));
 
-        tick(&store, &runtime, &arbiter).await.unwrap();
-        tick(&store, &runtime, &arbiter).await.unwrap();
+        tick(&store, &runtime, &arbiter, &tick_counter)
+            .await
+            .unwrap();
+        tick(&store, &runtime, &arbiter, &tick_counter)
+            .await
+            .unwrap();
         for _ in 0..40 {
             if store
                 .get_node_runs("run-loop")
@@ -2294,8 +2329,12 @@ mod tests {
             }
             sleep(Duration::from_millis(25)).await;
         }
-        tick(&store, &runtime, &arbiter).await.unwrap();
-        tick(&store, &runtime, &arbiter).await.unwrap();
+        tick(&store, &runtime, &arbiter, &tick_counter)
+            .await
+            .unwrap();
+        tick(&store, &runtime, &arbiter, &tick_counter)
+            .await
+            .unwrap();
 
         let store = store;
         assert_eq!(

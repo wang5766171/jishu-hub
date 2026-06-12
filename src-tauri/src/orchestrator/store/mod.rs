@@ -82,6 +82,9 @@ impl TaskStore {
         writer_conn.pragma_update(None, "synchronous", "NORMAL")?;
         writer_conn.pragma_update(None, "foreign_keys", "ON")?;
         writer_conn.pragma_update(None, "busy_timeout", 5000)?;
+        // Set automatic WAL checkpoint to trigger every 1000 pages (SQLite's default).
+        // This prevents unbounded WAL growth under sustained writes.
+        writer_conn.pragma_update(None, "wal_autocheckpoint", 1000)?;
 
         Self::create_schema(&writer_conn)?;
 
@@ -1979,15 +1982,44 @@ impl TaskStore {
         Ok(artifacts)
     }
 
-    /// Run a controlled WAL checkpoint.
-    pub fn checkpoint(&self) -> Result<(), StoreError> {
+    /// Run a controlled (PASSIVE) WAL checkpoint, returning how many WAL frames
+    /// were processed. The outcome lets callers and tests confirm the checkpoint
+    /// actually engaged the WAL machinery rather than being a silent no-op.
+    pub fn checkpoint(&self) -> Result<WalCheckpointOutcome, StoreError> {
         let conn = self
             .writer
             .lock()
             .map_err(|e| StoreError::Lock(e.to_string()))?;
-        conn.pragma_update(None, "wal_checkpoint", "PASSIVE")?;
-        Ok(())
+        // `PRAGMA wal_checkpoint(PASSIVE)` returns (busy, log, checkpointed):
+        //   busy         = 1 if the checkpoint could not start because a reader
+        //                  holds a lock past the most recent frame, else 0;
+        //   log          = frames in the WAL log file at checkpoint time;
+        //   checkpointed = frames successfully copied back to the main database.
+        let (busy, log_frames, checkpointed_frames) =
+            conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?;
+        Ok(WalCheckpointOutcome {
+            busy: busy != 0,
+            log_frames,
+            checkpointed_frames,
+        })
     }
+}
+
+/// Outcome of a controlled WAL checkpoint (`TaskStore::checkpoint`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WalCheckpointOutcome {
+    /// `true` if the checkpoint could not run because a reader held a lock.
+    pub busy: bool,
+    /// Number of frames in the WAL log file at checkpoint time.
+    pub log_frames: i64,
+    /// Number of WAL frames successfully copied back to the main database.
+    pub checkpointed_frames: i64,
 }
 
 fn insert_event(tx: &rusqlite::Transaction<'_>, event: &TaskEvent) -> Result<(), StoreError> {
@@ -2081,6 +2113,7 @@ mod tests {
     };
     use crate::orchestrator::domain::revision::GraphRevision;
     use crate::orchestrator::events::{build_event, payloads, TaskEventType};
+    use crate::util::gen_id;
 
     fn make_test_store() -> TaskStore {
         TaskStore::open_in_memory().unwrap()
@@ -2546,5 +2579,92 @@ mod tests {
             .get_graph("g1")
             .expect("read via reader must succeed while writer lock is held");
         assert_eq!(read_back.graph_id, "g1");
+    }
+
+    #[test]
+    fn autocheckpoint_pragma_is_set_on_file_based_db() {
+        // Test that wal_autocheckpoint is set to a non-zero value on file-based DBs.
+        // This ensures automatic WAL checkpointing is enabled to prevent unbounded WAL growth.
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join(format!("test_autocheckpoint_{}.db", gen_id("test")));
+
+        // Open a file-based store
+        let store = TaskStore::open(&db_path).expect("file-based store should open");
+
+        // Query the wal_autocheckpoint setting on the writer connection
+        let conn = store.writer.lock().unwrap();
+        let autocheckpoint: i32 = conn
+            .pragma_query_value(None, "wal_autocheckpoint", |row| row.get(0))
+            .expect("wal_autocheckpoint pragma should be queryable");
+
+        drop(conn);
+
+        // Assert it's set to a non-zero value (1000 pages is a reasonable default)
+        assert_eq!(
+            autocheckpoint, 1000,
+            "wal_autocheckpoint should be set to 1000 pages"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+    }
+
+    #[test]
+    fn checkpoint_executes_on_real_wal_file() {
+        // Test that TaskStore::checkpoint() executes successfully against a real WAL file.
+        // This proves the checkpoint wiring is functional and not just a stub.
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join(format!("test_checkpoint_{}.db", gen_id("test")));
+
+        // Open a file-based store
+        let store = TaskStore::open(&db_path).expect("file-based store should open");
+
+        // Create a graph and run to generate WAL activity
+        let graph = TaskGraph {
+            graph_id: "g1".into(),
+            title: "Checkpoint Test".into(),
+            goal: "Test WAL checkpoint".into(),
+            project_root: PathBuf::from("/test"),
+            owner: "test_user".into(),
+            current_draft_revision: None,
+            created_at: now(),
+            updated_at: now(),
+        };
+        store
+            .create_graph(&graph)
+            .expect("graph creation should succeed");
+
+        // Execute a checkpoint. It must succeed AND do real work: with no
+        // concurrent readers a PASSIVE checkpoint over our freshly-written
+        // frames must not be busy and must have copied back every frame that was
+        // in the log — proving it actually engaged the WAL, not a silent no-op.
+        let outcome = store
+            .checkpoint()
+            .expect("checkpoint should succeed on file-based DB with WAL");
+        assert!(
+            !outcome.busy,
+            "checkpoint must not be blocked by a busy reader: {outcome:?}"
+        );
+        assert!(
+            outcome.log_frames > 0,
+            "create_graph must have generated WAL frames to checkpoint: {outcome:?}"
+        );
+        assert_eq!(
+            outcome.checkpointed_frames, outcome.log_frames,
+            "PASSIVE checkpoint with no readers must copy back every WAL frame: {outcome:?}"
+        );
+
+        // Verify we can still read after checkpoint (proves DB integrity)
+        let retrieved = store
+            .get_graph("g1")
+            .expect("should read graph after checkpoint");
+        assert_eq!(retrieved.graph_id, "g1");
+
+        // Cleanup
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
     }
 }
