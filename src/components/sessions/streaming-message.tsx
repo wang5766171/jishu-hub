@@ -139,18 +139,14 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                       );
                     }
                     if (item.block.type === "text") {
-                      return isComplete ? (
+                      return (
                         <div key={`text-${idx}`} className="markdown-prose overflow-hidden">
                           <ReactMarkdown
                             remarkPlugins={REMARK_PLUGINS}
-                            rehypePlugins={REHYPE_PLUGINS_COMPLETE}
+                            rehypePlugins={isComplete ? REHYPE_PLUGINS_COMPLETE : undefined}
                           >
                             {item.block.text}
                           </ReactMarkdown>
-                        </div>
-                      ) : (
-                        <div key={`text-${idx}`} className="markdown-prose overflow-hidden whitespace-pre-wrap break-words">
-                          {item.block.text}
                         </div>
                       );
                     }
