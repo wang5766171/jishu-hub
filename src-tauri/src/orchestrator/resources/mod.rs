@@ -12,6 +12,7 @@ pub struct ResourceLimits {
     pub cpu_weight: u32,
     pub memory_mb: u64,
     pub network_concurrency_per_quota: usize,
+    pub max_parallel_nodes_per_run: usize,
 }
 
 impl Default for ResourceLimits {
@@ -22,6 +23,7 @@ impl Default for ResourceLimits {
             cpu_weight: 100,
             memory_mb: 8 * 1024,
             network_concurrency_per_quota: 1,
+            max_parallel_nodes_per_run: 4,
         }
     }
 }
@@ -107,6 +109,10 @@ impl ResourceArbiter {
             .unwrap_or_else(|error| error.into_inner())
             .leases
             .contains_key(lease_id)
+    }
+
+    pub fn max_parallel_nodes_per_run(&self) -> usize {
+        self.inner.limits.max_parallel_nodes_per_run
     }
 }
 
@@ -363,6 +369,7 @@ mod tests {
             cpu_weight: 100,
             memory_mb: 1024,
             network_concurrency_per_quota: 1,
+            max_parallel_nodes_per_run: 4,
         });
         let mut first = node("first");
         first.policy.resource_requirements.cpu_weight = Some(70);
@@ -394,5 +401,10 @@ mod tests {
             .try_acquire("lease-2", &second, std::path::Path::new("."))
             .is_none());
         drop(permit);
+    }
+
+    #[test]
+    fn resource_limits_default_max_parallel_per_run() {
+        assert_eq!(ResourceLimits::default().max_parallel_nodes_per_run, 4);
     }
 }

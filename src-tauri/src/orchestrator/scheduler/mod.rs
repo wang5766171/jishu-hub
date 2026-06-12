@@ -151,6 +151,8 @@ pub struct ReadySetComputer {
     last_inputs: HashMap<String, (NodeRunStatus, bool, Option<u32>)>,
     /// current ready set.
     ready_set: HashSet<String>,
+    /// When each node first entered the ready set (ms), for wait-time scoring.
+    ready_since: HashMap<String, i64>,
     /// diagnostic: number of `node_is_ready` evaluations performed in the last `update`.
     pub last_eval_count: usize,
 }
@@ -213,6 +215,7 @@ impl ReadySetComputer {
             loop_body_ids,
             last_inputs: HashMap::new(),
             ready_set: HashSet::new(),
+            ready_since: HashMap::new(),
             last_eval_count: 0,
         }
     }
@@ -299,8 +302,10 @@ impl ReadySetComputer {
                 self.last_eval_count += 1;
                 if ready {
                     self.ready_set.insert(node_id.clone());
+                    self.ready_since.entry(node_id.clone()).or_insert(now);
                 } else {
                     self.ready_set.remove(node_id);
+                    self.ready_since.remove(node_id);
                 }
             }
         }
@@ -312,6 +317,60 @@ impl ReadySetComputer {
         let mut ready_vec: Vec<String> = self.ready_set.iter().cloned().collect();
         ready_vec.sort();
         ready_vec
+    }
+
+    /// Score used to order ready nodes for scheduling. Higher = schedule first.
+    /// Factors: user priority (dominant), downstream-blocked count (criticality),
+    /// wait time in seconds (aging/fairness). Deterministic; ties broken by node_id.
+    fn score_node(node: &GraphNode, downstream_blocked: usize, wait_ms: i64) -> i64 {
+        let priority = node.policy.priority as i64;
+        // priority dominates; downstream criticality second; wait time a minor aging nudge.
+        priority * 1_000 + (downstream_blocked as i64) * 10 + (wait_ms / 1_000)
+    }
+
+    /// Return the ready node ids ordered for scheduling (highest score first,
+    /// node_id ascending as a deterministic tiebreak). Pure & deterministic — no RNG.
+    pub fn prioritize(
+        &self,
+        ready_ids: &[String],
+        snapshot: &GraphSnapshot,
+        latest_runs: &HashMap<String, &NodeRun>,
+        now: i64,
+    ) -> Vec<String> {
+        let mut scored: Vec<(i64, &String)> = ready_ids
+            .iter()
+            .map(|id| {
+                let node = snapshot.node_by_id(id);
+                let downstream_blocked = self
+                    .dependents
+                    .get(id)
+                    .map(|deps| {
+                        deps.iter()
+                            .filter(|dep| {
+                                latest_runs
+                                    .get(*dep)
+                                    .map(|r| {
+                                        matches!(
+                                            r.status,
+                                            NodeRunStatus::Blocked | NodeRunStatus::Ready
+                                        )
+                                    })
+                                    .unwrap_or(true) // a dependent with no run yet is Blocked (default)
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0);
+                let wait_ms = now - self.ready_since.get(id).copied().unwrap_or(now);
+                let score = match node {
+                    Some(n) => Self::score_node(n, downstream_blocked, wait_ms),
+                    None => i64::MIN, // unknown node: schedule last
+                };
+                (score, id)
+            })
+            .collect();
+        // Sort by score DESC; tiebreak node_id ASC (deterministic).
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+        scored.into_iter().map(|(_, id)| id.clone()).collect()
     }
 }
 
@@ -756,5 +815,283 @@ mod tests {
     fn sorted(mut vec: Vec<String>) -> Vec<String> {
         vec.sort();
         vec
+    }
+
+    #[test]
+    fn prioritize_schedules_higher_priority_first() {
+        // Two independent nodes A (priority 0) and B (priority 10)
+        let nodes = vec![
+            GraphNode {
+                node_id: "A".into(),
+                parent_id: None,
+                title: "A".into(),
+                description: None,
+                node_kind: NodeKind::Executable,
+                input_contract: Default::default(),
+                output_contract: Default::default(),
+                role_requirement: None,
+                capability_requirements: vec![],
+                agent_assignment_constraint: None,
+                policy: {
+                    let mut p = crate::orchestrator::domain::policy::NodePolicy::default();
+                    p.priority = 0;
+                    p
+                },
+                metadata: Default::default(),
+                executable_payload: None,
+                loop_config: None,
+                approval_gate_config: None,
+            },
+            GraphNode {
+                node_id: "B".into(),
+                parent_id: None,
+                title: "B".into(),
+                description: None,
+                node_kind: NodeKind::Executable,
+                input_contract: Default::default(),
+                output_contract: Default::default(),
+                role_requirement: None,
+                capability_requirements: vec![],
+                agent_assignment_constraint: None,
+                policy: {
+                    let mut p = crate::orchestrator::domain::policy::NodePolicy::default();
+                    p.priority = 10;
+                    p
+                },
+                metadata: Default::default(),
+                executable_payload: None,
+                loop_config: None,
+                approval_gate_config: None,
+            },
+        ];
+
+        let snapshot = GraphSnapshot {
+            nodes,
+            edges: vec![],
+        };
+
+        let mut computer = ReadySetComputer::for_revision(&snapshot, "rev");
+        let latest_runs = std::collections::HashMap::new();
+        let ready = computer.update(&snapshot, &latest_runs, 0);
+
+        // Both A and B should be ready
+        assert!(ready.contains(&"A".to_string()));
+        assert!(ready.contains(&"B".to_string()));
+
+        // Prioritize should order B (priority 10) before A (priority 0)
+        let ordered = computer.prioritize(&ready, &snapshot, &latest_runs, 0);
+        assert_eq!(ordered, vec!["B".to_string(), "A".to_string()]);
+    }
+
+    #[test]
+    fn prioritize_prefers_critical_path_node() {
+        // Graph: feeder -> A -> A1, A2; plus independent node B
+        // feeder Succeeded, A and B both Blocked (ready)
+        // A has 2 downstream Blocked dependents (A1, A2), B has 0
+        // With equal priority, A should be ordered before B
+        let nodes = vec![
+            GraphNode {
+                node_id: "feeder".into(),
+                parent_id: None,
+                title: "feeder".into(),
+                description: None,
+                node_kind: NodeKind::Executable,
+                input_contract: Default::default(),
+                output_contract: Default::default(),
+                role_requirement: None,
+                capability_requirements: vec![],
+                agent_assignment_constraint: None,
+                policy: Default::default(),
+                metadata: Default::default(),
+                executable_payload: None,
+                loop_config: None,
+                approval_gate_config: None,
+            },
+            GraphNode {
+                node_id: "A".into(),
+                parent_id: None,
+                title: "A".into(),
+                description: None,
+                node_kind: NodeKind::Executable,
+                input_contract: Default::default(),
+                output_contract: Default::default(),
+                role_requirement: None,
+                capability_requirements: vec![],
+                agent_assignment_constraint: None,
+                policy: Default::default(), // priority 0
+                metadata: Default::default(),
+                executable_payload: None,
+                loop_config: None,
+                approval_gate_config: None,
+            },
+            GraphNode {
+                node_id: "B".into(),
+                parent_id: None,
+                title: "B".into(),
+                description: None,
+                node_kind: NodeKind::Executable,
+                input_contract: Default::default(),
+                output_contract: Default::default(),
+                role_requirement: None,
+                capability_requirements: vec![],
+                agent_assignment_constraint: None,
+                policy: Default::default(), // priority 0
+                metadata: Default::default(),
+                executable_payload: None,
+                loop_config: None,
+                approval_gate_config: None,
+            },
+            GraphNode {
+                node_id: "A1".into(),
+                parent_id: None,
+                title: "A1".into(),
+                description: None,
+                node_kind: NodeKind::Executable,
+                input_contract: Default::default(),
+                output_contract: Default::default(),
+                role_requirement: None,
+                capability_requirements: vec![],
+                agent_assignment_constraint: None,
+                policy: Default::default(),
+                metadata: Default::default(),
+                executable_payload: None,
+                loop_config: None,
+                approval_gate_config: None,
+            },
+            GraphNode {
+                node_id: "A2".into(),
+                parent_id: None,
+                title: "A2".into(),
+                description: None,
+                node_kind: NodeKind::Executable,
+                input_contract: Default::default(),
+                output_contract: Default::default(),
+                role_requirement: None,
+                capability_requirements: vec![],
+                agent_assignment_constraint: None,
+                policy: Default::default(),
+                metadata: Default::default(),
+                executable_payload: None,
+                loop_config: None,
+                approval_gate_config: None,
+            },
+        ];
+
+        let edges = vec![
+            GraphEdge {
+                edge_id: "e1".into(),
+                source_node_id: "feeder".into(),
+                target_node_id: "A".into(),
+                kind: EdgeKind::ControlDependency,
+            },
+            GraphEdge {
+                edge_id: "e2".into(),
+                source_node_id: "A".into(),
+                target_node_id: "A1".into(),
+                kind: EdgeKind::ControlDependency,
+            },
+            GraphEdge {
+                edge_id: "e3".into(),
+                source_node_id: "A".into(),
+                target_node_id: "A2".into(),
+                kind: EdgeKind::ControlDependency,
+            },
+        ];
+
+        let snapshot = GraphSnapshot { nodes, edges };
+
+        let mut computer = ReadySetComputer::for_revision(&snapshot, "rev");
+
+        // feeder Succeeded, A and B Blocked (ready), A1 and A2 Blocked (not ready, depend on A)
+        let mut run_feeder = NodeRun::new("nr_feeder", "run", "feeder", "rev");
+        run_feeder.status = NodeRunStatus::Succeeded;
+        let mut run_a = NodeRun::new("nr_a", "run", "A", "rev");
+        run_a.status = NodeRunStatus::Blocked;
+        let mut run_b = NodeRun::new("nr_b", "run", "B", "rev");
+        run_b.status = NodeRunStatus::Blocked;
+        let mut run_a1 = NodeRun::new("nr_a1", "run", "A1", "rev");
+        run_a1.status = NodeRunStatus::Blocked;
+        let mut run_a2 = NodeRun::new("nr_a2", "run", "A2", "rev");
+        run_a2.status = NodeRunStatus::Blocked;
+
+        let mut latest_runs = std::collections::HashMap::new();
+        latest_runs.insert("feeder".to_string(), run_feeder);
+        latest_runs.insert("A".to_string(), run_a);
+        latest_runs.insert("B".to_string(), run_b);
+        latest_runs.insert("A1".to_string(), run_a1);
+        latest_runs.insert("A2".to_string(), run_a2);
+
+        let runs_ref: std::collections::HashMap<String, &NodeRun> =
+            latest_runs.iter().map(|(k, v)| (k.clone(), v)).collect();
+
+        let ready = computer.update(&snapshot, &runs_ref, 0);
+
+        // Only A and B should be ready
+        assert!(ready.contains(&"A".to_string()));
+        assert!(ready.contains(&"B".to_string()));
+        assert!(!ready.contains(&"A1".to_string()));
+        assert!(!ready.contains(&"A2".to_string()));
+
+        // Prioritize should order A (2 downstream blocked) before B (0 downstream)
+        let ordered = computer.prioritize(&ready, &snapshot, &runs_ref, 0);
+        assert_eq!(ordered, vec!["A".to_string(), "B".to_string()]);
+    }
+
+    #[test]
+    fn prioritize_is_deterministic_across_calls() {
+        // Two independent nodes with equal priority
+        let nodes = vec![
+            GraphNode {
+                node_id: "X".into(),
+                parent_id: None,
+                title: "X".into(),
+                description: None,
+                node_kind: NodeKind::Executable,
+                input_contract: Default::default(),
+                output_contract: Default::default(),
+                role_requirement: None,
+                capability_requirements: vec![],
+                agent_assignment_constraint: None,
+                policy: Default::default(),
+                metadata: Default::default(),
+                executable_payload: None,
+                loop_config: None,
+                approval_gate_config: None,
+            },
+            GraphNode {
+                node_id: "Y".into(),
+                parent_id: None,
+                title: "Y".into(),
+                description: None,
+                node_kind: NodeKind::Executable,
+                input_contract: Default::default(),
+                output_contract: Default::default(),
+                role_requirement: None,
+                capability_requirements: vec![],
+                agent_assignment_constraint: None,
+                policy: Default::default(),
+                metadata: Default::default(),
+                executable_payload: None,
+                loop_config: None,
+                approval_gate_config: None,
+            },
+        ];
+
+        let snapshot = GraphSnapshot {
+            nodes,
+            edges: vec![],
+        };
+
+        let mut computer = ReadySetComputer::for_revision(&snapshot, "rev");
+        let latest_runs = std::collections::HashMap::new();
+        let ready = computer.update(&snapshot, &latest_runs, 0);
+
+        let ordered1 = computer.prioritize(&ready, &snapshot, &latest_runs, 0);
+        let ordered2 = computer.prioritize(&ready, &snapshot, &latest_runs, 0);
+
+        // Should be identical (deterministic)
+        assert_eq!(ordered1, ordered2);
+        // With equal priority and scores, should be sorted by node_id (X before Y)
+        assert_eq!(ordered1, vec!["X".to_string(), "Y".to_string()]);
     }
 }

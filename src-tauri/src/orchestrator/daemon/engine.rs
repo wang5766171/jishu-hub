@@ -27,7 +27,6 @@ use crate::orchestrator::store::TaskStore;
 use crate::util::{gen_id, now_ms, redact_sensitive_text};
 
 const ENGINE_INTERVAL_MS: u64 = 250;
-const MAX_PARALLEL_NODES_PER_RUN: usize = 4;
 const EVENT_MESSAGE_LIMIT: usize = 4096;
 // Checkpoint every ~30 seconds (120 ticks * 250ms = 30s)
 const CHECKPOINT_INTERVAL_TICKS: u64 = 120;
@@ -203,7 +202,9 @@ async fn tick(
             continue;
         }
 
-        let capacity = MAX_PARALLEL_NODES_PER_RUN.saturating_sub(active_count);
+        let capacity = resource_arbiter
+            .max_parallel_nodes_per_run()
+            .saturating_sub(active_count);
         if capacity == 0 {
             continue;
         }
@@ -221,7 +222,8 @@ async fn tick(
                 .or_insert_with(|| {
                     ReadySetComputer::for_revision(&snapshot, &run.active_revision_id)
                 });
-            computer.update(&snapshot, &latest_runs, now)
+            let ready = computer.update(&snapshot, &latest_runs, now);
+            computer.prioritize(&ready, &snapshot, &latest_runs, now)
         };
         for node_id in ready_nodes.into_iter().take(capacity) {
             let Some(node) = snapshot.node_by_id(&node_id).cloned() else {
