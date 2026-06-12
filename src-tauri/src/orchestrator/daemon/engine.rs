@@ -416,6 +416,20 @@ async fn drive_loops(
     node_runs: &[NodeRun],
 ) -> Result<bool, String> {
     let now = now_ms();
+    // Re-check the run is still Running on the same revision we were called
+    // with — a revision may have been applied between the tick reading the run
+    // and this point (same guard `schedule_node` applies). Bail to avoid
+    // driving a loop against a stale snapshot.
+    {
+        let current = store
+            .get_run(&run.run_id)
+            .map_err(|error| error.to_string())?;
+        if current.active_revision_id != run.active_revision_id
+            || current.status != RunStatus::Running
+        {
+            return Ok(false);
+        }
+    }
     for loop_node in snapshot
         .nodes
         .iter()
@@ -660,6 +674,19 @@ fn start_loop_iteration(
     loop_node: &GraphNode,
     existing_loop_run: Option<NodeRun>,
 ) -> Result<(), String> {
+    // Guard against the run's revision/status changing between the tick reading
+    // the run and us starting an iteration (mirrors `schedule_node`). If the run
+    // moved on, skip rather than iterate against a stale snapshot.
+    {
+        let current = store
+            .get_run(&run.run_id)
+            .map_err(|error| error.to_string())?;
+        if current.active_revision_id != run.active_revision_id
+            || current.status != RunStatus::Running
+        {
+            return Ok(());
+        }
+    }
     let config = loop_node
         .loop_config
         .as_ref()
@@ -3073,5 +3100,186 @@ mod tests {
         store
             .refresh_lease_heartbeat("nr_no_attempt", 10)
             .expect("refresh on node_run with no attempt should be ok (no-op)");
+    }
+
+    #[tokio::test]
+    async fn drive_loops_skips_when_active_revision_changed() {
+        let store = Arc::new(TaskStore::open_in_memory().unwrap());
+        let mut shell_policy = NodePolicy::default();
+        shell_policy.permission_scope.can_run_commands = true;
+        shell_policy.approval_policy = ApprovalPolicy::Never;
+        let snapshot = GraphSnapshot {
+            nodes: vec![
+                GraphNode {
+                    node_id: "goal".into(),
+                    parent_id: None,
+                    title: "Goal".into(),
+                    description: None,
+                    node_kind: NodeKind::Goal,
+                    input_contract: Default::default(),
+                    output_contract: Default::default(),
+                    role_requirement: None,
+                    capability_requirements: vec![],
+                    agent_assignment_constraint: None,
+                    policy: Default::default(),
+                    metadata: Default::default(),
+                    executable_payload: None,
+                    loop_config: None,
+                    approval_gate_config: None,
+                },
+                GraphNode {
+                    node_id: "loop1".into(),
+                    parent_id: Some("goal".into()),
+                    title: "Test loop".into(),
+                    description: None,
+                    node_kind: NodeKind::ControlLoop,
+                    input_contract: Default::default(),
+                    output_contract: Default::default(),
+                    role_requirement: None,
+                    capability_requirements: vec![],
+                    agent_assignment_constraint: None,
+                    policy: Default::default(),
+                    metadata: Default::default(),
+                    executable_payload: None,
+                    loop_config: Some(LoopControllerConfig {
+                        body_node_ids: vec!["body".into()],
+                        evaluator: EvaluatorSpec::Inline {
+                            rules: serde_json::json!({"outcome": "continue"}),
+                        },
+                        interval_ms: 10,
+                        backoff_multiplier: None,
+                        max_interval_ms: None,
+                        termination_condition: "none".into(),
+                        max_iterations: Some(5),
+                        deadline_ms: None,
+                        token_budget: None,
+                        cost_budget_usd: None,
+                        no_progress_threshold: None,
+                        escalation_policy: "pause".into(),
+                    }),
+                    approval_gate_config: None,
+                },
+                GraphNode {
+                    node_id: "body".into(),
+                    parent_id: Some("loop1".into()),
+                    title: "Body".into(),
+                    description: None,
+                    node_kind: NodeKind::Executable,
+                    input_contract: Default::default(),
+                    output_contract: Default::default(),
+                    role_requirement: None,
+                    capability_requirements: vec![],
+                    agent_assignment_constraint: None,
+                    policy: shell_policy,
+                    metadata: Default::default(),
+                    executable_payload: Some(ExecutablePayload::Shell {
+                        command: "echo test".into(),
+                        cwd: None,
+                        timeout_ms: Some(5000),
+                    }),
+                    loop_config: None,
+                    approval_gate_config: None,
+                },
+            ],
+            edges: vec![],
+        };
+        let graph = TaskGraph {
+            graph_id: "g1".into(),
+            title: "Test".into(),
+            goal: "Test".into(),
+            project_root: PathBuf::from("."),
+            owner: "test".into(),
+            current_draft_revision: Some("r1".into()),
+            created_at: 1,
+            updated_at: 1,
+        };
+        let revision =
+            GraphRevision::from_snapshot("r1", "g1", None, &snapshot, "test", 1).unwrap();
+
+        // Create run on r2 in store (simulating mid-tick revision switch)
+        let store_run = GraphRun {
+            run_id: "run1".into(),
+            graph_id: "g1".into(),
+            active_revision_id: "r2".into(), // Different from graph's r1
+            status: RunStatus::Running,
+            run_seq: 1,
+            budget_state: BudgetState::default(),
+            planning_snapshot: Default::default(),
+            started_at: 1,
+            finished_at: None,
+        };
+        let started = build_event(
+            "e1",
+            "run1",
+            1,
+            TaskEventType::RunStarted,
+            "test",
+            1,
+            serde_json::to_value(payloads::RunStartedPayload {
+                run_id: "run1".into(),
+                graph_id: "g1".into(),
+                revision_id: "r2".into(), // Event reflects the run's revision
+                initial_status: RunStatus::Running,
+                budget_state: BudgetState::default(),
+            })
+            .unwrap(),
+        );
+        store.create_graph_with_revision(&graph, &revision).unwrap();
+        store.create_run_with_event(&store_run, &started).unwrap();
+
+        // Build tick_run with stale revision r1 (the tick's view)
+        let tick_run = GraphRun {
+            run_id: "run1".into(),
+            graph_id: "g1".into(),
+            active_revision_id: "r1".into(), // Stale revision
+            status: RunStatus::Running,
+            run_seq: 1,
+            budget_state: BudgetState::default(),
+            planning_snapshot: Default::default(),
+            started_at: 1,
+            finished_at: None,
+        };
+
+        // Create a Running loop_run in the store so that WITHOUT the guard
+        // drive_loops WOULD drive it (body succeeded, evaluator path reachable)
+        // These node_runs use r2 to match the store run's active_revision_id
+        let mut loop_run = NodeRun::new("nr_loop", "run1", "loop1", "r2");
+        loop_run.status = NodeRunStatus::Running;
+        loop_run.loop_iteration = Some(0);
+        loop_run.started_at = Some(1);
+        store.save_node_run(&loop_run).unwrap();
+        let mut body_run = NodeRun::new("nr_body", "run1", "body", "r2");
+        body_run.status = NodeRunStatus::Succeeded;
+        body_run.loop_iteration = Some(0);
+        body_run.started_at = Some(1);
+        body_run.finished_at = Some(2);
+        store.save_node_run(&body_run).unwrap();
+
+        // Call drive_loops with the stale tick_run
+        let node_runs = store.get_node_runs("run1").unwrap();
+        let result = drive_loops(&store, &tick_run, &snapshot, &node_runs)
+            .await
+            .unwrap();
+
+        // Assert the guard returns false (bails early)
+        assert!(
+            !result,
+            "drive_loops must bail when the run's active revision changed"
+        );
+
+        // Assert NO driving events were emitted
+        let events = store.all_events("run1").unwrap();
+        assert!(
+            events
+                .iter()
+                .all(|e| e.event_type != TaskEventType::ProgressEvaluated),
+            "should not emit ProgressEvaluated when guard fires"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|e| e.event_type != TaskEventType::IterationStarted),
+            "should not emit IterationStarted when guard fires"
+        );
     }
 }
