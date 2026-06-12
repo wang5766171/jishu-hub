@@ -1768,6 +1768,65 @@ impl TaskStore {
         .map_err(Into::into)
     }
 
+    /// Fetch a single attempt by (node_run_id, attempt_number).
+    pub fn get_attempt(
+        &self,
+        node_run_id: &str,
+        attempt_number: u32,
+    ) -> Result<crate::orchestrator::domain::run::NodeAttempt, StoreError> {
+        let conn = self
+            .reader
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        conn.query_row(
+            "SELECT attempt_id, node_run_id, attempt_number, agent_assignment, transport,
+                    session_id, lease, usage, error, idempotency_key, checkpoint,
+                    started_at, finished_at
+             FROM node_attempt WHERE node_run_id = ?1 AND attempt_number = ?2",
+            params![node_run_id, attempt_number],
+            |row| {
+                let agent_assignment = row
+                    .get::<_, Option<String>>(3)?
+                    .map(|value| decode_json_column(&value, 3))
+                    .transpose()?;
+                let lease = row
+                    .get::<_, Option<String>>(6)?
+                    .map(|value| decode_json_column(&value, 6))
+                    .transpose()?;
+                let usage_json: String = row.get(7)?;
+                let error = row
+                    .get::<_, Option<String>>(8)?
+                    .map(|value| decode_json_column(&value, 8))
+                    .transpose()?;
+                let checkpoint = row
+                    .get::<_, Option<String>>(10)?
+                    .map(|value| decode_json_column(&value, 10))
+                    .transpose()?;
+                Ok(NodeAttempt {
+                    attempt_id: row.get(0)?,
+                    node_run_id: row.get(1)?,
+                    attempt_number: row.get(2)?,
+                    agent_assignment,
+                    transport: row.get(4)?,
+                    session_id: row.get(5)?,
+                    lease,
+                    usage: decode_json_column(&usage_json, 7)?,
+                    error,
+                    idempotency_key: row.get(9)?,
+                    checkpoint,
+                    started_at: row.get(11)?,
+                    finished_at: row.get(12)?,
+                })
+            },
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                StoreError::NotFound(format!("attempt {node_run_id}/{attempt_number}"))
+            }
+            other => StoreError::Sqlite(other),
+        })
+    }
+
     /// Refresh the heartbeat deadline on the latest attempt's lease for a node run.
     /// Used by the execution heartbeat loop to keep an in-flight lease alive.
     pub fn refresh_lease_heartbeat(
@@ -2875,5 +2934,105 @@ mod tests {
             "wake_timer table should not exist (found: {:?})",
             tables
         );
+    }
+
+    #[test]
+    fn save_and_get_attempt() {
+        let store = make_test_store();
+
+        // First need a graph, revision, run, and node_run.
+        let graph = TaskGraph {
+            graph_id: "g1".into(),
+            title: "Test".into(),
+            goal: "Do X".into(),
+            project_root: PathBuf::from("/project"),
+            owner: "user".into(),
+            current_draft_revision: None,
+            created_at: now(),
+            updated_at: now(),
+        };
+        store.create_graph(&graph).unwrap();
+
+        let snapshot = GraphSnapshot {
+            nodes: vec![GraphNode {
+                node_id: "n1".into(),
+                parent_id: None,
+                title: "Node 1".into(),
+                description: None,
+                node_kind: NodeKind::Goal,
+                input_contract: Default::default(),
+                output_contract: Default::default(),
+                role_requirement: None,
+                capability_requirements: vec![],
+                agent_assignment_constraint: None,
+                policy: Default::default(),
+                metadata: Default::default(),
+                executable_payload: None,
+                loop_config: None,
+                approval_gate_config: None,
+            }],
+            edges: vec![],
+        };
+
+        let revision =
+            GraphRevision::from_snapshot("rev1", "g1", None, &snapshot, "user", now()).unwrap();
+        store.save_revision(&revision).unwrap();
+
+        let run = crate::orchestrator::domain::run::GraphRun {
+            run_id: "run1".into(),
+            graph_id: "g1".into(),
+            active_revision_id: "rev1".into(),
+            status: crate::orchestrator::domain::run::RunStatus::Running,
+            run_seq: 1,
+            budget_state: Default::default(),
+            planning_snapshot: Default::default(),
+            started_at: now(),
+            finished_at: None,
+        };
+        store.create_run(&run).unwrap();
+
+        let node_run = crate::orchestrator::domain::run::NodeRun {
+            node_run_id: "nr1".into(),
+            run_id: "run1".into(),
+            node_id: "n1".into(),
+            status: crate::orchestrator::domain::run::NodeRunStatus::Running,
+            revision_id: "rev1".into(),
+            started_at: Some(now()),
+            finished_at: None,
+            attempt_count: 0,
+            wake_at: None,
+            error: None,
+            loop_iteration: None,
+            superseded: false,
+        };
+        store.save_node_run(&node_run).unwrap();
+
+        // Now create an attempt.
+        let attempt = crate::orchestrator::domain::run::NodeAttempt {
+            attempt_id: "att1".into(),
+            node_run_id: "nr1".into(),
+            attempt_number: 1,
+            agent_assignment: None,
+            transport: None,
+            session_id: None,
+            lease: None,
+            usage: Default::default(),
+            error: None,
+            idempotency_key: None,
+            checkpoint: None,
+            started_at: now(),
+            finished_at: None,
+        };
+        store.save_attempt(&attempt).unwrap();
+
+        // Test get_attempt retrieves it.
+        let retrieved = store.get_attempt("nr1", 1).unwrap();
+        assert_eq!(retrieved.attempt_id, "att1");
+        assert_eq!(retrieved.node_run_id, "nr1");
+        assert_eq!(retrieved.attempt_number, 1);
+
+        // Test get_attempt returns NotFound for non-existent attempt.
+        let err = store.get_attempt("nr1", 999).unwrap_err();
+        assert!(matches!(err, StoreError::NotFound(_)));
     }
 }

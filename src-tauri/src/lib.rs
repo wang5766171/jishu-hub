@@ -2080,6 +2080,26 @@ fn orchestrator_get_node_runs(
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
+fn orchestrator_get_attempt(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    node_run_id: String,
+    attempt_number: u32,
+) -> Result<
+    crate::orchestrator::domain::run::NodeAttempt,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .get_attempt(&node_run_id, attempt_number)
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
 fn orchestrator_get_run_projection(
     state: tauri::State<'_, std::sync::Mutex<AppState>>,
     run_id: String,
@@ -2417,6 +2437,8 @@ pub fn run() {
             orchestrator_list_runs,
             #[cfg(feature = "orchestrator")]
             orchestrator_get_node_runs,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_get_attempt,
             #[cfg(feature = "orchestrator")]
             orchestrator_get_run_projection,
             #[cfg(feature = "orchestrator")]

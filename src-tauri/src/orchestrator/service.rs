@@ -30,7 +30,11 @@ pub enum TaskServiceError {
     Validation(ValidationError),
     InvalidInput(String),
     NotFound(String),
-    Conflict(String),
+    Conflict {
+        message: String,
+        current_revision: Option<String>,
+        current_run_seq: Option<u64>,
+    },
     Internal(String),
 }
 
@@ -41,7 +45,7 @@ impl std::fmt::Display for TaskServiceError {
             Self::Validation(e) => write!(f, "validation error: {e}"),
             Self::InvalidInput(msg) => write!(f, "invalid input: {msg}"),
             Self::NotFound(msg) => write!(f, "not found: {msg}"),
-            Self::Conflict(msg) => write!(f, "conflict: {msg}"),
+            Self::Conflict { message, .. } => write!(f, "conflict: {message}"),
             Self::Internal(msg) => write!(f, "internal error: {msg}"),
         }
     }
@@ -69,44 +73,71 @@ impl From<serde_json::Error> for TaskServiceError {
 
 impl From<TaskServiceError> for TaskError {
     fn from(error: TaskServiceError) -> Self {
-        let (code, category, retryable, remediation) = match &error {
-            TaskServiceError::Store(StoreError::Conflict(_)) | TaskServiceError::Conflict(_) => (
-                "TASK_CONFLICT",
-                TaskErrorCategory::Conflict,
-                true,
-                Some("Reload the latest revision or run projection and retry.".into()),
-            ),
-            TaskServiceError::Store(_) => (
-                "TASK_STORE_ERROR",
-                TaskErrorCategory::Store,
-                true,
-                Some("Retry the operation. If it persists, inspect the local task store.".into()),
-            ),
-            TaskServiceError::Validation(_) => (
-                "TASK_VALIDATION_ERROR",
-                TaskErrorCategory::Domain,
-                false,
-                Some("Correct the graph command or node configuration.".into()),
-            ),
-            TaskServiceError::InvalidInput(_) => (
-                "TASK_INVALID_INPUT",
-                TaskErrorCategory::Domain,
-                false,
-                Some("Correct the request values and retry.".into()),
-            ),
-            TaskServiceError::NotFound(_) => (
-                "TASK_NOT_FOUND",
-                TaskErrorCategory::Domain,
-                false,
-                Some("Reload the project task graph.".into()),
-            ),
-            TaskServiceError::Internal(_) => (
-                "TASK_INTERNAL_ERROR",
-                TaskErrorCategory::Internal,
-                false,
-                Some("Inspect application logs and the task event stream.".into()),
-            ),
-        };
+        let (code, category, retryable, remediation, current_revision, current_run_seq) =
+            match &error {
+                TaskServiceError::Conflict {
+                    current_revision: rev,
+                    current_run_seq: seq,
+                    ..
+                } => (
+                    "TASK_CONFLICT",
+                    TaskErrorCategory::Conflict,
+                    true,
+                    Some("Reload the latest revision or run projection and retry.".into()),
+                    rev.clone(),
+                    *seq,
+                ),
+                TaskServiceError::Store(StoreError::Conflict(_)) => (
+                    "TASK_CONFLICT",
+                    TaskErrorCategory::Conflict,
+                    true,
+                    Some("Reload the latest revision or run projection and retry.".into()),
+                    None,
+                    None,
+                ),
+                TaskServiceError::Store(_) => (
+                    "TASK_STORE_ERROR",
+                    TaskErrorCategory::Store,
+                    true,
+                    Some(
+                        "Retry the operation. If it persists, inspect the local task store.".into(),
+                    ),
+                    None,
+                    None,
+                ),
+                TaskServiceError::Validation(_) => (
+                    "TASK_VALIDATION_ERROR",
+                    TaskErrorCategory::Domain,
+                    false,
+                    Some("Correct the graph command or node configuration.".into()),
+                    None,
+                    None,
+                ),
+                TaskServiceError::InvalidInput(_) => (
+                    "TASK_INVALID_INPUT",
+                    TaskErrorCategory::Domain,
+                    false,
+                    Some("Correct the request values and retry.".into()),
+                    None,
+                    None,
+                ),
+                TaskServiceError::NotFound(_) => (
+                    "TASK_NOT_FOUND",
+                    TaskErrorCategory::Domain,
+                    false,
+                    Some("Reload the project task graph.".into()),
+                    None,
+                    None,
+                ),
+                TaskServiceError::Internal(_) => (
+                    "TASK_INTERNAL_ERROR",
+                    TaskErrorCategory::Internal,
+                    false,
+                    Some("Inspect application logs and the task event stream.".into()),
+                    None,
+                    None,
+                ),
+            };
         Self {
             code: code.into(),
             category,
@@ -114,8 +145,8 @@ impl From<TaskServiceError> for TaskError {
             field_path: None,
             retryable,
             retry_after_ms: None,
-            current_revision: None,
-            current_run_seq: None,
+            current_revision,
+            current_run_seq,
             remediation,
             provider_detail: None,
         }
@@ -293,9 +324,13 @@ impl TaskService {
         // Load the expected revision.
         let base_revision = store.get_revision(expected_revision_id)?;
         if base_revision.graph_id != graph_id {
-            return Err(TaskServiceError::Conflict(format!(
-                "revision {expected_revision_id} does not belong to graph {graph_id}"
-            )));
+            return Err(TaskServiceError::Conflict {
+                message: format!(
+                    "revision {expected_revision_id} does not belong to graph {graph_id}"
+                ),
+                current_revision: None,
+                current_run_seq: None,
+            });
         }
 
         // Verify it's still the current draft.
@@ -303,14 +338,20 @@ impl TaskService {
         match &graph.current_draft_revision {
             Some(draft) if draft == expected_revision_id => {}
             Some(draft) => {
-                return Err(TaskServiceError::Conflict(format!(
-                    "expected revision {expected_revision_id} but current draft is {draft}"
-                )));
+                return Err(TaskServiceError::Conflict {
+                    message: format!(
+                        "expected revision {expected_revision_id} but current draft is {draft}"
+                    ),
+                    current_revision: graph.current_draft_revision.clone(),
+                    current_run_seq: None,
+                });
             }
             None => {
-                return Err(TaskServiceError::Conflict(
-                    "graph has no current draft revision".into(),
-                ));
+                return Err(TaskServiceError::Conflict {
+                    message: "graph has no current draft revision".into(),
+                    current_revision: graph.current_draft_revision.clone(),
+                    current_run_seq: None,
+                });
             }
         }
 
@@ -388,9 +429,13 @@ impl TaskService {
         let store = &self.store;
         let target = store.get_revision(target_revision_id)?;
         if target.graph_id != graph_id {
-            return Err(TaskServiceError::Conflict(format!(
-                "revision {target_revision_id} does not belong to graph {graph_id}"
-            )));
+            return Err(TaskServiceError::Conflict {
+                message: format!(
+                    "revision {target_revision_id} does not belong to graph {graph_id}"
+                ),
+                current_revision: None,
+                current_run_seq: None,
+            });
         }
         store.checkout_graph_draft_revision(
             graph_id,
@@ -434,9 +479,11 @@ impl TaskService {
 
         let revision = store.get_revision(revision_id)?;
         if revision.graph_id != graph_id {
-            return Err(TaskServiceError::Conflict(format!(
-                "revision {revision_id} does not belong to graph {graph_id}"
-            )));
+            return Err(TaskServiceError::Conflict {
+                message: format!("revision {revision_id} does not belong to graph {graph_id}"),
+                current_revision: None,
+                current_run_seq: None,
+            });
         }
 
         let run_id = gen_id("run");
@@ -494,23 +541,31 @@ impl TaskService {
         let store = &self.store;
         let run = store.get_run(run_id)?;
         if run.status.is_terminal() {
-            return Err(TaskServiceError::Conflict(
-                "terminal runs cannot accept revision proposals".into(),
-            ));
+            return Err(TaskServiceError::Conflict {
+                message: "terminal runs cannot accept revision proposals".into(),
+                current_revision: None,
+                current_run_seq: None,
+            });
         }
         if run.active_revision_id == candidate_revision_id {
-            return Err(TaskServiceError::Conflict(
-                "candidate revision is already active".into(),
-            ));
+            return Err(TaskServiceError::Conflict {
+                message: "candidate revision is already active".into(),
+                current_revision: None,
+                current_run_seq: None,
+            });
         }
 
         let base_revision = store.get_revision(&run.active_revision_id)?;
         let candidate_revision = store.get_revision(candidate_revision_id)?;
         if candidate_revision.graph_id != run.graph_id {
-            return Err(TaskServiceError::Conflict(format!(
-                "revision {candidate_revision_id} does not belong to run graph {}",
-                run.graph_id
-            )));
+            return Err(TaskServiceError::Conflict {
+                message: format!(
+                    "revision {candidate_revision_id} does not belong to run graph {}",
+                    run.graph_id
+                ),
+                current_revision: None,
+                current_run_seq: None,
+            });
         }
         let base_snapshot = base_revision.snapshot()?;
         let candidate_snapshot = candidate_revision.snapshot()?;
@@ -527,27 +582,38 @@ impl TaskService {
         frozen_node_ids.dedup();
 
         for node_id in &frozen_node_ids {
-            let base_node = base_snapshot.node_by_id(node_id).ok_or_else(|| {
-                TaskServiceError::Conflict(format!(
-                    "frozen node {node_id} is missing from active revision"
-                ))
-            })?;
+            let base_node =
+                base_snapshot
+                    .node_by_id(node_id)
+                    .ok_or_else(|| TaskServiceError::Conflict {
+                        message: format!("frozen node {node_id} is missing from active revision"),
+                        current_revision: None,
+                        current_run_seq: None,
+                    })?;
             let candidate_node = candidate_snapshot.node_by_id(node_id).ok_or_else(|| {
-                TaskServiceError::Conflict(format!(
-                    "candidate revision removes frozen node {node_id}"
-                ))
+                TaskServiceError::Conflict {
+                    message: format!("candidate revision removes frozen node {node_id}"),
+                    current_revision: None,
+                    current_run_seq: None,
+                }
             })?;
             if serde_json::to_value(base_node)? != serde_json::to_value(candidate_node)? {
-                return Err(TaskServiceError::Conflict(format!(
-                    "candidate revision changes frozen node {node_id}"
-                )));
+                return Err(TaskServiceError::Conflict {
+                    message: format!("candidate revision changes frozen node {node_id}"),
+                    current_revision: None,
+                    current_run_seq: None,
+                });
             }
             if incoming_edge_signature(&base_snapshot, node_id)
                 != incoming_edge_signature(&candidate_snapshot, node_id)
             {
-                return Err(TaskServiceError::Conflict(format!(
-                    "candidate revision changes dependencies of frozen node {node_id}"
-                )));
+                return Err(TaskServiceError::Conflict {
+                    message: format!(
+                        "candidate revision changes dependencies of frozen node {node_id}"
+                    ),
+                    current_revision: None,
+                    current_run_seq: None,
+                });
             }
         }
 
@@ -591,23 +657,29 @@ impl TaskService {
         let store = &self.store;
         let proposal = store.get_run_revision_proposal(proposal_id)?;
         if proposal.run_id != run_id {
-            return Err(TaskServiceError::Conflict(format!(
-                "revision proposal {proposal_id} belongs to another run"
-            )));
+            return Err(TaskServiceError::Conflict {
+                message: format!("revision proposal {proposal_id} belongs to another run"),
+                current_revision: None,
+                current_run_seq: None,
+            });
         }
         let run = store.get_run(run_id)?;
         if run.status.is_terminal() {
-            return Err(TaskServiceError::Conflict(
-                "terminal runs cannot apply revisions".into(),
-            ));
+            return Err(TaskServiceError::Conflict {
+                message: "terminal runs cannot apply revisions".into(),
+                current_revision: None,
+                current_run_seq: None,
+            });
         }
         if run.run_seq != expected_run_seq
             || proposal.expected_run_seq != expected_run_seq
             || run.active_revision_id != proposal.base_revision_id
         {
-            return Err(TaskServiceError::Conflict(
-                "run changed after the revision proposal was validated".into(),
-            ));
+            return Err(TaskServiceError::Conflict {
+                message: "run changed after the revision proposal was validated".into(),
+                current_revision: Some(run.active_revision_id.to_string()),
+                current_run_seq: Some(run.run_seq),
+            });
         }
 
         let candidate_revision = store.get_revision(&proposal.candidate_revision_id)?;
@@ -705,6 +777,16 @@ impl TaskService {
         Ok(store.get_node_runs(run_id)?)
     }
 
+    /// Get a single attempt by node_run_id and attempt_number.
+    pub fn get_attempt(
+        &self,
+        node_run_id: &str,
+        attempt_number: u32,
+    ) -> Result<crate::orchestrator::domain::run::NodeAttempt, TaskServiceError> {
+        let store = &self.store;
+        Ok(store.get_attempt(node_run_id, attempt_number)?)
+    }
+
     /// List runs for a graph.
     pub fn list_runs(&self, graph_id: &str) -> Result<Vec<GraphRun>, TaskServiceError> {
         let store = &self.store;
@@ -720,7 +802,11 @@ impl TaskService {
             &run.status,
             &RunStatus::Paused,
         )
-        .map_err(|e| TaskServiceError::Conflict(e.to_string()))?;
+        .map_err(|e| TaskServiceError::Conflict {
+            message: e.to_string(),
+            current_revision: None,
+            current_run_seq: None,
+        })?;
 
         let now = now_ms();
         let new_seq = run.run_seq + 1;
@@ -747,7 +833,11 @@ impl TaskService {
             &run.status,
             &RunStatus::Running,
         )
-        .map_err(|e| TaskServiceError::Conflict(e.to_string()))?;
+        .map_err(|e| TaskServiceError::Conflict {
+            message: e.to_string(),
+            current_revision: None,
+            current_run_seq: None,
+        })?;
 
         let now = now_ms();
         let new_seq = run.run_seq + 1;
@@ -774,7 +864,11 @@ impl TaskService {
             &run.status,
             &RunStatus::Cancelled,
         )
-        .map_err(|e| TaskServiceError::Conflict(e.to_string()))?;
+        .map_err(|e| TaskServiceError::Conflict {
+            message: e.to_string(),
+            current_revision: None,
+            current_run_seq: None,
+        })?;
 
         let now = now_ms();
         let node_runs = store.get_node_runs(run_id)?;
@@ -848,16 +942,19 @@ impl TaskService {
         let store = &self.store;
         let mut approval = store.get_approval(approval_id)?;
         if approval.resolved {
-            return Err(TaskServiceError::Conflict(format!(
-                "approval {approval_id} is already resolved"
-            )));
+            return Err(TaskServiceError::Conflict {
+                message: format!("approval {approval_id} is already resolved"),
+                current_revision: None,
+                current_run_seq: None,
+            });
         }
         let mut node_run = store.get_node_run(&approval.node_run_id)?;
         if node_run.status != NodeRunStatus::AwaitingApproval {
-            return Err(TaskServiceError::Conflict(format!(
-                "node run {} is not awaiting approval",
-                node_run.node_run_id
-            )));
+            return Err(TaskServiceError::Conflict {
+                message: format!("node run {} is not awaiting approval", node_run.node_run_id),
+                current_revision: None,
+                current_run_seq: None,
+            });
         }
         let run = store.get_run(&approval.run_id)?;
         let revision = store.get_revision(&run.active_revision_id)?;
@@ -951,13 +1048,20 @@ impl TaskService {
         let mut node_run = store.get_node_run(node_run_id)?;
         let run = store.get_run(&node_run.run_id)?;
         if run.status.is_terminal() {
-            return Err(TaskServiceError::Conflict(
-                "terminal runs cannot accept recovery decisions".into(),
-            ));
+            return Err(TaskServiceError::Conflict {
+                message: "terminal runs cannot accept recovery decisions".into(),
+                current_revision: None,
+                current_run_seq: None,
+            });
         }
         let now = now_ms();
-        crate::orchestrator::recovery::apply_recovery(&mut node_run, strategy, now)
-            .map_err(TaskServiceError::Conflict)?;
+        crate::orchestrator::recovery::apply_recovery(&mut node_run, strategy, now).map_err(
+            |e| TaskServiceError::Conflict {
+                message: e.to_string(),
+                current_revision: None,
+                current_run_seq: None,
+            },
+        )?;
         let strategy_name = serde_json::to_value(strategy)?
             .as_str()
             .unwrap_or("unknown")
@@ -1346,6 +1450,41 @@ mod tests {
             "user",
         );
         assert!(result2.is_err());
+
+        // Verify the conflict error carries the current revision.
+        let task_err: TaskError = result2.unwrap_err().into();
+        assert_eq!(task_err.code, "TASK_CONFLICT");
+        assert!(task_err.current_revision.is_some());
+        assert_eq!(
+            task_err.current_revision.unwrap(),
+            result1.revision.revision_id
+        );
+        assert!(task_err.current_run_seq.is_none());
+    }
+
+    #[test]
+    fn conflict_error_conversion_with_live_values() {
+        // Test service-layer Conflict with live values converts through to TaskError.
+        let svc_err = TaskServiceError::Conflict {
+            message: "test conflict".into(),
+            current_revision: Some("rev-123".into()),
+            current_run_seq: Some(42),
+        };
+        let task_err: TaskError = svc_err.into();
+        assert_eq!(task_err.code, "TASK_CONFLICT");
+        assert_eq!(task_err.current_revision, Some("rev-123".into()));
+        assert_eq!(task_err.current_run_seq, Some(42));
+    }
+
+    #[test]
+    fn conflict_error_conversion_from_store() {
+        // Test store-layer Conflict (no live values) converts through to TaskError.
+        let store_err = StoreError::Conflict("store conflict".into());
+        let svc_err = TaskServiceError::Store(store_err);
+        let task_err: TaskError = svc_err.into();
+        assert_eq!(task_err.code, "TASK_CONFLICT");
+        assert!(task_err.current_revision.is_none());
+        assert!(task_err.current_run_seq.is_none());
     }
 
     #[test]
