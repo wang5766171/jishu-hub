@@ -44,6 +44,7 @@ pub enum TaskEventType {
     LoopSleeping,
     LoopCompleted,
     RevisionAppliedToRun,
+    RevisionCreated,
     NodeResolved,
     RunCompleted,
     // Additional control events
@@ -214,6 +215,15 @@ pub mod payloads {
         pub new_revision_id: String,
         pub frozen_node_ids: Vec<String>,
         pub superseded_node_ids: Vec<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct RevisionCreatedPayload {
+        pub revision_id: String,
+        pub run_id: String,
+        pub graph_id: String,
+        /// What produced this revision (e.g. "run_revision_apply").
+        pub source: String,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -532,6 +542,12 @@ fn apply_event_to_projection(
                 serde_json::from_value(event.payload.clone())
                     .map_err(|e| ProjectionError::PayloadDecode(e.to_string()))?;
             proj.revision_id = payload.new_revision_id;
+        }
+        RevisionCreated => {
+            let payload: payloads::RevisionCreatedPayload =
+                serde_json::from_value(event.payload.clone())
+                    .map_err(|e| ProjectionError::PayloadDecode(e.to_string()))?;
+            proj.revision_id = payload.revision_id;
         }
         RunCompleted => {
             let payload: payloads::RunCompletedPayload =

@@ -756,13 +756,33 @@ impl TaskService {
                 superseded_node_ids: proposal.superseded_node_ids.clone(),
             })?,
         ));
-        Ok(store.apply_run_revision(
+        let updated_run = store.apply_run_revision(
             &proposal,
             expected_run_seq,
             &planning_snapshot,
             &node_runs,
             &events,
-        )?)
+        )?;
+
+        // Emit RevisionCreated event to notify frontend of active revision change
+        let final_seq = updated_run.run_seq;
+        let revision_created_event = build_event(
+            gen_id("evt"),
+            run_id,
+            final_seq + 1,
+            TaskEventType::RevisionCreated,
+            "task_orchestrator",
+            now,
+            serde_json::to_value(&payloads::RevisionCreatedPayload {
+                revision_id: proposal.candidate_revision_id.clone(),
+                run_id: run_id.to_string(),
+                graph_id: updated_run.graph_id.clone(),
+                source: "run_revision_apply".into(),
+            })?,
+        );
+        store.append_events(&[revision_created_event])?;
+
+        Ok(updated_run)
     }
 
     /// Get a run by id.
@@ -1652,14 +1672,96 @@ mod tests {
                 .status,
             NodeRunStatus::Superseded
         );
+        let events = svc.run_events_after(&run.run_id, 0).unwrap();
+        // Last event should be RevisionCreated, second-to-last should be RevisionAppliedToRun
+        assert_eq!(events.last().unwrap().event_type, TaskEventType::RevisionCreated);
         assert_eq!(
-            svc.run_events_after(&run.run_id, 0)
-                .unwrap()
-                .last()
-                .unwrap()
-                .event_type,
+            events.get(events.len() - 2).unwrap().event_type,
             TaskEventType::RevisionAppliedToRun
         );
+    }
+
+    #[test]
+    fn apply_run_revision_emits_revision_created_event() {
+        let svc = TaskService::open_in_memory().unwrap();
+        let (graph, initial_revision) = svc
+            .create_graph(&CreateGraphInput {
+                title: "Hot update".into(),
+                goal: "Apply a safe candidate".into(),
+                project_root: "/project".into(),
+                owner: "user".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let active_revision = svc
+            .apply_commands(
+                &graph.graph_id,
+                &initial_revision.revision_id,
+                &[
+                    GraphCommand::AddNode {
+                        command_id: "add-n1".into(),
+                        node: shell_node("n1", "Completed"),
+                    },
+                    GraphCommand::AddNode {
+                        command_id: "add-n2".into(),
+                        node: shell_node("n2", "Pending"),
+                    },
+                ],
+                "user",
+            )
+            .unwrap()
+            .revision;
+        let run = svc
+            .start_run(&graph.graph_id, &active_revision.revision_id)
+            .unwrap();
+        let mut completed = NodeRun::new("nr-n1", &run.run_id, "n1", &active_revision.revision_id);
+        completed.status = NodeRunStatus::Succeeded;
+        completed.finished_at = Some(now_ms());
+        let pending = NodeRun::new("nr-n2", &run.run_id, "n2", &active_revision.revision_id);
+        {
+            let store = &svc.store;
+            store.save_node_run(&completed).unwrap();
+            store.save_node_run(&pending).unwrap();
+        }
+
+        let candidate = svc
+            .apply_commands(
+                &graph.graph_id,
+                &active_revision.revision_id,
+                &[GraphCommand::RemoveNode {
+                    command_id: "remove-n2".into(),
+                    node_id: "n2".into(),
+                }],
+                "user",
+            )
+            .unwrap()
+            .revision;
+        let proposal = svc
+            .propose_run_revision(&run.run_id, &candidate.revision_id)
+            .unwrap();
+
+        let updated_run = svc
+            .apply_run_revision(
+                &run.run_id,
+                &proposal.proposal_id,
+                proposal.expected_run_seq,
+            )
+            .unwrap();
+        assert_eq!(updated_run.active_revision_id, candidate.revision_id);
+
+        let events = svc.run_events_after(&run.run_id, 0).unwrap();
+        let revision_created_events = events
+            .iter()
+            .filter(|event| event.event_type == TaskEventType::RevisionCreated)
+            .collect::<Vec<_>>();
+        assert_eq!(revision_created_events.len(), 1, "Expected exactly one RevisionCreated event");
+        let event = &revision_created_events[0];
+        let payload: crate::orchestrator::events::payloads::RevisionCreatedPayload =
+            serde_json::from_value(event.payload.clone()).unwrap();
+        assert_eq!(payload.revision_id, candidate.revision_id);
+        assert_eq!(payload.run_id, run.run_id);
+        assert_eq!(payload.graph_id, graph.graph_id);
+        assert_eq!(payload.source, "run_revision_apply");
     }
 
     #[test]
