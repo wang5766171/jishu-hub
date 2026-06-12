@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { planPoll } from "./polling-delta";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -571,24 +572,69 @@ export function useTaskGraph() {
   const pollRunProjection = useCallback(async () => {
     if (!activeRunId) return;
     try {
-      const projection = await invoke<RunProjection>("orchestrator_get_run_projection", {
-        runId: activeRunId
+      // 0. If the active run changed since the last poll, reset the cursor and
+      // event log BEFORE fetching. Otherwise a stale poll scheduled for the
+      // previous run could fire after the switch, ingest the old run's events
+      // into the new run's stream, and clobber the cursor ref. (Dedup by
+      // event_id in Task 1.5 would not catch this — different runs have
+      // disjoint event ids.)
+      if (eventRunRef.current !== activeRunId) {
+        eventRunRef.current = activeRunId;
+        eventCursorRef.current = 0;
+        setEvents([]);
+      }
+
+      // 1. Fetch new events since the last cursor
+      const nextEvents = await invoke<TaskEvent[]>("orchestrator_run_events_after", {
+        runId: activeRunId,
+        afterSeq: eventCursorRef.current,
       });
-      setNodeRuns(nodeRunMapFromProjection(projection));
-      setRunStatus(projection.status);
-      setActiveRunRevisionId(projection.revision_id);
-      setActiveRunSeq(projection.run_seq);
-      await loadRunDetails(activeRunId);
-      if (["completed", "failed", "cancelled"].includes(projection.status)) {
-        setLastRunId(activeRunId);
-        setActiveRunId(null);
-        setActiveRunRevisionId(null);
-        setActiveRunSeq(null);
+
+      // 2. Decide what to fetch based on the delta
+      const plan = planPoll(nextEvents);
+
+      // 3. If there are new events, advance cursor and append
+      if (nextEvents.length > 0) {
+        eventCursorRef.current = nextEvents[nextEvents.length - 1].run_seq;
+        setEvents((current) => [...current, ...nextEvents]);
+      }
+
+      // 4. Re-fetch projection only if there are new events
+      if (plan.refetchProjection) {
+        const projection = await invoke<RunProjection>("orchestrator_get_run_projection", {
+          runId: activeRunId,
+        });
+        setNodeRuns(nodeRunMapFromProjection(projection));
+        setRunStatus(projection.status);
+        setActiveRunRevisionId(projection.revision_id);
+        setActiveRunSeq(projection.run_seq);
+
+        // Terminal-status handling
+        if (["completed", "failed", "cancelled"].includes(projection.status)) {
+          setLastRunId(activeRunId);
+          setActiveRunId(null);
+          setActiveRunRevisionId(null);
+          setActiveRunSeq(null);
+        }
+      }
+
+      // 5. Conditionally refresh approvals and artifacts
+      if (plan.refreshApprovals || plan.refreshArtifacts) {
+        const [nextApprovals, nextArtifacts] = await Promise.all([
+          plan.refreshApprovals
+            ? invoke<ApprovalRequest[]>("orchestrator_pending_approvals", { runId: activeRunId })
+            : Promise.resolve([]),
+          plan.refreshArtifacts
+            ? invoke<ArtifactRef[]>("orchestrator_list_artifacts", { runId: activeRunId })
+            : Promise.resolve([]),
+        ]);
+        if (plan.refreshApprovals) setApprovals(nextApprovals);
+        if (plan.refreshArtifacts) setArtifacts(nextArtifacts);
       }
     } catch (err) {
       console.error("Failed to poll run projection:", err);
     }
-  }, [activeRunId, loadRunDetails]);
+  }, [activeRunId]);
 
   const applyDraftToRun = useCallback(async () => {
     if (
