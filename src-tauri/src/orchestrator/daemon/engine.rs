@@ -490,12 +490,27 @@ async fn drive_loops(
             }
             EvaluatorSpec::Inline { .. } => None,
         };
+
+        // Compute accumulated usage over all body node runs across all iterations
+        let mut accumulated_usage = AttemptUsage::default();
+        for body_node_id in &config.body_node_ids {
+            for node_run in node_runs.iter().filter(|nr| &nr.node_id == body_node_id) {
+                if let Ok(Some(attempt)) = store.latest_attempt(&node_run.node_run_id) {
+                    accumulated_usage.input_tokens += attempt.usage.input_tokens;
+                    accumulated_usage.output_tokens += attempt.usage.output_tokens;
+                    accumulated_usage.cost_usd += attempt.usage.cost_usd;
+                }
+            }
+        }
+
         let mut result = crate::orchestrator::loop_controller::evaluate(
             config,
             iteration,
             now,
             body_succeeded,
             evaluator_output.as_ref(),
+            &accumulated_usage,
+            iteration,
         )
         .unwrap_or_else(|error| payloads::EvaluatorResult::Fail { error });
         if config.deadline_ms.is_some_and(|deadline_ms| {
@@ -649,6 +664,42 @@ fn start_loop_iteration(
         .loop_config
         .as_ref()
         .ok_or_else(|| format!("loop node {} has no config", loop_node.node_id))?;
+
+    // Runtime gate: a loop must have at least one hard budget
+    if !crate::orchestrator::loop_controller::has_hard_budget(config) {
+        let now = now_ms();
+        let mut failed = existing_loop_run.unwrap_or_else(|| {
+            let mut node_run = NodeRun::new(
+                gen_id("nr"),
+                &run.run_id,
+                &loop_node.node_id,
+                &run.active_revision_id,
+            );
+            node_run.loop_iteration = Some(0);
+            node_run.started_at = Some(now);
+            node_run
+        });
+        failed.status = NodeRunStatus::Failed;
+        failed.error = Some(
+            "control loop has no hard budget (set max_iterations, deadline_ms, token_budget, or cost_budget_usd)"
+                .into(),
+        );
+        failed.finished_at = Some(now);
+        let current_run = store
+            .get_run(&run.run_id)
+            .map_err(|error| error.to_string())?;
+        let events = vec![node_resolved_event(
+            &run.run_id,
+            current_run.run_seq + 1,
+            &failed,
+            now,
+        )?];
+        store
+            .save_node_runs_with_events(&[failed], &events, None)
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
     let now = now_ms();
     let initial = existing_loop_run.is_none();
     let mut loop_run = existing_loop_run.unwrap_or_else(|| {
@@ -2459,6 +2510,155 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.event_type == TaskEventType::LoopCompleted));
+    }
+
+    #[tokio::test]
+    async fn budgetless_control_loop_is_failed_not_started() {
+        let store = Arc::new(TaskStore::open_in_memory().unwrap());
+        let shell_policy = {
+            let mut p = NodePolicy::default();
+            p.permission_scope.can_run_commands = true;
+            p.approval_policy = ApprovalPolicy::Never;
+            p
+        };
+        let snapshot = GraphSnapshot {
+            nodes: vec![
+                GraphNode {
+                    node_id: "goal".into(),
+                    parent_id: None,
+                    title: "Goal".into(),
+                    description: None,
+                    node_kind: NodeKind::Goal,
+                    input_contract: Default::default(),
+                    output_contract: Default::default(),
+                    role_requirement: None,
+                    capability_requirements: vec![],
+                    agent_assignment_constraint: None,
+                    policy: Default::default(),
+                    metadata: Default::default(),
+                    executable_payload: None,
+                    loop_config: None,
+                    approval_gate_config: None,
+                },
+                GraphNode {
+                    node_id: "loop".into(),
+                    parent_id: Some("goal".into()),
+                    title: "Budgetless loop".into(),
+                    description: None,
+                    node_kind: NodeKind::ControlLoop,
+                    input_contract: Default::default(),
+                    output_contract: Default::default(),
+                    role_requirement: None,
+                    capability_requirements: vec![],
+                    agent_assignment_constraint: None,
+                    policy: Default::default(),
+                    metadata: Default::default(),
+                    executable_payload: None,
+                    // ALL budgets None - should fail immediately
+                    loop_config: Some(LoopControllerConfig {
+                        body_node_ids: vec!["body".into()],
+                        evaluator: EvaluatorSpec::Inline {
+                            rules: serde_json::json!({"outcome": "continue"}),
+                        },
+                        interval_ms: 100,
+                        backoff_multiplier: None,
+                        max_interval_ms: None,
+                        termination_condition: "none".into(),
+                        max_iterations: None,
+                        deadline_ms: None,
+                        token_budget: None,
+                        cost_budget_usd: None,
+                        no_progress_threshold: None,
+                        escalation_policy: "pause".into(),
+                    }),
+                    approval_gate_config: None,
+                },
+                GraphNode {
+                    node_id: "body".into(),
+                    parent_id: Some("loop".into()),
+                    title: "Body".into(),
+                    description: None,
+                    node_kind: NodeKind::Executable,
+                    input_contract: Default::default(),
+                    output_contract: Default::default(),
+                    role_requirement: None,
+                    capability_requirements: vec![],
+                    agent_assignment_constraint: None,
+                    policy: shell_policy,
+                    metadata: Default::default(),
+                    executable_payload: Some(ExecutablePayload::Shell {
+                        command: "echo test".into(),
+                        cwd: None,
+                        timeout_ms: Some(5000),
+                    }),
+                    loop_config: None,
+                    approval_gate_config: None,
+                },
+            ],
+            edges: vec![],
+        };
+        let graph = TaskGraph {
+            graph_id: "g-budgetless".into(),
+            title: "Budgetless".into(),
+            goal: "Test".into(),
+            project_root: PathBuf::from("."),
+            owner: "test".into(),
+            current_draft_revision: Some("r-budgetless".into()),
+            created_at: 1,
+            updated_at: 1,
+        };
+        let revision = GraphRevision::from_snapshot(
+            "r-budgetless",
+            "g-budgetless",
+            None,
+            &snapshot,
+            "test",
+            1,
+        )
+        .unwrap();
+        let run = GraphRun {
+            run_id: "run-budgetless".into(),
+            graph_id: "g-budgetless".into(),
+            active_revision_id: "r-budgetless".into(),
+            status: RunStatus::Running,
+            run_seq: 1,
+            budget_state: Default::default(),
+            planning_snapshot: Default::default(),
+            started_at: now_ms(),
+            finished_at: None,
+        };
+        store.create_graph(&graph).unwrap();
+        store.save_revision(&revision).unwrap();
+        store.create_run(&run).unwrap();
+
+        let runtime: Arc<dyn TaskAgentRuntime> = Arc::new(FakeAgentRuntime);
+        let arbiter = Arc::new(ResourceArbiter::new(ResourceLimits::default()));
+        let tick_counter = Arc::new(AtomicU64::new(0));
+        let ready_caches: Arc<
+            std::sync::Mutex<std::collections::HashMap<String, ReadySetComputer>>,
+        > = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+
+        tick(&store, &runtime, &arbiter, &tick_counter, &ready_caches)
+            .await
+            .unwrap();
+
+        // The loop should have failed immediately without starting
+        let loop_runs = store
+            .get_node_runs("run-budgetless")
+            .unwrap()
+            .into_iter()
+            .filter(|nr| nr.node_id == "loop")
+            .collect::<Vec<_>>();
+        assert_eq!(loop_runs.len(), 1);
+        let loop_run = &loop_runs[0];
+        assert_eq!(loop_run.status, NodeRunStatus::Failed);
+        assert!(loop_run.error.as_ref().unwrap().contains("no hard budget"));
+
+        // NO IterationStarted event should have been emitted
+        let events = store.all_events("run-budgetless").unwrap();
+        assert!(!events
+            .iter()
+            .any(|e| e.event_type == TaskEventType::IterationStarted));
     }
 
     #[test]

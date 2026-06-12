@@ -1,5 +1,14 @@
 use crate::orchestrator::domain::graph::{EvaluatorSpec, LoopControllerConfig};
+use crate::orchestrator::domain::run::AttemptUsage;
 use crate::orchestrator::events::payloads::EvaluatorResult;
+
+/// A loop must declare at least one hard budget so it cannot run unbounded.
+pub fn has_hard_budget(config: &LoopControllerConfig) -> bool {
+    config.max_iterations.is_some()
+        || config.deadline_ms.is_some()
+        || config.token_budget.is_some()
+        || config.cost_budget_usd.is_some()
+}
 
 pub fn evaluate(
     config: &LoopControllerConfig,
@@ -7,6 +16,8 @@ pub fn evaluate(
     now: i64,
     body_succeeded: bool,
     node_evaluator_output: Option<&serde_json::Value>,
+    accumulated_usage: &AttemptUsage,
+    iterations_without_progress: u32,
 ) -> Result<EvaluatorResult, String> {
     let mut result = match &config.evaluator {
         EvaluatorSpec::Inline { rules } => evaluate_rules(rules, iteration, now, body_succeeded)?,
@@ -26,6 +37,52 @@ pub fn evaluate(
                 result = EvaluatorResult::Fail {
                     error: format!("loop reached max_iterations={max_iterations}"),
                 };
+            }
+        }
+        // Token budget (input + output tokens)
+        if let Some(budget) = config.token_budget {
+            let used = accumulated_usage
+                .input_tokens
+                .saturating_add(accumulated_usage.output_tokens);
+            if used >= budget {
+                result = EvaluatorResult::Fail {
+                    error: format!("loop token_budget={budget} exhausted (used {used})"),
+                };
+            }
+        }
+        // Cost budget
+        if !matches!(result, EvaluatorResult::Fail { .. }) {
+            if let Some(budget) = config.cost_budget_usd {
+                if accumulated_usage.cost_usd >= budget {
+                    result = EvaluatorResult::Fail {
+                        error: format!(
+                            "loop cost_budget_usd={budget} exhausted (used {})",
+                            accumulated_usage.cost_usd
+                        ),
+                    };
+                }
+            }
+        }
+        // No-progress escalation (only if still non-terminal)
+        if !matches!(
+            result,
+            EvaluatorResult::Complete { .. } | EvaluatorResult::Fail { .. }
+        ) {
+            if let Some(threshold) = config.no_progress_threshold {
+                if iterations_without_progress >= threshold {
+                    result = match config.escalation_policy.as_str() {
+                        "pause" => EvaluatorResult::Pause {
+                            reason: format!(
+                                "loop exceeded no_progress_threshold={threshold} without progress"
+                            ),
+                        },
+                        _ => EvaluatorResult::Fail {
+                            error: format!(
+                                "loop exceeded no_progress_threshold={threshold} without progress"
+                            ),
+                        },
+                    };
+                }
             }
         }
     }
@@ -132,6 +189,8 @@ mod tests {
             10,
             true,
             None,
+            &AttemptUsage::default(),
+            0,
         )
         .unwrap();
         assert!(matches!(result, EvaluatorResult::Complete { .. }));
@@ -145,6 +204,8 @@ mod tests {
             1_000,
             true,
             None,
+            &AttemptUsage::default(),
+            0,
         )
         .unwrap();
         assert!(matches!(result, EvaluatorResult::Wait { wake_at: 1_250 }));
@@ -158,8 +219,126 @@ mod tests {
             1_000,
             true,
             None,
+            &AttemptUsage::default(),
+            0,
         )
         .unwrap();
         assert!(matches!(result, EvaluatorResult::Fail { .. }));
+    }
+
+    #[test]
+    fn token_budget_exhausted_overrides_continue() {
+        let cfg = {
+            let mut c = config(serde_json::json!({"outcome": "continue"}));
+            c.token_budget = Some(100);
+            c
+        };
+        let accumulated = AttemptUsage {
+            input_tokens: 60,
+            output_tokens: 40,
+            cost_usd: 0.0,
+        };
+        let result = evaluate(&cfg, 0, 1_000, true, None, &accumulated, 0).unwrap();
+        assert!(matches!(result, EvaluatorResult::Fail { .. }));
+        if let EvaluatorResult::Fail { error } = result {
+            assert!(error.contains("token_budget=100") && error.contains("used 100"));
+        }
+    }
+
+    #[test]
+    fn cost_budget_exhausted_overrides_continue() {
+        let cfg = {
+            let mut c = config(serde_json::json!({"outcome": "continue"}));
+            c.cost_budget_usd = Some(0.5);
+            c
+        };
+        let accumulated = AttemptUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.5,
+        };
+        let result = evaluate(&cfg, 0, 1_000, true, None, &accumulated, 0).unwrap();
+        assert!(matches!(result, EvaluatorResult::Fail { .. }));
+        if let EvaluatorResult::Fail { error } = result {
+            assert!(error.contains("cost_budget_usd=0.5"));
+        }
+    }
+
+    #[test]
+    fn no_progress_threshold_escalates_to_pause() {
+        let cfg = {
+            let mut c = config(serde_json::json!({"outcome": "continue"}));
+            c.no_progress_threshold = Some(2);
+            c.escalation_policy = "pause".into();
+            c
+        };
+        // Use iteration 0 to avoid triggering max_iterations (which is Some(3) from config())
+        let result = evaluate(&cfg, 0, 1_000, true, None, &AttemptUsage::default(), 2).unwrap();
+        assert!(matches!(result, EvaluatorResult::Pause { .. }));
+        if let EvaluatorResult::Pause { reason } = result {
+            assert!(reason.contains("no_progress_threshold=2"));
+        }
+    }
+
+    #[test]
+    fn no_progress_threshold_fails_when_policy_not_pause() {
+        let cfg = {
+            let mut c = config(serde_json::json!({"outcome": "continue"}));
+            c.no_progress_threshold = Some(2);
+            c.escalation_policy = "fail".into();
+            c
+        };
+        // Use iteration 0 to avoid triggering max_iterations
+        let result = evaluate(&cfg, 0, 1_000, true, None, &AttemptUsage::default(), 2).unwrap();
+        assert!(matches!(result, EvaluatorResult::Fail { .. }));
+    }
+
+    #[test]
+    fn has_hard_budget_detects_budgetless_loop() {
+        let cfg = config(serde_json::json!({"outcome": "continue"}));
+        // All four budgets Some
+        let cfg_with_all = LoopControllerConfig {
+            max_iterations: Some(10),
+            deadline_ms: Some(5000),
+            token_budget: Some(1000),
+            cost_budget_usd: Some(1.0),
+            ..cfg.clone()
+        };
+        assert!(has_hard_budget(&cfg_with_all));
+
+        // Each one individually
+        let cfg_max = LoopControllerConfig {
+            max_iterations: Some(10),
+            ..cfg.clone()
+        };
+        assert!(has_hard_budget(&cfg_max));
+
+        let cfg_deadline = LoopControllerConfig {
+            deadline_ms: Some(5000),
+            ..cfg.clone()
+        };
+        assert!(has_hard_budget(&cfg_deadline));
+
+        let cfg_token = LoopControllerConfig {
+            token_budget: Some(1000),
+            ..cfg.clone()
+        };
+        assert!(has_hard_budget(&cfg_token));
+
+        let cfg_cost = LoopControllerConfig {
+            cost_budget_usd: Some(1.0),
+            ..cfg.clone()
+        };
+        assert!(has_hard_budget(&cfg_cost));
+
+        // None - default config() has max_iterations set, so clear it
+        let cfg_none = LoopControllerConfig {
+            max_iterations: None,
+            deadline_ms: None,
+            token_budget: None,
+            cost_budget_usd: None,
+            ..cfg
+        };
+        assert!(!has_hard_budget(&cfg_none));
     }
 }

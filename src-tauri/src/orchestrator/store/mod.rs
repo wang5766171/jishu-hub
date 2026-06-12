@@ -294,17 +294,6 @@ impl TaskStore {
             CREATE INDEX IF NOT EXISTS idx_approval_run ON approval_request(run_id);
             CREATE INDEX IF NOT EXISTS idx_approval_pending ON approval_request(resolved) WHERE resolved = 0;
 
-            CREATE TABLE IF NOT EXISTS wake_timer (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id          TEXT NOT NULL,
-                node_run_id     TEXT NOT NULL,
-                wake_at         INTEGER NOT NULL,
-                timer_type      TEXT NOT NULL,
-                consumed        INTEGER DEFAULT 0
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_wake_pending ON wake_timer(consumed, wake_at);
-
             CREATE TABLE IF NOT EXISTS projection_checkpoint (
                 run_id          TEXT PRIMARY KEY,
                 last_seq        INTEGER NOT NULL,
@@ -2861,5 +2850,30 @@ mod tests {
         let _ = std::fs::remove_file(&db_path);
         let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+    }
+
+    #[test]
+    fn wake_timer_table_is_removed() {
+        let store = make_test_store();
+        let conn = store
+            .reader
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))
+            .unwrap();
+
+        // Verify wake_timer table does NOT exist (should have been dropped and not recreated)
+        let mut table_check = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='wake_timer'")
+            .unwrap();
+        let tables: Vec<String> = table_check
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(
+            tables.is_empty(),
+            "wake_timer table should not exist (found: {:?})",
+            tables
+        );
     }
 }
