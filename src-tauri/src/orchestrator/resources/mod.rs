@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::orchestrator::domain::graph::GraphNode;
@@ -13,6 +13,14 @@ pub struct ResourceLimits {
     pub memory_mb: u64,
     pub network_concurrency_per_quota: usize,
     pub max_parallel_nodes_per_run: usize,
+    /// Aggregate token budget cap across all concurrently-held leases.
+    /// `None` (default) = unbounded (preserves prior behavior). When set,
+    /// a node's `token_budget` is reserved up-front and summed with all held
+    /// token quotas, exactly like CPU weight / memory — acquire is refused if
+    /// the running total would exceed the cap.
+    pub token_budget_cap: Option<u64>,
+    /// Aggregate cost cap (USD) across concurrently-held leases, same semantics.
+    pub cost_budget_cap_usd: Option<f64>,
 }
 
 impl Default for ResourceLimits {
@@ -24,6 +32,8 @@ impl Default for ResourceLimits {
             memory_mb: 8 * 1024,
             network_concurrency_per_quota: 1,
             max_parallel_nodes_per_run: 4,
+            token_budget_cap: None,
+            cost_budget_cap_usd: None,
         }
     }
 }
@@ -213,6 +223,45 @@ fn can_acquire(
         return false;
     }
 
+    if let Some(cap) = limits.token_budget_cap {
+        let held_tokens = held
+            .iter()
+            .filter_map(|r| match r {
+                LeasedResource::TokenQuota { tokens } => Some(*tokens),
+                _ => None,
+            })
+            .sum::<u64>();
+        let requested_tokens = requested
+            .iter()
+            .filter_map(|r| match r {
+                LeasedResource::TokenQuota { tokens } => Some(*tokens),
+                _ => None,
+            })
+            .sum::<u64>();
+        if held_tokens.saturating_add(requested_tokens) > cap {
+            return false;
+        }
+    }
+    if let Some(cap) = limits.cost_budget_cap_usd {
+        let held_cost = held
+            .iter()
+            .filter_map(|r| match r {
+                LeasedResource::CostQuota { usd } => Some(*usd),
+                _ => None,
+            })
+            .sum::<f64>();
+        let requested_cost = requested
+            .iter()
+            .filter_map(|r| match r {
+                LeasedResource::CostQuota { usd } => Some(*usd),
+                _ => None,
+            })
+            .sum::<f64>();
+        if held_cost + requested_cost > cap {
+            return false;
+        }
+    }
+
     for resource in requested {
         match resource {
             LeasedResource::CapabilitySlot { capability } => {
@@ -248,6 +297,7 @@ fn can_acquire(
                 }
             }
             LeasedResource::NetworkQuota { name } => {
+                // Rate-quota modeling: per-name concurrency (limit defaults to 1 = exclusive).
                 let count = held
                     .iter()
                     .filter(|held| {
@@ -276,8 +326,34 @@ fn resolve_resource_path(project_root: &std::path::Path, path: &std::path::Path)
     }
 }
 
+fn normalize_lexical(path: &std::path::Path) -> PathBuf {
+    let mut stack: Vec<Component> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match stack.last() {
+                Some(Component::Normal(_)) => {
+                    stack.pop();
+                }
+                _ => stack.push(component),
+            },
+            other => stack.push(other),
+        }
+    }
+    let mut result = PathBuf::new();
+    for component in stack {
+        result.push(component.as_os_str());
+    }
+    if result.as_os_str().is_empty() {
+        result.push(Component::CurDir.as_os_str());
+    }
+    result
+}
+
 fn paths_overlap(left: &std::path::Path, right: &std::path::Path) -> bool {
-    left.starts_with(right) || right.starts_with(left)
+    let left = normalize_lexical(left);
+    let right = normalize_lexical(right);
+    left.starts_with(&right) || right.starts_with(&left)
 }
 
 fn resource_key(resource: &LeasedResource) -> String {
@@ -368,8 +444,7 @@ mod tests {
             capability_concurrency: 2,
             cpu_weight: 100,
             memory_mb: 1024,
-            network_concurrency_per_quota: 1,
-            max_parallel_nodes_per_run: 4,
+            ..ResourceLimits::default()
         });
         let mut first = node("first");
         first.policy.resource_requirements.cpu_weight = Some(70);
@@ -406,5 +481,48 @@ mod tests {
     #[test]
     fn resource_limits_default_max_parallel_per_run() {
         assert_eq!(ResourceLimits::default().max_parallel_nodes_per_run, 4);
+    }
+
+    #[test]
+    fn paths_overlap_detects_dot_prefixed_duplicate() {
+        let arbiter = ResourceArbiter::new(ResourceLimits::default());
+        let mut writer = node("writer");
+        writer.policy.write_set = vec![PathBuf::from("./src")];
+        let mut reader = node("reader");
+        reader.policy.read_set = vec![PathBuf::from("src/lib.rs")];
+
+        let permit = arbiter.try_acquire("lease-1", &writer, std::path::Path::new("project"));
+        assert!(permit.is_some());
+        assert!(arbiter
+            .try_acquire("lease-2", &reader, std::path::Path::new("project"))
+            .is_none());
+
+        drop(permit);
+        assert!(arbiter
+            .try_acquire("lease-2", &reader, std::path::Path::new("project"))
+            .is_some());
+    }
+
+    #[test]
+    fn aggregate_token_cap_rejects_acquisition() {
+        let arbiter = ResourceArbiter::new(ResourceLimits {
+            token_budget_cap: Some(1000),
+            ..ResourceLimits::default()
+        });
+        let mut node_a = node("node-a");
+        node_a.policy.token_budget = Some(600);
+        let mut node_b = node("node-b");
+        node_b.policy.token_budget = Some(600);
+
+        let permit_a = arbiter.try_acquire("lease-1", &node_a, std::path::Path::new("."));
+        assert!(permit_a.is_some());
+        assert!(arbiter
+            .try_acquire("lease-2", &node_b, std::path::Path::new("."))
+            .is_none());
+
+        drop(permit_a);
+        assert!(arbiter
+            .try_acquire("lease-2", &node_b, std::path::Path::new("."))
+            .is_some());
     }
 }
