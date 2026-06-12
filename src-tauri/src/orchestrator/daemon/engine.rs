@@ -131,6 +131,10 @@ async fn tick(
             (snapshot, node_runs, graph.project_root)
         };
 
+        // Ordering matters: `recover_lost_lease` MUST run before `drive_loops`. `drive_loops`
+        // derives the next run_seq from the store and assumes no concurrent event appends;
+        // lease recovery appends events and returns `Ok(true)` → `continue`, so `drive_loops`
+        // only runs on a tick where recovery found nothing to do. Do not reorder these.
         if recover_lost_lease(store, resource_arbiter, &run, &snapshot, &node_runs)? {
             continue;
         }

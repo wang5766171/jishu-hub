@@ -326,6 +326,15 @@ fn resolve_resource_path(project_root: &std::path::Path, path: &std::path::Path)
     }
 }
 
+/// Lexically normalize `path` without touching the filesystem: drop `.` components and
+/// resolve `..` against the previous `Normal` component (so `./src` and `src` compare
+/// equal, and `a/../b` collapses to `b`). Unlike `canonicalize`, this works for project
+/// dirs that do not yet exist on disk.
+///
+/// Edge case: a bare root such as `/` (or `\` on Windows) normalizes to an empty
+/// `PathBuf`, which the `is_empty()` guard turns into `.` — so `/` and `.` are treated
+/// as overlapping. This is intentional (both denote "the whole root") and consistent
+/// with how read/write sets resolve against `project_root`.
 fn normalize_lexical(path: &std::path::Path) -> PathBuf {
     let mut stack: Vec<Component> = Vec::new();
     for component in path.components() {

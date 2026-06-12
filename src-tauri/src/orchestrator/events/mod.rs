@@ -543,6 +543,11 @@ fn apply_event_to_projection(
                     .map_err(|e| ProjectionError::PayloadDecode(e.to_string()))?;
             proj.revision_id = payload.new_revision_id;
         }
+        // NOTE: `RevisionCreated` is currently emitted ONLY from `apply_run_revision`
+        // (run-scope — a running graph's active revision hot-swap), so overwriting the
+        // projection's `revision_id` here is correct. If a future caller emits it for a
+        // draft-scope revision (e.g. `apply_commands`), this handler must NOT overwrite
+        // `revision_id` for draft events — add a `scope`/`source` guard at that point.
         RevisionCreated => {
             let payload: payloads::RevisionCreatedPayload =
                 serde_json::from_value(event.payload.clone())
