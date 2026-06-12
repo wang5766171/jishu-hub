@@ -1,0 +1,436 @@
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{atomic::AtomicBool, Arc};
+
+use crate::agent::normalized::{NormalizedEvent, TurnEndReason};
+use crate::agent::{AgentCapabilities, AgentRegistry, TransportSurface};
+use crate::agent_runtime::{AgentTurnOutput, AgentTurnRequest};
+use crate::orchestrator::domain::graph::GraphNode;
+use crate::orchestrator::domain::run::{
+    AgentAssignment, AttemptError, AttemptUsage, ErrorCategory,
+};
+
+#[derive(Debug, Clone)]
+pub struct RuntimeInvocationRequest {
+    pub agent_id: String,
+    pub role_id: String,
+    pub project_path: String,
+    pub session_id: Option<String>,
+    pub prompt: String,
+    pub timeout_ms: u64,
+    pub cancellation: Arc<AtomicBool>,
+}
+
+pub trait TaskAgentRuntime: Send + Sync {
+    fn resolve_agent(
+        &self,
+        node: &GraphNode,
+        role_id: &str,
+    ) -> Result<(AgentAssignment, String), String>;
+
+    fn invoke(
+        &self,
+        request: RuntimeInvocationRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<AgentTurnOutput, String>> + Send>>;
+}
+
+pub struct DefaultTaskAgentRuntime {
+    registry: Arc<AgentRegistry>,
+}
+
+impl DefaultTaskAgentRuntime {
+    pub fn new(registry: Arc<AgentRegistry>) -> Self {
+        Self { registry }
+    }
+}
+
+impl TaskAgentRuntime for DefaultTaskAgentRuntime {
+    fn resolve_agent(
+        &self,
+        node: &GraphNode,
+        role_id: &str,
+    ) -> Result<(AgentAssignment, String), String> {
+        let (assignment, transport) = resolve_agent_assignment(&self.registry, node, role_id)?;
+        Ok((assignment, transport.as_str().to_string()))
+    }
+
+    fn invoke(
+        &self,
+        request: RuntimeInvocationRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<AgentTurnOutput, String>> + Send>> {
+        let registry = self.registry.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                crate::agent_runtime::run_turn_blocking_cancellable(
+                    &registry,
+                    AgentTurnRequest {
+                        agent_id: request.agent_id,
+                        project_path: request.project_path,
+                        session_id: request.session_id,
+                        message: request.prompt,
+                        timeout_secs: (request.timeout_ms.saturating_add(999) / 1000).max(1),
+                    },
+                    None,
+                    Some(request.cancellation),
+                )
+            })
+            .await
+            .map_err(|error| format!("agent runtime task failed: {error}"))?
+        })
+    }
+}
+
+pub fn resolve_agent_assignment(
+    registry: &AgentRegistry,
+    node: &GraphNode,
+    role_id: &str,
+) -> Result<(AgentAssignment, TransportSurface), String> {
+    let constraint = node.agent_assignment_constraint.as_ref();
+    let required = node
+        .role_requirement
+        .iter()
+        .flat_map(|role| role.required_capabilities.iter())
+        .chain(node.capability_requirements.iter())
+        .map(|capability| capability.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+
+    let mut candidates = registry.list_agents();
+    let active_id = registry.active_id();
+    candidates.sort_by_key(|agent| if agent.id == active_id { 0 } else { 1 });
+
+    if let Some(locked_agent_id) = constraint.and_then(|value| value.locked_agent_id.as_ref()) {
+        candidates.retain(|agent| &agent.id == locked_agent_id);
+    }
+    if let Some(constraint) = constraint {
+        if !constraint.allowed_agent_ids.is_empty() {
+            candidates.retain(|agent| constraint.allowed_agent_ids.contains(&agent.id));
+        }
+        candidates.retain(|agent| !constraint.denied_agent_ids.contains(&agent.id));
+    }
+
+    for candidate in candidates {
+        let Some(adapter) = registry.get(&candidate.id) else {
+            continue;
+        };
+        let capabilities = adapter.capabilities();
+        if required
+            .iter()
+            .all(|required| supports_capability(capabilities, required))
+        {
+            return Ok((
+                AgentAssignment {
+                    agent_id: candidate.id,
+                    role_id: role_id.to_string(),
+                    adapter_capability_snapshot: capability_snapshot(capabilities),
+                },
+                adapter.transport_surface(),
+            ));
+        }
+    }
+
+    Err(format!(
+        "no agent satisfies role {role_id} with capabilities [{}]",
+        required.join(", ")
+    ))
+}
+
+fn supports_capability(capabilities: AgentCapabilities, required: &str) -> bool {
+    capability_flag(required)
+        .map(|flag| capabilities.contains(flag))
+        .unwrap_or(false)
+}
+
+fn capability_flag(name: &str) -> Option<AgentCapabilities> {
+    Some(match name {
+        "resume_by_id" => AgentCapabilities::RESUME_BY_ID,
+        "resume_latest" => AgentCapabilities::RESUME_LATEST,
+        "session_fork" => AgentCapabilities::SESSION_FORK,
+        "image_input" => AgentCapabilities::IMAGE_INPUT,
+        "file_input" => AgentCapabilities::FILE_INPUT,
+        "stdin_prompt" => AgentCapabilities::STDIN_PROMPT,
+        "stream_text_delta" => AgentCapabilities::STREAM_TEXT_DELTA,
+        "stream_tool_calls" | "tool_use" => AgentCapabilities::STREAM_TOOL_CALLS,
+        "stream_thinking" => AgentCapabilities::STREAM_THINKING,
+        "abort" | "cancellation" => AgentCapabilities::ABORT,
+        "approval_request" => AgentCapabilities::APPROVAL_REQUEST,
+        "subagent_dispatch" => AgentCapabilities::SUBAGENT_DISPATCH,
+        "task_planning" => AgentCapabilities::TASK_PLANNING,
+        "task_supervision" => AgentCapabilities::TASK_SUPERVISION,
+        "rpc_bidirectional" => AgentCapabilities::RPC_BIDIRECTIONAL,
+        _ => return None,
+    })
+}
+
+pub(crate) fn capability_snapshot(capabilities: AgentCapabilities) -> Vec<String> {
+    [
+        "resume_by_id",
+        "resume_latest",
+        "session_fork",
+        "image_input",
+        "file_input",
+        "stdin_prompt",
+        "stream_text_delta",
+        "stream_tool_calls",
+        "stream_thinking",
+        "abort",
+        "approval_request",
+        "subagent_dispatch",
+        "task_planning",
+        "task_supervision",
+        "rpc_bidirectional",
+    ]
+    .into_iter()
+    .filter(|name| supports_capability(capabilities, name))
+    .map(str::to_string)
+    .collect()
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeEventContext {
+    pub run_id: String,
+    pub node_run_id: String,
+    pub attempt_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum RuntimeFact {
+    Progress {
+        context: RuntimeEventContext,
+        message: String,
+        usage_delta: AttemptUsage,
+    },
+    ApprovalRequested {
+        context: RuntimeEventContext,
+        request_id: String,
+        approval_kind: String,
+        payload: serde_json::Value,
+    },
+    SessionResolved {
+        context: RuntimeEventContext,
+        session_id: String,
+    },
+    Completed {
+        context: RuntimeEventContext,
+        usage: AttemptUsage,
+    },
+    Failed {
+        context: RuntimeEventContext,
+        error: AttemptError,
+    },
+    Diagnostic {
+        context: RuntimeEventContext,
+        payload: serde_json::Value,
+    },
+}
+
+pub fn map_normalized_event(context: &RuntimeEventContext, event: &NormalizedEvent) -> RuntimeFact {
+    match event {
+        NormalizedEvent::TextDelta { delta } | NormalizedEvent::Thinking { delta } => {
+            RuntimeFact::Progress {
+                context: context.clone(),
+                message: delta.clone(),
+                usage_delta: AttemptUsage::default(),
+            }
+        }
+        NormalizedEvent::Message { content } => RuntimeFact::Progress {
+            context: context.clone(),
+            message: serde_json::to_string(content).unwrap_or_else(|_| "message".into()),
+            usage_delta: AttemptUsage::default(),
+        },
+        NormalizedEvent::ToolUseStart {
+            call_id,
+            tool,
+            input,
+        } => RuntimeFact::Diagnostic {
+            context: context.clone(),
+            payload: serde_json::json!({
+                "kind": "tool_use_start",
+                "call_id": call_id,
+                "tool": tool,
+                "input": input,
+            }),
+        },
+        NormalizedEvent::ToolUseResult {
+            call_id,
+            output,
+            is_error,
+        } => RuntimeFact::Diagnostic {
+            context: context.clone(),
+            payload: serde_json::json!({
+                "kind": "tool_use_result",
+                "call_id": call_id,
+                "output": output,
+                "is_error": is_error,
+            }),
+        },
+        NormalizedEvent::ApprovalRequest {
+            request_id,
+            approval_kind,
+            payload,
+        } => RuntimeFact::ApprovalRequested {
+            context: context.clone(),
+            request_id: request_id.clone(),
+            approval_kind: format!("{approval_kind:?}").to_lowercase(),
+            payload: payload.clone(),
+        },
+        NormalizedEvent::SessionResolved { session_id } => RuntimeFact::SessionResolved {
+            context: context.clone(),
+            session_id: session_id.clone(),
+        },
+        NormalizedEvent::TurnComplete { reason, usage } => {
+            let usage = usage
+                .as_ref()
+                .map(|usage| AttemptUsage {
+                    input_tokens: usage.input_tokens.unwrap_or_default(),
+                    output_tokens: usage.output_tokens.unwrap_or_default(),
+                    cost_usd: usage.total_cost.unwrap_or_default(),
+                })
+                .unwrap_or_default();
+            match reason {
+                TurnEndReason::Complete => RuntimeFact::Completed {
+                    context: context.clone(),
+                    usage,
+                },
+                TurnEndReason::Aborted | TurnEndReason::Error | TurnEndReason::MaxTokens => {
+                    RuntimeFact::Failed {
+                        context: context.clone(),
+                        error: AttemptError {
+                            category: if matches!(reason, TurnEndReason::MaxTokens) {
+                                ErrorCategory::Policy
+                            } else {
+                                ErrorCategory::Transient
+                            },
+                            message: format!("agent turn ended with {reason:?}"),
+                            retryable: matches!(reason, TurnEndReason::Error),
+                            retry_after_ms: None,
+                            provider_detail: None,
+                        },
+                    }
+                }
+            }
+        }
+        NormalizedEvent::Error {
+            message,
+            recoverable,
+        } => RuntimeFact::Failed {
+            context: context.clone(),
+            error: AttemptError {
+                category: if *recoverable {
+                    ErrorCategory::Transient
+                } else {
+                    ErrorCategory::Deterministic
+                },
+                message: message.clone(),
+                retryable: *recoverable,
+                retry_after_ms: None,
+                provider_detail: None,
+            },
+        },
+        NormalizedEvent::TaskStep { .. }
+        | NormalizedEvent::SubAgentDispatch { .. }
+        | NormalizedEvent::Raw { .. } => RuntimeFact::Diagnostic {
+            context: context.clone(),
+            payload: serde_json::to_value(event).unwrap_or_default(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::normalized::UsageStats;
+    use crate::orchestrator::domain::graph::{AgentAssignmentConstraint, GraphNode, NodeKind};
+
+    fn dispatch_node() -> GraphNode {
+        GraphNode {
+            node_id: "dispatch".into(),
+            parent_id: None,
+            title: "Dispatch".into(),
+            description: None,
+            node_kind: NodeKind::Executable,
+            input_contract: Default::default(),
+            output_contract: Default::default(),
+            role_requirement: None,
+            capability_requirements: vec![],
+            agent_assignment_constraint: None,
+            policy: Default::default(),
+            metadata: Default::default(),
+            executable_payload: None,
+            loop_config: None,
+            approval_gate_config: None,
+        }
+    }
+
+    #[test]
+    fn assignment_honors_structured_agent_lock() {
+        let registry = AgentRegistry::new();
+        let mut node = dispatch_node();
+        node.agent_assignment_constraint = Some(AgentAssignmentConstraint {
+            role_id: "implementer".into(),
+            locked_agent_id: Some("codex".into()),
+            ..Default::default()
+        });
+
+        let (assignment, transport) =
+            resolve_agent_assignment(&registry, &node, "implementer").unwrap();
+
+        assert_eq!(assignment.agent_id, "codex");
+        assert_eq!(assignment.role_id, "implementer");
+        assert_eq!(transport, TransportSurface::Cli);
+    }
+
+    #[test]
+    fn assignment_rejects_unknown_required_capability() {
+        let registry = AgentRegistry::new();
+        let mut node = dispatch_node();
+        node.capability_requirements = vec!["nonexistent_capability".into()];
+
+        assert!(resolve_agent_assignment(&registry, &node, "implementer").is_err());
+    }
+
+    #[test]
+    fn task_planning_capability_resolves_through_adapter_contract() {
+        let registry = AgentRegistry::new();
+        let mut node = dispatch_node();
+        node.capability_requirements = vec!["task_planning".into()];
+
+        let (assignment, transport) =
+            resolve_agent_assignment(&registry, &node, "planner").unwrap();
+
+        assert_eq!(assignment.role_id, "planner");
+        assert!(assignment
+            .adapter_capability_snapshot
+            .contains(&"task_planning".to_string()));
+        assert_eq!(transport, TransportSurface::PiRpc);
+    }
+
+    #[test]
+    fn completed_turn_maps_usage_with_attempt_context() {
+        let context = RuntimeEventContext {
+            run_id: "run1".into(),
+            node_run_id: "node-run1".into(),
+            attempt_id: "attempt1".into(),
+        };
+        let fact = map_normalized_event(
+            &context,
+            &NormalizedEvent::TurnComplete {
+                reason: TurnEndReason::Complete,
+                usage: Some(UsageStats {
+                    input_tokens: Some(10),
+                    output_tokens: Some(20),
+                    total_cost: Some(0.25),
+                    context_remaining: None,
+                }),
+            },
+        );
+        match fact {
+            RuntimeFact::Completed { context, usage } => {
+                assert_eq!(context.attempt_id, "attempt1");
+                assert_eq!(usage.input_tokens, 10);
+                assert_eq!(usage.output_tokens, 20);
+                assert_eq!(usage.cost_usd, 0.25);
+            }
+            _ => panic!("expected completed runtime fact"),
+        }
+    }
+}

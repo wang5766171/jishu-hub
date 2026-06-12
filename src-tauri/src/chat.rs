@@ -324,3 +324,25 @@ pub async fn abort_chat(app: AppHandle, session_id: String) -> Result<(), String
         }
     }
 }
+
+#[tauri::command]
+pub async fn resolve_chat_permission(
+    app: AppHandle,
+    session_id: String,
+    request_id: String,
+    approved: bool,
+) -> Result<(), String> {
+    let chat_state = app.state::<Mutex<ChatState>>();
+    let acp = {
+        let state = chat_state
+            .lock()
+            .map_err(|_| "Chat state lock poisoned".to_string())?;
+        state
+            .processes
+            .get(&session_id)
+            .and_then(|process| process.acp.clone())
+            .ok_or_else(|| format!("No active ACP session found for {session_id}"))?
+    };
+
+    acp.resolve_permission(request_id, approved).await
+}

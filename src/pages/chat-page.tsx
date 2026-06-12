@@ -10,6 +10,14 @@ import { StatusBar as ObservabilityStatusBar } from "@/components/observability"
 import { TasksPage } from "@/pages/tasks-page";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
 import {
   HardDrive, MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ChevronDown, PictureInPicture2,
@@ -80,6 +88,13 @@ function extractRealSessionId(data: unknown): string | null {
   return null;
 }
 
+interface PendingChatApproval {
+  sessionId: string;
+  requestId: string;
+  approvalKind: string;
+  payload: unknown;
+}
+
 export function ChatPage({
   currentProject,
   currentProjectMeta,
@@ -124,6 +139,8 @@ export function ChatPage({
   const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
   const [optimisticSessions, setOptimisticSessions] = useState<Session[]>([]);
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
+  const [pendingApprovals, setPendingApprovals] = useState<PendingChatApproval[]>([]);
+  const [approvalResolving, setApprovalResolving] = useState(false);
 
   // Quick model picker for Pi-backed model stores. The adapter declares
   // this surface; the page does not inspect the agent id.
@@ -568,6 +585,23 @@ export function ChatPage({
 
         const cid = chunk.session_id;
 
+        if (chunk.data.kind === "approval_request") {
+          const approval: PendingChatApproval = {
+            sessionId: cid,
+            requestId: chunk.data.request_id,
+            approvalKind: chunk.data.approval_kind,
+            payload: chunk.data.payload,
+          };
+          setPendingApprovals((current) => {
+            const exists = current.some(
+              (item) =>
+                item.sessionId === approval.sessionId
+                && item.requestId === approval.requestId,
+            );
+            return exists ? current : [...current, approval];
+          });
+        }
+
         // Only push into the store if it knows about this session — otherwise
         // we'd accidentally create state for a session we never started.
         if (!streamStore.hasState(cid)) {
@@ -705,6 +739,29 @@ export function ChatPage({
   const displayName = selectedSession
     ? (sessionNames?.[selectedSession] || sessions?.find(s => s.id === selectedSession)?.display_name || optimisticSessions.find(s => s.id === selectedSession)?.display_name || selectedSession.slice(0, 8))
     : "";
+  const activeApproval = pendingApprovals[0] ?? null;
+  const resolveActiveApproval = useCallback(async (approved: boolean) => {
+    if (!activeApproval || approvalResolving) return;
+    setApprovalResolving(true);
+    try {
+      await invokeCommand("resolve_chat_permission", {
+        sessionId: activeApproval.sessionId,
+        requestId: activeApproval.requestId,
+        approved,
+      });
+      setPendingApprovals((current) =>
+        current.filter(
+          (item) =>
+            item.sessionId !== activeApproval.sessionId
+            || item.requestId !== activeApproval.requestId,
+        ),
+      );
+    } catch (error) {
+      console.error("Failed to resolve ACP permission request:", error);
+    } finally {
+      setApprovalResolving(false);
+    }
+  }, [activeApproval, approvalResolving]);
   const projectDisplayName = currentProjectMeta?.custom_name || currentProject?.name || t("sessions.noProject");
   const projectPath = currentProject?.path ?? "";
   const startComposerFooter = currentProject ? (
@@ -1178,6 +1235,45 @@ export function ChatPage({
         currentName={displayName}
         onRenamed={refetchNames}
       />
+      <Dialog
+        open={Boolean(activeApproval)}
+        onOpenChange={(open) => {
+          if (!open && activeApproval && !approvalResolving) {
+            void resolveActiveApproval(false);
+          }
+        }}
+      >
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>{t("sessions.permissionTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("sessions.permissionDescription", {
+                kind: activeApproval?.approvalKind ?? "other",
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <pre className="max-h-72 overflow-auto rounded-md border border-border/60 bg-muted/50 p-3 text-xs whitespace-pre-wrap break-all">
+            {JSON.stringify(activeApproval?.payload ?? {}, null, 2)}
+          </pre>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={approvalResolving}
+              onClick={() => void resolveActiveApproval(false)}
+            >
+              {t("sessions.permissionReject")}
+            </Button>
+            <Button
+              disabled={approvalResolving}
+              onClick={() => void resolveActiveApproval(true)}
+            >
+              {approvalResolving
+                ? t("sessions.permissionResolving")
+                : t("sessions.permissionApprove")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,5 +1,15 @@
-use tokio::process::Command as TokioCommand;
+use std::path::Path;
 use std::process::Command as StdCommand;
+use std::time::Duration;
+use tokio::process::Command as TokioCommand;
+use tokio::time::timeout;
+
+#[derive(Debug, Clone)]
+pub struct ShellOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+}
 
 /// Build a platform-aware command. On Windows, .cmd/.bat scripts (npm, npx, etc.)
 /// must be invoked via `cmd /C <command>` since `Command::new("npm")` won't resolve
@@ -21,10 +31,57 @@ pub fn shell_command(program: &str, args: Vec<String>) -> TokioCommand {
     }
 }
 
+pub async fn run_shell_command(
+    command: &str,
+    current_dir: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> Result<ShellOutput, String> {
+    #[cfg(target_os = "windows")]
+    let mut process = {
+        let mut process = TokioCommand::new("cmd");
+        process.arg("/C").arg(command);
+        process
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let mut process = {
+        let mut process = TokioCommand::new("sh");
+        process.arg("-c").arg(command);
+        process
+    };
+
+    if let Some(current_dir) = current_dir {
+        process.current_dir(current_dir);
+    }
+    process.kill_on_drop(true);
+    crate::process_command::tokio_no_window(&mut process);
+
+    let execution = process.output();
+    let output = if let Some(timeout_ms) = timeout_ms {
+        timeout(Duration::from_millis(timeout_ms), execution)
+            .await
+            .map_err(|_| format!("command timed out after {timeout_ms} ms"))?
+            .map_err(|error| format!("failed to run command: {error}"))?
+    } else {
+        execution
+            .await
+            .map_err(|error| format!("failed to run command: {error}"))?
+    };
+
+    Ok(ShellOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        exit_code: output.status.code(),
+    })
+}
+
 /// Run an arbitrary install or multi-line command with standard error capturing.
 /// Windows: uses `powershell -NoProfile -Command`
 /// Unix: uses `sh -c`
-pub async fn run_install_command(command: &str, current_dir: Option<&std::path::Path>) -> Result<String, String> {
+pub async fn run_install_command(
+    command: &str,
+    current_dir: Option<&std::path::Path>,
+) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
         let mut installer = StdCommand::new("powershell");
@@ -49,7 +106,7 @@ pub async fn run_install_command(command: &str, current_dir: Option<&std::path::
         if let Some(dir) = current_dir {
             installer.current_dir(dir);
         }
-        
+
         let output = crate::process_command::std_no_window(&mut installer)
             .output()
             .map_err(|e| format!("Failed to spawn sh: {}", e))?;

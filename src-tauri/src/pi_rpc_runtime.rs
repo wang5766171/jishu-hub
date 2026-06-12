@@ -282,6 +282,12 @@ async fn pi_rpc_connection_loop(
                         }
                         false
                     }
+                    Some(AcpCommand::ResolvePermission { response, .. }) => {
+                        let _ = response.send(Err(
+                            "Pi RPC does not use the ACP permission response channel".to_string(),
+                        ));
+                        false
+                    }
                     Some(AcpCommand::Shutdown) => {
                         log::info!("Pi RPC shutdown requested for session {}", session_id);
                         true
@@ -318,7 +324,7 @@ async fn pi_rpc_connection_loop(
                                                 .get("error")
                                                 .and_then(|v| v.as_str())
                                                 .unwrap_or("Unknown prompt error");
-                                            
+
                                             buf.push(make_chunk(&session_id, &NormalizedEvent::Error {
                                                 message: err_msg.to_string(),
                                                 recoverable: false,
@@ -328,7 +334,7 @@ async fn pi_rpc_connection_loop(
                                                 usage: None,
                                             }));
                                             flush_buf(&app, &agent_id, &mut buf);
-                                            
+
                                             state = LoopState::Idle;
                                         }
                                     }
@@ -514,7 +520,7 @@ async fn stdout_reader(stdout: tokio::process::ChildStdout, tx: tokio::sync::mps
 /// - `turn_start`, `turn_end`
 /// - `message_start`, `message_update`, `message_end`
 /// - `tool_execution_start`, `tool_execution_update`, `tool_execution_end`
-fn normalize_pi_agent_event(event: &serde_json::Value) -> Vec<NormalizedEvent> {
+pub(crate) fn normalize_pi_agent_event(event: &serde_json::Value) -> Vec<NormalizedEvent> {
     let event_type = match event.get("type").and_then(|v| v.as_str()) {
         Some(t) => t,
         None => return vec![],

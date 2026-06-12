@@ -29,10 +29,8 @@ impl JishuSelfAgent {
         args.push("install".to_string());
         args.push("npm:pi-mcp-adapter".to_string());
 
-        let mut cmd = crate::os_adapter::shell::shell_command(
-            &runtime.program.to_string_lossy(),
-            args,
-        );
+        let mut cmd =
+            crate::os_adapter::shell::shell_command(&runtime.program.to_string_lossy(), args);
         cmd.current_dir(std::env::current_dir().unwrap_or_default());
 
         #[cfg(target_os = "windows")]
@@ -138,6 +136,8 @@ impl AgentManifest for JishuSelfAgent {
             | AgentCapabilities::CONFIG_PROJECT
             | AgentCapabilities::IMAGE_INPUT
             | AgentCapabilities::FILE_INPUT
+            | AgentCapabilities::TASK_PLANNING
+            | AgentCapabilities::TASK_SUPERVISION
     }
 
     fn probe_sync(&self) -> crate::agent::capability::AgentHealth {
@@ -425,10 +425,8 @@ impl ConfigAdapter for JishuSelfAgent {
             args.push("install".to_string());
             args.push("npm:pi-mcp-adapter".to_string());
 
-            let mut cmd = crate::os_adapter::shell::shell_command(
-                &runtime.program.to_string_lossy(),
-                args,
-            );
+            let mut cmd =
+                crate::os_adapter::shell::shell_command(&runtime.program.to_string_lossy(), args);
             cmd.current_dir(std::env::current_dir().unwrap_or_default());
 
             #[cfg(target_os = "windows")]

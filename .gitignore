@@ -44,6 +44,7 @@ pi_agent_rust_readme.md
 
 # Scratch / test artifacts
 scratch/
+check_log.txt
 test_*.py
 test_*.exe
 test_*.pdb
@@ -66,4 +67,5 @@ run-kiro.ps1
 graphify.zh-CN.md
 
 .agents/
+.superpowers/
 third_party/pi-bundle/

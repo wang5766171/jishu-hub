@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod adapters;
@@ -123,7 +123,7 @@ impl TransportSurface {
 
 pub struct AgentRegistry {
     agents: HashMap<String, Box<dyn AgentPlugin + Send + Sync>>,
-    active_id: String,
+    active_id: RwLock<String>,
     health_cache: Arc<Mutex<HashMap<String, AgentHealth>>>,
 }
 
@@ -150,20 +150,24 @@ impl AgentRegistry {
 
         Self {
             agents,
-            active_id: id,
+            active_id: RwLock::new(id),
             health_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub fn active(&self) -> &dyn AgentPlugin {
+        let active_id = self.active_id();
         self.agents
-            .get(&self.active_id)
+            .get(&active_id)
             .map(|a| a.as_ref())
             .expect("AgentRegistry: active_id references a non-existent agent — this is a bug")
     }
 
-    pub fn active_id(&self) -> &str {
-        &self.active_id
+    pub fn active_id(&self) -> String {
+        self.active_id
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     pub fn list_agents(&self) -> Vec<AgentInfo> {
@@ -225,9 +229,12 @@ impl AgentRegistry {
             .collect()
     }
 
-    pub fn set_active(&mut self, id: &str) -> Result<(), String> {
+    pub fn set_active(&self, id: &str) -> Result<(), String> {
         if self.agents.contains_key(id) {
-            self.active_id = id.to_string();
+            *self
+                .active_id
+                .write()
+                .unwrap_or_else(|error| error.into_inner()) = id.to_string();
             Ok(())
         } else {
             Err(format!("Agent not found: {}", id))
@@ -367,6 +374,17 @@ pub struct AcpCommandSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_agent_selection_is_shared_across_registry_owners() {
+        let registry = Arc::new(AgentRegistry::new());
+        let runtime_registry = registry.clone();
+
+        registry.set_active("codex").unwrap();
+
+        assert_eq!(runtime_registry.active_id(), "codex");
+        assert_eq!(runtime_registry.active().info().id, "codex");
+    }
 
     #[test]
     fn agent_status_serializes_capabilities_as_decimal_string() {

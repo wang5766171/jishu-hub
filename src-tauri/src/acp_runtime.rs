@@ -8,6 +8,7 @@
 //! agents and relays their NormalizedEvent streams to the GUI.
 
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::Emitter;
@@ -26,6 +27,11 @@ use crate::cli_runtime::{AgentStreamChunk, StreamChunk};
 pub enum AcpCommand {
     Prompt(String),
     Cancel,
+    ResolvePermission {
+        request_id: String,
+        approved: bool,
+        response: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
     Shutdown,
 }
 
@@ -53,6 +59,25 @@ impl AcpControl {
 
     pub async fn send_cancel(&self) {
         let _ = self.tx.send(AcpCommand::Cancel).await;
+    }
+
+    pub async fn resolve_permission(
+        &self,
+        request_id: String,
+        approved: bool,
+    ) -> Result<(), String> {
+        let (response, receiver) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(AcpCommand::ResolvePermission {
+                request_id,
+                approved,
+                response,
+            })
+            .await
+            .map_err(|_| "ACP connection closed".to_string())?;
+        receiver
+            .await
+            .map_err(|_| "ACP permission response channel closed".to_string())?
     }
 
     pub async fn shutdown(&self) {
@@ -106,6 +131,10 @@ impl AcpWriter {
 
 pub enum AcpResponse {
     Update(Vec<NormalizedEvent>),
+    PermissionRequest {
+        id: serde_json::Value,
+        params: serde_json::Value,
+    },
     Result(serde_json::Value),
     Error(String),
     Ignored,
@@ -153,6 +182,13 @@ pub fn handle_acp_response_line(
             let events = normalize_acp_update(params, usage);
             return Ok(AcpResponse::Update(events));
         }
+    } else if msg.get("method").and_then(|v| v.as_str()) == Some("session/request_permission") {
+        let id = msg
+            .get("id")
+            .cloned()
+            .ok_or_else(|| "ACP permission request missing id".to_string())?;
+        let params = msg.get("params").cloned().unwrap_or_default();
+        return Ok(AcpResponse::PermissionRequest { id, params });
     } else if msg.get("id").and_then(|v| v.as_i64()) == Some(target_id) {
         if let Some(err) = msg.get("error") {
             return Ok(AcpResponse::Error(
@@ -186,6 +222,98 @@ enum LoopState {
 }
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+
+#[derive(Debug)]
+struct PendingPermission {
+    rpc_id: serde_json::Value,
+    allow_option_id: Option<String>,
+    reject_option_id: Option<String>,
+}
+
+fn permission_request_key(id: &serde_json::Value) -> String {
+    id.as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| id.to_string())
+}
+
+pub(crate) fn permission_option_id(params: &serde_json::Value, approved: bool) -> Option<String> {
+    let options = params.get("options")?.as_array()?;
+    options.iter().find_map(|option| {
+        let option_id = option.get("optionId").and_then(|value| value.as_str())?;
+        let kind = option
+            .get("kind")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let option_id_lower = option_id.to_ascii_lowercase();
+        let matches = if approved {
+            kind.contains("allow")
+                || kind.contains("approve")
+                || option_id_lower.contains("allow")
+                || option_id_lower.contains("approve")
+        } else {
+            kind.contains("reject")
+                || kind.contains("deny")
+                || option_id_lower.contains("reject")
+                || option_id_lower.contains("deny")
+        };
+        matches.then(|| option_id.to_string())
+    })
+}
+
+pub(crate) async fn write_permission_response(
+    stdin: &mut (impl tokio::io::AsyncWrite + Unpin),
+    id: &serde_json::Value,
+    option_id: &str,
+) -> Result<(), String> {
+    let message = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": {
+            "outcome": {
+                "outcome": "selected",
+                "optionId": option_id
+            }
+        }
+    });
+    stdin
+        .write_all(format!("{message}\n").as_bytes())
+        .await
+        .map_err(|error| format!("ACP permission response write error: {error}"))?;
+    stdin
+        .flush()
+        .await
+        .map_err(|error| format!("ACP permission response flush error: {error}"))
+}
+
+async fn reject_pending_permissions(
+    writer: &AcpWriter,
+    pending_permissions: &mut HashMap<String, PendingPermission>,
+) {
+    for (_, pending) in pending_permissions.drain() {
+        let Some(option_id) = pending.reject_option_id else {
+            log::warn!(
+                "ACP permission request {:?} has no reject option; closing without approval",
+                pending.rpc_id
+            );
+            continue;
+        };
+        if let Err(error) = writer
+            .respond(
+                &pending.rpc_id,
+                json!({
+                    "outcome": {
+                        "outcome": "selected",
+                        "optionId": option_id
+                    }
+                }),
+            )
+            .await
+        {
+            log::warn!("ACP failed to reject pending permission: {error}");
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -385,6 +513,7 @@ async fn acp_connection_loop(
     let mut usage: Option<UsageStats> = None;
     let mut buf: Vec<StreamChunk> = Vec::with_capacity(32);
     let mut last_flush = std::time::Instant::now();
+    let mut pending_permissions: HashMap<String, PendingPermission> = HashMap::new();
 
     loop {
         let cmd_future = command_rx.recv();
@@ -424,6 +553,7 @@ async fn acp_connection_loop(
                         false
                     }
                     Some(AcpCommand::Cancel) => {
+                        reject_pending_permissions(&writer, &mut pending_permissions).await;
                         match &state {
                             LoopState::Prompting { prompt_id } => {
                                 let _ = writer.request("session/cancel", json!({
@@ -439,7 +569,41 @@ async fn acp_connection_loop(
                         }
                         false
                     }
+                    Some(AcpCommand::ResolvePermission {
+                        request_id,
+                        approved,
+                        response,
+                    }) => {
+                        let result = if let Some(pending) = pending_permissions.remove(&request_id) {
+                            let option_id = if approved {
+                                pending.allow_option_id
+                            } else {
+                                pending.reject_option_id
+                            };
+                            if let Some(option_id) = option_id {
+                                writer.respond(
+                                    &pending.rpc_id,
+                                    json!({
+                                        "outcome": {
+                                            "outcome": "selected",
+                                            "optionId": option_id
+                                        }
+                                    }),
+                                ).await
+                            } else {
+                                Err(format!(
+                                    "ACP permission request {request_id} does not expose a {} option",
+                                    if approved { "safe approval" } else { "rejection" }
+                                ))
+                            }
+                        } else {
+                            Err(format!("ACP permission request {request_id} is no longer pending"))
+                        };
+                        let _ = response.send(result);
+                        false
+                    }
                     Some(AcpCommand::Shutdown) => {
+                        reject_pending_permissions(&writer, &mut pending_permissions).await;
                         log::info!("ACP shutdown requested for session {}", session_id);
                         true
                     }
@@ -519,24 +683,30 @@ async fn acp_connection_loop(
                                 }
                             }
                         } else if msg.get("method").and_then(|v| v.as_str()) == Some("session/request_permission") {
-                            // Pi runtime requests tool approval. Auto-approve all tools
-                            // since jishu-hub delegates permission control to its own
-                            // adapter-layer capability system and access mode settings.
-                            if let Some(req_id) = msg.get("id") {
-                                log::info!(
-                                    "ACP auto-approving tool permission request id={:?}",
-                                    req_id
-                                );
-                                let result = json!({
-                                    "outcome": {
-                                        "outcome": "selected",
-                                        "optionId": "allow-once"
-                                    }
-                                });
-                                if let Err(e) = writer.respond(req_id, result).await {
-                                    log::warn!("ACP failed to send permission response: {e}");
-                                }
-                            }
+                            let Some(rpc_id) = msg.get("id").cloned() else {
+                                log::warn!("ACP permission request ignored because it has no id");
+                                continue;
+                            };
+                            let params = msg.get("params").cloned().unwrap_or_default();
+                            let request_id = permission_request_key(&rpc_id);
+                            pending_permissions.insert(
+                                request_id.clone(),
+                                PendingPermission {
+                                    rpc_id,
+                                    allow_option_id: permission_option_id(&params, true),
+                                    reject_option_id: permission_option_id(&params, false),
+                                },
+                            );
+                            buf.push(make_chunk(
+                                &session_id,
+                                &NormalizedEvent::ApprovalRequest {
+                                    request_id,
+                                    approval_kind: crate::agent::normalized::ApprovalKind::Other,
+                                    payload: params,
+                                },
+                            ));
+                            flush_buf(&app, &agent_id, &mut buf);
+                            last_flush = std::time::Instant::now();
                         } else {
                             log::debug!("ACP stdout ignored msg (no matching id, not session/update): method={:?}", msg.get("method"));
                         }
@@ -983,5 +1153,36 @@ mod tests {
         let mut usage = None;
         let events = normalize_acp_update(&params, &mut usage);
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn selects_permission_options_by_kind_or_id() {
+        let params = json!({
+            "options": [
+                { "optionId": "reject-once", "kind": "reject_once" },
+                { "optionId": "allow-once", "kind": "allow_once" }
+            ]
+        });
+
+        assert_eq!(
+            permission_option_id(&params, true).as_deref(),
+            Some("allow-once")
+        );
+        assert_eq!(
+            permission_option_id(&params, false).as_deref(),
+            Some("reject-once")
+        );
+    }
+
+    #[test]
+    fn never_treats_an_unknown_permission_option_as_approval() {
+        let params = json!({
+            "options": [
+                { "optionId": "custom", "kind": "custom" }
+            ]
+        });
+
+        assert_eq!(permission_option_id(&params, true), None);
+        assert_eq!(permission_option_id(&params, false), None);
     }
 }

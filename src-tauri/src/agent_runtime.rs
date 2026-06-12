@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 use serde_json::json;
 use tauri::AppHandle;
@@ -24,6 +27,7 @@ pub struct RuntimeStdinBridge {
     pub cancelled: Arc<Mutex<bool>>,
 }
 
+#[derive(Debug, Clone)]
 pub struct AgentTurnOutput {
     pub events: Vec<NormalizedEvent>,
     pub exit_success: bool,
@@ -310,27 +314,183 @@ pub fn run_turn_blocking(
     request: AgentTurnRequest,
     stdin_bridge: Option<RuntimeStdinBridge>,
 ) -> Result<AgentTurnOutput, String> {
+    run_turn_blocking_cancellable(registry, request, stdin_bridge, None)
+}
+
+pub fn run_turn_blocking_cancellable(
+    registry: &AgentRegistry,
+    request: AgentTurnRequest,
+    stdin_bridge: Option<RuntimeStdinBridge>,
+    cancellation: Option<Arc<AtomicBool>>,
+) -> Result<AgentTurnOutput, String> {
     let agent = registry
         .get(&request.agent_id)
         .ok_or_else(|| format!("Agent not found: {}", request.agent_id))?;
     let transport = transport_for_agent(registry, &request.agent_id)?;
 
     match transport {
-        TransportSurface::AcpPreferred => run_acp_turn_blocking(agent, request),
-        TransportSurface::PiRpc => Err(
-            "PiRpc transport requires async GUI runtime; blocking CLI path not yet implemented"
-                .to_string(),
-        ),
+        TransportSurface::AcpPreferred => run_acp_turn_blocking(agent, request, cancellation),
+        TransportSurface::PiRpc => run_pi_rpc_turn_blocking(agent, request, cancellation),
         TransportSurface::Cli | TransportSurface::Embedded => {
-            run_cli_turn_blocking(agent, request, stdin_bridge)
+            run_cli_turn_blocking(agent, request, stdin_bridge, cancellation)
         }
     }
+}
+
+fn run_pi_rpc_turn_blocking(
+    agent: &(dyn AgentPlugin + Send + Sync),
+    request: AgentTurnRequest,
+    cancellation: Option<Arc<AtomicBool>>,
+) -> Result<AgentTurnOutput, String> {
+    let native_session_id = request
+        .session_id
+        .clone()
+        .filter(|session_id| !crate::agent::command_config::is_transient_session_id(session_id));
+    let req = ChatRequest {
+        project_path: request.project_path.clone(),
+        session_id: native_session_id,
+        message: request.message.clone(),
+    };
+    let spec = agent.build_acp_command(&req)?;
+    let mut cmd = tokio::process::Command::new(&spec.program);
+    cmd.args(&spec.args)
+        .current_dir(&request.project_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    for (key, value) in &spec.envs {
+        cmd.env(key, value);
+    }
+    cmd.kill_on_drop(true);
+    crate::process_command::tokio_no_window(&mut cmd);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("Runtime: {error}"))?;
+
+    rt.block_on(async move {
+        let inner = async move {
+            let mut child = cmd
+                .spawn()
+                .map_err(|error| format!("Spawn PiRPC {}: {error}", request.agent_id))?;
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| "PiRPC process missing stdin".to_string())?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| "PiRPC process missing stdout".to_string())?;
+            let mut lines = tokio::io::BufReader::new(stdout).lines();
+            let mut events = Vec::new();
+
+            write_pi_rpc_command(&mut stdin, json!({"type": "get_state"})).await?;
+            let session_id = loop {
+                let line = read_process_line(&mut lines, cancellation.as_ref(), "PiRPC")
+                    .await?
+                    .ok_or_else(|| "PiRPC stdout closed during initialization".to_string())?;
+                let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                if message.get("type").and_then(|value| value.as_str()) == Some("response")
+                    && message.get("command").and_then(|value| value.as_str()) == Some("get_state")
+                {
+                    break message
+                        .get("data")
+                        .and_then(|value| value.get("sessionId"))
+                        .and_then(|value| value.as_str())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| format!("pending-{}", child.id().unwrap_or_default()));
+                }
+            };
+            events.push(NormalizedEvent::SessionResolved { session_id });
+
+            write_pi_rpc_command(
+                &mut stdin,
+                json!({"type": "prompt", "message": request.message}),
+            )
+            .await?;
+
+            let mut completed = false;
+            while let Some(line) =
+                read_process_line(&mut lines, cancellation.as_ref(), "PiRPC").await?
+            {
+                let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                if message.get("type").and_then(|value| value.as_str()) == Some("response")
+                    && message.get("command").and_then(|value| value.as_str()) == Some("prompt")
+                    && message.get("success").and_then(|value| value.as_bool()) == Some(false)
+                {
+                    let error = message
+                        .get("error")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("PiRPC prompt failed");
+                    events.push(NormalizedEvent::Error {
+                        message: error.to_string(),
+                        recoverable: false,
+                    });
+                    events.push(NormalizedEvent::TurnComplete {
+                        reason: TurnEndReason::Error,
+                        usage: None,
+                    });
+                    completed = true;
+                    break;
+                }
+
+                let normalized = crate::pi_rpc_runtime::normalize_pi_agent_event(&message);
+                completed = normalized
+                    .iter()
+                    .any(|event| matches!(event, NormalizedEvent::TurnComplete { .. }));
+                events.extend(normalized);
+                if completed {
+                    break;
+                }
+            }
+
+            drop(stdin);
+            let exit_code =
+                match tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await {
+                    Ok(Ok(status)) => status.code(),
+                    Ok(Err(error)) => return Err(format!("PiRPC wait: {error}")),
+                    Err(_) => {
+                        let _ = child.kill().await;
+                        None
+                    }
+                };
+            Ok(AgentTurnOutput {
+                events,
+                exit_success: completed,
+                exit_code,
+            })
+        };
+
+        tokio::time::timeout(std::time::Duration::from_secs(request.timeout_secs), inner)
+            .await
+            .map_err(|_| format!("Agent dispatch timed out ({}s)", request.timeout_secs))?
+    })
+}
+
+async fn write_pi_rpc_command(
+    stdin: &mut ChildStdin,
+    command: serde_json::Value,
+) -> Result<(), String> {
+    stdin
+        .write_all(format!("{command}\n").as_bytes())
+        .await
+        .map_err(|error| format!("PiRPC write: {error}"))?;
+    stdin
+        .flush()
+        .await
+        .map_err(|error| format!("PiRPC flush: {error}"))
 }
 
 fn run_cli_turn_blocking(
     agent: &(dyn AgentPlugin + Send + Sync),
     request: AgentTurnRequest,
     stdin_bridge: Option<RuntimeStdinBridge>,
+    cancellation: Option<Arc<AtomicBool>>,
 ) -> Result<AgentTurnOutput, String> {
     let req = ChatRequest {
         project_path: request.project_path.clone(),
@@ -346,6 +506,7 @@ fn run_cli_turn_blocking(
     }
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -398,10 +559,8 @@ fn run_cli_turn_blocking(
             if let Some(stdout) = child.stdout.take() {
                 let reader = tokio::io::BufReader::new(stdout);
                 let mut lines = reader.lines();
-                while let Some(line) = lines
-                    .next_line()
-                    .await
-                    .map_err(|e| format!("Read stdout: {e}"))?
+                while let Some(line) =
+                    read_process_line(&mut lines, cancellation.as_ref(), "CLI").await?
                 {
                     if line.trim().is_empty() {
                         continue;
@@ -445,6 +604,7 @@ fn parse_agent_line(
 fn run_acp_turn_blocking(
     agent: &(dyn AgentPlugin + Send + Sync),
     request: AgentTurnRequest,
+    cancellation: Option<Arc<AtomicBool>>,
 ) -> Result<AgentTurnOutput, String> {
     let native_session_id = request
         .session_id
@@ -465,6 +625,7 @@ fn run_acp_turn_blocking(
     for (key, value) in &spec.envs {
         cmd.env(key, value);
     }
+    cmd.kill_on_drop(true);
     crate::process_command::tokio_no_window(&mut cmd);
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -507,7 +668,15 @@ fn run_acp_turn_blocking(
                 }),
             )
             .await?;
-            acp_wait_for_response(&mut lines, init_id, &mut events, &mut usage).await?;
+            acp_wait_for_response(
+                &mut stdin,
+                &mut lines,
+                init_id,
+                &mut events,
+                &mut usage,
+                cancellation.as_ref(),
+            )
+            .await?;
 
             let session_method = if native_session_id.is_some() {
                 "session/resume"
@@ -528,9 +697,15 @@ fn run_acp_turn_blocking(
                 session_params,
             )
             .await?;
-            let session_result =
-                acp_wait_for_response(&mut lines, session_request_id, &mut events, &mut usage)
-                    .await?;
+            let session_result = acp_wait_for_response(
+                &mut stdin,
+                &mut lines,
+                session_request_id,
+                &mut events,
+                &mut usage,
+                cancellation.as_ref(),
+            )
+            .await?;
             let acp_session_id = session_result
                 .get("sessionId")
                 .and_then(|v| v.as_str())
@@ -550,8 +725,15 @@ fn run_acp_turn_blocking(
                 }),
             )
             .await?;
-            let prompt_result =
-                acp_wait_for_response(&mut lines, prompt_id, &mut events, &mut usage).await;
+            let prompt_result = acp_wait_for_response(
+                &mut stdin,
+                &mut lines,
+                prompt_id,
+                &mut events,
+                &mut usage,
+                cancellation.as_ref(),
+            )
+            .await;
             let success = prompt_result.is_ok();
             if let Err(error) = prompt_result {
                 events.push(NormalizedEvent::Error {
@@ -598,20 +780,38 @@ fn run_acp_turn_blocking(
 }
 
 async fn acp_wait_for_response(
+    stdin: &mut tokio::process::ChildStdin,
     lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
     target_id: i64,
     events: &mut Vec<NormalizedEvent>,
     usage: &mut Option<UsageStats>,
+    cancellation: Option<&Arc<AtomicBool>>,
 ) -> Result<serde_json::Value, String> {
     loop {
-        let line = lines
-            .next_line()
-            .await
-            .map_err(|e| format!("ACP read: {e}"))?
+        let line = read_process_line(lines, cancellation, "ACP")
+            .await?
             .ok_or_else(|| "ACP stdout closed".to_string())?;
 
         match crate::acp_runtime::handle_acp_response_line(&line, target_id, usage)? {
             crate::acp_runtime::AcpResponse::Update(new_events) => events.extend(new_events),
+            crate::acp_runtime::AcpResponse::PermissionRequest { id, params } => {
+                let request_id = id
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| id.to_string());
+                events.push(NormalizedEvent::ApprovalRequest {
+                    request_id,
+                    approval_kind: crate::agent::normalized::ApprovalKind::Other,
+                    payload: params.clone(),
+                });
+                if let Some(option_id) = crate::acp_runtime::permission_option_id(&params, false) {
+                    crate::acp_runtime::write_permission_response(stdin, &id, &option_id).await?;
+                }
+                return Err(
+                    "ACP tool permission denied because task execution has no interactive approval channel"
+                        .to_string(),
+                );
+            }
             crate::acp_runtime::AcpResponse::Result(val) => return Ok(val),
             crate::acp_runtime::AcpResponse::Error(err) => {
                 return Err(format!("ACP response error: {}", err))
@@ -621,9 +821,40 @@ async fn acp_wait_for_response(
     }
 }
 
+async fn read_process_line(
+    lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    cancellation: Option<&Arc<AtomicBool>>,
+    transport: &str,
+) -> Result<Option<String>, String> {
+    if cancellation.is_some_and(|token| token.load(Ordering::Acquire)) {
+        return Err("Agent dispatch cancelled".into());
+    }
+
+    let next_line = lines.next_line();
+    tokio::pin!(next_line);
+    loop {
+        tokio::select! {
+            result = &mut next_line => {
+                return result.map_err(|error| format!("{transport} read: {error}"));
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(25)),
+                if cancellation.is_some() =>
+            {
+                if cancellation.is_some_and(|token| token.load(Ordering::Acquire)) {
+                    return Err("Agent dispatch cancelled".into());
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::agent::{AgentRegistry, TransportSurface};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
 
     #[test]
     fn runtime_transport_uses_adapter_contract_not_bridge_wrapping() {
@@ -641,5 +872,42 @@ mod tests {
             super::transport_for_agent(&registry, "jishu-self").unwrap(),
             TransportSurface::PiRpc
         );
+    }
+
+    #[tokio::test]
+    async fn process_line_reader_observes_cancellation_without_waiting_for_eof() {
+        #[cfg(target_os = "windows")]
+        let mut command = {
+            let mut command = tokio::process::Command::new("cmd");
+            command.args(["/C", "ping -n 6 127.0.0.1 >nul & echo done"]);
+            command
+        };
+        #[cfg(not(target_os = "windows"))]
+        let mut command = {
+            let mut command = tokio::process::Command::new("sh");
+            command.args(["-c", "sleep 5; echo done"]);
+            command
+        };
+        command
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command.spawn().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let mut lines = tokio::io::AsyncBufReadExt::lines(tokio::io::BufReader::new(stdout));
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let signal = cancellation.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            signal.store(true, Ordering::Release);
+        });
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            super::read_process_line(&mut lines, Some(&cancellation), "test"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.unwrap_err(), "Agent dispatch cancelled");
+        let _ = child.kill().await;
     }
 }

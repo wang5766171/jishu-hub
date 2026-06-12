@@ -12,6 +12,7 @@ mod hub;
 mod image;
 mod llm;
 mod orchestrator;
+pub mod os_adapter;
 mod pi_rpc_runtime;
 mod process_command;
 mod process_control;
@@ -20,14 +21,12 @@ mod project_config;
 mod session;
 mod task_plan;
 mod util;
-pub mod os_adapter;
-
 
 #[cfg(feature = "cli")]
 pub mod cli;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 const TEXT_PREVIEW_MAX_BYTES: usize = 512 * 1024;
@@ -41,7 +40,9 @@ struct TextFilePreview {
 }
 
 pub struct AppState {
-    pub registry: agent::AgentRegistry,
+    pub registry: Arc<agent::AgentRegistry>,
+    #[cfg(feature = "orchestrator")]
+    pub task_service: std::sync::Mutex<orchestrator::TaskService>,
 }
 
 #[tauri::command]
@@ -820,11 +821,15 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
         // JISHU_AGENT_BINDING_START
         let mut cmd = shell_command(
             "npm",
-            vec!["install".to_string(), "-g".to_string(), "@jishu-hub/jishu-agent@0.79.1-7".to_string()],
+            vec![
+                "install".to_string(),
+                "-g".to_string(),
+                "@jishu-hub/jishu-agent@0.79.1-7".to_string(),
+            ],
         );
         // JISHU_AGENT_BINDING_END
         let mut installer = crate::process_command::tokio_no_window(&mut cmd);
-        
+
         let output = installer.output().await.map_err(|e| e.to_string())?;
 
         if output.status.success() {
@@ -1814,162 +1819,451 @@ fn mask_model_key(key: String) -> String {
     llm::http::mask_key(&key)
 }
 
-// 鈹€鈹€ Orchestrator IPC commands (feature-gated) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
 #[cfg(feature = "orchestrator")]
-#[tauri::command]
-fn task_submit(spec: serde_json::Value) -> Result<serde_json::Value, String> {
-    let spec: orchestrator::TaskSpec =
-        serde_json::from_value(spec).map_err(|err| err.to_string())?;
-    serde_json::to_value(orchestrator::submit_task(spec)?).map_err(|err| err.to_string())
-}
-
-#[cfg(all(feature = "orchestrator", test))]
-fn task_submit_with_root(
-    spec: serde_json::Value,
-    root: &std::path::Path,
-) -> Result<serde_json::Value, String> {
-    let spec: orchestrator::TaskSpec =
-        serde_json::from_value(spec).map_err(|err| err.to_string())?;
-    serde_json::to_value(orchestrator::submit_task_in_root(spec, root)?)
-        .map_err(|err| err.to_string())
-}
-
-#[cfg(feature = "orchestrator")]
-#[tauri::command]
-fn run_list() -> Result<Vec<serde_json::Value>, String> {
-    orchestrator::list_runs()?
-        .into_iter()
-        .map(|run| serde_json::to_value(run).map_err(|err| err.to_string()))
-        .collect()
-}
-
-#[cfg(all(feature = "orchestrator", test))]
-fn run_list_with_root(root: &std::path::Path) -> Result<Vec<serde_json::Value>, String> {
-    orchestrator::list_runs_in_root(root)?
-        .into_iter()
-        .map(|run| serde_json::to_value(run).map_err(|err| err.to_string()))
-        .collect()
-}
-
-#[cfg(feature = "orchestrator")]
-#[tauri::command]
-fn run_get(run_id: String) -> Result<serde_json::Value, String> {
-    serde_json::to_value(orchestrator::get_run(&run_id)?).map_err(|err| err.to_string())
-}
-
-#[cfg(all(feature = "orchestrator", test))]
-fn run_get_with_root(run_id: String, root: &std::path::Path) -> Result<serde_json::Value, String> {
-    serde_json::to_value(orchestrator::get_run_in_root(root, &run_id)?)
-        .map_err(|err| err.to_string())
-}
-
-#[cfg(feature = "orchestrator")]
-#[tauri::command]
-fn run_cancel(run_id: String) -> Result<(), String> {
-    orchestrator::cancel_run(&run_id).map(|_| ())
-}
-
-#[cfg(feature = "orchestrator")]
-#[tauri::command]
-fn run_execute_plan(run_id: String) -> Result<serde_json::Value, String> {
-    serde_json::to_value(orchestrator::execute_plan(&run_id)?).map_err(|err| err.to_string())
-}
-
-#[cfg(feature = "orchestrator")]
-#[tauri::command]
-fn run_summarize(run_id: String, language: Option<String>) -> Result<(), String> {
-    orchestrator::regenerate_summary(&run_id, language.as_deref())
-}
-
-#[cfg(feature = "orchestrator")]
-#[tauri::command]
-fn run_send_message(run_id: String, step_id: String, message: String) -> Result<(), String> {
-    orchestrator::agent_runs::send_message(
-        orchestrator::agent_runs::global(),
-        &run_id,
-        &step_id,
-        &message,
-    )
-}
-
-#[cfg(feature = "orchestrator")]
-#[tauri::command]
-fn run_get_approval(run_id: String, step_id: String) -> Result<Option<serde_json::Value>, String> {
-    Ok(orchestrator::agent_runs::get_approval(
-        orchestrator::agent_runs::global(),
-        &run_id,
-        &step_id,
-    )
-    .and_then(|a| serde_json::to_value(a).ok()))
-}
-
-#[cfg(feature = "orchestrator")]
-#[tauri::command]
-fn run_step_cancel(run_id: String, step_id: String) -> Result<(), String> {
-    orchestrator::agent_runs::cancel(orchestrator::agent_runs::global(), &run_id, &step_id)
-}
-
-#[cfg(feature = "orchestrator")]
-#[tauri::command]
-fn trace_tail(run_id: String, byte_offset: u64) -> Result<serde_json::Value, String> {
-    let (events, new_offset) = orchestrator::trace_tail(&run_id, byte_offset)?;
-    Ok(serde_json::json!({
-        "events": events,
-        "offset": new_offset,
-    }))
-}
-
-#[cfg(feature = "orchestrator")]
-#[tauri::command]
-fn plan_get_state(run_id: String) -> Result<serde_json::Value, String> {
-    use orchestrator::planner_service;
-    // 1. In-memory live agent (currently running)
-    if let Some(agent) = planner_service::get(&run_id) {
-        let state = planner_service::snapshot_state(&agent.state);
-        return Ok(serde_json::to_value(&state).map_err(|e| e.to_string())?);
+fn task_ipc_internal(message: impl Into<String>) -> crate::orchestrator::domain::run::TaskError {
+    crate::orchestrator::domain::run::TaskError {
+        code: "TASK_IPC_INTERNAL".into(),
+        category: crate::orchestrator::domain::run::TaskErrorCategory::Internal,
+        message_key: message.into(),
+        field_path: None,
+        retryable: false,
+        retry_after_ms: None,
+        current_revision: None,
+        current_run_seq: None,
+        remediation: Some("Retry after restarting the local application.".into()),
+        provider_detail: None,
     }
-    // 2. Persisted state (restart-attached)
-    if let Some(state) = planner_service::read_state_from_disk(&run_id) {
-        return Ok(serde_json::to_value(&state).map_err(|e| e.to_string())?);
-    }
-    Ok(serde_json::Value::Null)
+}
+
+// ── Orchestrator IPC commands ────────────────────────────────────────
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_create_graph(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    input: crate::orchestrator::commands::CreateGraphInput,
+) -> Result<
+    (
+        crate::orchestrator::domain::graph::TaskGraph,
+        crate::orchestrator::domain::revision::GraphRevision,
+    ),
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service.create_graph(&input).map_err(Into::into)
 }
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
-fn plan_get_document(run_id: String) -> Result<serde_json::Value, String> {
-    serde_json::to_value(orchestrator::get_plan_document(&run_id)?).map_err(|err| err.to_string())
+fn orchestrator_get_graph(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    graph_id: String,
+) -> Result<
+    crate::orchestrator::domain::graph::TaskGraph,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service.get_graph(&graph_id).map_err(Into::into)
 }
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
-fn plan_update_steps(
+fn orchestrator_get_latest_graph_for_project(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    project_root: String,
+) -> Result<
+    Option<crate::orchestrator::domain::graph::TaskGraph>,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .latest_graph_for_project(std::path::Path::new(&project_root))
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_get_revision(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    revision_id: String,
+) -> Result<
+    crate::orchestrator::domain::revision::GraphRevision,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service.get_revision(&revision_id).map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_apply_commands(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    graph_id: String,
+    expected_revision_id: String,
+    commands: Vec<crate::orchestrator::commands::GraphCommand>,
+    author: String,
+) -> Result<
+    crate::orchestrator::commands::RevisionResult,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .apply_commands(&graph_id, &expected_revision_id, &commands, &author)
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_validate_commands(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    revision_id: String,
+    commands: Vec<crate::orchestrator::commands::GraphCommand>,
+) -> Result<Vec<String>, crate::orchestrator::domain::run::TaskError> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .validate_commands(&revision_id, &commands)
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+async fn orchestrator_generate_proposal(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    request: crate::orchestrator::planner::PlanningRequest,
+) -> Result<crate::orchestrator::planner::GraphProposal, crate::orchestrator::domain::run::TaskError>
+{
+    let planner = {
+        let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+        let task_service = app_state
+            .task_service
+            .lock()
+            .map_err(|e| task_ipc_internal(e.to_string()))?;
+        task_service
+            .planner_service()
+            .map_err(Into::<crate::orchestrator::domain::run::TaskError>::into)?
+    };
+    planner
+        .generate(request)
+        .await
+        .map_err(|message| crate::orchestrator::domain::run::TaskError {
+            code: "TASK_PLANNER_ERROR".into(),
+            category: crate::orchestrator::domain::run::TaskErrorCategory::Adapter,
+            message_key: message,
+            field_path: None,
+            retryable: true,
+            retry_after_ms: None,
+            current_revision: None,
+            current_run_seq: None,
+            remediation: Some(
+                "Check the planning skill installation and Jishu Agent configuration, then retry."
+                    .into(),
+            ),
+            provider_detail: None,
+        })
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_start_run(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    graph_id: String,
+    revision_id: String,
+    budget_state: Option<crate::orchestrator::domain::run::BudgetState>,
+) -> Result<crate::orchestrator::domain::run::GraphRun, crate::orchestrator::domain::run::TaskError>
+{
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .start_run_with_budget(&graph_id, &revision_id, budget_state.unwrap_or_default())
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_propose_run_revision(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
     run_id: String,
-    steps: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let steps: Vec<orchestrator::Step> =
-        serde_json::from_value(steps).map_err(|err| err.to_string())?;
-    serde_json::to_value(orchestrator::update_plan_steps(&run_id, steps)?)
-        .map_err(|err| err.to_string())
+    candidate_revision_id: String,
+) -> Result<
+    crate::orchestrator::domain::run::RunRevisionProposal,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .propose_run_revision(&run_id, &candidate_revision_id)
+        .map_err(Into::into)
 }
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
-fn plan_cancel(run_id: String) -> Result<(), String> {
-    orchestrator::planner_service::cancel_agent(&run_id);
-    Ok(())
+fn orchestrator_apply_run_revision(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    run_id: String,
+    proposal_id: String,
+    expected_run_seq: u64,
+) -> Result<crate::orchestrator::domain::run::GraphRun, crate::orchestrator::domain::run::TaskError>
+{
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .apply_run_revision(&run_id, &proposal_id, expected_run_seq)
+        .map_err(Into::into)
 }
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
-fn run_delete(run_id: String) -> Result<(), String> {
-    orchestrator::delete_run(&run_id)
+fn orchestrator_list_runs(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    graph_id: String,
+) -> Result<
+    Vec<crate::orchestrator::domain::run::GraphRun>,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service.list_runs(&graph_id).map_err(Into::into)
 }
 
-#[cfg(all(feature = "orchestrator", test))]
-fn run_cancel_with_root(run_id: String, root: &std::path::Path) -> Result<(), String> {
-    orchestrator::cancel_run_in_root(root, &run_id).map(|_| ())
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_get_node_runs(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    run_id: String,
+) -> Result<
+    Vec<crate::orchestrator::domain::run::NodeRun>,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service.get_node_runs(&run_id).map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_get_run_projection(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    run_id: String,
+) -> Result<crate::orchestrator::events::RunProjection, crate::orchestrator::domain::run::TaskError>
+{
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service.run_projection(&run_id).map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_pause_run(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    run_id: String,
+) -> Result<(), crate::orchestrator::domain::run::TaskError> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service.pause_run(&run_id).map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_resume_run(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    run_id: String,
+) -> Result<(), crate::orchestrator::domain::run::TaskError> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service.resume_run(&run_id).map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_cancel_run(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    run_id: String,
+) -> Result<(), crate::orchestrator::domain::run::TaskError> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service.cancel_run(&run_id).map_err(Into::into)
+}
+
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_pending_approvals(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    run_id: String,
+) -> Result<
+    Vec<crate::orchestrator::domain::run::ApprovalRequest>,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service.pending_approvals(&run_id).map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_resolve_approval(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    approval_id: String,
+    approved: bool,
+) -> Result<
+    crate::orchestrator::domain::run::ApprovalRequest,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .resolve_approval(&approval_id, approved, "local_user")
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_run_events_after(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    run_id: String,
+    after_seq: u64,
+) -> Result<Vec<crate::orchestrator::events::TaskEvent>, crate::orchestrator::domain::run::TaskError>
+{
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .run_events_after(&run_id, after_seq)
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_list_artifacts(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    run_id: String,
+) -> Result<
+    Vec<crate::orchestrator::domain::run::ArtifactRef>,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service.list_artifacts(&run_id).map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_list_revisions(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    graph_id: String,
+) -> Result<
+    Vec<crate::orchestrator::domain::revision::GraphRevision>,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service.list_revisions(&graph_id).map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_checkout_draft_revision(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    graph_id: String,
+    expected_revision_id: String,
+    target_revision_id: String,
+) -> Result<
+    crate::orchestrator::domain::revision::GraphRevision,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .checkout_draft_revision(&graph_id, &expected_revision_id, &target_revision_id)
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_choose_recovery(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    node_run_id: String,
+    strategy: crate::orchestrator::recovery::RecoveryStrategy,
+    reason: String,
+) -> Result<crate::orchestrator::domain::run::NodeRun, crate::orchestrator::domain::run::TaskError>
+{
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .choose_recovery(&node_run_id, &strategy, &reason)
+        .map_err(Into::into)
 }
 
 #[tauri::command]
@@ -1982,25 +2276,25 @@ fn task_plan_skill_install(skill_id: String) -> Result<task_plan::TaskPlanSkill,
     task_plan::install_builtin_skill(&skill_id)
 }
 
-#[tauri::command]
-fn task_plan_generate_roles(
-    skill_id: String,
-    message: String,
-) -> Result<Vec<task_plan::TaskPlanRole>, String> {
-    task_plan::generate_roles(&skill_id, &message)
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let _ = hub::migrate_v0_5_0();
-            let mut registry = agent::AgentRegistry::new();
+            let registry = Arc::new(agent::AgentRegistry::new());
             if let Ok(Some(active_id)) = hub::load_active_agent_id() {
                 let _ = registry.set_active(&active_id);
             }
-            app.manage(Mutex::new(AppState { registry }));
+            #[cfg(feature = "orchestrator")]
+            let task_service = std::sync::Mutex::new(
+                crate::orchestrator::TaskService::open_default(registry.clone())?,
+            );
+            app.manage(Mutex::new(AppState {
+                registry,
+                #[cfg(feature = "orchestrator")]
+                task_service,
+            }));
             app.manage(std::sync::Mutex::new(chat::ChatState::new()));
             if let Ok(pinned) = hub::load_always_on_top() {
                 if pinned {
@@ -2094,28 +2388,59 @@ pub fn run() {
             install_update,
             chat::send_message,
             chat::abort_chat,
+            chat::resolve_chat_permission,
             image::save_session_files,
             image::read_image_as_data_url,
             image::read_file_as_base64,
             image::get_clipboard_file_paths,
-            task_submit,
-            run_list,
-            run_get,
-            run_cancel,
-            run_execute_plan,
-            run_delete,
-            run_summarize,
-            run_send_message,
-            run_get_approval,
-            run_step_cancel,
-            trace_tail,
-            plan_get_state,
-            plan_get_document,
-            plan_update_steps,
-            plan_cancel,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_create_graph,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_get_graph,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_get_latest_graph_for_project,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_get_revision,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_apply_commands,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_validate_commands,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_generate_proposal,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_start_run,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_propose_run_revision,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_apply_run_revision,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_list_runs,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_get_node_runs,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_get_run_projection,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_pause_run,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_resume_run,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_cancel_run,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_pending_approvals,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_resolve_approval,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_run_events_after,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_list_artifacts,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_list_revisions,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_checkout_draft_revision,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_choose_recovery,
             task_plan_skill_list,
             task_plan_skill_install,
-            task_plan_generate_roles,
             list_models,
             add_model,
             update_model,
@@ -2132,7 +2457,6 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use crate::orchestrator::{AssignmentMode, RunStatus, TaskKind, TaskSpec};
     use std::collections::HashMap;
 
     #[test]
@@ -2180,52 +2504,5 @@ mod tests {
         assert!(!super::is_allowed_install_command(
             "winget upgrade Git.Git; whoami"
         ));
-    }
-
-    #[cfg(feature = "orchestrator")]
-    #[test]
-    fn task_ipc_helpers_submit_list_get_and_cancel_real_runs() {
-        let root = std::env::temp_dir().join(format!("jishu_ipc_test_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-
-        let spec = TaskSpec {
-            task_id: "ts_ipc".into(),
-            kind: TaskKind::Run,
-            message: "HUB task".into(),
-            project_path: Some("D:/project".into()),
-            roles: Vec::new(),
-            assignment_mode: crate::orchestrator::AssignmentMode::Manual,
-            policy: "default".into(),
-            parent_run_id: None,
-            epic_id: None,
-            depth: 0,
-            created_at: 1,
-            deadline_ms: None,
-            labels: HashMap::new(),
-        };
-
-        let submitted =
-            super::task_submit_with_root(serde_json::to_value(spec).unwrap(), &root).unwrap();
-        assert_ne!(submitted["run_id"], "stub");
-        let run_id = submitted["run_id"].as_str().unwrap().to_string();
-
-        let runs = super::run_list_with_root(&root).unwrap();
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0]["task_id"], "ts_ipc");
-
-        let record = super::run_get_with_root(run_id.clone(), &root).unwrap();
-        assert_eq!(record["spec"]["task_id"], "ts_ipc");
-        // v0.6 Run mode may be complete/error/aborted depending on
-        // whether agents are installed. Just verify status field exists.
-        assert!(record["result"]["status"].is_string());
-
-        super::run_cancel_with_root(run_id.clone(), &root).unwrap();
-        let record = super::run_get_with_root(run_id, &root).unwrap();
-        assert_eq!(
-            record["result"]["status"],
-            serde_json::to_value(RunStatus::Aborted).unwrap()
-        );
-
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

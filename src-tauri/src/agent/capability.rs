@@ -31,6 +31,8 @@ bitflags::bitflags! {
 
         const SUBAGENT_DISPATCH    = 1 << 50;
         const SUBAGENT_RECEIVE     = 1 << 51;
+        const TASK_PLANNING        = 1 << 52;
+        const TASK_SUPERVISION     = 1 << 53;
 
         const RPC_BIDIRECTIONAL    = 1 << 60;
     }

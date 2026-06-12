@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Jishu Hub",
-  "version": "0.6.17",
+  "version": "0.6.18",
   "identifier": "com.jishu-hub.app",
   "build": {
     "frontendDist": "../dist",

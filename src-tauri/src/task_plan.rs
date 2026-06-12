@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -48,6 +49,7 @@ pub struct TaskPlanSkill {
     pub valid: bool,
     pub error: Option<String>,
     pub content_bytes: u64,
+    pub content_hash: String,
     #[serde(default)]
     pub workflow_hints: Option<String>,
     #[serde(default)]
@@ -194,186 +196,6 @@ pub fn list_task_plan_skills() -> Result<Vec<TaskPlanSkill>, String> {
 
 pub fn install_builtin_skill(skill_id: &str) -> Result<TaskPlanSkill, String> {
     install_builtin_skill_in_dir(skill_id, &task_plan_dir()?)
-}
-
-pub fn generate_roles(skill_id: &str, message: &str) -> Result<Vec<TaskPlanRole>, String> {
-    let dir = task_plan_dir()?;
-    let skill = read_installed_skill(&dir, skill_id)?
-        .ok_or_else(|| format!("Task plan skill '{skill_id}' is not installed"))?;
-    if !skill.valid {
-        return Err(skill
-            .error
-            .unwrap_or_else(|| format!("Task plan skill '{skill_id}' is invalid")));
-    }
-
-    // Try LLM-powered role generation first; fall back to template roles
-    match generate_roles_with_llm(message, &skill.roles, skill.workflow_hints.as_deref()) {
-        Ok(roles) if !roles.is_empty() => Ok(roles),
-        _ => Ok(skill.roles),
-    }
-}
-
-/// Use the configured LLM to dynamically generate roles based on the task message
-/// and the skill template's role patterns.
-fn generate_roles_with_llm(
-    message: &str,
-    template_roles: &[TaskPlanRole],
-    workflow_hints: Option<&str>,
-) -> Result<Vec<TaskPlanRole>, String> {
-    let store = crate::llm::config::ModelStore::load()?;
-    let preset = store
-        .get_active()
-        .ok_or_else(|| "No active model configured".to_string())?
-        .clone();
-    let provider = crate::llm::create_provider(&preset)?;
-
-    let template_desc = template_roles
-        .iter()
-        .map(|r| {
-            format!(
-                "- {} ({}): {}",
-                r.role_name,
-                r.role_id,
-                r.responsibilities
-                    .first()
-                    .map(|s| s.as_str())
-                    .unwrap_or("N/A")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let system_prompt = r#"You are a task planning assistant. Given a task description and a set of available role patterns, generate the specific roles needed for this task.
-
-Return ONLY a JSON array of role objects. Each object must have:
-- role_id: snake_case identifier (use one of the available patterns or derive from it)
-- role_name: display name in Chinese
-- responsibilities: array of 2-4 specific responsibility strings in Chinese
-- acceptance: array of 1-3 acceptance criteria strings in Chinese
-- can_edit_files: boolean
-- can_run_commands: boolean
-- can_receive_rework: boolean
-
-Rules:
-- Select only the roles actually needed for this task (2-5 roles typically)
-- Adapt responsibilities and acceptance criteria to the specific task
-- The last role should be an auditor/reviewer that checks quality
-- can_receive_rework should be true for roles that can receive feedback (developers, designers)
-- can_receive_rework should be false for auditor roles
-- Return ONLY the JSON array, no markdown fences, no explanation"#;
-
-    let hints_section = if let Some(hints) = workflow_hints {
-        format!("\n\nWorkflow hints:\n{}", hints)
-    } else {
-        String::new()
-    };
-
-    let user_prompt = format!(
-        "Task: {}\n\nAvailable role patterns:\n{}{}",
-        message, template_desc, hints_section
-    );
-
-    let req = crate::llm::message::LlmRequest {
-        model: preset.model.clone(),
-        messages: vec![
-            crate::llm::message::LlmMessage {
-                role: crate::llm::message::LlmRole::System,
-                content: Some(system_prompt.to_string()),
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            crate::llm::message::LlmMessage {
-                role: crate::llm::message::LlmRole::User,
-                content: Some(user_prompt),
-                tool_calls: None,
-                tool_call_id: None,
-            },
-        ],
-        tools: vec![],
-        stream: false,
-        max_tokens: Some(4096),
-        temperature: Some(0.3),
-    };
-
-    let cancel = crate::llm::CancelToken::new();
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("Runtime: {e}"))?;
-
-    let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let text_clone = text.clone();
-    let cancel_for_async = cancel.clone();
-    let result = rt.block_on(async {
-        use tokio::time::{timeout, Duration};
-        let inner = provider.stream_chat(
-            req,
-            Box::new(move |event| {
-                if let crate::agent::NormalizedEvent::TextDelta { delta } = event {
-                    if let Ok(mut t) = text_clone.lock() {
-                        t.push_str(&delta);
-                    }
-                }
-            }),
-            &cancel_for_async,
-        );
-        // 5s timeout — fall back to template
-        match timeout(Duration::from_secs(5), inner).await {
-            Ok(r) => r,
-            Err(_) => {
-                cancel.cancel();
-                Err(crate::llm::LlmError::Request("LLM timed out (15s)".into()))
-            }
-        }
-    });
-
-    if let Err(e) = result {
-        // LLM failed — return empty to fall back to template
-        eprintln!("[task-plan] LLM role generation failed: {e}");
-        return Ok(Vec::new());
-    }
-    let response_text = text.lock().map_err(|e| e.to_string())?.clone();
-
-    // Parse the JSON response — handle possible markdown fences
-    let json_str = response_text
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
-
-    let raw_roles: Vec<RawLlmRole> = serde_json::from_str(json_str)
-        .map_err(|e| format!("Failed to parse LLM role response: {e}"))?;
-
-    Ok(raw_roles
-        .into_iter()
-        .filter(|r| !r.role_id.is_empty() && !r.role_name.is_empty())
-        .map(|r| TaskPlanRole {
-            role_id: r.role_id,
-            role_name: r.role_name,
-            responsibilities: r.responsibilities,
-            acceptance: r.acceptance,
-            can_edit_files: r.can_edit_files,
-            can_run_commands: r.can_run_commands,
-            can_receive_rework: r.can_receive_rework,
-        })
-        .collect())
-}
-
-#[derive(Deserialize)]
-struct RawLlmRole {
-    role_id: String,
-    role_name: String,
-    #[serde(default)]
-    responsibilities: Vec<String>,
-    #[serde(default)]
-    acceptance: Vec<String>,
-    #[serde(default)]
-    can_edit_files: bool,
-    #[serde(default)]
-    can_run_commands: bool,
-    #[serde(default = "default_receive_rework")]
-    can_receive_rework: bool,
 }
 
 fn list_task_plan_skills_in_dir(dir: &Path) -> Result<Vec<TaskPlanSkill>, String> {
@@ -678,6 +500,7 @@ fn parse_skill_markdown(
     let name = meta.get("name").cloned().unwrap_or_else(|| id.clone());
     let description = meta.get("description").cloned().unwrap_or_default();
     let content_bytes = content.as_bytes().len() as u64;
+    let content_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
     let (valid, error, roles, workflow_hints) = match parse_manifest(content) {
         Ok(manifest) => {
             let roles = normalize_roles(&manifest.roles);
@@ -708,6 +531,7 @@ fn parse_skill_markdown(
         valid,
         error,
         content_bytes,
+        content_hash,
         workflow_hints,
         roles,
     }
