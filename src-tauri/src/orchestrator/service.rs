@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::orchestrator::commands::{
     apply_commands, graph_create, graph_validate, CreateGraphInput, GraphCommand, RevisionResult,

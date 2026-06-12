@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{atomic::AtomicBool, Arc, Mutex};
+use std::sync::{atomic::AtomicBool, Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -68,24 +68,21 @@ impl PlannerService {
         if request.instruction.trim().is_empty() {
             return Err("planning instruction cannot be empty".into());
         }
-        let (graph, revision, snapshot) = {
-            let graph = self
-                .store
-                .get_graph(&request.graph_id)
-                .map_err(|error| error.to_string())?;
-            let revision = self
-                .store
-                .get_revision(&request.base_revision_id)
-                .map_err(|error| error.to_string())?;
-            if revision.graph_id != request.graph_id {
-                return Err(format!(
-                    "revision {} does not belong to graph {}",
-                    request.base_revision_id, request.graph_id
-                ));
-            }
-            let snapshot = revision.snapshot().map_err(|error| error.to_string())?;
-            (graph, revision, snapshot)
-        };
+        let graph = self
+            .store
+            .get_graph(&request.graph_id)
+            .map_err(|error| error.to_string())?;
+        let revision = self
+            .store
+            .get_revision(&request.base_revision_id)
+            .map_err(|error| error.to_string())?;
+        if revision.graph_id != request.graph_id {
+            return Err(format!(
+                "revision {} does not belong to graph {}",
+                request.base_revision_id, request.graph_id
+            ));
+        }
+        let snapshot = revision.snapshot().map_err(|error| error.to_string())?;
 
         let skill_manifests = load_skill_manifests(&revision.skill_refs)?;
         let available_agents = self

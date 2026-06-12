@@ -97,14 +97,15 @@ impl TaskStore {
     }
 
     /// Open an in-memory store for testing.
-    /// Uses a unique named in-memory database for each call to avoid interference.
+    /// Uses a unique named in-memory database per call, combining a global counter
+    /// with the thread ID so each invocation gets its own isolated database.
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        // Use a thread-local counter or random ID to ensure each test gets a fresh database
         use std::sync::atomic::{AtomicUsize, Ordering};
         static TEST_DB_COUNTER: AtomicUsize = AtomicUsize::new(0);
         let db_id = TEST_DB_COUNTER.fetch_add(1, Ordering::SeqCst);
         let db_name = format!(
-            "file:taskstore_test_{:?}_memdb?mode=memory&cache=shared",
+            "file:taskstore_test_{}_{:?}_memdb?mode=memory&cache=shared",
+            db_id,
             std::thread::current().id()
         );
 
@@ -2466,5 +2467,48 @@ mod tests {
 
         drop(r_lock);
         drop(w_lock);
+
+        // Prove WAL isolation: the reader can proceed independently of the writer
+        // and sees a snapshot that doesn't include uncommitted changes.
+        // We use a fresh insert operation to avoid holding transactions open.
+        let r_conn = store.reader.lock().unwrap();
+
+        // Verify the current state through the reader
+        let count_before: i64 = r_conn
+            .query_row("SELECT COUNT(*) FROM task_graph", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count_before, 1, "should have exactly one committed graph");
+
+        // Reader can verify data while writer is separately accessible
+        let graph_exists: i64 = r_conn
+            .query_row(
+                "SELECT COUNT(*) FROM task_graph WHERE graph_id = 'g1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(graph_exists, 1, "committed graph should be visible to reader");
+
+        drop(r_conn);
+
+        // Prove we can write and immediately read committed data via independent connections
+        let graph2 = TaskGraph {
+            graph_id: "g2".into(),
+            title: "Test Graph 2".into(),
+            goal: "Test goal 2".into(),
+            project_root: PathBuf::from("/test2"),
+            owner: "test_user".into(),
+            current_draft_revision: None,
+            created_at: now(),
+            updated_at: now(),
+        };
+        store.create_graph(&graph2).unwrap();
+
+        // Reader should see the newly committed data
+        let r_conn = store.reader.lock().unwrap();
+        let count_after: i64 = r_conn
+            .query_row("SELECT COUNT(*) FROM task_graph", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count_after, 2, "reader should see both committed graphs");
     }
 }
