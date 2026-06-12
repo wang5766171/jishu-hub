@@ -2487,7 +2487,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(graph_exists, 1, "committed graph should be visible to reader");
+        assert_eq!(
+            graph_exists, 1,
+            "committed graph should be visible to reader"
+        );
 
         drop(r_conn);
 
@@ -2510,5 +2513,38 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM task_graph", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count_after, 2, "reader should see both committed graphs");
+    }
+
+    #[test]
+    fn public_reads_do_not_take_the_writer_lock() {
+        // Behavioral routing guard: public read methods must go through the
+        // reader connection, never the writer. We hold the writer lock and
+        // then call a public read; if any read path were re-routed onto the
+        // writer lock this would deadlock. (The in-memory test DB cannot
+        // faithfully reproduce WAL's cross-connection read-during-write
+        // semantics, so this routing guard — not an uncommitted-tx probe — is
+        // the correct regression test here.)
+        let store = make_test_store();
+        let graph = TaskGraph {
+            graph_id: "g1".into(),
+            title: "Routing guard".into(),
+            goal: "prove reads bypass the writer lock".into(),
+            project_root: PathBuf::from("/test"),
+            owner: "test_user".into(),
+            current_draft_revision: None,
+            created_at: now(),
+            updated_at: now(),
+        };
+        store.create_graph(&graph).unwrap();
+
+        // Hold the writer lock for the duration of the read below.
+        let _writer_guard = store.writer.lock().unwrap();
+
+        // A public read must succeed while the writer is locked — proving it
+        // routes through the independent reader connection, not the writer.
+        let read_back = store
+            .get_graph("g1")
+            .expect("read via reader must succeed while writer lock is held");
+        assert_eq!(read_back.graph_id, "g1");
     }
 }
