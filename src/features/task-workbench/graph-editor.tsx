@@ -426,7 +426,11 @@ export function GraphEditor({
   );
 
   return (
-    <div className="relative h-full w-full">
+    <div
+      className="relative h-full w-full"
+      role="application"
+      aria-label={t("tasks.workbench.canvasAriaLabel")}
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}

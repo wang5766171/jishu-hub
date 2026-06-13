@@ -528,6 +528,7 @@
       "selectAll": "Select all",
       "clearSelection": "Clear",
       "addPhase": "Add phase",
+      "canvasAriaLabel": "Task graph canvas. Use arrow keys to pan, Ctrl/Cmd+Z to undo.",
       "addAgentStep": "Add agent step",
       "agentStepEyebrow": "Executable node",
       "stepTitle": "Step title",

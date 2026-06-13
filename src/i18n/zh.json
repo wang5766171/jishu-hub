@@ -526,6 +526,7 @@
       "selectAll": "全选",
       "clearSelection": "清空",
       "addPhase": "添加阶段",
+      "canvasAriaLabel": "任务图画布。使用方向键平移，按 Ctrl/Cmd+Z 撤销。",
       "addAgentStep": "添加 Agent 节点",
       "agentStepEyebrow": "可执行节点",
       "stepTitle": "节点标题",
