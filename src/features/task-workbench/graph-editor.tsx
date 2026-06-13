@@ -44,6 +44,30 @@ function nodeAppearance(status?: NodeRunStatus) {
   }
 }
 
+/// §12.3: node state must use text + color + shape. `nodeAppearance` covers
+/// color (status); this adds shape variation by node kind (border radius/style/
+/// width) so goal/group/executable/loop/gate are distinguishable beyond color.
+function nodeKindStyle(nodeKind: string): {
+  borderStyle: string;
+  borderRadius: number;
+  borderWidth: number;
+} {
+  switch (nodeKind) {
+    case "goal":
+      return { borderStyle: "solid", borderRadius: 28, borderWidth: 3 };
+    case "group":
+      return { borderStyle: "double", borderRadius: 12, borderWidth: 5 };
+    case "control_loop":
+    case "loop":
+      return { borderStyle: "dashed", borderRadius: 18, borderWidth: 3 };
+    case "control_approval_gate":
+    case "approval_gate":
+      return { borderStyle: "dotted", borderRadius: 8, borderWidth: 3 };
+    default:
+      return { borderStyle: "solid", borderRadius: 5, borderWidth: 2 };
+  }
+}
+
 interface GraphEditorProps {
   snapshot: GraphSnapshot | null;
   graphId?: string | null;
@@ -216,6 +240,7 @@ export function GraphEditor({
     const rfNodes: ReactFlowNode[] = snapshot.nodes.map((n) => {
       const status = nodeRuns?.[n.node_id]?.status;
       const appearance = nodeAppearance(status);
+      const kindStyle = nodeKindStyle(n.node_kind);
       const statusText = status ? ` [${t(`tasks.workbench.status.${status}`)}]` : "";
 
       return {
@@ -228,9 +253,9 @@ export function GraphEditor({
         targetPosition: Position.Left,
         sourcePosition: Position.Right,
         style: {
-          border: `2px solid ${appearance.borderColor}`,
+          border: `${kindStyle.borderWidth}px ${kindStyle.borderStyle} ${appearance.borderColor}`,
           padding: 10,
-          borderRadius: 5,
+          borderRadius: kindStyle.borderRadius,
           background: appearance.background,
           color: "#fff",
           width: LAYOUT_NODE_WIDTH,
@@ -338,6 +363,7 @@ export function GraphEditor({
         if (!graphNode) return node;
         const status = nodeRuns?.[node.id]?.status;
         const appearance = nodeAppearance(status);
+        const kindStyle = nodeKindStyle(graphNode.node_kind);
         const statusText = status ? ` [${t(`tasks.workbench.status.${status}`)}]` : "";
         return {
           ...node,
@@ -346,7 +372,8 @@ export function GraphEditor({
           },
           style: {
             ...node.style,
-            border: `2px solid ${appearance.borderColor}`,
+            border: `${kindStyle.borderWidth}px ${kindStyle.borderStyle} ${appearance.borderColor}`,
+            borderRadius: kindStyle.borderRadius,
             background: appearance.background,
             boxShadow: appearance.boxShadow,
           },
