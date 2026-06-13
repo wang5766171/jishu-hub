@@ -1,10 +1,11 @@
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { GraphProposal } from "./use-task-graph";
+import type { GraphCommand, GraphProposal } from "./use-task-graph";
 
 interface ProposalReviewProps {
   proposal: GraphProposal;
   accepting: boolean;
-  onAccept: () => Promise<void>;
+  onAccept: (commandIds: string[]) => Promise<void>;
   onDismiss: () => void;
 }
 
@@ -16,6 +17,22 @@ export function ProposalReview({
 }: ProposalReviewProps) {
   const { t } = useTranslation();
   const diff = proposal.diff;
+  // §12.5: accept all OR part of the proposal. Every command is selected by
+  // default; the user unchecks the ones they want to defer.
+  const allCommandIds = proposal.commands.map((command) => command.command_id);
+  const [selectedIds, setSelectedIds] = useState<string[]>(allCommandIds);
+  useEffect(() => {
+    setSelectedIds(proposal.commands.map((command) => command.command_id));
+  }, [proposal.proposal_id, proposal.commands]);
+  const toggleCommand = (commandId: string) => {
+    setSelectedIds((current) =>
+      current.includes(commandId)
+        ? current.filter((id) => id !== commandId)
+        : [...current, commandId],
+    );
+  };
+  const allSelected = selectedIds.length === allCommandIds.length && allCommandIds.length > 0;
+  const toggleAll = () => setSelectedIds(allSelected ? [] : allCommandIds);
 
   return (
     <div className="absolute inset-0 z-40 grid place-items-center bg-slate-950/75 p-6 backdrop-blur-sm">
@@ -84,6 +101,43 @@ export function ProposalReview({
           </div>
         </div>
 
+        {proposal.commands.length > 0 && (
+          <div className="mt-6">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-slate-100">
+                {t("tasks.workbench.proposalCommands")}
+              </h3>
+              <button
+                type="button"
+                className="text-xs text-cyan-300 hover:text-cyan-200"
+                onClick={toggleAll}
+              >
+                {allSelected
+                  ? t("tasks.workbench.clearSelection")
+                  : t("tasks.workbench.selectAll")}
+              </button>
+            </div>
+            <ul className="mt-3 space-y-1.5">
+              {proposal.commands.map((command) => {
+                const checked = selectedIds.includes(command.command_id);
+                return (
+                  <li key={command.command_id}>
+                    <label className="flex items-start gap-2.5 rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-200 hover:border-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleCommand(command.command_id)}
+                        className="mt-0.5"
+                      />
+                      <span>{summarizeCommand(command)}</span>
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+
         <div className="mt-7 flex justify-end gap-3 border-t border-slate-800 pt-5">
           <button
             type="button"
@@ -94,9 +148,9 @@ export function ProposalReview({
           </button>
           <button
             type="button"
-            disabled={accepting}
+            disabled={accepting || selectedIds.length === 0}
             className="rounded bg-cyan-400 px-5 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
-            onClick={() => onAccept().catch(console.error)}
+            onClick={() => onAccept(selectedIds).catch(console.error)}
           >
             {accepting
               ? t("tasks.workbench.acceptingProposal")
@@ -142,4 +196,30 @@ function ProposalList({
       </ul>
     </div>
   );
+}
+
+/// Render a one-line, user-readable summary of a GraphCommand for the per-command
+/// accept list. Commands are loosely typed (`{ op, command_id, ... }`), so read
+/// the common payload fields defensively.
+function summarizeCommand(command: GraphCommand): string {
+  const node = (command as { node?: { node_id?: string; title?: string } }).node;
+  const edge = (command as { edge?: { source_node_id?: string; target_node_id?: string } }).edge;
+  const nodeId = (command as { node_id?: string }).node_id;
+  const edgeId = (command as { edge_id?: string }).edge_id;
+  switch (command.op) {
+    case "add_node":
+      return `+ ${node?.title ?? node?.node_id ?? command.command_id}`;
+    case "remove_node":
+      return `- ${nodeId ?? command.command_id}`;
+    case "update_node":
+      return `~ ${nodeId ?? command.command_id}`;
+    case "add_edge":
+      return `+ ${edge?.source_node_id ?? "?"} → ${edge?.target_node_id ?? "?"}`;
+    case "remove_edge":
+      return `- ${edgeId ?? command.command_id}`;
+    case "update_policy":
+      return `⚙ ${nodeId ?? command.command_id}`;
+    default:
+      return `${command.op}: ${command.command_id}`;
+  }
 }

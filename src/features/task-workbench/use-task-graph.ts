@@ -224,6 +224,7 @@ export interface PlanningProgress {
     | "preparing_context"
     | "resolving_agent"
     | "generating"
+    | "awaiting_input"
     | "validating"
     | "retrying"
     | "building_proposal"
@@ -603,13 +604,20 @@ export function useTaskGraph() {
     }
   }, [checkoutDraftRevision, redoRevisionIds]);
 
-  const acceptProposal = useCallback(async () => {
+  const acceptProposal = useCallback(async (selectedCommandIds?: string[]) => {
     if (!proposal || !revision) return;
     if (proposal.base_revision_id !== revision.revision_id) {
       setProposal(null);
       throw new Error("The proposal is stale. Generate it again from the current revision.");
     }
-    await applyCommands(proposal.commands);
+    // §12.5: user may accept all or part of a proposal. Filter to the selected
+    // command ids (default: all). An empty selection just dismisses the proposal.
+    const selected = selectedCommandIds
+      ? proposal.commands.filter((command) => selectedCommandIds.includes(command.command_id))
+      : proposal.commands;
+    if (selected.length > 0) {
+      await applyCommands(selected);
+    }
     setProposal(null);
   }, [applyCommands, proposal, revision]);
 
