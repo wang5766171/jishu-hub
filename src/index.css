@@ -8,6 +8,20 @@ select option {
   color: var(--color-foreground);
 }
 
+/* Accessibility (§12.6): honor reduced-motion. Disables transitions/animations
+   app-wide — including the workbench node `transition: all 0.3s` — for users who
+   request reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 @property --font-size-prose {
   syntax: '<length>';
   initial-value: 19px;
