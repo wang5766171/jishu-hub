@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { computeLayout, LAYOUT_NODE_WIDTH, type LayoutGraph, type LayoutResult } from "./layout";
+import { loadViewport, saveViewport } from "./viewport-storage";
 import {
   ReactFlow,
   MiniMap,
@@ -45,6 +46,7 @@ function nodeAppearance(status?: NodeRunStatus) {
 
 interface GraphEditorProps {
   snapshot: GraphSnapshot | null;
+  graphId?: string | null;
   selectedNodeId?: string | null;
   onNodeSelect?: (nodeId: string | null) => void;
   applyCommands?: (commands: GraphCommand[]) => Promise<void>;
@@ -67,6 +69,7 @@ interface GraphEditorProps {
 
 export function GraphEditor({
   snapshot,
+  graphId,
   selectedNodeId,
   onNodeSelect,
   applyCommands,
@@ -94,6 +97,9 @@ export function GraphEditor({
   const [dispatchPrompt, setDispatchPrompt] = useState("");
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const flowRef = useRef<ReactFlowInstance | null>(null);
+  // Whether the initial layout (fit-or-restore) has happened for the current
+  // graph. Subsequent snapshot changes preserve the user's viewport (§13.2).
+  const didInitialLayoutRef = useRef(false);
   const selectedNodeIdRef = useRef(selectedNodeId);
   const onNodeSelectRef = useRef(onNodeSelect);
   selectedNodeIdRef.current = selectedNodeId;
@@ -191,6 +197,19 @@ export function GraphEditor({
     setSelectedEdgeId(null);
   }, [selectNode]);
 
+  const handleMoveEnd = useCallback(
+    (_event: unknown, viewport: { x: number; y: number; zoom: number }) => {
+      // Persist the user's viewport for this graph (§13.2 soft-constraint).
+      if (graphId) saveViewport(graphId, viewport);
+    },
+    [graphId],
+  );
+
+  useEffect(() => {
+    // Switching graphs re-runs the initial fit-or-restore on the next snapshot.
+    didInitialLayoutRef.current = false;
+  }, [graphId]);
+
   useEffect(() => {
     if (!snapshot) return;
 
@@ -269,7 +288,17 @@ export function GraphEditor({
     layoutWorker?.postMessage(layoutGraph);
     setEdges(rfEdges);
     requestAnimationFrame(() => {
-      flowRef.current?.fitView({ padding: 0.16, duration: 250 });
+      const instance = flowRef.current;
+      if (!instance) return;
+      // Only fit/restore once per graph; after that, preserve the user's viewport.
+      if (didInitialLayoutRef.current) return;
+      const saved = graphId ? loadViewport(graphId) : null;
+      if (saved) {
+        instance.setViewport(saved);
+      } else {
+        instance.fitView({ padding: 0.16, duration: 250 });
+      }
+      didInitialLayoutRef.current = true;
     });
   }, [snapshot, setNodes, setEdges, t]);
 
@@ -386,6 +415,7 @@ export function GraphEditor({
         deleteKeyCode={["Backspace", "Delete"]}
         onSelectionChange={handleSelectionChange}
         onPaneClick={handlePaneClick}
+        onMoveEnd={handleMoveEnd}
         onInit={(instance) => {
           flowRef.current = instance;
         }}

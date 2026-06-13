@@ -5,6 +5,7 @@ import {
   Activity,
   ArrowLeft,
   ClipboardList,
+  MessageSquareText,
   Plus,
   RefreshCw,
   X,
@@ -17,6 +18,7 @@ import { NodeSidebar } from "./node-sidebar";
 import { RunInspector } from "./run-inspector";
 import { ProposalReview } from "./proposal-review";
 import { PlanningProgressOverlay } from "./planning-progress";
+import { TaskConversationPanel } from "./task-conversation-panel";
 
 interface TaskPlanSkill {
   id: string;
@@ -31,12 +33,17 @@ interface TaskPlanSkill {
 
 interface TaskWorkbenchProps {
   initialProjectPath?: string | null;
+  initialGraphId?: string | null;
   onClose?: () => void;
 }
 
 type WorkbenchView = "list" | "create" | "graph";
 
-export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProps) {
+export function TaskWorkbench({
+  initialProjectPath,
+  initialGraphId,
+  onClose,
+}: TaskWorkbenchProps) {
   const { t, i18n } = useTranslation();
   const {
     graph,
@@ -80,10 +87,12 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
   const [listError, setListError] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [runInspectorOpen, setRunInspectorOpen] = useState(false);
+  const [conversationOpen, setConversationOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [goal, setGoal] = useState("");
   const [skills, setSkills] = useState<TaskPlanSkill[]>([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
+  const [installingSkillIds, setInstallingSkillIds] = useState<string[]>([]);
   const [formBusy, setFormBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [pendingInitialPlan, setPendingInitialPlan] = useState<string | null>(null);
@@ -121,9 +130,21 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
     clearGraph();
     setSelectedNodeId(null);
     setRunInspectorOpen(false);
-    setView("list");
-    loadTaskGraphs().catch(console.error);
-  }, [clearGraph, initialProjectPath, loadTaskGraphs]);
+    setConversationOpen(Boolean(initialGraphId));
+    if (initialGraphId) {
+      setView("graph");
+      loadGraph(initialGraphId).catch(console.error);
+    } else {
+      setView("list");
+      loadTaskGraphs().catch(console.error);
+    }
+  }, [
+    clearGraph,
+    initialGraphId,
+    initialProjectPath,
+    loadGraph,
+    loadTaskGraphs,
+  ]);
 
   useEffect(() => {
     if (!activeRunId || view !== "graph") return;
@@ -147,6 +168,32 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
     () => snapshot?.nodes.find((node) => node.node_id === selectedNodeId) ?? null,
     [selectedNodeId, snapshot],
   );
+  const selectedSkillsReady = useMemo(
+    () =>
+      skills
+        .filter((skill) => selectedSkillIds.includes(skill.id))
+        .every((skill) => skill.installed && skill.valid),
+    [selectedSkillIds, skills],
+  );
+
+  const installSkill = useCallback(async (skillId: string) => {
+    setInstallingSkillIds((current) => [...current, skillId]);
+    setFormError(null);
+    try {
+      const installed = await invoke<TaskPlanSkill>("task_plan_skill_install", {
+        skillId,
+      });
+      setSkills((current) =>
+        current.map((skill) => (skill.id === installed.id ? installed : skill)),
+      );
+    } catch (installError) {
+      setFormError(String(installError));
+    } finally {
+      setInstallingSkillIds((current) =>
+        current.filter((currentId) => currentId !== skillId),
+      );
+    }
+  }, []);
 
   const beginCreate = useCallback(() => {
     clearGraph();
@@ -171,6 +218,7 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
     async (graphId: string) => {
       setSelectedNodeId(null);
       setRunInspectorOpen(false);
+      setConversationOpen(true);
       setView("graph");
       await loadGraph(graphId);
     },
@@ -214,15 +262,10 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
                 const selected = skills.filter((skill) =>
                   selectedSkillIds.includes(skill.id),
                 );
-                const resolvedSkills = await Promise.all(
-                  selected.map(async (skill) => {
-                    if (skill.installed && skill.valid) return skill;
-                    return invoke<TaskPlanSkill>("task_plan_skill_install", {
-                      skillId: skill.id,
-                    });
-                  }),
-                );
-                const skillRefs = resolvedSkills.map((skill) => ({
+                if (selected.some((skill) => !skill.installed || !skill.valid)) {
+                  throw new Error(t("tasks.installSkillFirst"));
+                }
+                const skillRefs = selected.map((skill) => ({
                   skill_id: skill.id,
                   version_or_hash: skill.content_hash,
                   inputs: {},
@@ -235,6 +278,7 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
                   skillRefs,
                 );
                 setView("graph");
+                setConversationOpen(true);
               } catch (submitError) {
                 setPendingInitialPlan(null);
                 setFormError(String(submitError));
@@ -280,7 +324,7 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
                   {skills.map((skill) => {
                     const checked = selectedSkillIds.includes(skill.id);
                     return (
-                      <label
+                      <div
                         key={skill.id}
                         className={cn(
                           "rounded-xl border p-3 text-sm transition",
@@ -289,7 +333,7 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
                             : "border-border bg-background hover:border-foreground/20",
                         )}
                       >
-                        <span className="flex items-start gap-2">
+                        <label className="flex items-start gap-2">
                           <input
                             type="checkbox"
                             checked={checked}
@@ -303,13 +347,48 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
                             className="mt-1"
                           />
                           <span>
-                            <span className="font-medium">{skill.name}</span>
+                            <span className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium">{skill.name}</span>
+                              <span className={cn(
+                                "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                                skill.installed && skill.valid
+                                  ? "bg-emerald-500/10 text-emerald-600"
+                                  : "bg-amber-500/10 text-amber-600",
+                              )}>
+                                {skill.installed && skill.valid
+                                  ? t("tasks.installed")
+                                  : skill.installed
+                                    ? t("tasks.invalidSkill")
+                                    : t("tasks.notInstalled")}
+                              </span>
+                            </span>
                             <span className="mt-1 block text-xs leading-5 text-muted-foreground">
                               {skill.description || skill.id}
                             </span>
+                            {skill.error && (
+                              <span className="mt-1 block text-xs leading-5 text-destructive">
+                                {skill.error}
+                              </span>
+                            )}
                           </span>
-                        </span>
-                      </label>
+                        </label>
+                        {(!skill.installed || !skill.valid) && skill.installable && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="mt-3 w-full"
+                            disabled={installingSkillIds.includes(skill.id)}
+                            onClick={() => void installSkill(skill.id)}
+                          >
+                            {installingSkillIds.includes(skill.id)
+                              ? t("tasks.installingSkill")
+                              : skill.installed
+                                ? t("tasks.repairSkill")
+                                : t("tasks.installSkill")}
+                          </Button>
+                        )}
+                      </div>
                     );
                   })}
                 </div>
@@ -323,7 +402,12 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
               </Button>
               <Button
                 type="submit"
-                disabled={!goal.trim() || !initialProjectPath || formBusy}
+                disabled={
+                  !goal.trim() ||
+                  !initialProjectPath ||
+                  formBusy ||
+                  !selectedSkillsReady
+                }
               >
                 {formBusy
                   ? t("tasks.workbench.preparingTask")
@@ -359,6 +443,18 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
                   : t("tasks.workbench.showRunInspector")}
               </Button>
             )}
+            {graph && (
+              <Button
+                type="button"
+                size="sm"
+                variant={conversationOpen ? "secondary" : "outline"}
+                onClick={() => setConversationOpen((current) => !current)}
+                aria-pressed={conversationOpen}
+              >
+                <MessageSquareText className="size-4" />
+                {t("tasks.conversation.title")}
+              </Button>
+            )}
             <Button type="button" size="sm" variant="outline" onClick={beginCreate}>
               <Plus className="size-4" />
               {t("tasks.newTask")}
@@ -379,8 +475,12 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
           ) : snapshot ? (
             <GraphEditor
               snapshot={snapshot}
+              graphId={graph?.graph_id ?? null}
               selectedNodeId={selectedNodeId}
-              onNodeSelect={setSelectedNodeId}
+              onNodeSelect={(nodeId) => {
+                setSelectedNodeId(nodeId);
+                if (nodeId) setConversationOpen(true);
+              }}
               applyCommands={applyCommands}
               activeRunId={activeRunId}
               nodeRuns={nodeRuns}
@@ -399,6 +499,9 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
               canApplyDraftToRun={canApplyDraftToRun}
             />
           ) : null}
+          {planning && planningProgress && (
+            <PlanningProgressOverlay progress={planningProgress} />
+          )}
         </div>
 
         {displayedRunId && runInspectorOpen && (
@@ -420,6 +523,14 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
             onClose={() => setSelectedNodeId(null)}
           />
         )}
+
+        {graph && conversationOpen && (
+          <TaskConversationPanel
+            graphId={graph.graph_id}
+            selectedNodeId={selectedNodeId}
+            onClose={() => setConversationOpen(false)}
+          />
+        )}
       </div>
 
       {proposal && (
@@ -429,9 +540,6 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
           onAccept={acceptProposal}
           onDismiss={dismissProposal}
         />
-      )}
-      {planning && planningProgress && (
-        <PlanningProgressOverlay progress={planningProgress} />
       )}
     </div>
   );
