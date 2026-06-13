@@ -65,7 +65,8 @@ pub enum TaskEventType {
 pub mod payloads {
     use super::*;
     use crate::orchestrator::domain::run::{
-        AgentAssignment, AttemptError, AttemptUsage, BudgetState, NodeRunStatus, RunStatus,
+        AgentAssignment, AttemptError, AttemptUsage, BudgetState, ErrorCategory, NodeRunStatus,
+        RunStatus,
     };
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,7 +107,11 @@ pub mod payloads {
     pub struct AttemptProgressedPayload {
         pub attempt_id: String,
         pub node_run_id: String,
+        #[serde(default)]
+        pub node_id: Option<String>,
         pub message: String,
+        #[serde(default)]
+        pub public: bool,
         pub usage_delta: AttemptUsage,
     }
 
@@ -148,6 +153,12 @@ pub mod payloads {
         pub node_run_id: String,
         pub strategy: String,
         pub reason: String,
+        /// Error category that triggered recovery (design §9 audit; P01-7).
+        #[serde(default)]
+        pub category: Option<ErrorCategory>,
+        /// Repair depth at the time of the decision (design §9.3; P01-7).
+        #[serde(default)]
+        pub repair_depth: Option<u32>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -805,7 +816,9 @@ mod tests {
                 serde_json::to_value(payloads::AttemptProgressedPayload {
                     attempt_id: "attempt1".into(),
                     node_run_id: "nr1".into(),
+                    node_id: Some("node1".into()),
                     message: String::new(),
+                    public: false,
                     usage_delta: crate::orchestrator::domain::run::AttemptUsage {
                         input_tokens: 10,
                         output_tokens: 20,

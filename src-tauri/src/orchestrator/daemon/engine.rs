@@ -1404,6 +1404,8 @@ async fn schedule_node(
                             node_run_id: node_run_id.clone(),
                             strategy: "human_gate".into(),
                             reason,
+                            category: Some(error.category.clone()),
+                            repair_depth: Some(0),
                         })
                         .unwrap_or(serde_json::Value::Null),
                     ));

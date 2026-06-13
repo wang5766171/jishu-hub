@@ -1287,6 +1287,8 @@ impl TaskService {
                 node_run_id: node_run.node_run_id.clone(),
                 strategy: strategy_name,
                 reason: reason.to_string(),
+                category: None,
+                repair_depth: None,
             })?,
         )];
         match node_run.status {
