@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import dagre from "dagre";
+import { computeLayout, LAYOUT_NODE_WIDTH } from "./layout";
 import {
   ReactFlow,
   MiniMap,
@@ -17,45 +17,6 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { GraphCommand, GraphSnapshot, NodeRun, NodeRunStatus } from "./use-task-graph";
-
-const nodeWidth = 200;
-const nodeHeight = 60;
-
-function computeDagreLayout(
-  nodes: ReactFlowNode[],
-  edges: ReactFlowEdge[],
-  width: number,
-  height: number,
-): Record<string, { x: number; y: number }> {
-  if (nodes.length === 0) return {};
-  const graph = new dagre.graphlib.Graph();
-  graph.setDefaultEdgeLabel(() => ({}));
-  graph.setGraph({
-    rankdir: "LR",
-    ranksep: 150,
-    nodesep: 90,
-    edgesep: 35,
-    marginx: 40,
-    marginy: 40,
-  });
-  for (const node of nodes) {
-    graph.setNode(node.id, { width, height });
-  }
-  for (const edge of edges) {
-    graph.setEdge(edge.source, edge.target);
-  }
-  dagre.layout(graph);
-  const positions: Record<string, { x: number; y: number }> = {};
-  for (const node of nodes) {
-    const position = graph.node(node.id);
-    if (!position) continue;
-    positions[node.id] = {
-      x: position.x - width / 2,
-      y: position.y - height / 2,
-    };
-  }
-  return positions;
-}
 
 function nodeAppearance(status?: NodeRunStatus) {
   switch (status) {
@@ -205,7 +166,7 @@ export function GraphEditor({
           borderRadius: 5,
           background: appearance.background,
           color: "#fff",
-          width: nodeWidth,
+          width: LAYOUT_NODE_WIDTH,
           boxShadow: appearance.boxShadow,
           transition: "all 0.3s ease"
         },
@@ -243,12 +204,10 @@ export function GraphEditor({
       const currentPositions = new Map(
         current.map((node) => [node.id, node.position] as const),
       );
-      const positions = computeDagreLayout(
-        rfNodes,
-        rfEdges,
-        nodeWidth,
-        nodeHeight,
-      );
+      const positions = computeLayout({
+        nodes: rfNodes.map((node) => ({ id: node.id })),
+        edges: rfEdges.map((edge) => ({ source: edge.source, target: edge.target })),
+      });
       return rfNodes.map((node) => ({
         ...node,
         position: currentPositions.get(node.id) ?? positions[node.id] ?? { x: 0, y: 0 },
