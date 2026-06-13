@@ -45,6 +45,7 @@ function nodeAppearance(status?: NodeRunStatus) {
 
 interface GraphEditorProps {
   snapshot: GraphSnapshot | null;
+  selectedNodeId?: string | null;
   onNodeSelect?: (nodeId: string | null) => void;
   applyCommands?: (commands: GraphCommand[]) => Promise<void>;
   activeRunId?: string | null;
@@ -66,6 +67,7 @@ interface GraphEditorProps {
 
 export function GraphEditor({
   snapshot,
+  selectedNodeId,
   onNodeSelect,
   applyCommands,
   activeRunId,
@@ -92,6 +94,10 @@ export function GraphEditor({
   const [dispatchPrompt, setDispatchPrompt] = useState("");
   const layoutWorkerRef = useRef<Worker | null>(null);
   const layoutRequestRef = useRef(0);
+  const selectedNodeIdRef = useRef(selectedNodeId);
+  const onNodeSelectRef = useRef(onNodeSelect);
+  selectedNodeIdRef.current = selectedNodeId;
+  onNodeSelectRef.current = onNodeSelect;
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -142,6 +148,23 @@ export function GraphEditor({
     [applyCommands],
   );
 
+  const selectNode = useCallback((nodeId: string | null) => {
+    if (selectedNodeIdRef.current === nodeId) return;
+    selectedNodeIdRef.current = nodeId;
+    onNodeSelectRef.current?.(nodeId);
+  }, []);
+
+  const handleSelectionChange = useCallback(
+    (params: { nodes: ReactFlowNode[] }) => {
+      selectNode(params.nodes[0]?.id ?? null);
+    },
+    [selectNode],
+  );
+
+  const handlePaneClick = useCallback(() => {
+    selectNode(null);
+  }, [selectNode]);
+
   useEffect(() => {
     if (!snapshot) return;
 
@@ -152,6 +175,7 @@ export function GraphEditor({
 
       return {
         id: n.node_id,
+        selected: selectedNodeIdRef.current === n.node_id,
         data: {
           label: `${n.title}\n(${t(`tasks.workbench.nodeKinds.${n.node_kind}`)})${statusText}`,
         },
@@ -201,6 +225,19 @@ export function GraphEditor({
       nodeHeight,
     });
   }, [snapshot, setNodes, setEdges, t]);
+
+  useEffect(() => {
+    setNodes((currentNodes) => {
+      let changed = false;
+      const nextNodes = currentNodes.map((node) => {
+        const selected = node.id === selectedNodeId;
+        if (node.selected === selected) return node;
+        changed = true;
+        return { ...node, selected };
+      });
+      return changed ? nextNodes : currentNodes;
+    });
+  }, [selectedNodeId, setNodes]);
 
   useEffect(() => {
     const graphNodes = new Map(
@@ -287,13 +324,8 @@ export function GraphEditor({
         nodesDraggable
         elementsSelectable
         deleteKeyCode={["Backspace", "Delete"]}
-        onSelectionChange={(params) => {
-          if (params.nodes.length > 0) {
-            onNodeSelect?.(params.nodes[0].id);
-          } else {
-            onNodeSelect?.(null);
-          }
-        }}
+        onSelectionChange={handleSelectionChange}
+        onPaneClick={handlePaneClick}
         fitView
         colorMode="dark"
       >

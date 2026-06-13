@@ -1,5 +1,6 @@
 import type { GraphNode } from "./use-task-graph";
 import { useTranslation } from "react-i18next";
+import { X } from "lucide-react";
 
 interface NodeSidebarProps {
   node: GraphNode | null;
@@ -16,8 +17,14 @@ export function NodeSidebar({ node, onClose }: NodeSidebarProps) {
     <div className="w-80 h-full border-l border-border bg-background p-4 overflow-y-auto">
       <div className="flex justify-between items-center mb-4">
         <h3 className="text-lg font-semibold truncate">{node.title}</h3>
-        <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
-          &times;
+        <button
+          type="button"
+          onClick={onClose}
+          className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          aria-label={t("tasks.workbench.closeNodeInspector")}
+          title={t("tasks.workbench.closeNodeInspector")}
+        >
+          <X className="size-4" />
         </button>
       </div>
 

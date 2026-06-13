@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { X } from "lucide-react";
 import type {
   ApprovalRequest,
   ArtifactRef,
@@ -15,6 +16,7 @@ interface RunInspectorProps {
   revisions: GraphRevision[];
   currentRevisionId?: string | null;
   onResolveApproval: (approvalId: string, approved: boolean) => Promise<void>;
+  onClose: () => void;
 }
 
 type InspectorTab = "events" | "approvals" | "artifacts" | "revisions";
@@ -27,17 +29,29 @@ export function RunInspector({
   revisions,
   currentRevisionId,
   onResolveApproval,
+  onClose,
 }: RunInspectorProps) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<InspectorTab>("events");
 
   return (
     <aside className="flex h-full w-96 shrink-0 flex-col border-l border-border bg-background">
-      <div className="border-b border-border px-4 py-3">
-        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          {t("tasks.workbench.runInspector")}
+      <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="min-w-0">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            {t("tasks.workbench.runInspector")}
+          </div>
+          <div className="mt-1 truncate font-mono text-xs">{runId}</div>
         </div>
-        <div className="mt-1 truncate font-mono text-xs">{runId}</div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          aria-label={t("tasks.workbench.closeRunInspector")}
+          title={t("tasks.workbench.closeRunInspector")}
+        >
+          <X className="size-4" />
+        </button>
       </div>
       <div className="grid grid-cols-4 border-b border-border text-xs">
         {(["events", "approvals", "artifacts", "revisions"] as InspectorTab[]).map((item) => (

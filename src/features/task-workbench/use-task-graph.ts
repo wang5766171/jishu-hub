@@ -336,6 +336,7 @@ export function useTaskGraph() {
       }
       setRevisions(revisionList);
       setRedoRevisionIds([]);
+      setProposal(null);
       await restoreLatestRun(graphId);
     } catch (err: unknown) {
       console.error(err);
@@ -344,6 +345,27 @@ export function useTaskGraph() {
       setLoading(false);
     }
   }, [restoreLatestRun]);
+
+  const clearGraph = useCallback(() => {
+    setGraph(null);
+    setSnapshot(null);
+    setRevision(null);
+    setActiveRunId(null);
+    setActiveRunRevisionId(null);
+    setActiveRunSeq(null);
+    setLastRunId(null);
+    setRunStatus(null);
+    setNodeRuns({});
+    setEvents([]);
+    setApprovals([]);
+    setArtifacts([]);
+    setRevisions([]);
+    setRedoRevisionIds([]);
+    setProposal(null);
+    setError(null);
+    eventRunRef.current = null;
+    eventCursorRef.current = 0;
+  }, []);
 
   const loadLatestGraphForProject = useCallback(async (projectRoot: string) => {
     setLoading(true);
@@ -741,6 +763,7 @@ export function useTaskGraph() {
     loading,
     error,
     loadGraph,
+    clearGraph,
     loadLatestGraphForProject,
     createGraph,
     generateProposal,
