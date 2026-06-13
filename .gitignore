@@ -42,6 +42,9 @@ docs/superpowers/
 # Architecture guidance document (local reference only)
 pi_agent_rust_readme.md
 
+# Agent git commit guide (local reference only)
+agent-commit-guide.md
+
 # Scratch / test artifacts
 scratch/
 check_log.txt
