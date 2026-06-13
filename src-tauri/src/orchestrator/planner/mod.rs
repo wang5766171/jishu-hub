@@ -27,6 +27,14 @@ pub struct PlanningRequest {
     pub instruction: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlanningProgress {
+    pub graph_id: String,
+    pub stage: String,
+    pub attempt: Option<u8>,
+    pub max_attempts: Option<u8>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphProposal {
     pub proposal_id: String,
@@ -65,6 +73,26 @@ impl PlannerService {
     }
 
     pub async fn generate(&self, request: PlanningRequest) -> Result<GraphProposal, String> {
+        self.generate_with_progress(request, |_| {}).await
+    }
+
+    pub async fn generate_with_progress<F>(
+        &self,
+        request: PlanningRequest,
+        progress: F,
+    ) -> Result<GraphProposal, String>
+    where
+        F: Fn(PlanningProgress),
+    {
+        let report = |stage: &str, attempt: Option<u8>| {
+            progress(PlanningProgress {
+                graph_id: request.graph_id.clone(),
+                stage: stage.into(),
+                attempt,
+                max_attempts: Some(2),
+            });
+        };
+        report("preparing_context", None);
         if request.instruction.trim().is_empty() {
             return Err("planning instruction cannot be empty".into());
         }
@@ -97,6 +125,7 @@ impl PlannerService {
                 })
             })
             .collect::<Vec<_>>();
+        report("resolving_agent", None);
         let planning_node = planning_node();
         let (planner_assignment, _transport) = self
             .runtime
@@ -116,6 +145,7 @@ impl PlannerService {
         let mut last_error = None;
 
         for attempt in 0..2 {
+            report("generating", Some(attempt + 1));
             let output = self
                 .runtime
                 .invoke(RuntimeInvocationRequest {
@@ -136,6 +166,7 @@ impl PlannerService {
                 ));
             }
             let response = collect_text(&output.events);
+            report("validating", Some(attempt + 1));
             let parsed = parse_draft(&response).and_then(|draft| {
                 validate_plan_shape(&snapshot, &draft, &required_roles)?;
                 let commands = draft_to_commands(&snapshot, &draft)?;
@@ -147,6 +178,7 @@ impl PlannerService {
                     break;
                 }
                 Err(error) if attempt == 0 => {
+                    report("retrying", Some(2));
                     next_prompt = correction_prompt(&prompt, &error);
                     last_error = Some(error);
                 }
@@ -160,6 +192,7 @@ impl PlannerService {
                 last_error.unwrap_or_else(|| "unknown validation error".into())
             )
         })?;
+        report("building_proposal", None);
         let candidate = apply_commands(&snapshot, &commands).map_err(|error| error.to_string())?;
         let warnings = graph_validate(&candidate).map_err(|error| error.to_string())?;
         let proposal_id = gen_id("proposal");
@@ -170,9 +203,9 @@ impl PlannerService {
             &proposal_id,
         );
 
-        Ok(GraphProposal {
+        let proposal = GraphProposal {
             proposal_id,
-            graph_id: request.graph_id,
+            graph_id: request.graph_id.clone(),
             base_revision_id: request.base_revision_id,
             commands,
             rationale: draft.rationale,
@@ -184,7 +217,9 @@ impl PlannerService {
             skill_refs: revision.skill_refs,
             template_refs: revision.template_refs,
             planner_policy_refs: revision.planner_policy_refs,
-        })
+        };
+        report("completed", None);
+        Ok(proposal)
     }
 }
 
@@ -431,29 +466,116 @@ fn collect_text(events: &[NormalizedEvent]) -> String {
 }
 
 fn parse_draft(response: &str) -> Result<PlannerDraft, String> {
-    let trimmed = response
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
-    let json = if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
-        trimmed
-    } else {
-        let start = trimmed
-            .find('{')
-            .ok_or_else(|| "planner response did not contain a JSON object".to_string())?;
-        let end = trimmed
-            .rfind('}')
-            .ok_or_else(|| "planner response did not contain a complete JSON object".to_string())?;
-        &trimmed[start..=end]
-    };
-    let draft: PlannerDraft = serde_json::from_str(json)
-        .map_err(|error| format!("invalid planner proposal JSON: {error}"))?;
+    let trimmed = strip_code_fence(response).trim();
+    if trimmed.is_empty() {
+        return Err("planner response did not contain a JSON object".to_string());
+    }
+    match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(value) => {
+            if !value.is_object() {
+                return Err(format!(
+                    "invalid planner proposal JSON: top-level value is {:?}, expected an object",
+                    classify_top_level(&value)
+                ));
+            }
+            let draft: PlannerDraft = serde_json::from_value(value)
+                .map_err(|error| format!("invalid planner proposal JSON: {error}"))?;
+            return ensure_non_empty_commands(draft);
+        }
+        Err(_) => {}
+    }
+    if let Some(slice) = first_top_level_object(trimmed) {
+        let draft: PlannerDraft = serde_json::from_str(slice)
+            .map_err(|error| format!("invalid planner proposal JSON: {error}"))?;
+        return ensure_non_empty_commands(draft);
+    }
+    Err("planner response did not contain a JSON object".to_string())
+}
+
+fn ensure_non_empty_commands(draft: PlannerDraft) -> Result<PlannerDraft, String> {
     if draft.commands.is_empty() {
         return Err("planner proposal must contain at least one command".into());
     }
     Ok(draft)
+}
+
+fn classify_top_level(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+fn strip_code_fence(response: &str) -> &str {
+    let trimmed = response.trim_start();
+    let stripped = if let Some(rest) = trimmed.strip_prefix("```json") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("```JSON") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("```") {
+        rest
+    } else {
+        trimmed
+    };
+    let stripped = stripped.trim_start_matches('\r').trim_start_matches('\n');
+    let stripped = stripped.trim_start();
+    stripped
+        .trim_end_matches("```")
+        .trim_end()
+}
+
+fn first_top_level_object(input: &str) -> Option<&str> {
+    let bytes = input.as_bytes();
+    let mut in_string = false;
+    let mut escape = false;
+    let mut depth: i32 = 0;
+    let mut start: Option<usize> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if in_string {
+            if escape {
+                escape = false;
+            } else if byte == b'\\' {
+                escape = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'"' => {
+                in_string = true;
+                i += 1;
+            }
+            b'{' => {
+                if depth == 0 {
+                    start = Some(i);
+                }
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
+                if depth == 0 {
+                    i += 1;
+                    continue;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    let begin = start?;
+                    return Some(&input[begin..=i]);
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 fn existing_plan_shape(
@@ -1013,5 +1135,90 @@ mod tests {
             ],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn parse_draft_strips_markdown_fence_and_surrounding_prose() {
+        let response = r#"Here is the plan you asked for:
+
+```json
+{
+  "commands": [
+    {
+      "op": "add_agent_node",
+      "node_id": "implement",
+      "title": "Implement",
+      "role_id": "developer",
+      "prompt": "Implement the requested behavior.",
+      "acceptance": ["Tests pass"]
+    }
+  ],
+  "rationale": "Single node implementation",
+  "expected_benefits": [],
+  "risks": []
+}
+```
+
+Let me know if you want any changes."#;
+        let draft = parse_draft(response).expect("fenced JSON with prose must parse");
+        assert_eq!(draft.commands.len(), 1);
+        assert_eq!(draft.rationale, "Single node implementation");
+    }
+
+    #[test]
+    fn parse_draft_ignores_braces_inside_string_literals() {
+        let response = r#"{"commands":[{"op":"add_agent_node","node_id":"implement","title":"Implement","role_id":"developer","prompt":"Use {} placeholder when emitting JSON literals","acceptance":["done"]}],"rationale":"contains } and { characters","expected_benefits":[],"risks":[]}"#;
+        let draft = parse_draft(response).expect("braces inside string literals must not terminate the object");
+        assert_eq!(draft.commands.len(), 1);
+        assert!(draft.rationale.contains('}'));
+        assert!(draft.rationale.contains('{'));
+    }
+
+    #[test]
+    fn parse_draft_handles_escaped_quotes_and_braces() {
+        let response = r#"{
+  "commands": [
+    {
+      "op": "add_agent_node",
+      "node_id": "implement",
+      "title": "Implement",
+      "role_id": "developer",
+      "prompt": "Emit \"quoted\" string with \\\"nested\\\" braces like {a}",
+      "acceptance": ["ok"]
+    }
+  ],
+  "rationale": "Escaped \"quote\" should not break scanning",
+  "expected_benefits": [],
+  "risks": []
+}"#;
+        let draft = parse_draft(response).expect("escaped quotes must not terminate the string early");
+        assert_eq!(draft.commands.len(), 1);
+        assert!(draft.rationale.contains("Escaped"));
+    }
+
+    #[test]
+    fn parse_draft_extracts_json_embedded_after_prose() {
+        let response = r#"I considered several designs but here is the final one:
+{"commands":[{"op":"add_agent_node","node_id":"audit","title":"Audit","role_id":"auditor","prompt":"Audit","acceptance":["ok"]}],"rationale":"embedded","expected_benefits":[],"risks":[]}
+Hope this works for you."#;
+        let draft = parse_draft(response).expect("JSON embedded in prose must be extracted");
+        assert_eq!(draft.commands.len(), 1);
+        assert_eq!(draft.rationale, "embedded");
+    }
+
+    #[test]
+    fn parse_draft_rejects_top_level_array() {
+        let response = r#"[{"op":"add_agent_node","node_id":"x","title":"x","role_id":"developer","prompt":"x","acceptance":["ok"]}]"#;
+        let error = parse_draft(response).expect_err("top-level array must be rejected");
+        assert!(
+            error.contains("top-level value is \"array\""),
+            "expected diagnostic about top-level array, got: {error}"
+        );
+    }
+
+    #[test]
+    fn parse_draft_rejects_empty_response() {
+        let error = parse_draft("   \n  ").expect_err("empty response must be rejected");
+        assert!(error.contains("did not contain a JSON object"));
     }
 }
