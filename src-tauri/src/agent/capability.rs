@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 bitflags::bitflags! {
-    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct AgentCapabilities: u64 {
         const RESUME_BY_ID         = 1 << 0;
         const RESUME_LATEST        = 1 << 1;
@@ -23,6 +23,11 @@ bitflags::bitflags! {
 
         const ABORT                = 1 << 30;
         const APPROVAL_REQUEST     = 1 << 31;
+        /// Transport can intercept individual tool calls BEFORE execution and
+        /// pause for an orchestrator decision (P0-1 permission proxy). Adapters
+        /// declare this only once their transport actually implements pre-execution
+        /// interception + same-native-request resume.
+        const PRE_EXECUTION_INTERCEPTION = 1 << 32;
 
         const CONFIG_GLOBAL        = 1 << 40;
         const CONFIG_PROJECT       = 1 << 41;

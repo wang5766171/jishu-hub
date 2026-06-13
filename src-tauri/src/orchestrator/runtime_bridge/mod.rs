@@ -243,6 +243,7 @@ fn capability_flag(name: &str) -> Option<AgentCapabilities> {
         "stream_thinking" => AgentCapabilities::STREAM_THINKING,
         "abort" | "cancellation" => AgentCapabilities::ABORT,
         "approval_request" => AgentCapabilities::APPROVAL_REQUEST,
+        "pre_execution_interception" => AgentCapabilities::PRE_EXECUTION_INTERCEPTION,
         "subagent_dispatch" => AgentCapabilities::SUBAGENT_DISPATCH,
         "task_planning" => AgentCapabilities::TASK_PLANNING,
         "task_supervision" => AgentCapabilities::TASK_SUPERVISION,
@@ -264,6 +265,7 @@ pub(crate) fn capability_snapshot(capabilities: AgentCapabilities) -> Vec<String
         "stream_thinking",
         "abort",
         "approval_request",
+        "pre_execution_interception",
         "subagent_dispatch",
         "task_planning",
         "task_supervision",
@@ -523,6 +525,16 @@ mod tests {
         node.capability_requirements = vec!["nonexistent_capability".into()];
 
         assert!(resolve_agent_assignment(&registry, &node, "implementer").is_err());
+    }
+
+    #[test]
+    fn pre_execution_interception_capability_resolves() {
+        assert_eq!(
+            capability_flag("pre_execution_interception"),
+            Some(AgentCapabilities::PRE_EXECUTION_INTERCEPTION)
+        );
+        let snapshot = capability_snapshot(AgentCapabilities::PRE_EXECUTION_INTERCEPTION);
+        assert!(snapshot.contains(&"pre_execution_interception".to_string()));
     }
 
     #[test]
