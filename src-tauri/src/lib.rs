@@ -27,7 +27,7 @@ pub mod cli;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 const TEXT_PREVIEW_MAX_BYTES: usize = 512 * 1024;
 
@@ -1971,6 +1971,7 @@ fn orchestrator_validate_commands(
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
 async fn orchestrator_generate_proposal(
+    app: tauri::AppHandle,
     state: tauri::State<'_, std::sync::Mutex<AppState>>,
     request: crate::orchestrator::planner::PlanningRequest,
 ) -> Result<crate::orchestrator::planner::GraphProposal, crate::orchestrator::domain::run::TaskError>
@@ -1985,10 +1986,24 @@ async fn orchestrator_generate_proposal(
             .planner_service()
             .map_err(Into::<crate::orchestrator::domain::run::TaskError>::into)?
     };
-    planner
-        .generate(request)
-        .await
-        .map_err(|message| crate::orchestrator::domain::run::TaskError {
+    let graph_id = request.graph_id.clone();
+    let progress_app = app.clone();
+    let result = planner
+        .generate_with_progress(request, move |progress| {
+            let _ = progress_app.emit("task-planning-progress", progress);
+        })
+        .await;
+    result.map_err(|message| {
+        let _ = app.emit(
+            "task-planning-progress",
+            crate::orchestrator::planner::PlanningProgress {
+                graph_id,
+                stage: "failed".into(),
+                attempt: None,
+                max_attempts: Some(2),
+            },
+        );
+        crate::orchestrator::domain::run::TaskError {
             code: "TASK_PLANNER_ERROR".into(),
             category: crate::orchestrator::domain::run::TaskErrorCategory::Adapter,
             message_key: message,
@@ -2002,7 +2017,8 @@ async fn orchestrator_generate_proposal(
                     .into(),
             ),
             provider_detail: None,
-        })
+        }
+    })
 }
 
 #[cfg(feature = "orchestrator")]
