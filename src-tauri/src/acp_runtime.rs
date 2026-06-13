@@ -16,8 +16,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::ChildStdin;
 use tokio::sync::Mutex as TokioMutex;
 
-use crate::agent::normalized::{NormalizedEvent, TurnEndReason, UsageStats};
-use crate::cli_runtime::{AgentStreamChunk, StreamChunk};
+use crate::agent::normalized::{
+    interaction_requests_from_tool_call, NormalizedEvent, TurnEndReason, UsageStats,
+};
+use crate::cli_runtime::AgentStreamChunk;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -82,6 +84,55 @@ impl AcpControl {
 
     pub async fn shutdown(&self) {
         let _ = self.tx.send(AcpCommand::Shutdown).await;
+    }
+}
+
+/// Where the ACP connection loop sends its normalized events. Decouples the loop
+/// from `tauri::AppHandle` so the orchestrator (which has no `AppHandle`, design
+/// §3.1 / D4) can drive an ACP session through an in-process channel, while the
+/// GUI/chat path keeps emitting Tauri `agent-event` chunks. Same protocol — only
+/// the transport of the normalized events differs (no second adapter protocol).
+#[derive(Clone)]
+pub enum AcpEventSink {
+    /// GUI/chat path: emit normalized events to the Tauri webview.
+    Tauri {
+        app: tauri::AppHandle,
+        agent_id: String,
+    },
+    /// Orchestrator/test path: send normalized events into an mpsc channel.
+    Channel {
+        tx: tokio::sync::mpsc::Sender<NormalizedEvent>,
+    },
+}
+
+impl AcpEventSink {
+    pub async fn emit(&self, events: &[NormalizedEvent], session_id: &str) {
+        match self {
+            AcpEventSink::Tauri { app, agent_id } => {
+                let chunks: Vec<AgentStreamChunk> = events
+                    .iter()
+                    .filter_map(|event| {
+                        let data = serde_json::to_value(event).ok()?;
+                        Some(AgentStreamChunk {
+                            agent_id: agent_id.clone(),
+                            session_id: session_id.to_string(),
+                            event_type: event.event_type().to_string(),
+                            data,
+                        })
+                    })
+                    .collect();
+                if !chunks.is_empty() {
+                    let _ = app.emit("agent-event", &chunks);
+                }
+            }
+            AcpEventSink::Channel { tx } => {
+                for event in events {
+                    if tx.send(event.clone()).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -340,6 +391,15 @@ pub fn spawn_acp_session(
 
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(8);
 
+    // stdout reader + event sink are constructed here so the connection loop can
+    // run against a synthetic line stream / channel sink (tests, orchestrator).
+    let (stdout_tx, stdout_rx) = tokio::sync::mpsc::channel(64);
+    tokio::spawn(stdout_reader(stdout, stdout_tx));
+    let sink = AcpEventSink::Tauri {
+        app: app.clone(),
+        agent_id: agent_id.clone(),
+    };
+
     let control = AcpControl {
         tx: cmd_tx,
         acp_session_id: acp_session_id.clone(),
@@ -348,12 +408,11 @@ pub fn spawn_acp_session(
 
     tauri::async_runtime::spawn(async move {
         let result = acp_connection_loop(
-            app.clone(),
-            agent_id.clone(),
+            sink,
             pending_session_id.clone(),
             stdin_arc,
             acp_session_id,
-            stdout,
+            stdout_rx,
             project_path,
             requested_session_id,
             cmd_rx,
@@ -406,12 +465,11 @@ pub fn spawn_acp_session(
 // ---------------------------------------------------------------------------
 
 async fn acp_connection_loop(
-    app: tauri::AppHandle,
-    agent_id: String,
+    sink: AcpEventSink,
     pending_session_id: String,
     stdin_arc: Arc<TokioMutex<ChildStdin>>,
     acp_session_id: Arc<std::sync::Mutex<Option<String>>>,
-    stdout: tokio::process::ChildStdout,
+    mut stdout_rx: tokio::sync::mpsc::Receiver<String>,
     project_path: String,
     requested_session_id: Option<String>,
     mut command_rx: tokio::sync::mpsc::Receiver<AcpCommand>,
@@ -420,9 +478,8 @@ async fn acp_connection_loop(
 ) -> Result<(), String> {
     let mut writer = AcpWriter::new(stdin_arc);
 
-    // 1. stdout reader sub-task
-    let (stdout_tx, mut stdout_rx) = tokio::sync::mpsc::channel(64);
-    tokio::spawn(stdout_reader(stdout, stdout_tx));
+    // stdout reader is spawned by the caller (spawn_acp_session) so the loop can
+    // be driven with a synthetic line stream in tests / by the orchestrator.
 
     // 2. Handshake: initialize → session/new
     let init_id = writer
@@ -486,14 +543,13 @@ async fn acp_connection_loop(
     }
 
     // Emit SessionResolved
-    emit_events(
-        &app,
-        &agent_id,
-        &pending_session_id,
+    sink.emit(
         &[NormalizedEvent::SessionResolved {
             session_id: session_id.clone(),
         }],
-    );
+        &pending_session_id,
+    )
+    .await;
     on_session_resolved(&session_id);
 
     // 3. Send first message
@@ -511,7 +567,7 @@ async fn acp_connection_loop(
     // 4. Main loop
     let mut state = LoopState::Prompting { prompt_id };
     let mut usage: Option<UsageStats> = None;
-    let mut buf: Vec<StreamChunk> = Vec::with_capacity(32);
+    let mut buf: Vec<NormalizedEvent> = Vec::with_capacity(32);
     let mut last_flush = std::time::Instant::now();
     let mut pending_permissions: HashMap<String, PendingPermission> = HashMap::new();
 
@@ -645,10 +701,8 @@ async fn acp_connection_loop(
                                     LoopState::CancelPending { pending_prompt: Some(_), .. }
                                 );
                                 if !has_pending {
-                                    handle_prompt_response(
-                                        &msg, &session_id, &mut usage, &mut buf,
-                                    );
-                                    flush_buf(&app, &agent_id, &mut buf);
+                                    handle_prompt_response(&msg, &mut usage, &mut buf);
+                                    flush_buf(&sink, &session_id, &mut buf).await;
                                 }
 
                                 // State transition
@@ -679,7 +733,7 @@ async fn acp_connection_loop(
                             if let Some(params) = msg.get("params") {
                                 let events = normalize_acp_update(params, &mut usage);
                                 for event in &events {
-                                    buf.push(make_chunk(&session_id, event));
+                                    buf.push(event.clone());
                                 }
                             }
                         } else if msg.get("method").and_then(|v| v.as_str()) == Some("session/request_permission") {
@@ -697,15 +751,12 @@ async fn acp_connection_loop(
                                     reject_option_id: permission_option_id(&params, false),
                                 },
                             );
-                            buf.push(make_chunk(
-                                &session_id,
-                                &NormalizedEvent::ApprovalRequest {
-                                    request_id,
-                                    approval_kind: crate::agent::normalized::ApprovalKind::Other,
-                                    payload: params,
-                                },
-                            ));
-                            flush_buf(&app, &agent_id, &mut buf);
+                            buf.push(NormalizedEvent::ApprovalRequest {
+                                request_id,
+                                approval_kind: crate::agent::normalized::ApprovalKind::Other,
+                                payload: params,
+                            });
+                            flush_buf(&sink, &session_id, &mut buf).await;
                             last_flush = std::time::Instant::now();
                         } else {
                             log::debug!("ACP stdout ignored msg (no matching id, not session/update): method={:?}", msg.get("method"));
@@ -715,7 +766,7 @@ async fn acp_connection_loop(
                         if buf.len() >= 32
                             || last_flush.elapsed() >= Duration::from_millis(8)
                         {
-                            flush_buf(&app, &agent_id, &mut buf);
+                            flush_buf(&sink, &session_id, &mut buf).await;
                             last_flush = std::time::Instant::now();
                         }
                         false
@@ -747,7 +798,7 @@ async fn acp_connection_loop(
     }
 
     if !buf.is_empty() {
-        flush_buf(&app, &agent_id, &mut buf);
+        flush_buf(&sink, &session_id, &mut buf).await;
     }
     Ok(())
 }
@@ -771,29 +822,22 @@ async fn stdout_reader(stdout: tokio::process::ChildStdout, tx: tokio::sync::mps
 
 fn handle_prompt_response(
     msg: &serde_json::Value,
-    session_id: &str,
     usage: &mut Option<UsageStats>,
-    buf: &mut Vec<StreamChunk>,
+    buf: &mut Vec<NormalizedEvent>,
 ) {
     if let Some(err) = msg.get("error") {
         let err_msg = err
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or("ACP error");
-        buf.push(make_chunk(
-            session_id,
-            &NormalizedEvent::Error {
-                message: err_msg.to_string(),
-                recoverable: false,
-            },
-        ));
-        buf.push(make_chunk(
-            session_id,
-            &NormalizedEvent::TurnComplete {
-                reason: TurnEndReason::Error,
-                usage: None,
-            },
-        ));
+        buf.push(NormalizedEvent::Error {
+            message: err_msg.to_string(),
+            recoverable: false,
+        });
+        buf.push(NormalizedEvent::TurnComplete {
+            reason: TurnEndReason::Error,
+            usage: None,
+        });
     } else {
         let stop_reason = msg
             .get("result")
@@ -816,13 +860,10 @@ fn handle_prompt_response(
             "refusal" | "error" => TurnEndReason::Error,
             _ => TurnEndReason::Complete,
         };
-        buf.push(make_chunk(
-            session_id,
-            &NormalizedEvent::TurnComplete {
-                reason,
-                usage: usage.take(),
-            },
-        ));
+        buf.push(NormalizedEvent::TurnComplete {
+            reason,
+            usage: usage.take(),
+        });
     }
 }
 
@@ -908,18 +949,30 @@ pub(crate) fn normalize_acp_update(
                 .unwrap_or_default()
                 .to_string();
             let tool = update
-                .get("title")
+                .get("toolName")
+                .or_else(|| update.get("name"))
+                .or_else(|| update.get("title"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("tool")
                 .to_string();
+            let input = update
+                .get("rawInput")
+                .or_else(|| update.get("input"))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             if call_id.is_empty() {
                 vec![]
             } else {
-                vec![NormalizedEvent::ToolUseStart {
-                    call_id,
-                    tool,
-                    input: serde_json::Value::Null,
-                }]
+                let interactions = interaction_requests_from_tool_call(&call_id, &tool, &input);
+                if interactions.is_empty() {
+                    vec![NormalizedEvent::ToolUseStart {
+                        call_id,
+                        tool,
+                        input,
+                    }]
+                } else {
+                    interactions
+                }
             }
         }
         "tool_call_update" => {
@@ -977,14 +1030,6 @@ pub(crate) fn normalize_acp_update(
     }
 }
 
-fn make_chunk(session_id: &str, event: &NormalizedEvent) -> StreamChunk {
-    StreamChunk {
-        session_id: session_id.to_string(),
-        event_type: event.event_type().to_string(),
-        data: serde_json::to_value(event).unwrap_or_default(),
-    }
-}
-
 fn emit_events(
     app: &tauri::AppHandle,
     agent_id: &str,
@@ -1008,20 +1053,11 @@ fn emit_events(
     }
 }
 
-fn flush_buf(app: &tauri::AppHandle, agent_id: &str, buf: &mut Vec<StreamChunk>) {
+async fn flush_buf(sink: &AcpEventSink, session_id: &str, buf: &mut Vec<NormalizedEvent>) {
     if buf.is_empty() {
         return;
     }
-    let chunks: Vec<AgentStreamChunk> = buf
-        .iter()
-        .map(|chunk| AgentStreamChunk {
-            agent_id: agent_id.to_string(),
-            session_id: chunk.session_id.clone(),
-            event_type: chunk.event_type.clone(),
-            data: chunk.data.clone(),
-        })
-        .collect();
-    let _ = app.emit("agent-event", &chunks);
+    sink.emit(buf, session_id).await;
     buf.clear();
 }
 
@@ -1095,6 +1131,37 @@ mod tests {
                 input: serde_json::Value::Null,
             }]
         );
+    }
+
+    #[test]
+    fn normalizes_structured_interaction_tool_call() {
+        let params = json!({
+            "sessionId": "ses_1",
+            "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call_002",
+                "toolName": "request_user_input",
+                "rawInput": {
+                    "prompt": "请选择权限模型",
+                    "options": [
+                        { "id": "rbac", "label": "RBAC" },
+                        { "id": "abac", "label": "ABAC" }
+                    ]
+                },
+                "status": "pending"
+            }
+        });
+        let mut usage = None;
+        let events = normalize_acp_update(&params, &mut usage);
+
+        assert!(matches!(
+            events.as_slice(),
+            [NormalizedEvent::InteractionRequest {
+                request_id,
+                prompt,
+                ..
+            }] if request_id == "call_002:1" && prompt == "请选择权限模型"
+        ));
     }
 
     #[test]
