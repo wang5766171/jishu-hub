@@ -305,6 +305,13 @@ impl TaskService {
         Ok(store.latest_graph_for_project(project_root)?)
     }
 
+    pub fn list_graphs_for_project(
+        &self,
+        project_root: &std::path::Path,
+    ) -> Result<Vec<TaskGraph>, TaskServiceError> {
+        Ok(self.store.list_graphs_for_project(project_root)?)
+    }
+
     /// Get a revision by id, optionally deserializing the snapshot.
     pub fn get_revision(&self, revision_id: &str) -> Result<GraphRevision, TaskServiceError> {
         let store = &self.store;
@@ -1674,7 +1681,10 @@ mod tests {
         );
         let events = svc.run_events_after(&run.run_id, 0).unwrap();
         // Last event should be RevisionCreated, second-to-last should be RevisionAppliedToRun
-        assert_eq!(events.last().unwrap().event_type, TaskEventType::RevisionCreated);
+        assert_eq!(
+            events.last().unwrap().event_type,
+            TaskEventType::RevisionCreated
+        );
         assert_eq!(
             events.get(events.len() - 2).unwrap().event_type,
             TaskEventType::RevisionAppliedToRun
@@ -1754,7 +1764,11 @@ mod tests {
             .iter()
             .filter(|event| event.event_type == TaskEventType::RevisionCreated)
             .collect::<Vec<_>>();
-        assert_eq!(revision_created_events.len(), 1, "Expected exactly one RevisionCreated event");
+        assert_eq!(
+            revision_created_events.len(),
+            1,
+            "Expected exactly one RevisionCreated event"
+        );
         let event = &revision_created_events[0];
         let payload: crate::orchestrator::events::payloads::RevisionCreatedPayload =
             serde_json::from_value(event.payload.clone()).unwrap();

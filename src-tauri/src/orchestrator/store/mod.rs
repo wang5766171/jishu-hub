@@ -443,6 +443,38 @@ impl TaskStore {
         Ok(graph)
     }
 
+    pub fn list_graphs_for_project(
+        &self,
+        project_root: &Path,
+    ) -> Result<Vec<TaskGraph>, StoreError> {
+        let conn = self
+            .reader
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        let mut stmt = conn.prepare(
+            "SELECT graph_id, title, goal, project_root, owner, current_draft_revision,
+                    created_at, updated_at
+             FROM task_graph
+             WHERE project_root = ?1
+             ORDER BY updated_at DESC, created_at DESC",
+        )?;
+        let graphs = stmt
+            .query_map(params![project_root.to_string_lossy().to_string()], |row| {
+                Ok(TaskGraph {
+                    graph_id: row.get(0)?,
+                    title: row.get(1)?,
+                    goal: row.get(2)?,
+                    project_root: PathBuf::from(row.get::<_, String>(3)?),
+                    owner: row.get(4)?,
+                    current_draft_revision: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(graphs)
+    }
+
     pub fn update_graph_draft_revision(
         &self,
         graph_id: &str,
@@ -2789,6 +2821,41 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM task_graph", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count_after, 2, "reader should see both committed graphs");
+    }
+
+    #[test]
+    fn lists_project_graphs_by_most_recent_update() {
+        let store = make_test_store();
+        for (graph_id, project_root, updated_at) in [
+            ("older", "/project", 10),
+            ("other-project", "/other", 30),
+            ("newer", "/project", 20),
+        ] {
+            store
+                .create_graph(&TaskGraph {
+                    graph_id: graph_id.into(),
+                    title: graph_id.into(),
+                    goal: format!("Goal for {graph_id}"),
+                    project_root: PathBuf::from(project_root),
+                    owner: "test_user".into(),
+                    current_draft_revision: None,
+                    created_at: updated_at,
+                    updated_at,
+                })
+                .unwrap();
+        }
+
+        let graphs = store
+            .list_graphs_for_project(Path::new("/project"))
+            .unwrap();
+
+        assert_eq!(
+            graphs
+                .iter()
+                .map(|graph| graph.graph_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["newer", "older"]
+        );
     }
 
     #[test]

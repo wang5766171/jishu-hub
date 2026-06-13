@@ -1895,6 +1895,25 @@ fn orchestrator_get_latest_graph_for_project(
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
+fn orchestrator_list_graphs_for_project(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    project_root: String,
+) -> Result<
+    Vec<crate::orchestrator::domain::graph::TaskGraph>,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .list_graphs_for_project(std::path::Path::new(&project_root))
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
 fn orchestrator_get_revision(
     state: tauri::State<'_, std::sync::Mutex<AppState>>,
     revision_id: String,
@@ -2419,6 +2438,8 @@ pub fn run() {
             orchestrator_get_graph,
             #[cfg(feature = "orchestrator")]
             orchestrator_get_latest_graph_for_project,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_list_graphs_for_project,
             #[cfg(feature = "orchestrator")]
             orchestrator_get_revision,
             #[cfg(feature = "orchestrator")]
