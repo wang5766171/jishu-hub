@@ -34,4 +34,39 @@ export default defineConfig(async () => ({
     entries: ["index.html"],
     exclude: ["third_party", "src-tauri"],
   },
+  build: {
+    // M7 P2-6: split the heaviest vendor stacks out of the route chunks so the
+    // ~774KB chat-page (markdown render stack) and ~488KB index (xyflow) shrink.
+    // Conservative: only independent libs are grouped; react stays in the default
+    // chunk to avoid jsx-runtime load-order issues.
+    chunkSizeWarningLimit: 700,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules")) {
+            if (
+              id.includes("react-markdown") ||
+              id.includes("remark-gfm") ||
+              id.includes("rehype") ||
+              id.includes("highlight.js") ||
+              id.includes("lowlight") ||
+              id.includes("micromark") ||
+              id.includes("mdast") ||
+              id.includes("unified") ||
+              id.includes("hast-") ||
+              id.includes("nlcst") ||
+              id.includes("parse-") ||
+              id.includes("property-information")
+            ) {
+              return "markdown";
+            }
+            if (id.includes("@xyflow")) {
+              return "xyflow";
+            }
+          }
+          return undefined;
+        },
+      },
+    },
+  },
 }));
