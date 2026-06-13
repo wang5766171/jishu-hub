@@ -102,6 +102,7 @@ impl PlannerService {
             .runtime
             .resolve_agent(&planning_node, "planner")
             .map_err(|error| format!("planner resolution failed: {error}"))?;
+        let required_roles = required_role_ids(&skill_manifests);
         let prompt = build_prompt(
             &request,
             &graph.project_root.to_string_lossy(),
@@ -109,28 +110,56 @@ impl PlannerService {
             &skill_manifests,
             &available_agents,
         )?;
-        let output = self
-            .runtime
-            .invoke(RuntimeInvocationRequest {
-                agent_id: planner_assignment.agent_id.clone(),
-                role_id: "planner".into(),
-                project_path: graph.project_root.to_string_lossy().to_string(),
-                session_id: None,
-                prompt,
-                timeout_ms: 180_000,
-                cancellation: Arc::new(AtomicBool::new(false)),
-            })
-            .await
-            .map_err(|error| format!("planner invocation failed: {error}"))?;
-        if !output.exit_success {
-            return Err(format!(
-                "planner process exited unsuccessfully ({:?})",
-                output.exit_code
-            ));
+        let project_path = graph.project_root.to_string_lossy().to_string();
+        let mut next_prompt = prompt.clone();
+        let mut accepted = None;
+        let mut last_error = None;
+
+        for attempt in 0..2 {
+            let output = self
+                .runtime
+                .invoke(RuntimeInvocationRequest {
+                    agent_id: planner_assignment.agent_id.clone(),
+                    role_id: "planner".into(),
+                    project_path: project_path.clone(),
+                    session_id: None,
+                    prompt: next_prompt.clone(),
+                    timeout_ms: 180_000,
+                    cancellation: Arc::new(AtomicBool::new(false)),
+                })
+                .await
+                .map_err(|error| format!("planner invocation failed: {error}"))?;
+            if !output.exit_success {
+                return Err(format!(
+                    "planner process exited unsuccessfully ({:?})",
+                    output.exit_code
+                ));
+            }
+            let response = collect_text(&output.events);
+            let parsed = parse_draft(&response).and_then(|draft| {
+                validate_plan_shape(&snapshot, &draft, &required_roles)?;
+                let commands = draft_to_commands(&snapshot, &draft)?;
+                Ok((draft, commands))
+            });
+            match parsed {
+                Ok(value) => {
+                    accepted = Some(value);
+                    break;
+                }
+                Err(error) if attempt == 0 => {
+                    next_prompt = correction_prompt(&prompt, &error);
+                    last_error = Some(error);
+                }
+                Err(error) => last_error = Some(error),
+            }
         }
-        let response = collect_text(&output.events);
-        let draft = parse_draft(&response)?;
-        let commands = draft_to_commands(&snapshot, &draft)?;
+
+        let (draft, commands) = accepted.ok_or_else(|| {
+            format!(
+                "planner proposal remained invalid after one correction attempt: {}",
+                last_error.unwrap_or_else(|| "unknown validation error".into())
+            )
+        })?;
         let candidate = apply_commands(&snapshot, &commands).map_err(|error| error.to_string())?;
         let warnings = graph_validate(&candidate).map_err(|error| error.to_string())?;
         let proposal_id = gen_id("proposal");
@@ -261,6 +290,24 @@ fn load_skill_manifests(skill_refs: &[SkillRef]) -> Result<Vec<serde_json::Value
         .collect()
 }
 
+fn required_role_ids(skills: &[serde_json::Value]) -> Vec<String> {
+    let mut role_ids = skills
+        .iter()
+        .flat_map(|skill| {
+            skill
+                .get("roles")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|role| role.get("role_id").and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    role_ids.sort();
+    role_ids.dedup();
+    role_ids
+}
+
 fn build_prompt(
     request: &PlanningRequest,
     project_root: &str,
@@ -268,6 +315,17 @@ fn build_prompt(
     skills: &[serde_json::Value],
     available_agents: &[serde_json::Value],
 ) -> Result<String, String> {
+    let required_roles = required_role_ids(skills);
+    let minimum_agent_nodes = required_roles.len().max(4);
+    let (existing_agent_nodes, existing_roles, existing_supervisor_nodes) =
+        existing_plan_shape(snapshot);
+    let missing_role_ids = required_roles
+        .iter()
+        .filter(|role| !existing_roles.contains(*role))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut existing_role_ids = existing_roles.into_iter().collect::<Vec<_>>();
+    existing_role_ids.sort();
     let context = serde_json::json!({
         "instruction": request.instruction,
         "project_root": project_root,
@@ -275,6 +333,17 @@ fn build_prompt(
         "current_graph": snapshot,
         "skills": skills,
         "available_agents": available_agents,
+        "plan_quality": {
+            "minimum_total_agent_nodes": minimum_agent_nodes,
+            "minimum_new_agent_nodes": minimum_agent_nodes.saturating_sub(existing_agent_nodes),
+            "existing_agent_nodes": existing_agent_nodes,
+            "existing_role_ids": existing_role_ids,
+            "required_role_ids": required_roles,
+            "missing_role_ids": missing_role_ids,
+            "existing_supervisor_nodes": existing_supervisor_nodes,
+            "require_supervisor_node": existing_supervisor_nodes == 0,
+            "require_specific_acceptance_per_node": true,
+        },
     });
     let context = serde_json::to_string_pretty(&context).map_err(|error| error.to_string())?;
     Ok(format!(
@@ -322,6 +391,10 @@ Rules:
 - depends_on may reference existing graph nodes or nodes in this proposal.
 - Maximize safe parallelism; add a dependency only for a real control or data dependency.
 - Apply every selected skill's methodology in node roles, prompts, and acceptance criteria.
+- Make the resulting graph cover every required_role_id and satisfy minimum_total_agent_nodes. Use existing graph nodes where they already satisfy the requirement.
+- Make the resulting graph contain at least one supervisor node after the terminal work branches.
+- Decompose distinct concerns, subsystems, interfaces, implementation workstreams, tests, and acceptance. Never collapse a non-trivial goal into one generic "implement the system" node.
+- Every agent node needs a goal-specific description, a complete execution prompt, and at least one observable acceptance criterion.
 - Request the least permissions needed. Write, command, network, and deploy permissions are high risk.
 - Include explicit verification or review work where the task needs it.
 - Do not call tools, edit files, or start execution. Planning only.
@@ -329,6 +402,12 @@ Rules:
 Planning context:
 {context}"#
     ))
+}
+
+fn correction_prompt(original_prompt: &str, validation_error: &str) -> String {
+    format!(
+        "{original_prompt}\n\nThe previous proposal was rejected by the deterministic task-graph quality gate:\n{validation_error}\n\nReturn a completely regenerated JSON object that fixes every listed issue. Do not explain the correction."
+    )
 }
 
 fn collect_text(events: &[NormalizedEvent]) -> String {
@@ -375,6 +454,125 @@ fn parse_draft(response: &str) -> Result<PlannerDraft, String> {
         return Err("planner proposal must contain at least one command".into());
     }
     Ok(draft)
+}
+
+fn existing_plan_shape(
+    snapshot: &crate::orchestrator::domain::graph::GraphSnapshot,
+) -> (usize, HashSet<String>, usize) {
+    let mut agent_count = 0usize;
+    let mut agent_roles = HashSet::new();
+    let mut supervisor_count = 0usize;
+
+    for node in &snapshot.nodes {
+        if node.node_kind != NodeKind::Executable {
+            continue;
+        }
+        let is_supervisor = node
+            .role_requirement
+            .as_ref()
+            .is_some_and(|role| role.role_id == "supervisor")
+            || matches!(
+                node.executable_payload.as_ref(),
+                Some(ExecutablePayload::Reflect { .. })
+            );
+        if is_supervisor {
+            supervisor_count += 1;
+            continue;
+        }
+        agent_count += 1;
+        if let Some(role) = &node.role_requirement {
+            agent_roles.insert(role.role_id.clone());
+        } else if let Some(ExecutablePayload::Dispatch { role_id, .. }) = &node.executable_payload {
+            agent_roles.insert(role_id.clone());
+        }
+    }
+
+    (agent_count, agent_roles, supervisor_count)
+}
+
+fn validate_plan_shape<S: AsRef<str>>(
+    snapshot: &crate::orchestrator::domain::graph::GraphSnapshot,
+    draft: &PlannerDraft,
+    required_roles: &[S],
+) -> Result<(), String> {
+    let (mut agent_count, mut agent_roles, mut supervisor_count) = existing_plan_shape(snapshot);
+    let mut incomplete_nodes = Vec::new();
+
+    for command in &draft.commands {
+        match command {
+            PlannerDraftCommand::AddAgentNode {
+                node_id,
+                description,
+                role_id,
+                prompt,
+                acceptance,
+                ..
+            } => {
+                agent_count += 1;
+                agent_roles.insert(role_id.clone());
+                if description
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                    || prompt.trim().is_empty()
+                    || acceptance.is_empty()
+                    || acceptance.iter().any(|item| item.trim().is_empty())
+                {
+                    incomplete_nodes.push(node_id.as_str());
+                }
+            }
+            PlannerDraftCommand::AddSupervisorNode {
+                node_id,
+                question,
+                acceptance,
+                ..
+            } => {
+                supervisor_count += 1;
+                if question.trim().is_empty()
+                    || acceptance.is_empty()
+                    || acceptance.iter().any(|item| item.trim().is_empty())
+                {
+                    incomplete_nodes.push(node_id.as_str());
+                }
+            }
+        }
+    }
+
+    let minimum_agent_nodes = required_roles.len().max(4);
+    let missing_roles = required_roles
+        .iter()
+        .map(AsRef::as_ref)
+        .filter(|role| !agent_roles.contains(*role))
+        .collect::<Vec<_>>();
+    let mut issues = Vec::new();
+    if agent_count < minimum_agent_nodes {
+        issues.push(format!(
+            "plan is too shallow: expected at least {minimum_agent_nodes} goal-specific agent nodes, got {agent_count}"
+        ));
+    }
+    if supervisor_count == 0 {
+        issues.push("plan must include at least one supervisor node".into());
+    }
+    if !missing_roles.is_empty() {
+        issues.push(format!(
+            "plan does not cover required skill roles: {}",
+            missing_roles.join(", ")
+        ));
+    }
+    if !incomplete_nodes.is_empty() {
+        issues.push(format!(
+            "nodes need specific descriptions, prompts, and acceptance criteria: {}",
+            incomplete_nodes.join(", ")
+        ));
+    }
+
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "task graph quality check failed: {}",
+            issues.join("; ")
+        ))
+    }
 }
 
 fn draft_to_commands(
@@ -616,5 +814,204 @@ mod tests {
         }))
         .unwrap();
         assert!(draft_to_commands(&snapshot, &draft).is_err());
+    }
+
+    #[test]
+    fn initial_planning_rejects_a_single_generic_node() {
+        let snapshot = graph_create(&CreateGraphInput {
+            title: "Permission platform".into(),
+            goal: "Design frontend and backend permission management".into(),
+            project_root: ".".into(),
+            owner: "test".into(),
+            ..Default::default()
+        });
+        let draft: PlannerDraft = serde_json::from_value(serde_json::json!({
+            "commands": [{
+                "op": "add_agent_node",
+                "node_id": "implement",
+                "title": "Implement permission management",
+                "role_id": "developer",
+                "prompt": "Implement the requested system.",
+                "acceptance": ["The system exists"]
+            }],
+            "rationale": "One node",
+            "expected_benefits": [],
+            "risks": []
+        }))
+        .unwrap();
+
+        let error = validate_plan_shape(
+            &snapshot,
+            &draft,
+            &[
+                "requirements_owner",
+                "architect",
+                "developer",
+                "tester",
+                "auditor",
+            ],
+        )
+        .unwrap_err();
+
+        assert!(error.contains("too shallow"));
+        assert!(error.contains("supervisor"));
+    }
+
+    #[test]
+    fn shallow_existing_graph_still_requires_real_expansion() {
+        let mut snapshot = graph_create(&CreateGraphInput {
+            title: "Permission platform".into(),
+            goal: "Design frontend and backend permission management".into(),
+            project_root: ".".into(),
+            owner: "test".into(),
+            ..Default::default()
+        });
+        snapshot.nodes.push(GraphNode {
+            node_id: "permission_management".into(),
+            parent_id: None,
+            title: "Permission management".into(),
+            description: Some("Implement the whole permission system.".into()),
+            node_kind: NodeKind::Executable,
+            input_contract: Contract::default(),
+            output_contract: Contract::default(),
+            role_requirement: Some(RoleRequirement {
+                role_id: "developer".into(),
+                responsibility: "Implement everything".into(),
+                required_capabilities: vec![],
+                preferred_capabilities: vec![],
+            }),
+            capability_requirements: vec![],
+            agent_assignment_constraint: None,
+            policy: NodePolicy::default(),
+            metadata: HashMap::new(),
+            executable_payload: Some(ExecutablePayload::Dispatch {
+                role_id: "developer".into(),
+                prompt: "Implement the whole permission system.".into(),
+                project: None,
+                session: None,
+            }),
+            loop_config: None,
+            approval_gate_config: None,
+        });
+        let draft: PlannerDraft = serde_json::from_value(serde_json::json!({
+            "commands": [{
+                "op": "add_agent_node",
+                "node_id": "finish",
+                "title": "Finish permission management",
+                "role_id": "developer",
+                "prompt": "Finish the requested system.",
+                "acceptance": ["The system exists"]
+            }],
+            "rationale": "Small patch",
+            "expected_benefits": [],
+            "risks": []
+        }))
+        .unwrap();
+
+        let error = validate_plan_shape(
+            &snapshot,
+            &draft,
+            &[
+                "requirements_owner",
+                "architect",
+                "developer",
+                "tester",
+                "auditor",
+            ],
+        )
+        .unwrap_err();
+
+        assert!(error.contains("too shallow"));
+        assert!(error.contains("requirements_owner"));
+        assert!(error.contains("supervisor"));
+    }
+
+    #[test]
+    fn initial_planning_accepts_role_coverage_and_supervision() {
+        let snapshot = graph_create(&CreateGraphInput {
+            title: "Permission platform".into(),
+            goal: "Design frontend and backend permission management".into(),
+            project_root: ".".into(),
+            owner: "test".into(),
+            ..Default::default()
+        });
+        let draft: PlannerDraft = serde_json::from_value(serde_json::json!({
+            "commands": [
+                {
+                    "op": "add_agent_node",
+                    "node_id": "requirements",
+                    "title": "Clarify permission boundaries",
+                    "description": "Define operation and data permission scenarios.",
+                    "role_id": "requirements_owner",
+                    "prompt": "Produce explicit permission scenarios and acceptance criteria.",
+                    "acceptance": ["Operation and data permission cases are explicit"]
+                },
+                {
+                    "op": "add_agent_node",
+                    "node_id": "architecture",
+                    "title": "Design authorization architecture",
+                    "description": "Define organization, role, policy, and enforcement boundaries.",
+                    "role_id": "architect",
+                    "prompt": "Design the authorization model and interfaces.",
+                    "depends_on": ["requirements"],
+                    "acceptance": ["Frontend and backend contracts are explicit"]
+                },
+                {
+                    "op": "add_agent_node",
+                    "node_id": "implementation",
+                    "title": "Implement permission services",
+                    "description": "Build operation and data permission enforcement.",
+                    "role_id": "developer",
+                    "prompt": "Implement the planned services and management UI.",
+                    "depends_on": ["architecture"],
+                    "acceptance": ["Permission enforcement is implemented"]
+                },
+                {
+                    "op": "add_agent_node",
+                    "node_id": "testing",
+                    "title": "Test permission boundaries",
+                    "description": "Verify authorization and data isolation.",
+                    "role_id": "tester",
+                    "prompt": "Run positive, negative, and isolation tests.",
+                    "depends_on": ["implementation"],
+                    "acceptance": ["Unauthorized access is denied"]
+                },
+                {
+                    "op": "add_agent_node",
+                    "node_id": "audit",
+                    "title": "Audit security and traceability",
+                    "description": "Review policy correctness and audit evidence.",
+                    "role_id": "auditor",
+                    "prompt": "Audit the completed permission system.",
+                    "depends_on": ["testing"],
+                    "acceptance": ["Security findings are resolved or recorded"]
+                },
+                {
+                    "op": "add_supervisor_node",
+                    "node_id": "supervise",
+                    "title": "Evaluate goal completion",
+                    "question": "Evaluate the graph outputs against the goal and acceptance criteria.",
+                    "depends_on": ["audit"],
+                    "acceptance": ["Return pass, rework, stop, or human decision"]
+                }
+            ],
+            "rationale": "Role-complete engineering flow",
+            "expected_benefits": ["Traceable"],
+            "risks": []
+        }))
+        .unwrap();
+
+        validate_plan_shape(
+            &snapshot,
+            &draft,
+            &[
+                "requirements_owner",
+                "architect",
+                "developer",
+                "tester",
+                "auditor",
+            ],
+        )
+        .unwrap();
     }
 }
