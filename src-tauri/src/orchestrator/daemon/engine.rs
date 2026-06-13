@@ -527,19 +527,13 @@ async fn drive_loops(
             config,
             iteration,
             now,
+            loop_run.started_at.unwrap_or(now),
             body_succeeded,
             evaluator_output.as_ref(),
             &accumulated_usage,
             iteration,
         )
         .unwrap_or_else(|error| payloads::EvaluatorResult::Fail { error });
-        if config.deadline_ms.is_some_and(|deadline_ms| {
-            now.saturating_sub(loop_run.started_at.unwrap_or(now)) >= deadline_ms as i64
-        }) {
-            result = payloads::EvaluatorResult::Fail {
-                error: "loop deadline exceeded".into(),
-            };
-        }
 
         let current_run = store
             .get_run(&run.run_id)

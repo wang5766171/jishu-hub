@@ -20,6 +20,7 @@ pub fn evaluate(
     config: &LoopControllerConfig,
     iteration: u32,
     now: i64,
+    started_at: i64,
     body_succeeded: bool,
     node_evaluator_output: Option<&serde_json::Value>,
     accumulated_usage: &AttemptUsage,
@@ -42,6 +43,17 @@ pub fn evaluate(
             if iteration.saturating_add(1) >= max_iterations {
                 result = EvaluatorResult::Fail {
                     error: format!("loop reached max_iterations={max_iterations}"),
+                };
+            }
+        }
+        // Wall-clock deadline (M6/P03: consolidated into `evaluate` so the hard
+        // budgets have a single arbiter and nested loops can't miss it; was
+        // previously enforced only as a `drive_loops` post-override).
+        if let Some(deadline_ms) = config.deadline_ms {
+            let elapsed = now.saturating_sub(started_at);
+            if elapsed >= deadline_ms as i64 {
+                result = EvaluatorResult::Fail {
+                    error: format!("loop deadline_ms={deadline_ms} exceeded (elapsed {elapsed}ms)"),
                 };
             }
         }
@@ -193,6 +205,7 @@ mod tests {
             })),
             0,
             10,
+            10,
             true,
             None,
             &AttemptUsage::default(),
@@ -207,6 +220,7 @@ mod tests {
         let result = evaluate(
             &config(serde_json::json!({"outcome": "wait", "wait_ms": 250})),
             0,
+            1_000,
             1_000,
             true,
             None,
@@ -223,6 +237,7 @@ mod tests {
             &config(serde_json::json!({"outcome": "continue"})),
             2,
             1_000,
+            1_000,
             true,
             None,
             &AttemptUsage::default(),
@@ -230,6 +245,55 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(result, EvaluatorResult::Fail { .. }));
+    }
+
+    #[test]
+    fn deadline_budget_overrides_continue() {
+        let cfg = {
+            let mut c = config(serde_json::json!({"outcome": "continue"}));
+            c.max_iterations = None;
+            c.deadline_ms = Some(5000);
+            c
+        };
+        // started_at=1000, now=7000 → elapsed 6000 >= deadline 5000 → Fail.
+        let result = evaluate(
+            &cfg,
+            0,
+            7_000,
+            1_000,
+            true,
+            None,
+            &AttemptUsage::default(),
+            0,
+        )
+        .unwrap();
+        assert!(matches!(result, EvaluatorResult::Fail { .. }));
+        if let EvaluatorResult::Fail { error } = result {
+            assert!(error.contains("deadline_ms=5000"));
+        }
+    }
+
+    #[test]
+    fn deadline_not_triggered_within_window() {
+        let cfg = {
+            let mut c = config(serde_json::json!({"outcome": "continue"}));
+            c.max_iterations = None;
+            c.deadline_ms = Some(5000);
+            c
+        };
+        // elapsed 2000 < deadline 5000 → continue (not fail).
+        let result = evaluate(
+            &cfg,
+            0,
+            3_000,
+            1_000,
+            true,
+            None,
+            &AttemptUsage::default(),
+            0,
+        )
+        .unwrap();
+        assert!(matches!(result, EvaluatorResult::Continue));
     }
 
     #[test]
@@ -244,7 +308,7 @@ mod tests {
             output_tokens: 40,
             cost_usd: 0.0,
         };
-        let result = evaluate(&cfg, 0, 1_000, true, None, &accumulated, 0).unwrap();
+        let result = evaluate(&cfg, 0, 1_000, 1_000, true, None, &accumulated, 0).unwrap();
         assert!(matches!(result, EvaluatorResult::Fail { .. }));
         if let EvaluatorResult::Fail { error } = result {
             assert!(error.contains("token_budget=100") && error.contains("used 100"));
@@ -263,7 +327,7 @@ mod tests {
             output_tokens: 0,
             cost_usd: 0.5,
         };
-        let result = evaluate(&cfg, 0, 1_000, true, None, &accumulated, 0).unwrap();
+        let result = evaluate(&cfg, 0, 1_000, 1_000, true, None, &accumulated, 0).unwrap();
         assert!(matches!(result, EvaluatorResult::Fail { .. }));
         if let EvaluatorResult::Fail { error } = result {
             assert!(error.contains("cost_budget_usd=0.5"));
@@ -279,7 +343,17 @@ mod tests {
             c
         };
         // Use iteration 0 to avoid triggering max_iterations (which is Some(3) from config())
-        let result = evaluate(&cfg, 0, 1_000, true, None, &AttemptUsage::default(), 2).unwrap();
+        let result = evaluate(
+            &cfg,
+            0,
+            1_000,
+            1_000,
+            true,
+            None,
+            &AttemptUsage::default(),
+            2,
+        )
+        .unwrap();
         assert!(matches!(result, EvaluatorResult::Pause { .. }));
         if let EvaluatorResult::Pause { reason } = result {
             assert!(reason.contains("no_progress_threshold=2"));
@@ -295,7 +369,17 @@ mod tests {
             c
         };
         // Use iteration 0 to avoid triggering max_iterations
-        let result = evaluate(&cfg, 0, 1_000, true, None, &AttemptUsage::default(), 2).unwrap();
+        let result = evaluate(
+            &cfg,
+            0,
+            1_000,
+            1_000,
+            true,
+            None,
+            &AttemptUsage::default(),
+            2,
+        )
+        .unwrap();
         assert!(matches!(result, EvaluatorResult::Fail { .. }));
     }
 
