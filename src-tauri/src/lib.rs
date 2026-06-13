@@ -2417,6 +2417,25 @@ fn orchestrator_choose_recovery(
         .map_err(Into::into)
 }
 
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_attach_repair(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    run_id: String,
+    node_run_id: String,
+    commands: Vec<crate::orchestrator::commands::GraphCommand>,
+    repair_depth: u32,
+) -> Result<String, crate::orchestrator::domain::run::TaskError> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .attach_repair(&run_id, &node_run_id, &commands, repair_depth)
+        .map_err(Into::into)
+}
+
 #[tauri::command]
 fn task_plan_skill_list() -> Result<Vec<task_plan::TaskPlanSkill>, String> {
     task_plan::list_task_plan_skills()
@@ -2604,6 +2623,8 @@ pub fn run() {
             orchestrator_checkout_draft_revision,
             #[cfg(feature = "orchestrator")]
             orchestrator_choose_recovery,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_attach_repair,
             task_plan_skill_list,
             task_plan_skill_install,
             list_models,
