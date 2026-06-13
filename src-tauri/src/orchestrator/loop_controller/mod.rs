@@ -3,11 +3,17 @@ use crate::orchestrator::domain::run::AttemptUsage;
 use crate::orchestrator::events::payloads::EvaluatorResult;
 
 /// A loop must declare at least one hard budget so it cannot run unbounded.
+///
+/// `no_progress_threshold` counts as a hard budget because `evaluate` enforces
+/// it as a terminal constraint (pause/fail). Omitting it here would make a loop
+/// that declares only `no_progress_threshold` be rejected as budgetless by
+/// `start_loop_iteration`, contradicting `evaluate`.
 pub fn has_hard_budget(config: &LoopControllerConfig) -> bool {
     config.max_iterations.is_some()
         || config.deadline_ms.is_some()
         || config.token_budget.is_some()
         || config.cost_budget_usd.is_some()
+        || config.no_progress_threshold.is_some()
 }
 
 pub fn evaluate(
@@ -340,5 +346,24 @@ mod tests {
             ..cfg
         };
         assert!(!has_hard_budget(&cfg_none));
+    }
+
+    #[test]
+    fn has_hard_budget_counts_no_progress_threshold() {
+        // Regression: a loop that declares ONLY a no_progress_threshold must be
+        // treated as having a hard budget. `evaluate` enforces no_progress as a
+        // hard constraint, so `has_hard_budget` must agree — otherwise
+        // `start_loop_iteration` rejects the loop as budgetless while `evaluate`
+        // would have bounded it.
+        let base = config(serde_json::json!({"outcome": "continue"}));
+        let cfg = LoopControllerConfig {
+            max_iterations: None,
+            deadline_ms: None,
+            token_budget: None,
+            cost_budget_usd: None,
+            no_progress_threshold: Some(3),
+            ..base
+        };
+        assert!(has_hard_budget(&cfg));
     }
 }
