@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { computeLayout, LAYOUT_NODE_WIDTH } from "./layout";
+import { computeLayout, LAYOUT_NODE_WIDTH, type LayoutGraph, type LayoutResult } from "./layout";
 import {
   ReactFlow,
   MiniMap,
@@ -98,6 +98,54 @@ export function GraphEditor({
   const onNodeSelectRef = useRef(onNodeSelect);
   selectedNodeIdRef.current = selectedNodeId;
   onNodeSelectRef.current = onNodeSelect;
+
+  // Layout runs in a Web Worker so a large canvas never blocks the main thread
+  // (design §13.2). In environments without `Worker` (jsdom tests), `null` falls
+  // back to synchronous `computeLayout`, preserving existing behavior.
+  const layoutWorkerRef = useRef<Worker | null | undefined>(undefined);
+  if (layoutWorkerRef.current === undefined) {
+    if (typeof Worker !== "undefined") {
+      try {
+        layoutWorkerRef.current = new Worker(new URL("./layout-worker.ts", import.meta.url), {
+          type: "module",
+        });
+      } catch {
+        layoutWorkerRef.current = null;
+      }
+    } else {
+      layoutWorkerRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    const worker = layoutWorkerRef.current;
+    if (!worker) return;
+    const applyLayout = (event: MessageEvent<LayoutResult>) => {
+      const positions = event.data;
+      setNodes((current) => {
+        let changed = false;
+        const next = current.map((node) => {
+          // Only place nodes still at the origin (newly added, not yet laid out
+          // or dragged). Nodes the user moved keep their position.
+          if (node.position.x !== 0 || node.position.y !== 0) return node;
+          const placed = positions[node.id];
+          if (!placed) return node;
+          changed = true;
+          return { ...node, position: placed };
+        });
+        return changed ? next : current;
+      });
+    };
+    worker.addEventListener("message", applyLayout);
+    return () => worker.removeEventListener("message", applyLayout);
+  }, [setNodes]);
+
+  useEffect(() => {
+    return () => {
+      layoutWorkerRef.current?.terminate();
+      layoutWorkerRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -200,19 +248,25 @@ export function GraphEditor({
       };
     });
 
+    const layoutGraph: LayoutGraph = {
+      nodes: rfNodes.map((node) => ({ id: node.id })),
+      edges: rfEdges.map((edge) => ({ source: edge.source, target: edge.target })),
+    };
+    const layoutWorker = layoutWorkerRef.current;
+    // Without a worker (jsdom tests, or browsers where Worker failed to spawn),
+    // compute synchronously — behavior matches the legacy inline layout. With a
+    // worker, new-node positions arrive asynchronously via the message handler.
+    const positions = layoutWorker ? {} : computeLayout(layoutGraph);
     setNodes((current) => {
       const currentPositions = new Map(
         current.map((node) => [node.id, node.position] as const),
       );
-      const positions = computeLayout({
-        nodes: rfNodes.map((node) => ({ id: node.id })),
-        edges: rfEdges.map((edge) => ({ source: edge.source, target: edge.target })),
-      });
       return rfNodes.map((node) => ({
         ...node,
         position: currentPositions.get(node.id) ?? positions[node.id] ?? { x: 0, y: 0 },
       }));
     });
+    layoutWorker?.postMessage(layoutGraph);
     setEdges(rfEdges);
     requestAnimationFrame(() => {
       flowRef.current?.fitView({ padding: 0.16, duration: 250 });
