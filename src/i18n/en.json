@@ -439,6 +439,22 @@
       "cancelRun": "Cancel run",
       "aiPlan": "AI plan",
       "planning": "Planning…",
+      "planningProgress": {
+        "eyebrow": "AI task graph planning",
+        "description": "The planner is using the goal, selected methods, project capabilities, and current graph to build a candidate revision.",
+        "locked": "The task graph is locked while planning",
+        "attempt": "Attempt {{current}} / {{total}}",
+        "stages": {
+          "preparing_context": "Preparing planning context",
+          "resolving_agent": "Selecting planning agent",
+          "generating": "Generating task graph",
+          "validating": "Validating task graph",
+          "retrying": "Replanning from validation feedback",
+          "building_proposal": "Building review proposal",
+          "completed": "Planning complete",
+          "failed": "Planning failed"
+        }
+      },
       "planningSkills": "Planning methods",
       "planningSkillsHint": "Selected skills are pinned by content hash in the Revision and included in planning context and run trace.",
       "preparingTask": "Preparing task and plan…",
@@ -461,6 +477,11 @@
       "stepTitle": "Step title",
       "stepPrompt": "Execution prompt",
       "connectHint": "After creation, drag a connection from the source node to the target to add a control dependency. Select a node or edge and press Delete to remove it.",
+      "edgeKinds": {
+        "control_dependency": "Control dependency",
+        "data_dependency": "Data dependency"
+      },
+      "deleteEdge": "Delete dependency",
       "createStep": "Create step",
       "newPhase": "New phase",
       "nodeId": "ID",

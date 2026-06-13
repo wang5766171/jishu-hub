@@ -437,6 +437,22 @@
       "cancelRun": "取消运行",
       "aiPlan": "AI 规划",
       "planning": "规划中…",
+      "planningProgress": {
+        "eyebrow": "AI 任务图规划",
+        "description": "Planner 正在根据目标、规划方法、项目能力和当前任务图生成候选 Revision。",
+        "locked": "生成期间任务图已锁定",
+        "attempt": "尝试 {{current}} / {{total}}",
+        "stages": {
+          "preparing_context": "准备规划上下文",
+          "resolving_agent": "选择规划 Agent",
+          "generating": "生成任务图结构",
+          "validating": "校验任务图",
+          "retrying": "根据校验结果重新规划",
+          "building_proposal": "构建审核提案",
+          "completed": "规划完成",
+          "failed": "规划失败"
+        }
+      },
       "planningSkills": "规划方法",
       "planningSkillsHint": "所选 skill 将按内容哈希固定到 Revision，并进入规划上下文与运行追踪。",
       "preparingTask": "准备任务与规划…",
@@ -459,6 +475,11 @@
       "stepTitle": "节点标题",
       "stepPrompt": "执行提示词",
       "connectHint": "创建后，从源节点拖出连线到目标节点即可建立控制依赖。选中节点或连线后按 Delete 可删除。",
+      "edgeKinds": {
+        "control_dependency": "控制依赖",
+        "data_dependency": "数据依赖"
+      },
+      "deleteEdge": "删除依赖",
       "createStep": "创建节点",
       "newPhase": "新阶段",
       "nodeId": "节点 ID",
