@@ -18,6 +18,7 @@ use crate::orchestrator::domain::run::{
 };
 use crate::orchestrator::events::{build_event, payloads, TaskEvent, TaskEventType};
 use crate::orchestrator::local_actions::execute_local_action;
+use crate::orchestrator::recovery::{decide_recovery, RecoveryContext, RecoveryDecision};
 use crate::orchestrator::resources::{ResourceArbiter, ResourceLimits};
 use crate::orchestrator::runtime_bridge::{
     map_normalized_event, RuntimeEventContext, RuntimeFact, RuntimeInvocationRequest,
@@ -1359,42 +1360,96 @@ async fn schedule_node(
                     finished_at,
                     payload,
                 ));
-                if should_retry(&node, &attempt, &error) {
-                    let backoff_ms = error.retry_after_ms.unwrap_or_else(|| {
-                        node.policy.retry_policy.backoff_ms(attempt.attempt_number)
-                    });
-                    let wake_at = finished_at.saturating_add(backoff_ms as i64);
-                    node_run.status = NodeRunStatus::RetryWait;
-                    node_run.finished_at = None;
-                    node_run.wake_at = Some(wake_at);
+                let retries_remaining = error.retryable
+                    && node
+                        .policy
+                        .retry_policy
+                        .should_retry(attempt.attempt_number, true)
+                    && match node.policy.idempotency_policy {
+                        IdempotencyPolicy::NoRetry => false,
+                        IdempotencyPolicy::CheckpointRequired => attempt.checkpoint.is_some(),
+                        IdempotencyPolicy::None | IdempotencyPolicy::IdempotencyKey => true,
+                    };
+                let decision = decide_recovery(&RecoveryContext {
+                    category: error.category.clone(),
+                    retries_remaining,
+                    repair_depth: 0,
+                    repair_allowed: node.policy.repair_depth_limit() > 0,
+                    budget_remaining: true,
+                });
+                // HumanGate (and Repair, until M3.3 wires supervisor-generated
+                // repair subgraphs) pause for a human recovery decision. Compute
+                // the pause reason from a borrow first, then move `decision` below.
+                let pause_reason = match &decision {
+                    RecoveryDecision::HumanGate { reason } => Some(reason.clone()),
+                    RecoveryDecision::Repair => {
+                        Some("repair subgraph pending supervisor proposal".to_string())
+                    }
+                    _ => None,
+                };
+                if let Some(reason) = pause_reason {
+                    // Gating is fail-safe: never auto-acts, always defers to a human.
+                    node_run.status = NodeRunStatus::Failed;
+                    node_run.finished_at = Some(finished_at);
+                    run_status_update = Some((RunStatus::AwaitingHuman, None));
                     resolve_node = false;
-                    let retry_payload =
-                        match serde_json::to_value(payloads::RetryScheduledPayload {
-                            node_run_id: node_run_id.clone(),
-                            next_attempt_number: attempt.attempt_number + 1,
-                            wake_at,
-                            backoff_ms,
-                        }) {
-                            Ok(payload) => payload,
-                            Err(error) => {
-                                tracing::error!(
-                                    "failed to serialize retry for node {}: {error}",
-                                    node.node_id
-                                );
-                                return;
-                            }
-                        };
                     events.push(build_event(
                         gen_id("evt"),
                         &run_id,
                         run.run_seq + events.len() as u64 + 1,
-                        TaskEventType::RetryScheduled,
+                        TaskEventType::RecoveryChosen,
                         "recovery_controller",
                         finished_at,
-                        retry_payload,
+                        serde_json::to_value(payloads::RecoveryChosenPayload {
+                            node_run_id: node_run_id.clone(),
+                            strategy: "human_gate".into(),
+                            reason,
+                        })
+                        .unwrap_or(serde_json::Value::Null),
                     ));
                 } else {
-                    node_run.status = NodeRunStatus::Failed;
+                    match decision {
+                        RecoveryDecision::Retry => {
+                            let backoff_ms = error.retry_after_ms.unwrap_or_else(|| {
+                                node.policy.retry_policy.backoff_ms(attempt.attempt_number)
+                            });
+                            let wake_at = finished_at.saturating_add(backoff_ms as i64);
+                            node_run.status = NodeRunStatus::RetryWait;
+                            node_run.finished_at = None;
+                            node_run.wake_at = Some(wake_at);
+                            resolve_node = false;
+                            let retry_payload =
+                                match serde_json::to_value(payloads::RetryScheduledPayload {
+                                    node_run_id: node_run_id.clone(),
+                                    next_attempt_number: attempt.attempt_number + 1,
+                                    wake_at,
+                                    backoff_ms,
+                                }) {
+                                    Ok(payload) => payload,
+                                    Err(error) => {
+                                        tracing::error!(
+                                            "failed to serialize retry for node {}: {error}",
+                                            node.node_id
+                                        );
+                                        return;
+                                    }
+                                };
+                            events.push(build_event(
+                                gen_id("evt"),
+                                &run_id,
+                                run.run_seq + events.len() as u64 + 1,
+                                TaskEventType::RetryScheduled,
+                                "recovery_controller",
+                                finished_at,
+                                retry_payload,
+                            ));
+                        }
+                        RecoveryDecision::Fail
+                        | RecoveryDecision::HumanGate { .. }
+                        | RecoveryDecision::Repair => {
+                            node_run.status = NodeRunStatus::Failed;
+                        }
+                    }
                 }
             }
         }

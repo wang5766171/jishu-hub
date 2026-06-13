@@ -1318,6 +1318,16 @@ impl TaskService {
             _ => {}
         }
         store.save_node_runs_with_events(&[node_run.clone()], &events, None)?;
+        // A retry decision must resume a paused run so the scheduler picks the
+        // node back up — mirrors how `submit_task_interaction` resumes after an
+        // interaction is resolved. Without this, manual recovery on an
+        // AwaitingHuman run would leave the run paused (deadlock).
+        if node_run.status == NodeRunStatus::Blocked {
+            let latest_run = store.get_run(&run.run_id)?;
+            if latest_run.status == RunStatus::AwaitingHuman {
+                self.resume_run(&run.run_id)?;
+            }
+        }
         Ok(node_run)
     }
 
