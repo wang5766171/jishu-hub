@@ -7,6 +7,7 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 
+use crate::orchestrator::conversation::TaskInteractionRequest;
 use crate::orchestrator::domain::graph::{
     EvaluatorSpec, ExecutablePayload, GraphNode, GraphSnapshot, NodeKind,
 };
@@ -20,7 +21,7 @@ use crate::orchestrator::local_actions::execute_local_action;
 use crate::orchestrator::resources::{ResourceArbiter, ResourceLimits};
 use crate::orchestrator::runtime_bridge::{
     map_normalized_event, RuntimeEventContext, RuntimeFact, RuntimeInvocationRequest,
-    TaskAgentRuntime,
+    RuntimeStreamItem, TaskAgentRuntime,
 };
 use crate::orchestrator::scheduler::ReadySetComputer;
 use crate::orchestrator::store::TaskStore;
@@ -969,6 +970,10 @@ async fn schedule_node(
         return Ok(());
     };
     let leased_resources = resource_permit.resources().to_vec();
+    let continuation = store
+        .take_resolved_task_interaction(&node_run_id, now)
+        .map_err(|error| error.to_string())?
+        .and_then(|request| task_continuation_from_request(&request));
     node_run.status = NodeRunStatus::Leased;
     node_run.started_at.get_or_insert(now);
     node_run.finished_at = None;
@@ -1122,6 +1127,7 @@ async fn schedule_node(
                 &project_root,
                 runtime.as_ref(),
                 prepared_agent,
+                continuation,
                 RuntimeEventContext {
                     run_id: run_id.clone(),
                     node_run_id: node_run_id.clone(),
@@ -1158,122 +1164,172 @@ async fn schedule_node(
         let mut events = Vec::<TaskEvent>::new();
         let mut artifacts = Vec::<ArtifactRef>::new();
         let mut resolve_node = true;
+        let mut pending_interaction = None;
+        let mut run_status_update = None;
         match result {
             Ok(output) => {
-                node_run.status = NodeRunStatus::Succeeded;
-                attempt.session_id = output.session_id;
+                attempt.session_id = output.session_id.clone();
                 attempt.usage = output.usage.clone();
-                let output_text = output
-                    .progress
-                    .iter()
-                    .map(|progress| progress.message.as_str())
-                    .collect::<Vec<_>>()
-                    .join("");
-                let persisted_output = redact_sensitive_text(&output_text);
-                attempt.checkpoint = Some(serde_json::json!({
-                    "output": persisted_output,
-                }));
-                for name in &node.output_contract.artifacts {
-                    let artifact = ArtifactRef {
-                        artifact_id: gen_id("artifact"),
-                        run_id: run_id.clone(),
-                        node_run_id: node_run_id.clone(),
-                        attempt_id: attempt_id.clone(),
-                        name: name.clone(),
-                        artifact_type: "node_output".into(),
-                        hash: format!("{:x}", Sha256::digest(output_text.as_bytes())),
-                        sensitivity: ArtifactSensitivity::Internal,
+                if let Some(interaction) = output.interaction {
+                    node_run.status = NodeRunStatus::AwaitingApproval;
+                    node_run.finished_at = None;
+                    resolve_node = false;
+                    run_status_update = Some((RunStatus::AwaitingHuman, None));
+                    pending_interaction = Some(TaskInteractionRequest {
+                        request_id: interaction.request_id,
+                        graph_id: run.graph_id.clone(),
+                        run_id: Some(run_id.clone()),
+                        node_id: Some(node.node_id.clone()),
+                        node_run_id: Some(node_run_id.clone()),
+                        session_id: output.session_id,
+                        prompt: interaction.prompt,
+                        options: interaction.options,
+                        allow_multiple: interaction.allow_multiple,
+                        allow_custom_text: interaction.allow_custom_text,
+                        required: interaction.required,
                         created_at: finished_at,
-                        metadata: std::collections::HashMap::from([
-                            ("node_id".into(), serde_json::json!(node.node_id.clone())),
-                            (
-                                "content_length".into(),
-                                serde_json::json!(output_text.len()),
-                            ),
-                            ("content_redacted".into(), serde_json::json!(true)),
-                        ]),
-                    };
-                    let payload = match serde_json::to_value(payloads::ArtifactProducedPayload {
-                        artifact_id: artifact.artifact_id.clone(),
-                        attempt_id: attempt_id.clone(),
-                        name: artifact.name.clone(),
-                        artifact_type: artifact.artifact_type.clone(),
-                        hash: artifact.hash.clone(),
-                    }) {
-                        Ok(payload) => payload,
-                        Err(error) => {
-                            tracing::error!(
-                                "failed to serialize artifact for node {}: {error}",
-                                node.node_id
-                            );
-                            return;
-                        }
-                    };
+                        resolved_at: None,
+                        consumed_at: None,
+                        submission: None,
+                    });
                     events.push(build_event(
                         gen_id("evt"),
                         &run_id,
-                        run.run_seq + events.len() as u64 + 1,
-                        TaskEventType::ArtifactProduced,
-                        "task_orchestrator",
-                        finished_at,
-                        payload,
-                    ));
-                    artifacts.push(artifact);
-                }
-                for progress in output.progress {
-                    let payload = match serde_json::to_value(payloads::AttemptProgressedPayload {
-                        attempt_id: attempt_id.clone(),
-                        node_run_id: node_run_id.clone(),
-                        message: truncate_event_message(&progress.message),
-                        usage_delta: progress.usage_delta,
-                    }) {
-                        Ok(payload) => payload,
-                        Err(error) => {
-                            tracing::error!(
-                                "failed to serialize progress for node {}: {error}",
-                                node.node_id
-                            );
-                            return;
-                        }
-                    };
-                    events.push(build_event(
-                        gen_id("evt"),
-                        &run_id,
-                        run.run_seq + events.len() as u64 + 1,
-                        TaskEventType::AttemptProgressed,
-                        &progress.actor,
-                        finished_at,
-                        payload,
-                    ));
-                }
-                if attempt.usage.input_tokens > 0
-                    || attempt.usage.output_tokens > 0
-                    || attempt.usage.cost_usd > 0.0
-                {
-                    let payload = match serde_json::to_value(payloads::AttemptProgressedPayload {
-                        attempt_id: attempt_id.clone(),
-                        node_run_id: node_run_id.clone(),
-                        message: String::new(),
-                        usage_delta: attempt.usage.clone(),
-                    }) {
-                        Ok(payload) => payload,
-                        Err(error) => {
-                            tracing::error!(
-                                "failed to serialize usage for node {}: {error}",
-                                node.node_id
-                            );
-                            return;
-                        }
-                    };
-                    events.push(build_event(
-                        gen_id("evt"),
-                        &run_id,
-                        run.run_seq + events.len() as u64 + 1,
+                        run.run_seq + 1,
                         TaskEventType::AttemptProgressed,
                         "task_orchestrator",
                         finished_at,
-                        payload,
+                        serde_json::to_value(payloads::AttemptProgressedPayload {
+                            attempt_id: attempt_id.clone(),
+                            node_run_id: node_run_id.clone(),
+                            node_id: Some(node.node_id.clone()),
+                            message: String::new(),
+                            public: false,
+                            usage_delta: attempt.usage.clone(),
+                        })
+                        .unwrap_or(serde_json::Value::Null),
                     ));
+                } else {
+                    node_run.status = NodeRunStatus::Succeeded;
+                    let output_text = output
+                        .progress
+                        .iter()
+                        .map(|progress| progress.message.as_str())
+                        .collect::<Vec<_>>()
+                        .join("");
+                    let persisted_output = redact_sensitive_text(&output_text);
+                    attempt.checkpoint = Some(serde_json::json!({
+                        "output": persisted_output,
+                    }));
+                    for name in &node.output_contract.artifacts {
+                        let artifact = ArtifactRef {
+                            artifact_id: gen_id("artifact"),
+                            run_id: run_id.clone(),
+                            node_run_id: node_run_id.clone(),
+                            attempt_id: attempt_id.clone(),
+                            name: name.clone(),
+                            artifact_type: "node_output".into(),
+                            hash: format!("{:x}", Sha256::digest(output_text.as_bytes())),
+                            sensitivity: ArtifactSensitivity::Internal,
+                            created_at: finished_at,
+                            metadata: std::collections::HashMap::from([
+                                ("node_id".into(), serde_json::json!(node.node_id.clone())),
+                                (
+                                    "content_length".into(),
+                                    serde_json::json!(output_text.len()),
+                                ),
+                                ("content_redacted".into(), serde_json::json!(true)),
+                            ]),
+                        };
+                        let payload =
+                            match serde_json::to_value(payloads::ArtifactProducedPayload {
+                                artifact_id: artifact.artifact_id.clone(),
+                                attempt_id: attempt_id.clone(),
+                                name: artifact.name.clone(),
+                                artifact_type: artifact.artifact_type.clone(),
+                                hash: artifact.hash.clone(),
+                            }) {
+                                Ok(payload) => payload,
+                                Err(error) => {
+                                    tracing::error!(
+                                        "failed to serialize artifact for node {}: {error}",
+                                        node.node_id
+                                    );
+                                    return;
+                                }
+                            };
+                        events.push(build_event(
+                            gen_id("evt"),
+                            &run_id,
+                            run.run_seq + events.len() as u64 + 1,
+                            TaskEventType::ArtifactProduced,
+                            "task_orchestrator",
+                            finished_at,
+                            payload,
+                        ));
+                        artifacts.push(artifact);
+                    }
+                    for progress in output.progress {
+                        let payload =
+                            match serde_json::to_value(payloads::AttemptProgressedPayload {
+                                attempt_id: attempt_id.clone(),
+                                node_run_id: node_run_id.clone(),
+                                node_id: Some(node.node_id.clone()),
+                                message: truncate_event_message(&progress.message),
+                                public: progress.public,
+                                usage_delta: progress.usage_delta,
+                            }) {
+                                Ok(payload) => payload,
+                                Err(error) => {
+                                    tracing::error!(
+                                        "failed to serialize progress for node {}: {error}",
+                                        node.node_id
+                                    );
+                                    return;
+                                }
+                            };
+                        events.push(build_event(
+                            gen_id("evt"),
+                            &run_id,
+                            run.run_seq + events.len() as u64 + 1,
+                            TaskEventType::AttemptProgressed,
+                            &progress.actor,
+                            finished_at,
+                            payload,
+                        ));
+                    }
+                    if attempt.usage.input_tokens > 0
+                        || attempt.usage.output_tokens > 0
+                        || attempt.usage.cost_usd > 0.0
+                    {
+                        let payload =
+                            match serde_json::to_value(payloads::AttemptProgressedPayload {
+                                attempt_id: attempt_id.clone(),
+                                node_run_id: node_run_id.clone(),
+                                node_id: Some(node.node_id.clone()),
+                                message: String::new(),
+                                public: false,
+                                usage_delta: attempt.usage.clone(),
+                            }) {
+                                Ok(payload) => payload,
+                                Err(error) => {
+                                    tracing::error!(
+                                        "failed to serialize usage for node {}: {error}",
+                                        node.node_id
+                                    );
+                                    return;
+                                }
+                            };
+                        events.push(build_event(
+                            gen_id("evt"),
+                            &run_id,
+                            run.run_seq + events.len() as u64 + 1,
+                            TaskEventType::AttemptProgressed,
+                            "task_orchestrator",
+                            finished_at,
+                            payload,
+                        ));
+                    }
                 }
             }
             Err(mut error) => {
@@ -1368,13 +1424,25 @@ async fn schedule_node(
             ));
         }
 
+        if let Some(request) = pending_interaction.as_ref() {
+            if let Err(error) = store.save_task_interaction(request) {
+                tracing::error!(
+                    "failed to persist interaction request for node {}: {error}",
+                    node.node_id
+                );
+                return;
+            }
+        }
+
         if let Err(error) = store.save_execution_update(
             &node_run,
             Some(&attempt),
             &artifacts,
             &events,
             Some(&attempt.usage),
-            None,
+            run_status_update
+                .as_ref()
+                .map(|(status, finished_at)| (status, *finished_at)),
         ) {
             tracing::error!(
                 "failed to persist node completion {}: {error}",
@@ -1414,6 +1482,7 @@ async fn execute_node(
     project_root: &std::path::Path,
     runtime: &dyn TaskAgentRuntime,
     prepared_agent: Result<Option<PreparedAgentExecution>, String>,
+    continuation: Option<TaskContinuation>,
     context: RuntimeEventContext,
     cancellation: Arc<AtomicBool>,
 ) -> Result<NodeExecutionOutput, AttemptError> {
@@ -1460,11 +1529,13 @@ async fn execute_node(
                     vec![ExecutionProgress {
                         actor: "local_os_adapter".into(),
                         message: output.stdout,
+                        public: false,
                         usage_delta: AttemptUsage::default(),
                     }]
                 },
                 usage: AttemptUsage::default(),
                 session_id: None,
+                interaction: None,
             })
         }
         ExecutablePayload::Dispatch {
@@ -1475,6 +1546,7 @@ async fn execute_node(
         } => {
             let prepared = required_prepared_agent(prepared_agent)?;
             let request = RuntimeInvocationRequest {
+                invocation_id: gen_id("invocation"),
                 agent_id: prepared.assignment.agent_id.clone(),
                 role_id: prepared.assignment.role_id.clone(),
                 project_path: project
@@ -1482,8 +1554,14 @@ async fn execute_node(
                     .unwrap_or(project_root)
                     .to_string_lossy()
                     .into_owned(),
-                session_id: session.clone(),
-                prompt: agent_prompt_with_policy(prompt, &node.policy),
+                session_id: continuation
+                    .as_ref()
+                    .and_then(|value| value.session_id.clone())
+                    .or_else(|| session.clone()),
+                prompt: continuation
+                    .as_ref()
+                    .map(|value| value.reply.clone())
+                    .unwrap_or_else(|| agent_prompt_with_policy(prompt, &node.policy)),
                 timeout_ms: node.policy.timeout_ms.unwrap_or(600_000),
                 cancellation: cancellation.clone(),
             };
@@ -1492,11 +1570,17 @@ async fn execute_node(
         ExecutablePayload::Reflect { question } => {
             let prepared = required_prepared_agent(prepared_agent)?;
             let request = RuntimeInvocationRequest {
+                invocation_id: gen_id("invocation"),
                 agent_id: prepared.assignment.agent_id.clone(),
                 role_id: prepared.assignment.role_id.clone(),
                 project_path: project_root.to_string_lossy().into_owned(),
-                session_id: None,
-                prompt: question.clone(),
+                session_id: continuation
+                    .as_ref()
+                    .and_then(|value| value.session_id.clone()),
+                prompt: continuation
+                    .as_ref()
+                    .map(|value| value.reply.clone())
+                    .unwrap_or_else(|| question.clone()),
                 timeout_ms: node.policy.timeout_ms.unwrap_or(600_000),
                 cancellation,
             };
@@ -1587,6 +1671,7 @@ struct PreparedAgentExecution {
 struct ExecutionProgress {
     actor: String,
     message: String,
+    public: bool,
     usage_delta: AttemptUsage,
 }
 
@@ -1595,6 +1680,58 @@ struct NodeExecutionOutput {
     progress: Vec<ExecutionProgress>,
     usage: AttemptUsage,
     session_id: Option<String>,
+    interaction: Option<PendingRuntimeInteraction>,
+}
+
+#[derive(Debug)]
+struct PendingRuntimeInteraction {
+    request_id: String,
+    prompt: String,
+    options: Vec<crate::agent::normalized::InteractionOption>,
+    allow_multiple: bool,
+    allow_custom_text: bool,
+    required: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TaskContinuation {
+    session_id: Option<String>,
+    reply: String,
+}
+
+fn task_continuation_from_request(request: &TaskInteractionRequest) -> Option<TaskContinuation> {
+    let submission = request.submission.as_ref()?;
+    let selected_labels = submission
+        .selected_option_ids
+        .iter()
+        .map(|option_id| {
+            request
+                .options
+                .iter()
+                .find(|option| option.option_id == *option_id)
+                .map(|option| option.label.as_str())
+                .unwrap_or(option_id.as_str())
+        })
+        .collect::<Vec<_>>();
+    let mut parts = Vec::new();
+    if !selected_labels.is_empty() {
+        parts.push(format!("我的选择：{}", selected_labels.join("、")));
+    }
+    if let Some(custom_text) = submission
+        .custom_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(format!("补充说明：{custom_text}"));
+    }
+    if parts.is_empty() {
+        parts.push("继续执行。".into());
+    }
+    Some(TaskContinuation {
+        session_id: request.session_id.clone(),
+        reply: parts.join("\n"),
+    })
 }
 
 fn prepare_agent_execution(
@@ -1657,7 +1794,7 @@ async fn execute_agent(
     request: RuntimeInvocationRequest,
     context: RuntimeEventContext,
 ) -> Result<NodeExecutionOutput, AttemptError> {
-    let output = runtime
+    let mut handle = runtime
         .invoke(request)
         .await
         .map_err(|message| attempt_error(ErrorCategory::Transient, &message, true))?;
@@ -1666,47 +1803,83 @@ async fn execute_agent(
     let mut session_id = None;
     let mut failure = None;
     let mut completed = false;
+    let mut interaction = None;
+    let mut exit_success = true;
+    let mut exit_code = None;
 
-    for event in &output.events {
-        match map_normalized_event(&context, event) {
-            RuntimeFact::Progress {
-                message,
-                usage_delta,
-                ..
-            } => progress.push(ExecutionProgress {
-                actor: prepared.assignment.agent_id.clone(),
-                message,
-                usage_delta,
-            }),
-            RuntimeFact::Diagnostic { payload, .. } => progress.push(ExecutionProgress {
-                actor: prepared.assignment.agent_id.clone(),
-                message: payload.to_string(),
-                usage_delta: AttemptUsage::default(),
-            }),
-            RuntimeFact::SessionResolved {
-                session_id: resolved,
-                ..
-            } => session_id = Some(resolved),
-            RuntimeFact::Completed {
-                usage: completed_usage,
-                ..
-            } => {
-                usage = completed_usage;
-                completed = true;
+    while let Some(item) = handle.events.recv().await {
+        match item {
+            RuntimeStreamItem::Event(event) => match map_normalized_event(&context, &event) {
+                RuntimeFact::Progress {
+                    message,
+                    usage_delta,
+                    ..
+                } => progress.push(ExecutionProgress {
+                    actor: prepared.assignment.agent_id.clone(),
+                    message,
+                    public: true,
+                    usage_delta,
+                }),
+                RuntimeFact::Diagnostic { payload, .. } => progress.push(ExecutionProgress {
+                    actor: prepared.assignment.agent_id.clone(),
+                    message: payload.to_string(),
+                    public: false,
+                    usage_delta: AttemptUsage::default(),
+                }),
+                RuntimeFact::SessionResolved {
+                    session_id: resolved,
+                    ..
+                } => session_id = Some(resolved),
+                RuntimeFact::Completed {
+                    usage: completed_usage,
+                    ..
+                } => {
+                    usage = completed_usage;
+                    completed = true;
+                }
+                RuntimeFact::Failed { error, .. } => failure = Some(error),
+                RuntimeFact::ApprovalRequested {
+                    request_id,
+                    approval_kind,
+                    ..
+                } => {
+                    failure = Some(attempt_error(
+                        ErrorCategory::Policy,
+                        &format!(
+                            "runtime approval {request_id} ({approval_kind}) requires an approval gate"
+                        ),
+                        false,
+                    ));
+                }
+                RuntimeFact::InteractionRequested {
+                    request_id,
+                    prompt,
+                    options,
+                    allow_multiple,
+                    allow_custom_text,
+                    required,
+                    ..
+                } => {
+                    interaction = Some(PendingRuntimeInteraction {
+                        request_id,
+                        prompt,
+                        options,
+                        allow_multiple,
+                        allow_custom_text,
+                        required,
+                    });
+                }
+            },
+            RuntimeStreamItem::RuntimeError(message) => {
+                failure = Some(attempt_error(ErrorCategory::Transient, &message, true));
             }
-            RuntimeFact::Failed { error, .. } => failure = Some(error),
-            RuntimeFact::ApprovalRequested {
-                request_id,
-                approval_kind,
-                ..
+            RuntimeStreamItem::Finished {
+                exit_success: ok,
+                exit_code: code,
             } => {
-                failure = Some(attempt_error(
-                    ErrorCategory::Policy,
-                    &format!(
-                        "runtime approval {request_id} ({approval_kind}) requires an approval gate"
-                    ),
-                    false,
-                ));
+                exit_success = ok;
+                exit_code = code;
+                break;
             }
         }
     }
@@ -1714,17 +1887,18 @@ async fn execute_agent(
     if let Some(error) = failure {
         return Err(error);
     }
-    if !output.exit_success {
+    if !exit_success {
         return Err(attempt_error(
             ErrorCategory::Transient,
-            &format!("agent process exited with {:?}", output.exit_code),
+            &format!("agent process exited with {:?}", exit_code),
             true,
         ));
     }
-    if !completed {
+    if !completed && interaction.is_none() {
         progress.push(ExecutionProgress {
             actor: prepared.assignment.agent_id,
             message: "agent process completed without an explicit turn-complete event".into(),
+            public: false,
             usage_delta: AttemptUsage::default(),
         });
     }
@@ -1732,6 +1906,7 @@ async fn execute_agent(
         progress,
         usage,
         session_id,
+        interaction,
     })
 }
 
@@ -1996,7 +2171,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    use crate::agent::normalized::{NormalizedEvent, TurnEndReason, UsageStats};
+    use crate::agent::normalized::{InteractionOption, NormalizedEvent, TurnEndReason, UsageStats};
     use crate::agent_runtime::AgentTurnOutput;
     use crate::orchestrator::domain::graph::{
         EvaluatorSpec, GraphNode, GraphSnapshot, LoopControllerConfig, NodeKind, TaskGraph,
@@ -2004,7 +2179,9 @@ mod tests {
     use crate::orchestrator::domain::policy::{ApprovalPolicy, NodePolicy};
     use crate::orchestrator::domain::revision::GraphRevision;
     use crate::orchestrator::domain::run::{BudgetState, GraphRun};
-    use crate::orchestrator::runtime_bridge::DefaultTaskAgentRuntime;
+    use crate::orchestrator::runtime_bridge::{
+        materialize_handle, DefaultTaskAgentRuntime, InvocationHandle,
+    };
 
     struct FakeAgentRuntime;
 
@@ -2028,36 +2205,177 @@ mod tests {
             &self,
             request: RuntimeInvocationRequest,
         ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<AgentTurnOutput, String>> + Send>,
+            Box<dyn std::future::Future<Output = Result<InvocationHandle, String>> + Send>,
         > {
             Box::pin(async move {
                 assert_eq!(request.agent_id, "fake-agent");
                 assert_eq!(request.role_id, "implementer");
                 assert!(request.prompt.contains("Implement the feature"));
                 assert!(request.prompt.contains("write_files: false"));
-                Ok(AgentTurnOutput {
-                    events: vec![
-                        NormalizedEvent::SessionResolved {
-                            session_id: "native-session".into(),
-                        },
-                        NormalizedEvent::TextDelta {
-                            delta: "implemented".into(),
-                        },
-                        NormalizedEvent::TurnComplete {
-                            reason: TurnEndReason::Complete,
-                            usage: Some(UsageStats {
-                                input_tokens: Some(10),
-                                output_tokens: Some(20),
-                                total_cost: Some(0.1),
-                                context_remaining: None,
-                            }),
-                        },
-                    ],
-                    exit_success: true,
-                    exit_code: Some(0),
-                })
+                let invocation_id = request.invocation_id.clone();
+                Ok(materialize_handle(
+                    invocation_id,
+                    Ok(AgentTurnOutput {
+                        events: vec![
+                            NormalizedEvent::SessionResolved {
+                                session_id: "native-session".into(),
+                            },
+                            NormalizedEvent::TextDelta {
+                                delta: "implemented".into(),
+                            },
+                            NormalizedEvent::TurnComplete {
+                                reason: TurnEndReason::Complete,
+                                usage: Some(UsageStats {
+                                    input_tokens: Some(10),
+                                    output_tokens: Some(20),
+                                    total_cost: Some(0.1),
+                                    context_remaining: None,
+                                }),
+                            },
+                        ],
+                        exit_success: true,
+                        exit_code: Some(0),
+                    }),
+                ))
             })
         }
+    }
+
+    struct InteractionAgentRuntime;
+
+    impl TaskAgentRuntime for InteractionAgentRuntime {
+        fn resolve_agent(
+            &self,
+            _node: &GraphNode,
+            role_id: &str,
+        ) -> Result<(crate::orchestrator::domain::run::AgentAssignment, String), String> {
+            Ok((
+                crate::orchestrator::domain::run::AgentAssignment {
+                    agent_id: "jishu-self".into(),
+                    role_id: role_id.into(),
+                    adapter_capability_snapshot: vec!["rpc_bidirectional".into()],
+                },
+                "pi_rpc".into(),
+            ))
+        }
+
+        fn invoke(
+            &self,
+            request: RuntimeInvocationRequest,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<InvocationHandle, String>> + Send>,
+        > {
+            Box::pin(async move {
+                let invocation_id = request.invocation_id.clone();
+                Ok(materialize_handle(
+                    invocation_id,
+                    Ok(AgentTurnOutput {
+                        events: vec![
+                            NormalizedEvent::SessionResolved {
+                                session_id: "task-session-1".into(),
+                            },
+                            NormalizedEvent::InteractionRequest {
+                                request_id: "request-1".into(),
+                                prompt: "请选择实现方案".into(),
+                                options: vec![
+                                    InteractionOption {
+                                        option_id: "a".into(),
+                                        label: "方案 A".into(),
+                                        description: None,
+                                    },
+                                    InteractionOption {
+                                        option_id: "b".into(),
+                                        label: "方案 B".into(),
+                                        description: None,
+                                    },
+                                ],
+                                allow_multiple: false,
+                                allow_custom_text: true,
+                                required: true,
+                            },
+                        ],
+                        exit_success: true,
+                        exit_code: None,
+                    }),
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_interaction_pauses_without_fake_completion_progress() {
+        let prepared = PreparedAgentExecution {
+            assignment: crate::orchestrator::domain::run::AgentAssignment {
+                agent_id: "jishu-self".into(),
+                role_id: "planner".into(),
+                adapter_capability_snapshot: vec!["rpc_bidirectional".into()],
+            },
+            transport: "pi_rpc".into(),
+        };
+        let output = execute_agent(
+            &InteractionAgentRuntime,
+            prepared,
+            RuntimeInvocationRequest {
+                invocation_id: "test-invocation".into(),
+                agent_id: "jishu-self".into(),
+                role_id: "planner".into(),
+                project_path: ".".into(),
+                session_id: None,
+                prompt: "plan".into(),
+                timeout_ms: 1_000,
+                cancellation: Arc::new(AtomicBool::new(false)),
+            },
+            RuntimeEventContext {
+                run_id: "run-1".into(),
+                node_run_id: "node-run-1".into(),
+                attempt_id: "attempt-1".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output.session_id.as_deref(), Some("task-session-1"));
+        assert!(output.progress.is_empty());
+        let interaction = output.interaction.expect("interaction should be captured");
+        assert_eq!(interaction.request_id, "request-1");
+        assert_eq!(interaction.options.len(), 2);
+    }
+
+    #[test]
+    fn resolved_interaction_builds_a_visible_same_session_reply() {
+        let request = TaskInteractionRequest {
+            request_id: "request-1".into(),
+            graph_id: "graph-1".into(),
+            run_id: Some("run-1".into()),
+            node_id: Some("node-1".into()),
+            node_run_id: Some("node-run-1".into()),
+            session_id: Some("task-session-1".into()),
+            prompt: "请选择实现方案".into(),
+            options: vec![InteractionOption {
+                option_id: "a".into(),
+                label: "方案 A".into(),
+                description: None,
+            }],
+            allow_multiple: false,
+            allow_custom_text: true,
+            required: true,
+            created_at: 1,
+            resolved_at: Some(2),
+            consumed_at: None,
+            submission: Some(
+                crate::orchestrator::conversation::TaskInteractionSubmission {
+                    selected_option_ids: vec!["a".into()],
+                    custom_text: Some("优先保证兼容性".into()),
+                },
+            ),
+        };
+
+        let continuation =
+            task_continuation_from_request(&request).expect("resolved request should continue");
+        assert_eq!(continuation.session_id.as_deref(), Some("task-session-1"));
+        assert!(continuation.reply.contains("方案 A"));
+        assert!(continuation.reply.contains("优先保证兼容性"));
+        assert!(!continuation.reply.contains("execution contract"));
     }
 
     #[test]

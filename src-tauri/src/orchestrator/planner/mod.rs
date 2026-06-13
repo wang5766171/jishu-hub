@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::normalized::ContentBlock;
 use crate::agent::{AgentRegistry, NormalizedEvent};
 use crate::orchestrator::commands::{apply_commands, graph_validate, GraphCommand};
+use crate::orchestrator::conversation::{TaskInteractionRequest, TaskInteractionSubmission};
 use crate::orchestrator::domain::graph::{
     Contract, EdgeKind, ExecutablePayload, GraphEdge, GraphNode, NodeKind, RoleRequirement,
 };
@@ -15,10 +16,10 @@ use crate::orchestrator::domain::revision::{
 };
 use crate::orchestrator::domain::run::AgentAssignment;
 use crate::orchestrator::runtime_bridge::{
-    capability_snapshot, RuntimeInvocationRequest, TaskAgentRuntime,
+    capability_snapshot, RuntimeInvocationRequest, RuntimeStreamItem, TaskAgentRuntime,
 };
 use crate::orchestrator::store::TaskStore;
-use crate::util::gen_id;
+use crate::util::{gen_id, now_ms};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanningRequest {
@@ -143,29 +144,72 @@ impl PlannerService {
         let mut next_prompt = prompt.clone();
         let mut accepted = None;
         let mut last_error = None;
+        let mut planner_session_id = None;
 
         for attempt in 0..2 {
             report("generating", Some(attempt + 1));
-            let output = self
-                .runtime
-                .invoke(RuntimeInvocationRequest {
-                    agent_id: planner_assignment.agent_id.clone(),
-                    role_id: "planner".into(),
-                    project_path: project_path.clone(),
-                    session_id: None,
-                    prompt: next_prompt.clone(),
-                    timeout_ms: 180_000,
-                    cancellation: Arc::new(AtomicBool::new(false)),
-                })
-                .await
-                .map_err(|error| format!("planner invocation failed: {error}"))?;
-            if !output.exit_success {
-                return Err(format!(
-                    "planner process exited unsuccessfully ({:?})",
-                    output.exit_code
-                ));
-            }
-            let response = collect_text(&output.events);
+            let mut invocation_prompt = next_prompt.clone();
+            let response = loop {
+                let mut handle = self
+                    .runtime
+                    .invoke(RuntimeInvocationRequest {
+                        invocation_id: gen_id("planner-invocation"),
+                        agent_id: planner_assignment.agent_id.clone(),
+                        role_id: "planner".into(),
+                        project_path: project_path.clone(),
+                        session_id: planner_session_id.clone(),
+                        prompt: invocation_prompt.clone(),
+                        timeout_ms: 180_000,
+                        cancellation: Arc::new(AtomicBool::new(false)),
+                    })
+                    .await
+                    .map_err(|error| format!("planner invocation failed: {error}"))?;
+                let mut events = Vec::new();
+                let mut exit_success = true;
+                let mut exit_code = None;
+                let mut runtime_error = None;
+                while let Some(item) = handle.events.recv().await {
+                    match item {
+                        RuntimeStreamItem::Event(event) => events.push(event),
+                        RuntimeStreamItem::RuntimeError(message) => runtime_error = Some(message),
+                        RuntimeStreamItem::Finished {
+                            exit_success: ok,
+                            exit_code: code,
+                        } => {
+                            exit_success = ok;
+                            exit_code = code;
+                            break;
+                        }
+                    }
+                }
+                if let Some(error) = runtime_error {
+                    return Err(format!("planner invocation failed: {error}"));
+                }
+                if !exit_success {
+                    return Err(format!(
+                        "planner process exited unsuccessfully ({:?})",
+                        exit_code
+                    ));
+                }
+                if let Some(session_id) = resolved_session_id(&events) {
+                    planner_session_id = Some(session_id);
+                }
+                if let Some(mut interaction) =
+                    planning_interaction_request(&request.graph_id, &events)
+                {
+                    interaction.session_id = planner_session_id.clone();
+                    self.store
+                        .save_task_interaction(&interaction)
+                        .map_err(|error| error.to_string())?;
+                    report("awaiting_input", Some(attempt + 1));
+                    let resolved =
+                        wait_for_planning_interaction(&self.store, &interaction.request_id).await?;
+                    invocation_prompt = planning_interaction_reply(&resolved)?;
+                    report("generating", Some(attempt + 1));
+                    continue;
+                }
+                break collect_text(&events);
+            };
             report("validating", Some(attempt + 1));
             let parsed = parse_draft(&response).and_then(|draft| {
                 validate_plan_shape(&snapshot, &draft, &required_roles)?;
@@ -221,6 +265,97 @@ impl PlannerService {
         report("completed", None);
         Ok(proposal)
     }
+}
+
+fn resolved_session_id(events: &[NormalizedEvent]) -> Option<String> {
+    events.iter().rev().find_map(|event| match event {
+        NormalizedEvent::SessionResolved { session_id } => Some(session_id.clone()),
+        _ => None,
+    })
+}
+
+fn planning_interaction_request(
+    graph_id: &str,
+    events: &[NormalizedEvent],
+) -> Option<TaskInteractionRequest> {
+    events.iter().find_map(|event| match event {
+        NormalizedEvent::InteractionRequest {
+            request_id,
+            prompt,
+            options,
+            allow_multiple,
+            allow_custom_text,
+            required,
+        } => Some(TaskInteractionRequest {
+            request_id: request_id.clone(),
+            graph_id: graph_id.to_string(),
+            run_id: None,
+            node_id: None,
+            node_run_id: None,
+            session_id: None,
+            prompt: prompt.clone(),
+            options: options.clone(),
+            allow_multiple: *allow_multiple,
+            allow_custom_text: *allow_custom_text,
+            required: *required,
+            created_at: now_ms(),
+            resolved_at: None,
+            consumed_at: None,
+            submission: None,
+        }),
+        _ => None,
+    })
+}
+
+async fn wait_for_planning_interaction(
+    store: &TaskStore,
+    request_id: &str,
+) -> Result<TaskInteractionRequest, String> {
+    loop {
+        if let Some(request) = store
+            .take_resolved_task_interaction_by_id(request_id, now_ms())
+            .map_err(|error| error.to_string())?
+        {
+            return Ok(request);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+fn planning_interaction_reply(request: &TaskInteractionRequest) -> Result<String, String> {
+    let TaskInteractionSubmission {
+        selected_option_ids,
+        custom_text,
+    } = request
+        .submission
+        .as_ref()
+        .ok_or_else(|| "planning interaction has no submission".to_string())?;
+    let selected_labels = selected_option_ids
+        .iter()
+        .map(|option_id| {
+            request
+                .options
+                .iter()
+                .find(|option| option.option_id == *option_id)
+                .map(|option| option.label.as_str())
+                .unwrap_or(option_id.as_str())
+        })
+        .collect::<Vec<_>>();
+    let mut parts = Vec::new();
+    if !selected_labels.is_empty() {
+        parts.push(format!("我的选择：{}", selected_labels.join("、")));
+    }
+    if let Some(custom_text) = custom_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(format!("补充说明：{custom_text}"));
+    }
+    if parts.is_empty() {
+        parts.push("继续规划。".into());
+    }
+    Ok(parts.join("\n"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -523,9 +658,7 @@ fn strip_code_fence(response: &str) -> &str {
     };
     let stripped = stripped.trim_start_matches('\r').trim_start_matches('\n');
     let stripped = stripped.trim_start();
-    stripped
-        .trim_end_matches("```")
-        .trim_end()
+    stripped.trim_end_matches("```").trim_end()
 }
 
 fn first_top_level_object(input: &str) -> Option<&str> {
@@ -1168,7 +1301,8 @@ Let me know if you want any changes."#;
     #[test]
     fn parse_draft_ignores_braces_inside_string_literals() {
         let response = r#"{"commands":[{"op":"add_agent_node","node_id":"implement","title":"Implement","role_id":"developer","prompt":"Use {} placeholder when emitting JSON literals","acceptance":["done"]}],"rationale":"contains } and { characters","expected_benefits":[],"risks":[]}"#;
-        let draft = parse_draft(response).expect("braces inside string literals must not terminate the object");
+        let draft = parse_draft(response)
+            .expect("braces inside string literals must not terminate the object");
         assert_eq!(draft.commands.len(), 1);
         assert!(draft.rationale.contains('}'));
         assert!(draft.rationale.contains('{'));
@@ -1191,7 +1325,8 @@ Let me know if you want any changes."#;
   "expected_benefits": [],
   "risks": []
 }"#;
-        let draft = parse_draft(response).expect("escaped quotes must not terminate the string early");
+        let draft =
+            parse_draft(response).expect("escaped quotes must not terminate the string early");
         assert_eq!(draft.commands.len(), 1);
         assert!(draft.rationale.contains("Escaped"));
     }
@@ -1220,5 +1355,69 @@ Hope this works for you."#;
     fn parse_draft_rejects_empty_response() {
         let error = parse_draft("   \n  ").expect_err("empty response must be rejected");
         assert!(error.contains("did not contain a JSON object"));
+    }
+
+    #[test]
+    fn planning_interaction_is_project_owned_and_keeps_public_question_only() {
+        let request = planning_interaction_request(
+            "graph-1",
+            &[
+                NormalizedEvent::SessionResolved {
+                    session_id: "session-1".into(),
+                },
+                NormalizedEvent::InteractionRequest {
+                    request_id: "request-1".into(),
+                    prompt: "请选择规划范围".into(),
+                    options: vec![crate::agent::normalized::InteractionOption {
+                        option_id: "a".into(),
+                        label: "后端优先".into(),
+                        description: None,
+                    }],
+                    allow_multiple: false,
+                    allow_custom_text: true,
+                    required: true,
+                },
+            ],
+        )
+        .expect("interaction should be extracted");
+
+        assert_eq!(request.graph_id, "graph-1");
+        assert!(request.run_id.is_none());
+        assert!(request.node_id.is_none());
+        assert_eq!(request.prompt, "请选择规划范围");
+    }
+
+    #[test]
+    fn planning_interaction_reply_contains_only_the_visible_answer() {
+        let request = TaskInteractionRequest {
+            request_id: "request-1".into(),
+            graph_id: "graph-1".into(),
+            run_id: None,
+            node_id: None,
+            node_run_id: None,
+            session_id: Some("session-1".into()),
+            prompt: "请选择规划范围".into(),
+            options: vec![crate::agent::normalized::InteractionOption {
+                option_id: "a".into(),
+                label: "后端优先".into(),
+                description: None,
+            }],
+            allow_multiple: false,
+            allow_custom_text: true,
+            required: true,
+            created_at: 1,
+            resolved_at: Some(2),
+            consumed_at: Some(3),
+            submission: Some(TaskInteractionSubmission {
+                selected_option_ids: vec!["a".into()],
+                custom_text: Some("保留前端扩展点".into()),
+            }),
+        };
+
+        let reply = planning_interaction_reply(&request).unwrap();
+        assert!(reply.contains("后端优先"));
+        assert!(reply.contains("保留前端扩展点"));
+        assert!(!reply.contains("JSON"));
+        assert!(!reply.contains("execution contract"));
     }
 }

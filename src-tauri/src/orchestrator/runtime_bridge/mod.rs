@@ -2,6 +2,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{atomic::AtomicBool, Arc};
 
+use tokio::sync::mpsc;
+
 use crate::agent::normalized::{ContentBlock, NormalizedEvent, TurnEndReason};
 use crate::agent::{AgentCapabilities, AgentRegistry, TransportSurface};
 use crate::agent_runtime::{AgentTurnOutput, AgentTurnRequest};
@@ -50,8 +52,44 @@ pub(crate) fn bridge_output_to_stream_items(output: AgentTurnOutput) -> Vec<Runt
     items
 }
 
+/// Handle to a running invocation. `events` is consumed item-by-item by the
+/// orchestrator; the stream terminates after `Finished` (or `RuntimeError`).
+pub struct InvocationHandle {
+    pub invocation_id: String,
+    pub events: mpsc::Receiver<RuntimeStreamItem>,
+}
+
+/// Materialize a one-shot `Result<AgentTurnOutput, String>` (the legacy blocking
+/// shape) into a streaming `InvocationHandle`. Used by the blocking-backed
+/// `DefaultTaskAgentRuntime` and by in-process test runtimes. Real transports
+/// (M1.4+) emit items directly without going through this bridge.
+pub(crate) fn materialize_handle(
+    invocation_id: String,
+    result: Result<AgentTurnOutput, String>,
+) -> InvocationHandle {
+    let (tx, rx) = mpsc::channel::<RuntimeStreamItem>(64);
+    tokio::task::spawn_blocking(move || match result {
+        Ok(output) => {
+            for item in bridge_output_to_stream_items(output) {
+                if tx.blocking_send(item).is_err() {
+                    return;
+                }
+            }
+        }
+        Err(message) => {
+            let _ = tx.blocking_send(RuntimeStreamItem::RuntimeError(message));
+        }
+    });
+    InvocationHandle {
+        invocation_id,
+        events: rx,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeInvocationRequest {
+    /// Stable id for this invocation; used for `cancel(invocation_id)` and audit.
+    pub invocation_id: String,
     pub agent_id: String,
     pub role_id: String,
     pub project_path: String,
@@ -68,10 +106,18 @@ pub trait TaskAgentRuntime: Send + Sync {
         role_id: &str,
     ) -> Result<(AgentAssignment, String), String>;
 
+    /// Start a turn and return immediately with a streaming handle. The caller
+    /// consumes `handle.events` until termination. The returned future resolves
+    /// once the invocation has been launched; execution results arrive via the
+    /// stream (`RuntimeStreamItem`).
     fn invoke(
         &self,
         request: RuntimeInvocationRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<AgentTurnOutput, String>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = Result<InvocationHandle, String>> + Send>>;
+
+    /// Request cancellation of an in-flight invocation by id. Default no-op;
+    /// runtimes that track live invocations override this (M1.2+).
+    fn cancel(&self, _invocation_id: &str) {}
 }
 
 pub struct DefaultTaskAgentRuntime {
@@ -97,10 +143,13 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
     fn invoke(
         &self,
         request: RuntimeInvocationRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<AgentTurnOutput, String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<InvocationHandle, String>> + Send>> {
         let registry = self.registry.clone();
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
+            let invocation_id = request.invocation_id.clone();
+            let timeout_ms = request.timeout_ms;
+            let cancellation = request.cancellation.clone();
+            let result = tokio::task::spawn_blocking(move || {
                 crate::agent_runtime::run_turn_blocking_cancellable(
                     &registry,
                     AgentTurnRequest {
@@ -108,14 +157,15 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                         project_path: request.project_path,
                         session_id: request.session_id,
                         message: request.prompt,
-                        timeout_secs: (request.timeout_ms.saturating_add(999) / 1000).max(1),
+                        timeout_secs: (timeout_ms.saturating_add(999) / 1000).max(1),
                     },
                     None,
-                    Some(request.cancellation),
+                    Some(cancellation),
                 )
             })
             .await
-            .map_err(|error| format!("agent runtime task failed: {error}"))?
+            .map_err(|error| format!("agent runtime task failed: {error}"))?;
+            Ok(materialize_handle(invocation_id, result))
         })
     }
 }
@@ -555,6 +605,47 @@ mod tests {
                 exit_success: true,
                 exit_code: Some(0)
             }
+        ));
+    }
+
+    #[tokio::test]
+    async fn materialized_handle_streams_events_then_finished() {
+        let output: Result<AgentTurnOutput, String> = Ok(AgentTurnOutput {
+            events: vec![NormalizedEvent::TextDelta { delta: "x".into() }],
+            exit_success: true,
+            exit_code: Some(0),
+        });
+        let mut handle = materialize_handle("inv-1".into(), output);
+        assert_eq!(handle.invocation_id, "inv-1");
+        let mut items = Vec::new();
+        while let Some(item) = handle.events.recv().await {
+            items.push(item);
+        }
+        assert_eq!(items.len(), 2);
+        assert!(matches!(
+            items[0],
+            RuntimeStreamItem::Event(NormalizedEvent::TextDelta { .. })
+        ));
+        assert!(matches!(
+            items[1],
+            RuntimeStreamItem::Finished {
+                exit_success: true,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn materialized_handle_propagates_runtime_error() {
+        let mut handle = materialize_handle("inv-2".into(), Err("boom".to_string()));
+        let mut items = Vec::new();
+        while let Some(item) = handle.events.recv().await {
+            items.push(item);
+        }
+        assert_eq!(items.len(), 1);
+        assert!(matches!(
+            items[0],
+            RuntimeStreamItem::RuntimeError(ref msg) if msg == "boom"
         ));
     }
 }
