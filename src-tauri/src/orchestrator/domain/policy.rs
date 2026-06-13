@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Default cap on Repair-of-Repair depth when a node does not declare one.
+/// Bounds automatic repair so a failing node cannot recurse indefinitely
+/// (design §9.3: "每个节点必须有修复深度和总预算上限").
+pub const DEFAULT_MAX_REPAIR_DEPTH: u32 = 2;
+
 /// Policy attached to each GraphNode.
 /// Proposed by Planner, adjusted by user, validated and enforced by Task Orchestrator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +34,18 @@ pub struct NodePolicy {
     pub priority: i32,
     #[serde(default)]
     pub idempotency_policy: IdempotencyPolicy,
+    /// Maximum Repair subgraph depth allowed for this node before escalating to
+    /// a human gate. `None` falls back to `DEFAULT_MAX_REPAIR_DEPTH`. `Some(0)`
+    /// disables automatic repair for the node.
+    #[serde(default)]
+    pub max_repair_depth: Option<u32>,
+}
+
+impl NodePolicy {
+    /// Effective repair depth limit. `None` policy → `DEFAULT_MAX_REPAIR_DEPTH`.
+    pub fn repair_depth_limit(&self) -> u32 {
+        self.max_repair_depth.unwrap_or(DEFAULT_MAX_REPAIR_DEPTH)
+    }
 }
 
 impl Default for NodePolicy {
@@ -46,6 +63,7 @@ impl Default for NodePolicy {
             preferred_capabilities: vec![],
             priority: 0,
             idempotency_policy: IdempotencyPolicy::default(),
+            max_repair_depth: None,
         }
     }
 }
@@ -207,6 +225,26 @@ mod tests {
     }
 
     #[test]
+    fn repair_depth_limit_defaults_when_unset() {
+        let policy = NodePolicy::default();
+        assert_eq!(policy.repair_depth_limit(), DEFAULT_MAX_REPAIR_DEPTH);
+    }
+
+    #[test]
+    fn repair_depth_limit_honors_explicit_max() {
+        let mut policy = NodePolicy::default();
+        policy.max_repair_depth = Some(5);
+        assert_eq!(policy.repair_depth_limit(), 5);
+    }
+
+    #[test]
+    fn repair_depth_limit_zero_disables_repair() {
+        let mut policy = NodePolicy::default();
+        policy.max_repair_depth = Some(0);
+        assert_eq!(policy.repair_depth_limit(), 0);
+    }
+
+    #[test]
     fn policy_serialization() {
         let policy = NodePolicy {
             timeout_ms: Some(30000),
@@ -227,6 +265,7 @@ mod tests {
             preferred_capabilities: vec!["code_editing".into()],
             priority: 10,
             idempotency_policy: IdempotencyPolicy::CheckpointRequired,
+            max_repair_depth: Some(3),
         };
         let json = serde_json::to_string(&policy).unwrap();
         let de: NodePolicy = serde_json::from_str(&json).unwrap();
