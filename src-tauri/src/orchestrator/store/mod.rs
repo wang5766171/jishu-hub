@@ -3,16 +3,17 @@ use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use crate::orchestrator::conversation::{TaskInteractionRequest, TaskInteractionSubmission};
 use crate::orchestrator::domain::graph::TaskGraph;
 use crate::orchestrator::domain::revision::GraphRevision;
 use crate::orchestrator::domain::run::{
-    ApprovalRequest, ArtifactRef, BudgetState, GraphRun, NodeAttempt, NodeRun, NodeRunStatus,
-    RunPlanningSnapshot, RunRevisionProposal, RunStatus,
+    ApprovalRequest, ArtifactRef, ArtifactSensitivity, BudgetState, GraphRun, NodeAttempt, NodeRun,
+    NodeRunStatus, RunPlanningSnapshot, RunRevisionProposal, RunStatus,
 };
 use crate::orchestrator::events::TaskEvent;
 use crate::orchestrator::projections::checkpoint::ProjectionReadModel;
 
-const TASK_STORE_SCHEMA_VERSION: i64 = 3;
+const TASK_STORE_SCHEMA_VERSION: i64 = 4;
 
 fn decode_json_column<T: DeserializeOwned>(raw: &str, column: usize) -> rusqlite::Result<T> {
     serde_json::from_str(raw).map_err(|error| {
@@ -136,6 +137,7 @@ impl TaskStore {
                 r#"
                 DROP TABLE IF EXISTS projection_checkpoint;
                 DROP TABLE IF EXISTS wake_timer;
+                DROP TABLE IF EXISTS task_interaction_request;
                 DROP TABLE IF EXISTS approval_request;
                 DROP TABLE IF EXISTS artifact_ref;
                 DROP TABLE IF EXISTS task_event;
@@ -293,6 +295,29 @@ impl TaskStore {
 
             CREATE INDEX IF NOT EXISTS idx_approval_run ON approval_request(run_id);
             CREATE INDEX IF NOT EXISTS idx_approval_pending ON approval_request(resolved) WHERE resolved = 0;
+
+            CREATE TABLE IF NOT EXISTS task_interaction_request (
+                request_id      TEXT PRIMARY KEY,
+                graph_id       TEXT NOT NULL REFERENCES task_graph(graph_id),
+                run_id         TEXT,
+                node_id        TEXT,
+                node_run_id    TEXT,
+                session_id     TEXT,
+                prompt         TEXT NOT NULL,
+                options        TEXT NOT NULL DEFAULT '[]',
+                allow_multiple INTEGER NOT NULL DEFAULT 0,
+                allow_custom_text INTEGER NOT NULL DEFAULT 0,
+                required       INTEGER NOT NULL DEFAULT 1,
+                created_at     INTEGER NOT NULL,
+                resolved_at    INTEGER,
+                consumed_at    INTEGER,
+                submission     TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_task_interaction_graph_pending
+                ON task_interaction_request(graph_id, resolved_at, created_at);
+            CREATE INDEX IF NOT EXISTS idx_task_interaction_node_consumed
+                ON task_interaction_request(node_run_id, resolved_at, consumed_at, created_at);
 
             CREATE TABLE IF NOT EXISTS projection_checkpoint (
                 run_id          TEXT PRIMARY KEY,
@@ -1300,6 +1325,207 @@ impl TaskStore {
 
     // ── Projection checkpoint ─────────────────────────────────────────
 
+    pub fn save_task_interaction(
+        &self,
+        request: &TaskInteractionRequest,
+    ) -> Result<(), StoreError> {
+        let conn = self
+            .writer
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        conn.execute(
+            "INSERT INTO task_interaction_request
+             (request_id, graph_id, run_id, node_id, node_run_id, session_id, prompt, options,
+              allow_multiple, allow_custom_text, required, created_at, resolved_at, consumed_at,
+              submission)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                request.request_id,
+                request.graph_id,
+                request.run_id,
+                request.node_id,
+                request.node_run_id,
+                request.session_id,
+                request.prompt,
+                serde_json::to_string(&request.options)?,
+                request.allow_multiple,
+                request.allow_custom_text,
+                request.required,
+                request.created_at,
+                request.resolved_at,
+                request.consumed_at,
+                request
+                    .submission
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_task_interaction(
+        &self,
+        request_id: &str,
+    ) -> Result<TaskInteractionRequest, StoreError> {
+        let conn = self
+            .reader
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        conn.query_row(
+            "SELECT request_id, graph_id, run_id, node_id, node_run_id, session_id, prompt,
+                    options, allow_multiple, allow_custom_text, required, created_at, resolved_at,
+                    consumed_at, submission
+             FROM task_interaction_request
+             WHERE request_id = ?1",
+            params![request_id],
+            read_task_interaction,
+        )
+        .optional()?
+        .ok_or_else(|| StoreError::NotFound(format!("task interaction {request_id}")))
+    }
+
+    pub fn pending_task_interactions(
+        &self,
+        graph_id: &str,
+    ) -> Result<Vec<TaskInteractionRequest>, StoreError> {
+        let conn = self
+            .reader
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        let mut stmt = conn.prepare(
+            "SELECT request_id, graph_id, run_id, node_id, node_run_id, session_id, prompt,
+                    options, allow_multiple, allow_custom_text, required, created_at, resolved_at,
+                    consumed_at, submission
+             FROM task_interaction_request
+             WHERE graph_id = ?1 AND resolved_at IS NULL
+             ORDER BY created_at, request_id",
+        )?;
+        let requests = stmt
+            .query_map(params![graph_id], read_task_interaction)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(requests)
+    }
+
+    pub fn resolve_task_interaction(
+        &self,
+        request_id: &str,
+        submission: &TaskInteractionSubmission,
+        resolved_at: i64,
+    ) -> Result<TaskInteractionRequest, StoreError> {
+        let mut conn = self
+            .writer
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        let tx = conn.transaction()?;
+        let changed = tx.execute(
+            "UPDATE task_interaction_request
+             SET submission = ?1, resolved_at = ?2
+             WHERE request_id = ?3 AND resolved_at IS NULL",
+            params![serde_json::to_string(submission)?, resolved_at, request_id],
+        )?;
+        if changed == 0 {
+            let exists = tx
+                .query_row(
+                    "SELECT 1 FROM task_interaction_request WHERE request_id = ?1",
+                    params![request_id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            return Err(if exists {
+                StoreError::Conflict(format!("task interaction {request_id} is already resolved"))
+            } else {
+                StoreError::NotFound(format!("task interaction {request_id}"))
+            });
+        }
+        let request = tx.query_row(
+            "SELECT request_id, graph_id, run_id, node_id, node_run_id, session_id, prompt,
+                    options, allow_multiple, allow_custom_text, required, created_at, resolved_at,
+                    consumed_at, submission
+             FROM task_interaction_request
+             WHERE request_id = ?1",
+            params![request_id],
+            read_task_interaction,
+        )?;
+        tx.commit()?;
+        Ok(request)
+    }
+
+    pub fn take_resolved_task_interaction(
+        &self,
+        node_run_id: &str,
+        consumed_at: i64,
+    ) -> Result<Option<TaskInteractionRequest>, StoreError> {
+        let mut conn = self
+            .writer
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        let tx = conn.transaction()?;
+        let request = tx
+            .query_row(
+                "SELECT request_id, graph_id, run_id, node_id, node_run_id, session_id, prompt,
+                        options, allow_multiple, allow_custom_text, required, created_at,
+                        resolved_at, consumed_at, submission
+                 FROM task_interaction_request
+                 WHERE node_run_id = ?1 AND resolved_at IS NOT NULL AND consumed_at IS NULL
+                 ORDER BY resolved_at, request_id
+                 LIMIT 1",
+                params![node_run_id],
+                read_task_interaction,
+            )
+            .optional()?;
+        let Some(mut request) = request else {
+            tx.commit()?;
+            return Ok(None);
+        };
+        tx.execute(
+            "UPDATE task_interaction_request
+             SET consumed_at = ?1
+             WHERE request_id = ?2 AND consumed_at IS NULL",
+            params![consumed_at, request.request_id],
+        )?;
+        request.consumed_at = Some(consumed_at);
+        tx.commit()?;
+        Ok(Some(request))
+    }
+
+    pub fn take_resolved_task_interaction_by_id(
+        &self,
+        request_id: &str,
+        consumed_at: i64,
+    ) -> Result<Option<TaskInteractionRequest>, StoreError> {
+        let mut conn = self
+            .writer
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        let tx = conn.transaction()?;
+        let request = tx
+            .query_row(
+                "SELECT request_id, graph_id, run_id, node_id, node_run_id, session_id, prompt,
+                        options, allow_multiple, allow_custom_text, required, created_at,
+                        resolved_at, consumed_at, submission
+                 FROM task_interaction_request
+                 WHERE request_id = ?1 AND resolved_at IS NOT NULL AND consumed_at IS NULL",
+                params![request_id],
+                read_task_interaction,
+            )
+            .optional()?;
+        let Some(mut request) = request else {
+            tx.commit()?;
+            return Ok(None);
+        };
+        tx.execute(
+            "UPDATE task_interaction_request
+             SET consumed_at = ?1
+             WHERE request_id = ?2 AND consumed_at IS NULL",
+            params![consumed_at, request.request_id],
+        )?;
+        request.consumed_at = Some(consumed_at);
+        tx.commit()?;
+        Ok(Some(request))
+    }
+
     pub fn save_projection_checkpoint(
         &self,
         run_id: &str,
@@ -2112,6 +2338,40 @@ impl TaskStore {
         Ok(artifacts)
     }
 
+    /// Fetch a single artifact by id (§11.2 `artifact_get`). Returns `None` if
+    /// no artifact has the given id.
+    pub fn get_artifact(&self, artifact_id: &str) -> Result<Option<ArtifactRef>, StoreError> {
+        let conn = self
+            .reader
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        let artifact = conn
+            .query_row(
+                "SELECT artifact_id, run_id, node_run_id, attempt_id, name, artifact_type,
+                        hash, sensitivity, created_at, metadata
+                 FROM artifact_ref WHERE artifact_id = ?1",
+                params![artifact_id],
+                |row| {
+                    let sensitivity_json: String = row.get(7)?;
+                    let metadata_json: String = row.get(9)?;
+                    Ok(ArtifactRef {
+                        artifact_id: row.get(0)?,
+                        run_id: row.get(1)?,
+                        node_run_id: row.get(2)?,
+                        attempt_id: row.get(3)?,
+                        name: row.get(4)?,
+                        artifact_type: row.get(5)?,
+                        hash: row.get(6)?,
+                        sensitivity: decode_json_column(&sensitivity_json, 7)?,
+                        created_at: row.get(8)?,
+                        metadata: decode_json_column(&metadata_json, 9)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(artifact)
+    }
+
     /// Run a controlled (PASSIVE) WAL checkpoint, returning how many WAL frames
     /// were processed. The outcome lets callers and tests confirm the checkpoint
     /// actually engaged the WAL machinery rather than being a silent no-op.
@@ -2150,6 +2410,31 @@ pub struct WalCheckpointOutcome {
     pub log_frames: i64,
     /// Number of WAL frames successfully copied back to the main database.
     pub checkpointed_frames: i64,
+}
+
+fn read_task_interaction(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskInteractionRequest> {
+    let options_json: String = row.get(7)?;
+    let submission_json: Option<String> = row.get(14)?;
+    Ok(TaskInteractionRequest {
+        request_id: row.get(0)?,
+        graph_id: row.get(1)?,
+        run_id: row.get(2)?,
+        node_id: row.get(3)?,
+        node_run_id: row.get(4)?,
+        session_id: row.get(5)?,
+        prompt: row.get(6)?,
+        options: decode_json_column(&options_json, 7)?,
+        allow_multiple: row.get::<_, i32>(8)? != 0,
+        allow_custom_text: row.get::<_, i32>(9)? != 0,
+        required: row.get::<_, i32>(10)? != 0,
+        created_at: row.get(11)?,
+        resolved_at: row.get(12)?,
+        consumed_at: row.get(13)?,
+        submission: submission_json
+            .as_deref()
+            .map(|raw| decode_json_column(raw, 14))
+            .transpose()?,
+    })
 }
 
 fn insert_event(tx: &rusqlite::Transaction<'_>, event: &TaskEvent) -> Result<(), StoreError> {
@@ -2383,6 +2668,7 @@ impl ProjectionReadModel for std::sync::Arc<TaskStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::normalized::InteractionOption;
     use crate::orchestrator::domain::graph::{
         EdgeKind, GraphEdge, GraphNode, GraphSnapshot, NodeKind,
     };
@@ -2461,6 +2747,34 @@ mod tests {
         let recovered = store.get_revision("rev1").unwrap();
         assert_eq!(recovered.graph_id, "g1");
         assert_eq!(recovered.schema_version, "1.0.0");
+    }
+
+    #[test]
+    fn get_artifact_by_id_returns_saved_artifact_or_none() {
+        let store = make_test_store();
+        let artifact = ArtifactRef {
+            artifact_id: "art-1".into(),
+            run_id: "run-1".into(),
+            node_run_id: "nr-1".into(),
+            attempt_id: "att-1".into(),
+            name: "report".into(),
+            artifact_type: "node_output".into(),
+            hash: "abc123".into(),
+            sensitivity: ArtifactSensitivity::Internal,
+            created_at: now(),
+            metadata: Default::default(),
+        };
+        store.save_artifact(&artifact).unwrap();
+
+        let recovered = store
+            .get_artifact("art-1")
+            .unwrap()
+            .expect("artifact should exist");
+        assert_eq!(recovered.artifact_id, "art-1");
+        assert_eq!(recovered.name, "report");
+        assert_eq!(recovered.hash, "abc123");
+
+        assert!(store.get_artifact("missing").unwrap().is_none());
     }
 
     #[test]
@@ -3101,5 +3415,78 @@ mod tests {
         // Test get_attempt returns NotFound for non-existent attempt.
         let err = store.get_attempt("nr1", 999).unwrap_err();
         assert!(matches!(err, StoreError::NotFound(_)));
+    }
+
+    #[test]
+    fn task_interaction_is_persisted_resolved_and_consumed_once() {
+        let store = make_test_store();
+        store
+            .create_graph(&TaskGraph {
+                graph_id: "g-interaction".into(),
+                title: "Interactive task".into(),
+                goal: "Choose a design".into(),
+                project_root: PathBuf::from("/project"),
+                owner: "user".into(),
+                current_draft_revision: None,
+                created_at: now(),
+                updated_at: now(),
+            })
+            .unwrap();
+        let request = TaskInteractionRequest {
+            request_id: "request-1".into(),
+            graph_id: "g-interaction".into(),
+            run_id: Some("run-1".into()),
+            node_id: Some("node-1".into()),
+            node_run_id: Some("node-run-1".into()),
+            session_id: Some("session-1".into()),
+            prompt: "请选择权限模型".into(),
+            options: vec![InteractionOption {
+                option_id: "rbac".into(),
+                label: "RBAC".into(),
+                description: None,
+            }],
+            allow_multiple: false,
+            allow_custom_text: true,
+            required: true,
+            created_at: now(),
+            resolved_at: None,
+            consumed_at: None,
+            submission: None,
+        };
+
+        store.save_task_interaction(&request).unwrap();
+        assert_eq!(
+            store
+                .pending_task_interactions("g-interaction")
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let resolved = store
+            .resolve_task_interaction(
+                "request-1",
+                &TaskInteractionSubmission {
+                    selected_option_ids: vec!["rbac".into()],
+                    custom_text: Some("组织维度隔离".into()),
+                },
+                now() + 1,
+            )
+            .unwrap();
+        assert!(!resolved.is_pending());
+        assert!(store
+            .pending_task_interactions("g-interaction")
+            .unwrap()
+            .is_empty());
+
+        let consumed = store
+            .take_resolved_task_interaction("node-run-1", now() + 2)
+            .unwrap()
+            .expect("resolved interaction should be available");
+        assert_eq!(consumed.request_id, "request-1");
+        assert!(store
+            .take_resolved_task_interaction("node-run-1", now() + 3)
+            .unwrap()
+            .is_none());
     }
 }

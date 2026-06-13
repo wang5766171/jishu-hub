@@ -1914,6 +1914,65 @@ fn orchestrator_list_graphs_for_project(
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
+fn orchestrator_list_task_conversations(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    project_root: String,
+) -> Result<
+    Vec<crate::orchestrator::conversation::TaskConversationSummary>,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .list_task_conversations(std::path::Path::new(&project_root))
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_get_task_conversation(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    graph_id: String,
+    after_sequence: Option<u64>,
+) -> Result<
+    crate::orchestrator::conversation::TaskConversationDetail,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .get_task_conversation(&graph_id, after_sequence.unwrap_or_default())
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_submit_task_interaction(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    request_id: String,
+    submission: crate::orchestrator::conversation::TaskInteractionSubmission,
+) -> Result<
+    crate::orchestrator::conversation::TaskInteractionRequest,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .submit_task_interaction(&request_id, submission)
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
 fn orchestrator_get_revision(
     state: tauri::State<'_, std::sync::Mutex<AppState>>,
     revision_id: String,
@@ -2266,6 +2325,43 @@ fn orchestrator_list_artifacts(
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
+fn orchestrator_get_artifact(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    artifact_id: String,
+) -> Result<
+    crate::orchestrator::domain::run::ArtifactRef,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service.get_artifact(&artifact_id).map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_get_diff(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    from_revision_id: String,
+    to_revision_id: String,
+) -> Result<
+    crate::orchestrator::domain::revision::RevisionDiff,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .get_diff(&from_revision_id, &to_revision_id)
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
 fn orchestrator_list_revisions(
     state: tauri::State<'_, std::sync::Mutex<AppState>>,
     graph_id: String,
@@ -2457,6 +2553,12 @@ pub fn run() {
             #[cfg(feature = "orchestrator")]
             orchestrator_list_graphs_for_project,
             #[cfg(feature = "orchestrator")]
+            orchestrator_list_task_conversations,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_get_task_conversation,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_submit_task_interaction,
+            #[cfg(feature = "orchestrator")]
             orchestrator_get_revision,
             #[cfg(feature = "orchestrator")]
             orchestrator_apply_commands,
@@ -2492,6 +2594,10 @@ pub fn run() {
             orchestrator_run_events_after,
             #[cfg(feature = "orchestrator")]
             orchestrator_list_artifacts,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_get_artifact,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_get_diff,
             #[cfg(feature = "orchestrator")]
             orchestrator_list_revisions,
             #[cfg(feature = "orchestrator")]

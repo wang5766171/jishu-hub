@@ -4,6 +4,11 @@ use std::sync::Arc;
 use crate::orchestrator::commands::{
     apply_commands, graph_create, graph_validate, CreateGraphInput, GraphCommand, RevisionResult,
 };
+use crate::orchestrator::conversation::{
+    build_task_conversation_summary, original_goal_entry, project_public_entries,
+    TaskConversationDetail, TaskConversationSummary, TaskInteractionRequest,
+    TaskInteractionSubmission,
+};
 use crate::orchestrator::domain::graph::TaskGraph;
 use crate::orchestrator::domain::revision::GraphRevision;
 use crate::orchestrator::domain::run::{
@@ -310,6 +315,165 @@ impl TaskService {
         project_root: &std::path::Path,
     ) -> Result<Vec<TaskGraph>, TaskServiceError> {
         Ok(self.store.list_graphs_for_project(project_root)?)
+    }
+
+    pub fn list_task_conversations(
+        &self,
+        project_root: &std::path::Path,
+    ) -> Result<Vec<TaskConversationSummary>, TaskServiceError> {
+        let graphs = self.store.list_graphs_for_project(project_root)?;
+        let mut summaries = Vec::with_capacity(graphs.len());
+
+        for graph in graphs {
+            let pending_interactions = self.store.pending_task_interactions(&graph.graph_id)?;
+            let runs = self.store.list_runs(&graph.graph_id)?;
+            let run = runs.first();
+            let node_runs = match run {
+                Some(value) => self.store.get_node_runs(&value.run_id)?,
+                None => Vec::new(),
+            };
+            let revision_id = run
+                .map(|value| value.active_revision_id.as_str())
+                .or(graph.current_draft_revision.as_deref());
+            let snapshot = match revision_id {
+                Some(value) => Some(self.store.get_revision(value)?.snapshot()?),
+                None => None,
+            };
+            summaries.push(build_task_conversation_summary(
+                &graph,
+                run,
+                &node_runs,
+                snapshot.as_ref(),
+                pending_interactions.len(),
+            ));
+        }
+
+        summaries.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        Ok(summaries)
+    }
+
+    pub fn get_task_conversation(
+        &self,
+        graph_id: &str,
+        after_sequence: u64,
+    ) -> Result<TaskConversationDetail, TaskServiceError> {
+        let graph = self.store.get_graph(graph_id)?;
+        let pending_interactions = self.store.pending_task_interactions(graph_id)?;
+        let runs = self.store.list_runs(graph_id)?;
+        let run = runs.first();
+        let node_runs = match run {
+            Some(value) => self.store.get_node_runs(&value.run_id)?,
+            None => Vec::new(),
+        };
+        let revision_id = run
+            .map(|value| value.active_revision_id.as_str())
+            .or(graph.current_draft_revision.as_deref());
+        let snapshot = match revision_id {
+            Some(value) => Some(self.store.get_revision(value)?.snapshot()?),
+            None => None,
+        };
+        let summary = build_task_conversation_summary(
+            &graph,
+            run,
+            &node_runs,
+            snapshot.as_ref(),
+            pending_interactions.len(),
+        );
+        let mut entries = Vec::new();
+        if after_sequence == 0 {
+            entries.push(original_goal_entry(&graph));
+        }
+        if let Some(value) = run {
+            let events = self
+                .store
+                .events_after(&value.run_id, after_sequence, 500)?;
+            entries.extend(project_public_entries(graph_id, &events));
+        }
+
+        Ok(TaskConversationDetail {
+            summary,
+            entries,
+            pending_interactions,
+        })
+    }
+
+    pub fn submit_task_interaction(
+        &self,
+        request_id: &str,
+        submission: TaskInteractionSubmission,
+    ) -> Result<TaskInteractionRequest, TaskServiceError> {
+        let request = self.store.get_task_interaction(request_id)?;
+        let selected = submission
+            .selected_option_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::HashSet<_>>();
+        if selected.len() != submission.selected_option_ids.len() {
+            return Err(TaskServiceError::InvalidInput(
+                "interaction selection contains duplicate option ids".into(),
+            ));
+        }
+        if !request.allow_multiple && selected.len() > 1 {
+            return Err(TaskServiceError::InvalidInput(
+                "interaction only allows one option".into(),
+            ));
+        }
+        let valid_option_ids = request
+            .options
+            .iter()
+            .map(|option| option.option_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        if !selected.is_subset(&valid_option_ids) {
+            return Err(TaskServiceError::InvalidInput(
+                "interaction selection contains an unknown option".into(),
+            ));
+        }
+        let custom_text = submission
+            .custom_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if custom_text.is_some() && !request.allow_custom_text {
+            return Err(TaskServiceError::InvalidInput(
+                "interaction does not allow custom text".into(),
+            ));
+        }
+        if request.required && selected.is_empty() && custom_text.is_none() {
+            return Err(TaskServiceError::InvalidInput(
+                "interaction requires a selection or custom text".into(),
+            ));
+        }
+
+        let resolved = self
+            .store
+            .resolve_task_interaction(
+                request_id,
+                &TaskInteractionSubmission {
+                    selected_option_ids: submission.selected_option_ids,
+                    custom_text,
+                },
+                now_ms(),
+            )
+            .map_err(TaskServiceError::from)?;
+
+        if let Some(node_run_id) = resolved.node_run_id.as_deref() {
+            let mut node_run = self.store.get_node_run(node_run_id)?;
+            if node_run.status == NodeRunStatus::AwaitingApproval {
+                node_run.status = NodeRunStatus::Ready;
+                node_run.finished_at = None;
+                node_run.error = None;
+                self.store.save_node_run(&node_run)?;
+            }
+        }
+        if let Some(run_id) = resolved.run_id.as_deref() {
+            let run = self.store.get_run(run_id)?;
+            if run.status == RunStatus::AwaitingHuman {
+                self.resume_run(run_id)?;
+            }
+        }
+
+        Ok(resolved)
     }
 
     /// Get a revision by id, optionally deserializing the snapshot.
@@ -960,6 +1124,25 @@ impl TaskService {
         Ok(store.list_artifacts(run_id)?)
     }
 
+    /// Fetch a single artifact by id (§11.2 `artifact_get`).
+    pub fn get_artifact(&self, artifact_id: &str) -> Result<ArtifactRef, TaskServiceError> {
+        self.store
+            .get_artifact(artifact_id)?
+            .ok_or_else(|| TaskServiceError::NotFound(format!("artifact {artifact_id}")))
+    }
+
+    /// Compute the structured diff between two revisions (§11.2 `graph_diff`).
+    pub fn get_diff(
+        &self,
+        from_revision_id: &str,
+        to_revision_id: &str,
+    ) -> Result<crate::orchestrator::domain::revision::RevisionDiff, TaskServiceError> {
+        let from = self.store.get_revision(from_revision_id)?;
+        let to = self.store.get_revision(to_revision_id)?;
+        crate::orchestrator::commands::graph_diff(&from, &to)
+            .map_err(|e| TaskServiceError::Internal(format!("revision diff failed: {e}")))
+    }
+
     pub fn resolve_approval(
         &self,
         approval_id: &str,
@@ -1269,6 +1452,70 @@ mod tests {
         assert_eq!(recovered_graph.goal, "Build feature X");
         let recovered_revision = svc.get_revision(&revision.revision_id).unwrap();
         assert_eq!(recovered_revision.skill_refs[0].skill_id, "superpowers");
+    }
+
+    #[test]
+    fn task_conversations_are_project_scoped_and_public_only() {
+        let svc = TaskService::open_in_memory().unwrap();
+        let (graph, initial_revision) = svc
+            .create_graph(&CreateGraphInput {
+                title: "Permission system".into(),
+                goal: "Design organization-aware permissions".into(),
+                project_root: "/project-a".into(),
+                owner: "user".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let revision = svc
+            .apply_commands(
+                &graph.graph_id,
+                &initial_revision.revision_id,
+                &[GraphCommand::AddNode {
+                    command_id: "add-api".into(),
+                    node: shell_node("api", "Backend API"),
+                }],
+                "user",
+            )
+            .unwrap()
+            .revision;
+        let run = svc
+            .start_run(&graph.graph_id, &revision.revision_id)
+            .unwrap();
+        let mut node_run = NodeRun::new("nr-api", &run.run_id, "api", &revision.revision_id);
+        node_run.status = NodeRunStatus::Running;
+        node_run.started_at = Some(now_ms());
+        svc.store.save_node_run(&node_run).unwrap();
+        svc.store
+            .append_events(&[build_event(
+                gen_id("evt"),
+                &run.run_id,
+                2,
+                TaskEventType::AttemptProgressed,
+                "worker",
+                now_ms(),
+                serde_json::json!({
+                    "attempt_id": "attempt-1",
+                    "node_run_id": "nr-api",
+                    "message": "INTERNAL write_files: false"
+                }),
+            )])
+            .unwrap();
+
+        let summaries = svc
+            .list_task_conversations(std::path::Path::new("/project-a"))
+            .unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].owner_agent_id, "jishu-self");
+        assert_eq!(
+            summaries[0].current_node_title.as_deref(),
+            Some("Backend API")
+        );
+
+        let detail = svc.get_task_conversation(&graph.graph_id, 0).unwrap();
+        let serialized = serde_json::to_string(&detail).unwrap();
+        assert_eq!(detail.summary.graph_id, graph.graph_id);
+        assert!(!serialized.contains("write_files"));
+        assert!(!serialized.contains("INTERNAL"));
     }
 
     #[test]
