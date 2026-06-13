@@ -18,7 +18,14 @@ self.onmessage = (event: MessageEvent<LayoutRequest>) => {
   const request = event.data;
   const graph = new dagre.graphlib.Graph();
   graph.setDefaultEdgeLabel(() => ({}));
-  graph.setGraph({ rankdir: request.direction });
+  graph.setGraph({
+    rankdir: request.direction,
+    ranksep: 150,
+    nodesep: 90,
+    edgesep: 35,
+    marginx: 40,
+    marginy: 40,
+  });
 
   for (const nodeId of request.nodes) {
     graph.setNode(nodeId, {

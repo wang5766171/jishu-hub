@@ -11,6 +11,8 @@ import {
   type Edge as ReactFlowEdge,
   type Connection,
   Position,
+  MarkerType,
+  type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { GraphCommand, GraphSnapshot, NodeRun, NodeRunStatus } from "./use-task-graph";
@@ -92,7 +94,9 @@ export function GraphEditor({
   const [showDispatchForm, setShowDispatchForm] = useState(false);
   const [dispatchTitle, setDispatchTitle] = useState("");
   const [dispatchPrompt, setDispatchPrompt] = useState("");
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const layoutWorkerRef = useRef<Worker | null>(null);
+  const flowRef = useRef<ReactFlowInstance | null>(null);
   const layoutRequestRef = useRef(0);
   const selectedNodeIdRef = useRef(selectedNodeId);
   const onNodeSelectRef = useRef(onNodeSelect);
@@ -132,6 +136,9 @@ export function GraphEditor({
           position: event.data.positions[node.id] ?? node.position,
         })),
       );
+      requestAnimationFrame(() => {
+        flowRef.current?.fitView({ padding: 0.16, duration: 250 });
+      });
     };
     layoutWorkerRef.current = worker;
     return () => {
@@ -155,14 +162,17 @@ export function GraphEditor({
   }, []);
 
   const handleSelectionChange = useCallback(
-    (params: { nodes: ReactFlowNode[] }) => {
-      selectNode(params.nodes[0]?.id ?? null);
+    (params: { nodes: ReactFlowNode[]; edges: ReactFlowEdge[] }) => {
+      const nodeId = params.nodes[0]?.id ?? null;
+      selectNode(nodeId);
+      setSelectedEdgeId(nodeId ? null : (params.edges[0]?.id ?? null));
     },
     [selectNode],
   );
 
   const handlePaneClick = useCallback(() => {
     selectNode(null);
+    setSelectedEdgeId(null);
   }, [selectNode]);
 
   useEffect(() => {
@@ -180,8 +190,8 @@ export function GraphEditor({
           label: `${n.title}\n(${t(`tasks.workbench.nodeKinds.${n.node_kind}`)})${statusText}`,
         },
         position: { x: 0, y: 0 },
-        targetPosition: Position.Top,
-        sourcePosition: Position.Bottom,
+        targetPosition: Position.Left,
+        sourcePosition: Position.Right,
         style: {
           border: `2px solid ${appearance.borderColor}`,
           padding: 10,
@@ -195,14 +205,32 @@ export function GraphEditor({
       };
     });
 
-    const rfEdges: ReactFlowEdge[] = snapshot.edges.map((e) => ({
-      id: e.edge_id,
-      source: e.source_node_id,
-      target: e.target_node_id,
-      label: e.kind,
-      animated: false,
-      style: { stroke: e.kind === "control_dependency" ? "#ff0072" : "#00ff72" },
-    }));
+    const rfEdges: ReactFlowEdge[] = snapshot.edges.map((e) => {
+      const color = e.kind === "control_dependency" ? "#f43f8d" : "#22d3a7";
+      return {
+        id: e.edge_id,
+        source: e.source_node_id,
+        target: e.target_node_id,
+        label: t(`tasks.workbench.edgeKinds.${e.kind}`),
+        animated: false,
+        interactionWidth: 28,
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color,
+          width: 18,
+          height: 18,
+        },
+        labelStyle: { fill: "#e2e8f0", fontSize: 12, fontWeight: 600 },
+        labelShowBg: true,
+        labelBgStyle: { fill: "#0f172a", fillOpacity: 0.92 },
+        labelBgPadding: [6, 4] as [number, number],
+        labelBgBorderRadius: 5,
+        style: {
+          stroke: color,
+          strokeWidth: 2,
+        },
+      };
+    });
 
     setNodes((current) => {
       const currentPositions = new Map(
@@ -220,7 +248,7 @@ export function GraphEditor({
       requestId,
       nodes: rfNodes.map((node) => node.id),
       edges: rfEdges.map((edge) => ({ source: edge.source, target: edge.target })),
-      direction: "TB",
+      direction: "LR",
       nodeWidth,
       nodeHeight,
     });
@@ -238,6 +266,19 @@ export function GraphEditor({
       return changed ? nextNodes : currentNodes;
     });
   }, [selectedNodeId, setNodes]);
+
+  useEffect(() => {
+    setEdges((currentEdges) =>
+      currentEdges.map((edge) => ({
+        ...edge,
+        selected: edge.id === selectedEdgeId,
+        style: {
+          ...edge.style,
+          strokeWidth: edge.id === selectedEdgeId ? 3 : 2,
+        },
+      })),
+    );
+  }, [selectedEdgeId, setEdges]);
 
   useEffect(() => {
     const graphNodes = new Map(
@@ -326,6 +367,9 @@ export function GraphEditor({
         deleteKeyCode={["Backspace", "Delete"]}
         onSelectionChange={handleSelectionChange}
         onPaneClick={handlePaneClick}
+        onInit={(instance) => {
+          flowRef.current = instance;
+        }}
         fitView
         colorMode="dark"
       >
@@ -450,6 +494,42 @@ export function GraphEditor({
           </button>
         </div>
       </ReactFlow>
+      {selectedEdgeId && snapshot && (
+        <div className="absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-4 rounded-xl border border-cyan-300/25 bg-slate-950/95 px-4 py-3 text-sm text-slate-200 shadow-2xl">
+          {(() => {
+            const edge = snapshot.edges.find((candidate) => candidate.edge_id === selectedEdgeId);
+            if (!edge) return null;
+            const source = snapshot.nodes.find((node) => node.node_id === edge.source_node_id);
+            const target = snapshot.nodes.find((node) => node.node_id === edge.target_node_id);
+            return (
+              <>
+                <span className="font-medium">
+                  {source?.title ?? edge.source_node_id}
+                  <span className="px-2 text-cyan-300">→</span>
+                  {target?.title ?? edge.target_node_id}
+                </span>
+                <span className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-300">
+                  {t(`tasks.workbench.edgeKinds.${edge.kind}`)}
+                </span>
+                <button
+                  type="button"
+                  className="rounded border border-rose-400/40 px-3 py-1.5 text-rose-200 hover:bg-rose-500/10"
+                  onClick={() => {
+                    submitCommand({
+                      op: "remove_edge",
+                      command_id: `cmd_${crypto.randomUUID()}`,
+                      edge_id: edge.edge_id,
+                    });
+                    setSelectedEdgeId(null);
+                  }}
+                >
+                  {t("tasks.workbench.deleteEdge")}
+                </button>
+              </>
+            );
+          })()}
+        </div>
+      )}
       {showDispatchForm && (
         <div className="absolute inset-0 z-30 grid place-items-center bg-slate-950/70 p-6 backdrop-blur-sm">
           <form

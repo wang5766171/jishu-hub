@@ -16,6 +16,7 @@ import { GraphEditor } from "./graph-editor";
 import { NodeSidebar } from "./node-sidebar";
 import { RunInspector } from "./run-inspector";
 import { ProposalReview } from "./proposal-review";
+import { PlanningProgressOverlay } from "./planning-progress";
 
 interface TaskPlanSkill {
   id: string;
@@ -54,6 +55,7 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
     revisions,
     proposal,
     planning,
+    planningProgress,
     startRun,
     pollRunProjection,
     loadGraph,
@@ -427,6 +429,9 @@ export function TaskWorkbench({ initialProjectPath, onClose }: TaskWorkbenchProp
           onAccept={acceptProposal}
           onDismiss={dismissProposal}
         />
+      )}
+      {planning && planningProgress && (
+        <PlanningProgressOverlay progress={planningProgress} />
       )}
     </div>
   );

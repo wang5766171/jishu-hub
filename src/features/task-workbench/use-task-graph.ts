@@ -1,5 +1,6 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { planPoll, filterUnseenEvents } from "./polling-delta";
 
 export type JsonObject = Record<string, unknown>;
@@ -217,6 +218,21 @@ export interface GraphProposal {
   planner_policy_refs: JsonObject[];
 }
 
+export interface PlanningProgress {
+  graph_id: string;
+  stage:
+    | "preparing_context"
+    | "resolving_agent"
+    | "generating"
+    | "validating"
+    | "retrying"
+    | "building_proposal"
+    | "completed"
+    | "failed";
+  attempt: number | null;
+  max_attempts: number | null;
+}
+
 function snapshotFromRevision(revision: GraphRevision): GraphSnapshot {
   return JSON.parse(revision.canonical_snapshot.json) as GraphSnapshot;
 }
@@ -256,10 +272,30 @@ export function useTaskGraph() {
   const [redoRevisionIds, setRedoRevisionIds] = useState<string[]>([]);
   const [proposal, setProposal] = useState<GraphProposal | null>(null);
   const [planning, setPlanning] = useState(false);
+  const [planningProgress, setPlanningProgress] = useState<PlanningProgress | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const eventRunRef = useRef<string | null>(null);
   const eventCursorRef = useRef(0);
+
+  useEffect(() => {
+    if (!graph?.graph_id) return;
+    const graphId = graph.graph_id;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    listen<PlanningProgress>("task-planning-progress", (event) => {
+      if (!disposed && event.payload.graph_id === graphId) {
+        setPlanningProgress(event.payload);
+      }
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [graph?.graph_id]);
 
   const loadRunDetails = useCallback(async (runId: string) => {
     if (eventRunRef.current !== runId) {
@@ -465,6 +501,12 @@ export function useTaskGraph() {
   const generateProposal = useCallback(async (instruction?: string) => {
     if (!graph || !revision) return null;
     setPlanning(true);
+    setPlanningProgress({
+      graph_id: graph.graph_id,
+      stage: "preparing_context",
+      attempt: null,
+      max_attempts: 2,
+    });
     setError(null);
     try {
       const nextProposal = await invoke<GraphProposal>("orchestrator_generate_proposal", {
@@ -482,6 +524,7 @@ export function useTaskGraph() {
       throw err;
     } finally {
       setPlanning(false);
+      setPlanningProgress(null);
     }
   }, [graph, revision]);
 
@@ -760,6 +803,7 @@ export function useTaskGraph() {
     revisions,
     proposal,
     planning,
+    planningProgress,
     loading,
     error,
     loadGraph,
