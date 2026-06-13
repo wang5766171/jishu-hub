@@ -7,7 +7,6 @@ import type { GraphSnapshot } from "./use-task-graph";
 
 const flowHarness = vi.hoisted(() => ({
   selectionEffectCount: 0,
-  lastLayoutDirection: "",
 }));
 
 vi.mock("@xyflow/react", () => ({
@@ -84,23 +83,30 @@ vi.mock("@xyflow/react", () => ({
   MarkerType: { ArrowClosed: "arrowclosed" },
 }));
 
-class WorkerStub {
-  static postMessageCount = 0;
-
-  onmessage: ((event: MessageEvent) => void) | null = null;
-
-  postMessage(message: { requestId: number; direction: string }) {
-    WorkerStub.postMessageCount += 1;
-    flowHarness.lastLayoutDirection = message.direction;
-    this.onmessage?.({
-      data: { requestId: message.requestId, positions: {} },
-    } as MessageEvent);
+vi.mock("dagre", () => {
+  const setNode = vi.fn();
+  const setEdge = vi.fn();
+  const setGraph = vi.fn();
+  const setDefaultEdgeLabel = vi.fn();
+  const layout = vi.fn();
+  const nodeFn = vi.fn((id: string) => {
+    if (id === "implementation") return { x: 350, y: 80 };
+    return { x: 100, y: 80 };
+  });
+  class Graph {
+    setDefaultEdgeLabel = setDefaultEdgeLabel;
+    setGraph = setGraph;
+    setNode = setNode;
+    setEdge = setEdge;
+    layout = layout;
+    node = nodeFn;
   }
-
-  terminate() {}
-}
-
-vi.stubGlobal("Worker", WorkerStub);
+  const dagreMock = {
+    graphlib: { Graph },
+    layout,
+  };
+  return { default: dagreMock };
+});
 
 const snapshot: GraphSnapshot = {
   nodes: [
@@ -152,14 +158,24 @@ describe("graph editor controlled selection", () => {
 
   beforeEach(() => {
     flowHarness.selectionEffectCount = 0;
-    flowHarness.lastLayoutDirection = "";
   });
 
-  it("requests an expanded left-to-right layout", async () => {
+  it("spreads nodes by deterministic layout", async () => {
     render(<GraphEditor snapshot={snapshotWithEdge} />);
 
     await waitFor(() => {
-      expect(flowHarness.lastLayoutDirection).toBe("LR");
+      const data = screen.getByTestId("flow-nodes").textContent ?? "";
+      expect(data).toContain('"id":"goal"');
+      expect(data).toContain('"id":"implementation"');
+      const positions = JSON.parse(data) as Array<{
+        id: string;
+        position: { x: number; y: number };
+      }>;
+      const goal = positions.find((n) => n.id === "goal");
+      const implementation = positions.find((n) => n.id === "implementation");
+      expect(goal).toBeDefined();
+      expect(implementation).toBeDefined();
+      expect(Math.abs((goal?.position.x ?? 0) - (implementation?.position.x ?? 0))).toBeGreaterThan(0);
     });
   });
 
@@ -192,7 +208,6 @@ describe("graph editor controlled selection", () => {
   });
 
   it("clears React Flow selection when the inspector closes", async () => {
-    WorkerStub.postMessageCount = 0;
     const { rerender } = render(
       <GraphEditor
         snapshot={snapshot}
@@ -218,7 +233,6 @@ describe("graph editor controlled selection", () => {
         '"selected":false',
       );
     });
-    expect(WorkerStub.postMessageCount).toBe(1);
   });
 
   it("clears selection from the pane without a React Flow feedback loop", async () => {

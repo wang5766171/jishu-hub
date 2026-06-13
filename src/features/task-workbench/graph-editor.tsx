@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import dagre from "dagre";
 import {
   ReactFlow,
   MiniMap,
@@ -19,6 +20,42 @@ import type { GraphCommand, GraphSnapshot, NodeRun, NodeRunStatus } from "./use-
 
 const nodeWidth = 200;
 const nodeHeight = 60;
+
+function computeDagreLayout(
+  nodes: ReactFlowNode[],
+  edges: ReactFlowEdge[],
+  width: number,
+  height: number,
+): Record<string, { x: number; y: number }> {
+  if (nodes.length === 0) return {};
+  const graph = new dagre.graphlib.Graph();
+  graph.setDefaultEdgeLabel(() => ({}));
+  graph.setGraph({
+    rankdir: "LR",
+    ranksep: 150,
+    nodesep: 90,
+    edgesep: 35,
+    marginx: 40,
+    marginy: 40,
+  });
+  for (const node of nodes) {
+    graph.setNode(node.id, { width, height });
+  }
+  for (const edge of edges) {
+    graph.setEdge(edge.source, edge.target);
+  }
+  dagre.layout(graph);
+  const positions: Record<string, { x: number; y: number }> = {};
+  for (const node of nodes) {
+    const position = graph.node(node.id);
+    if (!position) continue;
+    positions[node.id] = {
+      x: position.x - width / 2,
+      y: position.y - height / 2,
+    };
+  }
+  return positions;
+}
 
 function nodeAppearance(status?: NodeRunStatus) {
   switch (status) {
@@ -95,9 +132,7 @@ export function GraphEditor({
   const [dispatchTitle, setDispatchTitle] = useState("");
   const [dispatchPrompt, setDispatchPrompt] = useState("");
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
-  const layoutWorkerRef = useRef<Worker | null>(null);
   const flowRef = useRef<ReactFlowInstance | null>(null);
-  const layoutRequestRef = useRef(0);
   const selectedNodeIdRef = useRef(selectedNodeId);
   const onNodeSelectRef = useRef(onNodeSelect);
   selectedNodeIdRef.current = selectedNodeId;
@@ -118,34 +153,6 @@ export function GraphEditor({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [canRedo, canUndo, redo, undo]);
-
-  useEffect(() => {
-    const worker = new Worker(new URL("./layout.worker.ts", import.meta.url), {
-      type: "module",
-    });
-    worker.onmessage = (
-      event: MessageEvent<{
-        requestId: number;
-        positions: Record<string, { x: number; y: number }>;
-      }>,
-    ) => {
-      if (event.data.requestId !== layoutRequestRef.current) return;
-      setNodes((current) =>
-        current.map((node) => ({
-          ...node,
-          position: event.data.positions[node.id] ?? node.position,
-        })),
-      );
-      requestAnimationFrame(() => {
-        flowRef.current?.fitView({ padding: 0.16, duration: 250 });
-      });
-    };
-    layoutWorkerRef.current = worker;
-    return () => {
-      worker.terminate();
-      layoutWorkerRef.current = null;
-    };
-  }, [setNodes]);
 
   const submitCommand = useCallback(
     (command: GraphCommand) => {
@@ -236,21 +243,20 @@ export function GraphEditor({
       const currentPositions = new Map(
         current.map((node) => [node.id, node.position] as const),
       );
+      const positions = computeDagreLayout(
+        rfNodes,
+        rfEdges,
+        nodeWidth,
+        nodeHeight,
+      );
       return rfNodes.map((node) => ({
         ...node,
-        position: currentPositions.get(node.id) ?? node.position,
+        position: currentPositions.get(node.id) ?? positions[node.id] ?? { x: 0, y: 0 },
       }));
     });
     setEdges(rfEdges);
-    const requestId = layoutRequestRef.current + 1;
-    layoutRequestRef.current = requestId;
-    layoutWorkerRef.current?.postMessage({
-      requestId,
-      nodes: rfNodes.map((node) => node.id),
-      edges: rfEdges.map((edge) => ({ source: edge.source, target: edge.target })),
-      direction: "LR",
-      nodeWidth,
-      nodeHeight,
+    requestAnimationFrame(() => {
+      flowRef.current?.fitView({ padding: 0.16, duration: 250 });
     });
   }, [snapshot, setNodes, setEdges, t]);
 
@@ -370,7 +376,6 @@ export function GraphEditor({
         onInit={(instance) => {
           flowRef.current = instance;
         }}
-        fitView
         colorMode="dark"
       >
         <Controls />
