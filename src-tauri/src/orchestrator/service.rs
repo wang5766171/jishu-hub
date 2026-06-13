@@ -956,6 +956,97 @@ impl TaskService {
         Ok(updated_run)
     }
 
+    /// Attach a Supervisor-generated repair to a failed node (design §9.3, M3.3).
+    ///
+    /// Builds a candidate revision from the run's ACTIVE revision (without
+    /// touching the user's draft — repair is run-scoped), attaches it via the
+    /// two-phase revision protocol (frozen-node safe), emits `RepairGraphAttached`
+    /// for event-sourced depth tracking, and resets the failed node so the
+    /// scheduler re-runs it under the repaired revision. The Supervisor
+    /// invocation that produces `commands` is the caller's responsibility (seam).
+    pub fn attach_repair(
+        &self,
+        run_id: &str,
+        node_run_id: &str,
+        commands: &[GraphCommand],
+        repair_depth: u32,
+    ) -> Result<String, TaskServiceError> {
+        let store = &self.store;
+        let run = store.get_run(run_id)?;
+        if run.status.is_terminal() {
+            return Err(TaskServiceError::Conflict {
+                message: "terminal runs cannot accept repairs".into(),
+                current_revision: None,
+                current_run_seq: None,
+            });
+        }
+        let node_run = store.get_node_run(node_run_id)?;
+        if node_run.run_id != run.run_id {
+            return Err(TaskServiceError::Conflict {
+                message: format!("node run {node_run_id} belongs to another run"),
+                current_revision: None,
+                current_run_seq: None,
+            });
+        }
+
+        // Candidate revision from the run's active revision. Must NOT update the
+        // graph draft (run-scoped repair).
+        let base = store.get_revision(&run.active_revision_id)?;
+        let base_snapshot = base.snapshot()?;
+        let new_snapshot = apply_commands(&base_snapshot, commands)?;
+        graph_validate(&new_snapshot)?;
+        let now = now_ms();
+        let candidate_id = gen_id("rev");
+        let mut candidate = GraphRevision::from_snapshot(
+            &candidate_id,
+            &run.graph_id,
+            Some(run.active_revision_id.clone()),
+            &new_snapshot,
+            "supervisor",
+            now,
+        )?;
+        candidate.skill_refs = base.skill_refs.clone();
+        candidate.template_refs = base.template_refs.clone();
+        candidate.planner_policy_refs = base.planner_policy_refs.clone();
+        candidate.refresh_content_hash()?;
+        store.save_revision(&candidate)?;
+
+        // Attach via the two-phase protocol. The failed node is terminal, so
+        // apply_run_revision will not advance it — we reset it manually below.
+        let proposal = self.propose_run_revision(run_id, &candidate_id)?;
+        self.apply_run_revision(run_id, &proposal.proposal_id, proposal.expected_run_seq)?;
+        // apply_run_revision also appends a RevisionCreated event, so re-read the
+        // run to get the authoritative run_seq before appending our repair event.
+        let latest_run = store.get_run(run_id)?;
+
+        // Record the repair (event-sourced depth → Repair-of-Repair guard).
+        let repair_event = build_event(
+            gen_id("evt"),
+            run_id,
+            latest_run.run_seq + 1,
+            TaskEventType::RepairGraphAttached,
+            "supervisor",
+            now,
+            serde_json::to_value(payloads::RepairGraphAttachedPayload {
+                node_run_id: node_run_id.to_string(),
+                repair_revision_id: candidate_id.clone(),
+                depth: repair_depth,
+            })?,
+        );
+        store.append_events(&[repair_event])?;
+
+        // Reset the failed node to re-run under the repaired revision.
+        let mut failed = store.get_node_run(node_run_id)?;
+        failed.status = NodeRunStatus::Blocked;
+        failed.revision_id = candidate_id.clone();
+        failed.error = None;
+        failed.finished_at = None;
+        failed.wake_at = None;
+        store.save_node_run(&failed)?;
+
+        Ok(candidate_id)
+    }
+
     /// Get a run by id.
     pub fn get_run(&self, run_id: &str) -> Result<GraphRun, TaskServiceError> {
         let store = &self.store;
@@ -1438,6 +1529,74 @@ mod tests {
             loop_config: None,
             approval_gate_config: None,
         }
+    }
+
+    #[test]
+    fn attach_repair_attaches_candidate_and_resets_failed_node() {
+        let svc = TaskService::open_in_memory().unwrap();
+        let (graph, initial_revision) = svc
+            .create_graph(&CreateGraphInput {
+                title: "Repair test".into(),
+                goal: "goal".into(),
+                project_root: "/p".into(),
+                owner: "user".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let revision = svc
+            .apply_commands(
+                &graph.graph_id,
+                &initial_revision.revision_id,
+                &[GraphCommand::AddNode {
+                    command_id: "add-shell".into(),
+                    node: shell_node("shell", "Shell node"),
+                }],
+                "user",
+            )
+            .unwrap()
+            .revision;
+        let run = svc
+            .start_run(&graph.graph_id, &revision.revision_id)
+            .unwrap();
+        // Seed a failed node run for the shell node.
+        let mut failed = NodeRun::new("nr-shell", &run.run_id, "shell", &revision.revision_id);
+        failed.status = NodeRunStatus::Failed;
+        failed.error = Some("boom".into());
+        svc.store.save_node_run(&failed).unwrap();
+
+        // Repair: adjust the shell node's policy (Supervisor-generated command).
+        let repair_revision_id = svc
+            .attach_repair(
+                &run.run_id,
+                "nr-shell",
+                &[GraphCommand::UpdatePolicy {
+                    command_id: "repair-1".into(),
+                    node_id: "shell".into(),
+                    policy: NodePolicy::default(),
+                }],
+                1,
+            )
+            .unwrap();
+
+        // The run is now on the repaired candidate revision.
+        let updated_run = svc.get_run(&run.run_id).unwrap();
+        assert_eq!(updated_run.active_revision_id, repair_revision_id);
+        // The failed node was reset to re-run under the repaired revision.
+        let repaired = svc.store.get_node_run("nr-shell").unwrap();
+        assert_eq!(repaired.status, NodeRunStatus::Blocked);
+        assert_eq!(repaired.revision_id, repair_revision_id);
+        assert_eq!(repaired.error, None);
+        // The repair was recorded as an event (event-sourced depth tracking).
+        let events = svc.store.all_events(&run.run_id).unwrap();
+        assert!(events.iter().any(|event| {
+            event.event_type == crate::orchestrator::events::TaskEventType::RepairGraphAttached
+        }));
+        // The user's draft was not touched by the run-scoped repair.
+        let graph_after = svc.get_graph(&graph.graph_id).unwrap();
+        assert_ne!(
+            graph_after.current_draft_revision.as_deref(),
+            Some(repair_revision_id.as_str())
+        );
     }
 
     #[test]
