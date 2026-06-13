@@ -2,13 +2,53 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{atomic::AtomicBool, Arc};
 
-use crate::agent::normalized::{NormalizedEvent, TurnEndReason};
+use crate::agent::normalized::{ContentBlock, NormalizedEvent, TurnEndReason};
 use crate::agent::{AgentCapabilities, AgentRegistry, TransportSurface};
 use crate::agent_runtime::{AgentTurnOutput, AgentTurnRequest};
 use crate::orchestrator::domain::graph::GraphNode;
 use crate::orchestrator::domain::run::{
     AgentAssignment, AttemptError, AttemptUsage, ErrorCategory,
 };
+
+/// A single item produced by a streaming runtime invocation.
+///
+/// M1 contract: `TaskAgentRuntime::invoke` returns a stream of these instead of
+/// a single collected `AgentTurnOutput`. The orchestrator consumes events as they
+/// arrive, can pause on `Event(ApprovalRequest|InteractionRequest)`, and is
+/// signalled completion by `Finished`. `RuntimeError` preserves the old
+/// "invoke-level Err" path (mapped to a retryable Transient attempt error).
+#[derive(Debug, Clone)]
+pub enum RuntimeStreamItem {
+    /// One normalized transport event (progress/approval/interaction/session/turn-complete/error/...).
+    Event(NormalizedEvent),
+    /// The runtime could not run the turn at all (equivalent to the legacy invoke `Err`).
+    RuntimeError(String),
+    /// The underlying process finished (equivalent to legacy `AgentTurnOutput.exit_success/exit_code`).
+    /// Terminates the stream.
+    Finished {
+        exit_success: bool,
+        exit_code: Option<i32>,
+    },
+}
+
+/// Bridge a legacy blocking `AgentTurnOutput` into a sequence of stream items:
+/// each event as `Event`, followed by one `Finished`. Used by the blocking-backed
+/// `DefaultTaskAgentRuntime` (M1.1, behavior-equivalent) and by tests; M1.4+
+/// transports emit items directly.
+pub(crate) fn bridge_output_to_stream_items(output: AgentTurnOutput) -> Vec<RuntimeStreamItem> {
+    let AgentTurnOutput {
+        events,
+        exit_success,
+        exit_code,
+    } = output;
+    let mut items: Vec<RuntimeStreamItem> =
+        events.into_iter().map(RuntimeStreamItem::Event).collect();
+    items.push(RuntimeStreamItem::Finished {
+        exit_success,
+        exit_code,
+    });
+    items
+}
 
 #[derive(Debug, Clone)]
 pub struct RuntimeInvocationRequest {
@@ -205,6 +245,15 @@ pub enum RuntimeFact {
         approval_kind: String,
         payload: serde_json::Value,
     },
+    InteractionRequested {
+        context: RuntimeEventContext,
+        request_id: String,
+        prompt: String,
+        options: Vec<crate::agent::normalized::InteractionOption>,
+        allow_multiple: bool,
+        allow_custom_text: bool,
+        required: bool,
+    },
     SessionResolved {
         context: RuntimeEventContext,
         session_id: String,
@@ -225,17 +274,39 @@ pub enum RuntimeFact {
 
 pub fn map_normalized_event(context: &RuntimeEventContext, event: &NormalizedEvent) -> RuntimeFact {
     match event {
-        NormalizedEvent::TextDelta { delta } | NormalizedEvent::Thinking { delta } => {
-            RuntimeFact::Progress {
-                context: context.clone(),
-                message: delta.clone(),
-                usage_delta: AttemptUsage::default(),
+        NormalizedEvent::TextDelta { delta } => RuntimeFact::Progress {
+            context: context.clone(),
+            message: delta.clone(),
+            usage_delta: AttemptUsage::default(),
+        },
+        NormalizedEvent::Message { content } => {
+            let message = content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            if message.is_empty() {
+                RuntimeFact::Diagnostic {
+                    context: context.clone(),
+                    payload: serde_json::json!({ "kind": "non_text_message" }),
+                }
+            } else {
+                RuntimeFact::Progress {
+                    context: context.clone(),
+                    message,
+                    usage_delta: AttemptUsage::default(),
+                }
             }
         }
-        NormalizedEvent::Message { content } => RuntimeFact::Progress {
+        NormalizedEvent::Thinking { delta } => RuntimeFact::Diagnostic {
             context: context.clone(),
-            message: serde_json::to_string(content).unwrap_or_else(|_| "message".into()),
-            usage_delta: AttemptUsage::default(),
+            payload: serde_json::json!({
+                "kind": "thinking",
+                "delta": delta,
+            }),
         },
         NormalizedEvent::ToolUseStart {
             call_id,
@@ -325,6 +396,22 @@ pub fn map_normalized_event(context: &RuntimeEventContext, event: &NormalizedEve
                 retry_after_ms: None,
                 provider_detail: None,
             },
+        },
+        NormalizedEvent::InteractionRequest {
+            request_id,
+            prompt,
+            options,
+            allow_multiple,
+            allow_custom_text,
+            required,
+        } => RuntimeFact::InteractionRequested {
+            context: context.clone(),
+            request_id: request_id.clone(),
+            prompt: prompt.clone(),
+            options: options.clone(),
+            allow_multiple: *allow_multiple,
+            allow_custom_text: *allow_custom_text,
+            required: *required,
         },
         NormalizedEvent::TaskStep { .. }
         | NormalizedEvent::SubAgentDispatch { .. }
@@ -432,5 +519,42 @@ mod tests {
             }
             _ => panic!("expected completed runtime fact"),
         }
+    }
+
+    #[test]
+    fn bridge_output_emits_events_then_finished() {
+        let output = AgentTurnOutput {
+            events: vec![
+                NormalizedEvent::TextDelta { delta: "hi".into() },
+                NormalizedEvent::TurnComplete {
+                    reason: TurnEndReason::Complete,
+                    usage: Some(UsageStats {
+                        input_tokens: Some(1),
+                        output_tokens: Some(2),
+                        total_cost: Some(0.1),
+                        context_remaining: None,
+                    }),
+                },
+            ],
+            exit_success: true,
+            exit_code: Some(0),
+        };
+        let items = bridge_output_to_stream_items(output);
+        assert_eq!(items.len(), 3);
+        assert!(matches!(
+            items[0],
+            RuntimeStreamItem::Event(NormalizedEvent::TextDelta { .. })
+        ));
+        assert!(matches!(
+            items[1],
+            RuntimeStreamItem::Event(NormalizedEvent::TurnComplete { .. })
+        ));
+        assert!(matches!(
+            items[2],
+            RuntimeStreamItem::Finished {
+                exit_success: true,
+                exit_code: Some(0)
+            }
+        ));
     }
 }
