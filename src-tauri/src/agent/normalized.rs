@@ -11,6 +11,13 @@ pub enum TaskStepKind {
     Failed,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InteractionOption {
+    pub option_id: String,
+    pub label: String,
+    pub description: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NormalizedEvent {
@@ -37,6 +44,14 @@ pub enum NormalizedEvent {
         request_id: String,
         approval_kind: ApprovalKind,
         payload: serde_json::Value,
+    },
+    InteractionRequest {
+        request_id: String,
+        prompt: String,
+        options: Vec<InteractionOption>,
+        allow_multiple: bool,
+        allow_custom_text: bool,
+        required: bool,
     },
     SessionResolved {
         session_id: String,
@@ -79,6 +94,7 @@ impl NormalizedEvent {
             NormalizedEvent::ToolUseResult { .. } => "tool_use_result",
             NormalizedEvent::Thinking { .. } => "thinking",
             NormalizedEvent::ApprovalRequest { .. } => "approval_request",
+            NormalizedEvent::InteractionRequest { .. } => "interaction_request",
             NormalizedEvent::SessionResolved { .. } => "session_resolved",
             NormalizedEvent::TurnComplete { .. } => "turn_complete",
             NormalizedEvent::Error { .. } => "error",
@@ -87,6 +103,122 @@ impl NormalizedEvent {
             NormalizedEvent::Raw { .. } => "raw",
         }
     }
+}
+
+pub fn interaction_requests_from_tool_call(
+    call_id: &str,
+    tool_name: &str,
+    input: &serde_json::Value,
+) -> Vec<NormalizedEvent> {
+    let normalized_name = tool_name
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or(tool_name)
+        .replace('-', "_")
+        .to_ascii_lowercase();
+    if !matches!(
+        normalized_name.as_str(),
+        "request_user_input" | "ask_user" | "ask_user_input"
+    ) {
+        return Vec::new();
+    }
+
+    let questions = input
+        .get("questions")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_else(|| vec![input.clone()]);
+
+    questions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, question)| {
+            let prompt = question
+                .get("question")
+                .or_else(|| question.get("prompt"))
+                .or_else(|| question.get("header"))
+                .and_then(serde_json::Value::as_str)?
+                .trim()
+                .to_string();
+            if prompt.is_empty() {
+                return None;
+            }
+            let question_id = question
+                .get("id")
+                .or_else(|| question.get("question_id"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| (index + 1).to_string());
+            let options = question
+                .get("options")
+                .and_then(serde_json::Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(option_index, option)| {
+                            if let Some(label) = option.as_str() {
+                                return Some(InteractionOption {
+                                    option_id: label.to_string(),
+                                    label: label.to_string(),
+                                    description: None,
+                                });
+                            }
+                            let label = option
+                                .get("label")
+                                .or_else(|| option.get("title"))
+                                .and_then(serde_json::Value::as_str)?
+                                .trim()
+                                .to_string();
+                            if label.is_empty() {
+                                return None;
+                            }
+                            let option_id = option
+                                .get("id")
+                                .or_else(|| option.get("option_id"))
+                                .or_else(|| option.get("value"))
+                                .and_then(serde_json::Value::as_str)
+                                .filter(|value| !value.trim().is_empty())
+                                .map(str::to_string)
+                                .unwrap_or_else(|| format!("option_{}", option_index + 1));
+                            Some(InteractionOption {
+                                option_id,
+                                label,
+                                description: option
+                                    .get("description")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_string),
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let allow_multiple = question
+                .get("allow_multiple")
+                .or_else(|| question.get("multiple"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let allow_custom_text = question
+                .get("allow_custom_text")
+                .or_else(|| question.get("allow_custom"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(options.is_empty());
+            let required = question
+                .get("required")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true);
+
+            Some(NormalizedEvent::InteractionRequest {
+                request_id: format!("{call_id}:{question_id}"),
+                prompt,
+                options,
+                allow_multiple,
+                allow_custom_text,
+                required,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -197,5 +329,85 @@ mod tests_v6 {
         let json = serde_json::to_string(&event).unwrap();
         let de: NormalizedEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(event, de);
+    }
+
+    #[test]
+    fn interaction_request_roundtrip() {
+        let event = NormalizedEvent::InteractionRequest {
+            request_id: "request-1".into(),
+            prompt: "Choose a delivery path".into(),
+            options: vec![
+                InteractionOption {
+                    option_id: "frontend".into(),
+                    label: "Frontend first".into(),
+                    description: None,
+                },
+                InteractionOption {
+                    option_id: "backend".into(),
+                    label: "Backend first".into(),
+                    description: Some("Build the API contract first".into()),
+                },
+            ],
+            allow_multiple: false,
+            allow_custom_text: true,
+            required: true,
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"kind\":\"interaction_request\""));
+        let decoded: NormalizedEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, event);
+        assert_eq!(event.event_type(), "interaction_request");
+    }
+
+    #[test]
+    fn recognizes_structured_request_user_input_tool_calls() {
+        let events = interaction_requests_from_tool_call(
+            "call-1",
+            "request_user_input",
+            &serde_json::json!({
+                "questions": [{
+                    "id": "architecture",
+                    "question": "请选择架构",
+                    "options": [
+                        { "label": "A", "description": "单体" },
+                        { "label": "B", "description": "前后端分离" }
+                    ]
+                }]
+            }),
+        );
+
+        assert_eq!(
+            events,
+            vec![NormalizedEvent::InteractionRequest {
+                request_id: "call-1:architecture".into(),
+                prompt: "请选择架构".into(),
+                options: vec![
+                    InteractionOption {
+                        option_id: "option_1".into(),
+                        label: "A".into(),
+                        description: Some("单体".into()),
+                    },
+                    InteractionOption {
+                        option_id: "option_2".into(),
+                        label: "B".into(),
+                        description: Some("前后端分离".into()),
+                    },
+                ],
+                allow_multiple: false,
+                allow_custom_text: false,
+                required: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn ignores_ordinary_tool_calls() {
+        assert!(interaction_requests_from_tool_call(
+            "call-1",
+            "read_file",
+            &serde_json::json!({ "path": "README.md" }),
+        )
+        .is_empty());
     }
 }

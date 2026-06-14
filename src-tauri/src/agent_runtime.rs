@@ -413,6 +413,7 @@ fn run_pi_rpc_turn_blocking(
             .await?;
 
             let mut completed = false;
+            let mut awaiting_interaction = false;
             while let Some(line) =
                 read_process_line(&mut lines, cancellation.as_ref(), "PiRPC").await?
             {
@@ -443,8 +444,11 @@ fn run_pi_rpc_turn_blocking(
                 completed = normalized
                     .iter()
                     .any(|event| matches!(event, NormalizedEvent::TurnComplete { .. }));
+                awaiting_interaction = normalized
+                    .iter()
+                    .any(|event| matches!(event, NormalizedEvent::InteractionRequest { .. }));
                 events.extend(normalized);
-                if completed {
+                if completed || awaiting_interaction {
                     break;
                 }
             }
@@ -461,7 +465,7 @@ fn run_pi_rpc_turn_blocking(
                 };
             Ok(AgentTurnOutput {
                 events,
-                exit_success: completed,
+                exit_success: completed || awaiting_interaction,
                 exit_code,
             })
         };
@@ -556,6 +560,7 @@ fn run_cli_turn_blocking(
             }
 
             let mut events = Vec::new();
+            let mut awaiting_interaction = false;
             if let Some(stdout) = child.stdout.take() {
                 let reader = tokio::io::BufReader::new(stdout);
                 let mut lines = reader.lines();
@@ -565,10 +570,25 @@ fn run_cli_turn_blocking(
                     if line.trim().is_empty() {
                         continue;
                     }
-                    events.extend(parse_agent_line(agent, &request.agent_id, &line));
+                    let normalized = parse_agent_line(agent, &request.agent_id, &line);
+                    awaiting_interaction = normalized
+                        .iter()
+                        .any(|event| matches!(event, NormalizedEvent::InteractionRequest { .. }));
+                    events.extend(normalized);
+                    if awaiting_interaction {
+                        break;
+                    }
                 }
             }
 
+            if awaiting_interaction {
+                let _ = child.kill().await;
+                return Ok::<_, String>(AgentTurnOutput {
+                    events,
+                    exit_success: true,
+                    exit_code: None,
+                });
+            }
             let status = child.wait().await.map_err(|e| format!("Wait: {e}"))?;
             Ok::<_, String>(AgentTurnOutput {
                 events,
@@ -734,17 +754,23 @@ fn run_acp_turn_blocking(
                 cancellation.as_ref(),
             )
             .await;
-            let success = prompt_result.is_ok();
+            let awaiting_interaction = matches!(
+                prompt_result.as_ref(),
+                Err(error) if error == TASK_INTERACTION_PENDING
+            );
+            let success = prompt_result.is_ok() || awaiting_interaction;
             if let Err(error) = prompt_result {
-                events.push(NormalizedEvent::Error {
-                    message: error,
-                    recoverable: false,
-                });
-                events.push(NormalizedEvent::TurnComplete {
-                    reason: TurnEndReason::Error,
-                    usage,
-                });
-            } else {
+                if !awaiting_interaction {
+                    events.push(NormalizedEvent::Error {
+                        message: error,
+                        recoverable: false,
+                    });
+                    events.push(NormalizedEvent::TurnComplete {
+                        reason: TurnEndReason::Error,
+                        usage,
+                    });
+                }
+            } else if !awaiting_interaction {
                 events.push(NormalizedEvent::TurnComplete {
                     reason: TurnEndReason::Complete,
                     usage,
@@ -779,6 +805,8 @@ fn run_acp_turn_blocking(
     })
 }
 
+const TASK_INTERACTION_PENDING: &str = "task interaction pending";
+
 async fn acp_wait_for_response(
     stdin: &mut tokio::process::ChildStdin,
     lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
@@ -793,7 +821,15 @@ async fn acp_wait_for_response(
             .ok_or_else(|| "ACP stdout closed".to_string())?;
 
         match crate::acp_runtime::handle_acp_response_line(&line, target_id, usage)? {
-            crate::acp_runtime::AcpResponse::Update(new_events) => events.extend(new_events),
+            crate::acp_runtime::AcpResponse::Update(new_events) => {
+                let awaiting_interaction = new_events
+                    .iter()
+                    .any(|event| matches!(event, NormalizedEvent::InteractionRequest { .. }));
+                events.extend(new_events);
+                if awaiting_interaction {
+                    return Err(TASK_INTERACTION_PENDING.to_string());
+                }
+            }
             crate::acp_runtime::AcpResponse::PermissionRequest { id, params } => {
                 let request_id = id
                     .as_str()

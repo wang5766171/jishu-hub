@@ -344,9 +344,11 @@ fn decode_by_fs_matching(current_dir: &Path, remaining: &str) -> Option<PathBuf>
 
 pub fn encode_project_path(path: &str) -> String {
     // Claude Code encodes: ':\' -> '--' (drive separator), '\'/' -> '-', spaces -> '-'
+    // Normalize forward slashes to backslashes first so that 'E:/Claude/test' and
+    // 'E:\Claude\test' produce the same encoded name.
+    let path = path.replace('/', "\\");
     path.replace(":\\", "--")
         .replace('\\', "-")
-        .replace('/', "-")
         .replace(' ', "-")
 }
 
@@ -445,6 +447,17 @@ mod tests {
     fn test_encode_project_path() {
         let encoded = encode_project_path("D:\\MyCodes\\claude-hub");
         assert_eq!(encoded, "D--MyCodes-claude-hub");
+    }
+
+    #[test]
+    fn test_encode_path_forward_slash_same_as_backslash() {
+        // Forward-slash paths (e.g. from Open Code's DB) must encode identically
+        // to backslash paths so that merge_projects can deduplicate by encoded_name.
+        assert_eq!(encode_project_path("E:/Claude/test"), "E--Claude-test");
+        assert_eq!(
+            encode_project_path("E:/Claude/test"),
+            encode_project_path("E:\\Claude\\test")
+        );
     }
 
     #[test]

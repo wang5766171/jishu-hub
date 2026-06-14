@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod conversation;
 pub mod daemon;
 pub mod domain;
 pub mod events;
