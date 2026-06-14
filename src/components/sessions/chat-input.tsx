@@ -323,8 +323,14 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   };
 
   const handleSend = async () => {
-    if (!projectPath || disabled || sending || isStreaming) return;
+    if (!projectPath || disabled || sending) return;
     if (!message.trim() && files.length === 0) return;
+
+    // If the agent is currently streaming, stop it first before sending
+    // the new message (user typed during output → stop + send).
+    if (isStreaming) {
+      handleAbort();
+    }
 
     setSending(true);
     try {
@@ -599,7 +605,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
           </div>
 
           <div className="flex items-center gap-1">
-            {(sending || isStreaming) ? (
+            {(sending || isStreaming) && !(message.trim() || files.length > 0) ? (
               <Button variant="destructive" size="icon-sm" className="h-8 w-8 rounded-full" onClick={handleAbort}>
                 <Square className="h-4 w-4" />
               </Button>
@@ -614,7 +620,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                 }`}
                 style={(message.trim() || files.length > 0) ? { backgroundColor: 'var(--icon-send-bg)', color: 'var(--icon-send-fg)' } : undefined}
                 onClick={handleSend}
-                disabled={disabled || isStreaming || (!message.trim() && files.length === 0)}
+                disabled={disabled || sending || (!message.trim() && files.length === 0)}
               >
                 <Send className="h-4 w-4 ml-[2px]" />
               </Button>
