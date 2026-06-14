@@ -87,53 +87,35 @@ impl AcpControl {
     }
 }
 
-/// Where the ACP connection loop sends its normalized events. Decouples the loop
-/// from `tauri::AppHandle` so the orchestrator (which has no `AppHandle`, design
-/// §3.1 / D4) can drive an ACP session through an in-process channel, while the
-/// GUI/chat path keeps emitting Tauri `agent-event` chunks. Same protocol — only
-/// the transport of the normalized events differs (no second adapter protocol).
-#[derive(Clone)]
-pub enum AcpEventSink {
-    /// GUI/chat path: emit normalized events to the Tauri webview.
-    Tauri {
-        app: tauri::AppHandle,
-        agent_id: String,
-    },
-    /// Orchestrator/test path: send normalized events into an mpsc channel.
-    Channel {
-        tx: tokio::sync::mpsc::Sender<NormalizedEvent>,
-    },
-}
+/// Where the ACP connection loop sends its normalized events. A callback (not an
+/// enum) decouples the loop from `tauri::AppHandle`: the GUI/chat path supplies a
+/// closure that emits Tauri `agent-event` chunks; the orchestrator (no
+/// `AppHandle`, design §3.1/D4) supplies a closure that pushes into a channel.
+/// A callback is used instead of an enum-with-a-channel-variant because
+/// constructing that enum variant in the test binary triggered a Windows
+/// toolchain load-time entry-point failure (STATUS_ENTRYPOINT_NOT_FOUND); a
+/// plain closure capturing a channel does not.
+pub type AcpEventEmit = Arc<dyn Fn(&[NormalizedEvent], &str) + Send + Sync>;
 
-impl AcpEventSink {
-    pub async fn emit(&self, events: &[NormalizedEvent], session_id: &str) {
-        match self {
-            AcpEventSink::Tauri { app, agent_id } => {
-                let chunks: Vec<AgentStreamChunk> = events
-                    .iter()
-                    .filter_map(|event| {
-                        let data = serde_json::to_value(event).ok()?;
-                        Some(AgentStreamChunk {
-                            agent_id: agent_id.clone(),
-                            session_id: session_id.to_string(),
-                            event_type: event.event_type().to_string(),
-                            data,
-                        })
-                    })
-                    .collect();
-                if !chunks.is_empty() {
-                    let _ = app.emit("agent-event", &chunks);
-                }
-            }
-            AcpEventSink::Channel { tx } => {
-                for event in events {
-                    if tx.send(event.clone()).await.is_err() {
-                        break;
-                    }
-                }
-            }
+/// Build the GUI/chat event emitter: emits `agent-event` chunks to the webview.
+pub fn tauri_event_emitter(app: tauri::AppHandle, agent_id: String) -> AcpEventEmit {
+    Arc::new(move |events: &[NormalizedEvent], session_id: &str| {
+        let chunks: Vec<AgentStreamChunk> = events
+            .iter()
+            .filter_map(|event| {
+                let data = serde_json::to_value(event).ok()?;
+                Some(AgentStreamChunk {
+                    agent_id: agent_id.clone(),
+                    session_id: session_id.to_string(),
+                    event_type: event.event_type().to_string(),
+                    data,
+                })
+            })
+            .collect();
+        if !chunks.is_empty() {
+            let _ = app.emit("agent-event", &chunks);
         }
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -395,10 +377,7 @@ pub fn spawn_acp_session(
     // run against a synthetic line stream / channel sink (tests, orchestrator).
     let (stdout_tx, stdout_rx) = tokio::sync::mpsc::channel(64);
     tokio::spawn(stdout_reader(stdout, stdout_tx));
-    let sink = AcpEventSink::Tauri {
-        app: app.clone(),
-        agent_id: agent_id.clone(),
-    };
+    let emit = tauri_event_emitter(app.clone(), agent_id.clone());
 
     let control = AcpControl {
         tx: cmd_tx,
@@ -408,7 +387,7 @@ pub fn spawn_acp_session(
 
     tauri::async_runtime::spawn(async move {
         let result = acp_connection_loop(
-            sink,
+            emit,
             pending_session_id.clone(),
             stdin_arc,
             acp_session_id,
@@ -465,7 +444,7 @@ pub fn spawn_acp_session(
 // ---------------------------------------------------------------------------
 
 async fn acp_connection_loop(
-    sink: AcpEventSink,
+    emit: AcpEventEmit,
     pending_session_id: String,
     stdin_arc: Arc<TokioMutex<ChildStdin>>,
     acp_session_id: Arc<std::sync::Mutex<Option<String>>>,
@@ -543,13 +522,12 @@ async fn acp_connection_loop(
     }
 
     // Emit SessionResolved
-    sink.emit(
+    emit(
         &[NormalizedEvent::SessionResolved {
             session_id: session_id.clone(),
         }],
         &pending_session_id,
-    )
-    .await;
+    );
     on_session_resolved(&session_id);
 
     // 3. Send first message
@@ -702,7 +680,7 @@ async fn acp_connection_loop(
                                 );
                                 if !has_pending {
                                     handle_prompt_response(&msg, &mut usage, &mut buf);
-                                    flush_buf(&sink, &session_id, &mut buf).await;
+                                    flush_buf(&emit, &session_id, &mut buf);
                                 }
 
                                 // State transition
@@ -756,7 +734,7 @@ async fn acp_connection_loop(
                                 approval_kind: crate::agent::normalized::ApprovalKind::Other,
                                 payload: params,
                             });
-                            flush_buf(&sink, &session_id, &mut buf).await;
+                            flush_buf(&emit, &session_id, &mut buf);
                             last_flush = std::time::Instant::now();
                         } else {
                             log::debug!("ACP stdout ignored msg (no matching id, not session/update): method={:?}", msg.get("method"));
@@ -766,7 +744,7 @@ async fn acp_connection_loop(
                         if buf.len() >= 32
                             || last_flush.elapsed() >= Duration::from_millis(8)
                         {
-                            flush_buf(&sink, &session_id, &mut buf).await;
+                            flush_buf(&emit, &session_id, &mut buf);
                             last_flush = std::time::Instant::now();
                         }
                         false
@@ -798,7 +776,7 @@ async fn acp_connection_loop(
     }
 
     if !buf.is_empty() {
-        flush_buf(&sink, &session_id, &mut buf).await;
+        flush_buf(&emit, &session_id, &mut buf);
     }
     Ok(())
 }
@@ -1053,11 +1031,11 @@ fn emit_events(
     }
 }
 
-async fn flush_buf(sink: &AcpEventSink, session_id: &str, buf: &mut Vec<NormalizedEvent>) {
+fn flush_buf(emit: &AcpEventEmit, session_id: &str, buf: &mut Vec<NormalizedEvent>) {
     if buf.is_empty() {
         return;
     }
-    sink.emit(buf, session_id).await;
+    emit(buf, session_id);
     buf.clear();
 }
 
@@ -1254,12 +1232,32 @@ mod tests {
     }
 
     // ---- M1.4 Phase 2: characterize the event-production units that Phase 1
-    // rerouted through the sink.
-    // NOTE: two async AcpEventSink::Channel tests were removed — constructing the
-    // Channel variant in the test binary triggered a load-time entry-point
-    // failure (STATUS_ENTRYPOINT_NOT_FOUND) on this Windows toolchain. The sync
-    // handle_prompt_response tests are kept; the async Channel path is exercised
-    // by the real chat ACP path (verified 315 green at Phase 1).
+    // rerouted through the callback emitter.
+    // NOTE: the emitter is an `Arc<dyn Fn>` (not an enum-with-a-channel-variant)
+    // because constructing that enum variant in the test binary triggered a
+    // Windows load-time entry-point failure; a plain closure capturing a channel
+    // does not.
+
+    #[tokio::test]
+    async fn callback_emitter_pushes_events_to_channel() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NormalizedEvent>();
+        let emit: AcpEventEmit = Arc::new(move |events: &[NormalizedEvent], _session_id: &str| {
+            for event in events {
+                let _ = tx.send(event.clone());
+            }
+        });
+        emit(&[NormalizedEvent::TextDelta { delta: "a".into() }], "ses-1");
+        drop(emit);
+        let mut collected = Vec::new();
+        while let Some(event) = rx.recv().await {
+            collected.push(event);
+        }
+        assert_eq!(collected.len(), 1);
+        assert!(matches!(
+            &collected[0],
+            NormalizedEvent::TextDelta { delta } if delta == "a"
+        ));
+    }
 
     #[test]
     fn handle_prompt_response_produces_turn_complete_on_success() {
