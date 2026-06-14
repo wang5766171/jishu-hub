@@ -1,6 +1,7 @@
 import { Check, LoaderCircle, LockKeyhole } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { PlanningProgress } from "./use-task-graph";
+import { MarkdownText } from "@/components/sessions/conversation-content";
 
 interface PlanningProgressOverlayProps {
   progress: PlanningProgress;
@@ -109,9 +110,9 @@ export function PlanningProgressOverlay({
                 <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                   {t("tasks.workbench.planningProgress.agentOutput")}
                 </p>
-                <p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground">
-                  {text}
-                </p>
+                <div className="text-sm leading-6 text-foreground">
+                  <MarkdownText text={text} />
+                </div>
               </div>
             )}
           </div>
