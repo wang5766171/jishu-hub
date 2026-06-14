@@ -129,6 +129,7 @@
     "selectSession": "Select a session to view messages",
     "msgCount": "{{count}} msg",
     "user": "User",
+    "steered": "Guided",
     "assistant": "Assistant",
     "rename": "Rename",
     "renameTitle": "Rename Session",

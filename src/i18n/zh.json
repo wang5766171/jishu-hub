@@ -129,6 +129,7 @@
     "selectSession": "选择一个会话以查看消息",
     "msgCount": "{{count}} 条消息",
     "user": "用户",
+    "steered": "已引导",
     "assistant": "助手",
     "rename": "重命名",
     "renameTitle": "重命名会话",

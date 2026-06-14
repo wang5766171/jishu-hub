@@ -159,6 +159,14 @@ export function ChatPage({
     && projectSettingsSurface.scopes.includes("local")
     && projectSettingsSurface.access_modes.length > 0;
 
+  // Mid-turn steer (inject guidance without stopping output) is only possible
+  // for agents running a persistent ACP / Pi-RPC connection, which populate
+  // ChatProcess.acp. CLI/embedded agents have no acp handle, so steer_chat
+  // would fail with "No active ACP session found" — for them guide must fall
+  // back to stop+send (handled by chat-input.tsx's default path).
+  const supportsSteer =
+    active?.transport === "pi_rpc" || active?.transport === "acp_preferred";
+
   // selectedSession: null or real backend UUID — never fake IDs
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
   const [sessionMessages, setSessionMessages] = useState<Message[]>([]);
@@ -238,6 +246,19 @@ export function ChatPage({
    * `<StreamingMessage>` from the pending state.
    */
   const sessionMessagesCacheRef = useRef<Map<string, Message[]>>(new Map());
+  // Steered user messages queued while the agent is mid-turn. They are NOT
+  // inserted into sessionMessages immediately — doing so while the first
+  // turn's assistant reply is still streaming (not yet committed to
+  // sessionMessages) would place them ABOVE that reply. Instead they are
+  // surfaced when the steer continuation's turn completes, slotted between
+  // the first reply and the steer response (matching Pi's JSONL order).
+  const pendingSteerMessagesRef = useRef<Map<string, string[]>>(new Map());
+  // Live display of steered user messages for the current session. Rendered
+  // AFTER the streaming bubble (a steer is inserted mid-output, so it must
+  // appear below the in-progress assistant reply). Each entry is removed when
+  // its turn completes and the steer is committed into sessionMessages at its
+  // correct position (between the prior reply and the steer's response).
+  const [pendingSteerDisplay, setPendingSteerDisplay] = useState<Message[]>([]);
   // Subscribe to streaming state for the currently-selected session. Drives
   // whether the streaming bubble is rendered and whether the input is in Stop mode.
   const currentStream = useSessionStream(selectedSession);
@@ -468,6 +489,10 @@ export function ChatPage({
     const isFirstVisit = !visitedSessions.current.has(sessionId);
     setSelectedSession(sessionId);
     selectedSessionRef.current = sessionId;
+    // Live steer placeholders belong to the previous session; drop them so
+    // they don't render under a different conversation. Any still-pending
+    // steer is committed into its own session's cache at turn_complete.
+    setPendingSteerDisplay([]);
 
     // While a session is streaming we keep its message snapshot in
     // `sessionMessagesCacheRef` and *do not* reload from JSONL — otherwise the
@@ -535,6 +560,7 @@ export function ChatPage({
     setSelectedSession("new");
     selectedSessionRef.current = "new";
     setSessionMessages([]);
+    setPendingSteerDisplay([]);
 
     requestAnimationFrame(() => {
       chatInputRef.current?.focus();
@@ -546,6 +572,7 @@ export function ChatPage({
     setTaskPanelOpen(true);
     setSelectedSession(null);
     selectedSessionRef.current = null;
+    setPendingSteerDisplay([]);
   }, []);
 
   const handleResumeSession = async (sessionId: string) => {
@@ -692,9 +719,30 @@ export function ChatPage({
         }
 
         // Only push into the store if it knows about this session — otherwise
-        // we'd accidentally create state for a session we never started.
+        // we'd accidentally create state for a session we never started. The
+        // one exception is a steer/follow_up continuation: Pi finishes the
+        // current turn (which drops the streaming state at turn_complete
+        // below), then starts a NEW turn for the queued steer/follow_up. That
+        // new turn's content chunks arrive AFTER the drop, so without this
+        // re-activation they'd be silently discarded and the agent's response
+        // to the steer would be invisible until a manual refresh. Re-start an
+        // empty state (pendingUserMessage=null — a continuation, not a new
+        // prompt) so the continuation's text/tool events accumulate and its
+        // turn_complete builds a second assistant message appended after the
+        // first. Non-content chunks (session_resolved/approval/interaction)
+        // still skip — they must not create streaming state on their own.
         if (!streamStore.hasState(cid)) {
-          continue;
+          if (
+            chunk.data.kind === "text_delta"
+            || chunk.data.kind === "thinking"
+            || chunk.data.kind === "tool_use_start"
+            || chunk.data.kind === "tool_use_result"
+            || chunk.data.kind === "message"
+          ) {
+            streamStore.start(cid, null);
+          } else {
+            continue;
+          }
         }
 
         // Detect resolved session id and register it as an alias before pushing
@@ -712,6 +760,18 @@ export function ChatPage({
           // both keys pointing at the same array for safety).
           const cached = sessionMessagesCacheRef.current.get(cid);
           if (cached) sessionMessagesCacheRef.current.set(realId, cached);
+          // Migrate queued steer messages too. A user can guide (steer) while
+          // a tool-bearing turn is running — often BEFORE the session id
+          // resolves — so the steer is queued under the pending id. Without
+          // this migration, turn_complete (which looks up by the resolved id
+          // once known) would miss the queue, leaving the live "已引导"
+          // placeholder stuck even though Pi already processed the steer
+          // (visible only after a JSONL refresh).
+          const queuedSteers = pendingSteerMessagesRef.current.get(cid);
+          if (queuedSteers) {
+            pendingSteerMessagesRef.current.set(realId, queuedSteers);
+            pendingSteerMessagesRef.current.delete(cid);
+          }
           setPendingInteractions((current) =>
             current.map((item) =>
               item.agentId === chunk.agent_id && item.sessionId === cid
@@ -773,6 +833,43 @@ export function ChatPage({
             newMessages.push({ role: "assistant", content: assistantContent, timestamp: Date.now() });
           }
 
+          // Commit one queued steer per turn. Pi's default steeringMode is
+          // "one-at-a-time" (one steer delivered per completed assistant
+          // turn), so each turn_complete appends exactly one steer AFTER this
+          // turn's assistant reply — yielding [reply, steer, steerResponse].
+          // The steer was already shown live (pendingSteerDisplay, rendered
+          // after the streaming bubble); committing here moves it into
+          // sessionMessages at its correct position and drops the live
+          // placeholder. Runs for every turn (first turn + continuations).
+          const steerQueueKey = pendingSteerMessagesRef.current.has(finalKey)
+            ? finalKey
+            : cid;
+          const queuedSteers = pendingSteerMessagesRef.current.get(steerQueueKey);
+          let steerCommitted = false;
+          if (queuedSteers && queuedSteers.length > 0) {
+            const [nextSteer, ...rest] = queuedSteers;
+            newMessages.push({
+              role: "user",
+              content: [{ type: "text", text: nextSteer }],
+              timestamp: Date.now(),
+            });
+            steerCommitted = true;
+            if (rest.length > 0) {
+              pendingSteerMessagesRef.current.set(steerQueueKey, rest);
+            } else {
+              pendingSteerMessagesRef.current.delete(steerQueueKey);
+            }
+            // Drop the oldest live placeholder (FIFO matches the queue shift) —
+            // but ONLY when this session is the one currently viewed. Live
+            // placeholders are session-specific (cleared on switch), so a
+            // background session committing its queued steer must not touch the
+            // viewed session's display array.
+            const viewing = selectedSessionRef.current;
+            if (viewing === cid || viewing === finalKey) {
+              setPendingSteerDisplay((prev) => prev.slice(1));
+            }
+          }
+
           // Resolve the base messages from the cache (preferring real id).
           const baseMessages =
             sessionMessagesCacheRef.current.get(finalKey)
@@ -802,6 +899,30 @@ export function ChatPage({
           // like a vertical jump at the end of a turn.
           streamStore.drop(cid);
           streamStore.flushNow();
+
+          if (steerCommitted && (state?.tools.length ?? 0) === 0) {
+            // A steer was committed on a NO-TOOL turn, so a separate response
+            // turn is guaranteed (Pi processes the steer as a new inner-loop
+            // iteration). Pre-create an empty streaming state so the
+            // "thinking" indicator shows immediately and PERSISTS until the
+            // agent actually responds — otherwise there's a blank gap until
+            // the response's first chunk re-activates the state via the
+            // content-chunk guard above. Skipped for tool-bearing turns:
+            // there the steer's reply is folded into the same turn (already
+            // committed above), so there is no following response turn and
+            // pre-creating would leave a stale "thinking" bubble. Use the
+            // resolved key + re-alias cid so response chunks route correctly
+            // after the drop cleared the alias map.
+            //
+            // No timeout: the response turn is guaranteed, so the state is
+            // always resolved — either content arrives (fills it; the
+            // indicator is naturally replaced by the reply) or the response
+            // turn's turn_complete fires (drops the state, covering empty or
+            // error responses). An arbitrary cutoff would kill the indicator
+            // before a slow model's first token, exactly the bug we're fixing.
+            streamStore.start(finalKey, null);
+            if (cid !== finalKey) streamStore.alias(finalKey, cid);
+          }
 
           if (isNewSessionStream) {
             newSessionStreamIdsRef.current.delete(cid);
@@ -1369,6 +1490,43 @@ export function ChatPage({
                   scrollContainerRef={messageAreaRef}
                 />
               )}
+              {/* Live placeholders for guided (steer) messages: shown the
+                  instant the user clicks "guide", positioned AFTER the
+                  streaming bubble so they sit at the guide position (below
+                  the in-progress reply). Rendered through the SAME container
+                  + user-bubble layout as StreamingMessage/MessageView so the
+                  bubble aligns exactly with a normal user question; the amber
+                  "已引导" chip in the label row marks it as guided. Each is
+                  committed into sessionMessages at its slot when the turn
+                  completes (turn_complete handler), which drops it here. */}
+              {pendingSteerDisplay.length > 0
+                && selectedSession
+                && selectedSession !== "new" && (
+                <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-1">
+                  {pendingSteerDisplay.map((msg, idx) => {
+                    const text = msg.content.find((c) => c.type === "text")?.text ?? "";
+                    return (
+                      <div key={`pending-steer-${idx}`} className="w-full flex justify-end">
+                        <div className="max-w-[88%] min-w-0 flex flex-col items-end">
+                          <div className="flex items-center gap-2 mb-0.5 text-[11px]">
+                            <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-600 dark:text-amber-500">
+                              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                              {t("sessions.steered")}
+                            </span>
+                          </div>
+                          <div
+                            className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full"
+                            style={{ fontSize: "var(--font-size-prose)" }}
+                          >
+                            {text}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </>
         )}
@@ -1400,13 +1558,34 @@ export function ChatPage({
               onAccessModeChange={handleAccessModeChange}
               interactionRequest={activeInteraction?.request}
               onInteractionSubmitted={handleInteractionSubmitted}
-              onGuideStaged={async (content: string) => {
-                if (!selectedSession || selectedSession === "new") return;
-                await invokeCommand("steer_chat", {
-                  sessionId: selectedSession,
-                  message: content,
-                });
-              }}
+              onGuideStaged={
+                supportsSteer
+                  ? async (content: string) => {
+                      if (!selectedSession || selectedSession === "new") return;
+                      await invokeCommand("steer_chat", {
+                        sessionId: selectedSession,
+                        message: content,
+                      });
+                      // Queue for commit at turn_complete AND show live now.
+                      // Rendered after the streaming bubble (see
+                      // pendingSteerDisplay below) so it sits below the
+                      // in-progress reply; committed into sessionMessages
+                      // between that reply and the steer's response when the
+                      // turn completes.
+                      const key = selectedSession;
+                      const existing = pendingSteerMessagesRef.current.get(key) ?? [];
+                      pendingSteerMessagesRef.current.set(key, [...existing, content]);
+                      setPendingSteerDisplay((prev) => [
+                        ...prev,
+                        {
+                          role: "user",
+                          content: [{ type: "text", text: content }],
+                          timestamp: Date.now(),
+                        },
+                      ]);
+                    }
+                  : undefined
+              }
             />
           </div>
         )}
