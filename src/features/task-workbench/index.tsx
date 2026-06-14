@@ -466,7 +466,11 @@ export function TaskWorkbench({
       <div className="flex min-h-0 flex-1">
         <div className="relative h-full min-w-0 flex-1">
           {planning && planningProgress ? (
-            <PlanningProgressOverlay progress={planningProgress} text={planningText} />
+            <PlanningProgressOverlay
+              progress={planningProgress}
+              text={planningText}
+              onCancel={() => dismissProposal()}
+            />
           ) : loading && !graph ? (
             <div className="flex h-full items-center justify-center text-muted-foreground">
               {t("common.loading")}

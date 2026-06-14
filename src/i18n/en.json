@@ -495,8 +495,11 @@
         "live": "Live planning progress",
         "description": "The planner is using the goal, selected methods, project capabilities, and current graph to build a candidate revision.",
         "agentOutput": "Agent live output",
-        "steer": "Steer",
-        "steerPlaceholder": "Type guidance — the agent will consider it while planning…",
+        "steer": "Guide",
+        "steerPlaceholder": "Type to stage, click guide to send…",
+        "staging": "Staged",
+        "stop": "Stop",
+        "sendOrStop": "Send / Stop",
         "locked": "The task graph is locked while planning",
         "attempt": "Attempt {{current}} / {{total}}",
         "stages": {

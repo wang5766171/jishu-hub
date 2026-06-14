@@ -494,7 +494,10 @@
         "description": "Planner 正在根据目标、规划方法、项目能力和当前任务图生成候选 Revision。",
         "agentOutput": "Agent 实时输出",
         "steer": "引导",
-        "steerPlaceholder": "输入引导内容，Agent 会在当前规划中综合考虑…",
+        "steerPlaceholder": "输入内容暂存，点击引导发送…",
+        "staging": "暂存",
+        "stop": "停止",
+        "sendOrStop": "发送 / 停止",
         "locked": "生成期间任务图已锁定",
         "attempt": "尝试 {{current}} / {{total}}",
         "stages": {

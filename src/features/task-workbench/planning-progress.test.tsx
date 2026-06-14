@@ -22,9 +22,9 @@ describe("planning progress overlay", () => {
 
     // Stage label is visible.
     expect(screen.getByText("校验任务图")).toBeDefined();
-    // Steer input exists.
+    // Staging input exists.
     expect(
-      screen.getByPlaceholderText("输入引导内容，Agent 会在当前规划中综合考虑…"),
+      screen.getByPlaceholderText("输入内容暂存，点击引导发送…"),
     ).toBeDefined();
   });
 
@@ -42,5 +42,20 @@ describe("planning progress overlay", () => {
     );
 
     expect(screen.getByText("正在分析项目结构...")).toBeDefined();
+  });
+
+  it("shows stop button when input is empty", () => {
+    render(
+      <PlanningProgressOverlay
+        progress={{
+          graph_id: "graph_1",
+          stage: "generating",
+          attempt: 1,
+          max_attempts: 2,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("停止")).toBeDefined();
   });
 });
