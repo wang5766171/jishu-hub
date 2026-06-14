@@ -44,6 +44,24 @@ export interface SessionStreamState {
   isStreaming: boolean;
   /** Step events from the orchestrator (v0.6.0). */
   steps: StepInfo[];
+  /**
+   * Content-array indices at which a steer (user message) was injected
+   * mid-turn. Each entry is `content.length` captured when the steer marker
+   * arrived, i.e. the start index of the next assistant segment. Populated
+   * only for tool-bearing turns where Pi folds the steer's reply into the
+   * same turn; turn_complete splits `content` at these indices and
+   * interleaves the queued steers between the segments to match the JSONL
+   * order. Reset on start/drop.
+   */
+  steerSplits: number[];
+  /**
+   * Text of each steer (user message) injected mid-turn, parallel to
+   * `steerSplits`. Populated from the steer marker's content so the live
+   * streaming view can render the guide inline between assistant segments
+   * (matching the final committed order) rather than pinned at the bottom.
+   * Reset on start/drop.
+   */
+  steerTexts: string[];
 }
 
 function emptyState(abortKey: string, pendingUserMessage: string | null): SessionStreamState {
@@ -59,6 +77,8 @@ function emptyState(abortKey: string, pendingUserMessage: string | null): Sessio
     abortKey,
     isStreaming: true,
     steps: [],
+    steerSplits: [],
+    steerTexts: [],
   };
 }
 
@@ -96,7 +116,7 @@ class StreamStore {
     const key = this.canonical(sid);
     const prev = this.sessions.get(key) ?? emptyState(key, null);
 
-    let { content, text, thinking, error, tools, resolvedId, steps } = prev;
+    let { content, text, thinking, error, tools, resolvedId, steps, steerSplits, steerTexts } = prev;
     const { pendingUserMessage, abortKey, isStreaming } = prev;
     const chunks = [...prev.chunks, chunk];
 
@@ -151,6 +171,18 @@ class StreamStore {
       }
     } else if (data.kind === "task_step") {
       steps = [...steps, { runId: data.run_id, stepId: data.step_id, kind: data.step_kind, title: data.title }];
+    } else if (data.kind === "steer_injected") {
+      // Record the index at which Pi injected the steer (the start of the
+      // next assistant segment), plus the steer's text so the live view can
+      // render the guide inline at that split. Only record when assistant
+      // content already exists: a no-tool follow-up steer arrives right after
+      // the streaming state is reset to empty, and a spurious split there
+      // would mis-split the follow-up turn's reply (and render the follow-up
+      // guide at the bottom instead of as a committed user message).
+      if (content.length > 0) {
+        steerSplits = [...steerSplits, content.length];
+        steerTexts = [...steerTexts, data.content];
+      }
     } else if (data.kind === "sub_agent_event") {
       // Recursively surface inner event content (text/thinking) from sub-agents
       const inner = data.sub_event;
@@ -180,6 +212,8 @@ class StreamStore {
       abortKey,
       isStreaming,
       steps,
+      steerSplits,
+      steerTexts,
     });
     this.scheduleFlush();
   }

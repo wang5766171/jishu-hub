@@ -230,6 +230,7 @@ export type NormalizedEvent =
       required: boolean;
     }
   | { kind: "session_resolved"; session_id: string }
+  | { kind: "steer_injected"; content: string }
   | { kind: "turn_complete"; reason: string; usage: unknown | null }
   | { kind: "error"; message: string; recoverable: boolean }
   | { kind: "task_step"; run_id: string; step_id: string; step_kind: string; title: string; detail?: unknown }

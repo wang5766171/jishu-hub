@@ -1,4 +1,4 @@
-import { useEffect, useCallback, memo, useRef } from "react";
+import { Fragment, useEffect, useCallback, memo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -34,6 +34,8 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   const errorText = state?.error ?? "";
   const toolUses = state?.tools ?? [];
   const content = state?.content ?? [];
+  const steerSplits = state?.steerSplits ?? [];
+  const steerTexts = state?.steerTexts ?? [];
   const steps = state?.steps ?? [];
   const resolvedUserMessage = userMessage === undefined ? state?.pendingUserMessage ?? undefined : userMessage ?? undefined;
   const userScrolledRef = useRef(false);
@@ -69,9 +71,6 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
     scrollToBottom();
   }, [displayText, thinkingText, errorText, toolUses.length, content.length, scrollToBottom, isComplete]);
 
-  const hasBubbleContent = content.length > 0 || displayText.length > 0 || thinkingText.length > 0 || errorText.length > 0;
-  const hasContent = hasBubbleContent || toolUses.length > 0;
-
   // Map streaming tool calls to the same card model used by persisted messages.
   const streamToolCalls: ToolCall[] = toolUses.map((tool, i) => ({
     id: tool.id || `stream-${i}-${tool.name}`,
@@ -83,7 +82,27 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
       typeof tool.output === "string" ? tool.output : JSON.stringify(tool.output, null, 2)
     ),
   }));
-  const renderItems = buildStreamRenderItems(content, streamToolCalls);
+  // Split the content array into assistant segments at the indices where Pi
+  // injected a steer (user message) mid-turn. With no splits there is a single
+  // segment — identical to the previous single-bubble rendering. steerTexts[i]
+  // is the guide Pi injected right before segment i+1, so it renders inline
+  // between segment i and segment i+1, matching the final committed order
+  // instead of staying pinned at the bottom until the turn completes.
+  const sanitizedSplits = Array.from(new Set(steerSplits))
+    .filter((idx) => idx > 0 && idx < content.length)
+    .sort((a, b) => a - b);
+  const segments: ContentBlock[][] = sanitizedSplits.length === 0
+    ? [content]
+    : (() => {
+        const segs: ContentBlock[][] = [];
+        let prev = 0;
+        for (const idx of sanitizedSplits) {
+          segs.push(content.slice(prev, idx));
+          prev = idx;
+        }
+        segs.push(content.slice(prev));
+        return segs;
+      })();
 
   return (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
@@ -102,90 +121,109 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
         </div>
       )}
 
-      {/* Assistant streaming response */}
-      <div className="w-full">
-        <div className="max-w-full min-w-0 flex flex-col">
-          <div className="flex items-center gap-2 mb-0.5 text-[11px]">
-            <span className="font-medium text-muted-foreground">{t("sessions.assistant")}</span>
-          </div>
-          {!hasContent && !isComplete ? (
-            <div className="rounded-xl px-3 py-2 bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)] overflow-hidden">
-              <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm font-medium">
-                <span className="processing-marquee">{t("sessions.thinkingDots")}</span>
+      {/* Assistant streaming response — one bubble per segment, with an inline
+          guide bubble (steerTexts[i]) rendered between segment i and i+1 when a
+          steer was injected mid-turn at a tool-call gap. Error/steps/processing
+          marquee attach to the last (still-streaming) segment only. With no
+          steer splits there is a single segment, identical to the previous
+          single-bubble rendering. */}
+      {segments.map((seg, i) => {
+        const isLast = i === segments.length - 1;
+        const segRenderItems = buildStreamRenderItems(seg, streamToolCalls);
+        const segHasItems = segRenderItems.length > 0;
+        const showBubble = segHasItems || (isLast && (errorText.length > 0 || steps.length > 0));
+        const showThinking = !showBubble && !isComplete;
+        return (
+          <Fragment key={`asst-seg-${i}`}>
+            <div className="w-full">
+              <div className="max-w-full min-w-0 flex flex-col">
+                <div className="flex items-center gap-2 mb-0.5 text-[11px]">
+                  <span className="font-medium text-muted-foreground">{t("sessions.assistant")}</span>
+                </div>
+                {showThinking ? (
+                  <div className="rounded-xl px-3 py-2 bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)] overflow-hidden">
+                    <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm font-medium">
+                      <span className="processing-marquee">{t("sessions.thinkingDots")}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {showBubble && (
+                      <div className="rounded-xl bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)] px-3 py-2 overflow-hidden min-w-0 max-w-full space-y-2">
+                        {segRenderItems.map((item, idx) => {
+                          if (item.kind === "tools") {
+                            return (
+                              <div key={`tools-${i}-${idx}`} className="rounded-[8px]">
+                                <ToolGroup calls={item.calls} />
+                              </div>
+                            );
+                          }
+                          if (item.block.type === "thinking") {
+                            return (
+                              <details key={`thinking-${i}-${idx}`} className="rounded-[6px] border border-border/40 bg-[var(--message-thinking-bg)] px-2.5 py-1.5 text-xs text-muted-foreground">
+                                <summary className="cursor-pointer select-none hover:text-foreground">
+                                  {t("sessions.showThinking")}
+                                </summary>
+                                <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
+                                  {item.block.thinking}
+                                </pre>
+                              </details>
+                            );
+                          }
+                          if (item.block.type === "text") {
+                            return (
+                              <div key={`text-${i}-${idx}`} className="markdown-prose overflow-hidden">
+                                <ReactMarkdown
+                                  remarkPlugins={REMARK_PLUGINS}
+                                  rehypePlugins={isComplete ? REHYPE_PLUGINS_COMPLETE : undefined}
+                                >
+                                  {item.block.text}
+                                </ReactMarkdown>
+                              </div>
+                            );
+                          }
+                          return null;
+                        })}
+                        {isLast && errorText && (
+                          <div className="rounded-[6px] border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-sm text-destructive">
+                            {errorText}
+                          </div>
+                        )}
+                        {isLast && steps.length > 0 && (
+                          <details open className="rounded-[6px] border border-border/40 bg-accent/30 px-2.5 py-1.5">
+                            <summary className="cursor-pointer select-none text-[11px] text-muted-foreground hover:text-foreground">
+                              {t("sessions.toolCalls", { count: steps.length })}
+                            </summary>
+                            <div className="mt-1.5 space-y-1">
+                              {steps.map((step, j) => (
+                                <div key={step.stepId ?? j} className="flex items-center gap-2 text-[11px]">
+                                  <StepStatusIcon kind={step.kind} />
+                                  <span className="text-muted-foreground font-mono">{step.kind}</span>
+                                  <span className="truncate">{step.title}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        )}
+                        {isLast && !isComplete && (
+                          <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm font-medium">
+                            <span className="processing-marquee">
+                              {toolUses.length > 0 ? t("sessions.toolCalling") : t("sessions.processing")}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
-          ) : (
-            <div className="space-y-1.5">
-              {hasContent && (
-                <div className="rounded-xl bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)] px-3 py-2 overflow-hidden min-w-0 max-w-full space-y-2">
-                  {renderItems.map((item, idx) => {
-                    if (item.kind === "tools") {
-                      return (
-                        <div key={`tools-${idx}`} className="rounded-[8px]">
-                          <ToolGroup calls={item.calls} />
-                        </div>
-                      );
-                    }
-                    if (item.block.type === "thinking") {
-                      return (
-                        <details key={`thinking-${idx}`} className="rounded-[6px] border border-border/40 bg-[var(--message-thinking-bg)] px-2.5 py-1.5 text-xs text-muted-foreground">
-                          <summary className="cursor-pointer select-none hover:text-foreground">
-                            {t("sessions.showThinking")}
-                          </summary>
-                          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
-                            {item.block.thinking}
-                          </pre>
-                        </details>
-                      );
-                    }
-                    if (item.block.type === "text") {
-                      return (
-                        <div key={`text-${idx}`} className="markdown-prose overflow-hidden">
-                          <ReactMarkdown
-                            remarkPlugins={REMARK_PLUGINS}
-                            rehypePlugins={isComplete ? REHYPE_PLUGINS_COMPLETE : undefined}
-                          >
-                            {item.block.text}
-                          </ReactMarkdown>
-                        </div>
-                      );
-                    }
-                    return null;
-                  })}
-                  {errorText && (
-                    <div className="rounded-[6px] border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-sm text-destructive">
-                      {errorText}
-                    </div>
-                  )}
-                  {steps.length > 0 && (
-                    <details open className="rounded-[6px] border border-border/40 bg-accent/30 px-2.5 py-1.5">
-                      <summary className="cursor-pointer select-none text-[11px] text-muted-foreground hover:text-foreground">
-                        {t("sessions.toolCalls", { count: steps.length })}
-                      </summary>
-                      <div className="mt-1.5 space-y-1">
-                        {steps.map((step, i) => (
-                          <div key={step.stepId ?? i} className="flex items-center gap-2 text-[11px]">
-                            <StepStatusIcon kind={step.kind} />
-                            <span className="text-muted-foreground font-mono">{step.kind}</span>
-                            <span className="truncate">{step.title}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </details>
-                  )}
-                  {!isComplete && (
-                    <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm font-medium">
-                      <span className="processing-marquee">
-                        {toolUses.length > 0 ? t("sessions.toolCalling") : t("sessions.processing")}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
+            {i < steerTexts.length && i < sanitizedSplits.length && (
+              <GuideBubble text={steerTexts[i]} />
+            )}
+          </Fragment>
+        );
+      })}
     </div>
   );
 });
@@ -225,4 +263,33 @@ function StepStatusIcon({ kind }: { kind: string }) {
     : kind === "failed" ? "text-[var(--color-destructive)]"
     : "text-[var(--icon-action)]";
   return <span className={`inline-block h-1.5 w-1.5 rounded-full ${color}`} />;
+}
+
+/**
+ * Inline guide (steer) bubble rendered between assistant segments during
+ * streaming. Mirrors the layout of the live bottom placeholder in chat-page
+ * (right-aligned user bubble + amber "已引导" chip) so the transition from
+ * bottom placeholder → inline, and later → committed message, is seamless.
+ */
+function GuideBubble({ text }: { text: string }) {
+  const { t } = useTranslation();
+  return (
+    <div className="w-full flex justify-end">
+      <div className="max-w-[88%] min-w-0 flex flex-col items-end">
+        <div className="flex items-center gap-2 mb-0.5 text-[11px]">
+          <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>
+          <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-600 dark:text-amber-500">
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+            {t("sessions.steered")}
+          </span>
+        </div>
+        <div
+          className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full"
+          style={{ fontSize: "var(--font-size-prose)" }}
+        >
+          {text}
+        </div>
+      </div>
+    </div>
+  );
 }

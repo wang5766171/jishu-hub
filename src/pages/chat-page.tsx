@@ -803,6 +803,27 @@ export function ChatPage({
               timestamp: Date.now(),
             });
           }
+          // Build the assistant content blocks for this turn. When Pi
+          // delivers a steer mid-turn (at a tool-call gap) it folds the
+          // steer's reply into the SAME turn — so a single turn_complete can
+          // hold [reply1a, steer, reply1b] worth of content, accumulated in
+          // arrival order. `steerSplits` records the content-array index at
+          // each injection point; we split there and interleave the queued
+          // steers so the live order matches the JSONL Pi persists.
+          const steerQueueKey = pendingSteerMessagesRef.current.has(finalKey)
+            ? finalKey
+            : cid;
+          const queuedSteers = pendingSteerMessagesRef.current.get(steerQueueKey) ?? [];
+          // Sanitize + sort: each split marks the start of a new segment.
+          const steerSplits = Array.from(new Set(state?.steerSplits ?? []))
+            .filter((idx) => idx > 0 && idx < (state?.content.length ?? 0))
+            .sort((a, b) => a - b);
+
+          // True when a committed steer will be answered in a FOLLOW-UP turn
+          // (a leftover not delivered mid-turn, or the appended steer in a
+          // no-tool turn). Drives the pre-created "thinking" state below.
+          let followUpExpected = false;
+
           const assistantContent: ContentBlock[] = [];
           if (state?.content.length) {
             assistantContent.push(...state.content);
@@ -825,48 +846,99 @@ export function ChatPage({
             });
             if (state?.text) assistantContent.push({ type: "text", text: state.text });
           }
-          if (state?.error) {
-            // Append errors as visible text so the user sees them.
-            assistantContent.push({ type: "text", text: state.error });
-          }
-          if (assistantContent.length > 0) {
-            newMessages.push({ role: "assistant", content: assistantContent, timestamp: Date.now() });
-          }
 
-          // Commit one queued steer per turn. Pi's default steeringMode is
-          // "one-at-a-time" (one steer delivered per completed assistant
-          // turn), so each turn_complete appends exactly one steer AFTER this
-          // turn's assistant reply — yielding [reply, steer, steerResponse].
-          // The steer was already shown live (pendingSteerDisplay, rendered
-          // after the streaming bubble); committing here moves it into
-          // sessionMessages at its correct position and drops the live
-          // placeholder. Runs for every turn (first turn + continuations).
-          const steerQueueKey = pendingSteerMessagesRef.current.has(finalKey)
-            ? finalKey
-            : cid;
-          const queuedSteers = pendingSteerMessagesRef.current.get(steerQueueKey);
-          let steerCommitted = false;
-          if (queuedSteers && queuedSteers.length > 0) {
-            const [nextSteer, ...rest] = queuedSteers;
-            newMessages.push({
-              role: "user",
-              content: [{ type: "text", text: nextSteer }],
-              timestamp: Date.now(),
-            });
-            steerCommitted = true;
-            if (rest.length > 0) {
-              pendingSteerMessagesRef.current.set(steerQueueKey, rest);
+          // Remove the first `count` steers from the session queue. Reads the
+          // CURRENT ref (not the `queuedSteers` snapshot) so successive calls
+          // within the same turn_complete — mid-turn steers then a leftover —
+          // compose correctly instead of re-slicing the original array.
+          const consumeSteerFromQueue = (count: number) => {
+            if (count <= 0) return;
+            const current = pendingSteerMessagesRef.current.get(steerQueueKey) ?? [];
+            const remaining = current.slice(count);
+            if (remaining.length > 0) {
+              pendingSteerMessagesRef.current.set(steerQueueKey, remaining);
             } else {
               pendingSteerMessagesRef.current.delete(steerQueueKey);
             }
-            // Drop the oldest live placeholder (FIFO matches the queue shift) —
-            // but ONLY when this session is the one currently viewed. Live
-            // placeholders are session-specific (cleared on switch), so a
-            // background session committing its queued steer must not touch the
-            // viewed session's display array.
+          };
+          // Drop the oldest `count` live placeholders (FIFO matches the queue
+          // shift) — but ONLY when this session is the one currently viewed.
+          // Live placeholders are session-specific (cleared on switch), so a
+          // background session committing its queued steer must not touch the
+          // viewed session's display array.
+          const dropLivePlaceholders = (count: number) => {
+            if (count <= 0) return;
             const viewing = selectedSessionRef.current;
             if (viewing === cid || viewing === finalKey) {
-              setPendingSteerDisplay((prev) => prev.slice(1));
+              setPendingSteerDisplay((prev) => prev.slice(count));
+            }
+          };
+
+          if (steerSplits.length > 0 && queuedSteers.length > 0) {
+            // TOOL-BEARING turn with mid-turn steers: split the accumulated
+            // content at each injection point and interleave the steers
+            // between segments — yielding [reply1a, steer, reply1b] instead of
+            // [reply1a+reply1b, steer], matching the JSONL order.
+            const midCount = Math.min(steerSplits.length, queuedSteers.length);
+            let prevIdx = 0;
+            for (let i = 0; i < midCount; i++) {
+              const seg = assistantContent.slice(prevIdx, steerSplits[i]);
+              if (seg.length > 0) {
+                newMessages.push({ role: "assistant", content: seg, timestamp: Date.now() });
+              }
+              newMessages.push({
+                role: "user",
+                content: [{ type: "text", text: queuedSteers[i] }],
+                timestamp: Date.now(),
+              });
+              prevIdx = steerSplits[i];
+            }
+            // Tail segment (after the final mid-turn steer); errors attach here.
+            const tail = assistantContent.slice(prevIdx);
+            if (state?.error) tail.push({ type: "text", text: state.error });
+            if (tail.length > 0) {
+              newMessages.push({ role: "assistant", content: tail, timestamp: Date.now() });
+            }
+            consumeSteerFromQueue(midCount);
+            dropLivePlaceholders(midCount);
+
+            // Pi delivers steers one-at-a-time; any queue entry left after the
+            // mid-turn steers was queued too late to be folded in and will be
+            // processed as a follow-up turn. Commit it now (appended after the
+            // tail) so it lands BEFORE its response, which arrives in the next
+            // turn_complete — mirroring the no-tool FIFO behavior below.
+            const leftover = pendingSteerMessagesRef.current.get(steerQueueKey);
+            if (leftover && leftover.length > 0) {
+              newMessages.push({
+                role: "user",
+                content: [{ type: "text", text: leftover[0] }],
+                timestamp: Date.now(),
+              });
+              followUpExpected = true;
+              consumeSteerFromQueue(1);
+              dropLivePlaceholders(1);
+            }
+          } else {
+            // No mid-turn steer injection: commit the turn as a single
+            // assistant message, then append one queued steer FIFO. With Pi's
+            // default one-at-a-time steering the steer is answered in a
+            // separate follow-up turn, so appending it here lands it between
+            // this reply and the next — [reply, steer, steerResponse].
+            if (state?.error) {
+              assistantContent.push({ type: "text", text: state.error });
+            }
+            if (assistantContent.length > 0) {
+              newMessages.push({ role: "assistant", content: assistantContent, timestamp: Date.now() });
+            }
+            if (queuedSteers.length > 0) {
+              newMessages.push({
+                role: "user",
+                content: [{ type: "text", text: queuedSteers[0] }],
+                timestamp: Date.now(),
+              });
+              followUpExpected = true;
+              consumeSteerFromQueue(1);
+              dropLivePlaceholders(1);
             }
           }
 
@@ -900,26 +972,25 @@ export function ChatPage({
           streamStore.drop(cid);
           streamStore.flushNow();
 
-          if (steerCommitted && (state?.tools.length ?? 0) === 0) {
-            // A steer was committed on a NO-TOOL turn, so a separate response
-            // turn is guaranteed (Pi processes the steer as a new inner-loop
-            // iteration). Pre-create an empty streaming state so the
-            // "thinking" indicator shows immediately and PERSISTS until the
-            // agent actually responds — otherwise there's a blank gap until
-            // the response's first chunk re-activates the state via the
-            // content-chunk guard above. Skipped for tool-bearing turns:
-            // there the steer's reply is folded into the same turn (already
-            // committed above), so there is no following response turn and
-            // pre-creating would leave a stale "thinking" bubble. Use the
+          if (followUpExpected) {
+            // A committed steer will be answered in a FOLLOW-UP turn (a
+            // leftover not delivered mid-turn in a tool turn, or the appended
+            // steer in a no-tool turn). Pre-create an empty streaming state so
+            // the "thinking" indicator shows immediately and PERSISTS until the
+            // agent actually responds — otherwise there's a blank gap until the
+            // response's first chunk re-activates the state via the
+            // content-chunk guard above. Mid-turn steers are folded into the
+            // committed segments above, so they do NOT trigger this. Use the
             // resolved key + re-alias cid so response chunks route correctly
             // after the drop cleared the alias map.
             //
-            // No timeout: the response turn is guaranteed, so the state is
-            // always resolved — either content arrives (fills it; the
-            // indicator is naturally replaced by the reply) or the response
-            // turn's turn_complete fires (drops the state, covering empty or
-            // error responses). An arbitrary cutoff would kill the indicator
-            // before a slow model's first token, exactly the bug we're fixing.
+            // No timeout: the response turn is guaranteed (Pi delivers the
+            // queued steer one-at-a-time), so the state is always resolved —
+            // either content arrives (fills it; the indicator is naturally
+            // replaced by the reply) or the response turn's turn_complete
+            // fires (drops the state, covering empty or error responses). An
+            // arbitrary cutoff would kill the indicator before a slow model's
+            // first token, exactly the bug we're fixing.
             streamStore.start(finalKey, null);
             if (cid !== finalKey) streamStore.alias(finalKey, cid);
           }
@@ -1490,43 +1561,49 @@ export function ChatPage({
                   scrollContainerRef={messageAreaRef}
                 />
               )}
-              {/* Live placeholders for guided (steer) messages: shown the
-                  instant the user clicks "guide", positioned AFTER the
-                  streaming bubble so they sit at the guide position (below
-                  the in-progress reply). Rendered through the SAME container
-                  + user-bubble layout as StreamingMessage/MessageView so the
-                  bubble aligns exactly with a normal user question; the amber
-                  "已引导" chip in the label row marks it as guided. Each is
-                  committed into sessionMessages at its slot when the turn
-                  completes (turn_complete handler), which drops it here. */}
-              {pendingSteerDisplay.length > 0
-                && selectedSession
-                && selectedSession !== "new" && (
-                <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-1">
-                  {pendingSteerDisplay.map((msg, idx) => {
-                    const text = msg.content.find((c) => c.type === "text")?.text ?? "";
-                    return (
-                      <div key={`pending-steer-${idx}`} className="w-full flex justify-end">
-                        <div className="max-w-[88%] min-w-0 flex flex-col items-end">
-                          <div className="flex items-center gap-2 mb-0.5 text-[11px]">
-                            <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>
-                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-600 dark:text-amber-500">
-                              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                              {t("sessions.steered")}
-                            </span>
-                          </div>
-                          <div
-                            className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full"
-                            style={{ fontSize: "var(--font-size-prose)" }}
-                          >
-                            {text}
+              {/* Live placeholders for guided (steer) messages that have NOT
+                  yet been injected. Shown the instant the user clicks "guide",
+                  positioned AFTER the streaming bubble so they sit at the guide
+                  position (below the in-progress reply). Once Pi delivers a
+                  steer at a tool-call gap (steer_injected marker) it is rendered
+                  INLINE inside <StreamingMessage> (via steerTexts) at its real
+                  split position, so we drop it from this bottom block to avoid
+                  showing it twice — `steerTexts.length` guides have moved
+                  inline. The remaining (not-yet-injected) guides stay here until
+                  the turn completes, at which point turn_complete commits them
+                  into sessionMessages and drops them from this list. */}
+              {(() => {
+                if (!selectedSession || selectedSession === "new") return null;
+                const steerInjectedCount = currentStream?.steerTexts?.length ?? 0;
+                const visible = pendingSteerDisplay.slice(steerInjectedCount);
+                if (visible.length === 0) return null;
+                return (
+                  <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-1">
+                    {visible.map((msg, i) => {
+                      const text = msg.content.find((c) => c.type === "text")?.text ?? "";
+                      return (
+                        <div key={`pending-steer-${steerInjectedCount + i}`} className="w-full flex justify-end">
+                          <div className="max-w-[88%] min-w-0 flex flex-col items-end">
+                            <div className="flex items-center gap-2 mb-0.5 text-[11px]">
+                              <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>
+                              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-600 dark:text-amber-500">
+                                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                                {t("sessions.steered")}
+                              </span>
+                            </div>
+                            <div
+                              className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full"
+                              style={{ fontSize: "var(--font-size-prose)" }}
+                            >
+                              {text}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
           </>
         )}
