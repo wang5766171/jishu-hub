@@ -606,6 +606,15 @@ export function ChatPage({
 
   const handleRefreshMessages = useCallback(async () => {
     if (selectedSession && projectId) {
+      // Refuse to reload from JSONL while this session has a live streaming
+      // state. Pi writes the user message and each assistant segment to JSONL
+      // as they're produced, so a mid-turn reload overlaps the live
+      // StreamingMessage bubble (duplicate rows) AND overwrites the
+      // turn-snapshot cache that turn_complete appends to — causing
+      // turn_complete to re-append the in-progress turn. The header button is
+      // disabled while streaming; this guard also covers the session-list
+      // context-menu entry that calls the same handler.
+      if (streamStore.hasState(selectedSession)) return;
       try {
         const msgs = await invokeCommand<Message[]>("get_session_messages", {
           sessionId: selectedSession,
@@ -1518,7 +1527,8 @@ export function ChatPage({
                     variant="ghost"
                     size="icon-xs"
                     onClick={handleRefreshMessages}
-                    title={t("sessions.refresh")}
+                    disabled={Boolean(currentStream)}
+                    title={currentStream ? t("sessions.refreshDisabledWhileStreaming") : t("sessions.refresh")}
                   >
                     <RotateCw className="h-3.5 w-3.5" />
                   </Button>

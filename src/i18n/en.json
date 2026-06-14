@@ -189,6 +189,7 @@
     "accessPlan": "Plan mode",
     "newSession": "New session",
     "refresh": "Refresh list",
+    "refreshDisabledWhileStreaming": "Cannot refresh while the agent is streaming — wait for the turn to finish",
     "openTerminal": "Open terminal",
     "resuming": "Opening terminal...",
     "toolCalls": "Tool Calls ({{count}})",
