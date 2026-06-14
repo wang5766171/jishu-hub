@@ -63,6 +63,7 @@ export function TaskWorkbench({
     proposal,
     planning,
     planningProgress,
+    planningText,
     startRun,
     pollRunProjection,
     loadGraph,
@@ -500,7 +501,7 @@ export function TaskWorkbench({
             />
           ) : null}
           {planning && planningProgress && (
-            <PlanningProgressOverlay progress={planningProgress} />
+            <PlanningProgressOverlay progress={planningProgress} text={planningText} />
           )}
         </div>
 

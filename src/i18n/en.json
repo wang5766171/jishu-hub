@@ -494,6 +494,7 @@
         "eyebrow": "AI task graph planning",
         "live": "Live planning progress",
         "description": "The planner is using the goal, selected methods, project capabilities, and current graph to build a candidate revision.",
+        "agentOutput": "Agent live output",
         "locked": "The task graph is locked while planning",
         "attempt": "Attempt {{current}} / {{total}}",
         "stages": {

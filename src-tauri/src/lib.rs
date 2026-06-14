@@ -2060,6 +2060,7 @@ async fn orchestrator_generate_proposal(
                 stage: "failed".into(),
                 attempt: None,
                 max_attempts: Some(2),
+                text: None,
             },
         );
         crate::orchestrator::domain::run::TaskError {

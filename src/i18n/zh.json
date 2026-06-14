@@ -492,6 +492,7 @@
         "eyebrow": "AI 任务图规划",
         "live": "实时规划进度",
         "description": "Planner 正在根据目标、规划方法、项目能力和当前任务图生成候选 Revision。",
+        "agentOutput": "Agent 实时输出",
         "locked": "生成期间任务图已锁定",
         "attempt": "尝试 {{current}} / {{total}}",
         "stages": {

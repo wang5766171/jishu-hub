@@ -34,6 +34,11 @@ pub struct PlanningProgress {
     pub stage: String,
     pub attempt: Option<u8>,
     pub max_attempts: Option<u8>,
+    /// Real-time agent text delta (from text_delta / thinking_delta events).
+    /// When present, the frontend appends it to the planning conversation view.
+    /// `None` for stage-only updates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +96,7 @@ impl PlannerService {
                 stage: stage.into(),
                 attempt,
                 max_attempts: Some(2),
+                text: None,
             });
         };
         report("preparing_context", None);
@@ -170,7 +176,42 @@ impl PlannerService {
                 let mut runtime_error = None;
                 while let Some(item) = handle.events.recv().await {
                     match item {
-                        RuntimeStreamItem::Event(event) => events.push(event),
+                        RuntimeStreamItem::Event(event) => {
+                            // Forward text/thinking deltas to the frontend in
+                            // real-time so the user sees the agent's output
+                            // during planning (not just stage labels).
+                            match &event {
+                                NormalizedEvent::TextDelta { delta } => {
+                                    progress(PlanningProgress {
+                                        graph_id: request.graph_id.clone(),
+                                        stage: "generating".into(),
+                                        attempt: Some(attempt + 1),
+                                        max_attempts: Some(2),
+                                        text: Some(delta.clone()),
+                                    });
+                                }
+                                NormalizedEvent::Thinking { delta } => {
+                                    progress(PlanningProgress {
+                                        graph_id: request.graph_id.clone(),
+                                        stage: "generating".into(),
+                                        attempt: Some(attempt + 1),
+                                        max_attempts: Some(2),
+                                        text: Some(format!("💭 {delta}")),
+                                    });
+                                }
+                                NormalizedEvent::ToolUseStart { tool, .. } => {
+                                    progress(PlanningProgress {
+                                        graph_id: request.graph_id.clone(),
+                                        stage: "generating".into(),
+                                        attempt: Some(attempt + 1),
+                                        max_attempts: Some(2),
+                                        text: Some(format!("🔧 {tool}")),
+                                    });
+                                }
+                                _ => {}
+                            }
+                            events.push(event);
+                        }
                         RuntimeStreamItem::RuntimeError(message) => runtime_error = Some(message),
                         RuntimeStreamItem::Finished {
                             exit_success: ok,

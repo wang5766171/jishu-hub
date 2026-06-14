@@ -232,6 +232,7 @@ export interface PlanningProgress {
     | "failed";
   attempt: number | null;
   max_attempts: number | null;
+  text?: string;
 }
 
 function snapshotFromRevision(revision: GraphRevision): GraphSnapshot {
@@ -274,6 +275,7 @@ export function useTaskGraph() {
   const [proposal, setProposal] = useState<GraphProposal | null>(null);
   const [planning, setPlanning] = useState(false);
   const [planningProgress, setPlanningProgress] = useState<PlanningProgress | null>(null);
+  const [planningText, setPlanningText] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const eventRunRef = useRef<string | null>(null);
@@ -287,6 +289,9 @@ export function useTaskGraph() {
     listen<PlanningProgress>("task-planning-progress", (event) => {
       if (!disposed && event.payload.graph_id === graphId) {
         setPlanningProgress(event.payload);
+        if (event.payload.text) {
+          setPlanningText((prev) => prev + event.payload.text);
+        }
       }
     }).then((dispose) => {
       if (disposed) dispose();
@@ -502,6 +507,7 @@ export function useTaskGraph() {
   const generateProposal = useCallback(async (instruction?: string) => {
     if (!graph || !revision) return null;
     setPlanning(true);
+    setPlanningText("");
     setPlanningProgress({
       graph_id: graph.graph_id,
       stage: "preparing_context",
@@ -812,6 +818,7 @@ export function useTaskGraph() {
     proposal,
     planning,
     planningProgress,
+    planningText,
     loading,
     error,
     loadGraph,
