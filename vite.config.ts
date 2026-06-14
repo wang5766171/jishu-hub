@@ -42,7 +42,7 @@ export default defineConfig(async () => ({
     chunkSizeWarningLimit: 700,
     rollupOptions: {
       output: {
-        manualChunks(id) {
+        manualChunks(id: string) {
           if (id.includes("node_modules")) {
             if (
               id.includes("react-markdown") ||
