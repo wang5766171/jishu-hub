@@ -6,8 +6,15 @@ import { streamStore, useIsSessionStreaming } from "@/hooks/use-stream-store";
 import { Button } from "@/components/ui/button";
 import { Check, ChevronDown, KeyRound, Paperclip, Plus, Send, Square, Sparkles, Blocks } from "lucide-react";
 import { FilePreview } from "./file-preview";
+import { InteractionComposer } from "./interaction-composer";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { ChatSession, SavedFile } from "@/types";
+import { formatInteractionReply } from "@/lib/conversation-interaction";
+import type {
+  ChatSession,
+  ConversationInteractionRequest,
+  ConversationInteractionSubmission,
+  SavedFile,
+} from "@/types";
 import { cn } from "@/lib/utils";
 
 interface AttachedFile {
@@ -36,6 +43,8 @@ interface ChatInputProps {
   accessModeOptions?: Array<{ value: string; label: string }>;
   accessModeValue?: string;
   onAccessModeChange?: (value: string) => void | Promise<void>;
+  interactionRequest?: ConversationInteractionRequest | null;
+  onInteractionSubmitted?: (requestId: string) => void;
 }
 
 function isInsideProject(filePath: string, projectPath: string): boolean {
@@ -61,6 +70,8 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   accessModeOptions = [],
   accessModeValue,
   onAccessModeChange,
+  interactionRequest = null,
+  onInteractionSubmitted,
 }: ChatInputProps, ref) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
@@ -280,6 +291,37 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     setFiles((prev) => prev.filter((f) => f.id !== id));
   };
 
+  const sendPreparedMessage = async (fullMessage: string, clearComposer: boolean) => {
+    if (!projectPath) {
+      throw new Error("project path is required");
+    }
+
+    const pendingId = sessionId || `pending-${Date.now()}`;
+    console.log("Starting message send. pendingId:", pendingId, "sessionId:", sessionId);
+    setActiveSessionId(pendingId);
+    streamStore.start(pendingId, fullMessage);
+    if (onMessageSent) onMessageSent(pendingId, fullMessage);
+
+    const chatSession = await invokeCommand<ChatSession>(
+      "send_message",
+      {
+        projectPath,
+        sessionId: pendingId,
+        message: fullMessage,
+      },
+    );
+
+    setActiveSessionId(chatSession.session_id);
+    if (chatSession.session_id !== pendingId) {
+      streamStore.alias(pendingId, chatSession.session_id);
+    }
+
+    if (clearComposer) {
+      setMessage("");
+      setFiles([]);
+    }
+  };
+
   const handleSend = async () => {
     if (!projectPath || disabled || sending || isStreaming) return;
     if (!message.trim() && files.length === 0) return;
@@ -332,35 +374,27 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         fullMessage += `\n\n<!--JISHU_HUB_IMAGES_BEGIN-->\n[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]\n${fileListStr}\n<!--JISHU_HUB_IMAGES_END-->`;
       }
 
-      // Pre-register the stream state so events from the backend process
-      // (which starts before the await resolves) aren't silently dropped.
-      const pendingId = sessionId || `pending-${Date.now()}`;
-      console.log("Starting message send. pendingId:", pendingId, "sessionId:", sessionId);
-      setActiveSessionId(pendingId);
-      streamStore.start(pendingId, fullMessage);
-      if (onMessageSent) onMessageSent(pendingId, fullMessage);
-
-      const chatSession = await invokeCommand<ChatSession>(
-        "send_message",
-        {
-          projectPath,
-          sessionId: pendingId,
-          message: fullMessage,
-        }
-      );
-
-      setActiveSessionId(chatSession.session_id);
-      // If the backend assigned a different session id, register it as an alias
-      // so stream events under the real id route to the pre-registered entry.
-      if (chatSession.session_id !== pendingId) {
-        streamStore.alias(pendingId, chatSession.session_id);
-      }
-
-      setMessage("");
-      setFiles([]);
+      await sendPreparedMessage(fullMessage, true);
     } catch (err) {
       console.error("Failed to send message:", err);
       setSending(false);
+    }
+  };
+
+  const handleInteractionSubmit = async (
+    submission: ConversationInteractionSubmission,
+  ) => {
+    if (!interactionRequest || disabled || sending || isStreaming) return;
+
+    setSending(true);
+    try {
+      const reply = formatInteractionReply(interactionRequest, submission);
+      await sendPreparedMessage(reply, false);
+      onInteractionSubmitted?.(submission.requestId);
+    } catch (err) {
+      console.error("Failed to submit interaction:", err);
+      setSending(false);
+      throw err;
     }
   };
 
@@ -443,6 +477,14 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         onDrop={handleDrop}
         onDragOver={handleDragOver}
       >
+        {interactionRequest ? (
+          <InteractionComposer
+            request={interactionRequest}
+            disabled={disabled || isStreaming}
+            submitting={sending}
+            onSubmit={handleInteractionSubmit}
+          />
+        ) : null}
         <FilePreview files={files} onLabelChange={handleLabelChange} onRemove={handleRemoveFile} />
 
         <textarea

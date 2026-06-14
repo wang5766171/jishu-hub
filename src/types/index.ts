@@ -21,6 +21,27 @@ export interface Message {
   timestamp: number | null;
 }
 
+export interface ConversationInteractionOption {
+  optionId: string;
+  label: string;
+  description?: string | null;
+}
+
+export interface ConversationInteractionRequest {
+  requestId: string;
+  prompt: string;
+  options: ConversationInteractionOption[];
+  allowMultiple: boolean;
+  allowCustomText: boolean;
+  required: boolean;
+}
+
+export interface ConversationInteractionSubmission {
+  requestId: string;
+  selectedOptionIds: string[];
+  customText: string;
+}
+
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
@@ -195,6 +216,19 @@ export type NormalizedEvent =
   | { kind: "tool_use_result"; call_id: string; output: unknown; is_error: boolean }
   | { kind: "thinking"; delta: string }
   | { kind: "approval_request"; request_id: string; approval_kind: string; payload: unknown }
+  | {
+      kind: "interaction_request";
+      request_id: string;
+      prompt: string;
+      options: Array<{
+        option_id: string;
+        label: string;
+        description?: string | null;
+      }>;
+      allow_multiple: boolean;
+      allow_custom_text: boolean;
+      required: boolean;
+    }
   | { kind: "session_resolved"; session_id: string }
   | { kind: "turn_complete"; reason: string; usage: unknown | null }
   | { kind: "error"; message: string; recoverable: boolean }
