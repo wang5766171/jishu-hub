@@ -465,7 +465,9 @@ export function TaskWorkbench({
       />
       <div className="flex min-h-0 flex-1">
         <div className="relative h-full min-w-0 flex-1">
-          {loading && !graph ? (
+          {planning && planningProgress ? (
+            <PlanningProgressOverlay progress={planningProgress} text={planningText} />
+          ) : loading && !graph ? (
             <div className="flex h-full items-center justify-center text-muted-foreground">
               {t("common.loading")}
             </div>
@@ -500,9 +502,6 @@ export function TaskWorkbench({
               canApplyDraftToRun={canApplyDraftToRun}
             />
           ) : null}
-          {planning && planningProgress && (
-            <PlanningProgressOverlay progress={planningProgress} text={planningText} />
-          )}
         </div>
 
         {displayedRunId && runInspectorOpen && (
