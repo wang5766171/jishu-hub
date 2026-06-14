@@ -12,16 +12,14 @@
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::Emitter;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::ChildStdin;
 use tokio::sync::Mutex as TokioMutex;
 
-use crate::acp_runtime::{AcpCommand, AcpControl};
+use crate::acp_runtime::{tauri_event_emitter, AcpCommand, AcpControl, AcpEventEmit};
 use crate::agent::normalized::{
     interaction_requests_from_tool_call, InteractionOption, NormalizedEvent, TurnEndReason,
 };
-use crate::cli_runtime::{AgentStreamChunk, StreamChunk};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -36,6 +34,47 @@ pub fn spawn_pi_rpc_session(
     mut child: tokio::process::Child,
     _project_path: String,
     _requested_session_id: Option<String>,
+    first_message: String,
+    on_finish: impl FnOnce() + Send + 'static,
+    on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
+) -> AcpControl {
+    let emit = tauri_event_emitter(app, agent_id);
+    spawn_pi_rpc_session_inner(
+        emit,
+        pending_session_id,
+        child,
+        first_message,
+        on_finish,
+        on_session_resolved,
+    )
+}
+
+/// Spawn a Pi RPC session with a custom event emitter (for orchestrator use).
+/// The orchestrator has no `AppHandle`; it provides a callback that pushes
+/// events into the streaming `InvocationHandle`.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_pi_rpc_session_with_emitter(
+    emit: AcpEventEmit,
+    pending_session_id: String,
+    child: tokio::process::Child,
+    first_message: String,
+    on_finish: impl FnOnce() + Send + 'static,
+    on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
+) -> AcpControl {
+    spawn_pi_rpc_session_inner(
+        emit,
+        pending_session_id,
+        child,
+        first_message,
+        on_finish,
+        on_session_resolved,
+    )
+}
+
+fn spawn_pi_rpc_session_inner(
+    emit: AcpEventEmit,
+    pending_session_id: String,
+    mut child: tokio::process::Child,
     first_message: String,
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
@@ -75,8 +114,7 @@ pub fn spawn_pi_rpc_session(
 
     tauri::async_runtime::spawn(async move {
         let result = pi_rpc_connection_loop(
-            app.clone(),
-            agent_id.clone(),
+            emit.clone(),
             pending_session_id.clone(),
             stdin_arc,
             acp_session_id,
@@ -91,7 +129,6 @@ pub fn spawn_pi_rpc_session(
             // Enrich error with stderr output
             let stderr_content = stderr_buf.lock().await.clone();
             let enriched_err = if !stderr_content.trim().is_empty() {
-                // Take last 500 chars of stderr for the error message
                 let tail = if stderr_content.len() > 500 {
                     &stderr_content[stderr_content.len() - 500..]
                 } else {
@@ -102,8 +139,6 @@ pub fn spawn_pi_rpc_session(
                 err.clone()
             };
             log::warn!("Pi RPC connection loop exited with error: {}", enriched_err);
-            // Emit SessionResolved using the pending_session_id so the UI stops "loading"
-            // and actually displays the error message.
             let events = vec![
                 NormalizedEvent::SessionResolved {
                     session_id: pending_session_id.clone(),
@@ -117,7 +152,7 @@ pub fn spawn_pi_rpc_session(
                     usage: None,
                 },
             ];
-            emit_events(&app, &agent_id, &pending_session_id, &events);
+            emit(&events, &pending_session_id);
             on_session_resolved(&pending_session_id);
         } else {
             log::info!(
@@ -159,8 +194,7 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[allow(clippy::too_many_arguments)]
 async fn pi_rpc_connection_loop(
-    app: tauri::AppHandle,
-    agent_id: String,
+    emit: AcpEventEmit,
     pending_session_id: String,
     stdin_arc: Arc<TokioMutex<ChildStdin>>,
     acp_session_id: Arc<std::sync::Mutex<Option<String>>>,
@@ -220,13 +254,11 @@ async fn pi_rpc_connection_loop(
     }
 
     // Emit SessionResolved
-    emit_events(
-        &app,
-        &agent_id,
-        &pending_session_id,
+    emit(
         &[NormalizedEvent::SessionResolved {
             session_id: session_id.clone(),
         }],
+        &pending_session_id,
     );
     on_session_resolved(&session_id);
 
@@ -240,7 +272,7 @@ async fn pi_rpc_connection_loop(
 
     // 4. Main loop
     let mut state = LoopState::Prompting;
-    let mut buf: Vec<StreamChunk> = Vec::with_capacity(32);
+    let mut buf: Vec<NormalizedEvent> = Vec::with_capacity(32);
     let mut last_flush = std::time::Instant::now();
 
     loop {
@@ -338,15 +370,15 @@ async fn pi_rpc_connection_loop(
                                                 .and_then(|v| v.as_str())
                                                 .unwrap_or("Unknown prompt error");
 
-                                            buf.push(make_chunk(&session_id, &NormalizedEvent::Error {
+                                            buf.push(NormalizedEvent::Error {
                                                 message: err_msg.to_string(),
                                                 recoverable: false,
-                                            }));
-                                            buf.push(make_chunk(&session_id, &NormalizedEvent::TurnComplete {
+                                            });
+                                            buf.push(NormalizedEvent::TurnComplete {
                                                 reason: TurnEndReason::Error,
                                                 usage: None,
-                                            }));
-                                            flush_buf(&app, &agent_id, &mut buf);
+                                            });
+                                            flush_buf(&emit, &session_id, &mut buf);
 
                                             state = LoopState::Idle;
                                         }
@@ -359,11 +391,11 @@ async fn pi_rpc_connection_loop(
                                             LoopState::CancelPending { pending_prompt: Some(_), .. }
                                         );
                                         if !has_pending {
-                                            buf.push(make_chunk(&session_id, &NormalizedEvent::TurnComplete {
+                                            buf.push(NormalizedEvent::TurnComplete {
                                                 reason: TurnEndReason::Aborted,
                                                 usage: None,
-                                            }));
-                                            flush_buf(&app, &agent_id, &mut buf);
+                                            });
+                                            flush_buf(&emit, &session_id, &mut buf);
                                         }
 
                                         // State transition
@@ -392,22 +424,22 @@ async fn pi_rpc_connection_loop(
                                 if !success {
                                     let error_msg = msg.get("error").and_then(|v| v.as_str()).unwrap_or("Unknown Pi RPC error");
                                     log::warn!("Pi RPC error response for {}: {}", response_cmd, error_msg);
-                                    buf.push(make_chunk(&session_id, &NormalizedEvent::Error {
+                                    buf.push(NormalizedEvent::Error {
                                         message: error_msg.to_string(),
                                         recoverable: false,
-                                    }));
-                                    buf.push(make_chunk(&session_id, &NormalizedEvent::TurnComplete {
+                                    });
+                                    buf.push(NormalizedEvent::TurnComplete {
                                         reason: TurnEndReason::Error,
                                         usage: None,
-                                    }));
-                                    flush_buf(&app, &agent_id, &mut buf);
+                                    });
+                                    flush_buf(&emit, &session_id, &mut buf);
                                     state = LoopState::Idle;
                                     continue;
                                 }
 
                                 // Periodic flush
                                 if buf.len() >= 32 || last_flush.elapsed() >= Duration::from_millis(8) {
-                                    flush_buf(&app, &agent_id, &mut buf);
+                                    flush_buf(&emit, &session_id, &mut buf);
                                     last_flush = std::time::Instant::now();
                                 }
                                 continue;
@@ -421,8 +453,8 @@ async fn pi_rpc_connection_loop(
                         // AcpCommand::RespondToInput → extension_ui_response.
                         if msg.get("type").and_then(|v| v.as_str()) == Some("extension_ui_request") {
                             if let Some(event) = convert_extension_ui_request(&msg) {
-                                buf.push(make_chunk(&session_id, &event));
-                                flush_buf(&app, &agent_id, &mut buf);
+                                buf.push(event);
+                                flush_buf(&emit, &session_id, &mut buf);
                                 last_flush = std::time::Instant::now();
                             }
                             continue;
@@ -432,11 +464,11 @@ async fn pi_rpc_connection_loop(
                         let events = normalize_pi_agent_event(&msg);
                         let has_turn_complete = events.iter().any(|e| matches!(e, NormalizedEvent::TurnComplete { .. }));
                         for event in &events {
-                            buf.push(make_chunk(&session_id, event));
+                            buf.push(event.clone());
                         }
 
                         if has_turn_complete {
-                            flush_buf(&app, &agent_id, &mut buf);
+                            flush_buf(&emit, &session_id, &mut buf);
                             last_flush = std::time::Instant::now();
 
                             // Handle cancel-pending with buffered prompt
@@ -457,7 +489,7 @@ async fn pi_rpc_connection_loop(
                         } else {
                             // Periodic flush
                             if buf.len() >= 32 || last_flush.elapsed() >= Duration::from_millis(8) {
-                                flush_buf(&app, &agent_id, &mut buf);
+                                flush_buf(&emit, &session_id, &mut buf);
                                 last_flush = std::time::Instant::now();
                             }
                         }
@@ -496,7 +528,7 @@ async fn pi_rpc_connection_loop(
     }
 
     if !buf.is_empty() {
-        flush_buf(&app, &agent_id, &mut buf);
+        flush_buf(&emit, &session_id, &mut buf);
     }
     Ok(())
 }
@@ -756,51 +788,11 @@ fn convert_extension_ui_request(msg: &serde_json::Value) -> Option<NormalizedEve
     }
 }
 
-fn make_chunk(session_id: &str, event: &NormalizedEvent) -> StreamChunk {
-    StreamChunk {
-        session_id: session_id.to_string(),
-        event_type: event.event_type().to_string(),
-        data: serde_json::to_value(event).unwrap_or_default(),
-    }
-}
-
-fn emit_events(
-    app: &tauri::AppHandle,
-    agent_id: &str,
-    session_id: &str,
-    events: &[NormalizedEvent],
-) {
-    let chunks: Vec<AgentStreamChunk> = events
-        .iter()
-        .filter_map(|event| {
-            let data = serde_json::to_value(event).ok()?;
-            Some(AgentStreamChunk {
-                agent_id: agent_id.to_string(),
-                session_id: session_id.to_string(),
-                event_type: event.event_type().to_string(),
-                data,
-            })
-        })
-        .collect();
-    if !chunks.is_empty() {
-        let _ = app.emit("agent-event", &chunks);
-    }
-}
-
-fn flush_buf(app: &tauri::AppHandle, agent_id: &str, buf: &mut Vec<StreamChunk>) {
+fn flush_buf(emit: &AcpEventEmit, session_id: &str, buf: &mut Vec<NormalizedEvent>) {
     if buf.is_empty() {
         return;
     }
-    let chunks: Vec<AgentStreamChunk> = buf
-        .iter()
-        .map(|chunk| AgentStreamChunk {
-            agent_id: agent_id.to_string(),
-            session_id: chunk.session_id.clone(),
-            event_type: chunk.event_type.clone(),
-            data: chunk.data.clone(),
-        })
-        .collect();
-    let _ = app.emit("agent-event", &chunks);
+    emit(buf, session_id);
     buf.clear();
 }
 
