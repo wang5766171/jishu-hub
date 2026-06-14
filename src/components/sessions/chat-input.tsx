@@ -403,7 +403,10 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
 
   // Guide a staged message — deliver it to the agent.
   // For Jishu Agent (task session): steer (pause→supplement→resume).
-  // For other agents: stop current → send as new message.
+  // Guide a staged message — deliver it to the agent.
+  // For Jishu Agent (task session): steer (pause→supplement→resume).
+  // For other agents: just send as new message (backend queues after current turn).
+  // Don't manually abort — that races with the send and corrupts stream state.
   const handleGuideStaged = async (id: string, content: string) => {
     if (!projectPath || disabled) return;
     setGuideLoading(id);
@@ -412,10 +415,9 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         // Caller handles delivery (e.g., steer for Pi RPC).
         await onGuideStaged(content);
       } else {
-        // Default: stop current generation → send as new message.
-        if (isStreaming) {
-          handleAbort();
-        }
+        // Default: just send. Backend send_message handles active sessions
+        // by queuing (ACP) or respawning (CLI). Don't abort first —
+        // handleAbort is async and races with sendPreparedMessage.
         await sendPreparedMessage(content, true);
       }
       setStagedMessages((prev) => prev.filter((m) => m.id !== id));
