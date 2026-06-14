@@ -196,16 +196,7 @@ impl PlannerService {
                                         stage: "generating".into(),
                                         attempt: Some(attempt + 1),
                                         max_attempts: Some(2),
-                                        text: Some(format!("💭 {delta}")),
-                                    });
-                                }
-                                NormalizedEvent::ToolUseStart { tool, .. } => {
-                                    progress(PlanningProgress {
-                                        graph_id: request.graph_id.clone(),
-                                        stage: "generating".into(),
-                                        attempt: Some(attempt + 1),
-                                        max_attempts: Some(2),
-                                        text: Some(format!("🔧 {tool}")),
+                                        text: Some(delta.clone()),
                                     });
                                 }
                                 _ => {}

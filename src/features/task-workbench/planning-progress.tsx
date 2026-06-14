@@ -109,9 +109,9 @@ export function PlanningProgressOverlay({
                 <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                   {t("tasks.workbench.planningProgress.agentOutput")}
                 </p>
-                <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-foreground">
+                <p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground">
                   {text}
-                </pre>
+                </p>
               </div>
             )}
           </div>
