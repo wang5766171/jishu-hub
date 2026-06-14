@@ -1252,4 +1252,79 @@ mod tests {
         assert_eq!(permission_option_id(&params, true), None);
         assert_eq!(permission_option_id(&params, false), None);
     }
+
+    // ---- M1.4 Phase 2: characterize the event-production units that Phase 1
+    // rerouted through the sink. These lock the post-parameterization behavior.
+
+    #[tokio::test]
+    async fn channel_sink_emits_normalized_events() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<NormalizedEvent>(16);
+        let sink = AcpEventSink::Channel { tx };
+        sink.emit(
+            &[
+                NormalizedEvent::TextDelta { delta: "a".into() },
+                NormalizedEvent::TextDelta { delta: "b".into() },
+            ],
+            "ses-1",
+        )
+        .await;
+        let mut collected = Vec::new();
+        while let Ok(Some(event)) =
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await
+        {
+            collected.push(event);
+        }
+        assert_eq!(collected.len(), 2);
+        assert!(matches!(&collected[0], NormalizedEvent::TextDelta { delta } if delta == "a"));
+    }
+
+    #[tokio::test]
+    async fn flush_buf_drains_buffer_through_sink() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<NormalizedEvent>(16);
+        let sink = AcpEventSink::Channel { tx };
+        let mut buf = vec![NormalizedEvent::TextDelta { delta: "x".into() }];
+        flush_buf(&sink, "ses-1", &mut buf).await;
+        assert!(buf.is_empty(), "flush_buf must clear the buffer");
+        let event = rx.recv().await.expect("event should be emitted");
+        assert!(matches!(event, NormalizedEvent::TextDelta { delta } if delta == "x"));
+        // Empty buffer is a no-op (no second event).
+        flush_buf(&sink, "ses-1", &mut buf).await;
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn handle_prompt_response_produces_turn_complete_on_success() {
+        let mut buf: Vec<NormalizedEvent> = Vec::new();
+        let mut usage = None;
+        let msg = json!({ "result": { "stopReason": "end_turn", "usage": { "inputTokens": 5, "outputTokens": 7 } } });
+        handle_prompt_response(&msg, &mut usage, &mut buf);
+        assert_eq!(buf.len(), 1);
+        assert!(matches!(
+            &buf[0],
+            NormalizedEvent::TurnComplete {
+                reason: TurnEndReason::Complete,
+                ..
+            }
+        ));
+        let used = usage.expect("usage should be captured");
+        assert_eq!(used.input_tokens, Some(5));
+        assert_eq!(used.output_tokens, Some(7));
+    }
+
+    #[test]
+    fn handle_prompt_response_produces_error_then_failed_turn_on_error() {
+        let mut buf: Vec<NormalizedEvent> = Vec::new();
+        let mut usage: Option<UsageStats> = None;
+        let msg = json!({ "error": { "message": "boom" } });
+        handle_prompt_response(&msg, &mut usage, &mut buf);
+        assert_eq!(buf.len(), 2);
+        assert!(matches!(&buf[0], NormalizedEvent::Error { .. }));
+        assert!(matches!(
+            &buf[1],
+            NormalizedEvent::TurnComplete {
+                reason: TurnEndReason::Error,
+                ..
+            }
+        ));
+    }
 }
