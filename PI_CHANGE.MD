@@ -119,6 +119,27 @@
 
 # 第二部分：改动记录
 
+## 第 8 版 (自研尾号 -8)
+
+### 2026-06-14 | 新增 `request_user_input` 内置工具（Jishu Agent 规划阶段暂停-续跑）
+
+**根因与背景**：Jishu Hub 任务编排的规划阶段（Jishu Agent / Pi planner）需要中途暂停向用户提问（选方案/补充信息），用户回复后同一 turn 继续。此前 Pi 无 `request_user_input` 工具，LLM 调用后 Pi tool runner 报错"未知工具"。方案 B：复用 Pi 已有的 `extension_ui_request` / `extension_ui_response` 协议（RPC 模式已实现），注册一个 `request_user_input` customTool，execute 内调 `ctx.ui.select` / `ctx.ui.input` 触发 extension_ui 暂停，Hub 收到 request 后转 `NormalizedEvent::InteractionRequest`，用户回复后 Hub 发 `extension_ui_response` → Pi 工具拿到结果 → LLM 同一 turn 继续。
+
+### 改动总览
+
+| 模块 | 改动说明 |
+|------|---------|
+| `packages/coding-agent/src/core/tools/request-user-input.ts`（**新增**） | 定义 `requestUserInputTool`（`defineTool`），参数 `{question: string, options?: string[]}`，execute 内：有 options → `ctx.ui.select(question, options)`，无 → `ctx.ui.input(question)`；返回 `{content: [{type:"text", text: response}], details: undefined}`。工具在 agent loop 中自然暂停（ui.select/input 是阻塞 Promise，等 extension_ui_response）。 |
+| `packages/coding-agent/src/main.ts` | 导入 `requestUserInputTool`；在 `createAgentSessionFromServices` 调用的 `customTools` 参数追加该工具（`customTools: [...(sessionOptions.customTools ?? []), requestUserInputTool]`）。仅 RPC 模式（Hub 启动 Pi 用 `--mode rpc`）。 |
+
+**设计依据**：Pi RPC 模式（`modes/rpc/rpc-mode.ts`）已完整实现 `extension_ui` 协议——`createExtensionUIContext` 的 `select`/`confirm`/`input` 方法发出 `extension_ui_request`（stdout JSON）+ 阻塞等 `extension_ui_response`（stdin JSON）。本工具复用此机制，不新增协议。`customTools` 是 Pi AgentSession 的既有扩展点（`CreateAgentSessionFromServicesOptions.customTools: ToolDefinition[]`），无需修改核心架构。工具仅在 LLM 主动调用时生效，不影响其他能力。
+
+**Hub 侧配套改动**（主仓 `src-tauri/src/pi_rpc_runtime.rs` + `acp_runtime.rs`，详见主仓提交 8e91546）：
+- `AcpCommand` 新增 `RespondToInput{id, value}`；`AcpControl` 新增 `respond_to_input(id, value)`。
+- `pi_rpc_connection_loop`：检测 `extension_ui_request` 事件 → `convert_extension_ui_request` 转 `NormalizedEvent::InteractionRequest`（select→选项+单选，input→自定义文本）；处理 `RespondToInput` → 发 `extension_ui_response` 到 Pi stdin。
+
+**验证**：`npx tsc --noEmit -p packages/coding-agent/tsconfig.build.json` → 0 error。Hub 侧 321 Rust 单测 + 3 架构回归全绿。端到端暂停-续跑需在 Tauri 桌面应用中手动验证（Pi 发 extension_ui_request → Hub 转 InteractionRequest → 前端展示 → 用户回复 → Hub 发 extension_ui_response → Pi 继续）。
+
 ## 第 7 版 (自研尾号 -7)
 
 ### 2026-06-12 | 修复 Lite 发布版 npm-shrinkwrap.json 转换 bug（别名依赖 404 → Lite 对话卡死）
