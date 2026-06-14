@@ -4,6 +4,7 @@ use std::sync::{atomic::AtomicBool, Arc};
 
 use tokio::sync::mpsc;
 
+use crate::acp_runtime::AcpEventEmit;
 use crate::agent::normalized::{ContentBlock, NormalizedEvent, TurnEndReason};
 use crate::agent::{AgentCapabilities, AgentRegistry, TransportSurface};
 use crate::agent_runtime::{AgentTurnOutput, AgentTurnRequest};
@@ -147,25 +148,131 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
         let registry = self.registry.clone();
         Box::pin(async move {
             let invocation_id = request.invocation_id.clone();
-            let timeout_ms = request.timeout_ms;
-            let cancellation = request.cancellation.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                crate::agent_runtime::run_turn_blocking_cancellable(
-                    &registry,
-                    AgentTurnRequest {
-                        agent_id: request.agent_id,
-                        project_path: request.project_path,
-                        session_id: request.session_id,
-                        message: request.prompt,
-                        timeout_secs: (timeout_ms.saturating_add(999) / 1000).max(1),
-                    },
-                    None,
-                    Some(cancellation),
-                )
-            })
-            .await
-            .map_err(|error| format!("agent runtime task failed: {error}"))?;
-            Ok(materialize_handle(invocation_id, result))
+
+            // Resolve transport to decide: persistent (PiRpc) vs blocking (ACP/CLI).
+            let agent = registry
+                .get(&request.agent_id)
+                .ok_or_else(|| format!("Agent not found: {}", request.agent_id))?;
+            let transport = agent.transport_surface();
+
+            if transport == TransportSurface::PiRpc {
+                // === Persistent Pi RPC session (real-time streaming) ===
+                // Unlike the blocking path (which buffers all events until the turn
+                // ends), the persistent session streams events live. This lets the
+                // planner/conversation panel show the agent's text + thinking in
+                // real-time and allows mid-turn steering.
+                let req = crate::agent::ChatRequest {
+                    project_path: request.project_path.clone(),
+                    session_id: request.session_id.clone(),
+                    message: request.prompt.clone(),
+                };
+                let acp_command = agent
+                    .build_acp_command(&req)
+                    .map_err(|e| format!("Failed to build Pi RPC command: {e}"))?;
+
+                let mut command = tokio::process::Command::new(&acp_command.program);
+                command.args(&acp_command.args);
+                command.current_dir(&request.project_path);
+                for (key, value) in &acp_command.envs {
+                    command.env(key, value);
+                }
+                command.stdin(std::process::Stdio::piped());
+                command.stdout(std::process::Stdio::piped());
+                command.stderr(std::process::Stdio::piped());
+
+                #[cfg(target_os = "windows")]
+                {
+                    crate::process_command::tokio_no_window(&mut command);
+                }
+
+                let child = command
+                    .spawn()
+                    .map_err(|e| format!("Failed to spawn Pi RPC process: {e}"))?;
+
+                // Create event channel + callback emitter.
+                let (event_tx, mut event_rx) =
+                    tokio::sync::mpsc::unbounded_channel::<NormalizedEvent>();
+                let emit: AcpEventEmit = Arc::new(move |events: &[NormalizedEvent], _| {
+                    for event in events {
+                        let _ = event_tx.send(event.clone());
+                    }
+                });
+
+                let pending_session_id = request
+                    .session_id
+                    .clone()
+                    .unwrap_or_else(|| format!("orchestrator-{invocation_id}"));
+
+                // Spawn the persistent session. Returns immediately with AcpControl.
+                let _acp_control = crate::pi_rpc_runtime::spawn_pi_rpc_session_with_emitter(
+                    emit,
+                    pending_session_id,
+                    child,
+                    request.prompt,
+                    || {},
+                    |_sid| {},
+                );
+
+                // Bridge: NormalizedEvent stream → RuntimeStreamItem stream.
+                // TurnComplete triggers Finished so the planner detects end-of-turn.
+                let (stream_tx, stream_rx) = mpsc::channel::<RuntimeStreamItem>(64);
+                tokio::spawn(async move {
+                    let mut finished = false;
+                    while let Some(event) = event_rx.recv().await {
+                        let is_complete = matches!(event, NormalizedEvent::TurnComplete { .. });
+                        if stream_tx
+                            .send(RuntimeStreamItem::Event(event))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        if is_complete && !finished {
+                            finished = true;
+                            let _ = stream_tx
+                                .send(RuntimeStreamItem::Finished {
+                                    exit_success: true,
+                                    exit_code: Some(0),
+                                })
+                                .await;
+                        }
+                    }
+                    if !finished {
+                        let _ = stream_tx
+                            .send(RuntimeStreamItem::Finished {
+                                exit_success: false,
+                                exit_code: None,
+                            })
+                            .await;
+                    }
+                });
+
+                Ok(InvocationHandle {
+                    invocation_id,
+                    events: stream_rx,
+                })
+            } else {
+                // === Blocking path (ACP / CLI) ===
+                let timeout_ms = request.timeout_ms;
+                let cancellation = request.cancellation.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    crate::agent_runtime::run_turn_blocking_cancellable(
+                        &registry,
+                        AgentTurnRequest {
+                            agent_id: request.agent_id,
+                            project_path: request.project_path,
+                            session_id: request.session_id,
+                            message: request.prompt,
+                            timeout_secs: (timeout_ms.saturating_add(999) / 1000).max(1),
+                        },
+                        None,
+                        Some(cancellation),
+                    )
+                })
+                .await
+                .map_err(|error| format!("agent runtime task failed: {error}"))?;
+                Ok(materialize_handle(invocation_id, result))
+            }
         })
     }
 }
