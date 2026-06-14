@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Check, ChevronDown, KeyRound, Paperclip, Plus, Send, Square, Sparkles, Blocks } from "lucide-react";
 import { FilePreview } from "./file-preview";
 import { InteractionComposer } from "./interaction-composer";
+import { MessageStaging, type StagedMessage } from "./message-staging";
 import { open } from "@tauri-apps/plugin-dialog";
 import { formatInteractionReply } from "@/lib/conversation-interaction";
 import type {
@@ -45,6 +46,9 @@ interface ChatInputProps {
   onAccessModeChange?: (value: string) => void | Promise<void>;
   interactionRequest?: ConversationInteractionRequest | null;
   onInteractionSubmitted?: (requestId: string) => void;
+  /** Called when user clicks "guide" on a staged message during streaming.
+   *  For Jishu Agent: steer. For others: parent should stop + send. */
+  onGuideStaged?: (content: string) => Promise<void>;
 }
 
 function isInsideProject(filePath: string, projectPath: string): boolean {
@@ -72,6 +76,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   onAccessModeChange,
   interactionRequest = null,
   onInteractionSubmitted,
+  onGuideStaged,
 }: ChatInputProps, ref) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
@@ -80,6 +85,8 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [accessMenuOpen, setAccessMenuOpen] = useState(false);
+  const [stagedMessages, setStagedMessages] = useState<StagedMessage[]>([]);
+  const [guideLoading, setGuideLoading] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
 
@@ -326,10 +333,17 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     if (!projectPath || disabled || sending) return;
     if (!message.trim() && files.length === 0) return;
 
-    // If the agent is currently streaming, stop it first before sending
-    // the new message (user typed during output → stop + send).
+    // If the agent is currently streaming, stage the message instead of
+    // interrupting the output. The user can then click "Guide" on the
+    // staged message to deliver it (stop+send or steer).
     if (isStreaming) {
-      handleAbort();
+      setStagedMessages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), content: message.trim() },
+      ]);
+      setMessage("");
+      setFiles([]);
+      return;
     }
 
     setSending(true);
@@ -384,6 +398,31 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     } catch (err) {
       console.error("Failed to send message:", err);
       setSending(false);
+    }
+  };
+
+  // Guide a staged message — deliver it to the agent.
+  // For Jishu Agent (task session): steer (pause→supplement→resume).
+  // For other agents: stop current → send as new message.
+  const handleGuideStaged = async (id: string, content: string) => {
+    if (!projectPath || disabled) return;
+    setGuideLoading(id);
+    try {
+      if (onGuideStaged) {
+        // Caller handles delivery (e.g., steer for Pi RPC).
+        await onGuideStaged(content);
+      } else {
+        // Default: stop current generation → send as new message.
+        if (isStreaming) {
+          handleAbort();
+        }
+        await sendPreparedMessage(content, true);
+      }
+      setStagedMessages((prev) => prev.filter((m) => m.id !== id));
+    } catch (err) {
+      console.error("Failed to guide staged message:", err);
+    } finally {
+      setGuideLoading(null);
     }
   };
 
@@ -491,6 +530,22 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
             onSubmit={handleInteractionSubmit}
           />
         ) : null}
+        {stagedMessages.length > 0 && (
+          <div className="px-3 pt-2">
+            <MessageStaging
+              messages={stagedMessages}
+              onEdit={(id, content) =>
+                setStagedMessages((prev) =>
+                  prev.map((m) => (m.id === id ? { ...m, content } : m)),
+                )
+              }
+              onDelete={(id) =>
+                setStagedMessages((prev) => prev.filter((m) => m.id !== id))
+              }
+              onSend={handleGuideStaged}
+            />
+          </div>
+        )}
         <FilePreview files={files} onLabelChange={handleLabelChange} onRemove={handleRemoveFile} />
 
         <textarea
