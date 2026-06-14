@@ -20,15 +20,26 @@ import {
 } from "@/components/ui/dialog";
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
 import {
-  HardDrive, MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ChevronDown, PictureInPicture2,
+  HardDrive, MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ChevronDown, ChevronRight, PictureInPicture2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { searchSessions } from "@/lib/session-search";
 import { openFloatingSession } from "@/lib/floating-window";
+import { interactionRequestFromEvent } from "@/lib/conversation-interaction";
 import { AgentLogo, useAgent } from "@/agents";
-import type { Session, Project, ProjectMeta, ProjectSettings, Message, ContentBlock, AgentStreamChunk, SessionSearchResult } from "@/types";
+import type {
+  AgentStreamChunk,
+  ContentBlock,
+  ConversationInteractionRequest,
+  Message,
+  Project,
+  ProjectMeta,
+  ProjectSettings,
+  Session,
+  SessionSearchResult,
+} from "@/types";
 
 function TerminalIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -95,6 +106,28 @@ interface PendingChatApproval {
   payload: unknown;
 }
 
+interface PendingChatInteraction {
+  agentId: string;
+  sessionId: string;
+  request: ConversationInteractionRequest;
+}
+
+interface TaskConversationSummary {
+  graph_id: string;
+  title: string;
+  original_goal: string;
+  project_root: string;
+  owner_agent_id: string;
+  run_id: string | null;
+  phase: string;
+  current_node_id: string | null;
+  current_node_title: string | null;
+  completed_nodes: number;
+  total_nodes: number;
+  pending_interaction_count: number;
+  updated_at: number;
+}
+
 export function ChatPage({
   currentProject,
   currentProjectMeta,
@@ -139,7 +172,11 @@ export function ChatPage({
   const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
   const [optimisticSessions, setOptimisticSessions] = useState<Session[]>([]);
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
+  const [selectedTaskGraphId, setSelectedTaskGraphId] = useState<string | null>(null);
+  const [regularSessionsOpen, setRegularSessionsOpen] = useState(true);
+  const [taskSessionsOpen, setTaskSessionsOpen] = useState(true);
   const [pendingApprovals, setPendingApprovals] = useState<PendingChatApproval[]>([]);
+  const [pendingInteractions, setPendingInteractions] = useState<PendingChatInteraction[]>([]);
   const [approvalResolving, setApprovalResolving] = useState(false);
 
   // Quick model picker for Pi-backed model stores. The adapter declares
@@ -226,6 +263,22 @@ export function ChatPage({
     projectId ? { encodedName: projectId } : undefined,
     activeId + "_" + listRefreshKey,
   );
+  const {
+    data: taskConversations,
+    refetch: refetchTaskConversations,
+  } = useInvoke<TaskConversationSummary[]>(
+    projectPathForSettings ? "orchestrator_list_task_conversations" : "",
+    projectPathForSettings ? { projectRoot: projectPathForSettings } : undefined,
+    projectPathForSettings ?? "",
+  );
+
+  useEffect(() => {
+    if (!projectPathForSettings) return;
+    const timer = window.setInterval(() => {
+      refetchTaskConversations(true).catch(console.error);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [projectPathForSettings, refetchTaskConversations]);
 
   useEffect(() => {
     refetchSessionsRef.current = refetchSessions;
@@ -256,6 +309,13 @@ export function ChatPage({
   } else if (!deferredSearchQuery.trim()) {
     displaySessions = uniqueSessionsById([...optimisticSessions, ...displaySessions]);
   }
+  const displayTaskConversations = (taskConversations ?? []).filter((task) => {
+    const query = deferredSearchQuery.trim().toLocaleLowerCase();
+    if (!query) return true;
+    return `${task.title}\n${task.original_goal}\n${task.current_node_title ?? ""}`
+      .toLocaleLowerCase()
+      .includes(query);
+  });
 
   const hasSearchQuery = searchQuery.trim().length > 0;
   const showMessageSearchControls = hasSearchQuery && !!selectedSession && selectedSession !== "new";
@@ -304,6 +364,7 @@ export function ChatPage({
     setSessionMessages([]);
     setOptimisticSessions([]);
     setTaskPanelOpen(false);
+    setSelectedTaskGraphId(null);
     sessionMessagesCacheRef.current.clear();
     newSessionStreamIdsRef.current.clear();
     clearImageCache();
@@ -316,6 +377,7 @@ export function ChatPage({
     setSessionMessages([]);
     setOptimisticSessions([]);
     setTaskPanelOpen(false);
+    setSelectedTaskGraphId(null);
     sessionMessagesCacheRef.current.clear();
     newSessionStreamIdsRef.current.clear();
     setListRefreshKey(Date.now());
@@ -397,6 +459,7 @@ export function ChatPage({
 
   const handleSelectSession = async (sessionId: string) => {
     setTaskPanelOpen(false);
+    setSelectedTaskGraphId(null);
     if (sessionId === selectedSession || !projectId) return;
 
     if (selectedSession && messageAreaRef.current) {
@@ -468,6 +531,7 @@ export function ChatPage({
     if (!projectId) return;
 
     setTaskPanelOpen(false);
+    setSelectedTaskGraphId(null);
     setSelectedSession("new");
     selectedSessionRef.current = "new";
     setSessionMessages([]);
@@ -476,6 +540,13 @@ export function ChatPage({
       chatInputRef.current?.focus();
     });
   };
+
+  const handleOpenTaskConversation = useCallback((graphId: string | null) => {
+    setSelectedTaskGraphId(graphId);
+    setTaskPanelOpen(true);
+    setSelectedSession(null);
+    selectedSessionRef.current = null;
+  }, []);
 
   const handleResumeSession = async (sessionId: string) => {
     setLoadingSessionId(sessionId);
@@ -602,6 +673,24 @@ export function ChatPage({
           });
         }
 
+        if (chunk.data.kind === "interaction_request") {
+          const request = interactionRequestFromEvent(chunk.data);
+          setPendingInteractions((current) => {
+            const next: PendingChatInteraction = {
+              agentId: chunk.agent_id,
+              sessionId: cid,
+              request,
+            };
+            const exists = current.some(
+              (item) =>
+                item.agentId === next.agentId
+                && item.sessionId === next.sessionId
+                && item.request.requestId === next.request.requestId,
+            );
+            return exists ? current : [...current, next];
+          });
+        }
+
         // Only push into the store if it knows about this session — otherwise
         // we'd accidentally create state for a session we never started.
         if (!streamStore.hasState(cid)) {
@@ -623,6 +712,13 @@ export function ChatPage({
           // both keys pointing at the same array for safety).
           const cached = sessionMessagesCacheRef.current.get(cid);
           if (cached) sessionMessagesCacheRef.current.set(realId, cached);
+          setPendingInteractions((current) =>
+            current.map((item) =>
+              item.agentId === chunk.agent_id && item.sessionId === cid
+                ? { ...item, sessionId: realId }
+                : item,
+            ),
+          );
           if (selectedSessionRef.current === cid) {
             setSelectedSession(realId);
             selectedSessionRef.current = realId;
@@ -740,6 +836,21 @@ export function ChatPage({
     ? (sessionNames?.[selectedSession] || sessions?.find(s => s.id === selectedSession)?.display_name || optimisticSessions.find(s => s.id === selectedSession)?.display_name || selectedSession.slice(0, 8))
     : "";
   const activeApproval = pendingApprovals[0] ?? null;
+  const activeInteraction = pendingInteractions.find(
+    (item) =>
+      item.agentId === activeId
+      && item.sessionId === selectedSession,
+  ) ?? null;
+  const handleInteractionSubmitted = useCallback((requestId: string) => {
+    setPendingInteractions((current) =>
+      current.filter(
+        (item) =>
+          item.agentId !== activeId
+          || item.sessionId !== selectedSession
+          || item.request.requestId !== requestId,
+      ),
+    );
+  }, [activeId, selectedSession]);
   const resolveActiveApproval = useCallback(async (approved: boolean) => {
     if (!activeApproval || approvalResolving) return;
     setApprovalResolving(true);
@@ -892,7 +1003,7 @@ export function ChatPage({
           </div>
           <div className="px-3 pb-2">
             <button
-              onClick={projectId ? () => { setTaskPanelOpen(true); setSelectedSession(null); selectedSessionRef.current = null; } : undefined}
+              onClick={projectId ? () => handleOpenTaskConversation(null) : undefined}
               title={projectId ? t("tasks.startTask") : t("sessions.selectProject")}
               className={cn(
                 "flex h-8 w-full items-center gap-2.5 rounded-lg pl-2 pr-2 text-sm text-foreground transition-fast",
@@ -990,7 +1101,7 @@ export function ChatPage({
           </div>
           <div className="flex items-center justify-center h-10 pb-2">
             <button
-              onClick={projectId ? () => { setTaskPanelOpen(true); setSelectedSession(null); selectedSessionRef.current = null; } : undefined}
+              onClick={projectId ? () => handleOpenTaskConversation(null) : undefined}
               title={projectId ? t("tasks.startTask") : t("sessions.selectProject")}
               className={cn(
                 "flex h-8 w-8 items-center justify-center rounded-lg transition-fast",
@@ -1004,8 +1115,17 @@ export function ChatPage({
 
         {/* Session list: expanded */}
         <div className={cn("flex-1 overflow-y-auto", sidebarCollapsed && "hidden")}>
-          {displaySessions.map((session) => {
-            const isActive = session.id === selectedSession;
+          <button
+            type="button"
+            onClick={() => setRegularSessionsOpen((open) => !open)}
+            className="flex h-8 w-full items-center gap-2 border-y border-border/20 bg-[var(--color-layer-1)] px-4 text-[11px] font-medium text-muted-foreground"
+          >
+            {regularSessionsOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+            <span>{t("sessions.regularConversations")}</span>
+            <span className="ml-auto tabular-nums">{displaySessions.length}</span>
+          </button>
+          {regularSessionsOpen && displaySessions.map((session) => {
+            const isActive = session.id === selectedSession && !taskPanelOpen;
             const name = sessionNames?.[session.id] || session.display_name || session.id.slice(0, 8);
             const timeStr = session.last_active
               ? formatRelativeTime(session.last_active, t)
@@ -1070,6 +1190,56 @@ export function ChatPage({
               </ContextMenu>
             );
           })}
+          <button
+            type="button"
+            onClick={() => setTaskSessionsOpen((open) => !open)}
+            className="flex h-8 w-full items-center gap-2 border-y border-border/20 bg-[var(--color-layer-1)] px-4 text-[11px] font-medium text-muted-foreground"
+          >
+            {taskSessionsOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+            <span>{t("sessions.taskConversations")}</span>
+            <span className="ml-auto tabular-nums">{displayTaskConversations.length}</span>
+          </button>
+          {taskSessionsOpen && displayTaskConversations.map((task) => {
+            const isActive = taskPanelOpen && task.graph_id === selectedTaskGraphId;
+            return (
+              <button
+                key={task.graph_id}
+                type="button"
+                onClick={() => handleOpenTaskConversation(task.graph_id)}
+                className={cn(
+                  "flex w-full flex-col items-start border-b border-border/10 py-2 pl-5 pr-2 text-xs transition-fast",
+                  isActive
+                    ? "bg-primary/10 text-foreground font-medium"
+                    : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
+                )}
+              >
+                <div className="flex w-full items-center gap-3">
+                  <ClipboardList className="h-3 w-3 shrink-0 text-[var(--icon-action)]" />
+                  <span className="min-w-0 flex-1 truncate text-left leading-none">
+                    {task.title}
+                  </span>
+                  {task.pending_interaction_count > 0 ? (
+                    <span className="shrink-0 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-medium text-amber-600">
+                      {task.pending_interaction_count}
+                    </span>
+                  ) : (
+                    <span className="shrink-0 text-[0.65em] tabular-nums text-muted-foreground/40">
+                      {formatRelativeTime(new Date(task.updated_at), t)}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-1.5 flex w-full items-center gap-2 pl-6 text-[10px] text-muted-foreground/70">
+                  <span>{t(`tasks.conversation.phases.${task.phase}`)}</span>
+                  {task.current_node_title && (
+                    <>
+                      <span>·</span>
+                      <span className="min-w-0 truncate">{task.current_node_title}</span>
+                    </>
+                  )}
+                </div>
+              </button>
+            );
+          })}
         </div>
 
         {/* Collapsed: empty body */}
@@ -1097,7 +1267,12 @@ export function ChatPage({
         ) : taskPanelOpen ? (
           <TasksPage
             initialProjectPath={currentProject?.path ?? null}
-            onClose={() => setTaskPanelOpen(false)}
+            initialGraphId={selectedTaskGraphId}
+            onClose={() => {
+              setTaskPanelOpen(false);
+              setSelectedTaskGraphId(null);
+              refetchTaskConversations(true).catch(console.error);
+            }}
           />
         ) : showStartComposer ? (
           <div className="flex min-h-0 flex-1 items-center justify-center px-6 py-10">
@@ -1223,6 +1398,8 @@ export function ChatPage({
               accessModeOptions={accessModeOptions}
               accessModeValue={accessModeValue}
               onAccessModeChange={handleAccessModeChange}
+              interactionRequest={activeInteraction?.request}
+              onInteractionSubmitted={handleInteractionSubmitted}
             />
           </div>
         )}
