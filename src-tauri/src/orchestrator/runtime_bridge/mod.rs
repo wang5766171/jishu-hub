@@ -119,15 +119,27 @@ pub trait TaskAgentRuntime: Send + Sync {
     /// Request cancellation of an in-flight invocation by id. Default no-op;
     /// runtimes that track live invocations override this (M1.2+).
     fn cancel(&self, _invocation_id: &str) {}
+
+    /// Steer an in-flight invocation (mid-turn text injection). Default no-op;
+    /// PiRpc overrides to send a `Prompt` (steer) command to the live session.
+    fn steer(&self, _invocation_id: &str, _message: String) -> Result<(), String> {
+        Err("steer not supported by this runtime".to_string())
+    }
 }
 
 pub struct DefaultTaskAgentRuntime {
     registry: Arc<AgentRegistry>,
+    /// Live Pi RPC sessions keyed by invocation_id. Used for mid-turn steering.
+    live_controls:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, crate::acp_runtime::AcpControl>>>,
 }
 
 impl DefaultTaskAgentRuntime {
     pub fn new(registry: Arc<AgentRegistry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            live_controls: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        }
     }
 }
 
@@ -146,6 +158,7 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
         request: RuntimeInvocationRequest,
     ) -> Pin<Box<dyn Future<Output = Result<InvocationHandle, String>> + Send>> {
         let registry = self.registry.clone();
+        let live_controls = self.live_controls.clone();
         Box::pin(async move {
             let invocation_id = request.invocation_id.clone();
 
@@ -213,12 +226,14 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                     |_sid| {},
                 );
 
-                // Bridge: NormalizedEvent stream → RuntimeStreamItem stream.
-                // TurnComplete triggers Finished so the planner detects end-of-turn.
-                // The acp_control is moved into the bridge to keep the command
-                // channel alive — without this, the connection loop exits
-                // immediately (command_rx returns None) and Pi is killed before
-                // producing any output.
+                // Register the control for mid-turn steering, then move a clone
+                // into the bridge. The original is removed when the bridge ends.
+                {
+                    let mut guard = live_controls.lock().map_err(|e| e.to_string())?;
+                    guard.insert(invocation_id.clone(), acp_control.clone());
+                }
+                let steer_invocation_id = invocation_id.clone();
+
                 let (stream_tx, stream_rx) = mpsc::channel::<RuntimeStreamItem>(64);
                 tokio::spawn(async move {
                     let _keep_alive = acp_control;
@@ -240,8 +255,6 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                                     exit_code: Some(0),
                                 })
                                 .await;
-                            // Break to clean up: dropping _keep_alive closes
-                            // the command channel → connection loop exits → Pi killed.
                             break;
                         }
                     }
@@ -252,6 +265,10 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                                 exit_code: None,
                             })
                             .await;
+                    }
+                    // Clean up: remove from live registry so steer() fails fast.
+                    if let Ok(mut guard) = live_controls.lock() {
+                        guard.remove(&steer_invocation_id);
                     }
                 });
 
@@ -281,6 +298,21 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                 .map_err(|error| format!("agent runtime task failed: {error}"))?;
                 Ok(materialize_handle(invocation_id, result))
             }
+        })
+    }
+
+    fn steer(&self, invocation_id: &str, message: String) -> Result<(), String> {
+        let guard = self.live_controls.lock().map_err(|e| e.to_string())?;
+        let control = guard
+            .get(invocation_id)
+            .ok_or_else(|| format!("No live session for invocation {invocation_id}"))?;
+        let control = control.clone();
+        drop(guard);
+        tauri::async_runtime::block_on(async move {
+            control
+                .send_prompt(message)
+                .await
+                .map_err(|e| format!("Steer failed: {e}"))
         })
     }
 }

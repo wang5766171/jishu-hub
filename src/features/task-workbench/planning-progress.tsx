@@ -1,5 +1,7 @@
-import { Check, LoaderCircle, LockKeyhole } from "lucide-react";
+import { useState } from "react";
+import { Check, LoaderCircle, LockKeyhole, Send } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { invoke } from "@tauri-apps/api/core";
 import type { PlanningProgress } from "./use-task-graph";
 import { MarkdownText } from "@/components/sessions/conversation-content";
 
@@ -13,6 +15,20 @@ export function PlanningProgressOverlay({
   text,
 }: PlanningProgressOverlayProps) {
   const { t } = useTranslation();
+  const [steerText, setSteerText] = useState("");
+  const [steerError, setSteerError] = useState<string | null>(null);
+
+  const handleSteer = async () => {
+    const msg = steerText.trim();
+    if (!msg) return;
+    setSteerError(null);
+    try {
+      await invoke("orchestrator_steer_planner", { message: msg });
+      setSteerText("");
+    } catch (err) {
+      setSteerError(String(err));
+    }
+  };
   const stages: PlanningProgress["stage"][] = [
     "preparing_context",
     "resolving_agent",
@@ -115,6 +131,36 @@ export function PlanningProgressOverlay({
                 </div>
               </div>
             )}
+
+            {/* Steer input — user can inject guidance mid-planning */}
+            <div className="mt-6">
+              {steerError && (
+                <p className="mb-2 text-xs text-destructive">{steerError}</p>
+              )}
+              <div className="flex items-center gap-2 rounded-xl border border-border/70 bg-card px-3 py-2">
+                <input
+                  value={steerText}
+                  onChange={(e) => setSteerText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void handleSteer();
+                    }
+                  }}
+                  placeholder={t("tasks.workbench.planningProgress.steerPlaceholder")}
+                  className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleSteer()}
+                  disabled={!steerText.trim()}
+                  className="flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Send className="size-3.5" />
+                  {t("tasks.workbench.planningProgress.steer")}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </section>

@@ -2083,6 +2083,38 @@ async fn orchestrator_generate_proposal(
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
+fn orchestrator_steer_planner(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    message: String,
+) -> Result<(), crate::orchestrator::domain::run::TaskError> {
+    let planner = {
+        let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+        let task_service = app_state
+            .task_service
+            .lock()
+            .map_err(|e| task_ipc_internal(e.to_string()))?;
+        task_service
+            .planner_service()
+            .map_err(Into::<crate::orchestrator::domain::run::TaskError>::into)?
+    };
+    planner
+        .steer(message)
+        .map_err(|message| crate::orchestrator::domain::run::TaskError {
+            code: "TASK_STEER_ERROR".into(),
+            category: crate::orchestrator::domain::run::TaskErrorCategory::Adapter,
+            message_key: message,
+            field_path: None,
+            retryable: false,
+            retry_after_ms: None,
+            current_revision: None,
+            current_run_seq: None,
+            remediation: None,
+            provider_detail: None,
+        })
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
 fn orchestrator_start_run(
     state: tauri::State<'_, std::sync::Mutex<AppState>>,
     graph_id: String,
@@ -2586,6 +2618,8 @@ pub fn run() {
             orchestrator_validate_commands,
             #[cfg(feature = "orchestrator")]
             orchestrator_generate_proposal,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_steer_planner,
             #[cfg(feature = "orchestrator")]
             orchestrator_start_run,
             #[cfg(feature = "orchestrator")]

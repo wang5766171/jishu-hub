@@ -63,6 +63,8 @@ pub struct PlannerService {
     store: Arc<TaskStore>,
     runtime: Arc<dyn TaskAgentRuntime>,
     registry: Arc<AgentRegistry>,
+    /// The invocation_id of the current planning session (for steering).
+    current_invocation: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl PlannerService {
@@ -75,7 +77,19 @@ impl PlannerService {
             store,
             runtime,
             registry,
+            current_invocation: Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// Steer the in-flight planning session (mid-turn text injection).
+    pub fn steer(&self, message: String) -> Result<(), String> {
+        let invocation_id = {
+            let guard = self.current_invocation.lock().map_err(|e| e.to_string())?;
+            guard
+                .clone()
+                .ok_or_else(|| "No planning session is currently active".to_string())?
+        };
+        self.runtime.steer(&invocation_id, message)
     }
 
     pub async fn generate(&self, request: PlanningRequest) -> Result<GraphProposal, String> {
@@ -156,10 +170,16 @@ impl PlannerService {
             report("generating", Some(attempt + 1));
             let mut invocation_prompt = next_prompt.clone();
             let response = loop {
+                let this_invocation_id = gen_id("planner-invocation");
+                // Store for steering — the frontend can call steer() while
+                // the Pi RPC session is live.
+                if let Ok(mut guard) = self.current_invocation.lock() {
+                    *guard = Some(this_invocation_id.clone());
+                }
                 let mut handle = self
                     .runtime
                     .invoke(RuntimeInvocationRequest {
-                        invocation_id: gen_id("planner-invocation"),
+                        invocation_id: this_invocation_id,
                         agent_id: planner_assignment.agent_id.clone(),
                         role_id: "planner".into(),
                         project_path: project_path.clone(),
@@ -295,6 +315,10 @@ impl PlannerService {
             planner_policy_refs: revision.planner_policy_refs,
         };
         report("completed", None);
+        // Clear the invocation — steering is no longer available.
+        if let Ok(mut guard) = self.current_invocation.lock() {
+            *guard = None;
+        }
         Ok(proposal)
     }
 }
