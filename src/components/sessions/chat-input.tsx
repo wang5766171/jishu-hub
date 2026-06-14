@@ -402,22 +402,26 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   };
 
   // Guide a staged message — deliver it to the agent.
-  // For Jishu Agent (task session): steer (pause→supplement→resume).
-  // Guide a staged message — deliver it to the agent.
-  // For Jishu Agent (task session): steer (pause→supplement→resume).
-  // For other agents: just send as new message (backend queues after current turn).
-  // Don't manually abort — that races with the send and corrupts stream state.
+  // For ACP/Pi-RPC agents (onGuideStaged provided): steer — inject the text
+  // mid-turn without interrupting output.
+  // For CLI/embedded agents (no onGuideStaged): stop the current generation,
+  // then send as a new message.
   const handleGuideStaged = async (id: string, content: string) => {
     if (!projectPath || disabled) return;
     setGuideLoading(id);
     try {
       if (onGuideStaged) {
-        // Caller handles delivery (e.g., steer for Pi RPC).
+        // Caller handles delivery (steer for Pi RPC / ACP).
         await onGuideStaged(content);
       } else {
-        // Default: just send. Backend send_message handles active sessions
-        // by queuing (ACP) or respawning (CLI). Don't abort first —
-        // handleAbort is async and races with sendPreparedMessage.
+        // CLI/embedded agents have no mid-turn steer. Stop the current turn
+        // first, then send. The abort MUST be awaited so its streamStore.drop
+        // settles before sendPreparedMessage's streamStore.start — an
+        // un-awaited abort racing with the send was what corrupted stream
+        // state and cleared the UI previously.
+        if (isStreaming) {
+          await handleAbort();
+        }
         await sendPreparedMessage(content, true);
       }
       setStagedMessages((prev) => prev.filter((m) => m.id !== id));
