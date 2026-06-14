@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { computeLayout, LAYOUT_NODE_WIDTH, type LayoutGraph, type LayoutResult } from "./layout";
 import { loadViewport, saveViewport } from "./viewport-storage";
+import { loadNodePositions, saveNodePositions } from "./node-positions";
 import {
   ReactFlow,
   MiniMap,
@@ -163,6 +164,14 @@ export function GraphEditor({
           changed = true;
           return { ...node, position: placed };
         });
+        // Persist dagre-computed positions so re-entry doesn't re-overlap.
+        if (changed && graphId) {
+          const allPositions: Record<string, { x: number; y: number }> = {};
+          for (const node of next) {
+            allPositions[node.id] = node.position;
+          }
+          saveNodePositions(graphId, allPositions);
+        }
         return changed ? next : current;
       });
     };
@@ -228,6 +237,16 @@ export function GraphEditor({
     },
     [graphId],
   );
+
+  // Persist node positions when the user drags a node.
+  const handleNodeDragStop = useCallback(() => {
+    if (!graphId) return;
+    const allPositions: Record<string, { x: number; y: number }> = {};
+    for (const node of nodes) {
+      allPositions[node.id] = node.position;
+    }
+    saveNodePositions(graphId, allPositions);
+  }, [graphId, nodes]);
 
   useEffect(() => {
     // Switching graphs re-runs the initial fit-or-restore on the next snapshot.
@@ -297,6 +316,9 @@ export function GraphEditor({
       edges: rfEdges.map((edge) => ({ source: edge.source, target: edge.target })),
     };
     const layoutWorker = layoutWorkerRef.current;
+    // Load persisted node positions for this graph (prevents re-overlap on
+    // re-entry). Saved positions take priority; dagre fills the rest.
+    const savedPositions = graphId ? loadNodePositions(graphId) : null;
     // Without a worker (jsdom tests, or browsers where Worker failed to spawn),
     // compute synchronously — behavior matches the legacy inline layout. With a
     // worker, new-node positions arrive asynchronously via the message handler.
@@ -307,7 +329,11 @@ export function GraphEditor({
       );
       return rfNodes.map((node) => ({
         ...node,
-        position: currentPositions.get(node.id) ?? positions[node.id] ?? { x: 0, y: 0 },
+        position:
+          savedPositions?.[node.id]
+          ?? currentPositions.get(node.id)
+          ?? positions[node.id]
+          ?? { x: 0, y: 0 },
       }));
     });
     layoutWorker?.postMessage(layoutGraph);
@@ -447,6 +473,7 @@ export function GraphEditor({
         onSelectionChange={handleSelectionChange}
         onPaneClick={handlePaneClick}
         onMoveEnd={handleMoveEnd}
+        onNodeDragStop={handleNodeDragStop}
         onInit={(instance) => {
           flowRef.current = instance;
         }}
