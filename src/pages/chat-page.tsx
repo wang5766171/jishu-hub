@@ -1400,6 +1400,13 @@ export function ChatPage({
               onAccessModeChange={handleAccessModeChange}
               interactionRequest={activeInteraction?.request}
               onInteractionSubmitted={handleInteractionSubmitted}
+              onGuideStaged={async (content: string) => {
+                if (!selectedSession || selectedSession === "new") return;
+                await invokeCommand("steer_chat", {
+                  sessionId: selectedSession,
+                  message: content,
+                });
+              }}
             />
           </div>
         )}

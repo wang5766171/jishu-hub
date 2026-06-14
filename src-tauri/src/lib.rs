@@ -2591,6 +2591,7 @@ pub fn run() {
             install_update,
             chat::send_message,
             chat::abort_chat,
+            chat::steer_chat,
             chat::resolve_chat_permission,
             image::save_session_files,
             image::read_image_as_data_url,
