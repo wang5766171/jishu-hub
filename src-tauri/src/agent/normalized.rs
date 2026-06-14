@@ -56,6 +56,15 @@ pub enum NormalizedEvent {
     SessionResolved {
         session_id: String,
     },
+    /// A steering user message was injected mid-turn. Pi emits a
+    /// `message_start`/`message_end` pair with `role=user` for the queued
+    /// steer at a tool-call gap. Carries the steer text so the frontend can
+    /// split the accumulated assistant content at the injection point and
+    /// interleave the steer between the two assistant segments — matching the
+    /// order Pi persists to the session JSONL.
+    SteerInjected {
+        content: String,
+    },
     TurnComplete {
         reason: TurnEndReason,
         usage: Option<UsageStats>,
@@ -96,6 +105,7 @@ impl NormalizedEvent {
             NormalizedEvent::ApprovalRequest { .. } => "approval_request",
             NormalizedEvent::InteractionRequest { .. } => "interaction_request",
             NormalizedEvent::SessionResolved { .. } => "session_resolved",
+            NormalizedEvent::SteerInjected { .. } => "steer_injected",
             NormalizedEvent::TurnComplete { .. } => "turn_complete",
             NormalizedEvent::Error { .. } => "error",
             NormalizedEvent::TaskStep { .. } => "task_step",

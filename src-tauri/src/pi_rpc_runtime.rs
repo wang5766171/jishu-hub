@@ -728,8 +728,52 @@ pub(crate) fn normalize_pi_agent_event(event: &serde_json::Value) -> Vec<Normali
             }
         }
 
+        // -- Steer injection marker --------------------------------------
+        // Pi emits `message_start`/`message_end` with `role=user` for a
+        // queued steer at the moment it is delivered (typically at a tool-call
+        // gap, mid-turn). Surface the steer text so the frontend can split the
+        // accumulated assistant content at the injection point and interleave
+        // the steer between the two assistant segments — matching the order Pi
+        // persists to the session JSONL. The companion `message_end` carries
+        // the same payload; one marker per steer is enough, so only
+        // `message_start` is converted. Assistant `message_start`
+        // (role=assistant) is still ignored: the assistant content arrives
+        // incrementally via `message_update` above.
+        "message_start" => {
+            let role = event
+                .get("message")
+                .and_then(|m| m.get("role"))
+                .and_then(|v| v.as_str());
+            if role != Some("user") {
+                return vec![];
+            }
+            let content = event
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|v| v.as_array())
+                .map(|blocks| {
+                    blocks
+                        .iter()
+                        .filter_map(|block| {
+                            if block.get("type").and_then(|v| v.as_str()) == Some("text") {
+                                block.get("text").and_then(|v| v.as_str()).map(str::to_string)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            if content.is_empty() {
+                vec![]
+            } else {
+                vec![NormalizedEvent::SteerInjected { content }]
+            }
+        }
+
         // All other event types (agent_start, agent_end, turn_start,
-        // message_start, message_end, tool_execution_update) are ignored.
+        // message_end, tool_execution_update) are ignored.
         _ => vec![],
     }
 }
@@ -830,6 +874,55 @@ mod tests {
                 ..
             }] if request_id == "call-1:1" && prompt == "请选择发布方式"
         ));
+    }
+
+    #[test]
+    fn surfaces_user_role_message_start_as_steer_injected() {
+        // Pi emits this for a queued steer delivered at a tool-call gap.
+        let events = normalize_pi_agent_event(&json!({
+            "type": "message_start",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": "改用 TypeScript 实现" }],
+                "timestamp": 0
+            }
+        }));
+
+        match events.as_slice() {
+            [NormalizedEvent::SteerInjected { content }] => {
+                assert_eq!(content, "改用 TypeScript 实现");
+            }
+            other => panic!("expected [SteerInjected], got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ignores_assistant_role_message_start() {
+        // Assistant content arrives via message_update, so the assistant
+        // message_start must not be surfaced (it carries no steer).
+        let events = normalize_pi_agent_event(&json!({
+            "type": "message_start",
+            "message": {
+                "role": "assistant",
+                "content": [{ "type": "text", "text": "" }],
+                "timestamp": 0
+            }
+        }));
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn ignores_message_end_for_steer() {
+        // Only message_start is converted; message_end is a duplicate marker.
+        let events = normalize_pi_agent_event(&json!({
+            "type": "message_end",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": "steer text" }],
+                "timestamp": 0
+            }
+        }));
+        assert!(events.is_empty());
     }
 
     #[test]

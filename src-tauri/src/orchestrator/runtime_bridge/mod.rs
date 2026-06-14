@@ -614,6 +614,7 @@ pub fn map_normalized_event(context: &RuntimeEventContext, event: &NormalizedEve
         },
         NormalizedEvent::TaskStep { .. }
         | NormalizedEvent::SubAgentDispatch { .. }
+        | NormalizedEvent::SteerInjected { .. }
         | NormalizedEvent::Raw { .. } => RuntimeFact::Diagnostic {
             context: context.clone(),
             payload: serde_json::to_value(event).unwrap_or_default(),
