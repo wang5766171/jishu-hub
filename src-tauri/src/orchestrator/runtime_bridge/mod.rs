@@ -204,7 +204,7 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                     .unwrap_or_else(|| format!("orchestrator-{invocation_id}"));
 
                 // Spawn the persistent session. Returns immediately with AcpControl.
-                let _acp_control = crate::pi_rpc_runtime::spawn_pi_rpc_session_with_emitter(
+                let acp_control = crate::pi_rpc_runtime::spawn_pi_rpc_session_with_emitter(
                     emit,
                     pending_session_id,
                     child,
@@ -215,8 +215,13 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
 
                 // Bridge: NormalizedEvent stream → RuntimeStreamItem stream.
                 // TurnComplete triggers Finished so the planner detects end-of-turn.
+                // The acp_control is moved into the bridge to keep the command
+                // channel alive — without this, the connection loop exits
+                // immediately (command_rx returns None) and Pi is killed before
+                // producing any output.
                 let (stream_tx, stream_rx) = mpsc::channel::<RuntimeStreamItem>(64);
                 tokio::spawn(async move {
+                    let _keep_alive = acp_control;
                     let mut finished = false;
                     while let Some(event) = event_rx.recv().await {
                         let is_complete = matches!(event, NormalizedEvent::TurnComplete { .. });
@@ -235,6 +240,9 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                                     exit_code: Some(0),
                                 })
                                 .await;
+                            // Break to clean up: dropping _keep_alive closes
+                            // the command channel → connection loop exits → Pi killed.
+                            break;
                         }
                     }
                     if !finished {
