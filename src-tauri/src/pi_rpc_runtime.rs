@@ -301,6 +301,16 @@ async fn pi_rpc_connection_loop(
                         }
                         false
                     }
+                    Some(AcpCommand::Steer(msg)) => {
+                        // Pi RPC native steer: inject text into the current turn.
+                        // The agent considers it while continuing — no turn restart.
+                        send_pi_command(&stdin_arc, &json!({
+                            "type": "steer",
+                            "message": msg
+                        })).await?;
+                        log::debug!("Pi RPC steer sent");
+                        false
+                    }
                     Some(AcpCommand::Cancel) => {
                         match &state {
                             LoopState::Prompting => {

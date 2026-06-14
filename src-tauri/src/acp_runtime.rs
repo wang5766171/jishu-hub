@@ -28,6 +28,9 @@ use crate::cli_runtime::AgentStreamChunk;
 /// Commands sent to the persistent ACP connection task.
 pub enum AcpCommand {
     Prompt(String),
+    /// Steer (mid-turn text injection). Pi RPC: sends {"type":"steer","message":...}.
+    /// ACP: sends a follow_up prompt after the current turn.
+    Steer(String),
     Cancel,
     /// Respond to a Pi extension_ui_request (pause-resume for Jishu Agent).
     /// `id` is the extension_ui_request id; `value` is the user's choice/input.
@@ -67,6 +70,16 @@ impl AcpControl {
 
     pub async fn send_cancel(&self) {
         let _ = self.tx.send(AcpCommand::Cancel).await;
+    }
+
+    /// Steer the in-flight turn (mid-turn text injection). For Pi RPC this
+    /// sends the native `steer` command; the agent incorporates the text
+    /// while continuing the same turn.
+    pub async fn steer(&self, message: String) -> Result<(), String> {
+        self.tx
+            .send(AcpCommand::Steer(message))
+            .await
+            .map_err(|_| "ACP connection closed".to_string())
     }
 
     /// Respond to a Pi extension_ui_request (planning-phase pause-resume).
@@ -615,6 +628,11 @@ async fn acp_connection_loop(
                             }
                             LoopState::Idle | LoopState::CancelPending { .. } => {}
                         }
+                        false
+                    }
+                    Some(AcpCommand::Steer(_)) => {
+                        // ACP does not have a native steer command; ignored.
+                        log::debug!("ACP Steer ignored (ACP transport)");
                         false
                     }
                     Some(AcpCommand::RespondToInput { .. }) => {

@@ -310,7 +310,7 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
         drop(guard);
         tauri::async_runtime::block_on(async move {
             control
-                .send_prompt(message)
+                .steer(message)
                 .await
                 .map_err(|e| format!("Steer failed: {e}"))
         })
