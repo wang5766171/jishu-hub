@@ -18,7 +18,9 @@ use tokio::process::ChildStdin;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::acp_runtime::{AcpCommand, AcpControl};
-use crate::agent::normalized::{NormalizedEvent, TurnEndReason};
+use crate::agent::normalized::{
+    interaction_requests_from_tool_call, InteractionOption, NormalizedEvent, TurnEndReason,
+};
 use crate::cli_runtime::{AgentStreamChunk, StreamChunk};
 
 // ---------------------------------------------------------------------------
@@ -282,6 +284,17 @@ async fn pi_rpc_connection_loop(
                         }
                         false
                     }
+                    Some(AcpCommand::RespondToInput { id, value }) => {
+                        // Respond to a Pi extension_ui_request (planning-phase
+                        // pause-resume). Pi is blocked waiting for this response.
+                        send_pi_command(&stdin_arc, &json!({
+                            "type": "extension_ui_response",
+                            "id": id,
+                            "value": value
+                        })).await?;
+                        log::debug!("Pi RPC extension_ui_response sent for id={}", id);
+                        false
+                    }
                     Some(AcpCommand::ResolvePermission { response, .. }) => {
                         let _ = response.send(Err(
                             "Pi RPC does not use the ACP permission response channel".to_string(),
@@ -399,6 +412,20 @@ async fn pi_rpc_connection_loop(
                                 }
                                 continue;
                             }
+                        }
+
+                        // Handle extension_ui_request (Pi planning-phase pause-resume).
+                        // Pi emits this when the LLM calls a tool that triggers
+                        // extension_ui (e.g., request_user_input). The Hub converts
+                        // it to an InteractionRequest; the user responds via
+                        // AcpCommand::RespondToInput → extension_ui_response.
+                        if msg.get("type").and_then(|v| v.as_str()) == Some("extension_ui_request") {
+                            if let Some(event) = convert_extension_ui_request(&msg) {
+                                buf.push(make_chunk(&session_id, &event));
+                                flush_buf(&app, &agent_id, &mut buf);
+                                last_flush = std::time::Instant::now();
+                            }
+                            continue;
                         }
 
                         // Handle AgentEvent objects
@@ -577,14 +604,23 @@ pub(crate) fn normalize_pi_agent_event(event: &serde_json::Value) -> Vec<Normali
                 .and_then(|v| v.as_str())
                 .unwrap_or("tool")
                 .to_string();
+            let input = event
+                .get("args")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             if call_id.is_empty() {
                 vec![]
             } else {
-                vec![NormalizedEvent::ToolUseStart {
-                    call_id,
-                    tool,
-                    input: serde_json::Value::Null,
-                }]
+                let interactions = interaction_requests_from_tool_call(&call_id, &tool, &input);
+                if interactions.is_empty() {
+                    vec![NormalizedEvent::ToolUseStart {
+                        call_id,
+                        tool,
+                        input,
+                    }]
+                } else {
+                    interactions
+                }
             }
         }
         "tool_execution_end" => {
@@ -660,6 +696,66 @@ pub(crate) fn normalize_pi_agent_event(event: &serde_json::Value) -> Vec<Normali
 // Event emission helpers
 // ---------------------------------------------------------------------------
 
+/// Convert a Pi `extension_ui_request` event to a `NormalizedEvent::InteractionRequest`.
+///
+/// Pi's extension_ui protocol emits requests for select/input/confirm. Only
+/// `select` and `input` are converted (they require a user response). Fire-and-
+/// forget methods (notify, setStatus, etc.) are ignored.
+fn convert_extension_ui_request(msg: &serde_json::Value) -> Option<NormalizedEvent> {
+    let method = msg.get("method").and_then(|v| v.as_str())?;
+    let id = msg.get("id").and_then(|v| v.as_str())?.to_string();
+    match method {
+        "select" => {
+            let title = msg
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("请选择")
+                .to_string();
+            let options = msg
+                .get("options")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| {
+                            v.as_str().map(|s| InteractionOption {
+                                option_id: s.to_string(),
+                                label: s.to_string(),
+                                description: None,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(NormalizedEvent::InteractionRequest {
+                request_id: id,
+                prompt: title,
+                options,
+                allow_multiple: false,
+                allow_custom_text: false,
+                required: true,
+            })
+        }
+        "input" => {
+            let title = msg
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("请输入")
+                .to_string();
+            Some(NormalizedEvent::InteractionRequest {
+                request_id: id,
+                prompt: title,
+                options: vec![],
+                allow_multiple: false,
+                allow_custom_text: true,
+                required: true,
+            })
+        }
+        // confirm, notify, setStatus, setWidget, setTitle, set_editor_text:
+        // fire-and-forget or not mapped to InteractionRequest.
+        _ => None,
+    }
+}
+
 fn make_chunk(session_id: &str, event: &NormalizedEvent) -> StreamChunk {
     StreamChunk {
         session_id: session_id.to_string(),
@@ -706,4 +802,110 @@ fn flush_buf(app: &tauri::AppHandle, agent_id: &str, buf: &mut Vec<StreamChunk>)
         .collect();
     let _ = app.emit("agent-event", &chunks);
     buf.clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_request_user_input_without_exposing_tool_payload() {
+        let events = normalize_pi_agent_event(&json!({
+            "type": "tool_execution_start",
+            "toolCallId": "call-1",
+            "toolName": "request_user_input",
+            "args": {
+                "question": "请选择发布方式",
+                "options": ["A", "B"]
+            }
+        }));
+
+        assert!(matches!(
+            events.as_slice(),
+            [NormalizedEvent::InteractionRequest {
+                request_id,
+                prompt,
+                ..
+            }] if request_id == "call-1:1" && prompt == "请选择发布方式"
+        ));
+    }
+
+    #[test]
+    fn converts_extension_ui_select_to_interaction_request() {
+        let event = convert_extension_ui_request(&json!({
+            "type": "extension_ui_request",
+            "id": "req-uuid-1",
+            "method": "select",
+            "title": "请选择实现方案",
+            "options": ["方案A", "方案B", "方案C"]
+        }))
+        .expect("select should convert");
+
+        match event {
+            NormalizedEvent::InteractionRequest {
+                request_id,
+                prompt,
+                options,
+                allow_multiple,
+                allow_custom_text,
+                required,
+            } => {
+                assert_eq!(request_id, "req-uuid-1");
+                assert_eq!(prompt, "请选择实现方案");
+                assert_eq!(options.len(), 3);
+                assert_eq!(options[0].label, "方案A");
+                assert!(!allow_multiple);
+                assert!(!allow_custom_text);
+                assert!(required);
+            }
+            _ => panic!("expected InteractionRequest"),
+        }
+    }
+
+    #[test]
+    fn converts_extension_ui_input_to_interaction_request() {
+        let event = convert_extension_ui_request(&json!({
+            "type": "extension_ui_request",
+            "id": "req-uuid-2",
+            "method": "input",
+            "title": "补充说明",
+            "placeholder": "可选"
+        }))
+        .expect("input should convert");
+
+        match event {
+            NormalizedEvent::InteractionRequest {
+                request_id,
+                prompt,
+                options,
+                allow_custom_text,
+                ..
+            } => {
+                assert_eq!(request_id, "req-uuid-2");
+                assert_eq!(prompt, "补充说明");
+                assert!(options.is_empty());
+                assert!(allow_custom_text);
+            }
+            _ => panic!("expected InteractionRequest"),
+        }
+    }
+
+    #[test]
+    fn ignores_fire_and_forget_extension_ui_requests() {
+        assert!(convert_extension_ui_request(&json!({
+            "type": "extension_ui_request",
+            "id": "x",
+            "method": "notify",
+            "message": "hello"
+        }))
+        .is_none());
+        assert!(convert_extension_ui_request(&json!({
+            "type": "extension_ui_request",
+            "id": "y",
+            "method": "setStatus",
+            "statusKey": "progress",
+            "statusText": "50%"
+        }))
+        .is_none());
+    }
 }

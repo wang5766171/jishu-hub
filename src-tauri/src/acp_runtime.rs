@@ -29,6 +29,12 @@ use crate::cli_runtime::AgentStreamChunk;
 pub enum AcpCommand {
     Prompt(String),
     Cancel,
+    /// Respond to a Pi extension_ui_request (pause-resume for Jishu Agent).
+    /// `id` is the extension_ui_request id; `value` is the user's choice/input.
+    RespondToInput {
+        id: String,
+        value: String,
+    },
     ResolvePermission {
         request_id: String,
         approved: bool,
@@ -61,6 +67,14 @@ impl AcpControl {
 
     pub async fn send_cancel(&self) {
         let _ = self.tx.send(AcpCommand::Cancel).await;
+    }
+
+    /// Respond to a Pi extension_ui_request (planning-phase pause-resume).
+    pub async fn respond_to_input(&self, id: String, value: String) -> Result<(), String> {
+        self.tx
+            .send(AcpCommand::RespondToInput { id, value })
+            .await
+            .map_err(|_| "ACP connection closed".to_string())
     }
 
     pub async fn resolve_permission(
@@ -601,6 +615,11 @@ async fn acp_connection_loop(
                             }
                             LoopState::Idle | LoopState::CancelPending { .. } => {}
                         }
+                        false
+                    }
+                    Some(AcpCommand::RespondToInput { .. }) => {
+                        // ACP protocol does not use extension_ui; only Pi RPC does.
+                        log::debug!("ACP RespondToInput ignored (ACP transport)");
                         false
                     }
                     Some(AcpCommand::ResolvePermission {
