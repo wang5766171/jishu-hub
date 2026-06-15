@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, Loader2, Bot, X, Maximize2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { AgentStreamChunk } from "@/types";
+import type { AgentEventPayload } from "@/types";
 
 // Apply theme from localStorage for floating window
 function applyStoredTheme() {
@@ -64,7 +64,7 @@ export function FloatingSessionView() {
     let cancelled = false;
     let unlistenFn: (() => void) | null = null;
 
-    listen<AgentStreamChunk[] | AgentStreamChunk>("agent-event", (event) => {
+    listen<AgentEventPayload>("agent-event", (event) => {
       const chunks = Array.isArray(event.payload) ? event.payload : [event.payload];
       for (const chunk of chunks) {
         if (!acceptsSession(chunk.session_id)) continue;

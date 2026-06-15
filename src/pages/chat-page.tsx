@@ -30,7 +30,7 @@ import { openFloatingSession } from "@/lib/floating-window";
 import { interactionRequestFromEvent } from "@/lib/conversation-interaction";
 import { AgentLogo, useAgent } from "@/agents";
 import type {
-  AgentStreamChunk,
+  AgentEventPayload,
   ContentBlock,
   ConversationInteractionRequest,
   Message,
@@ -687,7 +687,7 @@ export function ChatPage({
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
-    listen<AgentStreamChunk[] | AgentStreamChunk>("agent-event", (event) => {
+    listen<AgentEventPayload>("agent-event", (event) => {
       const payload = event.payload;
       const chunks = Array.isArray(payload) ? payload : [payload];
 
@@ -1030,17 +1030,26 @@ export function ChatPage({
               const merged = claimed.map((m) => m.content).join("\n\n");
               streamStore.start(finalKey, merged);
               if (cid !== finalKey) streamStore.alias(finalKey, cid);
-              try {
-                await invokeCommand("send_message", {
-                  projectPath: projectPathRef.current,
-                  sessionId: finalKey,
-                  message: merged,
-                });
-              } catch (err) {
-                console.error("Auto-send of staged guides failed:", err);
-                streamStore.drop(finalKey);
-                stagedApiRef.current.restore(claimed);
-              }
+              // The listen callback is synchronous; fire the send in an async
+              // IIFE so the rest of turn_complete (refetch, focus, scroll) runs
+              // immediately instead of waiting on the network. claimAll() already
+              // claimed synchronously, so exactly-once holds even though the
+              // actual send is deferred.
+              const projectPath = projectPathRef.current;
+              const restore = stagedApiRef.current.restore.bind(stagedApiRef.current);
+              void (async () => {
+                try {
+                  await invokeCommand("send_message", {
+                    projectPath,
+                    sessionId: finalKey,
+                    message: merged,
+                  });
+                } catch (err) {
+                  console.error("Auto-send of staged guides failed:", err);
+                  streamStore.drop(finalKey);
+                  restore(claimed);
+                }
+              })();
             }
           }
 

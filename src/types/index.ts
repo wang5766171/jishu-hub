@@ -209,6 +209,14 @@ export interface AgentStreamChunk extends StreamChunk {
   agent_id: string;
 }
 
+/**
+ * The `agent-event` Tauri payload is emitted as either a single chunk or an
+ * array of chunks. Extracted as a named type because Babel's TS parser mishandles
+ * the `AgentStreamChunk[]` array shorthand inside a `listen<...>()` type-argument
+ * list (it breaks the Vite dev build); a named identifier parses cleanly.
+ */
+export type AgentEventPayload = AgentStreamChunk[] | AgentStreamChunk;
+
 export type NormalizedEvent =
   | { kind: "text_delta"; delta: string }
   | { kind: "message"; content: ContentBlock[] }
