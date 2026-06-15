@@ -25,6 +25,11 @@ interface MessageStagingProps {
   onDelete: (id: string) => void;
   onSend: (id: string, content: string) => void;
   sendLabel?: string;
+  /** When set, a guide send is in flight — disable every send button so a
+   *  rapid double-click (or stacking across messages) can't fire the send
+   *  twice. Correctness is also enforced in the parent via a claimed-id set;
+   *  this is the UX layer. */
+  sendLoadingId?: string | null;
 }
 
 export function MessageStaging({
@@ -33,6 +38,7 @@ export function MessageStaging({
   onDelete,
   onSend,
   sendLabel,
+  sendLoadingId,
 }: MessageStagingProps) {
   const { t } = useTranslation();
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -112,9 +118,9 @@ export function MessageStaging({
                 <button
                   type="button"
                   onClick={() => onSend(msg.id, msg.content)}
-                  disabled={false}
+                  disabled={Boolean(sendLoadingId)}
                   className={cn(
-                    "flex items-center gap-1 rounded bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90",
+                    "flex items-center gap-1 rounded bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40",
                   )}
                   title={sendLabel ?? t("sessions.interactionSubmit")}
                 >

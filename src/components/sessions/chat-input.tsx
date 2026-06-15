@@ -27,6 +27,29 @@ interface AttachedFile {
   localPath?: string;     // set when file is inside project directory
 }
 
+/**
+ * Imperative bridge so the parent (chat-page) can participate in the staging
+ * area's lifecycle — specifically Route 2: auto-sending staged guides when the
+ * agent's turn completes. The staging state still lives here (Route 1, manual
+ * guide, owns it); the parent only reads/claims/clears through this handle.
+ *
+ * A shared `claimedStagedIdsRef` backs `pending`/`claimAll` so that whichever
+ * route (manual guide mid-turn, or auto-send at turn_complete) claims a message
+ * FIRST wins, and the other sees it as already sent — guaranteeing each staged
+ * guide is delivered exactly once even across the await boundary.
+ */
+export interface StagedGuideApi {
+  /** Staged messages not yet claimed by either route. */
+  pending(): StagedMessage[];
+  /** Atomically claim ALL unclaimed staged messages for auto-send: mark them
+   *  claimed (blocking concurrent manual guide / re-click), clear the staging
+   *  UI, and return what was claimed. */
+  claimAll(): StagedMessage[];
+  /** Roll back a failed auto-send: un-claim the ids and put the messages back
+   *  into the staging UI so the user can retry. */
+  restore(messages: StagedMessage[]): void;
+}
+
 interface ChatInputProps {
   sessionId: string | null;
   projectPath: string | null;
@@ -49,6 +72,9 @@ interface ChatInputProps {
   /** Called when user clicks "guide" on a staged message during streaming.
    *  For Jishu Agent: steer. For others: parent should stop + send. */
   onGuideStaged?: (content: string) => Promise<void>;
+  /** When provided, the parent can auto-send staged guides at turn_complete
+   *  (Route 2) and share the claimed-id dedup. */
+  stagedApiRef?: React.MutableRefObject<StagedGuideApi | null>;
 }
 
 function isInsideProject(filePath: string, projectPath: string): boolean {
@@ -77,6 +103,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   interactionRequest = null,
   onInteractionSubmitted,
   onGuideStaged,
+  stagedApiRef,
 }: ChatInputProps, ref) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
@@ -89,8 +116,42 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   const [guideLoading, setGuideLoading] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
+  // Single source of truth for "this staged message was already claimed/sent".
+  // Mutated SYNCHRONOUSLY before any await by BOTH routes (manual guide here,
+  // auto-send via stagedApiRef in the parent), so whichever claims first wins
+  // and the other short-circuits — exactly-once across the race window.
+  const claimedStagedIdsRef = useRef<Set<string>>(new Set());
+  // Always-fresh mirror of stagedMessages so the stagedApiRef methods (set up
+  // once) read the current array instead of a stale closure snapshot.
+  const stagedLiveRef = useRef<StagedMessage[]>(stagedMessages);
+  stagedLiveRef.current = stagedMessages;
 
   useImperativeHandle(ref, () => textareaRef.current!, []);
+
+  // Expose the staging-area lifecycle to the parent (Route 2: auto-send at
+  // turn_complete). Set up once; methods read live refs so they always reflect
+  // the current staging array and claimed set.
+  useEffect(() => {
+    if (!stagedApiRef) return;
+    stagedApiRef.current = {
+      pending: () =>
+        stagedLiveRef.current.filter(
+          (m) => !claimedStagedIdsRef.current.has(m.id),
+        ),
+      claimAll: () => {
+        const unclaimed = stagedLiveRef.current.filter(
+          (m) => !claimedStagedIdsRef.current.has(m.id),
+        );
+        for (const m of unclaimed) claimedStagedIdsRef.current.add(m.id);
+        setStagedMessages([]);
+        return unclaimed;
+      },
+      restore: (messages) => {
+        for (const m of messages) claimedStagedIdsRef.current.delete(m.id);
+        setStagedMessages((prev) => [...prev, ...messages]);
+      },
+    };
+  }, [stagedApiRef]);
 
   // Derive whether current session is streaming (per-session, parallel-safe)
   const isOwnStreaming = useIsSessionStreaming(sessionId);
@@ -108,8 +169,11 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
 
   // When the user switches to a different session, clear the local "active" abort
   // reference so the Stop button targets the new session, not the previous send.
+  // Also reset the claimed-id dedup set — claimed ids are UUIDs unique to the
+  // prior session's staged messages and no longer relevant.
   useEffect(() => {
     setActiveSessionId(null);
+    claimedStagedIdsRef.current.clear();
   }, [sessionId]);
 
   useEffect(() => {
@@ -408,6 +472,12 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   // then send as a new message.
   const handleGuideStaged = async (id: string, content: string) => {
     if (!projectPath || disabled) return;
+    // exactly-once: if this staged message was already claimed — by a prior
+    // click of the same button (claude multi-click), or by Route 2's auto-send
+    // racing this manual click — do nothing. Claim synchronously BEFORE any
+    // await so a concurrent Route 2 sees it as already sent.
+    if (claimedStagedIdsRef.current.has(id)) return;
+    claimedStagedIdsRef.current.add(id);
     setGuideLoading(id);
     try {
       if (onGuideStaged) {
@@ -427,6 +497,9 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
       setStagedMessages((prev) => prev.filter((m) => m.id !== id));
     } catch (err) {
       console.error("Failed to guide staged message:", err);
+      // Delivery failed — un-claim so the message stays in staging and can be
+      // retried (by manual click or a later Route 2 turn_complete).
+      claimedStagedIdsRef.current.delete(id);
     } finally {
       setGuideLoading(null);
     }
@@ -549,6 +622,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                 setStagedMessages((prev) => prev.filter((m) => m.id !== id))
               }
               onSend={handleGuideStaged}
+              sendLoadingId={guideLoading}
             />
           </div>
         )}

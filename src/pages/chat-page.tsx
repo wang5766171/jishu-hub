@@ -3,7 +3,7 @@ import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { streamStore, useSessionStream } from "@/hooks/use-stream-store";
 import { MessageView, type MessageSearchNavigation, type MessageSearchStatus } from "@/components/sessions/message-view";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
-import { ChatInput } from "@/components/sessions/chat-input";
+import { ChatInput, type StagedGuideApi } from "@/components/sessions/chat-input";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { clearImageCache } from "@/components/sessions/inline-image";
 import { StatusBar as ObservabilityStatusBar } from "@/components/observability";
@@ -225,6 +225,13 @@ export function ChatPage({
   const messageAreaRef = useRef<HTMLDivElement>(null);
   const activeIdRef = useRef<string | null>(activeId);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
+  // Fresh project path for the agent-event listener (whose useEffect deps are
+  // [], so it closes over a stale `currentProject`). Updated every render.
+  const projectPathRef = useRef<string | null>(currentProject?.path ?? null);
+  projectPathRef.current = currentProject?.path ?? null;
+  // Imperative handle into ChatInput's staging area — used by Route 2 to
+  // auto-send staged guides at turn_complete.
+  const stagedApiRef = useRef<StagedGuideApi | null>(null);
   const selectedSessionRef = useRef<string | null>(null);
   const visitedSessions = useRef(new Set<string>());
   const scrollMemory = useRef(new Map<string, number>());
@@ -1004,6 +1011,39 @@ export function ChatPage({
             if (cid !== finalKey) streamStore.alias(finalKey, cid);
           }
 
+          // Route 2 (orthogonal to manual guide): when the turn ends, auto-send
+          // any messages the user staged but did NOT manually guide — merged
+          // into a single new turn. claimAll() synchronously marks them sent,
+          // so a manual click racing this moment (or a re-click) is blocked by
+          // the shared claimed-id set — each staged guide is delivered exactly
+          // once. Gated on !followUpExpected so it never competes with a manual
+          // steer's follow-up turn (that turn fires its own turn_complete, which
+          // re-evaluates). Only for the viewed session, since staged messages
+          // belong to it.
+          if (
+            !followUpExpected
+            && stagedApiRef.current
+            && (viewed === cid || viewed === finalKey)
+          ) {
+            const claimed = stagedApiRef.current.claimAll();
+            if (claimed.length > 0) {
+              const merged = claimed.map((m) => m.content).join("\n\n");
+              streamStore.start(finalKey, merged);
+              if (cid !== finalKey) streamStore.alias(finalKey, cid);
+              try {
+                await invokeCommand("send_message", {
+                  projectPath: projectPathRef.current,
+                  sessionId: finalKey,
+                  message: merged,
+                });
+              } catch (err) {
+                console.error("Auto-send of staged guides failed:", err);
+                streamStore.drop(finalKey);
+                stagedApiRef.current.restore(claimed);
+              }
+            }
+          }
+
           if (isNewSessionStream) {
             newSessionStreamIdsRef.current.delete(cid);
             newSessionStreamIdsRef.current.delete(finalKey);
@@ -1633,6 +1673,7 @@ export function ChatPage({
               ref={chatInputRef}
               sessionId={selectedSession === "new" ? null : selectedSession}
               projectPath={currentProject?.path ?? null}
+              stagedApiRef={stagedApiRef}
               onMessageSent={handleMessageSent}
               allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
               agentDisplayName={active?.display_name}
