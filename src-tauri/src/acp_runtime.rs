@@ -746,6 +746,11 @@ async fn acp_connection_loop(
                         // session/update notifications
                         if msg.get("method").and_then(|v| v.as_str()) == Some("session/update") {
                             if let Some(params) = msg.get("params") {
+                                // Diagnostic: log the RAW session/update payload so we can
+                                // confirm the real ACP wire shape (discriminator key + text
+                                // location) for agents like opencode whose content was
+                                // previously dropped. Remove once stable.
+                                log::info!("ACP session/update raw params: {}", params);
                                 let events = normalize_acp_update(params, &mut usage);
                                 for event in &events {
                                     buf.push(event.clone());
@@ -914,6 +919,26 @@ async fn wait_for_response(
 // Event helpers (unchanged from original)
 // ---------------------------------------------------------------------------
 
+/// Extract the text of an `agent_message_chunk` / `agent_thought_chunk` from a
+/// `session/update` payload. Different ACP servers nest the text differently,
+/// so accept the common shapes: `content.text`, a bare-string `content`, or a
+/// top-level `text`. Returns "" when nothing parseable is found (the caller
+/// drops empty chunks).
+fn extract_chunk_text(update: &serde_json::Value) -> &str {
+    if let Some(content) = update.get("content") {
+        if let Some(s) = content.get("text").and_then(|v| v.as_str()) {
+            return s;
+        }
+        if let Some(s) = content.as_str() {
+            return s;
+        }
+    }
+    update
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+}
+
 pub(crate) fn normalize_acp_update(
     params: &serde_json::Value,
     usage_acc: &mut Option<UsageStats>,
@@ -923,18 +948,28 @@ pub(crate) fn normalize_acp_update(
         None => return vec![],
     };
 
+    // Discriminator: Zed's ACP spec uses `update.type`, but earlier code read
+    // `update.sessionUpdate`. Accept BOTH so a server using either shape is
+    // parsed (the wrong one previously dropped 100% of opencode content).
     let update_type = update
-        .get("sessionUpdate")
+        .get("type")
+        .or_else(|| update.get("sessionUpdate"))
         .and_then(|v| v.as_str())
         .unwrap_or_default();
 
+    // Diagnostic: surface the discriminator + top-level keys so the raw payload
+    // above can be cross-checked against what we parsed.
+    log::info!(
+        "ACP normalize update_type={:?} keys={:?}",
+        update_type,
+        update
+            .as_object()
+            .map(|o| o.keys().cloned().collect::<Vec<_>>())
+    );
+
     match update_type {
         "agent_message_chunk" => {
-            let text = update
-                .get("content")
-                .and_then(|c| c.get("text"))
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
+            let text = extract_chunk_text(update);
             if text.is_empty() {
                 vec![]
             } else {
@@ -944,11 +979,7 @@ pub(crate) fn normalize_acp_update(
             }
         }
         "agent_thought_chunk" => {
-            let text = update
-                .get("content")
-                .and_then(|c| c.get("text"))
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
+            let text = extract_chunk_text(update);
             if text.is_empty() {
                 vec![]
             } else {
