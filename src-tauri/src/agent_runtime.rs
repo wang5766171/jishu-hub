@@ -94,7 +94,7 @@ pub fn prepare_gui_turn(
         .filter(|session_id| !crate::agent::command_config::is_transient_session_id(session_id));
 
     match transport {
-        TransportSurface::AcpPreferred | TransportSurface::PiRpc => {
+        TransportSurface::AcpPreferred | TransportSurface::PiRpc | TransportSurface::CodexAppServer => {
             let req = ChatRequest {
                 project_path: request.project_path.clone(),
                 session_id: native_session_id.clone(),
@@ -129,12 +129,6 @@ pub fn prepare_gui_turn(
                 eof_is_complete: agent.treat_eof_as_complete_after_output(),
             }))
         }
-        // codex app-server runtime is wired in Phase 2 (交互模式通用化设计).
-        // Until then no adapter declares this transport surface.
-        TransportSurface::CodexAppServer => Err(format!(
-            "codex app-server transport is not yet wired for agent {}",
-            request.agent_id
-        )),
     }
 }
 
@@ -252,7 +246,6 @@ where
     command.stderr(std::process::Stdio::piped());
 
     // Transport selection based on adapter surface, not hardcoded agent id.
-    let is_pi_rpc = turn.transport == TransportSurface::PiRpc;
     #[cfg(target_os = "windows")]
     {
         crate::process_command::tokio_no_window(&mut command);
@@ -279,9 +272,12 @@ where
         turn.project_path
     );
 
-    // PiRpc uses Pi's native --mode rpc protocol; AcpPreferred uses ACP JSON-RPC 2.0.
-    let acp = if is_pi_rpc {
-        crate::pi_rpc_runtime::spawn_pi_rpc_session(
+    // Dispatch to the transport's runtime:
+    // - PiRpc         → Pi native `--mode rpc` protocol (JSON-line).
+    // - CodexAppServer → codex `app-server` (newline-delimited JSON-RPC, turn model).
+    // - AcpPreferred  → ACP JSON-RPC 2.0.
+    let acp = match turn.transport {
+        TransportSurface::PiRpc => crate::pi_rpc_runtime::spawn_pi_rpc_session(
             app,
             turn.agent_id.clone(),
             sid.clone(),
@@ -291,9 +287,21 @@ where
             turn.message,
             on_finish,
             on_session_resolved,
-        )
-    } else {
-        crate::acp_runtime::spawn_acp_session(
+        ),
+        TransportSurface::CodexAppServer => {
+            crate::codex_app_server_runtime::spawn_codex_app_server_session(
+                app,
+                turn.agent_id.clone(),
+                sid.clone(),
+                child,
+                turn.project_path,
+                turn.native_session_id,
+                turn.message,
+                on_finish,
+                on_session_resolved,
+            )
+        }
+        _ => crate::acp_runtime::spawn_acp_session(
             app,
             turn.agent_id.clone(),
             sid.clone(),
@@ -303,7 +311,7 @@ where
             turn.message,
             on_finish,
             on_session_resolved,
-        )
+        ),
     };
 
     Ok(GuiTurnHandle {
@@ -340,11 +348,12 @@ pub fn run_turn_blocking_cancellable(
         TransportSurface::Cli | TransportSurface::Embedded => {
             run_cli_turn_blocking(agent, request, stdin_bridge, cancellation)
         }
-        // codex app-server runtime is wired in Phase 2 (交互模式通用化设计).
-        TransportSurface::CodexAppServer => Err(format!(
-            "codex app-server transport is not yet wired for agent {}",
-            request.agent_id
-        )),
+        // The autonomous (task-orchestrator) path keeps using codex exec (CLI)
+        // rather than the app-server turn model — interaction generalization
+        // targets the interactive GUI path (design §5.5).
+        TransportSurface::CodexAppServer => {
+            run_cli_turn_blocking(agent, request, stdin_bridge, cancellation)
+        }
     }
 }
 
@@ -913,7 +922,7 @@ mod tests {
         );
         assert_eq!(
             super::transport_for_agent(&registry, "codex").unwrap(),
-            TransportSurface::Cli
+            TransportSurface::CodexAppServer
         );
         assert_eq!(
             super::transport_for_agent(&registry, "jishu-self").unwrap(),

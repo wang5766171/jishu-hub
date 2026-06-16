@@ -1,0 +1,1482 @@
+//! Codex app-server runtime (adapter for `codex app-server`).
+//!
+//! Codex's app-server speaks a newline-delimited JSON-RPC dialect that is **not**
+//! true JSON-RPC 2.0: per `codex-rs/app-server-protocol/src/jsonrpc_lite.rs`,
+//! "we neither send nor expect the `'jsonrpc':'2.0'` field". Outgoing requests
+//! are `{id, method, params?}` and responses to server-initiated requests are
+//! `{id, result}` (the `result` key, no `jsonrpc` envelope). This module omits
+//! the `jsonrpc` field to stay protocol-faithful.
+//!
+//! Lifecycle: `initialize` (with `experimentalApi:true`) → `thread/start` (or
+//! `thread/resume` to continue a thread) → `turn/start` (first message) → the
+//! turn streams `item/*` notifications and ends with `turn/completed`. Server
+//! requests (`item/tool/requestUserInput`, `item/*/requestApproval`) block the
+//! turn until answered — these are the pause-resume / approval channels.
+//!
+//! The runtime returns a shared `AcpControl` (same interface as the PiRpc / ACP
+//! runtimes), so `respond_chat_interaction` and `resolve_chat_permission` work
+//! unchanged: a business-question answer (`RespondToInput`) writes an
+//! `{id, result:{answers:{…}}}` response; an approval (`ResolvePermission`)
+//! writes `{id, result:{decision:…}}`. See `交互模式通用化设计_20260616.md` §7.2.
+
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::ChildStdin;
+use tokio::sync::Mutex as TokioMutex;
+
+use crate::acp_runtime::{tauri_event_emitter, AcpCommand, AcpControl, AcpEventEmit};
+use crate::agent::normalized::{
+    ApprovalKind, InteractionCorrelation, InteractionDeliveryHint, InteractionOption,
+    InteractionOrigin, InteractionTransport, NormalizedEvent, TurnEndReason,
+};
+
+// ---------------------------------------------------------------------------
+// request_kind discriminant (design R3)
+// ---------------------------------------------------------------------------
+// Stored in `InteractionCorrelation::request_kind` so a business answer's
+// correlation can never be confused with an approval's (the two also use
+// distinct frontend request-id prefixes: `codex-…` vs `codex-approval-…`).
+const KIND_BUSINESS: &str = "codex_tool_request_user_input";
+
+const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
+/// Spawn the codex app-server driver. Returns an `AcpControl` that speaks
+/// codex's newline-delimited JSON-RPC dialect internally.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_codex_app_server_session(
+    app: tauri::AppHandle,
+    agent_id: String,
+    pending_session_id: String,
+    child: tokio::process::Child,
+    project_path: String,
+    requested_session_id: Option<String>,
+    first_message: String,
+    on_finish: impl FnOnce() + Send + 'static,
+    on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
+) -> AcpControl {
+    let emit = tauri_event_emitter(app, agent_id);
+    spawn_codex_app_server_session_inner(
+        emit,
+        pending_session_id,
+        child,
+        project_path,
+        requested_session_id,
+        first_message,
+        on_finish,
+        on_session_resolved,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_codex_app_server_session_inner(
+    emit: AcpEventEmit,
+    pending_session_id: String,
+    mut child: tokio::process::Child,
+    project_path: String,
+    requested_session_id: Option<String>,
+    first_message: String,
+    on_finish: impl FnOnce() + Send + 'static,
+    on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
+) -> AcpControl {
+    let stdin = child
+        .stdin
+        .take()
+        .expect("codex app-server process must have stdin");
+    let stdout = child
+        .stdout
+        .take()
+        .expect("codex app-server process must have stdout");
+    let stderr = child.stderr.take();
+
+    let stdin_arc = Arc::new(TokioMutex::new(stdin));
+    let acp_session_id = Arc::new(std::sync::Mutex::new(None::<String>));
+
+    // Capture stderr for diagnostics (mirrors the PiRpc runtime).
+    let stderr_buf = Arc::new(TokioMutex::new(String::new()));
+    if let Some(stderr_stream) = stderr {
+        let stderr_buf_clone = stderr_buf.clone();
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr_stream).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                log::warn!("[codex app-server stderr] {}", line);
+                let mut buf = stderr_buf_clone.lock().await;
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        });
+    }
+
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(8);
+
+    let control = AcpControl {
+        tx: cmd_tx,
+        acp_session_id: acp_session_id.clone(),
+    };
+    let control_clone = control.clone();
+
+    tauri::async_runtime::spawn(async move {
+        let result = codex_connection_loop(
+            emit.clone(),
+            pending_session_id.clone(),
+            stdin_arc,
+            acp_session_id,
+            stdout,
+            project_path,
+            requested_session_id,
+            cmd_rx,
+            first_message,
+            &on_session_resolved,
+        )
+        .await;
+
+        if let Err(err) = &result {
+            let stderr_content = stderr_buf.lock().await.clone();
+            let enriched_err = if !stderr_content.trim().is_empty() {
+                let tail = if stderr_content.len() > 500 {
+                    &stderr_content[stderr_content.len() - 500..]
+                } else {
+                    &stderr_content
+                };
+                format!("{}\n--- codex stderr ---\n{}", err, tail.trim())
+            } else {
+                err.clone()
+            };
+            log::warn!("codex app-server connection loop exited with error: {}", enriched_err);
+            let events = vec![
+                NormalizedEvent::SessionResolved {
+                    session_id: pending_session_id.clone(),
+                },
+                NormalizedEvent::Error {
+                    message: enriched_err,
+                    recoverable: false,
+                },
+                NormalizedEvent::TurnComplete {
+                    reason: TurnEndReason::Error,
+                    usage: None,
+                },
+            ];
+            emit(&events, &pending_session_id);
+            on_session_resolved(&pending_session_id);
+        } else {
+            log::info!(
+                "codex app-server connection loop exited normally for session {}",
+                pending_session_id
+            );
+        }
+
+        // Ensure child exits.
+        match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+            Ok(Ok(status)) => {
+                log::info!("codex app-server child exited with status: {}", status);
+            }
+            Ok(Err(e)) => log::warn!("codex app-server child wait error: {}", e),
+            Err(_) => {
+                log::warn!("codex app-server child did not exit in 5s, force-killing");
+                let pid = child.id().unwrap_or(0);
+                let _ = crate::process_control::terminate_process_tree(pid);
+            }
+        }
+
+        on_finish();
+    });
+
+    control_clone
+}
+
+// ---------------------------------------------------------------------------
+// Internal: pending registries (design R3 — business 与 approval 分表)
+// ---------------------------------------------------------------------------
+
+/// A pending codex business question (`item/tool/requestUserInput`, non-approval
+/// payload). Keyed by the frontend-facing request id. Stored in a DISTINCT map
+/// from approvals (R3) so a business answer is never mistaken for an approval.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct PendingUserInput {
+    /// Original JSON-RPC id of the server request (echoed in the response).
+    rpc_id: Value,
+    /// Question id within the requestUserInput (codex groups answers by it).
+    question_id: String,
+    /// Correlation scope retained for diagnostics (R3): which thread/turn the
+    /// request belonged to. Not needed for the write-back itself.
+    thread_id: String,
+    turn_id: String,
+}
+
+/// A pending codex approval. Covers all three sources: the EXPERIMENTAL
+/// `item/tool/requestUserInput` carrying an MCP side-effect approval (origin
+/// `CodexMcpApproval`) and the `item/*/requestApproval` methods (origin
+/// `CodexApproval`). The write-back shape differs by wire method, hence the
+/// `writeback` discriminator.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct PendingApproval {
+    rpc_id: Value,
+    kind: ApprovalKind,
+    /// Correlation scope retained for diagnostics (R3).
+    thread_id: String,
+    turn_id: String,
+    /// How the decision should be encoded on the wire.
+    writeback: ApprovalWriteback,
+}
+
+/// Two wire shapes for an approval answer:
+/// - `Decision`: `{id, result:{decision:"accept"|"decline"}}` for the
+///   `item/*/requestApproval` methods.
+/// - `AnswerLabel`: `{id, result:{answers:{[qid]:{answers:[label]}}}}` for an
+///   MCP approval arriving via the EXPERIMENTAL `item/tool/requestUserInput`
+///   channel, where the approval semantics live in the chosen answer label.
+#[derive(Debug, Clone)]
+enum ApprovalWriteback {
+    Decision,
+    AnswerLabel {
+        question_id: String,
+        accept_label: String,
+        decline_label: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Internal: connection loop
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+enum LoopState {
+    Idle {
+        /// Last known active turn id (retained so a stray steer that races
+        /// turn/completed is not lost).
+        active_turn_id: Option<String>,
+    },
+    Prompting {
+        active_turn_id: Option<String>,
+    },
+    /// turn/interrupt was sent; waiting for turn/completed to confirm.
+    CancelPending,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn codex_connection_loop(
+    emit: AcpEventEmit,
+    pending_session_id: String,
+    stdin_arc: Arc<TokioMutex<ChildStdin>>,
+    acp_session_id: Arc<std::sync::Mutex<Option<String>>>,
+    stdout: tokio::process::ChildStdout,
+    project_path: String,
+    requested_session_id: Option<String>,
+    mut command_rx: tokio::sync::mpsc::Receiver<AcpCommand>,
+    first_message: String,
+    on_session_resolved: &(dyn Fn(&str) + Send + Sync),
+) -> Result<(), String> {
+    // stdout reader sub-task.
+    let (stdout_tx, mut stdout_rx) = tokio::sync::mpsc::channel(64);
+    tokio::spawn(stdout_reader(stdout, stdout_tx));
+
+    let mut writer = CodexWriter::new(stdin_arc.clone());
+
+    // Pending registries — separate maps (R3 分表).
+    let mut pending_user_inputs: HashMap<String, PendingUserInput> = HashMap::new();
+    let mut pending_approvals: HashMap<String, PendingApproval> = HashMap::new();
+
+    let mut buf: Vec<NormalizedEvent> = Vec::with_capacity(32);
+    let mut last_flush = std::time::Instant::now();
+
+    // 1. initialize (experimentalApi:true).
+    let init_id = writer.request("initialize", initialize_params()).await?;
+    wait_for_response(
+        &mut stdout_rx,
+        &mut pending_user_inputs,
+        &mut pending_approvals,
+        &emit,
+        &pending_session_id,
+        &mut buf,
+        &mut last_flush,
+        init_id,
+    )
+    .await
+    .map_err(|e| format!("codex initialize failed: {e}"))?;
+    flush_buf(&emit, &pending_session_id, &mut buf);
+
+    // 2. thread/start (new) or thread/resume (continue a known thread).
+    let thread_id = if let Some(thread_id) = requested_session_id.as_ref() {
+        let id = writer
+            .request("thread/resume", json!({ "threadId": thread_id }))
+            .await?;
+        let resp = wait_for_response(
+            &mut stdout_rx,
+            &mut pending_user_inputs,
+            &mut pending_approvals,
+            &emit,
+            &pending_session_id,
+            &mut buf,
+            &mut last_flush,
+            id,
+        )
+        .await
+        .map_err(|e| format!("codex thread/resume failed: {e}"))?;
+        flush_buf(&emit, &pending_session_id, &mut buf);
+        extract_thread_id(&resp).unwrap_or_else(|| thread_id.clone())
+    } else {
+        let id = writer
+            .request("thread/start", json!({ "cwd": project_path }))
+            .await?;
+        let resp = wait_for_response(
+            &mut stdout_rx,
+            &mut pending_user_inputs,
+            &mut pending_approvals,
+            &emit,
+            &pending_session_id,
+            &mut buf,
+            &mut last_flush,
+            id,
+        )
+        .await
+        .map_err(|e| format!("codex thread/start failed: {e}"))?;
+        flush_buf(&emit, &pending_session_id, &mut buf);
+        extract_thread_id(&resp).unwrap_or_else(|| pending_session_id.clone())
+    };
+
+    log::info!("codex app-server thread established: {}", thread_id);
+    {
+        let mut guard = acp_session_id.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = Some(thread_id.clone());
+    }
+    emit(
+        &[NormalizedEvent::SessionResolved {
+            session_id: thread_id.clone(),
+        }],
+        &pending_session_id,
+    );
+    on_session_resolved(&thread_id);
+
+    // 3. turn/start (first message). The response carries the Turn id; the turn
+    //    keeps streaming afterwards and ends with turn/completed.
+    let turn_start_id = writer
+        .request(
+            "turn/start",
+            json!({
+                "threadId": thread_id,
+                "input": [{ "type": "text", "text": first_message }]
+            }),
+        )
+        .await?;
+    let turn_resp = wait_for_response(
+        &mut stdout_rx,
+        &mut pending_user_inputs,
+        &mut pending_approvals,
+        &emit,
+        &pending_session_id,
+        &mut buf,
+        &mut last_flush,
+        turn_start_id,
+    )
+    .await
+    .map_err(|e| format!("codex turn/start failed: {e}"))?;
+    let active_turn_id = extract_turn_id(&turn_resp);
+    flush_buf(&emit, &pending_session_id, &mut buf);
+
+    let mut state = LoopState::Prompting { active_turn_id };
+
+    // 4. Main loop.
+    loop {
+        let idle_deadline = tokio::time::Instant::now() + IDLE_TIMEOUT;
+
+        let exit = tokio::select! {
+            cmd = command_rx.recv() => {
+                handle_command(
+                    cmd,
+                    &mut state,
+                    &thread_id,
+                    &mut writer,
+                    &mut pending_user_inputs,
+                    &mut pending_approvals,
+                    &emit,
+                    &pending_session_id,
+                    &mut buf,
+                )
+                .await?
+            }
+            line = stdout_rx.recv() => match line {
+                Some(line) => {
+                    handle_line(
+                        &line,
+                        &mut state,
+                        &mut pending_user_inputs,
+                        &mut pending_approvals,
+                        &emit,
+                        &pending_session_id,
+                        &mut buf,
+                    );
+                    flush_maybe(&emit, &pending_session_id, &mut buf, &mut last_flush);
+                    false
+                }
+                None => {
+                    log::warn!("codex app-server stdout EOF (thread {})", thread_id);
+                    if matches!(state, LoopState::Prompting { .. }) {
+                        return Err(format!(
+                            "codex app-server process exited unexpectedly (thread {}). Check stderr for details.",
+                            thread_id
+                        ));
+                    }
+                    true
+                }
+            },
+            _ = tokio::time::sleep_until(idle_deadline) => {
+                matches!(state, LoopState::Idle { .. })
+            }
+        };
+
+        if exit {
+            break;
+        }
+    }
+
+    if !buf.is_empty() {
+        flush_buf(&emit, &pending_session_id, &mut buf);
+    }
+    Ok(())
+}
+
+/// Read stdout lines until the response matching `expected_id` arrives. Server
+/// requests and notifications seen while waiting are processed immediately (so
+/// nothing is dropped); other responses are ignored. Returns the `result` of
+/// the matched response.
+#[allow(clippy::too_many_arguments)]
+async fn wait_for_response(
+    stdout_rx: &mut tokio::sync::mpsc::Receiver<String>,
+    pending_user_inputs: &mut HashMap<String, PendingUserInput>,
+    pending_approvals: &mut HashMap<String, PendingApproval>,
+    emit: &AcpEventEmit,
+    session_id: &str,
+    buf: &mut Vec<NormalizedEvent>,
+    last_flush: &mut std::time::Instant,
+    expected_id: i64,
+) -> Result<Value, String> {
+    loop {
+        let line = tokio::time::timeout(Duration::from_secs(45), stdout_rx.recv())
+            .await
+            .map_err(|_| "codex app-server response timeout (45s)".to_string())?
+            .ok_or_else(|| "codex app-server stdout closed during handshake".to_string())?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let msg: Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        match classify_line(&msg) {
+            LineKind::Response { id, result, error } => {
+                if id == Value::from(expected_id) {
+                    if let Some(err) = error {
+                        let message = err
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("codex app-server request failed")
+                            .to_string();
+                        return Err(message);
+                    }
+                    return Ok(result.unwrap_or(Value::Null));
+                }
+                // Unmatched response — ignore.
+            }
+            LineKind::ServerRequest { id, method, params } => {
+                register_server_request(
+                    &id,
+                    &method,
+                    &params,
+                    session_id,
+                    pending_user_inputs,
+                    pending_approvals,
+                    emit,
+                    session_id,
+                    buf,
+                );
+                flush_buf(emit, session_id, buf);
+            }
+            LineKind::Notification { method, params } => {
+                for event in normalize_notification(&method, &params) {
+                    buf.push(event);
+                }
+                flush_maybe(emit, session_id, buf, last_flush);
+            }
+            LineKind::Other => {}
+        }
+    }
+}
+
+#[derive(Debug)]
+enum LineKind {
+    /// Response to one of OUR requests: `{id, result?}` or `{id, error}`.
+    Response {
+        id: Value,
+        result: Option<Value>,
+        error: Option<Value>,
+    },
+    /// Notification: `{method, params?}` (no id).
+    Notification { method: String, params: Value },
+    /// Server-initiated request: `{id, method, params?}` (needs a response).
+    ServerRequest {
+        id: Value,
+        method: String,
+        params: Value,
+    },
+    Other,
+}
+
+fn classify_line(msg: &Value) -> LineKind {
+    let id = msg.get("id").cloned();
+    let method = msg
+        .get("method")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    match (id, method) {
+        (Some(id), Some(method)) => LineKind::ServerRequest {
+            id,
+            method,
+            params: msg.get("params").cloned().unwrap_or(Value::Null),
+        },
+        (Some(id), None) => {
+            // Response to our request: has result and/or error, no method.
+            let result = msg.get("result").cloned();
+            let error = msg.get("error").cloned();
+            LineKind::Response { id, result, error }
+        }
+        (None, Some(method)) => LineKind::Notification {
+            method,
+            params: msg.get("params").cloned().unwrap_or(Value::Null),
+        },
+        (None, None) => LineKind::Other,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internal: line + command handling
+// ---------------------------------------------------------------------------
+
+/// Process one stdout line. Sync because it runs in the select branch; the only
+/// stdin writes happen later when the user answers (command path).
+#[allow(clippy::too_many_arguments)]
+fn handle_line(
+    line: &str,
+    state: &mut LoopState,
+    pending_user_inputs: &mut HashMap<String, PendingUserInput>,
+    pending_approvals: &mut HashMap<String, PendingApproval>,
+    emit: &AcpEventEmit,
+    session_id: &str,
+    buf: &mut Vec<NormalizedEvent>,
+) {
+    if line.trim().is_empty() {
+        return;
+    }
+    let msg: Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    match classify_line(&msg) {
+        LineKind::Response { result, .. } => {
+            // The handshake consumes the first turn/start response. Subsequent
+            // turn/start responses (later turns) arrive here carrying the new
+            // turn id — capture it so steer/interrupt target the right turn.
+            if let Some(turn_id) = result.as_ref().and_then(extract_turn_id) {
+                set_active_turn_id(state, Some(turn_id));
+            }
+        }
+        LineKind::Notification { method, params } => match method.as_str() {
+            "turn/completed" => {
+                let reason = params
+                    .get("turn")
+                    .and_then(|t| t.get("status"))
+                    .and_then(Value::as_str)
+                    .map(turn_status_to_reason)
+                    .unwrap_or(TurnEndReason::Complete);
+                buf.push(NormalizedEvent::TurnComplete { reason, usage: None });
+                match state {
+                    LoopState::Prompting { active_turn_id } => {
+                        *state = LoopState::Idle {
+                            active_turn_id: active_turn_id.take(),
+                        };
+                    }
+                    LoopState::CancelPending => {
+                        *state = LoopState::Idle {
+                            active_turn_id: None,
+                        };
+                    }
+                    LoopState::Idle { .. } => {}
+                }
+            }
+            "turn/started" => {
+                // Some servers emit the turn id as a notification too.
+                if let Some(id) = extract_turn_id_from_params(&params) {
+                    set_active_turn_id(state, Some(id));
+                }
+            }
+            _ => {
+                for event in normalize_notification(&method, &params) {
+                    buf.push(event);
+                }
+            }
+        },
+        LineKind::ServerRequest { id, method, params } => {
+            let thread = params
+                .get("threadId")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            register_server_request(
+                &id,
+                &method,
+                &params,
+                &thread,
+                pending_user_inputs,
+                pending_approvals,
+                emit,
+                session_id,
+                buf,
+            );
+        }
+        LineKind::Other => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_command(
+    cmd: Option<AcpCommand>,
+    state: &mut LoopState,
+    thread_id: &str,
+    writer: &mut CodexWriter,
+    pending_user_inputs: &mut HashMap<String, PendingUserInput>,
+    pending_approvals: &mut HashMap<String, PendingApproval>,
+    emit: &AcpEventEmit,
+    session_id: &str,
+    buf: &mut Vec<NormalizedEvent>,
+) -> Result<bool, String> {
+    match cmd {
+        Some(AcpCommand::Prompt(msg)) => match state {
+            LoopState::Idle { .. } => {
+                // Fire turn/start; the turn id is captured when the response
+                // (or a turn/started notification) arrives in the stdout pump,
+                // and turn/completed flips state back to Idle.
+                writer
+                    .request(
+                        "turn/start",
+                        json!({
+                            "threadId": thread_id,
+                            "input": [{ "type": "text", "text": msg }]
+                        }),
+                    )
+                    .await?;
+                *state = LoopState::Prompting { active_turn_id: None };
+            }
+            LoopState::Prompting { .. } | LoopState::CancelPending => {
+                log::warn!("codex turn/start ignored: a turn is already in progress");
+            }
+        },
+        Some(AcpCommand::Steer(msg)) => {
+            let active_turn_id = active_turn_of(state);
+            if let Some(turn_id) = active_turn_id {
+                writer
+                    .request(
+                        "turn/steer",
+                        json!({
+                            "threadId": thread_id,
+                            "input": [{ "type": "text", "text": msg }],
+                            "expectedTurnId": turn_id
+                        }),
+                    )
+                    .await?;
+                log::debug!("codex turn/steer sent");
+            } else {
+                log::warn!("codex turn/steer ignored: no active turn to steer");
+            }
+        }
+        Some(AcpCommand::Cancel) => {
+            let active_turn_id = active_turn_of(state);
+            if let Some(turn_id) = active_turn_id.as_ref() {
+                let _ = writer
+                    .request(
+                        "turn/interrupt",
+                        json!({ "threadId": thread_id, "turnId": turn_id }),
+                    )
+                    .await;
+                log::info!("codex turn/interrupt sent");
+            }
+            // Best-effort: answer in-flight server requests so codex does not
+            // block on a request that will never get a real answer.
+            drain_pending_on_cancel(writer, pending_user_inputs, pending_approvals).await;
+            *state = LoopState::CancelPending;
+            // If there is no active turn, nothing else will emit turn/completed,
+            // so emit TurnComplete(Aborted) directly.
+            if active_turn_id.is_none() {
+                buf.push(NormalizedEvent::TurnComplete {
+                    reason: TurnEndReason::Aborted,
+                    usage: None,
+                });
+                flush_buf(emit, session_id, buf);
+                *state = LoopState::Idle {
+                    active_turn_id: None,
+                };
+            }
+        }
+        Some(AcpCommand::RespondToInput { id, value, response }) => {
+            let result = respond_to_user_input(&id, &value, writer, pending_user_inputs).await;
+            match &result {
+                Ok(()) => log::debug!("codex RespondToInput write-back sent for {}", id),
+                Err(error) => {
+                    log::error!("codex RespondToInput write-back failed for {}: {error}", id)
+                }
+            }
+            let _ = response.send(result);
+        }
+        Some(AcpCommand::ResolvePermission {
+            request_id,
+            approved,
+            response,
+        }) => {
+            let result =
+                resolve_codex_approval(&request_id, approved, writer, pending_approvals).await;
+            match &result {
+                Ok(()) => {
+                    log::debug!("codex ResolvePermission write-back sent for {}", request_id)
+                }
+                Err(error) => log::error!(
+                    "codex ResolvePermission write-back failed for {}: {error}",
+                    request_id
+                ),
+            }
+            let _ = response.send(result);
+        }
+        Some(AcpCommand::Shutdown) => {
+            log::info!("codex app-server shutdown requested (thread {})", thread_id);
+            drain_pending_on_cancel(writer, pending_user_inputs, pending_approvals).await;
+            return Ok(true);
+        }
+        None => {
+            log::info!("codex app-server command channel closed (thread {})", thread_id);
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Register a server request and emit the matching NormalizedEvent. No stdin
+/// write — the write-back happens when the user later answers (command path).
+#[allow(clippy::too_many_arguments)]
+fn register_server_request(
+    id: &Value,
+    method: &str,
+    params: &Value,
+    thread: &str,
+    pending_user_inputs: &mut HashMap<String, PendingUserInput>,
+    pending_approvals: &mut HashMap<String, PendingApproval>,
+    emit: &AcpEventEmit,
+    session_id: &str,
+    buf: &mut Vec<NormalizedEvent>,
+) {
+    let turn = params
+        .get("turnId")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    match method {
+        "item/tool/requestUserInput" => {
+            // R8: split by payload. Options that are all Accept/Decline/Cancel
+            // indicate an MCP/connector side-effect approval; anything else is a
+            // genuine business question.
+            match classify_request_user_input(params) {
+                RequestUserInputKind::Business(questions) => {
+                    for q in questions {
+                        let request_id = business_request_id(id, &q.id);
+                        let correlation = InteractionCorrelation {
+                            thread_id: (!thread.is_empty()).then(|| thread.to_string()),
+                            turn_id: (!turn.is_empty()).then(|| turn.to_string()),
+                            server_request_id: Some(rpc_id_str(id)),
+                            jsonrpc_id: Some(id.clone()),
+                            request_kind: Some(KIND_BUSINESS.to_string()),
+                            ..Default::default()
+                        };
+                        pending_user_inputs.insert(
+                            request_id.clone(),
+                            PendingUserInput {
+                                rpc_id: id.clone(),
+                                question_id: q.id.clone(),
+                                thread_id: thread.to_string(),
+                                turn_id: turn.clone(),
+                            },
+                        );
+                        buf.push(NormalizedEvent::InteractionRequest {
+                            request_id,
+                            prompt: q.prompt,
+                            options: q.options,
+                            allow_multiple: false,
+                            allow_custom_text: q.allow_custom_text,
+                            required: true,
+                            transport: InteractionTransport::CodexAppServer,
+                            origin: InteractionOrigin::CodexToolRequestUserInput,
+                            delivery_hint: InteractionDeliveryHint::MidTurn,
+                            correlation: Some(correlation),
+                        });
+                    }
+                    flush_buf(emit, session_id, buf);
+                }
+                RequestUserInputKind::McpApproval(accept_label, decline_label, question_id) => {
+                    let request_id = approval_request_id(id);
+                    pending_approvals.insert(
+                        request_id.clone(),
+                        PendingApproval {
+                            rpc_id: id.clone(),
+                            kind: ApprovalKind::Other,
+                            thread_id: thread.to_string(),
+                            turn_id: turn.clone(),
+                            writeback: ApprovalWriteback::AnswerLabel {
+                                question_id,
+                                accept_label,
+                                decline_label,
+                            },
+                        },
+                    );
+                    buf.push(NormalizedEvent::ApprovalRequest {
+                        request_id,
+                        approval_kind: ApprovalKind::Other,
+                        payload: params.clone(),
+                    });
+                    flush_buf(emit, session_id, buf);
+                }
+            }
+        }
+        "item/commandExecution/requestApproval" => register_approval(
+            id,
+            params,
+            thread,
+            &turn,
+            ApprovalKind::Command,
+            ApprovalWriteback::Decision,
+            pending_approvals,
+            emit,
+            session_id,
+            buf,
+        ),
+        "item/fileChange/requestApproval" => register_approval(
+            id,
+            params,
+            thread,
+            &turn,
+            ApprovalKind::FileWrite,
+            ApprovalWriteback::Decision,
+            pending_approvals,
+            emit,
+            session_id,
+            buf,
+        ),
+        "item/permissions/requestApproval" => register_approval(
+            id,
+            params,
+            thread,
+            &turn,
+            ApprovalKind::Other,
+            ApprovalWriteback::Decision,
+            pending_approvals,
+            emit,
+            session_id,
+            buf,
+        ),
+        other => {
+            // Unhandled server request (e.g. mcpServer/elicitation/request).
+            // We cannot answer it correctly without the schema; left unregistered
+            // so it is never mistaken for an answerable approval/question. The
+            // turn may stall on these — logged for diagnostics.
+            log::warn!(
+                "codex app-server: unhandled server request `{}` (id {:?})",
+                other,
+                id
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn register_approval(
+    id: &Value,
+    params: &Value,
+    thread: &str,
+    turn: &str,
+    kind: ApprovalKind,
+    writeback: ApprovalWriteback,
+    pending_approvals: &mut HashMap<String, PendingApproval>,
+    emit: &AcpEventEmit,
+    session_id: &str,
+    buf: &mut Vec<NormalizedEvent>,
+) {
+    let request_id = approval_request_id(id);
+    pending_approvals.insert(
+        request_id.clone(),
+        PendingApproval {
+            rpc_id: id.clone(),
+            kind: kind.clone(),
+            thread_id: thread.to_string(),
+            turn_id: turn.to_string(),
+            writeback,
+        },
+    );
+    buf.push(NormalizedEvent::ApprovalRequest {
+        request_id,
+        approval_kind: kind,
+        payload: params.clone(),
+    });
+    flush_buf(emit, session_id, buf);
+}
+
+// ---------------------------------------------------------------------------
+// Internal: write-backs
+// ---------------------------------------------------------------------------
+
+async fn respond_to_user_input(
+    request_id: &str,
+    value: &str,
+    writer: &CodexWriter,
+    pending_user_inputs: &mut HashMap<String, PendingUserInput>,
+) -> Result<(), String> {
+    let pending = pending_user_inputs
+        .remove(request_id)
+        .ok_or_else(|| format!("no pending codex business question for {request_id}"))?;
+    let result = user_input_result(&pending.question_id, value);
+    writer.respond(&pending.rpc_id, result).await
+}
+
+async fn resolve_codex_approval(
+    request_id: &str,
+    approved: bool,
+    writer: &CodexWriter,
+    pending_approvals: &mut HashMap<String, PendingApproval>,
+) -> Result<(), String> {
+    let pending = pending_approvals
+        .remove(request_id)
+        .ok_or_else(|| format!("no pending codex approval for {request_id}"))?;
+    let result = match pending.writeback {
+        ApprovalWriteback::Decision => decision_result(approved),
+        ApprovalWriteback::AnswerLabel {
+            question_id,
+            accept_label,
+            decline_label,
+        } => user_input_result(
+            &question_id,
+            if approved { &accept_label } else { &decline_label },
+        ),
+    };
+    writer.respond(&pending.rpc_id, result).await
+}
+
+/// Answer all in-flight server requests on cancel/shutdown so codex never blocks
+/// on a request that will never receive a real answer.
+async fn drain_pending_on_cancel(
+    writer: &CodexWriter,
+    pending_user_inputs: &mut HashMap<String, PendingUserInput>,
+    pending_approvals: &mut HashMap<String, PendingApproval>,
+) {
+    for (_, pending) in pending_user_inputs.drain() {
+        if let Err(error) = writer
+            .respond(&pending.rpc_id, user_input_result(&pending.question_id, ""))
+            .await
+        {
+            log::warn!("codex: failed to drain pending user input on cancel: {error}");
+        }
+    }
+    for (_, pending) in pending_approvals.drain() {
+        let result = match pending.writeback {
+            ApprovalWriteback::Decision => decision_result(false),
+            ApprovalWriteback::AnswerLabel {
+                question_id,
+                decline_label,
+                ..
+            } => user_input_result(&question_id, &decline_label),
+        };
+        if let Err(error) = writer.respond(&pending.rpc_id, result).await {
+            log::warn!("codex: failed to drain pending approval on cancel: {error}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internal: notification normalization
+// ---------------------------------------------------------------------------
+
+fn normalize_notification(method: &str, params: &Value) -> Vec<NormalizedEvent> {
+    match method {
+        "item/agentMessage/delta" => {
+            let delta = params.get("delta").and_then(Value::as_str).unwrap_or_default();
+            if delta.is_empty() {
+                vec![]
+            } else {
+                vec![NormalizedEvent::TextDelta {
+                    delta: delta.to_string(),
+                }]
+            }
+        }
+        "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
+            let delta = params.get("delta").and_then(Value::as_str).unwrap_or_default();
+            if delta.is_empty() {
+                vec![]
+            } else {
+                vec![NormalizedEvent::Thinking {
+                    delta: delta.to_string(),
+                }]
+            }
+        }
+        // thread/started and turn/started carry only state we track directly in
+        // handle_line (session already resolved at handshake; turn id captured).
+        _ => vec![],
+    }
+}
+
+fn turn_status_to_reason(status: &str) -> TurnEndReason {
+    match status {
+        "interrupted" => TurnEndReason::Aborted,
+        "failed" => TurnEndReason::Error,
+        _ => TurnEndReason::Complete,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internal: pure helpers (unit-tested)
+// ---------------------------------------------------------------------------
+
+fn initialize_params() -> Value {
+    json!({
+        "clientInfo": { "name": "jishu-hub", "version": "0.6.0" },
+        "capabilities": { "experimentalApi": true }
+    })
+}
+
+/// Extract the turn id from a `turn/start` response result `{turn:{id,…}}`,
+/// tolerant of `id` vs `turnId`.
+fn extract_turn_id(resp: &Value) -> Option<String> {
+    resp.get("turn")
+        .or_else(|| Some(resp))
+        .and_then(id_like)
+}
+
+fn extract_turn_id_from_params(params: &Value) -> Option<String> {
+    params.get("turn").or_else(|| Some(params)).and_then(id_like)
+}
+
+/// Extract the thread id from a `thread/start` response result `{thread:{id,…}}`,
+/// tolerant of `id` vs `threadId`.
+fn extract_thread_id(resp: &Value) -> Option<String> {
+    resp.get("thread")
+        .or_else(|| Some(resp))
+        .and_then(id_like)
+}
+
+fn id_like(obj: &Value) -> Option<String> {
+    obj.get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| obj.get("turnId").and_then(Value::as_str).map(str::to_string))
+        .or_else(|| obj.get("threadId").and_then(Value::as_str).map(str::to_string))
+}
+
+/// A business question parsed out of `item/tool/requestUserInput` params.
+struct ParsedQuestion {
+    id: String,
+    prompt: String,
+    options: Vec<InteractionOption>,
+    allow_custom_text: bool,
+}
+
+enum RequestUserInputKind {
+    /// Genuine business questions.
+    Business(Vec<ParsedQuestion>),
+    /// An MCP/connector side-effect approval (Accept/Decline/Cancel options).
+    /// Carries the answer labels + the question id to populate on write-back.
+    McpApproval(String, String, String),
+}
+
+impl RequestUserInputKind {
+    #[cfg(test)]
+    fn is_business(&self) -> bool {
+        matches!(self, RequestUserInputKind::Business(_))
+    }
+}
+
+/// R8 origin split: if a question's options are all Accept/Decline/Cancel, the
+/// request is an MCP approval — not a business question. Mirrors the wire-format
+/// spike (`.tmp/interaction-feasibility/spike.mjs`).
+fn classify_request_user_input(params: &Value) -> RequestUserInputKind {
+    let questions = match params.get("questions").and_then(Value::as_array) {
+        Some(arr) => arr,
+        None => return RequestUserInputKind::Business(Vec::new()),
+    };
+
+    // MCP approval: ANY question whose options are entirely Accept/Decline/Cancel.
+    for q in questions {
+        if let Some(options) = q.get("options").and_then(Value::as_array) {
+            if !options.is_empty()
+                && options.iter().all(|o| {
+                    let label = o.get("label").and_then(Value::as_str).unwrap_or_default();
+                    APPROVAL_LABELS.contains(&label)
+                })
+            {
+                let qid = question_id_of(q);
+                let (accept, decline) = approval_labels(options);
+                return RequestUserInputKind::McpApproval(accept, decline, qid);
+            }
+        }
+    }
+
+    let parsed = questions
+        .iter()
+        .filter_map(|q| {
+            let prompt = q
+                .get("question")
+                .or_else(|| q.get("header"))
+                .or_else(|| q.get("prompt"))
+                .and_then(Value::as_str)?
+                .trim()
+                .to_string();
+            if prompt.is_empty() {
+                return None;
+            }
+            let id = question_id_of(q);
+            let options = q
+                .get("options")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|option| {
+                            let label = option
+                                .get("label")
+                                .or_else(|| option.get("title"))
+                                .and_then(Value::as_str)?
+                                .trim()
+                                .to_string();
+                            if label.is_empty() {
+                                return None;
+                            }
+                            Some(InteractionOption {
+                                option_id: label.clone(),
+                                label,
+                                description: option
+                                    .get("description")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let allow_custom_text = q
+                .get("isOther")
+                .and_then(Value::as_bool)
+                .unwrap_or(options.is_empty());
+            Some(ParsedQuestion {
+                id,
+                prompt,
+                options,
+                allow_custom_text,
+            })
+        })
+        .collect();
+    RequestUserInputKind::Business(parsed)
+}
+
+const APPROVAL_LABELS: [&str; 3] = ["Accept", "Decline", "Cancel"];
+
+fn question_id_of(question: &Value) -> String {
+    question
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "q".to_string())
+}
+
+/// Find the Accept/Decline labels in an all-approval option set.
+fn approval_labels(options: &[Value]) -> (String, String) {
+    let accept = options
+        .iter()
+        .find_map(|o| {
+            let label = o.get("label").and_then(Value::as_str).unwrap_or_default();
+            (label == "Accept").then(|| label.to_string())
+        })
+        .unwrap_or_else(|| "Accept".to_string());
+    let decline = options
+        .iter()
+        .find_map(|o| {
+            let label = o.get("label").and_then(Value::as_str).unwrap_or_default();
+            (label == "Decline").then(|| label.to_string())
+        })
+        .unwrap_or_else(|| "Decline".to_string());
+    (accept, decline)
+}
+
+/// Frontend-facing request ids. Distinct prefixes keep the business / approval
+/// maps from colliding even if codex reuses a JSON-RPC id.
+fn business_request_id(rpc_id: &Value, question_id: &str) -> String {
+    format!("codex-{}-{}", rpc_id_str(rpc_id), question_id)
+}
+
+fn approval_request_id(rpc_id: &Value) -> String {
+    format!("codex-approval-{}", rpc_id_str(rpc_id))
+}
+
+fn rpc_id_str(rpc_id: &Value) -> String {
+    rpc_id
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| rpc_id.to_string())
+}
+
+/// `{answers:{[question_id]:{answers:[value]}}}` — the codex
+/// `item/tool/requestUserInput` result shape.
+fn user_input_result(question_id: &str, value: &str) -> Value {
+    let mut answers = serde_json::Map::new();
+    answers.insert(question_id.to_string(), json!({ "answers": [value] }));
+    json!({ "answers": Value::Object(answers) })
+}
+
+/// `{decision:"accept"|"decline"}` — the `item/*/requestApproval` result shape.
+/// `accept`/`decline` are valid in every codex approval decision enum
+/// (commandExecution / fileChange / permissions).
+fn decision_result(approved: bool) -> Value {
+    json!({ "decision": if approved { "accept" } else { "decline" } })
+}
+
+fn set_active_turn_id(state: &mut LoopState, id: Option<String>) {
+    match state {
+        LoopState::Idle { active_turn_id } => *active_turn_id = id,
+        LoopState::Prompting { active_turn_id } => *active_turn_id = id,
+        LoopState::CancelPending => {}
+    }
+}
+
+fn active_turn_of(state: &LoopState) -> Option<String> {
+    match state {
+        LoopState::Idle { active_turn_id } => active_turn_id.clone(),
+        LoopState::Prompting { active_turn_id } => active_turn_id.clone(),
+        LoopState::CancelPending => None,
+    }
+}
+
+fn flush_buf(emit: &AcpEventEmit, session_id: &str, buf: &mut Vec<NormalizedEvent>) {
+    if buf.is_empty() {
+        return;
+    }
+    emit(buf, session_id);
+    buf.clear();
+}
+
+fn flush_maybe(
+    emit: &AcpEventEmit,
+    session_id: &str,
+    buf: &mut Vec<NormalizedEvent>,
+    last_flush: &mut std::time::Instant,
+) {
+    if buf.len() >= 32 || last_flush.elapsed() >= Duration::from_millis(8) {
+        flush_buf(emit, session_id, buf);
+        *last_flush = std::time::Instant::now();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internal: writer (newline-delimited JSON-RPC, NO jsonrpc field)
+// ---------------------------------------------------------------------------
+
+struct CodexWriter {
+    stdin: Arc<TokioMutex<ChildStdin>>,
+    next_id: i64,
+}
+
+impl CodexWriter {
+    fn new(stdin: Arc<TokioMutex<ChildStdin>>) -> Self {
+        Self { stdin, next_id: 1 }
+    }
+
+    async fn request(&mut self, method: &str, params: Value) -> Result<i64, String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let msg = json!({ "id": id, "method": method, "params": params });
+        write_line(&self.stdin, &msg).await?;
+        Ok(id)
+    }
+
+    /// Write a response to a server-initiated request: `{id, result}`.
+    async fn respond(&self, id: &Value, result: Value) -> Result<(), String> {
+        let msg = json!({ "id": id, "result": result });
+        write_line(&self.stdin, &msg).await
+    }
+}
+
+async fn write_line(stdin: &Arc<TokioMutex<ChildStdin>>, msg: &Value) -> Result<(), String> {
+    let mut stdin = stdin.lock().await;
+    let line = format!("{}\n", msg);
+    stdin
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| format!("codex app-server stdin write failed: {e}"))?;
+    stdin
+        .flush()
+        .await
+        .map_err(|e| format!("codex app-server stdin flush failed: {e}"))?;
+    Ok(())
+}
+
+async fn stdout_reader(stdout: tokio::process::ChildStdout, tx: tokio::sync::mpsc::Sender<String>) {
+    let mut reader = BufReader::new(stdout).lines();
+    while let Ok(Some(line)) = reader.next_line().await {
+        if tx.send(line).await.is_err() {
+            break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_business_question() {
+        let params = json!({
+            "threadId": "t1", "turnId": "tu1", "itemId": "i1",
+            "questions": [{
+                "id": "architecture",
+                "header": "方案",
+                "question": "请选择架构",
+                "options": [
+                    { "label": "A", "description": "单体" },
+                    { "label": "B", "description": "前后端分离" }
+                ]
+            }]
+        });
+        match classify_request_user_input(&params) {
+            RequestUserInputKind::Business(qs) => {
+                assert_eq!(qs.len(), 1);
+                assert_eq!(qs[0].id, "architecture");
+                assert_eq!(qs[0].prompt, "请选择架构");
+                assert_eq!(qs[0].options.len(), 2);
+                assert!(!qs[0].allow_custom_text);
+            }
+            RequestUserInputKind::McpApproval(..) => panic!("expected Business"),
+        }
+    }
+
+    #[test]
+    fn classify_free_text_business_question_has_custom_text() {
+        let params = json!({
+            "questions": [{ "id": "q1", "question": "补充说明" }]
+        });
+        match classify_request_user_input(&params) {
+            RequestUserInputKind::Business(qs) => {
+                assert_eq!(qs.len(), 1);
+                assert!(qs[0].options.is_empty());
+                assert!(qs[0].allow_custom_text);
+            }
+            RequestUserInputKind::McpApproval(..) => panic!("expected Business"),
+        }
+    }
+
+    #[test]
+    fn classify_mcp_approval_via_request_user_input() {
+        let params = json!({
+            "questions": [{
+                "id": "approve_run",
+                "question": "Allow this command?",
+                "options": [
+                    { "label": "Accept" },
+                    { "label": "Decline" },
+                    { "label": "Cancel" }
+                ]
+            }]
+        });
+        match classify_request_user_input(&params) {
+            RequestUserInputKind::McpApproval(accept, decline, qid) => {
+                assert_eq!(accept, "Accept");
+                assert_eq!(decline, "Decline");
+                assert_eq!(qid, "approve_run");
+            }
+            RequestUserInputKind::Business(_) => panic!("expected McpApproval"),
+        }
+    }
+
+    #[test]
+    fn user_input_result_shape() {
+        let result = user_input_result("architecture", "A");
+        assert_eq!(
+            result,
+            json!({ "answers": { "architecture": { "answers": ["A"] } } })
+        );
+    }
+
+    #[test]
+    fn user_input_result_empty_value_drains_as_single_empty_answer() {
+        // The cancel-drain path writes an empty-string answer. codex's answer
+        // shape is a Vec<String>, so even an empty value is a one-element array
+        // (the discard is harmless — turn/interrupt was already sent).
+        let result = user_input_result("q1", "");
+        assert_eq!(result, json!({ "answers": { "q1": { "answers": [""] } } }));
+    }
+
+    #[test]
+    fn decision_result_accept_decline() {
+        assert_eq!(decision_result(true), json!({ "decision": "accept" }));
+        assert_eq!(decision_result(false), json!({ "decision": "decline" }));
+    }
+
+    #[test]
+    fn extract_turn_and_thread_ids_tolerant() {
+        assert_eq!(
+            extract_turn_id(&json!({ "turn": { "id": "tu-1" } })),
+            Some("tu-1".to_string())
+        );
+        assert_eq!(
+            extract_thread_id(&json!({ "thread": { "id": "t-1" } })),
+            Some("t-1".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_line_distinguishes_kinds() {
+        assert!(matches!(
+            classify_line(&json!({ "id": 1, "method": "item/tool/requestUserInput", "params": {} })),
+            LineKind::ServerRequest { .. }
+        ));
+        assert!(matches!(
+            classify_line(&json!({ "id": 1, "result": {} })),
+            LineKind::Response { .. }
+        ));
+        assert!(matches!(
+            classify_line(&json!({ "method": "turn/completed", "params": {} })),
+            LineKind::Notification { .. }
+        ));
+    }
+
+    #[test]
+    fn request_ids_are_distinct_for_business_and_approval() {
+        let rpc = json!(7);
+        assert_eq!(business_request_id(&rpc, "arch"), "codex-7-arch");
+        assert_eq!(approval_request_id(&rpc), "codex-approval-7");
+    }
+
+    #[test]
+    fn turn_status_maps_to_end_reason() {
+        assert_eq!(turn_status_to_reason("completed"), TurnEndReason::Complete);
+        assert_eq!(turn_status_to_reason("interrupted"), TurnEndReason::Aborted);
+        assert_eq!(turn_status_to_reason("failed"), TurnEndReason::Error);
+    }
+
+    #[test]
+    fn business_kind_helper() {
+        let params = json!({ "questions": [{ "id": "q", "question": "x" }] });
+        assert!(classify_request_user_input(&params).is_business());
+    }
+}

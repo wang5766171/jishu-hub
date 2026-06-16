@@ -664,7 +664,9 @@ mod tests {
 
         assert_eq!(assignment.agent_id, "codex");
         assert_eq!(assignment.role_id, "implementer");
-        assert_eq!(transport, TransportSurface::Cli);
+        // codex's transport surface is now the app-server (interactive path);
+        // the autonomous dispatch path internally falls back to CLI exec.
+        assert_eq!(transport, TransportSurface::CodexAppServer);
     }
 
     #[test]

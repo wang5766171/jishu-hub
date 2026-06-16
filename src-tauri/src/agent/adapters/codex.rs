@@ -153,7 +153,21 @@ impl AgentManifest for CodexAdapter {
 
 impl TransportAdapter for CodexAdapter {
     fn transport_surface(&self) -> crate::agent::TransportSurface {
-        crate::agent::TransportSurface::Cli
+        crate::agent::TransportSurface::CodexAppServer
+    }
+
+    /// Spawn `codex app-server` for the interactive GUI path (turn-based JSON-RPC
+    /// with mid-turn pause-resume via `item/tool/requestUserInput`). Mirrors the
+    /// opencode `acp` spec shape; the GUI spawn host resolves the binary.
+    fn build_acp_command(
+        &self,
+        _req: &ChatRequest,
+    ) -> Result<crate::agent::AcpCommandSpec, String> {
+        Ok(crate::agent::AcpCommandSpec {
+            program: "codex".to_string(),
+            args: vec!["app-server".to_string()],
+            envs: Vec::new(),
+        })
     }
 
     fn build_chat_command(&self, req: ChatRequest) -> tokio::process::Command {

@@ -4,6 +4,7 @@ mod agent;
 mod agent_runtime;
 mod chat;
 mod cli_runtime;
+mod codex_app_server_runtime;
 mod command;
 mod config;
 mod dialog_commands;
