@@ -282,6 +282,14 @@ Hub 与 MCP 子系统的交互必须通过 `ConfigAdapter` trait，禁止在页�
 
 `AgentStatus` 暴露 `mcp_installed` / `mcp_version` 字段，`list_agent_statuses()` 自动为声明 `supports_mcp = true` 的 adapter 调用 `check_mcp()`，GUI 从单一数据源渲染状态徽章。
 
+同样的 adapter-contract 形态用于检测 claude_code 的外部 **transport-bridge 依赖**（`claude-agent-acp`）。该桥是未捆绑的 npm 包，claude_code 仅在其存在时才升级到 `AcpPreferred`（探针门控见 §3.1），缺失则降级 `Cli`。检测/安装走平行的 trait 方法，禁止在页面或 IPC 写 `agent_id` 分支：
+
+- `supports_transport_bridge()` — 能力声明
+- `check_transport_bridge()` — 返回 `{ installed, version, name }`（复用 `resolve_transport()` 的同一探针）
+- `install_transport_bridge()` — 异步安装（`npm i -g @agentclientprotocol/claude-agent-acp`）
+
+`AgentStatus.transport_bridge`（`TransportBridgeStatus`）由 `list_agent_statuses()` 对声明 `supports_transport_bridge = true` 的 adapter 回填；env-check 页据此在 agent 行下渲染桥子项（与 MCP 适配器子项并列），缺失可一键安装。
+
 ### 7.4 生命周期模式
 
 `pi-mcp-adapter` 支持三种服务器生命周期（默认 `lazy`）：
