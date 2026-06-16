@@ -527,6 +527,31 @@ function AppContent() {
     return () => { cancelled = true; unlistenFn?.(); };
   }, [activeId, projects, setActive]);
 
+  // Diagnostic: surface the REAL transport dispatch path in the F12 console so
+  // the actual command route (ACP vs CLI) is inspectable at runtime — this is
+  // the subprocess genuinely spawned, not the probe/declarative surface. No UI;
+  // look for `[dispatch] <agent> -> <transport>` in DevTools console.
+  useEffect(() => {
+    let unlistenFn: (() => void) | null = null;
+    listen<{
+      agent_id: string;
+      session_id: string;
+      transport: string;
+      program: string | null;
+      pid: number;
+    }>("agent-dispatch", (event) => {
+      const { agent_id, session_id, transport, program, pid } = event.payload;
+      console.info(
+        `%c[dispatch] ${agent_id} → ${transport}${program ? ` (${program})` : ""}`,
+        "color:#6366f1;font-weight:600",
+        { session_id, pid, transport, program }
+      );
+    })
+      .then((fn) => { unlistenFn = fn; })
+      .catch(console.error);
+    return () => { unlistenFn?.(); };
+  }, []);
+
   return (
     <div className="flex flex-col h-screen bg-background relative">
       <TitleBar currentPage={currentPage} onNavigate={setCurrentPage} disabled={blockingLoading} />

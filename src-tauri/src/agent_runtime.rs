@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use serde_json::json;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::ChildStdin;
 
@@ -77,6 +77,35 @@ pub fn transport_for_agent(
         .get(agent_id)
         .map(|agent| agent.resolve_transport())
         .ok_or_else(|| format!("Agent not found: {agent_id}"))
+}
+
+/// Emit a diagnostic event recording the transport a GUI turn **actually**
+/// dispatched over — i.e. the subprocess genuinely spawned (a CLI child vs. an
+/// ACP/PiRPC/CodexAppServer JSON-RPC process). This is the runtime ground
+/// truth, NOT the probe/declarative surface: it only fires after a successful
+/// spawn, so what the F12 console sees is the real command path. The frontend
+/// listens on `agent-dispatch` and logs it. Only the GUI (chat) path emits;
+/// the orchestrator blocking path has no `AppHandle`.
+fn emit_dispatch(
+    app: &AppHandle,
+    agent_id: &str,
+    session_id: &str,
+    transport: &TransportSurface,
+    program: Option<&str>,
+    pid: u32,
+) {
+    let payload = json!({
+        "agent_id": agent_id,
+        "session_id": session_id,
+        // Serializes to snake_case ("acp_preferred" / "pi_rpc" / "cli" / ...),
+        // matching the transport field the frontend already consumes.
+        "transport": transport,
+        "program": program,
+        "pid": pid,
+    });
+    if let Err(e) = app.emit("agent-dispatch", &payload) {
+        log::warn!("failed to emit agent-dispatch diagnostic: {e}");
+    }
 }
 
 pub fn prepare_gui_turn(
@@ -177,6 +206,9 @@ where
         .clone()
         .unwrap_or_else(|| format!("pending-{pid}"));
 
+    // Record the real dispatch path (CLI subprocess) for F12 inspection.
+    emit_dispatch(&app, &turn.agent_id, &sid, &TransportSurface::Cli, None, pid);
+
     if turn.consumes_stdin {
         if let Some(mut stdin) = child.stdin.take() {
             stdin
@@ -263,6 +295,17 @@ where
         .gui_session_id
         .clone()
         .unwrap_or_else(|| format!("pending-{pid}"));
+
+    // Record the real dispatch path (ACP/PiRPC/CodexAppServer JSON-RPC
+    // subprocess, plus the actual launched program) for F12 inspection.
+    emit_dispatch(
+        &app,
+        &turn.agent_id,
+        &sid,
+        &turn.transport,
+        Some(turn.command.program.as_str()),
+        pid,
+    );
 
     log::info!(
         "Spawning {} session: agent={}, pid={}, project_path={}",
