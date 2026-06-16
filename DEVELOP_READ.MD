@@ -86,9 +86,11 @@ Agent Adapter -> AcpCommandSpec -> AgentRuntime -> ACP Transport Runtime -> 目�
 1. `ACP Transport Runtime` 负责通用协议交互：`initialize`、`session/new`、`session/resume`、`session/load`、`session/prompt`、`session/update`、完成事件、错误事件、usage、取消和 session id 解析。
 2. 每个支持 ACP 的 agent 只通过 adapter 声明 `TransportSurface::AcpPreferred`，并实现 `build_acp_command(ChatRequest) -> AcpCommandSpec`。
 3. `AcpCommandSpec` 只描述要启动哪个 ACP server，包括 program、args、envs。它不应包含 GUI 业务，也不应包含 Jishu 任务编排语义。
-4. OpenCode、未来 Claude ACP、远程 ACP agent 都应复用同一个 ACP runtime。
-5. 任何新增 ACP agent 都不能复制其他 agent 的 ACP loop，也不能在页面或 IPC 中直接写 JSON-RPC 帧。
-6. ACP 事件必须统一归一化成 `NormalizedEvent`，由 GUI 和 Task Orchestrator 共同消费。
+4. OpenCode、claude_code、远程 ACP agent 都复用同一个 ACP runtime。claude_code 经 claude-agent-acp 桥走 ACP（探针门控见下）。
+5. adapter 可覆写 `resolve_transport()` 声明探针门控的「有效 transport」。claude_code 声明 `AcpPreferred` 为目标，但仅在探针发现 `claude-agent-acp` 桥二进制时才升级，桥缺失则降级 `Cli`（行为与迁移前一致，零回归）。所有 dispatch 必须读 `resolve_transport()` 而非声明性的 `transport_surface()`。
+6. ACP runtime 在 `initialize` 声明 `capabilities.elicitation.form=true`，并处理 `session/request_permission`（工具审批回填）与 unstable `elicitation/create`（claude_code 业务提问）。业务应答与审批分表（`pending_permissions` / `pending_elicitations`），按 JSON-RPC id 回写、互不串扰。
+7. 任何新增 ACP agent 都不能复制其他 agent 的 ACP loop，也不能在页面或 IPC 中直接写 JSON-RPC 帧。
+8. ACP 事件必须统一归一化成 `NormalizedEvent`，由 GUI 和 Task Orchestrator 共同消费。
 
 ### 3.2 Pi RPC 是独立 transport
 
@@ -108,15 +110,36 @@ Agent Adapter -> AcpCommandSpec -> AgentRuntime -> Pi RPC Transport Runtime -> P
 4. 未来其他基于 Pi 的 agent 可复用同一个 Pi RPC runtime。
 5. 所有 transport 的事件必须统一归一化成 `NormalizedEvent`。
 
+### 3.3 Codex App Server 是独立 transport
+
+Codex 不走 ACP，而是使用其原生 app-server 协议（newline-delimited JSON，但**省略 `jsonrpc:"2.0"` 字段**，不同于 ACP/Pi 的 JSON-RPC 2.0）。它与 ACP/PiRpc 并列，由 `TransportSurface::CodexAppServer` 标识。
+
+正确模型：
+
+```text
+Agent Adapter -> AcpCommandSpec(codex app-server) -> AgentRuntime -> Codex App Server Runtime -> codex app-server
+```
+
+约束：
+
+1. `Codex App Server Runtime`（`codex_app_server_runtime.rs`）负责 `initialize`（声明 `capabilities.experimentalApi=true`）、`thread/start`、`thread/resume`、`turn/start`、流式 notification、`turn/completed`、`turn/steer`、`turn/interrupt` 与 session/turn id 解析。
+2. 工具审批走 `item/commandExecution/requestApproval`、`item/fileChange/requestApproval`、`item/permissions/requestApproval`，回写 `{decision:"accept"|"decline"}`。
+3. 业务提问走 EXPERIMENTAL `item/tool/requestUserInput`，**最佳努力、不承诺跨版本稳定**：同一通道还承载 MCP/connector 副作用审批，runtime 必须按 payload 分流（origin `codex_tool_request_user_input` vs `codex_mcp_approval`），回写 `{answers:{[qid]:{answers:[value]}}}`。
+4. codex adapter 声明 `TransportSurface::CodexAppServer`，GUI 流式走 app-server runtime；自治/阻塞路径仍走 CLI exec（`codex -p`）。
+5. CodexAppServer 与 AcpPreferred/PiRpc 是并列 transport 选项，禁止用 agent_id 硬编码判断。
+
 当前实现锚点：
 
-- `src-tauri/src/agent_runtime.rs`：通过 adapter 的 `TransportSurface` 选择 transport（ACP/PiRPC/CLI）。
-- `src-tauri/src/acp_runtime.rs`：通用 ACP JSON-RPC 2.0 client runtime。
+- `src-tauri/src/agent_runtime.rs`：通过 adapter 的 `resolve_transport()` 选择 transport（ACP/PiRPC/CodexAppServer/CLI），GUI 流式与自治阻塞路径分派。
+- `src-tauri/src/acp_runtime.rs`：通用 ACP JSON-RPC 2.0 client runtime（含 `request_permission` 审批回填与 `elicitation/create` 业务提问回填）。
 - `src-tauri/src/pi_rpc_runtime.rs`：Pi 原生 RPC 协议 runtime。
-- `src-tauri/src/agent/mod.rs`：`TransportSurface` 枚举（`AcpPreferred`、`PiRpc`、`Cli`、`Embedded`）。
-- `src-tauri/src/agent/traits.rs`：`build_acp_command` adapter contract。
+- `src-tauri/src/codex_app_server_runtime.rs`：Codex app-server 协议 runtime。
+- `src-tauri/src/agent/mod.rs`：`TransportSurface` 枚举（`AcpPreferred`、`PiRpc`、`CodexAppServer`、`Cli`、`Embedded`）。
+- `src-tauri/src/agent/traits.rs`：`build_acp_command` 与 `resolve_transport`（探针门控，默认回退 `transport_surface`）adapter contract。
 - `src-tauri/src/agent/jishu_self/mod.rs`：Jishu Agent adapter，声明 `PiRpc` transport。
-- `src-tauri/src/agent/adapters/opencode.rs`：OpenCode ACP adapter 实例。
+- `src-tauri/src/agent/adapters/opencode.rs`：OpenCode ACP adapter 实例（`AcpPreferred`）。
+- `src-tauri/src/agent/claude_code.rs`：Claude Code adapter，声明 `AcpPreferred` 目标 + `resolve_transport` 探针 `claude-agent-acp` 桥、缺失降级 `Cli`。
+- `src-tauri/src/agent/adapters/codex.rs`：Codex adapter，声明 `CodexAppServer`。
 
 ## 4. CLI 架构：`jishu-cli` 与 `jishu` 的职责分离
 
@@ -152,7 +175,7 @@ Agent Adapter -> AcpCommandSpec -> AgentRuntime -> Pi RPC Transport Runtime -> P
 
 CLI transport 用于两类场景：
 
-1. agent 本身只有 CLI 交互面，例如 Codex、Claude Code 的当前默认模式。
+1. agent 的有效 transport 降级到 CLI（例如 claude_code 在未安装 claude-agent-acp 桥时），或 agent 本身只有 CLI 交互面。Codex、Claude Code 的 GUI 流式现分别走 `CodexAppServer` 与 `AcpPreferred`（探针门控），CLI 仅作兜底。
 2. 用户主动打开终端，使用该 agent 的正式命令进行交互或恢复会话。
 
 原则：
@@ -336,7 +359,7 @@ Jishu/Pi 会话特别约束：
 5. GUI 在任务主工作台展示任务图和 Revision Diff，支持手工修改、补充约束、接受部分提案、重新规划和最终确认。
 6. 用户与 AI 的编辑都使用同一 GraphCommand 协议；后端校验通过后原子创建不可变 Revision。
 7. Task Orchestrator 启动 GraphRun，按依赖、资源、权限、预算和审批约束进行最大安全并行调度。
-8. 可执行节点通过 AgentRuntime 派发。AgentRuntime 根据 Adapter 的 `TransportSurface` 选择 ACP、PiRpc、CLI 或 Embedded Runtime，并统一输出 `NormalizedEvent`。
+8. 可执行节点通过 AgentRuntime 派发。AgentRuntime 根据 Adapter 的 `resolve_transport()` 选择 ACP、PiRpc、CodexAppServer、CLI 或 Embedded Runtime，并统一输出 `NormalizedEvent`。
 9. Task Orchestrator 将与 Run/Attempt 可靠关联的 `NormalizedEvent` 转为 `TaskEvent`，再更新任务投影；GUI 只消费投影和结构化审批请求。
 10. Jishu Supervisor 在需要语义判断时评估进展、产物和目标，返回 `EvaluationResult` 或 `RecoveryProposal`。确定性重试、Lease、超时和状态转换仍由 Task Orchestrator 处理。
 11. 返工、Repair Subgraph、持久化 Loop 或运行中改图必须形成结构化提案，经 Task Orchestrator 校验后创建或应用新 Revision。
