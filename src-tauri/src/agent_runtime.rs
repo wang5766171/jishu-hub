@@ -129,6 +129,12 @@ pub fn prepare_gui_turn(
                 eof_is_complete: agent.treat_eof_as_complete_after_output(),
             }))
         }
+        // codex app-server runtime is wired in Phase 2 (交互模式通用化设计).
+        // Until then no adapter declares this transport surface.
+        TransportSurface::CodexAppServer => Err(format!(
+            "codex app-server transport is not yet wired for agent {}",
+            request.agent_id
+        )),
     }
 }
 
@@ -334,6 +340,11 @@ pub fn run_turn_blocking_cancellable(
         TransportSurface::Cli | TransportSurface::Embedded => {
             run_cli_turn_blocking(agent, request, stdin_bridge, cancellation)
         }
+        // codex app-server runtime is wired in Phase 2 (交互模式通用化设计).
+        TransportSurface::CodexAppServer => Err(format!(
+            "codex app-server transport is not yet wired for agent {}",
+            request.agent_id
+        )),
     }
 }
 

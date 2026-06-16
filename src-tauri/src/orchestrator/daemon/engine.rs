@@ -2343,6 +2343,11 @@ mod tests {
                                 allow_multiple: false,
                                 allow_custom_text: true,
                                 required: true,
+                                transport: crate::agent::normalized::InteractionTransport::PiRpc,
+                                origin: crate::agent::normalized::InteractionOrigin::ExtensionUi,
+                                delivery_hint:
+                                    crate::agent::normalized::InteractionDeliveryHint::MidTurn,
+                                correlation: None,
                             },
                         ],
                         exit_success: true,

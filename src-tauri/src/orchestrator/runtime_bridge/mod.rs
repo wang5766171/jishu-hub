@@ -603,6 +603,7 @@ pub fn map_normalized_event(context: &RuntimeEventContext, event: &NormalizedEve
             allow_multiple,
             allow_custom_text,
             required,
+            ..
         } => RuntimeFact::InteractionRequested {
             context: context.clone(),
             request_id: request_id.clone(),

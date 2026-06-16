@@ -9,6 +9,7 @@ pub mod classify;
 pub mod claude_code;
 pub mod command_config;
 pub mod discovery;
+pub mod interaction;
 pub mod jishu_self;
 pub mod normalized;
 pub mod traits;
@@ -108,6 +109,11 @@ pub enum TransportSurface {
     PiRpc,
     Cli,
     Embedded,
+    /// codex's JSON-RPC 2.0 app-server protocol (thread/turn model). Added for
+    /// v0.6.0 interaction generalization — codex answers structured business
+    /// questions via EXPERIMENTAL `item/tool/requestUserInput`. See
+    /// `交互模式通用化设计_20260616.md` (§7.2).
+    CodexAppServer,
 }
 
 impl TransportSurface {
@@ -117,6 +123,7 @@ impl TransportSurface {
             Self::PiRpc => "PiRPC",
             Self::Cli => "CLI",
             Self::Embedded => "Embedded",
+            Self::CodexAppServer => "CodexAppServer",
         }
     }
 }

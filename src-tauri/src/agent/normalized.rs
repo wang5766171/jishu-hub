@@ -18,6 +18,90 @@ pub struct InteractionOption {
     pub description: Option<String>,
 }
 
+/// Which transport surfaced a structured interaction. Drives delivery routing
+/// (see `agent::interaction::delivery_hint_for`). Defaults to `Unspecified` so
+/// legacy/persisted events (without the field) deserialize safely.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractionTransport {
+    #[default]
+    Unspecified,
+    PiRpc,
+    AcpPreferred,
+    CodexAppServer,
+    Cli,
+    Embedded,
+}
+
+impl InteractionTransport {
+    pub fn from_surface(surface: super::TransportSurface) -> Self {
+        match surface {
+            super::TransportSurface::PiRpc => Self::PiRpc,
+            super::TransportSurface::AcpPreferred => Self::AcpPreferred,
+            super::TransportSurface::CodexAppServer => Self::CodexAppServer,
+            super::TransportSurface::Cli => Self::Cli,
+            super::TransportSurface::Embedded => Self::Embedded,
+        }
+    }
+}
+
+/// The protocol channel that produced an interaction. Determines whether the
+/// answer can be written back as a true mid-turn pause-resume or must fall back
+/// to a follow-up message. See `交互模式通用化设计_20260616.md` §7.1.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractionOrigin {
+    /// Generic text tool call / unverified channel — safe default, follow-up.
+    #[default]
+    Text,
+    /// Pi `extension_ui_request` (production mid-turn baseline).
+    ExtensionUi,
+    /// ACP unstable `elicitation/create` (claude_code, capability-gated).
+    AcpElicitation,
+    /// codex EXPERIMENTAL `item/tool/requestUserInput` business question.
+    CodexToolRequestUserInput,
+    /// codex `item/tool/requestUserInput` carrying an MCP/connector side-effect
+    /// approval (Accept/Decline/Cancel) — routes to the approval path.
+    CodexMcpApproval,
+    /// codex `item/*/requestApproval` (command/file/permission).
+    CodexApproval,
+}
+
+/// Expected write-back semantics for an interaction. The frontend uses this as a
+/// *hint* only; the authoritative decision is the `InteractionDelivery` returned
+/// by `respond_chat_interaction` (design R6 — never assume mid-turn from the
+/// event alone).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractionDeliveryHint {
+    #[default]
+    FollowUp,
+    MidTurn,
+}
+
+/// Native correlation scope carried with an interaction so the backend can
+/// locate the exact pending server request to write back (design R3 — must
+/// include `request_kind` to avoid approval/user-input registry collisions).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InteractionCorrelation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_request_id: Option<String>,
+    /// Raw JSON-RPC id (may be number or string) of the originating request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jsonrpc_id: Option<serde_json::Value>,
+    /// Disambiguates business/approval/elicitation pending entries sharing scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_kind: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NormalizedEvent {
@@ -52,6 +136,24 @@ pub enum NormalizedEvent {
         allow_multiple: bool,
         allow_custom_text: bool,
         required: bool,
+        /// Transport that surfaced this interaction. Drives answer routing.
+        #[serde(default)]
+        transport: InteractionTransport,
+        /// Protocol channel / origin. Disambiguates business question vs.
+        /// approval vs. elicitation (design R8: same `tool/requestUserInput`
+        /// channel carries two semantics — split by payload).
+        #[serde(default)]
+        origin: InteractionOrigin,
+        /// Expected write-back semantics — *hint only*. The authoritative
+        /// decision is the `InteractionDelivery` returned by
+        /// `respond_chat_interaction` (design R6).
+        #[serde(default)]
+        delivery_hint: InteractionDeliveryHint,
+        /// Native correlation scope for locating the pending server request to
+        /// write back (design R3 — includes `request_kind` to prevent registry
+        /// collisions between approval and business pending entries).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        correlation: Option<InteractionCorrelation>,
     },
     SessionResolved {
         session_id: String,
@@ -226,6 +328,14 @@ pub fn interaction_requests_from_tool_call(
                 allow_multiple,
                 allow_custom_text,
                 required,
+                // Generic tool-call path: not a verified mid-turn channel, so
+                // it defaults to follow-up. Verified mid-turn paths (Pi
+                // `extension_ui`, codex `requestUserInput`, ACP elicit) build
+                // events directly with full metadata.
+                transport: InteractionTransport::default(),
+                origin: InteractionOrigin::default(),
+                delivery_hint: InteractionDeliveryHint::default(),
+                correlation: None,
             })
         })
         .collect()
@@ -361,6 +471,10 @@ mod tests_v6 {
             allow_multiple: false,
             allow_custom_text: true,
             required: true,
+            transport: InteractionTransport::PiRpc,
+            origin: InteractionOrigin::ExtensionUi,
+            delivery_hint: InteractionDeliveryHint::MidTurn,
+            correlation: None,
         };
 
         let json = serde_json::to_string(&event).unwrap();
@@ -368,6 +482,38 @@ mod tests_v6 {
         let decoded: NormalizedEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, event);
         assert_eq!(event.event_type(), "interaction_request");
+    }
+
+    #[test]
+    fn interaction_request_legacy_payload_round_trip_keeps_defaults() {
+        // Persisted events from before v0.6.0 interaction-generalization do not
+        // carry transport/origin/delivery_hint/correlation. They must still
+        // deserialize (defaulting) so the persisted history remains readable.
+        let legacy = serde_json::json!({
+            "kind": "interaction_request",
+            "request_id": "legacy-1",
+            "prompt": "旧数据里的提问",
+            "options": [],
+            "allow_multiple": false,
+            "allow_custom_text": false,
+            "required": true,
+        });
+        let decoded: NormalizedEvent = serde_json::from_value(legacy).unwrap();
+        match decoded {
+            NormalizedEvent::InteractionRequest {
+                transport,
+                origin,
+                delivery_hint,
+                correlation,
+                ..
+            } => {
+                assert_eq!(transport, InteractionTransport::Unspecified);
+                assert_eq!(origin, InteractionOrigin::Text);
+                assert_eq!(delivery_hint, InteractionDeliveryHint::FollowUp);
+                assert_eq!(correlation, None);
+            }
+            other => panic!("expected InteractionRequest, got {other:?}"),
+        }
     }
 
     #[test]
@@ -407,6 +553,10 @@ mod tests_v6 {
                 allow_multiple: false,
                 allow_custom_text: false,
                 required: true,
+                transport: InteractionTransport::default(),
+                origin: InteractionOrigin::default(),
+                delivery_hint: InteractionDeliveryHint::default(),
+                correlation: None,
             }]
         );
     }

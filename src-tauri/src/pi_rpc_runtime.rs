@@ -18,7 +18,8 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::acp_runtime::{tauri_event_emitter, AcpCommand, AcpControl, AcpEventEmit};
 use crate::agent::normalized::{
-    interaction_requests_from_tool_call, InteractionOption, NormalizedEvent, TurnEndReason,
+    interaction_requests_from_tool_call, InteractionDeliveryHint, InteractionOption, InteractionOrigin,
+    InteractionTransport, NormalizedEvent, TurnEndReason,
 };
 
 // ---------------------------------------------------------------------------
@@ -822,6 +823,11 @@ fn convert_extension_ui_request(msg: &serde_json::Value) -> Option<NormalizedEve
                 allow_multiple: false,
                 allow_custom_text: true,
                 required: true,
+                // Pi `extension_ui` is the production mid-turn baseline.
+                transport: InteractionTransport::PiRpc,
+                origin: InteractionOrigin::ExtensionUi,
+                delivery_hint: InteractionDeliveryHint::MidTurn,
+                correlation: None,
             })
         }
         "input" => {
@@ -837,6 +843,10 @@ fn convert_extension_ui_request(msg: &serde_json::Value) -> Option<NormalizedEve
                 allow_multiple: false,
                 allow_custom_text: true,
                 required: true,
+                transport: InteractionTransport::PiRpc,
+                origin: InteractionOrigin::ExtensionUi,
+                delivery_hint: InteractionDeliveryHint::MidTurn,
+                correlation: None,
             })
         }
         // confirm, notify, setStatus, setWidget, setTitle, set_editor_text:
@@ -940,6 +950,10 @@ mod tests {
                 allow_multiple,
                 allow_custom_text,
                 required,
+                transport,
+                origin,
+                delivery_hint,
+                correlation,
             } => {
                 assert_eq!(request_id, "req-uuid-1");
                 assert_eq!(prompt, "请选择实现方案");
@@ -948,6 +962,11 @@ mod tests {
                 assert!(!allow_multiple);
                 assert!(allow_custom_text);
                 assert!(required);
+                // Pi extension_ui is the production mid-turn baseline.
+                assert_eq!(transport, InteractionTransport::PiRpc);
+                assert_eq!(origin, InteractionOrigin::ExtensionUi);
+                assert_eq!(delivery_hint, InteractionDeliveryHint::MidTurn);
+                assert!(correlation.is_none());
             }
             _ => panic!("expected InteractionRequest"),
         }

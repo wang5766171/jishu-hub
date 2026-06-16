@@ -342,6 +342,7 @@ fn planning_interaction_request(
             allow_multiple,
             allow_custom_text,
             required,
+            ..
         } => Some(TaskInteractionRequest {
             request_id: request_id.clone(),
             graph_id: graph_id.to_string(),
@@ -1432,6 +1433,10 @@ Hope this works for you."#;
                     allow_multiple: false,
                     allow_custom_text: true,
                     required: true,
+                    transport: crate::agent::normalized::InteractionTransport::PiRpc,
+                    origin: crate::agent::normalized::InteractionOrigin::ExtensionUi,
+                    delivery_hint: crate::agent::normalized::InteractionDeliveryHint::MidTurn,
+                    correlation: None,
                 },
             ],
         )
