@@ -17,7 +17,9 @@ use tokio::process::ChildStdin;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::agent::normalized::{
-    interaction_requests_from_tool_call, NormalizedEvent, TurnEndReason, UsageStats,
+    interaction_requests_from_tool_call, InteractionCorrelation, InteractionDeliveryHint,
+    InteractionOption, InteractionOrigin, InteractionTransport, NormalizedEvent, TurnEndReason,
+    UsageStats,
 };
 use crate::cli_runtime::AgentStreamChunk;
 
@@ -390,6 +392,121 @@ fn elicit_result_payload(action: ElicitAction, content: serde_json::Value) -> se
     }
 }
 
+/// `InteractionCorrelation::request_kind` discriminator for ACP elicitations,
+/// so a business-answer correlation can never collide with a permission's (R3).
+const KIND_ELICITATION: &str = "acp_elicitation";
+
+/// Parsed view of a renderable ACP `elicitation/create` (claude-agent-acp
+/// `AskUserQuestion`, form mode). `None` when the request cannot be surfaced as
+/// a single-choice interaction (url mode, arbitrary MCP schema, no enum) — the
+/// caller replies `cancel` to avoid stalling the turn.
+struct AcpElicitation {
+    prompt: String,
+    options: Vec<InteractionOption>,
+    /// JSON property name under `requestedSchema.properties` that holds the
+    /// chosen answer (claude-agent-acp keys it `question_<n>`). Written back as
+    /// `content[content_field]` so the tool's `applyAskElicitationResponse`
+    /// reads it as the selected label.
+    content_field: String,
+}
+
+/// Parse a form-mode `elicitation/create` into a single-choice interaction.
+///
+/// claude-agent-acp (`elicitation.ts`) renders each `AskUserQuestion` question
+/// as `requestedSchema.properties.question_<n>` — single-select `{type:"string",
+/// oneOf:[{const:LABEL,title:"LABEL — desc"}]}` (or multi-select `items.anyOf`)
+/// — followed by a `question_<n>_custom` free-text field. The enum `const` is
+/// always the option **label** (what the tool records as the answer), so the
+/// emitted `InteractionOption` sets `option_id == label == const`: the frontend
+/// submits the label (`formatInteractionResponseValue` maps optionId→label) and
+/// we write it back as `content[content_field]`, which the tool matches against
+/// the enum const. Multi-question/multi-select elicitations are reduced to the
+/// first question, single-select (the A/B/C decision v0.6.0 targets); the
+/// single-value write-back is consistent with the PiRpc/codex runtimes.
+fn parse_acp_elicitation(params: &serde_json::Value) -> Option<AcpElicitation> {
+    let mode = params.get("mode").and_then(|v| v.as_str()).unwrap_or("form");
+    if mode != "form" {
+        return None; // url-mode elicitations have no form rendering
+    }
+    let properties = params
+        .get("requestedSchema")
+        .and_then(|s| s.get("properties"))
+        .and_then(|p| p.as_object())?;
+
+    // First `question_<n>` field (skip the per-question `_custom` free-text box).
+    let (content_field, field) = properties
+        .iter()
+        .find(|(k, _)| is_question_field(k))?;
+    let options = extract_enum_options(field)?;
+    if options.is_empty() {
+        return None;
+    }
+
+    let prompt = params
+        .get("message")
+        .and_then(|v| v.as_str())
+        .or_else(|| field.get("description").and_then(|v| v.as_str()))
+        .or_else(|| field.get("title").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+
+    Some(AcpElicitation {
+        prompt,
+        options,
+        content_field: content_field.clone(),
+    })
+}
+
+/// A `question_<n>` form field (not the `question_<n>_custom` companion).
+fn is_question_field(key: &str) -> bool {
+    let rest = match key.strip_prefix("question_") {
+        Some(r) => r,
+        None => return false,
+    };
+    !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Extract choice options from a single-select `oneOf` or multi-select
+/// `items.anyOf` enum. Each option's `const` is the answer label.
+fn extract_enum_options(field: &serde_json::Value) -> Option<Vec<InteractionOption>> {
+    let enum_list = field
+        .get("oneOf")
+        .and_then(|v| v.as_array())
+        .or_else(|| {
+            field
+                .get("items")
+                .and_then(|i| i.get("anyOf"))
+                .and_then(|v| v.as_array())
+        })?;
+
+    let options = enum_list
+        .iter()
+        .filter_map(|opt| {
+            // `const` is the clean option label (the tool records it as the answer).
+            let const_val = opt.get("const")?.as_str()?;
+            // Prefer the structured description carried under ACP's `_meta`
+            // extension; fall back to the "label — description" flattened title.
+            let description = opt
+                .get("_meta")
+                .and_then(|m| m.get("_claude/askUserQuestionOption"))
+                .and_then(|m| m.get("description"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .or_else(|| {
+                    opt.get("title")
+                        .and_then(|v| v.as_str())
+                        .and_then(|t| t.split_once(" — ").map(|(_, d)| d.to_string()))
+                });
+            Some(InteractionOption {
+                option_id: const_val.to_string(),
+                label: const_val.to_string(),
+                description,
+            })
+        })
+        .collect();
+    Some(options)
+}
+
 fn permission_request_key(id: &serde_json::Value) -> String {
     id.as_str()
         .map(str::to_owned)
@@ -612,7 +729,13 @@ async fn acp_connection_loop(
                 "protocolVersion": 1,
                 "clientCapabilities": {
                     "fs": { "readTextFile": false, "writeTextFile": false },
-                    "terminal": false
+                    "terminal": false,
+                    // Declare unstable elicitation/form support so claude-agent-acp
+                    // routes `AskUserQuestion` tool calls to `elicitation/create`
+                    // server requests (design §5.2.1 / R4). Harmless for ACP
+                    // servers that never send elicitations (e.g. opencode): it only
+                    // advertises a capability they will not exercise.
+                    "elicitation": { "form": true }
                 },
                 "clientInfo": {
                     "name": "jishu-hub",
@@ -1020,6 +1143,82 @@ async fn acp_connection_loop(
                             });
                             flush_buf(&emit, &session_id, &mut buf);
                             last_flush = std::time::Instant::now();
+                        } else if msg.get("method").and_then(|v| v.as_str())
+                            == Some("elicitation/create")
+                        {
+                            // claude-agent-acp business question (AskUserQuestion),
+                            // capability-gated on the `elicitation.form` we advertised
+                            // at initialize. A server REQUEST (carries `id`): we must
+                            // eventually write back `{action, content}` or the turn
+                            // stalls.
+                            let Some(rpc_id) = msg.get("id").cloned() else {
+                                log::warn!(
+                                    "ACP elicitation/create ignored: no id (cannot reply)"
+                                );
+                                continue;
+                            };
+                            let params = msg.get("params").cloned().unwrap_or_default();
+                            match parse_acp_elicitation(&params) {
+                                Some(elic) => {
+                                    // Register under the same key the frontend will
+                                    // echo back as `request_id`, so RespondToInput's
+                                    // route_acp_interaction_response lookup matches
+                                    // (R3: kept in the DISTINCT elicitations table).
+                                    let request_id = permission_request_key(&rpc_id);
+                                    pending_elicitations.insert(
+                                        request_id.clone(),
+                                        PendingElicitation {
+                                            rpc_id: rpc_id.clone(),
+                                            content_field: elic.content_field,
+                                        },
+                                    );
+                                    buf.push(NormalizedEvent::InteractionRequest {
+                                        request_id,
+                                        prompt: elic.prompt,
+                                        options: elic.options,
+                                        allow_multiple: false,
+                                        allow_custom_text: true,
+                                        required: true,
+                                        transport: InteractionTransport::AcpPreferred,
+                                        origin: InteractionOrigin::AcpElicitation,
+                                        delivery_hint: InteractionDeliveryHint::MidTurn,
+                                        correlation: Some(InteractionCorrelation {
+                                            session_id: Some(session_id.clone()),
+                                            jsonrpc_id: Some(rpc_id),
+                                            request_kind: Some(KIND_ELICITATION.to_string()),
+                                            ..Default::default()
+                                        }),
+                                    });
+                                    flush_buf(&emit, &session_id, &mut buf);
+                                    last_flush = std::time::Instant::now();
+                                }
+                                None => {
+                                    // Unparsable elicitation (url mode, arbitrary MCP
+                                    // schema, or no enum) — we have no UI to render it.
+                                    // Reply `cancel` immediately so claude-agent-acp
+                                    // does not block the turn awaiting an answer that
+                                    // will never arrive (design §5.2.1 three-state).
+                                    log::warn!(
+                                        "ACP elicitation/create (id {:?}) is not a \
+                                         renderable single-choice form; replying cancel",
+                                        msg.get("id")
+                                    );
+                                    if let Err(error) = writer
+                                        .respond(
+                                            &rpc_id,
+                                            elicit_result_payload(
+                                                ElicitAction::Cancel,
+                                                serde_json::Value::Null,
+                                            ),
+                                        )
+                                        .await
+                                    {
+                                        log::warn!(
+                                            "ACP failed to cancel unparsable elicitation: {error}"
+                                        );
+                                    }
+                                }
+                            }
                         } else {
                             log::debug!("ACP stdout ignored msg (no matching id, not session/update): method={:?}", msg.get("method"));
                         }
@@ -1690,5 +1889,171 @@ mod tests {
             elicit_result_payload(ElicitAction::Cancel, json!(null)),
             json!({ "action": "cancel" })
         );
+    }
+
+    // --- elicitation/create parsing (claude-agent-acp AskUserQuestion) --------
+
+    #[test]
+    fn parses_single_choice_elicitation() {
+        // Shape produced by claude-agent-acp elicitation.ts for one question:
+        // message carries the prompt; question_0 is a titled oneOf whose `const`
+        // is the option label; question_0_custom is the free-text "Other" box.
+        let params = json!({
+            "mode": "form",
+            "message": "Which approach do you prefer?",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "question_0": {
+                        "type": "string",
+                        "oneOf": [
+                            { "const": "Refactor", "title": "Refactor — rewrite in place" },
+                            { "const": "Rewrite", "title": "Rewrite" }
+                        ]
+                    },
+                    "question_0_custom": {
+                        "type": "string",
+                        "title": "Other",
+                        "description": "Type your own answer."
+                    }
+                }
+            }
+        });
+        let elic = parse_acp_elicitation(&params).expect("single-choice form is parseable");
+        assert_eq!(elic.prompt, "Which approach do you prefer?");
+        assert_eq!(elic.content_field, "question_0");
+        assert_eq!(elic.options.len(), 2);
+        // const == label == option_id: the frontend submits the label and we
+        // write it back as content[content_field] for the enum match.
+        assert_eq!(elic.options[0].option_id, "Refactor");
+        assert_eq!(elic.options[0].label, "Refactor");
+        // Description folds out of the flattened "label — description" title.
+        assert_eq!(elic.options[0].description.as_deref(), Some("rewrite in place"));
+        assert_eq!(elic.options[1].description, None);
+    }
+
+    #[test]
+    fn parses_multi_select_anyof_enum() {
+        let params = json!({
+            "mode": "form",
+            "message": "Pick all that apply",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "question_0": {
+                        "type": "array",
+                        "items": {
+                            "anyOf": [
+                                { "const": "A", "title": "A" },
+                                { "const": "B", "title": "B" }
+                            ]
+                        }
+                    }
+                }
+            }
+        });
+        let elic = parse_acp_elicitation(&params).expect("array/anyOf is parseable");
+        assert_eq!(elic.options.len(), 2);
+        assert_eq!(elic.options.iter().map(|o| &o.label).collect::<Vec<_>>(), ["A", "B"]);
+    }
+
+    #[test]
+    fn url_mode_elicitation_is_not_renderable() {
+        let params = json!({ "mode": "url", "url": "https://example/auth", "message": "Sign in" });
+        assert!(parse_acp_elicitation(&params).is_none());
+    }
+
+    #[test]
+    fn elicitation_without_enum_is_not_renderable() {
+        // Arbitrary MCP form schema (no oneOf/anyOf) cannot become A/B/C options.
+        let params = json!({
+            "mode": "form",
+            "message": "Name?",
+            "requestedSchema": {
+                "type": "object",
+                "properties": { "question_0": { "type": "string", "title": "Name" } }
+            }
+        });
+        assert!(parse_acp_elicitation(&params).is_none());
+    }
+
+    #[test]
+    fn elicitation_prefers_structured_description_over_flattened_title() {
+        let params = json!({
+            "mode": "form",
+            "message": "q",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "question_0": {
+                        "type": "string",
+                        "oneOf": [{
+                            "const": "A",
+                            "title": "A — flattened desc",
+                            "_meta": { "_claude/askUserQuestionOption": { "description": "structured desc", "preview": "p" } }
+                        }]
+                    }
+                }
+            }
+        });
+        let elic = parse_acp_elicitation(&params).unwrap();
+        assert_eq!(elic.options[0].description.as_deref(), Some("structured desc"));
+    }
+
+    #[test]
+    fn question_field_discriminator_skips_custom_companion() {
+        assert!(is_question_field("question_0"));
+        assert!(is_question_field("question_12"));
+        assert!(!is_question_field("question_0_custom"));
+        assert!(!is_question_field("question_"));
+        assert!(!is_question_field("question_abc"));
+        assert!(!is_question_field("other"));
+    }
+
+    #[test]
+    fn parse_then_route_yields_enum_matching_content() {
+        // End-to-end shape: an elicitation is parsed, registered, and the user's
+        // submitted label is routed back as content[question_0] — exactly the
+        // shape claude-agent-acp's applyAskElicitationResponse matches against
+        // the oneOf const (= the option label).
+        let params = json!({
+            "mode": "form",
+            "message": "Choose",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "question_0": {
+                        "type": "string",
+                        "oneOf": [
+                            { "const": "A", "title": "A" },
+                            { "const": "B", "title": "B" }
+                        ]
+                    }
+                }
+            }
+        });
+        let elic = parse_acp_elicitation(&params).unwrap();
+
+        let mut pending: HashMap<String, PendingElicitation> = HashMap::new();
+        pending.insert(
+            "req_1".to_string(),
+            PendingElicitation {
+                rpc_id: json!(42),
+                content_field: elic.content_field.clone(),
+            },
+        );
+
+        match route_acp_interaction_response(&pending, "req_1", "B") {
+            AcpInteractionRoute::Elicit { rpc_id, action, content } => {
+                assert_eq!(rpc_id, json!(42));
+                assert_eq!(action, ElicitAction::Accept);
+                assert_eq!(content, json!({ "question_0": "B" }));
+                assert_eq!(
+                    elicit_result_payload(action, content),
+                    json!({ "action": "accept", "content": { "question_0": "B" } })
+                );
+            }
+            AcpInteractionRoute::NoChannel => panic!("expected Elicit route"),
+        }
     }
 }
