@@ -318,6 +318,13 @@ pub fn default_candidates_for(name: &str) -> Vec<String> {
                 format!("{}\\.bun\\bin\\opencode", userprofile),
                 format!("{}\\Programs\\opencode\\opencode.exe", local_appdata),
             ],
+            // claude-agent-acp: the ACP bridge wrapping the Claude Agent SDK
+            // (claude_code's AcpPreferred backend, design §5.2.1 / R4). Installed
+            // globally via npm as a `.cmd` shim (or via bun).
+            "claude-agent-acp" => vec![
+                format!("{}\\npm\\claude-agent-acp.cmd", appdata),
+                format!("{}\\.bun\\bin\\claude-agent-acp", userprofile),
+            ],
             _ => vec![],
         }
     }
@@ -336,6 +343,10 @@ pub fn default_candidates_for(name: &str) -> Vec<String> {
             "opencode" => vec![
                 format!("{}/.bun/bin/opencode", home_str),
                 "/usr/local/bin/opencode".to_string(),
+            ],
+            "claude-agent-acp" => vec![
+                format!("{}/.bun/bin/claude-agent-acp", home_str),
+                "/usr/local/bin/claude-agent-acp".to_string(),
             ],
             _ => vec![],
         }

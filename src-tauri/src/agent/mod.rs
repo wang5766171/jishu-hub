@@ -228,7 +228,7 @@ impl AgentRegistry {
                     config_surface: a.config_surface(),
                     project_settings_surface: a.project_settings_surface(),
                     terminal_surface: a.terminal_surface(),
-                    transport: a.transport_surface(),
+                    transport: a.resolve_transport(),
                     mcp_installed,
                     mcp_version,
                 }

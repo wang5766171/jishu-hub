@@ -141,7 +141,7 @@ impl PlannerService {
             .map(|(id, adapter)| {
                 serde_json::json!({
                     "agent_id": id,
-                    "transport": adapter.transport_surface().as_str(),
+                    "transport": adapter.resolve_transport().as_str(),
                     "capabilities": capability_snapshot(adapter.capabilities()),
                 })
             })

@@ -75,7 +75,7 @@ pub fn transport_for_agent(
 ) -> Result<TransportSurface, String> {
     registry
         .get(agent_id)
-        .map(|agent| agent.transport_surface())
+        .map(|agent| agent.resolve_transport())
         .ok_or_else(|| format!("Agent not found: {agent_id}"))
 }
 

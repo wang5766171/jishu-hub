@@ -52,6 +52,16 @@ pub trait AgentManifest {
 
 pub trait TransportAdapter {
     fn transport_surface(&self) -> TransportSurface;
+    /// The effective transport to dispatch this turn on. Defaults to the
+    /// declarative `transport_surface()`. An adapter whose ACP backend is an
+    /// external bridge that may or may not be installed (claude_code →
+    /// claude-agent-acp) overrides this to probe the bridge binary and fall
+    /// back to `Cli` when it is absent — so chat keeps working (design R4:
+    /// "失败降级") instead of breaking on a missing dependency. Callers that
+    /// decide Acp-vs-Cli dispatch must use this, not `transport_surface()`.
+    fn resolve_transport(&self) -> TransportSurface {
+        self.transport_surface()
+    }
     fn build_chat_command(&self, args: ChatRequest) -> tokio::process::Command;
     fn build_acp_command(&self, _args: &ChatRequest) -> Result<AcpCommandSpec, String> {
         Err("ACP transport is not supported by this agent".to_string())

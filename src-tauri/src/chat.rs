@@ -396,7 +396,7 @@ pub async fn respond_chat_interaction(
             .map_err(|_| "App state lock poisoned".to_string())?;
         s.registry
             .get(&agent_id)
-            .map(|agent| agent.transport_surface())
+            .map(|agent| agent.resolve_transport())
             .unwrap_or(crate::agent::TransportSurface::Cli)
     };
 

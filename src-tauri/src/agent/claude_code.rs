@@ -247,9 +247,66 @@ impl AgentManifest for ClaudeCodeAgent {
     }
 }
 
+/// Whether the `claude-agent-acp` bridge binary is resolvable on PATH. This
+/// gates claude_code's effective transport (design R4 "探针 + 降级"): present →
+/// AcpPreferred (mid-turn `elicitation/create` business questions), absent → Cli
+/// fallback so ordinary chat keeps working exactly as before.
+fn claude_acp_bridge_available() -> bool {
+    let candidates = super::discovery::default_candidates_for("claude-agent-acp");
+    let cands: Vec<&str> = candidates.iter().map(|s| s.as_str()).collect();
+    super::discovery::probe_binary_sync("claude-agent-acp", &cands).is_some()
+}
+
+/// Pure resolution decision, factored out so the logic is unit-testable without
+/// depending on the host PATH: AcpPreferred when the bridge is present, Cli
+/// otherwise (identical to the pre-migration behavior).
+fn resolve_transport_given(bridge_available: bool) -> crate::agent::TransportSurface {
+    if bridge_available {
+        crate::agent::TransportSurface::AcpPreferred
+    } else {
+        crate::agent::TransportSurface::Cli
+    }
+}
+
 impl TransportAdapter for ClaudeCodeAgent {
     fn transport_surface(&self) -> crate::agent::TransportSurface {
-        crate::agent::TransportSurface::Cli
+        // Declarative target (design R4): claude_code speaks ACP via the
+        // claude-agent-acp bridge, which routes AskUserQuestion to
+        // `elicitation/create` for mid-turn business questions (unstable,
+        // capability-gated, no fork). The EFFECTIVE transport — probed at
+        // dispatch — is `resolve_transport()`; this stays AcpPreferred so the
+        // dispatch upgrades claude_code to ACP whenever the bridge is installed.
+        crate::agent::TransportSurface::AcpPreferred
+    }
+
+    fn resolve_transport(&self) -> crate::agent::TransportSurface {
+        resolve_transport_given(claude_acp_bridge_available())
+    }
+
+    fn build_acp_command(
+        &self,
+        _req: &ChatRequest,
+    ) -> Result<crate::agent::AcpCommandSpec, String> {
+        // claude-agent-acp is a stdio JSON-RPC server launched with no args
+        // (it reads ACP requests from stdin). On Windows the npm bin is a `.cmd`
+        // shim that CreateProcess cannot resolve directly, so wrap it in
+        // `cmd /C` — mirroring build_chat_command's Windows handling.
+        #[cfg(target_os = "windows")]
+        {
+            Ok(crate::agent::AcpCommandSpec {
+                program: "cmd".to_string(),
+                args: vec!["/C".to_string(), "claude-agent-acp".to_string()],
+                envs: Vec::new(),
+            })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Ok(crate::agent::AcpCommandSpec {
+                program: "claude-agent-acp".to_string(),
+                args: Vec::new(),
+                envs: Vec::new(),
+            })
+        }
     }
 
     fn build_chat_command(&self, req: ChatRequest) -> tokio::process::Command {
@@ -672,5 +729,63 @@ mod tests {
         });
 
         assert!(!is_claude_internal_jsonl_record(&record));
+    }
+
+    // --- transport migration: Cli → AcpPreferred (probe-gated, design R4) -----
+
+    #[test]
+    fn declarative_transport_surface_is_acp_preferred() {
+        // The design target is AcpPreferred (claude-agent-acp bridge). The
+        // EFFECTIVE transport is probed separately by resolve_transport().
+        let agent = ClaudeCodeAgent::new();
+        assert_eq!(
+            agent.transport_surface(),
+            crate::agent::TransportSurface::AcpPreferred
+        );
+    }
+
+    #[test]
+    fn resolve_transport_upgrades_to_acp_when_bridge_present() {
+        assert_eq!(
+            resolve_transport_given(true),
+            crate::agent::TransportSurface::AcpPreferred
+        );
+    }
+
+    #[test]
+    fn resolve_transport_falls_back_to_cli_when_bridge_absent() {
+        // Bridge absent (the common case without claude-agent-acp installed) →
+        // Cli, identical to the pre-migration behavior. This is the safety
+        // guarantee: no regression when the bridge is missing.
+        assert_eq!(
+            resolve_transport_given(false),
+            crate::agent::TransportSurface::Cli
+        );
+    }
+
+    #[test]
+    fn build_acp_command_targets_claude_agent_acp() {
+        let agent = ClaudeCodeAgent::new();
+        let spec = agent
+            .build_acp_command(&ChatRequest {
+                project_path: "/p".to_string(),
+                session_id: None,
+                message: "hi".to_string(),
+            })
+            .expect("claude_code supports ACP");
+
+        // claude-agent-acp is a no-arg stdio server. On Windows the npm `.cmd`
+        // shim is wrapped in `cmd /C`; elsewhere it is invoked directly.
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(spec.program, "cmd");
+            assert_eq!(spec.args, vec!["/C".to_string(), "claude-agent-acp".to_string()]);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(spec.program, "claude-agent-acp");
+            assert!(spec.args.is_empty());
+        }
+        assert!(spec.envs.is_empty());
     }
 }

@@ -166,7 +166,7 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
             let agent = registry
                 .get(&request.agent_id)
                 .ok_or_else(|| format!("Agent not found: {}", request.agent_id))?;
-            let transport = agent.transport_surface();
+            let transport = agent.resolve_transport();
 
             if transport == TransportSurface::PiRpc {
                 // === Persistent Pi RPC session (real-time streaming) ===
@@ -360,7 +360,7 @@ pub fn resolve_agent_assignment(
                     role_id: role_id.to_string(),
                     adapter_capability_snapshot: capability_snapshot(capabilities),
                 },
-                adapter.transport_surface(),
+                adapter.resolve_transport(),
             ));
         }
     }
