@@ -277,6 +277,11 @@ enum LoopState {
     },
     CancelPending {
         old_prompt_id: i64,
+        // The JSON-RPC id of the session/cancel request we issued, so the
+        // stdout loop can detect when the agent rejects cancel (some ACP
+        // servers, e.g. opencode, do not implement session/cancel and reply
+        // with an error). Cleared once the cancel is acknowledged.
+        cancel_request_id: Option<i64>,
         pending_prompt: Option<String>,
     },
 }
@@ -575,6 +580,11 @@ async fn acp_connection_loop(
     let mut buf: Vec<NormalizedEvent> = Vec::with_capacity(32);
     let mut last_flush = std::time::Instant::now();
     let mut pending_permissions: HashMap<String, PendingPermission> = HashMap::new();
+    // Track whether the current prompt turn received any visible content
+    // (text, thinking, tool calls). Some ACP servers (e.g. opencode) silently
+    // return end_turn with zero content when the underlying model API fails.
+    // Detecting this lets us surface a meaningful error instead of a blank turn.
+    let mut turn_had_content = false;
 
     loop {
         let cmd_future = command_rx.recv();
@@ -593,6 +603,7 @@ async fn acp_connection_loop(
                         match &mut state {
                             LoopState::Idle => {
                                 usage = None;
+                                turn_had_content = false;
                                 let id = writer.request("session/prompt", json!({
                                     "sessionId": session_id,
                                     "prompt": [{ "type": "text", "text": msg }]
@@ -617,12 +628,28 @@ async fn acp_connection_loop(
                         reject_pending_permissions(&writer, &mut pending_permissions).await;
                         match &state {
                             LoopState::Prompting { prompt_id } => {
-                                let _ = writer.request("session/cancel", json!({
-                                    "sessionId": session_id
-                                })).await;
-                                log::info!("ACP cancel sent for prompt_id={}", prompt_id);
+                                // Ask the agent to cancel the in-flight prompt.
+                                // Some ACP servers (notably opencode) do not
+                                // implement session/cancel and reject it with an
+                                // error; the stdout loop detects that rejection
+                                // and force-terminates the session so output
+                                // actually stops. The next message then resumes
+                                // the persisted session.
+                                let cancel_id = writer
+                                    .request(
+                                        "session/cancel",
+                                        json!({ "sessionId": session_id }),
+                                    )
+                                    .await
+                                    .ok();
+                                log::info!(
+                                    "ACP cancel sent for prompt_id={} cancel_request_id={:?}",
+                                    prompt_id,
+                                    cancel_id
+                                );
                                 state = LoopState::CancelPending {
                                     old_prompt_id: *prompt_id,
+                                    cancel_request_id: cancel_id,
                                     pending_prompt: None,
                                 };
                             }
@@ -701,6 +728,8 @@ async fn acp_connection_loop(
                             LoopState::Idle => None,
                         };
 
+                        let mut force_exit = false;
+
                         if let Some(pid) = current_prompt_id {
                             if msg.get("id").and_then(|v| v.as_i64()) == Some(pid) {
                                 log::info!("ACP got prompt response for id={}, state={}", pid, match &state {
@@ -716,6 +745,27 @@ async fn acp_connection_loop(
                                     LoopState::CancelPending { pending_prompt: Some(_), .. }
                                 );
                                 if !has_pending {
+                                    // Detect silent empty turns: the ACP server
+                                    // returned end_turn but sent no content events
+                                    // (text / thinking / tool calls). Surface an
+                                    // error so the user doesn't see a blank screen.
+                                    let stop_reason = msg.get("result")
+                                        .and_then(|r| r.get("stopReason"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("end_turn");
+                                    if !turn_had_content
+                                        && stop_reason != "cancelled"
+                                        && msg.get("error").is_none()
+                                    {
+                                        log::warn!(
+                                            "ACP prompt id={} completed with stopReason={:?} but zero content events",
+                                            pid, stop_reason
+                                        );
+                                        buf.push(NormalizedEvent::Error {
+                                            message: "智能体本轮未返回任何内容，可能是上游异常。请重试或查看日志。".to_string(),
+                                            recoverable: true,
+                                        });
+                                    }
                                     handle_prompt_response(&msg, &mut usage, &mut buf);
                                     flush_buf(&emit, &session_id, &mut buf);
                                 }
@@ -725,6 +775,7 @@ async fn acp_connection_loop(
                                     let buffered = pending_prompt.take();
                                     if let Some(msg) = buffered {
                                         usage = None;
+                                        turn_had_content = false;
                                         let new_id = writer.request("session/prompt", json!({
                                             "sessionId": session_id,
                                             "prompt": [{ "type": "text", "text": msg }]
@@ -743,16 +794,47 @@ async fn acp_connection_loop(
                             }
                         }
 
+                        // Detect the session/cancel response. Some ACP servers
+                        // (notably opencode) do not implement session/cancel and
+                        // reject it with an error; the agent then keeps streaming,
+                        // so force-terminate the session — output stops, and the
+                        // next message resumes the persisted session.
+                        if let LoopState::CancelPending {
+                            cancel_request_id: Some(cancel_id),
+                            ..
+                        } = &state
+                        {
+                            if msg.get("id").and_then(|v| v.as_i64()) == Some(*cancel_id) {
+                                if msg.get("error").is_some() {
+                                    log::warn!(
+                                        "ACP session/cancel rejected by agent ({:?}); force-terminating session {}",
+                                        msg.get("error"),
+                                        session_id
+                                    );
+                                    buf.push(NormalizedEvent::TurnComplete {
+                                        reason: TurnEndReason::Aborted,
+                                        usage: usage.take(),
+                                    });
+                                    flush_buf(&emit, &session_id, &mut buf);
+                                    force_exit = true;
+                                } else if let LoopState::CancelPending {
+                                    cancel_request_id,
+                                    ..
+                                } = &mut state
+                                {
+                                    *cancel_request_id = None;
+                                }
+                            }
+                        }
+
                         // session/update notifications
                         if msg.get("method").and_then(|v| v.as_str()) == Some("session/update") {
                             if let Some(params) = msg.get("params") {
-                                // Diagnostic: log the RAW session/update payload so we can
-                                // confirm the real ACP wire shape (discriminator key + text
-                                // location) for agents like opencode whose content was
-                                // previously dropped. Remove once stable.
-                                log::info!("ACP session/update raw params: {}", params);
                                 let events = normalize_acp_update(params, &mut usage);
                                 for event in &events {
+                                    if is_content_event(event) {
+                                        turn_had_content = true;
+                                    }
                                     buf.push(event.clone());
                                 }
                             }
@@ -789,7 +871,7 @@ async fn acp_connection_loop(
                             flush_buf(&emit, &session_id, &mut buf);
                             last_flush = std::time::Instant::now();
                         }
-                        false
+                        force_exit
                     }
                     None => {
                         log::warn!("ACP stdout EOF for session {}", session_id);
@@ -957,16 +1039,6 @@ pub(crate) fn normalize_acp_update(
         .and_then(|v| v.as_str())
         .unwrap_or_default();
 
-    // Diagnostic: surface the discriminator + top-level keys so the raw payload
-    // above can be cross-checked against what we parsed.
-    log::info!(
-        "ACP normalize update_type={:?} keys={:?}",
-        update_type,
-        update
-            .as_object()
-            .map(|o| o.keys().cloned().collect::<Vec<_>>())
-    );
-
     match update_type {
         "agent_message_chunk" => {
             let text = extract_chunk_text(update);
@@ -1074,6 +1146,19 @@ pub(crate) fn normalize_acp_update(
         }
         _ => vec![],
     }
+}
+
+/// Returns `true` for normalised events that represent visible agent content
+/// (text, thinking, tool calls). Used to detect silent empty turns where the
+/// ACP server returns `end_turn` without streaming any content.
+fn is_content_event(event: &NormalizedEvent) -> bool {
+    matches!(
+        event,
+        NormalizedEvent::TextDelta { .. }
+            | NormalizedEvent::Thinking { .. }
+            | NormalizedEvent::ToolUseStart { .. }
+            | NormalizedEvent::Message { .. }
+    )
 }
 
 fn emit_events(
