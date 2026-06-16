@@ -32,11 +32,20 @@ pub enum AcpCommand {
     /// ACP: sends a follow_up prompt after the current turn.
     Steer(String),
     Cancel,
-    /// Respond to a Pi extension_ui_request (pause-resume for Jishu Agent).
-    /// `id` is the extension_ui_request id; `value` is the user's choice/input.
+    /// Respond to a structured interaction answer. Routed by the connection loop
+    /// to the transport's mid-turn write-back channel:
+    /// - PiRpc → `extension_ui_response` (production mid-turn baseline).
+    /// - ACP   → a pending `elicitation/create` (claude_code, capability-gated;
+    ///           populated in Phase 3). ACP agents without an elicitation channel
+    ///           (opencode) have no mid-turn business path and must be answered
+    ///           as a follow-up message (handled by the frontend, not here).
+    /// `id` is the interaction request id; `value` is the user's choice/input.
+    /// `response` carries the write-back outcome so the caller reports an
+    /// authoritative `InteractionDelivery` (design R6).
     RespondToInput {
         id: String,
         value: String,
+        response: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
     ResolvePermission {
         request_id: String,
@@ -82,12 +91,22 @@ impl AcpControl {
             .map_err(|_| "ACP connection closed".to_string())
     }
 
-    /// Respond to a Pi extension_ui_request (planning-phase pause-resume).
+    /// Respond to a structured interaction answer (PiRpc `extension_ui`, or ACP
+    /// `elicitation/create` for claude_code). Returns the write-back outcome so
+    /// the caller can take the authoritative delivery decision (design R6).
     pub async fn respond_to_input(&self, id: String, value: String) -> Result<(), String> {
+        let (response, receiver) = tokio::sync::oneshot::channel();
         self.tx
-            .send(AcpCommand::RespondToInput { id, value })
+            .send(AcpCommand::RespondToInput {
+                id,
+                value,
+                response,
+            })
             .await
-            .map_err(|_| "ACP connection closed".to_string())
+            .map_err(|_| "ACP connection closed".to_string())?;
+        receiver
+            .await
+            .map_err(|_| "ACP interaction response channel closed".to_string())?
     }
 
     pub async fn resolve_permission(
@@ -295,6 +314,82 @@ struct PendingPermission {
     reject_option_id: Option<String>,
 }
 
+/// A pending ACP `elicitation/create` (claude_code business question, capability-
+/// gated). Stored in a DISTINCT table from `pending_permissions` (design R3 / §8.2:
+/// `pending_permissions` 与 `pending_elicitations` 必须分表) so a business
+/// interaction answer can never be mistaken for — or routed to — a tool approval.
+#[derive(Debug, Clone)]
+struct PendingElicitation {
+    rpc_id: serde_json::Value,
+    /// Form field name (from the elicitation `requestedSchema`) to populate with
+    /// the user's answer. Phase 3 sets this when handling `elicitation/create`.
+    content_field: String,
+}
+
+/// Three-state ACP elicitation response action (protocol `accept`/`decline`/
+/// `cancel`). jishu-hub's InteractionComposer only ever submits a chosen answer,
+/// so the routed action is `Accept`; `Decline`/`Cancel` are modelled for protocol
+/// completeness and future UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ElicitAction {
+    Accept,
+    Decline,
+    Cancel,
+}
+
+/// Where a business-interaction answer should be written on ACP. Reads ONLY the
+/// elicitations table — by construction business answers never consult the
+/// permission table (R3 分表).
+#[derive(Debug)]
+enum AcpInteractionRoute {
+    /// Map the answer to the pending elicitation's JSON-RPC result.
+    Elicit {
+        rpc_id: serde_json::Value,
+        action: ElicitAction,
+        content: serde_json::Value,
+    },
+    /// No pending ACP business-interaction channel for this request. The agent
+    /// (e.g. opencode) has no elicitation path; the answer must be delivered as
+    /// a follow-up message, not written back here.
+    NoChannel,
+}
+
+/// Route a business-interaction answer. Consults ONLY `pending_elicitations` —
+/// a pending `request_permission` for the same request id is intentionally NOT
+/// matched here (R3: business/permission 分表, never cross-consumed).
+fn route_acp_interaction_response(
+    pending_elicitations: &HashMap<String, PendingElicitation>,
+    request_id: &str,
+    value: &str,
+) -> AcpInteractionRoute {
+    match pending_elicitations.get(request_id) {
+        Some(pending) => {
+            // Dynamic-key form object: { <content_field>: <value> }. Built via a
+            // Map because the `json!` macro cannot take a runtime key expression.
+            let mut content = serde_json::Map::new();
+            content.insert(
+                pending.content_field.clone(),
+                serde_json::Value::String(value.to_string()),
+            );
+            AcpInteractionRoute::Elicit {
+                rpc_id: pending.rpc_id.clone(),
+                action: ElicitAction::Accept,
+                content: serde_json::Value::Object(content),
+            }
+        }
+        None => AcpInteractionRoute::NoChannel,
+    }
+}
+
+/// Build the JSON-RPC `result` object for an elicitation write-back.
+fn elicit_result_payload(action: ElicitAction, content: serde_json::Value) -> serde_json::Value {
+    match action {
+        ElicitAction::Accept => serde_json::json!({ "action": "accept", "content": content }),
+        ElicitAction::Decline => serde_json::json!({ "action": "decline" }),
+        ElicitAction::Cancel => serde_json::json!({ "action": "cancel" }),
+    }
+}
+
 fn permission_request_key(id: &serde_json::Value) -> String {
     id.as_str()
         .map(str::to_owned)
@@ -376,6 +471,23 @@ async fn reject_pending_permissions(
             .await
         {
             log::warn!("ACP failed to reject pending permission: {error}");
+        }
+    }
+}
+
+/// Drain pending elicitation/create requests on shutdown/cancel, replying
+/// `cancel` so the agent does not block waiting for an answer that will never
+/// arrive (design §5.2.1 three-state protocol).
+async fn cancel_pending_elicitations(
+    writer: &AcpWriter,
+    pending_elicitations: &mut HashMap<String, PendingElicitation>,
+) {
+    for (_, pending) in pending_elicitations.drain() {
+        if let Err(error) = writer
+            .respond(&pending.rpc_id, elicit_result_payload(ElicitAction::Cancel, serde_json::Value::Null))
+            .await
+        {
+            log::warn!("ACP failed to cancel pending elicitation: {error}");
         }
     }
 }
@@ -587,6 +699,10 @@ async fn acp_connection_loop(
     let mut buf: Vec<NormalizedEvent> = Vec::with_capacity(32);
     let mut last_flush = std::time::Instant::now();
     let mut pending_permissions: HashMap<String, PendingPermission> = HashMap::new();
+    // Pending ACP elicitation/create (claude_code business questions). Kept in a
+    // separate table from pending_permissions (R3 分表); Phase 3 populates it
+    // when handling incoming elicitation/create.
+    let mut pending_elicitations: HashMap<String, PendingElicitation> = HashMap::new();
     // Track whether the current prompt turn received any visible content
     // (text, thinking, tool calls). Some ACP servers (e.g. opencode) silently
     // return end_turn with zero content when the underlying model API fails.
@@ -633,6 +749,7 @@ async fn acp_connection_loop(
                     }
                     Some(AcpCommand::Cancel) => {
                         reject_pending_permissions(&writer, &mut pending_permissions).await;
+                        cancel_pending_elicitations(&writer, &mut pending_elicitations).await;
                         match &state {
                             LoopState::Prompting { prompt_id } => {
                                 // Ask the agent to cancel the in-flight prompt.
@@ -669,9 +786,44 @@ async fn acp_connection_loop(
                         log::debug!("ACP Steer ignored (ACP transport)");
                         false
                     }
-                    Some(AcpCommand::RespondToInput { .. }) => {
-                        // ACP protocol does not use extension_ui; only Pi RPC does.
-                        log::debug!("ACP RespondToInput ignored (ACP transport)");
+                    Some(AcpCommand::RespondToInput {
+                        id,
+                        value,
+                        response,
+                    }) => {
+                        // R7: route the business-interaction answer by pending
+                        // table. Consults ONLY pending_elicitations (claude_code,
+                        // populated in Phase 3) — never pending_permissions (R3
+                        // 分表). ACP agents without an elicitation channel
+                        // (opencode) have no mid-turn business path: report
+                        // NoChannel so the frontend delivers the answer as a
+                        // follow-up message instead.
+                        let result = match route_acp_interaction_response(
+                            &pending_elicitations,
+                            &id,
+                            &value,
+                        ) {
+                            AcpInteractionRoute::Elicit {
+                                rpc_id,
+                                action,
+                                content,
+                            } => {
+                                pending_elicitations.remove(&id);
+                                let payload = elicit_result_payload(action, content);
+                                writer.respond(&rpc_id, payload).await
+                            }
+                            AcpInteractionRoute::NoChannel => {
+                                log::warn!(
+                                    "ACP RespondToInput for {id} has no pending elicitation; \
+                                     this ACP agent has no mid-turn business channel"
+                                );
+                                Err(format!(
+                                    "No pending ACP elicitation for interaction {id}; \
+                                     this transport cannot answer mid-turn as a business question"
+                                ))
+                            }
+                        };
+                        let _ = response.send(result);
                         false
                     }
                     Some(AcpCommand::ResolvePermission {
@@ -709,6 +861,7 @@ async fn acp_connection_loop(
                     }
                     Some(AcpCommand::Shutdown) => {
                         reject_pending_permissions(&writer, &mut pending_permissions).await;
+                        cancel_pending_elicitations(&writer, &mut pending_elicitations).await;
                         log::info!("ACP shutdown requested for session {}", session_id);
                         true
                     }
@@ -1455,5 +1608,87 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ---- Phase 1 (R7 / R3): ACP interaction routing + 分表隔离 ----
+
+    #[test]
+    fn routes_interaction_answer_to_pending_elicitation_as_accept() {
+        let mut pending = HashMap::new();
+        pending.insert(
+            "req-1".to_string(),
+            PendingElicitation {
+                rpc_id: json!(42),
+                content_field: "f0".to_string(),
+            },
+        );
+
+        match route_acp_interaction_response(&pending, "req-1", "A") {
+            AcpInteractionRoute::Elicit {
+                rpc_id,
+                action,
+                content,
+            } => {
+                assert_eq!(rpc_id, json!(42));
+                assert_eq!(action, ElicitAction::Accept);
+                assert_eq!(content, json!({ "f0": "A" }));
+            }
+            AcpInteractionRoute::NoChannel => panic!("expected Elicit route"),
+        }
+    }
+
+    #[test]
+    fn routes_interaction_answer_to_no_channel_when_no_pending_elicitation() {
+        // No pending elicitations at all → opencode-style agent with no mid-turn
+        // business channel. The answer must be delivered as a follow-up message.
+        let pending: HashMap<String, PendingElicitation> = HashMap::new();
+        assert!(matches!(
+            route_acp_interaction_response(&pending, "missing", "A"),
+            AcpInteractionRoute::NoChannel
+        ));
+    }
+
+    #[test]
+    fn interaction_routing_never_consults_the_permission_table() {
+        // R3 分表: a pending request_permission for the SAME request id must NOT
+        // be matched by the interaction router. The router only takes the
+        // elicitations table (proven by its signature), so even an approval
+        // sharing the id resolves to NoChannel rather than consuming the
+        // permission. This guards against business/permission cross-consumption.
+        let pending_elicitations: HashMap<String, PendingElicitation> = HashMap::new();
+        let mut pending_permissions: HashMap<String, PendingPermission> = HashMap::new();
+        pending_permissions.insert(
+            "shared-id".to_string(),
+            PendingPermission {
+                rpc_id: json!(7),
+                allow_option_id: Some("allow".to_string()),
+                reject_option_id: Some("reject".to_string()),
+            },
+        );
+
+        // The interaction router cannot see pending_permissions; the approval
+        // remains untouched.
+        assert!(matches!(
+            route_acp_interaction_response(&pending_elicitations, "shared-id", "A"),
+            AcpInteractionRoute::NoChannel
+        ));
+        assert!(pending_permissions.contains_key("shared-id"));
+    }
+
+    #[test]
+    fn elicit_result_payload_shapes_three_state_protocol_response() {
+        let content = json!({ "f0": "B" });
+        assert_eq!(
+            elicit_result_payload(ElicitAction::Accept, content.clone()),
+            json!({ "action": "accept", "content": { "f0": "B" } })
+        );
+        assert_eq!(
+            elicit_result_payload(ElicitAction::Decline, content.clone()),
+            json!({ "action": "decline" })
+        );
+        assert_eq!(
+            elicit_result_payload(ElicitAction::Cancel, json!(null)),
+            json!({ "action": "cancel" })
+        );
     }
 }

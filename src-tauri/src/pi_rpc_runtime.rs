@@ -327,15 +327,23 @@ async fn pi_rpc_connection_loop(
                         }
                         false
                     }
-                    Some(AcpCommand::RespondToInput { id, value }) => {
+                    Some(AcpCommand::RespondToInput { id, value, response }) => {
                         // Respond to a Pi extension_ui_request (planning-phase
                         // pause-resume). Pi is blocked waiting for this response.
-                        send_pi_command(&stdin_arc, &json!({
+                        let result = send_pi_command(&stdin_arc, &json!({
                             "type": "extension_ui_response",
                             "id": id,
                             "value": value
-                        })).await?;
-                        log::debug!("Pi RPC extension_ui_response sent for id={}", id);
+                        })).await;
+                        match &result {
+                            Ok(()) => log::debug!("Pi RPC extension_ui_response sent for id={}", id),
+                            Err(error) => log::error!(
+                                "Pi RPC extension_ui_response write failed for id={}: {error}",
+                                id
+                            ),
+                        }
+                        // Report the write-back outcome (R6: authoritative delivery).
+                        let _ = response.send(result);
                         false
                     }
                     Some(AcpCommand::ResolvePermission { response, .. }) => {
