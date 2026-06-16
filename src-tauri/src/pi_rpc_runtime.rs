@@ -661,7 +661,10 @@ pub(crate) fn normalize_pi_agent_event(event: &serde_json::Value) -> Vec<Normali
                         input,
                     }]
                 } else {
-                    interactions
+                    // Pi follows this tool start with an extension_ui_request
+                    // carrying the real response id. Emitting an interaction
+                    // here creates a duplicate, non-answerable question.
+                    vec![]
                 }
             }
         }
@@ -817,7 +820,7 @@ fn convert_extension_ui_request(msg: &serde_json::Value) -> Option<NormalizedEve
                 prompt: title,
                 options,
                 allow_multiple: false,
-                allow_custom_text: false,
+                allow_custom_text: true,
                 required: true,
             })
         }
@@ -855,7 +858,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalizes_request_user_input_without_exposing_tool_payload() {
+    fn ignores_request_user_input_tool_start_until_extension_ui_request_arrives() {
         let events = normalize_pi_agent_event(&json!({
             "type": "tool_execution_start",
             "toolCallId": "call-1",
@@ -866,14 +869,7 @@ mod tests {
             }
         }));
 
-        assert!(matches!(
-            events.as_slice(),
-            [NormalizedEvent::InteractionRequest {
-                request_id,
-                prompt,
-                ..
-            }] if request_id == "call-1:1" && prompt == "请选择发布方式"
-        ));
+        assert!(events.is_empty());
     }
 
     #[test]
@@ -950,7 +946,7 @@ mod tests {
                 assert_eq!(options.len(), 3);
                 assert_eq!(options[0].label, "方案A");
                 assert!(!allow_multiple);
-                assert!(!allow_custom_text);
+                assert!(allow_custom_text);
                 assert!(required);
             }
             _ => panic!("expected InteractionRequest"),

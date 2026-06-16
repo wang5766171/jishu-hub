@@ -2593,6 +2593,7 @@ pub fn run() {
             chat::abort_chat,
             chat::steer_chat,
             chat::resolve_chat_permission,
+            chat::respond_chat_interaction,
             image::save_session_files,
             image::read_image_as_data_url,
             image::read_file_as_base64,
