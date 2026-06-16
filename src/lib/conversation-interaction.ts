@@ -98,5 +98,11 @@ export function interactionRequestFromEvent(
     allowMultiple: event.allow_multiple,
     allowCustomText: event.allow_custom_text,
     required: event.required,
+    // New in v0.6.0 interaction generalization. All optional — legacy/persisted
+    // events omit them and the backend falls back to follow-up delivery.
+    transport: event.transport,
+    origin: event.origin,
+    deliveryHint: event.delivery_hint,
+    correlation: event.correlation ?? null,
   };
 }

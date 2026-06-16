@@ -257,6 +257,25 @@ class StreamStore {
     return true;
   }
 
+  /** Remove the interaction-split placeholder for `requestId`. Used when an
+   *  interaction is answered as a follow-up message (design R6: follow-up
+   *  answers are NOT interleaved inline) so no phantom gap is left in the
+   *  accumulated assistant content. */
+  removeInteractionSplit(sid: string, requestId: string): boolean {
+    const key = this.canonical(sid);
+    const prev = this.sessions.get(key);
+    if (!prev) return false;
+    if (!prev.interactionSplits.some((item) => item.requestId === requestId)) {
+      return false;
+    }
+    const interactionSplits = prev.interactionSplits.filter(
+      (item) => item.requestId !== requestId,
+    );
+    this.sessions.set(key, { ...prev, interactionSplits });
+    this.scheduleFlush();
+    return true;
+  }
+
   /** Mark a session as no longer streaming. State is retained until `drop`. */
   end(sid: string): void {
     const key = this.canonical(sid);

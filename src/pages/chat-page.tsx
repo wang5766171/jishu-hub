@@ -29,6 +29,7 @@ import { searchSessions } from "@/lib/session-search";
 import { openFloatingSession } from "@/lib/floating-window";
 import { commitAssistantWithUserInsertions } from "@/lib/deferred-user-message";
 import {
+  formatInteractionReply,
   formatInteractionResponseValue,
   interactionRequestFromEvent,
 } from "@/lib/conversation-interaction";
@@ -38,6 +39,7 @@ import type {
   ContentBlock,
   ConversationInteractionRequest,
   ConversationInteractionSubmission,
+  InteractionResponseDto,
   Message,
   Project,
   ProjectMeta,
@@ -1145,35 +1147,70 @@ export function ChatPage({
       && item.sessionId === interaction.sessionId
       && item.request.requestId === submission.requestId;
     const value = formatInteractionResponseValue(interaction.request, submission);
-    setPendingInteractions((current) => current.filter((item) => !matchesInteraction(item)));
-    const responseRecorded = value.trim()
-      ? streamStore.recordInteractionResponse(
-          interaction.sessionId,
-          submission.requestId,
-          value,
-        )
-      : false;
-
-    try {
-      await invokeCommand("respond_chat_interaction", {
-        sessionId: interaction.sessionId,
-        requestId: submission.requestId,
-        value,
-      });
-    } catch (error) {
+    const restorePending = () =>
       setPendingInteractions((current) =>
         current.some(matchesInteraction) ? current : [...current, interaction],
       );
-      if (responseRecorded) {
+
+    // Hide the panel immediately; restored below on failure.
+    setPendingInteractions((current) => current.filter((item) => !matchesInteraction(item)));
+
+    // Hand the answer to the backend along with the interaction's origin. The
+    // backend takes the AUTHORITATIVE delivery decision from the process's
+    // actual transport (design R6 — never assume mid-turn from the event hint).
+    let result: InteractionResponseDto | null = null;
+    try {
+      result = await invokeCommand<InteractionResponseDto>("respond_chat_interaction", {
+        sessionId: interaction.sessionId,
+        requestId: submission.requestId,
+        value,
+        origin: interaction.request.origin,
+      });
+    } catch (error) {
+      restorePending();
+      throw error;
+    }
+
+    const delivery = result?.delivery ?? "follow_up";
+    if (delivery === "mid_turn") {
+      // Mid-turn write-back succeeded: interleave the answer into the running
+      // turn at the request's insertion point (PiRpc production baseline, and
+      // codex/ACP elicit once those runtimes land).
+      if (value.trim()) {
         streamStore.recordInteractionResponse(
           interaction.sessionId,
           submission.requestId,
-          "",
+          value,
         );
       }
-      throw error;
+      return;
     }
-  }, [activeId, pendingInteractions, selectedSession]);
+
+    // Follow-up: this transport cannot answer mid-turn as a business question.
+    // Remove the inline placeholder (no phantom gap) and deliver the answer as
+    // a new user message — the design's safety net for transports without
+    // mid-turn reachability (CLI, capability-absent downgrade, opencode).
+    streamStore.removeInteractionSplit(interaction.sessionId, submission.requestId);
+    const replyText = formatInteractionReply(interaction.request, submission).trim();
+    if (!replyText) return;
+
+    // Mirror the standard send path: register a new turn's stream, snapshot the
+    // session cache, then dispatch send_message. The prior turn is persisted to
+    // the session JSONL and re-rendered from history on completion.
+    streamStore.start(interaction.sessionId, replyText);
+    handleMessageSent(interaction.sessionId, replyText);
+    try {
+      await invokeCommand("send_message", {
+        projectPath: projectPathRef.current ?? "",
+        sessionId: interaction.sessionId,
+        message: replyText,
+      });
+    } catch (sendError) {
+      console.error("Failed to send interaction follow-up message:", sendError);
+      streamStore.end(interaction.sessionId);
+      restorePending();
+    }
+  }, [activeId, pendingInteractions, selectedSession, handleMessageSent]);
   const resolveActiveApproval = useCallback(async (approved: boolean) => {
     if (!activeApproval || approvalResolving) return;
     setApprovalResolving(true);

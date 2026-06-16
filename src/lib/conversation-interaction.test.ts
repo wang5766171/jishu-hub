@@ -117,6 +117,10 @@ describe("conversation interaction", () => {
       allow_multiple: false,
       allow_custom_text: true,
       required: true,
+      transport: "pi_rpc",
+      origin: "extension_ui",
+      delivery_hint: "mid_turn",
+      correlation: { request_kind: "extension_ui", jsonrpc_id: 42 },
     };
 
     expect(interactionRequestFromEvent(event)).toEqual({
@@ -132,6 +136,28 @@ describe("conversation interaction", () => {
       allowMultiple: false,
       allowCustomText: true,
       required: true,
+      transport: "pi_rpc",
+      origin: "extension_ui",
+      deliveryHint: "mid_turn",
+      correlation: { request_kind: "extension_ui", jsonrpc_id: 42 },
     });
+  });
+
+  it("defaults legacy interaction events (without v0.6.0 fields) to a null correlation", () => {
+    const event: NormalizedEvent = {
+      kind: "interaction_request",
+      request_id: "legacy-1",
+      prompt: "Legacy question",
+      options: [],
+      allow_multiple: false,
+      allow_custom_text: false,
+      required: true,
+    };
+
+    const mapped = interactionRequestFromEvent(event);
+    expect(mapped.transport).toBeUndefined();
+    expect(mapped.origin).toBeUndefined();
+    expect(mapped.deliveryHint).toBeUndefined();
+    expect(mapped.correlation).toBeNull();
   });
 });

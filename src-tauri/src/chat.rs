@@ -366,21 +366,64 @@ pub async fn resolve_chat_permission(
 #[tauri::command]
 pub async fn respond_chat_interaction(
     app: AppHandle,
+    state: tauri::State<'_, Mutex<AppState>>,
     session_id: String,
     request_id: String,
     value: String,
-) -> Result<(), String> {
+    // Origin/protocol channel of the interaction being answered. Optional for
+    // backward compatibility with older frontends; defaults to the generic
+    // text channel (which resolves to follow-up unless overridden by transport).
+    origin: Option<crate::agent::normalized::InteractionOrigin>,
+) -> Result<crate::agent::interaction::InteractionResponseDto, String> {
     let chat_state = app.state::<Mutex<ChatState>>();
-    let acp = {
-        let state = chat_state
+    let (acp, agent_id) = {
+        let chat = chat_state
             .lock()
             .map_err(|_| "Chat state lock poisoned".to_string())?;
-        state
+        let process = chat
             .processes
             .get(&session_id)
-            .and_then(|process| process.acp.clone())
-            .ok_or_else(|| format!("No active ACP session found for {session_id}"))?
+            .ok_or_else(|| format!("No active ACP session found for {session_id}"))?;
+        (process.acp.clone(), process.agent_id.clone())
     };
 
-    acp.respond_to_input(request_id, value).await
+    // Resolve the process's transport from the registry (design R6: the
+    // authoritative delivery decision is taken at answer time from the actual
+    // transport capability, never assumed from the event hint alone).
+    let transport = {
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        s.registry
+            .get(&agent_id)
+            .map(|agent| agent.transport_surface())
+            .unwrap_or(crate::agent::TransportSurface::Cli)
+    };
+
+    let origin = origin.unwrap_or_default();
+    let delivery = crate::agent::interaction::delivery_for(transport, origin);
+
+    match delivery {
+        crate::agent::interaction::InteractionDelivery::MidTurn => {
+            // Mid-turn write-back. PiRpc (`extension_ui_response`) is the only
+            // wired mid-turn path in Phase 0; ACP elicit (Phase 3) and codex
+            // (Phase 2) reach here once their runtimes land. `respond_to_input`
+            // is the shared write-back entry point each transport implements.
+            if let Some(acp) = acp {
+                acp.respond_to_input(request_id, value).await?;
+            }
+            Ok(crate::agent::interaction::InteractionResponseDto::from_delivery(
+                crate::agent::interaction::InteractionDelivery::MidTurn,
+            ))
+        }
+        crate::agent::interaction::InteractionDelivery::FollowUp => {
+            // This transport cannot answer mid-turn as a business question.
+            // Report follow-up so the frontend sends the answer as a new user
+            // message (the design's safety net). Phase 1+ may route ACP
+            // business interactions to a fresh turn via the responder here.
+            Ok(crate::agent::interaction::InteractionResponseDto::from_delivery(
+                crate::agent::interaction::InteractionDelivery::FollowUp,
+            ))
+        }
+    }
 }

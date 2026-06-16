@@ -50,7 +50,12 @@ export type TerminalSurface =
   | { kind: "supported" }
   | { kind: "unsupported"; reason: string | null };
 
-export type TransportSurface = "acp_preferred" | "pi_rpc" | "cli" | "embedded";
+export type TransportSurface =
+  | "acp_preferred"
+  | "pi_rpc"
+  | "cli"
+  | "embedded"
+  | "codex_app_server";
 
 export class CapabilitySet {
   private flags: bigint;

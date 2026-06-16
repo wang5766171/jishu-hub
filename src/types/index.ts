@@ -27,6 +27,52 @@ export interface ConversationInteractionOption {
   description?: string | null;
 }
 
+/** Transport that surfaced an interaction (mirrors Rust `InteractionTransport`). */
+export type InteractionTransport =
+  | "unspecified"
+  | "pi_rpc"
+  | "acp_preferred"
+  | "codex_app_server"
+  | "cli"
+  | "embedded";
+
+/** Protocol channel / origin of an interaction (mirrors Rust `InteractionOrigin`).
+ *  Determines whether the answer can be written back mid-turn. */
+export type InteractionOrigin =
+  | "text"
+  | "extension_ui"
+  | "acp_elicitation"
+  | "codex_tool_request_user_input"
+  | "codex_mcp_approval"
+  | "codex_approval";
+
+/** Forward-looking write-back hint embedded in an interaction event. Advisory
+ *  only — the authoritative decision is `InteractionResponseDto.delivery`. */
+export type InteractionDeliveryHint = "follow_up" | "mid_turn";
+
+/** Authoritative delivery outcome returned by `respond_chat_interaction`.
+ *  - `mid_turn`: answer was injected into the running turn (interleave it).
+ *  - `follow_up`: answer became a new user message (render normally). */
+export type InteractionDelivery = "mid_turn" | "follow_up";
+
+/** DTO returned by the `respond_chat_interaction` Tauri command. */
+export interface InteractionResponseDto {
+  delivery: InteractionDelivery;
+}
+
+/** Native correlation scope carried with an interaction so the backend can
+ *  locate the exact pending server request to write back. Opaque to the
+ *  frontend — preserved verbatim from the event and echoed back on submit. */
+export interface InteractionCorrelation {
+  agent_id?: string | null;
+  session_id?: string | null;
+  thread_id?: string | null;
+  turn_id?: string | null;
+  server_request_id?: string | null;
+  jsonrpc_id?: unknown | null;
+  request_kind?: string | null;
+}
+
 export interface ConversationInteractionRequest {
   requestId: string;
   prompt: string;
@@ -34,6 +80,10 @@ export interface ConversationInteractionRequest {
   allowMultiple: boolean;
   allowCustomText: boolean;
   required: boolean;
+  transport?: InteractionTransport;
+  origin?: InteractionOrigin;
+  deliveryHint?: InteractionDeliveryHint;
+  correlation?: InteractionCorrelation | null;
 }
 
 export interface ConversationInteractionSubmission {
@@ -236,6 +286,18 @@ export type NormalizedEvent =
       allow_multiple: boolean;
       allow_custom_text: boolean;
       required: boolean;
+      /** Transport that surfaced the interaction. Advisory; may be absent on
+       *  legacy/persisted events. See `InteractionTransport`. */
+      transport?: InteractionTransport;
+      /** Protocol channel / origin (business question vs. approval vs. elicitation).
+       *  Absent → treated as the generic text channel. */
+      origin?: InteractionOrigin;
+      /** Forward-looking write-back hint — advisory only. The authoritative
+       *  decision is the `delivery` returned by `respond_chat_interaction`. */
+      delivery_hint?: InteractionDeliveryHint;
+      /** Native correlation scope the backend uses to locate the pending server
+       *  request to write back. Opaque to the frontend; passed through as-is. */
+      correlation?: InteractionCorrelation | null;
     }
   | { kind: "session_resolved"; session_id: string }
   | { kind: "steer_injected"; content: string }
