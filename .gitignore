@@ -47,6 +47,7 @@ agent-commit-guide.md
 
 # Scratch / test artifacts
 scratch/
+.tmp/
 check_log.txt
 test_*.py
 test_*.exe
