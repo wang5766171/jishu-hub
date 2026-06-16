@@ -535,11 +535,18 @@ async fn acp_connection_loop(
             .await?;
         wait_for_response(&mut stdout_rx, new_id).await?
     };
-    let session_id = session_result
-        .get("sessionId")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "ACP session creation/resume did not return sessionId".to_string())?
-        .to_string();
+    // session/new returns { sessionId, configOptions }; session/resume returns
+    // only { configOptions } — opencode does not echo the sessionId back on
+    // resume (the client already supplied it). Reuse the requested id for
+    // resume; only session/new needs the server-minted id from the response.
+    let session_id = match requested_session_id.as_deref() {
+        Some(req_id) => req_id.to_string(),
+        None => session_result
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "ACP session creation did not return sessionId".to_string())?
+            .to_string(),
+    };
 
     log::info!(
         "ACP session established: {} (pending: {})",
