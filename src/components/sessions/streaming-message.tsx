@@ -36,6 +36,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   const content = state?.content ?? [];
   const steerSplits = state?.steerSplits ?? [];
   const steerTexts = state?.steerTexts ?? [];
+  const interactionSplits = state?.interactionSplits ?? [];
   const steps = state?.steps ?? [];
   const resolvedUserMessage = userMessage === undefined ? state?.pendingUserMessage ?? undefined : userMessage ?? undefined;
   const userScrolledRef = useRef(false);
@@ -66,10 +67,11 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   }, [scrollContainerRef, isNearBottom]);
 
   // Scroll to bottom when content updates (only while actively streaming)
+  const interactionTextKey = interactionSplits.map((item) => item.text ?? "").join("\n");
   useEffect(() => {
     if (isComplete) return;
     scrollToBottom();
-  }, [displayText, thinkingText, errorText, toolUses.length, content.length, scrollToBottom, isComplete]);
+  }, [displayText, thinkingText, errorText, toolUses.length, content.length, interactionTextKey, scrollToBottom, isComplete]);
 
   // Map streaming tool calls to the same card model used by persisted messages.
   const streamToolCalls: ToolCall[] = toolUses.map((tool, i) => ({
@@ -91,18 +93,48 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   const sanitizedSplits = Array.from(new Set(steerSplits))
     .filter((idx) => idx > 0 && idx < content.length)
     .sort((a, b) => a - b);
-  const segments: ContentBlock[][] = sanitizedSplits.length === 0
-    ? [content]
-    : (() => {
-        const segs: ContentBlock[][] = [];
-        let prev = 0;
-        for (const idx of sanitizedSplits) {
-          segs.push(content.slice(prev, idx));
-          prev = idx;
-        }
-        segs.push(content.slice(prev));
-        return segs;
-      })();
+  const userInsertions = [
+    ...sanitizedSplits
+      .map((index, i) => ({
+        kind: "steer" as const,
+        index,
+        text: steerTexts[i] ?? "",
+        order: i,
+      }))
+      .filter((item) => item.text.length > 0),
+    ...interactionSplits
+      .map((item, i) => ({
+        kind: "interaction" as const,
+        index: Math.max(0, Math.min(item.index, content.length)),
+        text: item.text ?? "",
+        order: sanitizedSplits.length + i,
+      }))
+      .filter((item) => item.text.length > 0),
+  ].sort((a, b) => a.index - b.index || a.order - b.order);
+
+  type StreamPart =
+    | { kind: "assistant"; content: ContentBlock[] }
+    | { kind: "user"; text: string; guided: boolean };
+
+  const parts: StreamPart[] = [];
+  let previousIndex = 0;
+  for (const insertion of userInsertions) {
+    parts.push({
+      kind: "assistant",
+      content: content.slice(previousIndex, insertion.index),
+    });
+    parts.push({
+      kind: "user",
+      text: insertion.text,
+      guided: insertion.kind === "steer",
+    });
+    previousIndex = insertion.index;
+  }
+  parts.push({ kind: "assistant", content: content.slice(previousIndex) });
+  const lastAssistantPartIndex = parts.reduce(
+    (last, part, index) => part.kind === "assistant" ? index : last,
+    -1,
+  );
 
   return (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
@@ -127,12 +159,24 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
           marquee attach to the last (still-streaming) segment only. With no
           steer splits there is a single segment, identical to the previous
           single-bubble rendering. */}
-      {segments.map((seg, i) => {
-        const isLast = i === segments.length - 1;
+      {parts.map((part, i) => {
+        if (part.kind === "user") {
+          return (
+            <UserBubble
+              key={`user-insertion-${i}`}
+              text={part.text}
+              guided={part.guided}
+            />
+          );
+        }
+
+        const seg = part.content;
+        const isLast = i === lastAssistantPartIndex;
         const segRenderItems = buildStreamRenderItems(seg, streamToolCalls);
         const segHasItems = segRenderItems.length > 0;
         const showBubble = segHasItems || (isLast && (errorText.length > 0 || steps.length > 0));
-        const showThinking = !showBubble && !isComplete;
+        const showThinking = isLast && !showBubble && !isComplete;
+        if (!showBubble && !showThinking) return null;
         return (
           <Fragment key={`asst-seg-${i}`}>
             <div className="w-full">
@@ -218,9 +262,6 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                 )}
               </div>
             </div>
-            {i < steerTexts.length && i < sanitizedSplits.length && (
-              <GuideBubble text={steerTexts[i]} />
-            )}
           </Fragment>
         );
       })}
@@ -271,17 +312,19 @@ function StepStatusIcon({ kind }: { kind: string }) {
  * (right-aligned user bubble + amber "已引导" chip) so the transition from
  * bottom placeholder → inline, and later → committed message, is seamless.
  */
-function GuideBubble({ text }: { text: string }) {
+function UserBubble({ text, guided }: { text: string; guided?: boolean }) {
   const { t } = useTranslation();
   return (
     <div className="w-full flex justify-end">
       <div className="max-w-[88%] min-w-0 flex flex-col items-end">
         <div className="flex items-center gap-2 mb-0.5 text-[11px]">
           <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>
-          <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-600 dark:text-amber-500">
-            <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-            {t("sessions.steered")}
-          </span>
+          {guided ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-600 dark:text-amber-500">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+              {t("sessions.steered")}
+            </span>
+          ) : null}
         </div>
         <div
           className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full"

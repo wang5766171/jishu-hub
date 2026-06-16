@@ -10,7 +10,7 @@
  * Reference: Codex Desktop's input behavior during agent output.
  */
 import { useState } from "react";
-import { Edit3, Send, Trash2, X } from "lucide-react";
+import { Edit3, Send, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 

@@ -27,10 +27,10 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 const request: ConversationInteractionRequest = {
   requestId: "req-chat-1",
-  prompt: "请选择实现顺序",
+  prompt: "Choose implementation order",
   options: [
-    { optionId: "frontend", label: "前端优先" },
-    { optionId: "backend", label: "后端优先" },
+    { optionId: "frontend", label: "Frontend first" },
+    { optionId: "backend", label: "Backend first" },
   ],
   allowMultiple: false,
   allowCustomText: true,
@@ -39,7 +39,7 @@ const request: ConversationInteractionRequest = {
 
 describe("ChatInput interaction submission", () => {
   beforeAll(async () => {
-    await i18n.changeLanguage("zh");
+    await i18n.changeLanguage("en");
   });
 
   beforeEach(() => {
@@ -51,34 +51,61 @@ describe("ChatInput interaction submission", () => {
     });
   });
 
-  it("submits a structured choice to the current regular session", async () => {
-    const onInteractionSubmitted = vi.fn();
+  it("submits a structured interaction response without sending a regular chat message", async () => {
+    const onInteractionSubmit = vi.fn().mockResolvedValue(undefined);
     render(
       <ChatInput
         sessionId="session-1"
         projectPath={"D:\\project"}
         interactionRequest={request}
-        onInteractionSubmitted={onInteractionSubmitted}
+        onInteractionSubmit={onInteractionSubmit}
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /后端优先/ }));
-    fireEvent.change(screen.getAllByRole("textbox")[0], {
-      target: { value: "接口先稳定" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "提交选择" }));
+    fireEvent.click(screen.getByRole("button", { name: /Backend first/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit choice" }));
 
     await waitFor(() => {
-      expect(invokeCommand).toHaveBeenCalledWith("send_message", {
-        projectPath: "D:\\project",
-        sessionId: "session-1",
-        message: expect.stringContaining("后端优先"),
+      expect(onInteractionSubmit).toHaveBeenCalledWith({
+        requestId: "req-chat-1",
+        selectedOptionIds: ["backend"],
+        customText: "",
       });
     });
+    expect(invokeCommand).not.toHaveBeenCalledWith(
+      "send_message",
+      expect.anything(),
+    );
+  });
 
-    const message = invokeCommand.mock.calls[0][1].message as string;
-    expect(message).toContain("接口先稳定");
-    expect(message).not.toContain("req-chat-1");
-    expect(onInteractionSubmitted).toHaveBeenCalledWith("req-chat-1");
+  it("allows submitting an interaction while the current turn is waiting on user input", async () => {
+    const onInteractionSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ChatInput
+        sessionId="session-1"
+        projectPath={"D:\\project"}
+        isSessionStreaming
+        interactionRequest={request}
+        onInteractionSubmit={onInteractionSubmit}
+      />,
+    );
+
+    const backendOption = screen.getByRole("button", { name: /Backend first/ });
+    fireEvent.click(backendOption);
+    expect(backendOption).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Submit choice" }));
+
+    await waitFor(() => {
+      expect(onInteractionSubmit).toHaveBeenCalledWith({
+        requestId: "req-chat-1",
+        selectedOptionIds: ["backend"],
+        customText: "",
+      });
+    });
+    expect(invokeCommand).not.toHaveBeenCalledWith(
+      "send_message",
+      expect.anything(),
+    );
   });
 });

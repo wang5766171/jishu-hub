@@ -166,6 +166,7 @@
     "interactionPending": "Waiting for your choice",
     "interactionSubmit": "Submit choice",
     "interactionSubmitting": "Submitting...",
+    "interactionOtherOption": "Other",
     "interactionCustomPlaceholder": "Add context (optional)",
     "interactionSingleHint": "Select one option to continue",
     "interactionMultipleHint": "Select one or more options to continue",

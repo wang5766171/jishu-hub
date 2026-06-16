@@ -60,6 +60,30 @@ export function formatInteractionReply(
   return sections.join("\n\n");
 }
 
+export function formatInteractionResponseValue(
+  request: ConversationInteractionRequest,
+  submission: ConversationInteractionSubmission,
+): string {
+  const optionLabels = new Map(
+    request.options.map((option) => [option.optionId, option.label]),
+  );
+  const selectedLabels = submission.selectedOptionIds.map(
+    (optionId) => optionLabels.get(optionId) ?? optionId,
+  );
+  const customText = submission.customText.trim();
+
+  if (selectedLabels.length === 1 && !customText) {
+    return selectedLabels[0];
+  }
+  if (selectedLabels.length === 0) {
+    return customText;
+  }
+  if (!customText) {
+    return selectedLabels.join("\n");
+  }
+  return `${selectedLabels.join("\n")}\n\n${customText}`;
+}
+
 export function interactionRequestFromEvent(
   event: Extract<NormalizedEvent, { kind: "interaction_request" }>,
 ): ConversationInteractionRequest {

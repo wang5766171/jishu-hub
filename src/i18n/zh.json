@@ -166,6 +166,7 @@
     "interactionPending": "等待您的选择",
     "interactionSubmit": "提交选择",
     "interactionSubmitting": "提交中...",
+    "interactionOtherOption": "其他 / 补充",
     "interactionCustomPlaceholder": "可补充说明（可选）",
     "interactionSingleHint": "请选择一项后提交",
     "interactionMultipleHint": "可选择多项后提交",

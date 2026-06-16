@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatInteractionResponseValue,
   formatInteractionReply,
   interactionRequestFromEvent,
   validateInteractionSubmission,
@@ -51,6 +52,27 @@ describe("conversation interaction", () => {
     expect(reply).toContain("先做接口");
     expect(reply).not.toContain("req-1");
     expect(reply).not.toContain("optionId");
+  });
+
+  it("formats the transport response value expected by extension UI", () => {
+    expect(
+      formatInteractionResponseValue(request, {
+        requestId: "req-1",
+        selectedOptionIds: ["backend"],
+        customText: "",
+      }),
+    ).toBe("后端优先");
+
+    expect(
+      formatInteractionResponseValue(
+        { ...request, options: [] },
+        {
+          requestId: "req-1",
+          selectedOptionIds: [],
+          customText: "Use the existing cluster",
+        },
+      ),
+    ).toBe("Use the existing cluster");
   });
 
   it("rejects an option that does not belong to the request", () => {

@@ -27,12 +27,17 @@ import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { searchSessions } from "@/lib/session-search";
 import { openFloatingSession } from "@/lib/floating-window";
-import { interactionRequestFromEvent } from "@/lib/conversation-interaction";
+import { commitAssistantWithUserInsertions } from "@/lib/deferred-user-message";
+import {
+  formatInteractionResponseValue,
+  interactionRequestFromEvent,
+} from "@/lib/conversation-interaction";
 import { AgentLogo, useAgent } from "@/agents";
 import type {
   AgentEventPayload,
   ContentBlock,
   ConversationInteractionRequest,
+  ConversationInteractionSubmission,
   Message,
   Project,
   ProjectMeta,
@@ -830,6 +835,12 @@ export function ChatPage({
             ? finalKey
             : cid;
           const queuedSteers = pendingSteerMessagesRef.current.get(steerQueueKey) ?? [];
+          const interactionInsertions = (state?.interactionSplits ?? [])
+            .filter((item) => item.text?.trim())
+            .map((item) => ({
+              index: item.index,
+              text: item.text ?? "",
+            }));
           // Sanitize + sort: each split marks the start of a new segment.
           const steerSplits = Array.from(new Set(state?.steerSplits ?? []))
             .filter((idx) => idx > 0 && idx < (state?.content.length ?? 0))
@@ -889,8 +900,35 @@ export function ChatPage({
               setPendingSteerDisplay((prev) => prev.slice(count));
             }
           };
+          if (interactionInsertions.length > 0) {
+            const midSteerCount = Math.min(steerSplits.length, queuedSteers.length);
+            const committed = commitAssistantWithUserInsertions({
+              assistantContent,
+              userInsertions: [
+                ...steerSplits.slice(0, midSteerCount).map((index, i) => ({
+                  index,
+                  text: queuedSteers[i],
+                })),
+                ...interactionInsertions,
+              ],
+              error: state?.error,
+            });
+            newMessages.push(...committed.messages);
+            consumeSteerFromQueue(midSteerCount);
+            dropLivePlaceholders(midSteerCount);
 
-          if (steerSplits.length > 0 && queuedSteers.length > 0) {
+            const leftover = pendingSteerMessagesRef.current.get(steerQueueKey);
+            if (leftover && leftover.length > 0) {
+              newMessages.push({
+                role: "user",
+                content: [{ type: "text", text: leftover[0] }],
+                timestamp: Date.now(),
+              });
+              followUpExpected = true;
+              consumeSteerFromQueue(1);
+              dropLivePlaceholders(1);
+            }
+          } else if (steerSplits.length > 0 && queuedSteers.length > 0) {
             // TOOL-BEARING turn with mid-turn steers: split the accumulated
             // content at each injection point and interleave the steers
             // between segments — yielding [reply1a, steer, reply1b] instead of
@@ -1091,16 +1129,51 @@ export function ChatPage({
       item.agentId === activeId
       && item.sessionId === selectedSession,
   ) ?? null;
-  const handleInteractionSubmitted = useCallback((requestId: string) => {
-    setPendingInteractions((current) =>
-      current.filter(
-        (item) =>
-          item.agentId !== activeId
-          || item.sessionId !== selectedSession
-          || item.request.requestId !== requestId,
-      ),
+  const handleInteractionSubmit = useCallback(async (
+    submission: ConversationInteractionSubmission,
+  ) => {
+    const interaction = pendingInteractions.find(
+      (item) =>
+        item.agentId === activeId
+        && item.sessionId === selectedSession
+        && item.request.requestId === submission.requestId,
     );
-  }, [activeId, selectedSession]);
+    if (!interaction) return;
+
+    const matchesInteraction = (item: PendingChatInteraction) =>
+      item.agentId === interaction.agentId
+      && item.sessionId === interaction.sessionId
+      && item.request.requestId === submission.requestId;
+    const value = formatInteractionResponseValue(interaction.request, submission);
+    setPendingInteractions((current) => current.filter((item) => !matchesInteraction(item)));
+    const responseRecorded = value.trim()
+      ? streamStore.recordInteractionResponse(
+          interaction.sessionId,
+          submission.requestId,
+          value,
+        )
+      : false;
+
+    try {
+      await invokeCommand("respond_chat_interaction", {
+        sessionId: interaction.sessionId,
+        requestId: submission.requestId,
+        value,
+      });
+    } catch (error) {
+      setPendingInteractions((current) =>
+        current.some(matchesInteraction) ? current : [...current, interaction],
+      );
+      if (responseRecorded) {
+        streamStore.recordInteractionResponse(
+          interaction.sessionId,
+          submission.requestId,
+          "",
+        );
+      }
+      throw error;
+    }
+  }, [activeId, pendingInteractions, selectedSession]);
   const resolveActiveApproval = useCallback(async (approved: boolean) => {
     if (!activeApproval || approvalResolving) return;
     setApprovalResolving(true);
@@ -1694,7 +1767,7 @@ export function ChatPage({
               accessModeValue={accessModeValue}
               onAccessModeChange={handleAccessModeChange}
               interactionRequest={activeInteraction?.request}
-              onInteractionSubmitted={handleInteractionSubmitted}
+              onInteractionSubmit={handleInteractionSubmit}
               onGuideStaged={
                 supportsSteer
                   ? async (content: string) => {

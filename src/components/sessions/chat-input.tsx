@@ -68,7 +68,7 @@ interface ChatInputProps {
   accessModeValue?: string;
   onAccessModeChange?: (value: string) => void | Promise<void>;
   interactionRequest?: ConversationInteractionRequest | null;
-  onInteractionSubmitted?: (requestId: string) => void;
+  onInteractionSubmit?: (submission: ConversationInteractionSubmission) => void | Promise<void>;
   /** Called when user clicks "guide" on a staged message during streaming.
    *  For Jishu Agent: steer. For others: parent should stop + send. */
   onGuideStaged?: (content: string) => Promise<void>;
@@ -101,7 +101,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   accessModeValue,
   onAccessModeChange,
   interactionRequest = null,
-  onInteractionSubmitted,
+  onInteractionSubmit,
   onGuideStaged,
   stagedApiRef,
 }: ChatInputProps, ref) {
@@ -109,6 +109,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   const [message, setMessage] = useState("");
   const [files, setFiles] = useState<AttachedFile[]>([]);
   const [sending, setSending] = useState(false);
+  const [interactionSubmitting, setInteractionSubmitting] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [accessMenuOpen, setAccessMenuOpen] = useState(false);
@@ -508,17 +509,21 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   const handleInteractionSubmit = async (
     submission: ConversationInteractionSubmission,
   ) => {
-    if (!interactionRequest || disabled || sending || isStreaming) return;
+    if (!interactionRequest || disabled || interactionSubmitting) return;
 
-    setSending(true);
+    setInteractionSubmitting(true);
     try {
-      const reply = formatInteractionReply(interactionRequest, submission);
-      await sendPreparedMessage(reply, false);
-      onInteractionSubmitted?.(submission.requestId);
+      if (onInteractionSubmit) {
+        await onInteractionSubmit(submission);
+      } else {
+        const reply = formatInteractionReply(interactionRequest, submission);
+        await sendPreparedMessage(reply, false);
+      }
     } catch (err) {
       console.error("Failed to submit interaction:", err);
-      setSending(false);
       throw err;
+    } finally {
+      setInteractionSubmitting(false);
     }
   };
 
@@ -604,8 +609,8 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         {interactionRequest ? (
           <InteractionComposer
             request={interactionRequest}
-            disabled={disabled || isStreaming}
-            submitting={sending}
+            disabled={disabled}
+            submitting={interactionSubmitting}
             onSubmit={handleInteractionSubmit}
           />
         ) : null}

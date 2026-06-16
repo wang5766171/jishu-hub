@@ -25,11 +25,13 @@ export function InteractionComposer({
 }: InteractionComposerProps) {
   const { t } = useTranslation();
   const [selectedOptionIds, setSelectedOptionIds] = useState<string[]>([]);
+  const [customSelected, setCustomSelected] = useState(false);
   const [customText, setCustomText] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setSelectedOptionIds([]);
+    setCustomSelected(false);
     setCustomText("");
     setError(null);
   }, [request.requestId]);
@@ -41,6 +43,7 @@ export function InteractionComposer({
 
   const toggleOption = (optionId: string) => {
     setError(null);
+    setCustomSelected(false);
     setSelectedOptionIds((current) => {
       if (!request.allowMultiple) {
         return current[0] === optionId ? [] : [optionId];
@@ -48,6 +51,17 @@ export function InteractionComposer({
       return current.includes(optionId)
         ? current.filter((currentId) => currentId !== optionId)
         : [...current, optionId];
+    });
+  };
+
+  const toggleCustom = () => {
+    setError(null);
+    setCustomSelected((selected) => {
+      const next = !selected;
+      if (next && !request.allowMultiple) {
+        setSelectedOptionIds([]);
+      }
+      return next;
     });
   };
 
@@ -129,9 +143,40 @@ export function InteractionComposer({
             </button>
           );
         })}
+        {request.allowCustomText && request.options.length > 0 ? (
+          <button
+            type="button"
+            aria-pressed={customSelected}
+            disabled={disabled || submitting}
+            onClick={toggleCustom}
+            className={cn(
+              "flex min-h-12 items-start gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-colors",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+              customSelected
+                ? "border-primary/55 bg-primary/10 text-foreground shadow-xs"
+                : "border-border/65 bg-background/65 text-foreground hover:border-primary/35 hover:bg-accent/45",
+            )}
+          >
+            <span
+              className={cn(
+                "mt-0.5 flex h-5 min-w-5 items-center justify-center rounded-md border px-1 text-[10px] font-bold",
+                customSelected
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border bg-muted/70 text-muted-foreground",
+              )}
+            >
+              {customSelected ? <Check className="h-3 w-3" /> : String.fromCharCode(65 + request.options.length)}
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-medium">
+                {t("sessions.interactionOtherOption")}
+              </span>
+            </span>
+          </button>
+        ) : null}
       </div>
 
-      {request.allowCustomText ? (
+      {request.allowCustomText && (customSelected || request.options.length === 0) ? (
         <textarea
           value={customText}
           onChange={(event) => {

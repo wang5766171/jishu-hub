@@ -18,6 +18,12 @@ export interface StepInfo {
   title: string;
 }
 
+export interface InteractionSplit {
+  requestId: string;
+  index: number;
+  text: string | null;
+}
+
 /**
  * Per-session streaming state.
  *
@@ -62,6 +68,12 @@ export interface SessionStreamState {
    * Reset on start/drop.
    */
   steerTexts: string[];
+  /**
+   * Extension UI interaction answers inserted mid-turn. The index is captured
+   * when Pi emits `extension_ui_request`; the text is filled when the user
+   * responds via `extension_ui_response`.
+   */
+  interactionSplits: InteractionSplit[];
 }
 
 function emptyState(abortKey: string, pendingUserMessage: string | null): SessionStreamState {
@@ -79,6 +91,7 @@ function emptyState(abortKey: string, pendingUserMessage: string | null): Sessio
     steps: [],
     steerSplits: [],
     steerTexts: [],
+    interactionSplits: [],
   };
 }
 
@@ -116,7 +129,7 @@ class StreamStore {
     const key = this.canonical(sid);
     const prev = this.sessions.get(key) ?? emptyState(key, null);
 
-    let { content, text, thinking, error, tools, resolvedId, steps, steerSplits, steerTexts } = prev;
+    let { content, text, thinking, error, tools, resolvedId, steps, steerSplits, steerTexts, interactionSplits } = prev;
     const { pendingUserMessage, abortKey, isStreaming } = prev;
     const chunks = [...prev.chunks, chunk];
 
@@ -183,6 +196,13 @@ class StreamStore {
         steerSplits = [...steerSplits, content.length];
         steerTexts = [...steerTexts, data.content];
       }
+    } else if (data.kind === "interaction_request") {
+      if (!interactionSplits.some((item) => item.requestId === data.request_id)) {
+        interactionSplits = [
+          ...interactionSplits,
+          { requestId: data.request_id, index: content.length, text: null },
+        ];
+      }
     } else if (data.kind === "sub_agent_event") {
       // Recursively surface inner event content (text/thinking) from sub-agents
       const inner = data.sub_event;
@@ -214,8 +234,27 @@ class StreamStore {
       steps,
       steerSplits,
       steerTexts,
+      interactionSplits,
     });
     this.scheduleFlush();
+  }
+
+  recordInteractionResponse(sid: string, requestId: string, text: string): boolean {
+    const key = this.canonical(sid);
+    const prev = this.sessions.get(key);
+    if (!prev) return false;
+
+    let found = false;
+    const interactionSplits = prev.interactionSplits.map((item) => {
+      if (item.requestId !== requestId) return item;
+      found = true;
+      return { ...item, text };
+    });
+    if (!found) return false;
+
+    this.sessions.set(key, { ...prev, interactionSplits });
+    this.scheduleFlush();
+    return true;
   }
 
   /** Mark a session as no longer streaming. State is retained until `drop`. */

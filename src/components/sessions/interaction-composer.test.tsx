@@ -7,11 +7,11 @@ import { InteractionComposer } from "./interaction-composer";
 
 const singleChoiceRequest: ConversationInteractionRequest = {
   requestId: "req-regular-1",
-  prompt: "请选择实施顺序",
+  prompt: "Choose implementation order",
   options: [
-    { optionId: "frontend", label: "前端优先" },
-    { optionId: "backend", label: "后端优先", description: "先完成接口与权限模型" },
-    { optionId: "parallel", label: "前后端并行" },
+    { optionId: "frontend", label: "Frontend first" },
+    { optionId: "backend", label: "Backend first", description: "Stabilize the API and auth model" },
+    { optionId: "parallel", label: "Parallel work" },
   ],
   allowMultiple: false,
   allowCustomText: true,
@@ -20,10 +20,10 @@ const singleChoiceRequest: ConversationInteractionRequest = {
 
 describe("InteractionComposer", () => {
   beforeAll(async () => {
-    await i18n.changeLanguage("zh");
+    await i18n.changeLanguage("en");
   });
 
-  it("submits the selected option and optional text", async () => {
+  it("submits the selected option", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
 
     render(
@@ -33,17 +33,14 @@ describe("InteractionComposer", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /后端优先/ }));
-    fireEvent.change(screen.getByRole("textbox"), {
-      target: { value: "优先完成组织数据权限" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "提交选择" }));
+    fireEvent.click(screen.getByRole("button", { name: /Backend first/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit choice" }));
 
     await waitFor(() => {
       expect(onSubmit).toHaveBeenCalledWith({
         requestId: "req-regular-1",
         selectedOptionIds: ["backend"],
-        customText: "优先完成组织数据权限",
+        customText: "",
       });
     });
   });
@@ -56,8 +53,8 @@ describe("InteractionComposer", () => {
       />,
     );
 
-    const frontend = screen.getByRole("button", { name: /前端优先/ });
-    const backend = screen.getByRole("button", { name: /后端优先/ });
+    const frontend = screen.getByRole("button", { name: /Frontend first/ });
+    const backend = screen.getByRole("button", { name: /Backend first/ });
     fireEvent.click(frontend);
     fireEvent.click(backend);
 
@@ -73,8 +70,8 @@ describe("InteractionComposer", () => {
       />,
     );
 
-    const frontend = screen.getByRole("button", { name: /前端优先/ });
-    const backend = screen.getByRole("button", { name: /后端优先/ });
+    const frontend = screen.getByRole("button", { name: /Frontend first/ });
+    const backend = screen.getByRole("button", { name: /Backend first/ });
     fireEvent.click(frontend);
     fireEvent.click(backend);
 
@@ -82,7 +79,33 @@ describe("InteractionComposer", () => {
     expect(backend).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("does not render a custom text box when the request forbids it", () => {
+  it("shows an other option that submits custom text when available choices do not fit", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <InteractionComposer
+        request={singleChoiceRequest}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Other/ }));
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "This is a stateful worker service" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Submit choice" }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith({
+        requestId: "req-regular-1",
+        selectedOptionIds: [],
+        customText: "This is a stateful worker service",
+      });
+    });
+  });
+
+  it("does not render a custom text entry point when the request forbids it", () => {
     render(
       <InteractionComposer
         request={{ ...singleChoiceRequest, allowCustomText: false }}
@@ -90,6 +113,7 @@ describe("InteractionComposer", () => {
       />,
     );
 
+    expect(screen.queryByRole("button", { name: /Other/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
 });
