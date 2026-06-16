@@ -51,6 +51,9 @@ pub struct AgentStatus {
     /// MCP adapter installation status (only populated when config_surface declares supports_mcp).
     pub mcp_installed: bool,
     pub mcp_version: Option<String>,
+    /// Transport-bridge dependency status (only populated when the agent
+    /// declares supports_transport_bridge — e.g. claude_code's claude-agent-acp).
+    pub transport_bridge: TransportBridgeStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -126,6 +129,22 @@ impl TransportSurface {
             Self::CodexAppServer => "CodexAppServer",
         }
     }
+}
+
+/// Transport-bridge dependency status. Only meaningful when
+/// `ConfigAdapter::supports_transport_bridge` is true — i.e. the agent's
+/// effective transport depends on an external binary not bundled with its CLI
+/// (claude_code needs `claude-agent-acp` to reach AcpPreferred; absent → Cli).
+/// Surfaced to the env-check page the same way MCP adapter status is.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct TransportBridgeStatus {
+    /// Whether this agent declares a transport-bridge dependency at all.
+    pub supported: bool,
+    /// Whether the bridge binary is currently resolvable on PATH.
+    pub installed: bool,
+    pub version: Option<String>,
+    /// Human-facing bridge binary label (e.g. `claude-agent-acp`).
+    pub name: Option<String>,
 }
 
 pub struct AgentRegistry {
@@ -214,6 +233,25 @@ impl AgentRegistry {
                 } else {
                     (false, None)
                 };
+                let transport_bridge = if a.supports_transport_bridge() {
+                    match a.check_transport_bridge() {
+                        Ok(v) => TransportBridgeStatus {
+                            supported: true,
+                            installed: v
+                                .get("installed")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
+                            version: v.get("version").and_then(|v| v.as_str()).map(String::from),
+                            name: v.get("name").and_then(|v| v.as_str()).map(String::from),
+                        },
+                        Err(_) => TransportBridgeStatus {
+                            supported: true,
+                            ..Default::default()
+                        },
+                    }
+                } else {
+                    TransportBridgeStatus::default()
+                };
                 AgentStatus {
                     id: info.id.clone(),
                     display_name: info.display_name.clone(),
@@ -231,6 +269,7 @@ impl AgentRegistry {
                     transport: a.resolve_transport(),
                     mcp_installed,
                     mcp_version,
+                    transport_bridge,
                 }
             })
             .collect()
@@ -423,6 +462,7 @@ mod tests {
             transport: TransportSurface::Cli,
             mcp_installed: false,
             mcp_version: None,
+            transport_bridge: TransportBridgeStatus::default(),
         };
 
         let value = serde_json::to_value(status).unwrap();
@@ -494,5 +534,16 @@ mod tests {
                 ],
             }
         );
+
+        // Transport bridge: claude_code declares a claude-agent-acp dependency
+        // (others default to unsupported). `installed`/`version` depend on the
+        // host PATH, so only the supported flag + name contract are asserted.
+        assert!(claude.transport_bridge.supported);
+        assert_eq!(
+            claude.transport_bridge.name.as_deref(),
+            Some("claude-agent-acp")
+        );
+        assert!(!codex.transport_bridge.supported);
+        assert!(!opencode.transport_bridge.supported);
     }
 }

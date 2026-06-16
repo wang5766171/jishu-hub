@@ -908,6 +908,48 @@ async fn install_mcp_adapter(
     crate::agent::jishu_self::JishuSelfAgent::install_mcp_standalone().await
 }
 
+/// Check transport-bridge installation status for a specific agent (routed
+/// through adapter contract — e.g. claude_code's claude-agent-acp dependency).
+#[tauri::command]
+fn check_transport_bridge(
+    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
+) -> Result<serde_json::Value, String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
+    let agent = s
+        .registry
+        .get(&agent_id)
+        .ok_or_else(|| format!("Agent not found: {}", agent_id))?;
+    agent.check_transport_bridge()
+}
+
+/// Install transport bridge for a specific agent (routed through adapter
+/// contract). The MutexGuard is released before .await to keep the future
+/// Send-safe (mirrors install_mcp_adapter).
+#[tauri::command]
+async fn install_transport_bridge(
+    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
+) -> Result<String, String> {
+    // Validate the agent has a transport bridge under the lock, then release.
+    {
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        let agent = s
+            .registry
+            .get(&agent_id)
+            .ok_or_else(|| format!("Agent not found: {}", agent_id))?;
+        if !agent.supports_transport_bridge() {
+            return Err(format!("Agent {} has no transport bridge", agent_id));
+        }
+    }
+    // Lock released — delegate to claude_code's standalone install helper.
+    crate::agent::ClaudeCodeAgent::install_transport_bridge_standalone().await
+}
+
 #[derive(serde::Serialize)]
 pub struct EnvStatus {
     pub node_installed: bool,
@@ -2584,6 +2626,8 @@ pub fn run() {
             check_environment,
             check_mcp_adapter,
             install_mcp_adapter,
+            check_transport_bridge,
+            install_transport_bridge,
             check_available_updates,
             check_for_update,
             download_update,

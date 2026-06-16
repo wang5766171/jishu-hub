@@ -156,6 +156,32 @@ pub trait ConfigAdapter {
     }
     /// Run one-time migration of MCP config if needed (idempotent).
     fn migrate_mcp_if_needed(&self) {}
+
+    // Transport-bridge methods — meaningful only for agents whose EFFECTIVE
+    // transport depends on an external binary that is NOT bundled with the
+    // agent CLI. E.g. claude_code reaches `AcpPreferred` (mid-turn
+    // `elicitation/create` business questions) only when the `claude-agent-acp`
+    // npm bridge is installed; when it is absent `resolve_transport()` falls
+    // back to `Cli`. The env-check page detects + installs it the same way the
+    // MCP adapter is handled. Mirrors the MCP adapter methods' shape.
+
+    /// Whether this agent depends on an external transport bridge binary.
+    fn supports_transport_bridge(&self) -> bool {
+        false
+    }
+    /// Check transport-bridge installation status.
+    /// Returns `{ installed, version, name }` (`name` is the human-facing
+    /// binary label, e.g. `claude-agent-acp`).
+    fn check_transport_bridge(&self) -> Result<Value, String> {
+        Ok(serde_json::json!({"installed": false, "version": null, "name": null}))
+    }
+    /// Install the transport bridge for this agent.
+    fn install_transport_bridge(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+    {
+        Box::pin(async { Err("Transport bridge not supported".to_string()) })
+    }
 }
 
 pub trait SessionAdapter {

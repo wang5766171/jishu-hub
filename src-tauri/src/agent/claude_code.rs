@@ -7,6 +7,13 @@ impl ClaudeCodeAgent {
     pub fn new() -> Self {
         Self
     }
+
+    /// Standalone async transport-bridge install — does not borrow &self, so it
+    /// can be awaited without holding the AgentRegistry MutexGuard (mirrors
+    /// `JishuSelfAgent::install_mcp_standalone`).
+    pub async fn install_transport_bridge_standalone() -> Result<String, String> {
+        install_claude_agent_acp().await
+    }
 }
 
 pub fn normalize_stream_event(event: &serde_json::Value) -> Vec<NormalizedEvent> {
@@ -247,14 +254,53 @@ impl AgentManifest for ClaudeCodeAgent {
     }
 }
 
+/// Resolve the `claude-agent-acp` bridge binary path if present (None when
+/// absent). Shared by the transport probe and the env-check status check so
+/// they agree on exactly what "installed" means.
+fn probe_claude_acp_bridge() -> Option<std::path::PathBuf> {
+    let candidates = super::discovery::default_candidates_for("claude-agent-acp");
+    let cands: Vec<&str> = candidates.iter().map(|s| s.as_str()).collect();
+    super::discovery::probe_binary_sync("claude-agent-acp", &cands)
+}
+
 /// Whether the `claude-agent-acp` bridge binary is resolvable on PATH. This
 /// gates claude_code's effective transport (design R4 "探针 + 降级"): present →
 /// AcpPreferred (mid-turn `elicitation/create` business questions), absent → Cli
 /// fallback so ordinary chat keeps working exactly as before.
 fn claude_acp_bridge_available() -> bool {
-    let candidates = super::discovery::default_candidates_for("claude-agent-acp");
-    let cands: Vec<&str> = candidates.iter().map(|s| s.as_str()).collect();
-    super::discovery::probe_binary_sync("claude-agent-acp", &cands).is_some()
+    probe_claude_acp_bridge().is_some()
+}
+
+/// Install the `claude-agent-acp` bridge globally via npm. The published npm
+/// package is `@agentclientprotocol/claude-agent-acp`; its `bin` field exposes
+/// the `claude-agent-acp` command the probe above looks for (verified against
+/// the upstream package.json at agentclientprotocol/claude-agent-acp).
+async fn install_claude_agent_acp() -> Result<String, String> {
+    let mut cmd = crate::os_adapter::shell::shell_command(
+        "npm",
+        vec![
+            "install".to_string(),
+            "-g".to_string(),
+            "@agentclientprotocol/claude-agent-acp".to_string(),
+        ],
+    );
+
+    #[cfg(target_os = "windows")]
+    crate::process_command::tokio_no_window(&mut cmd);
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run npm install: {e}"))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(format!(
+            "npm install failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
 }
 
 /// Pure resolution decision, factored out so the logic is unit-testable without
@@ -411,6 +457,38 @@ impl ConfigAdapter for ClaudeCodeAgent {
     fn import_config(&self, path: &str) -> Result<serde_json::Value, String> {
         let config = crate::config::import_config(path).map_err(|e| e.to_string())?;
         serde_json::to_value(config).map_err(|e| e.to_string())
+    }
+
+    // ── Transport-bridge methods ──
+    // claude_code's effective transport is AcpPreferred only when the external
+    // `claude-agent-acp` bridge is installed (probe-gated, design R4). The
+    // env-check page surfaces this dependency and installs it on demand, the
+    // same way jishu agent handles the pi-mcp-adapter.
+
+    fn supports_transport_bridge(&self) -> bool {
+        true
+    }
+
+    fn check_transport_bridge(&self) -> Result<serde_json::Value, String> {
+        // Same probe that gates resolve_transport(): the effective transport
+        // upgrades to AcpPreferred only when this binary is resolvable.
+        let path = probe_claude_acp_bridge();
+        let installed = path.is_some();
+        let version = path
+            .as_ref()
+            .and_then(|p| super::discovery::version_of_sync(p));
+        Ok(serde_json::json!({
+            "installed": installed,
+            "version": version,
+            "name": "claude-agent-acp",
+        }))
+    }
+
+    fn install_transport_bridge(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+    {
+        Box::pin(async { Self::install_transport_bridge_standalone().await })
     }
 }
 
@@ -787,5 +865,26 @@ mod tests {
             assert!(spec.args.is_empty());
         }
         assert!(spec.envs.is_empty());
+    }
+
+    // --- transport-bridge detection (claude-agent-acp, design R4) ---
+
+    #[test]
+    fn claude_code_supports_transport_bridge() {
+        let agent = ClaudeCodeAgent::new();
+        assert!(agent.supports_transport_bridge());
+    }
+
+    #[test]
+    fn check_transport_bridge_reports_claude_agent_acp() {
+        // The `installed`/`version` fields depend on the host PATH, but the
+        // `name` (the human-facing binary label the env-check page shows) is a
+        // fixed contract: it must match what the probe looks for.
+        let agent = ClaudeCodeAgent::new();
+        let status = agent
+            .check_transport_bridge()
+            .expect("bridge status should resolve");
+        assert_eq!(status["name"], serde_json::json!("claude-agent-acp"));
+        assert!(status["installed"].is_boolean());
     }
 }

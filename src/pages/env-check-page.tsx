@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ArrowUpCircle,
   Puzzle,
+  Cable,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { AgentStatus } from "@/agents/types";
@@ -122,6 +123,9 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
     new Map()
   );
   const [installingMcpId, setInstallingMcpId] = useState<string | null>(null);
+  const [installingBridgeId, setInstallingBridgeId] = useState<string | null>(
+    null
+  );
 
   const [cliInstalled, setCliInstalled] = useState<boolean | null>(null);
 
@@ -505,6 +509,66 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                                     window.alert(`MCP ${t("env.installFailed", "安装失败")}: ${String(err)}`);
                                   } finally {
                                     setInstallingMcpId(null);
+                                  }
+                                }}
+                              >
+                                {t("env.install", "安装")}
+                              </Button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {/* Transport-bridge sub-item — shown when adapter declares supports_transport_bridge */}
+                  {originalAgent?.transport_bridge?.supported && item.installed && (
+                    <div className="ml-9 mt-1.5 flex items-start gap-2.5 py-1.5 px-1">
+                      <Cable className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-medium leading-tight">
+                            {originalAgent.transport_bridge.name ?? "claude-agent-acp"}{" "}
+                            {t("env.bridge", "桥")}
+                          </span>
+                          {originalAgent.transport_bridge.version && (
+                            <span className="text-[10px] font-mono text-muted-foreground bg-muted px-1 py-0.5 rounded">
+                              v{originalAgent.transport_bridge.version}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-muted-foreground leading-tight mt-0.5 truncate">
+                          {t("env.bridgeDesc", "claude_code 借此桥以 ACP 协议运行，启用会话中途的结构化提问；缺失将降级为命令行模式")}
+                        </p>
+                        {originalAgent.transport_bridge.installed ? (
+                          <div className="mt-1 flex items-center gap-1 text-[var(--icon-success)] justify-start">
+                            <CheckCircle2 className="h-3 w-3" />
+                            <span className="text-[10px] font-medium">{t("env.normal", "已就绪")}</span>
+                          </div>
+                        ) : (
+                          <div className="mt-1 flex items-center gap-1.5 justify-start">
+                            <span className="text-[10px] font-medium text-destructive">
+                              {t("env.notInstalled", "未安装")}
+                            </span>
+                            {installingBridgeId === item.agentId ? (
+                              <Button size="sm" variant="outline" disabled className="h-6 px-2 text-[10px]">
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-6 px-2 text-[10px]"
+                                onClick={async () => {
+                                  if (!item.agentId) return;
+                                  setInstallingBridgeId(item.agentId);
+                                  try {
+                                    await invokeCommand("install_transport_bridge", { agentId: item.agentId });
+                                    await refreshHealth();
+                                  } catch (err) {
+                                    console.error(err);
+                                    window.alert(`${t("env.bridge", "桥")} ${t("env.installFailed", "安装失败")}: ${String(err)}`);
+                                  } finally {
+                                    setInstallingBridgeId(null);
                                   }
                                 }}
                               >

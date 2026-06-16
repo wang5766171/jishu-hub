@@ -32,6 +32,24 @@ export interface AgentStatus {
   transport: TransportSurface;
   mcp_installed: boolean;
   mcp_version: string | null;
+  /** Transport-bridge dependency status (only meaningful when supported). */
+  transport_bridge: TransportBridgeStatus;
+}
+
+/**
+ * Transport-bridge dependency status. claude_code's effective transport
+ * (AcpPreferred) depends on the external `claude-agent-acp` binary; when it is
+ * absent the agent falls back to Cli. Surfaced in the env-check page the same
+ * way the MCP adapter status is.
+ */
+export interface TransportBridgeStatus {
+  /** Whether this agent declares a transport-bridge dependency at all. */
+  supported: boolean;
+  /** Whether the bridge binary is resolvable on PATH. */
+  installed: boolean;
+  version: string | null;
+  /** Human-facing bridge binary label (e.g. `claude-agent-acp`). */
+  name: string | null;
 }
 
 export type ConfigSurface =

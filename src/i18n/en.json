@@ -67,6 +67,8 @@
     "newVersionAvailable": "New version available: {{version}}",
     "adapter": "Adapter",
     "mcpDesc": "Provides Jishu Agent with MCP service capabilities (web search, web reading, etc.)",
+    "bridge": "Bridge",
+    "bridgeDesc": "Runs claude_code over ACP via this bridge, enabling mid-turn structured questions; falls back to CLI mode when absent",
     "cliNotInstalled": "Command-line tool not installed",
     "cliDesc": "To conveniently launch Jishu Hub from external terminals, installing the jishu command is strongly recommended (requires authorization)."
   },
