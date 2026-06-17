@@ -217,6 +217,29 @@ impl NormalizedEvent {
     }
 }
 
+/// Returns `true` when the tool's UI rendering is entirely handled by a
+/// separate elicitation/interaction channel (e.g. ACP `elicitation/create`),
+/// so `normalize_acp_update` must NOT create a `ToolUseStart` card for it.
+///
+/// Claude Code's `AskUserQuestion` is the canonical example: the ACP bridge
+/// sends a `tool_call` session update (which would create a "running" tool
+/// card) AND a separate `elicitation/create` RPC request (which creates the
+/// actual question UI). The tool card stays in "running" state because the
+/// `tool_use_result` only arrives after the user answers — producing a
+/// phantom "Tool" card with no useful content.
+pub fn is_elicitation_only_tool(tool_name: &str) -> bool {
+    let normalized_name = tool_name
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or(tool_name)
+        .replace('-', "_")
+        .to_ascii_lowercase();
+    matches!(
+        normalized_name.as_str(),
+        "askuserquestion" | "ask_user_question"
+    )
+}
+
 pub fn interaction_requests_from_tool_call(
     call_id: &str,
     tool_name: &str,

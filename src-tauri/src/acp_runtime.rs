@@ -17,9 +17,9 @@ use tokio::process::ChildStdin;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::agent::normalized::{
-    interaction_requests_from_tool_call, InteractionCorrelation, InteractionDeliveryHint,
-    InteractionOption, InteractionOrigin, InteractionTransport, NormalizedEvent, TurnEndReason,
-    UsageStats,
+    interaction_requests_from_tool_call, is_elicitation_only_tool, InteractionCorrelation,
+    InteractionDeliveryHint, InteractionOption, InteractionOrigin, InteractionTransport,
+    NormalizedEvent, TurnEndReason, UsageStats,
 };
 use crate::cli_runtime::AgentStreamChunk;
 
@@ -1031,7 +1031,21 @@ async fn acp_connection_loop(
                         let mut force_exit = false;
 
                         if let Some(pid) = current_prompt_id {
-                            if msg.get("id").and_then(|v| v.as_i64()) == Some(pid) {
+                            // Only treat this message as a prompt response if
+                            // it is actually a JSON-RPC *response* (has `result`
+                            // or `error`, no `method`). Server-initiated REQUESTs
+                            // like `elicitation/create` also carry an `id` field,
+                            // and the server's id space is independent from ours —
+                            // so a collision would misroute the elicitation as a
+                            // prompt response, emit a spurious TurnComplete, and
+                            // stall the agent waiting for an answer that never
+                            // arrives (see issue: third AskUserQuestion hang).
+                            let is_jsonrpc_response = msg.get("method").is_none()
+                                && (msg.get("result").is_some() || msg.get("error").is_some());
+
+                            if msg.get("id").and_then(|v| v.as_i64()) == Some(pid)
+                                && is_jsonrpc_response
+                            {
                                 log::info!("ACP got prompt response for id={}, state={}", pid, match &state {
                                     LoopState::Idle => "Idle",
                                     LoopState::Prompting { .. } => "Prompting",
@@ -1465,11 +1479,20 @@ pub(crate) fn normalize_acp_update(
             } else {
                 let interactions = interaction_requests_from_tool_call(&call_id, &tool, &input);
                 if interactions.is_empty() {
-                    vec![NormalizedEvent::ToolUseStart {
-                        call_id,
-                        tool,
-                        input,
-                    }]
+                    // Elicitation-only tools (e.g. Claude Code's AskUserQuestion)
+                    // have their UI rendered entirely by a separate channel
+                    // (ACP `elicitation/create`). Suppress the ToolUseStart to
+                    // avoid a phantom "Tool" card stuck in "running" state while
+                    // the agent waits for the user's answer.
+                    if is_elicitation_only_tool(&tool) {
+                        vec![]
+                    } else {
+                        vec![NormalizedEvent::ToolUseStart {
+                            call_id,
+                            tool,
+                            input,
+                        }]
+                    }
                 } else {
                     interactions
                 }
@@ -1487,6 +1510,19 @@ pub(crate) fn normalize_acp_update(
                 .unwrap_or_default();
 
             if call_id.is_empty() || status != "completed" {
+                return vec![];
+            }
+
+            // Suppress the result for elicitation-only tools whose start was
+            // also suppressed (see the tool_call branch above). Without a
+            // matching ToolUseStart the frontend has no card to update, and
+            // the orphan tool_use_result would be silently ignored.
+            let tool = update
+                .get("toolName")
+                .or_else(|| update.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if is_elicitation_only_tool(tool) {
                 return vec![];
             }
 
@@ -1716,6 +1752,54 @@ mod tests {
                 output: json!("file contents here"),
                 is_error: false,
             }]
+        );
+    }
+
+    #[test]
+    fn ask_user_question_tool_call_is_suppressed() {
+        // Regression: Claude Code's AskUserQuestion creates a phantom "Tool"
+        // card stuck in "running" because the tool_use_result only arrives
+        // after the elicitation is answered. The tool_call must be suppressed
+        // since the UI is rendered by the elicitation/create channel instead.
+        let params = json!({
+            "sessionId": "ses_1",
+            "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call_010",
+                "toolName": "AskUserQuestion",
+                "rawInput": {
+                    "questions": [{ "question": "Pick one", "options": ["A", "B"] }]
+                },
+                "status": "pending"
+            }
+        });
+        let mut usage = None;
+        let events = normalize_acp_update(&params, &mut usage);
+        assert!(
+            events.is_empty(),
+            "AskUserQuestion tool_call must be suppressed, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn ask_user_question_tool_call_update_is_suppressed() {
+        // The completion event for a suppressed elicitation-only tool must
+        // also be suppressed to avoid an orphan tool_use_result.
+        let params = json!({
+            "sessionId": "ses_1",
+            "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_010",
+                "toolName": "AskUserQuestion",
+                "status": "completed",
+                "content": [{ "type": "content", "content": { "type": "text", "text": "A" } }]
+            }
+        });
+        let mut usage = None;
+        let events = normalize_acp_update(&params, &mut usage);
+        assert!(
+            events.is_empty(),
+            "AskUserQuestion tool_call_update must be suppressed, got {events:?}"
         );
     }
 
@@ -2076,6 +2160,52 @@ mod tests {
         assert!(!is_question_field("question_"));
         assert!(!is_question_field("question_abc"));
         assert!(!is_question_field("other"));
+    }
+
+    #[test]
+    fn server_request_with_colliding_id_is_not_a_prompt_response() {
+        // Regression: a server-initiated REQUEST (e.g. elicitation/create) whose
+        // `id` happens to equal the client's current prompt_id must NOT be
+        // misrouted as a prompt response. JSON-RPC responses have `result` or
+        // `error` and NO `method`; requests have a `method` field.
+        let prompt_id: i64 = 3;
+
+        // A legitimate prompt response (no method, has result) → should match.
+        let response = json!({ "jsonrpc": "2.0", "id": prompt_id, "result": { "stopReason": "end_turn" } });
+        let is_response = response.get("method").is_none()
+            && (response.get("result").is_some() || response.get("error").is_some());
+        assert!(is_response, "prompt response must be classified as response");
+
+        // An elicitation/create request with the SAME id → must NOT match.
+        let elicitation = json!({
+            "jsonrpc": "2.0",
+            "id": prompt_id,
+            "method": "elicitation/create",
+            "params": {
+                "mode": "form",
+                "message": "Pick one",
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": {
+                        "question_0": {
+                            "type": "string",
+                            "oneOf": [
+                                { "const": "A", "title": "A" },
+                                { "const": "B", "title": "B" }
+                            ]
+                        }
+                    }
+                }
+            }
+        });
+        let is_response = elicitation.get("method").is_none()
+            && (elicitation.get("result").is_some() || elicitation.get("error").is_some());
+        assert!(!is_response, "elicitation/create request must NOT be classified as response");
+
+        // Verify the elicitation is still parseable even when its id collides.
+        let params = elicitation.get("params").unwrap();
+        let elic = parse_acp_elicitation(params).expect("elicitation should be parseable");
+        assert_eq!(elic.options.len(), 2);
     }
 
     #[test]
