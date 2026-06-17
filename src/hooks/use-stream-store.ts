@@ -135,11 +135,26 @@ class StreamStore {
 
     const data = chunk.data;
     if (data.kind === "text_delta") {
-      text = text + data.delta;
-      content = appendTextBlock(content, data.delta);
+      // Snapshot-echo guard: claude-agent-acp streams the reply as many small
+      // text_delta chunks, then re-sends the WHOLE reply as one final text_delta
+      // (an assembled-message fallback whose messageId dedup misses on
+      // non-Anthropic gateways like the user's glm endpoint). That echo's delta
+      // exactly equals the text already accumulated from the live deltas, so
+      // dropping an exact match is lossless and zero-false-positive — a real
+      // incremental delta can never equal the ENTIRE prior accumulation.
+      if (text.length > 0 && text === data.delta) {
+        // snapshot echo of already-streamed text — skip
+      } else {
+        text = text + data.delta;
+        content = appendTextBlock(content, data.delta);
+      }
     } else if (data.kind === "thinking") {
-      thinking = thinking + data.delta;
-      content = appendThinkingBlock(content, data.delta);
+      if (thinking.length > 0 && thinking === data.delta) {
+        // snapshot echo of already-streamed thinking — skip
+      } else {
+        thinking = thinking + data.delta;
+        content = appendThinkingBlock(content, data.delta);
+      }
     } else if (data.kind === "error") {
       error = data.message;
     } else if (data.kind === "tool_use_start") {
