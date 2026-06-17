@@ -148,7 +148,10 @@ fn spawn_codex_app_server_session_inner(
             } else {
                 err.clone()
             };
-            log::warn!("codex app-server connection loop exited with error: {}", enriched_err);
+            log::warn!(
+                "codex app-server connection loop exited with error: {}",
+                enriched_err
+            );
             let events = vec![
                 NormalizedEvent::SessionResolved {
                     session_id: pending_session_id.clone(),
@@ -519,7 +522,10 @@ enum LineKind {
         error: Option<Value>,
     },
     /// Notification: `{method, params?}` (no id).
-    Notification { method: String, params: Value },
+    Notification {
+        method: String,
+        params: Value,
+    },
     /// Server-initiated request: `{id, method, params?}` (needs a response).
     ServerRequest {
         id: Value,
@@ -595,7 +601,10 @@ fn handle_line(
                     .and_then(Value::as_str)
                     .map(turn_status_to_reason)
                     .unwrap_or(TurnEndReason::Complete);
-                buf.push(NormalizedEvent::TurnComplete { reason, usage: None });
+                buf.push(NormalizedEvent::TurnComplete {
+                    reason,
+                    usage: None,
+                });
                 match state {
                     LoopState::Prompting { active_turn_id } => {
                         *state = LoopState::Idle {
@@ -671,7 +680,9 @@ async fn handle_command(
                         }),
                     )
                     .await?;
-                *state = LoopState::Prompting { active_turn_id: None };
+                *state = LoopState::Prompting {
+                    active_turn_id: None,
+                };
             }
             LoopState::Prompting { .. } | LoopState::CancelPending => {
                 log::warn!("codex turn/start ignored: a turn is already in progress");
@@ -723,7 +734,11 @@ async fn handle_command(
                 };
             }
         }
-        Some(AcpCommand::RespondToInput { id, value, response }) => {
+        Some(AcpCommand::RespondToInput {
+            id,
+            value,
+            response,
+        }) => {
             let result = respond_to_user_input(&id, &value, writer, pending_user_inputs).await;
             match &result {
                 Ok(()) => log::debug!("codex RespondToInput write-back sent for {}", id),
@@ -757,7 +772,10 @@ async fn handle_command(
             return Ok(true);
         }
         None => {
-            log::info!("codex app-server command channel closed (thread {})", thread_id);
+            log::info!(
+                "codex app-server command channel closed (thread {})",
+                thread_id
+            );
             return Ok(true);
         }
     }
@@ -966,7 +984,11 @@ async fn resolve_codex_approval(
             decline_label,
         } => user_input_result(
             &question_id,
-            if approved { &accept_label } else { &decline_label },
+            if approved {
+                &accept_label
+            } else {
+                &decline_label
+            },
         ),
     };
     writer.respond(&pending.rpc_id, result).await
@@ -1009,7 +1031,10 @@ async fn drain_pending_on_cancel(
 fn normalize_notification(method: &str, params: &Value) -> Vec<NormalizedEvent> {
     match method {
         "item/agentMessage/delta" => {
-            let delta = params.get("delta").and_then(Value::as_str).unwrap_or_default();
+            let delta = params
+                .get("delta")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             if delta.is_empty() {
                 vec![]
             } else {
@@ -1019,7 +1044,10 @@ fn normalize_notification(method: &str, params: &Value) -> Vec<NormalizedEvent> 
             }
         }
         "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
-            let delta = params.get("delta").and_then(Value::as_str).unwrap_or_default();
+            let delta = params
+                .get("delta")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             if delta.is_empty() {
                 vec![]
             } else {
@@ -1056,29 +1084,36 @@ fn initialize_params() -> Value {
 /// Extract the turn id from a `turn/start` response result `{turn:{id,…}}`,
 /// tolerant of `id` vs `turnId`.
 fn extract_turn_id(resp: &Value) -> Option<String> {
-    resp.get("turn")
-        .or_else(|| Some(resp))
-        .and_then(id_like)
+    resp.get("turn").or_else(|| Some(resp)).and_then(id_like)
 }
 
 fn extract_turn_id_from_params(params: &Value) -> Option<String> {
-    params.get("turn").or_else(|| Some(params)).and_then(id_like)
+    params
+        .get("turn")
+        .or_else(|| Some(params))
+        .and_then(id_like)
 }
 
 /// Extract the thread id from a `thread/start` response result `{thread:{id,…}}`,
 /// tolerant of `id` vs `threadId`.
 fn extract_thread_id(resp: &Value) -> Option<String> {
-    resp.get("thread")
-        .or_else(|| Some(resp))
-        .and_then(id_like)
+    resp.get("thread").or_else(|| Some(resp)).and_then(id_like)
 }
 
 fn id_like(obj: &Value) -> Option<String> {
     obj.get("id")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .or_else(|| obj.get("turnId").and_then(Value::as_str).map(str::to_string))
-        .or_else(|| obj.get("threadId").and_then(Value::as_str).map(str::to_string))
+        .or_else(|| {
+            obj.get("turnId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            obj.get("threadId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
 }
 
 /// A business question parsed out of `item/tool/requestUserInput` params.
@@ -1447,7 +1482,9 @@ mod tests {
     #[test]
     fn classify_line_distinguishes_kinds() {
         assert!(matches!(
-            classify_line(&json!({ "id": 1, "method": "item/tool/requestUserInput", "params": {} })),
+            classify_line(
+                &json!({ "id": 1, "method": "item/tool/requestUserInput", "params": {} })
+            ),
             LineKind::ServerRequest { .. }
         ));
         assert!(matches!(

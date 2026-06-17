@@ -99,10 +99,7 @@ pub fn delivery_hint_for(
 /// transport; if a runtime's capability probe fails at answer time, it should
 /// return `FollowUp` regardless (the codex/ACP runtimes enforce their own
 /// capability gates before reaching here).
-pub fn delivery_for(
-    transport: TransportSurface,
-    origin: InteractionOrigin,
-) -> InteractionDelivery {
+pub fn delivery_for(transport: TransportSurface, origin: InteractionOrigin) -> InteractionDelivery {
     match (transport, origin) {
         // Production mid-turn baselines — verified mid-turn pause-resume.
         (TransportSurface::PiRpc, InteractionOrigin::ExtensionUi) => InteractionDelivery::MidTurn,
@@ -149,7 +146,10 @@ mod tests {
     #[test]
     fn claude_elicitation_is_mid_turn() {
         assert_eq!(
-            delivery_for(TransportSurface::AcpPreferred, InteractionOrigin::AcpElicitation),
+            delivery_for(
+                TransportSurface::AcpPreferred,
+                InteractionOrigin::AcpElicitation
+            ),
             InteractionDelivery::MidTurn
         );
     }
@@ -170,7 +170,10 @@ mod tests {
             InteractionDelivery::FollowUp
         );
         assert_eq!(
-            delivery_for(TransportSurface::CodexAppServer, InteractionOrigin::CodexApproval),
+            delivery_for(
+                TransportSurface::CodexAppServer,
+                InteractionOrigin::CodexApproval
+            ),
             InteractionDelivery::FollowUp
         );
         // CLI transport always falls back.
@@ -188,6 +191,9 @@ mod tests {
         assert_eq!(follow.delivery, "follow_up");
 
         let json = serde_json::to_string(&mid).unwrap();
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&json).unwrap()["delivery"], "mid_turn");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["delivery"],
+            "mid_turn"
+        );
     }
 }

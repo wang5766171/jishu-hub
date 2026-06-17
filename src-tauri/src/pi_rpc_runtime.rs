@@ -18,8 +18,8 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::acp_runtime::{tauri_event_emitter, AcpCommand, AcpControl, AcpEventEmit};
 use crate::agent::normalized::{
-    interaction_requests_from_tool_call, InteractionDeliveryHint, InteractionOption, InteractionOrigin,
-    InteractionTransport, NormalizedEvent, TurnEndReason,
+    interaction_requests_from_tool_call, InteractionDeliveryHint, InteractionOption,
+    InteractionOrigin, InteractionTransport, NormalizedEvent, TurnEndReason,
 };
 
 // ---------------------------------------------------------------------------
@@ -768,7 +768,10 @@ pub(crate) fn normalize_pi_agent_event(event: &serde_json::Value) -> Vec<Normali
                         .iter()
                         .filter_map(|block| {
                             if block.get("type").and_then(|v| v.as_str()) == Some("text") {
-                                block.get("text").and_then(|v| v.as_str()).map(str::to_string)
+                                block
+                                    .get("text")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string)
                             } else {
                                 None
                             }

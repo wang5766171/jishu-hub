@@ -857,7 +857,10 @@ mod tests {
         #[cfg(target_os = "windows")]
         {
             assert_eq!(spec.program, "cmd");
-            assert_eq!(spec.args, vec!["/C".to_string(), "claude-agent-acp".to_string()]);
+            assert_eq!(
+                spec.args,
+                vec!["/C".to_string(), "claude-agent-acp".to_string()]
+            );
         }
         #[cfg(not(target_os = "windows"))]
         {

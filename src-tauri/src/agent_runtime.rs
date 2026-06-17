@@ -123,7 +123,9 @@ pub fn prepare_gui_turn(
         .filter(|session_id| !crate::agent::command_config::is_transient_session_id(session_id));
 
     match transport {
-        TransportSurface::AcpPreferred | TransportSurface::PiRpc | TransportSurface::CodexAppServer => {
+        TransportSurface::AcpPreferred
+        | TransportSurface::PiRpc
+        | TransportSurface::CodexAppServer => {
             let req = ChatRequest {
                 project_path: request.project_path.clone(),
                 session_id: native_session_id.clone(),
@@ -207,7 +209,14 @@ where
         .unwrap_or_else(|| format!("pending-{pid}"));
 
     // Record the real dispatch path (CLI subprocess) for F12 inspection.
-    emit_dispatch(&app, &turn.agent_id, &sid, &TransportSurface::Cli, None, pid);
+    emit_dispatch(
+        &app,
+        &turn.agent_id,
+        &sid,
+        &TransportSurface::Cli,
+        None,
+        pid,
+    );
 
     if turn.consumes_stdin {
         if let Some(mut stdin) = child.stdin.take() {
@@ -738,17 +747,7 @@ fn run_acp_turn_blocking(
                 &mut stdin,
                 &mut next_id,
                 "initialize",
-                json!({
-                    "protocolVersion": 1,
-                    "clientCapabilities": {
-                        "fs": { "readTextFile": false, "writeTextFile": false },
-                        "terminal": false
-                    },
-                    "clientInfo": {
-                        "name": "jishu-hub",
-                        "version": env!("CARGO_PKG_VERSION")
-                    }
-                }),
+                crate::acp_runtime::acp_initialize_params(),
             )
             .await?;
             acp_wait_for_response(

@@ -412,18 +412,22 @@ pub async fn respond_chat_interaction(
             if let Some(acp) = acp {
                 acp.respond_to_input(request_id, value).await?;
             }
-            Ok(crate::agent::interaction::InteractionResponseDto::from_delivery(
-                crate::agent::interaction::InteractionDelivery::MidTurn,
-            ))
+            Ok(
+                crate::agent::interaction::InteractionResponseDto::from_delivery(
+                    crate::agent::interaction::InteractionDelivery::MidTurn,
+                ),
+            )
         }
         crate::agent::interaction::InteractionDelivery::FollowUp => {
             // This transport cannot answer mid-turn as a business question.
             // Report follow-up so the frontend sends the answer as a new user
             // message (the design's safety net). Phase 1+ may route ACP
             // business interactions to a fresh turn via the responder here.
-            Ok(crate::agent::interaction::InteractionResponseDto::from_delivery(
-                crate::agent::interaction::InteractionDelivery::FollowUp,
-            ))
+            Ok(
+                crate::agent::interaction::InteractionResponseDto::from_delivery(
+                    crate::agent::interaction::InteractionDelivery::FollowUp,
+                ),
+            )
         }
     }
 }

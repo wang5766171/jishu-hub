@@ -247,6 +247,24 @@ pub async fn write_jsonrpc_request(
     Ok(id)
 }
 
+pub(crate) fn acp_initialize_params() -> serde_json::Value {
+    json!({
+        "protocolVersion": 1,
+        "clientCapabilities": {
+            "fs": { "readTextFile": false, "writeTextFile": false },
+            "terminal": false,
+            // ACP SDK 0.26 models elicitation modes as object capabilities.
+            // Sending `form: true` is schema-invalid and gets dropped before
+            // claude-agent-acp computes its AskUserQuestion gate.
+            "elicitation": { "form": {} }
+        },
+        "clientInfo": {
+            "name": "jishu-hub",
+            "version": env!("CARGO_PKG_VERSION")
+        }
+    })
+}
+
 pub fn handle_acp_response_line(
     line: &str,
     target_id: i64,
@@ -424,7 +442,10 @@ struct AcpElicitation {
 /// first question, single-select (the A/B/C decision v0.6.0 targets); the
 /// single-value write-back is consistent with the PiRpc/codex runtimes.
 fn parse_acp_elicitation(params: &serde_json::Value) -> Option<AcpElicitation> {
-    let mode = params.get("mode").and_then(|v| v.as_str()).unwrap_or("form");
+    let mode = params
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("form");
     if mode != "form" {
         return None; // url-mode elicitations have no form rendering
     }
@@ -434,9 +455,7 @@ fn parse_acp_elicitation(params: &serde_json::Value) -> Option<AcpElicitation> {
         .and_then(|p| p.as_object())?;
 
     // First `question_<n>` field (skip the per-question `_custom` free-text box).
-    let (content_field, field) = properties
-        .iter()
-        .find(|(k, _)| is_question_field(k))?;
+    let (content_field, field) = properties.iter().find(|(k, _)| is_question_field(k))?;
     let options = extract_enum_options(field)?;
     if options.is_empty() {
         return None;
@@ -469,15 +488,12 @@ fn is_question_field(key: &str) -> bool {
 /// Extract choice options from a single-select `oneOf` or multi-select
 /// `items.anyOf` enum. Each option's `const` is the answer label.
 fn extract_enum_options(field: &serde_json::Value) -> Option<Vec<InteractionOption>> {
-    let enum_list = field
-        .get("oneOf")
-        .and_then(|v| v.as_array())
-        .or_else(|| {
-            field
-                .get("items")
-                .and_then(|i| i.get("anyOf"))
-                .and_then(|v| v.as_array())
-        })?;
+    let enum_list = field.get("oneOf").and_then(|v| v.as_array()).or_else(|| {
+        field
+            .get("items")
+            .and_then(|i| i.get("anyOf"))
+            .and_then(|v| v.as_array())
+    })?;
 
     let options = enum_list
         .iter()
@@ -601,7 +617,10 @@ async fn cancel_pending_elicitations(
 ) {
     for (_, pending) in pending_elicitations.drain() {
         if let Err(error) = writer
-            .respond(&pending.rpc_id, elicit_result_payload(ElicitAction::Cancel, serde_json::Value::Null))
+            .respond(
+                &pending.rpc_id,
+                elicit_result_payload(ElicitAction::Cancel, serde_json::Value::Null),
+            )
             .await
         {
             log::warn!("ACP failed to cancel pending elicitation: {error}");
@@ -723,26 +742,7 @@ async fn acp_connection_loop(
 
     // 2. Handshake: initialize → session/new
     let init_id = writer
-        .request(
-            "initialize",
-            json!({
-                "protocolVersion": 1,
-                "clientCapabilities": {
-                    "fs": { "readTextFile": false, "writeTextFile": false },
-                    "terminal": false,
-                    // Declare unstable elicitation/form support so claude-agent-acp
-                    // routes `AskUserQuestion` tool calls to `elicitation/create`
-                    // server requests (design §5.2.1 / R4). Harmless for ACP
-                    // servers that never send elicitations (e.g. opencode): it only
-                    // advertises a capability they will not exercise.
-                    "elicitation": { "form": true }
-                },
-                "clientInfo": {
-                    "name": "jishu-hub",
-                    "version": env!("CARGO_PKG_VERSION")
-                }
-            }),
-        )
+        .request("initialize", acp_initialize_params())
         .await?;
     wait_for_response(&mut stdout_rx, init_id).await?;
 
@@ -1743,6 +1743,15 @@ mod tests {
         assert_eq!(permission_option_id(&params, false), None);
     }
 
+    #[test]
+    fn initialize_payload_advertises_form_elicitation_as_object_capability() {
+        let params = acp_initialize_params();
+        assert_eq!(
+            params["clientCapabilities"]["elicitation"]["form"],
+            json!({})
+        );
+    }
+
     // ---- M1.4 Phase 2: characterize the event-production units that Phase 1
     // rerouted through the callback emitter.
     // NOTE: the emitter is an `Arc<dyn Fn>` (not an enum-with-a-channel-variant)
@@ -1928,7 +1937,10 @@ mod tests {
         assert_eq!(elic.options[0].option_id, "Refactor");
         assert_eq!(elic.options[0].label, "Refactor");
         // Description folds out of the flattened "label — description" title.
-        assert_eq!(elic.options[0].description.as_deref(), Some("rewrite in place"));
+        assert_eq!(
+            elic.options[0].description.as_deref(),
+            Some("rewrite in place")
+        );
         assert_eq!(elic.options[1].description, None);
     }
 
@@ -1954,7 +1966,10 @@ mod tests {
         });
         let elic = parse_acp_elicitation(&params).expect("array/anyOf is parseable");
         assert_eq!(elic.options.len(), 2);
-        assert_eq!(elic.options.iter().map(|o| &o.label).collect::<Vec<_>>(), ["A", "B"]);
+        assert_eq!(
+            elic.options.iter().map(|o| &o.label).collect::<Vec<_>>(),
+            ["A", "B"]
+        );
     }
 
     #[test]
@@ -1997,7 +2012,10 @@ mod tests {
             }
         });
         let elic = parse_acp_elicitation(&params).unwrap();
-        assert_eq!(elic.options[0].description.as_deref(), Some("structured desc"));
+        assert_eq!(
+            elic.options[0].description.as_deref(),
+            Some("structured desc")
+        );
     }
 
     #[test]
@@ -2044,7 +2062,11 @@ mod tests {
         );
 
         match route_acp_interaction_response(&pending, "req_1", "B") {
-            AcpInteractionRoute::Elicit { rpc_id, action, content } => {
+            AcpInteractionRoute::Elicit {
+                rpc_id,
+                action,
+                content,
+            } => {
                 assert_eq!(rpc_id, json!(42));
                 assert_eq!(action, ElicitAction::Accept);
                 assert_eq!(content, json!({ "question_0": "B" }));
