@@ -533,6 +533,7 @@ function AppContent() {
   // look for `[dispatch] <agent> -> <transport>` in DevTools console.
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
+    let cancelled = false;
     listen<{
       agent_id: string;
       session_id: string;
@@ -547,9 +548,18 @@ function AppContent() {
         { session_id, pid, transport, program }
       );
     })
-      .then((fn) => { unlistenFn = fn; })
+      .then((fn) => {
+        // React StrictMode unmounts before `listen` resolves; without this guard
+        // the first listener leaks and every emit logs twice (chat-page's
+        // agent-event listener already uses this exact pattern).
+        if (cancelled) fn();
+        else unlistenFn = fn;
+      })
       .catch(console.error);
-    return () => { unlistenFn?.(); };
+    return () => {
+      cancelled = true;
+      if (unlistenFn) unlistenFn();
+    };
   }, []);
 
   return (
