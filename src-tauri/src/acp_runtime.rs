@@ -647,9 +647,24 @@ pub fn spawn_acp_session(
 ) -> AcpControl {
     let stdin = child.stdin.take().expect("ACP process must have stdin");
     let stdout = child.stdout.take().expect("ACP process must have stdout");
+    let stderr = child.stderr.take();
 
     let stdin_arc = Arc::new(TokioMutex::new(stdin));
     let acp_session_id = Arc::new(std::sync::Mutex::new(None::<String>));
+    let stderr_buf = Arc::new(TokioMutex::new(String::new()));
+
+    if let Some(stderr_stream) = stderr {
+        let stderr_buf_clone = stderr_buf.clone();
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr_stream).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                log::warn!("[acp stderr] {}", line);
+                let mut buf = stderr_buf_clone.lock().await;
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        });
+    }
 
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(8);
 
@@ -674,6 +689,7 @@ pub fn spawn_acp_session(
             stdout_rx,
             project_path,
             requested_session_id,
+            stderr_buf,
             cmd_rx,
             first_message,
             &on_session_resolved,
@@ -731,6 +747,7 @@ async fn acp_connection_loop(
     mut stdout_rx: tokio::sync::mpsc::Receiver<String>,
     project_path: String,
     requested_session_id: Option<String>,
+    stderr_buf: Arc<TokioMutex<String>>,
     mut command_rx: tokio::sync::mpsc::Receiver<AcpCommand>,
     first_message: String,
     on_session_resolved: &(dyn Fn(&str) + Send + Sync),
@@ -1234,6 +1251,12 @@ async fn acp_connection_loop(
                     }
                     None => {
                         log::warn!("ACP stdout EOF for session {}", session_id);
+                        let stderr = stderr_buf.lock().await.clone();
+                        if let Some(error) =
+                            acp_unexpected_eof_error(&state, &session_id, &stderr)
+                        {
+                            return Err(error);
+                        }
                         true
                     }
                 }
@@ -1520,6 +1543,22 @@ fn is_content_event(event: &NormalizedEvent) -> bool {
     )
 }
 
+fn acp_unexpected_eof_error(state: &LoopState, session_id: &str, stderr: &str) -> Option<String> {
+    if matches!(state, LoopState::Prompting { .. }) {
+        let mut message = format!(
+            "ACP process exited unexpectedly (session {session_id}). Check stderr for details."
+        );
+        let stderr = stderr.trim();
+        if !stderr.is_empty() {
+            message.push_str("\n\nACP stderr:\n");
+            message.push_str(stderr);
+        }
+        Some(message)
+    } else {
+        None
+    }
+}
+
 fn emit_events(
     app: &tauri::AppHandle,
     agent_id: &str,
@@ -1750,6 +1789,17 @@ mod tests {
             params["clientCapabilities"]["elicitation"]["form"],
             json!({})
         );
+    }
+
+    #[test]
+    fn eof_while_prompting_reports_unexpected_exit() {
+        let state = LoopState::Prompting { prompt_id: 42 };
+        let message = acp_unexpected_eof_error(&state, "ses-dead", "bridge stacktrace")
+            .expect("prompting EOF should be surfaced as an error");
+
+        assert!(message.contains("ACP process exited unexpectedly"));
+        assert!(message.contains("ses-dead"));
+        assert!(message.contains("bridge stacktrace"));
     }
 
     // ---- M1.4 Phase 2: characterize the event-production units that Phase 1
