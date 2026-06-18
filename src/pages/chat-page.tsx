@@ -1844,11 +1844,24 @@ export function ChatPage({
               onAccessModeChange={handleAccessModeChange}
               interactionRequest={activeInteraction?.request}
               onInteractionSubmit={handleInteractionSubmit}
-              onAbort={() => {
+              onAbort={async () => {
                 if (selectedSession) {
                   setPendingInteractions((current) =>
                     current.filter((item) => item.sessionId !== selectedSession),
                   );
+                  // Refresh messages from backend so persisted content shows
+                  // up in the UI even when turn_complete hasn't fired yet
+                  // (e.g. user aborts during a pending interaction).
+                  try {
+                    const msgs = await invokeCommand<Message[]>("get_session_messages", {
+                      sessionId: selectedSession,
+                      encodedName: projectId,
+                    });
+                    sessionMessagesCacheRef.current.set(selectedSession, msgs);
+                    setSessionMessages(msgs);
+                  } catch (e) {
+                    console.error("Failed to refresh messages after abort", e);
+                  }
                 }
               }}
               onGuideStaged={
