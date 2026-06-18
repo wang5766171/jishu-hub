@@ -301,6 +301,10 @@ function buildRenderItemsForMessages(messages: Message[], messageIndices: number
             };
           });
 
+          const normalizedName = block.name.split('/').pop()?.split(':').pop()?.replace(/-/g, '_').toLowerCase() || "";
+          const isAcp = normalizedName === "askuserquestion" || normalizedName === "ask_user_question";
+          const origin = isAcp ? "acp_elicitation" : "extension_ui";
+
           items.push({
             kind: "block",
             block: {
@@ -308,7 +312,7 @@ function buildRenderItemsForMessages(messages: Message[], messageIndices: number
               prompt: rawPrompt,
               options: parsedOptions,
               answer: rawAnswer,
-              origin: "acp_elicitation",
+              origin,
             },
             messageIndex,
             blockIndex,
