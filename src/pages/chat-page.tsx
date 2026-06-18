@@ -844,8 +844,18 @@ export function ChatPage({
             ? finalKey
             : cid;
           const queuedSteers = pendingSteerMessagesRef.current.get(steerQueueKey) ?? [];
+          // Only persist interactions that have been answered. Unanswered
+          // (pending) interactions are live UI state — embedding them at the
+          // volatile content-length index where the request landed causes them
+          // to render at the wrong position after refresh (e.g. past all text
+          // that was emitted after the request). The backend will re-emit the
+          // question in the next turn if needed.
           const interactionInsertions = (state?.interactionSplits ?? [])
-            .filter((item) => item.prompt?.trim() || item.text?.trim())
+            .filter((item) => {
+              const hasAnswer = (item.text ?? "").trim().length > 0;
+              const hasPrompt = (item.prompt ?? "").trim().length > 0;
+              return hasAnswer && hasPrompt;
+            })
             .map((item) => ({
               index: item.index,
               prompt: item.prompt ?? "",
