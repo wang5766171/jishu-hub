@@ -199,6 +199,7 @@ function renderBlock(
     case "interaction":
       return (
         <InteractionCard
+          items={(block as any).items}
           prompt={block.prompt}
           options={block.options}
           answer={block.answer}
@@ -342,7 +343,37 @@ function buildRenderItemsForMessages(messages: Message[], messageIndices: number
   }
 
   flushTools();
-  return items;
+
+  // Group consecutive interaction blocks in the same message segment
+  const groupedItems: RenderItem[] = [];
+  for (const item of items) {
+    if (item.kind === "block" && item.block.type === "interaction") {
+      const last = groupedItems[groupedItems.length - 1];
+      if (last && last.kind === "block" && last.block.type === "interaction") {
+        const lastBlock = last.block as any;
+        if (!lastBlock.items) {
+          lastBlock.items = [
+            {
+              prompt: lastBlock.prompt,
+              options: lastBlock.options,
+              answer: lastBlock.answer,
+              selectedOptions: lastBlock.selected_options,
+            }
+          ];
+        }
+        lastBlock.items.push({
+          prompt: item.block.prompt,
+          options: item.block.options,
+          answer: item.block.answer,
+          selectedOptions: item.block.selected_options,
+        });
+        continue;
+      }
+    }
+    groupedItems.push(item);
+  }
+
+  return groupedItems;
 }
 
 function rowKey(row: RenderRow, messages: Message[]): string {
