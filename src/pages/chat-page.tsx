@@ -1744,26 +1744,31 @@ export function ChatPage({
                 <span className="font-medium text-sm text-muted-foreground">{t("sessions.newChat")}</span>
               </div>
             )}
-            {/* Messages */}
-            <div ref={messageAreaRef} className="flex-1 min-h-0 overflow-y-auto">
-              {selectedSession && selectedSession !== "new" && (
-                <MessageView
-                  messages={sessionMessages}
-                  searchQuery={searchQuery}
-                  searchNavigation={messageSearchNavigation}
-                  onSearchStatusChange={handleMessageSearchStatusChange}
-                  flat
-                  scrollContainerRef={messageAreaRef}
-                />
-              )}
-              {currentStream && selectedSession && selectedSession !== "new" && (
-                <StreamingMessage
-                  key={selectedSession}
-                  sessionId={selectedSession}
-                  isComplete={!currentStream.isStreaming}
-                  scrollContainerRef={messageAreaRef}
-                />
-              )}
+              {/* Messages */}
+              <div ref={messageAreaRef} className="flex-1 min-h-0 overflow-y-auto">
+                {selectedSession && selectedSession !== "new" && (
+                  <MessageView
+                    messages={sessionMessages}
+                    searchQuery={searchQuery}
+                    searchNavigation={messageSearchNavigation}
+                    onSearchStatusChange={handleMessageSearchStatusChange}
+                    flat
+                    scrollContainerRef={messageAreaRef}
+                  />
+                )}
+                {/* Only show StreamingMessage while the stream is active.
+                    Once isStreaming flips to false the turn is complete and the
+                    committed messages are already rendered by MessageView above —
+                    keeping the streaming preview would duplicate interaction cards
+                    and other content. */}
+                {currentStream?.isStreaming && selectedSession && selectedSession !== "new" && (
+                  <StreamingMessage
+                    key={selectedSession}
+                    sessionId={selectedSession}
+                    isComplete={false}
+                    scrollContainerRef={messageAreaRef}
+                  />
+                )}
               {/* Live placeholders for guided (steer) messages that have NOT
                   yet been injected. Shown the instant the user clicks "guide",
                   positioned AFTER the streaming bubble so they sit at the guide
