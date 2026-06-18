@@ -86,7 +86,7 @@ export function InteractionComposer({
     <div
       className={cn(
         "border-b border-border/55 bg-muted/45",
-        "mx-auto w-full max-w-[var(--message-content-max-width)]",
+        "w-full",
       )}
       aria-labelledby={`interaction-${request.requestId}`}
     >

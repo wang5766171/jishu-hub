@@ -844,27 +844,63 @@ export function ChatPage({
             ? finalKey
             : cid;
           const queuedSteers = pendingSteerMessagesRef.current.get(steerQueueKey) ?? [];
-          // ── Interaction persistence strategy ──────────────────────────────
-          // We do NOT embed explicit `type: "interaction"` ContentBlocks into
-          // committed messages.  The index captured at interaction_request time
-          // (content.length at that moment) quickly becomes stale as the agent
-          // continues outputting text / tools after the request — causing the
-          // embedded block to render at the wrong position (e.g. past all later
-          // content, appearing at the bottom after refresh).
-          //
-          // Instead, the raw `tool_use`(ask_user) + `tool_result`(answer) blocks
-          // are kept inside assistantContent as-is.  message-view.tsx's
-          // buildRenderItemsForMessages converts them inline into InteractionCard
-          // components via isInteractionTool(), reading answers from resultMap.
-          // This single rendering path eliminates both stale-index positioning
-          // AND double-rendering bugs.
+          // ── Build interactionInsertions with REAL indices ───────────────────
+          // The snapshot `item.index` (content.length at interaction_request time)
+          // goes stale once the agent emits more content after the request.
+          // Instead, after we've built the final assistantContent, re-scan it to
+          // find each answered interaction's tool_use block and use its REAL index.
+          const isInteractionToolName = (name: string) => {
+            const normalized = name.split('/').pop()?.split(':').pop()?.replace(/-/g, '_').toLowerCase() || "";
+            return [
+              "request_user_input", "ask_user", "ask_user_input",
+              "askuserquestion", "ask_user_question",
+              "ask_question", "ask_choice", "choice_question",
+            ].includes(normalized);
+          };
+          const answeredSplits = (state?.interactionSplits ?? []).filter((item) => {
+            const hasAnswer = (item.text ?? "").trim().length > 0;
+            const hasPrompt = (item.prompt ?? "").trim().length > 0;
+            return hasAnswer && hasPrompt;
+          });
           const interactionInsertions: Array<{
             index: number;
             prompt: string;
             options: Array<{ option_id: string; label: string; description?: string | null }>;
             answer: string;
+            selectedOptions?: string[];
             origin?: string;
           }> = [];
+          for (const item of answeredSplits) {
+            // Find the tool_use block in final assistantContent by matching id
+            const realIdx = assistantContent.findIndex(
+              (b) => b.type === "tool_use" && b.id === item.id
+            );
+            if (realIdx < 0) {
+              console.warn(`[interaction] tool_use id=${item.id} not found in final content; skipping persist for prompt="${item.prompt?.slice(0,40)}"`);
+              continue;
+            }
+            const toolBlock = assistantContent[realIdx] as any;
+            const inputObj = (toolBlock.input && typeof toolBlock.input === "object") ? toolBlock.input : {};
+            const rawOptions = Array.isArray(inputObj.options) ? inputObj.options : [];
+            const parsedOptions = rawOptions.map((opt: any) => {
+              if (typeof opt === "string") return { option_id: opt, label: opt };
+              return {
+                option_id: opt.option_id || opt.id || "",
+                label: opt.label || opt.text || opt.label || "",
+                description: opt.description,
+              };
+            });
+            const normalizedName = (toolBlock.name || "").split('/').pop()?.split(':').pop()?.replace(/-/g, '_').toLowerCase() || "";
+            const isAcp = normalizedName === "askuserquestion" || normalizedName === "ask_user_question";
+            interactionInsertions.push({
+              index: realIdx,
+              prompt: item.prompt ?? "",
+              options: parsedOptions,
+              answer: item.text ?? "",
+              selectedOptions: item.selectedOptions ?? [],
+              origin: isAcp ? "acp_elicitation" : "extension_ui",
+            });
+          }
           // Sanitize + sort: each split marks the start of a new segment.
           const steerSplits = Array.from(new Set(state?.steerSplits ?? []))
             .filter((idx) => idx > 0 && idx < (state?.content.length ?? 0))

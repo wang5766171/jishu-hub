@@ -152,7 +152,33 @@ export function commitAssistantWithInteractions({
   error,
   timestamp = Date.now(),
 }: CommitAssistantWithInteractionsInput): CommitAssistantWithInteractionsResult {
+  // Helper: detect interaction tool_use blocks
+  const isInteractionTool = (name: string, input: any) => {
+    const normalized = name.split('/').pop()?.split(':').pop()?.replace(/-/g, '_').toLowerCase() || "";
+    const names = [
+      "request_user_input", "ask_user", "ask_user_input",
+      "askuserquestion", "ask_user_question",
+      "ask_question", "ask_choice", "choice_question",
+    ];
+    if (names.includes(normalized)) return true;
+    if (input && typeof input === "object") {
+      if ("options" in input && ("question" in input || "prompt" in input)) return true;
+    }
+    return false;
+  };
+
   const content = [...assistantContent];
+
+  // Build a set of tool_use ids that have a corresponding interaction insertion.
+  // These tool_use+tool_result blocks must be removed from segmentContent
+  // to avoid double-rendering alongside the embedded interaction block.
+  const interactionToolUseIds = new Set<string>();
+  for (const ins of interactionInsertions) {
+    const block = content[ins.index];
+    if (block && block.type === "tool_use") {
+      interactionToolUseIds.add(block.id);
+    }
+  }
 
   // Sort interactions by insertion index
   const sortedInteractions = interactionInsertions
@@ -187,7 +213,22 @@ export function commitAssistantWithInteractions({
   for (const splitIdx of splitPoints) {
     // Build the assistant segment content with interactions embedded
     const segmentContent: ContentBlock[] = [];
-    const segBlocks = content.slice(previousIndex, splitIdx);
+    // Slice the content segment, filtering out tool_use+tool_result blocks
+    // that belong to an embedded interaction (avoid double-rendering).
+    const rawSeg = content.slice(previousIndex, splitIdx);
+    const segBlocks: typeof rawSeg = [];
+    for (let i = 0; i < rawSeg.length; i++) {
+      const block = rawSeg[i];
+      if (block.type === "tool_use" && interactionToolUseIds.has(block.id)) {
+        // Skip this tool_use, and also skip the immediately-following
+        // tool_result that references the same id.
+        continue;
+      }
+      if (block.type === "tool_result" && interactionToolUseIds.has(block.tool_use_id || "")) {
+        continue;
+      }
+      segBlocks.push(block);
+    }
     segmentContent.push(...segBlocks);
 
     // Add any interaction blocks at this exact index
@@ -223,9 +264,14 @@ export function commitAssistantWithInteractions({
     previousIndex = splitIdx;
   }
 
-  // Tail segment: remaining content with any remaining interactions
+  // Tail segment: remaining content, also filter interaction tool blocks
+  const rawTail = content.slice(previousIndex);
   const tailContent: ContentBlock[] = [];
-  tailContent.push(...content.slice(previousIndex));
+  for (const block of rawTail) {
+    if (block.type === "tool_use" && interactionToolUseIds.has(block.id)) continue;
+    if (block.type === "tool_result" && interactionToolUseIds.has(block.tool_use_id || "")) continue;
+    tailContent.push(block);
+  }
 
   if (error) {
     tailContent.push({ type: "text", text: error });
