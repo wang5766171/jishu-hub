@@ -96,7 +96,15 @@ export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "tool_result"; tool_use_id: string; content: unknown }
-  | { type: "thinking"; thinking: string };
+  | { type: "thinking"; thinking: string }
+  | {
+      type: "interaction";
+      prompt: string;
+      options?: Array<{ option_id: string; label: string; description?: string | null }>;
+      answer: string;
+      selected_options?: string[];
+      origin?: string;
+    };
 
 export interface Session {
   id: string;

@@ -27,7 +27,7 @@ import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { searchSessions } from "@/lib/session-search";
 import { openFloatingSession } from "@/lib/floating-window";
-import { commitAssistantWithUserInsertions } from "@/lib/deferred-user-message";
+import { commitAssistantWithInteractions } from "@/lib/deferred-user-message";
 import {
   formatInteractionReply,
   formatInteractionResponseValue,
@@ -236,6 +236,8 @@ export function ChatPage({
   // [], so it closes over a stale `currentProject`). Updated every render.
   const projectPathRef = useRef<string | null>(currentProject?.path ?? null);
   projectPathRef.current = currentProject?.path ?? null;
+  const projectIdRef = useRef<string | null>(currentProject?.encoded_name ?? null);
+  projectIdRef.current = currentProject?.encoded_name ?? null;
   // Imperative handle into ChatInput's staging area — used by Route 2 to
   // auto-send staged guides at turn_complete.
   const stagedApiRef = useRef<StagedGuideApi | null>(null);
@@ -298,6 +300,9 @@ export function ChatPage({
     projectId ? { encodedName: projectId } : undefined,
     activeId + "_" + listRefreshKey,
   );
+  // Ref mirror for use inside the mount-only stream listener closure.
+  const sessionsRef = useRef<Session[] | null>(null);
+  sessionsRef.current = sessions ?? null;
   const {
     data: taskConversations,
     refetch: refetchTaskConversations,
@@ -512,9 +517,11 @@ export function ChatPage({
     // `sessionMessagesCacheRef` and *do not* reload from JSONL — otherwise the
     // user message that the CLI has already flushed to disk would appear twice
     // (once from the JSONL, once from the live `<StreamingMessage>` bubble).
+    // Also trust the cache after streaming ends (turn_complete populates it
+    // with committed messages including interaction blocks), to avoid losing
+    // interaction cards when the user navigates between sessions.
     const cached = sessionMessagesCacheRef.current.get(sessionId);
-    const isStreaming = streamStore.isStreaming(sessionId);
-    if (cached && (isStreaming || streamStore.hasState(sessionId))) {
+    if (cached) {
       setSessionMessages(cached);
     } else {
       try {
@@ -838,10 +845,13 @@ export function ChatPage({
             : cid;
           const queuedSteers = pendingSteerMessagesRef.current.get(steerQueueKey) ?? [];
           const interactionInsertions = (state?.interactionSplits ?? [])
-            .filter((item) => item.text?.trim())
+            .filter((item) => item.prompt?.trim() || item.text?.trim())
             .map((item) => ({
               index: item.index,
-              text: item.text ?? "",
+              prompt: item.prompt ?? "",
+              options: item.options ?? [],
+              answer: item.text ?? "",
+              origin: item.origin,
             }));
           // Sanitize + sort: each split marks the start of a new segment.
           const steerSplits = Array.from(new Set(state?.steerSplits ?? []))
@@ -904,15 +914,13 @@ export function ChatPage({
           };
           if (interactionInsertions.length > 0) {
             const midSteerCount = Math.min(steerSplits.length, queuedSteers.length);
-            const committed = commitAssistantWithUserInsertions({
+            const committed = commitAssistantWithInteractions({
               assistantContent,
-              userInsertions: [
-                ...steerSplits.slice(0, midSteerCount).map((index, i) => ({
-                  index,
-                  text: queuedSteers[i],
-                })),
-                ...interactionInsertions,
-              ],
+              interactionInsertions,
+              steerInsertions: steerSplits.slice(0, midSteerCount).map((index, i) => ({
+                index,
+                text: queuedSteers[i],
+              })),
               error: state?.error,
             });
             newMessages.push(...committed.messages);
@@ -1006,6 +1014,32 @@ export function ChatPage({
           const updated = [...baseMessages, ...newMessages];
           sessionMessagesCacheRef.current.set(finalKey, updated);
           if (cid !== finalKey) sessionMessagesCacheRef.current.set(cid, updated);
+
+          // Persist interaction blocks to JSONL (best-effort). The session's
+          // `path` field is the JSONL file location for existing sessions; new
+          // sessions may only have the project directory, in which case we skip
+          // the write (the interaction data is still in the cache, and the
+          // session loader filters interaction tool_use blocks on reload).
+          if (interactionInsertions.length > 0) {
+            const sessionList = sessionsRef.current;
+            const sessionPath = sessionList?.find(s => s.id === finalKey)?.path
+              ?? sessionList?.find(s => s.id === cid)?.path
+              ?? "";
+            invokeCommand("persist_interaction_blocks", {
+              sessionPath,
+              sessionId: finalKey,
+              encodedName: projectIdRef.current,
+              interactions: interactionInsertions.map(ins => ({
+                prompt: ins.prompt,
+                options: ins.options,
+                answer: ins.answer,
+                selected_options: ins.selectedOptions ?? [],
+                origin: ins.origin ?? null,
+              })),
+            }).catch((err: unknown) => {
+              console.warn("Failed to persist interaction blocks:", err);
+            });
+          }
 
           // If the user is currently viewing this session, reflect the update
           // immediately. Otherwise the cache will be used the next time they

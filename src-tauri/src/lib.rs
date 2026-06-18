@@ -108,6 +108,89 @@ async fn get_session_messages(
         .get_session_messages(&session_id, &encoded_name)
 }
 
+/// Persist interaction Q&A pairs to the session JSONL so they survive app
+/// restarts. Called from the frontend after turn_complete when interaction
+/// blocks need to be written to the Agent runtime's JSONL file.
+///
+/// Accepts either a direct `session_path` (if the frontend already knows the
+/// JSONL file path) or `session_id` + `encoded_name` to resolve it via the
+/// adapter's session listing.
+#[tauri::command]
+async fn persist_interaction_blocks(
+    state: tauri::State<'_, Mutex<AppState>>,
+    session_path: String,
+    session_id: Option<String>,
+    encoded_name: Option<String>,
+    interactions: Vec<serde_json::Value>,
+) -> Result<(), String> {
+    use std::io::Write;
+
+    // Resolve the JSONL path: prefer the direct path if it ends with .jsonl,
+    // otherwise use the adapter registry to locate the session file.
+    let path = if session_path.ends_with(".jsonl") {
+        std::path::PathBuf::from(&session_path)
+    } else if let (Some(sid), Some(enc)) = (session_id.as_deref(), encoded_name.as_deref()) {
+        // Resolve via the active adapter's session listing.
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        let sessions = s.registry.active().list_sessions(enc)?;
+        sessions
+            .into_iter()
+            .find(|sess| sess.id == sid)
+            .map(|sess| sess.path)
+            .ok_or_else(|| format!("Session not found in adapter listing: {sid}"))?
+    } else {
+        // Cannot resolve — silently skip (the frontend cache still has the data).
+        return Ok(());
+    };
+
+    if !path.exists() {
+        // Session file may not exist yet (e.g., ACP sessions managed externally).
+        // Silently skip — the frontend cache still has the data for this session.
+        return Ok(());
+    }
+
+    // Build a single assistant message line containing all interaction blocks.
+    let content: Vec<serde_json::Value> = interactions
+        .into_iter()
+        .map(|mut v| {
+            // Ensure each block has type: "interaction"
+            v["type"] = serde_json::json!("interaction");
+            v
+        })
+        .collect();
+
+    let message = serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": content,
+        }
+    });
+
+    let line = serde_json::to_string(&message).map_err(|e| e.to_string())?;
+
+    // Append to the JSONL file
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("Failed to open session file: {}", e))?;
+
+    // Ensure we start on a new line
+    let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if file_size > 0 {
+        // Read last byte to check if file ends with newline
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        if !content.ends_with('\n') {
+            file.write_all(b"\n").map_err(|e| e.to_string())?;
+        }
+    }
+
+    writeln!(file, "{}", line).map_err(|e| format!("Failed to write: {}", e))?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn read_text_file(path: String) -> Result<TextFilePreview, String> {
     // Use the same path validation as the other read commands so all three
@@ -2558,6 +2641,7 @@ pub fn run() {
             remove_project,
             list_sessions,
             get_session_messages,
+            persist_interaction_blocks,
             read_text_file,
             get_session_names,
             rename_session,

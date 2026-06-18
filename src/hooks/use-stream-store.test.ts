@@ -52,6 +52,9 @@ describe("streamStore interaction requests", () => {
         requestId: "req-1",
         index: 1,
         text: "Stateful worker service",
+        prompt: "Choose workload type",
+        options: [],
+        origin: undefined,
       },
     ]);
 

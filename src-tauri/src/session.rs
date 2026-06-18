@@ -17,6 +17,14 @@ fn serialize_option_datetime<S: serde::Serializer>(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InteractionOptionInfo {
+    pub option_id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
     #[serde(rename = "text")]
@@ -36,6 +44,17 @@ pub enum ContentBlock {
     },
     #[serde(rename = "thinking")]
     Thinking { thinking: String },
+    #[serde(rename = "interaction")]
+    Interaction {
+        prompt: String,
+        #[serde(default)]
+        options: Vec<InteractionOptionInfo>,
+        answer: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        selected_options: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +118,28 @@ fn smart_summary(text: &str) -> String {
 
 const CONVERSATION_TYPES: &[&str] = &["user", "assistant"];
 
+/// Returns true when `tool_name` corresponds to an interaction tool whose
+/// `tool_use` / `tool_result` blocks should be suppressed in the rendered
+/// history (the interaction data is captured separately as an `Interaction`
+/// ContentBlock).
+fn is_interaction_tool_name(tool_name: &str) -> bool {
+    let normalized = tool_name
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or(tool_name)
+        .replace('-', "_")
+        .to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "request_user_input"
+            | "ask_user"
+            | "ask_user_input"
+            | "askuserquestion"
+            | "ask_user_question"
+            | "ask_question"
+    )
+}
+
 fn parse_content_blocks(value: &serde_json::Value) -> Vec<ContentBlock> {
     match value {
         serde_json::Value::String(s) => {
@@ -140,11 +181,42 @@ pub fn parse_message(line: &str) -> Option<Message> {
         return None;
     }
 
+    // Filter out tool_use blocks for interaction tools and their corresponding
+    // tool_result blocks. The interaction data is persisted separately as
+    // Interaction ContentBlocks, so the raw tool blocks are redundant and would
+    // render as generic TOOL cards on reload.
+    let interaction_tool_ids: std::collections::HashSet<String> = content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::ToolUse { id, name, .. } if is_interaction_tool_name(name) => {
+                Some(id.clone())
+            }
+            _ => None,
+        })
+        .collect();
+
+    let filtered: Vec<ContentBlock> = content
+        .into_iter()
+        .filter(|b| match b {
+            ContentBlock::ToolUse { name, .. } if is_interaction_tool_name(name) => false,
+            ContentBlock::ToolResult { tool_use_id, .. }
+                if interaction_tool_ids.contains(tool_use_id) =>
+            {
+                false
+            }
+            _ => true,
+        })
+        .collect();
+
+    if filtered.is_empty() {
+        return None;
+    }
+
     let timestamp = v.get("timestamp").and_then(|t| t.as_i64());
 
     Some(Message {
         role,
-        content,
+        content: filtered,
         timestamp,
     })
 }
@@ -217,6 +289,26 @@ where
     }
 
     merge_tool_results(&mut messages);
+
+    // Remove orphaned tool_result blocks (e.g. from interaction tools whose
+    // tool_use was filtered out in parse_message). An orphan is a tool_result
+    // whose tool_use_id has no matching tool_use in the same message.
+    for msg in &mut messages {
+        let use_ids: std::collections::HashSet<String> = msg
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        msg.content.retain(|b| match b {
+            ContentBlock::ToolResult { tool_use_id, .. } => use_ids.contains(tool_use_id),
+            _ => true,
+        });
+    }
+    // Drop messages that became empty after orphan removal.
+    messages.retain(|m| !m.content.is_empty());
 
     if messages.is_empty() {
         return None;
@@ -342,6 +434,43 @@ mod tests {
                 assert_eq!(content.as_str().unwrap(), "file contents here");
             }
             other => panic!("Expected ToolResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_is_interaction_tool_name() {
+        assert!(is_interaction_tool_name("request_user_input"));
+        assert!(is_interaction_tool_name("ask_user"));
+        assert!(is_interaction_tool_name("ask_user_input"));
+        assert!(is_interaction_tool_name("AskUserQuestion"));
+        assert!(is_interaction_tool_name("ask-user-question"));
+        assert!(!is_interaction_tool_name("Read"));
+        assert!(!is_interaction_tool_name("Write"));
+        assert!(!is_interaction_tool_name("bash"));
+    }
+
+    #[test]
+    fn test_parse_message_filters_interaction_tool_blocks() {
+        // An assistant message with a request_user_input tool_use and a text block
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"call_int_1","name":"request_user_input","input":{"question":"pick one"}},{"type":"text","text":"Continuing..."}]}}"#;
+        let msg = parse_message(line).unwrap();
+        // tool_use for request_user_input should be filtered out
+        assert_eq!(msg.content.len(), 1);
+        match &msg.content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "Continuing..."),
+            other => panic!("Expected Text, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_message_keeps_non_interaction_tools() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"call_r","name":"Read","input":{"file":"x"}},{"type":"tool_use","id":"call_int_2","name":"request_user_input","input":{}}]}}"#;
+        let msg = parse_message(line).unwrap();
+        // Only Read tool_use should remain
+        assert_eq!(msg.content.len(), 1);
+        match &msg.content[0] {
+            ContentBlock::ToolUse { name, .. } => assert_eq!(name, "Read"),
+            other => panic!("Expected ToolUse(Read), got {:?}", other),
         }
     }
 }

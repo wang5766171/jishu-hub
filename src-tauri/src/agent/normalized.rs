@@ -236,7 +236,7 @@ pub fn is_elicitation_only_tool(tool_name: &str) -> bool {
         .to_ascii_lowercase();
     matches!(
         normalized_name.as_str(),
-        "askuserquestion" | "ask_user_question"
+        "askuserquestion" | "ask_user_question" | "ask_question"
     )
 }
 
@@ -253,7 +253,12 @@ pub fn interaction_requests_from_tool_call(
         .to_ascii_lowercase();
     if !matches!(
         normalized_name.as_str(),
-        "request_user_input" | "ask_user" | "ask_user_input"
+        "request_user_input"
+            | "ask_user"
+            | "ask_user_input"
+            | "ask_question"
+            | "askuserquestion"
+            | "ask_user_question"
     ) {
         return Vec::new();
     }
@@ -332,6 +337,7 @@ pub fn interaction_requests_from_tool_call(
             let allow_multiple = question
                 .get("allow_multiple")
                 .or_else(|| question.get("multiple"))
+                .or_else(|| question.get("is_multi_select"))
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             let allow_custom_text = question
@@ -385,6 +391,25 @@ pub enum ContentBlock {
     },
     Image {
         source: ImageSource,
+    },
+    /// A persisted interaction (question + answer pair) from an Agent's
+    /// structured interaction channel (PiRpc extension_ui, ACP elicitation,
+    /// codex requestUserInput, etc.). Embeds both the prompt/options and the
+    /// user's answer so the full Q&A context survives session reloads.
+    Interaction {
+        /// The question text presented to the user.
+        prompt: String,
+        /// Available options (empty = free-text input only).
+        #[serde(default)]
+        options: Vec<InteractionOption>,
+        /// The user's answer text.
+        answer: String,
+        /// Selected option IDs (multi-select scenarios).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        selected_options: Vec<String>,
+        /// Origin label for display (e.g. "extension_ui", "acp_elicitation").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<String>,
     },
 }
 
@@ -592,5 +617,55 @@ mod tests_v6 {
             &serde_json::json!({ "path": "README.md" }),
         )
         .is_empty());
+    }
+
+    #[test]
+    fn interaction_content_block_roundtrip() {
+        let block = ContentBlock::Interaction {
+            prompt: "请选择架构方案".into(),
+            options: vec![
+                InteractionOption {
+                    option_id: "a".into(),
+                    label: "单体".into(),
+                    description: None,
+                },
+                InteractionOption {
+                    option_id: "b".into(),
+                    label: "微服务".into(),
+                    description: Some("推荐".into()),
+                },
+            ],
+            answer: "微服务".into(),
+            selected_options: vec!["b".into()],
+            origin: Some("acp_elicitation".into()),
+        };
+
+        let json = serde_json::to_string(&block).unwrap();
+        assert!(json.contains("interaction"));
+        assert!(json.contains("请选择架构方案"));
+        let decoded: ContentBlock = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, block);
+    }
+
+    #[test]
+    fn interaction_content_block_minimal_fields() {
+        // Minimal interaction block (no options, no selected_options, no origin)
+        let json = serde_json::json!({
+            "interaction": {
+                "prompt": "请确认",
+                "answer": "是"
+            }
+        });
+        let decoded: ContentBlock = serde_json::from_value(json).unwrap();
+        match decoded {
+            ContentBlock::Interaction { prompt, answer, options, selected_options, origin } => {
+                assert_eq!(prompt, "请确认");
+                assert_eq!(answer, "是");
+                assert!(options.is_empty());
+                assert!(selected_options.is_empty());
+                assert!(origin.is_none());
+            }
+            other => panic!("Expected Interaction, got {:?}", other),
+        }
     }
 }

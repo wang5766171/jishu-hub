@@ -179,6 +179,10 @@
       "interaction does not allow custom text": "当前问题不接受补充文本",
       "interaction response is required": "请选择选项或填写补充说明"
     },
+    "interactionDefault": "向用户提问",
+    "interactionQuestion": "问题",
+    "interactionAnswer": "回答",
+    "interactionNoAnswer": "（未回答）",
     "attachImage": "添加附件",
     "addContext": "添加上下文",
     "attachFile": "附件",

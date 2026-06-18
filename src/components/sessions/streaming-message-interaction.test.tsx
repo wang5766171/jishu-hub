@@ -57,10 +57,13 @@ describe("StreamingMessage interaction ordering", () => {
     );
     const text = container.textContent ?? "";
 
+    // The InteractionCard is collapsed by default (defaultOpen=false),
+    // showing the header "Interaction" instead of the answer text.
+    // Verify the ordering: assistant text → interaction header → continued text.
     expect(text.indexOf("What kind of workload is this?")).toBeLessThan(
-      text.indexOf("Stateful worker service"),
+      text.indexOf("Ask user"),
     );
-    expect(text.indexOf("Stateful worker service")).toBeLessThan(
+    expect(text.indexOf("Ask user")).toBeLessThan(
       text.indexOf("Use a StatefulSet."),
     );
   });

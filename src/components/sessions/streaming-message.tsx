@@ -8,6 +8,7 @@ import { InlineImages, stripImagePrompt } from "./inline-image";
 import { ToolGroup, classifyToolName } from "@/components/observability/tool-call-card";
 import type { ToolCall } from "@/components/observability/tool-call-card";
 import type { ContentBlock } from "@/types";
+import { InteractionCard } from "./interaction-card";
 
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS_COMPLETE = [rehypeHighlight];
@@ -107,27 +108,94 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
         kind: "interaction" as const,
         index: Math.max(0, Math.min(item.index, content.length)),
         text: item.text ?? "",
+        prompt: item.prompt ?? "",
+        options: item.options ?? [],
+        origin: item.origin,
         order: sanitizedSplits.length + i,
-      }))
-      .filter((item) => item.text.length > 0),
+      })),
   ].sort((a, b) => a.index - b.index || a.order - b.order);
+
+  type GroupedInsertion =
+    | { kind: "steer"; index: number; text: string }
+    | {
+        kind: "interaction";
+        index: number;
+        items: Array<{
+          prompt: string;
+          options: Array<{ option_id: string; label: string; description?: string | null }>;
+          text: string;
+        }>;
+        origin?: string;
+      };
+
+  const groupedInsertions: GroupedInsertion[] = [];
+  for (const ins of userInsertions) {
+    if (ins.kind === "interaction") {
+      const last = groupedInsertions[groupedInsertions.length - 1];
+      if (last && last.kind === "interaction" && last.index === ins.index) {
+        last.items.push({
+          prompt: ins.prompt,
+          options: ins.options,
+          text: ins.text,
+        });
+      } else {
+        groupedInsertions.push({
+          kind: "interaction",
+          index: ins.index,
+          items: [{
+            prompt: ins.prompt,
+            options: ins.options,
+            text: ins.text,
+          }],
+          origin: ins.origin,
+        });
+      }
+    } else {
+      groupedInsertions.push({
+        kind: "steer",
+        index: ins.index,
+        text: ins.text,
+      });
+    }
+  }
 
   type StreamPart =
     | { kind: "assistant"; content: ContentBlock[] }
-    | { kind: "user"; text: string; guided: boolean };
+    | { kind: "user"; text: string; guided: boolean }
+    | {
+        kind: "interaction";
+        items: Array<{
+          prompt: string;
+          options: Array<{ option_id: string; label: string; description?: string | null }>;
+          answer: string;
+        }>;
+        origin?: string;
+      };
 
   const parts: StreamPart[] = [];
   let previousIndex = 0;
-  for (const insertion of userInsertions) {
+  for (const insertion of groupedInsertions) {
     parts.push({
       kind: "assistant",
       content: content.slice(previousIndex, insertion.index),
     });
-    parts.push({
-      kind: "user",
-      text: insertion.text,
-      guided: insertion.kind === "steer",
-    });
+    if (insertion.kind === "interaction") {
+      parts.push({
+        kind: "interaction",
+        items: insertion.items.map(item => ({
+          prompt: item.prompt,
+          options: item.options,
+          answer: item.text,
+        })),
+        origin: insertion.origin,
+      });
+    } else {
+      parts.push({
+        kind: "user",
+        text: insertion.text,
+        guided: true,
+      });
+    }
     previousIndex = insertion.index;
   }
   parts.push({ kind: "assistant", content: content.slice(previousIndex) });
@@ -166,6 +234,17 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
               key={`user-insertion-${i}`}
               text={part.text}
               guided={part.guided}
+            />
+          );
+        }
+
+        if (part.kind === "interaction") {
+          return (
+            <InteractionCard
+              key={`interaction-${i}`}
+              items={part.items}
+              origin={part.origin}
+              defaultOpen={false}
             />
           );
         }

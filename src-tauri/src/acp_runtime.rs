@@ -454,26 +454,93 @@ fn parse_acp_elicitation(params: &serde_json::Value) -> Option<AcpElicitation> {
         .and_then(|s| s.get("properties"))
         .and_then(|p| p.as_object())?;
 
-    // First `question_<n>` field (skip the per-question `_custom` free-text box).
-    let (content_field, field) = properties.iter().find(|(k, _)| is_question_field(k))?;
-    let options = extract_enum_options(field)?;
+    // Collect ALL `question_<n>` fields sorted by index (skip `_custom`
+    // companion fields). This handles both single-question and multi-question
+    // AskUserQuestion calls.
+    let mut question_fields: Vec<(&String, &serde_json::Value)> = properties
+        .iter()
+        .filter(|(k, _)| is_question_field(k))
+        .collect();
+    question_fields.sort_by_key(|(k, _)| {
+        k.strip_prefix("question_")
+            .and_then(|n| n.parse::<u32>().ok())
+            .unwrap_or(u32::MAX)
+    });
+
+    let (content_field, first_field) = question_fields.first().cloned()?;
+    let options = extract_enum_options(first_field)?;
     if options.is_empty() {
         return None;
     }
 
-    let prompt = params
-        .get("message")
-        .and_then(|v| v.as_str())
-        .or_else(|| field.get("description").and_then(|v| v.as_str()))
-        .or_else(|| field.get("title").and_then(|v| v.as_str()))
-        .unwrap_or("")
-        .to_string();
+    // Build the prompt from actual question text, not the generic message.
+    // For single-question: use the field's description/title.
+    // For multi-question: combine all question descriptions.
+    let prompt = if question_fields.len() == 1 {
+        // Single question — prefer field description/title over generic message.
+        extract_actual_question(first_field)
+            .or_else(|| params.get("message").and_then(|v| v.as_str()))
+            .unwrap_or("")
+            .to_string()
+    } else {
+        // Multiple questions — combine all question descriptions.
+        let combined: Vec<String> = question_fields
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, (_, field))| {
+                let q = extract_actual_question(field)?;
+                Some(format!("{}. {}", idx + 1, q))
+            })
+            .collect();
+        if combined.is_empty() {
+            params
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        } else {
+            combined.join("\n")
+        }
+    };
 
     Some(AcpElicitation {
         prompt,
         options,
         content_field: content_field.clone(),
     })
+}
+
+fn extract_actual_question(field: &serde_json::Value) -> Option<&str> {
+    let desc = field.get("description").and_then(|v| v.as_str());
+    let title = field.get("title").and_then(|v| v.as_str());
+    match (desc, title) {
+        (Some(d), Some(t)) => {
+            if is_generic_question_title(t) {
+                Some(d)
+            } else if is_generic_question_title(d) {
+                Some(t)
+            } else {
+                Some(d)
+            }
+        }
+        (Some(d), None) => Some(d),
+        (None, Some(t)) => Some(t),
+        (None, None) => None,
+    }
+}
+
+fn is_generic_question_title(s: &str) -> bool {
+    let s_trimmed = s.trim();
+    if s_trimmed.starts_with("问题") {
+        let suffix = s_trimmed.strip_prefix("问题").unwrap().trim();
+        return suffix.chars().all(|c| c.is_ascii_digit());
+    }
+    let lower = s_trimmed.to_ascii_lowercase();
+    if lower.starts_with("question") {
+        let suffix = lower.strip_prefix("question").unwrap().trim();
+        return suffix.chars().all(|c| c.is_ascii_digit());
+    }
+    false
 }
 
 /// A `question_<n>` form field (not the `question_<n>_custom` companion).
@@ -848,6 +915,11 @@ async fn acp_connection_loop(
     // return end_turn with zero content when the underlying model API fails.
     // Detecting this lets us surface a meaningful error instead of a blank turn.
     let mut turn_had_content = false;
+    // Track call IDs of elicitation-only tools (AskUserQuestion) whose
+    // tool_call_start was suppressed, so the matching tool_call_update
+    // (result) can also be suppressed even when the tool name is missing
+    // from the update event.
+    let mut suppressed_acp_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     loop {
         let cmd_future = command_rx.recv();
@@ -1144,7 +1216,48 @@ async fn acp_connection_loop(
                         // session/update notifications
                         if msg.get("method").and_then(|v| v.as_str()) == Some("session/update") {
                             if let Some(params) = msg.get("params") {
+                                // Track suppressed tool_call IDs for elicitation-only tools.
+                                // When tool_call_start produces no events (AskUserQuestion),
+                                // record the call ID so we can suppress the result too.
+                                if let Some(update) = params.get("update") {
+                                    if let Some(update_type) = update.get("type").and_then(|v| v.as_str()) {
+                                        if update_type == "tool_call" {
+                                            if let Some(call_id) = update.get("toolCallId").and_then(|v| v.as_str()) {
+                                                let tool = update.get("toolName")
+                                                    .or_else(|| update.get("name"))
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or_default();
+                                                if is_elicitation_only_tool(tool) {
+                                                    suppressed_acp_calls.insert(call_id.to_string());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
                                 let events = normalize_acp_update(params, &mut usage);
+
+                                // Also suppress tool_call_update (result) by call ID tracking,
+                                // in case the tool name is missing from the update event.
+                                let events: Vec<NormalizedEvent> = if let Some(update) = params.get("update") {
+                                    let update_type = update.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+                                    if update_type == "tool_call_update" {
+                                        if let Some(call_id) = update.get("toolCallId").and_then(|v| v.as_str()) {
+                                            if suppressed_acp_calls.remove(call_id) {
+                                                vec![] // Suppress by tracked ID
+                                            } else {
+                                                events
+                                            }
+                                        } else {
+                                            events
+                                        }
+                                    } else {
+                                        events
+                                    }
+                                } else {
+                                    events
+                                };
+
                                 for event in &events {
                                     if is_content_event(event) {
                                         turn_had_content = true;
@@ -2076,6 +2189,46 @@ mod tests {
             Some("rewrite in place")
         );
         assert_eq!(elic.options[1].description, None);
+    }
+
+    #[test]
+    fn parses_multi_question_elicitation_with_real_prompts() {
+        // AskUserQuestion with multiple questions: each question_<n> field
+        // has a `description` containing the actual question text. The generic
+        // `message` is "Please answer the following questions." and should
+        // NOT be used as the prompt.
+        let params = json!({
+            "mode": "form",
+            "message": "Please answer the following questions.",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "question_1": {
+                        "type": "string",
+                        "description": "What deployment target?",
+                        "oneOf": [
+                            { "const": "K8s", "title": "Kubernetes" },
+                            { "const": "VM", "title": "Virtual Machine" }
+                        ]
+                    },
+                    "question_2": {
+                        "type": "string",
+                        "description": "What scaling strategy?",
+                        "oneOf": [
+                            { "const": "Auto", "title": "Auto-scaling" },
+                            { "const": "Manual", "title": "Manual" }
+                        ]
+                    }
+                }
+            }
+        });
+        let elic = parse_acp_elicitation(&params).expect("multi-question form is parseable");
+        // The prompt should combine actual question texts, NOT the generic message.
+        assert_eq!(elic.prompt, "1. What deployment target?\n2. What scaling strategy?");
+        assert_eq!(elic.content_field, "question_1");
+        // Options come from the first question only.
+        assert_eq!(elic.options.len(), 2);
+        assert_eq!(elic.options[0].option_id, "K8s");
     }
 
     #[test]

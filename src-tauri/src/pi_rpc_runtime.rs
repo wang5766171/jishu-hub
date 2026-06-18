@@ -275,6 +275,11 @@ async fn pi_rpc_connection_loop(
     let mut state = LoopState::Prompting;
     let mut buf: Vec<NormalizedEvent> = Vec::with_capacity(32);
     let mut last_flush = std::time::Instant::now();
+    // Track call IDs of interaction tools whose tool_execution_start was
+    // suppressed (request_user_input, ask_user, etc.) so their matching
+    // tool_execution_end can also be suppressed — preventing orphaned
+    // tool_result blocks in the streaming content.
+    let mut suppressed_interaction_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     loop {
         let cmd_future = command_rx.recv();
@@ -481,6 +486,39 @@ async fn pi_rpc_connection_loop(
 
                         // Handle AgentEvent objects
                         let events = normalize_pi_agent_event(&msg);
+
+                        // Track interaction tool call IDs: when tool_execution_start
+                        // returns empty events for an interaction tool (request_user_input,
+                        // ask_user, etc.), record the call_id so we can suppress the
+                        // matching tool_execution_end later.
+                        if let Some(event_type) = msg.get("type").and_then(|v| v.as_str()) {
+                            if event_type == "tool_execution_start" && events.is_empty() {
+                                if let Some(call_id) = msg.get("toolCallId").and_then(|v| v.as_str()) {
+                                    suppressed_interaction_calls.insert(call_id.to_string());
+                                }
+                            }
+                        }
+
+                        // Suppress tool_execution_end for interaction tools whose
+                        // start was also suppressed.
+                        let events: Vec<NormalizedEvent> = if let Some(event_type) = msg.get("type").and_then(|v| v.as_str()) {
+                            if event_type == "tool_execution_end" {
+                                if let Some(call_id) = msg.get("toolCallId").and_then(|v| v.as_str()) {
+                                    if suppressed_interaction_calls.remove(call_id) {
+                                        vec![] // Suppress this result
+                                    } else {
+                                        events
+                                    }
+                                } else {
+                                    events
+                                }
+                            } else {
+                                events
+                            }
+                        } else {
+                            events
+                        };
+
                         let has_turn_complete = events.iter().any(|e| matches!(e, NormalizedEvent::TurnComplete { .. }));
                         for event in &events {
                             buf.push(event.clone());

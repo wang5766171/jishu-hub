@@ -179,6 +179,10 @@
       "interaction does not allow custom text": "This question does not accept additional text",
       "interaction response is required": "Select an option or add a response"
     },
+    "interactionDefault": "Ask user",
+    "interactionQuestion": "Question",
+    "interactionAnswer": "Answer",
+    "interactionNoAnswer": "(No answer)",
     "attachImage": "Attach file",
     "addContext": "Add context",
     "attachFile": "Attachment",

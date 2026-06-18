@@ -11,6 +11,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { useTranslation } from "react-i18next";
 import type { ContentBlock } from "@/types";
+import { InteractionCard } from "./interaction-card";
 
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS = [rehypeHighlight];
@@ -45,13 +46,23 @@ export const ThinkingBlock = memo(function ThinkingBlock({
   );
 });
 
-/** Render a single ContentBlock (text → markdown, thinking → collapsible). */
+/** Render a single ContentBlock (text → markdown, thinking → collapsible, interaction → card). */
 export function renderContentBlock(block: ContentBlock): React.ReactNode {
   switch (block.type) {
     case "text":
       return <MarkdownText text={block.text} />;
     case "thinking":
       return <ThinkingBlock thinking={block.thinking} />;
+    case "interaction":
+      return (
+        <InteractionCard
+          prompt={block.prompt}
+          options={block.options}
+          answer={block.answer}
+          selectedOptions={block.selected_options}
+          origin={block.origin}
+        />
+      );
     default:
       return null;
   }
@@ -59,7 +70,45 @@ export function renderContentBlock(block: ContentBlock): React.ReactNode {
 
 /** Render an array of ContentBlock (a full message body). */
 export function renderContentBlocks(blocks: ContentBlock[]): React.ReactNode {
-  return blocks.map((block, i) => (
-    <div key={i}>{renderContentBlock(block)}</div>
-  ));
+  const renderedBlocks: React.ReactNode[] = [];
+  let currentGroup: Array<{
+    prompt: string;
+    options?: any[];
+    answer: string;
+    selectedOptions?: string[];
+  }> = [];
+  let currentOrigin: string | undefined = undefined;
+
+  const flushGroup = (key: number) => {
+    if (currentGroup.length === 0) return;
+    renderedBlocks.push(
+      <div key={`interaction-group-${key}`}>
+        <InteractionCard items={currentGroup} origin={currentOrigin} />
+      </div>
+    );
+    currentGroup = [];
+    currentOrigin = undefined;
+  };
+
+  blocks.forEach((block, idx) => {
+    if (block.type === "interaction") {
+      currentGroup.push({
+        prompt: block.prompt,
+        options: block.options,
+        answer: block.answer,
+        selectedOptions: block.selected_options,
+      });
+      if (block.origin) {
+        currentOrigin = block.origin;
+      }
+    } else {
+      flushGroup(idx);
+      renderedBlocks.push(
+        <div key={idx}>{renderContentBlock(block)}</div>
+      );
+    }
+  });
+  flushGroup(blocks.length);
+
+  return <>{renderedBlocks}</>;
 }

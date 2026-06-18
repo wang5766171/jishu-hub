@@ -22,6 +22,12 @@ export interface InteractionSplit {
   requestId: string;
   index: number;
   text: string | null;
+  /** Question prompt text (captured from interaction_request event). */
+  prompt: string;
+  /** Available options (captured from interaction_request event). */
+  options: Array<{ option_id: string; label: string; description?: string | null }>;
+  /** Origin label for display (e.g. "extension_ui", "acp_elicitation"). */
+  origin?: string;
 }
 
 /**
@@ -215,7 +221,14 @@ class StreamStore {
       if (!interactionSplits.some((item) => item.requestId === data.request_id)) {
         interactionSplits = [
           ...interactionSplits,
-          { requestId: data.request_id, index: content.length, text: null },
+          {
+            requestId: data.request_id,
+            index: content.length,
+            text: null,
+            prompt: data.prompt ?? "",
+            options: data.options ?? [],
+            origin: data.origin,
+          },
         ];
       }
     } else if (data.kind === "sub_agent_event") {
