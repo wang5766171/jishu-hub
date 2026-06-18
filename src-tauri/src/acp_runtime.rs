@@ -341,9 +341,9 @@ struct PendingPermission {
 #[derive(Debug, Clone)]
 struct PendingElicitation {
     rpc_id: serde_json::Value,
-    /// Form field name (from the elicitation `requestedSchema`) to populate with
-    /// the user's answer. Phase 3 sets this when handling `elicitation/create`.
-    content_field: String,
+    questions: Vec<AcpQuestion>,
+    current_index: usize,
+    answers: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Three-state ACP elicitation response action (protocol `accept`/`decline`/
@@ -362,6 +362,10 @@ enum ElicitAction {
 /// permission table (R3 分表).
 #[derive(Debug)]
 enum AcpInteractionRoute {
+    PendingNext {
+        base_id: String,
+        next_index: usize,
+    },
     /// Map the answer to the pending elicitation's JSON-RPC result.
     Elicit {
         rpc_id: serde_json::Value,
@@ -374,30 +378,70 @@ enum AcpInteractionRoute {
     NoChannel,
 }
 
+fn parse_sub_request_id(request_id: &str) -> Option<(&str, usize)> {
+    let last_underscore = request_id.rfind('_')?;
+    let base_id = &request_id[..last_underscore];
+    let index_str = &request_id[last_underscore + 1..];
+    let sub_index = index_str.parse::<usize>().ok()?;
+    Some((base_id, sub_index))
+}
+
 /// Route a business-interaction answer. Consults ONLY `pending_elicitations` —
 /// a pending `request_permission` for the same request id is intentionally NOT
 /// matched here (R3: business/permission 分表, never cross-consumed).
 fn route_acp_interaction_response(
-    pending_elicitations: &HashMap<String, PendingElicitation>,
+    pending_elicitations: &mut HashMap<String, PendingElicitation>,
     request_id: &str,
     value: &str,
 ) -> AcpInteractionRoute {
-    match pending_elicitations.get(request_id) {
-        Some(pending) => {
-            // Dynamic-key form object: { <content_field>: <value> }. Built via a
-            // Map because the `json!` macro cannot take a runtime key expression.
-            let mut content = serde_json::Map::new();
-            content.insert(
-                pending.content_field.clone(),
-                serde_json::Value::String(value.to_string()),
-            );
-            AcpInteractionRoute::Elicit {
-                rpc_id: pending.rpc_id.clone(),
-                action: ElicitAction::Accept,
-                content: serde_json::Value::Object(content),
+    let Some((base_id, sub_index)) = parse_sub_request_id(request_id) else {
+        return match pending_elicitations.get(request_id) {
+            Some(pending) => {
+                let mut content = serde_json::Map::new();
+                if let Some(first_q) = pending.questions.first() {
+                    content.insert(
+                        first_q.field_name.clone(),
+                        serde_json::Value::String(value.to_string()),
+                    );
+                }
+                AcpInteractionRoute::Elicit {
+                    rpc_id: pending.rpc_id.clone(),
+                    action: ElicitAction::Accept,
+                    content: serde_json::Value::Object(content),
+                }
             }
+            None => AcpInteractionRoute::NoChannel,
+        };
+    };
+
+    let pending = match pending_elicitations.get_mut(base_id) {
+        Some(p) => p,
+        None => return AcpInteractionRoute::NoChannel,
+    };
+
+    if sub_index < pending.questions.len() {
+        let q = &pending.questions[sub_index];
+        pending.answers.insert(
+            q.field_name.clone(),
+            serde_json::Value::String(value.to_string()),
+        );
+    }
+
+    pending.current_index = sub_index + 1;
+
+    if pending.current_index < pending.questions.len() {
+        AcpInteractionRoute::PendingNext {
+            base_id: base_id.to_string(),
+            next_index: pending.current_index,
         }
-        None => AcpInteractionRoute::NoChannel,
+    } else {
+        let rpc_id = pending.rpc_id.clone();
+        let content = serde_json::Value::Object(pending.answers.clone());
+        AcpInteractionRoute::Elicit {
+            rpc_id,
+            action: ElicitAction::Accept,
+            content,
+        }
     }
 }
 
@@ -418,14 +462,15 @@ const KIND_ELICITATION: &str = "acp_elicitation";
 /// `AskUserQuestion`, form mode). `None` when the request cannot be surfaced as
 /// a single-choice interaction (url mode, arbitrary MCP schema, no enum) — the
 /// caller replies `cancel` to avoid stalling the turn.
-struct AcpElicitation {
+#[derive(Debug, Clone)]
+struct AcpQuestion {
+    field_name: String,
     prompt: String,
     options: Vec<InteractionOption>,
-    /// JSON property name under `requestedSchema.properties` that holds the
-    /// chosen answer (claude-agent-acp keys it `question_<n>`). Written back as
-    /// `content[content_field]` so the tool's `applyAskElicitationResponse`
-    /// reads it as the selected label.
-    content_field: String,
+}
+
+struct AcpElicitation {
+    questions: Vec<AcpQuestion>,
 }
 
 /// Parse a form-mode `elicitation/create` into a single-choice interaction.
@@ -467,47 +512,43 @@ fn parse_acp_elicitation(params: &serde_json::Value) -> Option<AcpElicitation> {
             .unwrap_or(u32::MAX)
     });
 
-    let (content_field, first_field) = question_fields.first().cloned()?;
-    let options = extract_enum_options(first_field)?;
-    if options.is_empty() {
+    if question_fields.is_empty() {
         return None;
     }
 
-    // Build the prompt from actual question text, not the generic message.
-    // For single-question: use the field's description/title.
-    // For multi-question: combine all question descriptions.
-    let prompt = if question_fields.len() == 1 {
-        // Single question — prefer field description/title over generic message.
-        extract_actual_question(first_field)
-            .or_else(|| params.get("message").and_then(|v| v.as_str()))
-            .unwrap_or("")
-            .to_string()
-    } else {
-        // Multiple questions — combine all question descriptions.
-        let combined: Vec<String> = question_fields
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, (_, field))| {
-                let q = extract_actual_question(field)?;
-                Some(format!("{}. {}", idx + 1, q))
-            })
-            .collect();
-        if combined.is_empty() {
+    let mut questions = Vec::new();
+    for (content_field, field) in &question_fields {
+        let prompt = if question_fields.len() == 1 {
             params
                 .get("message")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    extract_actual_question(field)
+                        .map(|s| s.to_string())
+                        .unwrap_or_default()
+                })
         } else {
-            combined.join("\n")
-        }
-    };
+            extract_actual_question(field)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    params
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string()
+                })
+        };
+        let options = extract_enum_options(field).unwrap_or_default();
+        questions.push(AcpQuestion {
+            field_name: (*content_field).clone(),
+            prompt,
+            options,
+        });
+    }
 
-    Some(AcpElicitation {
-        prompt,
-        options,
-        content_field: content_field.clone(),
-    })
+    Some(AcpElicitation { questions })
 }
 
 fn extract_actual_question(field: &serde_json::Value) -> Option<&str> {
@@ -1011,16 +1052,46 @@ async fn acp_connection_loop(
                         // NoChannel so the frontend delivers the answer as a
                         // follow-up message instead.
                         let result = match route_acp_interaction_response(
-                            &pending_elicitations,
+                            &mut pending_elicitations,
                             &id,
                             &value,
                         ) {
+                            AcpInteractionRoute::PendingNext { base_id, next_index } => {
+                                if let Some(pending) = pending_elicitations.get(&base_id) {
+                                    if let Some(next_q) = pending.questions.get(next_index) {
+                                        let next_request_id = format!("{}_{}", base_id, next_index);
+                                        buf.push(NormalizedEvent::InteractionRequest {
+                                            request_id: next_request_id,
+                                            prompt: next_q.prompt.clone(),
+                                            options: next_q.options.clone(),
+                                            allow_multiple: false,
+                                            allow_custom_text: true,
+                                            required: true,
+                                            transport: InteractionTransport::AcpPreferred,
+                                            origin: InteractionOrigin::AcpElicitation,
+                                            delivery_hint: InteractionDeliveryHint::MidTurn,
+                                            correlation: Some(InteractionCorrelation {
+                                                session_id: Some(session_id.clone()),
+                                                jsonrpc_id: Some(pending.rpc_id.clone()),
+                                                request_kind: Some(KIND_ELICITATION.to_string()),
+                                                ..Default::default()
+                                            }),
+                                        });
+                                        flush_buf(&emit, &session_id, &mut buf);
+                                        last_flush = std::time::Instant::now();
+                                    }
+                                }
+                                Ok(())
+                            }
                             AcpInteractionRoute::Elicit {
                                 rpc_id,
                                 action,
                                 content,
                             } => {
-                                pending_elicitations.remove(&id);
+                                let base_id = parse_sub_request_id(&id)
+                                    .map(|(bid, _)| bid.to_string())
+                                    .unwrap_or_else(|| id.clone());
+                                pending_elicitations.remove(&base_id);
                                 let payload = elicit_result_payload(action, content);
                                 writer.respond(&rpc_id, payload).await
                             }
@@ -1030,8 +1101,8 @@ async fn acp_connection_loop(
                                      this ACP agent has no mid-turn business channel"
                                 );
                                 Err(format!(
-                                    "No pending ACP elicitation for interaction {id}; \
-                                     this transport cannot answer mid-turn as a business question"
+                                     "No pending ACP elicitation for interaction {id}; \
+                                      this transport cannot answer mid-turn as a business question"
                                 ))
                             }
                         };
@@ -1308,31 +1379,36 @@ async fn acp_connection_loop(
                                     // echo back as `request_id`, so RespondToInput's
                                     // route_acp_interaction_response lookup matches
                                     // (R3: kept in the DISTINCT elicitations table).
-                                    let request_id = permission_request_key(&rpc_id);
+                                    let base_request_id = permission_request_key(&rpc_id);
                                     pending_elicitations.insert(
-                                        request_id.clone(),
+                                        base_request_id.clone(),
                                         PendingElicitation {
                                             rpc_id: rpc_id.clone(),
-                                            content_field: elic.content_field,
+                                            questions: elic.questions.clone(),
+                                            current_index: 0,
+                                            answers: serde_json::Map::new(),
                                         },
                                     );
-                                    buf.push(NormalizedEvent::InteractionRequest {
-                                        request_id,
-                                        prompt: elic.prompt,
-                                        options: elic.options,
-                                        allow_multiple: false,
-                                        allow_custom_text: true,
-                                        required: true,
-                                        transport: InteractionTransport::AcpPreferred,
-                                        origin: InteractionOrigin::AcpElicitation,
-                                        delivery_hint: InteractionDeliveryHint::MidTurn,
-                                        correlation: Some(InteractionCorrelation {
-                                            session_id: Some(session_id.clone()),
-                                            jsonrpc_id: Some(rpc_id),
-                                            request_kind: Some(KIND_ELICITATION.to_string()),
-                                            ..Default::default()
-                                        }),
-                                    });
+                                    if let Some(first_q) = elic.questions.first() {
+                                        let request_id = format!("{}_0", base_request_id);
+                                        buf.push(NormalizedEvent::InteractionRequest {
+                                            request_id,
+                                            prompt: first_q.prompt.clone(),
+                                            options: first_q.options.clone(),
+                                            allow_multiple: false,
+                                            allow_custom_text: true,
+                                            required: true,
+                                            transport: InteractionTransport::AcpPreferred,
+                                            origin: InteractionOrigin::AcpElicitation,
+                                            delivery_hint: InteractionDeliveryHint::MidTurn,
+                                            correlation: Some(InteractionCorrelation {
+                                                session_id: Some(session_id.clone()),
+                                                jsonrpc_id: Some(rpc_id),
+                                                request_kind: Some(KIND_ELICITATION.to_string()),
+                                                ..Default::default()
+                                            }),
+                                        });
+                                    }
                                     flush_buf(&emit, &session_id, &mut buf);
                                     last_flush = std::time::Instant::now();
                                 }
@@ -2074,11 +2150,17 @@ mod tests {
             "req-1".to_string(),
             PendingElicitation {
                 rpc_id: json!(42),
-                content_field: "f0".to_string(),
+                questions: vec![AcpQuestion {
+                    field_name: "f0".to_string(),
+                    prompt: "prompt".to_string(),
+                    options: vec![],
+                }],
+                current_index: 0,
+                answers: serde_json::Map::new(),
             },
         );
 
-        match route_acp_interaction_response(&pending, "req-1", "A") {
+        match route_acp_interaction_response(&mut pending, "req-1_0", "A") {
             AcpInteractionRoute::Elicit {
                 rpc_id,
                 action,
@@ -2088,7 +2170,7 @@ mod tests {
                 assert_eq!(action, ElicitAction::Accept);
                 assert_eq!(content, json!({ "f0": "A" }));
             }
-            AcpInteractionRoute::NoChannel => panic!("expected Elicit route"),
+            _ => panic!("expected Elicit route"),
         }
     }
 
@@ -2096,9 +2178,9 @@ mod tests {
     fn routes_interaction_answer_to_no_channel_when_no_pending_elicitation() {
         // No pending elicitations at all → opencode-style agent with no mid-turn
         // business channel. The answer must be delivered as a follow-up message.
-        let pending: HashMap<String, PendingElicitation> = HashMap::new();
+        let mut pending: HashMap<String, PendingElicitation> = HashMap::new();
         assert!(matches!(
-            route_acp_interaction_response(&pending, "missing", "A"),
+            route_acp_interaction_response(&mut pending, "missing_0", "A"),
             AcpInteractionRoute::NoChannel
         ));
     }
@@ -2110,7 +2192,7 @@ mod tests {
         // elicitations table (proven by its signature), so even an approval
         // sharing the id resolves to NoChannel rather than consuming the
         // permission. This guards against business/permission cross-consumption.
-        let pending_elicitations: HashMap<String, PendingElicitation> = HashMap::new();
+        let mut pending_elicitations: HashMap<String, PendingElicitation> = HashMap::new();
         let mut pending_permissions: HashMap<String, PendingPermission> = HashMap::new();
         pending_permissions.insert(
             "shared-id".to_string(),
@@ -2124,7 +2206,7 @@ mod tests {
         // The interaction router cannot see pending_permissions; the approval
         // remains untouched.
         assert!(matches!(
-            route_acp_interaction_response(&pending_elicitations, "shared-id", "A"),
+            route_acp_interaction_response(&mut pending_elicitations, "shared-id_0", "A"),
             AcpInteractionRoute::NoChannel
         ));
         assert!(pending_permissions.contains_key("shared-id"));
@@ -2176,19 +2258,21 @@ mod tests {
             }
         });
         let elic = parse_acp_elicitation(&params).expect("single-choice form is parseable");
-        assert_eq!(elic.prompt, "Which approach do you prefer?");
-        assert_eq!(elic.content_field, "question_0");
-        assert_eq!(elic.options.len(), 2);
+        assert_eq!(elic.questions.len(), 1);
+        let q = &elic.questions[0];
+        assert_eq!(q.prompt, "Which approach do you prefer?");
+        assert_eq!(q.field_name, "question_0");
+        assert_eq!(q.options.len(), 2);
         // const == label == option_id: the frontend submits the label and we
         // write it back as content[content_field] for the enum match.
-        assert_eq!(elic.options[0].option_id, "Refactor");
-        assert_eq!(elic.options[0].label, "Refactor");
+        assert_eq!(q.options[0].option_id, "Refactor");
+        assert_eq!(q.options[0].label, "Refactor");
         // Description folds out of the flattened "label — description" title.
         assert_eq!(
-            elic.options[0].description.as_deref(),
+            q.options[0].description.as_deref(),
             Some("rewrite in place")
         );
-        assert_eq!(elic.options[1].description, None);
+        assert_eq!(q.options[1].description, None);
     }
 
     #[test]
@@ -2223,12 +2307,13 @@ mod tests {
             }
         });
         let elic = parse_acp_elicitation(&params).expect("multi-question form is parseable");
-        // The prompt should combine actual question texts, NOT the generic message.
-        assert_eq!(elic.prompt, "1. What deployment target?\n2. What scaling strategy?");
-        assert_eq!(elic.content_field, "question_1");
-        // Options come from the first question only.
-        assert_eq!(elic.options.len(), 2);
-        assert_eq!(elic.options[0].option_id, "K8s");
+        assert_eq!(elic.questions.len(), 2);
+        assert_eq!(elic.questions[0].prompt, "What deployment target?");
+        assert_eq!(elic.questions[0].field_name, "question_1");
+        assert_eq!(elic.questions[0].options.len(), 2);
+        assert_eq!(elic.questions[0].options[0].option_id, "K8s");
+        assert_eq!(elic.questions[1].prompt, "What scaling strategy?");
+        assert_eq!(elic.questions[1].field_name, "question_2");
     }
 
     #[test]
@@ -2252,9 +2337,11 @@ mod tests {
             }
         });
         let elic = parse_acp_elicitation(&params).expect("array/anyOf is parseable");
-        assert_eq!(elic.options.len(), 2);
+        assert_eq!(elic.questions.len(), 1);
+        let q = &elic.questions[0];
+        assert_eq!(q.options.len(), 2);
         assert_eq!(
-            elic.options.iter().map(|o| &o.label).collect::<Vec<_>>(),
+            q.options.iter().map(|o| &o.label).collect::<Vec<_>>(),
             ["A", "B"]
         );
     }
@@ -2299,8 +2386,9 @@ mod tests {
             }
         });
         let elic = parse_acp_elicitation(&params).unwrap();
+        assert_eq!(elic.questions.len(), 1);
         assert_eq!(
-            elic.options[0].description.as_deref(),
+            elic.questions[0].options[0].description.as_deref(),
             Some("structured desc")
         );
     }
@@ -2358,7 +2446,8 @@ mod tests {
         // Verify the elicitation is still parseable even when its id collides.
         let params = elicitation.get("params").unwrap();
         let elic = parse_acp_elicitation(params).expect("elicitation should be parseable");
-        assert_eq!(elic.options.len(), 2);
+        assert_eq!(elic.questions.len(), 1);
+        assert_eq!(elic.questions[0].options.len(), 2);
     }
 
     #[test]
@@ -2390,11 +2479,13 @@ mod tests {
             "req_1".to_string(),
             PendingElicitation {
                 rpc_id: json!(42),
-                content_field: elic.content_field.clone(),
+                questions: elic.questions.clone(),
+                current_index: 0,
+                answers: serde_json::Map::new(),
             },
         );
 
-        match route_acp_interaction_response(&pending, "req_1", "B") {
+        match route_acp_interaction_response(&mut pending, "req_1_0", "B") {
             AcpInteractionRoute::Elicit {
                 rpc_id,
                 action,
@@ -2408,7 +2499,7 @@ mod tests {
                     json!({ "action": "accept", "content": { "question_0": "B" } })
                 );
             }
-            AcpInteractionRoute::NoChannel => panic!("expected Elicit route"),
+            _ => panic!("expected Elicit route"),
         }
     }
 }

@@ -125,6 +125,9 @@ async fn persist_interaction_blocks(
 ) -> Result<(), String> {
     use std::io::Write;
 
+    log::info!("persist_interaction_blocks called: session_path='{}', session_id={:?}, encoded_name={:?}, count={}",
+        session_path, session_id, encoded_name, interactions.len());
+
     // Resolve the JSONL path: prefer the direct path if it ends with .jsonl,
     // otherwise use the adapter registry to locate the session file.
     let path = if session_path.ends_with(".jsonl") {
@@ -135,17 +138,22 @@ async fn persist_interaction_blocks(
             .lock()
             .map_err(|_| "App state lock poisoned".to_string())?;
         let sessions = s.registry.active().list_sessions(enc)?;
-        sessions
-            .into_iter()
-            .find(|sess| sess.id == sid)
-            .map(|sess| sess.path)
-            .ok_or_else(|| format!("Session not found in adapter listing: {sid}"))?
+        if let Some(sess) = sessions.into_iter().find(|sess| sess.id == sid) {
+            sess.path
+        } else {
+            log::warn!("persist_interaction_blocks: session {} not found in adapter listing for {}", sid, enc);
+            return Err(format!("Session not found in adapter listing: {sid}"));
+        }
     } else {
+        log::warn!("persist_interaction_blocks: cannot resolve path (no .jsonl and missing session_id/encoded_name)");
         // Cannot resolve — silently skip (the frontend cache still has the data).
         return Ok(());
     };
 
+    log::info!("persist_interaction_blocks: resolved path to {:?}", path);
+
     if !path.exists() {
+        log::warn!("persist_interaction_blocks: path {:?} does not exist", path);
         // Session file may not exist yet (e.g., ACP sessions managed externally).
         // Silently skip — the frontend cache still has the data for this session.
         return Ok(());
@@ -188,6 +196,7 @@ async fn persist_interaction_blocks(
     }
 
     writeln!(file, "{}", line).map_err(|e| format!("Failed to write: {}", e))?;
+    log::info!("persist_interaction_blocks: successfully wrote line to {:?}", path);
     Ok(())
 }
 

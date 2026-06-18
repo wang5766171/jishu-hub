@@ -227,20 +227,6 @@ export function commitAssistantWithInteractions({
   const tailContent: ContentBlock[] = [];
   tailContent.push(...content.slice(previousIndex));
 
-  // Add interactions at indices >= previousIndex (i.e. at the end)
-  for (const ins of sortedInteractions) {
-    if (ins.index >= previousIndex) {
-      tailContent.push({
-        type: "interaction",
-        prompt: ins.prompt,
-        options: ins.options,
-        answer: ins.answer,
-        selected_options: ins.selectedOptions,
-        origin: ins.origin,
-      } as ContentBlock);
-    }
-  }
-
   if (error) {
     tailContent.push({ type: "text", text: error });
   }

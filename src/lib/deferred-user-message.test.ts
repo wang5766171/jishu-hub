@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   commitAssistantThenDeferredUser,
   commitAssistantWithUserInsertions,
+  commitAssistantWithInteractions,
 } from "./deferred-user-message";
 import type { ContentBlock } from "@/types";
 
@@ -58,5 +59,38 @@ describe("commitAssistantThenDeferredUser", () => {
       { type: "text", text: "Use a StatefulSet." },
     ]);
     expect(result.consumedUserMessageCount).toBe(1);
+  });
+});
+
+describe("commitAssistantWithInteractions", () => {
+  it("embeds interactions as interaction blocks and does not duplicate them", () => {
+    const assistantContent: ContentBlock[] = [
+      { type: "text", text: "Hello" },
+    ];
+    const result = commitAssistantWithInteractions({
+      assistantContent,
+      interactionInsertions: [
+        {
+          index: 1,
+          prompt: "What is your name?",
+          options: [],
+          answer: "Alice",
+        },
+      ],
+      timestamp: 1000,
+    });
+
+    expect(result.messages.length).toBe(1);
+    expect(result.messages[0].content).toEqual([
+      { type: "text", text: "Hello" },
+      {
+        type: "interaction",
+        prompt: "What is your name?",
+        options: [],
+        answer: "Alice",
+        selected_options: undefined,
+        origin: undefined,
+      },
+    ]);
   });
 });
