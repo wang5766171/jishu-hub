@@ -844,25 +844,27 @@ export function ChatPage({
             ? finalKey
             : cid;
           const queuedSteers = pendingSteerMessagesRef.current.get(steerQueueKey) ?? [];
-          // Only persist interactions that have been answered. Unanswered
-          // (pending) interactions are live UI state — embedding them at the
-          // volatile content-length index where the request landed causes them
-          // to render at the wrong position after refresh (e.g. past all text
-          // that was emitted after the request). The backend will re-emit the
-          // question in the next turn if needed.
-          const interactionInsertions = (state?.interactionSplits ?? [])
-            .filter((item) => {
-              const hasAnswer = (item.text ?? "").trim().length > 0;
-              const hasPrompt = (item.prompt ?? "").trim().length > 0;
-              return hasAnswer && hasPrompt;
-            })
-            .map((item) => ({
-              index: item.index,
-              prompt: item.prompt ?? "",
-              options: item.options ?? [],
-              answer: item.text ?? "",
-              origin: item.origin,
-            }));
+          // ── Interaction persistence strategy ──────────────────────────────
+          // We do NOT embed explicit `type: "interaction"` ContentBlocks into
+          // committed messages.  The index captured at interaction_request time
+          // (content.length at that moment) quickly becomes stale as the agent
+          // continues outputting text / tools after the request — causing the
+          // embedded block to render at the wrong position (e.g. past all later
+          // content, appearing at the bottom after refresh).
+          //
+          // Instead, the raw `tool_use`(ask_user) + `tool_result`(answer) blocks
+          // are kept inside assistantContent as-is.  message-view.tsx's
+          // buildRenderItemsForMessages converts them inline into InteractionCard
+          // components via isInteractionTool(), reading answers from resultMap.
+          // This single rendering path eliminates both stale-index positioning
+          // AND double-rendering bugs.
+          const interactionInsertions: Array<{
+            index: number;
+            prompt: string;
+            options: Array<{ option_id: string; label: string; description?: string | null }>;
+            answer: string;
+            origin?: string;
+          }> = [];
           // Sanitize + sort: each split marks the start of a new segment.
           const steerSplits = Array.from(new Set(state?.steerSplits ?? []))
             .filter((idx) => idx > 0 && idx < (state?.content.length ?? 0))

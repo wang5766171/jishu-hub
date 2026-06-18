@@ -83,11 +83,14 @@ export function InteractionComposer({
   };
 
   return (
-    <section
-      className="border-b border-border/55 bg-muted/45"
+    <div
+      className={cn(
+        "border-b border-border/55 bg-muted/45",
+        "mx-auto w-full max-w-[var(--message-content-max-width)]",
+      )}
       aria-labelledby={`interaction-${request.requestId}`}
     >
-      <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4 py-3">
+      <div className="px-4 py-3">
       <div className="mb-2.5 flex items-start gap-2.5">
         <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background/75 text-[var(--icon-action)] shadow-xs">
           <ListChecks className="h-4 w-4" />
@@ -213,6 +216,7 @@ export function InteractionComposer({
         </Button>
       </div>
       </div>
-    </section>
+      </div>
+    </div>
   );
 }
