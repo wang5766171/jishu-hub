@@ -268,6 +268,13 @@ function buildRenderItemsForMessages(messages: Message[], messageIndices: number
   const items: RenderItem[] = [];
   let pendingTools: ToolCall[] = [];
 
+  // If committed messages already contain explicit `interaction` type ContentBlocks
+  // (embedded by commitAssistantWithInteractions), skip converting tool_use blocks
+  // that match isInteractionTool — otherwise the same Q&A pair renders twice.
+  const hasExplicitInteractionBlocks = messageIndices.some((mi) =>
+    messages[mi].content.some((b) => b.type === "interaction"),
+  );
+
   const flushTools = () => {
     if (pendingTools.length === 0) return;
     items.push({ kind: "tool-group", calls: pendingTools });
@@ -285,6 +292,10 @@ function buildRenderItemsForMessages(messages: Message[], messageIndices: number
         });
 
         if (isInteractionTool(block.name, block.input)) {
+          // When the committed messages already contain explicit `interaction`
+          // ContentBlocks (embedded during commitAssistantWithInteractions),
+          // skip converting this tool_use to avoid double-rendering.
+          if (hasExplicitInteractionBlocks) return;
           flushTools();
           const inputObj = (block.input && typeof block.input === "object") ? (block.input as any) : {};
           const rawPrompt = inputObj.question || inputObj.prompt || "";
