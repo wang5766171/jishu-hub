@@ -486,7 +486,10 @@ struct AcpElicitation {
 /// the enum const. Multi-question/multi-select elicitations are reduced to the
 /// first question, single-select (the A/B/C decision v0.6.0 targets); the
 /// single-value write-back is consistent with the PiRpc/codex runtimes.
-fn parse_acp_elicitation(params: &serde_json::Value) -> Option<AcpElicitation> {
+fn parse_acp_elicitation(
+    params: &serde_json::Value,
+    last_prompts: &Option<Vec<String>>,
+) -> Option<AcpElicitation> {
     let mode = params
         .get("mode")
         .and_then(|v| v.as_str())
@@ -517,30 +520,36 @@ fn parse_acp_elicitation(params: &serde_json::Value) -> Option<AcpElicitation> {
     }
 
     let mut questions = Vec::new();
-    for (content_field, field) in &question_fields {
-        let prompt = if question_fields.len() == 1 {
-            params
-                .get("message")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| {
-                    extract_actual_question(field)
-                        .map(|s| s.to_string())
-                        .unwrap_or_default()
-                })
-        } else {
-            extract_actual_question(field)
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| {
+    for (idx, &(content_field, field)) in question_fields.iter().enumerate() {
+        let prompt = last_prompts
+            .as_ref()
+            .and_then(|prompts| prompts.get(idx))
+            .cloned()
+            .unwrap_or_else(|| {
+                if question_fields.len() == 1 {
                     params
                         .get("message")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string()
-                })
-        };
-        let options = extract_enum_options(field).unwrap_or_default();
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| {
+                            extract_actual_question(field)
+                                .map(|s| s.to_string())
+                                .unwrap_or_default()
+                        })
+                } else {
+                    extract_actual_question(field)
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| {
+                            params
+                                .get("message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string()
+                        })
+                }
+            });
+        let options = extract_enum_options(field)?;
         questions.push(AcpQuestion {
             field_name: (*content_field).clone(),
             prompt,
@@ -582,6 +591,19 @@ fn is_generic_question_title(s: &str) -> bool {
         return suffix.chars().all(|c| c.is_ascii_digit());
     }
     false
+}
+
+fn extract_ask_user_prompts(update: &serde_json::Value) -> Option<Vec<String>> {
+    let raw_input = update.get("rawInput")
+        .or_else(|| update.get("input"))?;
+    let questions = raw_input.get("questions")?.as_array()?;
+    let mut prompts = Vec::new();
+    for q in questions {
+        if let Some(question_text) = q.get("question").and_then(|v| v.as_str()) {
+            prompts.push(question_text.to_string());
+        }
+    }
+    if prompts.is_empty() { None } else { Some(prompts) }
 }
 
 /// A `question_<n>` form field (not the `question_<n>_custom` companion).
@@ -961,6 +983,7 @@ async fn acp_connection_loop(
     // (result) can also be suppressed even when the tool name is missing
     // from the update event.
     let mut suppressed_acp_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut last_ask_user_prompts: Option<Vec<String>> = None;
 
     loop {
         let cmd_future = command_rx.recv();
@@ -1300,6 +1323,7 @@ async fn acp_connection_loop(
                                                     .unwrap_or_default();
                                                 if is_elicitation_only_tool(tool) {
                                                     suppressed_acp_calls.insert(call_id.to_string());
+                                                    last_ask_user_prompts = extract_ask_user_prompts(update);
                                                 }
                                             }
                                         }
@@ -1373,7 +1397,8 @@ async fn acp_connection_loop(
                                 continue;
                             };
                             let params = msg.get("params").cloned().unwrap_or_default();
-                            match parse_acp_elicitation(&params) {
+                            let prompts = last_ask_user_prompts.take();
+                            match parse_acp_elicitation(&params, &prompts) {
                                 Some(elic) => {
                                     // Register under the same key the frontend will
                                     // echo back as `request_id`, so RespondToInput's
@@ -1665,23 +1690,16 @@ pub(crate) fn normalize_acp_update(
                 .unwrap_or(serde_json::Value::Null);
             if call_id.is_empty() {
                 vec![]
+            } else if is_elicitation_only_tool(&tool) {
+                vec![]
             } else {
                 let interactions = interaction_requests_from_tool_call(&call_id, &tool, &input);
                 if interactions.is_empty() {
-                    // Elicitation-only tools (e.g. Claude Code's AskUserQuestion)
-                    // have their UI rendered entirely by a separate channel
-                    // (ACP `elicitation/create`). Suppress the ToolUseStart to
-                    // avoid a phantom "Tool" card stuck in "running" state while
-                    // the agent waits for the user's answer.
-                    if is_elicitation_only_tool(&tool) {
-                        vec![]
-                    } else {
-                        vec![NormalizedEvent::ToolUseStart {
-                            call_id,
-                            tool,
-                            input,
-                        }]
-                    }
+                    vec![NormalizedEvent::ToolUseStart {
+                        call_id,
+                        tool,
+                        input,
+                    }]
                 } else {
                     interactions
                 }
@@ -2257,7 +2275,7 @@ mod tests {
                 }
             }
         });
-        let elic = parse_acp_elicitation(&params).expect("single-choice form is parseable");
+        let elic = parse_acp_elicitation(&params, &None).expect("single-choice form is parseable");
         assert_eq!(elic.questions.len(), 1);
         let q = &elic.questions[0];
         assert_eq!(q.prompt, "Which approach do you prefer?");
@@ -2306,7 +2324,7 @@ mod tests {
                 }
             }
         });
-        let elic = parse_acp_elicitation(&params).expect("multi-question form is parseable");
+        let elic = parse_acp_elicitation(&params, &None).expect("multi-question form is parseable");
         assert_eq!(elic.questions.len(), 2);
         assert_eq!(elic.questions[0].prompt, "What deployment target?");
         assert_eq!(elic.questions[0].field_name, "question_1");
@@ -2314,6 +2332,37 @@ mod tests {
         assert_eq!(elic.questions[0].options[0].option_id, "K8s");
         assert_eq!(elic.questions[1].prompt, "What scaling strategy?");
         assert_eq!(elic.questions[1].field_name, "question_2");
+    }
+
+    #[test]
+    fn parses_multi_question_elicitation_with_stored_prompts() {
+        let params = json!({
+            "mode": "form",
+            "message": "Please answer the following questions.",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "question_1": {
+                        "type": "string",
+                        "title": "问题1",
+                        "oneOf": [{ "const": "A" }]
+                    },
+                    "question_2": {
+                        "type": "string",
+                        "title": "问题2",
+                        "oneOf": [{ "const": "B" }]
+                    }
+                }
+            }
+        });
+        let stored_prompts = Some(vec![
+            "你系统部署的方式是什么".to_string(),
+            "你要部署到 K8s 的工作负载是什么类型？".to_string(),
+        ]);
+        let elic = parse_acp_elicitation(&params, &stored_prompts).expect("multi-question form is parseable");
+        assert_eq!(elic.questions.len(), 2);
+        assert_eq!(elic.questions[0].prompt, "你系统部署的方式是什么");
+        assert_eq!(elic.questions[1].prompt, "你要部署到 K8s 的工作负载是什么类型？");
     }
 
     #[test]
@@ -2336,7 +2385,7 @@ mod tests {
                 }
             }
         });
-        let elic = parse_acp_elicitation(&params).expect("array/anyOf is parseable");
+        let elic = parse_acp_elicitation(&params, &None).expect("array/anyOf is parseable");
         assert_eq!(elic.questions.len(), 1);
         let q = &elic.questions[0];
         assert_eq!(q.options.len(), 2);
@@ -2349,7 +2398,7 @@ mod tests {
     #[test]
     fn url_mode_elicitation_is_not_renderable() {
         let params = json!({ "mode": "url", "url": "https://example/auth", "message": "Sign in" });
-        assert!(parse_acp_elicitation(&params).is_none());
+        assert!(parse_acp_elicitation(&params, &None).is_none());
     }
 
     #[test]
@@ -2363,7 +2412,7 @@ mod tests {
                 "properties": { "question_0": { "type": "string", "title": "Name" } }
             }
         });
-        assert!(parse_acp_elicitation(&params).is_none());
+        assert!(parse_acp_elicitation(&params, &None).is_none());
     }
 
     #[test]
@@ -2385,7 +2434,7 @@ mod tests {
                 }
             }
         });
-        let elic = parse_acp_elicitation(&params).unwrap();
+        let elic = parse_acp_elicitation(&params, &None).unwrap();
         assert_eq!(elic.questions.len(), 1);
         assert_eq!(
             elic.questions[0].options[0].description.as_deref(),
@@ -2413,8 +2462,7 @@ mod tests {
 
         // A legitimate prompt response (no method, has result) → should match.
         let response = json!({ "jsonrpc": "2.0", "id": prompt_id, "result": { "stopReason": "end_turn" } });
-        let is_response = response.get("method").is_none()
-            && (response.get("result").is_some() || response.get("error").is_some());
+        let is_response = response.get("method").is_none();
         assert!(is_response, "prompt response must be classified as response");
 
         // An elicitation/create request with the SAME id → must NOT match.
@@ -2439,13 +2487,12 @@ mod tests {
                 }
             }
         });
-        let is_response = elicitation.get("method").is_none()
-            && (elicitation.get("result").is_some() || elicitation.get("error").is_some());
+        let is_response = elicitation.get("method").is_none();
         assert!(!is_response, "elicitation/create request must NOT be classified as response");
 
         // Verify the elicitation is still parseable even when its id collides.
         let params = elicitation.get("params").unwrap();
-        let elic = parse_acp_elicitation(params).expect("elicitation should be parseable");
+        let elic = parse_acp_elicitation(params, &None).expect("elicitation should be parseable");
         assert_eq!(elic.questions.len(), 1);
         assert_eq!(elic.questions[0].options.len(), 2);
     }
@@ -2472,7 +2519,7 @@ mod tests {
                 }
             }
         });
-        let elic = parse_acp_elicitation(&params).unwrap();
+        let elic = parse_acp_elicitation(&params, &None).unwrap();
 
         let mut pending: HashMap<String, PendingElicitation> = HashMap::new();
         pending.insert(

@@ -290,6 +290,18 @@ where
 
     merge_tool_results(&mut messages);
 
+    // Merge consecutive assistant messages
+    let mut i = 1;
+    while i < messages.len() {
+        if messages[i].role == "assistant" && messages[i - 1].role == "assistant" {
+            let blocks: Vec<ContentBlock> = messages[i].content.drain(..).collect();
+            messages[i - 1].content.extend(blocks);
+            messages.remove(i);
+            continue;
+        }
+        i += 1;
+    }
+
     // Remove orphaned tool_result blocks (e.g. from interaction tools whose
     // tool_use was filtered out in parse_message). An orphan is a tool_result
     // whose tool_use_id has no matching tool_use in the same message.

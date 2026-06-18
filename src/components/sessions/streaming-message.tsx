@@ -104,6 +104,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
       }))
       .filter((item) => item.text.length > 0),
     ...interactionSplits
+      .filter((item) => item.text && item.text.trim().length > 0)
       .map((item, i) => ({
         kind: "interaction" as const,
         index: Math.max(0, Math.min(item.index, content.length)),

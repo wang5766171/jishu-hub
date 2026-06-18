@@ -216,6 +216,7 @@ class StreamStore {
       if (content.length > 0) {
         steerSplits = [...steerSplits, content.length];
         steerTexts = [...steerTexts, data.content];
+        content = freezeLastBlock(content);
       }
     } else if (data.kind === "interaction_request") {
       if (!interactionSplits.some((item) => item.requestId === data.request_id)) {
@@ -230,6 +231,7 @@ class StreamStore {
             origin: data.origin,
           },
         ];
+        content = freezeLastBlock(content);
       }
     } else if (data.kind === "sub_agent_event") {
       // Recursively surface inner event content (text/thinking) from sub-agents
@@ -377,7 +379,7 @@ function appendTextBlock(content: ContentBlock[], delta: string): ContentBlock[]
   if (!delta) return content;
   const next = [...content];
   const last = next[next.length - 1];
-  if (last?.type === "text") {
+  if (last?.type === "text" && !last.frozen) {
     next[next.length - 1] = { ...last, text: last.text + delta };
     return next;
   }
@@ -389,11 +391,21 @@ function appendThinkingBlock(content: ContentBlock[], delta: string): ContentBlo
   if (!delta) return content;
   const next = [...content];
   const last = next[next.length - 1];
-  if (last?.type === "thinking") {
+  if (last?.type === "thinking" && !last.frozen) {
     next[next.length - 1] = { ...last, thinking: last.thinking + delta };
     return next;
   }
   next.push({ type: "thinking", thinking: delta });
+  return next;
+}
+
+function freezeLastBlock(content: ContentBlock[]): ContentBlock[] {
+  if (content.length === 0) return content;
+  const next = [...content];
+  const last = next[next.length - 1];
+  if (last && (last.type === "text" || last.type === "thinking")) {
+    next[next.length - 1] = { ...last, frozen: true };
+  }
   return next;
 }
 

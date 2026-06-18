@@ -93,10 +93,10 @@ export interface ConversationInteractionSubmission {
 }
 
 export type ContentBlock =
-  | { type: "text"; text: string }
+  | { type: "text"; text: string; frozen?: boolean }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "tool_result"; tool_use_id: string; content: unknown }
-  | { type: "thinking"; thinking: string }
+  | { type: "thinking"; thinking: string; frozen?: boolean }
   | {
       type: "interaction";
       prompt: string;
