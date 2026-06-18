@@ -71,5 +71,6 @@ run-kiro.ps1
 graphify.zh-CN.md
 
 .agents/
+.workbuddy/
 .superpowers/
 third_party/pi-bundle/
