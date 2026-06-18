@@ -55,6 +55,7 @@ describe("streamStore interaction requests", () => {
         prompt: "Choose workload type",
         options: [],
         origin: undefined,
+        selectedOptions: [],
       },
     ]);
 

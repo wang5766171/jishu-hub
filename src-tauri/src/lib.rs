@@ -123,8 +123,6 @@ async fn persist_interaction_blocks(
     encoded_name: Option<String>,
     interactions: Vec<serde_json::Value>,
 ) -> Result<(), String> {
-    use std::io::Write;
-
     log::info!("persist_interaction_blocks called: session_path='{}', session_id={:?}, encoded_name={:?}, count={}",
         session_path, session_id, encoded_name, interactions.len());
 
@@ -141,7 +139,11 @@ async fn persist_interaction_blocks(
         if let Some(sess) = sessions.into_iter().find(|sess| sess.id == sid) {
             sess.path
         } else {
-            log::warn!("persist_interaction_blocks: session {} not found in adapter listing for {}", sid, enc);
+            log::warn!(
+                "persist_interaction_blocks: session {} not found in adapter listing for {}",
+                sid,
+                enc
+            );
             return Err(format!("Session not found in adapter listing: {sid}"));
         }
     } else {
@@ -159,45 +161,358 @@ async fn persist_interaction_blocks(
         return Ok(());
     }
 
-    // Build a single assistant message line containing all interaction blocks.
-    let content: Vec<serde_json::Value> = interactions
+    let original =
+        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read session file: {e}"))?;
+    let updated = insert_interaction_blocks_into_jsonl(&original, interactions)?;
+    std::fs::write(&path, updated).map_err(|e| format!("Failed to write session file: {e}"))?;
+    log::info!(
+        "persist_interaction_blocks: successfully updated {:?}",
+        path
+    );
+    Ok(())
+}
+
+#[derive(Debug)]
+struct InteractionBlockToInsert {
+    index: usize,
+    source_tool_id: Option<String>,
+    prompt: String,
+    identity_keys: Vec<String>,
+    value: serde_json::Value,
+}
+
+fn insert_interaction_blocks_into_jsonl(
+    input: &str,
+    interactions: Vec<serde_json::Value>,
+) -> Result<String, String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut blocks = interactions
         .into_iter()
-        .map(|mut v| {
-            // Ensure each block has type: "interaction"
-            v["type"] = serde_json::json!("interaction");
-            v
+        .filter_map(|mut value| {
+            let index = value
+                .get("index")
+                .and_then(serde_json::Value::as_u64)
+                .map(|n| n as usize)
+                .unwrap_or(usize::MAX);
+            if let Some(obj) = value.as_object_mut() {
+                obj.remove("index");
+            }
+            value["type"] = serde_json::json!("interaction");
+
+            let identity_keys = interaction_identity_keys(&value);
+            let primary_identity = identity_keys.first().cloned()?;
+            if !seen.insert(primary_identity) {
+                return None;
+            }
+
+            Some(InteractionBlockToInsert {
+                index,
+                source_tool_id: interaction_source_tool_id(&value),
+                prompt: string_field(&value, "prompt"),
+                identity_keys,
+                value,
+            })
         })
-        .collect();
+        .collect::<Vec<_>>();
 
-    let message = serde_json::json!({
-        "type": "assistant",
-        "message": {
-            "role": "assistant",
-            "content": content,
+    if blocks.is_empty() {
+        return Ok(input.to_string());
+    }
+    blocks.sort_by_key(|block| block.index);
+
+    let incoming_identities = blocks
+        .iter()
+        .flat_map(|block| block.identity_keys.iter().cloned())
+        .collect::<std::collections::HashSet<_>>();
+
+    let had_trailing_newline = input.ends_with('\n');
+    let mut lines = input
+        .lines()
+        .map(|line| Some(line.to_string()))
+        .collect::<Vec<_>>();
+
+    remove_existing_interaction_blocks(&mut lines, &incoming_identities)?;
+
+    let mut fallback_offsets: std::collections::HashMap<(usize, usize), usize> =
+        std::collections::HashMap::new();
+    for block in blocks {
+        if let Some((line_index, position)) = find_tool_anchor(&lines, &block) {
+            insert_interaction_block(&mut lines, line_index, position, block.value)?;
+            continue;
         }
-    });
 
-    let line = serde_json::to_string(&message).map_err(|e| e.to_string())?;
-
-    // Append to the JSONL file
-    let mut file = std::fs::OpenOptions::new()
-        .append(true)
-        .open(&path)
-        .map_err(|e| format!("Failed to open session file: {}", e))?;
-
-    // Ensure we start on a new line
-    let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
-    if file_size > 0 {
-        // Read last byte to check if file ends with newline
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
-        if !content.ends_with('\n') {
-            file.write_all(b"\n").map_err(|e| e.to_string())?;
+        if let Some(line_index) = find_last_assistant_with_visible_content(&lines) {
+            let offset_key = (line_index, block.index);
+            let offset = *fallback_offsets.get(&offset_key).unwrap_or(&0);
+            insert_interaction_block(
+                &mut lines,
+                line_index,
+                block.index.saturating_add(offset),
+                block.value,
+            )?;
+            fallback_offsets.insert(offset_key, offset + 1);
+            continue;
         }
+
+        let value = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [block.value],
+            }
+        });
+        lines.push(Some(
+            serde_json::to_string(&value).map_err(|e| e.to_string())?,
+        ));
     }
 
-    writeln!(file, "{}", line).map_err(|e| format!("Failed to write: {}", e))?;
-    log::info!("persist_interaction_blocks: successfully wrote line to {:?}", path);
+    let mut output = lines.into_iter().flatten().collect::<Vec<_>>().join("\n");
+    if had_trailing_newline && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    Ok(output)
+}
+
+fn remove_existing_interaction_blocks(
+    lines: &mut [Option<String>],
+    incoming_identities: &std::collections::HashSet<String>,
+) -> Result<(), String> {
+    for line in lines.iter_mut() {
+        let Some(raw_line) = line.as_ref() else {
+            continue;
+        };
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw_line) else {
+            continue;
+        };
+        if value.get("type").and_then(serde_json::Value::as_str) != Some("assistant") {
+            continue;
+        }
+
+        let Some(content_value) = value
+            .get_mut("message")
+            .and_then(|message| message.get_mut("content"))
+        else {
+            continue;
+        };
+        normalize_assistant_content(content_value);
+
+        let Some(content) = content_value.as_array_mut() else {
+            continue;
+        };
+        let was_interaction_only =
+            !content.is_empty() && content.iter().all(is_interaction_json_block);
+        content.retain(|block| {
+            if !is_interaction_json_block(block) {
+                return true;
+            }
+            let keys = interaction_identity_keys(block);
+            !keys.iter().any(|key| incoming_identities.contains(key))
+        });
+
+        if was_interaction_only && content.is_empty() {
+            *line = None;
+        } else {
+            *line = Some(serde_json::to_string(&value).map_err(|e| e.to_string())?);
+        }
+    }
     Ok(())
+}
+
+fn find_tool_anchor(
+    lines: &[Option<String>],
+    block: &InteractionBlockToInsert,
+) -> Option<(usize, usize)> {
+    for (line_index, line) in lines.iter().enumerate() {
+        let Some(raw_line) = line.as_ref() else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(raw_line) else {
+            continue;
+        };
+        if value.get("type").and_then(serde_json::Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(content) = value
+            .get("message")
+            .and_then(|message| message.get("content"))
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+
+        if let Some(source_tool_id) = block.source_tool_id.as_deref() {
+            if let Some(position) = content.iter().position(|item| {
+                item.get("type").and_then(serde_json::Value::as_str) == Some("tool_use")
+                    && item.get("id").and_then(serde_json::Value::as_str) == Some(source_tool_id)
+            }) {
+                return Some((line_index, position));
+            }
+        }
+
+        if !block.prompt.trim().is_empty() {
+            if let Some(position) = content
+                .iter()
+                .position(|item| tool_use_contains_prompt(item, &block.prompt))
+            {
+                return Some((line_index, position));
+            }
+        }
+    }
+    None
+}
+
+fn find_last_assistant_with_visible_content(lines: &[Option<String>]) -> Option<usize> {
+    lines
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(line_index, line)| {
+            let value = serde_json::from_str::<serde_json::Value>(line.as_ref()?).ok()?;
+            if value.get("type").and_then(serde_json::Value::as_str) != Some("assistant") {
+                return None;
+            }
+            let content = value
+                .get("message")
+                .and_then(|message| message.get("content"))?;
+            if content.as_str().is_some_and(|text| !text.trim().is_empty()) {
+                return Some(line_index);
+            }
+            let has_visible_content = content
+                .as_array()?
+                .iter()
+                .any(|item| !is_interaction_json_block(item));
+            has_visible_content.then_some(line_index)
+        })
+}
+
+fn insert_interaction_block(
+    lines: &mut [Option<String>],
+    line_index: usize,
+    position: usize,
+    block: serde_json::Value,
+) -> Result<(), String> {
+    let line = lines
+        .get_mut(line_index)
+        .and_then(Option::as_mut)
+        .ok_or_else(|| "assistant target line is missing".to_string())?;
+    let mut value: serde_json::Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
+    let content_value = value
+        .get_mut("message")
+        .and_then(|message| message.get_mut("content"))
+        .ok_or_else(|| "assistant message is missing content".to_string())?;
+    normalize_assistant_content(content_value);
+    let content = content_value
+        .as_array_mut()
+        .ok_or_else(|| "assistant message content is not an array".to_string())?;
+    let pos = position.min(content.len());
+    content.insert(pos, block);
+    *line = serde_json::to_string(&value).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn normalize_assistant_content(content_value: &mut serde_json::Value) {
+    if content_value.is_string() {
+        let text = content_value.as_str().unwrap_or_default().to_string();
+        *content_value = serde_json::json!([{ "type": "text", "text": text }]);
+    }
+}
+
+fn is_interaction_json_block(value: &serde_json::Value) -> bool {
+    value.get("type").and_then(serde_json::Value::as_str) == Some("interaction")
+}
+
+fn interaction_source_tool_id(value: &serde_json::Value) -> Option<String> {
+    let request_id =
+        string_field(value, "source_tool_id").if_empty_then(|| string_field(value, "request_id"));
+    if request_id.is_empty() {
+        return None;
+    }
+    if let Some((source, _)) = request_id.split_once(':') {
+        return (!source.trim().is_empty()).then(|| source.to_string());
+    }
+    let origin = string_field(value, "origin");
+    if origin == "acp_elicitation" {
+        if let Some((source, suffix)) = request_id.rsplit_once('_') {
+            if !source.trim().is_empty() && suffix.parse::<usize>().is_ok() {
+                return Some(source.to_string());
+            }
+        }
+    }
+    Some(request_id)
+}
+
+trait EmptyStringExt {
+    fn if_empty_then<F: FnOnce() -> String>(self, fallback: F) -> String;
+}
+
+impl EmptyStringExt for String {
+    fn if_empty_then<F: FnOnce() -> String>(self, fallback: F) -> String {
+        if self.is_empty() {
+            fallback()
+        } else {
+            self
+        }
+    }
+}
+
+fn interaction_identity_keys(value: &serde_json::Value) -> Vec<String> {
+    let mut keys = Vec::new();
+    let prompt = string_field(value, "prompt");
+    let answer = string_field(value, "answer");
+    let origin = string_field(value, "origin");
+    if !prompt.is_empty() || !answer.is_empty() {
+        keys.push(format!("qa:{origin}\n{prompt}\n{answer}"));
+    }
+
+    let request_id = string_field(value, "request_id");
+    if !request_id.is_empty() {
+        keys.push(format!("request:{request_id}"));
+    }
+
+    if keys.is_empty() {
+        keys.push(format!(
+            "json:{}",
+            serde_json::to_string(value).unwrap_or_default()
+        ));
+    }
+    keys
+}
+
+fn string_field(value: &serde_json::Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn tool_use_contains_prompt(value: &serde_json::Value, prompt: &str) -> bool {
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("tool_use") {
+        return false;
+    }
+    let Some(input) = value.get("input") else {
+        return false;
+    };
+    prompt_matches_question(input, prompt)
+        || input
+            .get("questions")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|questions| {
+                questions
+                    .iter()
+                    .any(|question| prompt_matches_question(question, prompt))
+            })
+}
+
+fn prompt_matches_question(value: &serde_json::Value, prompt: &str) -> bool {
+    ["question", "prompt", "header"].iter().any(|key| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            == Some(prompt.trim())
+    })
 }
 
 #[tauri::command]
@@ -2818,8 +3133,6 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     #[test]
     fn reads_text_file_preview() {
         let path =
@@ -2865,5 +3178,131 @@ mod tests {
         assert!(!super::is_allowed_install_command(
             "winget upgrade Git.Git; whoami"
         ));
+    }
+
+    #[test]
+    fn inserts_interaction_blocks_into_last_assistant_jsonl_message() {
+        let input = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"start"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Before"},{"type":"text","text":"After"}]}}"#;
+        let interactions = vec![serde_json::json!({
+            "index": 1,
+            "prompt": "Choose implementation order",
+            "options": [{"option_id": "backend", "label": "Backend first"}],
+            "answer": "Backend first",
+            "selected_options": ["backend"],
+            "origin": "acp_elicitation"
+        })];
+
+        let output = super::insert_interaction_blocks_into_jsonl(input, interactions).unwrap();
+        let last_line = output.lines().last().unwrap();
+        let value: serde_json::Value = serde_json::from_str(last_line).unwrap();
+        let content = value["message"]["content"].as_array().unwrap();
+
+        assert_eq!(content[0]["text"], "Before");
+        assert_eq!(content[1]["type"], "interaction");
+        assert_eq!(content[1]["prompt"], "Choose implementation order");
+        assert_eq!(content[2]["text"], "After");
+    }
+
+    #[test]
+    fn inserts_interaction_blocks_next_to_matching_tool_use_not_final_summary() {
+        let input = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"start"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Intro"},{"type":"tool_use","id":"call_abc","name":"AskUserQuestion","input":{}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Final summary"}]}}"#;
+        let interactions = vec![serde_json::json!({
+            "index": 99,
+            "request_id": "call_abc:1",
+            "prompt": "Choose implementation order",
+            "options": [],
+            "answer": "Backend first",
+            "selected_options": ["backend"],
+            "origin": "acp_elicitation"
+        })];
+
+        let output = super::insert_interaction_blocks_into_jsonl(input, interactions).unwrap();
+        let lines = output.lines().collect::<Vec<_>>();
+        let first_assistant: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        let first_content = first_assistant["message"]["content"].as_array().unwrap();
+        let final_assistant: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+        let final_content = final_assistant["message"]["content"].as_array().unwrap();
+
+        assert_eq!(first_content[0]["text"], "Intro");
+        assert_eq!(first_content[1]["type"], "interaction");
+        assert_eq!(first_content[1]["request_id"], "call_abc:1");
+        assert_eq!(first_content[2]["type"], "tool_use");
+        assert_eq!(final_content.len(), 1);
+        assert_eq!(final_content[0]["text"], "Final summary");
+    }
+
+    #[test]
+    fn moves_existing_interaction_only_tail_into_previous_assistant_and_dedupes() {
+        let input = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"start"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Before"},{"type":"text","text":"After"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"interaction","prompt":"Choose implementation order","answer":"Backend first","options":[],"origin":"acp_elicitation"}]}}"#;
+        let interactions = vec![serde_json::json!({
+            "index": 1,
+            "request_id": "17_0",
+            "prompt": "Choose implementation order",
+            "options": [],
+            "answer": "Backend first",
+            "selected_options": ["backend"],
+            "origin": "acp_elicitation"
+        })];
+
+        let output = super::insert_interaction_blocks_into_jsonl(input, interactions).unwrap();
+        let lines = output.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+
+        let value: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        let content = value["message"]["content"].as_array().unwrap();
+        let interaction_count = content
+            .iter()
+            .filter(|block| block["type"] == "interaction")
+            .count();
+
+        assert_eq!(interaction_count, 1);
+        assert_eq!(content[0]["text"], "Before");
+        assert_eq!(content[1]["type"], "interaction");
+        assert_eq!(content[1]["request_id"], "17_0");
+        assert_eq!(content[2]["text"], "After");
+    }
+
+    #[test]
+    fn dedupes_interaction_blocks_by_question_and_answer_when_request_ids_differ() {
+        let input = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"start"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Before"},{"type":"text","text":"After"}]}}"#;
+        let interactions = vec![
+            serde_json::json!({
+                "index": 1,
+                "request_id": "0_1",
+                "prompt": "Why did the hair stay dry?",
+                "options": [],
+                "answer": "Bald",
+                "selected_options": ["Bald"],
+                "origin": "acp_elicitation"
+            }),
+            serde_json::json!({
+                "index": 1,
+                "request_id": "duplicate_1",
+                "prompt": "Why did the hair stay dry?",
+                "options": [],
+                "answer": "Bald",
+                "selected_options": ["Bald"],
+                "origin": "acp_elicitation"
+            }),
+        ];
+
+        let output = super::insert_interaction_blocks_into_jsonl(input, interactions).unwrap();
+        let last_line = output.lines().last().unwrap();
+        let value: serde_json::Value = serde_json::from_str(last_line).unwrap();
+        let content = value["message"]["content"].as_array().unwrap();
+        let interactions = content
+            .iter()
+            .filter(|block| block["type"] == "interaction")
+            .collect::<Vec<_>>();
+
+        assert_eq!(interactions.len(), 1);
+        assert_eq!(interactions[0]["request_id"], "0_1");
+        assert_eq!(interactions[0]["prompt"], "Why did the hair stay dry?");
     }
 }

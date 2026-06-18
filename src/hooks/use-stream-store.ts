@@ -28,6 +28,8 @@ export interface InteractionSplit {
   options: Array<{ option_id: string; label: string; description?: string | null }>;
   /** Origin label for display (e.g. "extension_ui", "acp_elicitation"). */
   origin?: string;
+  /** Option ids selected by the user, captured when the response is submitted. */
+  selectedOptions?: string[];
 }
 
 /**
@@ -269,7 +271,12 @@ class StreamStore {
     this.scheduleFlush();
   }
 
-  recordInteractionResponse(sid: string, requestId: string, text: string): boolean {
+  recordInteractionResponse(
+    sid: string,
+    requestId: string,
+    text: string,
+    selectedOptions: string[] = [],
+  ): boolean {
     const key = this.canonical(sid);
     const prev = this.sessions.get(key);
     if (!prev) return false;
@@ -278,7 +285,7 @@ class StreamStore {
     const interactionSplits = prev.interactionSplits.map((item) => {
       if (item.requestId !== requestId) return item;
       found = true;
-      return { ...item, text };
+      return { ...item, text, selectedOptions };
     });
     if (!found) return false;
 

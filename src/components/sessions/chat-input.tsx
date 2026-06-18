@@ -541,13 +541,15 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
       ?? sessionId;
     if (abortKey) {
       await invokeCommand("abort_chat", { sessionId: abortKey });
+      await onAbort?.();
       streamStore.drop(abortKey);
       if (sessionId && sessionId !== abortKey) streamStore.drop(sessionId);
       if (activeSessionId && activeSessionId !== abortKey) streamStore.drop(activeSessionId);
       setSending(false);
       setActiveSessionId(null);
+    } else {
+      await onAbort?.();
     }
-    onAbort?.();
   };
 
   const handleDrop = async (e: React.DragEvent) => {

@@ -46,6 +46,8 @@ pub enum ContentBlock {
     Thinking { thinking: String },
     #[serde(rename = "interaction")]
     Interaction {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
         prompt: String,
         #[serde(default)]
         options: Vec<InteractionOptionInfo>,
@@ -241,6 +243,67 @@ fn merge_tool_results(messages: &mut Vec<Message>) {
     }
 }
 
+fn move_legacy_interaction_only_assistant_messages(messages: &mut Vec<Message>) {
+    let mut i = 1;
+    while i < messages.len() {
+        if is_interaction_only_assistant_message(&messages[i])
+            && messages[i - 1].role == "assistant"
+            && !is_interaction_only_assistant_message(&messages[i - 1])
+        {
+            let target = i - 1;
+            let message = messages.remove(i);
+            messages.insert(target, message);
+            i = target + 2;
+            continue;
+        }
+        i += 1;
+    }
+}
+
+fn is_interaction_only_assistant_message(message: &Message) -> bool {
+    message.role == "assistant"
+        && !message.content.is_empty()
+        && message
+            .content
+            .iter()
+            .all(|block| matches!(block, ContentBlock::Interaction { .. }))
+}
+
+fn dedupe_interaction_blocks(messages: &mut [Message]) {
+    for message in messages {
+        let mut seen = std::collections::HashSet::new();
+        message.content.retain(|block| match block {
+            ContentBlock::Interaction { .. } => seen.insert(interaction_block_key(block)),
+            _ => true,
+        });
+    }
+}
+
+fn interaction_block_key(block: &ContentBlock) -> String {
+    match block {
+        ContentBlock::Interaction {
+            request_id,
+            prompt,
+            answer,
+            origin,
+            ..
+        } => {
+            let semantic = format!(
+                "{}\n{}\n{}",
+                origin.clone().unwrap_or_default().trim(),
+                prompt.trim(),
+                answer.trim()
+            );
+            if prompt.trim().is_empty() && answer.trim().is_empty() {
+                request_id.clone().unwrap_or(semantic)
+            } else {
+                semantic
+            }
+        }
+        _ => String::new(),
+    }
+}
+
 pub fn load_session(path: &Path) -> Option<Session> {
     load_session_with_filter(path, |_| false)
 }
@@ -289,6 +352,7 @@ where
     }
 
     merge_tool_results(&mut messages);
+    move_legacy_interaction_only_assistant_messages(&mut messages);
 
     // Merge consecutive assistant messages
     let mut i = 1;
@@ -301,6 +365,7 @@ where
         }
         i += 1;
     }
+    dedupe_interaction_blocks(&mut messages);
 
     // Remove orphaned tool_result blocks (e.g. from interaction tools whose
     // tool_use was filtered out in parse_message). An orphan is a tool_result
@@ -484,5 +549,54 @@ mod tests {
             ContentBlock::ToolUse { name, .. } => assert_eq!(name, "Read"),
             other => panic!("Expected ToolUse(Read), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn load_session_moves_legacy_interaction_tail_before_final_assistant_and_dedupes() {
+        let dir = std::env::temp_dir().join(format!(
+            "jishu-session-legacy-interaction-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy.jsonl");
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"start"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Intro"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Final summary"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"interaction","request_id":"0_0","prompt":"Q1","answer":"A1","options":[],"origin":"acp_elicitation"},{"type":"interaction","request_id":"0_1","prompt":"Q2","answer":"A2","options":[],"origin":"acp_elicitation"},{"type":"interaction","request_id":"duplicate_1","prompt":"Q2","answer":"A2","options":[],"origin":"acp_elicitation"}]}}"#;
+        std::fs::write(&path, jsonl).unwrap();
+
+        let session = load_session(&path).unwrap();
+        let assistant = session
+            .messages
+            .iter()
+            .find(|message| message.role == "assistant")
+            .unwrap();
+
+        assert_eq!(assistant.content.len(), 4);
+        match &assistant.content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "Intro"),
+            other => panic!("Expected intro text, got {:?}", other),
+        }
+        match &assistant.content[1] {
+            ContentBlock::Interaction { prompt, answer, .. } => {
+                assert_eq!(prompt, "Q1");
+                assert_eq!(answer, "A1");
+            }
+            other => panic!("Expected Q1 interaction, got {:?}", other),
+        }
+        match &assistant.content[2] {
+            ContentBlock::Interaction { prompt, answer, .. } => {
+                assert_eq!(prompt, "Q2");
+                assert_eq!(answer, "A2");
+            }
+            other => panic!("Expected Q2 interaction, got {:?}", other),
+        }
+        match &assistant.content[3] {
+            ContentBlock::Text { text } => assert_eq!(text, "Final summary"),
+            other => panic!("Expected final text, got {:?}", other),
+        }
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

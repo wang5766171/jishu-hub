@@ -11,6 +11,7 @@ import { memo, useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, MessageCircleQuestion } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { dedupeInteractionItems } from "@/lib/interaction-tools";
 
 export interface InteractionCardOption {
   option_id: string;
@@ -68,10 +69,9 @@ export const InteractionCard = memo(function InteractionCard({
     : t("sessions.interactionDefault", { defaultValue: "向用户提问" });
 
   const itemsToRender: InteractionCardItem[] = useMemo(() => {
-    if (items && items.length > 0) {
-      return items;
-    }
-    return [
+    const rawItems = items && items.length > 0
+      ? items
+      : [
       {
         prompt: prompt ?? "",
         options,
@@ -79,12 +79,13 @@ export const InteractionCard = memo(function InteractionCard({
         selectedOptions,
       },
     ];
+    return dedupeInteractionItems(rawItems);
   }, [items, prompt, options, answer, selectedOptions]);
 
   return (
     <div
       className={cn(
-        "my-2 rounded-[6px] border transition-colors",
+        "w-full max-w-full rounded-[6px] border transition-colors",
         open
           ? "border-primary/30 bg-primary/[0.03]"
           : "border-border/50 bg-muted/20 hover:border-border/70",

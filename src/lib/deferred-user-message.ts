@@ -1,4 +1,5 @@
 import type { ContentBlock, Message } from "@/types";
+import { dedupeInteractionItems, isInteractionToolUseBlock } from "./interaction-tools";
 
 interface CommitAssistantThenDeferredUserInput {
   assistantContent: ContentBlock[];
@@ -109,13 +110,30 @@ export function commitAssistantWithUserInsertions({
 // assistant message (instead of splitting into user messages). This ensures
 // both the question (prompt/options) and the answer are persisted together.
 
-interface InteractionInsertion {
+export interface InteractionInsertion {
+  requestId?: string;
   index: number;
   prompt: string;
   options: Array<{ option_id: string; label: string; description?: string | null }>;
   answer: string;
   selectedOptions?: string[];
   origin?: string;
+}
+
+export interface InteractionSplitForCommit {
+  requestId: string;
+  index: number;
+  text: string | null;
+  prompt: string;
+  options: Array<{ option_id: string; label: string; description?: string | null }>;
+  selectedOptions?: string[];
+  origin?: string;
+}
+
+interface BuildInteractionInsertionsInput {
+  assistantContent: ContentBlock[];
+  interactionSplits: InteractionSplitForCommit[];
+  includePending?: boolean;
 }
 
 interface SteerInsertion {
@@ -139,6 +157,93 @@ interface CommitAssistantWithInteractionsResult {
   consumedSteerCount: number;
 }
 
+export function interactionToolIdFromRequestId(requestId: string, origin?: string): string {
+  const colonIndex = requestId.indexOf(":");
+  if (colonIndex > 0) return requestId.slice(0, colonIndex);
+
+  const acpSubRequest = origin === "acp_elicitation" ? requestId.match(/^(.+)_(\d+)$/) : null;
+  if (acpSubRequest) return acpSubRequest[1];
+
+  return requestId;
+}
+
+export function buildInteractionInsertions({
+  assistantContent,
+  interactionSplits,
+  includePending = false,
+}: BuildInteractionInsertionsInput): InteractionInsertion[] {
+  const insertions: Array<InteractionInsertion & { order: number }> = [];
+
+  interactionSplits.forEach((item, order) => {
+    const answer = item.text ?? "";
+    if (!includePending && answer.trim().length === 0) return;
+
+    const toolUseId = interactionToolIdFromRequestId(item.requestId, item.origin);
+    const toolIndex = assistantContent.findIndex(
+      (block) => block.type === "tool_use" && block.id === toolUseId,
+    );
+    const toolBlock = toolIndex >= 0 && assistantContent[toolIndex]?.type === "tool_use"
+      ? assistantContent[toolIndex]
+      : null;
+    const toolInput = toolBlock && typeof toolBlock.input === "object" && toolBlock.input !== null
+      ? toolBlock.input as Record<string, unknown>
+      : {};
+
+    const prompt = item.prompt.trim()
+      || stringFromUnknown(toolInput.question)
+      || stringFromUnknown(toolInput.prompt);
+    if (!prompt) return;
+
+    const options = item.options.length > 0
+      ? item.options
+      : parseInteractionOptions(toolInput.options);
+
+    insertions.push({
+      requestId: item.requestId,
+      index: Math.max(0, Math.min(toolIndex >= 0 ? toolIndex : item.index, assistantContent.length)),
+      prompt,
+      options,
+      answer,
+      selectedOptions: item.selectedOptions,
+      origin: item.origin,
+      order,
+    });
+  });
+
+  return dedupeInteractionItems(insertions)
+    .sort((a, b) => a.index - b.index || a.order - b.order)
+    .map(({ order: _order, ...item }) => item);
+}
+
+function stringFromUnknown(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function parseInteractionOptions(value: unknown): InteractionInsertion["options"] {
+  if (!Array.isArray(value)) return [];
+  const options: InteractionInsertion["options"] = [];
+  value.forEach((option, index) => {
+    if (typeof option === "string") {
+      options.push({ option_id: option, label: option });
+      return;
+    }
+    if (!option || typeof option !== "object") return;
+    const record = option as Record<string, unknown>;
+    const label = stringFromUnknown(record.label) || stringFromUnknown(record.text);
+    if (!label) return;
+    const description = stringFromUnknown(record.description);
+    options.push({
+      option_id: stringFromUnknown(record.option_id)
+        || stringFromUnknown(record.id)
+        || stringFromUnknown(record.value)
+        || `option_${index + 1}`,
+      label,
+      description: description || undefined,
+    });
+  });
+  return options;
+}
+
 /**
  * Commit assistant content with interactions embedded as `Interaction` blocks
  * (not as user messages). Steers are interleaved as user messages between
@@ -152,21 +257,6 @@ export function commitAssistantWithInteractions({
   error,
   timestamp = Date.now(),
 }: CommitAssistantWithInteractionsInput): CommitAssistantWithInteractionsResult {
-  // Helper: detect interaction tool_use blocks
-  const isInteractionTool = (name: string, input: any) => {
-    const normalized = name.split('/').pop()?.split(':').pop()?.replace(/-/g, '_').toLowerCase() || "";
-    const names = [
-      "request_user_input", "ask_user", "ask_user_input",
-      "askuserquestion", "ask_user_question",
-      "ask_question", "ask_choice", "choice_question",
-    ];
-    if (names.includes(normalized)) return true;
-    if (input && typeof input === "object") {
-      if ("options" in input && ("question" in input || "prompt" in input)) return true;
-    }
-    return false;
-  };
-
   const content = [...assistantContent];
 
   // Build a set of tool_use ids that have a corresponding interaction insertion.
@@ -179,10 +269,17 @@ export function commitAssistantWithInteractions({
       interactionToolUseIds.add(block.id);
     }
   }
+  const rawInteractionToolUseIds = new Set(
+    content
+      .filter(isInteractionToolUseBlock)
+      .map((block) => block.id),
+  );
 
   // Sort interactions by insertion index
-  const sortedInteractions = interactionInsertions
-    .filter((item) => item.answer.trim().length > 0 || item.prompt.trim().length > 0)
+  const sortedInteractions = dedupeInteractionItems(
+    interactionInsertions
+      .filter((item) => item.answer.trim().length > 0 || item.prompt.trim().length > 0),
+  )
     .map((item, order) => ({
       ...item,
       index: Math.max(0, Math.min(item.index, content.length)),
@@ -200,79 +297,80 @@ export function commitAssistantWithInteractions({
     }))
     .sort((a, b) => a.index - b.index || a.order - b.order);
 
-  // Merge all insertion points (steers split messages, interactions embed blocks)
-  const allIndices = new Set([
-    ...sortedSteers.map((s) => s.index),
-    ...sortedInteractions.map((i) => i.index),
-  ]);
-  const splitPoints = Array.from(allIndices).sort((a, b) => a - b);
-
   const messages: Message[] = [];
-  let previousIndex = 0;
 
-  for (const splitIdx of splitPoints) {
-    // Build the assistant segment content with interactions embedded
+  const consumedInteractionOrders = new Set<number>();
+  const appendInteraction = (
+    segmentContent: ContentBlock[],
+    ins: InteractionInsertion & { order: number },
+  ) => {
+    if (consumedInteractionOrders.has(ins.order)) return;
+    consumedInteractionOrders.add(ins.order);
+    const block: ContentBlock = {
+      type: "interaction",
+      prompt: ins.prompt,
+      options: ins.options,
+      answer: ins.answer,
+      selected_options: ins.selectedOptions,
+      origin: ins.origin,
+    };
+    if (ins.requestId) {
+      block.request_id = ins.requestId;
+    }
+    segmentContent.push(block);
+  };
+
+  const buildAssistantSegment = (startIndex: number, endIndex: number): ContentBlock[] => {
     const segmentContent: ContentBlock[] = [];
-    // Slice the content segment, filtering out tool_use+tool_result blocks
-    // that belong to an embedded interaction (avoid double-rendering).
-    const rawSeg = content.slice(previousIndex, splitIdx);
-    const segBlocks: typeof rawSeg = [];
-    for (let i = 0; i < rawSeg.length; i++) {
-      const block = rawSeg[i];
-      if (block.type === "tool_use" && interactionToolUseIds.has(block.id)) {
-        // Skip this tool_use, and also skip the immediately-following
-        // tool_result that references the same id.
-        continue;
+    for (let i = startIndex; i < endIndex; i++) {
+      for (const ins of sortedInteractions) {
+        if (ins.index === i) {
+          appendInteraction(segmentContent, ins);
+        }
       }
-      if (block.type === "tool_result" && interactionToolUseIds.has(block.tool_use_id || "")) {
-        continue;
-      }
-      segBlocks.push(block);
-    }
-    segmentContent.push(...segBlocks);
 
-    // Add any interaction blocks at this exact index
+      const block = content[i];
+      if (
+        block.type === "tool_use"
+        && (interactionToolUseIds.has(block.id) || rawInteractionToolUseIds.has(block.id))
+      ) {
+        continue;
+      }
+      if (
+        block.type === "tool_result"
+        && (
+          interactionToolUseIds.has(block.tool_use_id || "")
+          || rawInteractionToolUseIds.has(block.tool_use_id || "")
+        )
+      ) {
+        continue;
+      }
+      segmentContent.push(block);
+    }
+
     for (const ins of sortedInteractions) {
-      if (ins.index === splitIdx) {
-        segmentContent.push({
-          type: "interaction",
-          prompt: ins.prompt,
-          options: ins.options,
-          answer: ins.answer,
-          selected_options: ins.selectedOptions,
-          origin: ins.origin,
-        } as ContentBlock);
+      if (ins.index === endIndex) {
+        appendInteraction(segmentContent, ins);
       }
     }
+    return segmentContent;
+  };
 
-    // Push the assistant segment if it has content
+  let previousIndex = 0;
+  for (const steer of sortedSteers) {
+    const segmentContent = buildAssistantSegment(previousIndex, steer.index);
     if (segmentContent.length > 0) {
       messages.push({ role: "assistant", content: segmentContent, timestamp });
     }
-
-    // If a steer is at this index, add it as a user message
-    for (const steer of sortedSteers) {
-      if (steer.index === splitIdx) {
-        messages.push({
-          role: "user",
-          content: [{ type: "text", text: steer.text.trim() }],
-          timestamp,
-        });
-      }
-    }
-
-    previousIndex = splitIdx;
+    messages.push({
+      role: "user",
+      content: [{ type: "text", text: steer.text.trim() }],
+      timestamp,
+    });
+    previousIndex = steer.index;
   }
 
-  // Tail segment: remaining content, also filter interaction tool blocks
-  const rawTail = content.slice(previousIndex);
-  const tailContent: ContentBlock[] = [];
-  for (const block of rawTail) {
-    if (block.type === "tool_use" && interactionToolUseIds.has(block.id)) continue;
-    if (block.type === "tool_result" && interactionToolUseIds.has(block.tool_use_id || "")) continue;
-    tailContent.push(block);
-  }
-
+  const tailContent = buildAssistantSegment(previousIndex, content.length);
   if (error) {
     tailContent.push({ type: "text", text: error });
   }

@@ -9,6 +9,7 @@ import { ToolGroup, classifyToolName } from "@/components/observability/tool-cal
 import type { ToolCall } from "@/components/observability/tool-call-card";
 import type { ContentBlock } from "@/types";
 import { InteractionCard } from "./interaction-card";
+import { dedupeInteractionItems, isInteractionToolName, isInteractionToolUseBlock } from "@/lib/interaction-tools";
 
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS_COMPLETE = [rehypeHighlight];
@@ -68,14 +69,18 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   }, [scrollContainerRef, isNearBottom]);
 
   // Scroll to bottom when content updates (only while actively streaming)
-  const interactionTextKey = interactionSplits.map((item) => item.text ?? "").join("\n");
+  const interactionTextKey = interactionSplits
+    .map((item) => `${item.prompt}\n${item.text ?? ""}`)
+    .join("\n");
   useEffect(() => {
     if (isComplete) return;
     scrollToBottom();
   }, [displayText, thinkingText, errorText, toolUses.length, content.length, interactionTextKey, scrollToBottom, isComplete]);
 
   // Map streaming tool calls to the same card model used by persisted messages.
-  const streamToolCalls: ToolCall[] = toolUses.map((tool, i) => ({
+  const streamToolCalls: ToolCall[] = toolUses
+    .filter((tool) => !isInteractionToolName(tool.name))
+    .map((tool, i) => ({
     id: tool.id || `stream-${i}-${tool.name}`,
     toolName: tool.name,
     kind: classifyToolName(tool.name),
@@ -103,14 +108,18 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
         order: i,
       }))
       .filter((item) => item.text.length > 0),
-    ...interactionSplits
-      .filter((item) => item.text && item.text.trim().length > 0)
+    ...dedupeInteractionItems(interactionSplits.map((item) => ({
+      ...item,
+      answer: item.text ?? "",
+    })))
+      .filter((item) => item.prompt.trim().length > 0)
       .map((item, i) => ({
         kind: "interaction" as const,
         index: Math.max(0, Math.min(item.index, content.length)),
         text: item.text ?? "",
         prompt: item.prompt ?? "",
         options: item.options ?? [],
+        selectedOptions: item.selectedOptions,
         origin: item.origin,
         order: sanitizedSplits.length + i,
       })),
@@ -125,6 +134,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
           prompt: string;
           options: Array<{ option_id: string; label: string; description?: string | null }>;
           text: string;
+          selectedOptions?: string[];
         }>;
         origin?: string;
       };
@@ -138,6 +148,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
           prompt: ins.prompt,
           options: ins.options,
           text: ins.text,
+          selectedOptions: ins.selectedOptions,
         });
       } else {
         groupedInsertions.push({
@@ -147,6 +158,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
             prompt: ins.prompt,
             options: ins.options,
             text: ins.text,
+            selectedOptions: ins.selectedOptions,
           }],
           origin: ins.origin,
         });
@@ -169,6 +181,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
           prompt: string;
           options: Array<{ option_id: string; label: string; description?: string | null }>;
           answer: string;
+          selectedOptions?: string[];
         }>;
         origin?: string;
       };
@@ -187,6 +200,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
           prompt: item.prompt,
           options: item.options,
           answer: item.text,
+          selectedOptions: item.selectedOptions,
         })),
         origin: insertion.origin,
       });
@@ -241,12 +255,20 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
 
         if (part.kind === "interaction") {
           return (
-            <InteractionCard
-              key={`interaction-${i}`}
-              items={part.items}
-              origin={part.origin}
-              defaultOpen={false}
-            />
+            <div key={`interaction-${i}`} className="w-full">
+              <div className="max-w-full min-w-0 flex flex-col">
+                <div className="flex items-center gap-2 mb-0.5 text-[11px]">
+                  <span className="font-medium text-muted-foreground">{t("sessions.assistant")}</span>
+                </div>
+                <div className="rounded-xl bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)] px-3 py-2 overflow-hidden min-w-0 max-w-full">
+                  <InteractionCard
+                    items={part.items}
+                    origin={part.origin}
+                    defaultOpen={false}
+                  />
+                </div>
+              </div>
+            </div>
           );
         }
 
@@ -355,6 +377,11 @@ type StreamRenderItem =
 
 function buildStreamRenderItems(content: ContentBlock[], calls: ToolCall[]): StreamRenderItem[] {
   const callMap = new Map(calls.map((call) => [call.id, call]));
+  const interactionToolUseIds = new Set(
+    content
+      .filter(isInteractionToolUseBlock)
+      .map((block) => block.id),
+  );
   const items: StreamRenderItem[] = [];
   let pendingTools: ToolCall[] = [];
 
@@ -366,11 +393,15 @@ function buildStreamRenderItems(content: ContentBlock[], calls: ToolCall[]): Str
 
   for (const block of content) {
     if (block.type === "tool_use") {
+      if (interactionToolUseIds.has(block.id)) continue;
       const call = callMap.get(block.id);
       if (call) pendingTools.push(call);
       continue;
     }
-    if (block.type === "tool_result") continue;
+    if (block.type === "tool_result") {
+      if (interactionToolUseIds.has(block.tool_use_id)) continue;
+      continue;
+    }
     flushTools();
     items.push({ kind: "block", block });
   }

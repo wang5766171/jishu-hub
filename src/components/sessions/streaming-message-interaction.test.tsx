@@ -1,5 +1,5 @@
 import i18n from "@/i18n";
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { streamStore } from "@/hooks/use-stream-store";
@@ -66,5 +66,75 @@ describe("StreamingMessage interaction ordering", () => {
     expect(text.indexOf("Ask user")).toBeLessThan(
       text.indexOf("Use a StatefulSet."),
     );
+  });
+
+  it("renders a pending interaction request as the same collapsed card before it is answered", () => {
+    streamStore.start(sessionId, null);
+    streamStore.push(sessionId, chunk({
+      kind: "text_delta",
+      delta: "I need one choice.",
+    }));
+    streamStore.push(sessionId, chunk({
+      kind: "interaction_request",
+      request_id: "req-1",
+      prompt: "Choose workload type",
+      options: [],
+      allow_multiple: false,
+      allow_custom_text: true,
+      required: true,
+      origin: "acp_elicitation",
+    }));
+
+    const { container } = render(
+      <StreamingMessage sessionId={sessionId} />,
+    );
+
+    expect(container.textContent ?? "").toContain("Ask user");
+  });
+
+  it("does not render a raw AskUserQuestion tool card beside the interaction card", () => {
+    streamStore.start(sessionId, null);
+    streamStore.push(sessionId, chunk({
+      kind: "text_delta",
+      delta: "Answer these:",
+    }));
+    streamStore.push(sessionId, chunk({
+      kind: "interaction_request",
+      request_id: "0_0",
+      prompt: "Question 1",
+      options: [],
+      allow_multiple: false,
+      allow_custom_text: true,
+      required: true,
+      origin: "acp_elicitation",
+    }));
+    streamStore.recordInteractionResponse(sessionId, "0_0", "A");
+    streamStore.push(sessionId, chunk({
+      kind: "interaction_request",
+      request_id: "duplicate_0",
+      prompt: "Question 1",
+      options: [],
+      allow_multiple: false,
+      allow_custom_text: true,
+      required: true,
+      origin: "acp_elicitation",
+    }));
+    streamStore.recordInteractionResponse(sessionId, "duplicate_0", "A");
+    streamStore.push(sessionId, chunk({
+      kind: "message",
+      content: [{
+        type: "tool_use",
+        id: "call-quiz",
+        name: "AskUserQuestion",
+        input: {
+          questions: [{ question: "Question 1", options: [{ label: "A" }] }],
+        },
+      }],
+    }));
+
+    render(<StreamingMessage sessionId={sessionId} />);
+
+    expect(screen.getByText("Ask user")).toBeInTheDocument();
+    expect(screen.queryByText("Tool")).not.toBeInTheDocument();
   });
 });

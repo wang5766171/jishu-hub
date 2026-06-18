@@ -99,6 +99,7 @@ export type ContentBlock =
   | { type: "thinking"; thinking: string; frozen?: boolean }
   | {
       type: "interaction";
+      request_id?: string;
       prompt: string;
       options?: Array<{ option_id: string; label: string; description?: string | null }>;
       answer: string;

@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
-import { streamStore, useSessionStream } from "@/hooks/use-stream-store";
+import { streamStore, useSessionStream, type SessionStreamState } from "@/hooks/use-stream-store";
 import { MessageView, type MessageSearchNavigation, type MessageSearchStatus } from "@/components/sessions/message-view";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
 import { ChatInput, type StagedGuideApi } from "@/components/sessions/chat-input";
@@ -27,7 +27,11 @@ import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { searchSessions } from "@/lib/session-search";
 import { openFloatingSession } from "@/lib/floating-window";
-import { commitAssistantWithInteractions } from "@/lib/deferred-user-message";
+import {
+  buildInteractionInsertions,
+  commitAssistantWithInteractions,
+  type InteractionInsertion,
+} from "@/lib/deferred-user-message";
 import {
   formatInteractionReply,
   formatInteractionResponseValue,
@@ -56,6 +60,32 @@ function TerminalIcon(props: React.SVGProps<SVGSVGElement>) {
       <line x1="13" y1="16" x2="17" y2="16" />
     </svg>
   );
+}
+
+function buildAssistantContentFromStreamState(state: SessionStreamState | null | undefined): ContentBlock[] {
+  if (!state) return [];
+  if (state.content.length > 0) return [...state.content];
+
+  const assistantContent: ContentBlock[] = [];
+  if (state.thinking) assistantContent.push({ type: "thinking", thinking: state.thinking });
+  state.tools.forEach((tool, idx) => {
+    const id = tool.id || `stream-${idx}-${tool.name}`;
+    assistantContent.push({
+      type: "tool_use",
+      id,
+      name: tool.name,
+      input: tool.input,
+    });
+    if (tool.output !== undefined) {
+      assistantContent.push({
+        type: "tool_result",
+        tool_use_id: id,
+        content: tool.output,
+      });
+    }
+  });
+  if (state.text) assistantContent.push({ type: "text", text: state.text });
+  return assistantContent;
 }
 
 function formatRelativeTime(
@@ -849,58 +879,6 @@ export function ChatPage({
           // goes stale once the agent emits more content after the request.
           // Instead, after we've built the final assistantContent, re-scan it to
           // find each answered interaction's tool_use block and use its REAL index.
-          const isInteractionToolName = (name: string) => {
-            const normalized = name.split('/').pop()?.split(':').pop()?.replace(/-/g, '_').toLowerCase() || "";
-            return [
-              "request_user_input", "ask_user", "ask_user_input",
-              "askuserquestion", "ask_user_question",
-              "ask_question", "ask_choice", "choice_question",
-            ].includes(normalized);
-          };
-          const answeredSplits = (state?.interactionSplits ?? []).filter((item) => {
-            const hasAnswer = (item.text ?? "").trim().length > 0;
-            const hasPrompt = (item.prompt ?? "").trim().length > 0;
-            return hasAnswer && hasPrompt;
-          });
-          const interactionInsertions: Array<{
-            index: number;
-            prompt: string;
-            options: Array<{ option_id: string; label: string; description?: string | null }>;
-            answer: string;
-            selectedOptions?: string[];
-            origin?: string;
-          }> = [];
-          for (const item of answeredSplits) {
-            // Find the tool_use block in final assistantContent by matching id
-            const realIdx = assistantContent.findIndex(
-              (b) => b.type === "tool_use" && b.id === item.id
-            );
-            if (realIdx < 0) {
-              console.warn(`[interaction] tool_use id=${item.id} not found in final content; skipping persist for prompt="${item.prompt?.slice(0,40)}"`);
-              continue;
-            }
-            const toolBlock = assistantContent[realIdx] as any;
-            const inputObj = (toolBlock.input && typeof toolBlock.input === "object") ? toolBlock.input : {};
-            const rawOptions = Array.isArray(inputObj.options) ? inputObj.options : [];
-            const parsedOptions = rawOptions.map((opt: any) => {
-              if (typeof opt === "string") return { option_id: opt, label: opt };
-              return {
-                option_id: opt.option_id || opt.id || "",
-                label: opt.label || opt.text || opt.label || "",
-                description: opt.description,
-              };
-            });
-            const normalizedName = (toolBlock.name || "").split('/').pop()?.split(':').pop()?.replace(/-/g, '_').toLowerCase() || "";
-            const isAcp = normalizedName === "askuserquestion" || normalizedName === "ask_user_question";
-            interactionInsertions.push({
-              index: realIdx,
-              prompt: item.prompt ?? "",
-              options: parsedOptions,
-              answer: item.text ?? "",
-              selectedOptions: item.selectedOptions ?? [],
-              origin: isAcp ? "acp_elicitation" : "extension_ui",
-            });
-          }
           // Sanitize + sort: each split marks the start of a new segment.
           const steerSplits = Array.from(new Set(state?.steerSplits ?? []))
             .filter((idx) => idx > 0 && idx < (state?.content.length ?? 0))
@@ -911,28 +889,11 @@ export function ChatPage({
           // no-tool turn). Drives the pre-created "thinking" state below.
           let followUpExpected = false;
 
-          const assistantContent: ContentBlock[] = [];
-          if (state?.content.length) {
-            assistantContent.push(...state.content);
-          } else {
-            if (state?.thinking) assistantContent.push({ type: "thinking", thinking: state.thinking });
-            state?.tools.forEach((tool, idx) => {
-              assistantContent.push({
-                type: "tool_use",
-                id: tool.id || `stream-${idx}-${tool.name}`,
-                name: tool.name,
-                input: tool.input,
-              });
-              if (tool.output !== undefined) {
-                assistantContent.push({
-                  type: "tool_result",
-                  tool_use_id: tool.id || `stream-${idx}-${tool.name}`,
-                  content: tool.output,
-                });
-              }
-            });
-            if (state?.text) assistantContent.push({ type: "text", text: state.text });
-          }
+          const assistantContent = buildAssistantContentFromStreamState(state);
+          const interactionInsertions = buildInteractionInsertions({
+            assistantContent,
+            interactionSplits: state?.interactionSplits ?? [],
+          });
 
           // Remove the first `count` steers from the session queue. Reads the
           // CURRENT ref (not the `queuedSteers` snapshot) so successive calls
@@ -1078,6 +1039,8 @@ export function ChatPage({
               sessionId: finalKey,
               encodedName: projectIdRef.current,
               interactions: interactionInsertions.map(ins => ({
+                index: ins.index,
+                request_id: ins.requestId ?? null,
                 prompt: ins.prompt,
                 options: ins.options,
                 answer: ins.answer,
@@ -1263,6 +1226,7 @@ export function ChatPage({
           interaction.sessionId,
           submission.requestId,
           value,
+          submission.selectedOptionIds,
         );
       }
       return;
@@ -1894,21 +1858,83 @@ export function ChatPage({
               onInteractionSubmit={handleInteractionSubmit}
               onAbort={async () => {
                 if (selectedSession) {
+                  const state = streamStore.getState(selectedSession);
+                  const finalKey = state?.resolvedId ?? selectedSession;
+                  if (state) {
+                    const newMessages: Message[] = [];
+                    if (state.pendingUserMessage) {
+                      newMessages.push({
+                        role: "user",
+                        content: [{ type: "text", text: state.pendingUserMessage }],
+                        timestamp: Date.now(),
+                      });
+                    }
+                    const assistantContent = buildAssistantContentFromStreamState(state);
+                    const interactionInsertions = buildInteractionInsertions({
+                      assistantContent,
+                      interactionSplits: state.interactionSplits,
+                      includePending: true,
+                    });
+                    const committed = commitAssistantWithInteractions({
+                      assistantContent,
+                      interactionInsertions,
+                      error: state.error,
+                    });
+                    newMessages.push(...committed.messages);
+
+                    if (newMessages.length > 0) {
+                      const baseMessages =
+                        sessionMessagesCacheRef.current.get(finalKey)
+                        ?? sessionMessagesCacheRef.current.get(selectedSession)
+                        ?? [];
+                      const updated = [...baseMessages, ...newMessages];
+                      sessionMessagesCacheRef.current.set(finalKey, updated);
+                      if (selectedSession !== finalKey) {
+                        sessionMessagesCacheRef.current.set(selectedSession, updated);
+                      }
+                      setSessionMessages(updated);
+                    }
+
+                    if (interactionInsertions.length > 0) {
+                      const sessionList = sessionsRef.current;
+                      const sessionPath = sessionList?.find(s => s.id === finalKey)?.path
+                        ?? sessionList?.find(s => s.id === selectedSession)?.path
+                        ?? "";
+                      invokeCommand("persist_interaction_blocks", {
+                        sessionPath,
+                        sessionId: finalKey,
+                        encodedName: projectId,
+                        interactions: interactionInsertions.map((ins: InteractionInsertion) => ({
+                          index: ins.index,
+                          request_id: ins.requestId ?? null,
+                          prompt: ins.prompt,
+                          options: ins.options,
+                          answer: ins.answer,
+                          selected_options: ins.selectedOptions ?? [],
+                          origin: ins.origin ?? null,
+                        })),
+                      }).catch((err: unknown) => {
+                        console.warn("Failed to persist interaction blocks after abort:", err);
+                      });
+                    }
+                  }
+
                   setPendingInteractions((current) =>
                     current.filter((item) => item.sessionId !== selectedSession),
                   );
-                  // Refresh messages from backend so persisted content shows
-                  // up in the UI even when turn_complete hasn't fired yet
-                  // (e.g. user aborts during a pending interaction).
-                  try {
-                    const msgs = await invokeCommand<Message[]>("get_session_messages", {
-                      sessionId: selectedSession,
-                      encodedName: projectId,
-                    });
-                    sessionMessagesCacheRef.current.set(selectedSession, msgs);
-                    setSessionMessages(msgs);
-                  } catch (e) {
-                    console.error("Failed to refresh messages after abort", e);
+                  if (!state) {
+                    // Refresh messages from backend so persisted content shows
+                    // up in the UI even when turn_complete hasn't fired yet.
+                    try {
+                      const msgs = await invokeCommand<Message[]>("get_session_messages", {
+                        sessionId: selectedSession,
+                        encodedName: projectId,
+                      });
+                      sessionMessagesCacheRef.current.set(selectedSession, msgs);
+                      setSessionMessages(msgs);
+                    } catch (e) {
+                      console.error("Failed to refresh messages after abort", e);
+                    }
                   }
                 }
               }}

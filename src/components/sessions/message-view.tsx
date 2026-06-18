@@ -11,6 +11,7 @@ import { InlineImages, stripImagePrompt } from "./inline-image";
 import { ToolGroup, classifyToolName } from "@/components/observability/tool-call-card";
 import type { ToolCall } from "@/components/observability/tool-call-card";
 import { InteractionCard } from "./interaction-card";
+import { isInteractionToolName, looksLikeInteractionToolInput } from "@/lib/interaction-tools";
 
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS = [rehypeHighlight];
@@ -253,20 +254,15 @@ function buildRenderRows(messages: Message[]): RenderRow[] {
 }
 
 const isInteractionTool = (name: string, input: any) => {
-  const normalized = name.split('/').pop()?.split(':').pop()?.replace(/-/g, '_').toLowerCase() || "";
-  const names = ["request_user_input", "ask_user", "ask_user_input", "askuserquestion", "ask_user_question", "ask_question", "ask_choice", "choice_question"];
-  if (names.includes(normalized)) return true;
-
-  if (input && typeof input === "object") {
-    if ("options" in input && "question" in input) return true;
-    if ("options" in input && "prompt" in input) return true;
-  }
-  return false;
+  return isInteractionToolName(name) || looksLikeInteractionToolInput(input);
 };
 
 function buildRenderItemsForMessages(messages: Message[], messageIndices: number[], resultMap: Map<string, string>): RenderItem[] {
   const items: RenderItem[] = [];
   let pendingTools: ToolCall[] = [];
+  const hasPersistedInteraction = messageIndices.some((messageIndex) =>
+    messages[messageIndex].content.some((block) => block.type === "interaction"),
+  );
 
   const flushTools = () => {
     if (pendingTools.length === 0) return;
@@ -280,6 +276,9 @@ function buildRenderItemsForMessages(messages: Message[], messageIndices: number
       if (block.type === "tool_use") {
         if (isInteractionTool(block.name, block.input)) {
           flushTools();
+          if (hasPersistedInteraction) {
+            return;
+          }
           const inputObj = (block.input && typeof block.input === "object") ? (block.input as any) : {};
           const rawPrompt = inputObj.question || inputObj.prompt || "";
           const rawOptions = Array.isArray(inputObj.options) ? inputObj.options : [];
