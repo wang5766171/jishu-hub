@@ -90,7 +90,6 @@ export function InteractionComposer({
       )}
       aria-labelledby={`interaction-${request.requestId}`}
     >
-      <div className="px-4 py-3">
       <div className="mb-2.5 flex items-start gap-2.5">
         <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background/75 text-[var(--icon-action)] shadow-xs">
           <ListChecks className="h-4 w-4" />
@@ -214,8 +213,6 @@ export function InteractionComposer({
             ? t("sessions.interactionSubmitting")
             : t("sessions.interactionSubmit")}
         </Button>
-      </div>
-      </div>
       </div>
     </div>
   );
