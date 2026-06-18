@@ -72,6 +72,8 @@ interface ChatInputProps {
   /** Called when user clicks "guide" on a staged message during streaming.
    *  For Jishu Agent: steer. For others: parent should stop + send. */
   onGuideStaged?: (content: string) => Promise<void>;
+  /** Called when the user clicks the Stop button and the session is aborted. */
+  onAbort?: () => void;
   /** When provided, the parent can auto-send staged guides at turn_complete
    *  (Route 2) and share the claimed-id dedup. */
   stagedApiRef?: React.MutableRefObject<StagedGuideApi | null>;
@@ -103,6 +105,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   interactionRequest = null,
   onInteractionSubmit,
   onGuideStaged,
+  onAbort,
   stagedApiRef,
 }: ChatInputProps, ref) {
   const { t } = useTranslation();
@@ -544,6 +547,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
       setSending(false);
       setActiveSessionId(null);
     }
+    onAbort?.();
   };
 
   const handleDrop = async (e: React.DragEvent) => {

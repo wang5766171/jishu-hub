@@ -115,7 +115,7 @@ export function InteractionComposer({
               disabled={disabled || submitting}
               onClick={() => toggleOption(option.optionId)}
               className={cn(
-                "flex min-h-12 items-start gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-colors",
+                "flex min-h-12 items-start gap-2.5 rounded-[6px] border px-3 py-2.5 text-left transition-colors",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
                 selected
                   ? "border-primary/55 bg-primary/10 text-foreground shadow-xs"
@@ -150,7 +150,7 @@ export function InteractionComposer({
             disabled={disabled || submitting}
             onClick={toggleCustom}
             className={cn(
-              "flex min-h-12 items-start gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-colors",
+              "flex min-h-12 items-start gap-2.5 rounded-[6px] border px-3 py-2.5 text-left transition-colors",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
               customSelected
                 ? "border-primary/55 bg-primary/10 text-foreground shadow-xs"
@@ -186,7 +186,7 @@ export function InteractionComposer({
           disabled={disabled || submitting}
           rows={2}
           placeholder={t("sessions.interactionCustomPlaceholder")}
-          className="mt-2.5 min-h-16 w-full resize-none rounded-xl border border-input bg-background/70 px-3 py-2 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/30"
+          className="mt-2.5 min-h-16 w-full resize-none rounded-[6px] border border-input bg-background/70 px-3 py-2 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/30"
         />
       ) : null}
 

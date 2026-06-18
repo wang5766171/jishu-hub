@@ -84,7 +84,7 @@ export const InteractionCard = memo(function InteractionCard({
   return (
     <div
       className={cn(
-        "my-2 rounded-xl border transition-colors",
+        "my-2 rounded-[6px] border transition-colors",
         open
           ? "border-primary/30 bg-primary/[0.03]"
           : "border-border/50 bg-muted/20 hover:border-border/70",

@@ -1839,6 +1839,13 @@ export function ChatPage({
               onAccessModeChange={handleAccessModeChange}
               interactionRequest={activeInteraction?.request}
               onInteractionSubmit={handleInteractionSubmit}
+              onAbort={() => {
+                if (selectedSession) {
+                  setPendingInteractions((current) =>
+                    current.filter((item) => item.sessionId !== selectedSession),
+                  );
+                }
+              }}
               onGuideStaged={
                 supportsSteer
                   ? async (content: string) => {
