@@ -10,6 +10,7 @@ import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
 import { ToolGroup, classifyToolName } from "@/components/observability/tool-call-card";
 import type { ToolCall } from "@/components/observability/tool-call-card";
+import { InteractionCard } from "./interaction-card";
 
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS = [rehypeHighlight];
@@ -195,6 +196,16 @@ function renderBlock(
       return <TextBlock text={block.text} query={query} dark={dark} matchOffset={matchOffset} currentMatch={currentMatch} />;
     case "thinking":
       return <ThinkingBlock block={block} />;
+    case "interaction":
+      return (
+        <InteractionCard
+          prompt={block.prompt}
+          options={block.options}
+          answer={block.answer}
+          selectedOptions={block.selected_options}
+          origin={block.origin}
+        />
+      );
     default:
       return null;
   }
@@ -240,6 +251,18 @@ function buildRenderRows(messages: Message[]): RenderRow[] {
   return rows;
 }
 
+const isInteractionTool = (name: string, input: any) => {
+  const normalized = name.split('/').pop()?.split(':').pop()?.replace(/-/g, '_').toLowerCase() || "";
+  const names = ["request_user_input", "ask_user", "ask_user_input", "askuserquestion", "ask_user_question", "ask_question", "ask_choice", "choice_question"];
+  if (names.includes(normalized)) return true;
+
+  if (input && typeof input === "object") {
+    if ("options" in input && "question" in input) return true;
+    if ("options" in input && "prompt" in input) return true;
+  }
+  return false;
+};
+
 function buildRenderItemsForMessages(messages: Message[], messageIndices: number[], resultMap: Map<string, string>): RenderItem[] {
   const items: RenderItem[] = [];
   let pendingTools: ToolCall[] = [];
@@ -254,6 +277,45 @@ function buildRenderItemsForMessages(messages: Message[], messageIndices: number
     const message = messages[messageIndex];
     message.content.forEach((block, blockIndex) => {
       if (block.type === "tool_use") {
+        console.log("[ToolUse Debug] Rendering tool call:", {
+          name: block.name,
+          input: block.input,
+          output: resultMap.get(block.id || ""),
+        });
+
+        if (isInteractionTool(block.name, block.input)) {
+          flushTools();
+          const inputObj = (block.input && typeof block.input === "object") ? (block.input as any) : {};
+          const rawPrompt = inputObj.question || inputObj.prompt || "";
+          const rawOptions = Array.isArray(inputObj.options) ? inputObj.options : [];
+          const rawAnswer = resultMap.get(block.id) || "";
+
+          const parsedOptions = rawOptions.map((opt: any) => {
+            if (typeof opt === "string") {
+              return { option_id: opt, label: opt };
+            }
+            return {
+              option_id: opt.option_id || opt.id || "",
+              label: opt.label || opt.text || opt.label || "",
+              description: opt.description,
+            };
+          });
+
+          items.push({
+            kind: "block",
+            block: {
+              type: "interaction",
+              prompt: rawPrompt,
+              options: parsedOptions,
+              answer: rawAnswer,
+              origin: "acp_elicitation",
+            },
+            messageIndex,
+            blockIndex,
+          });
+          return;
+        }
+
         const id = block.id || `${block.name}-${messageIndex}-${blockIndex}`;
         pendingTools.push({
           id,
