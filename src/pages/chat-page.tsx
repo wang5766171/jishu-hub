@@ -890,9 +890,16 @@ export function ChatPage({
           let followUpExpected = false;
 
           const assistantContent = buildAssistantContentFromStreamState(state);
+          // An aborted turn (e.g. the user hit Stop on Claude Code's ACP
+          // transport, which emits TurnComplete(Aborted)) must still embed any
+          // pending, UNANSWERED interaction — otherwise the question vanishes
+          // the moment the stream state is dropped. On normal completion there
+          // are no pending interactions, so includePending only affects aborts.
+          const isAbortedTurn = chunk.data.reason === "Aborted";
           const interactionInsertions = buildInteractionInsertions({
             assistantContent,
             interactionSplits: state?.interactionSplits ?? [],
+            includePending: isAbortedTurn,
           });
 
           // Remove the first `count` steers from the session queue. Reads the
@@ -1049,6 +1056,31 @@ export function ChatPage({
               })),
             }).catch((err: unknown) => {
               console.warn("Failed to persist interaction blocks:", err);
+            });
+          }
+
+          // Persist the in-progress assistant text/thinking of an ABORTED turn
+          // so it survives a refresh. Claude Code's transcript is owned by the
+          // external `claude` CLI, which writes at message-completion
+          // boundaries and ABANDONS an interrupted message — so the JSONL a
+          // refresh reads would otherwise lack the partial the user already
+          // saw (opencode/jishu no-op their adapter: they persist their own
+          // store incrementally). Best-effort + idempotent: the backend strips
+          // anything Claude already durably wrote, so the racing onAbort path
+          // re-calling this is a safe no-op.
+          if (isAbortedTurn && (state?.text || state?.thinking)) {
+            const sessionList = sessionsRef.current;
+            const partialSessionPath = sessionList?.find(s => s.id === finalKey)?.path
+              ?? sessionList?.find(s => s.id === cid)?.path
+              ?? "";
+            invokeCommand("persist_partial_assistant", {
+              sessionPath: partialSessionPath,
+              sessionId: finalKey,
+              encodedName: projectIdRef.current,
+              text: state?.text ?? "",
+              thinking: state?.thinking ?? "",
+            }).catch((err: unknown) => {
+              console.warn("Failed to persist partial assistant after abort:", err);
             });
           }
 
@@ -1917,14 +1949,47 @@ export function ChatPage({
                         console.warn("Failed to persist interaction blocks after abort:", err);
                       });
                     }
+
+                    // Persist the in-progress assistant text/thinking of this
+                    // aborted turn so it survives a refresh (twin of the call
+                    // in the turn_complete(Aborted) handler). Idempotent on the
+                    // backend, so the two racing paths never double-write.
+                    if (state.text || state.thinking) {
+                      const sessionList = sessionsRef.current;
+                      const partialSessionPath = sessionList?.find(s => s.id === finalKey)?.path
+                        ?? sessionList?.find(s => s.id === selectedSession)?.path
+                        ?? "";
+                      invokeCommand("persist_partial_assistant", {
+                        sessionPath: partialSessionPath,
+                        sessionId: finalKey,
+                        encodedName: projectId,
+                        text: state.text,
+                        thinking: state.thinking,
+                      }).catch((err: unknown) => {
+                        console.warn("Failed to persist partial assistant after abort:", err);
+                      });
+                    }
                   }
 
                   setPendingInteractions((current) =>
                     current.filter((item) => item.sessionId !== selectedSession),
                   );
-                  if (!state) {
-                    // Refresh messages from backend so persisted content shows
-                    // up in the UI even when turn_complete hasn't fired yet.
+                  if (
+                    !state
+                    && !sessionMessagesCacheRef.current.has(selectedSession)
+                  ) {
+                    // A null `state` here means the abort-originated
+                    // turn_complete (e.g. Claude Code's ACP cancel, which races
+                    // this callback) already committed the turn's content from
+                    // the stream state and dropped it — so the cache (and thus
+                    // sessionMessages) is already authoritative and complete.
+                    // Re-fetching from the backend would clobber that with JSONL
+                    // that lags the live stream for a cancelled turn, visibly
+                    // rolling back already-shown content (Claude-Code-specific).
+                    // The aborted-turn turn_complete commit (which now uses
+                    // includePending, covering pending interactions) is the
+                    // source of truth, so we only fall back to the backend when
+                    // we genuinely have nothing cached for this session.
                     try {
                       const msgs = await invokeCommand<Message[]>("get_session_messages", {
                         sessionId: selectedSession,

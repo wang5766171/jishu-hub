@@ -132,6 +132,30 @@ async fn persist_interaction_blocks(
     )
 }
 
+/// Persist the in-progress assistant text/thinking of a CANCELLED turn so it
+/// survives a session refresh. Claude-Code-specific: only its adapter actually
+/// writes (others no-op — they persist incrementally in their own stores).
+#[tauri::command]
+async fn persist_partial_assistant(
+    state: tauri::State<'_, Mutex<AppState>>,
+    session_path: String,
+    session_id: Option<String>,
+    encoded_name: Option<String>,
+    text: String,
+    thinking: String,
+) -> Result<(), String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
+    s.registry.active().persist_partial_assistant(
+        (!session_path.trim().is_empty()).then_some(session_path.as_str()),
+        session_id.as_deref(),
+        encoded_name.as_deref(),
+        &text,
+        &thinking,
+    )
+}
+
 #[tauri::command]
 async fn read_text_file(path: String) -> Result<TextFilePreview, String> {
     // Use the same path validation as the other read commands so all three
@@ -2583,6 +2607,7 @@ pub fn run() {
             list_sessions,
             get_session_messages,
             persist_interaction_blocks,
+            persist_partial_assistant,
             read_text_file,
             get_session_names,
             rename_session,

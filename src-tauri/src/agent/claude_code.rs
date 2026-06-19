@@ -567,6 +567,34 @@ impl SessionAdapter for ClaudeCodeAgent {
         crate::session::persist_interaction_blocks_to_jsonl_path(&path, interactions)
     }
 
+    fn persist_partial_assistant(
+        &self,
+        session_path: Option<&str>,
+        session_id: Option<&str>,
+        encoded_name: Option<&str>,
+        text: &str,
+        thinking: &str,
+    ) -> Result<(), String> {
+        // Resolve the claude transcript JSONL the same way interaction blocks
+        // do: prefer an explicit .jsonl path, else look the session up by id.
+        let path = if let Some(path) = session_path.filter(|path| path.ends_with(".jsonl")) {
+            std::path::PathBuf::from(path)
+        } else if let (Some(session_id), Some(encoded_name)) = (session_id, encoded_name) {
+            self.list_sessions(encoded_name)?
+                .into_iter()
+                .find(|session| session.id == session_id)
+                .map(|session| session.path)
+                .ok_or_else(|| format!("Session not found in adapter listing: {session_id}"))?
+        } else {
+            log::warn!(
+                "persist_partial_assistant: claude_code cannot resolve session path without a .jsonl path or (session id, encoded project)"
+            );
+            return Ok(());
+        };
+
+        crate::session::persist_partial_assistant_to_jsonl_path(&path, text, thinking)
+    }
+
     fn load_history(&self) -> Vec<crate::history::HistoryEntry> {
         crate::history::load_history()
     }

@@ -200,6 +200,21 @@ pub trait SessionAdapter {
     ) -> Result<(), String> {
         Err("Interaction persistence is not supported by this agent adapter".to_string())
     }
+    /// Persist the in-progress assistant text/thinking that the agent's own
+    /// store would otherwise lose when a turn is cancelled mid-stream. Only
+    /// Claude Code needs this (its transcript is owned by the external `claude`
+    /// process, which abandons an interrupted message); agents that durably
+    /// persist incrementally (opencode's SQLite, pi's session log) no-op.
+    fn persist_partial_assistant(
+        &self,
+        _session_path: Option<&str>,
+        _session_id: Option<&str>,
+        _encoded_name: Option<&str>,
+        _text: &str,
+        _thinking: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     fn load_history(&self) -> Vec<HistoryEntry> {
         vec![]
     }

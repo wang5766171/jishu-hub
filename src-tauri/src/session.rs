@@ -346,6 +346,205 @@ pub fn persist_interaction_blocks_to_jsonl_path(
     Err(last_err.unwrap_or_else(|| "session file did not become stable".to_string()))
 }
 
+/// Minimum overlap (in bytes) required to treat a persisted-text suffix as a
+/// genuine dedup boundary rather than a coincidental short match. Genuine
+/// overlaps are the prose of complete assistant messages Claude already wrote
+/// — usually far larger than this — while a coincidental tail-of-prior-turn /
+/// head-of-this-turn match is overwhelmingly short. Falling below this bar
+/// means "no overlap": we append the whole streamed text, risking a tiny
+/// duplicated fragment instead of (worse) dropping content.
+const MIN_DEDUP_OVERLAP: usize = 16;
+
+/// Persist the in-progress assistant text/thinking that the `claude` CLI did
+/// NOT flush to its transcript when the user cancelled the turn (Claude-Code
+/// specific: the transcript is owned by the external `claude` process, which
+/// writes at message-completion boundaries and abandons an interrupted
+/// message). Without this, refreshing the session loses the partial the user
+/// already saw — the in-memory stream cache has it, but the JSONL does not.
+///
+/// Appends a synthesized `assistant` record carrying ONLY the unpersisted tail,
+/// computed by stripping the longest suffix of the file's existing assistant
+/// text/thinking that is also a prefix of the streamed text/thinking. This
+/// keeps the write idempotent (a second call after the first finds everything
+/// already present and writes nothing) and never duplicates complete messages
+/// Claude already durably wrote mid-turn.
+pub fn persist_partial_assistant_to_jsonl_path(
+    path: &Path,
+    text: &str,
+    thinking: &str,
+) -> Result<(), String> {
+    if !path.exists() {
+        log::warn!("persist_partial_assistant: path {:?} does not exist", path);
+        return Ok(());
+    }
+
+    let streamed_text = text.trim_end();
+    let streamed_thinking = thinking.trim_end();
+    if streamed_text.is_empty() && streamed_thinking.is_empty() {
+        return Ok(());
+    }
+
+    let mut last_err = None;
+    for _ in 0..5 {
+        wait_for_stable_file(path)?;
+        let before = file_fingerprint(path)?;
+        let original = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read session file: {e}"))?;
+        let updated = append_unpersisted_assistant_tail(&original, streamed_text, streamed_thinking);
+        let after = file_fingerprint(path)?;
+
+        if before != after {
+            last_err = Some(
+                "session file changed while preparing partial assistant persistence".to_string(),
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            continue;
+        }
+
+        // Nothing new to persist (Claude already wrote it all, or this call is
+        // a repeat) — skip the write entirely so we never touch the file.
+        if updated == original {
+            return Ok(());
+        }
+
+        return crate::util::atomic_write(path, updated.as_bytes())
+            .map_err(|e| format!("Failed to write session file: {e}"));
+    }
+
+    Err(last_err.unwrap_or_else(|| "session file did not become stable".to_string()))
+}
+
+/// Build the updated JSONL by appending a single `assistant` record that holds
+/// only the streamed text/thinking not already present in the file. Returns the
+/// input unchanged when there is nothing new to write.
+fn append_unpersisted_assistant_tail(input: &str, streamed_text: &str, streamed_thinking: &str) -> String {
+    let (persisted_text, persisted_thinking) = collect_persisted_assistant_text(input);
+    let new_text = unpersisted_suffix(&persisted_text, streamed_text);
+    let new_thinking = unpersisted_suffix(&persisted_thinking, streamed_thinking);
+
+    if new_text.is_empty() && new_thinking.is_empty() {
+        return input.to_string();
+    }
+
+    // Mirror the record shape claude-agent-acp / the interaction-block
+    // fallback already write (session.rs insert_interaction_blocks_into_jsonl
+    // fallback branch): a `type:"assistant"` line whose `message.content` is a
+    // block array. Thinking precedes text (matching the model's own ordering),
+    // so load_session_with_filter renders them in the natural order.
+    let mut content = Vec::<serde_json::Value>::new();
+    if !new_thinking.is_empty() {
+        content.push(serde_json::json!({ "type": "thinking", "thinking": new_thinking }));
+    }
+    if !new_text.is_empty() {
+        content.push(serde_json::json!({ "type": "text", "text": new_text }));
+    }
+
+    let record = serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": content,
+        }
+    });
+
+    let mut output = if input.is_empty() {
+        String::new()
+    } else {
+        // Preserve the existing trailing-newline convention.
+        let mut s = input.to_string();
+        if !s.ends_with('\n') {
+            s.push('\n');
+        }
+        s
+    };
+    output.push_str(&record.to_string());
+    output.push('\n');
+    output
+}
+
+/// Concatenate every `text` block (and separately every `thinking` block) from
+/// all `assistant`-typed records in the JSONL, in file order. This is the
+/// assistant prose Claude has durably persisted across the whole conversation.
+fn collect_persisted_assistant_text(input: &str) -> (String, String) {
+    let mut text = String::new();
+    let mut thinking = String::new();
+    for line in input.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value.get("type").and_then(|v| v.as_str()) != Some("assistant") {
+            continue;
+        }
+        let Some(content) = value
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array())
+        else {
+            continue;
+        };
+        for block in content {
+            match block.get("type").and_then(|t| t.as_str()) {
+                Some("text") => {
+                    if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                        text.push_str(t);
+                    }
+                }
+                Some("thinking") => {
+                    if let Some(t) = block.get("thinking").and_then(|v| v.as_str()) {
+                        thinking.push_str(t);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    (text, thinking)
+}
+
+/// Return the suffix of `streamed` that is NOT already covered by `persisted`.
+///
+/// Within a turn the streamed prose grows monotonically and Claude persists
+/// complete messages in order, so the persisted region's tail overlaps a prefix
+/// of `streamed`. We strip the longest such overlap. A coincidental short
+/// match (prior turn ending with the same few bytes this turn starts with) is
+/// rejected via `MIN_DEDUP_OVERLAP` so we never drop real content on a false
+/// positive — the cost of under-detecting is a tiny duplicated fragment, while
+/// over-detecting would lose content (the bug we are fixing).
+fn unpersisted_suffix(persisted: &str, streamed: &str) -> String {
+    if streamed.is_empty() {
+        return String::new();
+    }
+
+    // Full overlap: the ENTIRE streamed text is already a suffix of what's
+    // persisted (Claude flushed the whole message, or this is a repeat persist
+    // call from the racing turn_complete / onAbort paths). The remainder is
+    // empty, so this never drops content — recognize it regardless of length
+    // so short turns stay idempotent.
+    if persisted.ends_with(streamed) {
+        return String::new();
+    }
+
+    // Partial overlap: a PREFIX of streamed coincides with a SUFFIX of
+    // persisted (the in-progress tail continues from Claude's last complete
+    // message). Require MIN_DEDUP_OVERLAP so a coincidental short match
+    // (prior turn's tail vs this turn's head) is treated as "no overlap" and
+    // we append the whole text rather than risk dropping real content.
+    let mut offsets: Vec<usize> = streamed.char_indices().map(|(i, _)| i).collect();
+    offsets.push(streamed.len());
+    for &idx in offsets.iter().rev() {
+        if idx < MIN_DEDUP_OVERLAP {
+            break;
+        }
+        if idx == streamed.len() {
+            continue; // full overlap already handled above
+        }
+        if persisted.ends_with(&streamed[..idx]) {
+            return streamed[idx..].to_string();
+        }
+    }
+    streamed.to_string()
+}
+
 fn file_fingerprint(path: &Path) -> Result<(u64, Option<std::time::SystemTime>), String> {
     let metadata =
         std::fs::metadata(path).map_err(|e| format!("Failed to stat session file: {e}"))?;
@@ -1035,6 +1234,191 @@ mod tests {
             ContentBlock::Interaction { prompt, answer, .. }
                 if prompt == "Question 1" && answer == "A"
         ));
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── persist_partial_assistant: Claude-Code cancelled-turn tail recovery ──
+
+    #[test]
+    fn unpersisted_suffix_returns_full_when_no_overlap() {
+        // Claude persisted nothing for this turn (e.g. user cancelled during
+        // the very first streamed response) — the whole streamed text is new.
+        assert_eq!(unpersisted_suffix("", "Hello world, this is partial"), "Hello world, this is partial");
+        assert_eq!(
+            unpersisted_suffix("a completely different prior turn", "Hello world, this is partial"),
+            "Hello world, this is partial"
+        );
+    }
+
+    #[test]
+    fn unpersisted_suffix_strips_genuine_overlap_prefix() {
+        // Agentic turn: Claude durably wrote a complete message ("Let me read
+        // the file."), then the model streamed more before being cancelled.
+        let persisted = "Let me read the file.";
+        let streamed = "Let me read the file. Now I will edit it and the answer is 42";
+        assert_eq!(
+            unpersisted_suffix(persisted, streamed),
+            " Now I will edit it and the answer is 42"
+        );
+    }
+
+    #[test]
+    fn unpersisted_suffix_empty_when_already_persisted() {
+        // Late cancel after Claude flushed the whole message → nothing new.
+        let persisted = "The complete answer is here.";
+        assert_eq!(unpersisted_suffix(persisted, persisted), "");
+        assert_eq!(unpersisted_suffix(persisted, "The complete answer is here."), "");
+    }
+
+    #[test]
+    fn unpersisted_suffix_ignores_short_coincidental_match() {
+        // Prior turn ends with "x." (2 bytes < MIN_DEDUP_OVERLAP). Even though
+        // this turn's streamed text happens to start with "x.", the overlap is
+        // too short to trust as a real boundary → treat as no overlap so we do
+        // NOT drop content. (Cost: a tiny duplicated fragment, never data loss.)
+        assert_eq!(unpersisted_suffix("...ending in x.", "x. brand new content"), "x. brand new content");
+    }
+
+    #[test]
+    fn unpersisted_suffix_is_utf8_safe_for_chinese() {
+        // Must slice on a codepoint boundary, not mid-中. Genuine long overlap.
+        let persisted = "我先读取了这个文件的内容。";
+        let streamed = "我先读取了这个文件的内容。然后开始修改它，答案是四十二";
+        assert_eq!(
+            unpersisted_suffix(persisted, streamed),
+            "然后开始修改它，答案是四十二"
+        );
+    }
+
+    #[test]
+    fn persist_partial_assistant_appends_full_text_when_nothing_persisted() {
+        let dir = std::env::temp_dir().join(format!(
+            "jishu-session-partial-none-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("partial.jsonl");
+        // Only a user message — Claude wrote no assistant record before cancel.
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#;
+        std::fs::write(&path, jsonl).unwrap();
+
+        persist_partial_assistant_to_jsonl_path(&path, "the partial streamed reply", "").unwrap();
+
+        let session = load_session(&path).unwrap();
+        let assistant = session.messages.iter().find(|m| m.role == "assistant").unwrap();
+        match &assistant.content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "the partial streamed reply"),
+            other => panic!("Expected text, got {:?}", other),
+        }
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn persist_partial_assistant_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!(
+            "jishu-session-partial-idem-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("partial_idem.jsonl");
+        std::fs::write(&path, r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#).unwrap();
+
+        persist_partial_assistant_to_jsonl_path(&path, "partial reply", "").unwrap();
+        let after_first = std::fs::read_to_string(&path).unwrap();
+        // Second call (e.g. the abort callback racing turn_complete) must be a
+        // no-op — the text is already present, so the file must not change.
+        persist_partial_assistant_to_jsonl_path(&path, "partial reply", "").unwrap();
+        let after_second = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after_first, after_second);
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn persist_partial_assistant_appends_only_suffix_after_complete_message() {
+        let dir = std::env::temp_dir().join(format!(
+            "jishu-session-partial-suffix-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("partial_suffix.jsonl");
+        // Agentic turn: Claude durably wrote a complete assistant message
+        // (text + tool_use + result), then the model streamed more text and
+        // the user cancelled. The persisted tail must NOT duplicate the
+        // already-written complete message.
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"do it"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Let me read the file."},{"type":"tool_use","id":"call_1","name":"Read","input":{"file_path":"x"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"x contents"}]}}"#;
+        std::fs::write(&path, jsonl).unwrap();
+
+        // Frontend accumulated the whole turn: complete message + in-progress tail.
+        persist_partial_assistant_to_jsonl_path(
+            &path,
+            "Let me read the file. Now I will edit it and the answer is 42",
+            "",
+        )
+        .unwrap();
+
+        let session = load_session(&path).unwrap();
+        // Merge-consecutive-assistant collapses the two assistant lines; the
+        // rendered text must contain the complete message exactly once and the
+        // new tail exactly once — no duplication of "Let me read the file.".
+        let all_text: String = session
+            .messages
+            .iter()
+            .filter(|m| m.role == "assistant")
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        assert_eq!(
+            all_text,
+            "Let me read the file. Now I will edit it and the answer is 42"
+        );
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn persist_partial_assistant_handles_thinking_separately() {
+        let dir = std::env::temp_dir().join(format!(
+            "jishu-session-partial-thinking-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("partial_thinking.jsonl");
+        std::fs::write(&path, r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#).unwrap();
+
+        persist_partial_assistant_to_jsonl_path(&path, "visible answer", "private reasoning").unwrap();
+
+        let session = load_session(&path).unwrap();
+        let assistant = session.messages.iter().find(|m| m.role == "assistant").unwrap();
+        let mut has_thinking = false;
+        let mut has_text = false;
+        for block in &assistant.content {
+            match block {
+                ContentBlock::Thinking { thinking } => {
+                    assert_eq!(thinking, "private reasoning");
+                    has_thinking = true;
+                }
+                ContentBlock::Text { text } => {
+                    assert_eq!(text, "visible answer");
+                    has_text = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(has_thinking, "thinking block should be persisted");
+        assert!(has_text, "text block should be persisted");
 
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_dir_all(dir);
