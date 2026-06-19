@@ -1,7 +1,7 @@
 import i18n from "@/i18n";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Project } from "@/types";
+import type { Project, ProjectMeta } from "@/types";
 import { ProjectsPage } from "./projects-page";
 
 const invokeMock = vi.fn();
@@ -39,7 +39,7 @@ const sampleProject = (name: string): Project => ({
   initialized: false,
 });
 
-const noop = () => Promise.resolve([] as unknown[]);
+const noop = () => Promise.resolve({} as Record<string, ProjectMeta>);
 
 describe("ProjectsPage (props-driven)", () => {
   beforeAll(async () => {
