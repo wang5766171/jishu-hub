@@ -108,4 +108,40 @@ describe("ChatInput interaction submission", () => {
       expect.anything(),
     );
   });
+
+  it("keeps staged guide messages scoped to the active session", async () => {
+    const { rerender } = render(
+      <ChatInput
+        sessionId="session-a"
+        projectPath={"D:\\project"}
+        isSessionStreaming
+      />,
+    );
+
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "guide for A" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    expect(screen.getByText("guide for A")).toBeInTheDocument();
+
+    rerender(
+      <ChatInput
+        sessionId="session-b"
+        projectPath={"D:\\project"}
+        isSessionStreaming
+      />,
+    );
+
+    expect(screen.queryByText("guide for A")).not.toBeInTheDocument();
+
+    rerender(
+      <ChatInput
+        sessionId="session-a"
+        projectPath={"D:\\project"}
+        isSessionStreaming
+      />,
+    );
+
+    expect(screen.getByText("guide for A")).toBeInTheDocument();
+  });
 });

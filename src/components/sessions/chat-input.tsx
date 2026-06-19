@@ -27,13 +27,15 @@ interface AttachedFile {
   localPath?: string;     // set when file is inside project directory
 }
 
+type StagedMessageUpdater = StagedMessage[] | ((prev: StagedMessage[]) => StagedMessage[]);
+
 /**
  * Imperative bridge so the parent (chat-page) can participate in the staging
  * area's lifecycle — specifically Route 2: auto-sending staged guides when the
  * agent's turn completes. The staging state still lives here (Route 1, manual
  * guide, owns it); the parent only reads/claims/clears through this handle.
  *
- * A shared `claimedStagedIdsRef` backs `pending`/`claimAll` so that whichever
+ * A per-session claimed-id set backs `pending`/`claimAll` so that whichever
  * route (manual guide mid-turn, or auto-send at turn_complete) claims a message
  * FIRST wins, and the other sees it as already sent — guaranteeing each staged
  * guide is delivered exactly once even across the await boundary.
@@ -116,19 +118,48 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [accessMenuOpen, setAccessMenuOpen] = useState(false);
-  const [stagedMessages, setStagedMessages] = useState<StagedMessage[]>([]);
+  const [stagedMessagesBySession, setStagedMessagesBySession] = useState<Record<string, StagedMessage[]>>({});
   const [guideLoading, setGuideLoading] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
+  const stagingSessionKey = sessionId ?? "__new_session__";
+  const stagedMessages = stagedMessagesBySession[stagingSessionKey] ?? [];
   // Single source of truth for "this staged message was already claimed/sent".
   // Mutated SYNCHRONOUSLY before any await by BOTH routes (manual guide here,
   // auto-send via stagedApiRef in the parent), so whichever claims first wins
   // and the other short-circuits — exactly-once across the race window.
-  const claimedStagedIdsRef = useRef<Set<string>>(new Set());
+  const claimedStagedIdsBySessionRef = useRef<Map<string, Set<string>>>(new Map());
   // Always-fresh mirror of stagedMessages so the stagedApiRef methods (set up
   // once) read the current array instead of a stale closure snapshot.
   const stagedLiveRef = useRef<StagedMessage[]>(stagedMessages);
   stagedLiveRef.current = stagedMessages;
+
+  const claimedIdsForSession = useCallback((key: string) => {
+    let ids = claimedStagedIdsBySessionRef.current.get(key);
+    if (!ids) {
+      ids = new Set<string>();
+      claimedStagedIdsBySessionRef.current.set(key, ids);
+    }
+    return ids;
+  }, []);
+
+  const setStagedMessagesForSession = useCallback((key: string, updater: StagedMessageUpdater) => {
+    setStagedMessagesBySession((prev) => {
+      const current = prev[key] ?? [];
+      const next = typeof updater === "function" ? updater(current) : updater;
+      if (next.length === 0) {
+        if (!(key in prev)) return prev;
+        const rest = { ...prev };
+        delete rest[key];
+        return rest;
+      }
+      return { ...prev, [key]: next };
+    });
+  }, []);
+
+  const setCurrentStagedMessages = useCallback((updater: StagedMessageUpdater) => {
+    setStagedMessagesForSession(stagingSessionKey, updater);
+  }, [setStagedMessagesForSession, stagingSessionKey]);
 
   useImperativeHandle(ref, () => textareaRef.current!, []);
 
@@ -137,25 +168,28 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   // the current staging array and claimed set.
   useEffect(() => {
     if (!stagedApiRef) return;
+    const key = stagingSessionKey;
     stagedApiRef.current = {
-      pending: () =>
-        stagedLiveRef.current.filter(
-          (m) => !claimedStagedIdsRef.current.has(m.id),
-        ),
+      pending: () => {
+        const claimedIds = claimedIdsForSession(key);
+        return stagedLiveRef.current.filter((m) => !claimedIds.has(m.id));
+      },
       claimAll: () => {
+        const claimedIds = claimedIdsForSession(key);
         const unclaimed = stagedLiveRef.current.filter(
-          (m) => !claimedStagedIdsRef.current.has(m.id),
+          (m) => !claimedIds.has(m.id),
         );
-        for (const m of unclaimed) claimedStagedIdsRef.current.add(m.id);
-        setStagedMessages([]);
+        for (const m of unclaimed) claimedIds.add(m.id);
+        setStagedMessagesForSession(key, []);
         return unclaimed;
       },
       restore: (messages) => {
-        for (const m of messages) claimedStagedIdsRef.current.delete(m.id);
-        setStagedMessages((prev) => [...prev, ...messages]);
+        const claimedIds = claimedIdsForSession(key);
+        for (const m of messages) claimedIds.delete(m.id);
+        setStagedMessagesForSession(key, (prev) => [...prev, ...messages]);
       },
     };
-  }, [stagedApiRef]);
+  }, [claimedIdsForSession, setStagedMessagesForSession, stagedApiRef, stagingSessionKey]);
 
   // Derive whether current session is streaming (per-session, parallel-safe)
   const isOwnStreaming = useIsSessionStreaming(sessionId);
@@ -177,7 +211,6 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   // prior session's staged messages and no longer relevant.
   useEffect(() => {
     setActiveSessionId(null);
-    claimedStagedIdsRef.current.clear();
   }, [sessionId]);
 
   useEffect(() => {
@@ -405,7 +438,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     // interrupting the output. The user can then click "Guide" on the
     // staged message to deliver it (stop+send or steer).
     if (isStreaming) {
-      setStagedMessages((prev) => [
+      setCurrentStagedMessages((prev) => [
         ...prev,
         { id: crypto.randomUUID(), content: message.trim() },
       ]);
@@ -480,8 +513,9 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     // click of the same button (claude multi-click), or by Route 2's auto-send
     // racing this manual click — do nothing. Claim synchronously BEFORE any
     // await so a concurrent Route 2 sees it as already sent.
-    if (claimedStagedIdsRef.current.has(id)) return;
-    claimedStagedIdsRef.current.add(id);
+    const claimedIds = claimedIdsForSession(stagingSessionKey);
+    if (claimedIds.has(id)) return;
+    claimedIds.add(id);
     setGuideLoading(id);
     try {
       if (onGuideStaged) {
@@ -498,12 +532,12 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         }
         await sendPreparedMessage(content, true);
       }
-      setStagedMessages((prev) => prev.filter((m) => m.id !== id));
+      setCurrentStagedMessages((prev) => prev.filter((m) => m.id !== id));
     } catch (err) {
       console.error("Failed to guide staged message:", err);
       // Delivery failed — un-claim so the message stays in staging and can be
       // retried (by manual click or a later Route 2 turn_complete).
-      claimedStagedIdsRef.current.delete(id);
+      claimedIds.delete(id);
     } finally {
       setGuideLoading(null);
     }
@@ -625,12 +659,12 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
             <MessageStaging
               messages={stagedMessages}
               onEdit={(id, content) =>
-                setStagedMessages((prev) =>
+                setCurrentStagedMessages((prev) =>
                   prev.map((m) => (m.id === id ? { ...m, content } : m)),
                 )
               }
               onDelete={(id) =>
-                setStagedMessages((prev) => prev.filter((m) => m.id !== id))
+                setCurrentStagedMessages((prev) => prev.filter((m) => m.id !== id))
               }
               onSend={handleGuideStaged}
               sendLoadingId={guideLoading}
