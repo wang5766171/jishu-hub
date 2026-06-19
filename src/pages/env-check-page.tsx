@@ -116,7 +116,7 @@ function StatusIndicator({
 export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
   const { t } = useTranslation();
   const [env, setEnv] = useState<EnvData | null>(null);
-  const { agents, refreshHealth } = useAgent();
+  const { agents, refreshHealth, healthLoading } = useAgent();
   const [installingId, setInstallingId] = useState<string | null>(null);
   const [expandedAgents, setExpandedAgents] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -345,7 +345,11 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
     }
   };
 
-  if (!env) {
+  // Keep the loading view up until every probe has settled: runtime env, the
+  // CLI symlink check, and the agent health refresh. Showing partial data
+  // (e.g. before health comes back) looks like the page stalled.
+  const initialLoading = !env || cliInstalled === null || healthLoading;
+  if (initialLoading) {
     return (
       <div className="p-6 max-w-2xl mx-auto flex flex-col items-center justify-center gap-3 h-full">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />

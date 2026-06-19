@@ -29,6 +29,8 @@ interface AgentContextValue {
   setActive: (id: string) => Promise<void>;
   refreshHealth: () => Promise<void>;
   installHint: (id: string) => string | null;
+  /** True while a health probe is in flight (initial load or manual refresh). */
+  healthLoading: boolean;
 }
 
 export const AgentContext = createContext<AgentContextValue>(null!);
@@ -36,6 +38,7 @@ export const AgentContext = createContext<AgentContextValue>(null!);
 export function AgentProvider({ children }: { children: ReactNode }) {
   const [agents, setAgents] = useState<AgentStatus[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [healthLoading, setHealthLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
@@ -45,9 +48,11 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       ]);
       if (list) setAgents(list);
       if (active) setActiveId(active);
+      setHealthLoading(true);
       await safeInvoke("agent_refresh_health");
       const refreshed = await safeInvoke<AgentStatus[]>("agent_list_statuses");
       if (refreshed) setAgents(refreshed);
+      setHealthLoading(false);
     })();
   }, []);
 
@@ -57,9 +62,14 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const refreshHealth = useCallback(async () => {
-    await safeInvoke("agent_refresh_health");
-    const list = await safeInvoke<AgentStatus[]>("agent_list_statuses");
-    if (list) setAgents(list);
+    setHealthLoading(true);
+    try {
+      await safeInvoke("agent_refresh_health");
+      const list = await safeInvoke<AgentStatus[]>("agent_list_statuses");
+      if (list) setAgents(list);
+    } finally {
+      setHealthLoading(false);
+    }
   }, []);
 
   const active = useMemo(
@@ -87,6 +97,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         setActive,
         refreshHealth,
         installHint,
+        healthLoading,
       }}
     >
       {children}
