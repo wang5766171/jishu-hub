@@ -618,6 +618,20 @@
       "redo": "Redo",
       "applyDraftToRun": "Apply draft to run",
       "runUsesCurrentDraft": "Run uses current draft",
+      "revisionStatus": {
+        "revision": "Revision",
+        "dirty": "Draft changed",
+        "clean": "Confirmed"
+      },
+      "semanticZoom": {
+        "label": "Semantic zoom",
+        "detail": "Detail",
+        "compact": "Summary",
+        "map": "Map"
+      },
+      "phaseFilter": {
+        "all": "All phases"
+      },
       "viewModes": {
         "label": "Task view mode",
         "chat": "Chat mode",

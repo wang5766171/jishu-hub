@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { computeLayout, LAYOUT_NODE_WIDTH, type LayoutGraph, type LayoutResult } from "./layout";
 import { loadViewport, saveViewport } from "./viewport-storage";
 import { loadNodePositions, saveNodePositions } from "./node-positions";
+import { cn } from "@/lib/utils";
 import {
   ReactFlow,
   MiniMap,
@@ -72,6 +73,7 @@ function nodeKindStyle(nodeKind: string): {
 interface GraphEditorProps {
   snapshot: GraphSnapshot | null;
   graphId?: string | null;
+  currentRevisionId?: string | null;
   selectedNodeId?: string | null;
   onNodeSelect?: (nodeId: string | null) => void;
   applyCommands?: (commands: GraphCommand[]) => Promise<void>;
@@ -95,6 +97,7 @@ interface GraphEditorProps {
 export function GraphEditor({
   snapshot,
   graphId,
+  currentRevisionId,
   selectedNodeId,
   onNodeSelect,
   applyCommands,
@@ -121,6 +124,8 @@ export function GraphEditor({
   const [dispatchTitle, setDispatchTitle] = useState("");
   const [dispatchPrompt, setDispatchPrompt] = useState("");
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [phaseFilterId, setPhaseFilterId] = useState<string | null>(null);
+  const [semanticZoom, setSemanticZoom] = useState<"detail" | "compact" | "map">("detail");
   const flowRef = useRef<ReactFlowInstance | null>(null);
   // Whether the initial layout (fit-or-restore) has happened for the current
   // graph. Subsequent snapshot changes preserve the user's viewport (§13.2).
@@ -129,6 +134,39 @@ export function GraphEditor({
   const onNodeSelectRef = useRef(onNodeSelect);
   selectedNodeIdRef.current = selectedNodeId;
   onNodeSelectRef.current = onNodeSelect;
+
+  const phaseNodes = useMemo(
+    () => snapshot?.nodes.filter((node) => node.node_kind === "group") ?? [],
+    [snapshot],
+  );
+
+  const visibleSnapshot = useMemo<GraphSnapshot | null>(() => {
+    if (!snapshot || !phaseFilterId) return snapshot;
+    const visibleNodeIds = new Set(
+      snapshot.nodes
+        .filter((node) =>
+          node.node_id === phaseFilterId ||
+          node.parent_id === phaseFilterId ||
+          node.node_kind === "goal",
+        )
+        .map((node) => node.node_id),
+    );
+    return {
+      nodes: snapshot.nodes.filter((node) => visibleNodeIds.has(node.node_id)),
+      edges: snapshot.edges.filter(
+        (edge) =>
+          visibleNodeIds.has(edge.source_node_id) &&
+          visibleNodeIds.has(edge.target_node_id),
+      ),
+    };
+  }, [phaseFilterId, snapshot]);
+
+  useEffect(() => {
+    if (!phaseFilterId) return;
+    if (!phaseNodes.some((node) => node.node_id === phaseFilterId)) {
+      setPhaseFilterId(null);
+    }
+  }, [phaseFilterId, phaseNodes]);
 
   // Layout runs in a Web Worker so a large canvas never blocks the main thread
   // (design §13.2). In environments without `Worker` (jsdom tests), `null` falls
@@ -234,6 +272,9 @@ export function GraphEditor({
     (_event: unknown, viewport: { x: number; y: number; zoom: number }) => {
       // Persist the user's viewport for this graph (§13.2 soft-constraint).
       if (graphId) saveViewport(graphId, viewport);
+      setSemanticZoom(
+        viewport.zoom < 0.45 ? "map" : viewport.zoom < 0.75 ? "compact" : "detail",
+      );
     },
     [graphId],
   );
@@ -254,19 +295,25 @@ export function GraphEditor({
   }, [graphId]);
 
   useEffect(() => {
-    if (!snapshot) return;
+    if (!visibleSnapshot) return;
 
-    const rfNodes: ReactFlowNode[] = snapshot.nodes.map((n) => {
+    const rfNodes: ReactFlowNode[] = visibleSnapshot.nodes.map((n) => {
       const status = nodeRuns?.[n.node_id]?.status;
       const appearance = nodeAppearance(status);
       const kindStyle = nodeKindStyle(n.node_kind);
       const statusText = status ? ` [${t(`tasks.workbench.status.${status}`)}]` : "";
+      const nodeKindText = t(`tasks.workbench.nodeKinds.${n.node_kind}`);
+      const label = semanticZoom === "map"
+        ? n.title
+        : semanticZoom === "compact"
+          ? `${n.title}${statusText}`
+          : `${n.title}\n(${nodeKindText})${statusText}`;
 
       return {
         id: n.node_id,
         selected: selectedNodeIdRef.current === n.node_id,
         data: {
-          label: `${n.title}\n(${t(`tasks.workbench.nodeKinds.${n.node_kind}`)})${statusText}`,
+          label,
         },
         position: { x: 0, y: 0 },
         targetPosition: Position.Left,
@@ -284,7 +331,7 @@ export function GraphEditor({
       };
     });
 
-    const rfEdges: ReactFlowEdge[] = snapshot.edges.map((e) => {
+    const rfEdges: ReactFlowEdge[] = visibleSnapshot.edges.map((e) => {
       const color = e.kind === "control_dependency" ? "#f43f8d" : "#22d3a7";
       return {
         id: e.edge_id,
@@ -351,7 +398,7 @@ export function GraphEditor({
       }
       didInitialLayoutRef.current = true;
     });
-  }, [snapshot, setNodes, setEdges, t]);
+  }, [visibleSnapshot, semanticZoom, setNodes, setEdges, t]);
 
   useEffect(() => {
     setNodes((currentNodes) => {
@@ -381,7 +428,7 @@ export function GraphEditor({
 
   useEffect(() => {
     const graphNodes = new Map(
-      snapshot?.nodes.map((candidate) => [candidate.node_id, candidate]) ?? [],
+      visibleSnapshot?.nodes.map((candidate) => [candidate.node_id, candidate]) ?? [],
     );
     setNodes((currentNodes) =>
       currentNodes.map((node) => {
@@ -391,10 +438,16 @@ export function GraphEditor({
         const appearance = nodeAppearance(status);
         const kindStyle = nodeKindStyle(graphNode.node_kind);
         const statusText = status ? ` [${t(`tasks.workbench.status.${status}`)}]` : "";
+        const nodeKindText = t(`tasks.workbench.nodeKinds.${graphNode.node_kind}`);
+        const label = semanticZoom === "map"
+          ? graphNode.title
+          : semanticZoom === "compact"
+            ? `${graphNode.title}${statusText}`
+            : `${graphNode.title}\n(${nodeKindText})${statusText}`;
         return {
           ...node,
           data: {
-            label: `${graphNode.title}\n(${t(`tasks.workbench.nodeKinds.${graphNode.node_kind}`)})${statusText}`,
+            label,
           },
           style: {
             ...node.style,
@@ -406,7 +459,7 @@ export function GraphEditor({
         };
       }),
     );
-  }, [nodeRuns, setNodes, snapshot, t]);
+  }, [nodeRuns, semanticZoom, setNodes, visibleSnapshot, t]);
 
   const connectNodes = useCallback(
     (connection: Connection) => {
@@ -482,6 +535,68 @@ export function GraphEditor({
         <Controls />
         <MiniMap />
         <Background gap={12} size={1} />
+        <div className="absolute top-4 right-4 z-10 flex max-w-[42rem] flex-wrap items-center justify-end gap-2">
+          <div className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-950/90 px-3 py-2 text-xs text-slate-200 shadow">
+            <span className="text-slate-400">
+              {t("tasks.workbench.revisionStatus.revision")}
+            </span>
+            <span className="font-mono text-slate-50">
+              {currentRevisionId ?? "-"}
+            </span>
+            <span
+              className={cn(
+                "rounded px-2 py-0.5 font-medium",
+                canUndo
+                  ? "bg-amber-400/15 text-amber-200"
+                  : "bg-emerald-400/15 text-emerald-200",
+              )}
+            >
+              {canUndo
+                ? t("tasks.workbench.revisionStatus.dirty")
+                : t("tasks.workbench.revisionStatus.clean")}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-950/90 px-3 py-2 text-xs text-slate-200 shadow">
+            <span className="text-slate-400">
+              {t("tasks.workbench.semanticZoom.label")}
+            </span>
+            <span className="font-medium">
+              {t(`tasks.workbench.semanticZoom.${semanticZoom}`)}
+            </span>
+          </div>
+          {phaseNodes.length > 0 && (
+            <div className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-slate-700 bg-slate-950/90 p-1 shadow">
+              <button
+                type="button"
+                className={cn(
+                  "h-7 shrink-0 rounded px-2 text-xs transition",
+                  !phaseFilterId
+                    ? "bg-cyan-400 text-slate-950"
+                    : "text-slate-200 hover:bg-slate-800",
+                )}
+                onClick={() => setPhaseFilterId(null)}
+              >
+                {t("tasks.workbench.phaseFilter.all")}
+              </button>
+              {phaseNodes.map((phase) => (
+                <button
+                  key={phase.node_id}
+                  type="button"
+                  className={cn(
+                    "h-7 max-w-40 shrink-0 truncate rounded px-2 text-xs transition",
+                    phaseFilterId === phase.node_id
+                      ? "bg-cyan-400 text-slate-950"
+                      : "text-slate-200 hover:bg-slate-800",
+                  )}
+                  onClick={() => setPhaseFilterId(phase.node_id)}
+                  title={phase.title}
+                >
+                  {phase.title}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <div className="absolute top-4 left-4 z-10 flex gap-2">
           {startRun && (
             <button

@@ -402,6 +402,7 @@ export function TaskWorkbench({
     <GraphEditor
       snapshot={snapshot}
       graphId={graph?.graph_id ?? null}
+      currentRevisionId={graph?.current_draft_revision ?? null}
       selectedNodeId={selectedNodeId}
       onNodeSelect={(nodeId) => {
         setSelectedNodeId(nodeId);

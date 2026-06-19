@@ -616,6 +616,20 @@
       "redo": "重做",
       "applyDraftToRun": "应用草稿到运行",
       "runUsesCurrentDraft": "运行已使用当前草稿",
+      "revisionStatus": {
+        "revision": "Revision",
+        "dirty": "草稿已改动",
+        "clean": "已确认"
+      },
+      "semanticZoom": {
+        "label": "语义缩放",
+        "detail": "完整",
+        "compact": "摘要",
+        "map": "地图"
+      },
+      "phaseFilter": {
+        "all": "全部阶段"
+      },
       "viewModes": {
         "label": "任务视图模式",
         "chat": "会话模式",
