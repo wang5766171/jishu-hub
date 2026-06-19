@@ -280,7 +280,7 @@ export function ProjectsPage({ projects, projectMetas, refetchProjects, refetchP
           onViewSessions={(_name) => {}}
           onRemoved={() => { setSelectedProject(null); refetchProjects(); }}
           projectMetas={projectMetas ?? undefined}
-          onUpdateMetas={refetchMetas}
+          onUpdateMetas={refetchProjectMetas}
           merges={merges ?? undefined}
           onSplit={handleMergeComplete}
           agentNames={Object.fromEntries(agents.map(agent => [agent.id, agent.display_name]))}
