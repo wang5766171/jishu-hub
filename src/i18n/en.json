@@ -559,6 +559,19 @@
       "agentStepEyebrow": "Executable node",
       "stepTitle": "Step title",
       "stepPrompt": "Execution prompt",
+      "nodeWizard": {
+        "title": "Node wizard",
+        "step": "Step {{current}} / {{total}}",
+        "intent": "Intent",
+        "acceptance": "Acceptance",
+        "next": "Next",
+        "back": "Back",
+        "intents": {
+          "implement": "Implement",
+          "research": "Research",
+          "verify": "Verify"
+        }
+      },
       "connectHint": "After creation, drag a connection from the source node to the target to add a control dependency. Select a node or edge and press Delete to remove it.",
       "edgeKinds": {
         "control_dependency": "Control dependency",

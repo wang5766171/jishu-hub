@@ -121,8 +121,11 @@ export function GraphEditor({
   const [nodes, setNodes, onNodesChange] = useNodesState<ReactFlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<ReactFlowEdge>([]);
   const [showDispatchForm, setShowDispatchForm] = useState(false);
+  const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
+  const [dispatchIntent, setDispatchIntent] = useState<"implement" | "research" | "verify">("implement");
   const [dispatchTitle, setDispatchTitle] = useState("");
   const [dispatchPrompt, setDispatchPrompt] = useState("");
+  const [dispatchAcceptance, setDispatchAcceptance] = useState("");
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [phaseFilterId, setPhaseFilterId] = useState<string | null>(null);
   const [semanticZoom, setSemanticZoom] = useState<"detail" | "compact" | "map">("detail");
@@ -757,8 +760,17 @@ export function GraphEditor({
             className="w-full max-w-lg rounded-xl border border-cyan-400/30 bg-slate-950 p-5 shadow-2xl shadow-cyan-950/50"
             onSubmit={(event) => {
               event.preventDefault();
-              if (!dispatchTitle.trim() || !dispatchPrompt.trim()) return;
+              if (wizardStep < 3) {
+                setWizardStep((current) => (current === 1 ? 2 : 3));
+                return;
+              }
+              if (!dispatchTitle.trim() || !dispatchPrompt.trim() || !dispatchAcceptance.trim()) return;
               const goalNode = snapshot?.nodes.find((node) => node.node_kind === "goal");
+              const prompt = [
+                `${t("tasks.workbench.nodeWizard.intent")}: ${t(`tasks.workbench.nodeWizard.intents.${dispatchIntent}`)}`,
+                dispatchPrompt.trim(),
+                `${t("tasks.workbench.nodeWizard.acceptance")}: ${dispatchAcceptance.trim()}`,
+              ].join("\n\n");
               submitCommand({
                 op: "add_node",
                 command_id: `cmd_${crypto.randomUUID()}`,
@@ -769,7 +781,7 @@ export function GraphEditor({
                   description: dispatchPrompt.trim(),
                   node_kind: "executable",
                   input_contract: { description: null, artifacts: [], schema: null },
-                  output_contract: { description: null, artifacts: [], schema: null },
+                  output_contract: { description: dispatchAcceptance.trim(), artifacts: [], schema: null },
                   role_requirement: {
                     role_id: "implementer",
                     responsibility: dispatchTitle.trim(),
@@ -788,11 +800,13 @@ export function GraphEditor({
                       can_deploy: false,
                     },
                   },
-                  metadata: {},
+                  metadata: {
+                    intent: dispatchIntent,
+                  },
                   executable_payload: {
                     type: "dispatch",
                     role_id: "implementer",
-                    prompt: dispatchPrompt.trim(),
+                    prompt,
                     project: null,
                     session: null,
                   },
@@ -800,35 +814,86 @@ export function GraphEditor({
                   approval_gate_config: null,
                 },
               });
+              setWizardStep(1);
+              setDispatchIntent("implement");
               setDispatchTitle("");
               setDispatchPrompt("");
+              setDispatchAcceptance("");
               setShowDispatchForm(false);
             }}
           >
             <div className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-300">
-              {t("tasks.workbench.agentStepEyebrow")}
+              {t("tasks.workbench.nodeWizard.step", { current: wizardStep, total: 3 })}
             </div>
             <h3 className="mt-2 text-xl font-semibold text-slate-50">
-              {t("tasks.workbench.addAgentStep")}
+              {t("tasks.workbench.nodeWizard.title")}
             </h3>
-            <label className="mt-5 block text-xs font-medium text-slate-300">
-              {t("tasks.workbench.stepTitle")}
-              <input
-                autoFocus
-                value={dispatchTitle}
-                onChange={(event) => setDispatchTitle(event.target.value)}
-                className="mt-2 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-50 outline-none focus:border-cyan-400"
-              />
-            </label>
-            <label className="mt-4 block text-xs font-medium text-slate-300">
-              {t("tasks.workbench.stepPrompt")}
-              <textarea
-                rows={6}
-                value={dispatchPrompt}
-                onChange={(event) => setDispatchPrompt(event.target.value)}
-                className="mt-2 w-full resize-y rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-50 outline-none focus:border-cyan-400"
-              />
-            </label>
+            {wizardStep === 1 && (
+              <div className="mt-5 grid gap-2">
+                {(["implement", "research", "verify"] as const).map((intent) => (
+                  <button
+                    key={intent}
+                    type="button"
+                    className={cn(
+                      "rounded-lg border px-4 py-3 text-left text-sm transition",
+                      dispatchIntent === intent
+                        ? "border-cyan-300 bg-cyan-400/15 text-cyan-50"
+                        : "border-slate-700 bg-slate-900 text-slate-200 hover:border-slate-500",
+                    )}
+                    onClick={() => setDispatchIntent(intent)}
+                  >
+                    {t(`tasks.workbench.nodeWizard.intents.${intent}`)}
+                  </button>
+                ))}
+              </div>
+            )}
+            {wizardStep === 2 && (
+              <>
+                <label className="mt-5 block text-xs font-medium text-slate-300">
+                  {t("tasks.workbench.stepTitle")}
+                  <input
+                    autoFocus
+                    value={dispatchTitle}
+                    onChange={(event) => setDispatchTitle(event.target.value)}
+                    className="mt-2 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-50 outline-none focus:border-cyan-400"
+                  />
+                </label>
+                <label className="mt-4 block text-xs font-medium text-slate-300">
+                  {t("tasks.workbench.stepPrompt")}
+                  <textarea
+                    rows={5}
+                    value={dispatchPrompt}
+                    onChange={(event) => setDispatchPrompt(event.target.value)}
+                    className="mt-2 w-full resize-y rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-50 outline-none focus:border-cyan-400"
+                  />
+                </label>
+                <label className="mt-4 block text-xs font-medium text-slate-300">
+                  {t("tasks.workbench.nodeWizard.acceptance")}
+                  <textarea
+                    rows={3}
+                    value={dispatchAcceptance}
+                    onChange={(event) => setDispatchAcceptance(event.target.value)}
+                    className="mt-2 w-full resize-y rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-50 outline-none focus:border-cyan-400"
+                  />
+                </label>
+              </>
+            )}
+            {wizardStep === 3 && (
+              <div className="mt-5 space-y-3 rounded-lg border border-slate-700 bg-slate-900 p-4 text-sm text-slate-200">
+                <div>
+                  <span className="text-slate-400">{t("tasks.workbench.nodeWizard.intent")}: </span>
+                  {t(`tasks.workbench.nodeWizard.intents.${dispatchIntent}`)}
+                </div>
+                <div>
+                  <span className="text-slate-400">{t("tasks.workbench.stepTitle")}: </span>
+                  {dispatchTitle || "-"}
+                </div>
+                <div>
+                  <span className="text-slate-400">{t("tasks.workbench.nodeWizard.acceptance")}: </span>
+                  {dispatchAcceptance || "-"}
+                </div>
+              </div>
+            )}
             <p className="mt-3 text-xs leading-5 text-slate-400">
               {t("tasks.workbench.connectHint")}
             </p>
@@ -836,16 +901,33 @@ export function GraphEditor({
               <button
                 type="button"
                 className="rounded border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-900"
-                onClick={() => setShowDispatchForm(false)}
+                onClick={() => {
+                  setShowDispatchForm(false);
+                  setWizardStep(1);
+                }}
               >
                 {t("common.cancel")}
               </button>
+              {wizardStep > 1 && (
+                <button
+                  type="button"
+                  className="rounded border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-900"
+                  onClick={() => setWizardStep((current) => (current === 3 ? 2 : 1))}
+                >
+                  {t("tasks.workbench.nodeWizard.back")}
+                </button>
+              )}
               <button
                 type="submit"
-                disabled={!dispatchTitle.trim() || !dispatchPrompt.trim()}
+                disabled={
+                  wizardStep === 2 &&
+                  (!dispatchTitle.trim() || !dispatchPrompt.trim() || !dispatchAcceptance.trim())
+                }
                 className="rounded bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-300 disabled:opacity-40"
               >
-                {t("tasks.workbench.createStep")}
+                {wizardStep === 3
+                  ? t("tasks.workbench.createStep")
+                  : t("tasks.workbench.nodeWizard.next")}
               </button>
             </div>
           </form>
