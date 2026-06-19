@@ -528,6 +528,14 @@
       },
       "planningSkills": "Planning methods",
       "planningSkillsHint": "Selected skills are pinned by content hash in the Revision and included in planning context and run trace.",
+      "planningChat": {
+        "title": "Conversational planning",
+        "description": "Use multiple turns to clarify goals, constraints, and acceptance before generating a reviewable workflow proposal.",
+        "agentIntro": "Tell me what you want to accomplish. You can keep adding scope, priorities, acceptance criteria, or boundaries for the agent.",
+        "placeholder": "Type a planning request or follow-up…",
+        "addMessage": "Add to plan",
+        "barrier": "Interaction barrier: generating a workflow will not execute the task. Inputs are summarized as planning context and reviewed in Proposal Diff before becoming a Revision."
+      },
       "preparingTask": "Preparing task and plan…",
       "proposalEyebrow": "Candidate revision",
       "proposalTitle": "Review AI task graph proposal",

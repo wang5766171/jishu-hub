@@ -526,6 +526,14 @@
       },
       "planningSkills": "规划方法",
       "planningSkillsHint": "所选 skill 将按内容哈希固定到 Revision，并进入规划上下文与运行追踪。",
+      "planningChat": {
+        "title": "对话式规划",
+        "description": "先用多轮消息把目标、约束和验收口径说清楚，再生成可审阅的流程图提案。",
+        "agentIntro": "告诉我你希望完成什么任务，也可以继续补充范围、优先级、验收方式或不希望 agent 做的事。",
+        "placeholder": "输入一条规划需求或补充说明…",
+        "addMessage": "加入规划",
+        "barrier": "交互屏障：生成流程图前不会自动执行任务；所有输入会先汇总为规划上下文，并在 Proposal Diff 中审阅后再写入 Revision。"
+      },
       "preparingTask": "准备任务与规划…",
       "proposalEyebrow": "候选 Revision",
       "proposalTitle": "审阅 AI 任务图提案",

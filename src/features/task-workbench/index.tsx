@@ -4,10 +4,13 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   Activity,
   ArrowLeft,
+  Bot,
   ClipboardList,
   MessageSquareText,
   Plus,
   RefreshCw,
+  Send,
+  User,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -19,6 +22,13 @@ import { ProposalReview } from "./proposal-review";
 import { PlanningProgressOverlay } from "./planning-progress";
 import { TaskConversationPanel } from "./task-conversation-panel";
 import { InspectorPanel } from "./inspector-panel";
+import {
+  buildPlanningInstruction,
+  createPlanningMessage,
+  derivePlanningTitle,
+  hasPlanningInput,
+  type PlanningChatMessage,
+} from "./planning-session";
 
 interface TaskPlanSkill {
   id: string;
@@ -91,7 +101,8 @@ export function TaskWorkbench({
   const [runInspectorOpen, setRunInspectorOpen] = useState(false);
   const [surfaceView, setSurfaceView] = useState<WorkbenchSurfaceView>("canvas");
   const [title, setTitle] = useState("");
-  const [goal, setGoal] = useState("");
+  const [planningMessages, setPlanningMessages] = useState<PlanningChatMessage[]>([]);
+  const [planningDraft, setPlanningDraft] = useState("");
   const [skills, setSkills] = useState<TaskPlanSkill[]>([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
   const [installingSkillIds, setInstallingSkillIds] = useState<string[]>([]);
@@ -202,7 +213,8 @@ export function TaskWorkbench({
     setSelectedNodeId(null);
     setRunInspectorOpen(false);
     setTitle("");
-    setGoal("");
+    setPlanningMessages([]);
+    setPlanningDraft("");
     setFormError(null);
     setPendingInitialPlan(null);
     setView("create");
@@ -254,10 +266,14 @@ export function TaskWorkbench({
         />
         <div className="flex min-h-0 flex-1 items-start justify-center overflow-y-auto p-6">
           <form
-            className="w-full max-w-2xl space-y-5 rounded-2xl border border-border/70 bg-card p-6 shadow-sm"
+            className="w-full max-w-5xl space-y-5 rounded-xl border border-border/70 bg-card p-6 shadow-sm"
             onSubmit={async (event) => {
               event.preventDefault();
-              if (!goal.trim() || !initialProjectPath) return;
+              const messagesForSubmit = planningDraft.trim()
+                ? [...planningMessages, createPlanningMessage(planningDraft)]
+                : planningMessages;
+              const instruction = buildPlanningInstruction(messagesForSubmit);
+              if (!instruction || !initialProjectPath) return;
               setFormBusy(true);
               setFormError(null);
               try {
@@ -272,10 +288,10 @@ export function TaskWorkbench({
                   version_or_hash: skill.content_hash,
                   inputs: {},
                 }));
-                setPendingInitialPlan(goal.trim());
+                setPendingInitialPlan(instruction);
                 await createGraph(
-                  title.trim() || goal.trim(),
-                  goal.trim(),
+                  derivePlanningTitle(title, messagesForSubmit),
+                  instruction,
                   initialProjectPath,
                   skillRefs,
                 );
@@ -295,107 +311,48 @@ export function TaskWorkbench({
                 {t("tasks.createDescription")}
               </p>
             </div>
-            <label className="block space-y-1.5 text-sm">
-              <span className="font-medium">{t("tasks.taskTitle")}</span>
-              <input
-                value={title}
-                onChange={(event) => setTitle(event.target.value)}
-                placeholder={t("tasks.taskTitlePlaceholder")}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2.5 outline-none transition focus:ring-2 focus:ring-primary/40"
-              />
-            </label>
-            <label className="block space-y-1.5 text-sm">
-              <span className="font-medium">{t("tasks.taskGoal")}</span>
-              <textarea
-                value={goal}
-                onChange={(event) => setGoal(event.target.value)}
-                placeholder={t("tasks.taskGoalPlaceholder")}
-                rows={6}
-                className="w-full resize-y rounded-lg border border-border bg-background px-3 py-2.5 leading-6 outline-none transition focus:ring-2 focus:ring-primary/40"
-              />
-            </label>
-            {skills.length > 0 && (
-              <fieldset className="space-y-2">
-                <legend className="text-sm font-medium">
-                  {t("tasks.workbench.planningSkills")}
-                </legend>
-                <p className="text-xs leading-5 text-muted-foreground">
-                  {t("tasks.workbench.planningSkillsHint")}
-                </p>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {skills.map((skill) => {
-                    const checked = selectedSkillIds.includes(skill.id);
-                    return (
-                      <div
-                        key={skill.id}
-                        className={cn(
-                          "rounded-xl border p-3 text-sm transition",
-                          checked
-                            ? "border-primary/60 bg-primary/5"
-                            : "border-border bg-background hover:border-foreground/20",
-                        )}
-                      >
-                        <label className="flex items-start gap-2">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(changeEvent) => {
-                              setSelectedSkillIds((current) =>
-                                changeEvent.target.checked
-                                  ? [...current, skill.id]
-                                  : current.filter((id) => id !== skill.id),
-                              );
-                            }}
-                            className="mt-1"
-                          />
-                          <span>
-                            <span className="flex flex-wrap items-center gap-2">
-                              <span className="font-medium">{skill.name}</span>
-                              <span className={cn(
-                                "rounded-full px-2 py-0.5 text-[10px] font-medium",
-                                skill.installed && skill.valid
-                                  ? "bg-emerald-500/10 text-emerald-600"
-                                  : "bg-amber-500/10 text-amber-600",
-                              )}>
-                                {skill.installed && skill.valid
-                                  ? t("tasks.installed")
-                                  : skill.installed
-                                    ? t("tasks.invalidSkill")
-                                    : t("tasks.notInstalled")}
-                              </span>
-                            </span>
-                            <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                              {skill.description || skill.id}
-                            </span>
-                            {skill.error && (
-                              <span className="mt-1 block text-xs leading-5 text-destructive">
-                                {skill.error}
-                              </span>
-                            )}
-                          </span>
-                        </label>
-                        {(!skill.installed || !skill.valid) && skill.installable && (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            className="mt-3 w-full"
-                            disabled={installingSkillIds.includes(skill.id)}
-                            onClick={() => void installSkill(skill.id)}
-                          >
-                            {installingSkillIds.includes(skill.id)
-                              ? t("tasks.installingSkill")
-                              : skill.installed
-                                ? t("tasks.repairSkill")
-                                : t("tasks.installSkill")}
-                          </Button>
-                        )}
-                      </div>
-                    );
-                  })}
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
+              <div className="space-y-4">
+                <label className="block space-y-1.5 text-sm">
+                  <span className="font-medium">{t("tasks.taskTitle")}</span>
+                  <input
+                    value={title}
+                    onChange={(event) => setTitle(event.target.value)}
+                    placeholder={t("tasks.taskTitlePlaceholder")}
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2.5 outline-none transition focus:ring-2 focus:ring-primary/40"
+                  />
+                </label>
+                <PlanningChatComposer
+                  messages={planningMessages}
+                  draft={planningDraft}
+                  busy={formBusy}
+                  onDraftChange={setPlanningDraft}
+                  onAddMessage={() => {
+                    const message = planningDraft.trim();
+                    if (!message) return;
+                    setPlanningMessages((current) => [
+                      ...current,
+                      createPlanningMessage(message),
+                    ]);
+                    setPlanningDraft("");
+                  }}
+                />
+              </div>
+              <div className="space-y-4">
+                {skills.length > 0 && (
+                  <PlanningSkillSelector
+                    skills={skills}
+                    selectedSkillIds={selectedSkillIds}
+                    installingSkillIds={installingSkillIds}
+                    onSelectionChange={setSelectedSkillIds}
+                    onInstallSkill={installSkill}
+                  />
+                )}
+                <div className="rounded-xl border border-border bg-muted/20 p-4 text-xs leading-5 text-muted-foreground">
+                  {t("tasks.workbench.planningChat.barrier")}
                 </div>
-              </fieldset>
-            )}
+              </div>
+            </div>
             {error && <p className="text-sm text-destructive">{error}</p>}
             {formError && <p className="text-sm text-destructive">{formError}</p>}
             <div className="flex justify-end gap-2">
@@ -405,10 +362,10 @@ export function TaskWorkbench({
               <Button
                 type="submit"
                 disabled={
-                  !goal.trim() ||
                   !initialProjectPath ||
                   formBusy ||
-                  !selectedSkillsReady
+                  !selectedSkillsReady ||
+                  !hasPlanningInput(planningMessages, planningDraft)
                 }
               >
                 {formBusy
@@ -564,6 +521,214 @@ export function TaskWorkbench({
         />
       )}
     </div>
+  );
+}
+
+interface PlanningChatComposerProps {
+  messages: PlanningChatMessage[];
+  draft: string;
+  busy: boolean;
+  onDraftChange: (value: string) => void;
+  onAddMessage: () => void;
+}
+
+function PlanningChatComposer({
+  messages,
+  draft,
+  busy,
+  onDraftChange,
+  onAddMessage,
+}: PlanningChatComposerProps) {
+  const { t } = useTranslation();
+  return (
+    <section className="overflow-hidden rounded-xl border border-border bg-background">
+      <div className="border-b border-border/70 px-4 py-3">
+        <h3 className="text-sm font-semibold">
+          {t("tasks.workbench.planningChat.title")}
+        </h3>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          {t("tasks.workbench.planningChat.description")}
+        </p>
+      </div>
+      <div className="max-h-[22rem] min-h-56 space-y-4 overflow-y-auto px-4 py-4">
+        <PlanningChatBubble
+          role="assistant"
+          content={t("tasks.workbench.planningChat.agentIntro")}
+        />
+        {messages.map((message) => (
+          <PlanningChatBubble
+            key={message.id}
+            role={message.role}
+            content={message.content}
+          />
+        ))}
+      </div>
+      <div className="border-t border-border/70 bg-card px-4 py-3">
+        <div className="flex gap-2">
+          <textarea
+            value={draft}
+            onChange={(event) => onDraftChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                onAddMessage();
+              }
+            }}
+            disabled={busy}
+            placeholder={t("tasks.workbench.planningChat.placeholder")}
+            rows={2}
+            className="min-h-16 flex-1 resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm leading-6 outline-none transition focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
+          />
+          <Button
+            type="button"
+            variant="secondary"
+            className="self-end"
+            disabled={busy || !draft.trim()}
+            onClick={onAddMessage}
+          >
+            <Send className="size-4" />
+            {t("tasks.workbench.planningChat.addMessage")}
+          </Button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PlanningChatBubble({
+  role,
+  content,
+}: {
+  role: PlanningChatMessage["role"];
+  content: string;
+}) {
+  const isUser = role === "user";
+  const Icon = isUser ? User : Bot;
+  return (
+    <div className={cn("flex gap-3", isUser && "justify-end")}>
+      {!isUser && (
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+          <Icon className="size-4" />
+        </div>
+      )}
+      <div
+        className={cn(
+          "max-w-[82%] rounded-lg border px-3 py-2 text-sm leading-6",
+          isUser
+            ? "border-primary/25 bg-primary text-primary-foreground"
+            : "border-border bg-muted/40 text-foreground",
+        )}
+      >
+        {content}
+      </div>
+      {isUser && (
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+          <Icon className="size-4" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface PlanningSkillSelectorProps {
+  skills: TaskPlanSkill[];
+  selectedSkillIds: string[];
+  installingSkillIds: string[];
+  onSelectionChange: (ids: string[]) => void;
+  onInstallSkill: (skillId: string) => void;
+}
+
+function PlanningSkillSelector({
+  skills,
+  selectedSkillIds,
+  installingSkillIds,
+  onSelectionChange,
+  onInstallSkill,
+}: PlanningSkillSelectorProps) {
+  const { t } = useTranslation();
+  return (
+    <fieldset className="space-y-2 rounded-xl border border-border bg-background p-4">
+      <legend className="px-1 text-sm font-medium">
+        {t("tasks.workbench.planningSkills")}
+      </legend>
+      <p className="text-xs leading-5 text-muted-foreground">
+        {t("tasks.workbench.planningSkillsHint")}
+      </p>
+      <div className="space-y-2">
+        {skills.map((skill) => {
+          const checked = selectedSkillIds.includes(skill.id);
+          return (
+            <div
+              key={skill.id}
+              className={cn(
+                "rounded-lg border p-3 text-sm transition",
+                checked
+                  ? "border-primary/60 bg-primary/5"
+                  : "border-border bg-card hover:border-foreground/20",
+              )}
+            >
+              <label className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={(changeEvent) => {
+                    onSelectionChange(
+                      changeEvent.target.checked
+                        ? [...selectedSkillIds, skill.id]
+                        : selectedSkillIds.filter((id) => id !== skill.id),
+                    );
+                  }}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">{skill.name}</span>
+                    <span
+                      className={cn(
+                        "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                        skill.installed && skill.valid
+                          ? "bg-emerald-500/10 text-emerald-600"
+                          : "bg-amber-500/10 text-amber-600",
+                      )}
+                    >
+                      {skill.installed && skill.valid
+                        ? t("tasks.installed")
+                        : skill.installed
+                          ? t("tasks.invalidSkill")
+                          : t("tasks.notInstalled")}
+                    </span>
+                  </span>
+                  <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                    {skill.description || skill.id}
+                  </span>
+                  {skill.error && (
+                    <span className="mt-1 block text-xs leading-5 text-destructive">
+                      {skill.error}
+                    </span>
+                  )}
+                </span>
+              </label>
+              {(!skill.installed || !skill.valid) && skill.installable && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="mt-3 w-full"
+                  disabled={installingSkillIds.includes(skill.id)}
+                  onClick={() => onInstallSkill(skill.id)}
+                >
+                  {installingSkillIds.includes(skill.id)
+                    ? t("tasks.installingSkill")
+                    : skill.installed
+                      ? t("tasks.repairSkill")
+                      : t("tasks.installSkill")}
+                </Button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </fieldset>
   );
 }
 
