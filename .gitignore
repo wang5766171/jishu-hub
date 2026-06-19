@@ -24,8 +24,10 @@ Thumbs.db
 graphify-out
 
 # Internal dev docs (local only, not tracked)
-docs/v*/
-docs/superpowers/
+# docs/ 下仅保留 screenshots 截图，其余全部忽略
+# 用 docs/* 而非 docs/，否则 git 不再遍历该目录，screenshots 无法被反忽略
+docs/*
+!docs/screenshots/
 
 # Local screenshots
 *.png
