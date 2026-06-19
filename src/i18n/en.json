@@ -180,6 +180,9 @@
       "interaction response is required": "Select an option or add a response"
     },
     "interactionDefault": "Ask user",
+    "interactionOriginBuiltIn": "Built-in assistant",
+    "interactionOriginExternal": "External assistant",
+    "interactionOriginGeneric": "Assistant question",
     "interactionQuestion": "Question",
     "interactionAnswer": "Answer",
     "interactionNoAnswer": "(No answer)",

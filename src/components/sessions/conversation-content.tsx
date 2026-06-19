@@ -12,6 +12,7 @@ import rehypeHighlight from "rehype-highlight";
 import { useTranslation } from "react-i18next";
 import type { ContentBlock } from "@/types";
 import { InteractionCard } from "./interaction-card";
+import type { InteractionCardItem } from "./interaction-card";
 
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS = [rehypeHighlight];
@@ -56,10 +57,12 @@ export function renderContentBlock(block: ContentBlock): React.ReactNode {
     case "interaction":
       return (
         <InteractionCard
-          prompt={block.prompt}
-          options={block.options}
-          answer={block.answer}
-          selectedOptions={block.selected_options}
+          items={[{
+            prompt: block.prompt,
+            options: block.options,
+            answer: block.answer,
+            selectedOptions: block.selected_options,
+          }]}
           origin={block.origin}
         />
       );
@@ -71,12 +74,7 @@ export function renderContentBlock(block: ContentBlock): React.ReactNode {
 /** Render an array of ContentBlock (a full message body). */
 export function renderContentBlocks(blocks: ContentBlock[]): React.ReactNode {
   const renderedBlocks: React.ReactNode[] = [];
-  let currentGroup: Array<{
-    prompt: string;
-    options?: any[];
-    answer: string;
-    selectedOptions?: string[];
-  }> = [];
+  let currentGroup: InteractionCardItem[] = [];
   let currentOrigin: string | undefined = undefined;
 
   const flushGroup = (key: number) => {

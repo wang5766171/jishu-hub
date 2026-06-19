@@ -26,4 +26,19 @@ describe("InteractionCard", () => {
     expect(screen.getAllByText("Question 2")).toHaveLength(1);
     expect(screen.getAllByText("B")).toHaveLength(1);
   });
+
+  it("uses localized generic origin labels instead of engine names", () => {
+    render(
+      <InteractionCard
+        defaultOpen
+        origin="acp_elicitation"
+        items={[{ prompt: "Question", answer: "Answer", options: [] }]}
+      />,
+    );
+
+    expect(screen.getByText("External assistant")).toBeInTheDocument();
+    expect(screen.queryByText("Claude Code")).not.toBeInTheDocument();
+    expect(screen.queryByText("Codex")).not.toBeInTheDocument();
+    expect(screen.queryByText("Jishu Agent")).not.toBeInTheDocument();
+  });
 });

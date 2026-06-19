@@ -180,6 +180,9 @@
       "interaction response is required": "请选择选项或填写补充说明"
     },
     "interactionDefault": "向用户提问",
+    "interactionOriginBuiltIn": "内置助手",
+    "interactionOriginExternal": "外部助手",
+    "interactionOriginGeneric": "助手提问",
     "interactionQuestion": "问题",
     "interactionAnswer": "回答",
     "interactionNoAnswer": "（未回答）",

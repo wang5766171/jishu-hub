@@ -11,6 +11,7 @@ import { InlineImages, stripImagePrompt } from "./inline-image";
 import { ToolGroup, classifyToolName } from "@/components/observability/tool-call-card";
 import type { ToolCall } from "@/components/observability/tool-call-card";
 import { InteractionCard } from "./interaction-card";
+import type { InteractionCardItem } from "./interaction-card";
 import { isInteractionToolName, looksLikeInteractionToolInput } from "@/lib/interaction-tools";
 
 const REMARK_PLUGINS = [remarkGfm];
@@ -47,6 +48,7 @@ export interface MessageSearchNavigation {
 
 type RenderItem =
   | { kind: "block"; block: ContentBlock; messageIndex: number; blockIndex: number }
+  | { kind: "interaction"; items: InteractionCardItem[]; origin?: string; messageIndex: number; blockIndex: number }
   | { kind: "tool-group"; calls: ToolCall[] };
 
 type RenderRow =
@@ -200,11 +202,12 @@ function renderBlock(
     case "interaction":
       return (
         <InteractionCard
-          items={(block as any).items}
-          prompt={block.prompt}
-          options={block.options}
-          answer={block.answer}
-          selectedOptions={block.selected_options}
+          items={[{
+            prompt: block.prompt,
+            options: block.options,
+            answer: block.answer,
+            selectedOptions: block.selected_options,
+          }]}
           origin={block.origin}
         />
       );
@@ -257,6 +260,15 @@ const isInteractionTool = (name: string, input: any) => {
   return isInteractionToolName(name) || looksLikeInteractionToolInput(input);
 };
 
+function interactionBlockToItem(block: Extract<ContentBlock, { type: "interaction" }>): InteractionCardItem {
+  return {
+    prompt: block.prompt,
+    options: block.options,
+    answer: block.answer,
+    selectedOptions: block.selected_options,
+  };
+}
+
 function buildRenderItemsForMessages(messages: Message[], messageIndices: number[], resultMap: Map<string, string>): RenderItem[] {
   const items: RenderItem[] = [];
   let pendingTools: ToolCall[] = [];
@@ -300,14 +312,13 @@ function buildRenderItemsForMessages(messages: Message[], messageIndices: number
           const origin = isAcp ? "acp_elicitation" : "extension_ui";
 
           items.push({
-            kind: "block",
-            block: {
-              type: "interaction",
+            kind: "interaction",
+            items: [{
               prompt: rawPrompt,
               options: parsedOptions,
               answer: rawAnswer,
-              origin,
-            },
+            }],
+            origin,
             messageIndex,
             blockIndex,
           });
@@ -330,6 +341,18 @@ function buildRenderItemsForMessages(messages: Message[], messageIndices: number
 
       if (block.type === "tool_result") return;
 
+      if (block.type === "interaction") {
+        flushTools();
+        items.push({
+          kind: "interaction",
+          items: [interactionBlockToItem(block)],
+          origin: block.origin,
+          messageIndex,
+          blockIndex,
+        });
+        return;
+      }
+
       flushTools();
       items.push({ kind: "block", block, messageIndex, blockIndex });
     });
@@ -340,26 +363,11 @@ function buildRenderItemsForMessages(messages: Message[], messageIndices: number
   // Group consecutive interaction blocks in the same message segment
   const groupedItems: RenderItem[] = [];
   for (const item of items) {
-    if (item.kind === "block" && item.block.type === "interaction") {
+    if (item.kind === "interaction") {
       const last = groupedItems[groupedItems.length - 1];
-      if (last && last.kind === "block" && last.block.type === "interaction") {
-        const lastBlock = last.block as any;
-        if (!lastBlock.items) {
-          lastBlock.items = [
-            {
-              prompt: lastBlock.prompt,
-              options: lastBlock.options,
-              answer: lastBlock.answer,
-              selectedOptions: lastBlock.selected_options,
-            }
-          ];
-        }
-        lastBlock.items.push({
-          prompt: item.block.prompt,
-          options: item.block.options,
-          answer: item.block.answer,
-          selectedOptions: item.block.selected_options,
-        });
+      if (last && last.kind === "interaction") {
+        last.items.push(...item.items);
+        last.origin = last.origin ?? item.origin;
         continue;
       }
     }
@@ -407,6 +415,14 @@ function AssistantBubble({
               return (
                 <div key={`tg-${idx}`} className="rounded-[8px]">
                   <ToolGroup calls={item.calls} />
+                </div>
+              );
+            }
+
+            if (item.kind === "interaction") {
+              return (
+                <div key={`interaction-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
+                  <InteractionCard items={item.items} origin={item.origin} />
                 </div>
               );
             }
@@ -462,6 +478,14 @@ function UserBubble({
           {items.map((item, idx) => {
             if (item.kind === "tool-group") {
               return <ToolGroup key={`tg-${idx}`} calls={item.calls} />;
+            }
+
+            if (item.kind === "interaction") {
+              return (
+                <div key={`interaction-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
+                  <InteractionCard items={item.items} origin={item.origin} />
+                </div>
+              );
             }
 
             const offsetKey = `${messageIndex}-${item.blockIndex}`;
