@@ -83,6 +83,7 @@ export function TaskWorkbench({
     resumeRun,
     cancelRun,
     resolveApproval,
+    chooseRecovery,
     generateProposal,
     acceptProposal,
     dismissProposal,
@@ -181,6 +182,23 @@ export function TaskWorkbench({
     () => snapshot?.nodes.find((node) => node.node_id === selectedNodeId) ?? null,
     [selectedNodeId, snapshot],
   );
+  const selectedNodeRun = selectedNode ? nodeRuns[selectedNode.node_id] ?? null : null;
+  const selectedNodeEvents = useMemo(() => {
+    if (!selectedNode) return [];
+    return events.filter((event) => {
+      const payload = event.payload as Record<string, unknown> | null;
+      return payload?.node_id === selectedNode.node_id ||
+        (!!selectedNodeRun && payload?.node_run_id === selectedNodeRun.node_run_id);
+    });
+  }, [events, selectedNode, selectedNodeRun]);
+  const selectedNodeApprovals = useMemo(() => {
+    if (!selectedNodeRun) return [];
+    return approvals.filter((approval) => approval.node_run_id === selectedNodeRun.node_run_id);
+  }, [approvals, selectedNodeRun]);
+  const selectedNodeArtifacts = useMemo(() => {
+    if (!selectedNodeRun) return [];
+    return artifacts.filter((artifact) => artifact.node_run_id === selectedNodeRun.node_run_id);
+  }, [artifacts, selectedNodeRun]);
   const selectedSkillsReady = useMemo(
     () =>
       skills
@@ -508,6 +526,12 @@ export function TaskWorkbench({
         {selectedNode && (
           <InspectorPanel
             node={selectedNode}
+            nodeRun={selectedNodeRun}
+            events={selectedNodeEvents}
+            approvals={selectedNodeApprovals}
+            artifacts={selectedNodeArtifacts}
+            onChooseRecovery={chooseRecovery}
+            onResolveApproval={resolveApproval}
             onClose={() => setSelectedNodeId(null)}
           />
         )}

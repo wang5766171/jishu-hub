@@ -653,6 +653,28 @@
           "conversation": "会话",
           "artifacts": "产物"
         }
+      },
+      "intervention": {
+        "title": "干预方式",
+        "status": "节点状态",
+        "nodeRun": "NodeRun",
+        "attempts": "尝试次数",
+        "noNodeRun": "该节点还没有运行记录。",
+        "manualReason": "用户在 Inspector 中手动干预：",
+        "retryNow": "立即重试",
+        "skipNode": "跳过节点",
+        "failNode": "标记失败",
+        "approvalCard": "ApprovalCard",
+        "modes": {
+          "blocked": "等待依赖完成，暂不可直接干预。",
+          "queued_intervention": "节点已进入队列，可记录引导，执行前应用。",
+          "live_steer": "节点运行中，优先使用实时引导；不支持时降级为后续补充。",
+          "approval": "节点等待审批，请批准或拒绝后继续。",
+          "retry_wait": "节点等待重试，可立即重试、跳过或标记失败。",
+          "repairing": "节点正在修复，暂不重复提交恢复动作。",
+          "terminal": "节点已结束，只保留查看与审计。",
+          "recovery": "节点失败，可选择恢复策略。"
+        }
       }
     },
     "kind": {

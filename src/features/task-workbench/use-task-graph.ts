@@ -802,6 +802,27 @@ export function useTaskGraph() {
     }
   }, [activeRunId, lastRunId, loadRunDetails]);
 
+  const chooseRecovery = useCallback(async (
+    nodeRunId: string,
+    strategy: "retry_now" | "skip_node" | "fail_node",
+    reason: string,
+  ) => {
+    const updated = await invoke<NodeRun>("orchestrator_choose_recovery", {
+      nodeRunId,
+      strategy,
+      reason,
+    });
+    setNodeRuns((current) => ({
+      ...current,
+      [updated.node_id]: updated,
+    }));
+    const runId = activeRunId ?? lastRunId;
+    if (runId) {
+      await loadRunDetails(runId);
+    }
+    return updated;
+  }, [activeRunId, lastRunId, loadRunDetails]);
+
   return {
     graph,
     snapshot,
@@ -845,5 +866,6 @@ export function useTaskGraph() {
     resumeRun,
     cancelRun,
     resolveApproval,
+    chooseRecovery,
   };
 }

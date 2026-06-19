@@ -655,6 +655,28 @@
           "conversation": "Chat",
           "artifacts": "Artifacts"
         }
+      },
+      "intervention": {
+        "title": "Intervention",
+        "status": "Node status",
+        "nodeRun": "NodeRun",
+        "attempts": "Attempts",
+        "noNodeRun": "This node has no run record yet.",
+        "manualReason": "Manual intervention from Inspector:",
+        "retryNow": "Retry now",
+        "skipNode": "Skip node",
+        "failNode": "Mark failed",
+        "approvalCard": "ApprovalCard",
+        "modes": {
+          "blocked": "Waiting for dependencies; direct intervention is unavailable.",
+          "queued_intervention": "The node is queued. Guidance can be recorded and applied before execution.",
+          "live_steer": "The node is running. Live steer is preferred; unsupported runtimes degrade to a follow-up.",
+          "approval": "The node is waiting for approval. Approve or reject to continue.",
+          "retry_wait": "The node is waiting to retry. You can retry now, skip, or mark failed.",
+          "repairing": "The node is being repaired. Duplicate recovery actions are disabled.",
+          "terminal": "The node has finished. This view is audit-only.",
+          "recovery": "The node failed. Choose a recovery strategy."
+        }
       }
     },
     "kind": {
