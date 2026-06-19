@@ -191,6 +191,15 @@ pub trait SessionAdapter {
         session_id: &str,
         encoded_name: &str,
     ) -> Result<Vec<Message>, String>;
+    fn persist_interaction_blocks(
+        &self,
+        _session_path: Option<&str>,
+        _session_id: Option<&str>,
+        _encoded_name: Option<&str>,
+        _interactions: Vec<Value>,
+    ) -> Result<(), String> {
+        Err("Interaction persistence is not supported by this agent adapter".to_string())
+    }
     fn load_history(&self) -> Vec<HistoryEntry> {
         vec![]
     }

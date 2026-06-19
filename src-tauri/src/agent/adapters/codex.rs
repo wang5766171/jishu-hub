@@ -485,6 +485,27 @@ impl SessionAdapter for CodexAdapter {
         parse_rollout_messages(&rollout_path)
     }
 
+    fn persist_interaction_blocks(
+        &self,
+        session_path: Option<&str>,
+        session_id: Option<&str>,
+        _encoded_name: Option<&str>,
+        interactions: Vec<serde_json::Value>,
+    ) -> Result<(), String> {
+        let path = if let Some(path) = session_path.filter(|path| path.ends_with(".jsonl")) {
+            std::path::PathBuf::from(path)
+        } else if let Some(session_id) = session_id {
+            self.search_rollout_file(session_id)?
+        } else {
+            log::warn!(
+                "persist_interaction_blocks: codex cannot resolve rollout path without session id or encoded project"
+            );
+            return Ok(());
+        };
+
+        crate::session::persist_interaction_blocks_to_jsonl_path(&path, interactions)
+    }
+
     fn load_history(&self) -> Vec<crate::history::HistoryEntry> {
         vec![]
     }
