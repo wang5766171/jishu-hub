@@ -569,7 +569,15 @@ function AppContent() {
         <Suspense fallback={<LoadingOverlay />}>
           {currentPage === "chat"
             ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} />
-            : <ManagePage onBack={() => setCurrentPage("chat")} onEnterProject={handleEnterProject} navigateToProjects={manageNavKey} />}
+            : <ManagePage
+                onBack={() => setCurrentPage("chat")}
+                onEnterProject={handleEnterProject}
+                navigateToProjects={manageNavKey}
+                projects={projects}
+                projectMetas={projectMetas}
+                refetchProjects={refetchProjects}
+                refetchProjectMetas={refetchProjectMetas}
+              />}
         </Suspense>
       </div>
       <div className="h-6 flex items-center px-4 text-[10px] text-muted-foreground/50 border-t border-border/30">

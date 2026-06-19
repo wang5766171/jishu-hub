@@ -13,15 +13,20 @@ import { useAgent } from "@/agents";
 import type { Project, ProjectMeta, ProjectMergeInfo } from "@/types";
 
 interface ProjectsPageProps {
+  projects: Project[] | null;
+  projectMetas: Record<string, ProjectMeta> | null;
+  refetchProjects: (silent?: boolean) => Promise<Project[]>;
+  refetchProjectMetas: (silent?: boolean) => Promise<Record<string, ProjectMeta>>;
   onEnterProject?: (project: Project) => void;
 }
 
-export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
+export function ProjectsPage({ projects, projectMetas, refetchProjects, refetchProjectMetas, onEnterProject }: ProjectsPageProps) {
   const { t } = useTranslation();
   const { agents, activeId } = useAgent();
-  const { data: projects, loading, refetch } = useInvoke<Project[]>("scan_projects");
-  const { data: projectMetas, refetch: refetchMetas } = useInvoke<Record<string, ProjectMeta>>("load_project_metas");
+  // merges 只用于「已合并」标记，轻量，保留在本组件加载；不阻塞列表渲染。
   const { data: merges, refetch: refetchMerges } = useInvoke<ProjectMergeInfo>("get_project_merges");
+  // 复用 App 已加载的 projects，不再每次挂载重复 scan_projects。
+  const loading = projects === null;
 
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
@@ -64,7 +69,7 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
   }, [filterAgents, selectedAgent]);
 
   const handleProjectAdded = () => {
-    refetch();
+    refetchProjects();
   };
 
   const handleCheck = (encodedName: string) => {
@@ -87,7 +92,7 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
   };
 
   const handleMergeComplete = () => {
-    refetch();
+    refetchProjects();
     refetchMerges();
     setCheckedProjects(new Set());
     setManagementMode(false);
@@ -138,7 +143,7 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">{t("projects.title")}</h2>
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="icon" onClick={() => { refetch(); refetchMetas(); refetchMerges(); }} title={t("projects.refresh")}>
+          <Button variant="ghost" size="icon" onClick={() => { refetchProjects(); refetchProjectMetas(); refetchMerges(); }} title={t("projects.refresh")}>
             <RotateCw className="h-4 w-4" />
           </Button>
           <Button variant="outline" size="sm" onClick={toggleManagementMode}>
@@ -260,7 +265,7 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
               onCheck={() => handleCheck(project.encoded_name)}
               mergedCount={getMergedCount(project.encoded_name)}
               onTagClick={(tag) => setSelectedTag(selectedTag === tag ? null : tag)}
-              onRefresh={() => { refetch(); refetchMerges(); }}
+              onRefresh={() => { refetchProjects(); refetchMerges(); }}
               onEnterChat={() => onEnterProject?.(project)}
               agentNames={Object.fromEntries(agents.map(agent => [agent.id, agent.display_name]))}
             />
@@ -273,7 +278,7 @@ export function ProjectsPage({ onEnterProject }: ProjectsPageProps) {
           project={selectedProject}
           onClose={() => setSelectedProject(null)}
           onViewSessions={(_name) => {}}
-          onRemoved={() => { setSelectedProject(null); refetch(); }}
+          onRemoved={() => { setSelectedProject(null); refetchProjects(); }}
           projectMetas={projectMetas ?? undefined}
           onUpdateMetas={refetchMetas}
           merges={merges ?? undefined}

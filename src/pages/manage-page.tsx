@@ -7,12 +7,16 @@ import { CommandsPage } from "./commands-page";
 import { EnvCheckPage } from "./env-check-page";
 import { FolderOpen, Settings, Rocket, ArrowLeft, Activity, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { ManageTab, Project } from "@/types";
+import type { ManageTab, Project, ProjectMeta } from "@/types";
 
 interface ManagePageProps {
   onBack: () => void;
   onEnterProject: (project: Project) => void;
   navigateToProjects?: number;
+  projects: Project[] | null;
+  projectMetas: Record<string, ProjectMeta> | null;
+  refetchProjects: (silent?: boolean) => Promise<Project[]>;
+  refetchProjectMetas: (silent?: boolean) => Promise<Record<string, ProjectMeta>>;
 }
 
 const tabs: { id: ManageTab; icon: typeof FolderOpen; labelKey: string; fallback: string; iconColor: string }[] = [
@@ -22,7 +26,7 @@ const tabs: { id: ManageTab; icon: typeof FolderOpen; labelKey: string; fallback
   { id: "env", icon: Activity, labelKey: "nav.environment", fallback: "Env", iconColor: "text-[var(--icon-env)]" },
 ];
 
-export function ManagePage({ onBack, onEnterProject, navigateToProjects }: ManagePageProps) {
+export function ManagePage({ onBack, onEnterProject, navigateToProjects, projects, projectMetas, refetchProjects, refetchProjectMetas }: ManagePageProps) {
   const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<ManageTab>("projects");
   const prevNavRef = useRef(0);
@@ -90,7 +94,15 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects }: Manag
 
       {/* Right: Content */}
       <div className="flex-1 overflow-y-auto">
-        {activeTab === "projects" && <ProjectsPage onEnterProject={onEnterProject} />}
+        {activeTab === "projects" && (
+          <ProjectsPage
+            projects={projects}
+            projectMetas={projectMetas}
+            refetchProjects={refetchProjects}
+            refetchProjectMetas={refetchProjectMetas}
+            onEnterProject={onEnterProject}
+          />
+        )}
         {activeTab === "config" && <ConfigPage initialTab="edit" />}
         {activeTab === "commands" && <CommandsPage />}
         {activeTab === "env" && <EnvCheckPage />}
