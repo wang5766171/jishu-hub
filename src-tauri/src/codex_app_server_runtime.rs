@@ -21,6 +21,7 @@
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -114,10 +115,12 @@ fn spawn_codex_app_server_session_inner(
     }
 
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(8);
+    let supports_interaction_mid_turn = Arc::new(AtomicBool::new(true));
 
     let control = AcpControl {
         tx: cmd_tx,
         acp_session_id: acp_session_id.clone(),
+        supports_interaction_mid_turn: supports_interaction_mid_turn.clone(),
     };
     let control_clone = control.clone();
 
@@ -133,6 +136,7 @@ fn spawn_codex_app_server_session_inner(
             cmd_rx,
             first_message,
             &on_session_resolved,
+            supports_interaction_mid_turn,
         )
         .await;
 
@@ -276,6 +280,7 @@ async fn codex_connection_loop(
     mut command_rx: tokio::sync::mpsc::Receiver<AcpCommand>,
     first_message: String,
     on_session_resolved: &(dyn Fn(&str) + Send + Sync),
+    supports_interaction_mid_turn: Arc<AtomicBool>,
 ) -> Result<(), String> {
     // stdout reader sub-task.
     let (stdout_tx, mut stdout_rx) = tokio::sync::mpsc::channel(64);
@@ -290,9 +295,11 @@ async fn codex_connection_loop(
     let mut buf: Vec<NormalizedEvent> = Vec::with_capacity(32);
     let mut last_flush = std::time::Instant::now();
 
-    // 1. initialize (experimentalApi:true).
-    let init_id = writer.request("initialize", initialize_params()).await?;
-    wait_for_response(
+    // 1. initialize. Prefer experimentalApi for requestUserInput; if older
+    // codex builds reject that capability, retry a baseline initialize and mark
+    // the session as follow-up only for structured business questions.
+    let experimental_api_enabled = initialize_codex(
+        &mut writer,
         &mut stdout_rx,
         &mut pending_user_inputs,
         &mut pending_approvals,
@@ -300,10 +307,12 @@ async fn codex_connection_loop(
         &pending_session_id,
         &mut buf,
         &mut last_flush,
-        init_id,
     )
-    .await
-    .map_err(|e| format!("codex initialize failed: {e}"))?;
+    .await?;
+    supports_interaction_mid_turn.store(
+        experimental_api_enabled,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     flush_buf(&emit, &pending_session_id, &mut buf);
 
     // 2. thread/start (new) or thread/resume (continue a known thread).
@@ -444,6 +453,61 @@ async fn codex_connection_loop(
         flush_buf(&emit, &pending_session_id, &mut buf);
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn initialize_codex(
+    writer: &mut CodexWriter,
+    stdout_rx: &mut tokio::sync::mpsc::Receiver<String>,
+    pending_user_inputs: &mut HashMap<String, PendingUserInput>,
+    pending_approvals: &mut HashMap<String, PendingApproval>,
+    emit: &AcpEventEmit,
+    session_id: &str,
+    buf: &mut Vec<NormalizedEvent>,
+    last_flush: &mut std::time::Instant,
+) -> Result<bool, String> {
+    let experimental_id = writer
+        .request("initialize", initialize_params(true))
+        .await?;
+    match wait_for_response(
+        stdout_rx,
+        pending_user_inputs,
+        pending_approvals,
+        emit,
+        session_id,
+        buf,
+        last_flush,
+        experimental_id,
+    )
+    .await
+    {
+        Ok(_) => Ok(true),
+        Err(err) => {
+            log::warn!(
+                "codex initialize with experimentalApi failed ({err}); retrying without experimentalApi"
+            );
+            let baseline_id = writer
+                .request("initialize", initialize_params(false))
+                .await?;
+            wait_for_response(
+                stdout_rx,
+                pending_user_inputs,
+                pending_approvals,
+                emit,
+                session_id,
+                buf,
+                last_flush,
+                baseline_id,
+            )
+            .await
+            .map_err(|fallback_err| {
+                format!(
+                    "codex initialize failed: experimentalApi error: {err}; fallback error: {fallback_err}"
+                )
+            })?;
+            Ok(false)
+        }
+    }
 }
 
 /// Read stdout lines until the response matching `expected_id` arrives. Server
@@ -1074,11 +1138,14 @@ fn turn_status_to_reason(status: &str) -> TurnEndReason {
 // Internal: pure helpers (unit-tested)
 // ---------------------------------------------------------------------------
 
-fn initialize_params() -> Value {
-    json!({
-        "clientInfo": { "name": "jishu-hub", "version": "0.6.0" },
-        "capabilities": { "experimentalApi": true }
-    })
+fn initialize_params(experimental_api: bool) -> Value {
+    let mut params = json!({
+        "clientInfo": { "name": "jishu-hub", "version": "0.6.0" }
+    });
+    if experimental_api {
+        params["capabilities"] = json!({ "experimentalApi": true });
+    }
+    params
 }
 
 /// Extract the turn id from a `turn/start` response result `{turn:{id,…}}`,
@@ -1515,5 +1582,14 @@ mod tests {
     fn business_kind_helper() {
         let params = json!({ "questions": [{ "id": "q", "question": "x" }] });
         assert!(classify_request_user_input(&params).is_business());
+    }
+
+    #[test]
+    fn initialize_params_can_omit_experimental_api() {
+        assert_eq!(
+            initialize_params(true)["capabilities"]["experimentalApi"],
+            true
+        );
+        assert!(initialize_params(false).get("capabilities").is_none());
     }
 }

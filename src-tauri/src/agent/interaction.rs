@@ -95,11 +95,24 @@ pub fn delivery_hint_for(
 /// Authoritative delivery decision for an interaction of `origin` on `transport`.
 ///
 /// This encodes the protocol-verified reachability table (ground-truth memory +
-/// spike §15). Callers in `respond_chat_intersection` pass the *actual* current
+/// spike §15). Callers in `respond_chat_interaction` pass the *actual* current
 /// transport; if a runtime's capability probe fails at answer time, it should
 /// return `FollowUp` regardless (the codex/ACP runtimes enforce their own
 /// capability gates before reaching here).
 pub fn delivery_for(transport: TransportSurface, origin: InteractionOrigin) -> InteractionDelivery {
+    delivery_for_runtime(transport, origin, true)
+}
+
+/// Authoritative delivery decision with the runtime's live capability probe.
+pub fn delivery_for_runtime(
+    transport: TransportSurface,
+    origin: InteractionOrigin,
+    supports_mid_turn_interaction: bool,
+) -> InteractionDelivery {
+    if !supports_mid_turn_interaction {
+        return InteractionDelivery::FollowUp;
+    }
+
     match (transport, origin) {
         // Production mid-turn baselines — verified mid-turn pause-resume.
         (TransportSurface::PiRpc, InteractionOrigin::ExtensionUi) => InteractionDelivery::MidTurn,
@@ -140,6 +153,18 @@ mod tests {
                 InteractionOrigin::CodexToolRequestUserInput
             ),
             InteractionDelivery::MidTurn
+        );
+    }
+
+    #[test]
+    fn codex_business_question_falls_back_without_runtime_capability() {
+        assert_eq!(
+            delivery_for_runtime(
+                TransportSurface::CodexAppServer,
+                InteractionOrigin::CodexToolRequestUserInput,
+                false,
+            ),
+            InteractionDelivery::FollowUp
         );
     }
 

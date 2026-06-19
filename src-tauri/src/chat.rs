@@ -376,7 +376,7 @@ pub async fn respond_chat_interaction(
     origin: Option<crate::agent::normalized::InteractionOrigin>,
 ) -> Result<crate::agent::interaction::InteractionResponseDto, String> {
     let chat_state = app.state::<Mutex<ChatState>>();
-    let (acp, agent_id) = {
+    let (acp, agent_id, supports_interaction_mid_turn) = {
         let chat = chat_state
             .lock()
             .map_err(|_| "Chat state lock poisoned".to_string())?;
@@ -384,7 +384,15 @@ pub async fn respond_chat_interaction(
             .processes
             .get(&session_id)
             .ok_or_else(|| format!("No active ACP session found for {session_id}"))?;
-        (process.acp.clone(), process.agent_id.clone())
+        (
+            process.acp.clone(),
+            process.agent_id.clone(),
+            process
+                .acp
+                .as_ref()
+                .map(|acp| acp.supports_interaction_mid_turn())
+                .unwrap_or(false),
+        )
     };
 
     // Resolve the process's transport from the registry (design R6: the
@@ -401,14 +409,18 @@ pub async fn respond_chat_interaction(
     };
 
     let origin = origin.unwrap_or_default();
-    let delivery = crate::agent::interaction::delivery_for(transport, origin);
+    let delivery = crate::agent::interaction::delivery_for_runtime(
+        transport,
+        origin,
+        supports_interaction_mid_turn,
+    );
 
     match delivery {
         crate::agent::interaction::InteractionDelivery::MidTurn => {
-            // Mid-turn write-back. PiRpc (`extension_ui_response`) is the only
-            // wired mid-turn path in Phase 0; ACP elicit (Phase 3) and codex
-            // (Phase 2) reach here once their runtimes land. `respond_to_input`
-            // is the shared write-back entry point each transport implements.
+            // Mid-turn write-back for transports with a live pause/resume
+            // request (PiRpc extension UI, ACP elicitation, codex app-server
+            // requestUserInput). `respond_to_input` is the shared write-back
+            // entry point each runtime implements.
             if let Some(acp) = acp {
                 acp.respond_to_input(request_id, value).await?;
             }
@@ -421,8 +433,7 @@ pub async fn respond_chat_interaction(
         crate::agent::interaction::InteractionDelivery::FollowUp => {
             // This transport cannot answer mid-turn as a business question.
             // Report follow-up so the frontend sends the answer as a new user
-            // message (the design's safety net). Phase 1+ may route ACP
-            // business interactions to a fresh turn via the responder here.
+            // message (the design's safety net).
             Ok(
                 crate::agent::interaction::InteractionResponseDto::from_delivery(
                     crate::agent::interaction::InteractionDelivery::FollowUp,

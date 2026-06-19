@@ -9,6 +9,7 @@
 
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::Emitter;
@@ -62,6 +63,7 @@ pub enum AcpCommand {
 pub struct AcpControl {
     pub(crate) tx: tokio::sync::mpsc::Sender<AcpCommand>,
     pub(crate) acp_session_id: Arc<std::sync::Mutex<Option<String>>>,
+    pub(crate) supports_interaction_mid_turn: Arc<AtomicBool>,
 }
 
 impl AcpControl {
@@ -77,6 +79,10 @@ impl AcpControl {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    pub fn supports_interaction_mid_turn(&self) -> bool {
+        self.supports_interaction_mid_turn.load(Ordering::Relaxed)
     }
 
     pub async fn send_cancel(&self) {
@@ -834,6 +840,7 @@ pub fn spawn_acp_session(
     let control = AcpControl {
         tx: cmd_tx,
         acp_session_id: acp_session_id.clone(),
+        supports_interaction_mid_turn: Arc::new(AtomicBool::new(true)),
     };
     let control_clone = control.clone();
 

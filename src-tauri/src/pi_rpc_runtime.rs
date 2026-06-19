@@ -10,6 +10,7 @@
 //! - Events (stdout):   AgentEvent objects (`message_update`, `tool_execution_*`, …)
 
 use serde_json::json;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -110,6 +111,7 @@ fn spawn_pi_rpc_session_inner(
     let control = AcpControl {
         tx: cmd_tx,
         acp_session_id: acp_session_id.clone(),
+        supports_interaction_mid_turn: Arc::new(AtomicBool::new(true)),
     };
     let control_clone = control.clone();
 

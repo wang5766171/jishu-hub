@@ -139,6 +139,8 @@ fn is_interaction_tool_name(tool_name: &str) -> bool {
             | "askuserquestion"
             | "ask_user_question"
             | "ask_question"
+            | "ask_choice"
+            | "choice_question"
     )
 }
 
@@ -322,11 +324,45 @@ pub fn persist_interaction_blocks_to_jsonl_path(
         return Ok(());
     }
 
-    let original =
-        std::fs::read_to_string(path).map_err(|e| format!("Failed to read session file: {e}"))?;
-    let updated = insert_interaction_blocks_into_jsonl(&original, interactions)?;
-    std::fs::write(path, updated).map_err(|e| format!("Failed to write session file: {e}"))?;
-    Ok(())
+    let mut last_err = None;
+    for _ in 0..5 {
+        wait_for_stable_file(path)?;
+        let before = file_fingerprint(path)?;
+        let original = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read session file: {e}"))?;
+        let updated = insert_interaction_blocks_into_jsonl(&original, interactions.clone())?;
+        let after = file_fingerprint(path)?;
+
+        if before != after {
+            last_err = Some("session file changed while preparing interaction persistence".to_string());
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            continue;
+        }
+
+        return crate::util::atomic_write(path, updated.as_bytes())
+            .map_err(|e| format!("Failed to write session file: {e}"));
+    }
+
+    Err(last_err.unwrap_or_else(|| "session file did not become stable".to_string()))
+}
+
+fn file_fingerprint(path: &Path) -> Result<(u64, Option<std::time::SystemTime>), String> {
+    let metadata =
+        std::fs::metadata(path).map_err(|e| format!("Failed to stat session file: {e}"))?;
+    Ok((metadata.len(), metadata.modified().ok()))
+}
+
+fn wait_for_stable_file(path: &Path) -> Result<(), String> {
+    let mut previous = file_fingerprint(path)?;
+    for _ in 0..10 {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let current = file_fingerprint(path)?;
+        if current == previous {
+            return Ok(());
+        }
+        previous = current;
+    }
+    Err("session file is still changing".to_string())
 }
 
 pub(crate) fn insert_interaction_blocks_into_jsonl(
@@ -880,6 +916,8 @@ mod tests {
         assert!(is_interaction_tool_name("ask_user_input"));
         assert!(is_interaction_tool_name("AskUserQuestion"));
         assert!(is_interaction_tool_name("ask-user-question"));
+        assert!(is_interaction_tool_name("ask_choice"));
+        assert!(is_interaction_tool_name("choice-question"));
         assert!(!is_interaction_tool_name("Read"));
         assert!(!is_interaction_tool_name("Write"));
         assert!(!is_interaction_tool_name("bash"));
