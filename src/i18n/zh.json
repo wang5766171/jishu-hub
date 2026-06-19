@@ -607,7 +607,31 @@
       "undo": "撤销",
       "redo": "重做",
       "applyDraftToRun": "应用草稿到运行",
-      "runUsesCurrentDraft": "运行已使用当前草稿"
+      "runUsesCurrentDraft": "运行已使用当前草稿",
+      "viewModes": {
+        "label": "任务视图模式",
+        "chat": "会话模式",
+        "canvas": "画布模式",
+        "split": "分屏模式"
+      },
+      "context": {
+        "run": "Run",
+        "status": "状态",
+        "revision": "Revision",
+        "approvals": "待审批",
+        "failures": "失败",
+        "notRunning": "未运行"
+      },
+      "unifiedInspector": {
+        "title": "节点 Inspector",
+        "phase1Placeholder": "该区域将在执行监控阶段接入公开投影内容。",
+        "tabs": {
+          "overview": "概览",
+          "run": "运行",
+          "conversation": "会话",
+          "artifacts": "产物"
+        }
+      }
     },
     "kind": {
       "plan": "规划",

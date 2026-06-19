@@ -12,6 +12,7 @@ import { useTranslation } from "react-i18next";
 import { InteractionComposer } from "@/components/sessions/interaction-composer";
 import { MarkdownText } from "@/components/sessions/conversation-content";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import type {
   ConversationInteractionRequest,
   ConversationInteractionSubmission,
@@ -68,6 +69,7 @@ interface TaskConversationPanelProps {
   graphId: string;
   selectedNodeId?: string | null;
   onClose: () => void;
+  className?: string;
 }
 
 function interactionForComposer(
@@ -101,6 +103,7 @@ export function TaskConversationPanel({
   graphId,
   selectedNodeId,
   onClose,
+  className,
 }: TaskConversationPanelProps) {
   const { t } = useTranslation();
   const [detail, setDetail] = useState<TaskConversationDetail | null>(null);
@@ -164,7 +167,12 @@ export function TaskConversationPanel({
   const summary = detail?.summary;
 
   return (
-    <aside className="flex h-full w-[23rem] shrink-0 flex-col border-l border-border/70 bg-card">
+    <aside
+      className={cn(
+        "flex h-full w-[23rem] shrink-0 flex-col border-l border-border/70 bg-card",
+        className,
+      )}
+    >
       <div className="flex items-center justify-between border-b border-border/70 px-4 py-3">
         <div className="flex min-w-0 items-center gap-2">
           <ClipboardList className="size-4 shrink-0 text-primary" />

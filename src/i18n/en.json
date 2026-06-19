@@ -609,7 +609,31 @@
       "undo": "Undo",
       "redo": "Redo",
       "applyDraftToRun": "Apply draft to run",
-      "runUsesCurrentDraft": "Run uses current draft"
+      "runUsesCurrentDraft": "Run uses current draft",
+      "viewModes": {
+        "label": "Task view mode",
+        "chat": "Chat mode",
+        "canvas": "Canvas mode",
+        "split": "Split mode"
+      },
+      "context": {
+        "run": "Run",
+        "status": "Status",
+        "revision": "Revision",
+        "approvals": "Approvals",
+        "failures": "Failures",
+        "notRunning": "Not running"
+      },
+      "unifiedInspector": {
+        "title": "Node Inspector",
+        "phase1Placeholder": "Public projection content will be connected during execution monitoring.",
+        "tabs": {
+          "overview": "Overview",
+          "run": "Run",
+          "conversation": "Chat",
+          "artifacts": "Artifacts"
+        }
+      }
     },
     "kind": {
       "plan": "Plan",

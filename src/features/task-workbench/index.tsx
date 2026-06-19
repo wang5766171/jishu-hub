@@ -14,11 +14,11 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useTaskGraph, type TaskGraph } from "./use-task-graph";
 import { GraphEditor } from "./graph-editor";
-import { NodeSidebar } from "./node-sidebar";
 import { RunInspector } from "./run-inspector";
 import { ProposalReview } from "./proposal-review";
 import { PlanningProgressOverlay } from "./planning-progress";
 import { TaskConversationPanel } from "./task-conversation-panel";
+import { InspectorPanel } from "./inspector-panel";
 
 interface TaskPlanSkill {
   id: string;
@@ -38,6 +38,7 @@ interface TaskWorkbenchProps {
 }
 
 type WorkbenchView = "list" | "create" | "graph";
+type WorkbenchSurfaceView = "chat" | "canvas" | "split";
 
 export function TaskWorkbench({
   initialProjectPath,
@@ -88,7 +89,7 @@ export function TaskWorkbench({
   const [listError, setListError] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [runInspectorOpen, setRunInspectorOpen] = useState(false);
-  const [conversationOpen, setConversationOpen] = useState(false);
+  const [surfaceView, setSurfaceView] = useState<WorkbenchSurfaceView>("canvas");
   const [title, setTitle] = useState("");
   const [goal, setGoal] = useState("");
   const [skills, setSkills] = useState<TaskPlanSkill[]>([]);
@@ -131,7 +132,7 @@ export function TaskWorkbench({
     clearGraph();
     setSelectedNodeId(null);
     setRunInspectorOpen(false);
-    setConversationOpen(Boolean(initialGraphId));
+    setSurfaceView("canvas");
     if (initialGraphId) {
       setView("graph");
       loadGraph(initialGraphId).catch(console.error);
@@ -219,7 +220,7 @@ export function TaskWorkbench({
     async (graphId: string) => {
       setSelectedNodeId(null);
       setRunInspectorOpen(false);
-      setConversationOpen(true);
+      setSurfaceView("canvas");
       setView("graph");
       await loadGraph(graphId);
     },
@@ -279,7 +280,7 @@ export function TaskWorkbench({
                   skillRefs,
                 );
                 setView("graph");
-                setConversationOpen(true);
+                setSurfaceView("split");
               } catch (submitError) {
                 setPendingInitialPlan(null);
                 setFormError(String(submitError));
@@ -421,6 +422,62 @@ export function TaskWorkbench({
     );
   }
 
+  const unresolvedApprovalCount = approvals.filter((approval) => !approval.resolved).length;
+  const failedNodeCount = Object.values(nodeRuns).filter(
+    (nodeRun) => nodeRun.status === "failed",
+  ).length;
+
+  const graphContent = planning && planningProgress ? (
+    <PlanningProgressOverlay
+      progress={planningProgress}
+      text={planningText}
+      onCancel={() => dismissProposal()}
+    />
+  ) : loading && !graph ? (
+    <div className="flex h-full items-center justify-center text-muted-foreground">
+      {t("common.loading")}
+    </div>
+  ) : error ? (
+    <div className="flex h-full items-center justify-center p-6 text-center text-destructive">
+      {error}
+    </div>
+  ) : snapshot ? (
+    <GraphEditor
+      snapshot={snapshot}
+      graphId={graph?.graph_id ?? null}
+      selectedNodeId={selectedNodeId}
+      onNodeSelect={(nodeId) => {
+        setSelectedNodeId(nodeId);
+        if (nodeId) setSurfaceView("split");
+      }}
+      applyCommands={applyCommands}
+      activeRunId={activeRunId}
+      nodeRuns={nodeRuns}
+      startRun={startRun}
+      runStatus={runStatus}
+      pauseRun={pauseRun}
+      resumeRun={resumeRun}
+      cancelRun={cancelRun}
+      generateProposal={() => generateProposal()}
+      planning={planning}
+      canUndo={canUndo}
+      canRedo={canRedo}
+      undo={undo}
+      redo={redo}
+      applyDraftToRun={applyDraftToRun}
+      canApplyDraftToRun={canApplyDraftToRun}
+    />
+  ) : null;
+
+  const conversationContent = graph ? (
+    <TaskConversationPanel
+      graphId={graph.graph_id}
+      selectedNodeId={selectedNodeId}
+      onClose={() => setSurfaceView("canvas")}
+      className="w-full border-l-0"
+    />
+  ) : null;
+
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
       <WorkbenchHeader
@@ -445,16 +502,7 @@ export function TaskWorkbench({
               </Button>
             )}
             {graph && (
-              <Button
-                type="button"
-                size="sm"
-                variant={conversationOpen ? "secondary" : "outline"}
-                onClick={() => setConversationOpen((current) => !current)}
-                aria-pressed={conversationOpen}
-              >
-                <MessageSquareText className="size-4" />
-                {t("tasks.conversation.title")}
-              </Button>
+              <ViewModeSwitcher value={surfaceView} onChange={setSurfaceView} />
             )}
             <Button type="button" size="sm" variant="outline" onClick={beginCreate}>
               <Plus className="size-4" />
@@ -463,50 +511,28 @@ export function TaskWorkbench({
           </>
         }
       />
+      <TaskContextBar
+        runId={displayedRunId}
+        runStatus={runStatus}
+        revisionId={graph?.current_draft_revision ?? null}
+        approvalCount={unresolvedApprovalCount}
+        failedNodeCount={failedNodeCount}
+        onApprovalsClick={() => setRunInspectorOpen(true)}
+        onFailuresClick={() => setSurfaceView("split")}
+      />
       <div className="flex min-h-0 flex-1">
-        <div className="relative h-full min-w-0 flex-1">
-          {planning && planningProgress ? (
-            <PlanningProgressOverlay
-              progress={planningProgress}
-              text={planningText}
-              onCancel={() => dismissProposal()}
-            />
-          ) : loading && !graph ? (
-            <div className="flex h-full items-center justify-center text-muted-foreground">
-              {t("common.loading")}
+        {surfaceView === "chat" ? (
+          <div className="min-w-0 flex-1">{conversationContent}</div>
+        ) : surfaceView === "split" ? (
+          <div className="flex min-w-0 flex-1 flex-col">
+            <div className="relative min-h-[280px] flex-[2] border-b border-border/70">
+              {graphContent}
             </div>
-          ) : error ? (
-            <div className="flex h-full items-center justify-center p-6 text-center text-destructive">
-              {error}
-            </div>
-          ) : snapshot ? (
-            <GraphEditor
-              snapshot={snapshot}
-              graphId={graph?.graph_id ?? null}
-              selectedNodeId={selectedNodeId}
-              onNodeSelect={(nodeId) => {
-                setSelectedNodeId(nodeId);
-                if (nodeId) setConversationOpen(true);
-              }}
-              applyCommands={applyCommands}
-              activeRunId={activeRunId}
-              nodeRuns={nodeRuns}
-              startRun={startRun}
-              runStatus={runStatus}
-              pauseRun={pauseRun}
-              resumeRun={resumeRun}
-              cancelRun={cancelRun}
-              generateProposal={() => generateProposal()}
-              planning={planning}
-              canUndo={canUndo}
-              canRedo={canRedo}
-              undo={undo}
-              redo={redo}
-              applyDraftToRun={applyDraftToRun}
-              canApplyDraftToRun={canApplyDraftToRun}
-            />
-          ) : null}
-        </div>
+            <div className="min-h-[280px] flex-[3]">{conversationContent}</div>
+          </div>
+        ) : (
+          <div className="relative h-full min-w-0 flex-1">{graphContent}</div>
+        )}
 
         {displayedRunId && runInspectorOpen && (
           <RunInspector
@@ -522,17 +548,9 @@ export function TaskWorkbench({
         )}
 
         {selectedNode && (
-          <NodeSidebar
+          <InspectorPanel
             node={selectedNode}
             onClose={() => setSelectedNodeId(null)}
-          />
-        )}
-
-        {graph && conversationOpen && (
-          <TaskConversationPanel
-            graphId={graph.graph_id}
-            selectedNodeId={selectedNodeId}
-            onClose={() => setConversationOpen(false)}
           />
         )}
       </div>
@@ -545,6 +563,120 @@ export function TaskWorkbench({
           onDismiss={dismissProposal}
         />
       )}
+    </div>
+  );
+}
+
+interface ViewModeSwitcherProps {
+  value: WorkbenchSurfaceView;
+  onChange: (value: WorkbenchSurfaceView) => void;
+}
+
+function ViewModeSwitcher({ value, onChange }: ViewModeSwitcherProps) {
+  const { t } = useTranslation();
+  const modes: Array<{
+    value: WorkbenchSurfaceView;
+    icon: React.ComponentType<{ className?: string }>;
+  }> = [
+    { value: "chat", icon: MessageSquareText },
+    { value: "canvas", icon: ClipboardList },
+    { value: "split", icon: Activity },
+  ];
+
+  return (
+    <div
+      className="flex items-center rounded-lg border border-border bg-muted/30 p-0.5"
+      aria-label={t("tasks.workbench.viewModes.label")}
+    >
+      {modes.map((mode) => {
+        const Icon = mode.icon;
+        const label = t(`tasks.workbench.viewModes.${mode.value}`);
+        return (
+          <Button
+            key={mode.value}
+            type="button"
+            size="sm"
+            variant={value === mode.value ? "secondary" : "ghost"}
+            onClick={() => onChange(mode.value)}
+            aria-label={label}
+            aria-pressed={value === mode.value}
+            title={label}
+            className="h-7 gap-1.5 px-2"
+          >
+            <Icon className="size-3.5" />
+            <span className="hidden text-xs lg:inline">{label}</span>
+          </Button>
+        );
+      })}
+    </div>
+  );
+}
+
+interface TaskContextBarProps {
+  runId: string | null;
+  runStatus: string | null;
+  revisionId: string | null;
+  approvalCount: number;
+  failedNodeCount: number;
+  onApprovalsClick: () => void;
+  onFailuresClick: () => void;
+}
+
+function TaskContextBar({
+  runId,
+  runStatus,
+  revisionId,
+  approvalCount,
+  failedNodeCount,
+  onApprovalsClick,
+  onFailuresClick,
+}: TaskContextBarProps) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex min-h-11 items-center gap-2 overflow-x-auto border-b border-border/70 bg-card/70 px-4 py-2 text-xs">
+      <ContextPill label={t("tasks.workbench.context.run")} value={runId ?? "-"} />
+      <ContextPill
+        label={t("tasks.workbench.context.status")}
+        value={runStatus ?? t("tasks.workbench.context.notRunning")}
+      />
+      <ContextPill
+        label={t("tasks.workbench.context.revision")}
+        value={revisionId ?? "-"}
+      />
+      <button
+        type="button"
+        onClick={onApprovalsClick}
+        className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 transition hover:bg-muted"
+      >
+        <span className="text-muted-foreground">
+          {t("tasks.workbench.context.approvals")}
+        </span>
+        <span className="font-mono font-medium">{approvalCount}</span>
+      </button>
+      <button
+        type="button"
+        onClick={onFailuresClick}
+        className={cn(
+          "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2.5 transition hover:bg-muted",
+          failedNodeCount > 0
+            ? "border-destructive/40 bg-destructive/5 text-destructive"
+            : "border-border bg-background",
+        )}
+      >
+        <span className={failedNodeCount > 0 ? "" : "text-muted-foreground"}>
+          {t("tasks.workbench.context.failures")}
+        </span>
+        <span className="font-mono font-medium">{failedNodeCount}</span>
+      </button>
+    </div>
+  );
+}
+
+function ContextPill({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-2.5">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="max-w-48 truncate font-mono font-medium">{value}</span>
     </div>
   );
 }
