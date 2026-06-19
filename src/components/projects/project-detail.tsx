@@ -9,6 +9,7 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import { ProjectSettingsForm } from "@/components/projects/project-settings-form";
 import { ProjectMetaEditor } from "@/components/projects/project-meta-editor";
 import { useInvoke } from "@/hooks/use-invoke";
+import { ask } from "@tauri-apps/plugin-dialog";
 import type { Project, ProjectMeta, ProjectMergeInfo } from "@/types";
 
 interface ProjectDetailProps {
@@ -35,7 +36,8 @@ export function ProjectDetail({ project, onClose, onViewSessions, onRemoved, pro
   const { data: claudeMd } = useInvoke<string | null>("load_claude_md", { projectPath: project.path });
 
   const handleRemove = async () => {
-    if (!confirm(t("projects.removeProjectConfirm"))) return;
+    const confirmed = await ask(t("projects.removeProjectConfirm"), { title: t("projects.title"), kind: "warning" });
+    if (!confirmed) return;
     try {
       await invokeCommand("remove_project", { encodedName: project.encoded_name });
       onRemoved?.();

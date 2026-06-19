@@ -13,6 +13,7 @@ import {
   Cable,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { message } from "@tauri-apps/plugin-dialog";
 import type { AgentStatus } from "@/agents/types";
 
 interface EnvData {
@@ -287,7 +288,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       }
     } catch (err) {
       console.error(err);
-      window.alert(`安装失败: ${String(err)}`);
+      await message(`安装失败: ${String(err)}`, { title: t("env.title", "环境检测"), kind: "error" });
     } finally {
       setInstallingId(null);
     }
@@ -395,7 +396,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                   await invokeCommand("install_cli_symlink");
                   setCliInstalled(true);
                 } catch (e) {
-                  window.alert(`安装失败:\n${String(e)}`);
+                  void message(`安装失败:\n${String(e)}`, { title: t("env.title", "环境检测"), kind: "error" });
                 }
               }}
             >
@@ -506,7 +507,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                                     await refreshHealth();
                                   } catch (err) {
                                     console.error(err);
-                                    window.alert(`MCP ${t("env.installFailed", "安装失败")}: ${String(err)}`);
+                                    await message(`MCP ${t("env.installFailed", "安装失败")}: ${String(err)}`, { title: t("env.title", "环境检测"), kind: "error" });
                                   } finally {
                                     setInstallingMcpId(null);
                                   }
@@ -566,7 +567,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                                     await refreshHealth();
                                   } catch (err) {
                                     console.error(err);
-                                    window.alert(`${t("env.bridge", "桥")} ${t("env.installFailed", "安装失败")}: ${String(err)}`);
+                                    await message(`${t("env.bridge", "桥")} ${t("env.installFailed", "安装失败")}: ${String(err)}`, { title: t("env.title", "环境检测"), kind: "error" });
                                   } finally {
                                     setInstallingBridgeId(null);
                                   }
