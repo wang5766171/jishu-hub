@@ -8,7 +8,7 @@
 //! agents and relays their NormalizedEvent streams to the GUI.
 
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::Emitter;
@@ -325,6 +325,30 @@ enum LoopState {
     },
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum AcpSteerAction {
+    SendNow(String),
+    Queued,
+}
+
+fn queue_acp_steer_follow_up(
+    state: &LoopState,
+    pending_follow_ups: &mut VecDeque<String>,
+    message: String,
+) -> AcpSteerAction {
+    match state {
+        LoopState::Idle => AcpSteerAction::SendNow(message),
+        LoopState::Prompting { .. } | LoopState::CancelPending { .. } => {
+            pending_follow_ups.push_back(message);
+            AcpSteerAction::Queued
+        }
+    }
+}
+
+fn pop_next_acp_follow_up(pending_follow_ups: &mut VecDeque<String>) -> Option<String> {
+    pending_follow_ups.pop_front()
+}
+
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug)]
@@ -594,8 +618,7 @@ fn is_generic_question_title(s: &str) -> bool {
 }
 
 fn extract_ask_user_prompts(update: &serde_json::Value) -> Option<Vec<String>> {
-    let raw_input = update.get("rawInput")
-        .or_else(|| update.get("input"))?;
+    let raw_input = update.get("rawInput").or_else(|| update.get("input"))?;
     let questions = raw_input.get("questions")?.as_array()?;
     let mut prompts = Vec::new();
     for q in questions {
@@ -603,7 +626,11 @@ fn extract_ask_user_prompts(update: &serde_json::Value) -> Option<Vec<String>> {
             prompts.push(question_text.to_string());
         }
     }
-    if prompts.is_empty() { None } else { Some(prompts) }
+    if prompts.is_empty() {
+        None
+    } else {
+        Some(prompts)
+    }
 }
 
 /// A `question_<n>` form field (not the `question_<n>_custom` companion).
@@ -973,6 +1000,7 @@ async fn acp_connection_loop(
     // separate table from pending_permissions (R3 分表); Phase 3 populates it
     // when handling incoming elicitation/create.
     let mut pending_elicitations: HashMap<String, PendingElicitation> = HashMap::new();
+    let mut pending_follow_up_prompts: VecDeque<String> = VecDeque::new();
     // Track whether the current prompt turn received any visible content
     // (text, thinking, tool calls). Some ACP servers (e.g. opencode) silently
     // return end_turn with zero content when the underlying model API fails.
@@ -982,7 +1010,8 @@ async fn acp_connection_loop(
     // tool_call_start was suppressed, so the matching tool_call_update
     // (result) can also be suppressed even when the tool name is missing
     // from the update event.
-    let mut suppressed_acp_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut suppressed_acp_calls: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     let mut last_ask_user_prompts: Option<Vec<String>> = None;
 
     loop {
@@ -1057,9 +1086,29 @@ async fn acp_connection_loop(
                         }
                         false
                     }
-                    Some(AcpCommand::Steer(_)) => {
-                        // ACP does not have a native steer command; ignored.
-                        log::debug!("ACP Steer ignored (ACP transport)");
+                    Some(AcpCommand::Steer(msg)) => {
+                        match queue_acp_steer_follow_up(
+                            &state,
+                            &mut pending_follow_up_prompts,
+                            msg,
+                        ) {
+                            AcpSteerAction::SendNow(msg) => {
+                                usage = None;
+                                turn_had_content = false;
+                                let id = writer.request("session/prompt", json!({
+                                    "sessionId": session_id,
+                                    "prompt": [{ "type": "text", "text": msg }]
+                                })).await?;
+                                log::info!("ACP sent steer follow-up prompt immediately, id={}", id);
+                                state = LoopState::Prompting { prompt_id: id };
+                            }
+                            AcpSteerAction::Queued => {
+                                log::info!(
+                                    "ACP queued steer follow-up prompt; queue_len={}",
+                                    pending_follow_up_prompts.len()
+                                );
+                            }
+                        }
                         false
                     }
                     Some(AcpCommand::RespondToInput {
@@ -1251,21 +1300,33 @@ async fn acp_connection_loop(
                                 }
 
                                 // State transition
-                                state = if let LoopState::CancelPending { pending_prompt, .. } = &mut state {
-                                    let buffered = pending_prompt.take();
-                                    if let Some(msg) = buffered {
-                                        usage = None;
-                                        turn_had_content = false;
-                                        let new_id = writer.request("session/prompt", json!({
-                                            "sessionId": session_id,
-                                            "prompt": [{ "type": "text", "text": msg }]
-                                        })).await?;
-                                        log::info!("ACP sent buffered prompt after cancel, id={}", new_id);
-                                        LoopState::Prompting { prompt_id: new_id }
-                                    } else {
-                                        log::info!("ACP state -> Idle after prompt response");
-                                        LoopState::Idle
-                                    }
+                                let buffered_after_cancel = if let LoopState::CancelPending { pending_prompt, .. } = &mut state {
+                                    pending_prompt.take()
+                                } else {
+                                    None
+                                };
+                                state = if let Some(msg) = buffered_after_cancel {
+                                    usage = None;
+                                    turn_had_content = false;
+                                    let new_id = writer.request("session/prompt", json!({
+                                        "sessionId": session_id,
+                                        "prompt": [{ "type": "text", "text": msg }]
+                                    })).await?;
+                                    log::info!("ACP sent buffered prompt after cancel, id={}", new_id);
+                                    LoopState::Prompting { prompt_id: new_id }
+                                } else if let Some(msg) = pop_next_acp_follow_up(&mut pending_follow_up_prompts) {
+                                    usage = None;
+                                    turn_had_content = false;
+                                    let new_id = writer.request("session/prompt", json!({
+                                        "sessionId": session_id,
+                                        "prompt": [{ "type": "text", "text": msg }]
+                                    })).await?;
+                                    log::info!(
+                                        "ACP sent queued steer follow-up prompt after turn, id={} queue_len={}",
+                                        new_id,
+                                        pending_follow_up_prompts.len()
+                                    );
+                                    LoopState::Prompting { prompt_id: new_id }
                                 } else {
                                     log::info!("ACP state -> Idle after prompt response");
                                     LoopState::Idle
@@ -2162,6 +2223,35 @@ mod tests {
     // ---- Phase 1 (R7 / R3): ACP interaction routing + 分表隔离 ----
 
     #[test]
+    fn acp_steer_queues_follow_up_while_prompting() {
+        let mut queued = std::collections::VecDeque::new();
+        let state = LoopState::Prompting { prompt_id: 7 };
+
+        let action = queue_acp_steer_follow_up(&state, &mut queued, "guide me".to_string());
+
+        assert_eq!(action, AcpSteerAction::Queued);
+        assert_eq!(queued.pop_front().as_deref(), Some("guide me"));
+    }
+
+    #[test]
+    fn acp_follow_up_queue_drains_fifo_after_prompt_response() {
+        let mut queued = std::collections::VecDeque::from([
+            "first guide".to_string(),
+            "second guide".to_string(),
+        ]);
+
+        assert_eq!(
+            pop_next_acp_follow_up(&mut queued).as_deref(),
+            Some("first guide")
+        );
+        assert_eq!(
+            pop_next_acp_follow_up(&mut queued).as_deref(),
+            Some("second guide")
+        );
+        assert!(pop_next_acp_follow_up(&mut queued).is_none());
+    }
+
+    #[test]
     fn routes_interaction_answer_to_pending_elicitation_as_accept() {
         let mut pending = HashMap::new();
         pending.insert(
@@ -2359,10 +2449,14 @@ mod tests {
             "你系统部署的方式是什么".to_string(),
             "你要部署到 K8s 的工作负载是什么类型？".to_string(),
         ]);
-        let elic = parse_acp_elicitation(&params, &stored_prompts).expect("multi-question form is parseable");
+        let elic = parse_acp_elicitation(&params, &stored_prompts)
+            .expect("multi-question form is parseable");
         assert_eq!(elic.questions.len(), 2);
         assert_eq!(elic.questions[0].prompt, "你系统部署的方式是什么");
-        assert_eq!(elic.questions[1].prompt, "你要部署到 K8s 的工作负载是什么类型？");
+        assert_eq!(
+            elic.questions[1].prompt,
+            "你要部署到 K8s 的工作负载是什么类型？"
+        );
     }
 
     #[test]
@@ -2461,9 +2555,13 @@ mod tests {
         let prompt_id: i64 = 3;
 
         // A legitimate prompt response (no method, has result) → should match.
-        let response = json!({ "jsonrpc": "2.0", "id": prompt_id, "result": { "stopReason": "end_turn" } });
+        let response =
+            json!({ "jsonrpc": "2.0", "id": prompt_id, "result": { "stopReason": "end_turn" } });
         let is_response = response.get("method").is_none();
-        assert!(is_response, "prompt response must be classified as response");
+        assert!(
+            is_response,
+            "prompt response must be classified as response"
+        );
 
         // An elicitation/create request with the SAME id → must NOT match.
         let elicitation = json!({
@@ -2488,7 +2586,10 @@ mod tests {
             }
         });
         let is_response = elicitation.get("method").is_none();
-        assert!(!is_response, "elicitation/create request must NOT be classified as response");
+        assert!(
+            !is_response,
+            "elicitation/create request must NOT be classified as response"
+        );
 
         // Verify the elicitation is still parseable even when its id collides.
         let params = elicitation.get("params").unwrap();
