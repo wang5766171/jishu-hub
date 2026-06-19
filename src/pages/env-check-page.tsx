@@ -117,7 +117,10 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
   const { t } = useTranslation();
   const [env, setEnv] = useState<EnvData | null>(null);
   const { agents, refreshHealth, healthLoading } = useAgent();
-  const [installingId, setInstallingId] = useState<string | null>(null);
+  // Tracks every item currently being installed/updated concurrently.
+  // A single id would let the second click clobber the first's spinner,
+  // making it look like only one update can run at a time.
+  const [installingIds, setInstallingIds] = useState<Set<string>>(new Set());
   const [expandedAgents, setExpandedAgents] = useState(false);
   const [checking, setChecking] = useState(false);
   const [latestVersions, setLatestVersions] = useState<Map<string, string>>(
@@ -275,7 +278,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       ? item.updateCommand
       : item.installCommand ?? item.updateCommand;
     if (!command) return;
-    setInstallingId(item.id);
+    setInstallingIds((prev) => new Set(prev).add(item.id));
     try {
       await invokeCommand("install_agent_command", {
         command,
@@ -290,7 +293,11 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       console.error(err);
       await message(`安装失败: ${String(err)}`, { title: t("env.title", "环境检测"), kind: "error" });
     } finally {
-      setInstallingId(null);
+      setInstallingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(item.id);
+        return next;
+      });
     }
   };
 
@@ -430,7 +437,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                 <CheckItemRow
                   key={item.id}
                   item={item}
-                  installing={installingId === item.id}
+                  installing={installingIds.has(item.id)}
                   onInstall={() => handleInstall(item)}
                   onDownload={downloadUrl ? () => openUrl(downloadUrl) : undefined}
                   hasUpdate={hasUpdate(item)}
@@ -468,7 +475,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                 <div key={item.id}>
                   <CheckItemRow
                     item={item}
-                    installing={installingId === item.id}
+                    installing={installingIds.has(item.id)}
                     onInstall={() => handleInstall(item)}
                     onDownload={downloadUrl ? () => openUrl(downloadUrl) : undefined}
                     hasUpdate={hasUpdate(item)}
