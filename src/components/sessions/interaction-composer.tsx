@@ -86,7 +86,7 @@ export function InteractionComposer({
     <div
       className={cn(
         "border-b border-border/55 bg-muted/45",
-        "w-full",
+        "w-full px-3 py-3",
       )}
       aria-labelledby={`interaction-${request.requestId}`}
     >
@@ -107,7 +107,7 @@ export function InteractionComposer({
         </div>
       </div>
 
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div className="grid gap-2.5 sm:grid-cols-2">
         {request.options.map((option, index) => {
           const selected = selectedOptionSet.has(option.optionId);
           return (
