@@ -281,7 +281,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
         command,
       });
       if (item.id.startsWith("agent-")) {
-        await refreshHealth();
+        await refreshHealth({ silent: true });
       } else {
         const newEnv = await invokeCommand<EnvData>("check_environment");
         setEnv(newEnv);
@@ -299,7 +299,9 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
     try {
       const newEnv = await invokeCommand<EnvData>("check_environment");
       setEnv(newEnv);
-      await refreshHealth();
+      // Silent: the "check updates" button has its own spinner (checking
+      // state). No reason to flip the whole page back to the loading view.
+      await refreshHealth({ silent: true });
 
       const packages: [string, string][] = [];
       const currentAgents = await invokeCommand<AgentStatus[]>(
@@ -515,7 +517,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                                   setInstallingMcpId(item.agentId);
                                   try {
                                     await invokeCommand("install_mcp_adapter", { agentId: item.agentId });
-                                    await refreshHealth();
+                                    await refreshHealth({ silent: true });
                                   } catch (err) {
                                     console.error(err);
                                     await message(`MCP ${t("env.installFailed", "安装失败")}: ${String(err)}`, { title: t("env.title", "环境检测"), kind: "error" });
@@ -575,7 +577,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                                   setInstallingBridgeId(item.agentId);
                                   try {
                                     await invokeCommand("install_transport_bridge", { agentId: item.agentId });
-                                    await refreshHealth();
+                                    await refreshHealth({ silent: true });
                                   } catch (err) {
                                     console.error(err);
                                     await message(`${t("env.bridge", "桥")} ${t("env.installFailed", "安装失败")}: ${String(err)}`, { title: t("env.title", "环境检测"), kind: "error" });

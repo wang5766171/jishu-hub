@@ -38,7 +38,7 @@ export const AgentSwitcher = memo(function AgentSwitcher({ children }: { childre
             return;
           }
           setOpen(!open);
-          if (!open) refreshHealth();
+          if (!open) refreshHealth({ silent: true });
         }}
         className={cn(
           "relative flex h-7 items-center gap-1.5 rounded-md transition-fast hover:bg-accent/30",

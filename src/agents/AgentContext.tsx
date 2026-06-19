@@ -27,9 +27,16 @@ interface AgentContextValue {
   active: AgentStatus | null;
   capabilities: CapabilitySet | null;
   setActive: (id: string) => Promise<void>;
-  refreshHealth: () => Promise<void>;
+  /**
+   * Re-probe agent health and refresh the cached list.
+   * Pass `silent: true` for local refreshes after a single-item install —
+   * it skips the global `healthLoading` flag so the page doesn't flip back
+   * into the full-screen loading view. The caller already shows a per-item
+   * spinner (installingId / installingMcpId / installingBridgeId).
+   */
+  refreshHealth: (opts?: { silent?: boolean }) => Promise<void>;
   installHint: (id: string) => string | null;
-  /** True while a health probe is in flight (initial load or manual refresh). */
+  /** True while the initial health probe is in flight. */
   healthLoading: boolean;
 }
 
@@ -61,16 +68,20 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     setActiveId(id);
   }, []);
 
-  const refreshHealth = useCallback(async () => {
-    setHealthLoading(true);
-    try {
-      await safeInvoke("agent_refresh_health");
-      const list = await safeInvoke<AgentStatus[]>("agent_list_statuses");
-      if (list) setAgents(list);
-    } finally {
-      setHealthLoading(false);
-    }
-  }, []);
+  const refreshHealth = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      const silent = opts?.silent ?? false;
+      if (!silent) setHealthLoading(true);
+      try {
+        await safeInvoke("agent_refresh_health");
+        const list = await safeInvoke<AgentStatus[]>("agent_list_statuses");
+        if (list) setAgents(list);
+      } finally {
+        if (!silent) setHealthLoading(false);
+      }
+    },
+    []
+  );
 
   const active = useMemo(
     () => agents.find((a) => a.id === activeId) ?? null,
