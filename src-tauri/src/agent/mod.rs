@@ -295,14 +295,15 @@ impl AgentRegistry {
     /// This method must NOT be called while holding an external MutexGuard over self,
     /// since it internally borrows self across .await points.
     pub async fn refresh_health(&self) {
+        // Probe every agent concurrently. `probe()` is awaited per agent (its
+        // default impl wraps `probe_sync` in an async block), so serialising
+        // the loop made first-load latency grow linearly with agent count.
         let results: Vec<(String, AgentHealth)> = {
             let agents: Vec<_> = self.agents.iter().collect();
-            let mut health_results = Vec::new();
-            for (id, agent) in agents {
-                let health = agent.probe().await;
-                health_results.push((id.clone(), health));
-            }
-            health_results
+            futures_util::future::join_all(agents.into_iter().map(|(id, agent)| async move {
+                (id.clone(), agent.probe().await)
+            }))
+            .await
         };
 
         let mut cache = self.health_cache.lock().unwrap_or_else(|e| e.into_inner());

@@ -345,7 +345,14 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
     }
   };
 
-  if (!env) return <div className="p-8">{t("env.checking")}</div>;
+  if (!env) {
+    return (
+      <div className="p-6 max-w-2xl mx-auto flex flex-col items-center justify-center gap-3 h-full">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">{t("env.checking")}</p>
+      </div>
+    );
+  }
 
   const visibleAgents = expandedAgents ? agentItems : agentItems.slice(0, 3);
 

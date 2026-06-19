@@ -1156,10 +1156,11 @@ fn runtime_status<'a>(runtimes: &'a [RuntimeStatus], id: &str) -> Option<&'a Run
 
 #[tauri::command]
 async fn check_environment() -> Result<EnvStatus, String> {
-    let mut runtimes = Vec::new();
-    for definition in runtime_registry() {
-        runtimes.push(check_runtime(definition).await);
-    }
+    // Probe all runtimes concurrently: each `check_runtime` spawns a child
+    // process (`--version`), and serialising them adds up. Running them in
+    // parallel collapses N sequential round-trips into one.
+    let runtimes: Vec<RuntimeStatus> =
+        futures_util::future::join_all(runtime_registry().iter().map(check_runtime)).await;
     let node = runtime_status(&runtimes, "node");
     let npm = runtime_status(&runtimes, "npm");
     let python = runtime_status(&runtimes, "python");
@@ -1187,13 +1188,14 @@ pub struct LatestVersion {
 
 #[tauri::command]
 async fn check_available_updates(packages: Vec<(String, String)>) -> Vec<LatestVersion> {
-    let mut results = Vec::new();
-    for (id, pkg) in packages {
+    // Resolve latest versions concurrently: each query is an `npm view`
+    // round-trip (or runtime-specific probe) taking seconds each, so
+    // serialising them dominates the refresh latency.
+    futures_util::future::join_all(packages.into_iter().map(|(id, pkg)| async move {
         if let Some(definition) = runtime_registry().iter().find(|runtime| {
             runtime.id == id || runtime_latest_package(runtime) == Some(pkg.as_str())
         }) {
-            results.push(check_runtime_latest(&id, definition).await);
-            continue;
+            return check_runtime_latest(&id, definition).await;
         }
 
         let mut cmd = shell_command(
@@ -1214,37 +1216,35 @@ async fn check_available_updates(packages: Vec<(String, String)>) -> Vec<LatestV
                 let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 let version = stdout.trim_matches('"').trim().to_string();
                 if !version.is_empty() {
-                    results.push(LatestVersion {
+                    LatestVersion {
                         id,
                         latest_version: Some(version),
                         error: None,
-                    });
+                    }
                 } else {
-                    results.push(LatestVersion {
+                    LatestVersion {
                         id,
                         latest_version: None,
                         error: Some("empty response".into()),
-                    });
+                    }
                 }
             }
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                results.push(LatestVersion {
+                LatestVersion {
                     id,
                     latest_version: None,
                     error: Some(stderr),
-                });
+                }
             }
-            Err(e) => {
-                results.push(LatestVersion {
-                    id,
-                    latest_version: None,
-                    error: Some(e.to_string()),
-                });
-            }
+            Err(e) => LatestVersion {
+                id,
+                latest_version: None,
+                error: Some(e.to_string()),
+            },
         }
-    }
-    results
+    }))
+    .await
 }
 
 async fn check_runtime_latest(id: &str, definition: &RuntimeDefinition) -> LatestVersion {
