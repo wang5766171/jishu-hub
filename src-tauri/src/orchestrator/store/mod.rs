@@ -7,8 +7,8 @@ use crate::orchestrator::conversation::{TaskInteractionRequest, TaskInteractionS
 use crate::orchestrator::domain::graph::TaskGraph;
 use crate::orchestrator::domain::revision::GraphRevision;
 use crate::orchestrator::domain::run::{
-    ApprovalRequest, ArtifactRef, ArtifactSensitivity, BudgetState, GraphRun, NodeAttempt, NodeRun,
-    NodeRunStatus, RunPlanningSnapshot, RunRevisionProposal, RunStatus,
+    ApprovalRequest, ArtifactRef, BudgetState, GraphRun, NodeAttempt, NodeRun, NodeRunStatus,
+    RunPlanningSnapshot, RunRevisionProposal, RunStatus,
 };
 use crate::orchestrator::events::TaskEvent;
 use crate::orchestrator::projections::checkpoint::ProjectionReadModel;
@@ -498,6 +498,79 @@ impl TaskStore {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(graphs)
+    }
+
+    pub fn delete_graph(&self, graph_id: &str) -> Result<(), StoreError> {
+        let conn = self
+            .writer
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        let tx = conn.unchecked_transaction()?;
+        let exists: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM task_graph WHERE graph_id = ?1",
+            params![graph_id],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            return Err(StoreError::NotFound(format!("graph {graph_id}")));
+        }
+
+        tx.execute(
+            "DELETE FROM projection_checkpoint
+             WHERE run_id IN (SELECT run_id FROM graph_run WHERE graph_id = ?1)",
+            params![graph_id],
+        )?;
+        tx.execute(
+            "DELETE FROM run_revision_proposal
+             WHERE run_id IN (SELECT run_id FROM graph_run WHERE graph_id = ?1)",
+            params![graph_id],
+        )?;
+        tx.execute(
+            "DELETE FROM approval_request
+             WHERE run_id IN (SELECT run_id FROM graph_run WHERE graph_id = ?1)",
+            params![graph_id],
+        )?;
+        tx.execute(
+            "DELETE FROM artifact_ref
+             WHERE run_id IN (SELECT run_id FROM graph_run WHERE graph_id = ?1)",
+            params![graph_id],
+        )?;
+        tx.execute(
+            "DELETE FROM task_event
+             WHERE run_id IN (SELECT run_id FROM graph_run WHERE graph_id = ?1)",
+            params![graph_id],
+        )?;
+        tx.execute(
+            "DELETE FROM task_interaction_request WHERE graph_id = ?1",
+            params![graph_id],
+        )?;
+        tx.execute(
+            "DELETE FROM node_attempt
+             WHERE node_run_id IN (
+                 SELECT node_run_id FROM node_run
+                 WHERE run_id IN (SELECT run_id FROM graph_run WHERE graph_id = ?1)
+             )",
+            params![graph_id],
+        )?;
+        tx.execute(
+            "DELETE FROM node_run
+             WHERE run_id IN (SELECT run_id FROM graph_run WHERE graph_id = ?1)",
+            params![graph_id],
+        )?;
+        tx.execute(
+            "DELETE FROM graph_run WHERE graph_id = ?1",
+            params![graph_id],
+        )?;
+        tx.execute(
+            "DELETE FROM graph_revision WHERE graph_id = ?1",
+            params![graph_id],
+        )?;
+        tx.execute(
+            "DELETE FROM task_graph WHERE graph_id = ?1",
+            params![graph_id],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn update_graph_draft_revision(
@@ -2673,6 +2746,7 @@ mod tests {
         EdgeKind, GraphEdge, GraphNode, GraphSnapshot, NodeKind,
     };
     use crate::orchestrator::domain::revision::GraphRevision;
+    use crate::orchestrator::domain::run::ArtifactSensitivity;
     use crate::orchestrator::events::{build_event, payloads, TaskEventType};
     use crate::util::gen_id;
 
@@ -3170,6 +3244,182 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["newer", "older"]
         );
+    }
+
+    #[test]
+    fn delete_graph_removes_all_related_task_data() {
+        let store = make_test_store();
+        let snapshot = GraphSnapshot::default();
+        let revision =
+            GraphRevision::from_snapshot("rev1", "g1", None, &snapshot, "u", now()).unwrap();
+        let graph = TaskGraph {
+            graph_id: "g1".into(),
+            title: "T".into(),
+            goal: "G".into(),
+            project_root: PathBuf::from("/p"),
+            owner: "u".into(),
+            current_draft_revision: Some("rev1".into()),
+            created_at: now(),
+            updated_at: now(),
+        };
+        store.create_graph_with_revision(&graph, &revision).unwrap();
+        store
+            .create_graph(&TaskGraph {
+                graph_id: "g2".into(),
+                title: "Other".into(),
+                goal: "Keep".into(),
+                project_root: PathBuf::from("/p"),
+                owner: "u".into(),
+                current_draft_revision: None,
+                created_at: now(),
+                updated_at: now(),
+            })
+            .unwrap();
+
+        let run = GraphRun {
+            run_id: "run1".into(),
+            graph_id: "g1".into(),
+            active_revision_id: "rev1".into(),
+            status: RunStatus::Running,
+            run_seq: 0,
+            budget_state: BudgetState::default(),
+            planning_snapshot: Default::default(),
+            started_at: now(),
+            finished_at: None,
+        };
+        store.create_run(&run).unwrap();
+        let node_run = NodeRun::new("nr1", "run1", "n1", "rev1");
+        store.save_node_run(&node_run).unwrap();
+        store
+            .save_attempt(&NodeAttempt {
+                attempt_id: "att1".into(),
+                node_run_id: "nr1".into(),
+                attempt_number: 1,
+                agent_assignment: None,
+                transport: None,
+                session_id: Some("session1".into()),
+                lease: None,
+                usage: Default::default(),
+                error: None,
+                idempotency_key: None,
+                checkpoint: None,
+                started_at: now(),
+                finished_at: None,
+            })
+            .unwrap();
+        store
+            .append_events(&[build_event(
+                "e1",
+                "run1",
+                1,
+                TaskEventType::RunStarted,
+                "system",
+                now(),
+                serde_json::Value::Null,
+            )])
+            .unwrap();
+        store
+            .save_artifact(&ArtifactRef {
+                artifact_id: "art1".into(),
+                run_id: "run1".into(),
+                node_run_id: "nr1".into(),
+                attempt_id: "att1".into(),
+                name: "out".into(),
+                artifact_type: "node_output".into(),
+                hash: "hash".into(),
+                sensitivity: ArtifactSensitivity::Internal,
+                created_at: now(),
+                metadata: Default::default(),
+            })
+            .unwrap();
+        store
+            .save_approval(&ApprovalRequest {
+                approval_id: "approval1".into(),
+                run_id: "run1".into(),
+                node_run_id: "nr1".into(),
+                description: "Approve".into(),
+                risk_level: "medium".into(),
+                scope: vec!["write".into()],
+                requester: "agent".into(),
+                resolver: None,
+                resolved: false,
+                approved: None,
+                created_at: now(),
+                resolved_at: None,
+            })
+            .unwrap();
+        store
+            .save_task_interaction(&TaskInteractionRequest {
+                request_id: "interaction1".into(),
+                graph_id: "g1".into(),
+                run_id: Some("run1".into()),
+                node_id: Some("n1".into()),
+                node_run_id: Some("nr1".into()),
+                session_id: Some("session1".into()),
+                prompt: "Choose".into(),
+                options: vec![InteractionOption {
+                    option_id: "yes".into(),
+                    label: "Yes".into(),
+                    description: None,
+                }],
+                allow_multiple: false,
+                allow_custom_text: true,
+                required: true,
+                created_at: now(),
+                resolved_at: None,
+                consumed_at: None,
+                submission: None,
+            })
+            .unwrap();
+
+        {
+            let conn = store.writer.lock().unwrap();
+            conn.execute(
+                "INSERT INTO run_revision_proposal
+                 (proposal_id, run_id, base_revision_id, candidate_revision_id,
+                  expected_run_seq, frozen_node_ids, superseded_node_ids, created_at)
+                 VALUES ('proposal1', 'run1', 'rev1', 'rev2', 1, '[]', '[]', ?1)",
+                params![now()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO projection_checkpoint
+                 (run_id, last_seq, projection_json, updated_at)
+                 VALUES ('run1', 1, '{\"run_seq\":1}', ?1)",
+                params![now()],
+            )
+            .unwrap();
+        }
+
+        store.delete_graph("g1").unwrap();
+
+        assert!(matches!(
+            store.get_graph("g1"),
+            Err(StoreError::NotFound(_))
+        ));
+        assert_eq!(store.get_graph("g2").unwrap().graph_id, "g2");
+
+        let conn = store.reader.lock().unwrap();
+        for table in [
+            "graph_revision",
+            "graph_run",
+            "run_revision_proposal",
+            "node_run",
+            "node_attempt",
+            "task_event",
+            "artifact_ref",
+            "approval_request",
+            "task_interaction_request",
+            "projection_checkpoint",
+        ] {
+            let sql = format!("SELECT COUNT(*) FROM {table}");
+            let count: i64 = conn.query_row(&sql, [], |row| row.get(0)).unwrap();
+            assert_eq!(count, 0, "{table} should be fully deleted for g1");
+        }
+        let graph_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM task_graph", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(graph_count, 1, "unrelated graphs must remain");
     }
 
     #[test]

@@ -317,6 +317,11 @@ impl TaskService {
         Ok(self.store.list_graphs_for_project(project_root)?)
     }
 
+    pub fn delete_graph(&self, graph_id: &str) -> Result<(), TaskServiceError> {
+        self.store.delete_graph(graph_id)?;
+        Ok(())
+    }
+
     pub fn list_task_conversations(
         &self,
         project_root: &std::path::Path,

@@ -10,6 +10,7 @@ import {
   Plus,
   RefreshCw,
   Send,
+  Trash2,
   User,
   X,
 } from "lucide-react";
@@ -107,6 +108,7 @@ export function TaskWorkbench({
   const [skills, setSkills] = useState<TaskPlanSkill[]>([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
   const [installingSkillIds, setInstallingSkillIds] = useState<string[]>([]);
+  const [deletingGraphIds, setDeletingGraphIds] = useState<string[]>([]);
   const [formBusy, setFormBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [pendingInitialPlan, setPendingInitialPlan] = useState<string | null>(null);
@@ -263,6 +265,39 @@ export function TaskWorkbench({
     [loadGraph],
   );
 
+  const deleteTask = useCallback(
+    async (task: TaskGraph) => {
+      if (!window.confirm(t("tasks.deleteTaskConfirm", { title: task.title }))) {
+        return;
+      }
+      setDeletingGraphIds((current) =>
+        current.includes(task.graph_id) ? current : [...current, task.graph_id],
+      );
+      setListError(null);
+      try {
+        await invoke("orchestrator_delete_graph", { graphId: task.graph_id });
+        setTaskGraphs((current) =>
+          current.filter((item) => item.graph_id !== task.graph_id),
+        );
+        if (graph?.graph_id === task.graph_id) {
+          clearGraph();
+          setSelectedNodeId(null);
+          setRunInspectorOpen(false);
+          setSurfaceView("canvas");
+          setView("list");
+          await loadTaskGraphs();
+        }
+      } catch (deleteError) {
+        setListError(String(deleteError));
+      } finally {
+        setDeletingGraphIds((current) =>
+          current.filter((graphId) => graphId !== task.graph_id),
+        );
+      }
+    },
+    [clearGraph, graph?.graph_id, loadTaskGraphs, t],
+  );
+
   if (view === "list") {
     return (
       <TaskList
@@ -274,6 +309,8 @@ export function TaskWorkbench({
         onRefresh={loadTaskGraphs}
         onCreate={beginCreate}
         onOpen={openTask}
+        onDelete={deleteTask}
+        deletingGraphIds={deletingGraphIds}
         onClose={onClose}
       />
     );
@@ -502,6 +539,21 @@ export function TaskWorkbench({
             )}
             {graph && (
               <ViewModeSwitcher value={surfaceView} onChange={setSurfaceView} />
+            )}
+            {graph && (
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                disabled={deletingGraphIds.includes(graph.graph_id)}
+                onClick={() => deleteTask(graph).catch(console.error)}
+                title={t("tasks.deleteTask")}
+              >
+                <Trash2 className="size-4" />
+                {deletingGraphIds.includes(graph.graph_id)
+                  ? t("tasks.deletingTask")
+                  : t("tasks.deleteTask")}
+              </Button>
             )}
             <Button type="button" size="sm" variant="outline" onClick={beginCreate}>
               <Plus className="size-4" />
@@ -898,6 +950,8 @@ interface TaskListProps {
   onRefresh: () => Promise<void>;
   onCreate: () => void;
   onOpen: (graphId: string) => Promise<void>;
+  onDelete: (task: TaskGraph) => Promise<void>;
+  deletingGraphIds: string[];
   onClose?: () => void;
 }
 
@@ -910,6 +964,8 @@ function TaskList({
   onRefresh,
   onCreate,
   onOpen,
+  onDelete,
+  deletingGraphIds,
   onClose,
 }: TaskListProps) {
   const { t } = useTranslation();
@@ -1001,11 +1057,9 @@ function TaskList({
           ) : (
             <div className="grid gap-3 md:grid-cols-2">
               {tasks.map((task) => (
-                <button
+                <article
                   key={task.graph_id}
-                  type="button"
-                  onClick={() => onOpen(task.graph_id).catch(console.error)}
-                  className="group rounded-2xl border border-border/70 bg-card p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                  className="group rounded-2xl border border-border/70 bg-card p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -1014,16 +1068,37 @@ function TaskList({
                         {task.goal}
                       </p>
                     </div>
-                    <span className="shrink-0 rounded-full bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary">
-                      {t("tasks.openTask")}
-                    </span>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => onOpen(task.graph_id).catch(console.error)}
+                      >
+                        {t("tasks.openTask")}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="icon-sm"
+                        variant="ghost"
+                        disabled={deletingGraphIds.includes(task.graph_id)}
+                        onClick={() => onDelete(task).catch(console.error)}
+                        aria-label={t("tasks.deleteTaskWithTitle", {
+                          title: task.title,
+                        })}
+                        title={t("tasks.deleteTask")}
+                        className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
                   </div>
                   <div className="mt-5 border-t border-border/60 pt-3 text-xs text-muted-foreground">
                     {t("tasks.updatedAt", {
                       time: formatter.format(new Date(task.updated_at)),
                     })}
                   </div>
-                </button>
+                </article>
               ))}
             </div>
           )}

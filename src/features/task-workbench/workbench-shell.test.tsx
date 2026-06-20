@@ -157,4 +157,44 @@ describe("task workbench shell", () => {
       expect(screen.getByText(i18n.t("tasks.installed"))).toBeInTheDocument();
     });
   });
+
+  it("deletes a task graph from the task list after confirmation", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "task_plan_skill_list") return Promise.resolve([]);
+      if (command === "orchestrator_list_graphs_for_project") {
+        return Promise.resolve([
+          {
+            graph_id: "graph_delete",
+            title: "Delete me",
+            goal: "Remove all task data",
+            project_root: "D:\\project",
+            owner: "user",
+            current_draft_revision: "rev_1",
+            created_at: 1,
+            updated_at: 2,
+          },
+        ]);
+      }
+      if (command === "orchestrator_delete_graph") return Promise.resolve(null);
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+
+    render(<TaskWorkbench initialProjectPath="D:\\project" />);
+
+    expect(await screen.findByText("Delete me")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: i18n.t("tasks.deleteTaskWithTitle", { title: "Delete me" }),
+      }),
+    );
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("orchestrator_delete_graph", {
+        graphId: "graph_delete",
+      });
+      expect(screen.queryByText("Delete me")).not.toBeInTheDocument();
+    });
+    confirmSpy.mockRestore();
+  });
 });
