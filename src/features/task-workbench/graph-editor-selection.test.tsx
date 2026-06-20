@@ -14,7 +14,8 @@ vi.mock("@xyflow/react", () => ({
     nodes,
     edges,
     children,
-    onSelectionChange,
+    onNodeClick,
+    onEdgeClick,
     onPaneClick,
   }: {
     nodes: Array<{ id: string; selected?: boolean }>;
@@ -25,10 +26,8 @@ vi.mock("@xyflow/react", () => ({
       markerEnd?: { type?: string };
     }>;
     children: React.ReactNode;
-    onSelectionChange?: (params: {
-      nodes: Array<{ id: string; selected?: boolean }>;
-      edges: Array<{ id: string; selected?: boolean }>;
-    }) => void;
+    onNodeClick?: (event: unknown, node: { id: string; selected?: boolean }) => void;
+    onEdgeClick?: (event: unknown, edge: { id: string; selected?: boolean }) => void;
     onPaneClick?: () => void;
   }) => {
     React.useEffect(() => {
@@ -37,28 +36,29 @@ vi.mock("@xyflow/react", () => ({
       if (flowHarness.selectionEffectCount > 20) {
         throw new Error("selection feedback loop");
       }
-      onSelectionChange?.({
-        nodes: nodes.filter((node) => node.selected),
-        edges: edges.filter((edge) => edge.selected),
-      });
-    }, [edges, nodes, onSelectionChange]);
+    }, [edges, nodes]);
 
     return (
       <div>
         <button type="button" data-testid="flow-pane" onClick={onPaneClick}>
           pane
         </button>
+        {nodes.map((node) => (
+          <button
+            key={node.id}
+            type="button"
+            data-testid={`flow-node-${node.id}`}
+            onClick={() => onNodeClick?.({}, node)}
+          >
+            {JSON.stringify(node)}
+          </button>
+        ))}
         {edges.map((edge) => (
           <button
             key={edge.id}
             type="button"
             data-testid={`flow-edge-${edge.id}`}
-            onClick={() =>
-              onSelectionChange?.({
-                nodes: [],
-                edges: [{ ...edge, selected: true }],
-              })
-            }
+            onClick={() => onEdgeClick?.({}, edge)}
           >
             {JSON.stringify(edge)}
           </button>
@@ -207,7 +207,7 @@ describe("graph editor controlled selection", () => {
     ]);
   });
 
-  it("clears React Flow selection when the inspector closes", async () => {
+  it("does not force React Flow node selection from external inspector state", async () => {
     const { rerender } = render(
       <GraphEditor
         snapshot={snapshot}
@@ -216,10 +216,9 @@ describe("graph editor controlled selection", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByTestId("flow-nodes")).toHaveTextContent(
-        '"selected":true',
-      );
+      expect(screen.getByTestId("flow-nodes")).toHaveTextContent('"id":"goal"');
     });
+    expect(screen.getByTestId("flow-nodes")).not.toHaveTextContent('"selected"');
 
     rerender(
       <GraphEditor
@@ -229,39 +228,40 @@ describe("graph editor controlled selection", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByTestId("flow-nodes")).toHaveTextContent(
-        '"selected":false',
-      );
+      expect(screen.getByTestId("flow-nodes")).toHaveTextContent('"id":"goal"');
     });
+    expect(screen.getByTestId("flow-nodes")).not.toHaveTextContent('"selected"');
   });
 
-  it("clears selection from the pane without a React Flow feedback loop", async () => {
+  it("selects and clears nodes without a React Flow feedback loop", async () => {
     function SelectionHarness() {
       const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>(
         "goal",
       );
       return (
-        <GraphEditor
-          snapshot={snapshot}
-          selectedNodeId={selectedNodeId}
-          onNodeSelect={setSelectedNodeId}
-        />
+        <>
+          <GraphEditor
+            snapshot={snapshot}
+            selectedNodeId={selectedNodeId}
+            onNodeSelect={setSelectedNodeId}
+          />
+          <output data-testid="external-selected-node">{selectedNodeId ?? ""}</output>
+        </>
       );
     }
 
     render(<SelectionHarness />);
     await waitFor(() => {
-      expect(screen.getByTestId("flow-nodes")).toHaveTextContent(
-        '"selected":true',
-      );
+      expect(screen.getByTestId("flow-nodes")).toHaveTextContent('"id":"goal"');
     });
+
+    fireEvent.click(screen.getByTestId("flow-node-goal"));
+    expect(screen.getByTestId("external-selected-node")).toHaveTextContent("goal");
 
     fireEvent.click(screen.getByTestId("flow-pane"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("flow-nodes")).toHaveTextContent(
-        '"selected":false',
-      );
+      expect(screen.getByTestId("external-selected-node")).toHaveTextContent("");
     });
     expect(flowHarness.selectionEffectCount).toBeLessThan(10);
   });

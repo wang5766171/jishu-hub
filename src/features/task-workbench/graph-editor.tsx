@@ -257,11 +257,18 @@ export function GraphEditor({
     onNodeSelectRef.current?.(nodeId);
   }, []);
 
-  const handleSelectionChange = useCallback(
-    (params: { nodes: ReactFlowNode[]; edges: ReactFlowEdge[] }) => {
-      const nodeId = params.nodes[0]?.id ?? null;
-      selectNode(nodeId);
-      setSelectedEdgeId(nodeId ? null : (params.edges[0]?.id ?? null));
+  const handleNodeClick = useCallback(
+    (_event: unknown, node: ReactFlowNode) => {
+      selectNode(node.id);
+      setSelectedEdgeId(null);
+    },
+    [selectNode],
+  );
+
+  const handleEdgeClick = useCallback(
+    (_event: unknown, edge: ReactFlowEdge) => {
+      selectNode(null);
+      setSelectedEdgeId(edge.id);
     },
     [selectNode],
   );
@@ -314,7 +321,6 @@ export function GraphEditor({
 
       return {
         id: n.node_id,
-        selected: selectedNodeIdRef.current === n.node_id,
         data: {
           label,
         },
@@ -402,19 +408,6 @@ export function GraphEditor({
       didInitialLayoutRef.current = true;
     });
   }, [visibleSnapshot, semanticZoom, setNodes, setEdges, t]);
-
-  useEffect(() => {
-    setNodes((currentNodes) => {
-      let changed = false;
-      const nextNodes = currentNodes.map((node) => {
-        const selected = node.id === selectedNodeId;
-        if (node.selected === selected) return node;
-        changed = true;
-        return { ...node, selected };
-      });
-      return changed ? nextNodes : currentNodes;
-    });
-  }, [selectedNodeId, setNodes]);
 
   useEffect(() => {
     setEdges((currentEdges) =>
@@ -526,7 +519,8 @@ export function GraphEditor({
         nodesDraggable
         elementsSelectable
         deleteKeyCode={["Backspace", "Delete"]}
-        onSelectionChange={handleSelectionChange}
+        onNodeClick={handleNodeClick}
+        onEdgeClick={handleEdgeClick}
         onPaneClick={handlePaneClick}
         onMoveEnd={handleMoveEnd}
         onNodeDragStop={handleNodeDragStop}

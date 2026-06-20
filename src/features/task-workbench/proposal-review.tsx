@@ -7,6 +7,7 @@ interface ProposalReviewProps {
   accepting: boolean;
   onAccept: (commandIds: string[]) => Promise<void>;
   onDismiss: () => void;
+  className?: string;
 }
 
 export function ProposalReview({
@@ -14,6 +15,7 @@ export function ProposalReview({
   accepting,
   onAccept,
   onDismiss,
+  className,
 }: ProposalReviewProps) {
   const { t } = useTranslation();
   const diff = proposal.diff;
@@ -35,21 +37,20 @@ export function ProposalReview({
   const toggleAll = () => setSelectedIds(allSelected ? [] : allCommandIds);
 
   return (
-    <div className="absolute inset-0 z-40 grid place-items-center bg-slate-950/75 p-6 backdrop-blur-sm">
-      <section className="max-h-[88vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-cyan-400/25 bg-slate-950 p-6 shadow-2xl shadow-cyan-950/50">
+    <section className={`rounded-xl border border-primary/20 bg-background p-4 shadow-sm ${className ?? ""}`}>
         <div className="flex items-start justify-between gap-6">
           <div>
-            <div className="text-xs font-semibold uppercase tracking-[0.22em] text-cyan-300">
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
               {t("tasks.workbench.proposalEyebrow")}
             </div>
-            <h2 className="mt-2 text-2xl font-semibold text-slate-50">
+            <h2 className="mt-2 text-lg font-semibold text-foreground">
               {t("tasks.workbench.proposalTitle")}
             </h2>
-            <p className="mt-2 text-sm leading-6 text-slate-300">{proposal.rationale}</p>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">{proposal.rationale}</p>
           </div>
           <button
             type="button"
-            className="rounded border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-900"
+            className="rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted"
             onClick={onDismiss}
           >
             {t("common.cancel")}
@@ -86,14 +87,14 @@ export function ProposalReview({
         )}
 
         <div className="mt-6">
-          <h3 className="text-sm font-semibold text-slate-100">
+          <h3 className="text-sm font-semibold text-foreground">
             {t("tasks.workbench.proposedNodes")}
           </h3>
           <div className="mt-3 flex flex-wrap gap-2">
             {diff.nodes_added.map((nodeId) => (
               <span
                 key={nodeId}
-                className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1 text-xs text-cyan-100"
+                className="rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-xs text-primary"
               >
                 {nodeId}
               </span>
@@ -104,12 +105,12 @@ export function ProposalReview({
         {proposal.commands.length > 0 && (
           <div className="mt-6">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-slate-100">
+              <h3 className="text-sm font-semibold text-foreground">
                 {t("tasks.workbench.proposalCommands")}
               </h3>
               <button
                 type="button"
-                className="text-xs text-cyan-300 hover:text-cyan-200"
+                className="text-xs text-primary hover:text-primary/80"
                 onClick={toggleAll}
               >
                 {allSelected
@@ -122,7 +123,7 @@ export function ProposalReview({
                 const checked = selectedIds.includes(command.command_id);
                 return (
                   <li key={command.command_id}>
-                    <label className="flex items-start gap-2.5 rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-200 hover:border-slate-700">
+                    <label className="flex items-start gap-2.5 rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground hover:border-primary/30">
                       <input
                         type="checkbox"
                         checked={checked}
@@ -138,10 +139,10 @@ export function ProposalReview({
           </div>
         )}
 
-        <div className="mt-7 flex justify-end gap-3 border-t border-slate-800 pt-5">
+        <div className="mt-7 flex justify-end gap-3 border-t border-border pt-5">
           <button
             type="button"
-            className="rounded border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-900"
+            className="rounded-md border border-border px-4 py-2 text-sm text-muted-foreground hover:bg-muted"
             onClick={onDismiss}
           >
             {t("tasks.workbench.rejectProposal")}
@@ -149,7 +150,7 @@ export function ProposalReview({
           <button
             type="button"
             disabled={accepting || selectedIds.length === 0}
-            className="rounded bg-cyan-400 px-5 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-md bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             onClick={() => onAccept(selectedIds).catch(console.error)}
           >
             {accepting
@@ -158,15 +159,14 @@ export function ProposalReview({
           </button>
         </div>
       </section>
-    </div>
   );
 }
 
 function DiffMetric({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-3">
-      <div className="text-2xl font-semibold text-slate-50">{value}</div>
-      <div className="mt-1 text-xs text-slate-400">{label}</div>
+    <div className="rounded-lg border border-border bg-muted/30 p-3">
+      <div className="text-2xl font-semibold text-foreground">{value}</div>
+      <div className="mt-1 text-xs text-muted-foreground">{label}</div>
     </div>
   );
 }
@@ -182,10 +182,10 @@ function ProposalList({
 }) {
   const toneClass =
     tone === "benefit"
-      ? "border-emerald-400/20 bg-emerald-400/5 text-emerald-100"
+      ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-700 dark:text-emerald-200"
       : tone === "risk"
-        ? "border-rose-400/20 bg-rose-400/5 text-rose-100"
-        : "border-amber-400/20 bg-amber-400/5 text-amber-100";
+        ? "border-rose-500/20 bg-rose-500/5 text-rose-700 dark:text-rose-200"
+        : "border-amber-500/20 bg-amber-500/5 text-amber-700 dark:text-amber-200";
   return (
     <div className={`mt-5 rounded-lg border p-4 ${toneClass}`}>
       <h3 className="text-sm font-semibold">{title}</h3>

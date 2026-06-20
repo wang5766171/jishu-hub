@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Bot,
@@ -70,6 +71,7 @@ interface TaskConversationPanelProps {
   selectedNodeId?: string | null;
   onClose: () => void;
   className?: string;
+  leadingContent?: ReactNode;
 }
 
 function interactionForComposer(
@@ -104,6 +106,7 @@ export function TaskConversationPanel({
   selectedNodeId,
   onClose,
   className,
+  leadingContent,
 }: TaskConversationPanelProps) {
   const { t } = useTranslation();
   const [detail, setDetail] = useState<TaskConversationDetail | null>(null);
@@ -239,6 +242,7 @@ export function TaskConversationPanel({
       )}
 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
+        {leadingContent}
         {loading && !detail ? (
           <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
         ) : error ? (
