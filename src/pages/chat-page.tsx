@@ -1130,19 +1130,24 @@ export function ChatPage({
 
           // Route 2 (orthogonal to manual guide): when the turn ends, auto-send
           // any messages the user staged but did NOT manually guide — merged
-          // into a single new turn. claimAll() synchronously marks them sent,
-          // so a manual click racing this moment (or a re-click) is blocked by
-          // the shared claimed-id set — each staged guide is delivered exactly
-          // once. Gated on !followUpExpected so it never competes with a manual
-          // steer's follow-up turn (that turn fires its own turn_complete, which
-          // re-evaluates). Only for the viewed session, since staged messages
-          // belong to it.
-          if (
-            !followUpExpected
-            && stagedApiRef.current
-            && (viewed === cid || viewed === finalKey)
-          ) {
-            const claimed = stagedApiRef.current.claimAll();
+          // into a single new turn. claimAll(finalKey) synchronously marks them
+          // sent for THIS session, so a manual click racing this moment (or a
+          // re-click) is blocked by the shared claimed-id set — each staged
+          // guide is delivered exactly once. Gated on !followUpExpected so it
+          // never competes with a manual steer's follow-up turn (that turn fires
+          // its own turn_complete, which re-evaluates).
+          //
+          // Targets the session whose turn just completed (finalKey), NOT the
+          // currently-viewed session. Staging state is partitioned by session
+          // (stagedMessagesBySession), so a background session's turn_complete
+          // claims only its own staged guides — never another conversation's.
+          // This fixes the case where the user staged a guide in session A,
+          // switched to B, and A's completion (while viewing B) must still send
+          // A's staged guide. Claiming is gated only on stagedApiRef existing
+          // (the ChatInput must be mounted) and !followUpExpected; the viewed
+          // session is irrelevant.
+          if (!followUpExpected && stagedApiRef.current) {
+            const claimed = stagedApiRef.current.claimAll(finalKey);
             if (claimed.length > 0) {
               const merged = claimed.map((m) => m.content).join("\n\n");
               streamStore.start(finalKey, merged);
@@ -1164,7 +1169,7 @@ export function ChatPage({
                 } catch (err) {
                   console.error("Auto-send of staged guides failed:", err);
                   streamStore.drop(finalKey);
-                  restore(claimed);
+                  restore(finalKey, claimed);
                 }
               })();
             }
@@ -1713,30 +1718,13 @@ export function ChatPage({
             }}
           />
         ) : showStartComposer ? (
-          <div className="flex min-h-0 flex-1 items-center justify-center px-6 py-10">
-            <div className="flex w-full max-w-[var(--message-content-max-width)] min-w-0 flex-col items-center">
-              <h1 className="mb-14 max-w-full text-center text-[2rem] font-medium leading-tight tracking-normal text-foreground">
-                {t("sessions.startPrompt", { project: projectDisplayName })}
-              </h1>
-              <ChatInput
-                ref={chatInputRef}
-                sessionId={null}
-                projectPath={currentProject?.path ?? null}
-                onMessageSent={handleMessageSent}
-                allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
-                agentDisplayName={active?.display_name}
-                containerClassName="max-w-full px-0 pb-0 pt-0"
-                panelClassName="rounded-[22px] border-border/70 bg-card/98 shadow-[0_18px_48px_rgba(0,0,0,0.10)]"
-                contextFooter={startComposerFooter}
-                accessModeLabel={accessModeLabel}
-                accessModeTitle={supportsAccessModeSwitch ? t("sessions.accessMode") : t("sessions.accessModeReadOnly")}
-                accessModeReadOnly={!supportsAccessModeSwitch}
-                accessModeOptions={accessModeOptions}
-                accessModeValue={accessModeValue}
-                onAccessModeChange={handleAccessModeChange}
-              />
-            </div>
-          </div>
+          // Start-composer view: the heading + centered ChatInput are rendered
+          // in the unified ChatInput block below (kept in ONE React element
+          // position across start-composer and active-session views so the
+          // ChatInput instance — and its stagedMessagesBySession state — is
+          // preserved across session switches). This branch collapses the
+          // message area so the unified block can take flex-1 and center.
+          <div className="hidden" />
         ) : (
           <>
             <ObservabilityStatusBar
@@ -1859,10 +1847,24 @@ export function ChatPage({
             </div>
           </>
         )}
-        {/* Chat input area with scroll-to-bottom overlay */}
-        {projectId && !showStartComposer && !taskPanelOpen && (
-          <div className="relative">
-            {isAwayFromBottom && (
+        {/* Unified ChatInput — rendered in ONE React element position across
+            the start-composer view and the active-session view. Keeping the
+            component instance stable (same parent, same child slot, no key)
+            preserves its stagedMessagesBySession state across session switches;
+            previously two separate <ChatInput> instances in mutually-exclusive
+            branches unmounted/remounted on switch, losing staged guides.
+            taskPanelOpen hides it entirely. Layout adapts via conditional
+            sibling elements + className — ChatInput itself never moves. */}
+        {projectId && !taskPanelOpen && (
+          <div className={showStartComposer
+            ? "flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-10"
+            : "relative shrink-0"
+          }>
+            {showStartComposer ? (
+              <h1 className="mb-14 w-full max-w-[var(--message-content-max-width)] text-center text-[2rem] font-medium leading-tight tracking-normal text-foreground">
+                {t("sessions.startPrompt", { project: projectDisplayName })}
+              </h1>
+            ) : isAwayFromBottom ? (
               <button
                 onClick={handleScrollToBottom}
                 className="absolute -top-10 left-1/2 -translate-x-1/2 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-border/40 bg-background/80 text-muted-foreground shadow-sm backdrop-blur-sm transition-all hover:bg-accent hover:text-foreground hover:border-border/60 hover:shadow-md opacity-60 hover:opacity-100"
@@ -1870,7 +1872,7 @@ export function ChatPage({
               >
                 <ChevronDown className="h-4 w-4" strokeWidth={2.5} />
               </button>
-            )}
+            ) : null}
             <ChatInput
               ref={chatInputRef}
               sessionId={selectedSession === "new" ? null : selectedSession}
@@ -1879,6 +1881,8 @@ export function ChatPage({
               onMessageSent={handleMessageSent}
               allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
               agentDisplayName={active?.display_name}
+              containerClassName={showStartComposer ? "mx-auto w-full max-w-[var(--message-content-max-width)] px-0 pb-0 pt-0" : undefined}
+              panelClassName={showStartComposer ? "rounded-[22px] border-border/70 bg-card/98 shadow-[0_18px_48px_rgba(0,0,0,0.10)]" : undefined}
               contextFooter={startComposerFooter}
               accessModeLabel={accessModeLabel}
               accessModeTitle={supportsAccessModeSwitch ? t("sessions.accessMode") : t("sessions.accessModeReadOnly")}
