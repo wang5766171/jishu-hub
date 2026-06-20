@@ -197,12 +197,20 @@ export function ChatPage({
     && projectSettingsSurface.access_modes.length > 0;
 
   // Mid-turn steer (inject guidance without stopping output) is only possible
-  // for agents running a persistent ACP / Pi-RPC connection, which populate
-  // ChatProcess.acp. CLI/embedded agents have no acp handle, so steer_chat
-  // would fail with "No active ACP session found" — for them guide must fall
-  // back to stop+send (handled by chat-input.tsx's default path).
-  const supportsSteer =
-    active?.transport === "pi_rpc" || active?.transport === "acp_preferred";
+  // for agents running a persistent Pi-RPC connection: that runtime delivers
+  // the steer as a real mid-turn injection and emits a `steer_injected` event
+  // so the UI can interleave the guide at its real position. ACP (claude-code
+  // / acp_preferred) has NO mid-turn steer — its `steer_chat` just queues a
+  // follow-up prompt for the next turn and never emits `steer_injected`, so
+  // the steer UI path (optimistic bubble + turn_complete commit) never fires
+  // and the guide is lost. For ACP, guide must fall back to stop+send
+  // (handled by chat-input.tsx's default path), which matches ACP's actual
+  // "steer = new prompt" semantics.
+  const supportsSteer = active?.transport === "pi_rpc";
+  // Fresh mirror for the mount-only agent-event listener (whose useEffect deps
+  // are [], so it closes over a stale `supportsSteer`). Updated every render.
+  const supportsSteerRef = useRef(supportsSteer);
+  supportsSteerRef.current = supportsSteer;
 
   // selectedSession: null or real backend UUID — never fake IDs
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
@@ -865,25 +873,38 @@ export function ChatPage({
           // Spurious-completion guard: when a follow-up streaming state was just
           // created at the end of a turn (a manually-guided steer committed as a
           // follow-up, or Route 2 auto-sending staged guides), the (re)launched
-          // ACP/agent process can emit an early turn_complete(Complete) before
-          // its real reply has begun — carrying no assistant text. Processing it
-          // would drop the freshly-created "thinking" state, leaving a blank gap
-          // until the real reply's first token. Detect it (follow-up started very
-          // recently + no text produced) and skip: keep the state so the pending
-          // reply fills it naturally, and let the real turn_complete (with text)
-          // commit it later.
+          // ACP/agent process can emit early turn_complete events (Complete,
+          // Error, …) before its real reply has begun — carrying no assistant
+          // text. Processing them would drop the freshly-created "thinking"
+          // state, leaving a blank gap until the real reply's first token.
+          // Detect them (follow-up started recently + no text produced) and skip:
+          // keep the state so the pending reply fills it naturally. The marker
+          // is retained across skips so consecutive spurious completions are all
+          // ignored; it is cleared only when a genuine completion (with text) is
+          // processed below, or expires after the window.
           const pendingReplyStartedAt = pendingReplyStartedAtRef.current.get(finalKey)
             ?? pendingReplyStartedAtRef.current.get(cid);
+          // state must exist (an aborted turn whose state was already dropped by
+          // handleAbort is null here and must NOT be skipped — its queued steers
+          // still need committing). content/tools may hold ACP startup noise so
+          // only text/thinking gate this.
+          const hasNoReplyText = Boolean(state)
+            && !(state!.text.length || state!.thinking.length);
           if (
             pendingReplyStartedAt !== undefined
             && Date.now() - pendingReplyStartedAt < 2000
-            && !(state?.text?.length || state?.thinking?.length)
+            && hasNoReplyText
           ) {
             continue;
           }
           const isNewSessionStream =
             newSessionStreamIdsRef.current.has(cid)
             || newSessionStreamIdsRef.current.has(finalKey);
+          // For transports without mid-turn steer (ACP), a queued guide that
+          // couldn't be injected is sent as a real new message. Set in the
+          // no-tool branch below; the actual streamStore.start + send_message
+          // runs after this turn's drop(cid), so the new stream isn't cleared.
+          let guideToSendAfterDrop: string | null = null;
           const newMessages: Message[] = [];
           if (state?.pendingUserMessage) {
             newMessages.push({
@@ -1040,14 +1061,34 @@ export function ChatPage({
               newMessages.push({ role: "assistant", content: assistantContent, timestamp: Date.now() });
             }
             if (queuedSteers.length > 0) {
-              newMessages.push({
-                role: "user",
-                content: [{ type: "text", text: queuedSteers[0] }],
-                timestamp: Date.now(),
-              });
-              followUpExpected = true;
-              consumeSteerFromQueue(1);
-              dropLivePlaceholders(1);
+              if (supportsSteerRef.current) {
+                // Pi-RPC: the queued steer is answered in a follow-up turn.
+                // Commit it as a user message now; the response arrives in the
+                // next turn_complete. followUpExpected pre-creates a "thinking"
+                // state so the gap isn't blank.
+                newMessages.push({
+                  role: "user",
+                  content: [{ type: "text", text: queuedSteers[0] }],
+                  timestamp: Date.now(),
+                });
+                followUpExpected = true;
+                consumeSteerFromQueue(1);
+                dropLivePlaceholders(1);
+              } else {
+                // No mid-turn steer (ACP/claude-code): the queued guide was
+                // never injected, so no follow-up reply will come. Send it as a
+                // real new message (mirrors Route 2) so the agent actually
+                // processes it. Do NOT commit it as a user message here —
+                // send_message's own turn_complete will commit guide+reply
+                // naturally (committing now would duplicate it). The actual
+                // streamStore.start + send_message runs AFTER the drop below
+                // (same as Route 2) — otherwise this turn's drop(cid) would
+                // clear the freshly-started stream.
+                const guideText = queuedSteers[0];
+                consumeSteerFromQueue(1);
+                dropLivePlaceholders(1);
+                guideToSendAfterDrop = guideText;
+              }
             }
           }
 
@@ -1160,11 +1201,51 @@ export function ChatPage({
             // first token, exactly the bug we're fixing.
             streamStore.start(finalKey, null);
             if (cid !== finalKey) streamStore.alias(finalKey, cid);
-            // Record the follow-up start moment so a spurious turn_complete
-            // emitted by the (re)launched agent process before its real reply
-            // begins can be detected and ignored below (keeps the "thinking"
-            // state). Same mechanism as Route 2 below.
             pendingReplyStartedAtRef.current.set(finalKey, Date.now());
+          }
+
+          // ACP (no mid-turn steer): a queued guide that couldn't be injected
+          // is sent as a real new message now that this turn's drop has settled.
+          // Mirrors Route 2 — start the stream + record the spurious-completion
+          // marker + fire send_message in an async IIFE so the reply fills the
+          // "thinking" state naturally.
+          if (guideToSendAfterDrop !== null) {
+            const guideText = guideToSendAfterDrop;
+            // Start the reply stream WITHOUT pendingUserMessage: send_message
+            // already delivered the guide to the backend (it's in the JSONL),
+            // so the reply's turn_complete must NOT re-commit it as a user
+            // message (that would duplicate it). We commit the guide into the
+            // cache ourselves here, exactly once.
+            streamStore.start(finalKey, null);
+            if (cid !== finalKey) streamStore.alias(finalKey, cid);
+            pendingReplyStartedAtRef.current.set(finalKey, Date.now());
+            const guideBase =
+              sessionMessagesCacheRef.current.get(finalKey)
+              ?? sessionMessagesCacheRef.current.get(cid)
+              ?? [];
+            const guideUpdated = [...guideBase, {
+              role: "user" as const,
+              content: [{ type: "text" as const, text: guideText }],
+              timestamp: Date.now(),
+            }];
+            sessionMessagesCacheRef.current.set(finalKey, guideUpdated);
+            if (cid !== finalKey) sessionMessagesCacheRef.current.set(cid, guideUpdated);
+            if (selectedSessionRef.current === cid || selectedSessionRef.current === finalKey) {
+              setSessionMessages(guideUpdated);
+            }
+            const guideProjectPath = projectPathRef.current;
+            void (async () => {
+              try {
+                await invokeCommand("send_message", {
+                  projectPath: guideProjectPath,
+                  sessionId: finalKey,
+                  message: guideText,
+                });
+              } catch (err) {
+                console.error("Failed to send queued guide:", err);
+                streamStore.drop(finalKey);
+              }
+            })();
           }
 
           // Route 2 (orthogonal to manual guide): when the turn ends, auto-send
@@ -1189,17 +1270,27 @@ export function ChatPage({
             const claimed = stagedApiRef.current.claimAll(finalKey);
             if (claimed.length > 0) {
               const merged = claimed.map((m) => m.content).join("\n\n");
-              streamStore.start(finalKey, merged);
+              // Start WITHOUT pendingUserMessage: send_message delivers the
+              // message to the backend (JSONL), so the reply's turn_complete
+              // must NOT re-commit it (would duplicate). Commit it into the
+              // cache ourselves here, exactly once.
+              streamStore.start(finalKey, null);
               if (cid !== finalKey) streamStore.alias(finalKey, cid);
-              // Record the auto-send moment so a spurious turn_complete emitted
-              // by the (re)launched agent process before its real reply begins
-              // can be detected and ignored below (keeps the "thinking" state).
               pendingReplyStartedAtRef.current.set(finalKey, Date.now());
-              // The listen callback is synchronous; fire the send in an async
-              // IIFE so the rest of turn_complete (refetch, focus, scroll) runs
-              // immediately instead of waiting on the network. claimAll() already
-              // claimed synchronously, so exactly-once holds even though the
-              // actual send is deferred.
+              const autoBase =
+                sessionMessagesCacheRef.current.get(finalKey)
+                ?? sessionMessagesCacheRef.current.get(cid)
+                ?? [];
+              const autoUpdated = [...autoBase, {
+                role: "user" as const,
+                content: [{ type: "text" as const, text: merged }],
+                timestamp: Date.now(),
+              }];
+              sessionMessagesCacheRef.current.set(finalKey, autoUpdated);
+              if (cid !== finalKey) sessionMessagesCacheRef.current.set(cid, autoUpdated);
+              if (selectedSessionRef.current === cid || selectedSessionRef.current === finalKey) {
+                setSessionMessages(autoUpdated);
+              }
               const projectPath = projectPathRef.current;
               const restore = stagedApiRef.current.restore.bind(stagedApiRef.current);
               void (async () => {
@@ -2050,34 +2141,38 @@ export function ChatPage({
                   }
                 }
               }}
-              onGuideStaged={
-                supportsSteer
-                  ? async (content: string) => {
-                      if (!selectedSession || selectedSession === "new") return;
-                      await invokeCommand("steer_chat", {
-                        sessionId: selectedSession,
-                        message: content,
-                      });
-                      // Queue for commit at turn_complete AND show live now.
-                      // Rendered after the streaming bubble (see
-                      // pendingSteerDisplay below) so it sits below the
-                      // in-progress reply; committed into sessionMessages
-                      // between that reply and the steer's response when the
-                      // turn completes.
-                      const key = selectedSession;
-                      const existing = pendingSteerMessagesRef.current.get(key) ?? [];
-                      pendingSteerMessagesRef.current.set(key, [...existing, content]);
-                      setPendingSteerDisplay((prev) => [
-                        ...prev,
-                        {
-                          role: "user",
-                          content: [{ type: "text", text: content }],
-                          timestamp: Date.now(),
-                        },
-                      ]);
-                    }
-                  : undefined
-              }
+              onGuideStaged={async (content: string) => {
+                if (!selectedSession || selectedSession === "new") return;
+                // Pi-RPC delivers the guide as a real mid-turn injection
+                // (steer_chat + steer_injected event). ACP (claude-code) has no
+                // mid-turn steer — steer_chat just queues a follow-up prompt and
+                // never injects — so skip it; the guide still queues below and
+                // becomes a real message when the user stops or the reply
+                // completes (Route 2 / turn_complete commit).
+                if (supportsSteer) {
+                  await invokeCommand("steer_chat", {
+                    sessionId: selectedSession,
+                    message: content,
+                  });
+                }
+                // Queue for commit at turn_complete AND show live now.
+                // Rendered after the streaming bubble (see pendingSteerDisplay
+                // below) so it sits below the in-progress reply; committed into
+                // sessionMessages between that reply and the guide's response
+                // when the turn completes (or sent by Route 2 if it wasn't a
+                // real mid-turn injection).
+                const key = selectedSession;
+                const existing = pendingSteerMessagesRef.current.get(key) ?? [];
+                pendingSteerMessagesRef.current.set(key, [...existing, content]);
+                setPendingSteerDisplay((prev) => [
+                  ...prev,
+                  {
+                    role: "user",
+                    content: [{ type: "text", text: content }],
+                    timestamp: Date.now(),
+                  },
+                ]);
+              }}
             />
           </div>
         )}

@@ -576,9 +576,14 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     if (abortKey) {
       await invokeCommand("abort_chat", { sessionId: abortKey });
       await onAbort?.();
+      // Only drop the abort key (the canonical id the backend tracked). The
+      // aborted turn's turn_complete handler in chat-page already drops the
+      // resolved id (cid). Dropping sessionId/activeSessionId here too would
+      // race that handler: while `abort_chat`'s IPC is in flight the
+      // turn_complete(Aborted) event arrives and is processed — which may start
+      // a NEW stream (e.g. sending a queued guide) under the resolved id. This
+      // subsequent drop would then wipe that freshly-started "thinking" state.
       streamStore.drop(abortKey);
-      if (sessionId && sessionId !== abortKey) streamStore.drop(sessionId);
-      if (activeSessionId && activeSessionId !== abortKey) streamStore.drop(activeSessionId);
       setSending(false);
       setActiveSessionId(null);
     } else {
