@@ -51,6 +51,7 @@
     "installing": "Installing...",
     "installSuccess": "Success",
     "installFailed": "Failed",
+    "installFailedUnknown": "Unknown error, check the console log",
     "checking": "Checking environment...",
     "enterWorkspace": "Enter Workspace",
     "selectModule": "View more",

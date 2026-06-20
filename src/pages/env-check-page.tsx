@@ -291,7 +291,10 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       }
     } catch (err) {
       console.error(err);
-      await message(`安装失败: ${String(err)}`, { title: t("env.title", "环境检测"), kind: "error" });
+      // Backend may surface an empty detail when npm/winget fail; never
+      // show a bare "安装失败:" with no reason.
+      const reason = String(err).trim() || t("env.installFailedUnknown", "未知错误，请查看控制台日志");
+      await message(`安装失败: ${reason}`, { title: t("env.title", "环境检测"), kind: "error" });
     } finally {
       setInstallingIds((prev) => {
         const next = new Set(prev);

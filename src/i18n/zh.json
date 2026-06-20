@@ -51,6 +51,7 @@
     "installing": "安装中...",
     "installSuccess": "安装成功",
     "installFailed": "安装失败",
+    "installFailedUnknown": "未知错误，请查看控制台日志",
     "checking": "正在检测环境...",
     "enterWorkspace": "进入工作区",
     "selectModule": "查看更多",

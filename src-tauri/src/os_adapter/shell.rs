@@ -96,7 +96,17 @@ pub async fn run_install_command(
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         } else {
-            Err(String::from_utf8_lossy(&output.stderr).to_string())
+            // npm/winget often write failure detail to stdout rather than
+            // stderr; prefer stderr but fall back to stdout, and always
+            // include the exit code so the error is never empty.
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if !stderr.is_empty() {
+                stderr
+            } else {
+                stdout
+            };
+            Err(format!("command failed (exit {:?}): {}", output.status.code(), detail))
         }
     }
     #[cfg(not(target_os = "windows"))]
@@ -114,7 +124,14 @@ pub async fn run_install_command(
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         } else {
-            Err(String::from_utf8_lossy(&output.stderr).to_string())
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if !stderr.is_empty() {
+                stderr
+            } else {
+                stdout
+            };
+            Err(format!("command failed (exit {:?}): {}", output.status.code(), detail))
         }
     }
 }
