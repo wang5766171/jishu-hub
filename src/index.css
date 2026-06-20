@@ -173,6 +173,23 @@ select option {
   --diff-added-fg: hsl(140 65% 25%);
   --diff-removed: hsl(0 70% 95%);
   --diff-removed-fg: hsl(0 70% 35%);
+
+  /* Task flow canvas */
+  --task-canvas-bg: var(--color-background);
+  --task-canvas-grid: hsl(240 5.9% 82%);
+  --task-canvas-panel-bg: hsl(0 0% 100% / 0.94);
+  --task-canvas-overlay-bg: hsl(240 6% 10% / 0.20);
+  --task-node-bg: var(--color-card);
+  --task-node-fg: var(--color-card-foreground);
+  --task-node-border: var(--color-border);
+  --task-node-shadow: 0 8px 18px hsl(240 10% 3.9% / 0.06);
+  --task-node-running-bg: color-mix(in srgb, var(--tool-running) 12%, var(--color-card));
+  --task-node-success-bg: color-mix(in srgb, var(--tool-success) 12%, var(--color-card));
+  --task-node-error-bg: color-mix(in srgb, var(--tool-error) 12%, var(--color-card));
+  --task-node-muted-bg: color-mix(in srgb, var(--color-muted) 75%, var(--color-card));
+  --task-node-approval-bg: color-mix(in srgb, hsl(38 92% 50%) 14%, var(--color-card));
+  --task-edge-control: var(--color-primary);
+  --task-edge-data: var(--color-muted-foreground);
 }
 
 /* === Colorful theme === */
@@ -202,6 +219,12 @@ select option {
   --tool-card-header-bg: hsl(210 35% 97%);
   --tool-card-border: hsl(210 25% 86%);
   --tool-card-code-bg: hsl(210 35% 96%);
+  --task-canvas-bg: hsl(216 100% 98%);
+  --task-canvas-grid: hsl(216 80% 86%);
+  --task-canvas-panel-bg: hsl(0 0% 100% / 0.95);
+  --task-node-shadow: 0 10px 24px hsl(221 83% 53% / 0.10);
+  --task-edge-control: hsl(221 83% 53%);
+  --task-edge-data: hsl(172 66% 38%);
 }
 
 /* === Dark theme === */
@@ -275,6 +298,22 @@ select option {
   --diff-added-fg: hsl(140 50% 75%);
   --diff-removed: hsl(0 50% 22%);
   --diff-removed-fg: hsl(0 50% 75%);
+
+  --task-canvas-bg: hsl(240 6% 9%);
+  --task-canvas-grid: hsl(240 5% 22%);
+  --task-canvas-panel-bg: hsl(240 6% 13% / 0.94);
+  --task-canvas-overlay-bg: hsl(240 6% 4% / 0.56);
+  --task-node-bg: hsl(240 6% 13%);
+  --task-node-fg: var(--color-foreground);
+  --task-node-border: hsl(240 5% 28%);
+  --task-node-shadow: 0 10px 24px hsl(0 0% 0% / 0.28);
+  --task-node-running-bg: color-mix(in srgb, var(--tool-running) 16%, var(--color-card));
+  --task-node-success-bg: color-mix(in srgb, var(--tool-success) 14%, var(--color-card));
+  --task-node-error-bg: color-mix(in srgb, var(--tool-error) 16%, var(--color-card));
+  --task-node-muted-bg: color-mix(in srgb, var(--color-muted) 72%, var(--color-card));
+  --task-node-approval-bg: color-mix(in srgb, hsl(38 92% 58%) 18%, var(--color-card));
+  --task-edge-control: hsl(217 91% 65%);
+  --task-edge-data: hsl(240 5% 65%);
 }
 [data-theme="dark"] ::-webkit-scrollbar-thumb {
   background: hsl(240 5% 40% / 0.4);

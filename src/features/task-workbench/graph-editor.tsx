@@ -25,25 +25,67 @@ function nodeAppearance(status?: NodeRunStatus) {
   switch (status) {
     case "ready":
     case "blocked":
-      return { borderColor: "#cbd5e1", background: "#ffffff", color: "#0f172a", boxShadow: "0 8px 18px rgba(15, 23, 42, 0.06)" };
+      return {
+        borderColor: "var(--task-node-border)",
+        background: "var(--task-node-bg)",
+        color: "var(--task-node-fg)",
+        boxShadow: "var(--task-node-shadow)",
+      };
     case "leased":
     case "running":
     case "retry_wait":
     case "repairing":
-      return { borderColor: "#3b82f6", background: "#eff6ff", color: "#0f172a", boxShadow: "0 0 0 3px rgba(59, 130, 246, 0.14), 0 10px 24px rgba(37, 99, 235, 0.12)" };
+      return {
+        borderColor: "var(--tool-running)",
+        background: "var(--task-node-running-bg)",
+        color: "var(--task-node-fg)",
+        boxShadow: "0 0 0 3px color-mix(in srgb, var(--tool-running) 18%, transparent), var(--task-node-shadow)",
+      };
     case "succeeded":
-      return { borderColor: "#22c55e", background: "#f0fdf4", color: "#14532d", boxShadow: "0 8px 18px rgba(34, 197, 94, 0.10)" };
+      return {
+        borderColor: "var(--tool-success)",
+        background: "var(--task-node-success-bg)",
+        color: "var(--task-node-fg)",
+        boxShadow: "var(--task-node-shadow)",
+      };
     case "failed":
-      return { borderColor: "#ef4444", background: "#fff1f2", color: "#7f1d1d", boxShadow: "0 8px 18px rgba(239, 68, 68, 0.10)" };
+      return {
+        borderColor: "var(--tool-error)",
+        background: "var(--task-node-error-bg)",
+        color: "var(--task-node-fg)",
+        boxShadow: "var(--task-node-shadow)",
+      };
     case "cancelled":
     case "skipped":
     case "superseded":
-      return { borderColor: "#94a3b8", background: "#f8fafc", color: "#475569", boxShadow: "none" };
+      return {
+        borderColor: "var(--color-muted-foreground)",
+        background: "var(--task-node-muted-bg)",
+        color: "var(--color-muted-foreground)",
+        boxShadow: "none",
+      };
     case "awaiting_approval":
-      return { borderColor: "#f59e0b", background: "#fffbeb", color: "#78350f", boxShadow: "0 0 0 3px rgba(245, 158, 11, 0.15), 0 10px 24px rgba(245, 158, 11, 0.12)" };
+      return {
+        borderColor: "hsl(38 92% 50%)",
+        background: "var(--task-node-approval-bg)",
+        color: "var(--task-node-fg)",
+        boxShadow: "0 0 0 3px color-mix(in srgb, hsl(38 92% 50%) 20%, transparent), var(--task-node-shadow)",
+      };
     default:
-      return { borderColor: "#cbd5e1", background: "#ffffff", color: "#0f172a", boxShadow: "0 8px 18px rgba(15, 23, 42, 0.06)" };
+      return {
+        borderColor: "var(--task-node-border)",
+        background: "var(--task-node-bg)",
+        color: "var(--task-node-fg)",
+        boxShadow: "var(--task-node-shadow)",
+      };
   }
+}
+
+function currentFlowColorMode(): "light" | "dark" {
+  if (typeof document === "undefined") return "light";
+  return document.documentElement.getAttribute("data-theme") === "dark"
+    ? "dark"
+    : "light";
 }
 
 /// §12.3: node state must use text + color + shape. `nodeAppearance` covers
@@ -129,6 +171,9 @@ export function GraphEditor({
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [phaseFilterId, setPhaseFilterId] = useState<string | null>(null);
   const [semanticZoom, setSemanticZoom] = useState<"detail" | "compact" | "map">("detail");
+  const [flowColorMode, setFlowColorMode] = useState<"light" | "dark">(
+    currentFlowColorMode,
+  );
   const flowRef = useRef<ReactFlowInstance | null>(null);
   // Whether the initial layout (fit-or-restore) has happened for the current
   // graph. Subsequent snapshot changes preserve the user's viewport (§13.2).
@@ -225,6 +270,16 @@ export function GraphEditor({
       layoutWorkerRef.current?.terminate();
       layoutWorkerRef.current = null;
     };
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const element = document.documentElement;
+    const updateTheme = () => setFlowColorMode(currentFlowColorMode());
+    updateTheme();
+    const observer = new MutationObserver(updateTheme);
+    observer.observe(element, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => observer.disconnect();
   }, []);
 
   useEffect(() => {
@@ -342,7 +397,7 @@ export function GraphEditor({
 
     const rfEdges: ReactFlowEdge[] = visibleSnapshot.edges.map((e) => {
       const isControl = e.kind === "control_dependency";
-      const color = isControl ? "#2563eb" : "#64748b";
+      const color = isControl ? "var(--task-edge-control)" : "var(--task-edge-data)";
       return {
         id: e.edge_id,
         source: e.source_node_id,
@@ -356,9 +411,9 @@ export function GraphEditor({
           width: 18,
           height: 18,
         },
-        labelStyle: { fill: isControl ? "#1d4ed8" : "#475569", fontSize: 12, fontWeight: 600 },
+        labelStyle: { fill: color, fontSize: 12, fontWeight: 600 },
         labelShowBg: true,
-        labelBgStyle: { fill: "#ffffff", fillOpacity: 0.96 },
+        labelBgStyle: { fill: "var(--task-canvas-panel-bg)", fillOpacity: 0.96 },
         labelBgPadding: [6, 4] as [number, number],
         labelBgBorderRadius: 5,
         style: {
@@ -505,7 +560,7 @@ export function GraphEditor({
 
   return (
     <div
-      className="relative h-full w-full bg-slate-50"
+      className="relative h-full w-full bg-[var(--task-canvas-bg)]"
       role="application"
       aria-label={t("tasks.workbench.canvasAriaLabel")}
     >
@@ -530,25 +585,25 @@ export function GraphEditor({
         onInit={(instance) => {
           flowRef.current = instance;
         }}
-        colorMode="light"
+        colorMode={flowColorMode}
       >
         <Controls />
         <MiniMap />
-        <Background gap={18} size={1} color="#dbe4f0" />
+        <Background gap={18} size={1} color="var(--task-canvas-grid)" />
         <div className="absolute top-4 right-4 z-10 flex max-w-[42rem] flex-wrap items-center justify-end gap-2">
-          <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white/95 px-3 py-2 text-xs text-slate-700 shadow-sm">
-            <span className="text-slate-500">
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-[var(--task-canvas-panel-bg)] px-3 py-2 text-xs text-foreground shadow-sm backdrop-blur">
+            <span className="text-muted-foreground">
               {t("tasks.workbench.revisionStatus.revision")}
             </span>
-            <span className="font-mono text-slate-950">
+            <span className="font-mono text-foreground">
               {currentRevisionId ?? "-"}
             </span>
             <span
               className={cn(
                 "rounded px-2 py-0.5 font-medium",
                 canUndo
-                  ? "bg-amber-400/15 text-amber-200"
-                  : "bg-emerald-400/15 text-emerald-200",
+                  ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                  : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
               )}
             >
               {canUndo
@@ -556,8 +611,8 @@ export function GraphEditor({
                 : t("tasks.workbench.revisionStatus.clean")}
             </span>
           </div>
-          <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white/95 px-3 py-2 text-xs text-slate-700 shadow-sm">
-            <span className="text-slate-500">
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-[var(--task-canvas-panel-bg)] px-3 py-2 text-xs text-foreground shadow-sm backdrop-blur">
+            <span className="text-muted-foreground">
               {t("tasks.workbench.semanticZoom.label")}
             </span>
             <span className="font-medium">
@@ -565,14 +620,14 @@ export function GraphEditor({
             </span>
           </div>
           {phaseNodes.length > 0 && (
-            <div className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-slate-200 bg-white/95 p-1 shadow-sm">
+            <div className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-border bg-[var(--task-canvas-panel-bg)] p-1 shadow-sm backdrop-blur">
               <button
                 type="button"
                 className={cn(
                   "h-7 shrink-0 rounded px-2 text-xs transition",
                   !phaseFilterId
                     ? "bg-primary text-primary-foreground"
-                    : "text-slate-600 hover:bg-slate-100",
+                    : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
                 )}
                 onClick={() => setPhaseFilterId(null)}
               >
@@ -586,7 +641,7 @@ export function GraphEditor({
                     "h-7 max-w-40 shrink-0 truncate rounded px-2 text-xs transition",
                     phaseFilterId === phase.node_id
                       ? "bg-primary text-primary-foreground"
-                      : "text-slate-600 hover:bg-slate-100",
+                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
                   )}
                   onClick={() => setPhaseFilterId(phase.node_id)}
                   title={phase.title}
@@ -610,7 +665,7 @@ export function GraphEditor({
           {generateProposal && (
             <button
               type="button"
-              className="rounded-lg border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-medium text-violet-700 shadow-sm hover:border-violet-300 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg border border-primary/20 bg-primary/10 px-4 py-2 text-sm font-medium text-primary shadow-sm hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
               onClick={() => generateProposal().catch(console.error)}
               disabled={planning}
             >
@@ -622,7 +677,7 @@ export function GraphEditor({
           {activeRunId && applyDraftToRun && (
             <button
               type="button"
-              className="rounded-lg border border-cyan-200 bg-cyan-50 px-4 py-2 text-sm font-medium text-cyan-700 shadow-sm hover:border-cyan-300 hover:bg-cyan-100 disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-lg border border-border bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground shadow-sm hover:bg-secondary/80 disabled:cursor-not-allowed disabled:opacity-40"
               onClick={() => applyDraftToRun().catch(console.error)}
               disabled={!canApplyDraftToRun}
             >
@@ -633,7 +688,7 @@ export function GraphEditor({
           )}
           <button
             type="button"
-            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground shadow-sm hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-40"
             onClick={() => undo?.().catch(console.error)}
             disabled={!canUndo}
             title={`${t("tasks.workbench.undo")} (Ctrl/Cmd+Z)`}
@@ -642,7 +697,7 @@ export function GraphEditor({
           </button>
           <button
             type="button"
-            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground shadow-sm hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-40"
             onClick={() => redo?.().catch(console.error)}
             disabled={!canRedo}
             title={`${t("tasks.workbench.redo")} (Ctrl/Cmd+Shift+Z)`}
@@ -708,7 +763,7 @@ export function GraphEditor({
           </button>
           <button
             type="button"
-            className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium text-foreground shadow-sm hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
             onClick={() => setShowDispatchForm(true)}
           >
             {t("tasks.workbench.addAgentStep")}
@@ -716,7 +771,7 @@ export function GraphEditor({
         </div>
       </ReactFlow>
       {selectedEdgeId && snapshot && (
-        <div className="absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-4 rounded-xl border border-slate-200 bg-white/95 px-4 py-3 text-sm text-slate-700 shadow-xl">
+        <div className="absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-4 rounded-xl border border-border bg-[var(--task-canvas-panel-bg)] px-4 py-3 text-sm text-foreground shadow-xl backdrop-blur">
           {(() => {
             const edge = snapshot.edges.find((candidate) => candidate.edge_id === selectedEdgeId);
             if (!edge) return null;
@@ -726,15 +781,15 @@ export function GraphEditor({
               <>
                 <span className="font-medium">
                   {source?.title ?? edge.source_node_id}
-                  <span className="px-2 text-cyan-300">→</span>
+                  <span className="px-2 text-primary">→</span>
                   {target?.title ?? edge.target_node_id}
                 </span>
-                <span className="rounded bg-slate-100 px-2 py-1 text-xs text-slate-600">
+                <span className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">
                   {t(`tasks.workbench.edgeKinds.${edge.kind}`)}
                 </span>
                 <button
                   type="button"
-                  className="rounded border border-rose-200 px-3 py-1.5 text-rose-600 hover:bg-rose-50"
+                  className="rounded border border-destructive/25 px-3 py-1.5 text-destructive hover:bg-destructive/10"
                   onClick={() => {
                     submitCommand({
                       op: "remove_edge",
@@ -752,9 +807,9 @@ export function GraphEditor({
         </div>
       )}
       {showDispatchForm && (
-        <div className="absolute inset-0 z-30 grid place-items-center bg-slate-900/20 p-6 backdrop-blur-sm">
+        <div className="absolute inset-0 z-30 grid place-items-center bg-[var(--task-canvas-overlay-bg)] p-6 backdrop-blur-sm">
           <form
-            className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-5 shadow-2xl"
+            className="w-full max-w-lg rounded-xl border border-border bg-popover p-5 text-popover-foreground shadow-2xl"
             onSubmit={(event) => {
               event.preventDefault();
               if (wizardStep < 3) {
@@ -822,7 +877,7 @@ export function GraphEditor({
             <div className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
               {t("tasks.workbench.nodeWizard.step", { current: wizardStep, total: 3 })}
             </div>
-            <h3 className="mt-2 text-xl font-semibold text-slate-950">
+            <h3 className="mt-2 text-xl font-semibold text-foreground">
               {t("tasks.workbench.nodeWizard.title")}
             </h3>
             {wizardStep === 1 && (
@@ -835,7 +890,7 @@ export function GraphEditor({
                       "rounded-lg border px-4 py-3 text-left text-sm transition",
                       dispatchIntent === intent
                         ? "border-primary/40 bg-primary/10 text-primary"
-                        : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50",
+                        : "border-border bg-card text-card-foreground hover:bg-accent hover:text-accent-foreground",
                     )}
                     onClick={() => setDispatchIntent(intent)}
                   >
@@ -846,58 +901,58 @@ export function GraphEditor({
             )}
             {wizardStep === 2 && (
               <>
-                <label className="mt-5 block text-xs font-medium text-slate-600">
+                <label className="mt-5 block text-xs font-medium text-muted-foreground">
                   {t("tasks.workbench.stepTitle")}
                   <input
                     autoFocus
                     value={dispatchTitle}
                     onChange={(event) => setDispatchTitle(event.target.value)}
-                    className="mt-2 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 outline-none focus:border-primary"
+                    className="mt-2 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
                   />
                 </label>
-                <label className="mt-4 block text-xs font-medium text-slate-600">
+                <label className="mt-4 block text-xs font-medium text-muted-foreground">
                   {t("tasks.workbench.stepPrompt")}
                   <textarea
                     rows={5}
                     value={dispatchPrompt}
                     onChange={(event) => setDispatchPrompt(event.target.value)}
-                    className="mt-2 w-full resize-y rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 outline-none focus:border-primary"
+                    className="mt-2 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
                   />
                 </label>
-                <label className="mt-4 block text-xs font-medium text-slate-600">
+                <label className="mt-4 block text-xs font-medium text-muted-foreground">
                   {t("tasks.workbench.nodeWizard.acceptance")}
                   <textarea
                     rows={3}
                     value={dispatchAcceptance}
                     onChange={(event) => setDispatchAcceptance(event.target.value)}
-                    className="mt-2 w-full resize-y rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 outline-none focus:border-primary"
+                    className="mt-2 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
                   />
                 </label>
               </>
             )}
             {wizardStep === 3 && (
-              <div className="mt-5 space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+              <div className="mt-5 space-y-3 rounded-lg border border-border bg-muted/50 p-4 text-sm text-foreground">
                 <div>
-                  <span className="text-slate-500">{t("tasks.workbench.nodeWizard.intent")}: </span>
+                  <span className="text-muted-foreground">{t("tasks.workbench.nodeWizard.intent")}: </span>
                   {t(`tasks.workbench.nodeWizard.intents.${dispatchIntent}`)}
                 </div>
                 <div>
-                  <span className="text-slate-500">{t("tasks.workbench.stepTitle")}: </span>
+                  <span className="text-muted-foreground">{t("tasks.workbench.stepTitle")}: </span>
                   {dispatchTitle || "-"}
                 </div>
                 <div>
-                  <span className="text-slate-500">{t("tasks.workbench.nodeWizard.acceptance")}: </span>
+                  <span className="text-muted-foreground">{t("tasks.workbench.nodeWizard.acceptance")}: </span>
                   {dispatchAcceptance || "-"}
                 </div>
               </div>
             )}
-            <p className="mt-3 text-xs leading-5 text-slate-500">
+            <p className="mt-3 text-xs leading-5 text-muted-foreground">
               {t("tasks.workbench.connectHint")}
             </p>
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
-                className="rounded border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
+                className="rounded border border-border px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                 onClick={() => {
                   setShowDispatchForm(false);
                   setWizardStep(1);
@@ -908,7 +963,7 @@ export function GraphEditor({
               {wizardStep > 1 && (
                 <button
                   type="button"
-                  className="rounded border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
+                  className="rounded border border-border px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                   onClick={() => setWizardStep((current) => (current === 3 ? 2 : 1))}
                 >
                   {t("tasks.workbench.nodeWizard.back")}
