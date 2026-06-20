@@ -1,6 +1,7 @@
 import i18n from "@/i18n";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import * as dialogPlugin from "@tauri-apps/plugin-dialog";
 import { TaskWorkbench } from "./index";
 import { RunInspector } from "./run-inspector";
 
@@ -14,6 +15,10 @@ const taskGraphHarness = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  confirm: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("./use-task-graph", () => ({
@@ -159,7 +164,7 @@ describe("task workbench shell", () => {
   });
 
   it("deletes a task graph from the task list after confirmation", async () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirmMock = vi.mocked(dialogPlugin.confirm).mockResolvedValue(true);
     invokeMock.mockImplementation((command: string) => {
       if (command === "task_plan_skill_list") return Promise.resolve([]);
       if (command === "orchestrator_list_graphs_for_project") {
@@ -195,6 +200,6 @@ describe("task workbench shell", () => {
       });
       expect(screen.queryByText("Delete me")).not.toBeInTheDocument();
     });
-    confirmSpy.mockRestore();
+    confirmMock.mockRestore();
   });
 });

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import {
   Activity,
   ArrowLeft,
@@ -267,7 +268,11 @@ export function TaskWorkbench({
 
   const deleteTask = useCallback(
     async (task: TaskGraph) => {
-      if (!window.confirm(t("tasks.deleteTaskConfirm", { title: task.title }))) {
+      const confirmed = await confirm(
+        t("tasks.deleteTaskConfirm", { title: task.title }),
+        { title: t("tasks.deleteTask"), kind: "warning" },
+      );
+      if (!confirmed) {
         return;
       }
       setDeletingGraphIds((current) =>
