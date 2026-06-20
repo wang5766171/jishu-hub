@@ -406,7 +406,6 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     }
 
     const pendingId = sessionId || `pending-${Date.now()}`;
-    console.log("Starting message send. pendingId:", pendingId, "sessionId:", sessionId);
     setActiveSessionId(pendingId);
     streamStore.start(pendingId, fullMessage);
     if (onMessageSent) onMessageSent(pendingId, fullMessage);
