@@ -34,7 +34,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { confirm } from "@tauri-apps/plugin-dialog";
 
 interface ActiveModel {
   provider: string;
@@ -257,7 +257,7 @@ export function ModelManager({
     }
   };
   const deleteProvider = async (name: string) => {
-    const confirmed = await ask(t("config.deleteProviderConfirm", { name }), { title: t("config.title"), kind: "warning" });
+    const confirmed = await confirm(t("config.deleteProviderConfirm", { name }), { title: t("config.title"), kind: "warning" });
     if (!confirmed) {
       return;
     }
@@ -353,7 +353,7 @@ export function ModelManager({
     }
   };
   const deleteModel = async (providerName: string, modelId: string) => {
-    const confirmed = await ask(t("config.deleteModelConfirm", { provider: providerName, model: modelId }), { title: t("config.title"), kind: "warning" });
+    const confirmed = await confirm(t("config.deleteModelConfirm", { provider: providerName, model: modelId }), { title: t("config.title"), kind: "warning" });
     if (!confirmed) {
       return;
     }
