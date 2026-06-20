@@ -35,21 +35,25 @@ type StagedMessageUpdater = StagedMessage[] | ((prev: StagedMessage[]) => Staged
  * agent's turn completes. The staging state still lives here (Route 1, manual
  * guide, owns it); the parent only reads/claims/clears through this handle.
  *
- * A per-session claimed-id set backs `pending`/`claimAll` so that whichever
+ * Each method takes a `sessionKey` so the parent can target the session whose
+ * turn just completed — even when the user is viewing a DIFFERENT session.
+ * Staging state is partitioned by session (`stagedMessagesBySession`), so a
+ * background session's turn_complete claims only its own staged guides, never
+ * another session's.
+ *
+ * A per-session claimed-id set backs `claimAll`/`restore` so that whichever
  * route (manual guide mid-turn, or auto-send at turn_complete) claims a message
  * FIRST wins, and the other sees it as already sent — guaranteeing each staged
  * guide is delivered exactly once even across the await boundary.
  */
 export interface StagedGuideApi {
-  /** Staged messages not yet claimed by either route. */
-  pending(): StagedMessage[];
-  /** Atomically claim ALL unclaimed staged messages for auto-send: mark them
-   *  claimed (blocking concurrent manual guide / re-click), clear the staging
-   *  UI, and return what was claimed. */
-  claimAll(): StagedMessage[];
-  /** Roll back a failed auto-send: un-claim the ids and put the messages back
-   *  into the staging UI so the user can retry. */
-  restore(messages: StagedMessage[]): void;
+  /** Atomically claim ALL unclaimed staged messages for `sessionKey` auto-send:
+   *  mark them claimed (blocking concurrent manual guide / re-click), clear
+   *  that session's staging UI, and return what was claimed. */
+  claimAll(sessionKey: string): StagedMessage[];
+  /** Roll back a failed auto-send for `sessionKey`: un-claim the ids and put
+   *  the messages back into that session's staging UI so the user can retry. */
+  restore(sessionKey: string, messages: StagedMessage[]): void;
 }
 
 interface ChatInputProps {
@@ -129,10 +133,13 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   // auto-send via stagedApiRef in the parent), so whichever claims first wins
   // and the other short-circuits — exactly-once across the race window.
   const claimedStagedIdsBySessionRef = useRef<Map<string, Set<string>>>(new Map());
-  // Always-fresh mirror of stagedMessages so the stagedApiRef methods (set up
-  // once) read the current array instead of a stale closure snapshot.
-  const stagedLiveRef = useRef<StagedMessage[]>(stagedMessages);
-  stagedLiveRef.current = stagedMessages;
+  // Always-fresh mirror of the ENTIRE stagedMessagesBySession map so the
+  // stagedApiRef methods (set up once) can target ANY session's staging array
+  // by key — not just the currently-viewed session. This is what lets Route 2
+  // auto-send a background session's staged guides when its turn completes
+  // while the user is viewing a different conversation.
+  const stagedBySessionRef = useRef<Record<string, StagedMessage[]>>(stagedMessagesBySession);
+  stagedBySessionRef.current = stagedMessagesBySession;
 
   const claimedIdsForSession = useCallback((key: string) => {
     let ids = claimedStagedIdsBySessionRef.current.get(key);
@@ -164,32 +171,27 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   useImperativeHandle(ref, () => textareaRef.current!, []);
 
   // Expose the staging-area lifecycle to the parent (Route 2: auto-send at
-  // turn_complete). Set up once; methods read live refs so they always reflect
-  // the current staging array and claimed set.
+  // turn_complete). Set up ONCE on mount; methods take an explicit sessionKey
+  // and read live refs so they always target the right session — including a
+  // background session whose turn completed while the user views another.
   useEffect(() => {
     if (!stagedApiRef) return;
-    const key = stagingSessionKey;
     stagedApiRef.current = {
-      pending: () => {
-        const claimedIds = claimedIdsForSession(key);
-        return stagedLiveRef.current.filter((m) => !claimedIds.has(m.id));
-      },
-      claimAll: () => {
-        const claimedIds = claimedIdsForSession(key);
-        const unclaimed = stagedLiveRef.current.filter(
-          (m) => !claimedIds.has(m.id),
-        );
+      claimAll: (sessionKey: string) => {
+        const claimedIds = claimedIdsForSession(sessionKey);
+        const staged = stagedBySessionRef.current[sessionKey] ?? [];
+        const unclaimed = staged.filter((m) => !claimedIds.has(m.id));
         for (const m of unclaimed) claimedIds.add(m.id);
-        setStagedMessagesForSession(key, []);
+        setStagedMessagesForSession(sessionKey, []);
         return unclaimed;
       },
-      restore: (messages) => {
-        const claimedIds = claimedIdsForSession(key);
+      restore: (sessionKey: string, messages: StagedMessage[]) => {
+        const claimedIds = claimedIdsForSession(sessionKey);
         for (const m of messages) claimedIds.delete(m.id);
-        setStagedMessagesForSession(key, (prev) => [...prev, ...messages]);
+        setStagedMessagesForSession(sessionKey, (prev) => [...prev, ...messages]);
       },
     };
-  }, [claimedIdsForSession, setStagedMessagesForSession, stagedApiRef, stagingSessionKey]);
+  }, [claimedIdsForSession, setStagedMessagesForSession, stagedApiRef]);
 
   // Derive whether current session is streaming (per-session, parallel-safe)
   const isOwnStreaming = useIsSessionStreaming(sessionId);
@@ -199,7 +201,6 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   // Reset sending state when stream finishes for this session
   useEffect(() => {
     if (!isStreaming && sending) {
-      console.log("Stream complete, setting sending to false");
       setSending(false);
       setActiveSessionId(null);
     }
@@ -431,7 +432,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   };
 
   const handleSend = async () => {
-    if (!projectPath || disabled || sending) return;
+    if (!projectPath || disabled) return;
     if (!message.trim() && files.length === 0) return;
 
     // If the agent is currently streaming, stage the message instead of
@@ -785,7 +786,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
           </div>
 
           <div className="flex items-center gap-1">
-            {(sending || isStreaming) && !(message.trim() || files.length > 0) ? (
+            {isStreaming && !(message.trim() || files.length > 0) ? (
               <Button variant="destructive" size="icon-sm" className="h-8 w-8 rounded-full" onClick={handleAbort}>
                 <Square className="h-4 w-4" />
               </Button>
@@ -800,7 +801,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                 }`}
                 style={(message.trim() || files.length > 0) ? { backgroundColor: 'var(--icon-send-bg)', color: 'var(--icon-send-fg)' } : undefined}
                 onClick={handleSend}
-                disabled={disabled || sending || (!message.trim() && files.length === 0)}
+                disabled={disabled || (!message.trim() && files.length === 0)}
               >
                 <Send className="h-4 w-4 ml-[2px]" />
               </Button>
