@@ -278,13 +278,16 @@ export function ChatPage({
   const sessionMessagesRef = useRef(sessionMessages);
   sessionMessagesRef.current = sessionMessages;
   const newSessionStreamIdsRef = useRef<Set<string>>(new Set());
-  // Records when Route 2 (auto-send of staged guides at turn_complete) started
-  // a new stream for a session, keyed by session id → start timestamp (ms).
-  // Used to detect and ignore a spurious turn_complete that the ACP/agent
-  // process emits right after it is (re)launched — before the real reply has
-  // begun. Without this guard that early turn_complete drops the freshly-created
-  // "thinking" state, leaving a blank gap until the reply's first token arrives.
-  const route2SentAtRef = useRef<Map<string, number>>(new Map());
+  // Records when a follow-up streaming state was (re)created for a session at
+  // turn_complete — keyed by session id → start timestamp (ms). Covers two cases
+  // that both start an empty "thinking" state for a PENDING reply after a turn
+  // ends: (1) a manually-guided steer committed as a follow-up (followUpExpected),
+  // and (2) Route 2 auto-sending staged guides. Used to detect and ignore a
+  // spurious turn_complete that the ACP/agent process emits right after it is
+  // (re)launched — before the real reply has begun. Without this guard that
+  // early turn_complete drops the freshly-created "thinking" state, leaving a
+  // blank gap until the reply's first token arrives.
+  const pendingReplyStartedAtRef = useRef<Map<string, number>>(new Map());
   const refetchSessionsRef = useRef<((silent?: boolean) => Promise<Session[]>) | null>(null);
   // Holds the latest handleSelectSession so the navigateToSession effect always
   // invokes the freshest closure (current projectId/selectedSession) instead of
@@ -859,19 +862,21 @@ export function ChatPage({
           // Build final assistant/user messages from the accumulated state.
           const state = streamStore.getState(cid);
           const finalKey = state?.resolvedId ?? cid;
-          // Spurious-completion guard: when Route 2 auto-sends a staged guide at
-          // the end of a turn, the (re)launched ACP/agent process can emit an
-          // early turn_complete(Complete) before its real reply has begun —
-          // carrying no assistant text. Processing it would drop the freshly-
-          // created "thinking" state, leaving a blank gap until the real reply's
-          // first token. Detect it (auto-sent very recently + no text produced)
-          // and skip: keep the state so the pending reply fills it naturally,
-          // and let the real turn_complete (with text) commit it later.
-          const route2SentAt = route2SentAtRef.current.get(finalKey)
-            ?? route2SentAtRef.current.get(cid);
+          // Spurious-completion guard: when a follow-up streaming state was just
+          // created at the end of a turn (a manually-guided steer committed as a
+          // follow-up, or Route 2 auto-sending staged guides), the (re)launched
+          // ACP/agent process can emit an early turn_complete(Complete) before
+          // its real reply has begun — carrying no assistant text. Processing it
+          // would drop the freshly-created "thinking" state, leaving a blank gap
+          // until the real reply's first token. Detect it (follow-up started very
+          // recently + no text produced) and skip: keep the state so the pending
+          // reply fills it naturally, and let the real turn_complete (with text)
+          // commit it later.
+          const pendingReplyStartedAt = pendingReplyStartedAtRef.current.get(finalKey)
+            ?? pendingReplyStartedAtRef.current.get(cid);
           if (
-            route2SentAt !== undefined
-            && Date.now() - route2SentAt < 2000
+            pendingReplyStartedAt !== undefined
+            && Date.now() - pendingReplyStartedAt < 2000
             && !(state?.text?.length || state?.thinking?.length)
           ) {
             continue;
@@ -1128,11 +1133,11 @@ export function ChatPage({
           // like a vertical jump at the end of a turn.
           streamStore.drop(cid);
           streamStore.flushNow();
-          // This was a genuine completion (had text, or the auto-send window
-          // elapsed) — clear the Route 2 spurious-completion marker so it does
-          // not suppress a later legitimate turn_complete for this session.
-          route2SentAtRef.current.delete(finalKey);
-          route2SentAtRef.current.delete(cid);
+          // This was a genuine completion (had text, or the follow-up window
+          // elapsed) — clear the spurious-completion marker so it does not
+          // suppress a later legitimate turn_complete for this session.
+          pendingReplyStartedAtRef.current.delete(finalKey);
+          pendingReplyStartedAtRef.current.delete(cid);
 
           if (followUpExpected) {
             // A committed steer will be answered in a FOLLOW-UP turn (a
@@ -1155,6 +1160,11 @@ export function ChatPage({
             // first token, exactly the bug we're fixing.
             streamStore.start(finalKey, null);
             if (cid !== finalKey) streamStore.alias(finalKey, cid);
+            // Record the follow-up start moment so a spurious turn_complete
+            // emitted by the (re)launched agent process before its real reply
+            // begins can be detected and ignored below (keeps the "thinking"
+            // state). Same mechanism as Route 2 below.
+            pendingReplyStartedAtRef.current.set(finalKey, Date.now());
           }
 
           // Route 2 (orthogonal to manual guide): when the turn ends, auto-send
@@ -1184,7 +1194,7 @@ export function ChatPage({
               // Record the auto-send moment so a spurious turn_complete emitted
               // by the (re)launched agent process before its real reply begins
               // can be detected and ignored below (keeps the "thinking" state).
-              route2SentAtRef.current.set(finalKey, Date.now());
+              pendingReplyStartedAtRef.current.set(finalKey, Date.now());
               // The listen callback is synchronous; fire the send in an async
               // IIFE so the rest of turn_complete (refetch, focus, scroll) runs
               // immediately instead of waiting on the network. claimAll() already
