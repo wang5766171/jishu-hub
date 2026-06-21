@@ -101,12 +101,12 @@ pub async fn run_install_command(
             // include the exit code so the error is never empty.
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let detail = if !stderr.is_empty() {
-                stderr
-            } else {
-                stdout
-            };
-            Err(format!("command failed (exit {:?}): {}", output.status.code(), detail))
+            let detail = if !stderr.is_empty() { stderr } else { stdout };
+            Err(format!(
+                "command failed (exit {:?}): {}",
+                output.status.code(),
+                detail
+            ))
         }
     }
     #[cfg(not(target_os = "windows"))]
@@ -126,12 +126,12 @@ pub async fn run_install_command(
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let detail = if !stderr.is_empty() {
-                stderr
-            } else {
-                stdout
-            };
-            Err(format!("command failed (exit {:?}): {}", output.status.code(), detail))
+            let detail = if !stderr.is_empty() { stderr } else { stdout };
+            Err(format!(
+                "command failed (exit {:?}): {}",
+                output.status.code(),
+                detail
+            ))
         }
     }
 }

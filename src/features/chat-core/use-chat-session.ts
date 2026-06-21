@@ -23,7 +23,6 @@ import {
 import type {
   AgentEventPayload,
   ChatSession,
-  ContentBlock,
   Message,
 } from "@/types";
 import { listen } from "@tauri-apps/api/event";

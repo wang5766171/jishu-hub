@@ -13,17 +13,16 @@ import { MessageView } from "@/components/sessions/message-view";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { useChatSession } from "@/features/chat-core/use-chat-session";
 import type { PreparedMessage } from "@/features/chat-core/types";
-import type { TaskInstance, TaskPhase } from "./types";
+import type { TaskPhase } from "./types";
 
 interface PhaseConversationShellProps {
-  instance: TaskInstance | null;
   sessionId: string | null;
   phase: TaskPhase;
   readOnly: boolean;
   projectPath: string;
   encodedProjectId?: string;
   /** 隐藏指令注入（阶段专属）。 */
-  prepareMessage?: (message: string) => PreparedMessage | Promise<PreparedMessage>;
+  prepareMessage?: (message: string) => PreparedMessage;
   /** session 解析为真实 id 后的回调。 */
   onSessionResolved?: (realSessionId: string) => void;
   /** 会话末尾嵌入的确认卡片（如需求定稿卡 / 流程图生成卡）。 */
@@ -33,7 +32,6 @@ interface PhaseConversationShellProps {
 }
 
 export function PhaseConversationShell({
-  instance,
   sessionId,
   phase,
   readOnly,
@@ -49,9 +47,7 @@ export function PhaseConversationShell({
     projectPath,
     encodedProjectId,
     readOnly,
-    prepareMessage: prepareMessage
-      ? (msg) => Promise.resolve(prepareMessage(msg))
-      : undefined,
+    prepareMessage,
     onSessionResolved,
   });
 
@@ -72,16 +68,8 @@ export function PhaseConversationShell({
         <div className="mx-auto flex max-w-[760px] flex-col gap-3 px-4 py-4">
           <MessageView messages={chat.messages} />
 
-          {chat.stream && chat.stream.content.length > 0 && (
-            <StreamingMessage
-              content={chat.stream.content}
-              thinking={chat.stream.thinking}
-              tools={chat.stream.tools}
-              steps={chat.stream.steps}
-              interactionSplits={chat.stream.interactionSplits}
-              isStreaming={isStreaming}
-              error={chat.stream.error}
-            />
+          {sessionId && (
+            <StreamingMessage sessionId={sessionId} isComplete={!isStreaming} userMessage={null} />
           )}
 
           {embeddedCard}
@@ -99,10 +87,7 @@ export function PhaseConversationShell({
               placeholder={`输入消息…（${phase === "requirements" ? "需求讨论" : "流程规划"}）`}
               prepareMessageForAgent={
                 prepareMessage
-                  ? async (msg) => {
-                      const prepared = await prepareMessage(msg);
-                      return prepared.agent;
-                    }
+                  ? (msg) => prepareMessage(msg).agent
                   : undefined
               }
               onSessionResolved={async (_pending, real) => {

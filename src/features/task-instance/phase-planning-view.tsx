@@ -74,7 +74,6 @@ skill_id: ${skillId}
 
   return (
     <PhaseConversationShell
-      instance={instance}
       sessionId={sessionId}
       phase="planning"
       readOnly={readOnly}

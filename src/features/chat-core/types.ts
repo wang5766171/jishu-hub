@@ -8,7 +8,7 @@
  * 阶段差异只能通过 useChatSession 的声明式入参表达。
  */
 import type { ContentBlock, Message } from "@/types";
-import type { SessionStreamState, InteractionSplit, StreamToolUse, StepInfo } from "@/hooks/use-stream-store";
+import type { InteractionSplit, StreamToolUse, StepInfo } from "@/hooks/use-stream-store";
 
 /**
  * 准备发送的消息。`prepareMessage` 回调的返回值，允许调用方注入阶段专属的隐藏指令。

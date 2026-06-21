@@ -11,7 +11,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import {
   deriveAllPhaseStates,
-  normalizeBackendPhase,
   taskInstanceFromRaw,
   type ExecutionChatScope,
   type ExecutionView,

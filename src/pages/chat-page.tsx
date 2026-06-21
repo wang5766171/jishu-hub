@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue, lazy, Suspense } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { streamStore, useSessionStream, type SessionStreamState } from "@/hooks/use-stream-store";
 import { MessageView, type MessageSearchNavigation, type MessageSearchStatus } from "@/components/sessions/message-view";
@@ -8,6 +8,12 @@ import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { clearImageCache } from "@/components/sessions/inline-image";
 import { StatusBar as ObservabilityStatusBar } from "@/components/observability";
 import { TasksPage } from "@/pages/tasks-page";
+// 三阶段任务容器：动态加载，不膨胀 chat-page 初始 bundle。
+// 设计依据：任务入口与容器架构设计_20260622.md §2.1、§2.4。
+const TaskPhaseContainer = lazy(() =>
+  import("@/features/task-instance/task-phase-container").then((m) => ({ default: m.default })),
+);
+type TaskPhaseFromInstance = "requirements" | "planning" | "execution";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -275,6 +281,10 @@ export function ChatPage({
   const [optimisticSessions, setOptimisticSessions] = useState<Session[]>([]);
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
   const [selectedTaskGraphId, setSelectedTaskGraphId] = useState<string | null>(null);
+  // 三阶段任务容器（TaskPhaseContainer）状态。与 taskPanelOpen 共存（渐进迁移）。
+  const [taskModeActive, setTaskModeActive] = useState(false);
+  const [taskContainerTaskId, setTaskContainerTaskId] = useState<string | null>(null);
+  const [taskContainerPhase, setTaskContainerPhase] = useState<TaskPhaseFromInstance>("requirements");
   const [taskLaunchOpen, setTaskLaunchOpen] = useState(false);
   const [taskLaunchPhase, setTaskLaunchPhase] = useState<TaskLaunchPhase>("requirements");
   const [activeTaskInstanceId, setActiveTaskInstanceId] = useState<string | null>(null);
@@ -1219,8 +1229,14 @@ export function ChatPage({
     }
     setPendingTaskPlanInstruction(instruction);
     setTaskLaunchOpen(false);
+    // 生成图后打开三阶段容器，落在执行阶段（替代旧的 TaskWorkbench 跳转）
+    if (activeTaskInstanceIdRef.current) {
+      setTaskModeActive(true);
+      setTaskContainerTaskId(activeTaskInstanceIdRef.current);
+      setTaskContainerPhase("execution");
+    }
     setSelectedTaskGraphId(createdGraph.graph_id);
-    setTaskPanelOpen(true);
+    setTaskPanelOpen(false);
     setSelectedSession(null);
     selectedSessionRef.current = null;
     setPendingSteerDisplay([]);
@@ -2380,10 +2396,13 @@ export function ChatPage({
                       setActiveTaskInstanceId(taskSession.task_id);
                       setActiveTaskRequirementFile(taskSession.requirement_file ?? null);
                       setSelectedTaskSkillId(taskSession.skill_id || "jishu-task-planner");
-                      if (taskSession.graph_id && taskSession.current_phase === "graph") {
+                      if (taskSession.graph_id && (taskSession.current_phase === "graph" || taskSession.current_phase === "execution")) {
+                        // 执行阶段：打开三阶段容器（TaskPhaseContainer），落在执行阶段视图
+                        setTaskModeActive(true);
+                        setTaskContainerTaskId(taskSession.task_id);
+                        setTaskContainerPhase("execution");
                         setTaskLaunchOpen(false);
-                        setTaskPanelOpen(true);
-                        setSelectedTaskGraphId(taskSession.graph_id);
+                        setTaskPanelOpen(false);
                         setSelectedSession(null);
                         selectedSessionRef.current = null;
                         return;
@@ -2521,6 +2540,28 @@ export function ChatPage({
               </button>
             </div>
           </div>
+        ) : taskModeActive ? (
+          <Suspense
+            fallback={
+              <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+                {t("common.loading", "加载中…")}
+              </div>
+            }
+          >
+            <TaskPhaseContainer
+              projectPath={currentProject?.path ?? ""}
+              encodedProjectId={currentProject?.encoded_name}
+              initialTaskId={taskContainerTaskId}
+              initialPhase={taskContainerPhase}
+              onSidebarUpdate={() => refreshTaskLaunchSessions().catch(console.error)}
+              onClose={() => {
+                setTaskModeActive(false);
+                setTaskContainerTaskId(null);
+                setTaskContainerPhase("requirements");
+                refreshTaskLaunchSessions().catch(console.error);
+              }}
+            />
+          </Suspense>
         ) : taskPanelOpen ? (
           <TasksPage
             initialProjectPath={currentProject?.path ?? null}

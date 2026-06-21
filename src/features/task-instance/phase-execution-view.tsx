@@ -18,7 +18,6 @@ import { useEffect, useMemo } from "react";
 import { Play, Pause, Square } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { GraphEditor } from "@/features/task-workbench/graph-editor";
-import { InspectorPanel } from "@/features/task-workbench/inspector-panel";
 import { MessageView } from "@/components/sessions/message-view";
 import { ChatInput } from "@/components/sessions/chat-input";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
@@ -28,7 +27,7 @@ import { useNodeSession } from "./use-node-session";
 import { ExecutionViewSwitcher } from "./execution-view-switcher";
 import { ExecutionChatScopeTabs } from "./execution-chat-scope-tabs";
 import { cn } from "@/lib/utils";
-import type { useTaskGraph } from "@/features/task-workbench/use-task-graph";
+import type { useTaskGraph, RunProjection } from "@/features/task-workbench/use-task-graph";
 import type {
   ExecutionChatScope,
   ExecutionView,
@@ -86,7 +85,7 @@ export function PhaseExecutionView({
   // ── 节点会话查询（按需挂载当前选中节点）──
   // 构造 projection（从 taskGraph 的运行数据聚合）。
   // 注意：use-task-graph 的 nodeRuns 是 Record<string, NodeRun>，含 node_run_id/node_id/status/attempt_count，
-  // 与 RunProjection.node_runs 的 NodeRunProjection 结构兼容。
+  // 与 RunProjection.node_runs 的 NodeRunProjection 结构兼容（NodeRun.status 是 NodeRunStatus 枚举，兼容）。
   const projection = useMemo(() => {
     if (!runId) return null;
     return {
@@ -95,8 +94,8 @@ export function PhaseExecutionView({
       revision_id: taskGraph.activeRunRevisionId ?? taskGraph.revision?.revision_id ?? "",
       status: taskGraph.runStatus ?? "Draft",
       run_seq: 0,
-      node_runs: taskGraph.nodeRuns as unknown as Record<string, { node_run_id: string; node_id: string; status: string; attempt_count: number; current_attempt_id: string | null; wake_at: number | null; error: string | null }>,
-    };
+      node_runs: taskGraph.nodeRuns as unknown as RunProjection["node_runs"],
+    } as RunProjection;
   }, [runId, instance.graph_id, taskGraph.activeRunRevisionId, taskGraph.revision?.revision_id, taskGraph.runStatus, taskGraph.nodeRuns]);
 
   const nodeSession = useNodeSession({
@@ -360,17 +359,7 @@ function ExecutionChatPanel({
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-[760px] flex-col gap-2 px-3 py-3">
           <MessageView messages={nodeChat.messages} />
-          {nodeChat.stream && nodeChat.stream.content.length > 0 && (
-            <StreamingMessage
-              content={nodeChat.stream.content}
-              thinking={nodeChat.stream.thinking}
-              tools={nodeChat.stream.tools}
-              steps={nodeChat.stream.steps}
-              interactionSplits={nodeChat.stream.interactionSplits}
-              isStreaming={isStreaming}
-              error={nodeChat.stream.error}
-            />
-          )}
+          <StreamingMessage sessionId={sessionId} isComplete={!isStreaming} userMessage={null} />
         </div>
       </div>
       <div className="shrink-0 border-t border-border bg-background p-2">

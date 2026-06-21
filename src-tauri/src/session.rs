@@ -334,7 +334,8 @@ pub fn persist_interaction_blocks_to_jsonl_path(
         let after = file_fingerprint(path)?;
 
         if before != after {
-            last_err = Some("session file changed while preparing interaction persistence".to_string());
+            last_err =
+                Some("session file changed while preparing interaction persistence".to_string());
             std::thread::sleep(std::time::Duration::from_millis(50));
             continue;
         }
@@ -390,7 +391,8 @@ pub fn persist_partial_assistant_to_jsonl_path(
         let before = file_fingerprint(path)?;
         let original = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read session file: {e}"))?;
-        let updated = append_unpersisted_assistant_tail(&original, streamed_text, streamed_thinking);
+        let updated =
+            append_unpersisted_assistant_tail(&original, streamed_text, streamed_thinking);
         let after = file_fingerprint(path)?;
 
         if before != after {
@@ -417,7 +419,11 @@ pub fn persist_partial_assistant_to_jsonl_path(
 /// Build the updated JSONL by appending a single `assistant` record that holds
 /// only the streamed text/thinking not already present in the file. Returns the
 /// input unchanged when there is nothing new to write.
-fn append_unpersisted_assistant_tail(input: &str, streamed_text: &str, streamed_thinking: &str) -> String {
+fn append_unpersisted_assistant_tail(
+    input: &str,
+    streamed_text: &str,
+    streamed_thinking: &str,
+) -> String {
     let (persisted_text, persisted_thinking) = collect_persisted_assistant_text(input);
     let new_text = unpersisted_suffix(&persisted_text, streamed_text);
     let new_thinking = unpersisted_suffix(&persisted_thinking, streamed_thinking);
@@ -1245,9 +1251,15 @@ mod tests {
     fn unpersisted_suffix_returns_full_when_no_overlap() {
         // Claude persisted nothing for this turn (e.g. user cancelled during
         // the very first streamed response) — the whole streamed text is new.
-        assert_eq!(unpersisted_suffix("", "Hello world, this is partial"), "Hello world, this is partial");
         assert_eq!(
-            unpersisted_suffix("a completely different prior turn", "Hello world, this is partial"),
+            unpersisted_suffix("", "Hello world, this is partial"),
+            "Hello world, this is partial"
+        );
+        assert_eq!(
+            unpersisted_suffix(
+                "a completely different prior turn",
+                "Hello world, this is partial"
+            ),
             "Hello world, this is partial"
         );
     }
@@ -1269,7 +1281,10 @@ mod tests {
         // Late cancel after Claude flushed the whole message → nothing new.
         let persisted = "The complete answer is here.";
         assert_eq!(unpersisted_suffix(persisted, persisted), "");
-        assert_eq!(unpersisted_suffix(persisted, "The complete answer is here."), "");
+        assert_eq!(
+            unpersisted_suffix(persisted, "The complete answer is here."),
+            ""
+        );
     }
 
     #[test]
@@ -1278,7 +1293,10 @@ mod tests {
         // this turn's streamed text happens to start with "x.", the overlap is
         // too short to trust as a real boundary → treat as no overlap so we do
         // NOT drop content. (Cost: a tiny duplicated fragment, never data loss.)
-        assert_eq!(unpersisted_suffix("...ending in x.", "x. brand new content"), "x. brand new content");
+        assert_eq!(
+            unpersisted_suffix("...ending in x.", "x. brand new content"),
+            "x. brand new content"
+        );
     }
 
     #[test]
@@ -1294,20 +1312,23 @@ mod tests {
 
     #[test]
     fn persist_partial_assistant_appends_full_text_when_nothing_persisted() {
-        let dir = std::env::temp_dir().join(format!(
-            "jishu-session-partial-none-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("jishu-session-partial-none-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("partial.jsonl");
         // Only a user message — Claude wrote no assistant record before cancel.
-        let jsonl = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#;
+        let jsonl =
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#;
         std::fs::write(&path, jsonl).unwrap();
 
         persist_partial_assistant_to_jsonl_path(&path, "the partial streamed reply", "").unwrap();
 
         let session = load_session(&path).unwrap();
-        let assistant = session.messages.iter().find(|m| m.role == "assistant").unwrap();
+        let assistant = session
+            .messages
+            .iter()
+            .find(|m| m.role == "assistant")
+            .unwrap();
         match &assistant.content[0] {
             ContentBlock::Text { text } => assert_eq!(text, "the partial streamed reply"),
             other => panic!("Expected text, got {:?}", other),
@@ -1319,13 +1340,15 @@ mod tests {
 
     #[test]
     fn persist_partial_assistant_is_idempotent() {
-        let dir = std::env::temp_dir().join(format!(
-            "jishu-session-partial-idem-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("jishu-session-partial-idem-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("partial_idem.jsonl");
-        std::fs::write(&path, r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#,
+        )
+        .unwrap();
 
         persist_partial_assistant_to_jsonl_path(&path, "partial reply", "").unwrap();
         let after_first = std::fs::read_to_string(&path).unwrap();
@@ -1396,12 +1419,21 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("partial_thinking.jsonl");
-        std::fs::write(&path, r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#,
+        )
+        .unwrap();
 
-        persist_partial_assistant_to_jsonl_path(&path, "visible answer", "private reasoning").unwrap();
+        persist_partial_assistant_to_jsonl_path(&path, "visible answer", "private reasoning")
+            .unwrap();
 
         let session = load_session(&path).unwrap();
-        let assistant = session.messages.iter().find(|m| m.role == "assistant").unwrap();
+        let assistant = session
+            .messages
+            .iter()
+            .find(|m| m.role == "assistant")
+            .unwrap();
         let mut has_thinking = false;
         let mut has_text = false;
         for block in &assistant.content {

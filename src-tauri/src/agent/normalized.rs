@@ -658,7 +658,13 @@ mod tests_v6 {
         });
         let decoded: ContentBlock = serde_json::from_value(json).unwrap();
         match decoded {
-            ContentBlock::Interaction { prompt, answer, options, selected_options, origin } => {
+            ContentBlock::Interaction {
+                prompt,
+                answer,
+                options,
+                selected_options,
+                origin,
+            } => {
                 assert_eq!(prompt, "请确认");
                 assert_eq!(answer, "是");
                 assert!(options.is_empty());

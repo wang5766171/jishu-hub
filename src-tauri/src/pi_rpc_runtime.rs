@@ -281,7 +281,8 @@ async fn pi_rpc_connection_loop(
     // suppressed (request_user_input, ask_user, etc.) so their matching
     // tool_execution_end can also be suppressed — preventing orphaned
     // tool_result blocks in the streaming content.
-    let mut suppressed_interaction_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut suppressed_interaction_calls: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     loop {
         let cmd_future = command_rx.recv();

@@ -300,9 +300,11 @@ impl AgentRegistry {
         // the loop made first-load latency grow linearly with agent count.
         let results: Vec<(String, AgentHealth)> = {
             let agents: Vec<_> = self.agents.iter().collect();
-            futures_util::future::join_all(agents.into_iter().map(|(id, agent)| async move {
-                (id.clone(), agent.probe().await)
-            }))
+            futures_util::future::join_all(
+                agents
+                    .into_iter()
+                    .map(|(id, agent)| async move { (id.clone(), agent.probe().await) }),
+            )
             .await
         };
 

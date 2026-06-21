@@ -9,14 +9,14 @@
  * 作为独立 chunk 动态加载，chat-page 通过 React.lazy 引入，不膨胀初始 bundle。
  */
 import { useEffect, useState } from "react";
-import { invokeCommand } from "@/hooks/use-invoke";
+import { useTranslation } from "react-i18next";
 import { useTaskGraph } from "@/features/task-workbench/use-task-graph";
 import { TaskPhaseNavBar } from "./task-phase-nav-bar";
 import { PhaseRequirementsView } from "./phase-requirements-view";
 import { PhasePlanningView } from "./phase-planning-view";
 import { PhaseExecutionView } from "./phase-execution-view";
 import { useTaskInstance } from "./use-task-instance";
-import type { TaskInstanceRaw, TaskPhase } from "./types";
+import type { TaskPhase } from "./types";
 
 export interface TaskPhaseContainerProps {
   projectPath: string;
@@ -35,6 +35,7 @@ export default function TaskPhaseContainer({
   onSidebarUpdate,
   onClose,
 }: TaskPhaseContainerProps) {
+  const { t } = useTranslation();
   const task = useTaskInstance({ projectRoot: projectPath, initialTaskId });
   const taskGraph = useTaskGraph();
 
@@ -68,7 +69,6 @@ export default function TaskPhaseContainer({
 
   // ── 需求定稿状态（简化：本地 state 控制卡片显示）──
   const [showFinalizeCard, setShowFinalizeCard] = useState(false);
-  const [finalizeMarkdown, setFinalizeMarkdown] = useState<string>("");
   const [showGenerationCard, setShowGenerationCard] = useState(false);
 
   const handleSessionResolved = (realSessionId: string, phase: TaskPhase) => {
@@ -95,16 +95,17 @@ export default function TaskPhaseContainer({
   const handleGenerateGraph = async () => {
     if (!task.activeInstance) return;
     // 触发规划会话收集 → create_graph（复用现有 useTaskGraph.createGraph）
-    const skillRefs = [{ skill_id: task.activeInstance.skill_id }];
-    const [graph, revision] = await taskGraph.createGraph({
-      title: task.activeInstance.title,
-      goal: task.activeInstance.requirement_file
+    await taskGraph.createGraph(
+      task.activeInstance.title,
+      task.activeInstance.requirement_file
         ? `需求终稿：${task.activeInstance.requirement_file}`
         : task.activeInstance.title,
-      project_root: projectPath,
-      skill_refs: skillRefs,
-    });
-    await task.attachGraph(graph.graph_id);
+      projectPath,
+      [{ skill_id: task.activeInstance.skill_id }],
+    );
+    if (taskGraph.graph) {
+      await task.attachGraph(taskGraph.graph.graph_id);
+    }
     setShowGenerationCard(false);
   };
 
@@ -138,7 +139,7 @@ export default function TaskPhaseContainer({
                 ? {
                     taskId: task.activeInstance.task_id,
                     title: task.activeInstance.title,
-                    requirementMarkdown: finalizeMarkdown,
+                    requirementMarkdown: t("task.requirements.finalizePlaceholder", "请确认需求终稿内容（由 Agent 按 skill 约束产出）。"),
                   }
                 : null
             }
