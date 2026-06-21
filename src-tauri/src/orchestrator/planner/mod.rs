@@ -1,5 +1,8 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +68,7 @@ pub struct PlannerService {
     registry: Arc<AgentRegistry>,
     /// The invocation_id of the current planning session (for steering).
     current_invocation: Arc<std::sync::Mutex<Option<String>>>,
+    current_cancellation: Arc<std::sync::Mutex<Option<Arc<AtomicBool>>>>,
 }
 
 impl PlannerService {
@@ -78,6 +82,7 @@ impl PlannerService {
             runtime,
             registry,
             current_invocation: Arc::new(std::sync::Mutex::new(None)),
+            current_cancellation: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -90,6 +95,37 @@ impl PlannerService {
                 .ok_or_else(|| "No planning session is currently active".to_string())?
         };
         self.runtime.steer(&invocation_id, message)
+    }
+
+    /// Stop the current planner turn without clearing the surrounding planning conversation.
+    pub fn stop_current_turn(&self) -> Result<(), String> {
+        let (invocation_id, cancellation) = {
+            let invocation_guard = self.current_invocation.lock().map_err(|e| e.to_string())?;
+            let cancellation_guard = self
+                .current_cancellation
+                .lock()
+                .map_err(|e| e.to_string())?;
+            (
+                invocation_guard
+                    .clone()
+                    .ok_or_else(|| "No planning session is currently active".to_string())?,
+                cancellation_guard.clone(),
+            )
+        };
+        if let Some(token) = cancellation {
+            token.store(true, Ordering::SeqCst);
+        }
+        self.runtime.cancel(&invocation_id);
+        Ok(())
+    }
+
+    fn clear_current_turn(&self) {
+        if let Ok(mut guard) = self.current_invocation.lock() {
+            *guard = None;
+        }
+        if let Ok(mut guard) = self.current_cancellation.lock() {
+            *guard = None;
+        }
     }
 
     pub async fn generate(&self, request: PlanningRequest) -> Result<GraphProposal, String> {
@@ -171,10 +207,14 @@ impl PlannerService {
             let mut invocation_prompt = next_prompt.clone();
             let response = loop {
                 let this_invocation_id = gen_id("planner-invocation");
+                let cancellation = Arc::new(AtomicBool::new(false));
                 // Store for steering — the frontend can call steer() while
                 // the Pi RPC session is live.
                 if let Ok(mut guard) = self.current_invocation.lock() {
                     *guard = Some(this_invocation_id.clone());
+                }
+                if let Ok(mut guard) = self.current_cancellation.lock() {
+                    *guard = Some(cancellation.clone());
                 }
                 let mut handle = self
                     .runtime
@@ -186,7 +226,7 @@ impl PlannerService {
                         session_id: planner_session_id.clone(),
                         prompt: invocation_prompt.clone(),
                         timeout_ms: 180_000,
-                        cancellation: Arc::new(AtomicBool::new(false)),
+                        cancellation: cancellation.clone(),
                     })
                     .await
                     .map_err(|error| format!("planner invocation failed: {error}"))?;
@@ -234,10 +274,16 @@ impl PlannerService {
                         }
                     }
                 }
+                if cancellation.load(Ordering::SeqCst) {
+                    self.clear_current_turn();
+                    return Err("planner turn was stopped by user".into());
+                }
                 if let Some(error) = runtime_error {
+                    self.clear_current_turn();
                     return Err(format!("planner invocation failed: {error}"));
                 }
                 if !exit_success {
+                    self.clear_current_turn();
                     return Err(format!(
                         "planner process exited unsuccessfully ({:?})",
                         exit_code
@@ -316,9 +362,7 @@ impl PlannerService {
         };
         report("completed", None);
         // Clear the invocation — steering is no longer available.
-        if let Ok(mut guard) = self.current_invocation.lock() {
-            *guard = None;
-        }
+        self.clear_current_turn();
         Ok(proposal)
     }
 }

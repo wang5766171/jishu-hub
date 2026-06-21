@@ -129,7 +129,7 @@ pub trait TaskAgentRuntime: Send + Sync {
 
 pub struct DefaultTaskAgentRuntime {
     registry: Arc<AgentRegistry>,
-    /// Live Pi RPC sessions keyed by invocation_id. Used for mid-turn steering.
+    /// Live Pi RPC sessions keyed by invocation_id. Used for mid-turn steering/cancel.
     live_controls:
         Arc<std::sync::Mutex<std::collections::HashMap<String, crate::acp_runtime::AcpControl>>>,
 }
@@ -314,6 +314,19 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                 .await
                 .map_err(|e| format!("Steer failed: {e}"))
         })
+    }
+
+    fn cancel(&self, invocation_id: &str) {
+        let control = self
+            .live_controls
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(invocation_id).cloned());
+        if let Some(control) = control {
+            tauri::async_runtime::spawn(async move {
+                control.send_cancel().await;
+            });
+        }
     }
 }
 

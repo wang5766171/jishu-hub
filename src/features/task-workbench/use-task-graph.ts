@@ -506,6 +506,7 @@ export function useTaskGraph() {
 
   const generateProposal = useCallback(async (instruction?: string) => {
     if (!graph || !revision) return null;
+    let stoppedByUser = false;
     setPlanning(true);
     setPlanningText("");
     setPlanningProgress({
@@ -526,12 +527,25 @@ export function useTaskGraph() {
       setProposal(nextProposal);
       return nextProposal;
     } catch (err: unknown) {
+      const message = taskErrorMessage(err);
+      if (message.includes("planner turn was stopped by user")) {
+        stoppedByUser = true;
+        setPlanningProgress({
+          graph_id: graph.graph_id,
+          stage: "awaiting_input",
+          attempt: null,
+          max_attempts: 2,
+        });
+        return null;
+      }
       console.error(err);
-      setError(taskErrorMessage(err));
+      setError(message);
       throw err;
     } finally {
       setPlanning(false);
-      setPlanningProgress(null);
+      if (!stoppedByUser) {
+        setPlanningProgress(null);
+      }
     }
   }, [graph, revision]);
 

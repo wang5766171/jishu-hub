@@ -1,22 +1,29 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
   Activity,
   ArrowLeft,
-  Bot,
   ClipboardList,
+  ChevronDown,
+  FolderOpen,
   MessageSquareText,
   Plus,
   RefreshCw,
-  Send,
   Trash2,
-  User,
   X,
 } from "lucide-react";
+import { ChatInput } from "@/components/sessions/chat-input";
+import { MessageView } from "@/components/sessions/message-view";
+import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { Button } from "@/components/ui/button";
+import { invokeCommand } from "@/hooks/use-invoke";
+import { useSessionStream, type InteractionSplit } from "@/hooks/use-stream-store";
+import { formatInteractionResponseValue } from "@/lib/conversation-interaction";
 import { cn } from "@/lib/utils";
+import type { ConversationInteractionRequest, ConversationInteractionSubmission, Message } from "@/types";
 import { useTaskGraph, type TaskGraph } from "./use-task-graph";
 import { GraphEditor } from "./graph-editor";
 import { RunInspector } from "./run-inspector";
@@ -28,7 +35,6 @@ import {
   buildPlanningInstruction,
   createPlanningMessage,
   derivePlanningTitle,
-  hasPlanningInput,
   type PlanningChatMessage,
 } from "./planning-session";
 
@@ -46,15 +52,18 @@ interface TaskPlanSkill {
 interface TaskWorkbenchProps {
   initialProjectPath?: string | null;
   initialGraphId?: string | null;
+  initialPlanInstruction?: string | null;
   onClose?: () => void;
 }
 
 type WorkbenchView = "list" | "create" | "graph";
 type WorkbenchSurfaceView = "chat" | "canvas" | "split";
+type TaskCreationMode = "discussion" | "direct";
 
 export function TaskWorkbench({
   initialProjectPath,
   initialGraphId,
+  initialPlanInstruction,
   onClose,
 }: TaskWorkbenchProps) {
   const { t, i18n } = useTranslation();
@@ -103,16 +112,19 @@ export function TaskWorkbench({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [runInspectorOpen, setRunInspectorOpen] = useState(false);
   const [surfaceView, setSurfaceView] = useState<WorkbenchSurfaceView>("canvas");
-  const [title, setTitle] = useState("");
   const [planningMessages, setPlanningMessages] = useState<PlanningChatMessage[]>([]);
   const [planningDraft, setPlanningDraft] = useState("");
+  const [planningSessionId, setPlanningSessionId] = useState<string | null>(null);
+  const [discussionMessages, setDiscussionMessages] = useState<Message[]>([]);
+  const [taskCreationMode, setTaskCreationMode] = useState<TaskCreationMode>("discussion");
   const [skills, setSkills] = useState<TaskPlanSkill[]>([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
-  const [installingSkillIds, setInstallingSkillIds] = useState<string[]>([]);
   const [deletingGraphIds, setDeletingGraphIds] = useState<string[]>([]);
   const [formBusy, setFormBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [pendingInitialPlan, setPendingInitialPlan] = useState<string | null>(null);
+  const messageAreaRef = useRef<HTMLDivElement | null>(null);
+  const planningStream = useSessionStream(planningSessionId);
 
   const loadTaskGraphs = useCallback(async () => {
     if (!initialProjectPath) {
@@ -150,9 +162,10 @@ export function TaskWorkbench({
     setSurfaceView("canvas");
     if (initialGraphId) {
       setView("graph");
+      setPendingInitialPlan(initialPlanInstruction ?? null);
       loadGraph(initialGraphId).catch(console.error);
     } else {
-      setView("list");
+      setView("create");
       loadTaskGraphs().catch(console.error);
     }
   }, [
@@ -187,6 +200,65 @@ export function TaskWorkbench({
     generateProposal(instruction).catch(console.error);
   }, [generateProposal, graph, pendingInitialPlan, planning]);
 
+  const loadDiscussionMessages = useCallback(async (sessionId: string | null) => {
+    if (!sessionId || sessionId.startsWith("pending-")) return;
+    try {
+      const messages = await invokeCommand<Message[]>("get_session_messages", {
+        sessionId,
+      });
+      setDiscussionMessages(messages);
+    } catch (loadError) {
+      console.warn("Failed to load task planning discussion messages:", loadError);
+    }
+  }, []);
+
+  useEffect(() => {
+    const resolvedId = planningStream?.resolvedId;
+    if (resolvedId && resolvedId !== planningSessionId) {
+      setPlanningSessionId(resolvedId);
+      loadDiscussionMessages(resolvedId).catch(console.error);
+    }
+  }, [loadDiscussionMessages, planningSessionId, planningStream?.resolvedId]);
+
+  useEffect(() => {
+    if (!planningSessionId) return;
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<unknown>("agent-event", (event) => {
+      const chunks = Array.isArray(event.payload) ? event.payload : [event.payload];
+      for (const raw of chunks) {
+        const chunk = raw as {
+          session_id?: string;
+          data?: { kind?: string; session_id?: string };
+        };
+        const chunkSessionId = chunk.session_id;
+        const resolvedId = chunk.data?.kind === "session_resolved"
+          ? chunk.data.session_id
+          : null;
+        const matches = chunkSessionId === planningSessionId || resolvedId === planningSessionId;
+        if (!matches) continue;
+        if (resolvedId && resolvedId !== planningSessionId) {
+          setPlanningSessionId(resolvedId);
+        }
+        if (chunk.data?.kind === "turn_complete") {
+          window.setTimeout(() => {
+            if (!cancelled) {
+              loadDiscussionMessages(resolvedId || chunkSessionId || planningSessionId)
+                .catch(console.error);
+            }
+          }, 120);
+        }
+      }
+    }).then((dispose) => {
+      unlisten = dispose;
+      if (cancelled) dispose();
+    }).catch(console.error);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [loadDiscussionMessages, planningSessionId]);
+
   const selectedNode = useMemo(
     () => snapshot?.nodes.find((node) => node.node_id === selectedNodeId) ?? null,
     [selectedNodeId, snapshot],
@@ -208,40 +280,125 @@ export function TaskWorkbench({
     if (!selectedNodeRun) return [];
     return artifacts.filter((artifact) => artifact.node_run_id === selectedNodeRun.node_run_id);
   }, [artifacts, selectedNodeRun]);
-  const selectedSkillsReady = useMemo(
-    () =>
-      skills
-        .filter((skill) => selectedSkillIds.includes(skill.id))
-        .every((skill) => skill.installed && skill.valid),
-    [selectedSkillIds, skills],
+  const planningChatMessages = useMemo(() => {
+    return taskCreationMode === "discussion"
+      ? discussionMessages
+      : planningMessagesToMessages(planningMessages);
+  }, [discussionMessages, planningMessages, taskCreationMode]);
+
+  const planningTranscriptMessages = useMemo(
+    () => {
+      if (planningMessages.length === 0 && !planningText.trim()) return [];
+      return planningMessagesToMessages(
+        planningText.trim()
+          ? [...planningMessages, createPlanningMessage(planningText, "assistant")]
+          : planningMessages,
+      );
+    },
+    [planningMessages, planningText],
   );
 
-  const installSkill = useCallback(async (skillId: string) => {
-    setInstallingSkillIds((current) => [...current, skillId]);
+  const createTaskFromPlanningMessages = useCallback(async (
+    messagesForSubmit: PlanningChatMessage[],
+  ) => {
+    const instruction = buildPlanningInstruction(messagesForSubmit);
+    if (!instruction || !initialProjectPath) return;
+    setFormBusy(true);
     setFormError(null);
     try {
-      const installed = await invoke<TaskPlanSkill>("task_plan_skill_install", {
-        skillId,
-      });
-      setSkills((current) =>
-        current.map((skill) => (skill.id === installed.id ? installed : skill)),
+      const selected = skills.find((skill) => skill.id === selectedSkillIds[0]);
+      if (!selected?.installed || !selected.valid) {
+        throw new Error(t("tasks.installSkillFirst"));
+      }
+      const skillRefs = [{
+        skill_id: selected.id,
+        version_or_hash: selected.content_hash,
+        inputs: {},
+      }];
+      setPendingInitialPlan(instruction);
+      await createGraph(
+        derivePlanningTitle("", messagesForSubmit),
+        instruction,
+        initialProjectPath,
+        skillRefs,
       );
-    } catch (installError) {
-      setFormError(String(installError));
+      setPlanningDraft("");
+      setView("graph");
+      setSurfaceView("split");
+    } catch (submitError) {
+      setPendingInitialPlan(null);
+      setFormError(String(submitError));
     } finally {
-      setInstallingSkillIds((current) =>
-        current.filter((currentId) => currentId !== skillId),
-      );
+      setFormBusy(false);
     }
+  }, [createGraph, initialProjectPath, selectedSkillIds, skills, t]);
+
+  const discussionPlanningMessages = useCallback((): PlanningChatMessage[] => {
+    return messagesToPlanningMessages(discussionMessages);
+  }, [discussionMessages]);
+
+  const beforePlanningSend = useCallback(async (message: string) => {
+    const userMessage = createPlanningMessage(message);
+    if (taskCreationMode === "direct") {
+      await createTaskFromPlanningMessages([userMessage]);
+      return true;
+    }
+    return false;
+  }, [createTaskFromPlanningMessages, taskCreationMode]);
+
+  const handlePlanningMessageSent = useCallback((sessionId: string) => {
+    setPlanningSessionId(sessionId);
   }, []);
+
+  const activePlanningInteraction = useMemo(() => {
+    const pending = planningStream?.interactionSplits.find((item) => !item.text?.trim());
+    if (!pending) return null;
+    return interactionSplitToRequest(pending);
+  }, [planningStream?.interactionSplits]);
+
+  const handlePlanningInteractionSubmit = useCallback(async (
+    submission: ConversationInteractionSubmission,
+  ) => {
+    if (!planningSessionId || !activePlanningInteraction) return;
+    const value = formatInteractionResponseValue(activePlanningInteraction, submission);
+    await invokeCommand("respond_chat_interaction", {
+      sessionId: planningSessionId,
+      requestId: submission.requestId,
+      value,
+      origin: activePlanningInteraction.origin,
+    });
+    if (isGenerateTaskConfirmation(activePlanningInteraction, submission)) {
+      await createTaskFromPlanningMessages(discussionPlanningMessages());
+    }
+  }, [
+    activePlanningInteraction,
+    createTaskFromPlanningMessages,
+    discussionPlanningMessages,
+    planningSessionId,
+  ]);
+
+  const continuePlanning = useCallback(async (message: string) => {
+    const nextMessages = [
+      ...planningMessages,
+      ...(planningText.trim() ? [createPlanningMessage(planningText, "assistant")] : []),
+      createPlanningMessage(message),
+    ];
+    setPlanningMessages(nextMessages);
+    const instruction = buildPlanningInstruction(nextMessages);
+    if (instruction) {
+      await generateProposal(instruction);
+    }
+  }, [generateProposal, planningMessages, planningText]);
 
   const beginCreate = useCallback(() => {
     clearGraph();
     setSelectedNodeId(null);
     setRunInspectorOpen(false);
-    setTitle("");
     setPlanningMessages([]);
     setPlanningDraft("");
+    setPlanningSessionId(null);
+    setDiscussionMessages([]);
+    setTaskCreationMode("discussion");
     setFormError(null);
     setPendingInitialPlan(null);
     setView("create");
@@ -322,6 +479,39 @@ export function TaskWorkbench({
   }
 
   if (view === "create") {
+    const projectDisplayName = getProjectDisplayName(initialProjectPath);
+    const createComposerFooter = (
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border/40 bg-muted/45 px-4 py-2.5 text-xs text-muted-foreground">
+        <span className="inline-flex min-w-0 items-center gap-1.5">
+          <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[var(--icon-folder)]" />
+          <span className="truncate font-medium text-foreground" title={projectDisplayName}>
+            {projectDisplayName}
+          </span>
+        </span>
+        <label className="relative inline-flex min-w-0 items-center gap-1.5">
+          <ClipboardList className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
+          <select
+            aria-label={t("tasks.creationMode.label")}
+            value={taskCreationMode}
+            onChange={(event) => setTaskCreationMode(event.target.value as TaskCreationMode)}
+            className="h-6 appearance-none rounded-md border border-input bg-background/80 py-0 pl-2 pr-6 text-xs text-foreground outline-none transition focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
+          >
+            <option value="discussion">{t("tasks.creationMode.discussion")}</option>
+            <option value="direct">{t("tasks.creationMode.direct")}</option>
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-1.5 h-3 w-3 text-muted-foreground" />
+        </label>
+        <span className="inline-flex min-w-0 items-center gap-1.5">
+          <span className="truncate">Jishu Agent</span>
+        </span>
+        {initialProjectPath && (
+          <span className="min-w-0 flex-1 truncate text-right font-mono text-[0.92em]" title={`${t("sessions.projectPath")}: ${initialProjectPath}`}>
+            {initialProjectPath}
+          </span>
+        )}
+      </div>
+    );
+
     return (
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
         <WorkbenchHeader
@@ -331,80 +521,32 @@ export function TaskWorkbench({
           onClose={onClose}
         />
         <form
-          className="flex min-h-0 flex-1 overflow-hidden"
+          className="flex min-h-0 flex-1 flex-col overflow-hidden"
           onSubmit={async (event) => {
             event.preventDefault();
             const messagesForSubmit = planningDraft.trim()
-              ? [...planningMessages, createPlanningMessage(planningDraft)]
-              : planningMessages;
-            const instruction = buildPlanningInstruction(messagesForSubmit);
-            if (!instruction || !initialProjectPath) return;
-            setFormBusy(true);
-            setFormError(null);
-            try {
-              const selected = skills.filter((skill) =>
-                selectedSkillIds.includes(skill.id),
-              );
-              if (selected.some((skill) => !skill.installed || !skill.valid)) {
-                throw new Error(t("tasks.installSkillFirst"));
-              }
-              const skillRefs = selected.map((skill) => ({
-                skill_id: skill.id,
-                version_or_hash: skill.content_hash,
-                inputs: {},
-              }));
-              setPendingInitialPlan(instruction);
-              await createGraph(
-                derivePlanningTitle(title, messagesForSubmit),
-                instruction,
-                initialProjectPath,
-                skillRefs,
-              );
-              setView("graph");
-              setSurfaceView("split");
-            } catch (submitError) {
-              setPendingInitialPlan(null);
-              setFormError(String(submitError));
-            } finally {
-              setFormBusy(false);
-            }
+              ? [...discussionPlanningMessages(), createPlanningMessage(planningDraft)]
+              : discussionPlanningMessages();
+            await createTaskFromPlanningMessages(messagesForSubmit);
           }}
         >
           <main className="flex min-w-0 flex-1 flex-col bg-background">
-            <div className="border-b border-border/70 px-6 py-4">
-              <div className="mx-auto flex max-w-4xl flex-wrap items-end gap-3">
-                <div className="min-w-0 flex-1">
-                  <h2 className="text-lg font-semibold">{t("tasks.startTask")}</h2>
-                  <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                    {t("tasks.createDescription")}
-                  </p>
-                </div>
-                <label className="w-full max-w-xs space-y-1.5 text-sm sm:w-72">
-                  <span className="font-medium">{t("tasks.taskTitle")}</span>
-                  <input
-                    value={title}
-                    onChange={(event) => setTitle(event.target.value)}
-                    placeholder={t("tasks.taskTitlePlaceholder")}
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2.5 outline-none transition focus:ring-2 focus:ring-primary/40"
-                  />
-                </label>
-              </div>
-            </div>
-            <PlanningChatComposer
-              messages={planningMessages}
-              draft={planningDraft}
+            <PlanningChatSurface
+              messages={planningChatMessages}
+              projectPath={initialProjectPath ?? null}
               busy={formBusy}
               className="min-h-0 flex-1"
+              startPrompt={t("tasks.createPrompt", { project: projectDisplayName })}
+              contextFooter={createComposerFooter}
               onDraftChange={setPlanningDraft}
-              onAddMessage={() => {
-                const message = planningDraft.trim();
-                if (!message) return;
-                setPlanningMessages((current) => [
-                  ...current,
-                  createPlanningMessage(message),
-                ]);
-                setPlanningDraft("");
-              }}
+              streamSessionId={planningSessionId}
+              streamActive={Boolean(planningStream?.isStreaming)}
+              scrollContainerRef={messageAreaRef}
+              interactionRequest={activePlanningInteraction}
+              onInteractionSubmit={handlePlanningInteractionSubmit}
+              onBeforeSend={beforePlanningSend}
+              onMessageSent={handlePlanningMessageSent}
+              useNativeConversation={taskCreationMode === "discussion"}
             />
             {(error || formError) && (
               <div className="border-t border-border/70 px-6 py-2">
@@ -412,41 +554,7 @@ export function TaskWorkbench({
                 {formError && <p className="text-sm text-destructive">{formError}</p>}
               </div>
             )}
-            <div className="flex items-center justify-between gap-3 border-t border-border/70 bg-card/60 px-6 py-3">
-              <p className="min-w-0 text-xs leading-5 text-muted-foreground">
-                {t("tasks.workbench.planningChat.barrier")}
-              </p>
-              <div className="flex shrink-0 justify-end gap-2">
-                <Button type="button" variant="outline" onClick={returnToList}>
-                  {t("common.cancel")}
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={
-                    !initialProjectPath ||
-                    formBusy ||
-                    !selectedSkillsReady ||
-                    !hasPlanningInput(planningMessages, planningDraft)
-                  }
-                >
-                  {formBusy
-                    ? t("tasks.workbench.preparingTask")
-                    : t("tasks.createAndPlan")}
-                </Button>
-              </div>
-            </div>
           </main>
-          <aside className="hidden w-[22rem] shrink-0 overflow-y-auto border-l border-border/70 bg-card/80 p-4 xl:block">
-            {skills.length > 0 && (
-              <PlanningSkillSelector
-                skills={skills}
-                selectedSkillIds={selectedSkillIds}
-                installingSkillIds={installingSkillIds}
-                onSelectionChange={setSelectedSkillIds}
-                onInstallSkill={installSkill}
-              />
-            )}
-          </aside>
         </form>
       </div>
     );
@@ -457,11 +565,13 @@ export function TaskWorkbench({
     (nodeRun) => nodeRun.status === "failed",
   ).length;
 
-  const graphContent = planning && planningProgress ? (
+  const graphContent = planningProgress ? (
     <PlanningProgressOverlay
       progress={planningProgress}
       text={planningText}
-      onCancel={() => dismissProposal()}
+      projectPath={graph?.project_root ?? initialProjectPath ?? null}
+      turnActive={planning}
+      onSubmitMessage={continuePlanning}
     />
   ) : loading && !graph ? (
     <div className="flex h-full items-center justify-center text-muted-foreground">
@@ -516,6 +626,7 @@ export function TaskWorkbench({
           />
         ) : null
       }
+      extraMessages={planningTranscriptMessages}
     />
   ) : null;
 
@@ -620,216 +731,212 @@ export function TaskWorkbench({
   );
 }
 
-interface PlanningChatComposerProps {
-  messages: PlanningChatMessage[];
-  draft: string;
+interface PlanningChatSurfaceProps {
+  messages: Message[];
+  projectPath: string | null;
   busy: boolean;
   className?: string;
-  onDraftChange: (value: string) => void;
-  onAddMessage: () => void;
+  startPrompt?: string;
+  contextFooter?: ReactNode;
+  streamSessionId?: string | null;
+  streamActive?: boolean;
+  scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
+  interactionRequest?: ConversationInteractionRequest | null;
+  onDraftChange?: (value: string) => void;
+  onInteractionSubmit?: (submission: ConversationInteractionSubmission) => void | Promise<void>;
+  onBeforeSend?: (message: string) => Promise<boolean | void> | boolean | void;
+  onMessageSent?: (sessionId: string, message: string) => void;
+  useNativeConversation?: boolean;
 }
 
-function PlanningChatComposer({
+function PlanningChatSurface({
   messages,
-  draft,
+  projectPath,
   busy,
   className,
+  startPrompt,
+  contextFooter,
+  streamSessionId,
+  streamActive = false,
+  scrollContainerRef,
+  interactionRequest,
   onDraftChange,
-  onAddMessage,
-}: PlanningChatComposerProps) {
+  onInteractionSubmit,
+  onBeforeSend,
+  onMessageSent,
+  useNativeConversation = false,
+}: PlanningChatSurfaceProps) {
   const { t } = useTranslation();
+  const empty = messages.length === 0 && !streamActive;
   return (
     <section className={cn("flex h-full flex-col overflow-hidden bg-background", className)}>
-      <div className="border-b border-border/70 px-6 py-3">
-        <h3 className="text-sm font-semibold">
-          {t("tasks.workbench.planningChat.title")}
-        </h3>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          {t("tasks.workbench.planningChat.description")}
-        </p>
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-        <div className="mx-auto max-w-4xl space-y-4">
-          <PlanningChatBubble
-            role="assistant"
-            content={t("tasks.workbench.planningChat.agentIntro")}
+      <div
+        ref={scrollContainerRef}
+        className={cn(
+          "min-h-0 flex-1 overflow-y-auto px-2 py-5",
+          empty && "hidden",
+        )}
+      >
+        <MessageView messages={messages} flat />
+        {streamSessionId && streamActive && (
+          <StreamingMessage
+            sessionId={streamSessionId}
+            scrollContainerRef={scrollContainerRef}
           />
-          {messages.map((message) => (
-            <PlanningChatBubble
-              key={message.id}
-              role={message.role}
-              content={message.content}
-            />
-          ))}
-        </div>
+        )}
       </div>
-      <div className="border-t border-border/70 bg-background px-6 py-3">
-        <div className="mx-auto flex max-w-4xl gap-2 rounded-xl border border-border/70 bg-card px-3 py-2 shadow-sm">
-          <textarea
-            value={draft}
-            onChange={(event) => onDraftChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                onAddMessage();
-              }
-            }}
-            disabled={busy}
+      <div
+        className={cn(
+          "bg-background/95",
+          empty
+            ? "flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-10"
+            : "border-t border-border/60",
+        )}
+      >
+        {empty && startPrompt && (
+          <h1 className="mb-14 w-full max-w-[var(--message-content-max-width)] text-center text-[2rem] font-medium leading-tight tracking-normal text-foreground">
+            {startPrompt}
+          </h1>
+        )}
+        <div
+          className={cn(
+            "w-full transition-transform duration-300 ease-out",
+            empty
+              ? "max-w-[var(--message-content-max-width)]"
+              : "max-w-none translate-y-0",
+          )}
+        >
+          <ChatInput
+            sessionId={useNativeConversation ? streamSessionId ?? null : null}
+            projectPath={projectPath ?? ""}
+            allowFiles={Boolean(projectPath)}
+            agentDisplayName="Jishu Agent"
+            disabled={busy || !projectPath}
             placeholder={t("tasks.workbench.planningChat.placeholder")}
-            rows={2}
-            className="min-h-12 flex-1 resize-y bg-transparent px-1 py-1 text-sm leading-6 outline-none placeholder:text-muted-foreground disabled:opacity-60"
+            onDraftChange={onDraftChange}
+            onBeforeSend={onBeforeSend}
+            onMessageSent={onMessageSent}
+            interactionRequest={interactionRequest}
+            onInteractionSubmit={onInteractionSubmit}
+            containerClassName={cn(
+              empty
+                ? "max-w-none px-0 pb-0 pt-0"
+                : "px-4 pb-4 pt-3",
+            )}
+            panelClassName={cn(
+              empty
+                ? "rounded-[22px] border-border/70 bg-card/98 shadow-[0_18px_48px_rgba(0,0,0,0.10)]"
+                : "rounded-2xl bg-card",
+            )}
+            contextFooter={contextFooter}
           />
-          <Button
-            type="button"
-            variant="secondary"
-            className="self-end"
-            disabled={busy || !draft.trim()}
-            onClick={onAddMessage}
-          >
-            <Send className="size-4" />
-            {t("tasks.workbench.planningChat.addMessage")}
-          </Button>
         </div>
       </div>
     </section>
   );
 }
 
-function PlanningChatBubble({
-  role,
-  content,
-}: {
-  role: PlanningChatMessage["role"];
-  content: string;
-}) {
-  const isUser = role === "user";
-  const Icon = isUser ? User : Bot;
-  return (
-    <div className={cn("flex gap-3", isUser && "justify-end")}>
-      {!isUser && (
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-          <Icon className="size-4" />
-        </div>
-      )}
-      <div
-        className={cn(
-          "max-w-[82%] rounded-lg border px-3 py-2 text-sm leading-6",
-          isUser
-            ? "border-primary/25 bg-primary text-primary-foreground"
-            : "border-border bg-muted/40 text-foreground",
-        )}
-      >
-        {content}
-      </div>
-      {isUser && (
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-          <Icon className="size-4" />
-        </div>
-      )}
-    </div>
-  );
+function getProjectDisplayName(projectPath?: string | null): string {
+  if (!projectPath) return "";
+  const normalized = projectPath.replace(/[\\/]+$/, "");
+  return normalized.split(/[\\/]/).pop() || projectPath;
 }
 
-interface PlanningSkillSelectorProps {
-  skills: TaskPlanSkill[];
-  selectedSkillIds: string[];
-  installingSkillIds: string[];
-  onSelectionChange: (ids: string[]) => void;
-  onInstallSkill: (skillId: string) => void;
+function shouldGenerateFromDiscussion(
+  message: string,
+  currentMessages: PlanningChatMessage[],
+): boolean {
+  const normalized = message.trim().toLowerCase();
+  if (!normalized) return false;
+  const hasPriorUserMessage = currentMessages.some((item) => item.role === "user");
+  if (!hasPriorUserMessage) return false;
+  return [
+    "生成任务流程图",
+    "生成流程图",
+    "开始生成",
+    "确认生成",
+    "同意生成",
+    "没问题",
+    "可以生成",
+    "generate workflow",
+    "generate task",
+    "create workflow",
+    "looks good",
+  ].some((phrase) => normalized.includes(phrase));
 }
 
-function PlanningSkillSelector({
-  skills,
-  selectedSkillIds,
-  installingSkillIds,
-  onSelectionChange,
-  onInstallSkill,
-}: PlanningSkillSelectorProps) {
-  const { t } = useTranslation();
-  return (
-    <fieldset className="space-y-2 rounded-xl border border-border bg-background p-4">
-      <legend className="px-1 text-sm font-medium">
-        {t("tasks.workbench.planningSkills")}
-      </legend>
-      <p className="text-xs leading-5 text-muted-foreground">
-        {t("tasks.workbench.planningSkillsHint")}
-      </p>
-      <div className="space-y-2">
-        {skills.map((skill) => {
-          const checked = selectedSkillIds.includes(skill.id);
-          return (
-            <div
-              key={skill.id}
-              className={cn(
-                "rounded-lg border p-3 text-sm transition",
-                checked
-                  ? "border-primary/60 bg-primary/5"
-                  : "border-border bg-card hover:border-foreground/20",
-              )}
-            >
-              <label className="flex items-start gap-2">
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={(changeEvent) => {
-                    onSelectionChange(
-                      changeEvent.target.checked
-                        ? [...selectedSkillIds, skill.id]
-                        : selectedSkillIds.filter((id) => id !== skill.id),
-                    );
-                  }}
-                  className="mt-1"
-                />
-                <span>
-                  <span className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium">{skill.name}</span>
-                    <span
-                      className={cn(
-                        "rounded-full px-2 py-0.5 text-[10px] font-medium",
-                        skill.installed && skill.valid
-                          ? "bg-emerald-500/10 text-emerald-600"
-                          : "bg-amber-500/10 text-amber-600",
-                      )}
-                    >
-                      {skill.installed && skill.valid
-                        ? t("tasks.installed")
-                        : skill.installed
-                          ? t("tasks.invalidSkill")
-                          : t("tasks.notInstalled")}
-                    </span>
-                  </span>
-                  <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                    {skill.description || skill.id}
-                  </span>
-                  {skill.error && (
-                    <span className="mt-1 block text-xs leading-5 text-destructive">
-                      {skill.error}
-                    </span>
-                  )}
-                </span>
-              </label>
-              {(!skill.installed || !skill.valid) && skill.installable && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="mt-3 w-full"
-                  disabled={installingSkillIds.includes(skill.id)}
-                  onClick={() => onInstallSkill(skill.id)}
-                >
-                  {installingSkillIds.includes(skill.id)
-                    ? t("tasks.installingSkill")
-                    : skill.installed
-                      ? t("tasks.repairSkill")
-                      : t("tasks.installSkill")}
-                </Button>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </fieldset>
-  );
+void shouldGenerateFromDiscussion;
+
+function interactionSplitToRequest(split: InteractionSplit): ConversationInteractionRequest {
+  return {
+    requestId: split.requestId,
+    prompt: split.prompt,
+    options: split.options.map((option) => ({
+      optionId: option.option_id,
+      label: option.label,
+      description: option.description ?? null,
+    })),
+    allowMultiple: false,
+    allowCustomText: true,
+    required: true,
+    origin: split.origin as ConversationInteractionRequest["origin"],
+  };
+}
+
+function isGenerateTaskConfirmation(
+  request: ConversationInteractionRequest,
+  submission: ConversationInteractionSubmission,
+): boolean {
+  const selectedTexts = submission.selectedOptionIds.map((optionId) => {
+    const option = request.options.find((item) => item.optionId === optionId);
+    return `${optionId} ${option?.label ?? ""} ${option?.description ?? ""}`;
+  });
+  const text = [request.prompt, ...selectedTexts, submission.customText]
+    .join("\n")
+    .toLowerCase();
+  return [
+    "生成任务",
+    "生成流程",
+    "流程图",
+    "generate workflow",
+    "generate task",
+    "create workflow",
+  ].some((phrase) => text.includes(phrase));
+}
+
+function messagesToPlanningMessages(messages: Message[]): PlanningChatMessage[] {
+  return messages
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) =>
+      createPlanningMessage(
+        message.content
+          .map((block) => {
+            if (block.type === "text") return block.text;
+            if (block.type === "thinking") return block.thinking;
+            if (block.type === "interaction") {
+              return [block.prompt, block.answer, ...(block.selected_options ?? [])]
+                .filter(Boolean)
+                .join("\n");
+            }
+            return "";
+          })
+          .filter(Boolean)
+          .join("\n")
+          .trim(),
+        message.role === "user" ? "user" : "assistant",
+      ),
+    )
+    .filter((message) => message.content.length > 0);
+}
+
+function planningMessagesToMessages(messages: PlanningChatMessage[]): Message[] {
+  return messages
+    .filter((message) => message.content.trim().length > 0)
+    .map((message) => ({
+      role: message.role,
+      content: [{ type: "text" as const, text: message.content }],
+      timestamp: null,
+    }));
 }
 
 interface ViewModeSwitcherProps {

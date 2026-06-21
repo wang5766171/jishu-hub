@@ -123,7 +123,7 @@
   "sessions": {
     "regularConversations": "Regular conversations",
     "taskConversations": "Task conversations",
-    "startNewChat": "New Chat",
+    "startNewChat": "New chat",
     "projects": "Projects",
     "selectProject": "Select a project",
     "switchProject": "Switch",
@@ -198,7 +198,12 @@
     "accessDefault": "Default access",
     "accessBypass": "Full access",
     "accessPlan": "Plan mode",
-    "newSession": "New session",
+    "workMode": {
+      "label": "Conversation work mode",
+      "chat": "Chat mode",
+      "task": "Task mode"
+    },
+    "newSession": "New chat",
     "refresh": "Refresh list",
     "refreshDisabledWhileStreaming": "Cannot refresh while the agent is streaming — wait for the turn to finish",
     "openTerminal": "Open terminal",
@@ -471,10 +476,17 @@
         "completion": "Task completed"
       }
     },
-    "startTask": "Start task",
+    "startTask": "New task",
     "description": "Turn goals into reviewable, runnable, and traceable task graphs.",
-    "createDescription": "Describe the goal and choose planning methods. The task is created first, then AI proposes a detailed workflow graph for review.",
-    "createAndPlan": "Create and plan",
+    "createDescription": "Clarify the goal through a normal conversation, or enter one clear request and generate a reviewable task workflow directly.",
+    "createPrompt": "What task should we plan in {{project}}?",
+    "createAndPlan": "Generate workflow",
+    "planningSkill": "Planning skill",
+    "creationMode": {
+      "label": "Task generation mode",
+      "discussion": "Discuss requirements",
+      "direct": "Generate directly"
+    },
     "taskList": "Project tasks",
     "taskListDescription": "Open any task in this project or start a new task graph.",
     "newTask": "New task",

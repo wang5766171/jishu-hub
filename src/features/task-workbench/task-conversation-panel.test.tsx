@@ -115,4 +115,59 @@ describe("task conversation panel", () => {
     });
     unmount();
   });
+
+  it("sends task messages through the shared chat input adapter", async () => {
+    const detailWithoutInteraction = {
+      ...detail,
+      pending_interactions: [],
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "orchestrator_get_task_conversation") {
+        return Promise.resolve(detailWithoutInteraction);
+      }
+      if (command === "orchestrator_submit_task_message") {
+        return Promise.resolve({
+          ...detailWithoutInteraction,
+          entries: [
+            ...detailWithoutInteraction.entries,
+            {
+              entry_id: "entry-user",
+              sequence: 2,
+              occurred_at: 2,
+              phase: "executing",
+              node_id: "node-1",
+              actor: "user",
+              kind: "user_message",
+              payload: { text: "请优先补充权限边界说明" },
+            },
+          ],
+        });
+      }
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+
+    const { unmount } = render(
+      <TaskConversationPanel
+        graphId="graph-1"
+        selectedNodeId="node-1"
+        onClose={vi.fn()}
+      />,
+    );
+
+    const input = await screen.findByPlaceholderText(i18n.t("sessions.chatPlaceholder"));
+    fireEvent.change(input, {
+      target: { value: "请优先补充权限边界说明" },
+    });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("orchestrator_submit_task_message", {
+        graphId: "graph-1",
+        nodeId: "node-1",
+        message: "请优先补充权限边界说明",
+      });
+      expect(screen.getByText("请优先补充权限边界说明")).toBeInTheDocument();
+    });
+    unmount();
+  });
 });

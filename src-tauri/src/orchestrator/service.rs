@@ -481,6 +481,76 @@ impl TaskService {
         Ok(resolved)
     }
 
+    pub fn submit_task_message(
+        &self,
+        graph_id: &str,
+        node_id: Option<&str>,
+        message: &str,
+    ) -> Result<TaskConversationDetail, TaskServiceError> {
+        let text = message.trim();
+        if text.is_empty() {
+            return Err(TaskServiceError::InvalidInput(
+                "task message cannot be empty".into(),
+            ));
+        }
+
+        let run = self
+            .store
+            .list_runs(graph_id)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| TaskServiceError::InvalidInput("task has no run".into()))?;
+        let node_runs = self.store.get_node_runs(&run.run_id)?;
+        let selected_node_run = node_id
+            .and_then(|selected| {
+                node_runs
+                    .iter()
+                    .filter(|node_run| node_run.node_id == selected)
+                    .max_by_key(|node_run| node_run.started_at.unwrap_or_default())
+            })
+            .or_else(|| {
+                node_runs
+                    .iter()
+                    .find(|node_run| node_run.status.is_active())
+            })
+            .or_else(|| {
+                node_runs
+                    .iter()
+                    .max_by_key(|node_run| node_run.started_at.unwrap_or_default())
+            });
+
+        let latest_attempt = selected_node_run
+            .and_then(|node_run| self.store.latest_attempt(&node_run.node_run_id).ok())
+            .flatten();
+        let mut payload = serde_json::json!({
+            "message": text,
+            "public": true,
+        });
+        if let Some(selected) = node_id {
+            payload["node_id"] = serde_json::Value::String(selected.to_string());
+        } else if let Some(node_run) = selected_node_run {
+            payload["node_id"] = serde_json::Value::String(node_run.node_id.clone());
+        }
+        if let Some(node_run) = selected_node_run {
+            payload["node_run_id"] = serde_json::Value::String(node_run.node_run_id.clone());
+        }
+        if let Some(attempt) = latest_attempt {
+            payload["attempt_id"] = serde_json::Value::String(attempt.attempt_id);
+        }
+
+        let event = build_event(
+            gen_id("event"),
+            run.run_id,
+            run.run_seq + 1,
+            TaskEventType::AttemptProgressed,
+            "user",
+            now_ms(),
+            payload,
+        );
+        self.store.append_events(&[event])?;
+        self.get_task_conversation(graph_id, 0)
+    }
+
     /// Get a revision by id, optionally deserializing the snapshot.
     pub fn get_revision(&self, revision_id: &str) -> Result<GraphRevision, TaskServiceError> {
         let store = &self.store;
@@ -1692,6 +1762,66 @@ mod tests {
         assert_eq!(detail.summary.graph_id, graph.graph_id);
         assert!(!serialized.contains("write_files"));
         assert!(!serialized.contains("INTERNAL"));
+    }
+
+    #[test]
+    fn submit_task_message_appends_public_user_conversation_entry() {
+        let svc = TaskService::open_in_memory().unwrap();
+        let (graph, initial_revision) = svc
+            .create_graph(&CreateGraphInput {
+                title: "Permission system".into(),
+                goal: "Design organization-aware permissions".into(),
+                project_root: "/project-a".into(),
+                owner: "user".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let revision = svc
+            .apply_commands(
+                &graph.graph_id,
+                &initial_revision.revision_id,
+                &[GraphCommand::AddNode {
+                    command_id: "add-api".into(),
+                    node: shell_node("api", "Backend API"),
+                }],
+                "user",
+            )
+            .unwrap()
+            .revision;
+        let run = svc
+            .start_run(&graph.graph_id, &revision.revision_id)
+            .unwrap();
+        let mut node_run = NodeRun::new("nr-api", &run.run_id, "api", &revision.revision_id);
+        node_run.status = NodeRunStatus::Running;
+        node_run.started_at = Some(now_ms());
+        svc.store.save_node_run(&node_run).unwrap();
+
+        let detail = svc
+            .submit_task_message(
+                &graph.graph_id,
+                Some("api"),
+                "Please prioritize the permission boundary.",
+            )
+            .unwrap();
+
+        let user_entry = detail
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.kind
+                    == crate::orchestrator::conversation::TaskConversationEntryKind::UserMessage
+                    && entry.actor == "user"
+                    && entry.node_id.as_deref() == Some("api")
+            })
+            .expect("task message should become a public user entry");
+        assert_eq!(
+            user_entry
+                .payload
+                .get("text")
+                .and_then(serde_json::Value::as_str),
+            Some("Please prioritize the permission boundary.")
+        );
+        assert_eq!(svc.get_run(&run.run_id).unwrap().run_seq, 2);
     }
 
     #[test]

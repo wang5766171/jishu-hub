@@ -389,8 +389,13 @@ pub fn project_public_entries(graph_id: &str, events: &[TaskEvent]) -> Vec<TaskC
                         .and_then(serde_json::Value::as_str)
                         .is_some_and(|message| !message.trim().is_empty()) =>
             {
+                let kind = if event.actor == "user" {
+                    TaskConversationEntryKind::UserMessage
+                } else {
+                    TaskConversationEntryKind::AssistantMessage
+                };
                 Some((
-                    TaskConversationEntryKind::AssistantMessage,
+                    kind,
                     string_field(&event.payload, "node_id"),
                     string_field(&event.payload, "node_run_id"),
                     serde_json::json!({

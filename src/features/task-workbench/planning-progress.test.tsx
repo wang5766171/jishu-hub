@@ -1,14 +1,25 @@
 import i18n from "@/i18n";
-import { render, screen } from "@testing-library/react";
-import { beforeAll, describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlanningProgressOverlay } from "./planning-progress";
+
+const invokeMock = vi.fn();
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (...args: unknown[]) => invokeMock(...args),
+}));
 
 describe("planning progress overlay", () => {
   beforeAll(async () => {
     await i18n.changeLanguage("zh");
   });
 
-  it("displays the current planning stage and steer input", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(null);
+  });
+
+  it("displays the current planning stage and shared steer input", () => {
     render(
       <PlanningProgressOverlay
         progress={{
@@ -20,15 +31,15 @@ describe("planning progress overlay", () => {
       />,
     );
 
-    // Stage label is visible.
-    expect(screen.getByText("校验任务图")).toBeDefined();
-    // Staging input exists.
     expect(
-      screen.getByPlaceholderText("输入内容暂存，点击引导发送…"),
+      screen.getByText(i18n.t("tasks.workbench.planningProgress.stages.validating")),
+    ).toBeDefined();
+    expect(
+      screen.getByPlaceholderText(i18n.t("tasks.workbench.planningProgress.steerPlaceholder")),
     ).toBeDefined();
   });
 
-  it("renders agent text output with markdown", () => {
+  it("renders agent text output through the shared message view", () => {
     render(
       <PlanningProgressOverlay
         progress={{
@@ -44,7 +55,7 @@ describe("planning progress overlay", () => {
     expect(screen.getByText("正在分析项目结构...")).toBeDefined();
   });
 
-  it("shows stop button when input is empty", () => {
+  it("stops the current planner turn through the shared chat input", async () => {
     render(
       <PlanningProgressOverlay
         progress={{
@@ -53,9 +64,13 @@ describe("planning progress overlay", () => {
           attempt: 1,
           max_attempts: 2,
         }}
+        turnActive
       />,
     );
 
-    expect(screen.getByText("停止")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("sessions.stop") }));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("orchestrator_stop_planner_turn");
+    });
   });
 });

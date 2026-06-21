@@ -99,10 +99,10 @@ describe("task workbench phase 4A planning chat", () => {
     graphHarness.clearGraph.mockReset();
   });
 
-  it("collects multiple user turns before creating the task graph", async () => {
+  it("replies during requirement discussion and creates after confirmation", async () => {
     graphHarness.createGraph.mockResolvedValue({
       graph_id: "graph_1",
-      title: "本地录音任务",
+      title: "local inspiration task",
       goal: "goal",
       project_root: "D:\\project",
       owner: "local_user",
@@ -113,52 +113,76 @@ describe("task workbench phase 4A planning chat", () => {
 
     render(<TaskWorkbench initialProjectPath={"D:\\project"} />);
 
-    const newTaskButtons = await screen.findAllByRole("button", {
-      name: i18n.t("tasks.newTask"),
-    });
-    fireEvent.click(newTaskButtons[0]);
-
-    const createButton = await screen.findByRole("button", {
-      name: i18n.t("tasks.createAndPlan"),
-    });
-    expect(createButton).toBeDisabled();
-
-    const input = screen.getByPlaceholderText(
+    const input = await screen.findByPlaceholderText(
       i18n.t("tasks.workbench.planningChat.placeholder"),
     );
     fireEvent.change(input, {
-      target: { value: "我要做一个本地灵感记录软件" },
+      target: { value: "Build a local inspiration capture app" },
     });
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: i18n.t("tasks.workbench.planningChat.addMessage"),
-      }),
-    );
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/Build a local inspiration capture app/).length).toBeGreaterThan(0);
+    });
+    await screen.findByText(/生成任务流程图/);
+    expect(graphHarness.createGraph).not.toHaveBeenCalled();
 
     fireEvent.change(input, {
-      target: { value: "补充：流程里必须有人为验收节点" },
+      target: { value: "Add a required human acceptance node" },
     });
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: i18n.t("tasks.workbench.planningChat.addMessage"),
-      }),
-    );
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
-    fireEvent.change(screen.getByLabelText(i18n.t("tasks.taskTitle")), {
-      target: { value: "本地灵感记录任务" },
+    await waitFor(() => {
+      expect(screen.getAllByText(/Add a required human acceptance node/).length).toBeGreaterThan(0);
     });
-    fireEvent.click(createButton);
+
+    fireEvent.change(input, {
+      target: { value: "生成任务流程图" },
+    });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
     await waitFor(() => {
       expect(graphHarness.createGraph).toHaveBeenCalledWith(
-        "本地灵感记录任务",
-        expect.stringContaining("用户: 我要做一个本地灵感记录软件"),
+        "Build a local inspiration capture app",
+        expect.stringContaining("Add a required human acceptance node"),
         "D:\\project",
         [{ skill_id: "jishu-task-planner", version_or_hash: "sha256:planner", inputs: {} }],
       );
     });
-    expect(graphHarness.createGraph.mock.calls[0][1]).toContain(
-      "用户: 补充：流程里必须有人为验收节点",
+  });
+
+  it("can generate directly from the selected creation mode", async () => {
+    graphHarness.createGraph.mockResolvedValue({
+      graph_id: "graph_direct",
+      title: "one sentence task",
+      goal: "goal",
+      project_root: "D:\\project",
+      owner: "local_user",
+      current_draft_revision: "rev_direct",
+      created_at: 1,
+      updated_at: 1,
+    });
+
+    render(<TaskWorkbench initialProjectPath={"D:\\project"} />);
+
+    fireEvent.change(await screen.findByLabelText(i18n.t("tasks.creationMode.label")), {
+      target: { value: "direct" },
+    });
+    const input = screen.getByPlaceholderText(
+      i18n.t("tasks.workbench.planningChat.placeholder"),
     );
+    fireEvent.change(input, {
+      target: { value: "Directly generate a workflow for a local notes app" },
+    });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    await waitFor(() => {
+      expect(graphHarness.createGraph).toHaveBeenCalledWith(
+        "Directly generate a workflow for a local notes app",
+        expect.stringContaining("Directly generate a workflow for a local notes app"),
+        "D:\\project",
+        [{ skill_id: "jishu-task-planner", version_or_hash: "sha256:planner", inputs: {} }],
+      );
+    });
   });
 });

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { TFunction } from "i18next";
 import {
   Bot,
   CircleDot,
@@ -10,13 +11,15 @@ import {
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { InteractionComposer } from "@/components/sessions/interaction-composer";
-import { MarkdownText } from "@/components/sessions/conversation-content";
+import { ChatInput } from "@/components/sessions/chat-input";
+import { MessageView } from "@/components/sessions/message-view";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type {
+  ContentBlock,
   ConversationInteractionRequest,
   ConversationInteractionSubmission,
+  Message,
 } from "@/types";
 
 interface TaskConversationSummary {
@@ -31,6 +34,8 @@ interface TaskConversationSummary {
   current_node_title: string | null;
   completed_nodes: number;
   total_nodes: number;
+  active_revision_id?: string | null;
+  run_status?: string | null;
   pending_interaction_count: number;
   updated_at: number;
 }
@@ -72,6 +77,7 @@ interface TaskConversationPanelProps {
   onClose: () => void;
   className?: string;
   leadingContent?: ReactNode;
+  extraMessages?: Message[];
 }
 
 function interactionForComposer(
@@ -101,12 +107,65 @@ function entryText(entry: TaskConversationEntry): string {
   return "";
 }
 
+function isContentBlock(value: unknown): value is ContentBlock {
+  if (!value || typeof value !== "object") return false;
+  const type = (value as { type?: unknown }).type;
+  return (
+    type === "text" ||
+    type === "tool_use" ||
+    type === "tool_result" ||
+    type === "thinking" ||
+    type === "interaction"
+  );
+}
+
+function contentBlocksFromEntry(entry: TaskConversationEntry, kindLabel: string): ContentBlock[] {
+  const rawBlocks = entry.payload.content_blocks ?? entry.payload.content;
+  if (Array.isArray(rawBlocks)) {
+    const blocks = rawBlocks.filter(isContentBlock);
+    if (blocks.length > 0) return blocks;
+  }
+
+  const text = entryText(entry);
+  if (text) return [{ type: "text", text }];
+
+  const publicPayload = Object.keys(entry.payload).length
+    ? `\n\n\`\`\`json\n${JSON.stringify(entry.payload, null, 2)}\n\`\`\``
+    : "";
+  return [{ type: "text", text: `**${kindLabel}**${publicPayload}` }];
+}
+
+function taskEntriesToMessages(
+  entries: TaskConversationEntry[],
+  selectedNodeId: string | null | undefined,
+  t: TFunction,
+): Message[] {
+  const visibleEntries = selectedNodeId
+    ? entries.filter(
+        (entry) => entry.node_id === selectedNodeId || entry.node_id === null,
+      )
+    : entries;
+
+  return visibleEntries.map((entry) => {
+    const kindLabel = t(`tasks.conversation.entries.${entry.kind}`);
+    const role = entry.kind === "user_message" || entry.actor === "user"
+      ? "user"
+      : "assistant";
+    return {
+      role,
+      content: contentBlocksFromEntry(entry, kindLabel),
+      timestamp: entry.occurred_at,
+    };
+  });
+}
+
 export function TaskConversationPanel({
   graphId,
   selectedNodeId,
   onClose,
   className,
   leadingContent,
+  extraMessages = [],
 }: TaskConversationPanelProps) {
   const { t } = useTranslation();
   const [detail, setDetail] = useState<TaskConversationDetail | null>(null);
@@ -143,6 +202,14 @@ export function TaskConversationPanel({
     );
   }, [detail?.entries, selectedNodeId]);
 
+  const messages = useMemo(
+    () => [
+      ...extraMessages,
+      ...taskEntriesToMessages(detail?.entries ?? [], selectedNodeId, t),
+    ],
+    [detail?.entries, extraMessages, selectedNodeId, t],
+  );
+
   const activeInteraction = useMemo(() => {
     const pending = detail?.pending_interactions ?? [];
     return (
@@ -165,6 +232,21 @@ export function TaskConversationPanel({
       await refresh();
     },
     [refresh],
+  );
+
+  const submitTaskMessage = useCallback(
+    async (message: string) => {
+      const next = await invoke<TaskConversationDetail>(
+        "orchestrator_submit_task_message",
+        {
+          graphId,
+          nodeId: selectedNodeId ?? null,
+          message,
+        },
+      );
+      setDetail(next);
+    },
+    [graphId, selectedNodeId],
   );
 
   const summary = detail?.summary;
@@ -241,47 +323,49 @@ export function TaskConversationPanel({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {leadingContent}
         {loading && !detail ? (
-          <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
+          <p className="px-4 py-4 text-sm text-muted-foreground">
+            {t("common.loading")}
+          </p>
         ) : error ? (
-          <p className="text-sm text-destructive">{error}</p>
-        ) : visibleEntries.length === 0 ? (
-          <p className="text-sm leading-6 text-muted-foreground">
+          <p className="px-4 py-4 text-sm text-destructive">{error}</p>
+        ) : visibleEntries.length === 0 && extraMessages.length === 0 ? (
+          <p className="px-4 py-4 text-sm leading-6 text-muted-foreground">
             {t("tasks.conversation.noVisibleEvents")}
           </p>
         ) : (
-          visibleEntries.map((entry) => {
-            const text = entryText(entry);
-            return (
-              <article
-                key={entry.entry_id}
-                className="rounded-xl border border-border/70 bg-background px-3 py-2.5"
-              >
-                <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-                  <span>{t(`tasks.conversation.entries.${entry.kind}`)}</span>
-                  <span>{entry.actor === "user" ? t("sessions.user") : "Jishu Agent"}</span>
-                </div>
-                {text && (
-                  <div className="mt-1.5 text-xs leading-5 text-foreground">
-                    <MarkdownText text={text} />
-                  </div>
-                )}
-              </article>
-            );
-          })
+          <MessageView messages={messages} flat />
         )}
       </div>
 
-      {activeInteraction && (
-        <div className="border-t border-border/70 p-3">
-          <InteractionComposer
-            request={interactionForComposer(activeInteraction)}
-            onSubmit={submitInteraction}
-          />
-        </div>
-      )}
+      <div className="border-t border-border/70 bg-background/95">
+        <ChatInput
+          sessionId={`task-${graphId}-${selectedNodeId ?? "global"}`}
+          projectPath={summary?.project_root ?? null}
+          allowFiles={false}
+          agentDisplayName="Jishu Agent"
+          disabled={!summary || Boolean(error)}
+          isSessionStreaming={summary?.run_status === "running"}
+          interactionRequest={
+            activeInteraction ? interactionForComposer(activeInteraction) : null
+          }
+          onInteractionSubmit={submitInteraction}
+          onSubmitMessage={submitTaskMessage}
+          onGuideStaged={submitTaskMessage}
+          onAbort={refresh}
+          containerClassName="px-4 py-3"
+          panelClassName="rounded-xl shadow-none"
+          contextFooter={
+            <div className="px-4 pb-2 text-[11px] text-muted-foreground">
+              {selectedNodeId
+                ? t("tasks.conversation.nodeContext")
+                : t("tasks.conversation.taskContext")}
+            </div>
+          }
+        />
+      </div>
     </aside>
   );
 }

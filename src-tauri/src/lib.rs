@@ -21,6 +21,7 @@ mod project;
 mod project_config;
 mod session;
 mod task_plan;
+mod task_launch;
 mod util;
 
 #[cfg(feature = "cli")]
@@ -2078,6 +2079,27 @@ fn orchestrator_submit_task_interaction(
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
+fn orchestrator_submit_task_message(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    graph_id: String,
+    node_id: Option<String>,
+    message: String,
+) -> Result<
+    crate::orchestrator::conversation::TaskConversationDetail,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .submit_task_message(&graph_id, node_id.as_deref(), &message)
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
 fn orchestrator_get_revision(
     state: tauri::State<'_, std::sync::Mutex<AppState>>,
     revision_id: String,
@@ -2206,6 +2228,37 @@ fn orchestrator_steer_planner(
         .steer(message)
         .map_err(|message| crate::orchestrator::domain::run::TaskError {
             code: "TASK_STEER_ERROR".into(),
+            category: crate::orchestrator::domain::run::TaskErrorCategory::Adapter,
+            message_key: message,
+            field_path: None,
+            retryable: false,
+            retry_after_ms: None,
+            current_revision: None,
+            current_run_seq: None,
+            remediation: None,
+            provider_detail: None,
+        })
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_stop_planner_turn(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+) -> Result<(), crate::orchestrator::domain::run::TaskError> {
+    let planner = {
+        let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+        let task_service = app_state
+            .task_service
+            .lock()
+            .map_err(|e| task_ipc_internal(e.to_string()))?;
+        task_service
+            .planner_service()
+            .map_err(Into::<crate::orchestrator::domain::run::TaskError>::into)?
+    };
+    planner
+        .stop_current_turn()
+        .map_err(|message| crate::orchestrator::domain::run::TaskError {
+            code: "TASK_PLANNER_STOP_ERROR".into(),
             category: crate::orchestrator::domain::run::TaskErrorCategory::Adapter,
             message_key: message,
             field_path: None,
@@ -2584,6 +2637,72 @@ fn task_plan_skill_install(skill_id: String) -> Result<task_plan::TaskPlanSkill,
     task_plan::install_builtin_skill(&skill_id)
 }
 
+#[tauri::command]
+fn task_launch_list_sessions(project_root: String) -> Result<Vec<task_launch::TaskLaunchInstance>, String> {
+    task_launch::list_task_instances(&project_root)
+}
+
+#[tauri::command]
+fn task_launch_mark_session(
+    project_root: String,
+    task_id: Option<String>,
+    session_id: String,
+    skill_id: String,
+    phase: Option<String>,
+    title: Option<String>,
+) -> Result<task_launch::TaskLaunchInstance, String> {
+    task_launch::mark_task_stage_session(
+        &project_root,
+        task_id.as_deref(),
+        &session_id,
+        &skill_id,
+        phase.as_deref().unwrap_or("requirements"),
+        title.as_deref(),
+    )
+}
+
+#[tauri::command]
+fn task_requirement_finalize(
+    project_root: String,
+    task_id: Option<String>,
+    session_id: Option<String>,
+    skill_id: String,
+    title: Option<String>,
+    messages: Vec<task_launch::TaskRequirementMessage>,
+) -> Result<task_launch::TaskRequirementFinalized, String> {
+    task_launch::finalize_requirement(
+        &project_root,
+        task_id.as_deref(),
+        session_id.as_deref(),
+        &skill_id,
+        title.as_deref(),
+        messages,
+    )
+}
+
+#[tauri::command]
+fn task_launch_attach_graph(
+    project_root: String,
+    task_id: String,
+    graph_id: String,
+) -> Result<task_launch::TaskLaunchInstance, String> {
+    task_launch::attach_graph(&project_root, &task_id, &graph_id)
+}
+
+#[tauri::command]
+fn task_launch_rename_task(
+    project_root: String,
+    task_id: String,
+    title: String,
+) -> Result<task_launch::TaskLaunchInstance, String> {
+    task_launch::rename_task(&project_root, &task_id, &title)
+}
+
+#[tauri::command]
+fn task_launch_delete_task(project_root: String, task_id: String) -> Result<(), String> {
+    task_launch::delete_task(&project_root, &task_id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2724,6 +2843,8 @@ pub fn run() {
             #[cfg(feature = "orchestrator")]
             orchestrator_submit_task_interaction,
             #[cfg(feature = "orchestrator")]
+            orchestrator_submit_task_message,
+            #[cfg(feature = "orchestrator")]
             orchestrator_get_revision,
             #[cfg(feature = "orchestrator")]
             orchestrator_apply_commands,
@@ -2733,6 +2854,8 @@ pub fn run() {
             orchestrator_generate_proposal,
             #[cfg(feature = "orchestrator")]
             orchestrator_steer_planner,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_stop_planner_turn,
             #[cfg(feature = "orchestrator")]
             orchestrator_start_run,
             #[cfg(feature = "orchestrator")]
@@ -2775,6 +2898,12 @@ pub fn run() {
             orchestrator_attach_repair,
             task_plan_skill_list,
             task_plan_skill_install,
+            task_launch_list_sessions,
+            task_launch_mark_session,
+            task_requirement_finalize,
+            task_launch_attach_graph,
+            task_launch_rename_task,
+            task_launch_delete_task,
             list_models,
             add_model,
             update_model,
