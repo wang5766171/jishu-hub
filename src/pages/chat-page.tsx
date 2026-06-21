@@ -38,8 +38,16 @@ import {
   interactionRequestFromEvent,
 } from "@/lib/conversation-interaction";
 import { AgentLogo, useAgent } from "@/agents";
+import {
+  buildPlanningInstruction,
+  createPlanningMessage,
+  derivePlanningTitle,
+  type PlanningChatMessage,
+} from "@/features/task-workbench/planning-session";
+import type { GraphRevision, TaskGraph } from "@/features/task-workbench/use-task-graph";
 import type {
   AgentEventPayload,
+  ChatSession,
   ContentBlock,
   ConversationInteractionRequest,
   ConversationInteractionSubmission,
@@ -165,6 +173,47 @@ interface TaskConversationSummary {
   updated_at: number;
 }
 
+interface TaskPlanSkill {
+  id: string;
+  name: string;
+  description: string;
+  installed: boolean;
+  valid: boolean;
+  installable: boolean;
+  content_hash: string;
+}
+
+type TaskCreationMode = "discussion" | "direct";
+type TaskLaunchPhase = "requirements" | "planning";
+
+interface TaskLaunchInstanceSummary {
+  task_id: string;
+  project_root: string;
+  title: string;
+  skill_id: string;
+  status: string;
+  current_phase: string;
+  requirement_file?: string | null;
+  requirement_session_id?: string | null;
+  planning_session_id?: string | null;
+  graph_id?: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface TaskRequirementMessagePayload {
+  role: "user" | "assistant";
+  content: string;
+}
+
+interface TaskRequirementFinalized {
+  task_id: string;
+  title: string;
+  requirement_dir: string;
+  requirement_file: string;
+  planning_instruction: string;
+}
+
 export function ChatPage({
   currentProject,
   currentProjectMeta,
@@ -185,7 +234,7 @@ export function ChatPage({
   navigateToSession?: string | null;
 }) {
   const { t } = useTranslation();
-  const { activeId, active, capabilities } = useAgent();
+  const { agents, activeId, active, capabilities, setActive } = useAgent();
   const projectId = currentProject?.encoded_name ?? null;
   const projectPathForSettings = currentProject?.path ?? null;
   const supportsModelPicker = active?.config_surface.kind === "model_store"
@@ -226,6 +275,15 @@ export function ChatPage({
   const [optimisticSessions, setOptimisticSessions] = useState<Session[]>([]);
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
   const [selectedTaskGraphId, setSelectedTaskGraphId] = useState<string | null>(null);
+  const [taskLaunchOpen, setTaskLaunchOpen] = useState(false);
+  const [taskLaunchPhase, setTaskLaunchPhase] = useState<TaskLaunchPhase>("requirements");
+  const [activeTaskInstanceId, setActiveTaskInstanceId] = useState<string | null>(null);
+  const [activeTaskRequirementFile, setActiveTaskRequirementFile] = useState<string | null>(null);
+  const [taskCreationMode, setTaskCreationMode] = useState<TaskCreationMode>("discussion");
+  const [pendingTaskPlanInstruction, setPendingTaskPlanInstruction] = useState<string | null>(null);
+  const [taskPlanSkills, setTaskPlanSkills] = useState<TaskPlanSkill[]>([]);
+  const [selectedTaskSkillId, setSelectedTaskSkillId] = useState("jishu-task-planner");
+  const [taskLaunchSessions, setTaskLaunchSessions] = useState<TaskLaunchInstanceSummary[]>([]);
   const [regularSessionsOpen, setRegularSessionsOpen] = useState(true);
   const [taskSessionsOpen, setTaskSessionsOpen] = useState(true);
   const [pendingApprovals, setPendingApprovals] = useState<PendingChatApproval[]>([]);
@@ -236,6 +294,8 @@ export function ChatPage({
   // this surface; the page does not inspect the agent id.
   const [modelOptions, setModelOptions] = useState<{ provider: string; model: string }[]>([]);
   const [activeModel, setActiveModel] = useState<{ provider: string; model: string } | null>(null);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const modelMenuRef = useRef<HTMLSpanElement>(null);
   const refreshModelPicker = useCallback(async () => {
     if (!supportsModelPicker) {
       setModelOptions([]);
@@ -267,8 +327,22 @@ export function ChatPage({
     void refreshModelPicker();
   }, [refreshModelPicker]);
 
+  useEffect(() => {
+    const handlePointerDown = (event: MouseEvent) => {
+      if (modelMenuRef.current?.contains(event.target as Node)) return;
+      setModelMenuOpen(false);
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, []);
+
   const messageAreaRef = useRef<HTMLDivElement>(null);
   const activeIdRef = useRef<string | null>(activeId);
+  const taskLaunchOpenRef = useRef(taskLaunchOpen);
+  const taskLaunchPhaseRef = useRef<TaskLaunchPhase>(taskLaunchPhase);
+  const activeTaskInstanceIdRef = useRef<string | null>(activeTaskInstanceId);
+  const activeTaskRequirementFileRef = useRef<string | null>(activeTaskRequirementFile);
+  const selectedTaskSkillIdRef = useRef(selectedTaskSkillId);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
   // Fresh project path for the agent-event listener (whose useEffect deps are
   // [], so it closes over a stale `currentProject`). Updated every render.
@@ -341,6 +415,26 @@ export function ChatPage({
     activeIdRef.current = activeId;
   }, [activeId]);
 
+  useEffect(() => {
+    taskLaunchOpenRef.current = taskLaunchOpen;
+  }, [taskLaunchOpen]);
+
+  useEffect(() => {
+    taskLaunchPhaseRef.current = taskLaunchPhase;
+  }, [taskLaunchPhase]);
+
+  useEffect(() => {
+    activeTaskInstanceIdRef.current = activeTaskInstanceId;
+  }, [activeTaskInstanceId]);
+
+  useEffect(() => {
+    activeTaskRequirementFileRef.current = activeTaskRequirementFile;
+  }, [activeTaskRequirementFile]);
+
+  useEffect(() => {
+    selectedTaskSkillIdRef.current = selectedTaskSkillId;
+  }, [selectedTaskSkillId]);
+
   // Single hook for current project's sessions
   const [listRefreshKey, setListRefreshKey] = useState(0);
   const { data: sessions, loading: sessionsLoading, setData: setSessions, refetch: refetchSessions } = useInvoke<Session[]>(
@@ -360,13 +454,51 @@ export function ChatPage({
     projectPathForSettings ?? "",
   );
 
+  const refreshTaskPlanSkills = useCallback(async () => {
+    try {
+      const items = await invokeCommand<TaskPlanSkill[]>("task_plan_skill_list");
+      setTaskPlanSkills(items);
+      if (!items.some((item) => item.id === selectedTaskSkillIdRef.current)) {
+        const fallback = items.find((item) => item.id === "jishu-task-planner") ?? items[0];
+        if (fallback) setSelectedTaskSkillId(fallback.id);
+      }
+    } catch (error) {
+      console.warn("Failed to load task plan skills:", error);
+    }
+  }, []);
+
+  const refreshTaskLaunchSessions = useCallback(async () => {
+    if (!projectPathForSettings) {
+      setTaskLaunchSessions([]);
+      return;
+    }
+    try {
+      const items = await invokeCommand<TaskLaunchInstanceSummary[]>(
+        "task_launch_list_sessions",
+        { projectRoot: projectPathForSettings },
+      );
+      setTaskLaunchSessions(items);
+    } catch (error) {
+      console.warn("Failed to load task launch sessions:", error);
+    }
+  }, [projectPathForSettings]);
+
+  useEffect(() => {
+    refreshTaskPlanSkills().catch(console.error);
+  }, [refreshTaskPlanSkills]);
+
+  useEffect(() => {
+    refreshTaskLaunchSessions().catch(console.error);
+  }, [refreshTaskLaunchSessions]);
+
   useEffect(() => {
     if (!projectPathForSettings) return;
     const timer = window.setInterval(() => {
       refetchTaskConversations(true).catch(console.error);
+      refreshTaskLaunchSessions().catch(console.error);
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [projectPathForSettings, refetchTaskConversations]);
+  }, [projectPathForSettings, refetchTaskConversations, refreshTaskLaunchSessions]);
 
   useEffect(() => {
     refetchSessionsRef.current = refetchSessions;
@@ -389,18 +521,50 @@ export function ChatPage({
     if (!sessions || !deferredSearchQuery.trim()) return [];
     return searchSessions(sessions, deferredSearchQuery);
   }, [sessions, deferredSearchQuery]);
+  const taskLaunchSessionIds = useMemo(
+    () => new Set(
+      taskLaunchSessions.flatMap((item) => [
+        item.requirement_session_id,
+        item.planning_session_id,
+      ]).filter((value): value is string => Boolean(value)),
+    ),
+    [taskLaunchSessions],
+  );
+  const regularSessions = useMemo(
+    () => (sessions ?? []).filter((session) => !taskLaunchSessionIds.has(session.id)),
+    [sessions, taskLaunchSessionIds],
+  );
 
   // Build display session list with optimistic sessions prepended
-  let displaySessions = sessions ?? [];
+  let displaySessions = regularSessions;
   if (deferredSearchQuery.trim() && sessions) {
-    displaySessions = uniqueSessionsById(searchResults.map((r: SessionSearchResult) => sessions.find(s => s.id === r.sessionId)!).filter(Boolean) as Session[]);
+    displaySessions = uniqueSessionsById(
+      searchResults
+        .map((r: SessionSearchResult) => sessions.find(s => s.id === r.sessionId))
+        .filter((session): session is Session => {
+          if (!session) return false;
+          return !taskLaunchSessionIds.has(session.id);
+        }),
+    );
   } else if (!deferredSearchQuery.trim()) {
     displaySessions = uniqueSessionsById([...optimisticSessions, ...displaySessions]);
   }
+  const taskInstanceGraphIds = useMemo(
+    () => new Set(taskLaunchSessions.map((item) => item.graph_id).filter((value): value is string => Boolean(value))),
+    [taskLaunchSessions],
+  );
   const displayTaskConversations = (taskConversations ?? []).filter((task) => {
+    if (taskInstanceGraphIds.has(task.graph_id)) return false;
     const query = deferredSearchQuery.trim().toLocaleLowerCase();
     if (!query) return true;
     return `${task.title}\n${task.original_goal}\n${task.current_node_title ?? ""}`
+      .toLocaleLowerCase()
+      .includes(query);
+  });
+  const displayTaskLaunchSessions = taskLaunchSessions.filter((taskSession) => {
+    const query = deferredSearchQuery.trim().toLocaleLowerCase();
+    if (!query) return true;
+    return `${taskSession.title}\n${taskSession.skill_id}\n${taskSession.status}`
       .toLocaleLowerCase()
       .includes(query);
   });
@@ -453,6 +617,8 @@ export function ChatPage({
     setOptimisticSessions([]);
     setTaskPanelOpen(false);
     setSelectedTaskGraphId(null);
+    setTaskLaunchOpen(false);
+    setPendingTaskPlanInstruction(null);
     sessionMessagesCacheRef.current.clear();
     newSessionStreamIdsRef.current.clear();
     clearImageCache();
@@ -466,6 +632,8 @@ export function ChatPage({
     setOptimisticSessions([]);
     setTaskPanelOpen(false);
     setSelectedTaskGraphId(null);
+    setTaskLaunchOpen(false);
+    setPendingTaskPlanInstruction(null);
     sessionMessagesCacheRef.current.clear();
     newSessionStreamIdsRef.current.clear();
     setListRefreshKey(Date.now());
@@ -500,6 +668,28 @@ export function ChatPage({
 
   const accessModeValue = projectSettings?.permissions?.defaultMode || "default";
   const accessModeLabel = accessModeOptions.find((option) => option.value === accessModeValue)?.label ?? t("sessions.accessDefault");
+  const workModeOptions = useMemo(() => [
+    { value: "chat", label: t("sessions.workMode.chat") },
+    { value: "task", label: t("sessions.workMode.task") },
+  ], [t]);
+  const taskCreationModeOptions = useMemo(() => [
+    { value: "discussion", label: t("tasks.creationMode.discussion") },
+    { value: "direct", label: t("tasks.creationMode.direct") },
+  ], [t]);
+  const taskSkillOptions = useMemo(() => taskPlanSkills.map((skill) => ({
+    value: skill.id,
+    label: skill.name || skill.id,
+    description: skill.description,
+    installed: skill.installed,
+    valid: skill.valid,
+    installable: skill.installable,
+  })), [taskPlanSkills]);
+  const jishuAgent = useMemo(
+    () => agents.find((agent) => agent.id === "jishu-self") ?? null,
+    [agents],
+  );
+  const taskModeAgentReady = Boolean(jishuAgent?.health.installed);
+  const taskModeCanSend = taskModeAgentReady && activeId === "jishu-self";
 
   const handleAccessModeChange = useCallback(async (value: string) => {
     if (!supportsAccessModeSwitch || !projectPathForSettings) return;
@@ -516,6 +706,85 @@ export function ChatPage({
     await invokeCommand("save_project_settings_local", { projectPath: projectPathForSettings, settings: nextSettings });
     setAccessRefreshKey(Date.now());
   }, [projectPathForSettings, projectSettings, supportsAccessModeSwitch]);
+
+  useEffect(() => {
+    if (!taskLaunchOpen || agents.length === 0) return;
+    if (!taskModeAgentReady) {
+      window.alert("任务模式需要先安装 Jishu Agent。请到环境检测页面完成安装后再发起任务。");
+      return;
+    }
+    if (activeId !== "jishu-self") {
+      setActive("jishu-self").catch((error) => {
+        console.warn("Failed to switch to Jishu Agent for task mode:", error);
+      });
+    }
+  }, [activeId, agents.length, setActive, taskLaunchOpen, taskModeAgentReady]);
+
+  const handleWorkModeChange = useCallback((value: string) => {
+    const nextIsTask = value === "task";
+    setTaskPanelOpen(false);
+    setSelectedTaskGraphId(null);
+    setTaskLaunchOpen(nextIsTask);
+    setTaskLaunchPhase("requirements");
+    setActiveTaskInstanceId(null);
+    setActiveTaskRequirementFile(null);
+    setTaskCreationMode("discussion");
+    setPendingTaskPlanInstruction(null);
+    setSelectedSession("new");
+    selectedSessionRef.current = "new";
+    setSessionMessages([]);
+    setPendingSteerDisplay([]);
+    requestAnimationFrame(() => {
+      chatInputRef.current?.focus();
+    });
+  }, []);
+
+  const handleTaskSkillInstall = useCallback(async (skillId: string) => {
+    const skill = taskPlanSkills.find((item) => item.id === skillId);
+    const name = skill?.name || skillId;
+    if (!skill?.installable) {
+      window.alert(`${name} 暂不支持一键安装，请按该技能说明手动安装到任务规划技能目录。`);
+      return;
+    }
+    const confirmed = window.confirm(`安装任务规划技能「${name}」？安装后可用于需求讨论、流程规划和任务执行。`);
+    if (!confirmed) return;
+    try {
+      const installed = await invokeCommand<TaskPlanSkill>("task_plan_skill_install", { skillId });
+      setTaskPlanSkills((current) => current.map((item) => item.id === skillId ? installed : item));
+      setSelectedTaskSkillId(skillId);
+    } catch (error) {
+      window.alert(`安装失败：${String(error)}`);
+    }
+  }, [taskPlanSkills]);
+
+  const prepareTaskLaunchMessage = useCallback((message: string) => {
+    if (!taskLaunchOpen) return message;
+    const selected = taskPlanSkills.find((skill) => skill.id === selectedTaskSkillIdRef.current);
+    const skillName = selected?.name || selectedTaskSkillIdRef.current;
+    if (taskLaunchPhase === "planning") {
+      return [
+        `<jishu-task-planning-stage>`,
+        `task_id: ${activeTaskInstanceIdRef.current ?? ""}`,
+        `requirement_file: ${activeTaskRequirementFileRef.current ?? ""}`,
+        `skill_id: ${selectedTaskSkillIdRef.current}`,
+        `请使用任务规划技能「${skillName}」继续进行任务流程规划阶段会话。当前阶段目标是把需求终稿转为可审阅的流程方案：明确节点、职责、依赖、验收、风险和人工确认点。不要执行任务；不要要求用户去画布点击智能规划。当方案明确时，请发起交互式确认，询问用户是否生成任务流程图。`,
+        `</jishu-task-planning-stage>`,
+        "",
+        "用户消息：",
+        message,
+      ].join("\n");
+    }
+    return [
+      `<jishu-task-launch-instruction>`,
+      `请使用任务规划技能「${skillName}」（skill_id: ${selectedTaskSkillIdRef.current}）的方法论帮助用户澄清需求。`,
+      `当前阶段只做需求讨论和需求收敛：可以提问、总结、指出缺口、给出是否可以进入流程规划的建议；不要实施代码、不要执行命令、不要创建任务流程图、不要输出最终执行计划。`,
+      `当你判断需求已经足够明确时，请向用户确认是否生成任务流程图。`,
+      `</jishu-task-launch-instruction>`,
+      "",
+      "用户消息：",
+      message,
+    ].join("\n");
+  }, [taskLaunchOpen, taskLaunchPhase, taskPlanSkills]);
 
   useLayoutEffect(() => {
     if (!scrollAction.current || !messageAreaRef.current) return;
@@ -548,6 +817,7 @@ export function ChatPage({
   const handleSelectSession = async (sessionId: string) => {
     setTaskPanelOpen(false);
     setSelectedTaskGraphId(null);
+    setTaskLaunchOpen(false);
     if (sessionId === selectedSession || !projectId) return;
 
     if (selectedSession && messageAreaRef.current) {
@@ -577,8 +847,9 @@ export function ChatPage({
           sessionId,
           encodedName: projectId,
         });
-        sessionMessagesCacheRef.current.set(sessionId, messages);
-        setSessionMessages(messages);
+        const visibleMessages = stripTaskLaunchInstructionFromMessages(messages);
+        sessionMessagesCacheRef.current.set(sessionId, visibleMessages);
+        setSessionMessages(visibleMessages);
       } catch {
         setSessionMessages([]);
       }
@@ -626,6 +897,7 @@ export function ChatPage({
 
     setTaskPanelOpen(false);
     setSelectedTaskGraphId(null);
+    setTaskLaunchOpen(false);
     setSelectedSession("new");
     selectedSessionRef.current = "new";
     setSessionMessages([]);
@@ -637,6 +909,25 @@ export function ChatPage({
   };
 
   const handleOpenTaskConversation = useCallback((graphId: string | null) => {
+    if (!graphId) {
+      setTaskPanelOpen(false);
+      setSelectedTaskGraphId(null);
+      setTaskLaunchOpen(true);
+      setTaskLaunchPhase("requirements");
+      setActiveTaskInstanceId(null);
+      setActiveTaskRequirementFile(null);
+      setTaskCreationMode("discussion");
+      setPendingTaskPlanInstruction(null);
+      setSelectedSession("new");
+      selectedSessionRef.current = "new";
+      setSessionMessages([]);
+      setPendingSteerDisplay([]);
+      requestAnimationFrame(() => {
+        chatInputRef.current?.focus();
+      });
+      return;
+    }
+    setTaskLaunchOpen(false);
     setSelectedTaskGraphId(graphId);
     setTaskPanelOpen(true);
     setSelectedSession(null);
@@ -689,8 +980,9 @@ export function ChatPage({
           sessionId: selectedSession,
           encodedName: projectId,
         });
-        sessionMessagesCacheRef.current.set(selectedSession, msgs);
-        setSessionMessages(msgs);
+        const visibleMessages = stripTaskLaunchInstructionFromMessages(msgs);
+        sessionMessagesCacheRef.current.set(selectedSession, visibleMessages);
+        setSessionMessages(visibleMessages);
       } catch (e) {
         console.error(e);
       }
@@ -703,6 +995,29 @@ export function ChatPage({
       || sessionId.slice(0, 8);
     openFloatingSession(sessionId, name, activeId || "", currentProject?.encoded_name || "", active?.display_name);
   }, [sessionNames, sessions, activeId, active, currentProject]);
+
+  const markTaskLaunchSession = useCallback(async (sessionId: string) => {
+    if (!projectPathForSettings || !sessionId || sessionId.startsWith("new_session_")) return;
+    try {
+      const record = await invokeCommand<TaskLaunchInstanceSummary>("task_launch_mark_session", {
+        projectRoot: projectPathForSettings,
+        taskId: activeTaskInstanceIdRef.current,
+        sessionId,
+        skillId: selectedTaskSkillIdRef.current,
+        phase: taskLaunchPhaseRef.current,
+        title: null,
+      });
+      if (!activeTaskInstanceIdRef.current) {
+        setActiveTaskInstanceId(record.task_id);
+      }
+      if (record.requirement_file) {
+        setActiveTaskRequirementFile(record.requirement_file);
+      }
+      await refreshTaskLaunchSessions();
+    } catch (error) {
+      console.warn("Failed to mark task launch session:", error);
+    }
+  }, [projectPathForSettings, refreshTaskLaunchSessions]);
 
   const handleMessageSent = useCallback((sid: string, msg: string) => {
     // For new sessions, register a stream entry here. For existing sessions,
@@ -742,6 +1057,208 @@ export function ChatPage({
       }
     });
   }, [selectedSession, currentProject?.path, t]);
+
+  const handleSessionResolved = useCallback((_pendingSessionId: string, realSessionId: string) => {
+    if (!taskLaunchOpenRef.current) return;
+    markTaskLaunchSession(realSessionId).catch(console.error);
+  }, [markTaskLaunchSession]);
+
+  const sendTaskPhaseMessage = useCallback(async ({
+    taskId,
+    phase,
+    visibleMessage,
+    agentMessage,
+    title,
+  }: {
+    taskId: string;
+    phase: TaskLaunchPhase;
+    visibleMessage: string;
+    agentMessage: string;
+    title: string;
+  }) => {
+    if (!currentProject?.path) return;
+    const pendingId = `pending-${Date.now()}`;
+    setTaskLaunchOpen(true);
+    setTaskLaunchPhase(phase);
+    setActiveTaskInstanceId(taskId);
+    taskLaunchOpenRef.current = true;
+    activeTaskInstanceIdRef.current = taskId;
+    taskLaunchPhaseRef.current = phase;
+    setTaskCreationMode("discussion");
+    setTaskPanelOpen(false);
+    setSelectedTaskGraphId(null);
+    setSelectedSession("new");
+    selectedSessionRef.current = "new";
+    setSessionMessages([]);
+    setPendingSteerDisplay([]);
+    streamStore.start(pendingId, visibleMessage);
+    handleMessageSent(pendingId, visibleMessage);
+    const chatSession = await invokeCommand<ChatSession>("send_message", {
+      projectPath: currentProject.path,
+      sessionId: pendingId,
+      message: agentMessage,
+    });
+    streamStore.alias(pendingId, chatSession.session_id);
+    setSelectedSession(chatSession.session_id);
+    selectedSessionRef.current = chatSession.session_id;
+    await invokeCommand<TaskLaunchInstanceSummary>("task_launch_mark_session", {
+      projectRoot: currentProject.path,
+      taskId,
+      sessionId: chatSession.session_id,
+      skillId: selectedTaskSkillIdRef.current,
+      phase,
+      title,
+    });
+    await refreshTaskLaunchSessions();
+  }, [currentProject?.path, handleMessageSent, refreshTaskLaunchSessions]);
+
+  const finalizeRequirementsAndStartPlanning = useCallback(async (
+    messages: PlanningChatMessage[],
+  ) => {
+    if (!currentProject?.path) return;
+    const requirementMessages = messages
+      .map((message): TaskRequirementMessagePayload => ({
+        role: message.role,
+        content: message.content.trim(),
+      }))
+      .filter((message) => message.content.length > 0);
+    if (requirementMessages.length === 0) return;
+
+    const skills = taskPlanSkills.length
+      ? taskPlanSkills
+      : await invokeCommand<TaskPlanSkill[]>("task_plan_skill_list");
+    const planner = skills.find((skill) => skill.id === selectedTaskSkillIdRef.current)
+      ?? skills.find((skill) => skill.id === "jishu-task-planner")
+      ?? skills.find((skill) => skill.installed && skill.valid);
+    if (!planner?.installed || !planner.valid) {
+      throw new Error(t("tasks.installSkillFirst"));
+    }
+
+    const finalized = await invokeCommand<TaskRequirementFinalized>(
+      "task_requirement_finalize",
+      {
+        projectRoot: currentProject.path,
+        taskId: activeTaskInstanceIdRef.current,
+        sessionId: selectedSessionRef.current && selectedSessionRef.current !== "new"
+          ? selectedSessionRef.current
+          : null,
+        skillId: planner.id,
+        title: derivePlanningTitle("", messages),
+        messages: requirementMessages,
+      },
+    );
+
+    setActiveTaskInstanceId(finalized.task_id);
+    setActiveTaskRequirementFile(finalized.requirement_file);
+    activeTaskInstanceIdRef.current = finalized.task_id;
+    activeTaskRequirementFileRef.current = finalized.requirement_file;
+    await sendTaskPhaseMessage({
+      taskId: finalized.task_id,
+      phase: "planning",
+      title: finalized.title,
+      visibleMessage: `需求已定稿，开始规划任务流程。\n\n需求终稿：${finalized.requirement_file}`,
+      agentMessage: [
+        `<jishu-task-planning-stage>`,
+        `task_id: ${finalized.task_id}`,
+        `requirement_file: ${finalized.requirement_file}`,
+        `skill_id: ${planner.id}`,
+        `当前进入任务流程规划阶段。请基于需求终稿与用户在会话中生成流程方案。不要执行任务，不要要求用户去画布点击智能规划；当流程方案清晰后，发起交互式确认，询问用户是否生成任务流程图。`,
+        `</jishu-task-planning-stage>`,
+        "",
+        finalized.planning_instruction,
+      ].join("\n"),
+    });
+  }, [currentProject?.path, sendTaskPhaseMessage, t, taskPlanSkills]);
+
+  const createGraphFromPlanningConversation = useCallback(async () => {
+    if (!currentProject?.path) return;
+    const messages = messagesToPlanningMessages(sessionMessagesRef.current);
+    const streamingText = streamStore.getState(selectedSessionRef.current)?.text.trim();
+    if (streamingText) {
+      messages.push(createPlanningMessage(streamingText, "assistant"));
+    }
+    const skills = taskPlanSkills.length
+      ? taskPlanSkills
+      : await invokeCommand<TaskPlanSkill[]>("task_plan_skill_list");
+    const planner = skills.find((skill) => skill.id === selectedTaskSkillIdRef.current)
+      ?? skills.find((skill) => skill.id === "jishu-task-planner")
+      ?? skills.find((skill) => skill.installed && skill.valid);
+    if (!planner?.installed || !planner.valid) {
+      throw new Error(t("tasks.installSkillFirst"));
+    }
+    const requirementFile = activeTaskRequirementFileRef.current;
+    const instruction = [
+      "请根据需求终稿和以下流程规划阶段会话，生成可审阅的任务流程图。",
+      requirementFile ? `需求终稿文件：${requirementFile}` : null,
+      "",
+      buildPlanningInstruction(messages),
+    ].filter(Boolean).join("\n");
+
+    const [createdGraph] = await invokeCommand<[TaskGraph, GraphRevision]>(
+      "orchestrator_create_graph",
+      {
+        input: {
+          title: derivePlanningTitle("", messages) || "任务流程图",
+          goal: requirementFile ? `需求终稿：${requirementFile}` : instruction,
+          project_root: currentProject.path,
+          owner: "local_user",
+          skill_refs: [{
+            skill_id: planner.id,
+            version_or_hash: planner.content_hash,
+            inputs: {},
+          }],
+        },
+      },
+    );
+    if (activeTaskInstanceIdRef.current) {
+      await invokeCommand<TaskLaunchInstanceSummary>("task_launch_attach_graph", {
+        projectRoot: currentProject.path,
+        taskId: activeTaskInstanceIdRef.current,
+        graphId: createdGraph.graph_id,
+      });
+    }
+    setPendingTaskPlanInstruction(instruction);
+    setTaskLaunchOpen(false);
+    setSelectedTaskGraphId(createdGraph.graph_id);
+    setTaskPanelOpen(true);
+    setSelectedSession(null);
+    selectedSessionRef.current = null;
+    setPendingSteerDisplay([]);
+    refreshTaskLaunchSessions().catch(console.error);
+    refetchTaskConversations(true).catch(console.error);
+  }, [currentProject?.path, refetchTaskConversations, refreshTaskLaunchSessions, t, taskPlanSkills]);
+
+  const collectTaskLaunchPlanningMessages = useCallback((
+    extra?: PlanningChatMessage[],
+  ) => {
+    const messages = messagesToPlanningMessages(sessionMessagesRef.current);
+    const streamingText = streamStore.getState(selectedSessionRef.current)?.text.trim();
+    if (streamingText) {
+      messages.push(createPlanningMessage(streamingText, "assistant"));
+    }
+    if (extra?.length) {
+      messages.push(...extra);
+    }
+    return messages;
+  }, []);
+
+  const handleTaskLaunchBeforeSend = useCallback(async (message: string) => {
+    if (!taskLaunchOpen) return false;
+    const selected = taskPlanSkills.find((skill) => skill.id === selectedTaskSkillIdRef.current);
+    if (!selected?.installed || !selected.valid) {
+      await handleTaskSkillInstall(selectedTaskSkillIdRef.current);
+      return true;
+    }
+    if (taskLaunchPhase === "planning" && isGenerateTaskTextConfirmation(message)) {
+      await createGraphFromPlanningConversation();
+      return true;
+    }
+    if (taskLaunchPhase !== "requirements" || taskCreationMode !== "direct") return false;
+    await finalizeRequirementsAndStartPlanning([
+      createPlanningMessage(message, "user"),
+    ]);
+    return true;
+  }, [createGraphFromPlanningConversation, finalizeRequirementsAndStartPlanning, handleTaskSkillInstall, taskCreationMode, taskLaunchOpen, taskLaunchPhase, taskPlanSkills]);
 
   // Stream listener (mount-only). Each chunk is routed into the per-session
   // store entry via streamStore.push, regardless of which session is currently
@@ -828,6 +1345,32 @@ export function ChatPage({
         const realId = extractRealSessionId(chunk.data);
         if (realId && realId !== cid) {
           streamStore.alias(cid, realId);
+          if (taskLaunchOpenRef.current) {
+            const projectRoot = projectPathRef.current;
+            if (projectRoot) {
+              invokeCommand<TaskLaunchInstanceSummary>("task_launch_mark_session", {
+                projectRoot,
+                taskId: activeTaskInstanceIdRef.current,
+                sessionId: realId,
+                skillId: selectedTaskSkillIdRef.current,
+                phase: taskLaunchPhaseRef.current,
+                title: null,
+              })
+                .then((record) => {
+                  if (!activeTaskInstanceIdRef.current) {
+                    setActiveTaskInstanceId(record.task_id);
+                  }
+                  if (record.requirement_file) {
+                    setActiveTaskRequirementFile(record.requirement_file);
+                  }
+                  setTaskLaunchSessions((current) => {
+                    const rest = current.filter((item) => item.task_id !== record.task_id);
+                    return [record, ...rest];
+                  });
+                })
+                .catch((error) => console.warn("Failed to mark task launch session:", error));
+            }
+          }
 
           // Promote the optimistic session id to the real one in the UI.
           setOptimisticSessions(prev => uniqueSessionsById(prev.map(s => s.id === cid ? { ...s, id: realId } : s)));
@@ -1388,6 +1931,19 @@ export function ChatPage({
     }
 
     const delivery = result?.delivery ?? "follow_up";
+    if (taskLaunchOpen && isGenerateTaskConfirmation(interaction.request, submission)) {
+      if (taskLaunchPhase === "requirements") {
+        await finalizeRequirementsAndStartPlanning(
+          collectTaskLaunchPlanningMessages([
+            createPlanningMessage(value, "user"),
+          ]),
+        );
+      } else {
+        await createGraphFromPlanningConversation();
+      }
+      return;
+    }
+
     if (delivery === "mid_turn") {
       // Mid-turn write-back succeeded: interleave the answer into the running
       // turn at the request's insertion point (PiRpc production baseline, and
@@ -1427,7 +1983,17 @@ export function ChatPage({
       streamStore.end(interaction.sessionId);
       restorePending();
     }
-  }, [activeId, pendingInteractions, selectedSession, handleMessageSent]);
+  }, [
+    activeId,
+    collectTaskLaunchPlanningMessages,
+    createGraphFromPlanningConversation,
+    finalizeRequirementsAndStartPlanning,
+    handleMessageSent,
+    pendingInteractions,
+    selectedSession,
+    taskLaunchPhase,
+    taskLaunchOpen,
+  ]);
   const resolveActiveApproval = useCallback(async (approved: boolean) => {
     if (!activeApproval || approvalResolving) return;
     setApprovalResolving(true);
@@ -1452,6 +2018,9 @@ export function ChatPage({
   }, [activeApproval, approvalResolving]);
   const projectDisplayName = currentProjectMeta?.custom_name || currentProject?.name || t("sessions.noProject");
   const projectPath = currentProject?.path ?? "";
+  const activeModelLabel = activeModel
+    ? `${activeModel.provider}/${activeModel.model}`
+    : (t("sessions.activeModel") || "Pick model");
   const startComposerFooter = currentProject ? (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border/40 bg-muted/45 px-4 py-2.5 text-xs text-muted-foreground">
       <span className="inline-flex min-w-0 items-center gap-1.5">
@@ -1459,45 +2028,65 @@ export function ChatPage({
         <span className="truncate font-medium text-foreground" title={projectDisplayName}>{projectDisplayName}</span>
       </span>
       {supportsModelPicker ? (
-        <span className="inline-flex min-w-0 items-center gap-1.5">
+        <span ref={modelMenuRef} className="relative inline-flex min-w-0 items-center gap-1.5">
           <HardDrive className="h-3.5 w-3.5 shrink-0 text-[var(--icon-config)]" />
           {modelOptions.length === 0 ? (
             <span className="truncate text-amber-400">
               {t("sessions.modelNotConfigured") || "No models — open 管理-配置"}
             </span>
           ) : (
-            <select
-              aria-label={t("sessions.activeModel") || "Active model"}
-              className="h-6 rounded-md border border-input bg-transparent px-2 text-xs font-mono max-w-[260px] truncate"
-              value={
-                activeModel
-                  ? `${activeModel.provider}/${activeModel.model}`
-                  : ""
-              }
-              onChange={async (e) => {
-                const value = e.target.value;
-                if (!value) return;
-                const [provider, ...rest] = value.split("/");
-                const model = rest.join("/");
-                const next = { provider, model };
-                setActiveModel(next);
-                try {
-                  await invokeCommand("set_active", { active: next });
-                } catch (err) {
-                  console.warn("set_active failed:", err);
-                }
-              }}
-            >
-              {!activeModel && <option value="">— pick model —</option>}
-              {modelOptions.map((o) => (
-                <option
-                  key={`${o.provider}/${o.model}`}
-                  value={`${o.provider}/${o.model}`}
-                >
-                  {o.provider}/{o.model}
-                </option>
-              ))}
-            </select>
+            <>
+              <button
+                type="button"
+                aria-label={t("sessions.activeModel") || "Active model"}
+                aria-haspopup="menu"
+                aria-expanded={modelMenuOpen}
+                title={activeModelLabel}
+                onClick={() => setModelMenuOpen((open) => !open)}
+                className={cn(
+                  "inline-flex h-8 min-w-[8.5rem] max-w-[11rem] items-center justify-between gap-1.5 rounded-full border border-border/50 bg-background/80 px-2.5 text-xs font-mono text-muted-foreground transition-fast hover:bg-accent/45 hover:text-foreground",
+                  modelMenuOpen && "border-primary/45 bg-primary/8 text-foreground shadow-sm",
+                )}
+              >
+                <span className="min-w-0 truncate">{activeModelLabel}</span>
+                <ChevronDown className={cn("h-3 w-3 shrink-0 transition-transform", modelMenuOpen && "rotate-180")} />
+              </button>
+              {modelMenuOpen && (
+                <div className="absolute left-5 top-[calc(100%+0.45rem)] z-[80] max-h-64 w-48 origin-top-left overflow-y-auto rounded-xl border border-border bg-popover p-1 shadow-xl">
+                  {modelOptions.map((o) => {
+                    const value = `${o.provider}/${o.model}`;
+                    const selected = activeModel?.provider === o.provider && activeModel?.model === o.model;
+                    return (
+                      <button
+                        key={value}
+                        type="button"
+                        title={value}
+                        onClick={async () => {
+                          const next = { provider: o.provider, model: o.model };
+                          setActiveModel(next);
+                          setModelMenuOpen(false);
+                          try {
+                            await invokeCommand("set_active", { active: next });
+                          } catch (err) {
+                            console.warn("set_active failed:", err);
+                          }
+                        }}
+                        className={cn(
+                          "flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left text-xs font-mono transition-fast hover:bg-accent/60",
+                          selected ? "font-medium text-foreground" : "text-muted-foreground",
+                        )}
+                      >
+                        <span className={cn(
+                          "h-1.5 w-1.5 shrink-0 rounded-full",
+                          selected ? "bg-primary" : "bg-transparent",
+                        )} />
+                        <span className="min-w-0 flex-1 truncate">{value}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </>
           )}
         </span>
       ) : null}
@@ -1584,7 +2173,7 @@ export function ChatPage({
               title={projectId ? t("tasks.startTask") : t("sessions.selectProject")}
               className={cn(
                 "flex h-8 w-full items-center gap-2.5 rounded-lg pl-2 pr-2 text-sm text-foreground transition-fast",
-                projectId ? taskPanelOpen ? "bg-primary/10 font-medium" : "hover:bg-accent" : "opacity-40 cursor-not-allowed"
+                projectId ? (taskPanelOpen || taskLaunchOpen) ? "bg-primary/10 font-medium" : "hover:bg-accent" : "opacity-40 cursor-not-allowed"
               )}
             >
               <ClipboardList className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
@@ -1682,7 +2271,7 @@ export function ChatPage({
               title={projectId ? t("tasks.startTask") : t("sessions.selectProject")}
               className={cn(
                 "flex h-8 w-8 items-center justify-center rounded-lg transition-fast",
-                projectId ? taskPanelOpen ? "bg-primary/10" : "hover:bg-accent" : "opacity-40 cursor-not-allowed"
+                projectId ? (taskPanelOpen || taskLaunchOpen) ? "bg-primary/10" : "hover:bg-accent" : "opacity-40 cursor-not-allowed"
               )}
             >
               <ClipboardList className="h-4 w-4 text-[var(--icon-action)]" />
@@ -1774,8 +2363,99 @@ export function ChatPage({
           >
             {taskSessionsOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
             <span>{t("sessions.taskConversations")}</span>
-            <span className="ml-auto tabular-nums">{displayTaskConversations.length}</span>
+            <span className="ml-auto tabular-nums">{displayTaskLaunchSessions.length + displayTaskConversations.length}</span>
           </button>
+          {taskSessionsOpen && displayTaskLaunchSessions.map((taskSession) => {
+            const phase = taskSession.current_phase === "planning" ? "planning" : "requirements";
+            const sessionId = phase === "planning"
+              ? taskSession.planning_session_id ?? taskSession.requirement_session_id
+              : taskSession.requirement_session_id ?? taskSession.planning_session_id;
+            const isActive = activeTaskInstanceId === taskSession.task_id && taskLaunchOpen && !taskPanelOpen;
+            return (
+              <ContextMenu key={taskSession.task_id}>
+                <ContextMenuTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setActiveTaskInstanceId(taskSession.task_id);
+                      setActiveTaskRequirementFile(taskSession.requirement_file ?? null);
+                      setSelectedTaskSkillId(taskSession.skill_id || "jishu-task-planner");
+                      if (taskSession.graph_id && taskSession.current_phase === "graph") {
+                        setTaskLaunchOpen(false);
+                        setTaskPanelOpen(true);
+                        setSelectedTaskGraphId(taskSession.graph_id);
+                        setSelectedSession(null);
+                        selectedSessionRef.current = null;
+                        return;
+                      }
+                      if (sessionId) {
+                        await handleSelectSession(sessionId);
+                        setTaskLaunchOpen(true);
+                        setTaskLaunchPhase(phase as TaskLaunchPhase);
+                        setTaskPanelOpen(false);
+                        setSelectedTaskGraphId(null);
+                      }
+                    }}
+                    className={cn(
+                      "flex w-full flex-col items-start border-b border-border/10 py-2 pl-5 pr-2 text-xs transition-fast",
+                      isActive
+                        ? "bg-primary/10 text-foreground font-medium"
+                        : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
+                    )}
+                  >
+                    <div className="flex w-full items-center gap-3">
+                      <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
+                      <span className="min-w-0 flex-1 truncate text-left leading-none">
+                        {taskSession.title}
+                      </span>
+                      <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium text-primary">
+                        {taskSession.current_phase === "graph" ? "流程" : phase === "planning" ? "规划" : "需求"}
+                      </span>
+                    </div>
+                    <div className="mt-1.5 flex w-full items-center gap-2 pl-6 text-[10px] text-muted-foreground/70">
+                      <span className="truncate">Skill: {taskSession.skill_id}</span>
+                    </div>
+                  </button>
+                </ContextMenuTrigger>
+                <ContextMenuContent>
+                  <ContextMenuItem
+                    onClick={async () => {
+                      const nextTitle = window.prompt(t("sessions.rename"), taskSession.title);
+                      if (!nextTitle?.trim() || !projectPathForSettings) return;
+                      const updated = await invokeCommand<TaskLaunchInstanceSummary>("task_launch_rename_task", {
+                        projectRoot: projectPathForSettings,
+                        taskId: taskSession.task_id,
+                        title: nextTitle.trim(),
+                      });
+                      setTaskLaunchSessions((current) => current.map((item) => item.task_id === updated.task_id ? updated : item));
+                    }}
+                  >
+                    <Pencil className="h-3.5 w-3.5 mr-2" />
+                    {t("sessions.rename")}
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    className="text-destructive focus:text-destructive"
+                    onClick={async () => {
+                      if (!projectPathForSettings) return;
+                      const confirmed = window.confirm(t("tasks.deleteTaskConfirm", { title: taskSession.title }));
+                      if (!confirmed) return;
+                      if (taskSession.graph_id) {
+                        await invokeCommand("orchestrator_delete_graph", { graphId: taskSession.graph_id });
+                      }
+                      await invokeCommand("task_launch_delete_task", {
+                        projectRoot: projectPathForSettings,
+                        taskId: taskSession.task_id,
+                      });
+                      setTaskLaunchSessions((current) => current.filter((item) => item.task_id !== taskSession.task_id));
+                    }}
+                  >
+                    <X className="h-3.5 w-3.5 mr-2" />
+                    {t("tasks.deleteTask")}
+                  </ContextMenuItem>
+                </ContextMenuContent>
+              </ContextMenu>
+            );
+          })}
           {taskSessionsOpen && displayTaskConversations.map((task) => {
             const isActive = taskPanelOpen && task.graph_id === selectedTaskGraphId;
             return (
@@ -1845,9 +2525,11 @@ export function ChatPage({
           <TasksPage
             initialProjectPath={currentProject?.path ?? null}
             initialGraphId={selectedTaskGraphId}
+            initialPlanInstruction={pendingTaskPlanInstruction}
             onClose={() => {
               setTaskPanelOpen(false);
               setSelectedTaskGraphId(null);
+              setPendingTaskPlanInstruction(null);
               refetchTaskConversations(true).catch(console.error);
             }}
           />
@@ -1996,7 +2678,9 @@ export function ChatPage({
           }>
             {showStartComposer ? (
               <h1 className="mb-14 w-full max-w-[var(--message-content-max-width)] text-center text-[2rem] font-medium leading-tight tracking-normal text-foreground">
-                {t("sessions.startPrompt", { project: projectDisplayName })}
+                {taskLaunchOpen
+                  ? t("tasks.createPrompt", { project: projectDisplayName })
+                  : t("sessions.startPrompt", { project: projectDisplayName })}
               </h1>
             ) : isAwayFromBottom ? (
               <button
@@ -2013,11 +2697,30 @@ export function ChatPage({
               projectPath={currentProject?.path ?? null}
               stagedApiRef={stagedApiRef}
               onMessageSent={handleMessageSent}
+              onSessionResolved={handleSessionResolved}
+              onBeforeSend={handleTaskLaunchBeforeSend}
+              prepareMessageForAgent={prepareTaskLaunchMessage}
               allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
               agentDisplayName={active?.display_name}
+              disabled={taskLaunchOpen && !taskModeCanSend}
               containerClassName={showStartComposer ? "mx-auto w-full max-w-[var(--message-content-max-width)] px-0 pb-0 pt-0" : undefined}
               panelClassName={showStartComposer ? "rounded-[22px] border-border/70 bg-card/98 shadow-[0_18px_48px_rgba(0,0,0,0.10)]" : undefined}
               contextFooter={startComposerFooter}
+              workModeLabel={t("sessions.workMode.label")}
+              workModeOptions={workModeOptions}
+              workModeValue={taskLaunchOpen ? "task" : "chat"}
+              onWorkModeChange={handleWorkModeChange}
+              taskCreationModeLabel={t("tasks.creationMode.label")}
+              taskCreationModeOptions={taskLaunchOpen && taskLaunchPhase === "requirements" ? taskCreationModeOptions : []}
+              taskCreationModeValue={taskLaunchOpen && taskLaunchPhase === "requirements" ? taskCreationMode : undefined}
+              onTaskCreationModeChange={(value) => {
+                setTaskCreationMode(value === "direct" ? "direct" : "discussion");
+              }}
+              taskSkillLabel={t("tasks.planningSkill")}
+              taskSkillOptions={taskLaunchOpen ? taskSkillOptions : []}
+              taskSkillValue={taskLaunchOpen ? selectedTaskSkillId : undefined}
+              onTaskSkillChange={setSelectedTaskSkillId}
+              onTaskSkillInstall={handleTaskSkillInstall}
               accessModeLabel={accessModeLabel}
               accessModeTitle={supportsAccessModeSwitch ? t("sessions.accessMode") : t("sessions.accessModeReadOnly")}
               accessModeReadOnly={!supportsAccessModeSwitch}
@@ -2133,8 +2836,9 @@ export function ChatPage({
                         sessionId: selectedSession,
                         encodedName: projectId,
                       });
-                      sessionMessagesCacheRef.current.set(selectedSession, msgs);
-                      setSessionMessages(msgs);
+                      const visibleMessages = stripTaskLaunchInstructionFromMessages(msgs);
+                      sessionMessagesCacheRef.current.set(selectedSession, visibleMessages);
+                      setSessionMessages(visibleMessages);
                     } catch (e) {
                       console.error("Failed to refresh messages after abort", e);
                     }
@@ -2226,4 +2930,145 @@ export function ChatPage({
       </Dialog>
     </div>
   );
+}
+
+function messagesToPlanningMessages(messages: Message[]): PlanningChatMessage[] {
+  return messages
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) =>
+      createPlanningMessage(
+        messageToPlanningText(message),
+        message.role === "user" ? "user" : "assistant",
+      ),
+    )
+    .filter((message) => message.content.length > 0);
+}
+
+function messageToPlanningText(message: Message): string {
+  return message.content
+    .map((block) => {
+      if (block.type === "text") return block.text;
+      if (block.type === "thinking") return block.thinking;
+      if (block.type === "interaction") {
+        return [block.prompt, block.answer, ...(block.selected_options ?? [])]
+          .filter(Boolean)
+          .join("\n");
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function stripTaskLaunchInstructionFromMessages(messages: Message[]): Message[] {
+  return messages.map((message) => ({
+    ...message,
+    content: message.content.map((block) => {
+      if (block.type !== "text") return block;
+      return {
+        ...block,
+        text: stripTaskLaunchInstruction(block.text),
+      };
+    }),
+  }));
+}
+
+function stripTaskLaunchInstruction(text: string): string {
+  const launch = stripTaggedInstruction(
+    text,
+    "<jishu-task-launch-instruction>",
+    "</jishu-task-launch-instruction>",
+  );
+  const planning = stripTaggedInstruction(
+    launch,
+    "<jishu-task-planning-stage>",
+    "</jishu-task-planning-stage>",
+  );
+  return planning;
+}
+
+function stripTaggedInstruction(text: string, startTag: string, endTag: string): string {
+  const start = text.indexOf(startTag);
+  const end = text.indexOf(endTag);
+  if (start < 0 || end < start) return text;
+  const afterInstruction = text.slice(end + endTag.length);
+  const chineseMarker = "用户消息：";
+  const asciiMarker = "用户消息:";
+  const chineseIndex = afterInstruction.indexOf(chineseMarker);
+  if (chineseIndex >= 0) {
+    return afterInstruction.slice(chineseIndex + chineseMarker.length).trimStart();
+  }
+  const asciiIndex = afterInstruction.indexOf(asciiMarker);
+  if (asciiIndex >= 0) {
+    return afterInstruction.slice(asciiIndex + asciiMarker.length).trimStart();
+  }
+  return afterInstruction.trimStart();
+}
+
+function isGenerateTaskConfirmation(
+  request: ConversationInteractionRequest,
+  submission: ConversationInteractionSubmission,
+): boolean {
+  const selectedTexts = submission.selectedOptionIds.map((optionId) => {
+    const option = request.options.find((item) => item.optionId === optionId);
+    return `${optionId} ${option?.label ?? ""} ${option?.description ?? ""}`;
+  });
+  const text = [
+    request.prompt,
+    ...selectedTexts,
+    submission.customText,
+  ].join("\n").toLowerCase();
+
+  const generationIntent = [
+    "生成任务",
+    "生成流程",
+    "流程图",
+    "进入规划",
+    "generate workflow",
+    "generate task",
+    "create workflow",
+    "create task",
+  ].some((phrase) => text.includes(phrase));
+  const confirmationIntent = [
+    "确认",
+    "同意",
+    "可以",
+    "开始",
+    "生成",
+    "yes",
+    "ok",
+    "confirm",
+    "approve",
+    "generate",
+  ].some((phrase) => text.includes(phrase));
+
+  return generationIntent && confirmationIntent;
+}
+
+function isGenerateTaskTextConfirmation(message: string): boolean {
+  const text = message.trim().toLowerCase();
+  if (!text) return false;
+  const generationIntent = [
+    "生成任务",
+    "生成流程",
+    "流程图",
+    "generate workflow",
+    "generate task",
+    "create workflow",
+  ].some((phrase) => text.includes(phrase));
+  const confirmationIntent = [
+    "确认",
+    "同意",
+    "可以",
+    "没问题",
+    "开始",
+    "生成",
+    "yes",
+    "ok",
+    "confirm",
+    "approve",
+    "generate",
+  ].some((phrase) => text.includes(phrase));
+  return generationIntent && confirmationIntent;
 }
