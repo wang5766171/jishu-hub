@@ -20,8 +20,8 @@ mod process_control;
 mod project;
 mod project_config;
 mod session;
-mod task_plan;
 mod task_launch;
+mod task_plan;
 mod util;
 
 #[cfg(feature = "cli")]
@@ -2638,7 +2638,9 @@ fn task_plan_skill_install(skill_id: String) -> Result<task_plan::TaskPlanSkill,
 }
 
 #[tauri::command]
-fn task_launch_list_sessions(project_root: String) -> Result<Vec<task_launch::TaskLaunchInstance>, String> {
+fn task_launch_list_sessions(
+    project_root: String,
+) -> Result<Vec<task_launch::TaskLaunchInstance>, String> {
     task_launch::list_task_instances(&project_root)
 }
 
@@ -2664,20 +2666,9 @@ fn task_launch_mark_session(
 #[tauri::command]
 fn task_requirement_finalize(
     project_root: String,
-    task_id: Option<String>,
-    session_id: Option<String>,
-    skill_id: String,
-    title: Option<String>,
-    messages: Vec<task_launch::TaskRequirementMessage>,
+    request: task_launch::RequirementFinalizeRequest,
 ) -> Result<task_launch::TaskRequirementFinalized, String> {
-    task_launch::finalize_requirement(
-        &project_root,
-        task_id.as_deref(),
-        session_id.as_deref(),
-        &skill_id,
-        title.as_deref(),
-        messages,
-    )
+    task_launch::finalize_requirement(&project_root, request)
 }
 
 #[tauri::command]
@@ -2687,6 +2678,34 @@ fn task_launch_attach_graph(
     graph_id: String,
 ) -> Result<task_launch::TaskLaunchInstance, String> {
     task_launch::attach_graph(&project_root, &task_id, &graph_id)
+}
+
+#[tauri::command]
+fn task_launch_sync_run_status(
+    project_root: String,
+    task_id: String,
+    run_id: String,
+    run_status: String,
+) -> Result<task_launch::TaskLaunchInstance, String> {
+    task_launch::sync_run_status(&project_root, &task_id, &run_id, &run_status)
+}
+
+#[tauri::command]
+fn task_launch_get_instance(
+    project_root: String,
+    task_id: String,
+) -> Result<Option<task_launch::TaskLaunchInstance>, String> {
+    task_launch::get_task_instance(&project_root, &task_id)
+}
+
+#[tauri::command]
+fn task_launch_create_from_existing_graph(
+    project_root: String,
+    graph_id: String,
+    title: String,
+    skill_id: String,
+) -> Result<task_launch::TaskLaunchInstance, String> {
+    task_launch::create_from_existing_graph(&project_root, &graph_id, &title, &skill_id)
 }
 
 #[tauri::command]
@@ -2902,6 +2921,9 @@ pub fn run() {
             task_launch_mark_session,
             task_requirement_finalize,
             task_launch_attach_graph,
+            task_launch_sync_run_status,
+            task_launch_get_instance,
+            task_launch_create_from_existing_graph,
             task_launch_rename_task,
             task_launch_delete_task,
             list_models,
