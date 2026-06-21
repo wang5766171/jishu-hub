@@ -15,6 +15,7 @@ import {
   taskInstanceFromRaw,
   type ExecutionChatScope,
   type ExecutionView,
+  type NodeSessionInfo,
   type PhaseDisplayStates,
   type RequirementFinalizeRequest,
   type TaskInstance,
@@ -23,15 +24,7 @@ import {
   type TaskRequirementFinalized,
 } from "./types";
 
-/** 节点会话信息（执行阶段节点子代理会话缓存）。 */
-export interface NodeSessionInfo {
-  node_id: string;
-  node_run_id: string;
-  attempt_number: number; // 从 0 开始
-  session_id: string | null; // Agent 原生会话 ID（用于 get_session_messages）
-  status: string;
-  agent_id: string | null;
-}
+export type { NodeSessionInfo };
 
 export interface UseTaskInstanceOptions {
   projectRoot: string;

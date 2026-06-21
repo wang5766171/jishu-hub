@@ -114,6 +114,16 @@ export interface TaskSessionIndex {
   entries: TaskSessionEntry[];
 }
 
+/** 节点会话信息（执行阶段节点子代理会话缓存，来自 useNodeSession）。 */
+export interface NodeSessionInfo {
+  node_id: string;
+  node_run_id: string;
+  attempt_number: number; // 从 0 开始
+  session_id: string | null; // Agent 原生会话 ID（用于 get_session_messages）
+  status: string;
+  agent_id: string | null;
+}
+
 /** 需求终稿确认卡片（嵌入需求讨论会话流）。 */
 export interface RequirementFinalizeCardData {
   taskId: string;
