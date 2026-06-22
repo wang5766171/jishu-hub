@@ -1288,6 +1288,8 @@ export function ChatPage({
       await createGraphFromPlanningConversation();
     }
   }, [currentProject?.path, refreshTaskLaunchSessions, sendTaskPhaseMessage]);
+
+  const createGraphFromPlanningConversation = useCallback(async () => {
     if (!currentProject?.path) return;
     const messages = messagesToPlanningMessages(sessionMessagesRef.current);
     const streamingText = streamStore.getState(selectedSessionRef.current)?.text.trim();
