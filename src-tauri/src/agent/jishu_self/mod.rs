@@ -511,6 +511,27 @@ impl TransportAdapter for JishuSelfAgent {
         if let Some(dir) = pi_agent_dir() {
             envs.push(("PI_CODING_AGENT_DIR".to_string(), dir));
         }
+        // In debug builds, point JISHU_CLI_BIN to the locally built cli so the
+        // task planning skill (advance_phase.mjs) uses the dev version instead
+        // of the installed one from PATH. Release builds omit this (falls back
+        // to PATH).
+        #[cfg(debug_assertions)]
+        {
+            let dev_cli = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("debug")
+                .join(if cfg!(windows) {
+                    "jishu-cli.exe"
+                } else {
+                    "jishu-cli"
+                });
+            if dev_cli.exists() {
+                envs.push((
+                    "JISHU_CLI_BIN".to_string(),
+                    dev_cli.to_string_lossy().to_string(),
+                ));
+            }
+        }
 
         Ok(crate::agent::AcpCommandSpec {
             program: runtime.program.to_string_lossy().to_string(),

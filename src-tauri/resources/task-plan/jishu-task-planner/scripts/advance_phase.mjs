@@ -79,9 +79,13 @@ if (sessionId) {
   cliArgs.push("--session", sessionId);
 }
 
-// Execute jishu-cli
+// Execute jishu-cli.
+// JISHU_CLI_BIN env var overrides the binary path (for local dev/testing).
+// Falls back to "jishu-cli" (from PATH, the installed version).
+const cliBin = process.env.JISHU_CLI_BIN || "jishu-cli";
+
 try {
-  const output = execFileSync("jishu-cli", cliArgs, {
+  const output = execFileSync(cliBin, cliArgs, {
     encoding: "utf-8",
     maxBuffer: 10 * 1024 * 1024,
     windowsHide: true,
