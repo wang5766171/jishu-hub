@@ -485,10 +485,7 @@ impl TransportAdapter for JishuSelfAgent {
         cmd
     }
 
-    fn build_acp_command(
-        &self,
-        _req: &ChatRequest,
-    ) -> Result<crate::agent::AcpCommandSpec, String> {
+    fn build_acp_command(&self, req: &ChatRequest) -> Result<crate::agent::AcpCommandSpec, String> {
         let runtime = pi_runtime::resolve_pi_runtime()?;
         let mut args = runtime.base_args;
         // Use Pi's native --mode rpc (JSON-line protocol) instead of the
@@ -496,6 +493,16 @@ impl TransportAdapter for JishuSelfAgent {
         // protocol translation (prompt/abort commands, AgentEvent normalization).
         args.push("--mode".to_string());
         args.push("rpc".to_string());
+        // Resume an existing Pi session when a real (non-transient) session id
+        // is provided. Without this, Pi creates a fresh session on every process
+        // spawn, losing all conversation history (the root cause of "agent
+        // doesn't remember previous turns after restart"). Pi's --session-id
+        // accepts an exact project session id and resumes it if it exists,
+        // creating it if missing.
+        if let Some(session_id) = req.session_id.as_ref().filter(|id| !id.is_empty()) {
+            args.push("--session-id".to_string());
+            args.push(session_id.clone());
+        }
         args.push("--append-system-prompt".to_string());
         args.push(JISHU_AGENT_IDENTITY_PROMPT.to_string());
         args.extend(pi_model::build_pi_model_args_from_active()?);
