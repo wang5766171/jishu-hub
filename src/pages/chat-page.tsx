@@ -820,6 +820,7 @@ export function ChatPage({
     }
     return [
       buildRequirementsStagePrompt({
+        taskId: activeTaskInstanceIdRef.current,
         skillId: selectedTaskSkillIdRef.current,
         skillName,
         projectPath: currentProject?.path,

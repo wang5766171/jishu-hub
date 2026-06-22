@@ -3,8 +3,8 @@ use serde_json::Value;
 use super::command_config::AgentCommandPreset;
 use super::{
     AcpCommandSpec, AgentCapabilities, AgentHealth, AgentInfo, ChatRequest, ConfigSurface,
-    NormalizedEvent, ProjectSettingsSurface, StreamEventNormalizer, TerminalSurface,
-    TransportSurface,
+    NormalizedEvent, ProjectSettingsSurface, ResolvedSessionPromptInjection, StreamEventNormalizer,
+    TerminalSurface, TransportSurface,
 };
 use crate::history::HistoryEntry;
 use crate::project::Project;
@@ -65,6 +65,9 @@ pub trait TransportAdapter {
     fn build_chat_command(&self, args: ChatRequest) -> tokio::process::Command;
     fn build_acp_command(&self, _args: &ChatRequest) -> Result<AcpCommandSpec, String> {
         Err("ACP transport is not supported by this agent".to_string())
+    }
+    fn resolved_session_prompt_injection(&self) -> Option<ResolvedSessionPromptInjection> {
+        None
     }
     fn pipe_chat_stdin(&self) -> bool {
         self.abort_chat_sequence().is_some()

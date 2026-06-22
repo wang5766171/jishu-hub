@@ -22,6 +22,7 @@ use crate::agent::normalized::{
     interaction_requests_from_tool_call, InteractionDeliveryHint, InteractionOption,
     InteractionOrigin, InteractionTransport, NormalizedEvent, TurnEndReason,
 };
+use crate::agent::ResolvedSessionPromptInjection;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -37,6 +38,7 @@ pub fn spawn_pi_rpc_session(
     _project_path: String,
     _requested_session_id: Option<String>,
     first_message: String,
+    resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
 ) -> AcpControl {
@@ -46,6 +48,7 @@ pub fn spawn_pi_rpc_session(
         pending_session_id,
         child,
         first_message,
+        resolved_session_prompt_injection,
         on_finish,
         on_session_resolved,
     )
@@ -60,6 +63,7 @@ pub fn spawn_pi_rpc_session_with_emitter(
     pending_session_id: String,
     child: tokio::process::Child,
     first_message: String,
+    resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
 ) -> AcpControl {
@@ -68,6 +72,7 @@ pub fn spawn_pi_rpc_session_with_emitter(
         pending_session_id,
         child,
         first_message,
+        resolved_session_prompt_injection,
         on_finish,
         on_session_resolved,
     )
@@ -78,6 +83,7 @@ fn spawn_pi_rpc_session_inner(
     pending_session_id: String,
     mut child: tokio::process::Child,
     first_message: String,
+    resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
 ) -> AcpControl {
@@ -124,6 +130,7 @@ fn spawn_pi_rpc_session_inner(
             stdout,
             cmd_rx,
             first_message,
+            resolved_session_prompt_injection,
             &on_session_resolved,
         )
         .await;
@@ -195,6 +202,17 @@ enum LoopState {
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 
+pub(crate) fn apply_resolved_session_prompt_injection(
+    message: String,
+    session_id: &str,
+    injection: Option<&ResolvedSessionPromptInjection>,
+) -> String {
+    match injection {
+        Some(injection) => injection.apply(&message, session_id),
+        None => message,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn pi_rpc_connection_loop(
     emit: AcpEventEmit,
@@ -204,6 +222,7 @@ async fn pi_rpc_connection_loop(
     stdout: tokio::process::ChildStdout,
     mut command_rx: tokio::sync::mpsc::Receiver<AcpCommand>,
     first_message: String,
+    resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
     on_session_resolved: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<(), String> {
     // 1. stdout reader sub-task
@@ -266,6 +285,11 @@ async fn pi_rpc_connection_loop(
     on_session_resolved(&session_id);
 
     // 3. Send first prompt
+    let first_message = apply_resolved_session_prompt_injection(
+        first_message,
+        &session_id,
+        resolved_session_prompt_injection.as_ref(),
+    );
     send_pi_command(
         &stdin_arc,
         &json!({"type": "prompt", "message": first_message}),
@@ -295,6 +319,11 @@ async fn pi_rpc_connection_loop(
                         log::info!("Pi RPC loop received Prompt command");
                         match &mut state {
                             LoopState::Idle => {
+                                let msg = apply_resolved_session_prompt_injection(
+                                    msg,
+                                    &session_id,
+                                    resolved_session_prompt_injection.as_ref(),
+                                );
                                 send_pi_command(&stdin_arc, &json!({
                                     "type": "prompt",
                                     "message": msg
@@ -429,6 +458,11 @@ async fn pi_rpc_connection_loop(
                                         state = if let LoopState::CancelPending { pending_prompt } = &mut state {
                                             let buffered = pending_prompt.take();
                                             if let Some(msg) = buffered {
+                                                let msg = apply_resolved_session_prompt_injection(
+                                                    msg,
+                                                    &session_id,
+                                                    resolved_session_prompt_injection.as_ref(),
+                                                );
                                                 send_pi_command(&stdin_arc, &json!({
                                                     "type": "prompt",
                                                     "message": msg
@@ -535,6 +569,11 @@ async fn pi_rpc_connection_loop(
                             state = if let LoopState::CancelPending { pending_prompt } = &mut state {
                                 let buffered = pending_prompt.take();
                                 if let Some(msg) = buffered {
+                                    let msg = apply_resolved_session_prompt_injection(
+                                        msg,
+                                        &session_id,
+                                        resolved_session_prompt_injection.as_ref(),
+                                    );
                                     send_pi_command(&stdin_arc, &json!({
                                         "type": "prompt",
                                         "message": msg
@@ -981,6 +1020,27 @@ mod tests {
             }
         }));
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn applies_resolved_session_prompt_injection_before_prompt_is_sent() {
+        let injection = crate::agent::ResolvedSessionPromptInjection {
+            open_tag: "<jishu-runtime-context>".into(),
+            close_tag: "</jishu-runtime-context>".into(),
+            session_id_field: "session_id".into(),
+            guidance: "直接使用该 session_id，不要扫描 session 文件。".into(),
+        };
+
+        let message = apply_resolved_session_prompt_injection(
+            "用户原始消息".to_string(),
+            "sid-real",
+            Some(&injection),
+        );
+
+        assert!(message.starts_with("<jishu-runtime-context>"));
+        assert!(message.contains("session_id: sid-real"));
+        assert!(message.contains("直接使用该 session_id"));
+        assert!(message.ends_with("用户原始消息"));
     }
 
     #[test]

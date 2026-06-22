@@ -8,7 +8,7 @@ mod probe;
 mod store;
 
 use crate::agent::capability::AgentCapabilities;
-use crate::agent::{AgentInfo, AgentPlugin, ChatRequest};
+use crate::agent::{AgentInfo, AgentPlugin, ChatRequest, ResolvedSessionPromptInjection};
 use crate::project_config::ProjectSettings;
 use std::path::PathBuf;
 
@@ -226,7 +226,19 @@ impl ProjectAdapter for JishuSelfAgent {
 mod tests {
     use super::*;
 
-    // test removed
+    #[test]
+    fn jishu_agent_declares_resolved_session_prompt_injection() {
+        let injection = JishuSelfAgent::new()
+            .resolved_session_prompt_injection()
+            .expect("jishu agent should receive Hub-injected session context");
+
+        assert_eq!(injection.open_tag, "<jishu-runtime-context>");
+        assert_eq!(injection.session_id_field, "session_id");
+        assert!(injection.guidance.contains("get_state"));
+        assert!(injection
+            .apply("hello", "sid-real")
+            .contains("session_id: sid-real"));
+    }
 }
 
 impl SessionAdapter for JishuSelfAgent {
@@ -537,6 +549,15 @@ impl TransportAdapter for JishuSelfAgent {
             program: runtime.program.to_string_lossy().to_string(),
             args,
             envs,
+        })
+    }
+
+    fn resolved_session_prompt_injection(&self) -> Option<ResolvedSessionPromptInjection> {
+        Some(ResolvedSessionPromptInjection {
+            open_tag: "<jishu-runtime-context>".to_string(),
+            close_tag: "</jishu-runtime-context>".to_string(),
+            session_id_field: "session_id".to_string(),
+            guidance: "该 session_id 由 Hub 在 Pi RPC get_state 后注入；阶段推进脚本需要当前会话时直接使用这个值，不要扫描 sessions 目录、猜测最新文件或自行推断。".to_string(),
         })
     }
 

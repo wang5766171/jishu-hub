@@ -10,16 +10,17 @@
  *     --phase "planning" \
  *     --project "/path/to/project" \
  *     --requirement-file "/tmp/requirement.md" \
- *     --session "当前会话ID"
+ *     --session "<session_id>"
  *
  * 用法（规划→执行）：
  *   node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/advance_phase.mjs \
  *     --phase "execution" \
  *     --project "/path/to/project" \
- *     --session "当前会话ID"
+ *     --session "<session_id>"
  *
  * --task-id 可选：如果不传，脚本用 --session 通过 jishu-cli task find 查询。
- * --session 推荐传入（agent 从 Pi get_state 获取），用于确定性地查到当前任务。
+ * --session 推荐传入。Hub 会在发送给 agent 的消息前注入 <jishu-runtime-context>，
+ * 直接读取其中的 session_id 字段即可；不要扫描 sessions 目录或猜测最新文件。
  *
  * 内部调用：jishu-cli --json task advance/find
  */

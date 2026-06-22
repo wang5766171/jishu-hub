@@ -51,12 +51,13 @@ export function PhaseRequirementsView({
     (message: string): PreparedMessage => {
       const skillId = instance?.skill_id ?? "jishu-task-planner";
       const hidden = buildRequirementsStagePrompt({
+        taskId: instance?.task_id,
         skillId,
         projectPath,
       });
       return { visible: message, agent: `${hidden}\n\n${message}` };
     },
-    [instance?.skill_id, projectPath],
+    [instance?.task_id, instance?.skill_id, projectPath],
   );
 
   const inputContextFooter = useMemo(

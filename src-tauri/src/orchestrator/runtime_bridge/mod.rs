@@ -222,6 +222,7 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                     pending_session_id,
                     child,
                     request.prompt,
+                    agent.resolved_session_prompt_injection(),
                     || {},
                     |_sid| {},
                 );

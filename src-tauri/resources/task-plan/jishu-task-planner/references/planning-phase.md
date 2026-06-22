@@ -37,13 +37,14 @@ options: ["确认生成任务流程图", "还要调整方案"]
 node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/advance_phase.mjs \
   --phase "execution" \
   --project "/path/to/project" \
-  --session "SESSION_ID"
+  --session "<session_id>"
 ```
 
 **参数说明**：
-- `--session`：当前会话 ID
+- `--session`：当前会话 ID。Hub 会在每轮消息前注入 `<jishu-runtime-context>`，直接读取其中的 `session_id` 字段。
 - `--project`：当前项目路径（工作目录）
 - 不需要传 `--task-id`：脚本会用 `--session` 自动查询对应的任务实例
+- 不要扫描 sessions 目录、猜测最新文件或运行额外命令推断 session；如果未看到 `session_id`，说明无法确定性推进，应直接说明缺少运行上下文。
 
 然后说明"流程规划阶段完成，将生成任务流程图并进入执行阶段。Hub 会在检测到阶段状态变化后提示用户确认，并负责生成/绑定任务流程图。"
 

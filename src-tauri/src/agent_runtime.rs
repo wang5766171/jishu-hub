@@ -11,7 +11,8 @@ use tokio::process::ChildStdin;
 use crate::acp_runtime::AcpControl;
 use crate::agent::normalized::{TurnEndReason, UsageStats};
 use crate::agent::{
-    AcpCommandSpec, AgentPlugin, AgentRegistry, ChatRequest, NormalizedEvent, TransportSurface,
+    AcpCommandSpec, AgentPlugin, AgentRegistry, ChatRequest, NormalizedEvent,
+    ResolvedSessionPromptInjection, TransportSurface,
 };
 
 pub struct AgentTurnRequest {
@@ -59,6 +60,7 @@ pub struct PreparedAcpTurn {
     pub message: String,
     pub command: AcpCommandSpec,
     pub transport: TransportSurface,
+    pub resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
 }
 
 pub struct GuiTurnHandle {
@@ -140,6 +142,7 @@ pub fn prepare_gui_turn(
                 message: request.message,
                 command,
                 transport,
+                resolved_session_prompt_injection: agent.resolved_session_prompt_injection(),
             }))
         }
         TransportSurface::Cli | TransportSurface::Embedded => {
@@ -337,6 +340,7 @@ where
             turn.project_path,
             turn.native_session_id,
             turn.message,
+            turn.resolved_session_prompt_injection,
             on_finish,
             on_session_resolved,
         ),
@@ -424,6 +428,7 @@ fn run_pi_rpc_turn_blocking(
         message: request.message.clone(),
     };
     let spec = agent.build_acp_command(&req)?;
+    let resolved_session_prompt_injection = agent.resolved_session_prompt_injection();
     let mut cmd = tokio::process::Command::new(&spec.program);
     cmd.args(&spec.args)
         .current_dir(&request.project_path)
@@ -476,13 +481,16 @@ fn run_pi_rpc_turn_blocking(
                         .unwrap_or_else(|| format!("pending-{}", child.id().unwrap_or_default()));
                 }
             };
-            events.push(NormalizedEvent::SessionResolved { session_id });
+            events.push(NormalizedEvent::SessionResolved {
+                session_id: session_id.clone(),
+            });
+            let message = crate::pi_rpc_runtime::apply_resolved_session_prompt_injection(
+                request.message,
+                &session_id,
+                resolved_session_prompt_injection.as_ref(),
+            );
 
-            write_pi_rpc_command(
-                &mut stdin,
-                json!({"type": "prompt", "message": request.message}),
-            )
-            .await?;
+            write_pi_rpc_command(&mut stdin, json!({"type": "prompt", "message": message})).await?;
 
             let mut completed = false;
             let mut awaiting_interaction = false;

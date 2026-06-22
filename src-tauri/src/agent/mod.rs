@@ -21,6 +21,30 @@ pub use traits::*;
 
 pub type StreamEventNormalizer = fn(&serde_json::Value) -> Vec<NormalizedEvent>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSessionPromptInjection {
+    pub open_tag: String,
+    pub close_tag: String,
+    pub session_id_field: String,
+    pub guidance: String,
+}
+
+impl ResolvedSessionPromptInjection {
+    pub fn apply(&self, message: &str, session_id: &str) -> String {
+        let mut lines = vec![
+            self.open_tag.clone(),
+            format!("{}: {}", self.session_id_field, session_id),
+        ];
+        if !self.guidance.trim().is_empty() {
+            lines.push(self.guidance.clone());
+        }
+        lines.push(self.close_tag.clone());
+        lines.push(String::new());
+        lines.push(message.to_string());
+        lines.join("\n")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
     pub id: String,
