@@ -398,7 +398,6 @@ pub fn mark_task_stage_session(
     });
 
     instance.skill_id = skill_id.to_string();
-    instance.current_phase = phase.clone();
     instance.updated_at = now;
     if let Some(title) = title.map(str::trim).filter(|v| !v.is_empty()) {
         instance.title = title.to_string();
@@ -407,11 +406,15 @@ pub fn mark_task_stage_session(
     match phase.as_str() {
         "planning" => {
             instance.planning_session_id = Some(session_id.to_string());
-            instance.status = STATUS_PLANNING_DISCUSSING.into();
+            if instance.status != STATUS_GRAPH_CREATED {
+                instance.current_phase = "planning".into();
+                instance.status = STATUS_PLANNING_DISCUSSING.into();
+            }
         }
         "execution" => {
             // 执行阶段不绑定 session_id（执行会话由 run/node 管理）。
             // 仅当当前 status 还没到 graph_created 时才推进（避免覆盖已绑图的状态）。
+            instance.current_phase = "execution".into();
             if instance.status != STATUS_GRAPH_CREATED {
                 instance.status = STATUS_GRAPH_CREATED.into();
             }
@@ -419,7 +422,10 @@ pub fn mark_task_stage_session(
         _ => {
             // requirements 阶段
             instance.requirement_session_id = Some(session_id.to_string());
-            instance.status = STATUS_REQUIREMENTS_DISCUSSING.into();
+            if instance.status == STATUS_REQUIREMENTS_DISCUSSING {
+                instance.current_phase = "requirements".into();
+                instance.status = STATUS_REQUIREMENTS_DISCUSSING.into();
+            }
         }
     }
 
@@ -832,4 +838,53 @@ fn task_workspace_root(project_root: &str) -> PathBuf {
 
 fn task_instances_db_path(project_root: &str) -> PathBuf {
     task_workspace_root(project_root).join("task-instances.db")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_project(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "jishu-task-launch-{label}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn mark_stage_session_does_not_downgrade_graph_created_instance() {
+        let project = temp_project("no-downgrade");
+        let project_root = project.to_string_lossy().to_string();
+
+        let instance = mark_task_stage_session(
+            &project_root,
+            None,
+            "requirements-session",
+            "jishu-task-planner",
+            "requirements",
+            Some("Demo task"),
+        )
+        .unwrap();
+        attach_graph(&project_root, &instance.task_id, "graph-1").unwrap();
+
+        let updated = mark_task_stage_session(
+            &project_root,
+            Some(&instance.task_id),
+            "planning-session",
+            "jishu-task-planner",
+            "planning",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(updated.status, STATUS_GRAPH_CREATED);
+        assert_eq!(updated.current_phase, "execution");
+        assert_eq!(updated.planning_session_id.as_deref(), Some("planning-session"));
+
+        let _ = std::fs::remove_dir_all(&project);
+    }
 }

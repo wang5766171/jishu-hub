@@ -260,7 +260,17 @@ fn list_task_plan_skills_in_dir(dir: &Path) -> Result<Vec<TaskPlanSkill>, String
     Ok(skills)
 }
 
+type SkillLinker = fn(&str, &Path) -> Result<(), String>;
+
 fn install_builtin_skill_in_dir(skill_id: &str, dir: &Path) -> Result<TaskPlanSkill, String> {
+    install_builtin_skill_in_dir_with_linker(skill_id, dir, link_to_pi_skills_dir)
+}
+
+fn install_builtin_skill_in_dir_with_linker(
+    skill_id: &str,
+    dir: &Path,
+    link_skill: SkillLinker,
+) -> Result<TaskPlanSkill, String> {
     let builtins = builtin_skills_for_dir(dir)?;
     let builtin = builtin_by_id(&builtins, skill_id)
         .ok_or_else(|| format!("No built-in task plan skill named '{skill_id}'"))?;
@@ -278,7 +288,8 @@ fn install_builtin_skill_in_dir(skill_id: &str, dir: &Path) -> Result<TaskPlanSk
     // (<agentDir>/skills/<skill_id>) so Pi loads it as a real skill and
     // the agent recognizes it in its skill list. Without this, Pi only
     // scans <agentDir>/skills/ and never sees <agentDir>/task-plan/.
-    let _ = link_to_pi_skills_dir(skill_id, &skill_dir);
+    link_skill(skill_id, &skill_dir)
+        .map_err(|err| format!("Failed to link task plan skill into Pi skills dir: {err}"))?;
     let written = std::fs::read_to_string(&skill_path).map_err(|err| err.to_string())?;
     let mut skill = parse_skill_markdown(
         skill_id,
@@ -867,6 +878,24 @@ description: demo
             .iter()
             .any(|(filename, content)| filename == "advance_phase.mjs"
                 && String::from_utf8_lossy(content).contains("advance_phase.mjs")));
+    }
+
+    #[test]
+    fn install_builtin_skill_reports_pi_link_error() {
+        fn failing_linker(_: &str, _: &Path) -> Result<(), String> {
+            Err("link failed".to_string())
+        }
+
+        let dir =
+            std::env::temp_dir().join(format!("jishu-task-plan-link-test-{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let err =
+            install_builtin_skill_in_dir_with_linker("jishu-task-planner", &dir, failing_linker)
+                .unwrap_err();
+        assert!(err.contains("link failed"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

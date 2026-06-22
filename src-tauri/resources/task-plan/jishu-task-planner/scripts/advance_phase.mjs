@@ -46,15 +46,12 @@ if (phase !== "planning" && phase !== "execution") {
 
 const cliBin = process.env.JISHU_CLI_BIN || "jishu-cli";
 
-console.error(`[advance_phase] using cli: ${cliBin}`);
-
 // 如果没传 task-id，用 session-id 通过 jishu-cli task find 查询。
 if (!taskId) {
   if (!sessionId) {
     console.error("advance_phase.mjs: --task-id or --session is required");
     process.exit(1);
   }
-  console.error(`[advance_phase] querying task by session: ${sessionId}`);
   try {
     const findOutput = execFileSync(cliBin, [
       "--json", "task", "find",
@@ -64,7 +61,6 @@ if (!taskId) {
     const found = JSON.parse(findOutput.trim());
     if (found && found.task_id) {
       taskId = found.task_id;
-      console.error(`[advance_phase] found task_id: ${taskId}`);
     }
   } catch (e) {
     console.error(`advance_phase.mjs: task find failed: ${e.stderr || e.message}`);
@@ -87,32 +83,31 @@ const cliArgs = [
   "--project", project,
 ];
 
+let requirementMarkdown;
 if (phase === "planning") {
   if (!requirementFile) {
     console.error("advance_phase.mjs: --requirement-file is required for planning phase");
     process.exit(1);
   }
-  let requirementMarkdown;
   try {
     requirementMarkdown = readFileSync(requirementFile, "utf-8");
   } catch (e) {
     console.error(`advance_phase.mjs: cannot read requirement file: ${e.message}`);
     process.exit(1);
   }
-  cliArgs.push("--requirement", requirementMarkdown);
+  cliArgs.push("--requirement", "-");
 }
 
 if (sessionId) {
   cliArgs.push("--session", sessionId);
 }
 
-console.error(`[advance_phase] args: task=${taskId} phase=${phase} project=${project}`);
-
 try {
   const output = execFileSync(cliBin, cliArgs, {
     encoding: "utf-8",
     maxBuffer: 10 * 1024 * 1024,
     windowsHide: true,
+    input: requirementMarkdown,
   });
 
   const result = JSON.parse(output.trim());
