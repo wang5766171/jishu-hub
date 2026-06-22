@@ -104,6 +104,32 @@ pub struct TaskSessionIndex {
     pub entries: Vec<TaskSessionEntry>,
 }
 
+/// 阶段推进请求（统一入口，不绑定 skill）。
+///
+/// `phase` 表示要推进到哪个阶段：
+/// - "planning"：需求→规划（落盘终稿 + 推进状态 + 返回规划指令）
+/// - "execution"：规划→执行（推进状态到 graph_created）
+///
+/// 设计依据：阶段转换应该是确定性的后端原子操作，不应依赖前端关键词检测。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdvancePhaseRequest {
+    pub task_id: String,
+    pub phase: String,
+    /// 仅 requirements→planning 需要：需求终稿 markdown（由 skill 的 format_requirement.mjs 产出）。
+    pub requirement_markdown: Option<String>,
+    /// 仅 requirements→planning 需要：需求阶段会话 id（追溯用）。
+    pub requirement_session_id: Option<String>,
+}
+
+/// 阶段推进结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdvancePhaseResult {
+    pub instance: TaskLaunchInstance,
+    /// 仅 requirements→planning：传给规划阶段新会话的首条消息（隐藏指令 + 需求终稿）。
+    /// 前端收到后直接用 send_message 发给 agent（用新 pending session）。
+    pub planning_instruction: Option<String>,
+}
+
 /// 独立 SQLite 任务实例库。
 ///
 /// 设计依据：`任务数据结构与生命周期设计_20260622.md` §1.1、§7。
@@ -514,7 +540,95 @@ pub fn attach_graph(
     Ok(instance)
 }
 
-/// 同步执行实例运行态（由前端轮询 graph_run.status 后调用）。
+/// 统一阶段推进入口。
+///
+/// 按 `request.phase` 决定转换类型：
+/// - "planning"：需求→规划。落盘需求终稿，推进 status → requirements_finalized → planning_discussing，
+///   返回规划指令（含需求终稿内容），前端用它发起新的规划阶段会话。
+/// - "execution"：规划→执行。推进 status → graph_created，current_phase → execution。
+///
+/// 设计依据：阶段转换是确定性的后端原子操作（状态机 + 文件），不依赖前端关键词检测或 skill 话术。
+/// 无论用什么 skill，阶段转换都走这个统一入口。
+pub fn advance_phase(
+    project_root: &str,
+    request: AdvancePhaseRequest,
+) -> Result<AdvancePhaseResult, String> {
+    let AdvancePhaseRequest {
+        task_id,
+        phase,
+        requirement_markdown,
+        requirement_session_id,
+    } = request;
+
+    let store = open_store(project_root)?;
+    let mut instance = store
+        .get(&task_id)?
+        .ok_or_else(|| format!("task instance not found: {task_id}"))?;
+
+    match phase.as_str() {
+        "planning" => {
+            // 需求→规划：落盘终稿 + 推进状态
+            let markdown = requirement_markdown
+                .ok_or_else(|| "requirement_markdown is required for planning phase".to_string())?;
+            if markdown.trim().is_empty() {
+                return Err("requirement_markdown is empty".into());
+            }
+
+            // 落盘需求终稿
+            let requirement_dir = task_workspace_root(project_root)
+                .join(&task_id)
+                .join("requirements");
+            std::fs::create_dir_all(&requirement_dir).map_err(|err| err.to_string())?;
+            let requirement_file = requirement_dir.join("requirements.md");
+            let content = render_finalized_markdown(
+                &instance.title,
+                &instance.skill_id,
+                requirement_session_id.as_deref(),
+                "discussion",
+                &markdown,
+            );
+            crate::util::atomic_write(&requirement_file, content.as_bytes())
+                .map_err(|err| err.to_string())?;
+
+            // 推进状态
+            let now = now_ms();
+            instance.status = STATUS_PLANNING_DISCUSSING.into();
+            instance.current_phase = "planning".into();
+            instance.requirement_file = Some(requirement_file.to_string_lossy().to_string());
+            if let Some(sid) = requirement_session_id.filter(|v| !v.trim().is_empty()) {
+                instance.requirement_session_id = Some(sid);
+            }
+            instance.updated_at = now;
+            store.upsert(&instance)?;
+
+            // 生成规划指令（传给规划阶段新会话的首条消息）
+            let planning_instruction =
+                build_planning_instruction_from_requirement(&requirement_file)?;
+
+            Ok(AdvancePhaseResult {
+                instance,
+                planning_instruction: Some(planning_instruction),
+            })
+        }
+        "execution" => {
+            // 规划→执行：推进状态到 graph_created
+            // 注意：graph 的创建（orchestrator_create_graph）由前端调用，
+            // 这里只推进 task_instance 状态。前端先 create_graph 拿到 graph_id，
+            // 再调本命令推进状态。或者在 attach_graph 之后调本命令。
+            // 简化：execution 阶段推进只更新 current_phase，graph_id 由 attach_graph 设置。
+            instance.status = STATUS_GRAPH_CREATED.into();
+            instance.current_phase = "execution".into();
+            instance.updated_at = now_ms();
+            store.upsert(&instance)?;
+
+            Ok(AdvancePhaseResult {
+                instance,
+                planning_instruction: None,
+            })
+        }
+        _ => Err(format!("unknown phase: {phase}")),
+    }
+}
 ///
 /// 设计依据：`任务数据结构与生命周期设计_20260622.md` §1.1 联动契约、§2.1 run_status 流转。
 /// - running：写 active_run_id + run_status=running

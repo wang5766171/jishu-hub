@@ -2715,6 +2715,14 @@ fn task_launch_create_from_existing_graph(
 }
 
 #[tauri::command]
+fn task_advance_phase(
+    project_root: String,
+    request: task_launch::AdvancePhaseRequest,
+) -> Result<task_launch::AdvancePhaseResult, String> {
+    task_launch::advance_phase(&project_root, request)
+}
+
+#[tauri::command]
 fn task_launch_rename_task(
     project_root: String,
     task_id: String,
@@ -2930,6 +2938,7 @@ pub fn run() {
             task_launch_sync_run_status,
             task_launch_get_instance,
             task_launch_create_from_existing_graph,
+            task_advance_phase,
             task_launch_rename_task,
             task_launch_delete_task,
             list_models,

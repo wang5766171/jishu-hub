@@ -197,12 +197,16 @@ interface TaskLaunchInstanceSummary {
   project_root: string;
   title: string;
   skill_id: string;
+  planner_agent_id?: string;
   status: string;
   current_phase: string;
   requirement_file?: string | null;
   requirement_session_id?: string | null;
   planning_session_id?: string | null;
   graph_id?: string | null;
+  active_run_id?: string | null;
+  last_run_id?: string | null;
+  run_status?: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -1217,7 +1221,64 @@ export function ChatPage({
     });
   }, [currentProject?.path, sendTaskPhaseMessage, t, taskPlanSkills]);
 
-  const createGraphFromPlanningConversation = useCallback(async () => {
+  // 统一阶段推进：调用后端 task_advance_phase 命令（确定性状态机推进，不绑定 skill 话术）。
+  // 需求→规划：后端落盘终稿+推进状态+返回规划指令，前端用它发起新规划会话。
+  // 规划→执行：前端先 create_graph，再调推进。
+  const advanceToPhase = useCallback(async (
+    phase: "planning" | "execution",
+    requirementMarkdown?: string,
+  ) => {
+    if (!currentProject?.path || !activeTaskInstanceIdRef.current) return;
+    const taskId = activeTaskInstanceIdRef.current;
+
+    if (phase === "planning") {
+      // 需求→规划
+      const result = await invokeCommand<{ instance: TaskLaunchInstanceSummary; planning_instruction: string | null }>(
+        "task_advance_phase",
+        {
+          projectRoot: currentProject.path,
+          request: {
+            task_id: taskId,
+            phase: "planning",
+            requirement_markdown: requirementMarkdown ?? null,
+            requirement_session_id: selectedSessionRef.current && selectedSessionRef.current !== "new"
+              ? selectedSessionRef.current
+              : null,
+          },
+        },
+      );
+      if (!result) return;
+      activeTaskInstanceIdRef.current = result.instance.task_id;
+      setActiveTaskInstanceId(result.instance.task_id);
+      setActiveTaskRequirementFile(result.instance.requirement_file ?? null);
+      activeTaskRequirementFileRef.current = result.instance.requirement_file ?? null;
+
+      // 用返回的规划指令发起新规划阶段会话
+      if (result.planning_instruction) {
+        const skillId = selectedTaskSkillIdRef.current;
+        await sendTaskPhaseMessage({
+          taskId: result.instance.task_id,
+          phase: "planning",
+          title: result.instance.title,
+          visibleMessage: `需求已定稿，开始规划任务流程。\n\n需求终稿：${result.instance.requirement_file ?? ""}`,
+          agentMessage: [
+            `<jishu-task-planning-stage>`,
+            `task_id: ${result.instance.task_id}`,
+            `requirement_file: ${result.instance.requirement_file ?? ""}`,
+            `skill_id: ${skillId}`,
+            `当前进入任务流程规划阶段。请基于需求终稿与用户在会话中生成流程方案。不要执行任务，不要要求用户去画布点击智能规划；当流程方案清晰后，发起交互式确认，询问用户是否生成任务流程图。`,
+            `</jishu-task-planning-stage>`,
+            "",
+            result.planning_instruction,
+          ].join("\n"),
+        });
+      }
+      await refreshTaskLaunchSessions();
+    } else {
+      // 规划→执行：先 create_graph，再推进
+      await createGraphFromPlanningConversation();
+    }
+  }, [currentProject?.path, refreshTaskLaunchSessions, sendTaskPhaseMessage]);
     if (!currentProject?.path) return;
     const messages = messagesToPlanningMessages(sessionMessagesRef.current);
     const streamingText = streamStore.getState(selectedSessionRef.current)?.text.trim();
@@ -1998,22 +2059,14 @@ export function ChatPage({
 
     const delivery = result?.delivery ?? "follow_up";
     if (taskLaunchOpen && isGenerateTaskConfirmation(interaction.request, submission)) {
-      // 交互确认"生成任务流程图"。不能立即推进——如果 delivery 是 mid_turn,
-      // Pi 进程正在处理当前轮次(输出需求终稿),立即发规划消息会被 Pi 忽略
-      // (LoopState::Prompting)。暂存推进动作,等 turn_complete 后执行。
-      // 如果 delivery 是 follow_up,当前轮次已结束,可立即执行。
+      // 交互确认"生成任务流程图"。通过后端 task_advance_phase 统一推进。
+      // mid_turn 时延迟到 turn_complete（Pi 正在输出终稿，不能立即发新消息）。
       const advanceAction = taskLaunchPhase === "requirements"
-        ? () => finalizeRequirementsAndStartPlanning(
-            collectTaskLaunchPlanningMessages([
-              createPlanningMessage(value, "user"),
-            ]),
-          )
-        : () => createGraphFromPlanningConversation();
+        ? () => advanceToPhase("planning", value)
+        : () => advanceToPhase("execution");
 
       if (delivery === "mid_turn") {
-        // mid_turn: 让 Pi 先完成本轮(输出终稿),turn_complete 后再推进。
         pendingTaskAdvanceRef.current = advanceAction;
-        // 仍然把回答注入到当前流(recordInteractionResponse),让用户看到确认。
         if (value.trim()) {
           streamStore.recordInteractionResponse(
             interaction.sessionId,
@@ -2023,7 +2076,6 @@ export function ChatPage({
           );
         }
       } else {
-        // follow_up: 当前轮次已结束,直接推进。
         await advanceAction();
       }
       return;
