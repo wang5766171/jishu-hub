@@ -270,6 +270,9 @@ fn install_builtin_skill_in_dir(skill_id: &str, dir: &Path) -> Result<TaskPlanSk
     let skill_path = skill_dir.join("SKILL.md");
     crate::util::atomic_write(&skill_path, builtin.adapter.as_bytes())
         .map_err(|err| err.to_string())?;
+    // Copy extra bundled files (scripts/, references/) so the installed skill
+    // is a faithful copy of the bundled resource directory, not just SKILL.md.
+    copy_bundled_extra_files(skill_id, &skill_dir)?;
     write_install_metadata(builtin, &skill_dir)?;
     let written = std::fs::read_to_string(&skill_path).map_err(|err| err.to_string())?;
     let mut skill = parse_skill_markdown(
@@ -287,6 +290,73 @@ fn install_builtin_skill_in_dir(skill_id: &str, dir: &Path) -> Result<TaskPlanSk
             .unwrap_or_else(|| format!("Installed task plan skill '{skill_id}' is invalid")));
     }
     Ok(skill)
+}
+
+/// Copy extra bundled files (scripts/, references/, etc.) from the bundled
+/// resource directory to the installed skill directory. The bundled directory
+/// is `src-tauri/resources/task-plan/<skill_id>/` (embedded at compile time).
+///
+/// Only copies directories that exist in the bundled resources — missing dirs
+/// are silently skipped (backward compatible with skills that only have SKILL.md).
+fn copy_bundled_extra_files(skill_id: &str, dest_dir: &Path) -> Result<(), String> {
+    let extra_dirs = ["scripts", "references", "assets"];
+    for sub in &extra_dirs {
+        let bundled_key = format!("{skill_id}/{sub}");
+        let entries = match bundled_dir_entries(&bundled_key) {
+            Some(e) => e,
+            None => continue,
+        };
+        let dest_sub = dest_dir.join(sub);
+        std::fs::create_dir_all(&dest_sub).map_err(|err| err.to_string())?;
+        for (filename, content) in entries {
+            let dest_file = dest_sub.join(&filename);
+            crate::util::atomic_write(&dest_file, &content).map_err(|err| err.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Retrieve the list of (filename, content) pairs embedded in a bundled
+/// resource subdirectory. Returns None if the directory has no extra files.
+fn bundled_dir_entries(key: &str) -> Option<Vec<(String, Vec<u8>)>> {
+    // Bundled extra files are embedded via include_dir or similar. For now,
+    // we use compile-time include_bytes! for each known skill's extra files.
+    // This is intentionally extensible — add new entries as skills grow.
+    match key {
+        "jishu-task-planner/scripts" => Some(vec![
+            (
+                "format_requirement.mjs".to_string(),
+                include_bytes!(
+                    "../resources/task-plan/jishu-task-planner/scripts/format_requirement.mjs"
+                )
+                .to_vec(),
+            ),
+            (
+                "format_flow_plan.mjs".to_string(),
+                include_bytes!(
+                    "../resources/task-plan/jishu-task-planner/scripts/format_flow_plan.mjs"
+                )
+                .to_vec(),
+            ),
+        ]),
+        "jishu-task-planner/references" => Some(vec![
+            (
+                "requirements-phase.md".to_string(),
+                include_bytes!(
+                    "../resources/task-plan/jishu-task-planner/references/requirements-phase.md"
+                )
+                .to_vec(),
+            ),
+            (
+                "planning-phase.md".to_string(),
+                include_bytes!(
+                    "../resources/task-plan/jishu-task-planner/references/planning-phase.md"
+                )
+                .to_vec(),
+            ),
+        ]),
+        _ => None,
+    }
 }
 
 pub fn read_installed_skill(dir: &Path, skill_id: &str) -> Result<Option<TaskPlanSkill>, String> {
