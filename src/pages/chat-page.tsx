@@ -767,8 +767,29 @@ export function ChatPage({
     }
   }, [taskPlanSkills]);
 
+  // 记录哪些 session 已经注入过 launch instruction（只在每个阶段的首条消息注入一次，
+  // 后续消息复用 agent 进程上下文，不重复下达阶段指令，避免 agent 误以为每轮都是新阶段开始）。
+  const injectedLaunchSessionsRef = useRef<Set<string>>(new Set());
+
   const prepareTaskLaunchMessage = useCallback((message: string) => {
     if (!taskLaunchOpen) return message;
+    // 判断当前 session 是否已经注入过 launch instruction。
+    // selectedSession 为 null 或 "new" 时是首条消息，需要注入；
+    // 已有 session id 时，检查是否在已注入集合里。
+    const currentSession = selectedSessionRef.current;
+    const isFirstMessage = !currentSession || currentSession === "new";
+    const alreadyInjected = currentSession
+      ? injectedLaunchSessionsRef.current.has(currentSession)
+      : false;
+    if (!isFirstMessage && alreadyInjected) {
+      // 后续消息：不重复注入 launch instruction，原样透传（agent 进程已有上下文）。
+      return message;
+    }
+    // 标记当前 session 已注入（pending id 和后续 real id 都标记）。
+    if (currentSession && currentSession !== "new") {
+      injectedLaunchSessionsRef.current.add(currentSession);
+    }
+
     const selected = taskPlanSkills.find((skill) => skill.id === selectedTaskSkillIdRef.current);
     const skillName = selected?.name || selectedTaskSkillIdRef.current;
     if (taskLaunchPhase === "planning") {
@@ -1413,6 +1434,11 @@ export function ChatPage({
           if (queuedSteers) {
             pendingSteerMessagesRef.current.set(realId, queuedSteers);
             pendingSteerMessagesRef.current.delete(cid);
+          }
+          // Migrate launch-injection marker: if the pending id was already
+          // injected with launch instruction, the real id is too (same session).
+          if (injectedLaunchSessionsRef.current.has(cid)) {
+            injectedLaunchSessionsRef.current.add(realId);
           }
           setPendingInteractions((current) =>
             current.map((item) =>
