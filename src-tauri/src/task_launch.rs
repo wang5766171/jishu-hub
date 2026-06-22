@@ -427,6 +427,21 @@ pub fn mark_task_stage_session(
     Ok(instance)
 }
 
+/// 通过 session_id 查找任务实例。
+/// agent 调 advance_phase.mjs 时可能不知道 task_id，但知道自己的 session_id
+/// （Pi 的 get_state 返回）。用 session_id 反查 task_id 是确定性的。
+pub fn find_by_session(
+    project_root: &str,
+    session_id: &str,
+) -> Result<Option<TaskLaunchInstance>, String> {
+    let store = open_store(project_root)?;
+    let instances = store.list_by_project(project_root)?;
+    Ok(instances.into_iter().find(|inst| {
+        inst.requirement_session_id.as_deref() == Some(session_id)
+            || inst.planning_session_id.as_deref() == Some(session_id)
+    }))
+}
+
 /// 需求定稿：落盘 requirement_markdown + 推进 status=requirements_finalized。
 ///
 /// 设计依据：`任务数据结构与生命周期设计_20260622.md` §3.1。

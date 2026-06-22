@@ -4,24 +4,24 @@
  *
  * 这是任务阶段切换的**唯一触发入口**。agent 判断当前阶段已收敛后，
  * 调用此脚本（而非只在文本里说"完成了"），脚本通过 jishu-cli 推进后端状态。
- * Hub 前端检测到状态变化后，弹窗让用户确认，确认后发起下一阶段会话。
  *
  * 用法（需求→规划）：
  *   node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/advance_phase.mjs \
- *     --task-id "task_xxx" \
  *     --phase "planning" \
  *     --project "/path/to/project" \
- *     --requirement-file "/path/to/requirements.md" \
+ *     --requirement-file "/tmp/requirement.md" \
  *     --session "当前会话ID"
  *
  * 用法（规划→执行）：
  *   node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/advance_phase.mjs \
- *     --task-id "task_xxx" \
  *     --phase "execution" \
- *     --project "/path/to/project"
+ *     --project "/path/to/project" \
+ *     --session "当前会话ID"
  *
- * 内部调用：jishu-cli --json task advance --task-id xxx --phase xxx --project xxx
- * jishu-cli 直接操作 Hub 的 SQLite 数据库，推进任务实例状态。
+ * --task-id 可选：如果不传，脚本用 --session 通过 jishu-cli task find 查询。
+ * --session 推荐传入（agent 从 Pi get_state 获取），用于确定性地查到当前任务。
+ *
+ * 内部调用：jishu-cli --json task advance/find
  */
 import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
@@ -33,19 +33,47 @@ function getFlag(name) {
   return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : "";
 }
 
-const taskId = getFlag("task-id");
+let taskId = getFlag("task-id");
 const phase = getFlag("phase") || "planning";
 const project = getFlag("project") || ".";
 const requirementFile = getFlag("requirement-file");
 const sessionId = getFlag("session");
 
-if (!taskId) {
-  console.error("advance_phase.mjs: --task-id is required");
+if (phase !== "planning" && phase !== "execution") {
+  console.error(`advance_phase.mjs: --phase must be "planning" or "execution", got: ${phase}`);
   process.exit(1);
 }
 
-if (phase !== "planning" && phase !== "execution") {
-  console.error(`advance_phase.mjs: --phase must be "planning" or "execution", got: ${phase}`);
+const cliBin = process.env.JISHU_CLI_BIN || "jishu-cli";
+
+console.error(`[advance_phase] using cli: ${cliBin}`);
+
+// 如果没传 task-id，用 session-id 通过 jishu-cli task find 查询。
+if (!taskId) {
+  if (!sessionId) {
+    console.error("advance_phase.mjs: --task-id or --session is required");
+    process.exit(1);
+  }
+  console.error(`[advance_phase] querying task by session: ${sessionId}`);
+  try {
+    const findOutput = execFileSync(cliBin, [
+      "--json", "task", "find",
+      "--session", sessionId,
+      "--project", project,
+    ], { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, windowsHide: true });
+    const found = JSON.parse(findOutput.trim());
+    if (found && found.task_id) {
+      taskId = found.task_id;
+      console.error(`[advance_phase] found task_id: ${taskId}`);
+    }
+  } catch (e) {
+    console.error(`advance_phase.mjs: task find failed: ${e.stderr || e.message}`);
+    process.exit(1);
+  }
+}
+
+if (!taskId) {
+  console.error("advance_phase.mjs: cannot determine task_id");
   process.exit(1);
 }
 
@@ -60,7 +88,6 @@ const cliArgs = [
 ];
 
 if (phase === "planning") {
-  // Read requirement markdown from file (produced by format_requirement.mjs)
   if (!requirementFile) {
     console.error("advance_phase.mjs: --requirement-file is required for planning phase");
     process.exit(1);
@@ -79,13 +106,7 @@ if (sessionId) {
   cliArgs.push("--session", sessionId);
 }
 
-// Execute jishu-cli.
-// JISHU_CLI_BIN env var overrides the binary path (for local dev/testing).
-// Falls back to "jishu-cli" (from PATH, the installed version).
-const cliBin = process.env.JISHU_CLI_BIN || "jishu-cli";
-
-console.error(`[advance_phase] using cli: ${cliBin}`);
-console.error(`[advance_phase] args: ${cliArgs.join(" ")}`);
+console.error(`[advance_phase] args: task=${taskId} phase=${phase} project=${project}`);
 
 try {
   const output = execFileSync(cliBin, cliArgs, {
@@ -94,7 +115,6 @@ try {
     windowsHide: true,
   });
 
-  // Parse JSON output to verify success
   const result = JSON.parse(output.trim());
 
   if (phase === "planning") {

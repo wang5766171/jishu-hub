@@ -265,9 +265,6 @@ pub enum TaskAction {
     },
 
     /// Advance a task instance to the next phase (requirements → planning → execution).
-    /// Called by the task planning skill (via advance_phase.mjs) when the agent
-    /// determines the current phase is converged. This is the **only** trigger
-    /// for phase transitions — no keyword detection involved.
     Advance {
         /// Task instance ID (e.g. "task_xxx").
         #[arg(long)]
@@ -289,6 +286,18 @@ pub enum TaskAction {
         /// Current session ID (for traceability — recorded as requirement_session_id).
         #[arg(long)]
         session: Option<String>,
+    },
+
+    /// Find a task instance by session ID.
+    /// Used by advance_phase.mjs when the agent knows its session_id but not task_id.
+    Find {
+        /// Session ID to look up.
+        #[arg(long)]
+        session: String,
+
+        /// Project root path (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        project: String,
     },
 }
 

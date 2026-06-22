@@ -44,6 +44,37 @@ pub fn run(action: TaskAction, ctx: &ExecutionContext) -> Result<(), CliError> {
             session.as_deref(),
             ctx,
         ),
+        TaskAction::Find { session, project } => run_find(&session, &project, ctx),
+    }
+}
+
+/// Find a task instance by session ID.
+fn run_find(session: &str, project: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
+    let project_root = std::path::absolute(project)
+        .map_err(|e| CliError::Internal(format!("Cannot resolve project path: {e}")))?
+        .to_string_lossy()
+        .to_string();
+
+    match crate::task_launch::find_by_session(&project_root, session) {
+        Ok(Some(instance)) => {
+            if ctx.json {
+                println!("{}", serde_json::to_string(&instance).unwrap_or_default());
+            } else {
+                println!("task_id: {}", instance.task_id);
+                println!("status: {}", instance.status);
+                println!("phase: {}", instance.current_phase);
+            }
+            Ok(())
+        }
+        Ok(None) => {
+            if ctx.json {
+                println!("null");
+            } else {
+                println!("No task found for session: {session}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::Internal(e)),
     }
 }
 

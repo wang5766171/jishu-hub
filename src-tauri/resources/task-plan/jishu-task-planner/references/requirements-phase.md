@@ -82,14 +82,16 @@ node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/format_requirement.mjs 
 调用 `scripts/advance_phase.mjs`，它会通过 `jishu-cli` 推进任务状态：
 ```bash
 node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/advance_phase.mjs \
-  --task-id "task_xxx" \
   --phase "planning" \
   --project "/path/to/project" \
   --requirement-file "/tmp/requirement.md" \
-  --session "当前会话ID"
+  --session "SESSION_ID"
 ```
 
-task_id 从 `<jishu-task-launch-instruction>` 里读取。session 是当前会话 ID。
+**参数说明**：
+- `--session`：当前会话 ID（你的 session id，从上下文可知）
+- `--project`：当前项目路径（工作目录）
+- 不需要传 `--task-id`：脚本会用 `--session` 自动查询对应的任务实例
 
 ### 完成后
 

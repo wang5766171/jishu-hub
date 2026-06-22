@@ -35,12 +35,15 @@ options: ["确认生成任务流程图", "还要调整方案"]
 调用 `scripts/advance_phase.mjs` 触发阶段推进：
 ```bash
 node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/advance_phase.mjs \
-  --task-id "task_xxx" \
   --phase "execution" \
-  --project "/path/to/project"
+  --project "/path/to/project" \
+  --session "SESSION_ID"
 ```
 
-task_id 从 `<jishu-task-planning-stage>` 里读取。
+**参数说明**：
+- `--session`：当前会话 ID
+- `--project`：当前项目路径（工作目录）
+- 不需要传 `--task-id`：脚本会用 `--session` 自动查询对应的任务实例
 
 然后说明"流程规划阶段完成，将生成任务流程图并进入执行阶段。Hub 会提示用户确认后自动进入执行阶段。"
 
