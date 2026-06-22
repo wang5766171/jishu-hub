@@ -404,6 +404,13 @@ fn bundled_dir_entries(key: &str) -> Option<Vec<(String, Vec<u8>)>> {
                 )
                 .to_vec(),
             ),
+            (
+                "advance_phase.mjs".to_string(),
+                include_bytes!(
+                    "../resources/task-plan/jishu-task-planner/scripts/advance_phase.mjs"
+                )
+                .to_vec(),
+            ),
         ]),
         "jishu-task-planner/references" => Some(vec![
             (
@@ -851,6 +858,15 @@ description: demo
             .any(|skill| skill.id == "jishu-task-planner" && skill.installed));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundled_task_planner_scripts_include_phase_advancer() {
+        let entries = bundled_dir_entries("jishu-task-planner/scripts").unwrap();
+        assert!(entries
+            .iter()
+            .any(|(filename, content)| filename == "advance_phase.mjs"
+                && String::from_utf8_lossy(content).contains("advance_phase.mjs")));
     }
 
     #[test]

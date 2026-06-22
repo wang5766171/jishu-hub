@@ -14,6 +14,7 @@ import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { PhaseConversationShell } from "./phase-conversation-shell";
 import { RequirementFinalizeCard } from "./requirement-finalize-card";
+import { buildRequirementsStagePrompt } from "./task-phase-prompts";
 import type { PreparedMessage } from "@/features/chat-core/types";
 import type { TaskInstance } from "./types";
 
@@ -49,15 +50,13 @@ export function PhaseRequirementsView({
   const prepareMessage = useCallback(
     (message: string): PreparedMessage => {
       const skillId = instance?.skill_id ?? "jishu-task-planner";
-      const hidden = `<jishu-task-launch-instruction>
-skill_id: ${skillId}
-当前处于需求讨论阶段。你的职责是通过多轮对话澄清需求，不要写代码、不要执行命令、不要输出任务流程图或执行计划。
-当你判断需求已经足够明确时，请使用交互式问答（request_user_input）向用户确认是否进入流程规划阶段，选项中必须包含"生成任务流程图"。
-用户选择"生成任务流程图"后：请在本轮回复中产出结构化的需求终稿（按技能方法论定义的格式：目标/范围/范围外/约束/验收标准/关键假设），并说明"需求讨论阶段完成，将进入流程规划阶段"。这是你在本阶段的最后一次回复——不要继续提问，不要自己生成流程图，系统会自动推进到下一阶段。
-</jishu-task-launch-instruction>`;
+      const hidden = buildRequirementsStagePrompt({
+        skillId,
+        projectPath,
+      });
       return { visible: message, agent: `${hidden}\n\n${message}` };
     },
-    [instance?.skill_id],
+    [instance?.skill_id, projectPath],
   );
 
   const inputContextFooter = useMemo(

@@ -50,6 +50,8 @@ import {
   derivePlanningTitle,
   type PlanningChatMessage,
 } from "@/features/task-workbench/planning-session";
+import { detectTaskPhaseAdvancePrompt, type TaskPhaseAdvancePrompt } from "@/features/task-instance/task-phase-advance";
+import { buildPlanningStagePrompt, buildRequirementsStagePrompt } from "@/features/task-instance/task-phase-prompts";
 import type { GraphRevision, TaskGraph } from "@/features/task-workbench/use-task-graph";
 import type {
   AgentEventPayload,
@@ -300,13 +302,7 @@ export function ChatPage({
   const [taskLaunchSessions, setTaskLaunchSessions] = useState<TaskLaunchInstanceSummary[]>([]);
   // 阶段推进确认弹窗：agent 调 advance_phase.mjs(jishu-cli) 推进后端状态后，
   // 前端在 turn_complete 时检测到 status 变化，弹窗让用户确认是否进入下一阶段。
-  const [phaseAdvancePrompt, setPhaseAdvancePrompt] = useState<{
-    taskId: string;
-    fromPhase: string;
-    toPhase: string;
-    planningInstruction: string | null;
-    title: string;
-  } | null>(null);
+  const [phaseAdvancePrompt, setPhaseAdvancePrompt] = useState<TaskPhaseAdvancePrompt | null>(null);
   // 记录上次已知 status，用于检测变化。
   const lastKnownStatusRef = useRef<string | null>(null);
   const [regularSessionsOpen, setRegularSessionsOpen] = useState(true);
@@ -809,33 +805,29 @@ export function ChatPage({
     const skillName = selected?.name || selectedTaskSkillIdRef.current;
     if (taskLaunchPhase === "planning") {
       return [
-        `<jishu-task-planning-stage>`,
-        `task_id: ${activeTaskInstanceIdRef.current ?? ""}`,
-        `requirement_file: ${activeTaskRequirementFileRef.current ?? ""}`,
-        `skill_id: ${selectedTaskSkillIdRef.current}`,
-        `请使用任务规划技能「${skillName}」继续进行任务流程规划阶段会话。`,
-        `当前处于流程规划阶段。请读取需求终稿，设计任务流程节点（明确职责、依赖、验收口径、人工确认点），与用户讨论调整。`,
-        `不要执行任务代码或命令；不要要求用户去画布点击智能规划——规划在会话里完成。`,
-        `当流程方案稳定后，请使用交互式问答（request_user_input）向用户确认是否生成任务流程图，选项中必须包含"确认生成任务流程图"。`,
-        `用户确认后：说明"流程规划阶段完成，将生成任务流程图并进入执行阶段"，这是你在本阶段的最后一次回复——不要自己调用任何生成图的工具，系统会自动调用编排引擎生成流程图并推进到执行阶段。`,
-        `</jishu-task-planning-stage>`,
+        buildPlanningStagePrompt({
+          taskId: activeTaskInstanceIdRef.current,
+          requirementFile: activeTaskRequirementFileRef.current,
+          skillId: selectedTaskSkillIdRef.current,
+          skillName,
+          projectPath: currentProject?.path,
+        }),
         "",
         "用户消息：",
         message,
       ].join("\n");
     }
     return [
-      `<jishu-task-launch-instruction>`,
-      `请使用任务规划技能「${skillName}」（skill_id: ${selectedTaskSkillIdRef.current}）的方法论帮助用户澄清需求。`,
-      `当前处于需求讨论阶段。你的职责是通过多轮对话澄清需求，不要写代码、不要执行命令、不要输出任务流程图或执行计划（那是后续阶段的事）。`,
-      `当你判断需求已经足够明确时，请使用交互式问答（request_user_input）向用户确认是否进入流程规划阶段，选项中必须包含"生成任务流程图"。`,
-      `用户选择"生成任务流程图"后：请在本轮回复中产出结构化的需求终稿（按技能方法论定义的格式：目标/范围/范围外/约束/验收标准/关键假设），并说明"需求讨论阶段完成，将进入流程规划阶段"。这是你在本阶段的最后一次回复——不要继续提问，不要自己生成流程图，系统会自动推进到下一阶段。`,
-      `</jishu-task-launch-instruction>`,
+      buildRequirementsStagePrompt({
+        skillId: selectedTaskSkillIdRef.current,
+        skillName,
+        projectPath: currentProject?.path,
+      }),
       "",
       "用户消息：",
       message,
     ].join("\n");
-  }, [taskLaunchOpen, taskLaunchPhase, taskPlanSkills]);
+  }, [currentProject?.path, taskLaunchOpen, taskLaunchPhase, taskPlanSkills]);
 
   useLayoutEffect(() => {
     if (!scrollAction.current || !messageAreaRef.current) return;
@@ -1218,12 +1210,13 @@ export function ChatPage({
       title: finalized.title,
       visibleMessage: `需求已定稿，开始规划任务流程。\n\n需求终稿：${finalized.requirement_file}`,
       agentMessage: [
-        `<jishu-task-planning-stage>`,
-        `task_id: ${finalized.task_id}`,
-        `requirement_file: ${finalized.requirement_file}`,
-        `skill_id: ${planner.id}`,
-        `当前进入任务流程规划阶段。请基于需求终稿与用户在会话中生成流程方案。不要执行任务，不要要求用户去画布点击智能规划；当流程方案清晰后，发起交互式确认，询问用户是否生成任务流程图。`,
-        `</jishu-task-planning-stage>`,
+        buildPlanningStagePrompt({
+          taskId: finalized.task_id,
+          requirementFile: finalized.requirement_file,
+          skillId: planner.id,
+          skillName: planner.name,
+          projectPath: currentProject.path,
+        }),
         "",
         finalized.planning_instruction,
       ].join("\n"),
@@ -1271,12 +1264,13 @@ export function ChatPage({
           title: result.instance.title,
           visibleMessage: `需求已定稿，开始规划任务流程。\n\n需求终稿：${result.instance.requirement_file ?? ""}`,
           agentMessage: [
-            `<jishu-task-planning-stage>`,
-            `task_id: ${result.instance.task_id}`,
-            `requirement_file: ${result.instance.requirement_file ?? ""}`,
-            `skill_id: ${skillId}`,
-            `当前进入任务流程规划阶段。请基于需求终稿与用户在会话中生成流程方案。不要执行任务，不要要求用户去画布点击智能规划；当流程方案清晰后，发起交互式确认，询问用户是否生成任务流程图。`,
-            `</jishu-task-planning-stage>`,
+            buildPlanningStagePrompt({
+              taskId: result.instance.task_id,
+              requirementFile: result.instance.requirement_file,
+              skillId,
+              skillName: taskPlanSkills.find((skill) => skill.id === skillId)?.name,
+              projectPath: currentProject.path,
+            }),
             "",
             result.planning_instruction,
           ].join("\n"),
@@ -1287,7 +1281,7 @@ export function ChatPage({
       // 规划→执行：先 create_graph，再推进
       await createGraphFromPlanningConversation();
     }
-  }, [currentProject?.path, refreshTaskLaunchSessions, sendTaskPhaseMessage]);
+  }, [currentProject?.path, refreshTaskLaunchSessions, sendTaskPhaseMessage, taskPlanSkills]);
 
   const createGraphFromPlanningConversation = useCallback(async () => {
     if (!currentProject?.path) return;
@@ -1374,16 +1368,12 @@ export function ChatPage({
       await handleTaskSkillInstall(selectedTaskSkillIdRef.current);
       return true;
     }
-    if (taskLaunchPhase === "planning" && isGenerateTaskTextConfirmation(message)) {
-      await createGraphFromPlanningConversation();
-      return true;
-    }
     if (taskLaunchPhase !== "requirements" || taskCreationMode !== "direct") return false;
     await finalizeRequirementsAndStartPlanning([
       createPlanningMessage(message, "user"),
     ]);
     return true;
-  }, [createGraphFromPlanningConversation, finalizeRequirementsAndStartPlanning, handleTaskSkillInstall, taskCreationMode, taskLaunchOpen, taskLaunchPhase, taskPlanSkills]);
+  }, [finalizeRequirementsAndStartPlanning, handleTaskSkillInstall, taskCreationMode, taskLaunchOpen, taskLaunchPhase, taskPlanSkills]);
 
   // Stream listener (mount-only). Each chunk is routed into the per-session
   // store entry via streamStore.push, regardless of which session is currently
@@ -1875,19 +1865,13 @@ export function ChatPage({
               const newStatus = instance.status;
               // 检测到 status 变化（cli 推进了状态）
               if (prevStatus && prevStatus !== newStatus) {
-                const toPhase = instance.current_phase;
-                // 获取规划指令（如果是 requirements → planning）
-                if (prevStatus === "requirements_discussing"
-                  && (newStatus === "requirements_finalized" || newStatus === "planning_discussing")
-                  && instance.requirement_file) {
-                  // 读需求终稿作为规划指令来源
-                  setPhaseAdvancePrompt({
-                    taskId: tid,
-                    fromPhase: "requirements",
-                    toPhase: "planning",
-                    planningInstruction: null, // 由 advanceToPhase 从后端获取
-                    title: instance.title,
-                  });
+                const prompt = detectTaskPhaseAdvancePrompt({
+                  taskId: tid,
+                  previousStatus: prevStatus,
+                  instance,
+                });
+                if (prompt) {
+                  setPhaseAdvancePrompt(prompt);
                 }
               }
               lastKnownStatusRef.current = newStatus;
@@ -3229,71 +3213,4 @@ function stripTaggedInstruction(text: string, startTag: string, endTag: string):
     return afterInstruction.slice(asciiIndex + asciiMarker.length).trimStart();
   }
   return afterInstruction.trimStart();
-}
-
-function isGenerateTaskConfirmation(
-  request: ConversationInteractionRequest,
-  submission: ConversationInteractionSubmission,
-): boolean {
-  const selectedTexts = submission.selectedOptionIds.map((optionId) => {
-    const option = request.options.find((item) => item.optionId === optionId);
-    return `${optionId} ${option?.label ?? ""} ${option?.description ?? ""}`;
-  });
-  const text = [
-    request.prompt,
-    ...selectedTexts,
-    submission.customText,
-  ].join("\n").toLowerCase();
-
-  const generationIntent = [
-    "生成任务",
-    "生成流程",
-    "流程图",
-    "进入规划",
-    "generate workflow",
-    "generate task",
-    "create workflow",
-    "create task",
-  ].some((phrase) => text.includes(phrase));
-  const confirmationIntent = [
-    "确认",
-    "同意",
-    "可以",
-    "开始",
-    "生成",
-    "yes",
-    "ok",
-    "confirm",
-    "approve",
-    "generate",
-  ].some((phrase) => text.includes(phrase));
-
-  return generationIntent && confirmationIntent;
-}
-
-function isGenerateTaskTextConfirmation(message: string): boolean {
-  const text = message.trim().toLowerCase();
-  if (!text) return false;
-  const generationIntent = [
-    "生成任务",
-    "生成流程",
-    "流程图",
-    "generate workflow",
-    "generate task",
-    "create workflow",
-  ].some((phrase) => text.includes(phrase));
-  const confirmationIntent = [
-    "确认",
-    "同意",
-    "可以",
-    "没问题",
-    "开始",
-    "生成",
-    "yes",
-    "ok",
-    "confirm",
-    "approve",
-    "generate",
-  ].some((phrase) => text.includes(phrase));
-  return generationIntent && confirmationIntent;
 }

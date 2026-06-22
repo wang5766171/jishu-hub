@@ -14,6 +14,7 @@ import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { PhaseConversationShell } from "./phase-conversation-shell";
 import { GraphGenerationCard } from "./graph-generation-card";
+import { buildPlanningStagePrompt } from "./task-phase-prompts";
 import type { PreparedMessage } from "@/features/chat-core/types";
 import type { TaskInstance } from "./types";
 
@@ -49,18 +50,15 @@ export function PhasePlanningView({
       const taskId = instance?.task_id ?? "";
       const skillId = instance?.skill_id ?? "jishu-task-planner";
       const reqFile = instance?.requirement_file ?? "";
-      const hidden = `<jishu-task-planning-stage>
-task_id: ${taskId}
-requirement_file: ${reqFile}
-skill_id: ${skillId}
-当前处于流程规划阶段。请读取需求终稿，设计任务流程节点（明确职责、依赖、验收口径、人工确认点），与用户讨论调整。
-不要执行任务代码或命令；不要要求用户去画布点击智能规划——规划在会话里完成。
-当流程方案稳定后，请使用交互式问答（request_user_input）向用户确认是否生成任务流程图，选项中必须包含"确认生成任务流程图"。
-用户确认后：说明"流程规划阶段完成，将生成任务流程图并进入执行阶段"，这是你在本阶段的最后一次回复——不要自己调用任何生成图的工具，系统会自动调用编排引擎生成流程图并推进到执行阶段。
-</jishu-task-planning-stage>`;
+      const hidden = buildPlanningStagePrompt({
+        taskId,
+        requirementFile: reqFile,
+        skillId,
+        projectPath,
+      });
       return { visible: message, agent: `${hidden}\n\n${message}` };
     },
-    [instance?.task_id, instance?.skill_id, instance?.requirement_file],
+    [instance?.task_id, instance?.skill_id, instance?.requirement_file, projectPath],
   );
 
   const inputContextFooter = useMemo(
