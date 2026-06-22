@@ -380,6 +380,10 @@ export function ChatPage({
   // early turn_complete drops the freshly-created "thinking" state, leaving a
   // blank gap until the reply's first token arrives.
   const pendingReplyStartedAtRef = useRef<Map<string, number>>(new Map());
+  // 当任务需求阶段的交互确认("生成任务流程图")在 mid_turn 状态下提交时,
+  // 不能立即推进到规划阶段(当前 Pi 进程仍在处理本轮,新的 send_message 会被忽略)。
+  // 这里暂存待执行的推进动作,等 turn_complete 后再触发。
+  const pendingTaskAdvanceRef = useRef<(() => Promise<void>) | null>(null);
   const refetchSessionsRef = useRef<((silent?: boolean) => Promise<Session[]>) | null>(null);
   // Holds the latest handleSelectSession so the navigateToSession effect always
   // invokes the freshest closure (current projectId/selectedSession) instead of
@@ -1777,6 +1781,14 @@ export function ChatPage({
           pendingReplyStartedAtRef.current.delete(finalKey);
           pendingReplyStartedAtRef.current.delete(cid);
 
+          // 任务阶段推进:如果交互确认("生成任务流程图")在 mid_turn 时暂存了
+          // 推进动作,现在当前轮次已结束(turn_complete),安全执行推进。
+          const pendingAdvance = pendingTaskAdvanceRef.current;
+          if (pendingAdvance) {
+            pendingTaskAdvanceRef.current = null;
+            pendingAdvance().catch((err) => console.error("Pending task advance failed:", err));
+          }
+
           if (followUpExpected) {
             // A committed steer will be answered in a FOLLOW-UP turn (a
             // leftover not delivered mid-turn in a tool turn, or the appended
@@ -1986,14 +1998,33 @@ export function ChatPage({
 
     const delivery = result?.delivery ?? "follow_up";
     if (taskLaunchOpen && isGenerateTaskConfirmation(interaction.request, submission)) {
-      if (taskLaunchPhase === "requirements") {
-        await finalizeRequirementsAndStartPlanning(
-          collectTaskLaunchPlanningMessages([
-            createPlanningMessage(value, "user"),
-          ]),
-        );
+      // 交互确认"生成任务流程图"。不能立即推进——如果 delivery 是 mid_turn,
+      // Pi 进程正在处理当前轮次(输出需求终稿),立即发规划消息会被 Pi 忽略
+      // (LoopState::Prompting)。暂存推进动作,等 turn_complete 后执行。
+      // 如果 delivery 是 follow_up,当前轮次已结束,可立即执行。
+      const advanceAction = taskLaunchPhase === "requirements"
+        ? () => finalizeRequirementsAndStartPlanning(
+            collectTaskLaunchPlanningMessages([
+              createPlanningMessage(value, "user"),
+            ]),
+          )
+        : () => createGraphFromPlanningConversation();
+
+      if (delivery === "mid_turn") {
+        // mid_turn: 让 Pi 先完成本轮(输出终稿),turn_complete 后再推进。
+        pendingTaskAdvanceRef.current = advanceAction;
+        // 仍然把回答注入到当前流(recordInteractionResponse),让用户看到确认。
+        if (value.trim()) {
+          streamStore.recordInteractionResponse(
+            interaction.sessionId,
+            submission.requestId,
+            value,
+            submission.selectedOptionIds,
+          );
+        }
       } else {
-        await createGraphFromPlanningConversation();
+        // follow_up: 当前轮次已结束,直接推进。
+        await advanceAction();
       }
       return;
     }
