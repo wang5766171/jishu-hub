@@ -52,6 +52,7 @@ import {
 } from "@/features/task-workbench/planning-session";
 import { detectTaskPhaseAdvancePrompt, type TaskPhaseAdvancePrompt } from "@/features/task-instance/task-phase-advance";
 import { buildPlanningStagePrompt, buildRequirementsStagePrompt } from "@/features/task-instance/task-phase-prompts";
+import { shouldRenderGlobalChatInput } from "./chat-page-layout";
 import type { GraphRevision, TaskGraph } from "@/features/task-workbench/use-task-graph";
 import type {
   AgentEventPayload,
@@ -2840,7 +2841,7 @@ export function ChatPage({
             branches unmounted/remounted on switch, losing staged guides.
             taskPanelOpen hides it entirely. Layout adapts via conditional
             sibling elements + className — ChatInput itself never moves. */}
-        {projectId && !taskPanelOpen && (
+        {shouldRenderGlobalChatInput({ projectId, taskPanelOpen, taskModeActive }) && (
           <div className={showStartComposer
             ? "flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-10"
             : "relative shrink-0"

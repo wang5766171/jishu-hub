@@ -13,6 +13,7 @@ import { MessageView } from "@/components/sessions/message-view";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { useChatSession } from "@/features/chat-core/use-chat-session";
 import type { PreparedMessage } from "@/features/chat-core/types";
+import type { ConversationInteractionRequest, ConversationInteractionSubmission } from "@/types";
 import type { TaskPhase } from "./types";
 
 interface PhaseConversationShellProps {
@@ -29,6 +30,23 @@ interface PhaseConversationShellProps {
   embeddedCard?: React.ReactNode;
   /** 输入框底部额外信息（项目名、模型、skill 等）。 */
   inputContextFooter?: React.ReactNode;
+}
+
+function toConversationInteractionRequest(
+  interaction: ReturnType<typeof useChatSession>["pendingInteractions"][number] | null,
+): ConversationInteractionRequest | null {
+  if (!interaction) return null;
+  return {
+    requestId: interaction.requestId,
+    prompt: interaction.prompt,
+    options: interaction.options,
+    allowMultiple: interaction.allowMultiple,
+    allowCustomText: interaction.allowCustomText,
+    required: interaction.required,
+    transport: interaction.transport as ConversationInteractionRequest["transport"],
+    origin: interaction.origin as ConversationInteractionRequest["origin"],
+    deliveryHint: interaction.deliveryHint ?? undefined,
+  };
 }
 
 export function PhaseConversationShell({
@@ -61,6 +79,14 @@ export function PhaseConversationShell({
   }, [chat.stream?.text, chat.stream?.content.length]);
 
   const isStreaming = chat.stream?.isStreaming ?? false;
+  const activeInteraction = chat.pendingInteractions[0] ?? null;
+  const interactionRequest = toConversationInteractionRequest(activeInteraction);
+  const handleInteractionSubmit = async (submission: ConversationInteractionSubmission) => {
+    await chat.respondInteraction({
+      selectedOptionIds: submission.selectedOptionIds,
+      customText: submission.customText,
+    });
+  };
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
@@ -93,6 +119,8 @@ export function PhaseConversationShell({
               onSessionResolved={async (_pending, real) => {
                 onSessionResolved?.(real);
               }}
+              interactionRequest={interactionRequest}
+              onInteractionSubmit={handleInteractionSubmit}
               contextFooter={inputContextFooter}
             />
           </div>

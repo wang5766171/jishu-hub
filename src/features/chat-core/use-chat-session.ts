@@ -22,6 +22,7 @@ import {
 } from "@/hooks/use-stream-store";
 import type {
   AgentEventPayload,
+  AgentStreamChunk,
   ChatSession,
   Message,
 } from "@/types";
@@ -106,15 +107,30 @@ function approvalFromEvent(event: unknown): PendingChatApproval | null {
   const d = data as {
     request_id?: string;
     tool_name?: string;
+    approval_kind?: string;
     input?: unknown;
+    payload?: unknown;
     summary?: string;
   };
   return {
     requestId: d.request_id ?? "",
-    toolName: d.tool_name ?? "",
-    input: d.input,
+    toolName: d.tool_name ?? d.approval_kind ?? "",
+    input: d.input ?? d.payload,
     summary: d.summary ?? "",
   };
+}
+
+function normalizeAgentEventPayload(payload: AgentEventPayload): AgentStreamChunk[] {
+  return Array.isArray(payload) ? payload : [payload];
+}
+
+function chunkMatchesSession(
+  chunk: AgentStreamChunk,
+  sessionId: string,
+  resolvedSessionId: string,
+): boolean {
+  if (!sessionId) return false;
+  return chunk.session_id === sessionId || chunk.session_id === resolvedSessionId;
 }
 
 /**
@@ -210,42 +226,42 @@ export function useChatSession(options: UseChatSessionOptions): ChatSessionState
           const payload = event.payload;
           if (!payload) return;
 
-          // 推送到 streamStore（复用 chat-page 的核心链路）。
-          // payload.chunk 为流式增量，streamStore 负责按 session 归并。
-          const chunk = (payload as { chunk?: unknown }).chunk;
-          const chunkSessionId = (payload as { sessionId?: string }).sessionId;
-          if (chunk && chunkSessionId) {
-            streamStore.push(chunkSessionId, chunk as Parameters<typeof streamStore.push>[1]);
-          }
+          for (const chunk of normalizeAgentEventPayload(payload)) {
+            if (!chunkMatchesSession(chunk, sessionId, resolvedSessionIdRef.current)) {
+              continue;
+            }
 
-          // interaction_request → pendingInteractions
-          const interaction = interactionFromEvent(payload);
-          if (interaction && interaction.requestId) {
-            setPendingInteractions((prev) =>
-              prev.some((i) => i.requestId === interaction.requestId)
-                ? prev
-                : [...prev, interaction],
-            );
-          }
+            streamStore.push(chunk.session_id, chunk);
 
-          // approval_request → pendingApprovals
-          const approval = approvalFromEvent(payload);
-          if (approval && approval.requestId) {
-            setPendingApprovals((prev) =>
-              prev.some((a) => a.requestId === approval.requestId)
-                ? prev
-                : [...prev, approval],
-            );
-          }
+            // interaction_request → pendingInteractions
+            const interaction = interactionFromEvent(chunk);
+            if (interaction && interaction.requestId) {
+              setPendingInteractions((prev) =>
+                prev.some((i) => i.requestId === interaction.requestId)
+                  ? prev
+                  : [...prev, interaction],
+              );
+            }
 
-          // session_resolved → onSessionResolved 回调
-          const data = (payload as { data?: { kind?: string; session_id?: string } }).data;
-          if (data?.kind === "session_resolved" && data.session_id) {
-            const realId = data.session_id;
-            if (realId !== resolvedSessionIdRef.current) {
-              resolvedSessionIdRef.current = realId;
-              streamStore.alias(sessionId, realId);
-              onSessionResolved?.(realId);
+            // approval_request → pendingApprovals
+            const approval = approvalFromEvent(chunk);
+            if (approval && approval.requestId) {
+              setPendingApprovals((prev) =>
+                prev.some((a) => a.requestId === approval.requestId)
+                  ? prev
+                  : [...prev, approval],
+              );
+            }
+
+            // session_resolved → onSessionResolved 回调
+            const data = chunk.data;
+            if (data?.kind === "session_resolved" && data.session_id) {
+              const realId = data.session_id;
+              if (realId !== resolvedSessionIdRef.current) {
+                resolvedSessionIdRef.current = realId;
+                streamStore.alias(sessionId, realId);
+                onSessionResolved?.(realId);
+              }
             }
           }
         });
