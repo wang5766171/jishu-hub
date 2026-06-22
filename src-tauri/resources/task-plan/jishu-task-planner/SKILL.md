@@ -27,20 +27,28 @@ Jishu Hub 任务模式的默认规划技能。定义三阶段方法论，约束�
 核心流程：
 1. 逐个维度澄清（目标 → 核心功能 → 范围 → 约束 → 验收），每轮一个维度。
 2. 收敛后用 `request_user_input` 确认是否进入规划（选项含"生成任务流程图"）。
-3. 用户确认后，调用 `scripts/format_requirement.mjs` 格式化终稿，展示给用户，说明阶段完成。
+3. 用户确认后，执行两步（详细用法见 `references/requirements-phase.md`）：
+   - `scripts/format_requirement.mjs` 格式化终稿到文件
+   - `scripts/advance_phase.mjs` 触发阶段推进（通过 jishu-cli 推进后端状态）
+4. 展示终稿内容，说明阶段完成。Hub 检测到状态变化后弹窗让用户确认进入规划。
 
-### 收敛工具
+### 收敛工具链
 ```bash
+# 步骤1：格式化终稿
 node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/format_requirement.mjs \
   --title "标题" --goal "一句话目标" \
-  --scope "范围1;范围2;范围3" \
-  --out-scope "排除1;排除2" \
-  --constraints "约束1;约束2" \
-  --acceptance "验收1;验收2" \
-  --assumptions "假设1;假设2"
+  --scope "范围1;范围2" --out-scope "排除1" \
+  --constraints "约束1" --acceptance "验收1" --assumptions "假设1" \
+  > /tmp/requirement.md
+
+# 步骤2：触发阶段推进（task_id 从 launch instruction 读取）
+node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/advance_phase.mjs \
+  --task-id "task_xxx" --phase "planning" \
+  --project "/path/to/project" --requirement-file "/tmp/requirement.md" \
+  --session "当前会话ID"
 ```
 
-禁止：写代码、执行命令（格式化脚本除外）、产出文件、自己生成流程图。
+禁止：写代码、产出文件（终稿文件除外）、自己生成流程图。
 
 ## 阶段二：流程规划
 

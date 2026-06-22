@@ -298,6 +298,17 @@ export function ChatPage({
   const [taskPlanSkills, setTaskPlanSkills] = useState<TaskPlanSkill[]>([]);
   const [selectedTaskSkillId, setSelectedTaskSkillId] = useState("jishu-task-planner");
   const [taskLaunchSessions, setTaskLaunchSessions] = useState<TaskLaunchInstanceSummary[]>([]);
+  // 阶段推进确认弹窗：agent 调 advance_phase.mjs(jishu-cli) 推进后端状态后，
+  // 前端在 turn_complete 时检测到 status 变化，弹窗让用户确认是否进入下一阶段。
+  const [phaseAdvancePrompt, setPhaseAdvancePrompt] = useState<{
+    taskId: string;
+    fromPhase: string;
+    toPhase: string;
+    planningInstruction: string | null;
+    title: string;
+  } | null>(null);
+  // 记录上次已知 status，用于检测变化。
+  const lastKnownStatusRef = useRef<string | null>(null);
   const [regularSessionsOpen, setRegularSessionsOpen] = useState(true);
   const [taskSessionsOpen, setTaskSessionsOpen] = useState(true);
   const [pendingApprovals, setPendingApprovals] = useState<PendingChatApproval[]>([]);
@@ -384,10 +395,7 @@ export function ChatPage({
   // early turn_complete drops the freshly-created "thinking" state, leaving a
   // blank gap until the reply's first token arrives.
   const pendingReplyStartedAtRef = useRef<Map<string, number>>(new Map());
-  // 当任务需求阶段的交互确认("生成任务流程图")在 mid_turn 状态下提交时,
-  // 不能立即推进到规划阶段(当前 Pi 进程仍在处理本轮,新的 send_message 会被忽略)。
-  // 这里暂存待执行的推进动作,等 turn_complete 后再触发。
-  const pendingTaskAdvanceRef = useRef<(() => Promise<void>) | null>(null);
+  const lastKnownStatusRef = useRef<string | null>(null);
   const refetchSessionsRef = useRef<((silent?: boolean) => Promise<Session[]>) | null>(null);
   // Holds the latest handleSelectSession so the navigateToSession effect always
   // invokes the freshest closure (current projectId/selectedSession) instead of
@@ -1057,6 +1065,8 @@ export function ChatPage({
       if (record.requirement_file) {
         setActiveTaskRequirementFile(record.requirement_file);
       }
+      // 记录初始 status，用于 turn_complete 后检测 agent 是否调了 advance_phase。
+      lastKnownStatusRef.current = record.status;
       await refreshTaskLaunchSessions();
     } catch (error) {
       console.warn("Failed to mark task launch session:", error);
@@ -1842,12 +1852,39 @@ export function ChatPage({
           pendingReplyStartedAtRef.current.delete(finalKey);
           pendingReplyStartedAtRef.current.delete(cid);
 
-          // 任务阶段推进:如果交互确认("生成任务流程图")在 mid_turn 时暂存了
-          // 推进动作,现在当前轮次已结束(turn_complete),安全执行推进。
-          const pendingAdvance = pendingTaskAdvanceRef.current;
-          if (pendingAdvance) {
-            pendingTaskAdvanceRef.current = null;
-            pendingAdvance().catch((err) => console.error("Pending task advance failed:", err));
+          // 任务阶段推进检测：agent 可能在本轮调用了 advance_phase.mjs(jishu-cli)，
+          // 后端状态已被 cli 推进。turn_complete 后刷新实例，检测 status 变化。
+          // 这是确定性的（对比 status 值，不是猜意图），变化后弹窗让用户确认。
+          if (taskLaunchOpenRef.current && activeTaskInstanceIdRef.current) {
+            const tid = activeTaskInstanceIdRef.current;
+            const prevStatus = lastKnownStatusRef.current;
+            refreshTaskLaunchSessions().then(() => {
+              return invokeCommand<TaskLaunchInstanceSummary | null>(
+                "task_launch_get_instance",
+                { projectRoot: projectPathForSettings, taskId: tid },
+              );
+            }).then((instance) => {
+              if (!instance) return;
+              const newStatus = instance.status;
+              // 检测到 status 变化（cli 推进了状态）
+              if (prevStatus && prevStatus !== newStatus) {
+                const toPhase = instance.current_phase;
+                // 获取规划指令（如果是 requirements → planning）
+                if (prevStatus === "requirements_discussing"
+                  && (newStatus === "requirements_finalized" || newStatus === "planning_discussing")
+                  && instance.requirement_file) {
+                  // 读需求终稿作为规划指令来源
+                  setPhaseAdvancePrompt({
+                    taskId: tid,
+                    fromPhase: "requirements",
+                    toPhase: "planning",
+                    planningInstruction: null, // 由 advanceToPhase 从后端获取
+                    title: instance.title,
+                  });
+                }
+              }
+              lastKnownStatusRef.current = newStatus;
+            }).catch((err) => console.warn("Phase advance detection failed:", err));
           }
 
           if (followUpExpected) {
@@ -2058,28 +2095,6 @@ export function ChatPage({
     }
 
     const delivery = result?.delivery ?? "follow_up";
-    if (taskLaunchOpen && isGenerateTaskConfirmation(interaction.request, submission)) {
-      // 交互确认"生成任务流程图"。通过后端 task_advance_phase 统一推进。
-      // mid_turn 时延迟到 turn_complete（Pi 正在输出终稿，不能立即发新消息）。
-      const advanceAction = taskLaunchPhase === "requirements"
-        ? () => advanceToPhase("planning", value)
-        : () => advanceToPhase("execution");
-
-      if (delivery === "mid_turn") {
-        pendingTaskAdvanceRef.current = advanceAction;
-        if (value.trim()) {
-          streamStore.recordInteractionResponse(
-            interaction.sessionId,
-            submission.requestId,
-            value,
-            submission.selectedOptionIds,
-          );
-        }
-      } else {
-        await advanceAction();
-      }
-      return;
-    }
 
     if (delivery === "mid_turn") {
       // Mid-turn write-back succeeded: interleave the answer into the running
@@ -3051,6 +3066,46 @@ export function ChatPage({
         currentName={displayName}
         onRenamed={refetchNames}
       />
+      <Dialog open={Boolean(phaseAdvancePrompt)} onOpenChange={(open) => { if (!open) setPhaseAdvancePrompt(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {phaseAdvancePrompt?.toPhase === "planning"
+                ? t("task.advance.requirementsToPlanning", "需求讨论阶段完成")
+                : t("task.advance.planningToExecution", "流程规划阶段完成")}
+            </DialogTitle>
+            <DialogDescription>
+              {phaseAdvancePrompt?.toPhase === "planning"
+                ? t("task.advance.requirementsConfirm", "任务「{title}」的需求已定稿。是否进入流程规划阶段？", { title: phaseAdvancePrompt?.title ?? "" })
+                : t("task.advance.planningConfirm", "流程方案已确认。是否生成任务流程图并进入执行阶段？")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setPhaseAdvancePrompt(null)}
+            >
+              {t("common.cancel", "取消")}
+            </Button>
+            <Button
+              onClick={async () => {
+                if (!phaseAdvancePrompt) return;
+                const prompt = phaseAdvancePrompt;
+                setPhaseAdvancePrompt(null);
+                if (prompt.toPhase === "planning") {
+                  await advanceToPhase("planning");
+                } else {
+                  await advanceToPhase("execution");
+                }
+              }}
+            >
+              {phaseAdvancePrompt?.toPhase === "planning"
+                ? t("task.advance.startPlanning", "进入规划")
+                : t("task.advance.startExecution", "进入执行")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog
         open={Boolean(activeApproval)}
         onOpenChange={(open) => {

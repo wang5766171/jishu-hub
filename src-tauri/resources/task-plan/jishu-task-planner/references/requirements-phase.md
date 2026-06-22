@@ -65,15 +65,34 @@ options: ["生成任务流程图", "继续补充需求"]
 
 ## 用户选择"生成任务流程图"后
 
-这是本阶段**最后一次回复**：
+这是本阶段**最后一次回复**。你要执行两个动作：
 
-1. 调用 `scripts/format_requirement.mjs` 把收敛结论格式化为标准终稿：
-   ```
-   node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/format_requirement.mjs \
-     --title "..." --goal "..." --scope "...;...;..." \
-     --out-scope "...;..." --constraints "...;..." \
-     --acceptance "...;..." --assumptions "...;..."
-   ```
-2. 把脚本输出的终稿作为回复主体展示给用户。
-3. 附一句话："需求讨论阶段完成，将进入流程规划阶段。"
-4. 不再提问，不调用 request_user_input，不自己生成流程图。系统会自动推进。
+### 动作 1：格式化需求终稿
+
+调用 `scripts/format_requirement.mjs` 产出标准终稿文件：
+```bash
+node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/format_requirement.mjs \
+  --title "..." --goal "..." --scope "...;...;..." \
+  --out-scope "...;..." --constraints "...;..." \
+  --acceptance "...;..." --assumptions "...;..." > /tmp/requirement.md
+```
+
+### 动作 2：调用 advance_phase.mjs 触发阶段推进
+
+调用 `scripts/advance_phase.mjs`，它会通过 `jishu-cli` 推进任务状态：
+```bash
+node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/advance_phase.mjs \
+  --task-id "task_xxx" \
+  --phase "planning" \
+  --project "/path/to/project" \
+  --requirement-file "/tmp/requirement.md" \
+  --session "当前会话ID"
+```
+
+task_id 从 `<jishu-task-launch-instruction>` 里读取。session 是当前会话 ID。
+
+### 完成后
+
+把终稿内容展示给用户（从 format_requirement.mjs 的输出读取），附一句话："需求讨论阶段完成，将进入流程规划阶段。Hub 会提示用户确认后自动进入规划。"
+
+不再提问，不调用 request_user_input，不自己生成流程图。

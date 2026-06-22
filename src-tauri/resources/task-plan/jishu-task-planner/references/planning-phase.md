@@ -32,12 +32,22 @@ options: ["确认生成任务流程图", "还要调整方案"]
 
 ## 用户确认后
 
-说明"流程规划阶段完成，将生成任务流程图并进入执行阶段"。
+调用 `scripts/advance_phase.mjs` 触发阶段推进：
+```bash
+node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/advance_phase.mjs \
+  --task-id "task_xxx" \
+  --phase "execution" \
+  --project "/path/to/project"
+```
 
-不自己生成流程图，不调用任何生成图的工具。系统会自动调用编排引擎生成流程图并推进到执行阶段。
+task_id 从 `<jishu-task-planning-stage>` 里读取。
+
+然后说明"流程规划阶段完成，将生成任务流程图并进入执行阶段。Hub 会提示用户确认后自动进入执行阶段。"
+
+不自己生成流程图。系统会自动调用编排引擎生成流程图并推进到执行阶段。
 
 ## 禁止做的事
 
-- 不执行任何任务代码或命令。
+- 不执行任何任务代码或命令（advance_phase.mjs 和 format 脚本除外）。
 - 不要求用户去画布点击"智能规划"。
 - 不在用户确认前声称流程图已生成。
