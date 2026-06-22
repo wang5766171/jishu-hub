@@ -395,7 +395,6 @@ export function ChatPage({
   // early turn_complete drops the freshly-created "thinking" state, leaving a
   // blank gap until the reply's first token arrives.
   const pendingReplyStartedAtRef = useRef<Map<string, number>>(new Map());
-  const lastKnownStatusRef = useRef<string | null>(null);
   const refetchSessionsRef = useRef<((silent?: boolean) => Promise<Session[]>) | null>(null);
   // Holds the latest handleSelectSession so the navigateToSession effect always
   // invokes the freshest closure (current projectId/selectedSession) instead of
