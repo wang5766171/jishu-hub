@@ -1066,15 +1066,22 @@ export function ChatPage({
     const isNewSessionSend = !selectedSession || selectedSession === "new";
     if (isNewSessionSend) {
       newSessionStreamIdsRef.current.add(sid);
-      const newOptSession: Session = {
-        id: sid,
-        path: currentProject?.path || "",
-        messages: [],
-        display_name: t("sessions.newChat") || "新对话",
-        started_at: new Date().toISOString(),
-        last_active: new Date().toISOString(),
-      };
-      setOptimisticSessions(prev => [newOptSession, ...prev]);
+      // Task-mode sessions are tracked by the task instance list, not the
+      // regular optimistic sessions list. Adding them here would make a
+      // duplicate "new session" entry appear in the regular sidebar until the
+      // real session id resolves and the task filter catches up. Skip the
+      // optimistic entry for task mode; the task sidebar already shows it.
+      if (!taskLaunchOpenRef.current) {
+        const newOptSession: Session = {
+          id: sid,
+          path: currentProject?.path || "",
+          messages: [],
+          display_name: t("sessions.newChat") || "新对话",
+          started_at: new Date().toISOString(),
+          last_active: new Date().toISOString(),
+        };
+        setOptimisticSessions(prev => [newOptSession, ...prev]);
+      }
       setSelectedSession(sid);
       selectedSessionRef.current = sid;
       // Seed the cache for this brand-new session with whatever the user is
