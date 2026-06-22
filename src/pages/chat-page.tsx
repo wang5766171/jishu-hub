@@ -1858,11 +1858,17 @@ export function ChatPage({
           // 这是确定性的（对比 status 值，不是猜意图），变化后弹窗让用户确认。
           if (taskLaunchOpenRef.current && activeTaskInstanceIdRef.current) {
             const tid = activeTaskInstanceIdRef.current;
+            const projectRoot = currentProject?.path;
+            if (!projectRoot) {
+              if (followUpExpected) {
+                // fall through to followUpExpected handling below
+              }
+            } else {
             const prevStatus = lastKnownStatusRef.current;
             refreshTaskLaunchSessions().then(() => {
               return invokeCommand<TaskLaunchInstanceSummary | null>(
                 "task_launch_get_instance",
-                { projectRoot: projectPathForSettings, taskId: tid },
+                { projectRoot, taskId: tid },
               );
             }).then((instance) => {
               if (!instance) return;
@@ -1886,6 +1892,7 @@ export function ChatPage({
               }
               lastKnownStatusRef.current = newStatus;
             }).catch((err) => console.warn("Phase advance detection failed:", err));
+            }
           }
 
           if (followUpExpected) {
