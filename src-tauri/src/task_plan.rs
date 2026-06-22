@@ -274,6 +274,11 @@ fn install_builtin_skill_in_dir(skill_id: &str, dir: &Path) -> Result<TaskPlanSk
     // is a faithful copy of the bundled resource directory, not just SKILL.md.
     copy_bundled_extra_files(skill_id, &skill_dir)?;
     write_install_metadata(builtin, &skill_dir)?;
+    // Also link the skill into Pi's native skill discovery path
+    // (<agentDir>/skills/<skill_id>) so Pi loads it as a real skill and
+    // the agent recognizes it in its skill list. Without this, Pi only
+    // scans <agentDir>/skills/ and never sees <agentDir>/task-plan/.
+    let _ = link_to_pi_skills_dir(skill_id, &skill_dir);
     let written = std::fs::read_to_string(&skill_path).map_err(|err| err.to_string())?;
     let mut skill = parse_skill_markdown(
         skill_id,
@@ -311,6 +316,67 @@ fn copy_bundled_extra_files(skill_id: &str, dest_dir: &Path) -> Result<(), Strin
         for (filename, content) in entries {
             let dest_file = dest_sub.join(&filename);
             crate::util::atomic_write(&dest_file, &content).map_err(|err| err.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Create a symlink (or copy on Windows) from `<agentDir>/skills/<skill_id>`
+/// to the task-plan skill directory, so Pi's native skill loader discovers it.
+/// Pi scans `<agentDir>/skills/` for SKILL.md files — without this link,
+/// task-plan skills in `<agentDir>/task-plan/` are invisible to the agent.
+fn link_to_pi_skills_dir(skill_id: &str, skill_dir: &Path) -> Result<(), String> {
+    let agent_dir = jishu_agent_dir()?;
+    let skills_dir = agent_dir.join("skills");
+    std::fs::create_dir_all(&skills_dir).map_err(|err| err.to_string())?;
+    let link_path = skills_dir.join(skill_id);
+
+    // Remove existing link/dir if present (re-install case).
+    if link_path.exists() || link_path.is_symlink() {
+        if link_path.is_dir() && !link_path.is_symlink() {
+            std::fs::remove_dir_all(&link_path).map_err(|err| err.to_string())?;
+        } else {
+            std::fs::remove_file(&link_path).map_err(|err| err.to_string())?;
+        }
+    }
+
+    // Try symlink first (works on Unix and Windows with developer mode).
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(skill_dir, &link_path).map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+
+    // Windows: try symlink, fall back to directory copy.
+    #[cfg(windows)]
+    {
+        // std::os::windows::fs::symlink_dir requires developer mode or admin.
+        if std::os::windows::fs::symlink_dir(skill_dir, &link_path).is_ok() {
+            return Ok(());
+        }
+        // Fallback: copy the skill directory contents.
+        copy_skill_dir(skill_dir, &link_path)?;
+        return Ok(());
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        copy_skill_dir(skill_dir, &link_path)?;
+        Ok(())
+    }
+}
+
+/// Recursively copy a skill directory (for Windows symlink fallback).
+fn copy_skill_dir(src: &Path, dst: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_skill_dir(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path).map_err(|e| e.to_string())?;
         }
     }
     Ok(())

@@ -84,6 +84,9 @@ if (sessionId) {
 // Falls back to "jishu-cli" (from PATH, the installed version).
 const cliBin = process.env.JISHU_CLI_BIN || "jishu-cli";
 
+console.error(`[advance_phase] using cli: ${cliBin}`);
+console.error(`[advance_phase] args: ${cliArgs.join(" ")}`);
+
 try {
   const output = execFileSync(cliBin, cliArgs, {
     encoding: "utf-8",
