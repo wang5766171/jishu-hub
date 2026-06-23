@@ -235,13 +235,14 @@ impl TaskInstanceStore {
 
     fn list_by_project(&self, project_root: &str) -> Result<Vec<TaskLaunchInstance>, String> {
         let conn = self.writer.lock().map_err(|e| e.to_string())?;
+        let normalized_root = normalize_project_root(project_root);
         let sql = format!(
             "SELECT {} FROM task_instance WHERE project_root = ?1 ORDER BY updated_at DESC",
             Self::SELECT_COLUMNS
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![project_root], Self::row_to_instance)
+            .query_map(params![normalized_root], Self::row_to_instance)
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         for row in rows {
@@ -285,7 +286,7 @@ impl TaskInstanceStore {
                 updated_at = excluded.updated_at",
             params![
                 instance.task_id,
-                instance.project_root,
+                normalize_project_root(&instance.project_root),
                 instance.title,
                 instance.skill_id,
                 instance.planner_agent_id,
@@ -319,7 +320,7 @@ impl TaskInstanceStore {
 
 /// 打开（或创建）某项目根目录下的任务实例库。
 fn open_store(project_root: &str) -> Result<TaskInstanceStore, String> {
-    let db_path = task_instances_db_path(project_root);
+    let db_path = task_instances_db_path(&normalize_project_root(project_root));
     TaskInstanceStore::open(&db_path)
 }
 
@@ -331,6 +332,52 @@ fn normalize_phase(phase: &str) -> String {
         "execution" | "graph" => "execution".into(),
         _ => "requirements".into(),
     }
+}
+
+/// 将 `project_root` 规范化为稳定字符串，确保"db 路径 / 查询键 / 存储值"三者形式一致。
+///
+/// 根因：`project_root` 字符串同时被用作 db 文件路径（`PathBuf`，文件系统容忍分隔符/
+/// 大小写/`\\?\` 前缀差异）与 SQL 查询键（`WHERE project_root = ?`，严格逐字符匹配）。
+/// 若创建任务时存入的形式与加载时查询的形式不同——例如 orchestrator 经过 canonicalize
+/// 得到 `\\?\D:\foo`，而前端直接传入 `D:\foo`——同一个 db 文件能打开，但记录查不到，
+/// 表现为任务"丢失"、关联的 requirement/planning session 回归常规会话列表。
+///
+/// 统一用 `canonicalize`（消除大小写/符号链接/分隔符/`\\?\` 前缀差异，且与 orchestrator
+/// 的 canonicalize 行为对齐）；路径不存在时退回词法规范化，保证不报错。
+/// 不迁移历史数据——旧记录保持旧形式，自此次修复起写入与查询一致即可。
+fn normalize_project_root(project_root: &str) -> String {
+    let path = std::path::Path::new(project_root);
+    match path.canonicalize() {
+        Ok(canon) => canon.to_string_lossy().into_owned(),
+        Err(_) => normalize_lexical_path(path).to_string_lossy().into_owned(),
+    }
+}
+
+/// 纯词法规范化（不触碰文件系统）：去掉 `.`、消解 `..`、统一分隔符、去 trailing separator。
+/// 与 `orchestrator/resources::normalize_lexical` 等价，作为 canonicalize 不可用时的兜底。
+fn normalize_lexical_path(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut stack: Vec<Component> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match stack.last() {
+                Some(Component::Normal(_)) => {
+                    stack.pop();
+                }
+                _ => stack.push(component),
+            },
+            other => stack.push(other),
+        }
+    }
+    let mut result = std::path::PathBuf::new();
+    for component in stack {
+        result.push(component.as_os_str());
+    }
+    if result.as_os_str().is_empty() {
+        result.push(Component::CurDir.as_os_str());
+    }
+    result
 }
 
 pub fn list_task_instances(project_root: &str) -> Result<Vec<TaskLaunchInstance>, String> {
@@ -884,6 +931,49 @@ mod tests {
         assert_eq!(updated.status, STATUS_GRAPH_CREATED);
         assert_eq!(updated.current_phase, "execution");
         assert_eq!(updated.planning_session_id.as_deref(), Some("planning-session"));
+
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    /// 制造等价但形式不同的路径：翻转分隔符并加 trailing separator。
+    fn alternate_path_form(root: &str) -> String {
+        #[cfg(windows)]
+        {
+            format!("{}/", root.replace('\\', "/"))
+        }
+        #[cfg(not(windows))]
+        {
+            format!("{root}/")
+        }
+    }
+
+    #[test]
+    fn task_persists_and_lists_across_equivalent_path_forms() {
+        // 回归守护：同一项目用不同路径形式（分隔符/trailing）创建与查询，必须查到任务。
+        // normalize_project_root 统一了 project_root 形式，避免"创建存入形式 ≠ 加载查询形式
+        // → 任务查不到（丢失）→ 关联的 requirement/planning session 回归常规会话列表"。
+        let project = temp_project("path-forms");
+        let root = project.to_string_lossy().to_string();
+
+        // 用规范路径形式创建任务（mark_task_stage_session 内部 upsert 会写入 project_root）。
+        let instance = mark_task_stage_session(
+            &root,
+            None,
+            "requirements-session",
+            "jishu-task-planner",
+            "requirements",
+            Some("Path forms task"),
+        )
+        .unwrap();
+
+        // 用等价但形式不同的路径查询，必须命中。
+        let alt_root = alternate_path_form(&root);
+        let listed = list_task_instances(&alt_root).unwrap();
+        let found = listed.iter().any(|t| t.task_id == instance.task_id);
+        assert!(
+            found,
+            "等价路径形式应能查到任务（root={root}, alt={alt_root}）",
+        );
 
         let _ = std::fs::remove_dir_all(&project);
     }
