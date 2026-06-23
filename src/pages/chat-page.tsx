@@ -3,6 +3,7 @@ import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { streamStore, useSessionStream, type SessionStreamState } from "@/hooks/use-stream-store";
 import { MessageView, type MessageSearchNavigation, type MessageSearchStatus } from "@/components/sessions/message-view";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
+import { RenameTaskSessionDialog } from "@/components/sessions/rename-task-session-dialog";
 import { ChatInput, type StagedGuideApi } from "@/components/sessions/chat-input";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { clearImageCache } from "@/components/sessions/inline-image";
@@ -30,6 +31,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
+import { confirm, message } from "@tauri-apps/plugin-dialog";
 import { cn } from "@/lib/utils";
 import { searchSessions } from "@/lib/session-search";
 import { openFloatingSession } from "@/lib/floating-window";
@@ -278,6 +280,8 @@ export function ChatPage({
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
   const [sessionMessages, setSessionMessages] = useState<Message[]>([]);
   const [renameOpen, setRenameOpen] = useState(false);
+  // 正在重命名的任务会话；为 null 时弹窗关闭。用对象引用区分"重命名哪个任务会话"。
+  const [renameTaskTarget, setRenameTaskTarget] = useState<TaskLaunchInstanceSummary | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const deferredSearchQuery = useDeferredValue(searchQuery);
@@ -732,7 +736,9 @@ export function ChatPage({
   useEffect(() => {
     if (!taskLaunchOpen || agents.length === 0) return;
     if (!taskModeAgentReady) {
-      window.alert("任务模式需要先安装 Jishu Agent。请到环境检测页面完成安装后再发起任务。");
+      // Tauri v2 会拦截 window.alert 转发到未注册命令并抛 'dialog.* not allowed'，
+      // 改用 plugin-dialog 的 message 原生弹窗（同 commit a4c9b18c 同类修复）。
+      message("任务模式需要先安装 Jishu Agent。请到环境检测页面完成安装后再发起任务。").catch(() => {});
       return;
     }
     if (activeId !== "jishu-self") {
@@ -765,17 +771,17 @@ export function ChatPage({
     const skill = taskPlanSkills.find((item) => item.id === skillId);
     const name = skill?.name || skillId;
     if (!skill?.installable) {
-      window.alert(`${name} 暂不支持一键安装，请按该技能说明手动安装到任务规划技能目录。`);
+      await message(`${name} 暂不支持一键安装，请按该技能说明手动安装到任务规划技能目录。`);
       return;
     }
-    const confirmed = window.confirm(`安装任务规划技能「${name}」？安装后可用于需求讨论、流程规划和任务执行。`);
+    const confirmed = await confirm(`安装任务规划技能「${name}」？安装后可用于需求讨论、流程规划和任务执行。`);
     if (!confirmed) return;
     try {
       const installed = await invokeCommand<TaskPlanSkill>("task_plan_skill_install", { skillId });
       setTaskPlanSkills((current) => current.map((item) => item.id === skillId ? installed : item));
       setSelectedTaskSkillId(skillId);
     } catch (error) {
-      window.alert(`安装失败：${String(error)}`);
+      await message(`安装失败：${String(error)}`);
     }
   }, [taskPlanSkills]);
 
@@ -2568,16 +2574,7 @@ export function ChatPage({
                 </ContextMenuTrigger>
                 <ContextMenuContent>
                   <ContextMenuItem
-                    onClick={async () => {
-                      const nextTitle = window.prompt(t("sessions.rename"), taskSession.title);
-                      if (!nextTitle?.trim() || !projectPathForSettings) return;
-                      const updated = await invokeCommand<TaskLaunchInstanceSummary>("task_launch_rename_task", {
-                        projectRoot: projectPathForSettings,
-                        taskId: taskSession.task_id,
-                        title: nextTitle.trim(),
-                      });
-                      setTaskLaunchSessions((current) => current.map((item) => item.task_id === updated.task_id ? updated : item));
-                    }}
+                    onClick={() => setRenameTaskTarget(taskSession)}
                   >
                     <Pencil className="h-3.5 w-3.5 mr-2" />
                     {t("sessions.rename")}
@@ -2586,7 +2583,10 @@ export function ChatPage({
                     className="text-destructive focus:text-destructive"
                     onClick={async () => {
                       if (!projectPathForSettings) return;
-                      const confirmed = window.confirm(t("tasks.deleteTaskConfirm", { title: taskSession.title }));
+                      const confirmed = await confirm(
+                        t("tasks.deleteTaskConfirm", { title: taskSession.title }),
+                        { title: t("tasks.deleteTask"), kind: "warning" },
+                      );
                       if (!confirmed) return;
                       if (taskSession.graph_id) {
                         await invokeCommand("orchestrator_delete_graph", { graphId: taskSession.graph_id });
@@ -3059,6 +3059,25 @@ export function ChatPage({
         sessionId={selectedSession ?? ""}
         currentName={displayName}
         onRenamed={refetchNames}
+      />
+      <RenameTaskSessionDialog
+        open={renameTaskTarget !== null}
+        onOpenChange={(open) => { if (!open) setRenameTaskTarget(null); }}
+        currentName={renameTaskTarget?.title ?? ""}
+        onSubmit={async (name) => {
+          if (!renameTaskTarget || !projectPathForSettings) return;
+          try {
+            const updated = await invokeCommand<TaskLaunchInstanceSummary>("task_launch_rename_task", {
+              projectRoot: projectPathForSettings,
+              taskId: renameTaskTarget.task_id,
+              title: name,
+            });
+            setTaskLaunchSessions((current) => current.map((item) => item.task_id === updated.task_id ? updated : item));
+          } catch (error) {
+            // 重命名失败用原生 message 弹窗提示，避免再次触发未处理 Promise 拒绝。
+            message(`重命名失败：${String(error)}`).catch(() => {});
+          }
+        }}
       />
       <Dialog open={Boolean(phaseAdvancePrompt)} onOpenChange={(open) => { if (!open) setPhaseAdvancePrompt(null); }}>
         <DialogContent className="max-w-md">
