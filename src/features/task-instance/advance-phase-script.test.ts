@@ -13,4 +13,17 @@ describe("advance_phase.mjs", () => {
     expect(script).toMatch(/execFileSync\(cliBin,\s*cliArgs,\s*\{[\s\S]*input:\s*requirementMarkdown/);
     expect(script).not.toContain('cliArgs.push("--requirement", requirementMarkdown)');
   });
+
+  it("prints diagnostic phase advance breadcrumbs without logging requirement content", () => {
+    const script = readFileSync(
+      resolve("src-tauri/resources/task-plan/jishu-task-planner/scripts/advance_phase.mjs"),
+      "utf8",
+    );
+
+    expect(script).toContain('logDebug("start"');
+    expect(script).toContain('logDebug("find:start"');
+    expect(script).toContain('logDebug("advance:start"');
+    expect(script).toContain('logDebug("advance:done"');
+    expect(script).not.toContain("requirementMarkdown:");
+  });
 });

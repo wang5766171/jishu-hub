@@ -15,6 +15,7 @@ import { TaskPhaseNavBar } from "./task-phase-nav-bar";
 import { PhaseRequirementsView } from "./phase-requirements-view";
 import { PhasePlanningView } from "./phase-planning-view";
 import { PhaseExecutionView } from "./phase-execution-view";
+import { logTaskPhaseDebug } from "./task-phase-debug";
 import { useTaskInstance } from "./use-task-instance";
 import type { TaskPhase } from "./types";
 
@@ -43,6 +44,12 @@ export default function TaskPhaseContainer({
 
   // 进入时打开初始任务（若有）。
   useEffect(() => {
+    logTaskPhaseDebug("container:init", {
+      taskId: initialTaskId,
+      initialPhase,
+      initialReadOnly,
+      projectRoot: projectPath,
+    });
     if (initialTaskId) {
       task.openTask(initialTaskId);
     }
@@ -64,6 +71,12 @@ export default function TaskPhaseContainer({
       task.activeInstance?.graph_id &&
       task.activeInstance.graph_id !== taskGraph.graph?.graph_id
     ) {
+      logTaskPhaseDebug("container:load-graph", {
+        taskId: task.activeInstance.task_id,
+        graphId: task.activeInstance.graph_id,
+        activePhase: task.activePhase,
+        currentLoadedGraphId: taskGraph.graph?.graph_id ?? null,
+      });
       taskGraph.loadGraph(task.activeInstance.graph_id).catch(console.error);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -74,6 +87,11 @@ export default function TaskPhaseContainer({
   const [showGenerationCard, setShowGenerationCard] = useState(false);
 
   const handleSessionResolved = (realSessionId: string, phase: TaskPhase) => {
+    logTaskPhaseDebug("container:session-resolved", {
+      taskId: task.activeInstanceId,
+      phase,
+      sessionId: realSessionId,
+    });
     task.markSession(realSessionId, phase).catch(console.error);
   };
 
@@ -123,6 +141,13 @@ export default function TaskPhaseContainer({
         onPhaseChange={(phase) => {
           // done 阶段点击 → 回溯只读；active 阶段 → 回到当前
           const state = task.phaseStates[phase];
+          logTaskPhaseDebug("container:phase-click", {
+            taskId: task.activeInstanceId,
+            requestedPhase: phase,
+            state,
+            activePhase: task.activePhase,
+            readOnly: state === "done",
+          });
           task.openPhase(phase, state === "done");
         }}
         onClose={onClose}

@@ -52,6 +52,7 @@ import {
   type PlanningChatMessage,
 } from "@/features/task-workbench/planning-session";
 import { detectTaskPhaseAdvancePrompt, type TaskPhaseAdvancePrompt } from "@/features/task-instance/task-phase-advance";
+import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
 import { TaskPhaseNavBar } from "@/features/task-instance/task-phase-nav-bar";
 import { buildPlanningStagePrompt, buildRequirementsStagePrompt } from "@/features/task-instance/task-phase-prompts";
 import { shouldRenderGlobalChatInput } from "./chat-page-layout";
@@ -1098,6 +1099,21 @@ export function ChatPage({
   ) => {
     const isCurrentTask = !activeTaskInstanceIdRef.current
       || activeTaskInstanceIdRef.current === record.task_id;
+    const previousStatus = lastKnownStatusRef.current;
+    const activePhase = taskLaunchPhaseRef.current;
+
+    logTaskPhaseDebug("snapshot:received", {
+      taskId: record.task_id,
+      isCurrentTask,
+      detectPhaseAdvance: Boolean(options.detectPhaseAdvance),
+      previousStatus,
+      status: record.status,
+      currentPhase: record.current_phase,
+      activePhase,
+      requirementSessionId: record.requirement_session_id,
+      planningSessionId: record.planning_session_id,
+      graphId: record.graph_id,
+    });
 
     if (isCurrentTask) {
       activeTaskInstanceIdRef.current = record.task_id;
@@ -1108,9 +1124,19 @@ export function ChatPage({
       if (options.detectPhaseAdvance) {
         const prompt = detectTaskPhaseAdvancePrompt({
           taskId: record.task_id,
-          previousStatus: lastKnownStatusRef.current,
-          activePhase: taskLaunchPhaseRef.current,
+          previousStatus,
+          activePhase,
           instance: record,
+        });
+        logTaskPhaseDebug(prompt ? "advance-prompt:ready" : "advance-prompt:not-ready", {
+          taskId: record.task_id,
+          previousStatus,
+          status: record.status,
+          currentPhase: record.current_phase,
+          activePhase,
+          toPhase: prompt?.toPhase ?? null,
+          requirementFile: record.requirement_file,
+          graphId: record.graph_id,
         });
         if (prompt) {
           setPhaseAdvancePrompt(prompt);
@@ -1128,6 +1154,13 @@ export function ChatPage({
 
   const markTaskLaunchSession = useCallback(async (sessionId: string) => {
     if (!projectPathForSettings || !sessionId || sessionId.startsWith("new_session_")) return;
+    logTaskPhaseDebug("mark-session:start", {
+      taskId: activeTaskInstanceIdRef.current,
+      sessionId,
+      phase: taskLaunchPhaseRef.current,
+      skillId: selectedTaskSkillIdRef.current,
+      projectRoot: projectPathForSettings,
+    });
     try {
       const record = await invokeCommand<TaskLaunchInstanceSummary>("task_launch_mark_session", {
         projectRoot: projectPathForSettings,
@@ -1137,10 +1170,24 @@ export function ChatPage({
         phase: taskLaunchPhaseRef.current,
         title: null,
       });
+      logTaskPhaseDebug("mark-session:done", {
+        taskId: record.task_id,
+        sessionId,
+        phase: taskLaunchPhaseRef.current,
+        status: record.status,
+        currentPhase: record.current_phase,
+        requirementSessionId: record.requirement_session_id,
+        planningSessionId: record.planning_session_id,
+      });
       applyTaskLaunchInstanceSnapshot(record, { detectPhaseAdvance: true });
       await refreshTaskLaunchSessions();
     } catch (error) {
       console.warn("Failed to mark task launch session:", error);
+      logTaskPhaseDebug("mark-session:failed", {
+        taskId: activeTaskInstanceIdRef.current,
+        sessionId,
+        phase: taskLaunchPhaseRef.current,
+      });
     }
   }, [applyTaskLaunchInstanceSnapshot, projectPathForSettings, refreshTaskLaunchSessions]);
 
@@ -1191,7 +1238,18 @@ export function ChatPage({
   }, [selectedSession, currentProject?.path, t]);
 
   const handleSessionResolved = useCallback((_pendingSessionId: string, realSessionId: string) => {
-    if (!taskLaunchOpenRef.current) return;
+    if (!taskLaunchOpenRef.current) {
+      logTaskPhaseDebug("session-resolved:ignored", {
+        sessionId: realSessionId,
+        taskLaunchOpen: taskLaunchOpenRef.current,
+      });
+      return;
+    }
+    logTaskPhaseDebug("session-resolved", {
+      taskId: activeTaskInstanceIdRef.current,
+      sessionId: realSessionId,
+      phase: taskLaunchPhaseRef.current,
+    });
     markTaskLaunchSession(realSessionId).catch(console.error);
   }, [markTaskLaunchSession]);
 
@@ -1210,6 +1268,14 @@ export function ChatPage({
   }) => {
     if (!currentProject?.path) return;
     const pendingId = `pending-${Date.now()}`;
+    logTaskPhaseDebug("phase-message:start", {
+      taskId,
+      phase,
+      title,
+      pendingId,
+      projectRoot: currentProject.path,
+      skillId: selectedTaskSkillIdRef.current,
+    });
     setTaskLaunchOpen(true);
     setTaskModeActive(false);
     setTaskContainerReadOnly(false);
@@ -1233,6 +1299,12 @@ export function ChatPage({
       sessionId: pendingId,
       message: agentMessage,
     });
+    logTaskPhaseDebug("phase-message:session-created", {
+      taskId,
+      phase,
+      pendingId,
+      sessionId: chatSession.session_id,
+    });
     streamStore.alias(pendingId, chatSession.session_id);
     setSelectedSession(chatSession.session_id);
     selectedSessionRef.current = chatSession.session_id;
@@ -1244,17 +1316,35 @@ export function ChatPage({
       phase,
       title,
     });
+    logTaskPhaseDebug("phase-message:marked", {
+      taskId: marked.task_id,
+      phase,
+      status: marked.status,
+      currentPhase: marked.current_phase,
+      sessionId: chatSession.session_id,
+      requirementSessionId: marked.requirement_session_id,
+      planningSessionId: marked.planning_session_id,
+    });
     applyTaskLaunchInstanceSnapshot(marked);
     await refreshTaskLaunchSessions();
   }, [applyTaskLaunchInstanceSnapshot, currentProject?.path, handleMessageSent, refreshTaskLaunchSessions]);
 
   const startPlanningFromAdvancedTask = useCallback(async (prompt: TaskPhaseAdvancePrompt) => {
     if (!currentProject?.path) return;
+    logTaskPhaseDebug("advance-confirm:planning:start", {
+      taskId: prompt.taskId,
+      fromPhase: prompt.fromPhase,
+      toPhase: prompt.toPhase,
+      projectRoot: currentProject.path,
+    });
     const instance = await invokeCommand<TaskLaunchInstanceSummary | null>(
       "task_launch_get_instance",
       { projectRoot: currentProject.path, taskId: prompt.taskId },
     );
     if (!instance) {
+      logTaskPhaseDebug("advance-confirm:planning:missing-instance", {
+        taskId: prompt.taskId,
+      });
       throw new Error(`task instance not found: ${prompt.taskId}`);
     }
 
@@ -1268,6 +1358,13 @@ export function ChatPage({
       "task_planning_instruction",
       { projectRoot: currentProject.path, taskId: prompt.taskId },
     );
+    logTaskPhaseDebug("advance-confirm:planning:instruction-loaded", {
+      taskId: instance.task_id,
+      status: instance.status,
+      currentPhase: instance.current_phase,
+      requirementFile,
+      skillId: instance.skill_id,
+    });
     const skillId = instance.skill_id || selectedTaskSkillIdRef.current;
     const skill = taskPlanSkills.find((item) => item.id === skillId);
 
@@ -1429,6 +1526,14 @@ export function ChatPage({
     if (streamingText) {
       messages.push(createPlanningMessage(streamingText, "assistant"));
     }
+    logTaskPhaseDebug("graph-create:start", {
+      taskId: activeTaskInstanceIdRef.current,
+      sessionId: selectedSessionRef.current,
+      messageCount: messages.length,
+      hasStreamingText: Boolean(streamingText),
+      requirementFile: activeTaskRequirementFileRef.current,
+      projectRoot: currentProject.path,
+    });
     const skills = taskPlanSkills.length
       ? taskPlanSkills
       : await invokeCommand<TaskPlanSkill[]>("task_plan_skill_list");
@@ -1436,6 +1541,13 @@ export function ChatPage({
       ?? skills.find((skill) => skill.id === "jishu-task-planner")
       ?? skills.find((skill) => skill.installed && skill.valid);
     if (!planner?.installed || !planner.valid) {
+      logTaskPhaseDebug("graph-create:planner-unavailable", {
+        taskId: activeTaskInstanceIdRef.current,
+        selectedSkillId: selectedTaskSkillIdRef.current,
+        plannerId: planner?.id ?? null,
+        plannerInstalled: planner?.installed ?? null,
+        plannerValid: planner?.valid ?? null,
+      });
       throw new Error(t("tasks.installSkillFirst"));
     }
     const requirementFile = activeTaskRequirementFileRef.current;
@@ -1462,11 +1574,23 @@ export function ChatPage({
         },
       },
     );
+    logTaskPhaseDebug("graph-create:created", {
+      taskId: activeTaskInstanceIdRef.current,
+      graphId: createdGraph.graph_id,
+      plannerId: planner.id,
+      messageCount: messages.length,
+    });
     if (activeTaskInstanceIdRef.current) {
-      await invokeCommand<TaskLaunchInstanceSummary>("task_launch_attach_graph", {
+      const attached = await invokeCommand<TaskLaunchInstanceSummary>("task_launch_attach_graph", {
         projectRoot: currentProject.path,
         taskId: activeTaskInstanceIdRef.current,
         graphId: createdGraph.graph_id,
+      });
+      logTaskPhaseDebug("graph-create:attached", {
+        taskId: attached.task_id,
+        graphId: attached.graph_id,
+        status: attached.status,
+        currentPhase: attached.current_phase,
       });
     }
     setPendingTaskPlanInstruction(instruction);
@@ -1492,6 +1616,16 @@ export function ChatPage({
     phase: TaskPhase,
     readOnly = false,
   ) => {
+    logTaskPhaseDebug("workspace:open", {
+      taskId: taskSession.task_id,
+      phase,
+      readOnly,
+      status: taskSession.status,
+      currentPhase: taskSession.current_phase,
+      requirementSessionId: taskSession.requirement_session_id,
+      planningSessionId: taskSession.planning_session_id,
+      graphId: taskSession.graph_id,
+    });
     setActiveTaskInstanceId(taskSession.task_id);
     setActiveTaskRequirementFile(taskSession.requirement_file ?? null);
     setSelectedTaskSkillId(taskSession.skill_id || "jishu-task-planner");
@@ -1991,6 +2125,13 @@ export function ChatPage({
           if (taskLaunchOpenRef.current && activeTaskInstanceIdRef.current) {
             const tid = activeTaskInstanceIdRef.current;
             const projectRoot = currentProject?.path;
+            logTaskPhaseDebug("turn-complete:phase-check", {
+              taskId: tid,
+              projectRoot,
+              activePhase: taskLaunchPhaseRef.current,
+              previousStatus: lastKnownStatusRef.current,
+              sessionId: finalKey,
+            });
             if (!projectRoot) {
               if (followUpExpected) {
                 // fall through to followUpExpected handling below
@@ -2002,7 +2143,23 @@ export function ChatPage({
                   { projectRoot, taskId: tid },
                 );
               }).then((instance) => {
-                if (!instance) return;
+                if (!instance) {
+                  logTaskPhaseDebug("turn-complete:instance-missing", {
+                    taskId: tid,
+                    activePhase: taskLaunchPhaseRef.current,
+                    previousStatus: lastKnownStatusRef.current,
+                  });
+                  return;
+                }
+                logTaskPhaseDebug("turn-complete:instance-loaded", {
+                  taskId: instance.task_id,
+                  status: instance.status,
+                  currentPhase: instance.current_phase,
+                  activePhase: taskLaunchPhaseRef.current,
+                  previousStatus: lastKnownStatusRef.current,
+                  requirementFile: instance.requirement_file,
+                  graphId: instance.graph_id,
+                });
                 applyTaskLaunchInstanceSnapshot(instance, { detectPhaseAdvance: true });
               }).catch((err) => console.warn("Phase advance detection failed:", err));
             }
@@ -2758,10 +2915,23 @@ export function ChatPage({
             onPhaseChange={(phase) => {
               if (!activeTaskLaunchInstance) return;
               const state = taskLaunchPhaseStates[phase];
+              logTaskPhaseDebug("launch-nav:phase-click", {
+                taskId: activeTaskLaunchInstance.task_id,
+                requestedPhase: phase,
+                state,
+                activePhase: taskLaunchPhase,
+                status: activeTaskLaunchInstance.status,
+                currentPhase: activeTaskLaunchInstance.current_phase,
+              });
               if (state === "active") return;
               openTaskPhaseWorkspace(activeTaskLaunchInstance, phase, state === "done");
             }}
             onClose={() => {
+              logTaskPhaseDebug("launch-nav:close", {
+                taskId: activeTaskInstanceIdRef.current,
+                activePhase: taskLaunchPhaseRef.current,
+                status: activeTaskLaunchInstance?.status ?? null,
+              });
               setTaskLaunchOpen(false);
               taskLaunchOpenRef.current = false;
               setActiveTaskInstanceId(null);
@@ -3221,7 +3391,14 @@ export function ChatPage({
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setPhaseAdvancePrompt(null)}
+              onClick={() => {
+                logTaskPhaseDebug("advance-dialog:cancel", {
+                  taskId: phaseAdvancePrompt?.taskId ?? null,
+                  fromPhase: phaseAdvancePrompt?.fromPhase ?? null,
+                  toPhase: phaseAdvancePrompt?.toPhase ?? null,
+                });
+                setPhaseAdvancePrompt(null);
+              }}
             >
               {t("common.cancel", "取消")}
             </Button>
@@ -3229,10 +3406,21 @@ export function ChatPage({
               onClick={async () => {
                 if (!phaseAdvancePrompt) return;
                 const prompt = phaseAdvancePrompt;
+                logTaskPhaseDebug("advance-dialog:confirm", {
+                  taskId: prompt.taskId,
+                  fromPhase: prompt.fromPhase,
+                  toPhase: prompt.toPhase,
+                  title: prompt.title,
+                });
                 setPhaseAdvancePrompt(null);
                 if (prompt.toPhase === "planning") {
                   await startPlanningFromAdvancedTask(prompt);
                 } else {
+                  logTaskPhaseDebug("advance-confirm:execution:start", {
+                    taskId: prompt.taskId,
+                    fromPhase: prompt.fromPhase,
+                    toPhase: prompt.toPhase,
+                  });
                   await advanceToPhase("execution");
                 }
               }}

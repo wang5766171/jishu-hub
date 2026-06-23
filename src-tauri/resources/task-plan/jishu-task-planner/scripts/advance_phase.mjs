@@ -47,6 +47,27 @@ if (phase !== "planning" && phase !== "execution") {
 
 const cliBin = process.env.JISHU_CLI_BIN || "jishu-cli";
 
+function logDebug(event, details = {}) {
+  const safe = Object.fromEntries(
+    Object.entries(details).map(([key, value]) => {
+      if (/(message|content|markdown|instruction|prompt|requirement)$/i.test(key)) {
+        return [key, "[omitted]"];
+      }
+      return [key, value ?? null];
+    }),
+  );
+  console.log(`[task-phase][advance_phase.mjs] ${event} ${JSON.stringify(safe)}`);
+}
+
+logDebug("start", {
+  phase,
+  project,
+  taskId: taskId || null,
+  sessionId: sessionId || null,
+  requirementFile: requirementFile || null,
+  cliBin,
+});
+
 // 如果没传 task-id，用 session-id 通过 jishu-cli task find 查询。
 if (!taskId) {
   if (!sessionId) {
@@ -54,6 +75,11 @@ if (!taskId) {
     process.exit(1);
   }
   try {
+    logDebug("find:start", {
+      sessionId,
+      project,
+      cliBin,
+    });
     const findOutput = execFileSync(cliBin, [
       "--json", "task", "find",
       "--session", sessionId,
@@ -63,7 +89,17 @@ if (!taskId) {
     if (found && found.task_id) {
       taskId = found.task_id;
     }
+    logDebug("find:done", {
+      taskId: taskId || null,
+      sessionId,
+      found: Boolean(taskId),
+    });
   } catch (e) {
+    logDebug("find:failed", {
+      sessionId,
+      project,
+      cliBin,
+    });
     console.error(`advance_phase.mjs: task find failed: ${e.stderr || e.message}`);
     process.exit(1);
   }
@@ -91,7 +127,16 @@ if (phase === "planning") {
     process.exit(1);
   }
   try {
+    logDebug("requirement:read:start", {
+      taskId,
+      requirementFile,
+    });
     requirementMarkdown = readFileSync(requirementFile, "utf-8");
+    logDebug("requirement:read:done", {
+      taskId,
+      requirementFile,
+      requirementSize: requirementMarkdown.length,
+    });
   } catch (e) {
     console.error(`advance_phase.mjs: cannot read requirement file: ${e.message}`);
     process.exit(1);
@@ -104,6 +149,14 @@ if (sessionId) {
 }
 
 try {
+  logDebug("advance:start", {
+    taskId,
+    phase,
+    project,
+    sessionId: sessionId || null,
+    cliBin,
+    hasRequirementStdin: Boolean(requirementMarkdown),
+  });
   const output = execFileSync(cliBin, cliArgs, {
     encoding: "utf-8",
     maxBuffer: 10 * 1024 * 1024,
@@ -112,6 +165,14 @@ try {
   });
 
   const result = JSON.parse(output.trim());
+  logDebug("advance:done", {
+    taskId,
+    phase,
+    status: result.instance?.status ?? null,
+    currentPhase: result.instance?.current_phase ?? null,
+    requirementFile: result.instance?.requirement_file ?? null,
+    graphId: result.instance?.graph_id ?? null,
+  });
 
   if (phase === "planning") {
     console.log(`阶段推进成功：需求讨论 → 流程规划。`);
@@ -123,6 +184,13 @@ try {
   }
 } catch (e) {
   const stderr = e.stderr?.trim() || e.message;
+  logDebug("advance:failed", {
+    taskId,
+    phase,
+    project,
+    sessionId: sessionId || null,
+    cliBin,
+  });
   console.error(`advance_phase.mjs: jishu-cli task advance failed: ${stderr}`);
   process.exit(1);
 }
