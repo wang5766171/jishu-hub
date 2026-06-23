@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/dialog";
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
 import {
-  HardDrive, MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ChevronDown, ChevronRight, PictureInPicture2,
+  HardDrive, MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ChevronDown, ChevronRight, PictureInPicture2, Check,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
@@ -53,8 +53,14 @@ import {
   type PlanningChatMessage,
 } from "@/features/task-workbench/planning-session";
 import { detectTaskPhaseAdvancePrompt, type TaskPhaseAdvancePrompt } from "@/features/task-instance/task-phase-advance";
+import {
+  deriveTaskLaunchNavItems,
+  type TaskLaunchNavItem,
+  type TaskLaunchNavPhase,
+} from "@/features/task-instance/task-launch-phase-nav";
 import { buildPlanningStagePrompt, buildRequirementsStagePrompt } from "@/features/task-instance/task-phase-prompts";
 import { shouldRenderGlobalChatInput } from "./chat-page-layout";
+import type { RequirementFinalizeRequest, TaskRequirementFinalized } from "@/features/task-instance/types";
 import type { GraphRevision, TaskGraph } from "@/features/task-workbench/use-task-graph";
 import type {
   AgentEventPayload,
@@ -78,6 +84,64 @@ function TerminalIcon(props: React.SVGProps<SVGSVGElement>) {
       <polyline points="7 10 10 13 7 16" />
       <line x1="13" y1="16" x2="17" y2="16" />
     </svg>
+  );
+}
+
+function TaskLaunchPhaseNavigation({
+  items,
+  labels,
+  identityLabel,
+  onPhaseClick,
+}: {
+  items: TaskLaunchNavItem[];
+  labels: Record<TaskLaunchNavPhase, string>;
+  identityLabel: string;
+  onPhaseClick: (phase: TaskLaunchNavPhase) => void;
+}) {
+  return (
+    <div className="h-11 shrink-0 border-b border-border/50 bg-background">
+      <div className="flex h-full items-center justify-between gap-4 px-4">
+        <div className="flex h-full min-w-0 items-center gap-1.5">
+          {items.map((item) => {
+            const isActive = item.state === "active";
+            return (
+              <button
+                key={item.phase}
+                type="button"
+                disabled={item.disabled}
+                aria-current={isActive ? "step" : undefined}
+                onClick={() => onPhaseClick(item.phase)}
+                className={cn(
+                  "relative flex h-full items-center gap-1.5 px-2 text-xs font-medium tracking-normal transition-fast",
+                  isActive && "text-primary",
+                  item.state === "done" && !isActive && "text-muted-foreground hover:text-foreground",
+                  item.state === "ready" && !isActive && "text-foreground hover:text-primary",
+                  item.state === "pending" && "cursor-not-allowed text-muted-foreground/55",
+                )}
+              >
+                {item.state === "done" ? (
+                  <Check className="h-3.5 w-3.5 shrink-0" />
+                ) : (
+                  <span
+                    className={cn(
+                      "h-1.5 w-1.5 shrink-0 rounded-full",
+                      isActive && "bg-primary",
+                      item.state === "ready" && "bg-primary/55",
+                      item.state === "pending" && "bg-muted-foreground/55",
+                    )}
+                  />
+                )}
+                <span className="whitespace-nowrap leading-none">{labels[item.phase]}</span>
+                {isActive && <span className="absolute inset-x-0 bottom-0 h-0.5 bg-primary" />}
+              </button>
+            );
+          })}
+        </div>
+        <div className="min-w-0 truncate text-right text-[11px] text-muted-foreground">
+          {identityLabel}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -214,19 +278,6 @@ interface TaskLaunchInstanceSummary {
   run_status?: string | null;
   created_at: number;
   updated_at: number;
-}
-
-interface TaskRequirementMessagePayload {
-  role: "user" | "assistant";
-  content: string;
-}
-
-interface TaskRequirementFinalized {
-  task_id: string;
-  title: string;
-  requirement_dir: string;
-  requirement_file: string;
-  planning_instruction: string;
 }
 
 export function ChatPage({
@@ -598,6 +649,34 @@ export function ChatPage({
   const hasSearchQuery = searchQuery.trim().length > 0;
   const showMessageSearchControls = hasSearchQuery && !!selectedSession && selectedSession !== "new";
   const showStartComposer = !!projectId && (!selectedSession || selectedSession === "new");
+  const activeTaskLaunchInstance = useMemo(
+    () => activeTaskInstanceId
+      ? taskLaunchSessions.find((item) => item.task_id === activeTaskInstanceId) ?? null
+      : null,
+    [activeTaskInstanceId, taskLaunchSessions],
+  );
+  const hasVisibleTaskConversation = useMemo(() => {
+    if (!taskLaunchOpen) return false;
+    const hasPersistedText = sessionMessages.some((item) => messageToPlanningText(item).length > 0);
+    const hasStreamingText = Boolean(currentStream?.text.trim());
+    return hasPersistedText || hasStreamingText;
+  }, [currentStream, sessionMessages, taskLaunchOpen]);
+  const taskLaunchNavItems = useMemo(() => deriveTaskLaunchNavItems({
+    activePhase: taskLaunchPhase,
+    instance: activeTaskLaunchInstance,
+    hasRequirementConversation: taskLaunchPhase === "requirements" && hasVisibleTaskConversation,
+    hasPlanningConversation: taskLaunchPhase === "planning" && hasVisibleTaskConversation,
+  }), [activeTaskLaunchInstance, hasVisibleTaskConversation, taskLaunchPhase]);
+  const taskLaunchPhaseLabels = useMemo<Record<TaskLaunchNavPhase, string>>(() => ({
+    requirements: t("task.phase.requirements", "需求讨论"),
+    planning: t("task.phase.planning", "流程规划"),
+    execution: t("task.phase.execution", "任务执行"),
+  }), [t]);
+  const selectedTaskPlanSkill = taskPlanSkills.find((skill) => skill.id === selectedTaskSkillId) ?? null;
+  const taskLaunchIdentityLabel = [
+    active?.display_name ?? "Jishu Agent",
+    selectedTaskPlanSkill?.name ?? selectedTaskSkillId,
+  ].filter(Boolean).join(" · ");
   const [accessRefreshKey, setAccessRefreshKey] = useState(0);
   const { data: projectSettings } = useInvoke<ProjectSettings>(
     supportsAccessModeSwitch && projectPathForSettings ? "load_project_settings_local" : "",
@@ -1265,10 +1344,7 @@ export function ChatPage({
   ) => {
     if (!currentProject?.path) return;
     const requirementMessages = messages
-      .map((message): TaskRequirementMessagePayload => ({
-        role: message.role,
-        content: message.content.trim(),
-      }))
+      .map((message) => ({ ...message, content: message.content.trim() }))
       .filter((message) => message.content.length > 0);
     if (requirementMessages.length === 0) return;
 
@@ -1281,25 +1357,34 @@ export function ChatPage({
     if (!planner?.installed || !planner.valid) {
       throw new Error(t("tasks.installSkillFirst"));
     }
+    const title = derivePlanningTitle("", requirementMessages);
+    const currentSessionId = selectedSessionRef.current;
+    const sourceSessionId = currentSessionId && currentSessionId !== "new" && !currentSessionId.startsWith("pending-")
+      ? currentSessionId
+      : null;
+    const request: RequirementFinalizeRequest = {
+      task_id: activeTaskInstanceIdRef.current,
+      skill_id: planner.id,
+      title,
+      requirement_markdown: buildRequirementMarkdownFromMessages(title, requirementMessages),
+      source_session_id: sourceSessionId,
+      creation_mode: taskCreationMode,
+    };
 
     const finalized = await invokeCommand<TaskRequirementFinalized>(
       "task_requirement_finalize",
       {
         projectRoot: currentProject.path,
-        taskId: activeTaskInstanceIdRef.current,
-        sessionId: selectedSessionRef.current && selectedSessionRef.current !== "new"
-          ? selectedSessionRef.current
-          : null,
-        skillId: planner.id,
-        title: derivePlanningTitle("", messages),
-        messages: requirementMessages,
+        request,
       },
     );
 
     setActiveTaskInstanceId(finalized.task_id);
     setActiveTaskRequirementFile(finalized.requirement_file);
+    setSelectedTaskSkillId(planner.id);
     activeTaskInstanceIdRef.current = finalized.task_id;
     activeTaskRequirementFileRef.current = finalized.requirement_file;
+    selectedTaskSkillIdRef.current = planner.id;
     await sendTaskPhaseMessage({
       taskId: finalized.task_id,
       phase: "planning",
@@ -1317,7 +1402,7 @@ export function ChatPage({
         finalized.planning_instruction,
       ].join("\n"),
     });
-  }, [currentProject?.path, sendTaskPhaseMessage, t, taskPlanSkills]);
+  }, [currentProject?.path, sendTaskPhaseMessage, t, taskCreationMode, taskPlanSkills]);
 
   // 统一阶段推进：调用后端 task_advance_phase 命令（确定性状态机推进，不绑定 skill 话术）。
   // 需求→规划：后端落盘终稿+推进状态+返回规划指令，前端用它发起新规划会话。
@@ -1379,10 +1464,16 @@ export function ChatPage({
     }
   }, [currentProject?.path, refreshTaskLaunchSessions, sendTaskPhaseMessage, taskPlanSkills]);
 
-  const createGraphFromPlanningConversation = useCallback(async () => {
+  const createGraphFromPlanningConversation = useCallback(async (
+    sourceMessages?: PlanningChatMessage[],
+  ) => {
     if (!currentProject?.path) return;
-    const messages = messagesToPlanningMessages(sessionMessagesRef.current);
-    const streamingText = streamStore.getState(selectedSessionRef.current)?.text.trim();
+    const messages = sourceMessages
+      ? [...sourceMessages]
+      : messagesToPlanningMessages(sessionMessagesRef.current);
+    const streamingText = sourceMessages
+      ? ""
+      : streamStore.getState(selectedSessionRef.current)?.text.trim();
     if (streamingText) {
       messages.push(createPlanningMessage(streamingText, "assistant"));
     }
@@ -1456,6 +1547,146 @@ export function ChatPage({
     }
     return messages;
   }, []);
+
+  const openTaskExecutionWorkspace = useCallback((taskSession: TaskLaunchInstanceSummary) => {
+    setActiveTaskInstanceId(taskSession.task_id);
+    setActiveTaskRequirementFile(taskSession.requirement_file ?? null);
+    setSelectedTaskSkillId(taskSession.skill_id || "jishu-task-planner");
+    activeTaskInstanceIdRef.current = taskSession.task_id;
+    activeTaskRequirementFileRef.current = taskSession.requirement_file ?? null;
+    selectedTaskSkillIdRef.current = taskSession.skill_id || "jishu-task-planner";
+    lastKnownStatusRef.current = taskSession.status;
+    setTaskModeActive(true);
+    setTaskContainerTaskId(taskSession.task_id);
+    setTaskContainerPhase("execution");
+    setTaskLaunchOpen(false);
+    taskLaunchOpenRef.current = false;
+    setTaskPanelOpen(false);
+    setSelectedTaskGraphId(taskSession.graph_id ?? null);
+    setSelectedSession(null);
+    selectedSessionRef.current = null;
+    setPendingSteerDisplay([]);
+  }, []);
+
+  const openTaskLaunchChatPhase = useCallback(async (
+    taskSession: TaskLaunchInstanceSummary,
+    phase: TaskLaunchPhase,
+  ) => {
+    const sessionId = phase === "planning"
+      ? taskSession.planning_session_id ?? taskSession.requirement_session_id
+      : taskSession.requirement_session_id ?? taskSession.planning_session_id;
+    if (!sessionId) return;
+    setActiveTaskInstanceId(taskSession.task_id);
+    setActiveTaskRequirementFile(taskSession.requirement_file ?? null);
+    setSelectedTaskSkillId(taskSession.skill_id || "jishu-task-planner");
+    activeTaskInstanceIdRef.current = taskSession.task_id;
+    activeTaskRequirementFileRef.current = taskSession.requirement_file ?? null;
+    selectedTaskSkillIdRef.current = taskSession.skill_id || "jishu-task-planner";
+    lastKnownStatusRef.current = taskSession.status;
+    await handleSelectSession(sessionId);
+    setTaskLaunchOpen(true);
+    setTaskLaunchPhase(phase);
+    taskLaunchOpenRef.current = true;
+    taskLaunchPhaseRef.current = phase;
+    setTaskPanelOpen(false);
+    setSelectedTaskGraphId(null);
+    setTaskModeActive(false);
+  }, [handleSelectSession]);
+
+  const loadPlanningMessagesForSession = useCallback(async (sessionId: string) => {
+    if (!projectId) return [];
+    const messages = await invokeCommand<Message[]>("get_session_messages", {
+      sessionId,
+      encodedName: projectId,
+    });
+    return messagesToPlanningMessages(stripTaskLaunchInstructionFromMessages(messages));
+  }, [projectId]);
+
+  const handleTaskLaunchPhaseClick = useCallback(async (phase: TaskLaunchNavPhase) => {
+    if (!taskLaunchOpenRef.current || !currentProject?.path) return;
+    const taskId = activeTaskInstanceIdRef.current;
+    let instance = taskId
+      ? taskLaunchSessions.find((item) => item.task_id === taskId) ?? null
+      : null;
+    if (taskId && !instance) {
+      instance = await invokeCommand<TaskLaunchInstanceSummary | null>(
+        "task_launch_get_instance",
+        { projectRoot: currentProject.path, taskId },
+      );
+      if (instance) {
+        applyTaskLaunchInstanceSnapshot(instance);
+      }
+    }
+    if (instance) {
+      setActiveTaskInstanceId(instance.task_id);
+      setActiveTaskRequirementFile(instance.requirement_file ?? null);
+      setSelectedTaskSkillId(instance.skill_id || "jishu-task-planner");
+      activeTaskInstanceIdRef.current = instance.task_id;
+      activeTaskRequirementFileRef.current = instance.requirement_file ?? null;
+      selectedTaskSkillIdRef.current = instance.skill_id || "jishu-task-planner";
+      lastKnownStatusRef.current = instance.status;
+    }
+
+    if (phase === "requirements") {
+      if (instance) {
+        await openTaskLaunchChatPhase(instance, "requirements");
+      }
+      return;
+    }
+
+    if (phase === "planning") {
+      if (instance?.planning_session_id) {
+        await openTaskLaunchChatPhase(instance, "planning");
+        return;
+      }
+      if (instance?.requirement_file) {
+        await startPlanningFromAdvancedTask({
+          taskId: instance.task_id,
+          fromPhase: "requirements",
+          toPhase: "planning",
+          planningInstruction: null,
+          title: instance.title,
+        });
+        return;
+      }
+      const messages = collectTaskLaunchPlanningMessages();
+      if (messages.length === 0) {
+        await message(t("tasks.requirementDiscussionRequired", "请先完成需求讨论，再进入流程规划。"));
+        return;
+      }
+      await finalizeRequirementsAndStartPlanning(messages);
+      return;
+    }
+
+    if (!instance) {
+      await message(t("tasks.planningRequired", "请先完成流程规划，再进入任务执行。"));
+      return;
+    }
+    if (instance.graph_id) {
+      openTaskExecutionWorkspace(instance);
+      return;
+    }
+    const planningMessages = instance.planning_session_id
+      ? await loadPlanningMessagesForSession(instance.planning_session_id)
+      : collectTaskLaunchPlanningMessages();
+    if (planningMessages.length === 0) {
+      await message(t("tasks.planningRequired", "请先完成流程规划，再进入任务执行。"));
+      return;
+    }
+    await createGraphFromPlanningConversation(planningMessages);
+  }, [
+    applyTaskLaunchInstanceSnapshot,
+    collectTaskLaunchPlanningMessages,
+    createGraphFromPlanningConversation,
+    currentProject?.path,
+    finalizeRequirementsAndStartPlanning,
+    loadPlanningMessagesForSession,
+    openTaskExecutionWorkspace,
+    openTaskLaunchChatPhase,
+    startPlanningFromAdvancedTask,
+    t,
+    taskLaunchSessions,
+  ]);
 
   const handleTaskLaunchBeforeSend = useCallback(async (message: string) => {
     if (!taskLaunchOpen) return false;
@@ -2597,9 +2828,6 @@ export function ChatPage({
           </button>
           {taskSessionsOpen && displayTaskLaunchSessions.map((taskSession) => {
             const phase = taskSession.current_phase === "planning" ? "planning" : "requirements";
-            const sessionId = phase === "planning"
-              ? taskSession.planning_session_id ?? taskSession.requirement_session_id
-              : taskSession.requirement_session_id ?? taskSession.planning_session_id;
             const isActive = activeTaskInstanceId === taskSession.task_id && taskLaunchOpen && !taskPanelOpen;
             return (
               <ContextMenu key={taskSession.task_id}>
@@ -2607,34 +2835,12 @@ export function ChatPage({
                   <button
                     type="button"
                     onClick={async () => {
-                      setActiveTaskInstanceId(taskSession.task_id);
-                      setActiveTaskRequirementFile(taskSession.requirement_file ?? null);
-                      setSelectedTaskSkillId(taskSession.skill_id || "jishu-task-planner");
-                      activeTaskInstanceIdRef.current = taskSession.task_id;
-                      activeTaskRequirementFileRef.current = taskSession.requirement_file ?? null;
-                      selectedTaskSkillIdRef.current = taskSession.skill_id || "jishu-task-planner";
-                      lastKnownStatusRef.current = taskSession.status;
                       if (taskSession.graph_id && (taskSession.current_phase === "graph" || taskSession.current_phase === "execution")) {
                         // 执行阶段：打开三阶段容器（TaskPhaseContainer），落在执行阶段视图
-                        setTaskModeActive(true);
-                        setTaskContainerTaskId(taskSession.task_id);
-                        setTaskContainerPhase("execution");
-                        setTaskLaunchOpen(false);
-                        taskLaunchOpenRef.current = false;
-                        setTaskPanelOpen(false);
-                        setSelectedSession(null);
-                        selectedSessionRef.current = null;
+                        openTaskExecutionWorkspace(taskSession);
                         return;
                       }
-                      if (sessionId) {
-                        await handleSelectSession(sessionId);
-                        setTaskLaunchOpen(true);
-                        setTaskLaunchPhase(phase as TaskLaunchPhase);
-                        taskLaunchOpenRef.current = true;
-                        taskLaunchPhaseRef.current = phase as TaskLaunchPhase;
-                        setTaskPanelOpen(false);
-                        setSelectedTaskGraphId(null);
-                      }
+                      await openTaskLaunchChatPhase(taskSession, phase as TaskLaunchPhase);
                     }}
                     className={cn(
                       "flex w-full flex-col items-start border-b border-border/10 py-2 pl-5 pr-2 text-xs transition-fast",
@@ -2739,6 +2945,14 @@ export function ChatPage({
 
       {/* Right: Chat area */}
       <div className="flex-1 flex flex-col min-w-0 bg-background">
+        {projectId && taskLaunchOpen && !taskModeActive && !taskPanelOpen ? (
+          <TaskLaunchPhaseNavigation
+            items={taskLaunchNavItems}
+            labels={taskLaunchPhaseLabels}
+            identityLabel={taskLaunchIdentityLabel}
+            onPhaseClick={handleTaskLaunchPhaseClick}
+          />
+        ) : null}
         {!projectId ? (
           <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3">
             <div className="h-14 w-14 rounded-2xl bg-muted flex items-center justify-center">
@@ -2799,6 +3013,8 @@ export function ChatPage({
           <div className="hidden" />
         ) : (
           <>
+            {!taskLaunchOpen ? (
+              <>
             <ObservabilityStatusBar
               model={active?.display_name}
               turns={sessionMessages.length}
@@ -2848,6 +3064,8 @@ export function ChatPage({
                 <span className="font-medium text-sm text-muted-foreground">{t("sessions.newChat")}</span>
               </div>
             )}
+              </>
+            ) : null}
               {/* Messages */}
               <div ref={messageAreaRef} className="flex-1 min-h-0 overflow-y-auto">
                 {selectedSession && selectedSession !== "new" && (
@@ -3257,6 +3475,31 @@ function messagesToPlanningMessages(messages: Message[]): PlanningChatMessage[] 
       ),
     )
     .filter((message) => message.content.length > 0);
+}
+
+function buildRequirementMarkdownFromMessages(
+  title: string,
+  messages: PlanningChatMessage[],
+): string {
+  const heading = title.trim() || "任务需求";
+  const body = messages
+    .map((message, index) => {
+      const speaker = message.role === "user" ? "用户" : "Jishu Agent";
+      return [
+        `### ${index + 1}. ${speaker}`,
+        "",
+        message.content.trim(),
+      ].join("\n");
+    })
+    .join("\n\n");
+
+  return [
+    `# ${heading}`,
+    "",
+    "## 需求讨论记录",
+    "",
+    body,
+  ].join("\n").trim();
 }
 
 function messageToPlanningText(message: Message): string {
