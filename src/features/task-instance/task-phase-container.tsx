@@ -23,6 +23,7 @@ export interface TaskPhaseContainerProps {
   encodedProjectId?: string;
   initialTaskId?: string | null;
   initialPhase?: TaskPhase;
+  initialReadOnly?: boolean;
   onSidebarUpdate?: () => void;
   onClose?: () => void;
 }
@@ -32,6 +33,7 @@ export default function TaskPhaseContainer({
   encodedProjectId,
   initialTaskId,
   initialPhase,
+  initialReadOnly = false,
   onSidebarUpdate,
   onClose,
 }: TaskPhaseContainerProps) {
@@ -45,7 +47,7 @@ export default function TaskPhaseContainer({
       task.openTask(initialTaskId);
     }
     if (initialPhase) {
-      task.openPhase(initialPhase);
+      task.openPhase(initialPhase, initialReadOnly);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

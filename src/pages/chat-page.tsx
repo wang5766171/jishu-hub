@@ -14,7 +14,6 @@ import { TasksPage } from "@/pages/tasks-page";
 const TaskPhaseContainer = lazy(() =>
   import("@/features/task-instance/task-phase-container").then((m) => ({ default: m.default })),
 );
-type TaskPhaseFromInstance = "requirements" | "planning" | "execution";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -27,7 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
 import {
-  HardDrive, MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ChevronDown, ChevronRight, PictureInPicture2, Check,
+  HardDrive, MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ChevronDown, ChevronRight, PictureInPicture2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
@@ -53,14 +52,17 @@ import {
   type PlanningChatMessage,
 } from "@/features/task-workbench/planning-session";
 import { detectTaskPhaseAdvancePrompt, type TaskPhaseAdvancePrompt } from "@/features/task-instance/task-phase-advance";
-import {
-  deriveTaskLaunchNavItems,
-  type TaskLaunchNavItem,
-  type TaskLaunchNavPhase,
-} from "@/features/task-instance/task-launch-phase-nav";
+import { TaskPhaseNavBar } from "@/features/task-instance/task-phase-nav-bar";
 import { buildPlanningStagePrompt, buildRequirementsStagePrompt } from "@/features/task-instance/task-phase-prompts";
 import { shouldRenderGlobalChatInput } from "./chat-page-layout";
-import type { RequirementFinalizeRequest, TaskRequirementFinalized } from "@/features/task-instance/types";
+import {
+  deriveAllPhaseStates,
+  taskInstanceFromRaw,
+  type PhaseDisplayStates,
+  type RequirementFinalizeRequest,
+  type TaskPhase,
+  type TaskRequirementFinalized,
+} from "@/features/task-instance/types";
 import type { GraphRevision, TaskGraph } from "@/features/task-workbench/use-task-graph";
 import type {
   AgentEventPayload,
@@ -84,64 +86,6 @@ function TerminalIcon(props: React.SVGProps<SVGSVGElement>) {
       <polyline points="7 10 10 13 7 16" />
       <line x1="13" y1="16" x2="17" y2="16" />
     </svg>
-  );
-}
-
-function TaskLaunchPhaseNavigation({
-  items,
-  labels,
-  identityLabel,
-  onPhaseClick,
-}: {
-  items: TaskLaunchNavItem[];
-  labels: Record<TaskLaunchNavPhase, string>;
-  identityLabel: string;
-  onPhaseClick: (phase: TaskLaunchNavPhase) => void;
-}) {
-  return (
-    <div className="h-11 shrink-0 border-b border-border/50 bg-background">
-      <div className="flex h-full items-center justify-between gap-4 px-4">
-        <div className="flex h-full min-w-0 items-center gap-1.5">
-          {items.map((item) => {
-            const isActive = item.state === "active";
-            return (
-              <button
-                key={item.phase}
-                type="button"
-                disabled={item.disabled}
-                aria-current={isActive ? "step" : undefined}
-                onClick={() => onPhaseClick(item.phase)}
-                className={cn(
-                  "relative flex h-full items-center gap-1.5 px-2 text-xs font-medium tracking-normal transition-fast",
-                  isActive && "text-primary",
-                  item.state === "done" && !isActive && "text-muted-foreground hover:text-foreground",
-                  item.state === "ready" && !isActive && "text-foreground hover:text-primary",
-                  item.state === "pending" && "cursor-not-allowed text-muted-foreground/55",
-                )}
-              >
-                {item.state === "done" ? (
-                  <Check className="h-3.5 w-3.5 shrink-0" />
-                ) : (
-                  <span
-                    className={cn(
-                      "h-1.5 w-1.5 shrink-0 rounded-full",
-                      isActive && "bg-primary",
-                      item.state === "ready" && "bg-primary/55",
-                      item.state === "pending" && "bg-muted-foreground/55",
-                    )}
-                  />
-                )}
-                <span className="whitespace-nowrap leading-none">{labels[item.phase]}</span>
-                {isActive && <span className="absolute inset-x-0 bottom-0 h-0.5 bg-primary" />}
-              </button>
-            );
-          })}
-        </div>
-        <div className="min-w-0 truncate text-right text-[11px] text-muted-foreground">
-          {identityLabel}
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -346,7 +290,8 @@ export function ChatPage({
   // 三阶段任务容器（TaskPhaseContainer）状态。与 taskPanelOpen 共存（渐进迁移）。
   const [taskModeActive, setTaskModeActive] = useState(false);
   const [taskContainerTaskId, setTaskContainerTaskId] = useState<string | null>(null);
-  const [taskContainerPhase, setTaskContainerPhase] = useState<TaskPhaseFromInstance>("requirements");
+  const [taskContainerPhase, setTaskContainerPhase] = useState<TaskPhase>("requirements");
+  const [taskContainerReadOnly, setTaskContainerReadOnly] = useState(false);
   const [taskLaunchOpen, setTaskLaunchOpen] = useState(false);
   const [taskLaunchPhase, setTaskLaunchPhase] = useState<TaskLaunchPhase>("requirements");
   const [activeTaskInstanceId, setActiveTaskInstanceId] = useState<string | null>(null);
@@ -655,28 +600,19 @@ export function ChatPage({
       : null,
     [activeTaskInstanceId, taskLaunchSessions],
   );
-  const hasVisibleTaskConversation = useMemo(() => {
-    if (!taskLaunchOpen) return false;
-    const hasPersistedText = sessionMessages.some((item) => messageToPlanningText(item).length > 0);
-    const hasStreamingText = Boolean(currentStream?.text.trim());
-    return hasPersistedText || hasStreamingText;
-  }, [currentStream, sessionMessages, taskLaunchOpen]);
-  const taskLaunchNavItems = useMemo(() => deriveTaskLaunchNavItems({
-    activePhase: taskLaunchPhase,
-    instance: activeTaskLaunchInstance,
-    hasRequirementConversation: taskLaunchPhase === "requirements" && hasVisibleTaskConversation,
-    hasPlanningConversation: taskLaunchPhase === "planning" && hasVisibleTaskConversation,
-  }), [activeTaskLaunchInstance, hasVisibleTaskConversation, taskLaunchPhase]);
-  const taskLaunchPhaseLabels = useMemo<Record<TaskLaunchNavPhase, string>>(() => ({
-    requirements: t("task.phase.requirements", "需求讨论"),
-    planning: t("task.phase.planning", "流程规划"),
-    execution: t("task.phase.execution", "任务执行"),
-  }), [t]);
-  const selectedTaskPlanSkill = taskPlanSkills.find((skill) => skill.id === selectedTaskSkillId) ?? null;
-  const taskLaunchIdentityLabel = [
-    active?.display_name ?? "Jishu Agent",
-    selectedTaskPlanSkill?.name ?? selectedTaskSkillId,
-  ].filter(Boolean).join(" · ");
+  const taskLaunchPhaseStates = useMemo<PhaseDisplayStates>(() => {
+    if (!activeTaskLaunchInstance) {
+      return {
+        requirements: taskLaunchPhase === "requirements" ? "active" : "done",
+        planning: taskLaunchPhase === "planning" ? "active" : "pending",
+        execution: "pending",
+      };
+    }
+    return deriveAllPhaseStates(taskInstanceFromRaw({
+      ...activeTaskLaunchInstance,
+      planner_agent_id: activeTaskLaunchInstance.planner_agent_id ?? "jishu_agent",
+    }));
+  }, [activeTaskLaunchInstance, taskLaunchPhase]);
   const [accessRefreshKey, setAccessRefreshKey] = useState(0);
   const { data: projectSettings } = useInvoke<ProjectSettings>(
     supportsAccessModeSwitch && projectPathForSettings ? "load_project_settings_local" : "",
@@ -721,6 +657,8 @@ export function ChatPage({
     setSessionMessages([]);
     setOptimisticSessions([]);
     setTaskPanelOpen(false);
+    setTaskModeActive(false);
+    setTaskContainerReadOnly(false);
     setSelectedTaskGraphId(null);
     setTaskLaunchOpen(false);
     setPendingTaskPlanInstruction(null);
@@ -736,6 +674,8 @@ export function ChatPage({
     setSessionMessages([]);
     setOptimisticSessions([]);
     setTaskPanelOpen(false);
+    setTaskModeActive(false);
+    setTaskContainerReadOnly(false);
     setSelectedTaskGraphId(null);
     setTaskLaunchOpen(false);
     setPendingTaskPlanInstruction(null);
@@ -830,6 +770,8 @@ export function ChatPage({
   const handleWorkModeChange = useCallback((value: string) => {
     const nextIsTask = value === "task";
     setTaskPanelOpen(false);
+    setTaskModeActive(false);
+    setTaskContainerReadOnly(false);
     setSelectedTaskGraphId(null);
     setTaskLaunchOpen(nextIsTask);
     setTaskLaunchPhase("requirements");
@@ -951,6 +893,8 @@ export function ChatPage({
 
   const handleSelectSession = async (sessionId: string) => {
     setTaskPanelOpen(false);
+    setTaskModeActive(false);
+    setTaskContainerReadOnly(false);
     setSelectedTaskGraphId(null);
     setTaskLaunchOpen(false);
     if (sessionId === selectedSession || !projectId) return;
@@ -1031,6 +975,8 @@ export function ChatPage({
     if (!projectId) return;
 
     setTaskPanelOpen(false);
+    setTaskModeActive(false);
+    setTaskContainerReadOnly(false);
     setSelectedTaskGraphId(null);
     setTaskLaunchOpen(false);
     taskLaunchOpenRef.current = false;
@@ -1052,6 +998,8 @@ export function ChatPage({
   const handleOpenTaskConversation = useCallback((graphId: string | null) => {
     if (!graphId) {
       setTaskPanelOpen(false);
+      setTaskModeActive(false);
+      setTaskContainerReadOnly(false);
       setSelectedTaskGraphId(null);
       setTaskLaunchOpen(true);
       setTaskLaunchPhase("requirements");
@@ -1074,6 +1022,8 @@ export function ChatPage({
       return;
     }
     setTaskLaunchOpen(false);
+    setTaskModeActive(false);
+    setTaskContainerReadOnly(false);
     setSelectedTaskGraphId(graphId);
     setTaskPanelOpen(true);
     setSelectedSession(null);
@@ -1261,6 +1211,8 @@ export function ChatPage({
     if (!currentProject?.path) return;
     const pendingId = `pending-${Date.now()}`;
     setTaskLaunchOpen(true);
+    setTaskModeActive(false);
+    setTaskContainerReadOnly(false);
     setTaskLaunchPhase(phase);
     setActiveTaskInstanceId(taskId);
     taskLaunchOpenRef.current = true;
@@ -1524,6 +1476,7 @@ export function ChatPage({
       setTaskModeActive(true);
       setTaskContainerTaskId(activeTaskInstanceIdRef.current);
       setTaskContainerPhase("execution");
+      setTaskContainerReadOnly(false);
     }
     setSelectedTaskGraphId(createdGraph.graph_id);
     setTaskPanelOpen(false);
@@ -1534,21 +1487,11 @@ export function ChatPage({
     refetchTaskConversations(true).catch(console.error);
   }, [currentProject?.path, refetchTaskConversations, refreshTaskLaunchSessions, t, taskPlanSkills]);
 
-  const collectTaskLaunchPlanningMessages = useCallback((
-    extra?: PlanningChatMessage[],
+  const openTaskPhaseWorkspace = useCallback((
+    taskSession: TaskLaunchInstanceSummary,
+    phase: TaskPhase,
+    readOnly = false,
   ) => {
-    const messages = messagesToPlanningMessages(sessionMessagesRef.current);
-    const streamingText = streamStore.getState(selectedSessionRef.current)?.text.trim();
-    if (streamingText) {
-      messages.push(createPlanningMessage(streamingText, "assistant"));
-    }
-    if (extra?.length) {
-      messages.push(...extra);
-    }
-    return messages;
-  }, []);
-
-  const openTaskExecutionWorkspace = useCallback((taskSession: TaskLaunchInstanceSummary) => {
     setActiveTaskInstanceId(taskSession.task_id);
     setActiveTaskRequirementFile(taskSession.requirement_file ?? null);
     setSelectedTaskSkillId(taskSession.skill_id || "jishu-task-planner");
@@ -1558,7 +1501,8 @@ export function ChatPage({
     lastKnownStatusRef.current = taskSession.status;
     setTaskModeActive(true);
     setTaskContainerTaskId(taskSession.task_id);
-    setTaskContainerPhase("execution");
+    setTaskContainerPhase(phase);
+    setTaskContainerReadOnly(readOnly);
     setTaskLaunchOpen(false);
     taskLaunchOpenRef.current = false;
     setTaskPanelOpen(false);
@@ -1567,126 +1511,6 @@ export function ChatPage({
     selectedSessionRef.current = null;
     setPendingSteerDisplay([]);
   }, []);
-
-  const openTaskLaunchChatPhase = useCallback(async (
-    taskSession: TaskLaunchInstanceSummary,
-    phase: TaskLaunchPhase,
-  ) => {
-    const sessionId = phase === "planning"
-      ? taskSession.planning_session_id ?? taskSession.requirement_session_id
-      : taskSession.requirement_session_id ?? taskSession.planning_session_id;
-    if (!sessionId) return;
-    setActiveTaskInstanceId(taskSession.task_id);
-    setActiveTaskRequirementFile(taskSession.requirement_file ?? null);
-    setSelectedTaskSkillId(taskSession.skill_id || "jishu-task-planner");
-    activeTaskInstanceIdRef.current = taskSession.task_id;
-    activeTaskRequirementFileRef.current = taskSession.requirement_file ?? null;
-    selectedTaskSkillIdRef.current = taskSession.skill_id || "jishu-task-planner";
-    lastKnownStatusRef.current = taskSession.status;
-    await handleSelectSession(sessionId);
-    setTaskLaunchOpen(true);
-    setTaskLaunchPhase(phase);
-    taskLaunchOpenRef.current = true;
-    taskLaunchPhaseRef.current = phase;
-    setTaskPanelOpen(false);
-    setSelectedTaskGraphId(null);
-    setTaskModeActive(false);
-  }, [handleSelectSession]);
-
-  const loadPlanningMessagesForSession = useCallback(async (sessionId: string) => {
-    if (!projectId) return [];
-    const messages = await invokeCommand<Message[]>("get_session_messages", {
-      sessionId,
-      encodedName: projectId,
-    });
-    return messagesToPlanningMessages(stripTaskLaunchInstructionFromMessages(messages));
-  }, [projectId]);
-
-  const handleTaskLaunchPhaseClick = useCallback(async (phase: TaskLaunchNavPhase) => {
-    if (!taskLaunchOpenRef.current || !currentProject?.path) return;
-    const taskId = activeTaskInstanceIdRef.current;
-    let instance = taskId
-      ? taskLaunchSessions.find((item) => item.task_id === taskId) ?? null
-      : null;
-    if (taskId && !instance) {
-      instance = await invokeCommand<TaskLaunchInstanceSummary | null>(
-        "task_launch_get_instance",
-        { projectRoot: currentProject.path, taskId },
-      );
-      if (instance) {
-        applyTaskLaunchInstanceSnapshot(instance);
-      }
-    }
-    if (instance) {
-      setActiveTaskInstanceId(instance.task_id);
-      setActiveTaskRequirementFile(instance.requirement_file ?? null);
-      setSelectedTaskSkillId(instance.skill_id || "jishu-task-planner");
-      activeTaskInstanceIdRef.current = instance.task_id;
-      activeTaskRequirementFileRef.current = instance.requirement_file ?? null;
-      selectedTaskSkillIdRef.current = instance.skill_id || "jishu-task-planner";
-      lastKnownStatusRef.current = instance.status;
-    }
-
-    if (phase === "requirements") {
-      if (instance) {
-        await openTaskLaunchChatPhase(instance, "requirements");
-      }
-      return;
-    }
-
-    if (phase === "planning") {
-      if (instance?.planning_session_id) {
-        await openTaskLaunchChatPhase(instance, "planning");
-        return;
-      }
-      if (instance?.requirement_file) {
-        await startPlanningFromAdvancedTask({
-          taskId: instance.task_id,
-          fromPhase: "requirements",
-          toPhase: "planning",
-          planningInstruction: null,
-          title: instance.title,
-        });
-        return;
-      }
-      const messages = collectTaskLaunchPlanningMessages();
-      if (messages.length === 0) {
-        await message(t("tasks.requirementDiscussionRequired", "请先完成需求讨论，再进入流程规划。"));
-        return;
-      }
-      await finalizeRequirementsAndStartPlanning(messages);
-      return;
-    }
-
-    if (!instance) {
-      await message(t("tasks.planningRequired", "请先完成流程规划，再进入任务执行。"));
-      return;
-    }
-    if (instance.graph_id) {
-      openTaskExecutionWorkspace(instance);
-      return;
-    }
-    const planningMessages = instance.planning_session_id
-      ? await loadPlanningMessagesForSession(instance.planning_session_id)
-      : collectTaskLaunchPlanningMessages();
-    if (planningMessages.length === 0) {
-      await message(t("tasks.planningRequired", "请先完成流程规划，再进入任务执行。"));
-      return;
-    }
-    await createGraphFromPlanningConversation(planningMessages);
-  }, [
-    applyTaskLaunchInstanceSnapshot,
-    collectTaskLaunchPlanningMessages,
-    createGraphFromPlanningConversation,
-    currentProject?.path,
-    finalizeRequirementsAndStartPlanning,
-    loadPlanningMessagesForSession,
-    openTaskExecutionWorkspace,
-    openTaskLaunchChatPhase,
-    startPlanningFromAdvancedTask,
-    t,
-    taskLaunchSessions,
-  ]);
 
   const handleTaskLaunchBeforeSend = useCallback(async (message: string) => {
     if (!taskLaunchOpen) return false;
@@ -2172,27 +1996,15 @@ export function ChatPage({
                 // fall through to followUpExpected handling below
               }
             } else {
-            const prevStatus = lastKnownStatusRef.current;
-            refreshTaskLaunchSessions().then(() => {
-              return invokeCommand<TaskLaunchInstanceSummary | null>(
-                "task_launch_get_instance",
-                { projectRoot, taskId: tid },
-              );
-            }).then((instance) => {
-              if (!instance) return;
-              const newStatus = instance.status;
-              // 检测到 status 变化（cli 推进了状态）
-              const prompt = detectTaskPhaseAdvancePrompt({
-                taskId: tid,
-                previousStatus: prevStatus,
-                activePhase: taskLaunchPhaseRef.current,
-                instance,
-              });
-              if (prompt) {
-                setPhaseAdvancePrompt(prompt);
-              }
-              lastKnownStatusRef.current = newStatus;
-            }).catch((err) => console.warn("Phase advance detection failed:", err));
+              refreshTaskLaunchSessions().then(() => {
+                return invokeCommand<TaskLaunchInstanceSummary | null>(
+                  "task_launch_get_instance",
+                  { projectRoot, taskId: tid },
+                );
+              }).then((instance) => {
+                if (!instance) return;
+                applyTaskLaunchInstanceSnapshot(instance, { detectPhaseAdvance: true });
+              }).catch((err) => console.warn("Phase advance detection failed:", err));
             }
           }
 
@@ -2445,15 +2257,8 @@ export function ChatPage({
       restorePending();
     }
   }, [
-    activeId,
-    collectTaskLaunchPlanningMessages,
-    createGraphFromPlanningConversation,
-    finalizeRequirementsAndStartPlanning,
     handleMessageSent,
     pendingInteractions,
-    selectedSession,
-    taskLaunchPhase,
-    taskLaunchOpen,
   ]);
   const resolveActiveApproval = useCallback(async (approved: boolean) => {
     if (!activeApproval || approvalResolving) return;
@@ -2828,7 +2633,7 @@ export function ChatPage({
           </button>
           {taskSessionsOpen && displayTaskLaunchSessions.map((taskSession) => {
             const phase = taskSession.current_phase === "planning" ? "planning" : "requirements";
-            const isActive = activeTaskInstanceId === taskSession.task_id && taskLaunchOpen && !taskPanelOpen;
+            const isActive = activeTaskInstanceId === taskSession.task_id && (taskLaunchOpen || taskModeActive) && !taskPanelOpen;
             return (
               <ContextMenu key={taskSession.task_id}>
                 <ContextMenuTrigger asChild>
@@ -2837,10 +2642,10 @@ export function ChatPage({
                     onClick={async () => {
                       if (taskSession.graph_id && (taskSession.current_phase === "graph" || taskSession.current_phase === "execution")) {
                         // 执行阶段：打开三阶段容器（TaskPhaseContainer），落在执行阶段视图
-                        openTaskExecutionWorkspace(taskSession);
+                        openTaskPhaseWorkspace(taskSession, "execution");
                         return;
                       }
-                      await openTaskLaunchChatPhase(taskSession, phase as TaskLaunchPhase);
+                      openTaskPhaseWorkspace(taskSession, phase as TaskPhase);
                     }}
                     className={cn(
                       "flex w-full flex-col items-start border-b border-border/10 py-2 pl-5 pr-2 text-xs transition-fast",
@@ -2946,11 +2751,25 @@ export function ChatPage({
       {/* Right: Chat area */}
       <div className="flex-1 flex flex-col min-w-0 bg-background">
         {projectId && taskLaunchOpen && !taskModeActive && !taskPanelOpen ? (
-          <TaskLaunchPhaseNavigation
-            items={taskLaunchNavItems}
-            labels={taskLaunchPhaseLabels}
-            identityLabel={taskLaunchIdentityLabel}
-            onPhaseClick={handleTaskLaunchPhaseClick}
+          <TaskPhaseNavBar
+            title={activeTaskLaunchInstance?.title ?? t("tasks.startTask", "新任务")}
+            phases={taskLaunchPhaseStates}
+            activePhase={taskLaunchPhase}
+            onPhaseChange={(phase) => {
+              if (!activeTaskLaunchInstance) return;
+              const state = taskLaunchPhaseStates[phase];
+              if (state === "active") return;
+              openTaskPhaseWorkspace(activeTaskLaunchInstance, phase, state === "done");
+            }}
+            onClose={() => {
+              setTaskLaunchOpen(false);
+              taskLaunchOpenRef.current = false;
+              setActiveTaskInstanceId(null);
+              setActiveTaskRequirementFile(null);
+              activeTaskInstanceIdRef.current = null;
+              activeTaskRequirementFileRef.current = null;
+              lastKnownStatusRef.current = null;
+            }}
           />
         ) : null}
         {!projectId ? (
@@ -2978,15 +2797,18 @@ export function ChatPage({
             }
           >
             <TaskPhaseContainer
+              key={`${taskContainerTaskId ?? "new"}:${taskContainerPhase}:${taskContainerReadOnly ? "ro" : "rw"}`}
               projectPath={currentProject?.path ?? ""}
               encodedProjectId={currentProject?.encoded_name}
               initialTaskId={taskContainerTaskId}
               initialPhase={taskContainerPhase}
+              initialReadOnly={taskContainerReadOnly}
               onSidebarUpdate={() => refreshTaskLaunchSessions().catch(console.error)}
               onClose={() => {
                 setTaskModeActive(false);
                 setTaskContainerTaskId(null);
                 setTaskContainerPhase("requirements");
+                setTaskContainerReadOnly(false);
                 refreshTaskLaunchSessions().catch(console.error);
               }}
             />

@@ -44,6 +44,27 @@ describe("detectTaskPhaseAdvancePrompt", () => {
     });
   });
 
+  it("recovers a requirements to planning prompt when status was already synchronized but UI stayed in requirements", () => {
+    const prompt = detectTaskPhaseAdvancePrompt({
+      taskId: "task_1",
+      previousStatus: "planning_discussing",
+      activePhase: "requirements",
+      instance: {
+        status: "planning_discussing",
+        current_phase: "planning",
+        title: "final requirements",
+        requirement_file: "requirements.md",
+      },
+    });
+
+    expect(prompt).toMatchObject({
+      taskId: "task_1",
+      fromPhase: "requirements",
+      toPhase: "planning",
+      title: "final requirements",
+    });
+  });
+
   it("does not show the requirements prompt for an already-active planning turn", () => {
     expect(detectTaskPhaseAdvancePrompt({
       taskId: "task_1",
@@ -96,6 +117,27 @@ describe("detectTaskPhaseAdvancePrompt", () => {
     const prompt = detectTaskPhaseAdvancePrompt({
       taskId: "task_2",
       previousStatus: null,
+      activePhase: "planning",
+      instance: {
+        status: "graph_created",
+        current_phase: "execution",
+        title: "flow plan",
+        requirement_file: "requirements.md",
+      },
+    });
+
+    expect(prompt).toMatchObject({
+      taskId: "task_2",
+      fromPhase: "planning",
+      toPhase: "execution",
+      title: "flow plan",
+    });
+  });
+
+  it("recovers a planning to execution prompt when status was already synchronized but UI stayed in planning", () => {
+    const prompt = detectTaskPhaseAdvancePrompt({
+      taskId: "task_2",
+      previousStatus: "graph_created",
       activePhase: "planning",
       instance: {
         status: "graph_created",
