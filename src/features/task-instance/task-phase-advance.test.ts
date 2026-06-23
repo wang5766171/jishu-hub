@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { detectTaskPhaseAdvancePrompt } from "./task-phase-advance";
+import {
+  detectMissingTaskPhaseSessionPrompt,
+  detectTaskPhaseAdvancePrompt,
+  resolveTaskPhaseAdvanceProjectRoot,
+} from "./task-phase-advance";
 
 describe("detectTaskPhaseAdvancePrompt", () => {
   it("detects requirements to planning after the agent advances state", () => {
@@ -166,5 +170,69 @@ describe("detectTaskPhaseAdvancePrompt", () => {
         title: "flow plan",
       },
     })).toBeNull();
+  });
+});
+
+describe("detectMissingTaskPhaseSessionPrompt", () => {
+  it("prompts to create the planning session when the task is already in planning without a planning session", () => {
+    expect(detectMissingTaskPhaseSessionPrompt({
+      taskId: "task_1",
+      requestedPhase: "planning",
+      instance: {
+        status: "planning_discussing",
+        current_phase: "planning",
+        title: "idea memory app",
+        requirement_file: "requirements.md",
+        planning_session_id: null,
+      },
+    })).toMatchObject({
+      taskId: "task_1",
+      fromPhase: "requirements",
+      toPhase: "planning",
+      title: "idea memory app",
+    });
+  });
+
+  it("does not prompt for planning when the planning session already exists", () => {
+    expect(detectMissingTaskPhaseSessionPrompt({
+      taskId: "task_1",
+      requestedPhase: "planning",
+      instance: {
+        status: "planning_discussing",
+        current_phase: "planning",
+        title: "idea memory app",
+        requirement_file: "requirements.md",
+        planning_session_id: "session_1",
+      },
+    })).toBeNull();
+  });
+
+  it("prompts to enter execution when the task is already in execution without a graph", () => {
+    expect(detectMissingTaskPhaseSessionPrompt({
+      taskId: "task_2",
+      requestedPhase: "execution",
+      instance: {
+        status: "graph_created",
+        current_phase: "execution",
+        title: "flow plan",
+        requirement_file: "requirements.md",
+        planning_session_id: "session_2",
+        graph_id: null,
+      },
+    })).toMatchObject({
+      taskId: "task_2",
+      fromPhase: "planning",
+      toPhase: "execution",
+      title: "flow plan",
+    });
+  });
+});
+
+describe("resolveTaskPhaseAdvanceProjectRoot", () => {
+  it("prefers the live project path from refs used by mount-only listeners", () => {
+    expect(resolveTaskPhaseAdvanceProjectRoot({
+      liveProjectPath: "E:/current",
+      capturedProjectPath: "E:/stale",
+    })).toBe("E:/current");
   });
 });

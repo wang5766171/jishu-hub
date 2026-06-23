@@ -523,25 +523,52 @@ impl TransportAdapter for JishuSelfAgent {
         if let Some(dir) = pi_agent_dir() {
             envs.push(("PI_CODING_AGENT_DIR".to_string(), dir));
         }
-        // In debug builds, point JISHU_CLI_BIN to the locally built cli so the
-        // task planning skill (advance_phase.mjs) uses the dev version instead
-        // of the installed one from PATH. Release builds omit this (falls back
-        // to PATH).
-        #[cfg(debug_assertions)]
-        {
-            let dev_cli = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("target")
-                .join("debug")
-                .join(if cfg!(windows) {
-                    "jishu-cli.exe"
-                } else {
-                    "jishu-cli"
-                });
-            if dev_cli.exists() {
+
+        match crate::task_plan::task_plan_skill_runtime_paths("jishu-task-planner") {
+            Ok(paths) => {
+                #[cfg(debug_assertions)]
+                {
+                    if let Err(err) =
+                        crate::task_plan::sync_dev_runtime_skill_to_pi("jishu-task-planner")
+                    {
+                        log::warn!(
+                            "[task-plan-runtime] failed to sync dev skill into Pi skills dir: {err}"
+                        );
+                    }
+                }
+                log::info!(
+                    "[task-plan-runtime] source={} skill_dir={} script_dir={}",
+                    paths.source.as_str(),
+                    paths.skill_dir.display(),
+                    paths.script_dir.display()
+                );
+                envs.push((
+                    "JISHU_TASK_PLANNER_SKILL_DIR".to_string(),
+                    paths.skill_dir.to_string_lossy().to_string(),
+                ));
+                envs.push((
+                    "JISHU_TASK_PLANNER_SCRIPT_DIR".to_string(),
+                    paths.script_dir.to_string_lossy().to_string(),
+                ));
+            }
+            Err(err) => {
+                log::warn!("[task-plan-runtime] failed to resolve skill runtime paths: {err}");
+            }
+        }
+
+        // Always resolve the CLI explicitly for spawned Pi processes. Debug
+        // resolves to target/debug/jishu-cli(.exe); installed builds resolve
+        // to the packaged production CLI next to the app/resources.
+        match resolve_jishu_cli_binary() {
+            Ok(cli) => {
+                log::info!("[task-plan-runtime] cli={}", cli.display());
                 envs.push((
                     "JISHU_CLI_BIN".to_string(),
-                    dev_cli.to_string_lossy().to_string(),
+                    cli.to_string_lossy().to_string(),
                 ));
+            }
+            Err(err) => {
+                log::warn!("[task-plan-runtime] failed to resolve jishu-cli: {err}");
             }
         }
 

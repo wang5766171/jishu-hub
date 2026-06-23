@@ -3,7 +3,7 @@
  * format_requirement.mjs — 将需求讨论的关键信息格式化为标准需求终稿。
  *
  * Agent 调用方式（Pi 工具执行 bash）：
- *   node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/format_requirement.mjs \
+ *   node "$JISHU_TASK_PLANNER_SCRIPT_DIR/format_requirement.mjs" \
  *     --title "任务标题" \
  *     --goal "一句话目标" \
  *     --scope "范围1;范围2;范围3" \

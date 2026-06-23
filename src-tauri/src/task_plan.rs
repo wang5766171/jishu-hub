@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 const BUNDLED_TASK_PLAN_REGISTRY: &str = include_str!("../resources/task-plan/registry.json");
+const RESOURCE_TASK_PLAN_DIR: &str = "resources/task-plan";
 
 #[derive(Debug, Deserialize)]
 struct TaskPlanRegistryManifest {
@@ -113,6 +114,82 @@ fn jishu_agent_dir() -> Result<PathBuf, String> {
 
 pub fn task_plan_dir() -> Result<PathBuf, String> {
     Ok(jishu_agent_dir()?.join("task-plan"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskPlanRuntimeSource {
+    DevResource,
+    Installed,
+}
+
+impl TaskPlanRuntimeSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DevResource => "dev_resource",
+            Self::Installed => "installed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskPlanSkillRuntimePaths {
+    pub skill_dir: PathBuf,
+    pub script_dir: PathBuf,
+    pub source: TaskPlanRuntimeSource,
+}
+
+fn bundled_task_plan_resource_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(RESOURCE_TASK_PLAN_DIR)
+}
+
+fn bundled_task_plan_skill_resource_dir(skill_id: &str) -> PathBuf {
+    bundled_task_plan_resource_dir().join(skill_id)
+}
+
+pub fn task_plan_skill_runtime_paths(
+    skill_id: &str,
+) -> Result<TaskPlanSkillRuntimePaths, String> {
+    #[cfg(debug_assertions)]
+    {
+        let skill_dir = bundled_task_plan_skill_resource_dir(skill_id);
+        if skill_dir.join("SKILL.md").is_file() {
+            return Ok(TaskPlanSkillRuntimePaths {
+                script_dir: skill_dir.join("scripts"),
+                skill_dir,
+                source: TaskPlanRuntimeSource::DevResource,
+            });
+        }
+    }
+
+    let skill_dir = task_plan_dir()?.join(skill_id);
+    Ok(TaskPlanSkillRuntimePaths {
+        script_dir: skill_dir.join("scripts"),
+        skill_dir,
+        source: TaskPlanRuntimeSource::Installed,
+    })
+}
+
+#[cfg(debug_assertions)]
+fn sync_dev_runtime_skill_to_pi_with_linker<F>(
+    skill_id: &str,
+    link_skill: F,
+) -> Result<Option<TaskPlanSkillRuntimePaths>, String>
+where
+    F: FnOnce(&str, &Path) -> Result<(), String>,
+{
+    let paths = task_plan_skill_runtime_paths(skill_id)?;
+    if paths.source != TaskPlanRuntimeSource::DevResource {
+        return Ok(None);
+    }
+    link_skill(skill_id, &paths.skill_dir)?;
+    Ok(Some(paths))
+}
+
+#[cfg(debug_assertions)]
+pub fn sync_dev_runtime_skill_to_pi(
+    skill_id: &str,
+) -> Result<Option<TaskPlanSkillRuntimePaths>, String> {
+    sync_dev_runtime_skill_to_pi_with_linker(skill_id, link_to_pi_skills_dir)
 }
 
 fn builtin_skills_for_dir(dir: &Path) -> Result<Vec<BuiltinTaskPlanSkill>, String> {
@@ -878,6 +955,38 @@ description: demo
             .iter()
             .any(|(filename, content)| filename == "advance_phase.mjs"
                 && String::from_utf8_lossy(content).contains("advance_phase.mjs")));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn runtime_paths_use_dev_resource_skill_in_debug_builds() {
+        let paths = task_plan_skill_runtime_paths("jishu-task-planner").unwrap();
+        assert_eq!(paths.source, TaskPlanRuntimeSource::DevResource);
+        assert!(paths.skill_dir.join("SKILL.md").is_file());
+        assert!(paths.script_dir.join("advance_phase.mjs").is_file());
+        assert!(paths
+            .skill_dir
+            .to_string_lossy()
+            .replace('\\', "/")
+            .ends_with("src-tauri/resources/task-plan/jishu-task-planner"));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn dev_runtime_skill_sync_links_the_resource_skill() {
+        let mut linked: Option<(String, PathBuf)> = None;
+        let result =
+            sync_dev_runtime_skill_to_pi_with_linker("jishu-task-planner", |skill_id, skill_dir| {
+                linked = Some((skill_id.to_string(), skill_dir.to_path_buf()));
+                Ok(())
+            })
+            .unwrap()
+            .unwrap();
+
+        let (skill_id, skill_dir) = linked.unwrap();
+        assert_eq!(skill_id, "jishu-task-planner");
+        assert_eq!(skill_dir, result.skill_dir);
+        assert_eq!(result.source, TaskPlanRuntimeSource::DevResource);
     }
 
     #[test]

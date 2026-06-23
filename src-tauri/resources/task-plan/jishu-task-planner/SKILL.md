@@ -48,6 +48,7 @@ Jishu Hub 任务模式的默认规划技能。定义三阶段方法论，约束�
 ## 关键规则
 
 - **阶段推进的唯一触发方式是执行 `scripts/advance_phase.mjs`**。只在文本里说"完成了"不会推进阶段。
+- Hub 会注入 `JISHU_TASK_PLANNER_SCRIPT_DIR` 指向当前环境的脚本目录；调用脚本时使用 `node "$JISHU_TASK_PLANNER_SCRIPT_DIR/advance_phase.mjs"`，不要硬编码 `~/.jishu-agent`。
 - `task_id` 从阶段指令（`<jishu-task-launch-instruction>` 或 `<jishu-task-planning-stage>`）中读取。
 - 阶段切换由系统驱动，你不负责生成流程图或执行计划。
 

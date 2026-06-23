@@ -3,7 +3,7 @@
  * format_flow_plan.mjs — 将流程规划讨论的节点信息格式化为标准流程方案文本。
  *
  * Agent 调用方式：
- *   node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/format_flow_plan.mjs \
+ *   node "$JISHU_TASK_PLANNER_SCRIPT_DIR/format_flow_plan.mjs" \
  *     --nodes '环境准备|安装依赖、配置构建||基础组件升级|替换核心组件库|环境准备'
  *
  * --nodes 格式：节点之间用双竖线 || 分隔，每个节点三段用单竖线 | 分隔：

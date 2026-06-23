@@ -71,7 +71,7 @@ options: ["生成任务流程图", "继续补充需求"]
 
 调用 `scripts/format_requirement.mjs` 产出标准终稿文件：
 ```bash
-node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/format_requirement.mjs \
+node "$JISHU_TASK_PLANNER_SCRIPT_DIR/format_requirement.mjs" \
   --title "..." --goal "..." --scope "...;...;..." \
   --out-scope "...;..." --constraints "...;..." \
   --acceptance "...;..." --assumptions "...;..." > /tmp/requirement.md
@@ -81,7 +81,7 @@ node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/format_requirement.mjs 
 
 调用 `scripts/advance_phase.mjs`，它会通过 `jishu-cli` 推进任务状态：
 ```bash
-node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/advance_phase.mjs \
+node "$JISHU_TASK_PLANNER_SCRIPT_DIR/advance_phase.mjs" \
   --phase "planning" \
   --project "/path/to/project" \
   --requirement-file "/tmp/requirement.md" \
@@ -89,6 +89,7 @@ node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/advance_phase.mjs \
 ```
 
 **参数说明**：
+- `JISHU_TASK_PLANNER_SCRIPT_DIR`：Hub 注入的脚本目录。开发环境指向源码资源目录，正式安装指向 `.jishu-agent/task-plan` 中的生产副本。
 - `--session`：当前会话 ID。Hub 会在每轮消息前注入 `<jishu-runtime-context>`，直接读取其中的 `session_id` 字段。
 - `--project`：当前项目路径（工作目录）
 - 不需要传 `--task-id`：脚本会用 `--session` 自动查询对应的任务实例

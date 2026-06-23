@@ -3,6 +3,8 @@ export interface TaskPhaseAdvanceInstance {
   current_phase: string;
   title: string;
   requirement_file?: string | null;
+  planning_session_id?: string | null;
+  graph_id?: string | null;
 }
 
 export interface TaskPhaseAdvancePrompt {
@@ -59,4 +61,57 @@ export function detectTaskPhaseAdvancePrompt({
   }
 
   return null;
+}
+
+export function detectMissingTaskPhaseSessionPrompt({
+  taskId,
+  requestedPhase,
+  instance,
+}: {
+  taskId: string;
+  requestedPhase: "planning" | "execution";
+  instance: TaskPhaseAdvanceInstance;
+}): TaskPhaseAdvancePrompt | null {
+  if (
+    requestedPhase === "planning"
+    && instance.status === "planning_discussing"
+    && instance.current_phase === "planning"
+    && Boolean(instance.requirement_file)
+    && !instance.planning_session_id
+  ) {
+    return {
+      taskId,
+      fromPhase: "requirements",
+      toPhase: "planning",
+      planningInstruction: null,
+      title: instance.title,
+    };
+  }
+
+  if (
+    requestedPhase === "execution"
+    && instance.status === "graph_created"
+    && instance.current_phase === "execution"
+    && !instance.graph_id
+  ) {
+    return {
+      taskId,
+      fromPhase: "planning",
+      toPhase: "execution",
+      planningInstruction: null,
+      title: instance.title,
+    };
+  }
+
+  return null;
+}
+
+export function resolveTaskPhaseAdvanceProjectRoot({
+  liveProjectPath,
+  capturedProjectPath,
+}: {
+  liveProjectPath?: string | null;
+  capturedProjectPath?: string | null;
+}): string | null {
+  return liveProjectPath?.trim() || capturedProjectPath?.trim() || null;
 }

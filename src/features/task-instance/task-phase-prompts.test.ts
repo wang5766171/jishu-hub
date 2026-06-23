@@ -14,6 +14,8 @@ describe("task phase prompts", () => {
     });
 
     expect(prompt).toContain("advance_phase.mjs");
+    expect(prompt).toContain("JISHU_TASK_PLANNER_SCRIPT_DIR");
+    expect(prompt).toContain('node "$JISHU_TASK_PLANNER_SCRIPT_DIR/advance_phase.mjs"');
     expect(prompt).toContain('--phase "planning"');
     expect(prompt).toContain("--requirement-file");
     expect(prompt).toContain("task_id: task_1");
@@ -21,6 +23,7 @@ describe("task phase prompts", () => {
     expect(prompt).toContain("<jishu-runtime-context>");
     expect(prompt).toContain('--session "<session_id>"');
     expect(prompt).not.toContain("SESSION_ID");
+    expect(prompt).not.toContain("~/.jishu-agent/task-plan");
     expect(prompt).not.toContain("当前会话ID");
     expect(prompt).not.toContain("系统会自动推进");
   });
@@ -35,12 +38,15 @@ describe("task phase prompts", () => {
     });
 
     expect(prompt).toContain("advance_phase.mjs");
+    expect(prompt).toContain("JISHU_TASK_PLANNER_SCRIPT_DIR");
+    expect(prompt).toContain('node "$JISHU_TASK_PLANNER_SCRIPT_DIR/advance_phase.mjs"');
     expect(prompt).toContain('--phase "execution"');
     expect(prompt).toContain("task_id: task_1");
     expect(prompt).toContain("session_id");
     expect(prompt).toContain("<jishu-runtime-context>");
     expect(prompt).toContain('--session "<session_id>"');
     expect(prompt).not.toContain("SESSION_ID");
+    expect(prompt).not.toContain("~/.jishu-agent/task-plan");
     expect(prompt).not.toContain("当前会话ID");
     expect(prompt).not.toContain("系统会自动调用编排引擎");
   });

@@ -6,14 +6,14 @@
  * 调用此脚本（而非只在文本里说"完成了"），脚本通过 jishu-cli 推进后端状态。
  *
  * 用法（需求→规划）：
- *   node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/advance_phase.mjs \
+ *   node "$JISHU_TASK_PLANNER_SCRIPT_DIR/advance_phase.mjs" \
  *     --phase "planning" \
  *     --project "/path/to/project" \
  *     --requirement-file "/tmp/requirement.md" \
  *     --session "<session_id>"
  *
  * 用法（规划→执行）：
- *   node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/advance_phase.mjs \
+ *   node "$JISHU_TASK_PLANNER_SCRIPT_DIR/advance_phase.mjs" \
  *     --phase "execution" \
  *     --project "/path/to/project" \
  *     --session "<session_id>"

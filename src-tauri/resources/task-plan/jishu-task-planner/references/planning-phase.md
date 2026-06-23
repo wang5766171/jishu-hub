@@ -10,7 +10,7 @@
 2. **设计节点**：把需求拆解为可执行的任务节点。参考 SKILL.md manifest 中的角色（需求负责人/架构师/开发/测试/审计）来分派节点职责。
 3. **格式化方案**：调用 `scripts/format_flow_plan.mjs` 输出标准格式：
    ```
-   node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/format_flow_plan.mjs \
+   node "$JISHU_TASK_PLANNER_SCRIPT_DIR/format_flow_plan.mjs" \
      --nodes '环境准备|安装依赖、配置构建||基础组件升级|替换核心组件库|环境准备||...'
    ```
 4. **与用户讨论**：展示方案，邀请用户调整。用户可能增删节点、改依赖、改优先级。
@@ -34,13 +34,14 @@ options: ["确认生成任务流程图", "还要调整方案"]
 
 调用 `scripts/advance_phase.mjs` 触发阶段推进：
 ```bash
-node ~/.jishu-agent/task-plan/jishu-task-planner/scripts/advance_phase.mjs \
+node "$JISHU_TASK_PLANNER_SCRIPT_DIR/advance_phase.mjs" \
   --phase "execution" \
   --project "/path/to/project" \
   --session "<session_id>"
 ```
 
 **参数说明**：
+- `JISHU_TASK_PLANNER_SCRIPT_DIR`：Hub 注入的脚本目录。开发环境指向源码资源目录，正式安装指向 `.jishu-agent/task-plan` 中的生产副本。
 - `--session`：当前会话 ID。Hub 会在每轮消息前注入 `<jishu-runtime-context>`，直接读取其中的 `session_id` 字段。
 - `--project`：当前项目路径（工作目录）
 - 不需要传 `--task-id`：脚本会用 `--session` 自动查询对应的任务实例

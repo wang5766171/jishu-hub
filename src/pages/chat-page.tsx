@@ -51,7 +51,12 @@ import {
   derivePlanningTitle,
   type PlanningChatMessage,
 } from "@/features/task-workbench/planning-session";
-import { detectTaskPhaseAdvancePrompt, type TaskPhaseAdvancePrompt } from "@/features/task-instance/task-phase-advance";
+import {
+  detectMissingTaskPhaseSessionPrompt,
+  detectTaskPhaseAdvancePrompt,
+  resolveTaskPhaseAdvanceProjectRoot,
+  type TaskPhaseAdvancePrompt,
+} from "@/features/task-instance/task-phase-advance";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
 import { TaskPhaseNavBar } from "@/features/task-instance/task-phase-nav-bar";
 import { buildPlanningStagePrompt, buildRequirementsStagePrompt } from "@/features/task-instance/task-phase-prompts";
@@ -294,6 +299,7 @@ export function ChatPage({
   const [taskContainerPhase, setTaskContainerPhase] = useState<TaskPhase>("requirements");
   const [taskContainerReadOnly, setTaskContainerReadOnly] = useState(false);
   const [taskLaunchOpen, setTaskLaunchOpen] = useState(false);
+  const [taskLaunchReadOnly, setTaskLaunchReadOnly] = useState(false);
   const [taskLaunchPhase, setTaskLaunchPhase] = useState<TaskLaunchPhase>("requirements");
   const [activeTaskInstanceId, setActiveTaskInstanceId] = useState<string | null>(null);
   const [activeTaskRequirementFile, setActiveTaskRequirementFile] = useState<string | null>(null);
@@ -662,6 +668,8 @@ export function ChatPage({
     setTaskContainerReadOnly(false);
     setSelectedTaskGraphId(null);
     setTaskLaunchOpen(false);
+    setTaskLaunchReadOnly(false);
+    taskLaunchOpenRef.current = false;
     setPendingTaskPlanInstruction(null);
     sessionMessagesCacheRef.current.clear();
     newSessionStreamIdsRef.current.clear();
@@ -679,6 +687,8 @@ export function ChatPage({
     setTaskContainerReadOnly(false);
     setSelectedTaskGraphId(null);
     setTaskLaunchOpen(false);
+    setTaskLaunchReadOnly(false);
+    taskLaunchOpenRef.current = false;
     setPendingTaskPlanInstruction(null);
     sessionMessagesCacheRef.current.clear();
     newSessionStreamIdsRef.current.clear();
@@ -775,6 +785,7 @@ export function ChatPage({
     setTaskContainerReadOnly(false);
     setSelectedTaskGraphId(null);
     setTaskLaunchOpen(nextIsTask);
+    setTaskLaunchReadOnly(false);
     setTaskLaunchPhase("requirements");
     setActiveTaskInstanceId(null);
     setActiveTaskRequirementFile(null);
@@ -898,6 +909,8 @@ export function ChatPage({
     setTaskContainerReadOnly(false);
     setSelectedTaskGraphId(null);
     setTaskLaunchOpen(false);
+    setTaskLaunchReadOnly(false);
+    taskLaunchOpenRef.current = false;
     if (sessionId === selectedSession || !projectId) return;
 
     if (selectedSession && messageAreaRef.current) {
@@ -980,6 +993,7 @@ export function ChatPage({
     setTaskContainerReadOnly(false);
     setSelectedTaskGraphId(null);
     setTaskLaunchOpen(false);
+    setTaskLaunchReadOnly(false);
     taskLaunchOpenRef.current = false;
     activeTaskInstanceIdRef.current = null;
     activeTaskRequirementFileRef.current = null;
@@ -1003,6 +1017,7 @@ export function ChatPage({
       setTaskContainerReadOnly(false);
       setSelectedTaskGraphId(null);
       setTaskLaunchOpen(true);
+      setTaskLaunchReadOnly(false);
       setTaskLaunchPhase("requirements");
       setActiveTaskInstanceId(null);
       setActiveTaskRequirementFile(null);
@@ -1023,6 +1038,8 @@ export function ChatPage({
       return;
     }
     setTaskLaunchOpen(false);
+    setTaskLaunchReadOnly(false);
+    taskLaunchOpenRef.current = false;
     setTaskModeActive(false);
     setTaskContainerReadOnly(false);
     setSelectedTaskGraphId(graphId);
@@ -1277,6 +1294,7 @@ export function ChatPage({
       skillId: selectedTaskSkillIdRef.current,
     });
     setTaskLaunchOpen(true);
+    setTaskLaunchReadOnly(false);
     setTaskModeActive(false);
     setTaskContainerReadOnly(false);
     setTaskLaunchPhase(phase);
@@ -1595,6 +1613,8 @@ export function ChatPage({
     }
     setPendingTaskPlanInstruction(instruction);
     setTaskLaunchOpen(false);
+    setTaskLaunchReadOnly(false);
+    taskLaunchOpenRef.current = false;
     // 生成图后打开三阶段容器，落在执行阶段（替代旧的 TaskWorkbench 跳转）
     if (activeTaskInstanceIdRef.current) {
       setTaskModeActive(true);
@@ -1611,7 +1631,88 @@ export function ChatPage({
     refetchTaskConversations(true).catch(console.error);
   }, [currentProject?.path, refetchTaskConversations, refreshTaskLaunchSessions, t, taskPlanSkills]);
 
-  const openTaskPhaseWorkspace = useCallback((
+  const openTaskChatPhase = useCallback(async (
+    taskSession: TaskLaunchInstanceSummary,
+    phase: Exclude<TaskPhase, "execution">,
+    readOnly = false,
+  ) => {
+    const sessionId = phase === "planning"
+      ? taskSession.planning_session_id
+      : taskSession.requirement_session_id;
+    logTaskPhaseDebug("chat-phase:open", {
+      taskId: taskSession.task_id,
+      phase,
+      readOnly,
+      sessionId,
+      status: taskSession.status,
+      currentPhase: taskSession.current_phase,
+      requirementSessionId: taskSession.requirement_session_id,
+      planningSessionId: taskSession.planning_session_id,
+      graphId: taskSession.graph_id,
+    });
+    setActiveTaskInstanceId(taskSession.task_id);
+    setActiveTaskRequirementFile(taskSession.requirement_file ?? null);
+    setSelectedTaskSkillId(taskSession.skill_id || "jishu-task-planner");
+    activeTaskInstanceIdRef.current = taskSession.task_id;
+    activeTaskRequirementFileRef.current = taskSession.requirement_file ?? null;
+    selectedTaskSkillIdRef.current = taskSession.skill_id || "jishu-task-planner";
+    lastKnownStatusRef.current = taskSession.status;
+    setTaskModeActive(false);
+    setTaskContainerReadOnly(false);
+    setTaskLaunchOpen(true);
+    setTaskLaunchReadOnly(readOnly);
+    setTaskLaunchPhase(phase);
+    taskLaunchOpenRef.current = true;
+    taskLaunchPhaseRef.current = phase;
+    setTaskPanelOpen(false);
+    setSelectedTaskGraphId(null);
+    setPendingTaskPlanInstruction(null);
+    setPendingSteerDisplay([]);
+
+    if (!sessionId || !projectId) {
+      setSelectedSession("new");
+      selectedSessionRef.current = "new";
+      setSessionMessages([]);
+      return;
+    }
+
+    const currentSelectedSession = selectedSessionRef.current;
+    if (currentSelectedSession && messageAreaRef.current) {
+      scrollMemory.current.set(currentSelectedSession, messageAreaRef.current.scrollTop);
+    }
+    const isFirstVisit = !visitedSessions.current.has(sessionId);
+    setSelectedSession(sessionId);
+    selectedSessionRef.current = sessionId;
+
+    const cached = sessionMessagesCacheRef.current.get(sessionId);
+    if (cached) {
+      setSessionMessages(cached);
+    } else {
+      try {
+        const messages = await invokeCommand<Message[]>("get_session_messages", {
+          sessionId,
+          encodedName: projectId,
+        });
+        const visibleMessages = stripTaskLaunchInstructionFromMessages(messages);
+        sessionMessagesCacheRef.current.set(sessionId, visibleMessages);
+        setSessionMessages(visibleMessages);
+      } catch {
+        setSessionMessages([]);
+      }
+    }
+
+    if (isFirstVisit) {
+      scrollAction.current = { type: "bottom" };
+      visitedSessions.current.add(sessionId);
+    } else {
+      const saved = scrollMemory.current.get(sessionId);
+      scrollAction.current = saved !== undefined
+        ? { type: "restore", top: saved }
+        : { type: "bottom" };
+    }
+  }, [projectId]);
+
+  const openTaskPhaseWorkspace = useCallback(async (
     taskSession: TaskLaunchInstanceSummary,
     phase: TaskPhase,
     readOnly = false,
@@ -1626,6 +1727,28 @@ export function ChatPage({
       planningSessionId: taskSession.planning_session_id,
       graphId: taskSession.graph_id,
     });
+    const missingPrompt = detectMissingTaskPhaseSessionPrompt({
+      taskId: taskSession.task_id,
+      requestedPhase: phase === "execution" ? "execution" : "planning",
+      instance: taskSession,
+    });
+    if (phase !== "requirements" && missingPrompt) {
+      logTaskPhaseDebug("workspace:missing-phase-target", {
+        taskId: taskSession.task_id,
+        requestedPhase: phase,
+        toPhase: missingPrompt.toPhase,
+        status: taskSession.status,
+        currentPhase: taskSession.current_phase,
+      });
+      setPhaseAdvancePrompt(missingPrompt);
+      return;
+    }
+
+    if (phase !== "execution") {
+      await openTaskChatPhase(taskSession, phase, readOnly);
+      return;
+    }
+
     setActiveTaskInstanceId(taskSession.task_id);
     setActiveTaskRequirementFile(taskSession.requirement_file ?? null);
     setSelectedTaskSkillId(taskSession.skill_id || "jishu-task-planner");
@@ -1638,13 +1761,14 @@ export function ChatPage({
     setTaskContainerPhase(phase);
     setTaskContainerReadOnly(readOnly);
     setTaskLaunchOpen(false);
+    setTaskLaunchReadOnly(false);
     taskLaunchOpenRef.current = false;
     setTaskPanelOpen(false);
     setSelectedTaskGraphId(taskSession.graph_id ?? null);
     setSelectedSession(null);
     selectedSessionRef.current = null;
     setPendingSteerDisplay([]);
-  }, []);
+  }, [openTaskChatPhase]);
 
   const handleTaskLaunchBeforeSend = useCallback(async (message: string) => {
     if (!taskLaunchOpen) return false;
@@ -2124,10 +2248,15 @@ export function ChatPage({
           // 这是确定性的（对比 status 值，不是猜意图），变化后弹窗让用户确认。
           if (taskLaunchOpenRef.current && activeTaskInstanceIdRef.current) {
             const tid = activeTaskInstanceIdRef.current;
-            const projectRoot = currentProject?.path;
+            const projectRoot = resolveTaskPhaseAdvanceProjectRoot({
+              liveProjectPath: projectPathRef.current,
+              capturedProjectPath: currentProject?.path,
+            });
             logTaskPhaseDebug("turn-complete:phase-check", {
               taskId: tid,
               projectRoot,
+              capturedProjectRoot: currentProject?.path ?? null,
+              liveProjectRoot: projectPathRef.current,
               activePhase: taskLaunchPhaseRef.current,
               previousStatus: lastKnownStatusRef.current,
               sessionId: finalKey,
@@ -2933,6 +3062,7 @@ export function ChatPage({
                 status: activeTaskLaunchInstance?.status ?? null,
               });
               setTaskLaunchOpen(false);
+              setTaskLaunchReadOnly(false);
               taskLaunchOpenRef.current = false;
               setActiveTaskInstanceId(null);
               setActiveTaskRequirementFile(null);
@@ -3168,7 +3298,7 @@ export function ChatPage({
               prepareMessageForAgent={prepareTaskLaunchMessage}
               allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
               agentDisplayName={active?.display_name}
-              disabled={taskLaunchOpen && !taskModeCanSend}
+              disabled={taskLaunchOpen && (!taskModeCanSend || taskLaunchReadOnly)}
               containerClassName={showStartComposer ? "mx-auto w-full max-w-[var(--message-content-max-width)] px-0 pb-0 pt-0" : undefined}
               panelClassName={showStartComposer ? "rounded-[22px] border-border/70 bg-card/98 shadow-[0_18px_48px_rgba(0,0,0,0.10)]" : undefined}
               contextFooter={startComposerFooter}
