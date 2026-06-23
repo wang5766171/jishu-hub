@@ -16,18 +16,21 @@ export interface TaskPhaseAdvancePrompt {
 export function detectTaskPhaseAdvancePrompt({
   taskId,
   previousStatus,
+  activePhase = null,
   instance,
 }: {
   taskId: string;
   previousStatus: string | null;
+  activePhase?: "requirements" | "planning" | null;
   instance: TaskPhaseAdvanceInstance;
 }): TaskPhaseAdvancePrompt | null {
-  if (!previousStatus || previousStatus === instance.status) {
+  if (previousStatus === instance.status) {
     return null;
   }
 
   if (
-    previousStatus === "requirements_discussing"
+    (previousStatus === "requirements_discussing"
+      || (!previousStatus && activePhase === "requirements"))
     && (instance.status === "requirements_finalized" || instance.status === "planning_discussing")
     && instance.requirement_file
   ) {
@@ -41,7 +44,8 @@ export function detectTaskPhaseAdvancePrompt({
   }
 
   if (
-    previousStatus === "planning_discussing"
+    (previousStatus === "planning_discussing"
+      || (!previousStatus && activePhase === "planning"))
     && instance.status === "graph_created"
     && instance.current_phase === "execution"
   ) {

@@ -393,6 +393,24 @@ pub fn get_task_instance(
     store.get(task_id)
 }
 
+pub fn planning_instruction_for_instance(
+    project_root: &str,
+    task_id: &str,
+) -> Result<String, String> {
+    let store = open_store(project_root)?;
+    let instance = store
+        .get(task_id)?
+        .ok_or_else(|| format!("task instance not found: {task_id}"))?;
+    let requirement_file = instance
+        .requirement_file
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("task instance has no requirement file: {task_id}"))?;
+
+    build_planning_instruction_from_requirement(Path::new(requirement_file))
+}
+
 /// 标记某阶段的会话。阶段由 `phase` 参数决定（经 `normalize_phase` 归一化）。
 ///
 /// 设计依据：`任务数据结构与生命周期设计_20260622.md` §3.1、§3.2、§1.3。
@@ -930,7 +948,10 @@ mod tests {
 
         assert_eq!(updated.status, STATUS_GRAPH_CREATED);
         assert_eq!(updated.current_phase, "execution");
-        assert_eq!(updated.planning_session_id.as_deref(), Some("planning-session"));
+        assert_eq!(
+            updated.planning_session_id.as_deref(),
+            Some("planning-session")
+        );
 
         let _ = std::fs::remove_dir_all(&project);
     }
@@ -945,6 +966,41 @@ mod tests {
         {
             format!("{root}/")
         }
+    }
+
+    #[test]
+    fn planning_instruction_can_be_rebuilt_after_advance() {
+        let project = temp_project("planning-instruction");
+        let project_root = project.to_string_lossy().to_string();
+
+        let instance = mark_task_stage_session(
+            &project_root,
+            None,
+            "requirements-session",
+            "jishu-task-planner",
+            "requirements",
+            Some("Demo task"),
+        )
+        .unwrap();
+
+        let result = advance_phase(
+            &project_root,
+            AdvancePhaseRequest {
+                task_id: instance.task_id.clone(),
+                phase: "planning".into(),
+                requirement_markdown: Some("# Demo task\n\n## Goal\nShip a usable demo.".into()),
+                requirement_session_id: Some("requirements-session".into()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.instance.status, STATUS_PLANNING_DISCUSSING);
+        let instruction =
+            planning_instruction_for_instance(&project_root, &instance.task_id).unwrap();
+        assert!(instruction.contains("requirements.md"));
+        assert!(instruction.contains("Ship a usable demo."));
+
+        let _ = std::fs::remove_dir_all(&project);
     }
 
     #[test]
