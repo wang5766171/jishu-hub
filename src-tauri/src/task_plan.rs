@@ -271,6 +271,59 @@ pub fn list_task_plan_skills() -> Result<Vec<TaskPlanSkill>, String> {
     list_task_plan_skills_in_dir(&task_plan_dir()?)
 }
 
+// ── Conductor 扩展自动注册（Phase 1）──
+const CONDUCTOR_EXTENSION_TS: &str = include_str!("../resources/extensions/jishu-task-conductor.ts");
+const CONDUCTOR_DISCUSS_SKILL: &str = include_str!("../resources/task-plan/jishu-conductor-dev/discuss.SKILL.md");
+const CONDUCTOR_PLAN_SKILL: &str = include_str!("../resources/task-plan/jishu-conductor-dev/plan.SKILL.md");
+const CONDUCTOR_EXECUTE_SKILL: &str = include_str!("../resources/task-plan/jishu-conductor-dev/execute.SKILL.md");
+
+/// 自动注册 Conductor 扩展 + skill pack + settings.json extensions + 删除旧 skill。
+/// 在 Hub setup hook 调用，每次启动自动确保。
+pub fn ensure_conductor_extension() {
+    let Some(home) = dirs::home_dir() else { return; };
+    let agent_dir = home.join(".jishu-agent");
+
+    // 1. 写扩展文件
+    let ext_dir = agent_dir.join("extensions");
+    let _ = std::fs::create_dir_all(&ext_dir);
+    let _ = std::fs::write(ext_dir.join("jishu-task-conductor.ts"), CONDUCTOR_EXTENSION_TS);
+
+    // 2. 写 skill pack
+    let skill_dir = agent_dir.join("skills").join("jishu-conductor-dev");
+    let _ = std::fs::create_dir_all(&skill_dir);
+    let _ = std::fs::write(skill_dir.join("discuss.SKILL.md"), CONDUCTOR_DISCUSS_SKILL);
+    let _ = std::fs::write(skill_dir.join("plan.SKILL.md"), CONDUCTOR_PLAN_SKILL);
+    let _ = std::fs::write(skill_dir.join("execute.SKILL.md"), CONDUCTOR_EXECUTE_SKILL);
+
+    // 3. 注册 settings.json extensions（幂等）
+    let settings_path = agent_dir.join("settings.json");
+    if let Ok(content) = std::fs::read_to_string(&settings_path) {
+        if let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) {
+            let conductor_path = "extensions/jishu-task-conductor.ts";
+            let need_add = match settings.get("extensions").and_then(|v| v.as_array()) {
+                Some(arr) => !arr.iter().any(|v| v.as_str() == Some(conductor_path)),
+                None => true,
+            };
+            if need_add {
+                if let Some(arr) = settings.get_mut("extensions").and_then(|v| v.as_array_mut()) {
+                    arr.push(serde_json::Value::String(conductor_path.to_string()));
+                } else {
+                    settings["extensions"] = serde_json::json!([conductor_path]);
+                }
+                if let Ok(new_content) = serde_json::to_string_pretty(&settings) {
+                    let _ = std::fs::write(&settings_path, new_content);
+                }
+            }
+        }
+    }
+
+    // 4. 删除旧 skill（避免 agent 读旧 jishu-task-planner 干扰 Conductor）
+    let old_skill = agent_dir.join("skills").join("jishu-task-planner");
+    if old_skill.exists() {
+        let _ = std::fs::remove_dir_all(&old_skill);
+    }
+}
+
 pub fn install_builtin_skill(skill_id: &str) -> Result<TaskPlanSkill, String> {
     install_builtin_skill_in_dir(skill_id, &task_plan_dir()?)
 }

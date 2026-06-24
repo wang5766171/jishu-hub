@@ -885,7 +885,7 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
         if output.status.success() {
             // Auto-install the default task plan skill so users don't need to
             // manually install it before using task mode.
-            let _ = task_plan::install_builtin_skill("jishu-task-planner");
+            // let _ = task_plan::install_builtin_skill("jishu-task-planner"); // Phase 1: replaced by Conductor
             return Ok("Pi agent installed globally from NPM (Lite version).".to_string());
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2747,6 +2747,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let _ = hub::migrate_v0_5_0();
+            // Phase 1: 自动注册 Conductor 扩展 + skill pack + 删除旧 skill
+            task_plan::ensure_conductor_extension();
             let registry = Arc::new(agent::AgentRegistry::new());
             if let Ok(Some(active_id)) = hub::load_active_agent_id() {
                 let _ = registry.set_active(&active_id);

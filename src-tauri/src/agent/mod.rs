@@ -31,6 +31,12 @@ pub struct ResolvedSessionPromptInjection {
 
 impl ResolvedSessionPromptInjection {
     pub fn apply(&self, message: &str, session_id: &str) -> String {
+        // Slash commands must start with '/' as the very first character for
+        // Pi's command dispatcher to recognize them. Injecting runtime context
+        // before a '/' breaks command detection — bypass for slash commands.
+        if message.trim_start().starts_with('/') {
+            return message.to_string();
+        }
         let mut lines = vec![
             self.open_tag.clone(),
             format!("{}: {}", self.session_id_field, session_id),
