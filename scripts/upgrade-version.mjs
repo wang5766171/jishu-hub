@@ -84,7 +84,10 @@ const libRsPath = path.resolve(process.cwd(), "src-tauri", "src", "lib.rs");
 if (fs.existsSync(libRsPath)) {
   let content = fs.readFileSync(libRsPath, "utf-8");
   // Regex to match the binding section exactly
-  const regex = /(\/\/ JISHU_AGENT_BINDING_START[\s\S]*?@jishu-hub\/jishu-agent@)[^"]+("\.to_string\(\)\],\s+\);\s+\/\/ JISHU_AGENT_BINDING_END)/m;
+  // Format-agnostic: match from the START marker through @jishu-hub/jishu-agent@<version>"
+  // up to the END marker, so rustfmt's multi-line `vec![...]` layout (each element on its
+  // own line, `],` / `);` on separate lines) matches just as well as the old single-line form.
+  const regex = /(\/\/ JISHU_AGENT_BINDING_START[\s\S]*?@jishu-hub\/jishu-agent@)[^"]+("[\s\S]*?\/\/ JISHU_AGENT_BINDING_END)/;
   
   const match = content.match(regex);
   if (match) {
