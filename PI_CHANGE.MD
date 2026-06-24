@@ -28,7 +28,7 @@
                │fork from
                ▼
 ┌─────────────────────────────────┐
-│Dicklesworthstone/pi             │
+│earendil-works/pi                │
 │（上游开源仓库）                 │
 │tags: v0.78.1, ...               │
 └─────────────────────────────────┘
@@ -53,11 +53,11 @@
 
 | 项目 | 地址 |
 |------|-----|
-| 上游仓库 | `https://github.com/Dicklesworthstone/pi` |
+| 上游仓库 | `https://github.com/earendil-works/pi` |
 | 自有 fork | `https://github.com/wang5766171/pi` |
-| 当前维护分支 | `release_v0.79.1-7` |
+| 当前维护分支 | `release_v0.80.2-8` |
 | `.gitmodules` URL | `https://github.com/wang5766171/pi` |
-| `.gitmodules` branch | `release_v0.79.1-7` |
+| `.gitmodules` branch | `release_v0.80.2-8` |
 
 ## 1.5 日常源码变动流程
 
@@ -118,6 +118,34 @@
 ---
 
 # 第二部分：改动记录
+
+## 合并上游 v0.80.2（落地第8版，release_v0.80.2-8）
+
+### 2026-06-24 | 合并上游 v0.80.2 并落地第8版
+
+**背景**：上游 `earendil-works/pi` 发布 `v0.80.2`（原基线 `v0.79.1`，跨 12 个版本、219 commits、435 files）。按版本规则（§1.3），Pi 版本升至 `0.80.2`、自研尾号落地 `-8`（含 request_user_input 等全部自研改动）。
+
+### 改动总览（一事一议：逐项判断上游 v0.80.2 是否已实现等价功能）
+
+| 自研改动 | 上游 v0.80.2 状态 | 去留决策 |
+|---------|------------------|---------|
+| `request_user_input` 工具 + `main.ts` 注册（第8版）| 未实现（coding-agent tools 目录无此工具；`extension_ui` 仅 rpc-mode 内部协议）| **保留** |
+| `build-bundle.mjs` 输出 `runtime-deps.json`（第6版）| 未实现（上游无 build-bundle/runtime-deps 机制）| **保留** |
+| `packages/ai` build 移除 `generate-models` 卡点（第2版）| 未修复（上游 build 仍 `npm run generate-models && ...`）| **保留** |
+| `husky` prepare 安全化（第1版）| 未修复（上游 prepare 仍强 husky）| **保留** |
+| `pi` CLI → `jishu` 命名（第2版）| 未实现 | **保留** |
+| `.publish-stage/` gitignore（第7版）| 未实现 | **保留** |
+| `npm-shrinkwrap.json` | 上游有（v0.80.2 重新生成）| fork **重新生成**为 0.80.2-8（惯例同 release_v0.79.1-7），主仓 publish-pi.mjs 转 resolved |
+| `trust-manager` 命名 | 上游演进：`hasProjectTrustInputs` → `hasTrustRequiringProjectResources` | **采用上游新命名**（main.ts 同步）|
+| 孤立产物 `earendil-works-pi-coding-agent-0.78.1.tgz` | — | **删除**（源码无引用、v0.78.1 过时、4.7MB）|
+
+**版本同步**：所有 `package.json`（根 + agent/ai/coding-agent/tui）version 与内部依赖统一为 `0.80.2-8`；`package-lock.json` 经 `npm install` 同步 v0.80.2 依赖树（bin `pi`→`jishu` 同步入 lock）。
+
+**验证（2026-06-24）**：`tsc --noEmit -p packages/coding-agent/tsconfig.build.json` → 0 error；`npm-shrinkwrap.json` up to date；`build-bundle` 输出 27 runtime-deps；pre-commit 全套（biome / pinned-deps / ts-imports / shrinkwrap / tsgo / browser-smoke）通过。
+
+**主仓配套（本次同步落地）**：`third_party/pi` 指针指向 `c07d10e0`，`.gitmodules` branch 改为 `release_v0.80.2-8`，PI_CHANGE.MD 记录本次合并。**注意**：主仓指针当前指向 fork 本地 commit，主仓发版 push 前必须先 `git push origin release_v0.80.2-8`（fork）使该 commit 在远端可达。`PI_AGENT_VERSION` 由 upgrade-version.mjs 在发版时同步。
+
+---
 
 ## 第 8 版 (自研尾号 -8)
 
