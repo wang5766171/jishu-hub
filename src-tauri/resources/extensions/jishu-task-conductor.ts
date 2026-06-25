@@ -204,8 +204,10 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     lastTurnEndedNormally = false;
   });
 
-  pi.on("turn_end", async () => {
-    lastTurnEndedNormally = true;
+  pi.on("turn_end", async (event) => {
+    // stopReason="aborted" 表示用户点了停止——不是正常完成
+    const msg = event.message as { stopReason?: string };
+    lastTurnEndedNormally = msg?.stopReason !== "aborted";
   });
 
   pi.on("agent_end", async (_event, ctx) => {
