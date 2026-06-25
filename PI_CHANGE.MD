@@ -149,6 +149,20 @@
 
 ## 第 8 版 (自研尾号 -8)
 
+### 2026-06-25 | 修复 Windows 上 stdio:"ignore" 创建 nul 文件
+
+**根因**：Pi 的 bash/find/grep 工具用 `child_process.spawn` 时 stdin 设为 `"ignore"`。Node.js 在 Windows 上把 `"ignore"` 映射为打开 `nul` 设备，但特定条件下（工作目录在非系统盘等）会创建实际的 0 字节 `nul` 文件而非使用设备。用户执行 `/jishu-task` 时 Pi 进程的工作目录是项目目录（如 `E:\Claude\test`），导致项目目录下出现 `nul` 文件。
+
+### 改动总览
+
+| 模块 | 改动说明 |
+|------|---------|
+| `packages/coding-agent/src/core/tools/bash.ts` | `stdio: ["ignore", "pipe", "pipe"]` → `["pipe", "pipe", "pipe"]`；非 stdin 模式时立即 `child.stdin.end()`。 |
+| `packages/coding-agent/src/core/tools/find.ts` | 同上：`"ignore"` → `"pipe"` + `stdin.end()`。 |
+| `packages/coding-agent/src/core/tools/grep.ts` | 同上：`"ignore"` → `"pipe"` + `stdin.end()`。 |
+
+**验证**：Pi pre-commit 全套检查通过（biome / pinned-deps / ts-imports / shrinkwrap / tsgo / browser-smoke）。
+
 ### 2026-06-25 | jishu-task-conductor Pi 扩展（三阶段工作流驱动）+ slash command 注入旁路
 
 **背景**：任务功能从"Hub 层脚本/事件驱动阶段推进"改为"Pi 原生扩展驱动"。Conductor 扩展在 Pi 内部确定性驱动 discuss→plan→execute 三阶段，通过 `lock_requirement` / `commit_plan` 结构化工具提交产物，`agent_end` + `ctx.ui.select` 人工关卡推进阶段。扩展随 Hub 启动自动注册到 `~/.jishu-agent/`。
