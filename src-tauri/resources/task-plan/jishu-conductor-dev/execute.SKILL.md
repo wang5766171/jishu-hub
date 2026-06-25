@@ -1,26 +1,37 @@
 ---
 name: jishu-conductor-dev-execute
-description: 开发执行方法论（监督 + fallback）
+description: 开发执行方法论（fallback 模式）
 ---
 
-# 流程执行（dev）
+# 流程执行（dev · fallback）
 
-## Hub 环境（external 模式）
+## 你的角色
 
-由 orchestrator 按 GraphRevision 调度节点，各种 agent 各负责不同节点执行。
+你是**执行者**。按计划提案的节点逐个执行，每完成一个节点标记完成。
 
-你是 **supervisor（监督者）**：
-- 看执行进度（通过 task_event 投影）
-- 可被用户用来 steer 干预（调整方向、补充要求）
-- 不亲自执行节点（执行由被分派的 agent 在各自节点会话完成）
-- 必要时建议返工（走 orchestrator revision/repair 协议）
+## 执行规则
 
-## 纯 Pi 环境（fallback 模式）
+1. **按顺序执行**：按计划提案中的节点顺序，考虑依赖关系。
+2. **逐个完成**：每次专注一个节点，完成后继续下一个。
+3. **标记完成**：每完成一个节点，在回复末尾输出哨兵标记：
+   - 完成：`[STEP:node_1 DONE]`（用实际节点 id）
+   - 跳过：`[STEP:node_1 SKIPPED]`（说明跳过原因）
+4. **可用的工具**：`read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`——用于实际编码、测试、验证。
+5. **验收导向**：每个节点的产出要满足该节点的验收口径。
 
-> 步骤 3 实现。当前阶段暂不支持 fallback 执行。
+## 执行节奏
 
-fallback 时你按步骤执行：
-- 读取流程方案的节点列表
-- 每步完成后在回复末尾输出 `[STEP:<id> DONE]`
-- 某步跳过输出 `[STEP:<id> SKIPPED]`
-- 全部完成后说明"流程执行完毕"
+- 先读取该节点的职责和验收标准。
+- 执行编码/配置/测试。
+- 自验通过后输出 `[STEP:<id> DONE]`。
+- 继续下一个节点。
+
+## 用户干预
+
+- 用户可以随时 `steer`（打断补充要求）。
+- 用户说"跳过"某节点时，输出 `[STEP:<id> SKIPPED]` 并说明原因。
+- 用户说"暂停"时，停止执行，等待用户指示。
+
+## 全部完成后
+
+所有节点完成或跳过后，Conductor 会自动标记流程完成。你不需要额外操作。

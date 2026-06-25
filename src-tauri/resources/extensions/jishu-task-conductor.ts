@@ -14,6 +14,16 @@ type Phase = "idle" | "discuss" | "plan" | "execute" | "done";
 type Domain = "dev" | "research";
 type SkillPhase = "discuss" | "plan" | "execute";
 
+interface Step {
+  id: string;
+  title: string;
+  responsibility: string;
+  acceptance: string;
+  depends_on: string[];
+  role: string;
+  status: "pending" | "done" | "skipped";
+}
+
 interface ConductorState {
   domain: Domain;
   phase: Phase;
@@ -24,6 +34,7 @@ interface ConductorState {
     flowPlanMd?: string;
     flowPlanJson?: string;
   };
+  steps: Step[];
 }
 
 // ── 常量 ──
@@ -32,7 +43,7 @@ const DOMAINS: Domain[] = ["dev"]; // Phase 6 再开 research
 const PHASE_ALLOWED_TOOLS: Partial<Record<Phase, string[]>> = {
   discuss: ["read", "grep", "find", "ls", "lock_requirement", "request_user_input"],
   plan: ["read", "grep", "find", "ls", "commit_plan", "request_user_input"],
-  // execute: 步骤 3 实现 FALLBACK_EXECUTE_ALLOWED_TOOLS 前不放开
+  execute: ["read", "bash", "edit", "write", "grep", "find", "ls"],
 };
 
 const SKILLS_DIR =
@@ -69,6 +80,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     phase: "idle",
     goal: "",
     artifacts: {},
+    steps: [],
   };
   let toolsBeforeWorkflow: string[] | undefined;
 
@@ -204,12 +216,6 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     lastTurnEndedNormally = false;
   });
 
-  pi.on("turn_end", async (event) => {
-    // stopReason="aborted" 表示用户点了停止——不是正常完成
-    const msg = event.message as { stopReason?: string };
-    lastTurnEndedNormally = msg?.stopReason !== "aborted";
-  });
-
   pi.on("agent_end", async (_event, ctx) => {
     // 用户 abort（turn_end 没正常触发）→ 不弹确认，不推进
     if (!lastTurnEndedNormally) return;
@@ -221,7 +227,10 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       );
       if (choice?.startsWith("进入")) {
         setPhase("plan", ctx);
-        ctx.ui.notify("已进入流程规划阶段。请发送消息开始规划（读取需求终稿，设计节点方案）。", "info");
+        pi.sendUserMessage(
+          "进入流程规划阶段。读取需求终稿（" + (state.artifacts.requirements ?? "")
+          + "），设计任务节点方案。与用户讨论调整后，调用 commit_plan 工具提交。",
+        );
       } else {
         state.artifacts.requirements = undefined;
         persist();
@@ -235,14 +244,100 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         ["进入流程执行", "修改计划"],
       );
       if (choice?.startsWith("进入")) {
-        setPhase("done", ctx);
-        ctx.ui.notify("流程规划完成。执行阶段将在后续步骤实现。计划提案已落盘：" + (state.artifacts.flowPlanJson ?? ""), "info");
+        // 读取计划提案，初始化步骤列表
+        let plan: { nodes: Array<{ id: string; title: string; responsibility: string; acceptance?: string; depends_on: string[]; role?: string }> } | null = null;
+        try {
+          const raw = readFileSync(state.artifacts.flowPlanJson ?? "", "utf-8");
+          plan = JSON.parse(raw);
+        } catch {
+          ctx.ui.notify("无法读取计划提案，请重新提交", "warning");
+          state.artifacts.flowPlanJson = undefined;
+          persist();
+          return;
+        }
+        if (!plan?.nodes?.length) {
+          ctx.ui.notify("计划提案无节点，请重新提交", "warning");
+          return;
+        }
+        state.steps = plan.nodes.map((n) => ({
+          id: n.id,
+          title: n.title,
+          responsibility: n.responsibility ?? "",
+          acceptance: n.acceptance ?? "",
+          depends_on: n.depends_on ?? [],
+          role: n.role ?? "developer",
+          status: "pending" as const,
+        }));
+        setPhase("execute", ctx);
+        const stepList = state.steps
+          .map((s, i) => {
+            const dep = s.depends_on.length > 0 ? `（依赖：${s.depends_on.join(", ")}）` : "";
+            const acc = s.acceptance ? `\n   验收：${s.acceptance}` : "";
+            return `${i + 1}. [${s.id}] ${s.title} [${s.role}]${dep}\n   职责：${s.responsibility}${acc}`;
+          })
+          .join("\n");
+        ctx.ui.notify("进入执行阶段（fallback）。共 " + state.steps.length + " 个节点。", "info");
+        pi.sendUserMessage(
+          "进入流程执行阶段。按以下步骤逐个执行：\n" + stepList + "\n\n"
+          + "每完成一个步骤，在回复末尾输出 [STEP:<id> DONE]。\n"
+          + "如需跳过某步骤，输出 [STEP:<id> SKIPPED]。\n"
+          + "从第一个步骤开始：" + (state.steps[0]?.title ?? ""),
+        );
       } else {
         state.artifacts.flowPlanJson = undefined;
         state.artifacts.flowPlanMd = undefined;
         persist();
       }
       return;
+    }
+  });
+
+  // ── turn_end：execute 阶段扫哨兵 [STEP:<id> DONE/SKIPPED]，跟踪进度 ──
+  pi.on("turn_end", async (event, ctx) => {
+    // stopReason=aborted 检测（agent_end 用）
+    const msg = event.message as { stopReason?: string };
+    lastTurnEndedNormally = msg?.stopReason !== "aborted";
+
+    // execute 阶段：扫哨兵
+    if (state.phase !== "execute" || state.steps.length === 0) return;
+    const text = JSON.stringify(event.message);
+    let changed = false;
+    for (const step of state.steps) {
+      if (step.status !== "pending") continue;
+      if (text.includes(`[STEP:${step.id} DONE]`)) {
+        step.status = "done";
+        changed = true;
+      } else if (text.includes(`[STEP:${step.id} SKIPPED]`)) {
+        step.status = "skipped";
+        changed = true;
+      }
+    }
+    if (changed) {
+      const done = state.steps.filter((s) => s.status !== "pending").length;
+      ctx.ui.setStatus("jishu-conductor", `\u25b6 ${done}/${state.steps.length}`);
+      persist();
+      // 全部完成 → done
+      if (state.steps.every((s) => s.status !== "pending")) {
+        setPhase("done", ctx);
+        ctx.ui.notify(
+          `流程执行完成。${state.steps.filter((s) => s.status === "done").length} 完成，${state.steps.filter((s) => s.status === "skipped").length} 跳过。`,
+          "info",
+        );
+      } else {
+        // 还有 pending → 自动推进下一个节点
+        const next = state.steps.find((s) => s.status === "pending");
+        if (next) {
+          const dep = next.depends_on.length > 0 ? `（依赖：${next.depends_on.join(", ")}）` : "";
+          pi.sendMessage(
+            {
+              customType: "jishu-conductor:execute-next",
+              display: false,
+              content: `继续执行下一个节点：[${next.id}] ${next.title}${dep}\n职责：${next.responsibility}\n${next.acceptance ? `验收：${next.acceptance}\n` : ""}完成后输出 [STEP:${next.id} DONE]。`,
+            },
+            { triggerTurn: true, deliverAs: "followUp" },
+          );
+        }
+      }
     }
   });
 
