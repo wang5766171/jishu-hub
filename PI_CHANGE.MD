@@ -149,6 +149,27 @@
 
 ## 第 8 版 (自研尾号 -8)
 
+### 2026-06-25 | jishu-task-conductor Pi 扩展（三阶段工作流驱动）+ slash command 注入旁路
+
+**背景**：任务功能从"Hub 层脚本/事件驱动阶段推进"改为"Pi 原生扩展驱动"。Conductor 扩展在 Pi 内部确定性驱动 discuss→plan→execute 三阶段，通过 `lock_requirement` / `commit_plan` 结构化工具提交产物，`agent_end` + `ctx.ui.select` 人工关卡推进阶段。扩展随 Hub 启动自动注册到 `~/.jishu-agent/`。
+
+**改动说明**：本次改动不涉及 Pi 子模块源码（`third_party/pi` 无修改），全部在 jishu-hub 主仓。但改动深度依赖 Pi 的扩展机制（registerCommand / registerTool / on events / ctx.ui.select / appendEntry），且解决了 Pi RPC 模式下的 slash command 与 abort 兼容问题，故记录于此。
+
+| 模块（主仓） | 改动说明 |
+|------|---------|
+| `src-tauri/resources/extensions/jishu-task-conductor.ts`（**新增**） | Pi 扩展，驱动三阶段工作流。核心机制：`registerCommand("jishu-task")` 启动命令；`registerTool("lock_requirement")` / `registerTool("commit_plan")` 结构化提交工具；`on("before_agent_start")` 按 (domain, phase) 注入 skill pack 方法论；`on("context")` 过滤旧阶段注入；`on("agent_end")` + `ctx.ui.select` 人工关卡（Hub 通过 `extension_ui_request` → `InteractionRequest` 渲染弹窗）；`on("tool_call")` 白名单兜底拦截；`on("session_start")` + `appendEntry` 断点恢复。`on("turn_end")` 检测 `stopReason === "aborted"` 避免用户停止后 `agent_end` 阻塞 Pi。 |
+| `src-tauri/resources/task-plan/jishu-conductor-dev/`（**新增**） | dev 领域 skill pack（discuss / plan / execute 三阶段方法论 markdown），被 Conductor 按 phase 注入。 |
+| `src-tauri/src/agent/mod.rs` | `ResolvedSessionPromptInjection::apply()` 新增 slash command 旁路：消息以 `/` 开头时跳过 `<jishu-runtime-context>` 注入。**根因**：Pi 的命令分发器仅在消息首字符为 `/` 时触发（`agent-session.ts:1005`），Hub 的 runtime context 注入把 `<jishu-runtime-context>...` 放在消息前面，导致 `/jishu-task` 被当普通文本而非 Pi 命令。 |
+| `src-tauri/src/task_plan.rs` | 新增 `ensure_conductor_extension()`：Hub setup hook 调用，自动将扩展 .ts + skill pack 写入 `~/.jishu-agent/`，幂等注册 `settings.json` extensions，删除旧 `jishu-task-planner` skill（避免 agent 读旧 skill 干扰）。 |
+| `src-tauri/src/lib.rs` | setup hook 调用 `ensure_conductor_extension()`；注释 `install_builtin_skill("jishu-task-planner")`（旧 skill 被 Conductor 取代）。 |
+
+**设计依据**：
+- Pi 扩展机制（`ExtensionAPI` / `ToolDefinition` / 事件钩子）全部来自 `types.ts`，已逐行核实源码。`ctx.ui.select` 在 RPC 模式下通过 `extension_ui_request` 协议传给 Hub，Hub 的 `convert_extension_ui_request`（`pi_rpc_runtime.rs:885`）已对接 select/input → `InteractionRequest`。`ctx.ui.confirm` 不映射（L943 `_ => None`），故 Conductor 统一用 `select`。
+- slash command 旁路的根因定位：Pi `agent-session.ts:1005` 检查 `message[0] === '/'`；Hub `apply()` 把 `<jishu-runtime-context>` 放在前面，破坏了这个前提。
+- abort 兼容：Pi 的 abort 流程是 `turn_end(stopReason="aborted") → agent_end`。`turn_end` 在 abort 时也会触发，Conductor 通过检查 `stopReason` 区分正常完成 vs abort，避免 `agent_end` 里 `ctx.ui.select()` 阻塞 Pi 导致"停止后继续输出"。
+
+**验证**：`/jishu-task dev "实现一个登录功能"` 端到端测试通过——discuss 阶段 `request_user_input` 提问 → `lock_requirement` 工具提交需求 → `ctx.ui.select` 弹窗确认 → plan 阶段 `commit_plan` 工具提交计划 → 确认弹窗 → 产物落盘 `.jishu-hub/tasks/<task_id>/artifacts/`。停止按钮测试通过（abort 不再阻塞）。
+
 ### 2026-06-14 | 新增 `request_user_input` 内置工具（Jishu Agent 规划阶段暂停-续跑）
 
 **根因与背景**：Jishu Hub 任务编排的规划阶段（Jishu Agent / Pi planner）需要中途暂停向用户提问（选方案/补充信息），用户回复后同一 turn 继续。此前 Pi 无 `request_user_input` 工具，LLM 调用后 Pi tool runner 报错"未知工具"。方案 B：复用 Pi 已有的 `extension_ui_request` / `extension_ui_response` 协议（RPC 模式已实现），注册一个 `request_user_input` customTool，execute 内调 `ctx.ui.select` / `ctx.ui.input` 触发 extension_ui 暂停，Hub 收到 request 后转 `NormalizedEvent::InteractionRequest`，用户回复后 Hub 发 `extension_ui_response` → Pi 工具拿到结果 → LLM 同一 turn 继续。
