@@ -1,11 +1,11 @@
 /**
  * jishu-task-conductor — Pi 扩展，驱动 discuss→plan→execute 三阶段工作流。
  *
- * Phase 1 骨架：启动命令 + phase 状态机 + appendEntry 恢复 + skill 注入 + context 过滤 + 工具门。
- * 后续步骤追加：lock_requirement/commit_plan 工具（步骤 2）、agent_end 关卡（步骤 2）、fallback 执行（步骤 3）。
+ * Phase 1 步骤 1+2：骨架 + 结构化工具 + agent_end 关卡 + 阶段推进。
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { Type } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -19,6 +19,7 @@ interface ConductorState {
   phase: Phase;
   goal: string;
   artifacts: {
+    taskId?: string;
     requirements?: string;
     flowPlanMd?: string;
     flowPlanJson?: string;
@@ -29,9 +30,9 @@ interface ConductorState {
 const DOMAINS: Domain[] = ["dev"]; // Phase 6 再开 research
 
 const PHASE_ALLOWED_TOOLS: Partial<Record<Phase, string[]>> = {
-  discuss: ["read", "grep", "find", "ls"],
-  plan: ["read", "grep", "find", "ls"],
-  // execute: external 交给 Hub；fallback 用 FALLBACK_EXECUTE_ALLOWED_TOOLS（步骤 3）
+  discuss: ["read", "grep", "find", "ls", "lock_requirement", "request_user_input"],
+  plan: ["read", "grep", "find", "ls", "commit_plan", "request_user_input"],
+  // execute: 步骤 3 实现 FALLBACK_EXECUTE_ALLOWED_TOOLS 前不放开
 };
 
 const SKILLS_DIR =
@@ -70,6 +71,178 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     artifacts: {},
   };
   let toolsBeforeWorkflow: string[] | undefined;
+
+  // ── 产物目录辅助 ──
+  function artifactsDir(): string {
+    const cwd = process.cwd();
+    const taskId = state.artifacts.taskId || "draft";
+    return join(cwd, ".jishu-hub", "tasks", taskId, "artifacts");
+  }
+
+  function writeArtifact(subdir: string, filename: string, content: string): string {
+    const dir = join(artifactsDir(), subdir);
+    mkdirSync(dir, { recursive: true });
+    const fullPath = join(dir, filename);
+    writeFileSync(fullPath, content, "utf-8");
+    return fullPath;
+  }
+
+  // ─── 结构化工具：lock_requirement（discuss→plan 提交需求）───
+  pi.registerTool({
+    name: "lock_requirement",
+    label: "锁定需求",
+    description: "提交结构化需求终稿，锁定后进入流程规划阶段。需求收敛后调用此工具。",
+    parameters: Type.Object({
+      title: Type.String({ description: "任务标题" }),
+      goal: Type.String({ description: "一句话目标" }),
+      scope: Type.String({ description: "范围（分号分隔）" }),
+      out_scope: Type.Optional(Type.String({ description: "范围外（分号分隔）" })),
+      constraints: Type.Optional(Type.String({ description: "约束条件（分号分隔）" })),
+      acceptance: Type.String({ description: "验收标准（分号分隔）" }),
+      assumptions: Type.Optional(Type.String({ description: "关键假设（分号分隔）" })),
+    }),
+    async execute(_id, params) {
+      const splitList = (v: string) => v.split(";").map((s) => s.trim()).filter(Boolean);
+      const md = [
+        `# ${params.title}`, "",
+        "## 目标", params.goal, "",
+        "## 范围",
+        ...splitList(params.scope).map((s, i) => `${i + 1}. ${s}`), "",
+      ];
+      if (params.out_scope) {
+        md.push("## 范围外", ...splitList(params.out_scope).map((s) => `- ${s}`), "");
+      }
+      if (params.constraints) {
+        md.push("## 约束条件", ...splitList(params.constraints).map((s) => `- ${s}`), "");
+      }
+      md.push("## 验收标准",
+        ...splitList(params.acceptance).map((s, i) => `${i + 1}. ${s}`), "");
+      if (params.assumptions) {
+        md.push("## 关键假设", ...splitList(params.assumptions).map((s) => `- ${s}`), "");
+      }
+      const content = md.join("\n");
+      const path = writeArtifact("requirements", "REQUIREMENTS.md", content);
+      state.artifacts.requirements = path;
+      persist();
+      return {
+        content: [{ type: "text" as const, text: `需求终稿已落盘：${path}\n\n${content}` }],
+        details: { artifactPath: path },
+      };
+    },
+  });
+
+  // ─── 结构化工具：commit_plan（plan→execute 提交计划提案）───
+  pi.registerTool({
+    name: "commit_plan",
+    label: "提交计划",
+    description: "提交结构化流程计划提案，用户确认后进入执行阶段。流程方案稳定后调用此工具。",
+    parameters: Type.Object({
+      nodes: Type.Array(Type.Object({
+        id: Type.String({ description: "节点 id（如 node_1）" }),
+        title: Type.String({ description: "节点标题" }),
+        responsibility: Type.String({ description: "职责描述" }),
+        depends_on: Type.Array(Type.String(), { description: "前置依赖节点 id 列表" }),
+        acceptance: Type.Optional(Type.String({ description: "验收口径" })),
+        role: Type.Optional(Type.String({ description: "建议角色（developer/tester/architect）" })),
+      }), { description: "流程节点列表" }),
+    }),
+    async execute(_id, params) {
+      const plan = {
+        schema: "jishu-flow-plan-proposal/v1",
+        domain: state.domain,
+        goal: state.goal,
+        requirements_ref: state.artifacts.requirements
+          ? `artifact://requirements/REQUIREMENTS.md`
+          : undefined,
+        nodes: params.nodes,
+        generated_at: Date.now(),
+      };
+      const md = [
+        "## 流程方案", "",
+        `共 ${params.nodes.length} 个节点：`, "",
+        ...params.nodes.map((n, i) => {
+          const dep = n.depends_on.length > 0 ? `（依赖：${n.depends_on.join(", ")}）` : "（无依赖）";
+          const role = n.role ? ` [${n.role}]` : "";
+          return `${i + 1}. **${n.title}**${role}${dep}\n   - 职责：${n.responsibility}`;
+        }),
+        "", "---", "",
+        "以上为计划提案，等待用户确认后进入执行。",
+      ].join("\n");
+      const jsonPath = writeArtifact("planning", "flow-plan-proposal.json", JSON.stringify(plan, null, 2));
+      const mdPath = writeArtifact("planning", "flow-plan.md", md);
+      // manifest（实施计划 1.4：含 hash/task_id/phase/session/revision）
+      const crypto = await import("node:crypto");
+      const contentHash = crypto.createHash("sha256").update(JSON.stringify(plan)).digest("hex");
+      const manifest = {
+        artifact_id: "planning",
+        schema_version: "jishu-flow-plan-proposal/v1",
+        content_hash: `sha256:${contentHash}`,
+        generated_phase: "plan",
+        generated_session_id: "conductor",
+        task_id: state.artifacts.taskId ?? "draft",
+        skill_pack: `jishu-conductor-${state.domain}`,
+        linked_revision_id: null,
+      };
+      writeArtifact("planning", "manifest.json", JSON.stringify(manifest, null, 2));
+      state.artifacts.flowPlanJson = jsonPath;
+      state.artifacts.flowPlanMd = mdPath;
+      persist();
+      return {
+        content: [{ type: "text" as const, text: `计划提案已落盘：\n${mdPath}\n${jsonPath}\n\n${md}` }],
+        details: { jsonPath, mdPath },
+      };
+    },
+  });
+
+  // ─── agent_end：人工关卡 + 阶段推进 ───
+  // 注意：agent_end 在正常完成和用户 abort 时都会触发。
+  // 不使用 sendMessage(triggerTurn:true) 自动驱动新 turn——避免用户点停止后 agent 继续输出。
+  // 改为 setPhase + notify，让用户自己发消息开始下一阶段（before_agent_start 会自动注入对应 skill）。
+  let lastTurnEndedNormally = false;
+
+  pi.on("turn_start", async () => {
+    lastTurnEndedNormally = false;
+  });
+
+  pi.on("turn_end", async () => {
+    lastTurnEndedNormally = true;
+  });
+
+  pi.on("agent_end", async (_event, ctx) => {
+    // 用户 abort（turn_end 没正常触发）→ 不弹确认，不推进
+    if (!lastTurnEndedNormally) return;
+
+    if (state.phase === "discuss" && state.artifacts.requirements) {
+      const choice = await ctx.ui.select(
+        "需求已锁定，是否进入流程规划？",
+        ["进入流程规划", "继续补充需求"],
+      );
+      if (choice?.startsWith("进入")) {
+        setPhase("plan", ctx);
+        ctx.ui.notify("已进入流程规划阶段。请发送消息开始规划（读取需求终稿，设计节点方案）。", "info");
+      } else {
+        state.artifacts.requirements = undefined;
+        persist();
+      }
+      return;
+    }
+
+    if (state.phase === "plan" && state.artifacts.flowPlanJson) {
+      const choice = await ctx.ui.select(
+        "计划提案已提交，是否进入执行？",
+        ["进入流程执行", "修改计划"],
+      );
+      if (choice?.startsWith("进入")) {
+        setPhase("done", ctx);
+        ctx.ui.notify("流程规划完成。执行阶段将在后续步骤实现。计划提案已落盘：" + (state.artifacts.flowPlanJson ?? ""), "info");
+      } else {
+        state.artifacts.flowPlanJson = undefined;
+        state.artifacts.flowPlanMd = undefined;
+        persist();
+      }
+      return;
+    }
+  });
 
   const persist = (): void => {
     pi.appendEntry("jishu-conductor", { ...state, toolsBeforeWorkflow });
@@ -118,14 +291,15 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       }
       state.domain = domainArg;
       state.goal = goal;
+      state.artifacts.taskId = `task_${Date.now().toString(36)}`;
       if (!toolsBeforeWorkflow) {
         toolsBeforeWorkflow = pi.getActiveTools();
       }
       setPhase("discuss", ctx);
       pi.sendUserMessage(
-        `[\u542f\u52a8\u4efb\u52a1\u5de5\u4f5c\u6d41:${state.domain}] \u76ee\u6807\uff1a${state.goal}\n`
-          + "\u4f60\u662f\u9700\u6c42\u6f84\u6e05\u8005\u3002\u5148\u901a\u8fc7\u591a\u8f6e\u5bf9\u8bdd\u6f84\u6e05\u9700\u6c42\uff08\u6bcf\u6b21\u53ea\u95ee\u4e00\u4e2a\u6838\u5fc3\u7ef4\u5ea6\uff09\u3002"
-          + "\u9700\u6c42\u6536\u655b\u540e\u8bf4\u660e\"\u9700\u6c42\u5df2\u6f84\u6e05\"\uff0c\u5217\u51fa\u8981\u70b9\uff08\u76ee\u6807/\u8303\u56f4/\u7ea6\u675f/\u9a8c\u6536\uff09\u3002",
+        `[启动任务工作流:${state.domain}] 目标：${state.goal}\n`
+          + "你是需求澄清者。先通过多轮对话澄清需求（每次只问一个核心维度），用 request_user_input 提供选项。\n"
+          + "需求收敛后**必须调用 lock_requirement 工具**提交结构化需求终稿，不要只用文本声明。",
       );
     },
   });

@@ -12,7 +12,7 @@ description: 开发流程规划方法论
 1. 读取需求要点（上一阶段产出的需求终稿）。
 2. 把需求拆解为可执行的节点。
 3. 每个节点明确：标题、职责描述、前置依赖、验收口径、建议角色。
-4. 与用户讨论调整（用户可能增删节点、改依赖、改优先级）。
+4. 与用户讨论调整——**必须使用 `request_user_input` 工具**提供选项，不要用纯文本选项。
 
 ## 节点设计原则
 
@@ -32,6 +32,17 @@ description: 开发流程规划方法论
 
 ## 收敛后
 
-方案稳定后说明"流程方案已就绪"，等待用户确认。
+方案稳定后，**调用 `commit_plan` 工具**提交结构化计划提案。工具参数：
+- `nodes`：节点数组，每个节点含 `id` / `title` / `responsibility` / `depends_on` / `acceptance`（可选）/ `role`（可选）
 
-> 后续步骤会接入 `commit_plan` 工具，用于结构化提交 `flow-plan-proposal.json`（计划提案）。
+示例：
+```
+commit_plan({
+  nodes: [
+    { id: "node_1", title: "数据库 schema", responsibility: "设计 users 表", depends_on: [], role: "developer" },
+    { id: "node_2", title: "登录接口", responsibility: "实现 /api/login", depends_on: ["node_1"], role: "developer" }
+  ]
+})
+```
+
+提交后 Conductor 会自动弹出确认。不要用文本说"计划已就绪"。
