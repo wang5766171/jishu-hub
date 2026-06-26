@@ -929,7 +929,7 @@ mod tests {
             &project_root,
             None,
             "requirements-session",
-            "jishu-task-planner",
+            "jishu-conductor-dev",
             "requirements",
             Some("Demo task"),
         )
@@ -940,7 +940,7 @@ mod tests {
             &project_root,
             Some(&instance.task_id),
             "planning-session",
-            "jishu-task-planner",
+            "jishu-conductor-dev",
             "planning",
             None,
         )
@@ -977,7 +977,7 @@ mod tests {
             &project_root,
             None,
             "requirements-session",
-            "jishu-task-planner",
+            "jishu-conductor-dev",
             "requirements",
             Some("Demo task"),
         )
@@ -1016,7 +1016,7 @@ mod tests {
             &root,
             None,
             "requirements-session",
-            "jishu-task-planner",
+            "jishu-conductor-dev",
             "requirements",
             Some("Path forms task"),
         )
