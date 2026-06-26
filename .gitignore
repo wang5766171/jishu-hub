@@ -46,8 +46,6 @@ docs/
 # Claude Code project config
 .claude/
 
-# Agent git commit guide (local reference only)
-agent-commit-guide.md
 
 # Scratch / test artifacts
 scratch/
