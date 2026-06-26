@@ -73,6 +73,12 @@ function phaseDisplayName(phase: Phase): string {
   return names[phase] ?? phase;
 }
 
+function phaseSeparator(phase: Phase): string {
+  const name = phaseDisplayName(phase);
+  const bar = "\u2550".repeat(20);
+  return `${bar}\n      \u8fdb\u5165${name}\u9636\u6bb5\n${bar}\n\n`;
+}
+
 // ── 扩展入口 ──
 export default function conductorExtension(pi: ExtensionAPI): void {
   const state: ConductorState = {
@@ -217,8 +223,13 @@ export default function conductorExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("agent_end", async (_event, ctx) => {
+    // 诊断日志（排查 agent_end 是否触发、条件是否满足）
+    console.error(`[jishu-task-conductor] agent_end fired: phase=${state.phase} lastTurnEndedNormally=${lastTurnEndedNormally} requirements=${state.artifacts.requirements ?? "none"} flowPlanJson=${state.artifacts.flowPlanJson ?? "none"}`);
     // 用户 abort（turn_end 没正常触发）→ 不弹确认，不推进
-    if (!lastTurnEndedNormally) return;
+    if (!lastTurnEndedNormally) {
+      console.error("[jishu-task-conductor] agent_end skipped: lastTurnEndedNormally=false");
+      return;
+    }
 
     if (state.phase === "discuss" && state.artifacts.requirements) {
       const choice = await ctx.ui.select(
@@ -227,9 +238,15 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       );
       if (choice?.startsWith("进入")) {
         setPhase("plan", ctx);
-        pi.sendUserMessage(
-          "进入流程规划阶段。读取需求终稿（" + (state.artifacts.requirements ?? "")
-          + "），设计任务节点方案。与用户讨论调整后，调用 commit_plan 工具提交。",
+        pi.sendMessage(
+          {
+            customType: "jishu-conductor:phase-enter:plan",
+            display: false,
+            content: phaseSeparator("plan")
+              + "进入流程规划阶段。读取需求终稿（" + (state.artifacts.requirements ?? "")
+              + "），设计任务节点方案。与用户讨论调整后，调用 commit_plan 工具提交。",
+          },
+          { triggerTurn: true, deliverAs: "followUp" },
         );
       } else {
         state.artifacts.requirements = undefined;
@@ -277,11 +294,17 @@ export default function conductorExtension(pi: ExtensionAPI): void {
           })
           .join("\n");
         ctx.ui.notify("进入执行阶段（fallback）。共 " + state.steps.length + " 个节点。", "info");
-        pi.sendUserMessage(
-          "进入流程执行阶段。按以下步骤逐个执行：\n" + stepList + "\n\n"
-          + "每完成一个步骤，在回复末尾输出 [STEP:<id> DONE]。\n"
-          + "如需跳过某步骤，输出 [STEP:<id> SKIPPED]。\n"
-          + "从第一个步骤开始：" + (state.steps[0]?.title ?? ""),
+        pi.sendMessage(
+          {
+            customType: "jishu-conductor:phase-enter:execute",
+            display: false,
+            content: phaseSeparator("execute")
+              + "进入流程执行阶段。按以下步骤逐个执行：\n" + stepList + "\n\n"
+              + "每完成一个步骤，在回复末尾输出 [STEP:<id> DONE]。\n"
+              + "如需跳过某步骤，输出 [STEP:<id> SKIPPED]。\n"
+              + "从第一个步骤开始：" + (state.steps[0]?.title ?? ""),
+          },
+          { triggerTurn: true, deliverAs: "followUp" },
         );
       } else {
         state.artifacts.flowPlanJson = undefined;
@@ -348,7 +371,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
   const phaseTag = (): string =>
     `jishu-conductor:phase:${state.domain}:${state.phase}`;
 
-  function setPhase(phase: Phase, _ctx: ExtensionContext): void {
+  function setPhase(phase: Phase, ctx: ExtensionContext): void {
     state.phase = phase;
     const allowed = PHASE_ALLOWED_TOOLS[phase];
     if (allowed) {
@@ -356,11 +379,10 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     } else if (toolsBeforeWorkflow) {
       pi.setActiveTools(toolsBeforeWorkflow);
     }
-    pi.sendMessage({
-      customType: `jishu-conductor:phase-start:${phase}`,
-      display: false, // Hub RPC mode doesn't render display:true messages
-      content: `\u2500\u2500 \u8fdb\u5165${phaseDisplayName(phase)}\u9636\u6bb5 \u2500\u2500`,
-    });
+    // 发送结构化阶段标记：Pi RPC 转为 extension_ui_request(setStatus)，
+    // Hub 的 convert_extension_ui_request 识别后转为 PhaseDivider 事件，
+    // 前端渲染为分隔线。
+    ctx.ui.setStatus("jishu-conductor-phase", phase);
     persist();
   }
 
@@ -393,10 +415,16 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         toolsBeforeWorkflow = pi.getActiveTools();
       }
       setPhase("discuss", ctx);
-      pi.sendUserMessage(
-        `[启动任务工作流:${state.domain}] 目标：${state.goal}\n`
-          + "你是需求澄清者。先通过多轮对话澄清需求（每次只问一个核心维度），用 request_user_input 提供选项。\n"
-          + "需求收敛后**必须调用 lock_requirement 工具**提交结构化需求终稿，不要只用文本声明。",
+      pi.sendMessage(
+        {
+          customType: "jishu-conductor:startup",
+          display: false,
+          content: phaseSeparator("discuss")
+            + `[启动任务工作流:${state.domain}] 目标：${state.goal}\n`
+            + "你是需求澄清者。先通过多轮对话澄清需求（每次只问一个核心维度），用 request_user_input 提供选项。\n"
+            + "需求收敛后**必须调用 lock_requirement 工具**提交结构化需求终稿，不要只用文本声明。",
+        },
+        { triggerTurn: true, deliverAs: "followUp" },
       );
     },
   });
