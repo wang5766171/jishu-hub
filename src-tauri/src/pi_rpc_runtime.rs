@@ -307,6 +307,9 @@ async fn pi_rpc_connection_loop(
     // tool_result blocks in the streaming content.
     let mut suppressed_interaction_calls: std::collections::HashSet<String> =
         std::collections::HashSet::new();
+    // PhaseDivider arrives during agent_end (after turn_complete, stream dropped).
+    // Buffer it and inject as the FIRST event of the next turn's content stream.
+    let mut pending_phase_divider: Option<NormalizedEvent> = None;
 
     loop {
         let cmd_future = command_rx.recv();
@@ -514,9 +517,15 @@ async fn pi_rpc_connection_loop(
                         // AcpCommand::RespondToInput → extension_ui_response.
                         if msg.get("type").and_then(|v| v.as_str()) == Some("extension_ui_request") {
                             if let Some(event) = convert_extension_ui_request(&msg) {
-                                buf.push(event);
-                                flush_buf(&emit, &session_id, &mut buf);
-                                last_flush = std::time::Instant::now();
+                                // PhaseDivider arrives during agent_end (after turn_complete).
+                                // Buffer it — will be injected as first event of next turn.
+                                if matches!(event, NormalizedEvent::PhaseDivider { .. }) {
+                                    pending_phase_divider = Some(event);
+                                } else {
+                                    buf.push(event);
+                                    flush_buf(&emit, &session_id, &mut buf);
+                                    last_flush = std::time::Instant::now();
+                                }
                             }
                             continue;
                         }
@@ -557,6 +566,20 @@ async fn pi_rpc_connection_loop(
                         };
 
                         let has_turn_complete = events.iter().any(|e| matches!(e, NormalizedEvent::TurnComplete { .. }));
+
+                        // Inject pending PhaseDivider as the FIRST content event of a new turn.
+                        // It was buffered from a previous agent_end's setStatus call.
+                        let has_content = events.iter().any(|e| {
+                            matches!(e,
+                                NormalizedEvent::TextDelta { .. }
+                                | NormalizedEvent::Thinking { .. }
+                                | NormalizedEvent::Message { .. }
+                            )
+                        });
+                        if has_content && pending_phase_divider.is_some() {
+                            buf.push(pending_phase_divider.take().unwrap());
+                        }
+
                         for event in &events {
                             buf.push(event.clone());
                         }
@@ -940,7 +963,27 @@ fn convert_extension_ui_request(msg: &serde_json::Value) -> Option<NormalizedEve
                 correlation: None,
             })
         }
-        // confirm, notify, setStatus, setWidget, setTitle, set_editor_text:
+        // setStatus with key "jishu-conductor-phase" → PhaseDivider event
+        "setStatus" => {
+            let status_key = msg.get("statusKey").and_then(|v| v.as_str()).unwrap_or("");
+            let status_text = msg.get("statusText").and_then(|v| v.as_str()).unwrap_or("");
+            if status_key == "jishu-conductor-phase" && !status_text.is_empty() {
+                let title = match status_text {
+                    "discuss" => "需求讨论",
+                    "plan" => "流程规划",
+                    "execute" => "流程执行",
+                    "done" => "已完成",
+                    other => other,
+                };
+                Some(NormalizedEvent::PhaseDivider {
+                    phase: status_text.to_string(),
+                    title: title.to_string(),
+                })
+            } else {
+                None
+            }
+        }
+        // confirm, notify, setWidget, setTitle, set_editor_text:
         // fire-and-forget or not mapped to InteractionRequest.
         _ => None,
     }

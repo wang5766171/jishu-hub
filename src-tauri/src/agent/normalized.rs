@@ -194,6 +194,13 @@ pub enum NormalizedEvent {
         agent: String,
         raw: serde_json::Value,
     },
+    /// Phase divider — emitted when a Pi extension signals a phase transition
+    /// (via ctx.ui.setStatus with key "jishu-conductor-phase"). Rendered as a
+    /// centered divider line in the chat content area.
+    PhaseDivider {
+        phase: String,
+        title: String,
+    },
 }
 
 impl NormalizedEvent {
@@ -213,6 +220,7 @@ impl NormalizedEvent {
             NormalizedEvent::TaskStep { .. } => "task_step",
             NormalizedEvent::SubAgentDispatch { .. } => "sub_agent_dispatch",
             NormalizedEvent::Raw { .. } => "raw",
+            NormalizedEvent::PhaseDivider { .. } => "phase_divider",
         }
     }
 }
