@@ -68,8 +68,6 @@ src-tauri/bin/
 .kiro/
 .codex
 .opencode
-CLAUDE.md
-AGENTS.md
 run-kiro.cmd
 run-kiro.ps1
 
