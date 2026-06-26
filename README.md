@@ -39,34 +39,34 @@ For users in China, downloads are also available from [Gitee Releases](https://g
 
 ### Main Chat Interface
 <p align="center">
-  <img src="./docs/screenshots/会话-暗.png" alt="Chat (Dark)" width="100%" />
+  <img src="./screenshots/会话-暗.png" alt="Chat (Dark)" width="100%" />
 </p>
 A clean, focused, and immersive chat interface natively on your desktop. Jishu Hub replaces scattered terminal windows with a beautifully designed dark-mode workspace.
 
 ### Multimodal Capabilities
 <p align="center">
-  <img src="./docs/screenshots/图片会话.png" alt="Image Chat" width="49%" />
-  <img src="./docs/screenshots/图片发送支持标注.png" alt="Image Annotation" width="49%" />
+  <img src="./screenshots/图片会话.png" alt="Image Chat" width="49%" />
+  <img src="./screenshots/图片发送支持标注.png" alt="Image Annotation" width="49%" />
 </p>
 Engage in rich multimodal conversations. Send images and files effortlessly, and use built-in image annotation tools to highlight exactly what you need the AI to focus on.
 
 ### Multi-Agent Collaboration & Parallel Tasks
 <p align="center">
-  <img src="./docs/screenshots/智能体切换.png" alt="Agent Switching" width="49%" />
-  <img src="./docs/screenshots/多任务的并行处理.png" alt="Parallel Tasks" width="49%" />
+  <img src="./screenshots/智能体切换.png" alt="Agent Switching" width="49%" />
+  <img src="./screenshots/多任务的并行处理.png" alt="Parallel Tasks" width="49%" />
 </p>
 Switch smoothly between CLI agents (Claude Code, OpenAI Codex, Open Code, and more) via the plugin architecture. Run multiple sessions in parallel across projects without context interference.
 
 ### Project & Session Management
 <p align="center">
-  <img src="./docs/screenshots/项目管理.png" alt="Project Management" width="49%" />
-  <img src="./docs/screenshots/项目全局搜索.png" alt="Global Search" width="49%" />
+  <img src="./screenshots/项目管理.png" alt="Project Management" width="49%" />
+  <img src="./screenshots/项目全局搜索.png" alt="Global Search" width="49%" />
 </p>
 Projects are automatically discovered and organized. Instantly locate past conversations with the powerful global session search.
 
 ### Configuration Editor
 <p align="center">
-  <img src="./docs/screenshots/配置管理.png" alt="Config Management" width="100%" />
+  <img src="./screenshots/配置管理.png" alt="Config Management" width="100%" />
 </p>
 Ditch manual JSON edits. Use the visual form-based editor to manage models, environment variables, and agent presets — with built-in templates for popular providers and automatic backup & restore.
 

@@ -31,25 +31,20 @@ Thumbs.db
 graphify-out
 
 # Internal dev docs (local only, not tracked)
-# docs/ 下仅保留 screenshots 截图，其余全部忽略
-# 用 docs/* 而非 docs/，否则 git 不再遍历该目录，screenshots 无法被反忽略
-docs/*
-!docs/screenshots/
+# screenshots 已移至仓库根目录 screenshots/，docs 整体忽略
+docs/
 
 # Local screenshots
 *.png
 !src-tauri/icons/*.png
 !src/assets/*.png
-!docs/screenshots/*.png
+!screenshots/*.png
 
 # Runtime data
 .jishu_hub/
 
 # Claude Code project config
 .claude/
-
-# Architecture guidance document (local reference only)
-pi_agent_rust_readme.md
 
 # Agent git commit guide (local reference only)
 agent-commit-guide.md
@@ -77,7 +72,6 @@ CLAUDE.md
 AGENTS.md
 run-kiro.cmd
 run-kiro.ps1
-graphify.zh-CN.md
 
 .agents/
 .workbuddy/

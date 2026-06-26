@@ -39,34 +39,34 @@ AI 编程智能体正在快速演进 —— Claude Code、OpenAI Codex、Open Co
 
 ### 主对话界面
 <p align="center">
-  <img src="./docs/screenshots/会话-暗.png" alt="主对话界面" width="100%" />
+  <img src="./screenshots/会话-暗.png" alt="主对话界面" width="100%" />
 </p>
 体验原生桌面上干净、专注且沉浸式的对话界面。Jishu Hub 用精心设计的暗色模式工作区取代了凌乱的终端窗口。
 
 ### 多模态交互
 <p align="center">
-  <img src="./docs/screenshots/图片会话.png" alt="图片会话" width="49%" />
-  <img src="./docs/screenshots/图片发送支持标注.png" alt="图片标注" width="49%" />
+  <img src="./screenshots/图片会话.png" alt="图片会话" width="49%" />
+  <img src="./screenshots/图片发送支持标注.png" alt="图片标注" width="49%" />
 </p>
 支持丰富的多模态对话。轻松发送图片和文件，并使用内置的图片标注工具，准确地向 AI 传达你的焦点。
 
 ### 多智能体与并行任务处理
 <p align="center">
-  <img src="./docs/screenshots/智能体切换.png" alt="智能体切换" width="49%" />
-  <img src="./docs/screenshots/多任务的并行处理.png" alt="多任务并行处理" width="49%" />
+  <img src="./screenshots/智能体切换.png" alt="智能体切换" width="49%" />
+  <img src="./screenshots/多任务的并行处理.png" alt="多任务并行处理" width="49%" />
 </p>
 通过插件架构，在不同的 CLI 智能体（Claude Code、OpenAI Codex、Open Code 等）之间丝滑切换。支持跨项目并行运行多个对话，上下文互不干扰。
 
 ### 项目与会话管理
 <p align="center">
-  <img src="./docs/screenshots/项目管理.png" alt="项目管理" width="49%" />
-  <img src="./docs/screenshots/项目全局搜索.png" alt="全局搜索" width="49%" />
+  <img src="./screenshots/项目管理.png" alt="项目管理" width="49%" />
+  <img src="./screenshots/项目全局搜索.png" alt="全局搜索" width="49%" />
 </p>
 自动发现和整理你的项目。利用强大的全局会话搜索功能，瞬间定位过去的重要对话历史。
 
 ### 配置管理
 <p align="center">
-  <img src="./docs/screenshots/配置管理.png" alt="配置管理" width="100%" />
+  <img src="./screenshots/配置管理.png" alt="配置管理" width="100%" />
 </p>
 告别手动修改 JSON 的烦恼。使用可视化的表单编辑器管理模型、环境变量和智能体预设，内置主流供应商模板，支持自动备份与恢复。
 
