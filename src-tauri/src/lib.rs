@@ -882,11 +882,8 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
 
         let output = installer.output().await.map_err(|e| e.to_string())?;
 
-        if output.status.success() {
-            // Auto-install the default task plan skill so users don't need to
-            // manually install it before using task mode.
-            // let _ = task_plan::install_builtin_skill("jishu-task-planner"); // Phase 1: replaced by Conductor
-            return Ok("Pi agent installed globally from NPM (Lite version).".to_string());
+    if output.status.success() {
+        return Ok("Pi agent installed globally from NPM (Lite version).".to_string());
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!("NPM installation failed: {}", stderr));
@@ -914,9 +911,6 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
     let output = installer.output().await.map_err(|e| e.to_string())?;
 
     if output.status.success() {
-        // Auto-install the default task plan skill so users don't need to
-        // manually install it before using task mode.
-        let _ = task_plan::install_builtin_skill("jishu-task-planner");
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
         Err(String::from_utf8_lossy(&output.stderr).to_string())

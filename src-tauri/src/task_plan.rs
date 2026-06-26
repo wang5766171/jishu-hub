@@ -254,9 +254,6 @@ fn load_registry_adapter(
 
 fn bundled_adapter(key: &str) -> Option<&'static str> {
     match key {
-        "jishu-task-planner" => Some(include_str!(
-            "../resources/task-plan/jishu-task-planner/SKILL.md"
-        )),
         "gstack" => Some(include_str!("../resources/task-plan/gstack/SKILL.md")),
         "superpowers" => Some(include_str!("../resources/task-plan/superpowers/SKILL.md")),
         "openspec" => Some(include_str!("../resources/task-plan/openspec/SKILL.md")),
@@ -526,51 +523,8 @@ fn copy_skill_dir(src: &Path, dst: &Path) -> Result<(), String> {
 /// Retrieve the list of (filename, content) pairs embedded in a bundled
 /// resource subdirectory. Returns None if the directory has no extra files.
 fn bundled_dir_entries(key: &str) -> Option<Vec<(String, Vec<u8>)>> {
-    // Bundled extra files are embedded via include_dir or similar. For now,
-    // we use compile-time include_bytes! for each known skill's extra files.
-    // This is intentionally extensible — add new entries as skills grow.
-    match key {
-        "jishu-task-planner/scripts" => Some(vec![
-            (
-                "format_requirement.mjs".to_string(),
-                include_bytes!(
-                    "../resources/task-plan/jishu-task-planner/scripts/format_requirement.mjs"
-                )
-                .to_vec(),
-            ),
-            (
-                "format_flow_plan.mjs".to_string(),
-                include_bytes!(
-                    "../resources/task-plan/jishu-task-planner/scripts/format_flow_plan.mjs"
-                )
-                .to_vec(),
-            ),
-            (
-                "advance_phase.mjs".to_string(),
-                include_bytes!(
-                    "../resources/task-plan/jishu-task-planner/scripts/advance_phase.mjs"
-                )
-                .to_vec(),
-            ),
-        ]),
-        "jishu-task-planner/references" => Some(vec![
-            (
-                "requirements-phase.md".to_string(),
-                include_bytes!(
-                    "../resources/task-plan/jishu-task-planner/references/requirements-phase.md"
-                )
-                .to_vec(),
-            ),
-            (
-                "planning-phase.md".to_string(),
-                include_bytes!(
-                    "../resources/task-plan/jishu-task-planner/references/planning-phase.md"
-                )
-                .to_vec(),
-            ),
-        ]),
-        _ => None,
-    }
+    let _ = key;
+    None
 }
 
 pub fn read_installed_skill(dir: &Path, skill_id: &str) -> Result<Option<TaskPlanSkill>, String> {
@@ -977,87 +931,6 @@ description: demo
             .unwrap();
         assert!(auditor.responsibilities[1].contains("开发角色"));
         assert!(auditor.acceptance[1].contains("开发角色"));
-    }
-
-    #[test]
-    fn missing_builtin_is_installable_then_installed() {
-        let dir = std::env::temp_dir().join(format!("jishu-task-plan-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-
-        let before = list_task_plan_skills_in_dir(&dir).unwrap();
-        assert!(before
-            .iter()
-            .any(|skill| skill.id == "jishu-task-planner" && !skill.installed));
-
-        let installed = install_builtin_skill_in_dir("jishu-task-planner", &dir).unwrap();
-        assert!(installed.installed);
-        assert!(dir.join("jishu-task-planner").join("SKILL.md").exists());
-
-        let after = list_task_plan_skills_in_dir(&dir).unwrap();
-        assert!(after
-            .iter()
-            .any(|skill| skill.id == "jishu-task-planner" && skill.installed));
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn bundled_task_planner_scripts_include_phase_advancer() {
-        let entries = bundled_dir_entries("jishu-task-planner/scripts").unwrap();
-        assert!(entries
-            .iter()
-            .any(|(filename, content)| filename == "advance_phase.mjs"
-                && String::from_utf8_lossy(content).contains("advance_phase.mjs")));
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn runtime_paths_use_dev_resource_skill_in_debug_builds() {
-        let paths = task_plan_skill_runtime_paths("jishu-task-planner").unwrap();
-        assert_eq!(paths.source, TaskPlanRuntimeSource::DevResource);
-        assert!(paths.skill_dir.join("SKILL.md").is_file());
-        assert!(paths.script_dir.join("advance_phase.mjs").is_file());
-        assert!(paths
-            .skill_dir
-            .to_string_lossy()
-            .replace('\\', "/")
-            .ends_with("src-tauri/resources/task-plan/jishu-task-planner"));
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn dev_runtime_skill_sync_links_the_resource_skill() {
-        let mut linked: Option<(String, PathBuf)> = None;
-        let result =
-            sync_dev_runtime_skill_to_pi_with_linker("jishu-task-planner", |skill_id, skill_dir| {
-                linked = Some((skill_id.to_string(), skill_dir.to_path_buf()));
-                Ok(())
-            })
-            .unwrap()
-            .unwrap();
-
-        let (skill_id, skill_dir) = linked.unwrap();
-        assert_eq!(skill_id, "jishu-task-planner");
-        assert_eq!(skill_dir, result.skill_dir);
-        assert_eq!(result.source, TaskPlanRuntimeSource::DevResource);
-    }
-
-    #[test]
-    fn install_builtin_skill_reports_pi_link_error() {
-        fn failing_linker(_: &str, _: &Path) -> Result<(), String> {
-            Err("link failed".to_string())
-        }
-
-        let dir =
-            std::env::temp_dir().join(format!("jishu-task-plan-link-test-{}", uuid::Uuid::new_v4()));
-        let _ = std::fs::remove_dir_all(&dir);
-
-        let err =
-            install_builtin_skill_in_dir_with_linker("jishu-task-planner", &dir, failing_linker)
-                .unwrap_err();
-        assert!(err.contains("link failed"));
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
