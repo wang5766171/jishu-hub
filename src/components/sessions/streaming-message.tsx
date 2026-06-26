@@ -328,6 +328,17 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                               </div>
                             );
                           }
+                          if (item.block.type === "phase_divider") {
+                            return (
+                              <div key={`divider-${i}-${idx}`} className="flex items-center gap-3 py-3" data-phase={item.block.phase}>
+                                <div className="h-px flex-1 bg-border/60" />
+                                <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground whitespace-nowrap">
+                                  {item.block.title}
+                                </span>
+                                <div className="h-px flex-1 bg-border/60" />
+                              </div>
+                            );
+                          }
                           return null;
                         })}
                         {isLast && errorText && (

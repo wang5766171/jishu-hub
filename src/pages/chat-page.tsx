@@ -3660,16 +3660,26 @@ function messageToPlanningText(message: Message): string {
 }
 
 function stripTaskLaunchInstructionFromMessages(messages: Message[]): Message[] {
-  return messages.map((message) => ({
-    ...message,
-    content: message.content.map((block) => {
-      if (block.type !== "text") return block;
-      return {
-        ...block,
-        text: stripTaskLaunchInstruction(block.text),
-      };
-    }),
-  }));
+  return messages
+    // 过滤 Conductor before_agent_start 注入消息（skill 方法论全文，display:false 但 Pi 仍写 JSONL）
+    .filter((message) => {
+      if (message.role !== "user") return true;
+      const firstText = message.content.find((b) => b.type === "text");
+      if (!firstText || firstText.type !== "text") return true;
+      // Conductor 注入消息以 [JISHU-TASK: 开头
+      if (firstText.text.trimStart().startsWith("[JISHU-TASK:")) return false;
+      return true;
+    })
+    .map((message) => ({
+      ...message,
+      content: message.content.map((block) => {
+        if (block.type !== "text") return block;
+        return {
+          ...block,
+          text: stripTaskLaunchInstruction(block.text),
+        };
+      }),
+    }));
 }
 
 function stripTaskLaunchInstruction(text: string): string {

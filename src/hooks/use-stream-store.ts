@@ -220,6 +220,11 @@ class StreamStore {
         steerTexts = [...steerTexts, data.content];
         content = freezeLastBlock(content);
       }
+    } else if (data.kind === "phase_divider") {
+      // Phase transition divider — push as a content block so it renders
+      // inline in the message stream at the position it occurred.
+      content = freezeLastBlock(content);
+      content = [...content, { type: "phase_divider" as const, phase: data.phase, title: data.title }];
     } else if (data.kind === "interaction_request") {
       if (!interactionSplits.some((item) => item.requestId === data.request_id)) {
         interactionSplits = [
