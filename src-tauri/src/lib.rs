@@ -2743,6 +2743,8 @@ pub fn run() {
             let _ = hub::migrate_v0_5_0();
             // Phase 1: 自动注册 Conductor 扩展 + skill pack + 删除旧 skill
             task_plan::ensure_conductor_extension();
+            // 自动部署 request_user_input 扩展（conductor 的 discuss/plan 阶段依赖此工具）
+            task_plan::ensure_request_user_input_extension();
             let registry = Arc::new(agent::AgentRegistry::new());
             if let Ok(Some(active_id)) = hub::load_active_agent_id() {
                 let _ = registry.set_active(&active_id);

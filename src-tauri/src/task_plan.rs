@@ -268,22 +268,64 @@ pub fn list_task_plan_skills() -> Result<Vec<TaskPlanSkill>, String> {
     list_task_plan_skills_in_dir(&task_plan_dir()?)
 }
 
-// ── Conductor 扩展自动注册（Phase 1）──
+// ── Pi 扩展自动注册（Hub setup hook 每次启动幂等确保）──
 const CONDUCTOR_EXTENSION_TS: &str = include_str!("../resources/extensions/jishu-task-conductor.ts");
 const CONDUCTOR_DISCUSS_SKILL: &str = include_str!("../resources/task-plan/jishu-conductor-dev/discuss.SKILL.md");
 const CONDUCTOR_PLAN_SKILL: &str = include_str!("../resources/task-plan/jishu-conductor-dev/plan.SKILL.md");
 const CONDUCTOR_EXECUTE_SKILL: &str = include_str!("../resources/task-plan/jishu-conductor-dev/execute.SKILL.md");
+const REQUEST_USER_INPUT_EXTENSION_TS: &str = include_str!("../resources/extensions/request-user-input.ts");
+
+/// 部署内嵌扩展源到 `<agent_dir>/<rel_path>`，自动建父目录；内容相同则跳过写入。
+fn deploy_extension_file(agent_dir: &Path, rel_path: &str, source: &str) {
+    let target = agent_dir.join(rel_path);
+    if let Some(parent) = target.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if std::fs::read_to_string(&target).ok().as_deref() != Some(source) {
+        let _ = std::fs::write(&target, source);
+    }
+}
+
+/// 在 `settings.json` 的 `extensions` 数组幂等追加 `rel_path`。
+/// settings.json 不存在 → 兜底创建（修复旧版静默跳过的隐患）；
+/// 存在但 JSON 损坏 / 顶层非 object → 保守 return，不动用户文件。
+fn register_extension_in_settings(agent_dir: &Path, rel_path: &str) {
+    let settings_path = agent_dir.join("settings.json");
+    let content = std::fs::read_to_string(&settings_path).unwrap_or_else(|_| "{}".to_string());
+    let mut settings = match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(v) if v.is_object() => v,
+        _ => return,
+    };
+    let exists = settings
+        .get("extensions")
+        .and_then(|v| v.as_array())
+        .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(rel_path)));
+    if exists {
+        return;
+    }
+    match settings.get_mut("extensions").and_then(|v| v.as_array_mut()) {
+        Some(arr) => arr.push(serde_json::Value::String(rel_path.to_string())),
+        None => {
+            settings["extensions"] = serde_json::json!([rel_path]);
+        }
+    }
+    if let Ok(new_content) = serde_json::to_string_pretty(&settings) {
+        let _ = std::fs::write(&settings_path, new_content);
+    }
+}
 
 /// 自动注册 Conductor 扩展 + skill pack + settings.json extensions + 删除旧 skill。
 /// 在 Hub setup hook 调用，每次启动自动确保。
 pub fn ensure_conductor_extension() {
     let Some(home) = dirs::home_dir() else { return; };
-    let agent_dir = home.join(".jishu-agent");
+    ensure_conductor_extension_in(&home.join(".jishu-agent"));
+}
+
+fn ensure_conductor_extension_in(agent_dir: &Path) {
+    const CONDUCTOR_EXT_REL: &str = "extensions/jishu-task-conductor.ts";
 
     // 1. 写扩展文件
-    let ext_dir = agent_dir.join("extensions");
-    let _ = std::fs::create_dir_all(&ext_dir);
-    let _ = std::fs::write(ext_dir.join("jishu-task-conductor.ts"), CONDUCTOR_EXTENSION_TS);
+    deploy_extension_file(agent_dir, CONDUCTOR_EXT_REL, CONDUCTOR_EXTENSION_TS);
 
     // 2. 写 skill pack
     let skill_dir = agent_dir.join("skills").join("jishu-conductor-dev");
@@ -293,32 +335,26 @@ pub fn ensure_conductor_extension() {
     let _ = std::fs::write(skill_dir.join("execute.SKILL.md"), CONDUCTOR_EXECUTE_SKILL);
 
     // 3. 注册 settings.json extensions（幂等）
-    let settings_path = agent_dir.join("settings.json");
-    if let Ok(content) = std::fs::read_to_string(&settings_path) {
-        if let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) {
-            let conductor_path = "extensions/jishu-task-conductor.ts";
-            let need_add = match settings.get("extensions").and_then(|v| v.as_array()) {
-                Some(arr) => !arr.iter().any(|v| v.as_str() == Some(conductor_path)),
-                None => true,
-            };
-            if need_add {
-                if let Some(arr) = settings.get_mut("extensions").and_then(|v| v.as_array_mut()) {
-                    arr.push(serde_json::Value::String(conductor_path.to_string()));
-                } else {
-                    settings["extensions"] = serde_json::json!([conductor_path]);
-                }
-                if let Ok(new_content) = serde_json::to_string_pretty(&settings) {
-                    let _ = std::fs::write(&settings_path, new_content);
-                }
-            }
-        }
-    }
+    register_extension_in_settings(agent_dir, CONDUCTOR_EXT_REL);
 
     // 4. 删除旧 skill（避免 agent 读旧 jishu-task-planner 干扰 Conductor）
     let old_skill = agent_dir.join("skills").join("jishu-task-planner");
     if old_skill.exists() {
         let _ = std::fs::remove_dir_all(&old_skill);
     }
+}
+
+/// 自动部署 `request_user_input` 扩展（conductor 的 discuss/plan 阶段依赖此工具）。
+/// 在 Hub setup hook 调用，每次启动自动确保。
+pub fn ensure_request_user_input_extension() {
+    let Some(home) = dirs::home_dir() else { return; };
+    ensure_request_user_input_extension_in(&home.join(".jishu-agent"));
+}
+
+fn ensure_request_user_input_extension_in(agent_dir: &Path) {
+    const RUI_EXT_REL: &str = "extensions/request-user-input.ts";
+    deploy_extension_file(agent_dir, RUI_EXT_REL, REQUEST_USER_INPUT_EXTENSION_TS);
+    register_extension_in_settings(agent_dir, RUI_EXT_REL);
 }
 
 pub fn install_builtin_skill(skill_id: &str) -> Result<TaskPlanSkill, String> {
@@ -1017,6 +1053,125 @@ description: demo
         assert!(!custom.installed);
         assert_eq!(custom.roles.len(), 1);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Pi 扩展部署辅助测试 ──
+
+    fn ext_test_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "jishu-ext-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn settings_extensions(dir: &Path) -> Vec<String> {
+        let content = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        v.get("extensions")
+            .and_then(|x| x.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .map(|x| x.as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn register_extension_creates_settings_when_absent() {
+        let dir = ext_test_dir("absent");
+        register_extension_in_settings(&dir, "extensions/request-user-input.ts");
+        assert!(settings_extensions(&dir).contains(&"extensions/request-user-input.ts".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn register_extension_is_idempotent_and_preserves_other_keys() {
+        let dir = ext_test_dir("idempotent");
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"defaultModel":"gpt-4o","extensions":["extensions/other.ts"]}"#,
+        )
+        .unwrap();
+        register_extension_in_settings(&dir, "extensions/request-user-input.ts");
+        let between = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+        register_extension_in_settings(&dir, "extensions/request-user-input.ts");
+        let after = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+        assert_eq!(between, after, "二次注册不应改写文件");
+        let v: serde_json::Value = serde_json::from_str(&after).unwrap();
+        assert_eq!(v.get("defaultModel").and_then(|x| x.as_str()), Some("gpt-4o"));
+        let arr = settings_extensions(&dir);
+        assert_eq!(arr.len(), 2);
+        assert!(arr.contains(&"extensions/other.ts".into()));
+        assert!(arr.contains(&"extensions/request-user-input.ts".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn register_extension_skips_corrupt_and_non_object_settings() {
+        let dir = ext_test_dir("corrupt");
+        // JSON 损坏：不动文件
+        let corrupt = "not a json";
+        std::fs::write(dir.join("settings.json"), corrupt).unwrap();
+        register_extension_in_settings(&dir, "extensions/request-user-input.ts");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("settings.json")).unwrap(),
+            corrupt
+        );
+        // 顶层非 object：不动文件
+        let arr_only = r#"["a","b"]"#;
+        std::fs::write(dir.join("settings.json"), arr_only).unwrap();
+        register_extension_in_settings(&dir, "extensions/request-user-input.ts");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("settings.json")).unwrap(),
+            arr_only
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deploy_extension_file_is_idempotent() {
+        let dir = ext_test_dir("deploy");
+        deploy_extension_file(&dir, "extensions/x.ts", "hello");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("extensions/x.ts")).unwrap(),
+            "hello"
+        );
+        // 内容相同再调：内容不变、不报错
+        deploy_extension_file(&dir, "extensions/x.ts", "hello");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("extensions/x.ts")).unwrap(),
+            "hello"
+        );
+        // 内容变化：覆盖
+        deploy_extension_file(&dir, "extensions/x.ts", "world");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("extensions/x.ts")).unwrap(),
+            "world"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_both_extensions_deploy_and_register() {
+        let dir = ext_test_dir("both");
+        ensure_conductor_extension_in(&dir);
+        ensure_request_user_input_extension_in(&dir);
+        // 两个 .ts 扩展文件已部署
+        assert!(dir.join("extensions/jishu-task-conductor.ts").is_file());
+        assert!(dir.join("extensions/request-user-input.ts").is_file());
+        // conductor skill pack 仍在
+        assert!(dir
+            .join("skills/jishu-conductor-dev/discuss.SKILL.md")
+            .is_file());
+        // settings.json 同时含两条扩展
+        let arr = settings_extensions(&dir);
+        assert!(arr.contains(&"extensions/jishu-task-conductor.ts".into()));
+        assert!(arr.contains(&"extensions/request-user-input.ts".into()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
