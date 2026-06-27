@@ -129,7 +129,7 @@
 
 | 自研改动 | 上游 v0.80.2 状态 | 去留决策 |
 |---------|------------------|---------|
-| `request_user_input` 工具 + `main.ts` 注册（第8版）| 未实现（coding-agent tools 目录无此工具；`extension_ui` 仅 rpc-mode 内部协议）| **保留** |
+| `request_user_input` 工具 + `main.ts` 注册（第8版）| 未实现（coding-agent tools 目录无此工具；`extension_ui` 仅 rpc-mode 内部协议）| **保留**（注：扩展源已于 2026-06-27 移交主仓纳管，见第 8 版该日期条目） |
 | `build-bundle.mjs` 输出 `runtime-deps.json`（第6版）| 未实现（上游无 build-bundle/runtime-deps 机制）| **保留** |
 | `packages/ai` build 移除 `generate-models` 卡点（第2版）| 未修复（上游 build 仍 `npm run generate-models && ...`）| **保留** |
 | `husky` prepare 安全化（第1版）| 未修复（上游 prepare 仍强 husky）| **保留** |
@@ -148,6 +148,29 @@
 ---
 
 ## 第 8 版 (自研尾号 -8)
+
+### 2026-06-27 | request_user_input 扩展源移交主仓纳管（完全解耦 pi submodule）
+
+**背景**：`request_user_input` 工具自第 8 版（c019b317）改为扩展形态后，源文件 `.pi/extensions/request-user-input.ts` 随 pi submodule 提交。但 `.pi/extensions/` 是 pi 的**项目级**扩展目录（仅当 cwd 为 pi 仓库时加载），对 jishu-hub 用户在任意 cwd 使用 pi 实际无效；文档承诺的"Hub 部署到全局 extensions 目录"此前未落地。本次彻底解耦：源文件移交 jishu-hub 主仓纳管，Hub 启动时自动部署，机制完全模仿 `jishu-task-conductor`。
+
+### 改动总览
+
+| 模块 | 改动说明 |
+|------|---------|
+| `.pi/extensions/request-user-input.ts`（**删除**） | 扩展源移交主仓纳管，本仓库不再持有；`main.ts` 仍保持上游原样，无引用残留 |
+| `docs/development-note.md`（修改） | 修正 `~/.pi/agent/extensions/` 笔误为 `~/.jishu-agent/extensions/`；新增「八、扩展源移交主仓纳管」节 |
+| `packages/coding-agent/docs/request-user-input.md`（修改） | 顶部加迁移声明框；多处 `~/.pi/agent/` 笔误修正为 `~/.jishu-agent/` |
+
+**主仓对应改动**（jishu-hub，本次同步落地）：
+- `src-tauri/resources/extensions/request-user-input.ts`（**新增**）：扩展源，内容平移自本仓库原文件；编译期 `include_str!` 嵌入。
+- `src-tauri/src/task_plan.rs`：抽 `deploy_extension_file` / `register_extension_in_settings` 共享辅助（conductor 与新函数复用）；`ensure_conductor_extension` 迁移到辅助并修复「settings.json 不存在则静默跳过注册」隐患；新增 `ensure_request_user_input_extension`。
+- `src-tauri/src/lib.rs`：setup hook 调用 `ensure_request_user_input_extension`。
+
+**设计依据**：pi fork 的 agent 目录为 `~/.jishu-agent`（环境变量 `PI_CODING_AGENT_DIR`，`config.ts` 的 `getAgentDir`）；`settings.json` 的 `extensions` 数组路径相对 `agentDir` 解析（`package-manager.ts:resolve`）。即便 settings 注册失败，pi 也会自动发现并加载 `~/.jishu-agent/extensions/` 下文件（`addAutoDiscoveredResources`）——双重加载兜底。扩展 `.ts` 的 import（`@earendil-works/pi-coding-agent`、`typebox`）由 pi loader 的虚拟模块解析，与磁盘位置无关，搬到主仓后无需改动。
+
+**版本同步**：本仓库本次提交为 `release_v0.80.2-8` 的后续 commit（`1339cb80`），主仓 submodule 指针已更新指向该 commit；该 commit 已 push 到 fork `release_v0.80.2-8`，远端可达。
+
+**验证**：主仓 Rust 改动的 `cargo check` / 单测 / 端到端待在已装 Rust 工具链的环境补跑（实现机无 Rust 工具链）。
 
 ### 2026-06-25 | jishu-task-conductor Pi 扩展（三阶段工作流驱动）+ slash command 注入旁路
 
