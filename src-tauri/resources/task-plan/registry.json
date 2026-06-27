@@ -1,11 +1,6 @@
 {
   "skills": [
     {
-      "id": "jishu-task-planner",
-      "adapter_key": "jishu-task-planner",
-      "source": { "type": "bundled" }
-    },
-    {
       "id": "gstack",
       "adapter_key": "gstack",
       "source": {
