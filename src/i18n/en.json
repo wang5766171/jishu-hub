@@ -79,7 +79,7 @@
   },
   "projects": {
     "title": "Projects",
-    "addProject": "Add Project",
+    "addProject": "Open Folder",
     "noProjects": "No projects found",
     "noProjectsDesc": "Select a project directory to get started",
     "hasClaudeMd": "Has CLAUDE.md",

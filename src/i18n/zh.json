@@ -79,7 +79,7 @@
   },
   "projects": {
     "title": "项目",
-    "addProject": "添加项目",
+    "addProject": "打开目录",
     "noProjects": "未找到项目",
     "noProjectsDesc": "选择一个项目目录即可开始使用",
     "hasClaudeMd": "包含 CLAUDE.md",
