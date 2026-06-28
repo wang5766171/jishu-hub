@@ -108,6 +108,10 @@ class StreamStore {
   private sessions = new Map<string, SessionStreamState>();
   /** Any-id -> canonical key. */
   private aliases = new Map<string, string>();
+  /** Per-session conductor phase (from phase_divider events). Independent of
+   *  stream state so it survives drop() — used to tell conductor-driven
+   *  followUp (execute node advance) apart from a final turn. */
+  private conductorPhases = new Map<string, string>();
   private listeners = new Set<Listener>();
   private flushScheduled = false;
 
@@ -225,6 +229,7 @@ class StreamStore {
       // inline in the message stream at the position it occurred.
       content = freezeLastBlock(content);
       content = [...content, { type: "phase_divider" as const, phase: data.phase, title: data.title }];
+      this.conductorPhases.set(key, data.phase);
     } else if (data.kind === "interaction_request") {
       if (!interactionSplits.some((item) => item.requestId === data.request_id)) {
         interactionSplits = [
@@ -345,6 +350,12 @@ class StreamStore {
 
   isStreaming(sid: string | null | undefined): boolean {
     return this.getState(sid)?.isStreaming ?? false;
+  }
+
+  /** 当前会话的 conductor phase（从 phase_divider 事件跟踪），drop 后仍可读。 */
+  getConductorPhase(sid: string | null | undefined): string | null {
+    if (!sid) return null;
+    return this.conductorPhases.get(this.canonical(sid)) ?? null;
   }
 
   hasState(sid: string | null | undefined): boolean {
