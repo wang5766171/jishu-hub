@@ -73,12 +73,6 @@ function phaseDisplayName(phase: Phase): string {
   return names[phase] ?? phase;
 }
 
-function phaseSeparator(phase: Phase): string {
-  const name = phaseDisplayName(phase);
-  const bar = "\u2550".repeat(20);
-  return `${bar}\n      \u8fdb\u5165${name}\u9636\u6bb5\n${bar}\n\n`;
-}
-
 // ── 扩展入口 ──
 export default function conductorExtension(pi: ExtensionAPI): void {
   const state: ConductorState = {
@@ -244,8 +238,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
           {
             customType: "jishu-conductor:phase-enter:plan",
             display: false,
-            content: phaseSeparator("plan")
-              + "进入流程规划阶段。读取需求终稿（" + (state.artifacts.requirements ?? "")
+            content: "进入流程规划阶段。读取需求终稿（" + (state.artifacts.requirements ?? "")
               + "），设计任务节点方案。与用户讨论调整后，调用 commit_plan 工具提交。",
           },
           { triggerTurn: true, deliverAs: "followUp" },
@@ -300,8 +293,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
           {
             customType: "jishu-conductor:phase-enter:execute",
             display: false,
-            content: phaseSeparator("execute")
-              + "进入流程执行阶段。按以下步骤逐个执行：\n" + stepList + "\n\n"
+            content: "进入流程执行阶段。按以下步骤逐个执行：\n" + stepList + "\n\n"
               + "每完成一个步骤，在回复末尾输出 [STEP:<id> DONE]。\n"
               + "如需跳过某步骤，输出 [STEP:<id> SKIPPED]。\n"
               + "从第一个步骤开始：" + (state.steps[0]?.title ?? ""),
@@ -423,8 +415,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         {
           customType: "jishu-conductor:startup",
           display: true,
-          content: phaseSeparator("discuss")
-            + `**[启动任务工作流：${state.domain}]** 目标：${state.goal}`,
+          content: `**[启动任务工作流：${state.domain}]** 目标：${state.goal}`,
         },
         { triggerTurn: true, deliverAs: "followUp" },
       );
