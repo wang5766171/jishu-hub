@@ -411,14 +411,10 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         toolsBeforeWorkflow = pi.getActiveTools();
       }
       setPhase("discuss", ctx);
-      pi.sendMessage(
-        {
-          customType: "jishu-conductor:startup",
-          display: true,
-          content: `**[启动任务工作流：${state.domain}]** 目标：${state.goal}`,
-        },
-        { triggerTurn: true, deliverAs: "followUp" },
-      );
+      // 用 sendUserMessage 把用户指令作为标准 user 消息持久化（slash command 本身不入会话历史，
+      // 必须显式补一条，否则重新进入看不到发起指令）；同时触发 discuss 首个 turn。
+      // discuss 方法论由 before_agent_start 注入，这里无需再带指令文本。
+      pi.sendUserMessage(`/jishu-task ${args}`);
     },
   });
 
