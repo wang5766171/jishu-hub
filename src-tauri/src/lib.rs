@@ -858,14 +858,27 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
         .path()
         .resource_dir()
         .map_err(|e| format!("Failed to resolve resource directory: {}", e))?;
+    eprintln!("[jishu-install] resource_dir = {}", res_dir.display());
     let mut source = res_dir.join("third_party").join("pi-bundle");
+    eprintln!(
+        "[jishu-install] source candidate 1 = {} (exists={})",
+        source.display(),
+        source.exists()
+    );
     if !source.exists() {
         source = res_dir.join("_up_").join("third_party").join("pi-bundle");
+        eprintln!(
+            "[jishu-install] source candidate 2 (_up_) = {} (exists={})",
+            source.display(),
+            source.exists()
+        );
     }
 
     let target = crate::agent::jishu_self::pi_agent_dir().ok_or("Failed to get target dir")?;
+    eprintln!("[jishu-install] target (pi_agent_dir) = {}", target);
 
     if !source.exists() {
+        eprintln!("[jishu-install] pi-bundle NOT found → Lite mode: npm install -g @jishu-hub/jishu-agent@0.80.2-8");
         // LITE MODE: If bundled pi is missing, fallback to installing from NPM globally
         // This is safe because if we get here, it means the user clicked install and we are in lite build
         // JISHU_AGENT_BINDING_START
@@ -880,7 +893,16 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
         // JISHU_AGENT_BINDING_END
         let mut installer = crate::process_command::tokio_no_window(&mut cmd);
 
-        let output = installer.output().await.map_err(|e| e.to_string())?;
+        let output = installer.output().await.map_err(|e| {
+            eprintln!("[jishu-install] npm spawn failed: {e}");
+            e.to_string()
+        })?;
+        eprintln!(
+            "[jishu-install] npm install -g exit={} stdout={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
 
     if output.status.success() {
         return Ok("Pi agent installed globally from NPM (Lite version).".to_string());
@@ -890,15 +912,19 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
         }
     }
 
+    eprintln!("[jishu-install] pi-bundle found → Full mode: copy + npm install --production");
     // Ensure target directory exists to prevent xcopy from asking F/D
     if let Err(e) = std::fs::create_dir_all(&target) {
+        eprintln!("[jishu-install] create_dir_all failed: {e}");
         return Err(format!("Failed to create target directory: {}", e));
     }
 
     // Copy files
     if let Err(e) = copy_dir_recursive(&source, std::path::Path::new(&target)) {
+        eprintln!("[jishu-install] copy_dir_recursive failed: {e}");
         return Err(format!("Failed to copy bundled pi agent files: {}", e));
     }
+    eprintln!("[jishu-install] copy_dir_recursive OK");
 
     // Run npm install --production
     let mut cmd = shell_command(
@@ -908,7 +934,16 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
     let mut installer = crate::process_command::tokio_no_window(&mut cmd);
     installer.current_dir(&target);
 
-    let output = installer.output().await.map_err(|e| e.to_string())?;
+    let output = installer.output().await.map_err(|e| {
+        eprintln!("[jishu-install] npm spawn failed: {e}");
+        e.to_string()
+    })?;
+    eprintln!(
+        "[jishu-install] npm install --production exit={} stdout={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())

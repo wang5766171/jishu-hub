@@ -24,9 +24,13 @@ cpSync(piRoot, piBundle, {
   }
 });
 
-// 3. Install dependencies in pi-bundle
+// 3. Install dependencies in pi-bundle.
+// --ignore-scripts: 跳过 native 模块的 postinstall（如 canvas 的 node-gyp，
+// Windows 缺 cairo 会失败并中断整个 install，导致排在后面的 @typescript/native-preview
+// 没装上、tsgo 缺失、build 失败）。pi/ai 不实际 import canvas，跳过其 gyp 无害；
+// tsgo(@typescript/native-preview) 的二进制经 optionalDependencies 预编译提供，不受影响。
 console.log("Installing dependencies in pi-bundle...");
-spawnSync("npm", ["install"], { cwd: piBundle, stdio: "inherit", shell: true });
+spawnSync("npm", ["install", "--ignore-scripts"], { cwd: piBundle, stdio: "inherit", shell: true });
 
 // 4. Build the project
 console.log("Building pi-bundle...");
