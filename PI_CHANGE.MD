@@ -149,6 +149,24 @@
 
 ## 第 8 版 (自研尾号 -8)
 
+### 2026-06-28 | pi 扩展 UI 加 multiSelect 多选 API（加法）
+
+**背景**：jishu-hub 交互式问答要支持「一个问题、多选项、可多选」。pi 的 ctx.ui 只有单选 select，无多选 API，扩展无法触发多选 UI。
+
+**改动（加法，对上游合并友好）**：
+
+| 文件 | 改动 |
+|------|------|
+| `packages/coding-agent/src/core/extensions/types.ts` | ExtensionUIContext 加 `multiSelect(title, options, opts?): Promise<string[] \| undefined>` |
+| `packages/coding-agent/src/modes/rpc/rpc-types.ts` | RpcExtensionUIRequest 加 `method:"multiSelect"` union 成员 |
+| `packages/coding-agent/src/modes/rpc/rpc-mode.ts` | createExtensionUIContext 加 multiSelect 实现（response.value split("\n") → string[]） |
+| `packages/coding-agent/src/core/extensions/runner.ts` | noOpUIContext 加 multiSelect 兜底 |
+| `packages/coding-agent/src/modes/interactive/interactive-mode.ts` | createExtensionUIContext 加 multiSelect 兜底（fallback 单选 + warn，TUI 暂无 checkbox） |
+
+**多值编码**：multiSelect response 复用 `{value:string}`（不新增 response 类型），value 是前端 join("\n") 的多选结果串，pi rpc-mode split("\n") 还原 string[]。
+
+**主仓配套**：pi_rpc_runtime convert multiSelect → allow_multiple:true；request_user_input 扩展加 multi 参数 → ctx.ui.multiSelect。端到端验证通过。
+
 ### 2026-06-27 | request_user_input 扩展源移交主仓纳管（完全解耦 pi submodule）
 
 **背景**：`request_user_input` 工具自第 8 版（c019b317）改为扩展形态后，源文件 `.pi/extensions/request-user-input.ts` 随 pi submodule 提交。但 `.pi/extensions/` 是 pi 的**项目级**扩展目录（仅当 cwd 为 pi 仓库时加载），对 jishu-hub 用户在任意 cwd 使用 pi 实际无效；文档承诺的"Hub 部署到全局 extensions 目录"此前未落地。本次彻底解耦：源文件移交 jishu-hub 主仓纳管，Hub 启动时自动部署，机制完全模仿 `jishu-task-conductor`。

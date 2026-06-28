@@ -933,7 +933,8 @@ fn convert_extension_ui_request(msg: &serde_json::Value) -> Option<NormalizedEve
     let method = msg.get("method").and_then(|v| v.as_str())?;
     let id = msg.get("id").and_then(|v| v.as_str())?.to_string();
     match method {
-        "select" => {
+        "select" | "multiSelect" => {
+            let allow_multiple = method == "multiSelect";
             let title = msg
                 .get("title")
                 .and_then(|v| v.as_str())
@@ -958,7 +959,7 @@ fn convert_extension_ui_request(msg: &serde_json::Value) -> Option<NormalizedEve
                 request_id: id,
                 prompt: title,
                 options,
-                allow_multiple: false,
+                allow_multiple,
                 allow_custom_text: true,
                 required: true,
                 // Pi `extension_ui` is the production mid-turn baseline.

@@ -39,14 +39,29 @@ export default function requestUserInputExtension(pi: ExtensionAPI) {
 					description: "Available choices. Omit for free-text input.",
 				}),
 			),
+			multi: Type.Optional(
+				Type.Boolean({
+					description:
+						"Set to true to allow the user to select multiple options (checkbox-style). Default false (single-select).",
+				}),
+			),
 		}),
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const { question, options } = params as { question: string; options?: string[] };
+			const { question, options, multi } = params as {
+				question: string;
+				options?: string[];
+				multi?: boolean;
+			};
 			let response: string | undefined;
 
 			if (options && options.length > 0) {
-				response = await ctx.ui.select(question, options);
+				if (multi) {
+					const selected = await ctx.ui.multiSelect(question, options);
+					response = selected ? selected.join(", ") : undefined;
+				} else {
+					response = await ctx.ui.select(question, options);
+				}
 			} else {
 				response = await ctx.ui.input(question);
 			}
