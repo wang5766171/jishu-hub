@@ -299,6 +299,9 @@ async fn pi_rpc_connection_loop(
 
     // 4. Main loop
     let mut state = LoopState::Prompting;
+    // 当前 pending 的 extension_ui_request id（select/input 等待用户响应时）。
+    // abort 时用它发 cancelled response 释放 pi 的阻塞，否则 pi 卡在等响应、abort 推进不了。
+    let mut pending_interaction_id: Option<String> = None;
     let mut buf: Vec<NormalizedEvent> = Vec::with_capacity(32);
     let mut last_flush = std::time::Instant::now();
     // Track call IDs of interaction tools whose tool_execution_start was
@@ -353,6 +356,20 @@ async fn pi_rpc_connection_loop(
                         false
                     }
                     Some(AcpCommand::Cancel) => {
+                        // 若有 pending extension_ui（select/input 阻塞等响应），先发 cancelled
+                        // response 释放 pi 的 Promise，否则 pi 卡在 await、abort 推进不了
+                        //（pi 的 abort 打断 LLM 生成，但打断不了 in-flight extension_ui 等待）。
+                        if let Some(id) = pending_interaction_id.take() {
+                            let _ = send_pi_command(&stdin_arc, &json!({
+                                "type": "extension_ui_response",
+                                "id": id,
+                                "cancelled": true
+                            })).await;
+                            log::info!(
+                                "Pi RPC cancel: sent cancelled extension_ui_response for id={}",
+                                id
+                            );
+                        }
                         match &state {
                             LoopState::Prompting => {
                                 let _ = send_pi_command(&stdin_arc, &json!({
@@ -382,6 +399,8 @@ async fn pi_rpc_connection_loop(
                                 id
                             ),
                         }
+                        // 用户已响应，select/input 解决；清掉 pending 追踪。
+                        pending_interaction_id = None;
                         // Report the write-back outcome (R6: authoritative delivery).
                         let _ = response.send(result);
                         false
@@ -517,6 +536,11 @@ async fn pi_rpc_connection_loop(
                         // AcpCommand::RespondToInput → extension_ui_response.
                         if msg.get("type").and_then(|v| v.as_str()) == Some("extension_ui_request") {
                             if let Some(event) = convert_extension_ui_request(&msg) {
+                                // 记录 pending interaction id（仅 select/input 需响应；
+                                // fire-and-forget 如 notify/setStatus convert 返回 None，不记）。
+                                if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
+                                    pending_interaction_id = Some(id.to_string());
+                                }
                                 // PhaseDivider arrives during agent_end (after turn_complete).
                                 // Buffer it — will be injected as first event of next turn.
                                 if matches!(event, NormalizedEvent::PhaseDivider { .. }) {
