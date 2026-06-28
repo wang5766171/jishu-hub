@@ -429,10 +429,15 @@ fn route_acp_interaction_response(
             Some(pending) => {
                 let mut content = serde_json::Map::new();
                 if let Some(first_q) = pending.questions.first() {
-                    content.insert(
-                        first_q.field_name.clone(),
-                        serde_json::Value::String(value.to_string()),
-                    );
+                    let field_value = if first_q.is_multi_select {
+                        serde_json::Value::Array(
+                            value.split('\n').filter(|s| !s.is_empty())
+                                .map(|s| serde_json::Value::String(s.to_string())).collect(),
+                        )
+                    } else {
+                        serde_json::Value::String(value.to_string())
+                    };
+                    content.insert(first_q.field_name.clone(), field_value);
                 }
                 AcpInteractionRoute::Elicit {
                     rpc_id: pending.rpc_id.clone(),
@@ -451,10 +456,15 @@ fn route_acp_interaction_response(
 
     if sub_index < pending.questions.len() {
         let q = &pending.questions[sub_index];
-        pending.answers.insert(
-            q.field_name.clone(),
-            serde_json::Value::String(value.to_string()),
-        );
+        let field_value = if q.is_multi_select {
+            serde_json::Value::Array(
+                value.split('\n').filter(|s| !s.is_empty())
+                    .map(|s| serde_json::Value::String(s.to_string())).collect(),
+            )
+        } else {
+            serde_json::Value::String(value.to_string())
+        };
+        pending.answers.insert(q.field_name.clone(), field_value);
     }
 
     pending.current_index = sub_index + 1;
@@ -497,6 +507,7 @@ struct AcpQuestion {
     field_name: String,
     prompt: String,
     options: Vec<InteractionOption>,
+    is_multi_select: bool,
 }
 
 struct AcpElicitation {
@@ -580,10 +591,14 @@ fn parse_acp_elicitation(
                 }
             });
         let options = extract_enum_options(field)?;
+        // 多选：ACP schema 用 {type:"array", items:{anyOf:[...]}};
+        // 单选：{type:"string", oneOf:[...]}
+        let is_multi_select = field.get("type").and_then(|v| v.as_str()) == Some("array");
         questions.push(AcpQuestion {
             field_name: (*content_field).clone(),
             prompt,
             options,
+            is_multi_select,
         });
     }
 
@@ -1143,7 +1158,7 @@ async fn acp_connection_loop(
                                             request_id: next_request_id,
                                             prompt: next_q.prompt.clone(),
                                             options: next_q.options.clone(),
-                                            allow_multiple: false,
+                                            allow_multiple: next_q.is_multi_select,
                                             allow_custom_text: true,
                                             required: true,
                                             transport: InteractionTransport::AcpPreferred,
@@ -1488,7 +1503,7 @@ async fn acp_connection_loop(
                                             request_id,
                                             prompt: first_q.prompt.clone(),
                                             options: first_q.options.clone(),
-                                            allow_multiple: false,
+                                            allow_multiple: first_q.is_multi_select,
                                             allow_custom_text: true,
                                             required: true,
                                             transport: InteractionTransport::AcpPreferred,
