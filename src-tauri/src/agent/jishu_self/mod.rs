@@ -227,17 +227,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn jishu_agent_declares_resolved_session_prompt_injection() {
-        let injection = JishuSelfAgent::new()
+    fn jishu_agent_disables_user_message_session_injection() {
+        // session_id 改由 session-context 扩展注入 system prompt，user message 注入下线。
+        assert!(JishuSelfAgent::new()
             .resolved_session_prompt_injection()
-            .expect("jishu agent should receive Hub-injected session context");
-
-        assert_eq!(injection.open_tag, "<jishu-runtime-context>");
-        assert_eq!(injection.session_id_field, "session_id");
-        assert!(injection.guidance.contains("get_state"));
-        assert!(injection
-            .apply("hello", "sid-real")
-            .contains("session_id: sid-real"));
+            .is_none());
     }
 }
 
@@ -549,12 +543,9 @@ impl TransportAdapter for JishuSelfAgent {
     }
 
     fn resolved_session_prompt_injection(&self) -> Option<ResolvedSessionPromptInjection> {
-        Some(ResolvedSessionPromptInjection {
-            open_tag: "<jishu-runtime-context>".to_string(),
-            close_tag: "</jishu-runtime-context>".to_string(),
-            session_id_field: "session_id".to_string(),
-            guidance: "该 session_id 由 Hub 在 Pi RPC get_state 后注入；阶段推进脚本需要当前会话时直接使用这个值，不要扫描 sessions 目录、猜测最新文件或自行推断。".to_string(),
-        })
+        // session_id 改由 session-context 扩展注入 system prompt（before_agent_start），
+        // 不再往 user message 拼提示词（避免污染会话列表名/内容/搜索）。返回 None 下线注入。
+        None
     }
 
     fn pipe_chat_stdin(&self) -> bool {

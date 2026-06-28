@@ -2780,6 +2780,8 @@ pub fn run() {
             task_plan::ensure_conductor_extension();
             // 自动部署 request_user_input 扩展（conductor 的 discuss/plan 阶段依赖此工具）
             task_plan::ensure_request_user_input_extension();
+            // 部署 session-context 扩展（session_id 注入 system prompt，取代 user message 注入）
+            task_plan::ensure_session_context_extension();
             let registry = Arc::new(agent::AgentRegistry::new());
             if let Ok(Some(active_id)) = hub::load_active_agent_id() {
                 let _ = registry.set_active(&active_id);

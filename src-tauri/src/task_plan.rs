@@ -274,6 +274,7 @@ const CONDUCTOR_DISCUSS_SKILL: &str = include_str!("../resources/task-plan/jishu
 const CONDUCTOR_PLAN_SKILL: &str = include_str!("../resources/task-plan/jishu-conductor-dev/plan.SKILL.md");
 const CONDUCTOR_EXECUTE_SKILL: &str = include_str!("../resources/task-plan/jishu-conductor-dev/execute.SKILL.md");
 const REQUEST_USER_INPUT_EXTENSION_TS: &str = include_str!("../resources/extensions/request-user-input.ts");
+const SESSION_CONTEXT_EXTENSION_TS: &str = include_str!("../resources/extensions/session-context.ts");
 
 /// 部署内嵌扩展源到 `<agent_dir>/<rel_path>`，自动建父目录；内容相同则跳过写入。
 fn deploy_extension_file(agent_dir: &Path, rel_path: &str, source: &str) {
@@ -355,6 +356,20 @@ fn ensure_request_user_input_extension_in(agent_dir: &Path) {
     const RUI_EXT_REL: &str = "extensions/request-user-input.ts";
     deploy_extension_file(agent_dir, RUI_EXT_REL, REQUEST_USER_INPUT_EXTENSION_TS);
     register_extension_in_settings(agent_dir, RUI_EXT_REL);
+}
+
+/// 自动部署 `session-context` 扩展：把当前 session_id 注入 system prompt（每轮），
+/// 供 task_launch 阶段推进脚本（advance_phase.mjs → find_by_session）使用，
+/// 取代往 user message 拼提示词的旧做法（避免污染会话列表名/内容/搜索）。
+pub fn ensure_session_context_extension() {
+    let Some(home) = dirs::home_dir() else { return; };
+    ensure_session_context_extension_in(&home.join(".jishu-agent"));
+}
+
+fn ensure_session_context_extension_in(agent_dir: &Path) {
+    const SC_EXT_REL: &str = "extensions/session-context.ts";
+    deploy_extension_file(agent_dir, SC_EXT_REL, SESSION_CONTEXT_EXTENSION_TS);
+    register_extension_in_settings(agent_dir, SC_EXT_REL);
 }
 
 pub fn install_builtin_skill(skill_id: &str) -> Result<TaskPlanSkill, String> {
