@@ -213,9 +213,11 @@ export default function conductorExtension(pi: ExtensionAPI): void {
   });
 
   // ─── agent_end：人工关卡 + 阶段推进 ───
-  // 注意：agent_end 在正常完成和用户 abort 时都会触发。
-  // 不使用 sendMessage(triggerTurn:true) 自动驱动新 turn——避免用户点停止后 agent 继续输出。
-  // 改为 setPhase + notify，让用户自己发消息开始下一阶段（before_agent_start 会自动注入对应 skill）。
+  // agent_end 在正常完成和用户 abort 时都会触发，用 lastTurnEndedNormally 区分
+  // （turn_end 据 message.stopReason 置位：正常完成=true，abort=false）。
+  // abort 时跳过关卡、不推进阶段——这是「用户点停止后流程不会自行继续」的保障。
+  // 正常完成且关卡确认后，再用 sendMessage(triggerTurn:true) 自动驱动下一阶段 turn
+  // （discuss→plan→execute 衔接；before_agent_start 会注入对应 skill）。
   let lastTurnEndedNormally = false;
 
   pi.on("turn_start", async () => {
