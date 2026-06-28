@@ -15,6 +15,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { message } from "@tauri-apps/plugin-dialog";
 import type { AgentStatus } from "@/agents/types";
+import { MIN_NODE_VERSION, nodeVersionSatisfies } from "@/agents/version-constants";
 
 interface EnvData {
   node_installed: boolean;
@@ -52,6 +53,8 @@ interface CheckItem {
   npmPackage?: string;
   /** Original agent ID for MCP status lookup (only for agent items). */
   agentId?: string;
+  /** 若设置，安装按钮禁用并显示该原因（如 Node 版本过低）。 */
+  installBlockedReason?: string;
 }
 
 interface LatestVersion {
@@ -237,8 +240,18 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
 
   const agentItems: CheckItem[] = sortedAgents.map((agent) => {
     let desc = agent.install_hint?.replace("npm install -g ", "") || "";
+    let installBlockedReason: string | undefined;
     if (agent.id === "jishu-self") {
       desc = t("env.jishuAgentImportance", "Jishu Agent 是本应用的核心智能体引擎。安装它能解锁完整的文件系统操作、原生命令行执行以及强大的 MCP 服务支持，强烈建议安装。");
+      if (
+        env?.node_version &&
+        !nodeVersionSatisfies(env.node_version, MIN_NODE_VERSION)
+      ) {
+        installBlockedReason = t(
+          "env.nodeVersionTooLowShort",
+          `Node 版本过低 v${env.node_version}（需 ≥ v${MIN_NODE_VERSION}）`,
+        );
+      }
     }
     
     return {
@@ -255,6 +268,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
         ?.replace("npm install -g ", "")
         ?.trim(),
       agentId: agent.id,
+      installBlockedReason,
     };
   });
 
@@ -274,6 +288,21 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
   };
 
   const handleInstall = async (item: CheckItem) => {
+    // jishu-self 安装前校验 Node.js 版本（pi 要求 >=22.19），过低直接提示升级、不执行安装。
+    if (
+      item.agentId === "jishu-self" &&
+      env?.node_version &&
+      !nodeVersionSatisfies(env.node_version, MIN_NODE_VERSION)
+    ) {
+      await message(
+        t(
+          "env.nodeVersionTooLow",
+          `Node.js 版本过低（当前 v${env.node_version}，Jishu Agent 需要 Node.js ≥ v${MIN_NODE_VERSION}），请升级 Node.js 后重试。`,
+        ),
+        { title: t("env.title", "环境检测"), kind: "warning" },
+      );
+      return;
+    }
     const command = item.installed
       ? item.updateCommand
       : item.installCommand ?? item.updateCommand;
@@ -686,6 +715,11 @@ function CheckItemRow({
           {hasUpdate && latestVersion && (
             <UpdateBadge latest={latestVersion} />
           )}
+          {item.installBlockedReason && (
+            <span className="text-[10px] bg-amber-500/10 text-amber-600 dark:text-amber-400 px-2 py-0.5 rounded-full whitespace-nowrap">
+              {item.installBlockedReason}
+            </span>
+          )}
         </div>
         {item.desc && (
           <p className="text-xs text-muted-foreground truncate" title={item.desc}>{item.desc}</p>
@@ -717,7 +751,7 @@ function CheckItemRow({
               {labelUpdateBtn}
             </Button>
           ) : showInstallBtn ? (
-            <Button size="sm" variant="outline" onClick={onInstall}>
+            <Button size="sm" variant="outline" onClick={onInstall} disabled={!!item.installBlockedReason}>
               {labelInstall}
             </Button>
           ) : showDownloadBtn ? (

@@ -4,6 +4,13 @@ import { Button } from "@/components/ui/button";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { Terminal, Package, AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
 import type { AgentStatus } from "./types";
+import { MIN_NODE_VERSION, nodeVersionSatisfies } from "./version-constants";
+
+/** check_environment 返回的 EnvStatus 的精简视图（结构类型兼容完整返回）。 */
+interface EnvData {
+  node_installed: boolean;
+  node_version: string | null;
+}
 
 interface InstallAgentDialogProps {
   agent: AgentStatus | null;
@@ -13,7 +20,8 @@ interface InstallAgentDialogProps {
 }
 
 export function InstallAgentDialog({ agent, open, onOpenChange, onInstalled }: InstallAgentDialogProps) {
-  const [nodeExists, setNodeExists] = useState<boolean | null>(null);
+  const [nodeInstalled, setNodeInstalled] = useState<boolean | null>(null);
+  const [nodeVersion, setNodeVersion] = useState<string | null>(null);
   const [nativePkgExists, setNativePkgExists] = useState<boolean | null>(null);
   const [installing, setInstalling] = useState<string | null>(null); // 'npm' | 'native'
   const [error, setError] = useState<string | null>(null);
@@ -25,7 +33,10 @@ export function InstallAgentDialog({ agent, open, onOpenChange, onInstalled }: I
       setError(null);
       setInstalling(null);
       
-      invokeCommand<boolean>("check_prerequisite", { command: "node" }).then(setNodeExists);
+      invokeCommand<EnvData>("check_environment").then((env) => {
+        setNodeInstalled(env.node_installed);
+        setNodeVersion(env.node_version);
+      });
       
       const pkg = agent.install_package_manager ?? "choco";
       invokeCommand<boolean>("check_prerequisite", { command: pkg }).then(setNativePkgExists);
@@ -33,6 +44,13 @@ export function InstallAgentDialog({ agent, open, onOpenChange, onInstalled }: I
   }, [open, agent]);
 
   if (!agent) return null;
+
+  const nodeOk =
+    nodeInstalled === true && nodeVersionSatisfies(nodeVersion, MIN_NODE_VERSION);
+  const nodeTooOld =
+    nodeInstalled === true &&
+    nodeVersion !== null &&
+    !nodeVersionSatisfies(nodeVersion, MIN_NODE_VERSION);
 
   // Auto-installed agents (e.g. jishu-self) — show a different message
   if (agent.auto_installed) {
@@ -117,19 +135,29 @@ export function InstallAgentDialog({ agent, open, onOpenChange, onInstalled }: I
                         </div>
                         <span className="font-medium">通过本地 Node 环境运行安装</span>
                       </div>
-                      {nodeExists === false && (
+                      {nodeInstalled === false && (
                         <span className="text-[10px] bg-amber-500/10 text-amber-600 px-2 py-0.5 rounded-full flex items-center gap-1">
                           <AlertTriangle className="h-3 w-3" /> 需要 Node.js
                         </span>
                       )}
+                      {nodeTooOld && (
+                        <span className="text-[10px] bg-amber-500/10 text-amber-600 px-2 py-0.5 rounded-full flex items-center gap-1">
+                          <AlertTriangle className="h-3 w-3" /> Node 版本过低
+                        </span>
+                      )}
                     </div>
+                    {nodeTooOld && (
+                      <p className="text-xs text-amber-700 dark:text-amber-300 -mt-1">
+                        当前 v{nodeVersion}，Jishu Agent 需要 Node.js ≥ v{MIN_NODE_VERSION}，请升级 Node.js 后重试。
+                      </p>
+                    )}
                     <code className="block text-[11px] font-mono p-2 bg-muted rounded border text-muted-foreground break-all">
                       npm install && npm run build
                     </code>
                     <Button 
-                      className="w-full" 
-                      variant={nodeExists ? "default" : "outline"}
-                      disabled={!!installing || nodeExists === false}
+                      className="w-full"
+                      variant={nodeOk ? "default" : "outline"}
+                      disabled={!!installing || !nodeOk}
                       onClick={() => handleInstall("native")}
                     >
                       {installing === "native" ? <Loader2 className="h-4 w-4 animate-spin" /> : "一键安装"}
@@ -144,7 +172,7 @@ export function InstallAgentDialog({ agent, open, onOpenChange, onInstalled }: I
                         </div>
                         <span className="font-medium">通过 NPM 安装</span>
                       </div>
-                      {nodeExists === false && (
+                      {nodeInstalled === false && (
                         <span className="text-[10px] bg-amber-500/10 text-amber-600 px-2 py-0.5 rounded-full flex items-center gap-1">
                           <AlertTriangle className="h-3 w-3" /> 需要 Node.js
                         </span>
@@ -154,9 +182,9 @@ export function InstallAgentDialog({ agent, open, onOpenChange, onInstalled }: I
                       {agent.install_hint}
                     </code>
                     <Button 
-                      className="w-full" 
-                      variant={nodeExists ? "default" : "outline"}
-                      disabled={!!installing || nodeExists === false}
+                      className="w-full"
+                      variant={nodeInstalled ? "default" : "outline"}
+                      disabled={!!installing || nodeInstalled === false}
                       onClick={() => handleInstall("npm")}
                     >
                       {installing === "npm" ? <Loader2 className="h-4 w-4 animate-spin" /> : "立即安装"}
