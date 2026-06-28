@@ -9,7 +9,8 @@ import { MergeDialog } from "@/components/projects/merge-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { useAgent } from "@/agents";
-import { open as openDialog, message } from "@tauri-apps/plugin-dialog";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { Project, ProjectMeta, ProjectMergeInfo } from "@/types";
 
 interface ProjectsPageProps {
@@ -22,6 +23,7 @@ interface ProjectsPageProps {
 
 export function ProjectsPage({ projects, projectMetas, refetchProjects, refetchProjectMetas, onEnterProject }: ProjectsPageProps) {
   const { t } = useTranslation();
+  const { alert: alertDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
   const { agents, activeId } = useAgent();
   // merges 只用于「已合并」标记，轻量，保留在本组件加载；不阻塞列表渲染。
   const { data: merges, refetch: refetchMerges } = useInvoke<ProjectMergeInfo>("get_project_merges");
@@ -75,7 +77,7 @@ export function ProjectsPage({ projects, projectMetas, refetchProjects, refetchP
       refetchProjects();
       onEnterProject?.(project);
     } catch (err) {
-      void message(String(err), { title: t("projects.addProjectTitle"), kind: "error" });
+      void alertDialog({ title: t("projects.addProjectTitle"), description: String(err) });
     }
   };
 
@@ -147,6 +149,7 @@ export function ProjectsPage({ projects, projectMetas, refetchProjects, refetchP
 
   return (
     <div className="space-y-6 p-6 h-full overflow-auto pb-20">
+      {confirmDialogNode}
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">{t("projects.title")}</h2>
         <div className="flex items-center gap-2">

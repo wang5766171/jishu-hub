@@ -9,7 +9,7 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import { ProjectSettingsForm } from "@/components/projects/project-settings-form";
 import { ProjectMetaEditor } from "@/components/projects/project-meta-editor";
 import { useInvoke } from "@/hooks/use-invoke";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { Project, ProjectMeta, ProjectMergeInfo } from "@/types";
 
 interface ProjectDetailProps {
@@ -32,11 +32,16 @@ export function ProjectDetail({ project, onClose, onViewSessions, onRemoved, pro
     return [...tagSet].sort();
   };
   const { t } = useTranslation();
+  const { confirm: confirmDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
   const [activeTab, setActiveTab] = useState<"info" | "config">("info");
   const { data: claudeMd } = useInvoke<string | null>("load_claude_md", { projectPath: project.path });
 
   const handleRemove = async () => {
-    const confirmed = await confirm(t("projects.removeProjectConfirm"), { title: t("projects.title"), kind: "warning" });
+    const confirmed = await confirmDialog({
+      title: t("projects.title"),
+      description: t("projects.removeProjectConfirm"),
+      variant: "destructive",
+    });
     if (!confirmed) return;
     try {
       await invokeCommand("remove_project", { encodedName: project.encoded_name });
@@ -49,6 +54,7 @@ export function ProjectDetail({ project, onClose, onViewSessions, onRemoved, pro
 
   return (
     <div className="fixed inset-y-0 right-0 z-10 w-[28rem] border-l border-border bg-card shadow-lg flex flex-col">
+      {confirmDialogNode}
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border p-4">
         <h2 className="font-semibold truncate">{projectMetas?.[project.encoded_name]?.custom_name || project.name}</h2>

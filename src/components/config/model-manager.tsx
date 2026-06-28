@@ -34,7 +34,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 
 interface ActiveModel {
   provider: string;
@@ -147,6 +147,7 @@ export function ModelManager({
   onActiveModelChange?: (modelId: string | null) => void;
 }) {
   const { t } = useTranslation();
+  const { confirm: confirmDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -257,7 +258,11 @@ export function ModelManager({
     }
   };
   const deleteProvider = async (name: string) => {
-    const confirmed = await confirm(t("config.deleteProviderConfirm", { name }), { title: t("config.title"), kind: "warning" });
+    const confirmed = await confirmDialog({
+      title: t("config.title"),
+      description: t("config.deleteProviderConfirm", { name }),
+      variant: "destructive",
+    });
     if (!confirmed) {
       return;
     }
@@ -353,7 +358,11 @@ export function ModelManager({
     }
   };
   const deleteModel = async (providerName: string, modelId: string) => {
-    const confirmed = await confirm(t("config.deleteModelConfirm", { provider: providerName, model: modelId }), { title: t("config.title"), kind: "warning" });
+    const confirmed = await confirmDialog({
+      title: t("config.title"),
+      description: t("config.deleteModelConfirm", { provider: providerName, model: modelId }),
+      variant: "destructive",
+    });
     if (!confirmed) {
       return;
     }
@@ -399,6 +408,7 @@ export function ModelManager({
 
   return (
     <div className="space-y-4">
+      {confirmDialogNode}
       <div className="flex items-center gap-2">
         <div className="flex-1" />
         <Button size="sm" className="h-6 text-xs mr-3" onClick={startAddProvider} disabled={loading}>

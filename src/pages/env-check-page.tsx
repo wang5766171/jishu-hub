@@ -13,7 +13,7 @@ import {
   Cable,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { message } from "@tauri-apps/plugin-dialog";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { AgentStatus } from "@/agents/types";
 import { MIN_NODE_VERSION, nodeVersionSatisfies } from "@/agents/version-constants";
 
@@ -118,6 +118,7 @@ function StatusIndicator({
 
 export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
   const { t } = useTranslation();
+  const { alert: alertDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
   const [env, setEnv] = useState<EnvData | null>(null);
   const { agents, refreshHealth, healthLoading } = useAgent();
   // Tracks every item currently being installed/updated concurrently.
@@ -294,13 +295,13 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       env?.node_version &&
       !nodeVersionSatisfies(env.node_version, MIN_NODE_VERSION)
     ) {
-      await message(
-        t(
+      await alertDialog({
+        title: t("env.title", "环境检测"),
+        description: t(
           "env.nodeVersionTooLow",
           `Node.js 版本过低（当前 v${env.node_version}，Jishu Agent 需要 Node.js ≥ v${MIN_NODE_VERSION}），请升级 Node.js 后重试。`,
         ),
-        { title: t("env.title", "环境检测"), kind: "warning" },
-      );
+      });
       return;
     }
     const command = item.installed
@@ -323,7 +324,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       // Backend may surface an empty detail when npm/winget fail; never
       // show a bare "安装失败:" with no reason.
       const reason = String(err).trim() || t("env.installFailedUnknown", "未知错误，请查看控制台日志");
-      await message(`安装失败: ${reason}`, { title: t("env.title", "环境检测"), kind: "error" });
+      await alertDialog({ title: t("env.title", "环境检测"), description: `安装失败: ${reason}` });
     } finally {
       setInstallingIds((prev) => {
         const next = new Set(prev);
@@ -411,6 +412,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
 
   return (
     <div className="p-6 max-w-2xl mx-auto flex flex-col h-full overflow-y-auto">
+      {confirmDialogNode}
       <div className="flex items-center justify-between mb-1">
         <h1 className="text-2xl font-bold">{t("env.title")}</h1>
         <Button
@@ -448,7 +450,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                   await invokeCommand("install_cli_symlink");
                   setCliInstalled(true);
                 } catch (e) {
-                  void message(`安装失败:\n${String(e)}`, { title: t("env.title", "环境检测"), kind: "error" });
+                  void alertDialog({ title: t("env.title", "环境检测"), description: `安装失败:\n${String(e)}` });
                 }
               }}
             >
@@ -559,7 +561,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                                     await refreshHealth({ silent: true });
                                   } catch (err) {
                                     console.error(err);
-                                    await message(`MCP ${t("env.installFailed", "安装失败")}: ${String(err)}`, { title: t("env.title", "环境检测"), kind: "error" });
+                                    await alertDialog({ title: t("env.title", "环境检测"), description: `MCP ${t("env.installFailed", "安装失败")}: ${String(err)}` });
                                   } finally {
                                     setInstallingMcpId(null);
                                   }
@@ -619,7 +621,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                                     await refreshHealth({ silent: true });
                                   } catch (err) {
                                     console.error(err);
-                                    await message(`${t("env.bridge", "桥")} ${t("env.installFailed", "安装失败")}: ${String(err)}`, { title: t("env.title", "环境检测"), kind: "error" });
+                                    await alertDialog({ title: t("env.title", "环境检测"), description: `${t("env.bridge", "桥")} ${t("env.installFailed", "安装失败")}: ${String(err)}` });
                                   } finally {
                                     setInstallingBridgeId(null);
                                   }

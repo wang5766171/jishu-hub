@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Activity,
   ArrowLeft,
@@ -67,6 +67,7 @@ export function TaskWorkbench({
   onClose,
 }: TaskWorkbenchProps) {
   const { t, i18n } = useTranslation();
+  const { confirm: confirmDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
   const {
     graph,
     snapshot,
@@ -425,10 +426,11 @@ export function TaskWorkbench({
 
   const deleteTask = useCallback(
     async (task: TaskGraph) => {
-      const confirmed = await confirm(
-        t("tasks.deleteTaskConfirm", { title: task.title }),
-        { title: t("tasks.deleteTask"), kind: "warning" },
-      );
+      const confirmed = await confirmDialog({
+        title: t("tasks.deleteTask"),
+        description: t("tasks.deleteTaskConfirm", { title: task.title }),
+        variant: "destructive",
+      });
       if (!confirmed) {
         return;
       }
@@ -632,6 +634,7 @@ export function TaskWorkbench({
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
+      {confirmDialogNode}
       <WorkbenchHeader
         title={graph?.title || t("tasks.title")}
         subtitle={graph?.goal}
