@@ -598,7 +598,6 @@ async fn pi_rpc_connection_loop(
                                 NormalizedEvent::TextDelta { .. }
                                 | NormalizedEvent::Thinking { .. }
                                 | NormalizedEvent::Message { .. }
-                                | NormalizedEvent::ToolUseStart { .. }
                             )
                         });
                         if has_content && pending_phase_divider.is_some() {

@@ -2335,16 +2335,7 @@ export function ChatPage({
             }
           }
 
-          // conductor（任务模式 Pi 扩展）在 execute 阶段用 sendMessage(triggerTurn)
-          // 自动推进下一节点；这种 followUp 不经过前端 steer/guide 机制（followUpExpected
-          // 不置位），导致节点切换间隔期无"思考中"占位。补判：任务模式 + pi_rpc +
-          // conductor phase=execute（节点推进；done 时 conductor 不再 triggerTurn）。
-          const conductorFollowUpExpected =
-            taskLaunchOpenRef.current
-            && supportsSteerRef.current
-            && streamStore.getConductorPhase(finalKey) === "execute";
-
-          if (followUpExpected || conductorFollowUpExpected) {
+          if (followUpExpected) {
             // A committed steer will be answered in a FOLLOW-UP turn (a
             // leftover not delivered mid-turn in a tool turn, or the appended
             // steer in a no-tool turn). Pre-create an empty streaming state so
