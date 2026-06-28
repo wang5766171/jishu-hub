@@ -1,8 +1,7 @@
 import { Card, CardContent } from "@/components/ui/card";
-import { FolderOpen, FileText, MessageSquare, AlertCircle, MoreVertical, Pencil as PencilIcon, MessageSquareText } from "lucide-react";
+import { FolderOpen, FileText, MessageSquare, MoreVertical, Pencil as PencilIcon, MessageSquareText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
-import { invokeCommand } from "@/hooks/use-invoke";
 import { useState, useRef, useEffect } from "react";
 import type { Project, ProjectMeta } from "@/types";
 
@@ -16,7 +15,6 @@ interface ProjectCardProps {
   onCheck?: () => void;
   mergedCount?: number;
   onTagClick?: (tag: string) => void;
-  onRefresh?: () => void;
   onEnterChat?: () => void;
   agentNames?: Record<string, string>;
 }
@@ -31,7 +29,6 @@ export function ProjectCard({
   onCheck,
   mergedCount,
   onTagClick,
-  onRefresh,
   onEnterChat,
   agentNames = {},
 }: ProjectCardProps) {
@@ -40,7 +37,6 @@ export function ProjectCard({
   const [menuOpen, setMenuOpen] = useState(false);
   const [agentsExpanded, setAgentsExpanded] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const pendingInitRefresh = useRef(false);
 
   // Close menu on outside click
   useEffect(() => {
@@ -54,34 +50,9 @@ export function ProjectCard({
     return () => document.removeEventListener("mousedown", handler);
   }, [menuOpen]);
 
-  // Refresh status once when returning to the app from the terminal
-  useEffect(() => {
-    const handleFocus = () => {
-      if (pendingInitRefresh.current) {
-        pendingInitRefresh.current = false;
-        onRefresh?.();
-      }
-    };
-    window.addEventListener("focus", handleFocus);
-    return () => window.removeEventListener("focus", handleFocus);
-  }, [onRefresh]);
-
-  const handleInit = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    try {
-      await invokeCommand("init_project", { projectPath: project.path });
-      // Wait for the user to return to the Jishu Hub window to refresh
-      pendingInitRefresh.current = true;
-    } catch (err) {
-      console.error("Failed to init project:", err);
-    }
-  };
-
   const handleCardClick = () => {
     if (managementMode) return;
-    if (project.initialized) {
-      onEnterChat?.();
-    }
+    onEnterChat?.();
   };
 
   const projectAgents = (project.agent_ids ?? []).map((id) => ({
@@ -185,23 +156,11 @@ export function ProjectCard({
         )}
         <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
           <div className="flex items-center gap-3">
-            {!project.initialized ? (
-              <button
-                className="flex items-center gap-1.5 text-amber-500 hover:text-amber-600 transition-colors"
-                onClick={handleInit}
-              >
-                <AlertCircle className="h-3 w-3" />
-                {t("projects.notInitialized")}
-              </button>
-            ) : (
-              <>
-                <span className="flex items-center gap-1">
-                  <MessageSquare className="h-3 w-3" />
-                  {t("projects.sessionCount", { count: project.session_count })}
-                </span>
-                {project.last_active && <span>{project.last_active}</span>}
-              </>
-            )}
+            <span className="flex items-center gap-1">
+              <MessageSquare className="h-3 w-3" />
+              {t("projects.sessionCount", { count: project.session_count })}
+            </span>
+            {project.last_active && <span>{project.last_active}</span>}
           </div>
           {!managementMode && (
             <div className="relative" ref={menuRef}>

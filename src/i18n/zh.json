@@ -84,7 +84,6 @@
     "noProjectsDesc": "添加一个包含 .claude 目录的项目以开始使用",
     "hasClaudeMd": "包含 CLAUDE.md",
     "sessionCount": "{{count}} 个会话",
-    "notInitialized": "未初始化，点击执行当前智能体初始化",
     "path": "路径：",
     "sessions": "会话数",
     "lastActive": "最后活跃",
