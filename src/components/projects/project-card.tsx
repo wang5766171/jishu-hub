@@ -1,5 +1,5 @@
 import { Card, CardContent } from "@/components/ui/card";
-import { FolderOpen, FileText, MessageSquare, MoreVertical, Pencil as PencilIcon, MessageSquareText } from "lucide-react";
+import { FolderOpen, FileText, MessageSquare, MoreVertical, Pencil as PencilIcon, MessageSquareText, CircleSlash } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { useState, useRef, useEffect } from "react";
@@ -107,7 +107,7 @@ export function ProjectCard({
             {project.name}
           </p>
         )}
-        {projectAgents.length > 0 && (
+        {projectAgents.length > 0 ? (
           <div className="mt-2 flex flex-wrap items-center gap-1">
             {visibleAgents.map((agent) => (
               <span
@@ -131,6 +131,16 @@ export function ProjectCard({
                 {agentsExpanded ? t("projects.collapseAgents") : `+${projectAgents.length - 2}`}
               </button>
             )}
+          </div>
+        ) : (
+          <div className="mt-2 flex flex-wrap items-center gap-1">
+            <span
+              className="inline-flex items-center gap-1 rounded-full border border-dashed border-border/60 bg-muted/30 px-1.5 py-0.5 text-[10px] italic text-muted-foreground/80"
+              title={t("projects.untrackedHint")}
+            >
+              <CircleSlash className="h-2.5 w-2.5" />
+              {t("projects.untracked")}
+            </span>
           </div>
         )}
         <p className="mt-1 truncate text-xs text-muted-foreground" title={project.path}>

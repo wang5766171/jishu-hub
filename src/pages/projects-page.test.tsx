@@ -18,9 +18,6 @@ vi.mock("@/components/projects/project-card", () => ({
 vi.mock("@/components/projects/project-detail", () => ({
   ProjectDetail: () => <div data-testid="project-detail" />,
 }));
-vi.mock("@/components/projects/add-project-dialog", () => ({
-  AddProjectDialog: () => null,
-}));
 vi.mock("@/components/projects/merge-dialog", () => ({
   MergeDialog: () => null,
 }));

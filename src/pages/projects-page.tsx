@@ -2,14 +2,14 @@ import { useEffect, useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Plus, FolderOpen, Settings2, RotateCw, Search, ChevronDown, ChevronUp } from "lucide-react";
-import { useInvoke } from "@/hooks/use-invoke";
+import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { ProjectCard } from "@/components/projects/project-card";
 import { ProjectDetail } from "@/components/projects/project-detail";
-import { AddProjectDialog } from "@/components/projects/add-project-dialog";
 import { MergeDialog } from "@/components/projects/merge-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { useAgent } from "@/agents";
+import { open as openDialog, message } from "@tauri-apps/plugin-dialog";
 import type { Project, ProjectMeta, ProjectMergeInfo } from "@/types";
 
 interface ProjectsPageProps {
@@ -29,7 +29,6 @@ export function ProjectsPage({ projects, projectMetas, refetchProjects, refetchP
   const loading = projects === null;
 
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
-  const [addDialogOpen, setAddDialogOpen] = useState(false);
 
   // Management mode state
   const [managementMode, setManagementMode] = useState(false);
@@ -68,9 +67,16 @@ export function ProjectsPage({ projects, projectMetas, refetchProjects, refetchP
     }
   }, [filterAgents, selectedAgent]);
 
-  const handleProjectAdded = (project: Project) => {
-    refetchProjects();
-    onEnterProject?.(project);
+  const handleAddProject = async () => {
+    try {
+      const selected = await openDialog({ directory: true, multiple: false });
+      if (!selected) return;
+      const project = await invokeCommand<Project>("add_project", { path: selected });
+      refetchProjects();
+      onEnterProject?.(project);
+    } catch (err) {
+      void message(String(err), { title: t("projects.addProjectTitle"), kind: "error" });
+    }
   };
 
   const handleCheck = (encodedName: string) => {
@@ -151,7 +157,7 @@ export function ProjectsPage({ projects, projectMetas, refetchProjects, refetchP
             <Settings2 className="h-4 w-4 mr-1" />
             {managementMode ? t("projects.exitManagement") : t("projects.management")}
           </Button>
-          <Button className="gap-2" onClick={() => setAddDialogOpen(true)}>
+          <Button className="gap-2" onClick={handleAddProject}>
             <Plus className="h-4 w-4" />
             {t("projects.addProject")}
           </Button>
@@ -286,12 +292,6 @@ export function ProjectsPage({ projects, projectMetas, refetchProjects, refetchP
           agentNames={Object.fromEntries(agents.map(agent => [agent.id, agent.display_name]))}
         />
       )}
-
-      <AddProjectDialog
-        open={addDialogOpen}
-        onOpenChange={setAddDialogOpen}
-        onAdded={handleProjectAdded}
-      />
 
       {managementMode && checkedProjects.size >= 2 && (
         <div className="fixed bottom-0 left-0 right-0 border-t bg-background p-3 flex items-center justify-between z-50">
