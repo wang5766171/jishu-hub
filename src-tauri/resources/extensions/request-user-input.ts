@@ -10,48 +10,51 @@
  * it to the global extensions dir (`~/.jishu-agent/extensions/`) so the tool is
  * available in every project — same mechanism as `jishu-task-conductor`.
  *
- * Implemented as an extension (rather than a built-in `customTool` injected in
- * `main.ts`) so that `main.ts` stays byte-identical to upstream and merges no
- * longer conflict on this feature. See `third_party/pi/docs/development-note.md`
- * for full context.
+ * Registration passes a plain object to `pi.registerTool` (NOT wrapped in
+ * `defineTool`). `defineTool` is a type-only cast helper exported from
+ * `@earendil-works/pi-coding-agent`; importing it as a VALUE would make this
+ * extension require `@earendil-works/pi-coding-agent` at runtime, which pi's
+ * Node-mode loader (getAliases) resolves to a non-existent path under the built
+ * pi-bundle (`packages/index.js`) and fails to load. Importing only the TYPE
+ * (`type ExtensionAPI`) keeps that require erased at runtime; `Type` comes from
+ * `typebox`, a real dependency present in node_modules. See
+ * `third_party/pi/docs/development-note.md` for full context.
  */
-import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 export default function requestUserInputExtension(pi: ExtensionAPI) {
-	pi.registerTool(
-		defineTool({
-			name: "request_user_input",
-			label: "Request User Input",
-			description:
-				"Request structured input from the user during task execution. Use when you need the user to choose between options or provide information before continuing. The agent will pause until the user responds.",
-			promptSnippet: "request_user_input: Ask the user a question or offer choices",
-			parameters: Type.Object({
-				question: Type.String({
-					description: "The question to ask the user",
-				}),
-				options: Type.Optional(
-					Type.Array(Type.String(), {
-						description: "Available choices. Omit for free-text input.",
-					}),
-				),
+	pi.registerTool({
+		name: "request_user_input",
+		label: "Request User Input",
+		description:
+			"Request structured input from the user during task execution. Use when you need the user to choose between options or provide information before continuing. The agent will pause until the user responds.",
+		promptSnippet: "request_user_input: Ask the user a question or offer choices",
+		parameters: Type.Object({
+			question: Type.String({
+				description: "The question to ask the user",
 			}),
-
-			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-				const { question, options } = params as { question: string; options?: string[] };
-				let response: string | undefined;
-
-				if (options && options.length > 0) {
-					response = await ctx.ui.select(question, options);
-				} else {
-					response = await ctx.ui.input(question);
-				}
-
-				return {
-					content: [{ type: "text" as const, text: response ?? "(no response)" }],
-					details: undefined,
-				};
-			},
+			options: Type.Optional(
+				Type.Array(Type.String(), {
+					description: "Available choices. Omit for free-text input.",
+				}),
+			),
 		}),
-	);
+
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const { question, options } = params as { question: string; options?: string[] };
+			let response: string | undefined;
+
+			if (options && options.length > 0) {
+				response = await ctx.ui.select(question, options);
+			} else {
+				response = await ctx.ui.input(question);
+			}
+
+			return {
+				content: [{ type: "text" as const, text: response ?? "(no response)" }],
+				details: undefined,
+			};
+		},
+	});
 }
