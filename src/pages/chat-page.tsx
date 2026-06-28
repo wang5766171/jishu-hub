@@ -31,6 +31,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { searchSessions } from "@/lib/session-search";
 import { openFloatingSession } from "@/lib/floating-window";
@@ -370,6 +371,8 @@ export function ChatPage({
   const taskLaunchOpenRef = useRef(taskLaunchOpen);
   const taskLaunchPhaseRef = useRef<TaskLaunchPhase>(taskLaunchPhase);
   const activeTaskInstanceIdRef = useRef<string | null>(activeTaskInstanceId);
+  // 进入任务模式需切到 Jishu Agent 时置 true：阻止 activeId 变化触发的清理 effect 重置任务模式状态
+  const enteringTaskModeRef = useRef(false);
   const activeTaskRequirementFileRef = useRef<string | null>(activeTaskRequirementFile);
   const selectedTaskSkillIdRef = useRef(selectedTaskSkillId);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
@@ -678,6 +681,13 @@ export function ChatPage({
 
   useEffect(() => {
     if (!projectId || !activeId) return;
+    // 若本次 agent 切换是为进入任务模式（自动切到 Jishu Agent），保留任务模式状态，仅刷新会话列表
+    if (enteringTaskModeRef.current) {
+      enteringTaskModeRef.current = false;
+      setListRefreshKey(Date.now());
+      refetchNames(true).catch(console.error);
+      return;
+    }
     setSelectedSession(null);
     selectedSessionRef.current = null;
     setSessionMessages([]);
@@ -746,6 +756,8 @@ export function ChatPage({
   );
   const taskModeAgentReady = Boolean(jishuAgent?.health.installed);
   const taskModeCanSend = taskModeAgentReady && activeId === "jishu-self";
+  // 应用内确认/提示弹窗（替代系统原生 confirm/message，样式与应用统一）
+  const { confirm: confirmDialog, alert: alertDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
 
   const handleAccessModeChange = useCallback(async (value: string) => {
     if (!supportsAccessModeSwitch || !projectPathForSettings) return;
@@ -772,14 +784,36 @@ export function ChatPage({
       return;
     }
     if (activeId !== "jishu-self") {
+      // 标记本次切换是为进入任务模式，阻止上面的清理 effect 重置任务模式状态
+      enteringTaskModeRef.current = true;
       setActive("jishu-self").catch((error) => {
         console.warn("Failed to switch to Jishu Agent for task mode:", error);
+        enteringTaskModeRef.current = false;
       });
     }
   }, [activeId, agents.length, setActive, taskLaunchOpen, taskModeAgentReady]);
 
-  const handleWorkModeChange = useCallback((value: string) => {
+  const handleWorkModeChange = useCallback(async (value: string) => {
     const nextIsTask = value === "task";
+    // 方式2：进入任务模式时若当前不是 Jishu Agent，弹窗确认后自动切换（仅 Jishu Agent 支持任务模式）。
+    if (nextIsTask && activeId !== "jishu-self") {
+      if (!taskModeAgentReady) {
+        await alertDialog({
+          title: "无法进入任务模式",
+          description: "任务模式需要先安装 Jishu Agent。请到环境检测页面完成安装后再发起任务。",
+        });
+        return;
+      }
+      const confirmed = await confirmDialog({
+        title: "切换到 Jishu Agent",
+        description: "任务模式由 Jishu Agent 提供。将切换到 Jishu Agent 并进入任务模式，是否继续？",
+        confirmText: "切换并继续",
+        cancelText: "取消",
+      });
+      if (!confirmed) return;
+      // 标记本次切换是为进入任务模式，阻止 activeId 变化时的清理 effect 重置任务模式
+      enteringTaskModeRef.current = true;
+    }
     setTaskPanelOpen(false);
     setTaskModeActive(false);
     setTaskContainerReadOnly(false);
@@ -800,10 +834,17 @@ export function ChatPage({
     selectedSessionRef.current = "new";
     setSessionMessages([]);
     setPendingSteerDisplay([]);
+    // 确认切换后主动切到 Jishu Agent（enteringTaskModeRef 已置，清理 effect 会跳过任务模式重置）
+    if (nextIsTask && activeId !== "jishu-self") {
+      setActive("jishu-self").catch((error) => {
+        console.warn("Failed to switch to Jishu Agent for task mode:", error);
+        enteringTaskModeRef.current = false;
+      });
+    }
     requestAnimationFrame(() => {
       chatInputRef.current?.focus();
     });
-  }, []);
+  }, [activeId, taskModeAgentReady, setActive]);
 
   const handleTaskSkillInstall = useCallback(async (skillId: string) => {
     const skill = taskPlanSkills.find((item) => item.id === skillId);
@@ -3504,6 +3545,7 @@ export function ChatPage({
           }
         }}
       />
+      {confirmDialogNode}
       <Dialog open={Boolean(phaseAdvancePrompt)} onOpenChange={(open) => { if (!open) setPhaseAdvancePrompt(null); }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
