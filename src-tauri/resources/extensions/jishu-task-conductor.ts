@@ -422,11 +422,9 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       pi.sendMessage(
         {
           customType: "jishu-conductor:startup",
-          display: false,
+          display: true,
           content: phaseSeparator("discuss")
-            + `[启动任务工作流:${state.domain}] 目标：${state.goal}\n`
-            + "你是需求澄清者。先通过多轮对话澄清需求（每次只问一个核心维度），用 request_user_input 提供选项。\n"
-            + "需求收敛后**必须调用 lock_requirement 工具**提交结构化需求终稿，不要只用文本声明。",
+            + `**[启动任务工作流：${state.domain}]** 目标：${state.goal}`,
         },
         { triggerTurn: true, deliverAs: "followUp" },
       );
