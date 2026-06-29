@@ -311,9 +311,13 @@ export default function conductorExtension(pi: ExtensionAPI): void {
 
   // ── turn_end：execute 阶段扫哨兵 [STEP:<id> DONE/SKIPPED]，跟踪进度 ──
   pi.on("turn_end", async (event, ctx) => {
-    // stopReason=aborted 检测（agent_end 关卡 + 下方 execute 推进都用）
+    // abort 检测（agent_end 关卡 + 下方 execute 推进都用）：
+    // 优先用 ctx.signal.aborted——execute 阶段 abort 后当前节点 turn 仍可能以
+    // stopReason="stop" 结束（tool 执行间隙/密集 thinking 未被中断），单靠 stopReason
+    // 检测不到，conductor 会误判为正常完成、继续推进下一节点（execute 停止无效）。
     const msg = event.message as { stopReason?: string };
-    lastTurnEndedNormally = msg?.stopReason !== "aborted";
+    const aborted = ctx.signal?.aborted === true || msg?.stopReason === "aborted";
+    lastTurnEndedNormally = !aborted;
 
     // execute 阶段：扫哨兵
     if (state.phase !== "execute" || state.steps.length === 0) return;
