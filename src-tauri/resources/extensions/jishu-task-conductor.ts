@@ -310,62 +310,19 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     }
   });
 
-  // ── turn_end：execute 阶段扫哨兵 [STEP:<id> DONE/SKIPPED]，跟踪进度 ──
+  // ── turn_end：abort 检测 + execute 一段式收尾（turn 结束即 done）──
   pi.on("turn_end", async (event, ctx) => {
-    // abort 检测（agent_end 关卡 + 下方 execute 推进都用）：
-    // 优先用 ctx.signal.aborted——execute 阶段 abort 后当前节点 turn 仍可能以
-    // stopReason="stop" 结束（tool 执行间隙/密集 thinking 未被中断），单靠 stopReason
-    // 检测不到，conductor 会误判为正常完成、继续推进下一节点（execute 停止无效）。
+    // abort 检测：一段式单 turn 下 abort 走 stream 中断，ctx.signal.aborted 可靠
     const msg = event.message as { stopReason?: string };
     const aborted = ctx.signal?.aborted === true || msg?.stopReason === "aborted";
     lastTurnEndedNormally = !aborted;
 
-    // execute 一段式：单个 turn 执行完所有节点，turn 自然结束 = done。
+    // execute 一段式：单个 turn 依次执行完所有节点，turn 自然结束 = done。
     // abort 时（lastTurnEndedNormally=false）不进 done。
     if (state.phase !== "execute") return;
     if (!lastTurnEndedNormally) return;
     setPhase("done", ctx);
     ctx.ui.notify("流程执行完成。共 " + state.steps.length + " 个节点。", "info");
-    return; // 一段式 done；下方逐节点哨兵/推进逻辑已废弃（dead code，待清理）
-    const text = JSON.stringify(event.message);
-    let changed = false;
-    for (const step of state.steps) {
-      if (step.status !== "pending") continue;
-      if (text.includes(`[STEP:${step.id} DONE]`)) {
-        step.status = "done";
-        changed = true;
-      } else if (text.includes(`[STEP:${step.id} SKIPPED]`)) {
-        step.status = "skipped";
-        changed = true;
-      }
-    }
-    if (changed) {
-      const done = state.steps.filter((s) => s.status !== "pending").length;
-      ctx.ui.setStatus("jishu-conductor", `\u25b6 ${done}/${state.steps.length}`);
-      persist();
-      // 全部完成 → done
-      if (state.steps.every((s) => s.status !== "pending")) {
-        setPhase("done", ctx);
-        ctx.ui.notify(
-          `流程执行完成。${state.steps.filter((s) => s.status === "done").length} 完成，${state.steps.filter((s) => s.status === "skipped").length} 跳过。`,
-          "info",
-        );
-      } else {
-        // 还有 pending → 自动推进下一个节点
-        const next = state.steps.find((s) => s.status === "pending");
-        if (next) {
-          const dep = next.depends_on.length > 0 ? `（依赖：${next.depends_on.join(", ")}）` : "";
-          pi.sendMessage(
-            {
-              customType: "jishu-conductor:execute-next",
-              display: false,
-              content: `继续执行下一个节点：[${next.id}] ${next.title}${dep}\n职责：${next.responsibility}\n${next.acceptance ? `验收：${next.acceptance}\n` : ""}完成后输出 [STEP:${next.id} DONE]。`,
-            },
-            { triggerTurn: true, deliverAs: "followUp" },
-          );
-        }
-      }
-    }
   });
 
   const persist = (): void => {
