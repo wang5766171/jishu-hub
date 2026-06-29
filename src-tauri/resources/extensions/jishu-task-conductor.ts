@@ -288,15 +288,16 @@ export default function conductorExtension(pi: ExtensionAPI): void {
             return `${i + 1}. [${s.id}] ${s.title} [${s.role}]${dep}\n   职责：${s.responsibility}${acc}`;
           })
           .join("\n");
-        ctx.ui.notify("进入执行阶段（fallback）。共 " + state.steps.length + " 个节点。", "info");
+        ctx.ui.notify("进入执行阶段。共 " + state.steps.length + " 个节点。", "info");
+        // 一段式执行：单个 turn 内一口气执行完所有节点（不再逐节点 sendMessage 推进）。
+        // 这样 abort 走正常 stream 中断（anthropic-messages :379），不存在逐节点 followUp
+        // + signal 延迟导致的停止无效。fallback 是过渡态，简单优先。
         pi.sendMessage(
           {
             customType: "jishu-conductor:phase-enter:execute",
             display: false,
-            content: "进入流程执行阶段。按以下步骤逐个执行：\n" + stepList + "\n\n"
-              + "每完成一个步骤，在回复末尾输出 [STEP:<id> DONE]。\n"
-              + "如需跳过某步骤，输出 [STEP:<id> SKIPPED]。\n"
-              + "从第一个步骤开始：" + (state.steps[0]?.title ?? ""),
+            content: "进入流程执行阶段。按以下节点依次执行：\n" + stepList + "\n\n"
+              + "按顺序逐个完成。全部完成后简要报告产出。",
           },
           { triggerTurn: true, deliverAs: "followUp" },
         );
@@ -319,10 +320,13 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     const aborted = ctx.signal?.aborted === true || msg?.stopReason === "aborted";
     lastTurnEndedNormally = !aborted;
 
-    // execute 阶段：扫哨兵
-    if (state.phase !== "execute" || state.steps.length === 0) return;
-    // 用户点停止（abort）时不扫哨兵、不自动推进下一节点，否则 execute 阶段停止无效
+    // execute 一段式：单个 turn 执行完所有节点，turn 自然结束 = done。
+    // abort 时（lastTurnEndedNormally=false）不进 done。
+    if (state.phase !== "execute") return;
     if (!lastTurnEndedNormally) return;
+    setPhase("done", ctx);
+    ctx.ui.notify("流程执行完成。共 " + state.steps.length + " 个节点。", "info");
+    return; // 一段式 done；下方逐节点哨兵/推进逻辑已废弃（dead code，待清理）
     const text = JSON.stringify(event.message);
     let changed = false;
     for (const step of state.steps) {
