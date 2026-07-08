@@ -57,6 +57,11 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         origin: Option<String>,
     },
+    #[serde(rename = "phase_divider")]
+    PhaseDivider {
+        phase: String,
+        title: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,6 +178,12 @@ pub fn parse_message(line: &str) -> Option<Message> {
         return None;
     }
 
+    let custom_type = v
+        .get("message")
+        .and_then(|m| m.get("customType"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+
     let content_value = v
         .get("message")
         .and_then(|m| m.get("content"))
@@ -181,14 +192,8 @@ pub fn parse_message(line: &str) -> Option<Message> {
 
     let content = parse_content_blocks(&content_value);
 
-    if content.is_empty() {
-        return None;
-    }
-
     // Filter out tool_use blocks for interaction tools and their corresponding
-    // tool_result blocks. The interaction data is persisted separately as
-    // Interaction ContentBlocks, so the raw tool blocks are redundant and would
-    // render as generic TOOL cards on reload.
+    // tool_result blocks.
     let interaction_tool_ids: std::collections::HashSet<String> = content
         .iter()
         .filter_map(|b| match b {
@@ -199,7 +204,7 @@ pub fn parse_message(line: &str) -> Option<Message> {
         })
         .collect();
 
-    let filtered: Vec<ContentBlock> = content
+    let mut filtered: Vec<ContentBlock> = content
         .into_iter()
         .filter(|b| match b {
             ContentBlock::ToolUse { name, .. } if is_interaction_tool_name(name) => false,
@@ -212,8 +217,43 @@ pub fn parse_message(line: &str) -> Option<Message> {
         })
         .collect();
 
-    if filtered.is_empty() {
+    let is_phase_enter = custom_type.starts_with("jishu-conductor:phase-enter:");
+    
+    if filtered.is_empty() && !is_phase_enter {
         return None;
+    }
+
+    let is_launch_text = role == "user" && filtered.iter().any(|b| match b {
+        ContentBlock::Text { text } => text.trim_start().starts_with("/jishu-task "),
+        _ => false,
+    });
+
+    if is_phase_enter || is_launch_text {
+        let phase = if is_phase_enter {
+            custom_type.strip_prefix("jishu-conductor:phase-enter:").unwrap_or("discuss")
+        } else {
+            "discuss"
+        };
+        
+        let title = match phase {
+            "discuss" => "需求讨论",
+            "plan" => "流程规划",
+            "execute" => "流程执行",
+            "done" => "已完成",
+            other => other,
+        };
+
+        let has_divider = filtered.iter().any(|b| match b {
+            ContentBlock::PhaseDivider { phase: p, .. } => p == phase,
+            _ => false,
+        });
+
+        if !has_divider {
+            filtered.insert(0, ContentBlock::PhaseDivider {
+                phase: phase.to_string(),
+                title: title.to_string(),
+            });
+        }
     }
 
     let timestamp = v.get("timestamp").and_then(|t| t.as_i64());

@@ -67,18 +67,65 @@ export function renderContentBlock(block: ContentBlock): React.ReactNode {
         />
       );
     case "phase_divider":
-      return (
-        <div className="flex items-center gap-3 py-3" data-phase={block.phase}>
-          <div className="h-px flex-1 bg-border/60" />
-          <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground whitespace-nowrap">
-            {block.title}
-          </span>
-          <div className="h-px flex-1 bg-border/60" />
-        </div>
-      );
+      return <PhaseDivider phase={block.phase} title={block.title} />;
     default:
       return null;
   }
+}
+
+export function PhaseDivider({ phase, title }: { phase: string; title: string }) {
+  const theme = (() => {
+    switch (phase) {
+      case "discuss":
+        return {
+          bg: "bg-indigo-50/80 dark:bg-indigo-950/40",
+          text: "text-indigo-600 dark:text-indigo-400",
+          border: "border-indigo-200/60 dark:border-indigo-900/60",
+          dot: "bg-indigo-500",
+          shadow: "shadow-sm shadow-indigo-100/50 dark:shadow-none"
+        };
+      case "plan":
+        return {
+          bg: "bg-amber-50/80 dark:bg-amber-950/40",
+          text: "text-amber-600 dark:text-amber-400",
+          border: "border-amber-200/60 dark:border-amber-900/60",
+          dot: "bg-amber-500",
+          shadow: "shadow-sm shadow-amber-100/50 dark:shadow-none"
+        };
+      case "execute":
+        return {
+          bg: "bg-emerald-50/80 dark:bg-emerald-950/40",
+          text: "text-emerald-600 dark:text-emerald-400",
+          border: "border-emerald-200/60 dark:border-emerald-900/60",
+          dot: "bg-emerald-500",
+          shadow: "shadow-sm shadow-emerald-100/50 dark:shadow-none"
+        };
+      default:
+        return {
+          bg: "bg-muted/80",
+          text: "text-muted-foreground",
+          border: "border-border",
+          dot: "bg-muted-foreground",
+          shadow: ""
+        };
+    }
+  })();
+
+  return (
+    <div className="flex items-center justify-center gap-4 py-6" data-phase={phase}>
+      <div className="h-[2px] flex-1 bg-gradient-to-r from-transparent via-border/70 to-border/40" />
+      <div className={`flex items-center gap-2 rounded-full border px-4 py-1.5 ${theme.bg} ${theme.border} ${theme.shadow} backdrop-blur-sm transition-all hover:scale-105 duration-200`}>
+        <span className="relative flex h-2 w-2">
+          <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${theme.dot}`} />
+          <span className={`relative inline-flex rounded-full h-2 w-2 ${theme.dot}`} />
+        </span>
+        <span className={`text-[12px] font-semibold tracking-wider uppercase ${theme.text}`}>
+          {title}
+        </span>
+      </div>
+      <div className="h-[2px] flex-1 bg-gradient-to-l from-transparent via-border/70 to-border/40" />
+    </div>
+  );
 }
 
 /** Render an array of ContentBlock (a full message body). */

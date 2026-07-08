@@ -13,6 +13,7 @@ import type { ToolCall } from "@/components/observability/tool-call-card";
 import { InteractionCard } from "./interaction-card";
 import type { InteractionCardItem } from "./interaction-card";
 import { isInteractionToolName, looksLikeInteractionToolInput } from "@/lib/interaction-tools";
+import { PhaseDivider } from "./conversation-content";
 
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS = [rehypeHighlight];
@@ -212,15 +213,7 @@ function renderBlock(
         />
       );
     case "phase_divider":
-      return (
-        <div className="flex items-center gap-3 py-3" data-phase={block.phase}>
-          <div className="h-px flex-1 bg-border/60" />
-          <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground whitespace-nowrap">
-            {block.title}
-          </span>
-          <div className="h-px flex-1 bg-border/60" />
-        </div>
-      );
+      return <PhaseDivider phase={block.phase} title={block.title} />;
     default:
       return null;
   }

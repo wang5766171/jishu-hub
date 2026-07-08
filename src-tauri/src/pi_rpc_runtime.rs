@@ -886,6 +886,30 @@ pub(crate) fn normalize_pi_agent_event(event: &serde_json::Value) -> Vec<Normali
             if role != Some("user") {
                 return vec![];
             }
+
+            // Detect PhaseDivider via customType
+            let custom_type = event
+                .get("message")
+                .and_then(|m| m.get("customType"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if custom_type.starts_with("jishu-conductor:phase-enter:") {
+                let phase = custom_type
+                    .strip_prefix("jishu-conductor:phase-enter:")
+                    .unwrap_or("");
+                let title = match phase {
+                    "discuss" => "需求讨论",
+                    "plan" => "流程规划",
+                    "execute" => "流程执行",
+                    "done" => "已完成",
+                    other => other,
+                };
+                return vec![NormalizedEvent::PhaseDivider {
+                    phase: phase.to_string(),
+                    title: title.to_string(),
+                }];
+            }
+
             let content = event
                 .get("message")
                 .and_then(|m| m.get("content"))
