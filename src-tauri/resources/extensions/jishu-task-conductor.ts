@@ -73,6 +73,34 @@ function phaseDisplayName(phase: Phase): string {
   return names[phase] ?? phase;
 }
 
+function phaseDiscipline(phase: Phase): string {
+  const rules: Record<Phase, string> = {
+    idle: "",
+    discuss: [
+      "⚠️⚠️⚠️【CRITICAL DISCIPLINE REDLINE - 需求讨论阶段】⚠️⚠️⚠️",
+      "1. 你的唯一目标是澄清并收敛需求，最后调用 lock_requirement 提交需求终稿。",
+      "2. 🚫 绝对禁止提供任何具体的技术实现方案、严禁编写或设计代码结构、严禁在回复中输出任何代码片段（即便是为了演示）。如果用户要求输出代码，你必须予以拒绝，并解释必须先澄清并锁定需求。",
+      "3. 🚫 绝对禁止询问用户是否要开始编写代码，当前阶段只做澄清需求。",
+      "4. 你在此阶段没有 edit/write/bash 工具，不要尝试写文件或运行系统命令。",
+    ].join("\n"),
+    plan: [
+      "⚠️⚠️⚠️【CRITICAL DISCIPLINE REDLINE - 流程规划阶段】⚠️⚠️⚠️",
+      "1. 你的唯一目标是基于上一阶段确定的 REQUIREMENTS.md，设计任务节点方案并调用 commit_plan 工具提交提案。",
+      "2. 🚫 绝对禁止在此阶段询问用户是否开始实现，你也绝对无权开始实现！你的工作在调用 commit_plan 提交那一刻就立即结束并等待。",
+      "3. 🚫 绝对禁止编写、修改或输出任何具体的业务代码，也绝对禁止开始执行任何具体的任务节点。",
+      "4. 🚫 绝对禁止在此阶段询问用户是否要启用 write/edit 等工具。你的工具白名单被严格限定在只读和提交计划上。",
+    ].join("\n"),
+    execute: [
+      "⚠️⚠️⚠️【CRITICAL DISCIPLINE REDLINE - 流程执行阶段】⚠️⚠️⚠️",
+      "1. 按照流程规划中的节点顺序依次执行，每个节点执行完毕前严禁跳过或并行处理其他未完成的节点。",
+      "2. 此时你可以使用 write/edit/bash 等工具编写代码、进行测试。请以高标准完成实现并满足验收标准。",
+      "3. 每执行完一个步骤（节点），你必须且只能在当前回复的末尾输出哨兵标记 `[STEP:<id> DONE]`（例如 `[STEP:node_1 DONE]`），通知 Conductor 步骤完成。严禁在步骤未完成时提前输出该标记。",
+    ].join("\n"),
+    done: "",
+  };
+  return rules[phase] ?? "";
+}
+
 // ── 扩展入口 ──
 export default function conductorExtension(pi: ExtensionAPI): void {
   const state: ConductorState = {
@@ -136,8 +164,13 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       const path = writeArtifact("requirements", "REQUIREMENTS.md", content);
       state.artifacts.requirements = path;
       persist();
+      const warningText = "\n\n⚠️⚠️⚠️【CRITICAL REDLINE - 需求讨论已锁定】⚠️⚠️⚠️\n"
+        + "需求终稿已锁！你已经处于转向进入【流程规划阶段】的过程中。根据阶段红线：\n"
+        + "1. 🚫 绝对禁止提供任何代码、具体的架构或技术实现。\n"
+        + "2. 🚫 绝对禁止问询用户其他需求，也不要继续回答任何问题。\n"
+        + "3. 必须立刻停止输出，结束当前回复，等待用户批准并开启流程规划阶段。";
       return {
-        content: [{ type: "text" as const, text: `需求终稿已落盘：${path}\n\n${content}` }],
+        content: [{ type: "text" as const, text: `需求终稿已落盘：${path}\n\n${content}${warningText}` }],
         details: { artifactPath: path },
       };
     },
@@ -199,8 +232,13 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       state.artifacts.flowPlanJson = jsonPath;
       state.artifacts.flowPlanMd = mdPath;
       persist();
+      const warningText = "\n\n⚠️⚠️⚠️【CRITICAL REDLINE - 流程规划已提交】⚠️⚠️⚠️\n"
+        + "流程规划计划提案已成功提交！你目前处于转向进入【流程执行阶段】的过程中。根据阶段红线：\n"
+        + "1. 🚫 绝对禁止在当前会话中开始编写、演示或输出任何代码。\n"
+        + "2. 🚫 绝对禁止向用户询问“是否开始实现”或“开始做哪件事”。你无权擅自开始实现。\n"
+        + "3. 必须立刻停止输出，结束当前回复，等待用户批准并开启流程执行阶段。";
       return {
-        content: [{ type: "text" as const, text: `计划提案已落盘：\n${mdPath}\n${jsonPath}\n\n${md}` }],
+        content: [{ type: "text" as const, text: `计划提案已落盘：\n${mdPath}\n${jsonPath}\n\n${md}${warningText}` }],
         details: { jsonPath, mdPath },
       };
     },
@@ -234,14 +272,17 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       );
       if (choice?.startsWith("进入")) {
         setPhase("plan", ctx);
+        // 阶段分隔 / 指令通过 ctx.ui.setStatus 生成 PhaseDivider（前端已对接）；
+        // 这里 sendMessage 仅作为驱动下一阶段 turn 的 prompt，deliverAs 非法值 "user" 改为省略
+        // （triggerTurn 路径下 deliverAs 仅 "nextTurn"/"followUp"/"steer" 有意义，此处忽略即可）。
         pi.sendMessage(
           {
             customType: "jishu-conductor:phase-enter:plan",
-            display: false,
+            display: true,
             content: "进入流程规划阶段。读取需求终稿（" + (state.artifacts.requirements ?? "")
               + "），设计任务节点方案。与用户讨论调整后，调用 commit_plan 工具提交。",
           },
-          { triggerTurn: true, deliverAs: "followUp" },
+          { triggerTurn: true },
         );
       } else {
         state.artifacts.requirements = undefined;
@@ -292,14 +333,15 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         // 一段式执行：单个 turn 内一口气执行完所有节点（不再逐节点 sendMessage 推进）。
         // 这样 abort 走正常 stream 中断（anthropic-messages :379），不存在逐节点 followUp
         // + signal 延迟导致的停止无效。fallback 是过渡态，简单优先。
+        // deliverAs 非法值 "user" 改为省略（triggerTurn 路径下无意义）。
         pi.sendMessage(
           {
             customType: "jishu-conductor:phase-enter:execute",
-            display: false,
+            display: true,
             content: "进入流程执行阶段。按以下节点依次执行：\n" + stepList + "\n\n"
               + "按顺序逐个完成。全部完成后简要报告产出。",
           },
-          { triggerTurn: true, deliverAs: "followUp" },
+          { triggerTurn: true },
         );
       } else {
         state.artifacts.flowPlanJson = undefined;
@@ -312,7 +354,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
 
   // ── turn_end：abort 检测 + execute 一段式收尾（turn 结束即 done）──
   pi.on("turn_end", async (event, ctx) => {
-    // abort 检测：一段式单 turn 下 abort 走 stream 中断，ctx.signal.aborted 可靠
+    // abort 检测：一段式单 turn 下 abort 走 stream 中断，ctx.signal.aborted可靠
     const msg = event.message as { stopReason?: string };
     const aborted = ctx.signal?.aborted === true || msg?.stopReason === "aborted";
     lastTurnEndedNormally = !aborted;
@@ -376,23 +418,32 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         toolsBeforeWorkflow = pi.getActiveTools();
       }
       setPhase("discuss", ctx);
-      // 用 sendUserMessage 把用户指令作为标准 user 消息持久化（slash command 本身不入会话历史，
-      // 必须显式补一条，否则重新进入看不到发起指令）；同时触发 discuss 首个 turn。
+      // slash command 本身不会写入会话历史：Pi 在 prompt() 中识别到以 "/" 开头会走
+      // _tryExecuteExtensionCommand，命中命令后直接 return，不会生成 user 消息。
+      // 因此必须显式补一条「真实用户消息」，否则会话关闭重进后看不到原始诉求。
+      //
+      // 关键修复：必须用 sendUserMessage，不能用 sendMessage(..., deliverAs:"user")。
+      // sendMessage 只能产生 role:"custom" 消息（deliverAs 合法值只有
+      // "steer"|"followUp"|"nextTurn"，"user" 会被忽略）。custom 消息虽写入 JSONL，
+      // 但 Hub 前端重载会话时不会把未知 customType 渲染成用户气泡，于是「原始问题消失」。
+      // sendUserMessage 生成 role:"user" 的标准消息，重载后正常以用户气泡呈现，且始终进入 LLM 上下文。
+      // 其内部走 prompt(expandPromptTemplates:false)，不会二次触发 /jishu-task 命令。
       // discuss 方法论由 before_agent_start 注入，这里无需再带指令文本。
       pi.sendUserMessage(`/jishu-task ${args}`);
     },
   });
 
-  // ── before_agent_start\uff1a\u6ce8\u5165\u5f53\u524d\u9636\u6bb5\u65b9\u6cd5\u8bba ──
+  // ── before_agent_start：注入当前阶段方法论 ──
   pi.on("before_agent_start", async () => {
     if (state.phase === "idle" || state.phase === "done") return;
     const skillPhase = state.phase as SkillPhase;
     const skill = loadSkill(state.domain, skillPhase);
+    const discipline = phaseDiscipline(state.phase);
     return {
       message: {
         customType: phaseTag(),
         display: false,
-        content: `[JISHU-TASK:${state.domain}:${state.phase}] === ${phaseDisplayName(state.phase)} ===\n${skill}`,
+        content: `[JISHU-TASK:${state.domain}:${state.phase}] === ${phaseDisplayName(state.phase)} ===\n${skill}\n\n${discipline}`,
       },
     };
   });

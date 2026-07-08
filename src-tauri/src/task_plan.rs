@@ -268,7 +268,7 @@ pub fn list_task_plan_skills() -> Result<Vec<TaskPlanSkill>, String> {
     list_task_plan_skills_in_dir(&task_plan_dir()?)
 }
 
-// ── Pi 扩展自动注册（Hub setup hook 每次启动幂等确保）──
+// ── Pi 扩展自动注册（Hub setup hook 每次启动幂等确保）── // FORCE COMPILER TO RE-READ STATIC EMBEDDED FILE CHANGES V6
 const CONDUCTOR_EXTENSION_TS: &str = include_str!("../resources/extensions/jishu-task-conductor.ts");
 const CONDUCTOR_DISCUSS_SKILL: &str = include_str!("../resources/task-plan/jishu-conductor-dev/discuss.SKILL.md");
 const CONDUCTOR_PLAN_SKILL: &str = include_str!("../resources/task-plan/jishu-conductor-dev/plan.SKILL.md");
