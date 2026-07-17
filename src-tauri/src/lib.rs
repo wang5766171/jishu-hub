@@ -887,7 +887,7 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
             vec![
                 "install".to_string(),
                 "-g".to_string(),
-                "@jishu-hub/jishu-agent@0.80.2-8".to_string(),
+                "@jishu-hub/jishu-agent@0.80.10-8".to_string(),
             ],
         );
         // JISHU_AGENT_BINDING_END

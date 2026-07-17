@@ -43,7 +43,8 @@ const nameMapping = {
   "coding-agent": `${SCOPE_NEW}/jishu-agent`,
   "ai": `${SCOPE_NEW}/jishu-agent-ai`,
   "agent": `${SCOPE_NEW}/jishu-agent-core`,
-  "tui": `${SCOPE_NEW}/jishu-agent-tui`
+  "tui": `${SCOPE_NEW}/jishu-agent-tui`,
+  "orchestrator": `${SCOPE_NEW}/jishu-agent-orchestrator`,
 };
 
 // Retrieve the current version to use in the alias strings
@@ -56,10 +57,11 @@ const replaceDepWithAlias = (dep) => {
   if (dep === "@earendil-works/pi-ai") return `npm:${nameMapping["ai"]}@${version}`;
   if (dep === "@earendil-works/pi-agent-core") return `npm:${nameMapping["agent"]}@${version}`;
   if (dep === "@earendil-works/pi-tui") return `npm:${nameMapping["tui"]}@${version}`;
+  if (dep === "@earendil-works/pi-orchestrator") return `npm:${nameMapping["orchestrator"]}@${version}`;
   return null;
 };
 
-const publishOrder = ["tui", "ai", "agent", "coding-agent"];
+const publishOrder = ["tui", "ai", "agent", "coding-agent", "orchestrator"];
 let packagesToPublish = packages.sort((a, b) => {
   const idxA = publishOrder.indexOf(a) === -1 ? 99 : publishOrder.indexOf(a);
   const idxB = publishOrder.indexOf(b) === -1 ? 99 : publishOrder.indexOf(b);
@@ -171,6 +173,7 @@ for (const pkg of packagesToPublish) {
       "@earendil-works/pi-ai": `${SCOPE_NEW}/jishu-agent-ai`,
       "@earendil-works/pi-agent-core": `${SCOPE_NEW}/jishu-agent-core`,
       "@earendil-works/pi-tui": `${SCOPE_NEW}/jishu-agent-tui`,
+      "@earendil-works/pi-orchestrator": `${SCOPE_NEW}/jishu-agent-orchestrator`,
     };
     const tarballUrl = (jishuName, ver) => {
       const slug = jishuName.split("/")[1];

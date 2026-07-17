@@ -12,13 +12,17 @@ const SHEBANG = "#!/usr/bin/env node\n";
  * SyntaxError on the second line when the file is executed.
  *
  * This collapses any number of stacked leading shebangs deterministically:
- * the CLI entry (cli.js) keeps exactly one, the library entry (index.js) keeps
- * none (it is imported as a module, never run directly).
+ * the executable entries (cli.js and rpc-entry.js) keep exactly one, while
+ * the library entry (index.js) keeps none.
  *
- * @param {string} distDir - the dist/ directory containing cli.js and index.js
+ * @param {string} distDir - the dist/ directory containing bundled entry points
  */
 export function fixShebang(distDir) {
-  for (const [entry, keepShebang] of [["cli.js", true], ["index.js", false]]) {
+  for (const [entry, keepShebang] of [
+    ["cli.js", true],
+    ["rpc-entry.js", true],
+    ["index.js", false],
+  ]) {
     const entryPath = path.join(distDir, entry);
     if (!fs.existsSync(entryPath)) continue;
     let content = fs.readFileSync(entryPath, "utf8");

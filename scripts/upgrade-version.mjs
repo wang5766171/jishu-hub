@@ -27,7 +27,14 @@ try {
 
 // 2. Update package.jsons
 console.log(`\n[2] Updating package.json versions...`);
-const pkgsToUpdate = ["package.json", "packages/agent/package.json", "packages/ai/package.json", "packages/coding-agent/package.json", "packages/tui/package.json"];
+const pkgsToUpdate = [
+  "package.json",
+  "packages/agent/package.json",
+  "packages/ai/package.json",
+  "packages/coding-agent/package.json",
+  "packages/tui/package.json",
+  "packages/orchestrator/package.json",
+];
 
 for (const pkgPath of pkgsToUpdate) {
   const fullPath = path.join(ROOT_DIR, pkgPath);
@@ -37,7 +44,13 @@ for (const pkgPath of pkgsToUpdate) {
     json.version = newVersion;
     
     // Also update cross-dependencies within the workspace
-    const internalDeps = ["@earendil-works/pi-agent-core", "@earendil-works/pi-ai", "@earendil-works/pi-tui", "@earendil-works/pi-coding-agent"];
+    const internalDeps = [
+      "@earendil-works/pi-agent-core",
+      "@earendil-works/pi-ai",
+      "@earendil-works/pi-tui",
+      "@earendil-works/pi-coding-agent",
+      "@earendil-works/pi-orchestrator",
+    ];
     for (const depType of ["dependencies", "devDependencies", "peerDependencies"]) {
       if (json[depType]) {
         for (const [dep, ver] of Object.entries(json[depType])) {
@@ -78,6 +91,15 @@ try {
   process.exit(1);
 }
 
+// 3.6 Regenerate coding-agent install-lock
+console.log(`\n[3.6] Regenerating packages/coding-agent/install-lock...`);
+try {
+  execSync("npm run install-lock:coding-agent", { cwd: ROOT_DIR, stdio: "inherit" });
+} catch (e) {
+  console.error("❌ Failed to regenerate coding-agent install-lock");
+  process.exit(1);
+}
+
 // 4. Update Jishu Hub Backend Binding
 console.log(`\n[4] Binding Jishu Hub Lite to Jishu Agent @${newVersion}...`);
 const libRsPath = path.resolve(process.cwd(), "src-tauri", "src", "lib.rs");
@@ -115,15 +137,32 @@ if (fs.existsSync(modRsPath)) {
   }
 }
 
-// 5. Update PI_CHANGE.MD Branch Mention
-console.log(`\n[5] Updating PI_CHANGE.MD documentation...`);
+// 5. Update only the current Pi maintenance branch references.
+console.log(`\n[5] Updating current Pi branch references...`);
 const piChangePath = path.resolve(process.cwd(), "PI_CHANGE.MD");
 if (fs.existsSync(piChangePath)) {
   let content = fs.readFileSync(piChangePath, "utf-8");
-  // Only replace the branch string specifically formatted like release_vXXX
-  content = content.replace(/release_v\d+\.\d+\.\d+-\d+/g, `release_v${newVersion}`);
+  content = content.replace(
+    /(\| 当前维护分支 \| `)release_v[^`]+(` \|)/,
+    `$1release_v${newVersion}$2`,
+  );
+  content = content.replace(
+    /(\| `\.gitmodules` branch \| `)release_v[^`]+(` \|)/,
+    `$1release_v${newVersion}$2`,
+  );
   fs.writeFileSync(piChangePath, content);
-  console.log(`  - Successfully updated PI_CHANGE.MD`);
+  console.log(`  - Updated current branch fields in PI_CHANGE.MD`);
+}
+
+const gitmodulesPath = path.resolve(process.cwd(), ".gitmodules");
+if (fs.existsSync(gitmodulesPath)) {
+  let content = fs.readFileSync(gitmodulesPath, "utf-8");
+  content = content.replace(
+    /(submodule "third_party\/pi"\][\s\S]*?\bbranch\s*=\s*)[^\r\n]+/,
+    `$1release_v${newVersion}`,
+  );
+  fs.writeFileSync(gitmodulesPath, content);
+  console.log(`  - Updated .gitmodules branch`);
 }
 
 console.log(`\n✅ Upgrade Complete!`);

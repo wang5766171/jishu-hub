@@ -81,7 +81,7 @@
 
 两个打包脚本共用同一份工具库：
 
-- `fixShebang(distDir)`：esbuild 的 banner 会给每个入口注入 shebang，而 `src/cli.ts` 自身也带一个，导致 `dist/cli.js` 出现双 shebang（Node 报 `SyntaxError`）。该函数确定性地折叠所有重复 shebang——CLI 入口 `cli.js` 保留恰好一个，库入口 `index.js` 不保留。
+- `fixShebang(distDir)`：规范化 esbuild 入口文件的 shebang。可执行入口 `cli.js` 与 `rpc-entry.js` 各保留恰好一个，库入口 `index.js` 不保留。`rpc-entry.js` 是 Pi v0.80.10 新增的独立 RPC 启动入口，Full/Lite 必须与 CLI 入口一起构建和交付。
 - `readRuntimeDeps(distDir)`：读取并解析 `runtime-deps.json`，缺失则直接报错（提示先跑 coding-agent 构建以生成它）。
 
 ### 4.3 两条路径如何消费同一份清单
@@ -94,7 +94,7 @@
 ### 4.4 唯一的区别：依赖的交付方式
 
 ```
-                 ┌─ 同一份 esbuild bundle（cli.js）
+                 ┌─ 同一组 esbuild bundle（cli.js / rpc-entry.js / index.js）
 Full / Lite 共享 ─┼─ 同一份 runtime-deps.json（单一真相）
                  └─ 同一个 fixShebang 处理
         │

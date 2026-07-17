@@ -55,9 +55,9 @@
 |------|-----|
 | 上游仓库 | `https://github.com/earendil-works/pi` |
 | 自有 fork | `https://github.com/wang5766171/pi` |
-| 当前维护分支 | `release_v0.80.2-8` |
+| 当前维护分支 | `release_v0.80.10-8` |
 | `.gitmodules` URL | `https://github.com/wang5766171/pi` |
-| `.gitmodules` branch | `release_v0.80.2-8` |
+| `.gitmodules` branch | `release_v0.80.10-8` |
 
 ## 1.5 日常源码变动流程
 
@@ -119,7 +119,37 @@
 
 # 第二部分：改动记录
 
-## 2026-07-16 | AgentSession RPC 暴露 queued continuation 状态
+## 合并上游 v0.80.10（release_v0.80.10-8）
+
+### 2026-07-17 | 采用上游 settled 生命周期并适配第 8 版能力
+
+**升级策略**：以原生 tag `v0.80.10` 为新底座，逐项比较现有 fork 能力。上游已提供等价或更强实现时采用上游方案；未覆盖的能力按新代码结构继续保留，不使用旧文件整块覆盖上游内容。
+
+| 第 8 版能力 | v0.80.10 状态 | 处理 |
+|---|---|---|
+| `agent_end.willContinue` | 上游新增 `agent_settled`，只在 retry、compaction recovery 和 queued continuation 全部耗尽后触发 | **采用上游**。删除 fork 的 `willContinue` 字段；Hub Pi RPC 缓存 final `turn_end`，仅在 `agent_settled` 提交 `TurnComplete` |
+| extension UI `multiSelect` | 上游仍只有 select/confirm/input | **适配保留** types、runner、RPC request/mode、interactive fallback，并补齐 v0.80.10 新增测试夹具 |
+| `request_user_input` | 上游无默认 RPC-aware 工具；fork 源码已于第 8 版移交主仓资源部署 | **主仓继续纳管**，不把旧 `.pi/extensions` 源码重新加入 fork |
+| `build-bundle.mjs` / `runtime-deps.json` | 上游无统一依赖清单，但新增 `rpc-entry.js` 和 orchestrator workspace | **适配保留**。先运行上游 tsgo 生成完整 dist/types，再由 esbuild 覆盖 `cli.js`、`rpc-entry.js`、`index.js`；依赖扫描纳入 agent/ai/tui/orchestrator |
+| shrinkwrap / install-lock | 上游新增 install-lock 和增强生成校验，不支持 `@jishu-hub` alias | **采用上游生成校验，保留主仓 alias rewrite**；版本脚本同时重建 shrinkwrap 与 install-lock |
+| safe prepare、AI 离线 build、`jishu` bin、`.publish-stage/` | 上游未覆盖 | **保留** |
+| 新 orchestrator 包 | 上游新增 | **采用上游**，同步 `0.80.10-8`，并纳入主仓 Lite alias 发布顺序 |
+
+**发布脚本适配**：`upgrade-version.mjs` 现同步六个 workspace 与内部依赖，只更新本文件的“当前状态”字段，不再批量改写历史版本示例；`pi-common.mjs` 同时规范 `cli.js`、`rpc-entry.js`、`index.js`；Lite dry-run 新增 `@jishu-hub/jishu-agent-orchestrator`。
+
+**验证结果**：
+
+- Pi `npm run check` 通过：Biome、pinned dependencies、TS imports、shrinkwrap、install-lock、全仓 tsgo、browser smoke 全部通过。
+- Pi 全 workspace build 通过；CLI 输出 `0.80.10-8`；`cli.js` / `rpc-entry.js` 各一个 shebang，`index.js` 无 shebang；`runtime-deps.json` 为 27 项。
+- `agent_settled`/retry/`multiSelect` 定向测试 3 文件 24 项通过。
+- 主仓 `pack-pi.mjs` 通过，27 项运行时依赖完整；`publish-pi.mjs --dry-run` 完成 tui→ai→agent→coding-agent→orchestrator 五包 staging，未发布；shrinkwrap key 保持 `@earendil-works`，resolved URL 指向 `@jishu-hub`。
+- Hub `npx tsc --noEmit`、interaction/stream 4 文件 16 项、Pi RPC 11 项、Pi interaction sidecar 2 项和 `cargo check` 通过。
+- Pi 全量 `npm test` 在当前 Windows 环境未全绿：agent 12 项、coding-agent 42 项失败，集中于 Windows 路径分隔、symlink/chmod/权限、缺少 `fd`、全局包管理器探针和 trust TUI；AI 557 项通过。本次改动涉及的生命周期和 extension UI 定向测试均通过，不把该全量结果写成全绿。
+- 锁文件审计：当前 npm 11.7.0 不识别仓库的 `min-release-age` 配置，但本次没有新增或升级第三方包，也没有新增 install script；root lock、shrinkwrap、install-lock 的包版本、resolved 和 integrity 均继承 `v0.80.10`。npm 重写时丢失的 15 个 Linux `libc` 元数据已按上游 lock 恢复，最终 root lock 只保留 fork 版本、内部依赖和 `jishu` bin 变化。
+
+---
+
+## 2026-07-16 | AgentSession RPC 暴露 queued continuation 状态（历史方案，已由 v0.80.10 `agent_settled` 取代）
 
 **背景**：Task Conductor 在 awaited `agent_end` 扩展处理器内等待用户确认，并可用 `sendMessage(triggerTurn)` 排入下一阶段。Pi 原有 RPC 事件只暴露 `willRetry`，Hub 无法区分“本次 core run 已结束”与“扩展已排入 continuation”，导致 Hub 在 `turn_end` 提前结束 GUI stream、后续停止无效且确认卡片/阶段标记丢失。
 
