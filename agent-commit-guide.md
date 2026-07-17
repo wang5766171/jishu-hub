@@ -50,6 +50,7 @@ codex: fix(graph-editor): 修复节点选中态丢失问题
 ## 4. 不要做的事
 
 - **不要回滚自己不熟悉或归属不明的改动。** 禁止对不明确的改动使用 `git reset --hard`、`git checkout --`、`git restore`、`git revert`、`git stash drop`、`git clean -fd` 等会丢弃工作区内容的命令。仓库里可能存在其他智能体或用户正在进行的本地改动（典型如 `.gitignore`、`CLAUDE.md` 等配置文件），凡是不清楚来源与意图的改动一律保留；遇到冲突先向用户确认，绝不擅自"清理"工作区——一次错误的回滚就会把别人未提交的工作抹掉。
+- **不要提交已被 `.gitignore` 忽略的内容。** 提交前使用 `git check-ignore` 或 `git status --ignored` 核对目标；禁止使用 `git add -f` 绕过忽略规则。只有用户明确要求提交某个被忽略的文件时，才可对该指定文件例外处理。
 - 不要使用英文 message。
 - 不要省略 agent 前缀。
 - 不要把不相关的多个问题塞进同一个 commit。
