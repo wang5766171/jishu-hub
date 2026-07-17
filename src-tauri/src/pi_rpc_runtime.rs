@@ -313,9 +313,8 @@ async fn pi_rpc_connection_loop(
     // PhaseDivider arrives during agent_end. Buffer it and inject it as the
     // first content event of the next phase run.
     let mut pending_phase_divider: Option<NormalizedEvent> = None;
-    // Pi awaits extension agent_end handlers after the final turn_end. Those
-    // handlers can open an interaction and queue another run, so keep the GUI
-    // stream alive until agent_end declares the prompt operation settled.
+    // Pi may run awaited agent_end handlers and queue another core run after the
+    // final turn_end, so keep the GUI stream alive until agent_settled.
     let mut pending_turn_complete: Option<NormalizedEvent> = None;
 
     loop {
@@ -479,9 +478,9 @@ async fn pi_rpc_connection_loop(
                                     }
                                     "abort" => {
                                         log::info!("Pi RPC abort acknowledged");
-                                        // session.abort() responds only after awaited agent_end
-                                        // handlers settle. The agent_end branch has already
-                                        // emitted completion and advanced the local state.
+                                        // session.abort() responds after awaited agent_end
+                                        // handlers and emits agent_settled, which owns final
+                                        // completion and the local Idle transition.
                                         continue;
                                     }
                                     _ => {
@@ -616,19 +615,12 @@ async fn pi_rpc_connection_loop(
                         buf.extend(events);
 
                         if event_type == "agent_end" {
-                            let will_continue = msg
-                                .get("willContinue")
-                                .and_then(|value| value.as_bool())
-                                .unwrap_or(false);
-
-                            if will_continue && !matches!(state, LoopState::CancelPending { .. }) {
-                                pending_turn_complete = None;
-                                state = LoopState::Prompting;
-                                flush_buf(&emit, &session_id, &mut buf);
-                                last_flush = std::time::Instant::now();
-                                continue;
-                            }
-
+                            // v0.80.10 emits agent_settled only after retries,
+                            // compaction recovery, and queued continuations are exhausted.
+                            // agent_end is therefore a per-core-run boundary only.
+                            flush_buf(&emit, &session_id, &mut buf);
+                            last_flush = std::time::Instant::now();
+                        } else if pi_prompt_is_settled(event_type) {
                             if matches!(state, LoopState::CancelPending { .. }) {
                                 pending_turn_complete = Some(NormalizedEvent::TurnComplete {
                                     reason: TurnEndReason::Aborted,
@@ -1068,6 +1060,10 @@ fn convert_extension_ui_request(msg: &serde_json::Value) -> Option<NormalizedEve
     }
 }
 
+fn pi_prompt_is_settled(event_type: &str) -> bool {
+    event_type == "agent_settled"
+}
+
 fn flush_buf(emit: &AcpEventEmit, session_id: &str, buf: &mut Vec<NormalizedEvent>) {
     if buf.is_empty() {
         return;
@@ -1079,6 +1075,13 @@ fn flush_buf(emit: &AcpEventEmit, session_id: &str, buf: &mut Vec<NormalizedEven
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waits_for_agent_settled_before_completing_prompt() {
+        assert!(!pi_prompt_is_settled("agent_end"));
+        assert!(!pi_prompt_is_settled("turn_end"));
+        assert!(pi_prompt_is_settled("agent_settled"));
+    }
 
     #[test]
     fn ignores_request_user_input_tool_start_until_extension_ui_request_arrives() {
@@ -1223,6 +1226,32 @@ mod tests {
                 assert_eq!(origin, InteractionOrigin::ExtensionUi);
                 assert_eq!(delivery_hint, InteractionDeliveryHint::MidTurn);
                 assert!(correlation.is_none());
+            }
+            _ => panic!("expected InteractionRequest"),
+        }
+    }
+
+    #[test]
+    fn converts_extension_ui_multi_select_to_interaction_request() {
+        let event = convert_extension_ui_request(&json!({
+            "type": "extension_ui_request",
+            "id": "req-multi-1",
+            "method": "multiSelect",
+            "title": "选择功能",
+            "options": ["登录", "注册"]
+        }))
+        .expect("multiSelect should convert");
+
+        match event {
+            NormalizedEvent::InteractionRequest {
+                request_id,
+                options,
+                allow_multiple,
+                ..
+            } => {
+                assert_eq!(request_id, "req-multi-1");
+                assert_eq!(options.len(), 2);
+                assert!(allow_multiple);
             }
             _ => panic!("expected InteractionRequest"),
         }
