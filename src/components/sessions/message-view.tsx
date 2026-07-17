@@ -652,7 +652,13 @@ export const MessageView = memo(function MessageView({
   const fullMessageList = (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
       {rows.map((row) => (
-        <div key={rowKey(row, messages)} style={ROW_STYLE}>{renderRow(row)}</div>
+        <div
+          key={rowKey(row, messages)}
+          data-user-message={row.kind === "user" ? "true" : undefined}
+          style={ROW_STYLE}
+        >
+          {renderRow(row)}
+        </div>
       ))}
     </div>
   );

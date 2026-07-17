@@ -366,6 +366,7 @@ export function ChatPage({
   }, []);
 
   const messageAreaRef = useRef<HTMLDivElement>(null);
+  const [isUserMessageAbove, setIsUserMessageAbove] = useState(false);
   const activeIdRef = useRef<string | null>(activeId);
   const taskLaunchOpenRef = useRef(taskLaunchOpen);
   const taskLaunchPhaseRef = useRef<TaskLaunchPhase>(taskLaunchPhase);
@@ -933,10 +934,29 @@ export function ChatPage({
     if (!el) return;
     const onScroll = () => {
       setIsAwayFromBottom(el.scrollHeight - el.scrollTop - el.clientHeight > 100);
+      const containerTop = el.getBoundingClientRect().top;
+      const hasUserMessageAbove = Array.from(
+        el.querySelectorAll<HTMLElement>('[data-user-message="true"]'),
+      ).some((message) => message.getBoundingClientRect().top < containerTop - 1);
+      setIsUserMessageAbove(hasUserMessageAbove);
     };
+    onScroll();
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
-  }, [selectedSession]);
+  }, [selectedSession, sessionMessages]);
+
+  const handleScrollToPreviousUserMessage = useCallback(() => {
+    const el = messageAreaRef.current;
+    if (!el) return;
+    const containerTop = el.getBoundingClientRect().top;
+    const previousMessages = Array.from(
+      el.querySelectorAll<HTMLElement>('[data-user-message="true"]'),
+    ).filter((message) => message.getBoundingClientRect().top < containerTop - 1);
+    const target = previousMessages[previousMessages.length - 1];
+    if (!target) return;
+    const top = el.scrollTop + target.getBoundingClientRect().top - containerTop;
+    el.scrollTo({ top, behavior: "smooth" });
+  }, []);
 
   const handleScrollToBottom = useCallback(() => {
     if (messageAreaRef.current) {
@@ -2240,12 +2260,6 @@ export function ChatPage({
           // immediately. Otherwise the cache will be used the next time they
           // switch back to this session (without a JSONL reload).
           const viewed = selectedSessionRef.current;
-          const scrollEl = messageAreaRef.current;
-          const shouldStickToBottom = Boolean(
-            scrollEl
-            && (viewed === cid || viewed === finalKey)
-            && scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 120
-          );
           if (viewed === cid || viewed === finalKey) {
             setSessionMessages(updated);
           }
@@ -2449,9 +2463,6 @@ export function ChatPage({
           }
 
           requestAnimationFrame(() => {
-            if (shouldStickToBottom && messageAreaRef.current) {
-              messageAreaRef.current.scrollTop = messageAreaRef.current.scrollHeight;
-            }
             chatInputRef.current?.focus();
           });
         }
@@ -3219,7 +3230,8 @@ export function ChatPage({
               </>
             ) : null}
               {/* Messages */}
-              <div ref={messageAreaRef} className="flex-1 min-h-0 overflow-y-auto">
+              <div className="relative flex-1 min-h-0">
+                <div ref={messageAreaRef} className="h-full overflow-y-auto">
                 {selectedSession && selectedSession !== "new" && (
                   <MessageView
                     messages={sessionMessages}
@@ -3254,7 +3266,7 @@ export function ChatPage({
                   inline. The remaining (not-yet-injected) guides stay here until
                   the turn completes, at which point turn_complete commits them
                   into sessionMessages and drops them from this list. */}
-              {(() => {
+                {(() => {
                 if (!selectedSession || selectedSession === "new") return null;
                 const steerInjectedCount = currentStream?.steerTexts?.length ?? 0;
                 const visible = pendingSteerDisplay.slice(steerInjectedCount);
@@ -3264,7 +3276,11 @@ export function ChatPage({
                     {visible.map((msg, i) => {
                       const text = msg.content.find((c) => c.type === "text")?.text ?? "";
                       return (
-                        <div key={`pending-steer-${steerInjectedCount + i}`} className="w-full flex justify-end">
+                        <div
+                          key={`pending-steer-${steerInjectedCount + i}`}
+                          className="w-full flex justify-end"
+                          data-user-message="true"
+                        >
                           <div className="max-w-[88%] min-w-0 flex flex-col items-end">
                             <div className="flex items-center gap-2 mb-0.5 text-[11px]">
                               <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>
@@ -3286,7 +3302,17 @@ export function ChatPage({
                   </div>
                 );
               })()}
-            </div>
+                </div>
+                {isUserMessageAbove ? (
+                  <button
+                    onClick={handleScrollToPreviousUserMessage}
+                    className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-border/40 bg-background/80 text-muted-foreground shadow-sm backdrop-blur-sm transition-all hover:bg-accent hover:text-foreground hover:border-border/60 hover:shadow-md opacity-60 hover:opacity-100"
+                    title={t("sessions.scrollToPreviousUserMessage")}
+                  >
+                    <ChevronUp className="h-4 w-4" strokeWidth={2.5} />
+                  </button>
+                ) : null}
+              </div>
           </>
         )}
         {/* Unified ChatInput — rendered in ONE React element position across

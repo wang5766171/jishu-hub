@@ -224,7 +224,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
       {/* User message bubble */}
       {resolvedUserMessage && (
-        <div className="w-full flex justify-end">
+        <div className="w-full flex justify-end" data-user-message="true">
           <div className="max-w-[88%] min-w-0 flex flex-col items-end">
             <div className="flex items-center gap-2 mb-0.5 text-[11px]">
               <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>
@@ -434,7 +434,7 @@ function StepStatusIcon({ kind }: { kind: string }) {
 function UserBubble({ text, guided }: { text: string; guided?: boolean }) {
   const { t } = useTranslation();
   return (
-    <div className="w-full flex justify-end">
+    <div className="w-full flex justify-end" data-user-message="true">
       <div className="max-w-[88%] min-w-0 flex flex-col items-end">
         <div className="flex items-center gap-2 mb-0.5 text-[11px]">
           <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>

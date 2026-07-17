@@ -152,6 +152,7 @@
     "matches": "matches",
     "previousMatch": "Previous match",
     "nextMatch": "Next match",
+    "scrollToPreviousUserMessage": "Go to the previous user message",
     "expand": "Expand",
     "collapse": "Collapse",
     "copy": "Copy",

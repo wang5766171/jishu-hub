@@ -57,4 +57,23 @@ describe("MessageView interaction rendering", () => {
     expect(scope.getAllByText("Question 2")).toHaveLength(1);
     expect(scope.getAllByText("Answer 2")).toHaveLength(1);
   });
+
+  it("marks user rows as scroll navigation targets", () => {
+    const messages: Message[] = [
+      {
+        role: "user",
+        timestamp: null,
+        content: [{ type: "text", text: "First question" }],
+      },
+      {
+        role: "assistant",
+        timestamp: null,
+        content: [{ type: "text", text: "Answer" }],
+      },
+    ];
+
+    const { container } = render(<MessageView messages={messages} flat />);
+
+    expect(container.querySelectorAll('[data-user-message="true"]')).toHaveLength(1);
+  });
 });
