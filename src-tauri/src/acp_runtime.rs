@@ -2284,6 +2284,7 @@ mod tests {
                     field_name: "f0".to_string(),
                     prompt: "prompt".to_string(),
                     options: vec![],
+                    is_multi_select: false,
                 }],
                 current_index: 0,
                 answers: serde_json::Map::new(),

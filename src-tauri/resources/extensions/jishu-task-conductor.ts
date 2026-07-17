@@ -1,15 +1,15 @@
 /**
  * jishu-task-conductor — Pi 扩展，驱动 discuss→plan→execute 三阶段工作流。
- *
- * Phase 1 步骤 1+2：骨架 + 结构化工具 + agent_end 关卡 + 阶段推进。
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 
-// ── 类型 ──
 type Phase = "idle" | "discuss" | "plan" | "execute" | "done";
 type Domain = "dev" | "research";
 type SkillPhase = "discuss" | "plan" | "execute";
@@ -24,7 +24,48 @@ interface Step {
   status: "pending" | "done" | "skipped";
 }
 
+interface RequirementCandidate {
+  kind: "requirements";
+  id: string;
+  revision: number;
+  title: string;
+  goal: string;
+  scope: string;
+  out_scope?: string;
+  constraints?: string;
+  acceptance: string;
+  assumptions?: string;
+  markdown: string;
+}
+
+interface PlanNode {
+  id: string;
+  title: string;
+  responsibility: string;
+  depends_on: string[];
+  acceptance?: string;
+  role?: string;
+}
+
+interface PlanCandidate {
+  kind: "plan";
+  id: string;
+  revision: number;
+  generatedAt: number;
+  nodes: PlanNode[];
+  markdown: string;
+}
+
+type Candidate = RequirementCandidate | PlanCandidate;
+
+interface PendingConfirmation {
+  id: string;
+  kind: "requirements-to-plan" | "plan-to-execute";
+  candidateId: string;
+}
+
 interface ConductorState {
+  schemaVersion: 3;
   domain: Domain;
   phase: Phase;
   goal: string;
@@ -34,23 +75,42 @@ interface ConductorState {
     flowPlanMd?: string;
     flowPlanJson?: string;
   };
+  candidate?: Candidate;
+  pendingConfirmation?: PendingConfirmation;
+  revisionInstruction?: string;
   steps: Step[];
 }
 
-// ── 常量 ──
-const DOMAINS: Domain[] = ["dev"]; // Phase 6 再开 research
+const DOMAINS: Domain[] = ["dev"];
+const PLAN_ROLES = new Set([
+  "developer",
+  "tester",
+  "architect",
+  "reviewer",
+  "researcher",
+]);
 
 const PHASE_ALLOWED_TOOLS: Partial<Record<Phase, string[]>> = {
-  discuss: ["read", "grep", "find", "ls", "lock_requirement", "request_user_input"],
+  discuss: [
+    "read",
+    "grep",
+    "find",
+    "ls",
+    "lock_requirement",
+    "request_user_input",
+  ],
   plan: ["read", "grep", "find", "ls", "commit_plan", "request_user_input"],
   execute: ["read", "bash", "edit", "write", "grep", "find", "ls"],
 };
 
 const SKILLS_DIR =
   process.env.JISHU_CONDUCTOR_SKILLS_DIR ||
-  join(process.env.HOME || process.env.USERPROFILE || "~", ".jishu-agent", "skills");
+  join(
+    process.env.HOME || process.env.USERPROFILE || "~",
+    ".jishu-agent",
+    "skills",
+  );
 
-// ── 辅助 ──
 function loadSkill(domain: Domain, phase: SkillPhase): string {
   try {
     return readFileSync(
@@ -78,32 +138,146 @@ function phaseDiscipline(phase: Phase): string {
     idle: "",
     discuss: [
       "⚠️⚠️⚠️【CRITICAL DISCIPLINE REDLINE - 需求讨论阶段】⚠️⚠️⚠️",
-      "1. 你的唯一目标是澄清并收敛需求，最后调用 lock_requirement 提交需求终稿。",
-      "2. 🚫 绝对禁止提供任何具体的技术实现方案、严禁编写或设计代码结构、严禁在回复中输出任何代码片段（即便是为了演示）。如果用户要求输出代码，你必须予以拒绝，并解释必须先澄清并锁定需求。",
-      "3. 🚫 绝对禁止询问用户是否要开始编写代码，当前阶段只做澄清需求。",
-      "4. 你在此阶段没有 edit/write/bash 工具，不要尝试写文件或运行系统命令。",
+      "1. 你的唯一目标是逐步澄清并收敛需求；每轮只问一个核心问题。",
+      "2. 🚫 绝对禁止提供具体技术实现、代码结构或代码片段。",
+      "3. 需求明确后调用 lock_requirement 提交候选需求；最终转场由 Conductor 问答卡片确认。",
+      "4. 你在此阶段没有 edit/write/bash 工具。",
     ].join("\n"),
     plan: [
       "⚠️⚠️⚠️【CRITICAL DISCIPLINE REDLINE - 流程规划阶段】⚠️⚠️⚠️",
-      "1. 你的唯一目标是基于上一阶段确定的 REQUIREMENTS.md，设计任务节点方案并调用 commit_plan 工具提交提案。",
-      "2. 🚫 绝对禁止在此阶段询问用户是否开始实现，你也绝对无权开始实现！你的工作在调用 commit_plan 提交那一刻就立即结束并等待。",
-      "3. 🚫 绝对禁止编写、修改或输出任何具体的业务代码，也绝对禁止开始执行任何具体的任务节点。",
-      "4. 🚫 绝对禁止在此阶段询问用户是否要启用 write/edit 等工具。你的工具白名单被严格限定在只读和提交计划上。",
+      "1. 你的唯一目标是基于已确认的 REQUIREMENTS.md 设计任务节点方案。",
+      "2. 如有真实缺口，每轮只澄清一个问题；方案明确后调用 commit_plan 提交候选。",
+      "3. 🚫 绝对禁止开始实现或输出业务代码。最终转场由 Conductor 问答卡片确认。",
     ].join("\n"),
     execute: [
       "⚠️⚠️⚠️【CRITICAL DISCIPLINE REDLINE - 流程执行阶段】⚠️⚠️⚠️",
-      "1. 按照流程规划中的节点顺序依次执行，每个节点执行完毕前严禁跳过或并行处理其他未完成的节点。",
-      "2. 此时你可以使用 write/edit/bash 等工具编写代码、进行测试。请以高标准完成实现并满足验收标准。",
-      "3. 每执行完一个步骤（节点），你必须且只能在当前回复的末尾输出哨兵标记 `[STEP:<id> DONE]`（例如 `[STEP:node_1 DONE]`），通知 Conductor 步骤完成。严禁在步骤未完成时提前输出该标记。",
+      "1. 只能执行用户已确认并正式落盘的计划。",
+      "2. 按节点依赖和顺序执行，满足每个节点的验收标准。",
+      "3. 用户点击停止或要求暂停时立即停止。",
     ].join("\n"),
     done: "",
   };
   return rules[phase] ?? "";
 }
 
-// ── 扩展入口 ──
+function splitList(value: string): string[] {
+  return value
+    .split(";")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function renderRequirement(params: {
+  title: string;
+  goal: string;
+  scope: string;
+  out_scope?: string;
+  constraints?: string;
+  acceptance: string;
+  assumptions?: string;
+}): string {
+  const lines = [
+    `# ${params.title}`,
+    "",
+    "## 目标",
+    params.goal,
+    "",
+    "## 范围",
+    ...splitList(params.scope).map((item, index) => `${index + 1}. ${item}`),
+    "",
+  ];
+  if (params.out_scope) {
+    lines.push(
+      "## 范围外",
+      ...splitList(params.out_scope).map((item) => `- ${item}`),
+      "",
+    );
+  }
+  if (params.constraints) {
+    lines.push(
+      "## 约束条件",
+      ...splitList(params.constraints).map((item) => `- ${item}`),
+      "",
+    );
+  }
+  lines.push(
+    "## 验收标准",
+    ...splitList(params.acceptance).map(
+      (item, index) => `${index + 1}. ${item}`,
+    ),
+    "",
+  );
+  if (params.assumptions) {
+    lines.push(
+      "## 关键假设",
+      ...splitList(params.assumptions).map((item) => `- ${item}`),
+      "",
+    );
+  }
+  return lines.join("\n");
+}
+
+function renderPlan(nodes: PlanNode[]): string {
+  return [
+    "## 流程方案",
+    "",
+    `共 ${nodes.length} 个节点：`,
+    "",
+    ...nodes.map((node, index) => {
+      const dependency =
+        node.depends_on.length > 0
+          ? `（依赖：${node.depends_on.join(", ")}）`
+          : "（无依赖）";
+      const role = node.role ? ` [${node.role}]` : "";
+      const acceptance = node.acceptance
+        ? `\n   - 验收：${node.acceptance}`
+        : "";
+      return `${index + 1}. **${node.title}**${role}${dependency}\n   - 职责：${node.responsibility}${acceptance}`;
+    }),
+    "",
+    "---",
+    "",
+    "以上为候选计划，等待用户确认后进入执行。",
+  ].join("\n");
+}
+
+function validatePlan(nodes: PlanNode[]): void {
+  if (nodes.length === 0) throw new Error("计划至少需要一个节点");
+  const ids = new Set<string>();
+  for (const node of nodes) {
+    if (!node.id.trim() || !node.title.trim() || !node.responsibility.trim()) {
+      throw new Error("每个节点都必须包含 id、title 和 responsibility");
+    }
+    if (ids.has(node.id)) throw new Error(`节点 id 重复：${node.id}`);
+    if (node.role && !PLAN_ROLES.has(node.role))
+      throw new Error(`不支持的节点角色：${node.role}`);
+    ids.add(node.id);
+  }
+  for (const node of nodes) {
+    for (const dependency of node.depends_on) {
+      if (dependency === node.id)
+        throw new Error(`节点不能依赖自身：${node.id}`);
+      if (!ids.has(dependency))
+        throw new Error(`节点 ${node.id} 引用了不存在的依赖：${dependency}`);
+    }
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const visit = (id: string): void => {
+    if (visited.has(id)) return;
+    if (visiting.has(id)) throw new Error(`计划依赖存在环：${id}`);
+    visiting.add(id);
+    for (const dependency of byId.get(id)?.depends_on ?? []) visit(dependency);
+    visiting.delete(id);
+    visited.add(id);
+  };
+  for (const node of nodes) visit(node.id);
+}
+
 export default function conductorExtension(pi: ExtensionAPI): void {
   const state: ConductorState = {
+    schemaVersion: 3,
     domain: "dev",
     phase: "idle",
     goal: "",
@@ -111,15 +285,23 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     steps: [],
   };
   let toolsBeforeWorkflow: string[] | undefined;
+  let terminalStopReason: string | undefined;
+  let gateInFlight: string | undefined;
 
-  // ── 产物目录辅助 ──
+  const persist = (): void => {
+    pi.appendEntry("jishu-conductor", { ...state, toolsBeforeWorkflow });
+  };
+
   function artifactsDir(): string {
-    const cwd = process.cwd();
     const taskId = state.artifacts.taskId || "draft";
-    return join(cwd, ".jishu-hub", "tasks", taskId, "artifacts");
+    return join(process.cwd(), ".jishu-hub", "tasks", taskId, "artifacts");
   }
 
-  function writeArtifact(subdir: string, filename: string, content: string): string {
+  function writeArtifact(
+    subdir: string,
+    filename: string,
+    content: string,
+  ): string {
     const dir = join(artifactsDir(), subdir);
     mkdirSync(dir, { recursive: true });
     const fullPath = join(dir, filename);
@@ -127,358 +309,407 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     return fullPath;
   }
 
-  // ─── 结构化工具：lock_requirement（discuss→plan 提交需求）───
-  pi.registerTool({
-    name: "lock_requirement",
-    label: "锁定需求",
-    description: "提交结构化需求终稿，锁定后进入流程规划阶段。需求收敛后调用此工具。",
-    parameters: Type.Object({
-      title: Type.String({ description: "任务标题" }),
-      goal: Type.String({ description: "一句话目标" }),
-      scope: Type.String({ description: "范围（分号分隔）" }),
-      out_scope: Type.Optional(Type.String({ description: "范围外（分号分隔）" })),
-      constraints: Type.Optional(Type.String({ description: "约束条件（分号分隔）" })),
-      acceptance: Type.String({ description: "验收标准（分号分隔）" }),
-      assumptions: Type.Optional(Type.String({ description: "关键假设（分号分隔）" })),
-    }),
-    async execute(_id, params) {
-      const splitList = (v: string) => v.split(";").map((s) => s.trim()).filter(Boolean);
-      const md = [
-        `# ${params.title}`, "",
-        "## 目标", params.goal, "",
-        "## 范围",
-        ...splitList(params.scope).map((s, i) => `${i + 1}. ${s}`), "",
-      ];
-      if (params.out_scope) {
-        md.push("## 范围外", ...splitList(params.out_scope).map((s) => `- ${s}`), "");
-      }
-      if (params.constraints) {
-        md.push("## 约束条件", ...splitList(params.constraints).map((s) => `- ${s}`), "");
-      }
-      md.push("## 验收标准",
-        ...splitList(params.acceptance).map((s, i) => `${i + 1}. ${s}`), "");
-      if (params.assumptions) {
-        md.push("## 关键假设", ...splitList(params.assumptions).map((s) => `- ${s}`), "");
-      }
-      const content = md.join("\n");
-      const path = writeArtifact("requirements", "REQUIREMENTS.md", content);
-      state.artifacts.requirements = path;
-      persist();
-      const warningText = "\n\n⚠️⚠️⚠️【CRITICAL REDLINE - 需求讨论已锁定】⚠️⚠️⚠️\n"
-        + "需求终稿已锁！你已经处于转向进入【流程规划阶段】的过程中。根据阶段红线：\n"
-        + "1. 🚫 绝对禁止提供任何代码、具体的架构或技术实现。\n"
-        + "2. 🚫 绝对禁止问询用户其他需求，也不要继续回答任何问题。\n"
-        + "3. 必须立刻停止输出，结束当前回复，等待用户批准并开启流程规划阶段。";
-      return {
-        content: [{ type: "text" as const, text: `需求终稿已落盘：${path}\n\n${content}${warningText}` }],
-        details: { artifactPath: path },
-      };
-    },
-  });
-
-  // ─── 结构化工具：commit_plan（plan→execute 提交计划提案）───
-  pi.registerTool({
-    name: "commit_plan",
-    label: "提交计划",
-    description: "提交结构化流程计划提案，用户确认后进入执行阶段。流程方案稳定后调用此工具。",
-    parameters: Type.Object({
-      nodes: Type.Array(Type.Object({
-        id: Type.String({ description: "节点 id（如 node_1）" }),
-        title: Type.String({ description: "节点标题" }),
-        responsibility: Type.String({ description: "职责描述" }),
-        depends_on: Type.Array(Type.String(), { description: "前置依赖节点 id 列表" }),
-        acceptance: Type.Optional(Type.String({ description: "验收口径" })),
-        role: Type.Optional(Type.String({ description: "建议角色（developer/tester/architect）" })),
-      }), { description: "流程节点列表" }),
-    }),
-    async execute(_id, params) {
-      const plan = {
-        schema: "jishu-flow-plan-proposal/v1",
-        domain: state.domain,
-        goal: state.goal,
-        requirements_ref: state.artifacts.requirements
-          ? `artifact://requirements/REQUIREMENTS.md`
-          : undefined,
-        nodes: params.nodes,
-        generated_at: Date.now(),
-      };
-      const md = [
-        "## 流程方案", "",
-        `共 ${params.nodes.length} 个节点：`, "",
-        ...params.nodes.map((n, i) => {
-          const dep = n.depends_on.length > 0 ? `（依赖：${n.depends_on.join(", ")}）` : "（无依赖）";
-          const role = n.role ? ` [${n.role}]` : "";
-          return `${i + 1}. **${n.title}**${role}${dep}\n   - 职责：${n.responsibility}`;
-        }),
-        "", "---", "",
-        "以上为计划提案，等待用户确认后进入执行。",
-      ].join("\n");
-      const jsonPath = writeArtifact("planning", "flow-plan-proposal.json", JSON.stringify(plan, null, 2));
-      const mdPath = writeArtifact("planning", "flow-plan.md", md);
-      // manifest（实施计划 1.4：含 hash/task_id/phase/session/revision）
-      const crypto = await import("node:crypto");
-      const contentHash = crypto.createHash("sha256").update(JSON.stringify(plan)).digest("hex");
-      const manifest = {
-        artifact_id: "planning",
-        schema_version: "jishu-flow-plan-proposal/v1",
-        content_hash: `sha256:${contentHash}`,
-        generated_phase: "plan",
-        generated_session_id: "conductor",
-        task_id: state.artifacts.taskId ?? "draft",
-        skill_pack: `jishu-conductor-${state.domain}`,
-        linked_revision_id: null,
-      };
-      writeArtifact("planning", "manifest.json", JSON.stringify(manifest, null, 2));
-      state.artifacts.flowPlanJson = jsonPath;
-      state.artifacts.flowPlanMd = mdPath;
-      persist();
-      const warningText = "\n\n⚠️⚠️⚠️【CRITICAL REDLINE - 流程规划已提交】⚠️⚠️⚠️\n"
-        + "流程规划计划提案已成功提交！你目前处于转向进入【流程执行阶段】的过程中。根据阶段红线：\n"
-        + "1. 🚫 绝对禁止在当前会话中开始编写、演示或输出任何代码。\n"
-        + "2. 🚫 绝对禁止向用户询问“是否开始实现”或“开始做哪件事”。你无权擅自开始实现。\n"
-        + "3. 必须立刻停止输出，结束当前回复，等待用户批准并开启流程执行阶段。";
-      return {
-        content: [{ type: "text" as const, text: `计划提案已落盘：\n${mdPath}\n${jsonPath}\n\n${md}${warningText}` }],
-        details: { jsonPath, mdPath },
-      };
-    },
-  });
-
-  // ─── agent_end：人工关卡 + 阶段推进 ───
-  // agent_end 在正常完成和用户 abort 时都会触发，用 lastTurnEndedNormally 区分
-  // （turn_end 据 message.stopReason 置位：正常完成=true，abort=false）。
-  // abort 时跳过关卡、不推进阶段——这是「用户点停止后流程不会自行继续」的保障。
-  // 正常完成且关卡确认后，再用 sendMessage(triggerTurn:true) 自动驱动下一阶段 turn
-  // （discuss→plan→execute 衔接；before_agent_start 会注入对应 skill）。
-  let lastTurnEndedNormally = false;
-
-  pi.on("turn_start", async () => {
-    lastTurnEndedNormally = false;
-  });
-
-  pi.on("agent_end", async (_event, ctx) => {
-    // 诊断日志（排查 agent_end 是否触发、条件是否满足）
-    console.error(`[jishu-task-conductor] agent_end fired: phase=${state.phase} lastTurnEndedNormally=${lastTurnEndedNormally} requirements=${state.artifacts.requirements ?? "none"} flowPlanJson=${state.artifacts.flowPlanJson ?? "none"}`);
-    // 用户 abort（turn_end 没正常触发）→ 不弹确认，不推进
-    if (!lastTurnEndedNormally) {
-      console.error("[jishu-task-conductor] agent_end skipped: lastTurnEndedNormally=false");
-      return;
-    }
-
-    if (state.phase === "discuss" && state.artifacts.requirements) {
-      const choice = await ctx.ui.select(
-        "需求已锁定，是否进入流程规划？",
-        ["进入流程规划", "继续补充需求"],
-      );
-      if (choice?.startsWith("进入")) {
-        setPhase("plan", ctx);
-        // 阶段分隔 / 指令通过 ctx.ui.setStatus 生成 PhaseDivider（前端已对接）；
-        // 这里 sendMessage 仅作为驱动下一阶段 turn 的 prompt，deliverAs 非法值 "user" 改为省略
-        // （triggerTurn 路径下 deliverAs 仅 "nextTurn"/"followUp"/"steer" 有意义，此处忽略即可）。
-        pi.sendMessage(
-          {
-            customType: "jishu-conductor:phase-enter:plan",
-            display: true,
-            content: "进入流程规划阶段。读取需求终稿（" + (state.artifacts.requirements ?? "")
-              + "），设计任务节点方案。与用户讨论调整后，调用 commit_plan 工具提交。",
-          },
-          { triggerTurn: true },
-        );
-      } else {
-        state.artifacts.requirements = undefined;
-        persist();
-      }
-      return;
-    }
-
-    if (state.phase === "plan" && state.artifacts.flowPlanJson) {
-      const choice = await ctx.ui.select(
-        "计划提案已提交，是否进入执行？",
-        ["进入流程执行", "修改计划"],
-      );
-      if (choice?.startsWith("进入")) {
-        // 读取计划提案，初始化步骤列表
-        let plan: { nodes: Array<{ id: string; title: string; responsibility: string; acceptance?: string; depends_on: string[]; role?: string }> } | null = null;
-        try {
-          const raw = readFileSync(state.artifacts.flowPlanJson ?? "", "utf-8");
-          plan = JSON.parse(raw);
-        } catch {
-          ctx.ui.notify("无法读取计划提案，请重新提交", "warning");
-          state.artifacts.flowPlanJson = undefined;
-          persist();
-          return;
-        }
-        if (!plan?.nodes?.length) {
-          ctx.ui.notify("计划提案无节点，请重新提交", "warning");
-          return;
-        }
-        state.steps = plan.nodes.map((n) => ({
-          id: n.id,
-          title: n.title,
-          responsibility: n.responsibility ?? "",
-          acceptance: n.acceptance ?? "",
-          depends_on: n.depends_on ?? [],
-          role: n.role ?? "developer",
-          status: "pending" as const,
-        }));
-        setPhase("execute", ctx);
-        const stepList = state.steps
-          .map((s, i) => {
-            const dep = s.depends_on.length > 0 ? `（依赖：${s.depends_on.join(", ")}）` : "";
-            const acc = s.acceptance ? `\n   验收：${s.acceptance}` : "";
-            return `${i + 1}. [${s.id}] ${s.title} [${s.role}]${dep}\n   职责：${s.responsibility}${acc}`;
-          })
-          .join("\n");
-        ctx.ui.notify("进入执行阶段。共 " + state.steps.length + " 个节点。", "info");
-        // 一段式执行：单个 turn 内一口气执行完所有节点（不再逐节点 sendMessage 推进）。
-        // 这样 abort 走正常 stream 中断（anthropic-messages :379），不存在逐节点 followUp
-        // + signal 延迟导致的停止无效。fallback 是过渡态，简单优先。
-        // deliverAs 非法值 "user" 改为省略（triggerTurn 路径下无意义）。
-        pi.sendMessage(
-          {
-            customType: "jishu-conductor:phase-enter:execute",
-            display: true,
-            content: "进入流程执行阶段。按以下节点依次执行：\n" + stepList + "\n\n"
-              + "按顺序逐个完成。全部完成后简要报告产出。",
-          },
-          { triggerTurn: true },
-        );
-      } else {
-        state.artifacts.flowPlanJson = undefined;
-        state.artifacts.flowPlanMd = undefined;
-        persist();
-      }
-      return;
-    }
-  });
-
-  // ── turn_end：abort 检测 + execute 一段式收尾（turn 结束即 done）──
-  pi.on("turn_end", async (event, ctx) => {
-    // abort 检测：一段式单 turn 下 abort 走 stream 中断，ctx.signal.aborted可靠
-    const msg = event.message as { stopReason?: string };
-    const aborted = ctx.signal?.aborted === true || msg?.stopReason === "aborted";
-    lastTurnEndedNormally = !aborted;
-
-    // execute 一段式：单个 turn 依次执行完所有节点，turn 自然结束 = done。
-    // abort 时（lastTurnEndedNormally=false）不进 done。
-    if (state.phase !== "execute") return;
-    if (!lastTurnEndedNormally) return;
-    setPhase("done", ctx);
-    ctx.ui.notify("流程执行完成。共 " + state.steps.length + " 个节点。", "info");
-  });
-
-  const persist = (): void => {
-    pi.appendEntry("jishu-conductor", { ...state, toolsBeforeWorkflow });
-  };
-
   const phaseTag = (): string =>
     `jishu-conductor:phase:${state.domain}:${state.phase}`;
 
   function setPhase(phase: Phase, ctx: ExtensionContext): void {
     state.phase = phase;
     const allowed = PHASE_ALLOWED_TOOLS[phase];
-    if (allowed) {
-      pi.setActiveTools(allowed);
-    } else if (toolsBeforeWorkflow) {
-      pi.setActiveTools(toolsBeforeWorkflow);
-    }
-    // 发送结构化阶段标记：Pi RPC 转为 extension_ui_request(setStatus)，
-    // Hub 的 convert_extension_ui_request 识别后转为 PhaseDivider 事件，
-    // 前端渲染为分隔线。
+    if (allowed) pi.setActiveTools(allowed);
+    else if (toolsBeforeWorkflow) pi.setActiveTools(toolsBeforeWorkflow);
     ctx.ui.setStatus("jishu-conductor-phase", phase);
     persist();
   }
 
-  // ── 启动命令：/jishu-task <domain> <goal> ──
+  function queueRevision(kind: "requirements" | "plan", answer: string): void {
+    state.pendingConfirmation = undefined;
+    state.revisionInstruction = answer;
+    persist();
+    const baseline =
+      state.candidate?.kind === kind
+        ? kind === "requirements"
+          ? state.candidate.markdown
+          : state.candidate.markdown
+        : "";
+    const label = kind === "requirements" ? "需求" : "计划";
+    pi.sendMessage(
+      {
+        customType: `jishu-conductor:revise:${kind}`,
+        display: false,
+        content: [
+          `继续当前${label}阶段。`,
+          "以下是上一版候选基线，保留用户未明确否定的内容，只修改受补充影响的字段。",
+          baseline,
+          `用户补充：${answer}`,
+          kind === "requirements"
+            ? "修订完成后重新调用 lock_requirement，提交完整合并后的候选需求。"
+            : "修订完成后重新调用 commit_plan，提交完整合并后的候选计划。",
+        ].join("\n\n"),
+      },
+      { triggerTurn: true, deliverAs: "followUp" },
+    );
+  }
+
+  function acceptRequirements(
+    candidate: RequirementCandidate,
+    ctx: ExtensionContext,
+  ): void {
+    const path = writeArtifact(
+      "requirements",
+      "REQUIREMENTS.md",
+      candidate.markdown,
+    );
+    state.artifacts.requirements = path;
+    state.candidate = undefined;
+    state.pendingConfirmation = undefined;
+    state.revisionInstruction = undefined;
+    setPhase("plan", ctx);
+    pi.sendMessage(
+      {
+        customType: "jishu-conductor:phase-enter:plan",
+        display: true,
+        content: `进入流程规划阶段。读取需求终稿（${path}），逐步澄清流程缺口并设计任务节点方案；明确后调用 commit_plan。`,
+      },
+      { triggerTurn: true, deliverAs: "followUp" },
+    );
+  }
+
+  async function acceptPlan(
+    candidate: PlanCandidate,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    validatePlan(candidate.nodes);
+    const plan = {
+      schema: "jishu-flow-plan-proposal/v1",
+      domain: state.domain,
+      goal: state.goal,
+      requirements_ref: state.artifacts.requirements
+        ? "artifact://requirements/REQUIREMENTS.md"
+        : undefined,
+      nodes: candidate.nodes,
+      generated_at: candidate.generatedAt,
+    };
+    const json = JSON.stringify(plan, null, 2);
+    const jsonPath = writeArtifact("planning", "flow-plan-proposal.json", json);
+    const mdPath = writeArtifact(
+      "planning",
+      "flow-plan.md",
+      candidate.markdown,
+    );
+    const crypto = await import("node:crypto");
+    const contentHash = crypto.createHash("sha256").update(json).digest("hex");
+    writeArtifact(
+      "planning",
+      "manifest.json",
+      JSON.stringify(
+        {
+          artifact_id: "planning",
+          schema_version: "jishu-flow-plan-proposal/v1",
+          content_hash: `sha256:${contentHash}`,
+          generated_phase: "plan",
+          generated_session_id: "conductor",
+          task_id: state.artifacts.taskId ?? "draft",
+          skill_pack: `jishu-conductor-${state.domain}`,
+          linked_revision_id: null,
+        },
+        null,
+        2,
+      ),
+    );
+
+    state.artifacts.flowPlanJson = jsonPath;
+    state.artifacts.flowPlanMd = mdPath;
+    state.steps = candidate.nodes.map((node) => ({
+      id: node.id,
+      title: node.title,
+      responsibility: node.responsibility,
+      acceptance: node.acceptance ?? "",
+      depends_on: node.depends_on,
+      role: node.role ?? "developer",
+      status: "pending",
+    }));
+    state.candidate = undefined;
+    state.pendingConfirmation = undefined;
+    state.revisionInstruction = undefined;
+    setPhase("execute", ctx);
+
+    const stepList = state.steps
+      .map((step, index) => {
+        const dependency =
+          step.depends_on.length > 0
+            ? `（依赖：${step.depends_on.join(", ")}）`
+            : "";
+        const acceptance = step.acceptance
+          ? `\n   验收：${step.acceptance}`
+          : "";
+        return `${index + 1}. [${step.id}] ${step.title} [${step.role}]${dependency}\n   职责：${step.responsibility}${acceptance}`;
+      })
+      .join("\n");
+    pi.sendMessage(
+      {
+        customType: "jishu-conductor:phase-enter:execute",
+        display: true,
+        content: `进入流程执行阶段。按以下已确认节点依次执行：\n${stepList}\n\n全部完成后简要报告产出。`,
+      },
+      { triggerTurn: true, deliverAs: "followUp" },
+    );
+  }
+
+  pi.registerTool({
+    name: "lock_requirement",
+    label: "提交候选需求",
+    description: "提交结构化候选需求；用户确认进入规划后才写正式需求终稿。",
+    parameters: Type.Object({
+      title: Type.String({ description: "任务标题" }),
+      goal: Type.String({ description: "一句话目标" }),
+      scope: Type.String({ description: "范围（分号分隔）" }),
+      out_scope: Type.Optional(
+        Type.String({ description: "范围外（分号分隔）" }),
+      ),
+      constraints: Type.Optional(
+        Type.String({ description: "约束条件（分号分隔）" }),
+      ),
+      acceptance: Type.String({ description: "验收标准（分号分隔）" }),
+      assumptions: Type.Optional(
+        Type.String({ description: "关键假设（分号分隔）" }),
+      ),
+    }),
+    async execute(_id, params) {
+      const revision =
+        state.candidate?.kind === "requirements"
+          ? state.candidate.revision + 1
+          : 1;
+      const candidate: RequirementCandidate = {
+        kind: "requirements",
+        id: `requirements_${Date.now().toString(36)}_${revision}`,
+        revision,
+        ...params,
+        markdown: renderRequirement(params),
+      };
+      state.candidate = candidate;
+      state.pendingConfirmation = {
+        id: `gate_${Date.now().toString(36)}`,
+        kind: "requirements-to-plan",
+        candidateId: candidate.id,
+      };
+      state.revisionInstruction = undefined;
+      persist();
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `候选需求已准备（第 ${revision} 版），等待用户确认后写入正式终稿。\n\n${candidate.markdown}`,
+          },
+        ],
+        details: { candidateId: candidate.id, revision },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "commit_plan",
+    label: "提交候选计划",
+    description: "提交结构化候选计划；用户确认进入执行后才写正式计划文件。",
+    parameters: Type.Object({
+      nodes: Type.Array(
+        Type.Object({
+          id: Type.String({ description: "节点 id" }),
+          title: Type.String({ description: "节点标题" }),
+          responsibility: Type.String({ description: "职责描述" }),
+          depends_on: Type.Array(Type.String(), {
+            description: "前置依赖节点 id 列表",
+          }),
+          acceptance: Type.Optional(Type.String({ description: "验收口径" })),
+          role: Type.Optional(Type.String({ description: "建议角色" })),
+        }),
+      ),
+    }),
+    async execute(_id, params) {
+      validatePlan(params.nodes);
+      const revision =
+        state.candidate?.kind === "plan" ? state.candidate.revision + 1 : 1;
+      const candidate: PlanCandidate = {
+        kind: "plan",
+        id: `plan_${Date.now().toString(36)}_${revision}`,
+        revision,
+        generatedAt: Date.now(),
+        nodes: params.nodes,
+        markdown: renderPlan(params.nodes),
+      };
+      state.candidate = candidate;
+      state.pendingConfirmation = {
+        id: `gate_${Date.now().toString(36)}`,
+        kind: "plan-to-execute",
+        candidateId: candidate.id,
+      };
+      state.revisionInstruction = undefined;
+      persist();
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `候选计划已准备（第 ${revision} 版），等待用户确认后写入正式计划。\n\n${candidate.markdown}`,
+          },
+        ],
+        details: { candidateId: candidate.id, revision },
+      };
+    },
+  });
+
+  pi.on("agent_start", async () => {
+    terminalStopReason = undefined;
+  });
+
+  pi.on("turn_end", async (event, ctx) => {
+    const message = event.message as { stopReason?: string };
+    terminalStopReason =
+      ctx.signal?.aborted === true ? "aborted" : message.stopReason;
+    if (state.phase === "execute" && terminalStopReason === "stop") {
+      setPhase("done", ctx);
+      ctx.ui.notify(`流程执行完成。共 ${state.steps.length} 个节点。`, "info");
+    }
+  });
+
+  pi.on("agent_end", async (_event, ctx) => {
+    const gate = state.pendingConfirmation;
+    const candidate = state.candidate;
+    if (terminalStopReason !== "stop" || !gate || !candidate) return;
+    if (gate.candidateId !== candidate.id || gateInFlight === gate.id) return;
+
+    gateInFlight = gate.id;
+    try {
+      if (
+        gate.kind === "requirements-to-plan" &&
+        candidate.kind === "requirements"
+      ) {
+        const choice = await ctx.ui.select(
+          "候选需求已明确，是否进入流程规划？",
+          ["进入流程规划", "继续补充需求"],
+        );
+        if (choice === undefined) return;
+        if (choice === "进入流程规划") {
+          acceptRequirements(candidate, ctx);
+        } else {
+          queueRevision(
+            "requirements",
+            choice === "继续补充需求"
+              ? "请继续补充需求；只询问尚未明确或需要修改的一个维度。"
+              : choice,
+          );
+        }
+        return;
+      }
+
+      if (gate.kind === "plan-to-execute" && candidate.kind === "plan") {
+        const choice = await ctx.ui.select(
+          "候选计划已明确，是否进入流程执行？",
+          ["进入流程执行", "修改计划"],
+        );
+        if (choice === undefined) return;
+        if (choice === "进入流程执行") {
+          await acceptPlan(candidate, ctx);
+        } else {
+          queueRevision(
+            "plan",
+            choice === "修改计划"
+              ? "请继续修改计划；只询问尚未明确或需要修改的一个问题。"
+              : choice,
+          );
+        }
+      }
+    } finally {
+      gateInFlight = undefined;
+    }
+  });
+
   pi.registerCommand("jishu-task", {
-    description: "\u542f\u52a8\u4efb\u52a1\u5de5\u4f5c\u6d41\uff1a/jishu-task <dev|research> <\u9700\u6c42>",
+    description: "启动任务工作流：/jishu-task <dev|research> <需求>",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       const domainArg = parts[0] as Domain;
       if (!DOMAINS.includes(domainArg)) {
         ctx.ui.notify(
-          `\u672a\u77e5\u9886\u57df\uff1a${domainArg}\u3002\u652f\u6301\uff1a${DOMAINS.join(", ")}`,
+          `未知领域：${domainArg}。支持：${DOMAINS.join(", ")}`,
           "warning",
         );
         return;
       }
       const goal = parts.slice(1).join(" ").trim();
       if (!goal) {
-        ctx.ui.notify("请提供任务目标，例如：/jishu-task dev 实现一个登录功能", "warning");
+        ctx.ui.notify(
+          "请提供任务目标，例如：/jishu-task dev 实现一个登录功能",
+          "warning",
+        );
         return;
       }
       if (state.phase !== "idle") {
-        ctx.ui.notify("已有任务流程正在运行（当前：" + phaseDisplayName(state.phase) + "），请先完成或取消", "warning");
+        ctx.ui.notify(
+          `已有任务流程正在运行（当前：${phaseDisplayName(state.phase)}），请先完成或取消`,
+          "warning",
+        );
         return;
       }
       state.domain = domainArg;
       state.goal = goal;
       state.artifacts.taskId = `task_${Date.now().toString(36)}`;
-      if (!toolsBeforeWorkflow) {
-        toolsBeforeWorkflow = pi.getActiveTools();
-      }
+      if (!toolsBeforeWorkflow) toolsBeforeWorkflow = pi.getActiveTools();
       setPhase("discuss", ctx);
-      // slash command 本身不会写入会话历史：Pi 在 prompt() 中识别到以 "/" 开头会走
-      // _tryExecuteExtensionCommand，命中命令后直接 return，不会生成 user 消息。
-      // 因此必须显式补一条「真实用户消息」，否则会话关闭重进后看不到原始诉求。
-      //
-      // 关键修复：必须用 sendUserMessage，不能用 sendMessage(..., deliverAs:"user")。
-      // sendMessage 只能产生 role:"custom" 消息（deliverAs 合法值只有
-      // "steer"|"followUp"|"nextTurn"，"user" 会被忽略）。custom 消息虽写入 JSONL，
-      // 但 Hub 前端重载会话时不会把未知 customType 渲染成用户气泡，于是「原始问题消失」。
-      // sendUserMessage 生成 role:"user" 的标准消息，重载后正常以用户气泡呈现，且始终进入 LLM 上下文。
-      // 其内部走 prompt(expandPromptTemplates:false)，不会二次触发 /jishu-task 命令。
-      // discuss 方法论由 before_agent_start 注入，这里无需再带指令文本。
       pi.sendUserMessage(`/jishu-task ${args}`);
     },
   });
 
-  // ── before_agent_start：注入当前阶段方法论 ──
   pi.on("before_agent_start", async () => {
     if (state.phase === "idle" || state.phase === "done") return;
-    const skillPhase = state.phase as SkillPhase;
-    const skill = loadSkill(state.domain, skillPhase);
-    const discipline = phaseDiscipline(state.phase);
+    const skill = loadSkill(state.domain, state.phase as SkillPhase);
+    const revisionContext =
+      state.revisionInstruction && state.candidate
+        ? [
+            "[REVISION CONTEXT]",
+            `用户补充：${state.revisionInstruction}`,
+            "上一版候选基线：",
+            state.candidate.markdown,
+            "只修改受补充影响的内容，保留未被明确否定的字段；完成后提交完整替代候选。",
+          ].join("\n\n")
+        : "";
     return {
       message: {
         customType: phaseTag(),
         display: false,
-        content: `[JISHU-TASK:${state.domain}:${state.phase}] === ${phaseDisplayName(state.phase)} ===\n${skill}\n\n${discipline}`,
+        content: `[JISHU-TASK:${state.domain}:${state.phase}] === ${phaseDisplayName(state.phase)} ===\n${skill}\n\n${phaseDiscipline(state.phase)}${revisionContext ? `\n\n${revisionContext}` : ""}`,
       },
     };
   });
 
-  // ── context\uff1a\u8fc7\u6ee4\u975e\u5f53\u524d\u9636\u6bb5\u7684\u6ce8\u5165\u6d88\u606f ──
   pi.on("context", async (event) => {
     if (state.phase === "idle") return;
     const current = phaseTag();
     return {
-      messages: event.messages.filter((m) => {
-        const msg = m as AgentMessage & { customType?: string };
-        if (
-          msg.customType?.startsWith("jishu-conductor:phase:") &&
-          msg.customType !== current
-        ) {
-          return false;
-        }
-        return true;
+      messages: event.messages.filter((message) => {
+        const item = message as AgentMessage & { customType?: string };
+        return (
+          !item.customType?.startsWith("jishu-conductor:phase:") ||
+          item.customType === current
+        );
       }),
     };
   });
 
-  // ── session_start\uff1a\u6062\u590d\u72b6\u6001 ──
   pi.on("session_start", async (_event, ctx) => {
     type Entry = {
       type: string;
       customType?: string;
-      data?: ConductorState & { toolsBeforeWorkflow?: string[] };
+      data?: Partial<ConductorState> & { toolsBeforeWorkflow?: string[] };
     };
-    const entries = ctx.sessionManager.getEntries() as Entry[];
-    const last = entries
-      .filter((e) => e.type === "custom" && e.customType === "jishu-conductor")
+    const last = (ctx.sessionManager.getEntries() as Entry[])
+      .filter(
+        (entry) =>
+          entry.type === "custom" && entry.customType === "jishu-conductor",
+      )
       .pop();
     if (last?.data) {
-      Object.assign(state, last.data);
+      Object.assign(state, last.data, { schemaVersion: 3 });
+      state.artifacts ??= {};
+      state.steps ??= [];
       toolsBeforeWorkflow = last.data.toolsBeforeWorkflow;
     }
     if (state.phase !== "idle") {
@@ -487,12 +718,14 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     }
   });
 
-  // 工具门兜底：setActiveTools 可能因状态不同步而漏，再拦一层（评审 P1）
   pi.on("tool_call", async (event) => {
     const allowed = PHASE_ALLOWED_TOOLS[state.phase];
-    if (!allowed) return; // execute/idle/done 不限制
+    if (!allowed) return;
     if (!allowed.includes(event.toolName)) {
-      return { block: true, reason: `${state.phase} 阶段不允许 ${event.toolName}` };
+      return {
+        block: true,
+        reason: `${state.phase} 阶段不允许 ${event.toolName}`,
+      };
     }
   });
 }

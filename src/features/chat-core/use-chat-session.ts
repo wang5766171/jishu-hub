@@ -24,8 +24,17 @@ import type {
   AgentEventPayload,
   AgentStreamChunk,
   ChatSession,
+  ConversationInteractionRequest,
+  ConversationInteractionSubmission,
+  InteractionDeliveryHint,
+  InteractionOrigin,
+  InteractionTransport,
   Message,
 } from "@/types";
+import {
+  formatInteractionReply,
+  formatInteractionResponseValue,
+} from "@/lib/conversation-interaction";
 import { listen } from "@tauri-apps/api/event";
 import type {
   ChatSessionState,
@@ -94,6 +103,54 @@ function interactionFromEvent(event: unknown): PendingChatInteraction | null {
     allowCustomText: d.allow_custom_text ?? false,
     allowMultiple: d.allow_multiple ?? false,
     required: d.required ?? true,
+  };
+}
+
+function interactionTransport(value: string): InteractionTransport | undefined {
+  return ["unspecified", "pi_rpc", "acp_preferred", "codex_app_server", "cli", "embedded"]
+    .includes(value)
+    ? value as InteractionTransport
+    : undefined;
+}
+
+function interactionOrigin(value: string): InteractionOrigin | undefined {
+  return ["text", "extension_ui", "acp_elicitation", "codex_tool_request_user_input", "codex_mcp_approval", "codex_approval"]
+    .includes(value)
+    ? value as InteractionOrigin
+    : undefined;
+}
+
+function interactionDeliveryHint(
+  value: "follow_up" | "mid_turn" | null,
+): InteractionDeliveryHint | undefined {
+  return value ?? undefined;
+}
+
+function toConversationInteractionRequest(
+  interaction: PendingChatInteraction,
+): ConversationInteractionRequest {
+  return {
+    requestId: interaction.requestId,
+    prompt: interaction.prompt,
+    options: interaction.options,
+    allowMultiple: interaction.allowMultiple,
+    allowCustomText: interaction.allowCustomText,
+    required: interaction.required,
+    transport: interactionTransport(interaction.transport),
+    origin: interactionOrigin(interaction.origin),
+    deliveryHint: interactionDeliveryHint(interaction.deliveryHint),
+    correlation: null,
+  };
+}
+
+function toConversationInteractionSubmission(
+  requestId: string,
+  submission: InteractionSubmission,
+): ConversationInteractionSubmission {
+  return {
+    requestId,
+    selectedOptionIds: submission.selectedOptionIds,
+    customText: submission.customText ?? "",
   };
 }
 
@@ -231,7 +288,7 @@ export function useChatSession(options: UseChatSessionOptions): ChatSessionState
               continue;
             }
 
-            streamStore.push(chunk.session_id, chunk);
+            streamStore.pushTracked(chunk.session_id, chunk);
 
             // interaction_request → pendingInteractions
             const interaction = interactionFromEvent(chunk);
@@ -332,37 +389,66 @@ export function useChatSession(options: UseChatSessionOptions): ChatSessionState
   const respondInteraction = useCallback(
     async (submission: InteractionSubmission) => {
       if (readOnly) return;
-      // 取第一个待处理交互（同一时刻通常只有一个活跃交互）。
       const target = pendingInteractions[0];
       if (!target) return;
+
+      const request = toConversationInteractionRequest(target);
+      const normalizedSubmission = toConversationInteractionSubmission(
+        target.requestId,
+        submission,
+      );
+      const value = formatInteractionResponseValue(request, normalizedSubmission);
+      const checkpoint = streamStore.recordInteractionResponseWithCheckpoint(
+        sessionId,
+        target.requestId,
+        value,
+        submission.selectedOptionIds,
+      );
+      setPendingInteractions((prev) =>
+        prev.filter((item) => item.requestId !== target.requestId),
+      );
+
       try {
         const result = await invokeCommand<{ delivery: "mid_turn" | "follow_up" }>(
           "respond_chat_interaction",
           {
             sessionId,
             requestId: target.requestId,
-            value: submission,
+            value,
+            interaction: {
+              request_id: target.requestId,
+              prompt: target.prompt,
+              options: target.options.map((option) => ({
+                option_id: option.optionId,
+                label: option.label,
+                description: option.description ?? null,
+              })),
+              answer: value,
+              selected_options: submission.selectedOptionIds,
+              origin: target.origin || null,
+            },
             origin: target.origin,
           },
         );
-        // mid_turn：交互内联到当前流；follow_up：作为新消息发送（streamStore 已处理）
-        if (result?.delivery === "mid_turn") {
-          streamStore.recordInteractionResponse(
-            sessionId,
-            target.requestId,
-            submission.customText ?? "",
-            submission.selectedOptionIds,
-          );
-        } else {
+
+        if (result?.delivery === "follow_up") {
           streamStore.removeInteractionSplit(sessionId, target.requestId);
+          const reply = formatInteractionReply(request, normalizedSubmission).trim();
+          if (reply) await send(reply);
         }
-        setPendingInteractions((prev) => prev.filter((i) => i.requestId !== target.requestId));
         onInteractionSubmit?.(submission, target);
       } catch (err) {
+        streamStore.rollbackInteractionResponse(checkpoint);
+        setPendingInteractions((prev) =>
+          prev.some((item) => item.requestId === target.requestId)
+            ? prev
+            : [target, ...prev],
+        );
         console.error("useChatSession: respond_chat_interaction failed:", err);
+        throw err;
       }
     },
-    [readOnly, sessionId, pendingInteractions, onInteractionSubmit],
+    [readOnly, sessionId, pendingInteractions, onInteractionSubmit, send],
   );
 
   // ── 审批决策 ──

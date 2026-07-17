@@ -119,6 +119,22 @@
 
 # 第二部分：改动记录
 
+## 2026-07-16 | AgentSession RPC 暴露 queued continuation 状态
+
+**背景**：Task Conductor 在 awaited `agent_end` 扩展处理器内等待用户确认，并可用 `sendMessage(triggerTurn)` 排入下一阶段。Pi 原有 RPC 事件只暴露 `willRetry`，Hub 无法区分“本次 core run 已结束”与“扩展已排入 continuation”，导致 Hub 在 `turn_end` 提前结束 GUI stream、后续停止无效且确认卡片/阶段标记丢失。
+
+**改动（最小附加字段，不修改上游 AgentEvent）**：
+
+| 文件 | 改动 |
+|------|------|
+| `packages/coding-agent/src/core/agent-session.ts` | 在 `AgentSessionEvent.agent_end` 增加可选 `willContinue`；awaited extension handler 返回后，以 `willRetry || agent.hasQueuedMessages()` 计算并发送。旧消费者与测试夹具可继续省略该字段。 |
+
+**主仓配套**：`pi_rpc_runtime.rs` 缓存最终 `TurnComplete`，以 `agent_end.willContinue` 判断是否继续保持 `Prompting`；仅最后一个 core run 的 `agent_end` 向 GUI发完成事件。取消等待中的 extension UI 时，先回 `cancelled` 释放 Promise，再发 Pi abort。
+
+**验证**：修改后的 Pi bundle 已在主仓构建流程中成功编译；主仓 `cargo check`、`pi_rpc_runtime::tests` 通过。Pi 子模块独立 `tsc` 受当前环境 TypeScript 版本不支持 `erasableSyntaxOnly` 及 workspace 依赖未安装影响，未作为有效验证口径。
+
+---
+
 ## 合并上游 v0.80.2（落地第8版，release_v0.80.2-8）
 
 ### 2026-06-24 | 合并上游 v0.80.2 并落地第8版

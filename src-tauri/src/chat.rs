@@ -370,6 +370,7 @@ pub async fn respond_chat_interaction(
     session_id: String,
     request_id: String,
     value: String,
+    interaction: Option<serde_json::Value>,
     // Origin/protocol channel of the interaction being answered. Optional for
     // backward compatibility with older frontends; defaults to the generic
     // text channel (which resolves to follow-up unless overridden by transport).
@@ -409,11 +410,29 @@ pub async fn respond_chat_interaction(
     };
 
     let origin = origin.unwrap_or_default();
+    let persist_with_session_adapter = transport == crate::agent::TransportSurface::PiRpc;
     let delivery = crate::agent::interaction::delivery_for_runtime(
         transport,
         origin,
         supports_interaction_mid_turn,
     );
+
+    let persist_answer = || -> Result<(), String> {
+        if !persist_with_session_adapter {
+            return Ok(());
+        }
+        let Some(interaction) = interaction.clone() else {
+            return Ok(());
+        };
+        let app_state = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        let agent = app_state
+            .registry
+            .get(&agent_id)
+            .ok_or_else(|| format!("Agent adapter not found: {agent_id}"))?;
+        agent.persist_interaction_blocks(None, Some(&session_id), None, vec![interaction])
+    };
 
     match delivery {
         crate::agent::interaction::InteractionDelivery::MidTurn => {
@@ -423,6 +442,13 @@ pub async fn respond_chat_interaction(
             // entry point each runtime implements.
             if let Some(acp) = acp {
                 acp.respond_to_input(request_id, value).await?;
+            }
+            if let Err(error) = persist_answer() {
+                log::warn!(
+                    "interaction answer delivered but immediate persistence failed for session {}: {}",
+                    session_id,
+                    error
+                );
             }
             Ok(
                 crate::agent::interaction::InteractionResponseDto::from_delivery(

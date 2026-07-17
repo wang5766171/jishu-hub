@@ -1878,33 +1878,6 @@ export function ChatPage({
           });
         }
 
-        // Only push into the store if it knows about this session — otherwise
-        // we'd accidentally create state for a session we never started. The
-        // one exception is a steer/follow_up continuation: Pi finishes the
-        // current turn (which drops the streaming state at turn_complete
-        // below), then starts a NEW turn for the queued steer/follow_up. That
-        // new turn's content chunks arrive AFTER the drop, so without this
-        // re-activation they'd be silently discarded and the agent's response
-        // to the steer would be invisible until a manual refresh. Re-start an
-        // empty state (pendingUserMessage=null — a continuation, not a new
-        // prompt) so the continuation's text/tool events accumulate and its
-        // turn_complete builds a second assistant message appended after the
-        // first. Non-content chunks (session_resolved/approval/interaction)
-        // still skip — they must not create streaming state on their own.
-        if (!streamStore.hasState(cid)) {
-          if (
-            chunk.data.kind === "text_delta"
-            || chunk.data.kind === "thinking"
-            || chunk.data.kind === "tool_use_start"
-            || chunk.data.kind === "tool_use_result"
-            || chunk.data.kind === "message"
-          ) {
-            streamStore.start(cid, null);
-          } else {
-            continue;
-          }
-        }
-
         // Detect resolved session id and register it as an alias before pushing
         // (so subsequent chunks under the real id route to the same entry).
         const realId = extractRealSessionId(chunk.data);
@@ -1968,7 +1941,12 @@ export function ChatPage({
           }
         }
 
-        streamStore.push(cid, chunk);
+        // Phase dividers and interaction requests may legitimately arrive after
+        // a prior run's stream state was dropped; lifecycle-only events may not
+        // create an empty continuation stream.
+        if (!streamStore.pushTracked(cid, chunk)) {
+          continue;
+        }
 
         if (chunk.data.kind === "turn_complete") {
           // Build final assistant/user messages from the accumulated state.
@@ -2518,6 +2496,12 @@ export function ChatPage({
       && item.sessionId === interaction.sessionId
       && item.request.requestId === submission.requestId;
     const value = formatInteractionResponseValue(interaction.request, submission);
+    const checkpoint = streamStore.recordInteractionResponseWithCheckpoint(
+      interaction.sessionId,
+      submission.requestId,
+      value,
+      submission.selectedOptionIds,
+    );
     const restorePending = () =>
       setPendingInteractions((current) =>
         current.some(matchesInteraction) ? current : [...current, interaction],
@@ -2535,9 +2519,22 @@ export function ChatPage({
         sessionId: interaction.sessionId,
         requestId: submission.requestId,
         value,
+        interaction: {
+          request_id: submission.requestId,
+          prompt: interaction.request.prompt,
+          options: interaction.request.options.map((option) => ({
+            option_id: option.optionId,
+            label: option.label,
+            description: option.description ?? null,
+          })),
+          answer: value,
+          selected_options: submission.selectedOptionIds,
+          origin: interaction.request.origin ?? null,
+        },
         origin: interaction.request.origin,
       });
     } catch (error) {
+      streamStore.rollbackInteractionResponse(checkpoint);
       restorePending();
       throw error;
     }
@@ -2545,17 +2542,8 @@ export function ChatPage({
     const delivery = result?.delivery ?? "follow_up";
 
     if (delivery === "mid_turn") {
-      // Mid-turn write-back succeeded: interleave the answer into the running
-      // turn at the request's insertion point (PiRpc production baseline, and
-      // codex/ACP elicit once those runtimes land).
-      if (value.trim()) {
-        streamStore.recordInteractionResponse(
-          interaction.sessionId,
-          submission.requestId,
-          value,
-          submission.selectedOptionIds,
-        );
-      }
+      // The answer was recorded before IPC so a TurnComplete released by the
+      // extension_ui_response cannot commit an unanswered interaction.
       return;
     }
 

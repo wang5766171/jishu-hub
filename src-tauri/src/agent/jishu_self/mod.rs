@@ -248,6 +248,20 @@ impl SessionAdapter for JishuSelfAgent {
         pi_session::load_pi_session_messages(session_id, encoded_name)
     }
 
+    fn persist_interaction_blocks(
+        &self,
+        _session_path: Option<&str>,
+        session_id: Option<&str>,
+        _encoded_name: Option<&str>,
+        interactions: Vec<serde_json::Value>,
+    ) -> Result<(), String> {
+        let session_id = session_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Pi interaction persistence requires a session id".to_string())?;
+        pi_session::persist_pi_interaction_blocks(session_id, interactions)
+    }
+
     fn load_history(&self) -> Vec<crate::history::HistoryEntry> {
         Vec::new()
     }
@@ -517,7 +531,6 @@ impl TransportAdapter for JishuSelfAgent {
         if let Some(dir) = pi_agent_dir() {
             envs.push(("PI_CODING_AGENT_DIR".to_string(), dir));
         }
-
 
         // Always resolve the CLI explicitly for spawned Pi processes. Debug
         // resolves to target/debug/jishu-cli(.exe); installed builds resolve

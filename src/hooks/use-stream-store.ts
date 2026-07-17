@@ -103,6 +103,21 @@ function emptyState(abortKey: string, pendingUserMessage: string | null): Sessio
   };
 }
 
+export interface InteractionResponseCheckpoint {
+  key: string;
+  interactionSplits: InteractionSplit[];
+}
+
+function canStartContinuationStream(chunk: StreamChunk): boolean {
+  return chunk.data.kind === "text_delta"
+    || chunk.data.kind === "thinking"
+    || chunk.data.kind === "tool_use_start"
+    || chunk.data.kind === "tool_use_result"
+    || chunk.data.kind === "message"
+    || chunk.data.kind === "phase_divider"
+    || chunk.data.kind === "interaction_request";
+}
+
 class StreamStore {
   /** Canonical key -> state. */
   private sessions = new Map<string, SessionStreamState>();
@@ -134,6 +149,17 @@ class StreamStore {
     const key = this.canonical(canonicalId);
     this.aliases.set(otherId, key);
     this.aliases.set(canonicalId, key);
+  }
+
+  /** Push only events that belong to an existing stream or can start a
+   *  continuation. Lifecycle-only events must not create empty streaming state. */
+  pushTracked(sid: string, chunk: StreamChunk): boolean {
+    if (!this.hasState(sid)) {
+      if (!canStartContinuationStream(chunk)) return false;
+      this.start(sid, null);
+    }
+    this.push(sid, chunk);
+    return true;
   }
 
   /** Push a chunk into the appropriate per-session buffer. */
@@ -226,9 +252,17 @@ class StreamStore {
       }
     } else if (data.kind === "phase_divider") {
       // Phase transition divider — push as a content block so it renders
-      // inline in the message stream at the position it occurred.
+      // inline in the message stream at the position it occurred. setStatus
+      // and explicit phase-enter can report the same boundary consecutively.
       content = freezeLastBlock(content);
-      content = [...content, { type: "phase_divider" as const, phase: data.phase, title: data.title }];
+      const last = content[content.length - 1];
+      if (
+        last?.type !== "phase_divider"
+        || last.phase !== data.phase
+        || last.title !== data.title
+      ) {
+        content = [...content, { type: "phase_divider" as const, phase: data.phase, title: data.title }];
+      }
       this.conductorPhases.set(key, data.phase);
     } else if (data.kind === "interaction_request") {
       if (!interactionSplits.some((item) => item.requestId === data.request_id)) {
@@ -281,15 +315,15 @@ class StreamStore {
     this.scheduleFlush();
   }
 
-  recordInteractionResponse(
+  recordInteractionResponseWithCheckpoint(
     sid: string,
     requestId: string,
     text: string,
     selectedOptions: string[] = [],
-  ): boolean {
+  ): InteractionResponseCheckpoint | null {
     const key = this.canonical(sid);
     const prev = this.sessions.get(key);
-    if (!prev) return false;
+    if (!prev) return null;
 
     let found = false;
     const interactionSplits = prev.interactionSplits.map((item) => {
@@ -297,9 +331,36 @@ class StreamStore {
       found = true;
       return { ...item, text, selectedOptions };
     });
-    if (!found) return false;
+    if (!found) return null;
 
+    const checkpoint = { key, interactionSplits: prev.interactionSplits };
     this.sessions.set(key, { ...prev, interactionSplits });
+    this.scheduleFlush();
+    return checkpoint;
+  }
+
+  recordInteractionResponse(
+    sid: string,
+    requestId: string,
+    text: string,
+    selectedOptions: string[] = [],
+  ): boolean {
+    return this.recordInteractionResponseWithCheckpoint(
+      sid,
+      requestId,
+      text,
+      selectedOptions,
+    ) !== null;
+  }
+
+  rollbackInteractionResponse(checkpoint: InteractionResponseCheckpoint | null): boolean {
+    if (!checkpoint) return false;
+    const prev = this.sessions.get(checkpoint.key);
+    if (!prev) return false;
+    this.sessions.set(checkpoint.key, {
+      ...prev,
+      interactionSplits: checkpoint.interactionSplits,
+    });
     this.scheduleFlush();
     return true;
   }

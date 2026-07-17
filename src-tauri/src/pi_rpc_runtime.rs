@@ -310,9 +310,13 @@ async fn pi_rpc_connection_loop(
     // tool_result blocks in the streaming content.
     let mut suppressed_interaction_calls: std::collections::HashSet<String> =
         std::collections::HashSet::new();
-    // PhaseDivider arrives during agent_end (after turn_complete, stream dropped).
-    // Buffer it and inject as the FIRST event of the next turn's content stream.
+    // PhaseDivider arrives during agent_end. Buffer it and inject it as the
+    // first content event of the next phase run.
     let mut pending_phase_divider: Option<NormalizedEvent> = None;
+    // Pi awaits extension agent_end handlers after the final turn_end. Those
+    // handlers can open an interaction and queue another run, so keep the GUI
+    // stream alive until agent_end declares the prompt operation settled.
+    let mut pending_turn_complete: Option<NormalizedEvent> = None;
 
     loop {
         let cmd_future = command_rx.recv();
@@ -372,6 +376,10 @@ async fn pi_rpc_connection_loop(
                         }
                         match &state {
                             LoopState::Prompting => {
+                                pending_turn_complete = Some(NormalizedEvent::TurnComplete {
+                                    reason: TurnEndReason::Aborted,
+                                    usage: None,
+                                });
                                 let _ = send_pi_command(&stdin_arc, &json!({
                                     "type": "abort"
                                 })).await;
@@ -380,7 +388,13 @@ async fn pi_rpc_connection_loop(
                                     pending_prompt: None,
                                 };
                             }
-                            LoopState::Idle | LoopState::CancelPending { .. } => {}
+                            LoopState::CancelPending { .. } => {
+                                pending_turn_complete = Some(NormalizedEvent::TurnComplete {
+                                    reason: TurnEndReason::Aborted,
+                                    usage: None,
+                                });
+                            }
+                            LoopState::Idle => {}
                         }
                         false
                     }
@@ -399,8 +413,10 @@ async fn pi_rpc_connection_loop(
                                 id
                             ),
                         }
-                        // 用户已响应，select/input 解决；清掉 pending 追踪。
-                        pending_interaction_id = None;
+                        // Only the matching response resolves the tracked request.
+                        if pending_interaction_id.as_deref() == Some(id.as_str()) {
+                            pending_interaction_id = None;
+                        }
                         // Report the write-back outcome (R6: authoritative delivery).
                         let _ = response.send(result);
                         false
@@ -463,39 +479,9 @@ async fn pi_rpc_connection_loop(
                                     }
                                     "abort" => {
                                         log::info!("Pi RPC abort acknowledged");
-                                        // Emit TurnComplete for the cancelled turn
-                                        let has_pending = matches!(
-                                            &state,
-                                            LoopState::CancelPending { pending_prompt: Some(_), .. }
-                                        );
-                                        if !has_pending {
-                                            buf.push(NormalizedEvent::TurnComplete {
-                                                reason: TurnEndReason::Aborted,
-                                                usage: None,
-                                            });
-                                            flush_buf(&emit, &session_id, &mut buf);
-                                        }
-
-                                        // State transition
-                                        state = if let LoopState::CancelPending { pending_prompt } = &mut state {
-                                            let buffered = pending_prompt.take();
-                                            if let Some(msg) = buffered {
-                                                let msg = apply_resolved_session_prompt_injection(
-                                                    msg,
-                                                    &session_id,
-                                                    resolved_session_prompt_injection.as_ref(),
-                                                );
-                                                send_pi_command(&stdin_arc, &json!({
-                                                    "type": "prompt",
-                                                    "message": msg
-                                                })).await?;
-                                                LoopState::Prompting
-                                            } else {
-                                                LoopState::Idle
-                                            }
-                                        } else {
-                                            LoopState::Idle
-                                        };
+                                        // session.abort() responds only after awaited agent_end
+                                        // handlers settle. The agent_end branch has already
+                                        // emitted completion and advanced the local state.
                                         continue;
                                     }
                                     _ => {
@@ -536,13 +522,14 @@ async fn pi_rpc_connection_loop(
                         // AcpCommand::RespondToInput → extension_ui_response.
                         if msg.get("type").and_then(|v| v.as_str()) == Some("extension_ui_request") {
                             if let Some(event) = convert_extension_ui_request(&msg) {
-                                // 记录 pending interaction id（仅 select/input 需响应；
-                                // fire-and-forget 如 notify/setStatus convert 返回 None，不记）。
-                                if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
-                                    pending_interaction_id = Some(id.to_string());
+                                // Track only requests that actually wait for a response.
+                                if matches!(event, NormalizedEvent::InteractionRequest { .. }) {
+                                    if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
+                                        pending_interaction_id = Some(id.to_string());
+                                    }
                                 }
-                                // PhaseDivider arrives during agent_end (after turn_complete).
-                                // Buffer it — will be injected as first event of next turn.
+                                // PhaseDivider arrives during agent_end and belongs at
+                                // the beginning of the next phase run.
                                 if matches!(event, NormalizedEvent::PhaseDivider { .. }) {
                                     pending_phase_divider = Some(event);
                                 } else {
@@ -554,31 +541,35 @@ async fn pi_rpc_connection_loop(
                             continue;
                         }
 
-                        // Handle AgentEvent objects
+                        // Handle AgentEvent objects.
+                        let event_type = msg
+                            .get("type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
                         let events = normalize_pi_agent_event(&msg);
+
+                        if matches!(event_type, "agent_start" | "turn_start")
+                            && !matches!(state, LoopState::CancelPending { .. })
+                        {
+                            state = LoopState::Prompting;
+                        }
 
                         // Track interaction tool call IDs: when tool_execution_start
                         // returns empty events for an interaction tool (request_user_input,
                         // ask_user, etc.), record the call_id so we can suppress the
                         // matching tool_execution_end later.
-                        if let Some(event_type) = msg.get("type").and_then(|v| v.as_str()) {
-                            if event_type == "tool_execution_start" && events.is_empty() {
-                                if let Some(call_id) = msg.get("toolCallId").and_then(|v| v.as_str()) {
-                                    suppressed_interaction_calls.insert(call_id.to_string());
-                                }
+                        if event_type == "tool_execution_start" && events.is_empty() {
+                            if let Some(call_id) = msg.get("toolCallId").and_then(|v| v.as_str()) {
+                                suppressed_interaction_calls.insert(call_id.to_string());
                             }
                         }
 
                         // Suppress tool_execution_end for interaction tools whose
                         // start was also suppressed.
-                        let events: Vec<NormalizedEvent> = if let Some(event_type) = msg.get("type").and_then(|v| v.as_str()) {
-                            if event_type == "tool_execution_end" {
-                                if let Some(call_id) = msg.get("toolCallId").and_then(|v| v.as_str()) {
-                                    if suppressed_interaction_calls.remove(call_id) {
-                                        vec![] // Suppress this result
-                                    } else {
-                                        events
-                                    }
+                        let mut events: Vec<NormalizedEvent> = if event_type == "tool_execution_end" {
+                            if let Some(call_id) = msg.get("toolCallId").and_then(|v| v.as_str()) {
+                                if suppressed_interaction_calls.remove(call_id) {
+                                    vec![]
                                 } else {
                                     events
                                 }
@@ -589,10 +580,26 @@ async fn pi_rpc_connection_loop(
                             events
                         };
 
-                        let has_turn_complete = events.iter().any(|e| matches!(e, NormalizedEvent::TurnComplete { .. }));
+                        // A final turn_end is only a candidate completion. Pi still
+                        // awaits agent_end extension handlers, which may ask the user
+                        // a question or enqueue the next conductor phase.
+                        if let Some(index) = events
+                            .iter()
+                            .position(|event| matches!(event, NormalizedEvent::TurnComplete { .. }))
+                        {
+                            pending_turn_complete = Some(events.remove(index));
+                        }
 
-                        // Inject pending PhaseDivider as the FIRST content event of a new turn.
-                        // It was buffered from a previous agent_end's setStatus call.
+                        // An explicit phase-enter marker supersedes the setStatus
+                        // fallback buffered during the preceding agent_end.
+                        if events
+                            .iter()
+                            .any(|event| matches!(event, NormalizedEvent::PhaseDivider { .. }))
+                        {
+                            pending_phase_divider = None;
+                        }
+
+                        // Inject pending PhaseDivider as the first content event of a new run.
                         let has_content = events.iter().any(|e| {
                             matches!(e,
                                 NormalizedEvent::TextDelta { .. }
@@ -600,19 +607,41 @@ async fn pi_rpc_connection_loop(
                                 | NormalizedEvent::Message { .. }
                             )
                         });
-                        if has_content && pending_phase_divider.is_some() {
-                            buf.push(pending_phase_divider.take().unwrap());
+                        if has_content {
+                            if let Some(divider) = pending_phase_divider.take() {
+                                buf.push(divider);
+                            }
                         }
 
-                        for event in &events {
-                            buf.push(event.clone());
-                        }
+                        buf.extend(events);
 
-                        if has_turn_complete {
+                        if event_type == "agent_end" {
+                            let will_continue = msg
+                                .get("willContinue")
+                                .and_then(|value| value.as_bool())
+                                .unwrap_or(false);
+
+                            if will_continue && !matches!(state, LoopState::CancelPending { .. }) {
+                                pending_turn_complete = None;
+                                state = LoopState::Prompting;
+                                flush_buf(&emit, &session_id, &mut buf);
+                                last_flush = std::time::Instant::now();
+                                continue;
+                            }
+
+                            if matches!(state, LoopState::CancelPending { .. }) {
+                                pending_turn_complete = Some(NormalizedEvent::TurnComplete {
+                                    reason: TurnEndReason::Aborted,
+                                    usage: None,
+                                });
+                            }
+                            if let Some(completion) = pending_turn_complete.take() {
+                                buf.push(completion);
+                            }
                             flush_buf(&emit, &session_id, &mut buf);
                             last_flush = std::time::Instant::now();
 
-                            // Handle cancel-pending with buffered prompt
+                            // A user prompt may arrive while cancellation is settling.
                             state = if let LoopState::CancelPending { pending_prompt } = &mut state {
                                 let buffered = pending_prompt.take();
                                 if let Some(msg) = buffered {
@@ -632,12 +661,11 @@ async fn pi_rpc_connection_loop(
                             } else {
                                 LoopState::Idle
                             };
-                        } else {
-                            // Periodic flush
-                            if buf.len() >= 32 || last_flush.elapsed() >= Duration::from_millis(8) {
-                                flush_buf(&emit, &session_id, &mut buf);
-                                last_flush = std::time::Instant::now();
-                            }
+                        } else if buf.len() >= 32
+                            || last_flush.elapsed() >= Duration::from_millis(8)
+                        {
+                            flush_buf(&emit, &session_id, &mut buf);
+                            last_flush = std::time::Instant::now();
                         }
                         false
                     }
@@ -879,15 +907,9 @@ pub(crate) fn normalize_pi_agent_event(event: &serde_json::Value) -> Vec<Normali
         // (role=assistant) is still ignored: the assistant content arrives
         // incrementally via `message_update` above.
         "message_start" => {
-            let role = event
-                .get("message")
-                .and_then(|m| m.get("role"))
-                .and_then(|v| v.as_str());
-            if role != Some("user") {
-                return vec![];
-            }
-
-            // Detect PhaseDivider via customType
+            // Detect PhaseDivider before checking the message role. Extension
+            // sendMessage markers use role=custom, while normal steer markers
+            // use role=user.
             let custom_type = event
                 .get("message")
                 .and_then(|m| m.get("customType"))
@@ -908,6 +930,14 @@ pub(crate) fn normalize_pi_agent_event(event: &serde_json::Value) -> Vec<Normali
                     phase: phase.to_string(),
                     title: title.to_string(),
                 }];
+            }
+
+            let role = event
+                .get("message")
+                .and_then(|m| m.get("role"))
+                .and_then(|v| v.as_str());
+            if role != Some("user") {
+                return vec![];
             }
 
             let content = event
@@ -1063,6 +1093,28 @@ mod tests {
         }));
 
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn detects_custom_role_phase_enter_marker() {
+        let events = normalize_pi_agent_event(&json!({
+            "type": "message_start",
+            "message": {
+                "role": "custom",
+                "customType": "jishu-conductor:phase-enter:plan",
+                "content": "进入流程规划阶段",
+                "display": true,
+                "timestamp": 0
+            }
+        }));
+
+        match events.as_slice() {
+            [NormalizedEvent::PhaseDivider { phase, title }] => {
+                assert_eq!(phase, "plan");
+                assert_eq!(title, "流程规划");
+            }
+            other => panic!("expected phase divider, got {other:?}"),
+        }
     }
 
     #[test]

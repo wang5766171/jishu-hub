@@ -135,9 +135,421 @@ pub(crate) fn find_pi_session_location_in_agent_dir(
     Err(format!("Pi session not found: {session_id}"))
 }
 
+pub(crate) fn persist_pi_interaction_blocks(
+    session_id: &str,
+    interactions: Vec<serde_json::Value>,
+) -> Result<(), String> {
+    let location = find_pi_session_location(session_id)?;
+    persist_pi_interaction_blocks_at_path(&location.path, interactions)
+}
+
+fn interaction_sidecar_path(session_path: &Path) -> PathBuf {
+    session_path.with_extension("jishu-interactions")
+}
+
+fn pi_interaction_key(value: &serde_json::Value) -> String {
+    if let Some(request_id) = value
+        .get("request_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return format!("request:{request_id}");
+    }
+    format!(
+        "legacy:{}\n{}\n{}",
+        value
+            .get("origin")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default(),
+        value
+            .get("prompt")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default(),
+        value
+            .get("answer")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default(),
+    )
+}
+
+fn pi_interaction_tool_name(name: &str) -> bool {
+    let normalized = name
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or(name)
+        .replace('-', "_")
+        .to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "request_user_input"
+            | "ask_user"
+            | "ask_user_input"
+            | "askuserquestion"
+            | "ask_user_question"
+            | "ask_question"
+            | "ask_choice"
+            | "choice_question"
+    )
+}
+
+fn pi_tool_call_prompt(item: &serde_json::Value) -> Option<&str> {
+    let arguments = item.get("arguments").or_else(|| item.get("input"))?;
+    ["question", "prompt", "title"]
+        .into_iter()
+        .find_map(|key| arguments.get(key).and_then(serde_json::Value::as_str))
+}
+
+fn add_pi_interaction_anchor(
+    session_path: &Path,
+    interaction: &mut serde_json::Value,
+    existing: &[serde_json::Value],
+) {
+    let Some(object) = interaction.as_object_mut() else {
+        return;
+    };
+    if object.contains_key("anchor_message_id") {
+        return;
+    }
+
+    let prompt = object
+        .get("prompt")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let claimed_tool_calls = existing
+        .iter()
+        .filter_map(|value| value.get("anchor_tool_call_id"))
+        .filter_map(serde_json::Value::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    let Ok(content) = fs::read_to_string(session_path) else {
+        return;
+    };
+    let mut matching_anchor = None;
+
+    'messages: for line in content.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if !matches!(
+            value.get("type").and_then(serde_json::Value::as_str),
+            Some("message") | Some("message_start") | Some("message_end")
+        ) {
+            continue;
+        }
+        let Some(message) = value.get("message") else {
+            continue;
+        };
+        if message.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(message_id) = value.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+
+        let Some(items) = message.get("content").and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for item in items {
+            let Some(name) = item.get("name").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Some(tool_call_id) = item.get("id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if pi_interaction_tool_name(name)
+                && !claimed_tool_calls.contains(tool_call_id)
+                && pi_tool_call_prompt(item).map(str::trim) == Some(prompt)
+            {
+                matching_anchor = Some((message_id.to_string(), tool_call_id.to_string()));
+                break 'messages;
+            }
+        }
+    }
+
+    if let Some((message_id, tool_call_id)) = matching_anchor {
+        object.insert(
+            "anchor_message_id".to_string(),
+            serde_json::json!(message_id),
+        );
+        object.insert(
+            "anchor_tool_call_id".to_string(),
+            serde_json::json!(tool_call_id),
+        );
+    } else if let Some(message_id) = last_pi_assistant_message_id(&content) {
+        object.insert(
+            "anchor_message_id".to_string(),
+            serde_json::json!(message_id),
+        );
+    }
+}
+
+fn last_pi_assistant_message_id(content: &str) -> Option<String> {
+    content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|value| {
+            matches!(
+                value.get("type").and_then(serde_json::Value::as_str),
+                Some("message") | Some("message_start") | Some("message_end")
+            ) && value
+                .get("message")
+                .and_then(|message| message.get("role"))
+                .and_then(serde_json::Value::as_str)
+                == Some("assistant")
+        })
+        .filter_map(|value| {
+            value
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .last()
+}
+
+fn persist_pi_interaction_blocks_at_path(
+    session_path: &Path,
+    interactions: Vec<serde_json::Value>,
+) -> Result<(), String> {
+    if !session_path.is_file()
+        || session_path.extension().and_then(|value| value.to_str()) != Some("jsonl")
+    {
+        return Err("Pi interaction persistence requires an existing session JSONL".to_string());
+    }
+
+    let sidecar = interaction_sidecar_path(session_path);
+    let mut entries = if sidecar.exists() {
+        fs::read_to_string(&sidecar)
+            .map_err(|error| format!("Failed to read Pi interaction sidecar: {error}"))?
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line)
+                    .map_err(|error| format!("Invalid Pi interaction sidecar entry: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+
+    for mut interaction in interactions {
+        let key = pi_interaction_key(&interaction);
+        if let Some(previous) = entries
+            .iter()
+            .find(|existing| pi_interaction_key(existing) == key)
+        {
+            if let (Some(object), Some(previous_object)) =
+                (interaction.as_object_mut(), previous.as_object())
+            {
+                for field in ["anchor_message_id", "anchor_tool_call_id"] {
+                    if !object.contains_key(field) {
+                        if let Some(value) = previous_object.get(field) {
+                            object.insert(field.to_string(), value.clone());
+                        }
+                    }
+                }
+            }
+        }
+        add_pi_interaction_anchor(session_path, &mut interaction, &entries);
+        if let Some(object) = interaction.as_object_mut() {
+            object.insert("type".to_string(), serde_json::json!("interaction"));
+        }
+        entries.retain(|existing| pi_interaction_key(existing) != key);
+        entries.push(interaction);
+    }
+
+    let mut serialized = entries
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?
+        .join("\n");
+    if !serialized.is_empty() {
+        serialized.push('\n');
+    }
+    crate::util::atomic_write(&sidecar, serialized.as_bytes())
+        .map_err(|error| format!("Failed to write Pi interaction sidecar: {error}"))
+}
+
+fn merge_pi_interaction_sidecar(session_path: &Path, messages: &mut Vec<crate::session::Message>) {
+    let sidecar = interaction_sidecar_path(session_path);
+    let Ok(content) = fs::read_to_string(&sidecar) else {
+        return;
+    };
+    let session_content = fs::read_to_string(session_path).unwrap_or_default();
+    let message_positions = pi_message_positions(&session_content);
+    let mut replaced_tool_calls = std::collections::HashSet::new();
+    let mut anchored_blocks: Vec<(usize, crate::session::ContentBlock)> = Vec::new();
+    let mut fallback_blocks = Vec::new();
+
+    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            log::warn!(
+                "Ignoring invalid Pi interaction sidecar entry for {:?}",
+                session_path
+            );
+            continue;
+        };
+        let Ok(block @ crate::session::ContentBlock::Interaction { .. }) =
+            serde_json::from_value::<crate::session::ContentBlock>(value.clone())
+        else {
+            log::warn!(
+                "Ignoring invalid Pi interaction sidecar entry for {:?}",
+                session_path
+            );
+            continue;
+        };
+
+        let anchored_tool_call_id = value
+            .get("anchor_tool_call_id")
+            .and_then(serde_json::Value::as_str);
+        let prompt = value
+            .get("prompt")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let tool_call_id = anchored_tool_call_id
+            .map(str::to_string)
+            .or_else(|| find_pi_interaction_tool(messages, prompt, &replaced_tool_calls));
+
+        if let Some(tool_call_id) = tool_call_id {
+            if replace_pi_interaction_tool(messages, &tool_call_id, block.clone()) {
+                replaced_tool_calls.insert(tool_call_id);
+                continue;
+            }
+        }
+        if let Some(message_index) = value
+            .get("anchor_message_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|message_id| message_positions.get(message_id))
+            .copied()
+        {
+            anchored_blocks.push((message_index, block));
+        } else {
+            fallback_blocks.push(block);
+        }
+    }
+
+    for (message_index, block) in anchored_blocks {
+        if let Some(message) = messages.get_mut(message_index) {
+            message.content.push(block);
+        } else {
+            fallback_blocks.push(block);
+        }
+    }
+
+    if !replaced_tool_calls.is_empty() {
+        for message in messages.iter_mut() {
+            message.content.retain(|block| {
+                !matches!(
+                    block,
+                    crate::session::ContentBlock::ToolResult { tool_use_id, .. }
+                        if replaced_tool_calls.contains(tool_use_id)
+                )
+            });
+        }
+        messages.retain(|message| !message.content.is_empty());
+    }
+    if fallback_blocks.is_empty() {
+        return;
+    }
+
+    if let Some(message) = messages
+        .iter_mut()
+        .rev()
+        .find(|message| message.role == "assistant")
+    {
+        message.content.extend(fallback_blocks);
+    } else {
+        messages.push(crate::session::Message {
+            role: "assistant".to_string(),
+            content: fallback_blocks,
+            timestamp: None,
+        });
+    }
+}
+
+fn pi_message_positions(content: &str) -> std::collections::HashMap<String, usize> {
+    let mut positions = std::collections::HashMap::new();
+    let mut message_index = 0;
+
+    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if !matches!(
+            value.get("type").and_then(serde_json::Value::as_str),
+            Some("message") | Some("message_start") | Some("message_end")
+        ) {
+            continue;
+        }
+        let entry_timestamp = value
+            .get("timestamp")
+            .and_then(serde_json::Value::as_str)
+            .and_then(parse_rfc3339_millis);
+        let Some(message) = value
+            .get("message")
+            .and_then(|message| parse_pi_message(message, entry_timestamp))
+        else {
+            continue;
+        };
+        if let Some(id) = value.get("id").and_then(serde_json::Value::as_str) {
+            positions.insert(id.to_string(), message_index);
+        }
+        let _ = message;
+        message_index += 1;
+    }
+
+    positions
+}
+
+fn find_pi_interaction_tool(
+    messages: &[crate::session::Message],
+    prompt: &str,
+    used: &std::collections::HashSet<String>,
+) -> Option<String> {
+    messages.iter().find_map(|message| {
+        message.content.iter().find_map(|block| match block {
+            crate::session::ContentBlock::ToolUse { id, name, input }
+                if pi_interaction_tool_name(name)
+                    && !used.contains(id)
+                    && ["question", "prompt", "title"]
+                        .into_iter()
+                        .find_map(|key| input.get(key).and_then(serde_json::Value::as_str))
+                        .map(str::trim)
+                        == Some(prompt.trim()) =>
+            {
+                Some(id.clone())
+            }
+            _ => None,
+        })
+    })
+}
+
+fn replace_pi_interaction_tool(
+    messages: &mut [crate::session::Message],
+    tool_call_id: &str,
+    interaction: crate::session::ContentBlock,
+) -> bool {
+    for message in messages {
+        if let Some(index) = message.content.iter().position(|block| {
+            matches!(
+                block,
+                crate::session::ContentBlock::ToolUse { id, .. } if id == tool_call_id
+            )
+        }) {
+            message.content[index] = interaction;
+            return true;
+        }
+    }
+    false
+}
+
 pub(crate) fn load_pi_session(path: &Path) -> Option<crate::session::Session> {
     let content = fs::read_to_string(path).ok()?;
-    parse_pi_session_jsonl(path, &content)
+    let mut session = parse_pi_session_jsonl(path, &content)?;
+    merge_pi_interaction_sidecar(path, &mut session.messages);
+    Some(session)
 }
 
 fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::Session> {
@@ -563,6 +975,176 @@ mod tests {
         assert!(matches!(
             session.messages[2].content[0],
             ContentBlock::ToolResult { .. }
+        ));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persists_pi_interactions_in_sidecar_with_latest_answer() {
+        let root = std::env::temp_dir().join(format!(
+            "jishu-pi-interaction-sidecar-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("sid-interaction.jsonl");
+        let original = [
+            r#"{"type":"session","version":3,"id":"sid-interaction","timestamp":"2026-06-01T00:00:00.000Z","cwd":"D:\\Work\\app"}"#,
+            r#"{"type":"message_end","id":"a1","parentId":null,"timestamp":"2026-06-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"需求已明确"}],"stopReason":"stop","timestamp":1780272002000}}"#,
+        ].join("\n");
+        fs::write(&path, &original).unwrap();
+
+        persist_pi_interaction_blocks_at_path(
+            &path,
+            vec![serde_json::json!({
+                "request_id": "gate-1",
+                "prompt": "是否进入规划？",
+                "options": [],
+                "answer": "继续补充需求",
+                "selected_options": ["继续补充需求"],
+                "origin": "extension_ui"
+            })],
+        )
+        .unwrap();
+        persist_pi_interaction_blocks_at_path(
+            &path,
+            vec![serde_json::json!({
+                "request_id": "gate-1",
+                "prompt": "是否进入规划？",
+                "options": [],
+                "answer": "进入流程规划",
+                "selected_options": ["进入流程规划"],
+                "origin": "extension_ui"
+            })],
+        )
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        let sidecar = fs::read_to_string(interaction_sidecar_path(&path)).unwrap();
+        assert_eq!(sidecar.lines().count(), 1);
+        assert!(sidecar.contains("进入流程规划"));
+        assert!(!sidecar.contains("继续补充需求"));
+
+        let session = load_pi_session(&path).unwrap();
+        assert!(session
+            .messages
+            .iter()
+            .any(|message| message.content.iter().any(|block| matches!(
+                block,
+                ContentBlock::Interaction { request_id, answer, .. }
+                    if request_id.as_deref() == Some("gate-1") && answer == "进入流程规划"
+            ))));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn keeps_non_tool_interaction_at_the_answered_assistant_message() {
+        let root = std::env::temp_dir().join(format!(
+            "jishu-pi-interaction-message-anchor-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("sid-gate-anchor.jsonl");
+        let first_messages = [
+            r#"{"type":"session","version":3,"id":"sid-gate-anchor","timestamp":"2026-07-16T10:20:32.000Z","cwd":"E:\\test"}"#,
+            r#"{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"实现登录 demo"}]}}"#,
+            r#"{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"候选需求已提交。"}]}}"#,
+        ]
+        .join("\n");
+        fs::write(&path, &first_messages).unwrap();
+        persist_pi_interaction_blocks_at_path(
+            &path,
+            vec![serde_json::json!({
+                "request_id": "gate-1",
+                "prompt": "是否进入规划？",
+                "options": [],
+                "answer": "进入流程规划",
+                "origin": "extension_ui"
+            })],
+        )
+        .unwrap();
+        fs::write(
+            &path,
+            format!(
+                "{first_messages}\n{}",
+                r#"{"type":"message","id":"a2","message":{"role":"assistant","content":[{"type":"text","text":"开始流程规划。"}]}}"#
+            ),
+        )
+        .unwrap();
+
+        let session = load_pi_session(&path).unwrap();
+        assert!(matches!(
+            session.messages[1].content.as_slice(),
+            [
+                ContentBlock::Text { text },
+                ContentBlock::Interaction { prompt, answer, .. }
+            ] if text == "候选需求已提交。"
+                && prompt == "是否进入规划？"
+                && answer == "进入流程规划"
+        ));
+        assert!(matches!(
+            session.messages[2].content.as_slice(),
+            [ContentBlock::Text { text }] if text == "开始流程规划。"
+        ));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn restores_legacy_pi_interactions_at_their_question_messages() {
+        let root = std::env::temp_dir().join(format!(
+            "jishu-pi-interaction-order-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("sid-interaction-order.jsonl");
+        fs::write(
+            &path,
+            [
+                r#"{"type":"session","version":3,"id":"sid-interaction-order","timestamp":"2026-07-16T10:20:32.000Z","cwd":"E:\\test"}"#,
+                r#"{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"实现登录 demo"}]}}"#,
+                r#"{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"先明确目标。"},{"type":"toolCall","id":"call-goal","name":"request_user_input","arguments":{"question":"主要目的是什么？"}}]}}"#,
+                r#"{"type":"message","id":"t1","message":{"role":"toolResult","toolCallId":"call-goal","content":[{"type":"text","text":"单页面"}]}}"#,
+                r#"{"type":"message","id":"a2","message":{"role":"assistant","content":[{"type":"text","text":"再明确技术栈。"},{"type":"toolCall","id":"call-stack","name":"request_user_input","arguments":{"question":"用什么技术栈？"}}]}}"#,
+                r#"{"type":"message","id":"t2","message":{"role":"toolResult","toolCallId":"call-stack","content":[{"type":"text","text":"原生 HTML"}]}}"#,
+                r#"{"type":"message","id":"a3","message":{"role":"assistant","content":[{"type":"text","text":"候选需求已提交。"}]}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        fs::write(
+            interaction_sidecar_path(&path),
+            [
+                r#"{"type":"interaction","request_id":"req-goal","prompt":"主要目的是什么？","options":[],"answer":"单页面","origin":"extension_ui"}"#,
+                r#"{"type":"interaction","request_id":"req-stack","prompt":"用什么技术栈？","options":[],"answer":"原生 HTML","origin":"extension_ui"}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let session = load_pi_session(&path).unwrap();
+        assert_eq!(session.messages.len(), 4);
+        assert!(matches!(
+            session.messages[1].content.as_slice(),
+            [
+                ContentBlock::Text { text },
+                ContentBlock::Interaction { prompt, answer, .. }
+            ] if text == "先明确目标。" && prompt == "主要目的是什么？" && answer == "单页面"
+        ));
+        assert!(matches!(
+            session.messages[2].content.as_slice(),
+            [
+                ContentBlock::Text { text },
+                ContentBlock::Interaction { prompt, answer, .. }
+            ] if text == "再明确技术栈。" && prompt == "用什么技术栈？" && answer == "原生 HTML"
+        ));
+        assert!(matches!(
+            session.messages[3].content.as_slice(),
+            [ContentBlock::Text { text }] if text == "候选需求已提交。"
         ));
 
         let _ = fs::remove_dir_all(&root);
