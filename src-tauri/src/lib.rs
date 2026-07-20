@@ -841,12 +841,25 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
     }
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
-        let ty = entry.file_type()?;
+        let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_recursive(&entry.path(), &dst_path)?;
+        // Bundled npm workspaces contain directory junctions on Windows.
+        // `DirEntry::file_type()` reports those as links, so follow the link
+        // before deciding whether to recurse instead of passing a directory to
+        // `fs::copy`, which fails with access denied (os error 5).
+        if std::fs::metadata(&src_path)?.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
         } else {
-            std::fs::copy(&entry.path(), &dst_path)?;
+            std::fs::copy(&src_path, &dst_path).map_err(|error| {
+                std::io::Error::new(
+                    error.kind(),
+                    format!(
+                        "failed to copy {} to {}: {error}",
+                        src_path.display(),
+                        dst_path.display()
+                    ),
+                )
+            })?;
         }
     }
     Ok(())
@@ -944,7 +957,7 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
         }
     }
 
-    eprintln!("[jishu-install] pi-bundle found → Full mode: copy + npm install --production");
+    eprintln!("[jishu-install] pi-bundle found → Full mode: replace bundled runtime");
     // Preserve user settings/sessions/extensions, but replace managed runtime
     // directories so stale or partially copied dependency files cannot survive.
     if let Err(e) = std::fs::create_dir_all(&target) {
@@ -959,48 +972,11 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
         return Err(format!("Failed to copy bundled pi agent files: {}", e));
     }
     eprintln!("[jishu-install] copy_dir_recursive OK");
-
-    // Run npm install --production
-    let mut cmd = shell_command(
-        "npm",
-        vec!["install".to_string(), "--production".to_string()],
-    );
-    let mut installer = crate::process_command::tokio_no_window(&mut cmd);
-    installer.current_dir(&target);
-
-    let output = match installer.output().await {
-        Ok(output) => output,
-        Err(error) => {
-            eprintln!("[jishu-install] npm spawn failed: {error}");
-            let restore_error =
-                restore_managed_pi_runtime(std::path::Path::new(&target), &backup)
-                    .err()
-                    .map(|restore| format!("; rollback failed: {restore}"))
-                    .unwrap_or_default();
-            return Err(format!("{error}{restore_error}"));
-        }
-    };
-    eprintln!(
-        "[jishu-install] npm install --production exit={} stdout={} stderr={}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    if output.status.success() {
-        let _ = std::fs::remove_dir_all(&backup);
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        let restore_error = restore_managed_pi_runtime(std::path::Path::new(&target), &backup)
-            .err()
-            .map(|error| format!("; rollback failed: {error}"))
-            .unwrap_or_default();
-        Err(format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stderr),
-            restore_error
-        ))
-    }
+    // pack-pi.mjs already installs, prunes, and verifies every runtime
+    // dependency before bundling. Re-running npm here only delays the IPC and
+    // makes a completed update appear stuck in the UI.
+    let _ = std::fs::remove_dir_all(&backup);
+    Ok("Bundled Jishu Agent runtime installed.".to_string())
 }
 
 /// Check MCP adapter installation status for a specific agent (routed through adapter contract).
@@ -2849,6 +2825,21 @@ fn task_launch_delete_task(project_root: String, task_id: String) -> Result<(), 
     task_launch::delete_task(&project_root, &task_id)
 }
 
+#[tauri::command]
+fn conductor_sync_phase(
+    request: task_launch::ConductorSyncPhaseRequest,
+) -> Result<task_launch::ConductorSyncPhaseResult, String> {
+    task_launch::conductor_sync_phase(request)
+}
+
+#[tauri::command]
+fn conductor_load_task_state(
+    project_root: String,
+    task_id: String,
+) -> Result<task_launch::ConductorLoadStateResult, String> {
+    task_launch::conductor_load_task_state(&project_root, &task_id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3062,6 +3053,8 @@ pub fn run() {
             task_advance_phase,
             task_launch_rename_task,
             task_launch_delete_task,
+            conductor_sync_phase,
+            conductor_load_task_state,
             list_models,
             add_model,
             update_model,
