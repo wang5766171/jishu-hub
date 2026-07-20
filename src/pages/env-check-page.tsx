@@ -15,7 +15,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { AgentStatus } from "@/agents/types";
-import { MIN_NODE_VERSION, nodeVersionSatisfies } from "@/agents/version-constants";
+import { isVersionNewer, MIN_NODE_VERSION, nodeVersionSatisfies } from "@/agents/version-constants";
 
 interface EnvData {
   node_installed: boolean;
@@ -49,6 +49,7 @@ interface CheckItem {
   iconClassName?: string;
   installCommand?: string;
   updateCommand?: string;
+  availableVersion?: string;
   downloadUrl?: string;
   npmPackage?: string;
   /** Original agent ID for MCP status lookup (only for agent items). */
@@ -61,6 +62,11 @@ interface LatestVersion {
   id: string;
   latest_version: string | null;
   error: string | null;
+}
+
+interface AdapterVersionStatus {
+  installed: boolean;
+  version: string | null;
 }
 
 function VersionBadge({ version }: { version: string | null }) {
@@ -265,6 +271,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       iconClassName: "bg-transparent",
       updateCommand: agent.native_install_command || agent.install_hint || undefined,
       installCommand: agent.native_install_command || agent.install_hint || undefined,
+      availableVersion: agent.available_version ?? undefined,
       npmPackage: agent.install_hint
         ?.replace("npm install -g ", "")
         ?.trim(),
@@ -275,11 +282,9 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
 
   const hasUpdate = useCallback(
     (item: CheckItem): boolean => {
-      if (!item.installed || !item.version || !latestVersions.has(item.id))
-        return false;
-      const latest = latestVersions.get(item.id)!;
-      const current = item.version.replace(/^v/, "");
-      return latest !== current;
+      if (!item.installed || !item.version) return false;
+      const latest = latestVersions.get(item.id);
+      return latest ? isVersionNewer(item.version, latest) : false;
     },
     [latestVersions]
   );
@@ -315,6 +320,33 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       });
       if (item.id.startsWith("agent-")) {
         await refreshHealth({ silent: true });
+        if (item.availableVersion && item.installed) {
+          const statuses = await invokeCommand<AgentStatus[]>("agent_list_statuses");
+          const actualVersion = statuses.find((status) => status.id === item.agentId)?.health.version;
+          if (!actualVersion || isVersionNewer(actualVersion, item.availableVersion)) {
+            throw new Error(
+              t("env.updateVersionMismatch", {
+                current: actualVersion ?? t("common.unknown", "未知"),
+                target: item.availableVersion,
+                defaultValue: "更新完成后检测到的版本仍为 {{current}}，目标版本为 {{target}}",
+              }),
+            );
+          }
+        }
+        setLatestVersions((current) => {
+          const next = new Map(current);
+          next.delete(item.id);
+          return next;
+        });
+        if (item.availableVersion && item.installed) {
+          await alertDialog({
+            title: t("env.updateSuccess", "更新成功"),
+            description: t(
+              "env.jishuAgentRestartRequired",
+              "Jishu Agent 已更新。请重启 Jishu Hub，以结束旧运行时进程并让新会话使用最新版本。",
+            ),
+          });
+        }
       } else {
         const newEnv = await invokeCommand<EnvData>("check_environment");
         setEnv(newEnv);
@@ -354,16 +386,19 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
         }
       }
       for (const agent of currentAgents || []) {
+        const agentItemId = `agent-${agent.id}`;
         if (agent.install_hint) {
           const pkg = agent.install_hint
             .replace("npm install -g ", "")
             .trim();
           if (pkg) {
-            const id = `agent-${agent.id}`;
-            if (!packages.some((p) => p[0] === id)) {
-              packages.push([id, pkg]);
+            if (!packages.some((p) => p[0] === agentItemId)) {
+              packages.push([agentItemId, pkg]);
             }
           }
+        }
+        if (agent.mcp_installed) {
+          packages.push([`mcp-${agent.id}`, "pi-mcp-adapter"]);
         }
       }
 
@@ -374,6 +409,11 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
         );
         if (results) {
           const map = new Map<string, string>();
+          for (const agent of currentAgents || []) {
+            if (agent.available_version) {
+              map.set(`agent-${agent.id}`, agent.available_version);
+            }
+          }
           for (const r of results) {
             if (r.latest_version) {
               map.set(r.id, r.latest_version);
@@ -505,6 +545,12 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                 (originalAgent.config_surface as { supports_mcp?: boolean }).supports_mcp;
               const mcpInstalled = originalAgent?.mcp_installed ?? false;
               const mcpVersion = originalAgent?.mcp_version ?? null;
+              const mcpLatestVersion = item.agentId
+                ? latestVersions.get(`mcp-${item.agentId}`)
+                : undefined;
+              const mcpHasUpdate = Boolean(
+                mcpVersion && mcpLatestVersion && isVersionNewer(mcpVersion, mcpLatestVersion),
+              );
               return (
                 <div key={item.id}>
                   <CheckItemRow
@@ -513,7 +559,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                     onInstall={() => handleInstall(item)}
                     onDownload={downloadUrl ? () => openUrl(downloadUrl) : undefined}
                     hasUpdate={hasUpdate(item)}
-                    latestVersion={latestVersions.get(item.id)}
+                    latestVersion={item.availableVersion ?? latestVersions.get(item.id)}
                     {...rowLabels}
                   />
                   {/* MCP adapter sub-item — shown only when adapter declares supports_mcp */}
@@ -530,14 +576,74 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                               v{mcpVersion}
                             </span>
                           )}
+                          {mcpHasUpdate && mcpLatestVersion && (
+                            <UpdateBadge latest={mcpLatestVersion} />
+                          )}
                         </div>
                         <p className="text-[10px] text-muted-foreground leading-tight mt-0.5 truncate">
                           {t("env.mcpDesc", "为 Jishu Agent 提供 MCP 服务调用能力（Web 搜索、网页读取等）")}
                         </p>
                         {mcpInstalled ? (
-                          <div className="mt-1 flex items-center gap-1 text-[var(--icon-success)] justify-start">
-                            <CheckCircle2 className="h-3 w-3" />
-                            <span className="text-[10px] font-medium">{t("env.normal", "已就绪")}</span>
+                          <div className="mt-1 flex items-center gap-2 justify-start">
+                            <div className={mcpHasUpdate
+                              ? "flex items-center gap-1 text-amber-600 dark:text-amber-400"
+                              : "flex items-center gap-1 text-[var(--icon-success)]"
+                            }>
+                              {mcpHasUpdate
+                                ? <ArrowUpCircle className="h-3 w-3" />
+                                : <CheckCircle2 className="h-3 w-3" />}
+                              <span className="text-[10px] font-medium">
+                                {mcpHasUpdate ? t("env.updateLabel", "更新") : t("env.normal", "已就绪")}
+                              </span>
+                            </div>
+                            {mcpHasUpdate && item.agentId && (
+                              installingMcpId === item.agentId ? (
+                                <Button size="sm" variant="outline" disabled className="h-6 px-2 text-[10px]">
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                </Button>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-6 px-2 text-[10px]"
+                                  onClick={async () => {
+                                    setInstallingMcpId(item.agentId!);
+                                    try {
+                                      await invokeCommand("update_mcp_adapter", { agentId: item.agentId });
+                                      const status = await invokeCommand<AdapterVersionStatus>(
+                                        "check_mcp_adapter",
+                                        { agentId: item.agentId },
+                                      );
+                                      if (
+                                        !status.version
+                                        || (mcpLatestVersion && isVersionNewer(status.version, mcpLatestVersion))
+                                      ) {
+                                        throw new Error(
+                                          t("env.updateVersionMismatch", {
+                                            current: status.version ?? t("common.unknown", "未知"),
+                                            target: mcpLatestVersion ?? t("common.unknown", "未知"),
+                                            defaultValue: "更新完成后检测到的版本仍为 {{current}}，目标版本为 {{target}}",
+                                          }),
+                                        );
+                                      }
+                                      await refreshHealth({ silent: true });
+                                      setLatestVersions((current) => {
+                                        const next = new Map(current);
+                                        next.delete(`mcp-${item.agentId}`);
+                                        return next;
+                                      });
+                                    } catch (err) {
+                                      console.error(err);
+                                      await alertDialog({ title: t("env.title", "环境检测"), description: `MCP ${t("env.updateFailed", "更新失败")}: ${String(err)}` });
+                                    } finally {
+                                      setInstallingMcpId(null);
+                                    }
+                                  }}
+                                >
+                                  {t("env.updateLabel", "更新")}
+                                </Button>
+                              )
+                            )}
                           </div>
                         ) : (
                           <div className="mt-1 flex items-center gap-1.5 justify-start">

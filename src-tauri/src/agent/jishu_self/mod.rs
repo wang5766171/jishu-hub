@@ -22,12 +22,18 @@ impl JishuSelfAgent {
     /// Standalone async MCP install — does not borrow &self, so it can be
     /// awaited without holding the AgentRegistry MutexGuard.
     pub async fn install_mcp_standalone() -> Result<String, String> {
+        Self::run_mcp_package_command("install").await
+    }
+
+    pub async fn update_mcp_standalone() -> Result<String, String> {
+        Self::run_mcp_package_command("update").await
+    }
+
+    async fn run_mcp_package_command(action: &str) -> Result<String, String> {
         let runtime = pi_runtime::resolve_pi_runtime()
             .map_err(|e| format!("Failed to resolve Pi runtime: {e}"))?;
 
-        let mut args = runtime.base_args.clone();
-        args.push("install".to_string());
-        args.push("npm:pi-mcp-adapter".to_string());
+        let args = mcp_package_args(&runtime.base_args, action);
 
         let mut cmd =
             crate::os_adapter::shell::shell_command(&runtime.program.to_string_lossy(), args);
@@ -43,13 +49,13 @@ impl JishuSelfAgent {
         let output = cmd
             .output()
             .await
-            .map_err(|e| format!("Failed to run pi install: {e}"))?;
+            .map_err(|e| format!("Failed to run pi {action}: {e}"))?;
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         } else {
             Err(format!(
-                "pi install failed: {}",
+                "pi {action} failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             ))
         }
@@ -150,6 +156,10 @@ impl AgentManifest for JishuSelfAgent {
 
     fn native_install_command(&self) -> Option<String> {
         Some("jishu-hub-internal-install".to_string())
+    }
+
+    fn available_version(&self) -> Option<String> {
+        Some(PI_AGENT_VERSION.to_string())
     }
 
     fn install_package_manager(&self) -> Option<String> {
@@ -437,39 +447,14 @@ impl ConfigAdapter for JishuSelfAgent {
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
     {
-        Box::pin(async {
-            let runtime = pi_runtime::resolve_pi_runtime()
-                .map_err(|e| format!("Failed to resolve Pi runtime: {e}"))?;
+        Box::pin(async { Self::install_mcp_standalone().await })
+    }
 
-            let mut args = runtime.base_args.clone();
-            args.push("install".to_string());
-            args.push("npm:pi-mcp-adapter".to_string());
-
-            let mut cmd =
-                crate::os_adapter::shell::shell_command(&runtime.program.to_string_lossy(), args);
-            cmd.current_dir(std::env::current_dir().unwrap_or_default());
-
-            #[cfg(target_os = "windows")]
-            crate::process_command::tokio_no_window(&mut cmd);
-
-            // Set PI_CODING_AGENT_DIR so pi writes to ~/.jishu-agent
-            if let Some(dir) = pi_agent_dir() {
-                cmd.env("PI_CODING_AGENT_DIR", &dir);
-            }
-
-            let output = cmd
-                .output()
-                .await
-                .map_err(|e| format!("Failed to run pi install: {e}"))?;
-
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                Ok(stdout)
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                Err(format!("pi install failed: {stderr}"))
-            }
-        })
+    fn update_mcp(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+    {
+        Box::pin(async { Self::update_mcp_standalone().await })
     }
 
     fn migrate_mcp_if_needed(&self) {
@@ -480,6 +465,26 @@ impl ConfigAdapter for JishuSelfAgent {
             return;
         };
         let _ = config::sync_mcp_json(&typed);
+    }
+}
+
+fn mcp_package_args(base_args: &[String], action: &str) -> Vec<String> {
+    let mut args = base_args.to_vec();
+    args.push(action.to_string());
+    args.push("npm:pi-mcp-adapter".to_string());
+    args
+}
+
+#[cfg(test)]
+mod mcp_tests {
+    use super::mcp_package_args;
+
+    #[test]
+    fn mcp_update_uses_pi_single_package_update_command() {
+        assert_eq!(
+            mcp_package_args(&["cli.js".to_string()], "update"),
+            vec!["cli.js", "update", "npm:pi-mcp-adapter"]
+        );
     }
 }
 

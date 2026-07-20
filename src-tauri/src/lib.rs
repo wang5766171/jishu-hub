@@ -852,6 +852,38 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
     Ok(())
 }
 
+fn backup_managed_pi_runtime(target: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let backup = target.join(format!(".runtime-backup-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&backup).map_err(|error| error.to_string())?;
+    for name in ["packages", "node_modules"] {
+        let current = target.join(name);
+        if current.exists() {
+            std::fs::rename(&current, backup.join(name)).map_err(|error| {
+                format!("Failed to back up {}: {error}", current.display())
+            })?;
+        }
+    }
+    Ok(backup)
+}
+
+fn restore_managed_pi_runtime(
+    target: &std::path::Path,
+    backup: &std::path::Path,
+) -> Result<(), String> {
+    for name in ["packages", "node_modules"] {
+        let current = target.join(name);
+        if current.exists() {
+            std::fs::remove_dir_all(&current).map_err(|error| error.to_string())?;
+        }
+        let previous = backup.join(name);
+        if previous.exists() {
+            std::fs::rename(&previous, &current).map_err(|error| error.to_string())?;
+        }
+    }
+    let _ = std::fs::remove_dir_all(backup);
+    Ok(())
+}
+
 async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, String> {
     use tauri::Manager;
     let res_dir = app
@@ -913,15 +945,17 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
     }
 
     eprintln!("[jishu-install] pi-bundle found → Full mode: copy + npm install --production");
-    // Ensure target directory exists to prevent xcopy from asking F/D
+    // Preserve user settings/sessions/extensions, but replace managed runtime
+    // directories so stale or partially copied dependency files cannot survive.
     if let Err(e) = std::fs::create_dir_all(&target) {
         eprintln!("[jishu-install] create_dir_all failed: {e}");
         return Err(format!("Failed to create target directory: {}", e));
     }
 
-    // Copy files
+    let backup = backup_managed_pi_runtime(std::path::Path::new(&target))?;
     if let Err(e) = copy_dir_recursive(&source, std::path::Path::new(&target)) {
         eprintln!("[jishu-install] copy_dir_recursive failed: {e}");
+        let _ = restore_managed_pi_runtime(std::path::Path::new(&target), &backup);
         return Err(format!("Failed to copy bundled pi agent files: {}", e));
     }
     eprintln!("[jishu-install] copy_dir_recursive OK");
@@ -934,10 +968,18 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
     let mut installer = crate::process_command::tokio_no_window(&mut cmd);
     installer.current_dir(&target);
 
-    let output = installer.output().await.map_err(|e| {
-        eprintln!("[jishu-install] npm spawn failed: {e}");
-        e.to_string()
-    })?;
+    let output = match installer.output().await {
+        Ok(output) => output,
+        Err(error) => {
+            eprintln!("[jishu-install] npm spawn failed: {error}");
+            let restore_error =
+                restore_managed_pi_runtime(std::path::Path::new(&target), &backup)
+                    .err()
+                    .map(|restore| format!("; rollback failed: {restore}"))
+                    .unwrap_or_default();
+            return Err(format!("{error}{restore_error}"));
+        }
+    };
     eprintln!(
         "[jishu-install] npm install --production exit={} stdout={} stderr={}",
         output.status,
@@ -946,9 +988,18 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
     );
 
     if output.status.success() {
+        let _ = std::fs::remove_dir_all(&backup);
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
+        let restore_error = restore_managed_pi_runtime(std::path::Path::new(&target), &backup)
+            .err()
+            .map(|error| format!("; rollback failed: {error}"))
+            .unwrap_or_default();
+        Err(format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stderr),
+            restore_error
+        ))
     }
 }
 
@@ -990,6 +1041,27 @@ async fn install_mcp_adapter(
     }
     // Lock released — delegate to adapter's standalone install helper.
     crate::agent::jishu_self::JishuSelfAgent::install_mcp_standalone().await
+}
+
+/// Update MCP adapter for a specific agent (routed through adapter contract).
+#[tauri::command]
+async fn update_mcp_adapter(
+    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
+) -> Result<String, String> {
+    {
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        let agent = s
+            .registry
+            .get(&agent_id)
+            .ok_or_else(|| format!("Agent not found: {}", agent_id))?;
+        if !agent.supports_mcp() {
+            return Err(format!("Agent {} does not support MCP", agent_id));
+        }
+    }
+    crate::agent::jishu_self::JishuSelfAgent::update_mcp_standalone().await
 }
 
 /// Check transport-bridge installation status for a specific agent (routed
@@ -1228,6 +1300,13 @@ async fn check_available_updates(packages: Vec<(String, String)>) -> Vec<LatestV
     // round-trip (or runtime-specific probe) taking seconds each, so
     // serialising them dominates the refresh latency.
     futures_util::future::join_all(packages.into_iter().map(|(id, pkg)| async move {
+        if let Some(version) = pkg.strip_prefix("__managed__:") {
+            return LatestVersion {
+                id,
+                latest_version: Some(version.to_string()),
+                error: None,
+            };
+        }
         if let Some(definition) = runtime_registry().iter().find(|runtime| {
             runtime.id == id || runtime_latest_package(runtime) == Some(pkg.as_str())
         }) {
@@ -2882,6 +2961,7 @@ pub fn run() {
             check_environment,
             check_mcp_adapter,
             install_mcp_adapter,
+            update_mcp_adapter,
             check_transport_bridge,
             install_transport_bridge,
             check_available_updates,
@@ -3043,6 +3123,39 @@ mod tests {
         assert!(!super::is_allowed_install_command(
             "winget upgrade Git.Git; whoami"
         ));
+    }
+
+    #[test]
+    fn pi_runtime_backup_preserves_user_data_and_can_restore_managed_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "jishu-runtime-backup-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join("packages")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::fs::create_dir_all(root.join("sessions")).unwrap();
+        std::fs::write(root.join("packages/old.txt"), "old package").unwrap();
+        std::fs::write(root.join("node_modules/old.txt"), "old dependency").unwrap();
+        std::fs::write(root.join("settings.json"), "{}").unwrap();
+        std::fs::write(root.join("sessions/keep.jsonl"), "session").unwrap();
+
+        let backup = super::backup_managed_pi_runtime(&root).unwrap();
+        assert!(!root.join("packages").exists());
+        assert!(!root.join("node_modules").exists());
+        assert!(root.join("settings.json").exists());
+        assert!(root.join("sessions/keep.jsonl").exists());
+
+        std::fs::create_dir_all(root.join("packages")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::fs::write(root.join("packages/new.txt"), "new package").unwrap();
+        super::restore_managed_pi_runtime(&root, &backup).unwrap();
+
+        assert!(root.join("packages/old.txt").exists());
+        assert!(root.join("node_modules/old.txt").exists());
+        assert!(!root.join("packages/new.txt").exists());
+        assert!(root.join("settings.json").exists());
+        assert!(root.join("sessions/keep.jsonl").exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

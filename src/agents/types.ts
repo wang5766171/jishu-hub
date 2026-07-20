@@ -24,6 +24,7 @@ export interface AgentStatus {
   health: AgentHealth;
   install_hint: string | null;
   native_install_command: string | null;
+  available_version: string | null;
   install_package_manager: string | null;
   auto_installed: boolean;
   config_surface: ConfigSurface;

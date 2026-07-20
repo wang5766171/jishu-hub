@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   compareSemver,
+  isVersionNewer,
   nodeVersionSatisfies,
   MIN_NODE_VERSION,
 } from "./version-constants";
@@ -28,6 +29,16 @@ describe("compareSemver", () => {
     expect(compareSemver("not a version", "22.19.0")).toBeNaN();
     expect(compareSemver("22.19.0", "")).toBeNaN();
     expect(compareSemver("abc", "def")).toBeNaN();
+  });
+});
+
+describe("isVersionNewer", () => {
+  it("识别 Jishu Agent 自研版本的升级", () => {
+    expect(isVersionNewer("0.80.2-8", "0.80.10-8")).toBe(true);
+    expect(isVersionNewer("0.80.10-7", "0.80.10-8")).toBe(true);
+    expect(isVersionNewer("0.80.10-8", "0.80.10-8")).toBe(false);
+    expect(isVersionNewer("0.80.11-8", "0.80.10-8")).toBe(false);
+    expect(isVersionNewer("unknown", "0.80.10-8")).toBe(false);
   });
 });
 

@@ -190,7 +190,7 @@ CLI transport 用于两类场景：
 
 必须由 adapter 或 adapter surface 提供的能力（具体通过 `TerminalAdapter`、`TransportAdapter`、`ConfigAdapter`、`AgentManifest` 四大核心 Trait 承载）：
 
-- agent 基础信息、健康检查、安装提示（含 `install_package_manager` 和 `auto_installed` 等标识）、动态 Logo 路径（`logo_path`）。
+- agent 基础信息、健康检查、安装提示（含 `install_package_manager` 和 `auto_installed` 等标识）、应用可提供的更新版本（`available_version`）、动态 Logo 路径（`logo_path`）。
 - transport 声明：ACP 优先、CLI、Embedded、未来 Remote。
 - 配置 surface：raw、structured、model-store、unsupported。
 - 项目设置 surface。
@@ -278,6 +278,7 @@ Hub 与 MCP 子系统的交互必须通过 `ConfigAdapter` trait，禁止在页�
 - `supports_mcp()` — 能力声明
 - `check_mcp()` — 返回 `{ installed, version }`
 - `install_mcp()` — 异步安装
+- `update_mcp()` — 使用 adapter 原生包管理能力更新已安装的 MCP 适配器
 - `migrate_mcp_if_needed()` — 幂等地把 `mcpServers` 从 `settings.json` 同步到 `mcp.json`
 
 `AgentStatus` 暴露 `mcp_installed` / `mcp_version` 字段，`list_agent_statuses()` 自动为声明 `supports_mcp = true` 的 adapter 调用 `check_mcp()`，GUI 从单一数据源渲染状态徽章。
@@ -473,7 +474,7 @@ ACP 场景下，审批应优先通过 ACP 的 tool/update/approval 能力表达�
 
 ## 12. 版本与验证纪律
 
-每次交付给用户测试前都要递增版本号，便于用户确认是否安装了最新构建。当前仓库测试版为 `0.6.20`。用户最终确认后，再按发布要求改为正式 `v0.6.0`。
+每次交付给用户测试前都要递增版本号，便于用户确认是否安装了最新构建。当前仓库测试版为 `0.6.32`。用户最终确认后，再按发布要求改为正式 `v0.6.0`。
 
 修改范围涉及 agent、adapter、ACP、任务编排、配置页时，至少执行：
 

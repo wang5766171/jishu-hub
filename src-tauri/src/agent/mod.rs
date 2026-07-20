@@ -72,6 +72,7 @@ pub struct AgentStatus {
     pub health: AgentHealth,
     pub install_hint: Option<String>,
     pub native_install_command: Option<String>,
+    pub available_version: Option<String>,
     pub install_package_manager: Option<String>,
     pub auto_installed: bool,
     pub config_surface: ConfigSurface,
@@ -291,6 +292,7 @@ impl AgentRegistry {
                     health,
                     install_hint: a.install_hint(),
                     native_install_command: a.native_install_command(),
+                    available_version: a.available_version(),
                     install_package_manager: a.install_package_manager(),
                     auto_installed: a.auto_installed(),
                     config_surface: a.config_surface(),
@@ -485,6 +487,7 @@ mod tests {
             },
             install_hint: None,
             native_install_command: None,
+            available_version: None,
             install_package_manager: None,
             auto_installed: false,
             config_surface: ConfigSurface::Raw {
@@ -524,6 +527,10 @@ mod tests {
         );
         assert_eq!(jishu.terminal_surface, TerminalSurface::Supported);
         assert_eq!(jishu.transport, TransportSurface::PiRpc);
+        assert_eq!(
+            jishu.available_version.as_deref(),
+            Some(crate::agent::jishu_self::PI_AGENT_VERSION)
+        );
 
         let codex = statuses
             .iter()

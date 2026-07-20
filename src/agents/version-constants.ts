@@ -40,3 +40,15 @@ export function nodeVersionSatisfies(
   const cmp = compareSemver(current, minimum);
   return Number.isNaN(cmp) ? false : cmp >= 0;
 }
+
+export function isVersionNewer(current: string, available: string): boolean {
+  const cmp = compareSemver(available, current);
+  if (Number.isNaN(cmp)) return false;
+  if (cmp !== 0) return cmp > 0;
+
+  const revision = (version: string) => {
+    const match = version.trim().replace(/^v/, "").match(/^\d+\.\d+\.\d+-(\d+)$/);
+    return match ? Number(match[1]) : 0;
+  };
+  return revision(available) > revision(current);
+}

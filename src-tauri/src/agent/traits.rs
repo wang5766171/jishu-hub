@@ -22,6 +22,10 @@ pub trait AgentManifest {
     fn native_install_command(&self) -> Option<String> {
         None
     }
+    /// Version bundled or otherwise managed by the application itself.
+    fn available_version(&self) -> Option<String> {
+        None
+    }
     /// Package manager used for native install (e.g. "winget", "choco").
     fn install_package_manager(&self) -> Option<String> {
         None
@@ -156,6 +160,13 @@ pub trait ConfigAdapter {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
     {
         Box::pin(async { Err("MCP not supported".to_string()) })
+    }
+    /// Update the installed MCP adapter for this agent.
+    fn update_mcp(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+    {
+        Box::pin(async { Err("MCP update not supported".to_string()) })
     }
     /// Run one-time migration of MCP config if needed (idempotent).
     fn migrate_mcp_if_needed(&self) {}
