@@ -367,6 +367,7 @@ export function ChatPage({
 
   const messageAreaRef = useRef<HTMLDivElement>(null);
   const [isUserMessageAbove, setIsUserMessageAbove] = useState(false);
+  const isAwayFromBottomRef = useRef(false);
   const activeIdRef = useRef<string | null>(activeId);
   const taskLaunchOpenRef = useRef(taskLaunchOpen);
   const taskLaunchPhaseRef = useRef<TaskLaunchPhase>(taskLaunchPhase);
@@ -933,7 +934,9 @@ export function ChatPage({
     const el = messageAreaRef.current;
     if (!el) return;
     const onScroll = () => {
-      setIsAwayFromBottom(el.scrollHeight - el.scrollTop - el.clientHeight > 100);
+      const awayFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight > 100;
+      isAwayFromBottomRef.current = awayFromBottom;
+      setIsAwayFromBottom(awayFromBottom);
       const containerTop = el.getBoundingClientRect().top;
       const hasUserMessageAbove = Array.from(
         el.querySelectorAll<HTMLElement>('[data-user-message="true"]'),
@@ -2260,16 +2263,30 @@ export function ChatPage({
           // immediately. Otherwise the cache will be used the next time they
           // switch back to this session (without a JSONL reload).
           const viewed = selectedSessionRef.current;
+          const shouldKeepFollowingOutput = !isAwayFromBottomRef.current;
           if (viewed === cid || viewed === finalKey) {
             setSessionMessages(updated);
           }
 
           // Convert the streaming bubble into the formal MessageView row in a
-          // single paint. Keeping the completed stream around briefly causes
-          // the same reply to be rendered twice, then removed, which looks
-          // like a vertical jump at the end of a turn.
+          // single paint. drop() schedules the normal external-store update;
+          // forcing a synchronous flush here can remove the live row before
+          // React commits its formal Markdown replacement.
           streamStore.drop(cid);
-          streamStore.flushNow();
+          if ((viewed === cid || viewed === finalKey) && shouldKeepFollowingOutput) {
+            // The live turn and its committed Markdown use different DOM
+            // subtrees. Wait for both the stream-store notification and the
+            // Markdown layout before fixing the viewport at the output end.
+            // If the user scrolled up, preserve their reading position.
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                const currentViewed = selectedSessionRef.current;
+                if (currentViewed !== cid && currentViewed !== finalKey) return;
+                const scrollEl = messageAreaRef.current;
+                if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+              });
+            });
+          }
           // This was a genuine completion (had text, or the follow-up window
           // elapsed) — clear the spurious-completion marker so it does not
           // suppress a later legitimate turn_complete for this session.
@@ -2462,9 +2479,6 @@ export function ChatPage({
             refetchSessionsRef.current?.(true).catch(console.error);
           }
 
-          requestAnimationFrame(() => {
-            chatInputRef.current?.focus();
-          });
         }
       }
     }).then((fn) => {
