@@ -3,6 +3,7 @@
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
@@ -309,6 +310,58 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     return fullPath;
   }
 
+  // ── Hub 桥接（Phase 2）：通过 select 通道编码调用 Hub 后端命令 ──
+  // Pi 扩展 API 无通用 invoke，复用 ctx.ui.select 通道：
+  // title 以 "\x00hub_invoke:" 开头，Hub 拦截后直接执行并响应，不经过前端。
+  // 返回 { success, data?, error? } 或 null（桥接不可用 / 超时，如纯 Pi 环境）。
+  // timeoutMs：超时保护（默认 5s），防止阻塞事件管线导致死锁。
+  async function hubInvoke(
+    ctx: ExtensionContext,
+    command: string,
+    params: Record<string, unknown>,
+    timeoutMs = 5000,
+  ): Promise<{ success: boolean; data?: unknown; error?: string } | null> {
+    try {
+      const payload = JSON.stringify({ command, params });
+      const selectPromise = ctx.ui.select(`\x00hub_invoke:${payload}`, [
+        "\x00ok",
+      ]);
+      // 超时保护：避免 Hub 无响应时阻塞事件管线（turn_end 里尤其关键）
+      const timeoutPromise = new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), timeoutMs),
+      );
+      const result = await Promise.race([selectPromise, timeoutPromise]);
+      if (!result) return null;
+      return JSON.parse(result) as {
+        success: boolean;
+        data?: unknown;
+        error?: string;
+      };
+    } catch {
+      // 桥接不可用（纯 Pi 环境 / Hub 未启动）→ fallback 模式
+      return null;
+    }
+  }
+
+  async function syncHubPhase(
+    ctx: ExtensionContext,
+    params: Record<string, unknown>,
+  ): Promise<boolean> {
+    const result = await hubInvoke(ctx, "conductor_sync_phase", params);
+    // No bridge means standalone Pi fallback. Hub command results are nested in
+    // the transport response, and a command-level rejection is authoritative.
+    if (!result) return true;
+    if (!result.success) {
+      ctx.ui.notify(result.error ?? "Hub 阶段同步调用失败", "error");
+      return false;
+    }
+    const data = result.data as
+      { success?: boolean; error?: string } | undefined;
+    if (data?.success !== false) return true;
+    ctx.ui.notify(data.error ?? "Hub 拒绝了任务阶段同步", "error");
+    return false;
+  }
+
   const phaseTag = (): string =>
     `jishu-conductor:phase:${state.domain}:${state.phase}`;
 
@@ -350,16 +403,52 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     );
   }
 
-  function acceptRequirements(
+  async function acceptRequirements(
     candidate: RequirementCandidate,
     ctx: ExtensionContext,
-  ): void {
+  ): Promise<void> {
     const path = writeArtifact(
       "requirements",
       "REQUIREMENTS.md",
       candidate.markdown,
     );
+    const contentHash = createHash("sha256")
+      .update(candidate.markdown)
+      .digest("hex");
+    writeArtifact(
+      "requirements",
+      "manifest.json",
+      JSON.stringify(
+        {
+          artifact_id: "requirements",
+          schema_version: "jishu-requirements/v1",
+          content_hash: `sha256:${contentHash}`,
+          generated_phase: "discuss",
+          generated_session_id: ctx.sessionManager.getSessionId(),
+          task_id: state.artifacts.taskId ?? "draft",
+          skill_pack: `jishu-conductor-${state.domain}`,
+          skill_pack_hash: `sha256:${createHash("sha256").update(loadSkill(state.domain, "discuss")).digest("hex")}`,
+          linked_revision_id: null,
+        },
+        null,
+        2,
+      ),
+    );
     state.artifacts.requirements = path;
+    // Phase 2：同步阶段到 Hub TaskInstance（discuss→plan）
+    const synced = await syncHubPhase(ctx, {
+      task_id: state.artifacts.taskId ?? "draft",
+      project_root: process.cwd(),
+      phase: "plan",
+      domain: state.domain,
+      artifacts: { requirements: path },
+      expected_phase: "discuss",
+      artifact_hash: `sha256:${contentHash}`,
+      title: candidate.title,
+      session_id: ctx.sessionManager.getSessionId(),
+    });
+    if (!synced) return;
+
     state.candidate = undefined;
     state.pendingConfirmation = undefined;
     state.revisionInstruction = undefined;
@@ -396,8 +485,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       "flow-plan.md",
       candidate.markdown,
     );
-    const crypto = await import("node:crypto");
-    const contentHash = crypto.createHash("sha256").update(json).digest("hex");
+    const contentHash = createHash("sha256").update(json).digest("hex");
     writeArtifact(
       "planning",
       "manifest.json",
@@ -407,9 +495,10 @@ export default function conductorExtension(pi: ExtensionAPI): void {
           schema_version: "jishu-flow-plan-proposal/v1",
           content_hash: `sha256:${contentHash}`,
           generated_phase: "plan",
-          generated_session_id: "conductor",
+          generated_session_id: ctx.sessionManager.getSessionId(),
           task_id: state.artifacts.taskId ?? "draft",
           skill_pack: `jishu-conductor-${state.domain}`,
+          skill_pack_hash: `sha256:${createHash("sha256").update(loadSkill(state.domain, "plan")).digest("hex")}`,
           linked_revision_id: null,
         },
         null,
@@ -428,6 +517,19 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       role: node.role ?? "developer",
       status: "pending",
     }));
+    // Phase 2：同步阶段到 Hub TaskInstance（plan→execute），携带产物哈希校验
+    const synced = await syncHubPhase(ctx, {
+      task_id: state.artifacts.taskId ?? "draft",
+      project_root: process.cwd(),
+      phase: "execute",
+      domain: state.domain,
+      artifacts: { flow_plan_json: jsonPath, flow_plan_md: mdPath },
+      expected_phase: "plan",
+      artifact_hash: `sha256:${contentHash}`,
+      session_id: ctx.sessionManager.getSessionId(),
+    });
+    if (!synced) return;
+
     state.candidate = undefined;
     state.pendingConfirmation = undefined;
     state.revisionInstruction = undefined;
@@ -565,6 +667,15 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     terminalStopReason =
       ctx.signal?.aborted === true ? "aborted" : message.stopReason;
     if (state.phase === "execute" && terminalStopReason === "stop") {
+      const synced = await syncHubPhase(ctx, {
+        task_id: state.artifacts.taskId ?? "draft",
+        project_root: process.cwd(),
+        phase: "done",
+        domain: state.domain,
+        expected_phase: "execute",
+      });
+      if (!synced) return;
+      for (const step of state.steps) step.status = "done";
       setPhase("done", ctx);
       ctx.ui.notify(`流程执行完成。共 ${state.steps.length} 个节点。`, "info");
     }
@@ -588,7 +699,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         );
         if (choice === undefined) return;
         if (choice === "进入流程规划") {
-          acceptRequirements(candidate, ctx);
+          await acceptRequirements(candidate, ctx);
         } else {
           queueRevision(
             "requirements",
@@ -653,6 +764,23 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       state.goal = goal;
       state.artifacts.taskId = `task_${Date.now().toString(36)}`;
       if (!toolsBeforeWorkflow) toolsBeforeWorkflow = pi.getActiveTools();
+
+      // Phase 2：创建 TaskInstance（任务 2.5：Hub 任务创建入口）
+      const synced = await syncHubPhase(ctx, {
+        task_id: state.artifacts.taskId,
+        project_root: process.cwd(),
+        phase: "discuss",
+        domain: state.domain,
+        expected_phase: "idle",
+        title: goal.slice(0, 40),
+        session_id: ctx.sessionManager.getSessionId(),
+      });
+      if (!synced) {
+        state.goal = "";
+        state.artifacts = {};
+        return;
+      }
+
       setPhase("discuss", ctx);
       pi.sendUserMessage(`/jishu-task ${args}`);
     },
@@ -712,6 +840,49 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       state.steps ??= [];
       toolsBeforeWorkflow = last.data.toolsBeforeWorkflow;
     }
+
+    // Phase 2（任务 2.6）：从 Hub 拉取 TaskInstance 权威状态，覆盖 appendEntry。
+    // 冲突时以 TaskInstance 为准。appendEntry 只补派侧 UI 状态。
+    if (state.phase !== "idle" && state.artifacts.taskId) {
+      const hubState = await hubInvoke(ctx, "conductor_load_task_state", {
+        project_root: process.cwd(),
+        task_id: state.artifacts.taskId,
+      });
+      if (hubState?.success && hubState.data) {
+        const data = hubState.data as {
+          found: boolean;
+          instance?: {
+            current_phase: string;
+            status: string;
+            run_status: string | null;
+          };
+        };
+        if (data.found && data.instance) {
+          const inst = data.instance;
+          // Hub current_phase → Conductor phase 映射
+          let hubPhase: Phase;
+          switch (inst.current_phase) {
+            case "requirements":
+              hubPhase = "discuss";
+              break;
+            case "planning":
+              hubPhase = "plan";
+              break;
+            case "execution":
+              hubPhase = inst.run_status === "completed" ? "done" : "execute";
+              break;
+            default:
+              hubPhase = state.phase;
+          }
+          // TaskInstance 为准：覆盖本地 phase
+          if (hubPhase !== state.phase) {
+            state.phase = hubPhase;
+            persist();
+          }
+        }
+      }
+    }
+
     if (state.phase !== "idle") {
       const allowed = PHASE_ALLOWED_TOOLS[state.phase];
       if (allowed) pi.setActiveTools(allowed);

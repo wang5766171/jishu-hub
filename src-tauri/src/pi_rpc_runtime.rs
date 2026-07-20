@@ -520,6 +520,47 @@ async fn pi_rpc_connection_loop(
                         // it to an InteractionRequest; the user responds via
                         // AcpCommand::RespondToInput → extension_ui_response.
                         if msg.get("type").and_then(|v| v.as_str()) == Some("extension_ui_request") {
+                            // ── hub_invoke 桥接（Phase 2）：扩展通过 select 编码调 Hub 后端命令 ──
+                            // Pi 扩展 API 无通用 invoke，复用 select 通道：
+                            // title 以 "\x00hub_invoke:" 开头时，Hub 直接执行命令并响应，不经过前端。
+                            let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
+                            let title = msg.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                            if method == "select" && title.starts_with("\x00hub_invoke:") {
+                                let payload_str = title
+                                    .strip_prefix("\x00hub_invoke:")
+                                    .unwrap_or("{}");
+                                let request_id = msg
+                                    .get("id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let payload: serde_json::Value = serde_json::from_str(payload_str)
+                                    .unwrap_or_else(|_| serde_json::json!({}));
+                                let command = payload
+                                    .get("command")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let params = payload
+                                    .get("params")
+                                    .cloned()
+                                    .unwrap_or_else(|| serde_json::json!({}));
+                                let result = handle_hub_invoke(command, &params);
+                                let response_value = match result {
+                                    Ok(data) => serde_json::json!({
+                                        "type": "extension_ui_response",
+                                        "id": request_id,
+                                        "value": serde_json::json!({ "success": true, "data": data }).to_string()
+                                    }),
+                                    Err(err) => serde_json::json!({
+                                        "type": "extension_ui_response",
+                                        "id": request_id,
+                                        "value": serde_json::json!({ "success": false, "error": err }).to_string()
+                                    }),
+                                };
+                                let _ = send_pi_command(&stdin_arc, &response_value).await;
+                                continue;
+                            }
+
                             if let Some(event) = convert_extension_ui_request(&msg) {
                                 // Track only requests that actually wait for a response.
                                 if matches!(event, NormalizedEvent::InteractionRequest { .. }) {
@@ -1057,6 +1098,41 @@ fn convert_extension_ui_request(msg: &serde_json::Value) -> Option<NormalizedEve
         // confirm, notify, setWidget, setTitle, set_editor_text:
         // fire-and-forget or not mapped to InteractionRequest.
         _ => None,
+    }
+}
+
+/// hub_invoke 桥接命令分发（Phase 2：Conductor 扩展 → Hub 后端）。
+///
+/// 扩展通过带保留标题前缀的 `extension_ui_request(method="select")` 发起同步调用，
+/// Hub 直接执行后端函数并通过 extension_ui_response 返回结果，不经过前端。
+/// 设计依据：`jishu-task-conductor_实施计划.md` Phase 2 任务 2.2。
+fn handle_hub_invoke(
+    command: &str,
+    params: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    match command {
+        "conductor_sync_phase" => {
+            let request: crate::task_launch::ConductorSyncPhaseRequest =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| format!("conductor_sync_phase 参数解析失败: {e}"))?;
+            let result = crate::task_launch::conductor_sync_phase(request)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "conductor_load_task_state" => {
+            let project_root = params
+                .get("project_root")
+                .or_else(|| params.get("projectRoot"))
+                .and_then(|v| v.as_str())
+                .ok_or("conductor_load_task_state: project_root is required")?;
+            let task_id = params
+                .get("task_id")
+                .or_else(|| params.get("taskId"))
+                .and_then(|v| v.as_str())
+                .ok_or("conductor_load_task_state: task_id is required")?;
+            let result = crate::task_launch::conductor_load_task_state(project_root, task_id)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        _ => Err(format!("未知 hub_invoke 命令: {command}")),
     }
 }
 
