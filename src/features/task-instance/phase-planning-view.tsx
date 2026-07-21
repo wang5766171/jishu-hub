@@ -1,21 +1,15 @@
 /**
- * PhasePlanningView —— 流程规划阶段视图。
+ * PhasePlanningView —— 流程规划阶段视图（conductor 驱动）。
  *
- * 设计依据：`任务入口与容器架构设计_20260622.md` §3.3、§6。
- *           `任务数据结构与生命周期设计_20260622.md` §3.2。
- *           `任务会话与流程串联补充说明_20260621.md` §6.3（规划阶段读取需求终稿）。
- *
- * 复用 PhaseConversationShell（会话核心），注入规划阶段专属的：
- *   - prepareMessage：注入 `<jishu-task-planning-stage>` + 需求终稿内容
- *   - 嵌入流程图生成确认卡片（用户确认 → 触发 orchestrator_create_graph + attach_graph）
- *   - onSessionResolved：回写 planning_session_id
+ * 设计依据：Batch 2 UI 任务模式统一。流程规划由 conductor 扩展驱动，
+ * 本视图仅承载 conductor 会话（PhaseConversationShell），不再注入旧阶段推进话术，
+ * 也不再使用原生流程图生成卡片。conductor 的 commit_plan 确认卡通过 ctx.ui.select
+ * 渲染为聊天交互卡（pendingInteractions），由 PhaseConversationShell 的 ChatInput 呈现。
+ * plan 确认后 conductor 调 orchestrator_validate_proposal 创建 GraphRevision。
  */
-import { useCallback, useMemo } from "react";
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { PhaseConversationShell } from "./phase-conversation-shell";
-import { GraphGenerationCard } from "./graph-generation-card";
-import { buildPlanningStagePrompt } from "./task-phase-prompts";
-import type { PreparedMessage } from "@/features/chat-core/types";
 import type { TaskInstance } from "./types";
 
 interface PhasePlanningViewProps {
@@ -24,12 +18,7 @@ interface PhasePlanningViewProps {
   readOnly: boolean;
   projectPath: string;
   encodedProjectId?: string;
-  /** 用户确认生成流程图 → 触发 orchestrator_create_graph + attach_graph。 */
-  onGenerateGraph: () => void;
-  /** 用户要求修改方案 → 继续讨论。 */
-  onModify?: () => void;
-  /** 是否展示生成卡片（Agent 发起"是否生成流程图"交互后置为 true）。 */
-  showGenerationCard: boolean;
+  onSessionResolved?: (realSessionId: string) => void;
 }
 
 export function PhasePlanningView({
@@ -38,28 +27,9 @@ export function PhasePlanningView({
   readOnly,
   projectPath,
   encodedProjectId,
-  onGenerateGraph,
-  onModify,
-  showGenerationCard,
+  onSessionResolved,
 }: PhasePlanningViewProps) {
   const { t } = useTranslation();
-
-  // 规划阶段的隐藏指令注入（含需求终稿路径，约束 Agent 基于终稿规划流程）。
-  const prepareMessage = useCallback(
-    (message: string): PreparedMessage => {
-      const taskId = instance?.task_id ?? "";
-      const skillId = instance?.skill_id ?? "jishu-task-planner";
-      const reqFile = instance?.requirement_file ?? "";
-      const hidden = buildPlanningStagePrompt({
-        taskId,
-        requirementFile: reqFile,
-        skillId,
-        projectPath,
-      });
-      return { visible: message, agent: `${hidden}\n\n${message}` };
-    },
-    [instance?.task_id, instance?.skill_id, instance?.requirement_file, projectPath],
-  );
 
   const inputContextFooter = useMemo(
     () => (
@@ -78,17 +48,8 @@ export function PhasePlanningView({
       readOnly={readOnly}
       projectPath={projectPath}
       encodedProjectId={encodedProjectId}
-      prepareMessage={prepareMessage}
+      onSessionResolved={onSessionResolved}
       inputContextFooter={inputContextFooter}
-      embeddedCard={
-        showGenerationCard ? (
-          <GraphGenerationCard
-            readOnly={readOnly}
-            onConfirm={onGenerateGraph}
-            onModify={onModify}
-          />
-        ) : null
-      }
     />
   );
 }

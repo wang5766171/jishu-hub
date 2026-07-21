@@ -58,10 +58,7 @@ pub enum ContentBlock {
         origin: Option<String>,
     },
     #[serde(rename = "phase_divider")]
-    PhaseDivider {
-        phase: String,
-        title: String,
-    },
+    PhaseDivider { phase: String, title: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,23 +215,26 @@ pub fn parse_message(line: &str) -> Option<Message> {
         .collect();
 
     let is_phase_enter = custom_type.starts_with("jishu-conductor:phase-enter:");
-    
+
     if filtered.is_empty() && !is_phase_enter {
         return None;
     }
 
-    let is_launch_text = role == "user" && filtered.iter().any(|b| match b {
-        ContentBlock::Text { text } => text.trim_start().starts_with("/jishu-task "),
-        _ => false,
-    });
+    let is_launch_text = role == "user"
+        && filtered.iter().any(|b| match b {
+            ContentBlock::Text { text } => text.trim_start().starts_with("/jishu-task "),
+            _ => false,
+        });
 
     if is_phase_enter || is_launch_text {
         let phase = if is_phase_enter {
-            custom_type.strip_prefix("jishu-conductor:phase-enter:").unwrap_or("discuss")
+            custom_type
+                .strip_prefix("jishu-conductor:phase-enter:")
+                .unwrap_or("discuss")
         } else {
             "discuss"
         };
-        
+
         let title = match phase {
             "discuss" => "需求讨论",
             "plan" => "流程规划",
@@ -249,10 +249,13 @@ pub fn parse_message(line: &str) -> Option<Message> {
         });
 
         if !has_divider {
-            filtered.insert(0, ContentBlock::PhaseDivider {
-                phase: phase.to_string(),
-                title: title.to_string(),
-            });
+            filtered.insert(
+                0,
+                ContentBlock::PhaseDivider {
+                    phase: phase.to_string(),
+                    title: title.to_string(),
+                },
+            );
         }
     }
 

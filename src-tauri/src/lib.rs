@@ -871,9 +871,8 @@ fn backup_managed_pi_runtime(target: &std::path::Path) -> Result<std::path::Path
     for name in ["packages", "node_modules"] {
         let current = target.join(name);
         if current.exists() {
-            std::fs::rename(&current, backup.join(name)).map_err(|error| {
-                format!("Failed to back up {}: {error}", current.display())
-            })?;
+            std::fs::rename(&current, backup.join(name))
+                .map_err(|error| format!("Failed to back up {}: {error}", current.display()))?;
         }
     }
     Ok(backup)
@@ -949,8 +948,8 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
             String::from_utf8_lossy(&output.stderr)
         );
 
-    if output.status.success() {
-        return Ok("Pi agent installed globally from NPM (Lite version).".to_string());
+        if output.status.success() {
+            return Ok("Pi agent installed globally from NPM (Lite version).".to_string());
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!("NPM installation failed: {}", stderr));
@@ -2762,6 +2761,13 @@ fn task_requirement_finalize(
 }
 
 #[tauri::command]
+fn task_launch_start_run(
+    request: task_launch::TaskLaunchStartRunRequest,
+) -> Result<task_launch::StartRunFromRevisionResult, String> {
+    task_launch::task_launch_start_run(request)
+}
+
+#[tauri::command]
 fn task_launch_attach_graph(
     project_root: String,
     task_id: String,
@@ -2801,14 +2807,6 @@ fn task_launch_create_from_existing_graph(
     skill_id: String,
 ) -> Result<task_launch::TaskLaunchInstance, String> {
     task_launch::create_from_existing_graph(&project_root, &graph_id, &title, &skill_id)
-}
-
-#[tauri::command]
-fn task_advance_phase(
-    project_root: String,
-    request: task_launch::AdvancePhaseRequest,
-) -> Result<task_launch::AdvancePhaseResult, String> {
-    task_launch::advance_phase(&project_root, request)
 }
 
 #[tauri::command]
@@ -3045,12 +3043,12 @@ pub fn run() {
             task_launch_list_sessions,
             task_launch_mark_session,
             task_requirement_finalize,
+            task_launch_start_run,
             task_launch_attach_graph,
             task_launch_sync_run_status,
             task_launch_get_instance,
             task_planning_instruction,
             task_launch_create_from_existing_graph,
-            task_advance_phase,
             task_launch_rename_task,
             task_launch_delete_task,
             conductor_sync_phase,

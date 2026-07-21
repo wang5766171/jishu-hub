@@ -8,8 +8,7 @@
  *
  * 作为独立 chunk 动态加载，chat-page 通过 React.lazy 引入，不膨胀初始 bundle。
  */
-import { useEffect, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { useEffect } from "react";
 import { useTaskGraph } from "@/features/task-workbench/use-task-graph";
 import { TaskPhaseNavBar } from "./task-phase-nav-bar";
 import { PhaseRequirementsView } from "./phase-requirements-view";
@@ -25,6 +24,7 @@ export interface TaskPhaseContainerProps {
   initialTaskId?: string | null;
   initialPhase?: TaskPhase;
   initialReadOnly?: boolean;
+  agents?: Array<{ id: string; display_name: string }>;
   onSidebarUpdate?: () => void;
   onClose?: () => void;
 }
@@ -35,10 +35,10 @@ export default function TaskPhaseContainer({
   initialTaskId,
   initialPhase,
   initialReadOnly = false,
+  agents,
   onSidebarUpdate,
   onClose,
 }: TaskPhaseContainerProps) {
-  const { t } = useTranslation();
   const task = useTaskInstance({ projectRoot: projectPath, initialTaskId });
   const taskGraph = useTaskGraph();
 
@@ -82,10 +82,7 @@ export default function TaskPhaseContainer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.activePhase, task.activeInstance?.graph_id]);
 
-  // ── 需求定稿状态（简化：本地 state 控制卡片显示）──
-  const [showFinalizeCard, setShowFinalizeCard] = useState(false);
-  const [showGenerationCard, setShowGenerationCard] = useState(false);
-
+  // ── 会话解析回调：将 conductor 会话写回 TaskInstance 对应阶段字段 ──
   const handleSessionResolved = (realSessionId: string, phase: TaskPhase) => {
     logTaskPhaseDebug("container:session-resolved", {
       taskId: task.activeInstanceId,
@@ -93,40 +90,6 @@ export default function TaskPhaseContainer({
       sessionId: realSessionId,
     });
     task.markSession(realSessionId, phase).catch(console.error);
-  };
-
-  const handleFinalize = async (markdown: string) => {
-    if (!task.activeInstance) return;
-    const result = await task.finalizeRequirements({
-      task_id: task.activeInstanceId,
-      skill_id: task.activeInstance.skill_id,
-      title: task.activeInstance.title,
-      requirement_markdown: markdown,
-      source_session_id: task.activeInstance.requirement_session_id,
-      creation_mode: "discussion",
-    });
-    if (result) {
-      setShowFinalizeCard(false);
-      // 终稿后自动进入规划阶段
-      task.openPhase("planning");
-    }
-  };
-
-  const handleGenerateGraph = async () => {
-    if (!task.activeInstance) return;
-    // 触发规划会话收集 → create_graph（复用现有 useTaskGraph.createGraph）
-    await taskGraph.createGraph(
-      task.activeInstance.title,
-      task.activeInstance.requirement_file
-        ? `需求终稿：${task.activeInstance.requirement_file}`
-        : task.activeInstance.title,
-      projectPath,
-      [{ skill_id: task.activeInstance.skill_id }],
-    );
-    if (taskGraph.graph) {
-      await task.attachGraph(taskGraph.graph.graph_id);
-    }
-    setShowGenerationCard(false);
   };
 
   const runStatusLabel = task.activeInstance?.run_status ?? null;
@@ -161,18 +124,7 @@ export default function TaskPhaseContainer({
             readOnly={task.readOnly}
             projectPath={projectPath}
             encodedProjectId={encodedProjectId}
-            finalizeCardData={
-              showFinalizeCard && task.activeInstance
-                ? {
-                    taskId: task.activeInstance.task_id,
-                    title: task.activeInstance.title,
-                    requirementMarkdown: t("task.requirements.finalizePlaceholder", "请确认需求终稿内容（由 Agent 按 skill 约束产出）。"),
-                  }
-                : null
-            }
             onSessionResolved={(sid) => handleSessionResolved(sid, "requirements")}
-            onFinalize={handleFinalize}
-            onModify={() => setShowFinalizeCard(false)}
           />
         )}
 
@@ -183,9 +135,7 @@ export default function TaskPhaseContainer({
             readOnly={task.readOnly}
             projectPath={projectPath}
             encodedProjectId={encodedProjectId}
-            showGenerationCard={showGenerationCard}
-            onGenerateGraph={handleGenerateGraph}
-            onModify={() => setShowGenerationCard(false)}
+            onSessionResolved={(sid) => handleSessionResolved(sid, "planning")}
           />
         )}
 
@@ -199,6 +149,7 @@ export default function TaskPhaseContainer({
             chatScope={task.chatScope}
             selectedNodeId={task.selectedNodeId}
             nodeSessions={task.nodeSessionMap}
+            agents={agents}
             onExecutionViewChange={task.setExecutionView}
             onChatScopeChange={task.setChatScope}
             onSelectNode={task.selectNode}

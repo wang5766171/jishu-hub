@@ -83,8 +83,8 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [nodeSessionMap, setNodeSessionMap] = useState<Record<string, NodeSessionInfo>>({});
 
-  // skill id 保留（markSession 需要）。默认 jishu-task-planner。
-  const skillIdRef = useRef<string>("jishu-task-planner");
+  // skill id 保留（markSession 需要）。默认 conductor dev skill。
+  const skillIdRef = useRef<string>("jishu-conductor-dev");
 
   const loadInstances = useCallback(async () => {
     if (!projectRoot) {

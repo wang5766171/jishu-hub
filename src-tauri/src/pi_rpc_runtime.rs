@@ -1141,8 +1141,9 @@ fn handle_hub_invoke(
         }
         "orchestrator_start_run_from_revision" => {
             let request: crate::task_launch::StartRunFromRevisionRequest =
-                serde_json::from_value(params.clone())
-                    .map_err(|e| format!("orchestrator_start_run_from_revision 参数解析失败: {e}"))?;
+                serde_json::from_value(params.clone()).map_err(|e| {
+                    format!("orchestrator_start_run_from_revision 参数解析失败: {e}")
+                })?;
             let result = crate::task_launch::orchestrator_start_run_from_revision(request)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }

@@ -107,32 +107,6 @@ pub struct TaskSessionIndex {
     pub entries: Vec<TaskSessionEntry>,
 }
 
-/// 阶段推进请求（统一入口，不绑定 skill）。
-///
-/// `phase` 表示要推进到哪个阶段：
-/// - "planning"：需求→规划（落盘终稿 + 推进状态 + 返回规划指令）
-/// - "execution"：规划→执行（推进状态到 graph_created）
-///
-/// 设计依据：阶段转换应该是确定性的后端原子操作，不应依赖前端关键词检测。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdvancePhaseRequest {
-    pub task_id: String,
-    pub phase: String,
-    /// 仅 requirements→planning 需要：需求终稿 markdown（由 skill 的 format_requirement.mjs 产出）。
-    pub requirement_markdown: Option<String>,
-    /// 仅 requirements→planning 需要：需求阶段会话 id（追溯用）。
-    pub requirement_session_id: Option<String>,
-}
-
-/// 阶段推进结果。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdvancePhaseResult {
-    pub instance: TaskLaunchInstance,
-    /// 仅 requirements→planning：传给规划阶段新会话的首条消息（隐藏指令 + 需求终稿）。
-    /// 前端收到后直接用 send_message 发给 agent（用新 pending session）。
-    pub planning_instruction: Option<String>,
-}
-
 /// 独立 SQLite 任务实例库。
 ///
 /// 设计依据：`任务数据结构与生命周期设计_20260622.md` §1.1、§7。
@@ -176,10 +150,8 @@ impl TaskInstanceStore {
                 .map_err(|e| e.to_string())?;
         } else if current_version == 1 {
             // v1 → v2：增量迁移，新增 last_launch_key 列。
-            conn.execute_batch(
-                "ALTER TABLE task_instance ADD COLUMN last_launch_key TEXT;",
-            )
-            .map_err(|e| e.to_string())?;
+            conn.execute_batch("ALTER TABLE task_instance ADD COLUMN last_launch_key TEXT;")
+                .map_err(|e| e.to_string())?;
         }
         // current_version == 2：无需迁移。
 
@@ -512,8 +484,6 @@ pub fn mark_task_stage_session(
 }
 
 /// 通过 session_id 查找任务实例。
-/// agent 调 advance_phase.mjs 时可能不知道 task_id，但知道自己的 session_id
-/// （Pi 的 get_state 返回）。用 session_id 反查 task_id 是确定性的。
 pub fn find_by_session(
     project_root: &str,
     session_id: &str,
@@ -640,95 +610,6 @@ pub fn attach_graph(
     Ok(instance)
 }
 
-/// 统一阶段推进入口。
-///
-/// 按 `request.phase` 决定转换类型：
-/// - "planning"：需求→规划。落盘需求终稿，推进 status → requirements_finalized → planning_discussing，
-///   返回规划指令（含需求终稿内容），前端用它发起新的规划阶段会话。
-/// - "execution"：规划→执行。推进 status → graph_created，current_phase → execution。
-///
-/// 设计依据：阶段转换是确定性的后端原子操作（状态机 + 文件），不依赖前端关键词检测或 skill 话术。
-/// 无论用什么 skill，阶段转换都走这个统一入口。
-pub fn advance_phase(
-    project_root: &str,
-    request: AdvancePhaseRequest,
-) -> Result<AdvancePhaseResult, String> {
-    let AdvancePhaseRequest {
-        task_id,
-        phase,
-        requirement_markdown,
-        requirement_session_id,
-    } = request;
-
-    let store = open_store(project_root)?;
-    let mut instance = store
-        .get(&task_id)?
-        .ok_or_else(|| format!("task instance not found: {task_id}"))?;
-
-    match phase.as_str() {
-        "planning" => {
-            // 需求→规划：落盘终稿 + 推进状态
-            let markdown = requirement_markdown
-                .ok_or_else(|| "requirement_markdown is required for planning phase".to_string())?;
-            if markdown.trim().is_empty() {
-                return Err("requirement_markdown is empty".into());
-            }
-
-            // 落盘需求终稿
-            let requirement_dir = task_workspace_root(project_root)
-                .join(&task_id)
-                .join("requirements");
-            std::fs::create_dir_all(&requirement_dir).map_err(|err| err.to_string())?;
-            let requirement_file = requirement_dir.join("requirements.md");
-            let content = render_finalized_markdown(
-                &instance.title,
-                &instance.skill_id,
-                requirement_session_id.as_deref(),
-                "discussion",
-                &markdown,
-            );
-            crate::util::atomic_write(&requirement_file, content.as_bytes())
-                .map_err(|err| err.to_string())?;
-
-            // 推进状态
-            let now = now_ms();
-            instance.status = STATUS_PLANNING_DISCUSSING.into();
-            instance.current_phase = "planning".into();
-            instance.requirement_file = Some(requirement_file.to_string_lossy().to_string());
-            if let Some(sid) = requirement_session_id.filter(|v| !v.trim().is_empty()) {
-                instance.requirement_session_id = Some(sid);
-            }
-            instance.updated_at = now;
-            store.upsert(&instance)?;
-
-            // 生成规划指令（传给规划阶段新会话的首条消息）
-            let planning_instruction =
-                build_planning_instruction_from_requirement(&requirement_file)?;
-
-            Ok(AdvancePhaseResult {
-                instance,
-                planning_instruction: Some(planning_instruction),
-            })
-        }
-        "execution" => {
-            // 规划→执行：推进状态到 graph_created
-            // 注意：graph 的创建（orchestrator_create_graph）由前端调用，
-            // 这里只推进 task_instance 状态。前端先 create_graph 拿到 graph_id，
-            // 再调本命令推进状态。或者在 attach_graph 之后调本命令。
-            // 简化：execution 阶段推进只更新 current_phase，graph_id 由 attach_graph 设置。
-            instance.status = STATUS_GRAPH_CREATED.into();
-            instance.current_phase = "execution".into();
-            instance.updated_at = now_ms();
-            store.upsert(&instance)?;
-
-            Ok(AdvancePhaseResult {
-                instance,
-                planning_instruction: None,
-            })
-        }
-        _ => Err(format!("unknown phase: {phase}")),
-    }
-}
 ///
 /// 设计依据：`任务数据结构与生命周期设计_20260622.md` §1.1 联动契约、§2.1 run_status 流转。
 /// - running：写 active_run_id + run_status=running
@@ -966,10 +847,7 @@ pub struct ConductorLoadStateResult {
 fn is_legal_conductor_transition(from: &str, to: &str) -> bool {
     matches!(
         (from, to),
-        ("idle", "discuss")
-            | ("discuss", "plan")
-            | ("plan", "execute")
-            | ("execute", "done")
+        ("idle", "discuss") | ("discuss", "plan") | ("plan", "execute") | ("execute", "done")
     )
 }
 
@@ -1013,12 +891,8 @@ fn verify_artifact_hash(
             "产物哈希校验失败: manifest={stored_hash}, expected={expected_hash}"
         ));
     }
-    let proposal = std::fs::read(&expected_proposal_path).map_err(|e| {
-        format!(
-            "读取产物失败 ({}): {e}",
-            expected_proposal_path.display()
-        )
-    })?;
+    let proposal = std::fs::read(&expected_proposal_path)
+        .map_err(|e| format!("读取产物失败 ({}): {e}", expected_proposal_path.display()))?;
     let actual_hash = format!("sha256:{:x}", Sha256::digest(&proposal));
     if actual_hash != expected_hash {
         return Err(format!(
@@ -1114,9 +988,7 @@ pub fn conductor_sync_phase(
         return Ok(ConductorSyncPhaseResult {
             success: false,
             instance: existing.ok_or_else(|| format!("task instance not found: {task_id}"))?,
-            error: Some(format!(
-                "非法阶段转换: {current_conductor_phase} → {phase}"
-            )),
+            error: Some(format!("非法阶段转换: {current_conductor_phase} → {phase}")),
         });
     }
 
@@ -1419,14 +1291,13 @@ pub fn orchestrator_validate_proposal(
     };
 
     // 3. 校验 DAG
-    let _warnings = graph_validate(&snapshot)
-        .map_err(|e| format!("graph validation failed: {e:?}"))?;
+    let _warnings =
+        graph_validate(&snapshot).map_err(|e| format!("graph validation failed: {e:?}"))?;
 
     // 4. 创建 TaskGraph + GraphRevision
     let db_path = default_db_path();
     if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create db dir failed: {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("create db dir failed: {e}"))?;
     }
     let store =
         TaskStore::open(&db_path).map_err(|e| format!("open orchestrator store failed: {e}"))?;
@@ -1446,15 +1317,9 @@ pub fn orchestrator_validate_proposal(
         updated_at: now,
     };
 
-    let mut revision = GraphRevision::from_snapshot(
-        &revision_id,
-        &graph_id,
-        None,
-        &snapshot,
-        "conductor",
-        now,
-    )
-    .map_err(|e| format!("create revision failed: {e}"))?;
+    let mut revision =
+        GraphRevision::from_snapshot(&revision_id, &graph_id, None, &snapshot, "conductor", now)
+            .map_err(|e| format!("create revision failed: {e}"))?;
     revision.change_summary = "Created from flow-plan-proposal".to_string();
     revision
         .refresh_content_hash()
@@ -1481,8 +1346,7 @@ pub fn orchestrator_validate_proposal(
     if manifest_path.exists() {
         if let Ok(manifest_raw) = std::fs::read_to_string(&manifest_path) {
             if let Ok(mut manifest) = serde_json::from_str::<serde_json::Value>(&manifest_raw) {
-                manifest["linked_revision_id"] =
-                    serde_json::Value::String(revision_id.clone());
+                manifest["linked_revision_id"] = serde_json::Value::String(revision_id.clone());
                 let _ = std::fs::write(
                     &manifest_path,
                     serde_json::to_string_pretty(&manifest).unwrap_or_default(),
@@ -1521,11 +1385,11 @@ pub struct StartRunFromRevisionResult {
 pub fn orchestrator_start_run_from_revision(
     req: StartRunFromRevisionRequest,
 ) -> Result<StartRunFromRevisionResult, String> {
+    use crate::orchestrator::events::payloads;
     use crate::orchestrator::{
         build_event, default_db_path, BudgetState, GraphRun, RunPlanningSnapshot, RunStatus,
-        TaskStore, TaskEventType,
+        TaskEventType, TaskStore,
     };
-    use crate::orchestrator::events::payloads;
     use crate::util::gen_id;
 
     // 1. 读取 manifest 获取 linked_revision_id + content_hash
@@ -1536,8 +1400,8 @@ pub fn orchestrator_start_run_from_revision(
         .join("manifest.json");
     let manifest_raw = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("read manifest failed: {e}"))?;
-    let manifest: serde_json::Value = serde_json::from_str(&manifest_raw)
-        .map_err(|e| format!("parse manifest failed: {e}"))?;
+    let manifest: serde_json::Value =
+        serde_json::from_str(&manifest_raw).map_err(|e| format!("parse manifest failed: {e}"))?;
 
     let revision_id = manifest
         .get("linked_revision_id")
@@ -1554,8 +1418,7 @@ pub fn orchestrator_start_run_from_revision(
         .get(&req.task_id)?
         .ok_or_else(|| format!("task instance not found: {}", req.task_id))?;
 
-    if let (Some(active_run), Some(last_key)) =
-        (&instance.active_run_id, &instance.last_launch_key)
+    if let (Some(active_run), Some(last_key)) = (&instance.active_run_id, &instance.last_launch_key)
     {
         if *last_key == req.idempotency_key {
             // 幂等：返回已有 run
@@ -1584,8 +1447,7 @@ pub fn orchestrator_start_run_from_revision(
         if let Some(dir) = manifest_path.parent() {
             let proposal_path = dir.join("flow-plan-proposal.json");
             if let Ok(proposal_raw) = std::fs::read_to_string(&proposal_path) {
-                let actual_hash =
-                    format!("sha256:{:x}", Sha256::digest(proposal_raw.as_bytes()));
+                let actual_hash = format!("sha256:{:x}", Sha256::digest(proposal_raw.as_bytes()));
                 if actual_hash != expected_hash {
                     return Err(format!(
                         "proposal file tampered: manifest={expected_hash}, actual={actual_hash}"
@@ -1664,6 +1526,128 @@ pub fn orchestrator_start_run_from_revision(
         run_id,
         graph_id,
         revision_id: revision_id.to_string(),
+    })
+}
+
+/// UI 执行工作台手动启动 run 的请求（显式指定最新 revision，不依赖 manifest）。
+///
+/// 与 [`orchestrator_start_run_from_revision`] 的区别：用户在执行工作台按节点选智能体后
+/// 会生成新 revision，此处直接用 UI 传入的最新 revision_id 启动，避免 manifest 滞后。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskLaunchStartRunRequest {
+    pub task_id: String,
+    pub project_root: String,
+    pub revision_id: String,
+    pub idempotency_key: String,
+}
+
+/// UI 执行工作台手动启动 run：在指定 revision 上创建 GraphRun 并同步更新 TaskInstance。
+pub fn task_launch_start_run(
+    req: TaskLaunchStartRunRequest,
+) -> Result<StartRunFromRevisionResult, String> {
+    use crate::orchestrator::events::payloads;
+    use crate::orchestrator::{
+        build_event, default_db_path, BudgetState, GraphRun, RunPlanningSnapshot, RunStatus,
+        TaskEventType, TaskStore,
+    };
+    use crate::util::gen_id;
+
+    // 1. 幂等检查：已有活跃 run 且 key 相同 → 返回现有 run_id
+    let ti_store = open_store(&req.project_root)?;
+    let instance = ti_store
+        .get(&req.task_id)?
+        .ok_or_else(|| format!("task instance not found: {}", req.task_id))?;
+
+    if let (Some(active_run), Some(last_key)) = (&instance.active_run_id, &instance.last_launch_key)
+    {
+        if *last_key == req.idempotency_key {
+            let graph_id = instance.graph_id.clone().unwrap_or_default();
+            return Ok(StartRunFromRevisionResult {
+                status: "already_running".to_string(),
+                run_id: active_run.clone(),
+                graph_id,
+                revision_id: req.revision_id.clone(),
+            });
+        }
+    }
+
+    // 2. 打开 orchestrator store，校验 revision 存在
+    let db_path = default_db_path();
+    let store =
+        TaskStore::open(&db_path).map_err(|e| format!("open orchestrator store failed: {e}"))?;
+
+    let revision = store
+        .get_revision(&req.revision_id)
+        .map_err(|e| format!("get revision failed: {e}"))?;
+    let graph_id = revision.graph_id.clone();
+
+    // 3. 创建 GraphRun（status=Running）
+    let run_id = gen_id("run");
+    let now = now_ms();
+    let snapshot = revision
+        .snapshot()
+        .map_err(|e| format!("deserialize revision snapshot failed: {e}"))?;
+    let planning_snapshot = RunPlanningSnapshot {
+        revision_content_hash: revision.content_hash.0.clone(),
+        skill_refs: revision.skill_refs.clone(),
+        template_refs: revision.template_refs.clone(),
+        planner_policy_refs: revision.planner_policy_refs.clone(),
+        node_policies: snapshot
+            .nodes
+            .into_iter()
+            .map(|node| (node.node_id, node.policy))
+            .collect(),
+    };
+
+    let run = GraphRun {
+        run_id: run_id.clone(),
+        graph_id: graph_id.clone(),
+        active_revision_id: req.revision_id.clone(),
+        status: RunStatus::Running,
+        run_seq: 1,
+        budget_state: BudgetState::default(),
+        planning_snapshot,
+        started_at: now,
+        finished_at: None,
+    };
+
+    let event = build_event(
+        gen_id("evt"),
+        &run_id,
+        1,
+        TaskEventType::RunStarted,
+        "ui_workbench",
+        now,
+        serde_json::to_value(&payloads::RunStartedPayload {
+            run_id: run_id.clone(),
+            graph_id: graph_id.clone(),
+            revision_id: req.revision_id.clone(),
+            initial_status: RunStatus::Running,
+            budget_state: BudgetState::default(),
+        })
+        .map_err(|e| format!("serialize event payload failed: {e}"))?,
+    );
+
+    store
+        .create_run_with_event(&run, &event)
+        .map_err(|e| format!("create run failed: {e}"))?;
+
+    // 4. 更新 TaskInstance
+    let mut updated = instance;
+    updated.active_run_id = Some(run_id.clone());
+    updated.last_run_id = Some(run_id.clone());
+    updated.run_status = Some(RUN_STATUS_RUNNING.to_string());
+    updated.current_phase = "execution".to_string();
+    updated.status = STATUS_GRAPH_CREATED.to_string();
+    updated.last_launch_key = Some(req.idempotency_key);
+    updated.updated_at = now;
+    ti_store.upsert(&updated)?;
+
+    Ok(StartRunFromRevisionResult {
+        status: "started".to_string(),
+        run_id,
+        graph_id,
+        revision_id: req.revision_id,
     })
 }
 
@@ -1766,41 +1750,6 @@ mod tests {
     }
 
     #[test]
-    fn planning_instruction_can_be_rebuilt_after_advance() {
-        let project = temp_project("planning-instruction");
-        let project_root = project.to_string_lossy().to_string();
-
-        let instance = mark_task_stage_session(
-            &project_root,
-            None,
-            "requirements-session",
-            "jishu-conductor-dev",
-            "requirements",
-            Some("Demo task"),
-        )
-        .unwrap();
-
-        let result = advance_phase(
-            &project_root,
-            AdvancePhaseRequest {
-                task_id: instance.task_id.clone(),
-                phase: "planning".into(),
-                requirement_markdown: Some("# Demo task\n\n## Goal\nShip a usable demo.".into()),
-                requirement_session_id: Some("requirements-session".into()),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(result.instance.status, STATUS_PLANNING_DISCUSSING);
-        let instruction =
-            planning_instruction_for_instance(&project_root, &instance.task_id).unwrap();
-        assert!(instruction.contains("requirements.md"));
-        assert!(instruction.contains("Ship a usable demo."));
-
-        let _ = std::fs::remove_dir_all(&project);
-    }
-
-    #[test]
     fn task_persists_and_lists_across_equivalent_path_forms() {
         // 回归守护：同一项目用不同路径形式（分隔符/trailing）创建与查询，必须查到任务。
         // normalize_project_root 统一了 project_root 形式，避免"创建存入形式 ≠ 加载查询形式
@@ -1894,7 +1843,8 @@ mod tests {
             artifacts: Some(ConductorSyncArtifacts {
                 requirements: None,
                 flow_plan_json: Some(
-                    project.join("outside-flow-plan-proposal.json")
+                    project
+                        .join("outside-flow-plan-proposal.json")
                         .to_string_lossy()
                         .into_owned(),
                 ),

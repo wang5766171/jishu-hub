@@ -146,9 +146,7 @@ fn bundled_task_plan_skill_resource_dir(skill_id: &str) -> PathBuf {
     bundled_task_plan_resource_dir().join(skill_id)
 }
 
-pub fn task_plan_skill_runtime_paths(
-    skill_id: &str,
-) -> Result<TaskPlanSkillRuntimePaths, String> {
+pub fn task_plan_skill_runtime_paths(skill_id: &str) -> Result<TaskPlanSkillRuntimePaths, String> {
     #[cfg(debug_assertions)]
     {
         let skill_dir = bundled_task_plan_skill_resource_dir(skill_id);
@@ -269,12 +267,18 @@ pub fn list_task_plan_skills() -> Result<Vec<TaskPlanSkill>, String> {
 }
 
 // ── Pi 扩展自动注册（Hub setup hook 每次启动幂等确保）── // FORCE COMPILER TO RE-READ STATIC EMBEDDED FILE CHANGES V6
-const CONDUCTOR_EXTENSION_TS: &str = include_str!("../resources/extensions/jishu-task-conductor.ts");
-const CONDUCTOR_DISCUSS_SKILL: &str = include_str!("../resources/task-plan/jishu-conductor-dev/discuss.SKILL.md");
-const CONDUCTOR_PLAN_SKILL: &str = include_str!("../resources/task-plan/jishu-conductor-dev/plan.SKILL.md");
-const CONDUCTOR_EXECUTE_SKILL: &str = include_str!("../resources/task-plan/jishu-conductor-dev/execute.SKILL.md");
-const REQUEST_USER_INPUT_EXTENSION_TS: &str = include_str!("../resources/extensions/request-user-input.ts");
-const SESSION_CONTEXT_EXTENSION_TS: &str = include_str!("../resources/extensions/session-context.ts");
+const CONDUCTOR_EXTENSION_TS: &str =
+    include_str!("../resources/extensions/jishu-task-conductor.ts");
+const CONDUCTOR_DISCUSS_SKILL: &str =
+    include_str!("../resources/task-plan/jishu-conductor-dev/discuss.SKILL.md");
+const CONDUCTOR_PLAN_SKILL: &str =
+    include_str!("../resources/task-plan/jishu-conductor-dev/plan.SKILL.md");
+const CONDUCTOR_EXECUTE_SKILL: &str =
+    include_str!("../resources/task-plan/jishu-conductor-dev/execute.SKILL.md");
+const REQUEST_USER_INPUT_EXTENSION_TS: &str =
+    include_str!("../resources/extensions/request-user-input.ts");
+const SESSION_CONTEXT_EXTENSION_TS: &str =
+    include_str!("../resources/extensions/session-context.ts");
 
 /// 部署内嵌扩展源到 `<agent_dir>/<rel_path>`，自动建父目录；内容相同则跳过写入。
 fn deploy_extension_file(agent_dir: &Path, rel_path: &str, source: &str) {
@@ -304,7 +308,10 @@ fn register_extension_in_settings(agent_dir: &Path, rel_path: &str) {
     if exists {
         return;
     }
-    match settings.get_mut("extensions").and_then(|v| v.as_array_mut()) {
+    match settings
+        .get_mut("extensions")
+        .and_then(|v| v.as_array_mut())
+    {
         Some(arr) => arr.push(serde_json::Value::String(rel_path.to_string())),
         None => {
             settings["extensions"] = serde_json::json!([rel_path]);
@@ -318,7 +325,9 @@ fn register_extension_in_settings(agent_dir: &Path, rel_path: &str) {
 /// 自动注册 Conductor 扩展 + skill pack + settings.json extensions + 删除旧 skill。
 /// 在 Hub setup hook 调用，每次启动自动确保。
 pub fn ensure_conductor_extension() {
-    let Some(home) = dirs::home_dir() else { return; };
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
     ensure_conductor_extension_in(&home.join(".jishu-agent"));
 }
 
@@ -348,7 +357,9 @@ fn ensure_conductor_extension_in(agent_dir: &Path) {
 /// 自动部署 `request_user_input` 扩展（conductor 的 discuss/plan 阶段依赖此工具）。
 /// 在 Hub setup hook 调用，每次启动自动确保。
 pub fn ensure_request_user_input_extension() {
-    let Some(home) = dirs::home_dir() else { return; };
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
     ensure_request_user_input_extension_in(&home.join(".jishu-agent"));
 }
 
@@ -359,10 +370,12 @@ fn ensure_request_user_input_extension_in(agent_dir: &Path) {
 }
 
 /// 自动部署 `session-context` 扩展：把当前 session_id 注入 system prompt（每轮），
-/// 供 task_launch 阶段推进脚本（advance_phase.mjs → find_by_session）使用，
+/// 供 conductor 将当前 Pi 会话关联到 TaskInstance，
 /// 取代往 user message 拼提示词的旧做法（避免污染会话列表名/内容/搜索）。
 pub fn ensure_session_context_extension() {
-    let Some(home) = dirs::home_dir() else { return; };
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
     ensure_session_context_extension_in(&home.join(".jishu-agent"));
 }
 
@@ -1074,10 +1087,8 @@ description: demo
     // ── Pi 扩展部署辅助测试 ──
 
     fn ext_test_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "jishu-ext-test-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("jishu-ext-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -1118,7 +1129,10 @@ description: demo
         let after = std::fs::read_to_string(dir.join("settings.json")).unwrap();
         assert_eq!(between, after, "二次注册不应改写文件");
         let v: serde_json::Value = serde_json::from_str(&after).unwrap();
-        assert_eq!(v.get("defaultModel").and_then(|x| x.as_str()), Some("gpt-4o"));
+        assert_eq!(
+            v.get("defaultModel").and_then(|x| x.as_str()),
+            Some("gpt-4o")
+        );
         let arr = settings_extensions(&dir);
         assert_eq!(arr.len(), 2);
         assert!(arr.contains(&"extensions/other.ts".into()));

@@ -431,8 +431,11 @@ fn route_acp_interaction_response(
                 if let Some(first_q) = pending.questions.first() {
                     let field_value = if first_q.is_multi_select {
                         serde_json::Value::Array(
-                            value.split('\n').filter(|s| !s.is_empty())
-                                .map(|s| serde_json::Value::String(s.to_string())).collect(),
+                            value
+                                .split('\n')
+                                .filter(|s| !s.is_empty())
+                                .map(|s| serde_json::Value::String(s.to_string()))
+                                .collect(),
                         )
                     } else {
                         serde_json::Value::String(value.to_string())
@@ -458,8 +461,11 @@ fn route_acp_interaction_response(
         let q = &pending.questions[sub_index];
         let field_value = if q.is_multi_select {
             serde_json::Value::Array(
-                value.split('\n').filter(|s| !s.is_empty())
-                    .map(|s| serde_json::Value::String(s.to_string())).collect(),
+                value
+                    .split('\n')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| serde_json::Value::String(s.to_string()))
+                    .collect(),
             )
         } else {
             serde_json::Value::String(value.to_string())

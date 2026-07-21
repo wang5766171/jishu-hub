@@ -22,6 +22,7 @@ import { MessageView } from "@/components/sessions/message-view";
 import { ChatInput } from "@/components/sessions/chat-input";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { useChatSession } from "@/features/chat-core/use-chat-session";
+import { invokeCommand } from "@/hooks/use-invoke";
 import { useRunEventStream } from "./use-run-event-stream";
 import { useNodeSession } from "./use-node-session";
 import { ExecutionViewSwitcher } from "./execution-view-switcher";
@@ -47,6 +48,8 @@ interface PhaseExecutionViewProps {
   chatScope: ExecutionChatScope;
   selectedNodeId: string | null;
   nodeSessions: Record<string, NodeSessionInfo>;
+  /** 可选智能体列表（用于按节点指定执行 agent）。 */
+  agents?: Array<{ id: string; display_name: string }>;
   onExecutionViewChange: (view: ExecutionView) => void;
   onChatScopeChange: (scope: ExecutionChatScope) => void;
   onSelectNode: (nodeId: string | null) => void;
@@ -63,6 +66,7 @@ export function PhaseExecutionView({
   chatScope,
   selectedNodeId,
   nodeSessions,
+  agents,
   onExecutionViewChange,
   onChatScopeChange,
   onSelectNode,
@@ -71,6 +75,57 @@ export function PhaseExecutionView({
 }: PhaseExecutionViewProps) {
   const { t } = useTranslation();
   const runId = instance.active_run_id ?? taskGraph.displayedRunId ?? null;
+  const runStarted = Boolean(runId || taskGraph.activeRunId);
+
+  // ── 手动启动执行（UI 驱动）：在最新 revision 上创建 run 并同步 TaskInstance ──
+  const handleLaunchRun = async () => {
+    const revisionId = taskGraph.revision?.revision_id;
+    if (!instance.graph_id || !revisionId) return;
+    try {
+      const result = await invokeCommand<{ status: string; run_id: string }>(
+        "task_launch_start_run",
+        {
+          request: {
+            task_id: instance.task_id,
+            project_root: projectPath,
+            revision_id: revisionId,
+            idempotency_key: `ui-${instance.task_id}-${revisionId}`,
+          },
+        },
+      );
+      if (result?.run_id) {
+        onSyncRunStatus(result.run_id, "running");
+        await taskGraph.loadGraph(instance.graph_id);
+      }
+    } catch (err) {
+      console.error("Failed to launch run:", err);
+    }
+  };
+
+  // ── 按节点指定执行 agent：UpdateNode 设置 agent_assignment_constraint.locked_agent_id → 新 revision ──
+  const handleAssignAgent = async (nodeId: string, agentId: string, roleId: string) => {
+    if (runStarted) return;
+    try {
+      await taskGraph.applyCommands([
+        {
+          op: "update_node",
+          command_id: `assign-${nodeId}-${Date.now().toString(36)}`,
+          node_id: nodeId,
+          patch: {
+            agent_assignment_constraint: {
+              role_id: roleId,
+              locked_agent_id: agentId,
+              allowed_agent_ids: [],
+              denied_agent_ids: [],
+              required_capabilities: [],
+            },
+          },
+        },
+      ]);
+    } catch (err) {
+      console.error("Failed to assign agent:", err);
+    }
+  };
 
   // ── 维度3：主进程（run 事件流 + 投影）── 始终活跃 ──
   const runStream = useRunEventStream({ runId });
@@ -162,10 +217,10 @@ export function PhaseExecutionView({
               <Play className="h-3 w-3" />
             </button>
           )}
-          {!taskGraph.activeRunId && instance.graph_id && (
+          {!taskGraph.activeRunId && !instance.active_run_id && instance.graph_id && (
             <button
               type="button"
-              onClick={() => taskGraph.startRun().catch(console.error)}
+              onClick={() => handleLaunchRun().catch(console.error)}
               className="flex h-6 items-center gap-1 rounded bg-primary/10 px-2 text-[11px] text-primary hover:bg-primary/20"
               title={t("task.execution.start", "开始执行")}
             >
@@ -212,7 +267,7 @@ export function PhaseExecutionView({
               }}
               activeRunId={taskGraph.activeRunId}
               nodeRuns={taskGraph.nodeRuns}
-              startRun={() => taskGraph.startRun()}
+              startRun={() => handleLaunchRun()}
               runStatus={taskGraph.runStatus}
               pauseRun={() => taskGraph.pauseRun()}
               resumeRun={() => taskGraph.resumeRun()}
@@ -264,6 +319,9 @@ export function PhaseExecutionView({
           nodeTitle={nodeTitles[selectedNodeId] ?? selectedNodeId}
           nodeSession={currentNodeSession}
           snapshot={taskGraph.snapshot}
+          agents={agents ?? []}
+          disabled={runStarted}
+          onAssignAgent={handleAssignAgent}
         />
       )}
     </div>
@@ -380,16 +438,53 @@ function NodeInspector({
   nodeTitle,
   nodeSession,
   snapshot,
+  agents,
+  disabled,
+  onAssignAgent,
 }: {
   nodeId: string;
   nodeTitle: string;
   nodeSession: NodeSessionInfo | null;
-  snapshot: { nodes: Array<{ node_id: string; title: string; description: string | null }> } | null;
+  snapshot: {
+    nodes: Array<{
+      node_id: string;
+      title: string;
+      description: string | null;
+      role_requirement?: Record<string, unknown> | null;
+      agent_assignment_constraint?: Record<string, unknown> | null;
+    }>;
+  } | null;
+  agents: Array<{ id: string; display_name: string }>;
+  disabled: boolean;
+  onAssignAgent: (nodeId: string, agentId: string, roleId: string) => Promise<void>;
 }) {
   const node = snapshot?.nodes.find((n) => n.node_id === nodeId);
+  const constraint = node?.agent_assignment_constraint;
+  const roleRequirement = node?.role_requirement;
+  const lockedAgentId = typeof constraint?.locked_agent_id === "string" ? constraint.locked_agent_id : "";
+  const roleId = typeof roleRequirement?.role_id === "string" ? roleRequirement.role_id : nodeId;
   return (
     <div className="h-32 shrink-0 border-t border-border bg-background px-3 py-2">
-      <div className="text-xs font-medium text-foreground">{nodeTitle}</div>
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1 text-xs font-medium text-foreground">{nodeTitle}</div>
+        <label className="flex items-center gap-2 text-[10px] text-muted-foreground">
+          <span>执行智能体</span>
+          <select
+            value={lockedAgentId}
+            disabled={disabled || agents.length === 0}
+            onChange={(event) => {
+              const value = event.target.value;
+              if (value) onAssignAgent(nodeId, value, roleId).catch(console.error);
+            }}
+            className="h-6 rounded border border-border bg-background px-2 text-[11px] text-foreground disabled:opacity-60"
+          >
+            <option value="">自动选择</option>
+            {agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>{agent.display_name}</option>
+            ))}
+          </select>
+        </label>
+      </div>
       {node?.description && (
         <div className="mt-1 text-[11px] text-muted-foreground">{node.description}</div>
       )}

@@ -105,19 +105,8 @@ const PHASE_ALLOWED_TOOLS: Partial<Record<Phase, string[]>> = {
   execute: ["read", "bash", "edit", "write", "grep", "find", "ls"],
 };
 
-const EXECUTE_EXTERNAL_TOOLS = [
-  "read",
-  "grep",
-  "find",
-  "ls",
-  "start_execution",
-];
-
 /** 根据 phase + executorMode 返回当前允许的工具列表。 */
-function allowedToolsFor(phase: Phase, executorMode?: string): string[] | undefined {
-  if (phase === "execute" && executorMode === "external") {
-    return EXECUTE_EXTERNAL_TOOLS;
-  }
+function allowedToolsFor(phase: Phase, _executorMode?: string): string[] | undefined {
   return PHASE_ALLOWED_TOOLS[phase];
 }
 
@@ -172,7 +161,7 @@ function phaseDiscipline(phase: Phase): string {
       "1. 只能执行用户已确认并正式落盘的计划。",
       "2. 按节点依赖和顺序执行，满足每个节点的验收标准。",
       "3. 用户点击停止或要求暂停时立即停止。",
-      "4. 如果是 orchestrator 模式，调用 start_execution 后立即结束回复。",
+      "4. 如果已生成执行图，等待用户在 Hub 执行工作台手动启动 run。",
     ].join("\n"),
     done: "",
   };
@@ -581,14 +570,15 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       .join("\n");
 
     if (state.executorMode === "external") {
-      // orchestrator 模式：告诉模型调用 start_execution 工具
+      // UI 模式：计划已提交 orchestrator 并生成执行图，执行由界面工作台手动启动。
+      // 不触发 turn（无需模型动作）；完成态由 Hub 权威，重开会话时 session_start 校正 phase=done。
       pi.sendMessage(
         {
           customType: "jishu-conductor:phase-enter:execute",
           display: true,
-          content: `进入流程执行阶段。计划已提交 orchestrator，请立即调用 start_execution 工具启动执行。\n\n节点列表：\n${stepList}\n\n调用 start_execution 后立即结束回复，不要做任何其他操作。`,
+          content: `进入流程执行阶段。计划已提交 orchestrator 并生成执行图。\n\n节点列表：\n${stepList}\n\n请在执行工作台为各节点选择智能体，然后点击“执行”按钮启动。`,
         },
-        { triggerTurn: true, deliverAs: "followUp" },
+        { triggerTurn: false, deliverAs: "followUp" },
       );
     } else {
       // fallback 模式：纯 Pi 执行
@@ -700,81 +690,6 @@ export default function conductorExtension(pi: ExtensionAPI): void {
           },
         ],
         details: { candidateId: candidate.id, revision },
-      };
-    },
-  });
-
-  // Phase 4：start_execution 工具（orchestrator 模式）
-  pi.registerTool({
-    name: "start_execution",
-    label: "启动 orchestrator 执行",
-    description:
-      "将已确认的计划提交给 orchestrator 引擎启动自动化执行。仅在 external 模式下可用。",
-    parameters: Type.Object({
-      taskId: Type.String({ description: "任务 ID" }),
-      projectRoot: Type.String({ description: "项目根目录" }),
-      idempotencyKey: Type.String({ description: "幂等键（防重复启动）" }),
-    }),
-    async execute(_id, params) {
-      const ctx = extensionCtx;
-      if (!ctx) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({ status: "failed", error: "Extension context 不可用" }),
-            },
-          ],
-        };
-      }
-      const result = await hubInvoke(
-        ctx,
-        "orchestrator_start_run_from_revision",
-        {
-          task_id: params.taskId,
-          project_root: params.projectRoot,
-          idempotency_key: params.idempotencyKey,
-        },
-        10000,
-      );
-      if (!result) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({ status: "failed", error: "Hub 桥接不可用" }),
-            },
-          ],
-        };
-      }
-      if (!result.success) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({ status: "failed", error: result.error }),
-            },
-          ],
-        };
-      }
-      const data = result.data as {
-        status: string;
-        run_id: string;
-        graph_id: string;
-        revision_id: string;
-      };
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({
-              status: data.status,
-              runId: data.run_id,
-              graphId: data.graph_id,
-              revisionId: data.revision_id,
-            }),
-          },
-        ],
       };
     },
   });

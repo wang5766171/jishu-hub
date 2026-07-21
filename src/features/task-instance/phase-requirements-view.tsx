@@ -1,21 +1,14 @@
 /**
- * PhaseRequirementsView —— 需求讨论阶段视图。
+ * PhaseRequirementsView —— 需求讨论阶段视图（conductor 驱动）。
  *
- * 设计依据：`任务入口与容器架构设计_20260622.md` §3.3、§6。
- *           `任务数据结构与生命周期设计_20260622.md` §3.1。
- *           `任务会话与流程串联补充说明_20260621.md` §5.3（需求讨论阶段 skill 约束隐藏注入）。
- *
- * 复用 PhaseConversationShell（会话核心），注入需求讨论专属的：
- *   - prepareMessage：注入 `<jishu-task-requirements-stage>` 隐藏指令（约束 Agent 只做需求澄清）
- *   - 嵌入需求定稿确认卡片（Agent 发起"是否生成流程图"交互后展示）
- *   - onSessionResolved：回写 requirement_session_id
+ * 设计依据：Batch 2 UI 任务模式统一。需求讨论由 conductor 扩展驱动，
+ * 本视图仅承载 conductor 会话（PhaseConversationShell），不再注入旧阶段推进话术，
+ * 也不再使用原生定稿卡片。conductor 的 lock_requirement 确认卡通过 ctx.ui.select
+ * 渲染为聊天交互卡（pendingInteractions），由 PhaseConversationShell 的 ChatInput 呈现。
  */
-import { useCallback, useMemo } from "react";
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { PhaseConversationShell } from "./phase-conversation-shell";
-import { RequirementFinalizeCard } from "./requirement-finalize-card";
-import { buildRequirementsStagePrompt } from "./task-phase-prompts";
-import type { PreparedMessage } from "@/features/chat-core/types";
 import type { TaskInstance } from "./types";
 
 interface PhaseRequirementsViewProps {
@@ -24,13 +17,7 @@ interface PhaseRequirementsViewProps {
   readOnly: boolean;
   projectPath: string;
   encodedProjectId?: string;
-  /** Agent 产出的结构化定稿（由 skill 约束格式）。null 时不显示定稿卡。 */
-  finalizeCardData: { taskId: string; title: string; requirementMarkdown: string } | null;
   onSessionResolved?: (realSessionId: string) => void;
-  /** 用户确认需求定稿 → 触发 finalizeRequirements。 */
-  onFinalize: (markdown: string) => void;
-  /** 用户要求修改 → 继续讨论（卡片收起）。 */
-  onModify?: () => void;
 }
 
 export function PhaseRequirementsView({
@@ -39,26 +26,9 @@ export function PhaseRequirementsView({
   readOnly,
   projectPath,
   encodedProjectId,
-  finalizeCardData,
   onSessionResolved,
-  onFinalize,
-  onModify,
 }: PhaseRequirementsViewProps) {
   const { t } = useTranslation();
-
-  // 需求讨论阶段的隐藏指令注入（约束 Agent 只做需求澄清，不做实施/不建图）。
-  const prepareMessage = useCallback(
-    (message: string): PreparedMessage => {
-      const skillId = instance?.skill_id ?? "jishu-task-planner";
-      const hidden = buildRequirementsStagePrompt({
-        taskId: instance?.task_id,
-        skillId,
-        projectPath,
-      });
-      return { visible: message, agent: `${hidden}\n\n${message}` };
-    },
-    [instance?.task_id, instance?.skill_id, projectPath],
-  );
 
   const inputContextFooter = useMemo(
     () => (
@@ -77,20 +47,8 @@ export function PhaseRequirementsView({
       readOnly={readOnly}
       projectPath={projectPath}
       encodedProjectId={encodedProjectId}
-      prepareMessage={prepareMessage}
       onSessionResolved={onSessionResolved}
       inputContextFooter={inputContextFooter}
-      embeddedCard={
-        finalizeCardData ? (
-          <RequirementFinalizeCard
-            title={finalizeCardData.title}
-            markdown={finalizeCardData.requirementMarkdown}
-            readOnly={readOnly}
-            onConfirm={() => onFinalize(finalizeCardData.requirementMarkdown)}
-            onModify={onModify}
-          />
-        ) : null
-      }
     />
   );
 }

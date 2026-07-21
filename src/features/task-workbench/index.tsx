@@ -150,7 +150,7 @@ export function TaskWorkbench({
     invoke<TaskPlanSkill[]>("task_plan_skill_list")
       .then((items) => {
         setSkills(items);
-        const defaultSkill = items.find((item) => item.id === "jishu-task-planner");
+        const defaultSkill = items.find((item) => item.id === "jishu-conductor-dev");
         if (defaultSkill) setSelectedSkillIds([defaultSkill.id]);
       })
       .catch((skillError) => setFormError(String(skillError)));

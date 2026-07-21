@@ -264,32 +264,7 @@ pub enum TaskAction {
         plan_id: String,
     },
 
-    /// Advance a task instance to the next phase (requirements → planning → execution).
-    Advance {
-        /// Task instance ID (e.g. "task_xxx").
-        #[arg(long)]
-        task_id: String,
-
-        /// Target phase: "planning" (from requirements) or "execution" (from planning).
-        #[arg(long)]
-        phase: String,
-
-        /// Project root path (defaults to current directory).
-        #[arg(long, default_value = ".")]
-        project: String,
-
-        /// Requirement markdown (required for planning phase; produced by format_requirement.mjs).
-        /// Can be "-" to read from stdin.
-        #[arg(long)]
-        requirement: Option<String>,
-
-        /// Current session ID (for traceability — recorded as requirement_session_id).
-        #[arg(long)]
-        session: Option<String>,
-    },
-
     /// Find a task instance by session ID.
-    /// Used by advance_phase.mjs when the agent knows its session_id but not task_id.
     Find {
         /// Session ID to look up.
         #[arg(long)]

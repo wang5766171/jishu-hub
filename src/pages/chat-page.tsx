@@ -46,28 +46,16 @@ import {
 } from "@/lib/conversation-interaction";
 import { AgentLogo, useAgent } from "@/agents";
 import {
-  buildPlanningInstruction,
-  createPlanningMessage,
-  derivePlanningTitle,
-  type PlanningChatMessage,
-} from "@/features/task-workbench/planning-session";
-import {
   detectMissingTaskPhaseSessionPrompt,
-  detectTaskPhaseAdvancePrompt,
-  resolveTaskPhaseAdvanceProjectRoot,
-  type TaskPhaseAdvancePrompt,
 } from "@/features/task-instance/task-phase-advance";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
 import { TaskPhaseNavBar } from "@/features/task-instance/task-phase-nav-bar";
-import { buildPlanningStagePrompt, buildRequirementsStagePrompt } from "@/features/task-instance/task-phase-prompts";
 import { shouldRenderGlobalChatInput } from "./chat-page-layout";
 import {
   deriveAllPhaseStates,
   taskInstanceFromRaw,
   type PhaseDisplayStates,
-  type RequirementFinalizeRequest,
   type TaskPhase,
-  type TaskRequirementFinalized,
 } from "@/features/task-instance/types";
 import type { GraphRevision, TaskGraph } from "@/features/task-workbench/use-task-graph";
 import type {
@@ -306,11 +294,8 @@ export function ChatPage({
   const [taskCreationMode, setTaskCreationMode] = useState<TaskCreationMode>("discussion");
   const [pendingTaskPlanInstruction, setPendingTaskPlanInstruction] = useState<string | null>(null);
   const [taskPlanSkills, setTaskPlanSkills] = useState<TaskPlanSkill[]>([]);
-  const [selectedTaskSkillId, setSelectedTaskSkillId] = useState("jishu-task-planner");
+  const [selectedTaskSkillId, setSelectedTaskSkillId] = useState("jishu-conductor-dev");
   const [taskLaunchSessions, setTaskLaunchSessions] = useState<TaskLaunchInstanceSummary[]>([]);
-  // 阶段推进确认弹窗：agent 调 advance_phase.mjs(jishu-cli) 推进后端状态后，
-  // 前端在 turn_complete 时检测到 status 变化，弹窗让用户确认是否进入下一阶段。
-  const [phaseAdvancePrompt, setPhaseAdvancePrompt] = useState<TaskPhaseAdvancePrompt | null>(null);
   // 记录上次已知 status，用于检测变化。
   const lastKnownStatusRef = useRef<string | null>(null);
   const [regularSessionsOpen, setRegularSessionsOpen] = useState(true);
@@ -492,7 +477,7 @@ export function ChatPage({
       const items = await invokeCommand<TaskPlanSkill[]>("task_plan_skill_list");
       setTaskPlanSkills(items);
       if (!items.some((item) => item.id === selectedTaskSkillIdRef.current)) {
-        const fallback = items.find((item) => item.id === "jishu-task-planner") ?? items[0];
+        const fallback = items.find((item) => item.id === "jishu-conductor-dev") ?? items[0];
         if (fallback) setSelectedTaskSkillId(fallback.id);
       }
     } catch (error) {
@@ -872,51 +857,26 @@ export function ChatPage({
 
   const prepareTaskLaunchMessage = useCallback((message: string) => {
     if (!taskLaunchOpen) return message;
-    // 判断当前 session 是否已经注入过 launch instruction。
-    // selectedSession 为 null 或 "new" 时是首条消息，需要注入；
-    // 已有 session id 时，检查是否在已注入集合里。
+    // 判断当前 session 是否已经激活过 conductor。
+    // selectedSession 为 null 或 "new" 时是首条消息，需要激活 conductor；
+    // 已有 session id 时，检查是否在已激活集合里。
     const currentSession = selectedSessionRef.current;
     const isFirstMessage = !currentSession || currentSession === "new";
     const alreadyInjected = currentSession
       ? injectedLaunchSessionsRef.current.has(currentSession)
       : false;
     if (!isFirstMessage && alreadyInjected) {
-      // 后续消息：不重复注入 launch instruction，原样透传（agent 进程已有上下文）。
+      // 后续消息：conductor 已接管，原样透传（agent 进程已有上下文）。
       return message;
     }
-    // 标记当前 session 已注入（pending id 和后续 real id 都标记）。
+    // 标记当前 session 已激活（pending id 和后续 real id 都标记）。
     if (currentSession && currentSession !== "new") {
       injectedLaunchSessionsRef.current.add(currentSession);
     }
-
-    const selected = taskPlanSkills.find((skill) => skill.id === selectedTaskSkillIdRef.current);
-    const skillName = selected?.name || selectedTaskSkillIdRef.current;
-    if (taskLaunchPhase === "planning") {
-      return [
-        buildPlanningStagePrompt({
-          taskId: activeTaskInstanceIdRef.current,
-          requirementFile: activeTaskRequirementFileRef.current,
-          skillId: selectedTaskSkillIdRef.current,
-          skillName,
-          projectPath: currentProject?.path,
-        }),
-        "",
-        "用户消息：",
-        message,
-      ].join("\n");
-    }
-    return [
-      buildRequirementsStagePrompt({
-        taskId: activeTaskInstanceIdRef.current,
-        skillId: selectedTaskSkillIdRef.current,
-        skillName,
-        projectPath: currentProject?.path,
-      }),
-      "",
-      "用户消息：",
-      message,
-    ].join("\n");
-  }, [currentProject?.path, taskLaunchOpen, taskLaunchPhase, taskPlanSkills]);
+    // 首条消息：以 /jishu-task 命令激活 conductor 扩展，由其驱动 discuss→plan→execute。
+    // domain 默认 dev（Batch 4 增加 research 后可由 UI 选择）。
+    return `/jishu-task dev ${message}`;
+  }, [taskLaunchOpen]);
 
   useLayoutEffect(() => {
     if (!scrollAction.current || !messageAreaRef.current) return;
@@ -1202,28 +1162,6 @@ export function ChatPage({
       setActiveTaskInstanceId(record.task_id);
       setActiveTaskRequirementFile(record.requirement_file ?? null);
 
-      if (options.detectPhaseAdvance) {
-        const prompt = detectTaskPhaseAdvancePrompt({
-          taskId: record.task_id,
-          previousStatus,
-          activePhase,
-          instance: record,
-        });
-        logTaskPhaseDebug(prompt ? "advance-prompt:ready" : "advance-prompt:not-ready", {
-          taskId: record.task_id,
-          previousStatus,
-          status: record.status,
-          currentPhase: record.current_phase,
-          activePhase,
-          toPhase: prompt?.toPhase ?? null,
-          requirementFile: record.requirement_file,
-          graphId: record.graph_id,
-        });
-        if (prompt) {
-          setPhaseAdvancePrompt(prompt);
-        }
-      }
-
       lastKnownStatusRef.current = record.status;
     }
 
@@ -1318,6 +1256,46 @@ export function ChatPage({
     });
   }, [selectedSession, currentProject?.path, t]);
 
+  // conductor 驱动的任务发现：首条消息激活 conductor 后，conductor 异步创建 TaskInstance（写入 requirement_session_id）。
+  // 轮询任务列表按 requirement_session_id 匹配到该任务后，打开三阶段工作台（不再调 markTaskLaunchSession 避免重复建任务）。
+  const discoverConductorTask = useCallback(async (sessionId: string) => {
+    if (!projectPathForSettings || !sessionId) return;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      try {
+        const items = await invokeCommand<TaskLaunchInstanceSummary[]>(
+          "task_launch_list_sessions",
+          { projectRoot: projectPathForSettings },
+        );
+        const found = items.find((item) => item.requirement_session_id === sessionId);
+        if (found) {
+          logTaskPhaseDebug("conductor-task:discovered", {
+            taskId: found.task_id,
+            sessionId,
+            currentPhase: found.current_phase,
+          });
+          setActiveTaskInstanceId(found.task_id);
+          activeTaskInstanceIdRef.current = found.task_id;
+          setSelectedTaskSkillId(found.skill_id || "jishu-conductor-dev");
+          selectedTaskSkillIdRef.current = found.skill_id || "jishu-conductor-dev";
+          lastKnownStatusRef.current = found.status;
+          setTaskModeActive(true);
+          setTaskContainerTaskId(found.task_id);
+          setTaskContainerPhase("requirements");
+          setTaskContainerReadOnly(false);
+          setTaskLaunchOpen(false);
+          taskLaunchOpenRef.current = false;
+          setTaskPanelOpen(false);
+          setTaskLaunchSessions(items);
+          return;
+        }
+      } catch (error) {
+        console.warn("discoverConductorTask poll failed:", error);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+    logTaskPhaseDebug("conductor-task:not-found", { sessionId });
+  }, [projectPathForSettings]);
+
   const handleSessionResolved = useCallback((_pendingSessionId: string, realSessionId: string) => {
     if (!taskLaunchOpenRef.current) {
       logTaskPhaseDebug("session-resolved:ignored", {
@@ -1331,369 +1309,9 @@ export function ChatPage({
       sessionId: realSessionId,
       phase: taskLaunchPhaseRef.current,
     });
-    markTaskLaunchSession(realSessionId).catch(console.error);
-  }, [markTaskLaunchSession]);
-
-  const sendTaskPhaseMessage = useCallback(async ({
-    taskId,
-    phase,
-    visibleMessage,
-    agentMessage,
-    title,
-  }: {
-    taskId: string;
-    phase: TaskLaunchPhase;
-    visibleMessage: string;
-    agentMessage: string;
-    title: string;
-  }) => {
-    if (!currentProject?.path) return;
-    const pendingId = `pending-${Date.now()}`;
-    logTaskPhaseDebug("phase-message:start", {
-      taskId,
-      phase,
-      title,
-      pendingId,
-      projectRoot: currentProject.path,
-      skillId: selectedTaskSkillIdRef.current,
-    });
-    setTaskLaunchOpen(true);
-    setTaskLaunchReadOnly(false);
-    setTaskModeActive(false);
-    setTaskContainerReadOnly(false);
-    setTaskLaunchPhase(phase);
-    setActiveTaskInstanceId(taskId);
-    taskLaunchOpenRef.current = true;
-    activeTaskInstanceIdRef.current = taskId;
-    taskLaunchPhaseRef.current = phase;
-    lastKnownStatusRef.current = null;
-    setTaskCreationMode("discussion");
-    setTaskPanelOpen(false);
-    setSelectedTaskGraphId(null);
-    setSelectedSession("new");
-    selectedSessionRef.current = "new";
-    setSessionMessages([]);
-    setPendingSteerDisplay([]);
-    streamStore.start(pendingId, visibleMessage);
-    handleMessageSent(pendingId, visibleMessage);
-    const chatSession = await invokeCommand<ChatSession>("send_message", {
-      projectPath: currentProject.path,
-      sessionId: pendingId,
-      message: agentMessage,
-    });
-    logTaskPhaseDebug("phase-message:session-created", {
-      taskId,
-      phase,
-      pendingId,
-      sessionId: chatSession.session_id,
-    });
-    streamStore.alias(pendingId, chatSession.session_id);
-    setSelectedSession(chatSession.session_id);
-    selectedSessionRef.current = chatSession.session_id;
-    const marked = await invokeCommand<TaskLaunchInstanceSummary>("task_launch_mark_session", {
-      projectRoot: currentProject.path,
-      taskId,
-      sessionId: chatSession.session_id,
-      skillId: selectedTaskSkillIdRef.current,
-      phase,
-      title,
-    });
-    logTaskPhaseDebug("phase-message:marked", {
-      taskId: marked.task_id,
-      phase,
-      status: marked.status,
-      currentPhase: marked.current_phase,
-      sessionId: chatSession.session_id,
-      requirementSessionId: marked.requirement_session_id,
-      planningSessionId: marked.planning_session_id,
-    });
-    applyTaskLaunchInstanceSnapshot(marked);
-    await refreshTaskLaunchSessions();
-  }, [applyTaskLaunchInstanceSnapshot, currentProject?.path, handleMessageSent, refreshTaskLaunchSessions]);
-
-  const startPlanningFromAdvancedTask = useCallback(async (prompt: TaskPhaseAdvancePrompt) => {
-    if (!currentProject?.path) return;
-    logTaskPhaseDebug("advance-confirm:planning:start", {
-      taskId: prompt.taskId,
-      fromPhase: prompt.fromPhase,
-      toPhase: prompt.toPhase,
-      projectRoot: currentProject.path,
-    });
-    const instance = await invokeCommand<TaskLaunchInstanceSummary | null>(
-      "task_launch_get_instance",
-      { projectRoot: currentProject.path, taskId: prompt.taskId },
-    );
-    if (!instance) {
-      logTaskPhaseDebug("advance-confirm:planning:missing-instance", {
-        taskId: prompt.taskId,
-      });
-      throw new Error(`task instance not found: ${prompt.taskId}`);
-    }
-
-    applyTaskLaunchInstanceSnapshot(instance);
-    const requirementFile = instance.requirement_file ?? activeTaskRequirementFileRef.current;
-    if (!requirementFile) {
-      throw new Error(`task instance has no requirement file: ${prompt.taskId}`);
-    }
-
-    const planningInstruction = await invokeCommand<string>(
-      "task_planning_instruction",
-      { projectRoot: currentProject.path, taskId: prompt.taskId },
-    );
-    logTaskPhaseDebug("advance-confirm:planning:instruction-loaded", {
-      taskId: instance.task_id,
-      status: instance.status,
-      currentPhase: instance.current_phase,
-      requirementFile,
-      skillId: instance.skill_id,
-    });
-    const skillId = instance.skill_id || selectedTaskSkillIdRef.current;
-    const skill = taskPlanSkills.find((item) => item.id === skillId);
-
-    await sendTaskPhaseMessage({
-      taskId: instance.task_id,
-      phase: "planning",
-      title: instance.title,
-      visibleMessage: `需求已定稿，开始规划任务流程。\n\n需求终稿：${requirementFile}`,
-      agentMessage: [
-        buildPlanningStagePrompt({
-          taskId: instance.task_id,
-          requirementFile,
-          skillId,
-          skillName: skill?.name,
-          projectPath: currentProject.path,
-        }),
-        "",
-        planningInstruction,
-      ].join("\n"),
-    });
-    await refreshTaskLaunchSessions();
-  }, [applyTaskLaunchInstanceSnapshot, currentProject?.path, refreshTaskLaunchSessions, sendTaskPhaseMessage, taskPlanSkills]);
-
-  const finalizeRequirementsAndStartPlanning = useCallback(async (
-    messages: PlanningChatMessage[],
-  ) => {
-    if (!currentProject?.path) return;
-    const requirementMessages = messages
-      .map((message) => ({ ...message, content: message.content.trim() }))
-      .filter((message) => message.content.length > 0);
-    if (requirementMessages.length === 0) return;
-
-    const skills = taskPlanSkills.length
-      ? taskPlanSkills
-      : await invokeCommand<TaskPlanSkill[]>("task_plan_skill_list");
-    const planner = skills.find((skill) => skill.id === selectedTaskSkillIdRef.current)
-      ?? skills.find((skill) => skill.id === "jishu-task-planner")
-      ?? skills.find((skill) => skill.installed && skill.valid);
-    if (!planner?.installed || !planner.valid) {
-      throw new Error(t("tasks.installSkillFirst"));
-    }
-    const title = derivePlanningTitle("", requirementMessages);
-    const currentSessionId = selectedSessionRef.current;
-    const sourceSessionId = currentSessionId && currentSessionId !== "new" && !currentSessionId.startsWith("pending-")
-      ? currentSessionId
-      : null;
-    const request: RequirementFinalizeRequest = {
-      task_id: activeTaskInstanceIdRef.current,
-      skill_id: planner.id,
-      title,
-      requirement_markdown: buildRequirementMarkdownFromMessages(title, requirementMessages),
-      source_session_id: sourceSessionId,
-      creation_mode: taskCreationMode,
-    };
-
-    const finalized = await invokeCommand<TaskRequirementFinalized>(
-      "task_requirement_finalize",
-      {
-        projectRoot: currentProject.path,
-        request,
-      },
-    );
-
-    setActiveTaskInstanceId(finalized.task_id);
-    setActiveTaskRequirementFile(finalized.requirement_file);
-    setSelectedTaskSkillId(planner.id);
-    activeTaskInstanceIdRef.current = finalized.task_id;
-    activeTaskRequirementFileRef.current = finalized.requirement_file;
-    selectedTaskSkillIdRef.current = planner.id;
-    await sendTaskPhaseMessage({
-      taskId: finalized.task_id,
-      phase: "planning",
-      title: finalized.title,
-      visibleMessage: `需求已定稿，开始规划任务流程。\n\n需求终稿：${finalized.requirement_file}`,
-      agentMessage: [
-        buildPlanningStagePrompt({
-          taskId: finalized.task_id,
-          requirementFile: finalized.requirement_file,
-          skillId: planner.id,
-          skillName: planner.name,
-          projectPath: currentProject.path,
-        }),
-        "",
-        finalized.planning_instruction,
-      ].join("\n"),
-    });
-  }, [currentProject?.path, sendTaskPhaseMessage, t, taskCreationMode, taskPlanSkills]);
-
-  // 统一阶段推进：调用后端 task_advance_phase 命令（确定性状态机推进，不绑定 skill 话术）。
-  // 需求→规划：后端落盘终稿+推进状态+返回规划指令，前端用它发起新规划会话。
-  // 规划→执行：前端先 create_graph，再调推进。
-  const advanceToPhase = useCallback(async (
-    phase: "planning" | "execution",
-    requirementMarkdown?: string,
-  ) => {
-    if (!currentProject?.path || !activeTaskInstanceIdRef.current) return;
-    const taskId = activeTaskInstanceIdRef.current;
-
-    if (phase === "planning") {
-      // 需求→规划
-      const result = await invokeCommand<{ instance: TaskLaunchInstanceSummary; planning_instruction: string | null }>(
-        "task_advance_phase",
-        {
-          projectRoot: currentProject.path,
-          request: {
-            task_id: taskId,
-            phase: "planning",
-            requirement_markdown: requirementMarkdown ?? null,
-            requirement_session_id: selectedSessionRef.current && selectedSessionRef.current !== "new"
-              ? selectedSessionRef.current
-              : null,
-          },
-        },
-      );
-      if (!result) return;
-      activeTaskInstanceIdRef.current = result.instance.task_id;
-      setActiveTaskInstanceId(result.instance.task_id);
-      setActiveTaskRequirementFile(result.instance.requirement_file ?? null);
-      activeTaskRequirementFileRef.current = result.instance.requirement_file ?? null;
-
-      // 用返回的规划指令发起新规划阶段会话
-      if (result.planning_instruction) {
-        const skillId = selectedTaskSkillIdRef.current;
-        await sendTaskPhaseMessage({
-          taskId: result.instance.task_id,
-          phase: "planning",
-          title: result.instance.title,
-          visibleMessage: `需求已定稿，开始规划任务流程。\n\n需求终稿：${result.instance.requirement_file ?? ""}`,
-          agentMessage: [
-            buildPlanningStagePrompt({
-              taskId: result.instance.task_id,
-              requirementFile: result.instance.requirement_file,
-              skillId,
-              skillName: taskPlanSkills.find((skill) => skill.id === skillId)?.name,
-              projectPath: currentProject.path,
-            }),
-            "",
-            result.planning_instruction,
-          ].join("\n"),
-        });
-      }
-      await refreshTaskLaunchSessions();
-    } else {
-      // 规划→执行：先 create_graph，再推进
-      await createGraphFromPlanningConversation();
-    }
-  }, [currentProject?.path, refreshTaskLaunchSessions, sendTaskPhaseMessage, taskPlanSkills]);
-
-  const createGraphFromPlanningConversation = useCallback(async (
-    sourceMessages?: PlanningChatMessage[],
-  ) => {
-    if (!currentProject?.path) return;
-    const messages = sourceMessages
-      ? [...sourceMessages]
-      : messagesToPlanningMessages(sessionMessagesRef.current);
-    const streamingText = sourceMessages
-      ? ""
-      : streamStore.getState(selectedSessionRef.current)?.text.trim();
-    if (streamingText) {
-      messages.push(createPlanningMessage(streamingText, "assistant"));
-    }
-    logTaskPhaseDebug("graph-create:start", {
-      taskId: activeTaskInstanceIdRef.current,
-      sessionId: selectedSessionRef.current,
-      messageCount: messages.length,
-      hasStreamingText: Boolean(streamingText),
-      requirementFile: activeTaskRequirementFileRef.current,
-      projectRoot: currentProject.path,
-    });
-    const skills = taskPlanSkills.length
-      ? taskPlanSkills
-      : await invokeCommand<TaskPlanSkill[]>("task_plan_skill_list");
-    const planner = skills.find((skill) => skill.id === selectedTaskSkillIdRef.current)
-      ?? skills.find((skill) => skill.id === "jishu-task-planner")
-      ?? skills.find((skill) => skill.installed && skill.valid);
-    if (!planner?.installed || !planner.valid) {
-      logTaskPhaseDebug("graph-create:planner-unavailable", {
-        taskId: activeTaskInstanceIdRef.current,
-        selectedSkillId: selectedTaskSkillIdRef.current,
-        plannerId: planner?.id ?? null,
-        plannerInstalled: planner?.installed ?? null,
-        plannerValid: planner?.valid ?? null,
-      });
-      throw new Error(t("tasks.installSkillFirst"));
-    }
-    const requirementFile = activeTaskRequirementFileRef.current;
-    const instruction = [
-      "请根据需求终稿和以下流程规划阶段会话，生成可审阅的任务流程图。",
-      requirementFile ? `需求终稿文件：${requirementFile}` : null,
-      "",
-      buildPlanningInstruction(messages),
-    ].filter(Boolean).join("\n");
-
-    const [createdGraph] = await invokeCommand<[TaskGraph, GraphRevision]>(
-      "orchestrator_create_graph",
-      {
-        input: {
-          title: derivePlanningTitle("", messages) || "任务流程图",
-          goal: requirementFile ? `需求终稿：${requirementFile}` : instruction,
-          project_root: currentProject.path,
-          owner: "local_user",
-          skill_refs: [{
-            skill_id: planner.id,
-            version_or_hash: planner.content_hash,
-            inputs: {},
-          }],
-        },
-      },
-    );
-    logTaskPhaseDebug("graph-create:created", {
-      taskId: activeTaskInstanceIdRef.current,
-      graphId: createdGraph.graph_id,
-      plannerId: planner.id,
-      messageCount: messages.length,
-    });
-    if (activeTaskInstanceIdRef.current) {
-      const attached = await invokeCommand<TaskLaunchInstanceSummary>("task_launch_attach_graph", {
-        projectRoot: currentProject.path,
-        taskId: activeTaskInstanceIdRef.current,
-        graphId: createdGraph.graph_id,
-      });
-      logTaskPhaseDebug("graph-create:attached", {
-        taskId: attached.task_id,
-        graphId: attached.graph_id,
-        status: attached.status,
-        currentPhase: attached.current_phase,
-      });
-    }
-    setPendingTaskPlanInstruction(instruction);
-    setTaskLaunchOpen(false);
-    setTaskLaunchReadOnly(false);
-    taskLaunchOpenRef.current = false;
-    // 生成图后打开三阶段容器，落在执行阶段（替代旧的 TaskWorkbench 跳转）
-    if (activeTaskInstanceIdRef.current) {
-      setTaskModeActive(true);
-      setTaskContainerTaskId(activeTaskInstanceIdRef.current);
-      setTaskContainerPhase("execution");
-      setTaskContainerReadOnly(false);
-    }
-    setSelectedTaskGraphId(createdGraph.graph_id);
-    setTaskPanelOpen(false);
-    setSelectedSession(null);
-    selectedSessionRef.current = null;
-    setPendingSteerDisplay([]);
-    refreshTaskLaunchSessions().catch(console.error);
-    refetchTaskConversations(true).catch(console.error);
-  }, [currentProject?.path, refetchTaskConversations, refreshTaskLaunchSessions, t, taskPlanSkills]);
+    // conductor 驱动：发现 conductor 创建的 TaskInstance 并打开工作台。
+    discoverConductorTask(realSessionId).catch(console.error);
+  }, [discoverConductorTask]);
 
   const openTaskChatPhase = useCallback(async (
     taskSession: TaskLaunchInstanceSummary,
@@ -1716,10 +1334,10 @@ export function ChatPage({
     });
     setActiveTaskInstanceId(taskSession.task_id);
     setActiveTaskRequirementFile(taskSession.requirement_file ?? null);
-    setSelectedTaskSkillId(taskSession.skill_id || "jishu-task-planner");
+    setSelectedTaskSkillId(taskSession.skill_id || "jishu-conductor-dev");
     activeTaskInstanceIdRef.current = taskSession.task_id;
     activeTaskRequirementFileRef.current = taskSession.requirement_file ?? null;
-    selectedTaskSkillIdRef.current = taskSession.skill_id || "jishu-task-planner";
+    selectedTaskSkillIdRef.current = taskSession.skill_id || "jishu-conductor-dev";
     lastKnownStatusRef.current = taskSession.status;
     setTaskModeActive(false);
     setTaskContainerReadOnly(false);
@@ -1815,10 +1433,10 @@ export function ChatPage({
 
     setActiveTaskInstanceId(taskSession.task_id);
     setActiveTaskRequirementFile(taskSession.requirement_file ?? null);
-    setSelectedTaskSkillId(taskSession.skill_id || "jishu-task-planner");
+    setSelectedTaskSkillId(taskSession.skill_id || "jishu-conductor-dev");
     activeTaskInstanceIdRef.current = taskSession.task_id;
     activeTaskRequirementFileRef.current = taskSession.requirement_file ?? null;
-    selectedTaskSkillIdRef.current = taskSession.skill_id || "jishu-task-planner";
+    selectedTaskSkillIdRef.current = taskSession.skill_id || "jishu-conductor-dev";
     lastKnownStatusRef.current = taskSession.status;
     setTaskModeActive(true);
     setTaskContainerTaskId(taskSession.task_id);
@@ -1834,19 +1452,11 @@ export function ChatPage({
     setPendingSteerDisplay([]);
   }, [openTaskChatPhase]);
 
-  const handleTaskLaunchBeforeSend = useCallback(async (message: string) => {
-    if (!taskLaunchOpen) return false;
-    const selected = taskPlanSkills.find((skill) => skill.id === selectedTaskSkillIdRef.current);
-    if (!selected?.installed || !selected.valid) {
-      await handleTaskSkillInstall(selectedTaskSkillIdRef.current);
-      return true;
-    }
-    if (taskLaunchPhase !== "requirements" || taskCreationMode !== "direct") return false;
-    await finalizeRequirementsAndStartPlanning([
-      createPlanningMessage(message, "user"),
-    ]);
-    return true;
-  }, [finalizeRequirementsAndStartPlanning, handleTaskSkillInstall, taskCreationMode, taskLaunchOpen, taskLaunchPhase, taskPlanSkills]);
+  const handleTaskLaunchBeforeSend = useCallback(async (_message: string) => {
+    // conductor 驱动的任务模式：首条消息由 prepareTaskLaunchMessage 包装为 /jishu-task 命令激活 conductor，
+    // 无需前端拦截或技能安装检查（conductor 扩展随 Hub 启动自动部署）。消息正常发送。
+    return false;
+  }, []);
 
   // Stream listener (mount-only). Each chunk is routed into the per-session
   // store entry via streamStore.push, regardless of which session is currently
@@ -2292,57 +1902,6 @@ export function ChatPage({
           // suppress a later legitimate turn_complete for this session.
           pendingReplyStartedAtRef.current.delete(finalKey);
           pendingReplyStartedAtRef.current.delete(cid);
-
-          // 任务阶段推进检测：agent 可能在本轮调用了 advance_phase.mjs(jishu-cli)，
-          // 后端状态已被 cli 推进。turn_complete 后刷新实例，检测 status 变化。
-          // 这是确定性的（对比 status 值，不是猜意图），变化后弹窗让用户确认。
-          if (taskLaunchOpenRef.current && activeTaskInstanceIdRef.current) {
-            const tid = activeTaskInstanceIdRef.current;
-            const projectRoot = resolveTaskPhaseAdvanceProjectRoot({
-              liveProjectPath: projectPathRef.current,
-              capturedProjectPath: currentProject?.path,
-            });
-            logTaskPhaseDebug("turn-complete:phase-check", {
-              taskId: tid,
-              projectRoot,
-              capturedProjectRoot: currentProject?.path ?? null,
-              liveProjectRoot: projectPathRef.current,
-              activePhase: taskLaunchPhaseRef.current,
-              previousStatus: lastKnownStatusRef.current,
-              sessionId: finalKey,
-            });
-            if (!projectRoot) {
-              if (followUpExpected) {
-                // fall through to followUpExpected handling below
-              }
-            } else {
-              refreshTaskLaunchSessions().then(() => {
-                return invokeCommand<TaskLaunchInstanceSummary | null>(
-                  "task_launch_get_instance",
-                  { projectRoot, taskId: tid },
-                );
-              }).then((instance) => {
-                if (!instance) {
-                  logTaskPhaseDebug("turn-complete:instance-missing", {
-                    taskId: tid,
-                    activePhase: taskLaunchPhaseRef.current,
-                    previousStatus: lastKnownStatusRef.current,
-                  });
-                  return;
-                }
-                logTaskPhaseDebug("turn-complete:instance-loaded", {
-                  taskId: instance.task_id,
-                  status: instance.status,
-                  currentPhase: instance.current_phase,
-                  activePhase: taskLaunchPhaseRef.current,
-                  previousStatus: lastKnownStatusRef.current,
-                  requirementFile: instance.requirement_file,
-                  graphId: instance.graph_id,
-                });
-                applyTaskLaunchInstanceSnapshot(instance, { detectPhaseAdvance: true });
-              }).catch((err) => console.warn("Phase advance detection failed:", err));
-            }
-          }
 
           if (followUpExpected) {
             // A committed steer will be answered in a FOLLOW-UP turn (a
@@ -3158,6 +2717,7 @@ export function ChatPage({
               initialTaskId={taskContainerTaskId}
               initialPhase={taskContainerPhase}
               initialReadOnly={taskContainerReadOnly}
+              agents={agents.map((agent) => ({ id: agent.id, display_name: agent.display_name }))}
               onSidebarUpdate={() => refreshTaskLaunchSessions().catch(console.error)}
               onClose={() => {
                 setTaskModeActive(false);
@@ -3574,64 +3134,6 @@ export function ChatPage({
         }}
       />
       {confirmDialogNode}
-      <Dialog open={Boolean(phaseAdvancePrompt)} onOpenChange={(open) => { if (!open) setPhaseAdvancePrompt(null); }}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              {phaseAdvancePrompt?.toPhase === "planning"
-                ? t("task.advance.requirementsToPlanning", "需求讨论阶段完成")
-                : t("task.advance.planningToExecution", "流程规划阶段完成")}
-            </DialogTitle>
-            <DialogDescription>
-              {phaseAdvancePrompt?.toPhase === "planning"
-                ? t("task.advance.requirementsConfirm", "任务「{title}」的需求已定稿。是否进入流程规划阶段？", { title: phaseAdvancePrompt?.title ?? "" })
-                : t("task.advance.planningConfirm", "流程方案已确认。是否生成任务流程图并进入执行阶段？")}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                logTaskPhaseDebug("advance-dialog:cancel", {
-                  taskId: phaseAdvancePrompt?.taskId ?? null,
-                  fromPhase: phaseAdvancePrompt?.fromPhase ?? null,
-                  toPhase: phaseAdvancePrompt?.toPhase ?? null,
-                });
-                setPhaseAdvancePrompt(null);
-              }}
-            >
-              {t("common.cancel", "取消")}
-            </Button>
-            <Button
-              onClick={async () => {
-                if (!phaseAdvancePrompt) return;
-                const prompt = phaseAdvancePrompt;
-                logTaskPhaseDebug("advance-dialog:confirm", {
-                  taskId: prompt.taskId,
-                  fromPhase: prompt.fromPhase,
-                  toPhase: prompt.toPhase,
-                  title: prompt.title,
-                });
-                setPhaseAdvancePrompt(null);
-                if (prompt.toPhase === "planning") {
-                  await startPlanningFromAdvancedTask(prompt);
-                } else {
-                  logTaskPhaseDebug("advance-confirm:execution:start", {
-                    taskId: prompt.taskId,
-                    fromPhase: prompt.fromPhase,
-                    toPhase: prompt.toPhase,
-                  });
-                  await advanceToPhase("execution");
-                }
-              }}
-            >
-              {phaseAdvancePrompt?.toPhase === "planning"
-                ? t("task.advance.startPlanning", "进入规划")
-                : t("task.advance.startExecution", "进入执行")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
       <Dialog
         open={Boolean(activeApproval)}
         onOpenChange={(open) => {
@@ -3673,60 +3175,6 @@ export function ChatPage({
       </Dialog>
     </div>
   );
-}
-
-function messagesToPlanningMessages(messages: Message[]): PlanningChatMessage[] {
-  return messages
-    .filter((message) => message.role === "user" || message.role === "assistant")
-    .map((message) =>
-      createPlanningMessage(
-        messageToPlanningText(message),
-        message.role === "user" ? "user" : "assistant",
-      ),
-    )
-    .filter((message) => message.content.length > 0);
-}
-
-function buildRequirementMarkdownFromMessages(
-  title: string,
-  messages: PlanningChatMessage[],
-): string {
-  const heading = title.trim() || "任务需求";
-  const body = messages
-    .map((message, index) => {
-      const speaker = message.role === "user" ? "用户" : "Jishu Agent";
-      return [
-        `### ${index + 1}. ${speaker}`,
-        "",
-        message.content.trim(),
-      ].join("\n");
-    })
-    .join("\n\n");
-
-  return [
-    `# ${heading}`,
-    "",
-    "## 需求讨论记录",
-    "",
-    body,
-  ].join("\n").trim();
-}
-
-function messageToPlanningText(message: Message): string {
-  return message.content
-    .map((block) => {
-      if (block.type === "text") return block.text;
-      if (block.type === "thinking") return block.thinking;
-      if (block.type === "interaction") {
-        return [block.prompt, block.answer, ...(block.selected_options ?? [])]
-          .filter(Boolean)
-          .join("\n");
-      }
-      return "";
-    })
-    .filter(Boolean)
-    .join("\n")
-    .trim();
 }
 
 function stripTaskLaunchInstructionFromMessages(messages: Message[]): Message[] {
