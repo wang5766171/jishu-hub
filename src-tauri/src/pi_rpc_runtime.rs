@@ -1132,6 +1132,20 @@ fn handle_hub_invoke(
             let result = crate::task_launch::conductor_load_task_state(project_root, task_id)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+        "orchestrator_validate_proposal" => {
+            let request: crate::task_launch::ValidateProposalRequest =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| format!("orchestrator_validate_proposal 参数解析失败: {e}"))?;
+            let result = crate::task_launch::orchestrator_validate_proposal(request)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "orchestrator_start_run_from_revision" => {
+            let request: crate::task_launch::StartRunFromRevisionRequest =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| format!("orchestrator_start_run_from_revision 参数解析失败: {e}"))?;
+            let result = crate::task_launch::orchestrator_start_run_from_revision(request)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
         _ => Err(format!("未知 hub_invoke 命令: {command}")),
     }
 }

@@ -25,7 +25,7 @@ pub const RUN_STATUS_FAILED: &str = "failed";
 pub const RUN_STATUS_CANCELLED: &str = "cancelled";
 
 /// task_instance 表 schema 版本。升级表结构时递增，并在 `migrate_schema` 中处理迁移。
-const TASK_INSTANCE_SCHEMA_VERSION: i64 = 1;
+const TASK_INSTANCE_SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TaskLaunchInstance {
@@ -49,6 +49,8 @@ pub struct TaskLaunchInstance {
     pub last_run_id: Option<String>,
     /// 执行状态冗余（5 值枚举，仅执行阶段有值）。
     pub run_status: Option<String>,
+    /// 幂等启动键（防止 fork/resume 重复启动 run）。
+    pub last_launch_key: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -167,16 +169,20 @@ impl TaskInstanceStore {
         let current_version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|e| e.to_string())?;
-        if current_version != TASK_INSTANCE_SCHEMA_VERSION {
-            // v0 → v1：旧版本可能为 0（全新库）或不存在 task_instance 表。
-            // 开发期允许 drop 重建；正式发布后需要按 version 增量迁移。
+
+        if current_version == 0 {
+            // v0（全新库）：drop 重建。
+            conn.execute_batch("DROP TABLE IF EXISTS task_instance;")
+                .map_err(|e| e.to_string())?;
+        } else if current_version == 1 {
+            // v1 → v2：增量迁移，新增 last_launch_key 列。
             conn.execute_batch(
-                r#"
-                DROP TABLE IF EXISTS task_instance;
-                "#,
+                "ALTER TABLE task_instance ADD COLUMN last_launch_key TEXT;",
             )
             .map_err(|e| e.to_string())?;
         }
+        // current_version == 2：无需迁移。
+
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS task_instance (
@@ -194,6 +200,7 @@ impl TaskInstanceStore {
                 active_run_id            TEXT,
                 last_run_id              TEXT,
                 run_status               TEXT,
+                last_launch_key          TEXT,
                 created_at               INTEGER NOT NULL,
                 updated_at               INTEGER NOT NULL
             );
@@ -224,6 +231,7 @@ impl TaskInstanceStore {
             active_run_id: row.get("active_run_id")?,
             last_run_id: row.get("last_run_id")?,
             run_status: row.get("run_status")?,
+            last_launch_key: row.get("last_launch_key")?,
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
         })
@@ -232,7 +240,7 @@ impl TaskInstanceStore {
     const SELECT_COLUMNS: &'static str = "task_id, project_root, title, skill_id, planner_agent_id,
                 status, current_phase, requirement_file, requirement_session_id,
                 planning_session_id, graph_id, active_run_id, last_run_id, run_status,
-                created_at, updated_at";
+                last_launch_key, created_at, updated_at";
 
     fn list_by_project(&self, project_root: &str) -> Result<Vec<TaskLaunchInstance>, String> {
         let conn = self.writer.lock().map_err(|e| e.to_string())?;
@@ -269,8 +277,9 @@ impl TaskInstanceStore {
             "INSERT INTO task_instance (
                 task_id, project_root, title, skill_id, planner_agent_id, status,
                 current_phase, requirement_file, requirement_session_id, planning_session_id,
-                graph_id, active_run_id, last_run_id, run_status, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                graph_id, active_run_id, last_run_id, run_status, last_launch_key,
+                created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
              ON CONFLICT(task_id) DO UPDATE SET
                 title = excluded.title,
                 skill_id = excluded.skill_id,
@@ -284,6 +293,7 @@ impl TaskInstanceStore {
                 active_run_id = excluded.active_run_id,
                 last_run_id = excluded.last_run_id,
                 run_status = excluded.run_status,
+                last_launch_key = excluded.last_launch_key,
                 updated_at = excluded.updated_at",
             params![
                 instance.task_id,
@@ -300,6 +310,7 @@ impl TaskInstanceStore {
                 instance.active_run_id,
                 instance.last_run_id,
                 instance.run_status,
+                instance.last_launch_key,
                 instance.created_at,
                 instance.updated_at,
             ],
@@ -459,6 +470,7 @@ pub fn mark_task_stage_session(
         active_run_id: None,
         last_run_id: None,
         run_status: None,
+        last_launch_key: None,
         created_at: now,
         updated_at: now,
     });
@@ -583,6 +595,7 @@ pub fn finalize_requirement(
         active_run_id: None,
         last_run_id: None,
         run_status: None,
+        last_launch_key: None,
         created_at: now,
         updated_at: now,
     });
@@ -815,6 +828,7 @@ pub fn create_from_existing_graph(
         active_run_id: None,
         last_run_id: None,
         run_status: None,
+        last_launch_key: None,
         created_at: now,
         updated_at: now,
     };
@@ -1084,6 +1098,7 @@ pub fn conductor_sync_phase(
                     active_run_id: None,
                     last_run_id: None,
                     run_status: None,
+                    last_launch_key: None,
                     created_at: now,
                     updated_at: now,
                 }),
@@ -1159,6 +1174,7 @@ pub fn conductor_sync_phase(
         active_run_id: None,
         last_run_id: None,
         run_status: None,
+        last_launch_key: None,
         created_at: now,
         updated_at: now,
     });
@@ -1233,6 +1249,449 @@ pub fn conductor_load_task_state(
             instance: None,
         }),
     }
+}
+
+// ── Phase 3+4: Orchestrator 桥接命令 ─────────────────────────────────────────────
+
+/// 提案校验请求。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidateProposalRequest {
+    pub task_id: String,
+    pub project_root: String,
+    pub proposal_path: String,
+}
+
+/// 提案校验结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidateProposalResult {
+    pub graph_id: String,
+    pub revision_id: String,
+    pub content_hash: String,
+}
+
+/// 校验 flow-plan-proposal.json 并创建 TaskGraph + GraphRevision。
+///
+/// 流程：
+/// 1. 读取 proposal JSON，解析 `jishu-flow-plan-proposal/v1` schema
+/// 2. 构建 GraphSnapshot（Goal + Executable nodes + edges）
+/// 3. graph_validate 校验 DAG 完整性
+/// 4. 创建 TaskGraph + 初始 GraphRevision（写入 orchestrator taskstore.db）
+/// 5. 更新 TaskInstance.graph_id
+/// 6. 更新 planning/manifest.json 的 linked_revision_id
+pub fn orchestrator_validate_proposal(
+    req: ValidateProposalRequest,
+) -> Result<ValidateProposalResult, String> {
+    use crate::orchestrator::{
+        default_db_path, graph_validate, EdgeKind, ExecutablePayload, GraphEdge, GraphNode,
+        GraphRevision, GraphSnapshot, NodeKind, RoleRequirement, TaskGraph, TaskStore,
+    };
+    use crate::util::gen_id;
+
+    // 1. 读取 proposal
+    let proposal_raw = std::fs::read_to_string(&req.proposal_path)
+        .map_err(|e| format!("read proposal failed: {e}"))?;
+    let proposal: serde_json::Value = serde_json::from_str(&proposal_raw)
+        .map_err(|e| format!("parse proposal JSON failed: {e}"))?;
+
+    let schema = proposal
+        .get("schema")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if schema != "jishu-flow-plan-proposal/v1" {
+        return Err(format!("unsupported proposal schema: {schema}"));
+    }
+
+    let goal_text = proposal
+        .get("goal")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Task goal")
+        .to_string();
+    let nodes_arr = proposal
+        .get("nodes")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "proposal missing 'nodes' array".to_string())?;
+
+    // 2. 构建 GraphSnapshot
+    let mut snapshot_nodes: Vec<GraphNode> = Vec::new();
+    let mut snapshot_edges: Vec<GraphEdge> = Vec::new();
+
+    // Goal 节点
+    snapshot_nodes.push(GraphNode {
+        node_id: "goal".to_string(),
+        parent_id: None,
+        title: goal_text.clone(),
+        description: Some(goal_text.clone()),
+        node_kind: NodeKind::Goal,
+        input_contract: Default::default(),
+        output_contract: Default::default(),
+        role_requirement: None,
+        capability_requirements: vec![],
+        agent_assignment_constraint: None,
+        policy: Default::default(),
+        metadata: Default::default(),
+        executable_payload: None,
+        loop_config: None,
+        approval_gate_config: None,
+    });
+
+    // 解析 proposal nodes → Executable 节点
+    let mut node_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for node_val in nodes_arr {
+        let node_id = node_val
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "proposal node missing 'id'".to_string())?
+            .to_string();
+        if !node_ids.insert(node_id.clone()) {
+            return Err(format!("duplicate node id: {node_id}"));
+        }
+        let title = node_val
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&node_id)
+            .to_string();
+        let responsibility = node_val
+            .get("responsibility")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let role = node_val
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("developer")
+            .to_string();
+
+        snapshot_nodes.push(GraphNode {
+            node_id: node_id.clone(),
+            parent_id: Some("goal".to_string()),
+            title,
+            description: Some(responsibility.clone()),
+            node_kind: NodeKind::Executable,
+            input_contract: Default::default(),
+            output_contract: Default::default(),
+            role_requirement: Some(RoleRequirement {
+                role_id: role.clone(),
+                responsibility: responsibility.clone(),
+                required_capabilities: vec![],
+                preferred_capabilities: vec![],
+            }),
+            capability_requirements: vec![],
+            agent_assignment_constraint: None,
+            policy: Default::default(),
+            metadata: Default::default(),
+            executable_payload: Some(ExecutablePayload::Dispatch {
+                role_id: role,
+                prompt: responsibility,
+                project: None,
+                session: None,
+            }),
+            loop_config: None,
+            approval_gate_config: None,
+        });
+    }
+
+    // 解析 depends_on → edges
+    let mut edge_counter = 0u32;
+    for node_val in nodes_arr {
+        let node_id = node_val.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(deps) = node_val.get("depends_on").and_then(|v| v.as_array()) {
+            for dep in deps {
+                let dep_id = dep.as_str().unwrap_or("");
+                if !node_ids.contains(dep_id) {
+                    return Err(format!(
+                        "node '{node_id}' depends on unknown node '{dep_id}'"
+                    ));
+                }
+                edge_counter += 1;
+                snapshot_edges.push(GraphEdge {
+                    edge_id: format!("e{edge_counter}"),
+                    source_node_id: dep_id.to_string(),
+                    target_node_id: node_id.to_string(),
+                    kind: EdgeKind::ControlDependency,
+                });
+            }
+        }
+    }
+
+    let snapshot = GraphSnapshot {
+        nodes: snapshot_nodes,
+        edges: snapshot_edges,
+    };
+
+    // 3. 校验 DAG
+    let _warnings = graph_validate(&snapshot)
+        .map_err(|e| format!("graph validation failed: {e:?}"))?;
+
+    // 4. 创建 TaskGraph + GraphRevision
+    let db_path = default_db_path();
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create db dir failed: {e}"))?;
+    }
+    let store =
+        TaskStore::open(&db_path).map_err(|e| format!("open orchestrator store failed: {e}"))?;
+
+    let now = now_ms();
+    let graph_id = gen_id("graph");
+    let revision_id = gen_id("rev");
+
+    let graph = TaskGraph {
+        graph_id: graph_id.clone(),
+        title: goal_text.clone(),
+        goal: goal_text,
+        project_root: PathBuf::from(&req.project_root),
+        owner: "conductor".to_string(),
+        current_draft_revision: Some(revision_id.clone()),
+        created_at: now,
+        updated_at: now,
+    };
+
+    let mut revision = GraphRevision::from_snapshot(
+        &revision_id,
+        &graph_id,
+        None,
+        &snapshot,
+        "conductor",
+        now,
+    )
+    .map_err(|e| format!("create revision failed: {e}"))?;
+    revision.change_summary = "Created from flow-plan-proposal".to_string();
+    revision
+        .refresh_content_hash()
+        .map_err(|e| format!("refresh content hash failed: {e}"))?;
+
+    store
+        .create_graph_with_revision(&graph, &revision)
+        .map_err(|e| format!("persist graph+revision failed: {e}"))?;
+
+    // 5. 更新 TaskInstance.graph_id（仅写 graph_id，不推进 phase/status，阶段推进由 syncHubPhase 负责）
+    let ti_store = open_store(&req.project_root)?;
+    if let Some(mut instance) = ti_store.get(&req.task_id)? {
+        instance.graph_id = Some(graph_id.clone());
+        instance.updated_at = now_ms();
+        ti_store.upsert(&instance)?;
+    }
+
+    // 6. 更新 planning/manifest.json 的 linked_revision_id
+    let manifest_path = task_workspace_root(&req.project_root)
+        .join(&req.task_id)
+        .join("artifacts")
+        .join("planning")
+        .join("manifest.json");
+    if manifest_path.exists() {
+        if let Ok(manifest_raw) = std::fs::read_to_string(&manifest_path) {
+            if let Ok(mut manifest) = serde_json::from_str::<serde_json::Value>(&manifest_raw) {
+                manifest["linked_revision_id"] =
+                    serde_json::Value::String(revision_id.clone());
+                let _ = std::fs::write(
+                    &manifest_path,
+                    serde_json::to_string_pretty(&manifest).unwrap_or_default(),
+                );
+            }
+        }
+    }
+
+    Ok(ValidateProposalResult {
+        graph_id,
+        revision_id,
+        content_hash: revision.content_hash.0.clone(),
+    })
+}
+
+/// 启动执行运行请求。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StartRunFromRevisionRequest {
+    pub task_id: String,
+    pub project_root: String,
+    pub idempotency_key: String,
+}
+
+/// 启动执行运行结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StartRunFromRevisionResult {
+    pub status: String,
+    pub run_id: String,
+    pub graph_id: String,
+    pub revision_id: String,
+}
+
+/// 从 manifest 中读取 linked_revision_id 并启动 GraphRun。
+///
+/// 幂等约束：同一 idempotency_key 不会重复创建 run。
+pub fn orchestrator_start_run_from_revision(
+    req: StartRunFromRevisionRequest,
+) -> Result<StartRunFromRevisionResult, String> {
+    use crate::orchestrator::{
+        build_event, default_db_path, BudgetState, GraphRun, RunPlanningSnapshot, RunStatus,
+        TaskStore, TaskEventType,
+    };
+    use crate::orchestrator::events::payloads;
+    use crate::util::gen_id;
+
+    // 1. 读取 manifest 获取 linked_revision_id + content_hash
+    let manifest_path = task_workspace_root(&req.project_root)
+        .join(&req.task_id)
+        .join("artifacts")
+        .join("planning")
+        .join("manifest.json");
+    let manifest_raw = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("read manifest failed: {e}"))?;
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_raw)
+        .map_err(|e| format!("parse manifest failed: {e}"))?;
+
+    let revision_id = manifest
+        .get("linked_revision_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "manifest missing linked_revision_id".to_string())?;
+    let expected_hash = manifest
+        .get("content_hash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // 2. 幂等检查：已有活跃 run 且 key 相同 → 返回现有 run_id
+    let ti_store = open_store(&req.project_root)?;
+    let instance = ti_store
+        .get(&req.task_id)?
+        .ok_or_else(|| format!("task instance not found: {}", req.task_id))?;
+
+    if let (Some(active_run), Some(last_key)) =
+        (&instance.active_run_id, &instance.last_launch_key)
+    {
+        if *last_key == req.idempotency_key {
+            // 幂等：返回已有 run
+            let graph_id = instance.graph_id.clone().unwrap_or_default();
+            return Ok(StartRunFromRevisionResult {
+                status: "already_running".to_string(),
+                run_id: active_run.clone(),
+                graph_id,
+                revision_id: revision_id.to_string(),
+            });
+        }
+    }
+
+    // 3. 打开 orchestrator store，校验 revision 存在
+    let db_path = default_db_path();
+    let store =
+        TaskStore::open(&db_path).map_err(|e| format!("open orchestrator store failed: {e}"))?;
+
+    let revision = store
+        .get_revision(revision_id)
+        .map_err(|e| format!("get revision failed: {e}"))?;
+
+    // 校验 manifest 完整性（评审 P1）：重读提案文件，验证其哈希与 manifest.content_hash 一致。
+    // 注意：manifest.content_hash 是提案 JSON 文件的哈希，与 revision.content_hash（图快照哈希）无关。
+    if !expected_hash.is_empty() {
+        if let Some(dir) = manifest_path.parent() {
+            let proposal_path = dir.join("flow-plan-proposal.json");
+            if let Ok(proposal_raw) = std::fs::read_to_string(&proposal_path) {
+                let actual_hash =
+                    format!("sha256:{:x}", Sha256::digest(proposal_raw.as_bytes()));
+                if actual_hash != expected_hash {
+                    return Err(format!(
+                        "proposal file tampered: manifest={expected_hash}, actual={actual_hash}"
+                    ));
+                }
+            }
+        }
+    }
+
+    let graph_id = revision.graph_id.clone();
+
+    // 4. 创建 GraphRun（status=Running）
+    let run_id = gen_id("run");
+    let now = now_ms();
+    let snapshot = revision
+        .snapshot()
+        .map_err(|e| format!("deserialize revision snapshot failed: {e}"))?;
+    let planning_snapshot = RunPlanningSnapshot {
+        revision_content_hash: revision.content_hash.0.clone(),
+        skill_refs: revision.skill_refs.clone(),
+        template_refs: revision.template_refs.clone(),
+        planner_policy_refs: revision.planner_policy_refs.clone(),
+        node_policies: snapshot
+            .nodes
+            .into_iter()
+            .map(|node| (node.node_id, node.policy))
+            .collect(),
+    };
+
+    let run = GraphRun {
+        run_id: run_id.clone(),
+        graph_id: graph_id.clone(),
+        active_revision_id: revision_id.to_string(),
+        status: RunStatus::Running,
+        run_seq: 1,
+        budget_state: BudgetState::default(),
+        planning_snapshot,
+        started_at: now,
+        finished_at: None,
+    };
+
+    let event = build_event(
+        gen_id("evt"),
+        &run_id,
+        1,
+        TaskEventType::RunStarted,
+        "conductor",
+        now,
+        serde_json::to_value(&payloads::RunStartedPayload {
+            run_id: run_id.clone(),
+            graph_id: graph_id.clone(),
+            revision_id: revision_id.to_string(),
+            initial_status: RunStatus::Running,
+            budget_state: BudgetState::default(),
+        })
+        .map_err(|e| format!("serialize event payload failed: {e}"))?,
+    );
+
+    store
+        .create_run_with_event(&run, &event)
+        .map_err(|e| format!("create run failed: {e}"))?;
+
+    // 5. 更新 TaskInstance
+    let mut updated = instance;
+    updated.active_run_id = Some(run_id.clone());
+    updated.last_run_id = Some(run_id.clone());
+    updated.run_status = Some(RUN_STATUS_RUNNING.to_string());
+    updated.current_phase = "execution".to_string();
+    updated.status = STATUS_GRAPH_CREATED.to_string();
+    updated.last_launch_key = Some(req.idempotency_key);
+    updated.updated_at = now;
+    ti_store.upsert(&updated)?;
+
+    Ok(StartRunFromRevisionResult {
+        status: "started".to_string(),
+        run_id,
+        graph_id,
+        revision_id: revision_id.to_string(),
+    })
+}
+
+/// 完成态投影：将 run 终态同步到 TaskInstance。
+///
+/// 由 engine 的 finish_run 钩子调用。失败只 warn 不阻塞 engine。
+pub fn sync_run_status_to_task_instance(
+    project_root: &str,
+    run_id: &str,
+    final_status: &str,
+) -> Result<(), String> {
+    let store = open_store(project_root)?;
+    // 按 active_run_id 查找 TaskInstance
+    let instances = store.list_by_project(project_root)?;
+    let Some(mut instance) = instances
+        .into_iter()
+        .find(|i| i.active_run_id.as_deref() == Some(run_id))
+    else {
+        // 没有匹配的 instance，可能已被清理，静默返回
+        return Ok(());
+    };
+
+    instance.run_status = Some(final_status.to_string());
+    instance.last_run_id = Some(run_id.to_string());
+    instance.active_run_id = None;
+    instance.updated_at = now_ms();
+    store.upsert(&instance)?;
+    Ok(())
 }
 
 fn task_workspace_root(project_root: &str) -> PathBuf {

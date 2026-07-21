@@ -80,6 +80,7 @@ interface ConductorState {
   pendingConfirmation?: PendingConfirmation;
   revisionInstruction?: string;
   steps: Step[];
+  executorMode?: "external" | "fallback" | null;
 }
 
 const DOMAINS: Domain[] = ["dev"];
@@ -103,6 +104,22 @@ const PHASE_ALLOWED_TOOLS: Partial<Record<Phase, string[]>> = {
   plan: ["read", "grep", "find", "ls", "commit_plan", "request_user_input"],
   execute: ["read", "bash", "edit", "write", "grep", "find", "ls"],
 };
+
+const EXECUTE_EXTERNAL_TOOLS = [
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "start_execution",
+];
+
+/** 根据 phase + executorMode 返回当前允许的工具列表。 */
+function allowedToolsFor(phase: Phase, executorMode?: string): string[] | undefined {
+  if (phase === "execute" && executorMode === "external") {
+    return EXECUTE_EXTERNAL_TOOLS;
+  }
+  return PHASE_ALLOWED_TOOLS[phase];
+}
 
 const SKILLS_DIR =
   process.env.JISHU_CONDUCTOR_SKILLS_DIR ||
@@ -155,6 +172,7 @@ function phaseDiscipline(phase: Phase): string {
       "1. 只能执行用户已确认并正式落盘的计划。",
       "2. 按节点依赖和顺序执行，满足每个节点的验收标准。",
       "3. 用户点击停止或要求暂停时立即停止。",
+      "4. 如果是 orchestrator 模式，调用 start_execution 后立即结束回复。",
     ].join("\n"),
     done: "",
   };
@@ -288,6 +306,8 @@ export default function conductorExtension(pi: ExtensionAPI): void {
   let toolsBeforeWorkflow: string[] | undefined;
   let terminalStopReason: string | undefined;
   let gateInFlight: string | undefined;
+  // 模块级 ctx 缓存（工具 execute 回调不接收 ctx，需从事件处理器捕获）
+  let extensionCtx: ExtensionContext | null = null;
 
   const persist = (): void => {
     pi.appendEntry("jishu-conductor", { ...state, toolsBeforeWorkflow });
@@ -367,7 +387,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
 
   function setPhase(phase: Phase, ctx: ExtensionContext): void {
     state.phase = phase;
-    const allowed = PHASE_ALLOWED_TOOLS[phase];
+    const allowed = allowedToolsFor(phase, state.executorMode);
     if (allowed) pi.setActiveTools(allowed);
     else if (toolsBeforeWorkflow) pi.setActiveTools(toolsBeforeWorkflow);
     ctx.ui.setStatus("jishu-conductor-phase", phase);
@@ -517,6 +537,18 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       role: node.role ?? "developer",
       status: "pending",
     }));
+
+    // Phase 3：尝试创建 GraphRevision（orchestrator 模式）
+    state.executorMode = "fallback";
+    const validateResult = await hubInvoke(ctx, "orchestrator_validate_proposal", {
+      task_id: state.artifacts.taskId ?? "draft",
+      project_root: process.cwd(),
+      proposal_path: jsonPath,
+    }, 10000);
+    if (validateResult?.success && validateResult.data) {
+      state.executorMode = "external";
+    }
+
     // Phase 2：同步阶段到 Hub TaskInstance（plan→execute），携带产物哈希校验
     const synced = await syncHubPhase(ctx, {
       task_id: state.artifacts.taskId ?? "draft",
@@ -547,14 +579,28 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         return `${index + 1}. [${step.id}] ${step.title} [${step.role}]${dependency}\n   职责：${step.responsibility}${acceptance}`;
       })
       .join("\n");
-    pi.sendMessage(
-      {
-        customType: "jishu-conductor:phase-enter:execute",
-        display: true,
-        content: `进入流程执行阶段。按以下已确认节点依次执行：\n${stepList}\n\n全部完成后简要报告产出。`,
-      },
-      { triggerTurn: true, deliverAs: "followUp" },
-    );
+
+    if (state.executorMode === "external") {
+      // orchestrator 模式：告诉模型调用 start_execution 工具
+      pi.sendMessage(
+        {
+          customType: "jishu-conductor:phase-enter:execute",
+          display: true,
+          content: `进入流程执行阶段。计划已提交 orchestrator，请立即调用 start_execution 工具启动执行。\n\n节点列表：\n${stepList}\n\n调用 start_execution 后立即结束回复，不要做任何其他操作。`,
+        },
+        { triggerTurn: true, deliverAs: "followUp" },
+      );
+    } else {
+      // fallback 模式：纯 Pi 执行
+      pi.sendMessage(
+        {
+          customType: "jishu-conductor:phase-enter:execute",
+          display: true,
+          content: `进入流程执行阶段。按以下已确认节点依次执行：\n${stepList}\n\n全部完成后简要报告产出。`,
+        },
+        { triggerTurn: true, deliverAs: "followUp" },
+      );
+    }
   }
 
   pi.registerTool({
@@ -622,7 +668,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
             description: "前置依赖节点 id 列表",
           }),
           acceptance: Type.Optional(Type.String({ description: "验收口径" })),
-          role: Type.Optional(Type.String({ description: "建议角色" })),
+          role: Type.Optional(Type.String({ description: "建议角色，仅限：developer / tester / architect / reviewer / researcher" })),
         }),
       ),
     }),
@@ -658,15 +704,93 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     },
   });
 
+  // Phase 4：start_execution 工具（orchestrator 模式）
+  pi.registerTool({
+    name: "start_execution",
+    label: "启动 orchestrator 执行",
+    description:
+      "将已确认的计划提交给 orchestrator 引擎启动自动化执行。仅在 external 模式下可用。",
+    parameters: Type.Object({
+      taskId: Type.String({ description: "任务 ID" }),
+      projectRoot: Type.String({ description: "项目根目录" }),
+      idempotencyKey: Type.String({ description: "幂等键（防重复启动）" }),
+    }),
+    async execute(_id, params) {
+      const ctx = extensionCtx;
+      if (!ctx) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ status: "failed", error: "Extension context 不可用" }),
+            },
+          ],
+        };
+      }
+      const result = await hubInvoke(
+        ctx,
+        "orchestrator_start_run_from_revision",
+        {
+          task_id: params.taskId,
+          project_root: params.projectRoot,
+          idempotency_key: params.idempotencyKey,
+        },
+        10000,
+      );
+      if (!result) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ status: "failed", error: "Hub 桥接不可用" }),
+            },
+          ],
+        };
+      }
+      if (!result.success) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ status: "failed", error: result.error }),
+            },
+          ],
+        };
+      }
+      const data = result.data as {
+        status: string;
+        run_id: string;
+        graph_id: string;
+        revision_id: string;
+      };
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              status: data.status,
+              runId: data.run_id,
+              graphId: data.graph_id,
+              revisionId: data.revision_id,
+            }),
+          },
+        ],
+      };
+    },
+  });
+
   pi.on("agent_start", async () => {
     terminalStopReason = undefined;
   });
 
   pi.on("turn_end", async (event, ctx) => {
+    extensionCtx = ctx;
     const message = event.message as { stopReason?: string };
     terminalStopReason =
       ctx.signal?.aborted === true ? "aborted" : message.stopReason;
     if (state.phase === "execute" && terminalStopReason === "stop") {
+      // external 模式：完成态由 Hub 权威，turn_end 不推进 done
+      if (state.executorMode === "external") return;
       const synced = await syncHubPhase(ctx, {
         task_id: state.artifacts.taskId ?? "draft",
         project_root: process.cwd(),
@@ -682,6 +806,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("agent_end", async (_event, ctx) => {
+    extensionCtx = ctx;
     const gate = state.pendingConfirmation;
     const candidate = state.candidate;
     if (terminalStopReason !== "stop" || !gate || !candidate) return;
@@ -823,6 +948,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    extensionCtx = ctx;
     type Entry = {
       type: string;
       customType?: string;
@@ -884,13 +1010,13 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     }
 
     if (state.phase !== "idle") {
-      const allowed = PHASE_ALLOWED_TOOLS[state.phase];
+      const allowed = allowedToolsFor(state.phase, state.executorMode);
       if (allowed) pi.setActiveTools(allowed);
     }
   });
 
   pi.on("tool_call", async (event) => {
-    const allowed = PHASE_ALLOWED_TOOLS[state.phase];
+    const allowed = allowedToolsFor(state.phase, state.executorMode);
     if (!allowed) return;
     if (!allowed.includes(event.toolName)) {
       return {

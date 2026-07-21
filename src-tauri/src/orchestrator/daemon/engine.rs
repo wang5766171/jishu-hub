@@ -2010,7 +2010,7 @@ async fn finish_run(
             .iter()
             .map(|node_run| node_run.node_run_id.clone())
             .collect::<Vec<_>>();
-        return store
+        store
             .terminate_run_with_events(
                 run_id,
                 &run.status,
@@ -2019,7 +2019,11 @@ async fn finish_run(
                 &cancelled_node_run_ids,
                 &events,
             )
-            .map_err(|error| error.to_string());
+            .map_err(|error| error.to_string())?;
+
+        // 完成态投影：同步 run 终态到 TaskInstance
+        sync_run_status_hook(store, &run.graph_id, run_id, final_status);
+        return Ok(());
     }
 
     let event = match final_status {
@@ -2045,7 +2049,38 @@ async fn finish_run(
     };
     store
         .transition_run_with_event(run_id, &run.status, final_status, Some(now), &event)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+
+    // 完成态投影：同步 run 终态到 TaskInstance
+    sync_run_status_hook(store, &run.graph_id, run_id, final_status);
+    Ok(())
+}
+
+/// 完成态投影钩子：将 run 终态同步到 TaskInstance。
+/// 失败只 warn 不阻塞 engine（投影是最终一致，不是事务）。
+fn sync_run_status_hook(
+    store: &Arc<TaskStore>,
+    graph_id: &str,
+    run_id: &str,
+    final_status: &RunStatus,
+) {
+    let status_str = match final_status {
+        RunStatus::Completed => "completed",
+        RunStatus::Failed => "failed",
+        RunStatus::Cancelled => "cancelled",
+        _ => return,
+    };
+    let project_root = match store.get_graph(graph_id) {
+        Ok(graph) => graph.project_root.to_string_lossy().to_string(),
+        Err(_) => return,
+    };
+    if let Err(e) =
+        crate::task_launch::sync_run_status_to_task_instance(&project_root, run_id, status_str)
+    {
+        tracing::warn!(
+            "sync_run_status_to_task_instance failed (non-blocking): run={run_id}, err={e}"
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
