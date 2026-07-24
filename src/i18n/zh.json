@@ -272,7 +272,7 @@
     "noBaseUrl": "无 baseUrl",
     "customHeaders": "自定义请求头",
     "noCustomHeaders": "未配置自定义请求头",
-    "models": "模型列表",
+    "models": "模型接入",
     "noModelsHint": "下方输入模型 id 后回车添加。每个模型可设上下文长度、最大输出、baseUrl 等。",
     "addModel": "添加模型",
     "contextWindow": "上下文窗口",
@@ -289,9 +289,8 @@
     "required": "必填",
     "exists": "已存在",
     "notFound": "未找到",
-    "modelId": "模型 id",
+    "modelId": "标识 ID",
     "editModel": "编辑模型",
-    "addModel": "添加模型",
     "deleteModelConfirm": "确定删除模型 「{{model}}」 吗? (在接入 {{provider}} 下)",
     "setActive": "设为激活",
     "capabilities": "能力",
@@ -335,7 +334,6 @@
     "editHint": "可直接编辑 JSON 内容",
     "fillRequiredInfo": "填写配置信息",
     "fillRequiredDesc": "以下信息需要填写后才能使用此模板",
-    "modelId": "模型 ID",
     "modelIdPlaceholder": "例如：claude-sonnet-4-6 或自定义模型 ID",
     "envValueHint": "{{key}} 的值",
     "applyAnyway": "跳过，直接应用",
@@ -380,9 +378,7 @@
     "sandbox": "沙箱",
     "enabled": "已启用",
     "disabled": "已禁用",
-    "models": "模型接入",
     "modelManagerDesc": "配置 LLM 模型供应商，支持 OpenAI 和 Anthropic 兼容协议。配置后可用于 the agent 智能体和任务编排。",
-    "addModel": "添加模型",
     "noModels": "暂无模型配置",
     "noModelsDesc": "点击上方「添加模型」按钮配置第一个模型",
     "testModel": "测试连通性",
@@ -393,15 +389,12 @@
     "protocol": "协议",
     "baseUrl": "API 地址",
     "modelName": "模型名称",
-    "modelId": "标识 ID",
     "apiKeyLabel": "API Key",
     "apiKeyPlaceholder": "sk-xxx...",
     "apiKeyStorageHint": "密钥保存在本地配置文件中，也可通过环境变量覆盖。点击已添加模型的密钥行可随时修改。",
     "apiKeySet": "已配置",
     "apiKeyFromEnv": "来自环境变量",
     "apiKeyNotSet": "点击设置 API Key",
-    "save": "保存",
-    "editModel": "编辑模型",
     "activate": "激活",
     "activateAfterSave": "保存后设为活动",
     "displayName": "显示名称",
@@ -440,78 +433,10 @@
     "custom": "自定义命令"
   },
   "tasks": {
-    "title": "任务",
-    "conversation": {
-      "title": "任务会话",
-      "taskContext": "查看任务规划与执行过程",
-      "nodeContext": "仅显示当前节点相关过程",
-      "fixedAgent": "任务会话固定由当前智能体处理",
-      "currentNode": "当前节点：{{node}}",
-      "noVisibleEvents": "暂无可展示的任务过程。系统提示词、内部格式约束和原始运行载荷不会显示在这里。",
-      "phases": {
-        "created": "已创建",
-        "planning": "规划阶段",
-        "proposal_review": "方案审核",
-        "executing": "执行阶段",
-        "verifying": "验证阶段",
-        "reworking": "返工阶段",
-        "completed": "已完成",
-        "failed": "已失败",
-        "cancelled": "已取消"
-      },
-      "entries": {
-        "user_message": "用户消息",
-        "assistant_message": "智能体",
-        "phase_changed": "阶段变化",
-        "planning_progress": "规划进度",
-        "interaction_requested": "需要您的选择",
-        "interaction_resolved": "已提交选择",
-        "node_progress": "节点执行",
-        "node_completed": "节点完成",
-        "approval_requested": "等待审批",
-        "approval_resolved": "审批完成",
-        "artifact_published": "产物生成",
-        "revision_changed": "流程版本更新",
-        "warning": "提示",
-        "error": "错误",
-        "completion": "任务完成"
-      }
-    },
     "startTask": "新任务",
-    "description": "将目标转换为可审阅、可运行、可追踪的任务图。",
-    "createDescription": "像普通会话一样先把目标聊清楚；也可以只输入一句明确需求，直接生成可审阅的任务流程图。",
     "createPrompt": "我们应该在 {{project}} 中规划什么任务？",
-    "createAndPlan": "生成任务流程图",
-    "planningSkill": "任务规划技能",
-    "creationMode": {
-      "label": "任务生成方式",
-      "discussion": "需求讨论",
-      "direct": "直接生成任务"
-    },
-    "taskList": "项目任务",
-    "taskListDescription": "查看当前项目中的所有任务，或发起一个新的任务图。",
-    "newTask": "新建任务",
-    "openTask": "打开",
     "deleteTask": "删除任务",
-    "deletingTask": "删除中",
-    "deleteTaskWithTitle": "删除任务「{{title}}」",
     "deleteTaskConfirm": "确认删除任务「{{title}}」及其全部数据？此操作不可恢复。",
-    "noTasks": "这个项目还没有任务",
-    "noTasksDescription": "从一个清晰目标开始，智能体会把它拆解成包含角色、依赖和验收条件的任务流程图。",
-    "updatedAt": "更新于 {{time}}",
-    "refresh": "刷新",
-    "refreshTaskList": "刷新任务列表",
-    "backToTasks": "返回任务列表",
-    "closeTaskPage": "关闭任务页面",
-    "refreshRuns": "刷新运行记录",
-    "close": "关闭",
-    "hubTask": "HUB 任务",
-    "taskTitle": "标题",
-    "taskTitlePlaceholder": "可选任务标题",
-    "projectPath": "项目路径",
-    "projectPathPlaceholder": "未选择项目时可留空",
-    "taskGoal": "任务目标",
-    "taskGoalPlaceholder": "描述要交给智能体的任务。",
     "workbench": {
       "startRun": "开始运行",
       "runStarted": "运行已开始",
@@ -521,60 +446,11 @@
       "aiPlan": "智能规划",
       "planning": "规划中…",
       "planningProgress": {
-        "eyebrow": "智能任务图规划",
-        "live": "实时规划进度",
-        "description": "规划器正在根据目标、规划方法、项目能力和当前任务图生成候选版本。",
-        "agentOutput": "Agent 实时输出",
-        "steer": "引导",
-        "steerPlaceholder": "输入内容暂存，点击引导发送…",
-        "staging": "暂存",
-        "stop": "停止",
-        "sendOrStop": "发送 / 停止",
-        "locked": "生成期间任务图已锁定",
-        "attempt": "尝试 {{current}} / {{total}}",
-        "stages": {
-          "preparing_context": "准备规划上下文",
-          "resolving_agent": "选择规划智能体",
-          "generating": "生成任务图结构",
-          "awaiting_input": "等待您的补充",
-          "validating": "校验任务图",
-          "retrying": "根据校验结果重新规划",
-          "building_proposal": "构建审核提案",
-          "completed": "规划完成",
-          "failed": "规划失败"
-        }
+        "steer": "引导"
       },
-      "planningSkills": "规划方法",
-      "planningSkillsHint": "所选规划方法会按内容哈希固定到版本，并进入规划上下文与运行追踪。",
-      "planningChat": {
-        "title": "对话式规划",
-        "description": "先通过多轮对话明确目标、约束和验收口径，再生成可审阅的流程图提案。",
-        "agentIntro": "告诉我你希望完成什么任务，也可以继续补充范围、优先级、验收方式或不希望智能体处理的事项。",
-        "placeholder": "输入一条规划需求或补充说明…",
-        "addMessage": "加入规划",
-        "barrier": "交互屏障：生成流程图前不会自动执行任务；所有输入会先汇总为规划上下文，并在提案差异中审阅后再写入版本。"
-      },
-      "preparingTask": "准备任务与规划…",
-      "proposalEyebrow": "候选版本",
-      "proposalTitle": "审阅智能体任务图提案",
-      "nodesAdded": "新增节点",
-      "nodesChanged": "修改节点",
-      "edgesAdded": "新增依赖",
-      "policyChanges": "策略变化",
-      "expectedBenefits": "预期收益",
-      "proposalRisks": "风险",
-      "validationWarnings": "校验提示",
-      "proposedNodes": "候选节点",
-      "rejectProposal": "暂不采用",
-      "acceptProposal": "确认并创建版本",
-      "acceptingProposal": "正在提交…",
-      "proposalCommands": "命令（可逐条勾选）",
-      "selectAll": "全选",
-      "clearSelection": "清空",
       "addPhase": "添加阶段",
       "canvasAriaLabel": "任务图画布。使用方向键平移，按 Ctrl/Cmd+Z 撤销。",
       "addAgentStep": "添加智能体节点",
-      "agentStepEyebrow": "可执行节点",
       "stepTitle": "节点标题",
       "stepPrompt": "执行提示词",
       "nodeWizard": {
@@ -598,15 +474,6 @@
       "deleteEdge": "删除依赖",
       "createStep": "创建节点",
       "newPhase": "新阶段",
-      "nodeId": "节点 ID",
-      "nodeKind": "节点类型",
-      "description": "描述",
-      "payload": "执行载荷",
-      "loopConfig": "循环配置",
-      "approvalGate": "审批门",
-      "contracts": "输入输出契约",
-      "input": "输入",
-      "output": "输出",
       "status": {
         "blocked": "等待依赖",
         "ready": "已就绪",
@@ -628,23 +495,6 @@
         "control_loop": "持久循环",
         "control_approval_gate": "审批门"
       },
-      "runInspector": "运行详情",
-      "showRunInspector": "运行详情",
-      "hideRunInspector": "收起运行详情",
-      "closeRunInspector": "关闭运行详情",
-      "closeNodeInspector": "关闭节点详情",
-      "inspectorTabs": {
-        "events": "事件",
-        "approvals": "审批",
-        "artifacts": "产物",
-        "revisions": "版本"
-      },
-      "noEvents": "暂无运行事件",
-      "noApprovals": "暂无待处理审批",
-      "noArtifacts": "暂无产物",
-      "approve": "批准",
-      "reject": "拒绝",
-      "currentRevision": "当前",
       "undo": "撤销",
       "redo": "重做",
       "applyDraftToRun": "应用草稿到运行",
@@ -662,372 +512,7 @@
       },
       "phaseFilter": {
         "all": "全部阶段"
-      },
-      "viewModes": {
-        "label": "任务视图模式",
-        "chat": "会话模式",
-        "canvas": "画布模式",
-        "split": "分屏模式"
-      },
-      "context": {
-        "run": "运行",
-        "status": "状态",
-        "revision": "版本",
-        "approvals": "待审批",
-        "failures": "失败",
-        "notRunning": "未运行"
-      },
-      "unifiedInspector": {
-        "title": "节点详情",
-        "phase1Placeholder": "该区域将在执行监控阶段接入公开投影内容。",
-        "tabs": {
-          "overview": "概览",
-          "run": "运行",
-          "conversation": "会话",
-          "artifacts": "产物"
-        }
-      },
-      "intervention": {
-        "title": "干预方式",
-        "status": "节点状态",
-        "nodeRun": "NodeRun",
-        "attempts": "尝试次数",
-        "noNodeRun": "该节点还没有运行记录。",
-        "manualReason": "用户在 Inspector 中手动干预：",
-        "retryNow": "立即重试",
-        "skipNode": "跳过节点",
-        "failNode": "标记失败",
-        "approvalCard": "ApprovalCard",
-        "modes": {
-          "blocked": "等待依赖完成，暂不可直接干预。",
-          "queued_intervention": "节点已进入队列，可记录引导，执行前应用。",
-          "live_steer": "节点运行中，优先使用实时引导；不支持时降级为后续补充。",
-          "approval": "节点等待审批，请批准或拒绝后继续。",
-          "retry_wait": "节点等待重试，可立即重试、跳过或标记失败。",
-          "repairing": "节点正在修复，暂不重复提交恢复动作。",
-          "terminal": "节点已结束，只保留查看与审计。",
-          "recovery": "节点失败，可选择恢复策略。"
-        }
       }
-    },
-    "kind": {
-      "plan": "规划",
-      "run": "执行"
-    },
-    "submit": "提交给 jishu",
-    "submitting": "提交中...",
-    "runs": "运行记录",
-    "loadingRuns": "正在加载运行记录...",
-    "noRuns": "暂无任务运行记录。",
-    "manualRoles": "人工角色分配",
-    "roleAssignments": "角色分配",
-    "templateSection": "Skill 模版",
-    "templateLabel": "任务模版",
-    "templateHint": "任务模版从 ~/.jishu-agent/task-plan 识别。先安装规划方法，再生成标准角色契约。",
-    "templateRequiresGoal": "请先填写任务目标",
-    "installSkillFirst": "请先安装此规划方法",
-    "generateBreakdown": "生成分解",
-    "generatingBreakdown": "生成中...",
-    "installSkill": "安装",
-    "repairSkill": "修复安装",
-    "installingSkill": "安装中...",
-    "installed": "已安装",
-    "notInstalled": "未安装",
-    "invalidSkill": "无效规划方法",
-    "skillBytes": "{{count}} 字节",
-    "builtinSkill": "内置",
-    "noTaskPlanSkills": "未发现任务规划方法",
-    "noSkillDescription": "暂无描述。",
-    "agentAssignmentHint": "生成的角色不会自动分配智能体，需要你手动选择。",
-    "rolesGenerated": "{{count}} 个角色",
-    "generateRolesBeforeSubmit": "请先从所选规划方法生成角色后再提交。",
-    "assignRoleAgentsFirst": "请先为每个角色分配智能体后再提交。",
-    "addPresetRole": "添加预设角色",
-    "addRole": "添加角色",
-    "noRoles": "暂无角色分配。需要人工指定智能体时再添加角色。",
-    "role": "角色",
-    "agent": "智能体",
-    "selectAgent": "选择",
-    "responsibilities": "职责",
-    "acceptance": "验收标准",
-    "removeRole": "移除角色",
-    "cancel": "取消",
-    "executePlan": "执行此计划",
-    "executingPlan": "执行中...",
-    "viewDetails": "查看详情",
-    "delete": "删除",
-    "confirmDelete": "确认删除此运行记录？此操作不可恢复。",
-    "aiSummary": "智能总结",
-    "noSummary": "（暂无总结）",
-    "closeDrawer": "关闭",
-    "stepOf": "第 {{index}} 步",
-    "all": "全部",
-    "parallelView": "并行视图",
-    "listView": "列表视图",
-    "running": "执行中，可关闭抽屉继续操作",
-    "regenerateSummary": "重新生成总结",
-    "openSession": "在会话中打开",
-    "floatSession": "悬浮窗口",
-    "agentAsking": "智能体正在询问",
-    "yourReply": "您的回复",
-    "sendReply": "发送",
-    "replyPlaceholder": "输入您的回复...",
-    "noOptions": "无选项 - 直接输入回复",
-    "actions": {
-      "default": "处理任务",
-      "developer": "编写实现",
-      "architect": "架构设计",
-      "auditor": "审计检查",
-      "tester": "测试验证",
-      "requirements_owner": "需求澄清"
-    },
-    "ago": "{{seconds}} 秒前",
-    "runningFor": "已运行 {{seconds}} 秒",
-    "pending": "用户确认中",
-    "expanded": "展开审批",
-    "inProgress": "处理中",
-    "planGenerating": "Plan 生成中（LLM 调用中）",
-    "awaitingLLM": "正在等待 LLM 响应…",
-    "cancelPlan": "停止 Plan 生成",
-    "errorDetail": "错误详情",
-    "errorDetailHint": "复制错误信息以便排查。可参考 ~/.jishu-hub/runs/<run_id>/trace.jsonl 查看完整事件流。",
-    "assignedRoles": "已分配角色",
-    "noAssignedRoles": "暂无已分配角色。",
-    "planSteps": "计划步骤",
-    "noPlanSteps": "暂无计划步骤。",
-    "timeline": "执行时间线",
-    "noTimeline": "暂无执行时间线。",
-    "dependsOn": "依赖 {{steps}}",
-    "startedAt": "开始时间 {{time}}",
-    "parentRun": "父任务运行：{{runId}}",
-    "childRuns": "子任务运行",
-    "reworkItems": "返工项",
-    "reworkDispatchedTo": "已派发至运行 {{runId}}",
-    "unassigned": "未分配",
-    "validation": {
-      "needOneStep": "计划至少需要一个步骤",
-      "stepMissingId": "第 {{index}} 步缺少 step_id",
-      "stepDuplicateId": "第 {{index}} 步的 step_id 重复",
-      "stepMissingPrompt": "第 {{index}} 步缺少执行说明",
-      "stepMissingRole": "第 {{index}} 步缺少角色",
-      "stepTimeoutNaN": "第 {{index}} 步的超时时间必须是数字"
-    },
-    "planStatus": {
-      "pending": "等待中",
-      "generating": "生成中",
-      "draft": "草案",
-      "ready": "可执行",
-      "plan_ready": "计划已生成",
-      "editing": "编辑中",
-      "updating": "更新中",
-      "executing": "执行中",
-      "committed": "已提交",
-      "cancelled": "已取消",
-      "complete": "已完成",
-      "failed": "失败",
-      "none": "未生成"
-    },
-    "planEdit": {
-      "cancelEdit": "取消编辑",
-      "saving": "保存中",
-      "savePlan": "保存计划",
-      "editFinal": "编辑定稿",
-      "addStep": "添加步骤",
-      "removeStep": "移除步骤",
-      "saveOrCancelFirst": "请先保存或取消计划编辑，再执行。"
-    },
-    "planGen": {
-      "waitingAgent": "正在等待智能体输出规划过程。",
-      "stepLabel": "第 {{index}} 步"
-    },
-    "timelineLabels": {
-      "toolCall": "调用工具",
-      "toolReturn": "工具返回",
-      "taskEvent": "任务事件",
-      "type": "类型",
-      "role": "角色",
-      "timeout": "超时 ms"
-    },
-    "status": {
-      "queued": "排队中",
-      "running": "运行中",
-      "awaiting_rework": "等待返工",
-      "awaiting_approval": "等待审批",
-      "complete": "已完成",
-      "aborted": "已取消",
-      "error": "错误"
-    },
-    "templates": {
-      "jishuDefault": {
-        "label": "默认编排",
-        "description": "面向常规 HUB 任务的架构、开发、测试、审计角色分工。",
-        "roles": {
-          "architect": {
-            "name": "架构师",
-            "responsibility1": "澄清架构边界、依赖关系和实现路径。",
-            "responsibility2": "产出下游角色需要遵循的设计约束。",
-            "acceptance1": "架构决策明确且可执行。",
-            "acceptance2": "风险和集成点已识别。"
-          },
-          "developer": {
-            "name": "开发工程师",
-            "responsibility1": "按照架构方向实现必要变更。",
-            "responsibility2": "保持变更范围收敛并符合项目既有约定。",
-            "acceptance1": "任务所需代码路径已实现。",
-            "acceptance2": "具备本地验证证据。"
-          },
-          "tester": {
-            "name": "测试工程师",
-            "responsibility1": "为交付变更设计并执行聚焦验证。",
-            "responsibility2": "报告回归、覆盖缺口和可复现失败。",
-            "acceptance1": "关键任务路径已验证。",
-            "acceptance2": "失败包含复现上下文。"
-          },
-          "auditor": {
-            "name": "审计员",
-            "responsibility1": "审查最终实现的正确性、风险和测试缺口。",
-            "responsibility2": "将可执行返工项反馈给对应角色。",
-            "acceptance1": "发现的问题绑定到具体文件或行为。",
-            "acceptance2": "剩余风险已记录。"
-          }
-        }
-      },
-      "gstack": {
-        "label": "GStack",
-        "description": "以目标为先进行任务拆解，随后完成方案构建和反馈验证。",
-        "roles": {
-          "goalOwner": {
-            "name": "目标负责人",
-            "responsibility1": "澄清目标、范围、约束和成功信号。",
-            "responsibility2": "将任务描述转化为可衡量的工作切片。",
-            "acceptance1": "目标和非目标明确。",
-            "acceptance2": "工作切片能映射回原始任务。"
-          },
-          "solutionBuilder": {
-            "name": "方案构建者",
-            "responsibility1": "构建满足目标切片的解决方案。",
-            "responsibility2": "记录影响后续验证的决策和依赖。",
-            "acceptance1": "实现结果覆盖选定工作切片。",
-            "acceptance2": "权衡取舍对评审者可见。"
-          },
-          "feedbackValidator": {
-            "name": "反馈验证者",
-            "responsibility1": "根据目标信号和用户预期验证输出。",
-            "responsibility2": "将缺口转化为精确的后续工作。",
-            "acceptance1": "验证结果绑定目标信号。",
-            "acceptance2": "后续工作分配清晰。"
-          }
-        }
-      },
-      "superpowers": {
-        "label": "Superpowers",
-        "description": "按照头脑风暴、计划、实现、验证的节奏推进，并用证据确认完成。",
-        "roles": {
-          "brainstormer": {
-            "name": "探索者",
-            "responsibility1": "在实现前探索意图、约束和可选方案。",
-            "responsibility2": "暴露需要在计划中固定的关键决策。",
-            "acceptance1": "选定方案体现用户意图。",
-            "acceptance2": "未决事项清晰可见。"
-          },
-          "planner": {
-            "name": "计划者",
-            "responsibility1": "将选定方案转化为有顺序的实施步骤。",
-            "responsibility2": "定义检查点和验证命令。",
-            "acceptance1": "计划顺序和范围清晰。",
-            "acceptance2": "验证方式具体。"
-          },
-          "implementer": {
-            "name": "实施者",
-            "responsibility1": "按计划完成范围内变更。",
-            "responsibility2": "保持实现符合既有代码风格。",
-            "acceptance1": "计划中的变更已完成。",
-            "acceptance2": "没有引入无关变更。"
-          },
-          "verifier": {
-            "name": "验证者",
-            "responsibility1": "运行约定验证并系统性检查失败。",
-            "responsibility2": "只在有证据时确认完成。",
-            "acceptance1": "验证命令通过或阻塞点已记录。",
-            "acceptance2": "完成结论附带证据。"
-          }
-        }
-      },
-      "openspec": {
-        "label": "OpenSpec",
-        "description": "以规格为先定义变更，再完成实现和一致性验证。",
-        "roles": {
-          "specAuthor": {
-            "name": "规格作者",
-            "responsibility1": "编写能力意图、需求和验收标准。",
-            "responsibility2": "区分当前行为和目标行为。",
-            "acceptance1": "规格清晰描述请求变更。",
-            "acceptance2": "验收标准可测试。"
-          },
-          "changeDesigner": {
-            "name": "变更设计者",
-            "responsibility1": "将规格需求映射到受影响模块和接口。",
-            "responsibility2": "定义最小实现路径。",
-            "acceptance1": "受影响面已识别。",
-            "acceptance2": "实现路径符合规格。"
-          },
-          "implementationOwner": {
-            "name": "实现负责人",
-            "responsibility1": "实现由规格支撑的变更。",
-            "responsibility2": "保持需求到代码变更的可追踪性。",
-            "acceptance1": "实现满足规格要求。",
-            "acceptance2": "追踪关系可检查。"
-          },
-          "specValidator": {
-            "name": "规格验证者",
-            "responsibility1": "根据书面规格验证实现。",
-            "responsibility2": "将一致性缺口反馈为返工项。",
-            "acceptance1": "每条验收标准都已检查。",
-            "acceptance2": "缺口已分配责任人。"
-          }
-        }
-      },
-      "compound": {
-        "label": "Compound Engineering",
-        "description": "面向并行工程的编排、集成和质量审计流程。",
-        "roles": {
-          "orchestrator": {
-            "name": "编排者",
-            "responsibility1": "将任务拆成可并行的工作包并分配归属。",
-            "responsibility2": "监督进度并处理依赖冲突。",
-            "acceptance1": "工作包具备负责人和边界。",
-            "acceptance2": "依赖关系清晰可见。"
-          },
-          "parallelEngineer": {
-            "name": "并行工程师",
-            "responsibility1": "独立交付被分配的工作包。",
-            "responsibility2": "尽早暴露集成要求。",
-            "acceptance1": "分配的工作包已完成。",
-            "acceptance2": "已提供集成说明。"
-          },
-          "integrator": {
-            "name": "集成者",
-            "responsibility1": "将并行输出整合为一致结果。",
-            "responsibility2": "解决冲突并保留跨角色意图。",
-            "acceptance1": "集成结果一致。",
-            "acceptance2": "冲突已解决或升级。"
-          },
-          "qualityAuditor": {
-            "name": "质量审计员",
-            "responsibility1": "审计集成结果的正确性、一致性和回归风险。",
-            "responsibility2": "将返工路由给对应角色。",
-            "acceptance1": "质量风险已记录。",
-            "acceptance2": "返工分配精确。"
-          }
-        }
-      }
-    },
-    "status": {
-      "pending": "待处理",
-      "running": "运行中",
-      "complete": "已完成",
-      "error": "错误",
-      "aborted": "已中止"
     }
   },
   "projectConfig": {
