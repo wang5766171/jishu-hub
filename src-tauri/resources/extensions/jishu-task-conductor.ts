@@ -79,6 +79,12 @@ interface ConductorState {
   candidate?: Candidate;
   pendingConfirmation?: PendingConfirmation;
   revisionInstruction?: string;
+  /** 铁律7：待在下一次 turn_end 落地的目标 phase（轮内确认后不立即 setPhase）。 */
+  enteringPhase?: Phase;
+  /** R3：turn_end 落地某阶段后标记待驱动，空闲 agent_end 消费并启下一阶段轮次+持久化分隔符。 */
+  pendingDrive?: Phase;
+  /** R6：修订分支登记待驱动的修订轮（用户补充原话），由空闲 agent_end 单一驱动，避免流式 followUp 双驱动。 */
+  pendingRevise?: { kind: "requirements" | "plan"; answer: string };
   steps: Step[];
   executorMode?: "external" | "fallback" | null;
 }
@@ -106,7 +112,11 @@ const PHASE_ALLOWED_TOOLS: Partial<Record<Phase, string[]>> = {
 };
 
 /** 根据 phase + executorMode 返回当前允许的工具列表。 */
-function allowedToolsFor(phase: Phase, _executorMode?: string): string[] | undefined {
+function allowedToolsFor(phase: Phase, executorMode?: string): string[] | undefined {
+  // #5 纵深防御：external 模式 execute 阶段 Conductor 不执行，收窄为只读（硬保障靠 commit_plan 的 terminate）
+  if (phase === "execute" && executorMode === "external") {
+    return ["read", "grep", "find", "ls"];
+  }
   return PHASE_ALLOWED_TOOLS[phase];
 }
 
@@ -294,9 +304,6 @@ export default function conductorExtension(pi: ExtensionAPI): void {
   };
   let toolsBeforeWorkflow: string[] | undefined;
   let terminalStopReason: string | undefined;
-  let gateInFlight: string | undefined;
-  // 模块级 ctx 缓存（工具 execute 回调不接收 ctx，需从事件处理器捕获）
-  let extensionCtx: ExtensionContext | null = null;
 
   const persist = (): void => {
     pi.appendEntry("jishu-conductor", { ...state, toolsBeforeWorkflow });
@@ -384,16 +391,22 @@ export default function conductorExtension(pi: ExtensionAPI): void {
   }
 
   function queueRevision(kind: "requirements" | "plan", answer: string): void {
+    // R6：只登记待修订，不在流式态发 followUp（避免与未终止轮双驱动）。
+    // 工具修订分支返回 terminate:true 当前轮干净停，由空闲 agent_end 消费 pendingRevise 单一驱动修订轮。
     state.pendingConfirmation = undefined;
     state.revisionInstruction = answer;
+    state.pendingRevise = { kind, answer };
     persist();
-    const baseline =
-      state.candidate?.kind === kind
-        ? kind === "requirements"
-          ? state.candidate.markdown
-          : state.candidate.markdown
-        : "";
+  }
+
+  /** R6：由 agent_end 在空闲态驱动修订轮（携基线 + 用户补充原话）。
+   *  注意：followUp/continue 驱动的轮 **不触发 before_agent_start**（已核实 pi 源码：emitBeforeAgentStart 仅在
+   *  AgentSession.prompt() 路径，agent.continue() 绕开）。故基线+补充**必须**放进 followUp 正文本身，
+   *  不能依赖 before_agent_start 的 REVISION CONTEXT（那一轮它不注入）。 */
+  function driveRevision(kind: "requirements" | "plan", answer: string): void {
+    const baseline = state.candidate?.kind === kind ? state.candidate.markdown : "";
     const label = kind === "requirements" ? "需求" : "计划";
+    const tool = kind === "requirements" ? "lock_requirement" : "commit_plan";
     pi.sendMessage(
       {
         customType: `jishu-conductor:revise:${kind}`,
@@ -403,13 +416,27 @@ export default function conductorExtension(pi: ExtensionAPI): void {
           "以下是上一版候选基线，保留用户未明确否定的内容，只修改受补充影响的字段。",
           baseline,
           `用户补充：${answer}`,
-          kind === "requirements"
-            ? "修订完成后重新调用 lock_requirement，提交完整合并后的候选需求。"
-            : "修订完成后重新调用 commit_plan，提交完整合并后的候选计划。",
+          `修订完成后重新调用 ${tool}，提交完整合并后的候选${label}。`,
         ].join("\n\n"),
       },
       { triggerTurn: true, deliverAs: "followUp" },
     );
+  }
+
+  /** R3：用 state.steps 重建执行节点列表文本（供 agent_end 的 execute 分隔符复用）。 */
+  function renderStepList(): string {
+    return state.steps
+      .map((step, index) => {
+        const dependency =
+          step.depends_on.length > 0
+            ? `（依赖：${step.depends_on.join(", ")}）`
+            : "";
+        const acceptance = step.acceptance
+          ? `\n   验收：${step.acceptance}`
+          : "";
+        return `${index + 1}. [${step.id}] ${step.title} [${step.role}]${dependency}\n   职责：${step.responsibility}${acceptance}`;
+      })
+      .join("\n");
   }
 
   async function acceptRequirements(
@@ -461,15 +488,9 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     state.candidate = undefined;
     state.pendingConfirmation = undefined;
     state.revisionInstruction = undefined;
-    setPhase("plan", ctx);
-    pi.sendMessage(
-      {
-        customType: "jishu-conductor:phase-enter:plan",
-        display: true,
-        content: `进入流程规划阶段。读取需求终稿（${path}），逐步澄清流程缺口并设计任务节点方案；明确后调用 commit_plan。`,
-      },
-      { triggerTurn: true, deliverAs: "followUp" },
-    );
+    state.enteringPhase = "plan"; // 铁律7：推迟到 turn_end 落 phase，避免同轮 lock→commit 一跳到底
+    persist();
+    // R3：驱动下一阶段轮次+持久化分隔符移到空闲 agent_end（消费 pendingDrive），此处不再发送。
   }
 
   async function acceptPlan(
@@ -554,43 +575,9 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     state.candidate = undefined;
     state.pendingConfirmation = undefined;
     state.revisionInstruction = undefined;
-    setPhase("execute", ctx);
-
-    const stepList = state.steps
-      .map((step, index) => {
-        const dependency =
-          step.depends_on.length > 0
-            ? `（依赖：${step.depends_on.join(", ")}）`
-            : "";
-        const acceptance = step.acceptance
-          ? `\n   验收：${step.acceptance}`
-          : "";
-        return `${index + 1}. [${step.id}] ${step.title} [${step.role}]${dependency}\n   职责：${step.responsibility}${acceptance}`;
-      })
-      .join("\n");
-
-    if (state.executorMode === "external") {
-      // UI 模式：计划已提交 orchestrator 并生成执行图，执行由界面工作台手动启动。
-      // 不触发 turn（无需模型动作）；完成态由 Hub 权威，重开会话时 session_start 校正 phase=done。
-      pi.sendMessage(
-        {
-          customType: "jishu-conductor:phase-enter:execute",
-          display: true,
-          content: `进入流程执行阶段。计划已提交 orchestrator 并生成执行图。\n\n节点列表：\n${stepList}\n\n请在执行工作台为各节点选择智能体，然后点击“执行”按钮启动。`,
-        },
-        { triggerTurn: false, deliverAs: "followUp" },
-      );
-    } else {
-      // fallback 模式：纯 Pi 执行
-      pi.sendMessage(
-        {
-          customType: "jishu-conductor:phase-enter:execute",
-          display: true,
-          content: `进入流程执行阶段。按以下已确认节点依次执行：\n${stepList}\n\n全部完成后简要报告产出。`,
-        },
-        { triggerTurn: true, deliverAs: "followUp" },
-      );
-    }
+    state.enteringPhase = "execute"; // 铁律7：推迟到 turn_end 落 phase
+    persist();
+    // R3：进入执行的驱动/分隔符移到空闲 agent_end（消费 pendingDrive），节点列表用 renderStepList() 重建。
   }
 
   pi.registerTool({
@@ -612,7 +599,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         Type.String({ description: "关键假设（分号分隔）" }),
       ),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, _signal, _onUpdate, ctx: ExtensionContext) {
       const revision =
         state.candidate?.kind === "requirements"
           ? state.candidate.revision + 1
@@ -632,14 +619,43 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       };
       state.revisionInstruction = undefined;
       persist();
+      // #2（补丁2/R1）：候选全文改由 agent 在调用本工具前于回复中总结呈现（Hub 会丢弃 role=custom 展示消息），此处只弹简短确认卡
+      const choice = await ctx.ui.select(
+        `请查阅上方候选需求（第 ${revision} 版）是否已满足、是否还有补充。`,
+        ["进入流程规划", "继续补充需求"],
+      );
+      if (choice === "进入流程规划") {
+        await acceptRequirements(candidate, ctx);
+      } else if (choice !== undefined) {
+        // R5：choice 可能是按钮「继续补充需求」，也可能是用户自由输入的补充内容。
+        // 后者必须把用户原话带给 agent（基线行为），否则用户的补充被丢弃、agent 只收到套话。
+        queueRevision(
+          "requirements",
+          choice === "继续补充需求"
+            ? "请继续补充需求；只询问尚未明确或需要修改的一个维度。"
+            : choice,
+        );
+      }
+      // I1：terminate/话术以 accept 是否真正成功为准（acceptRequirements 内 Hub 同步失败会
+      // early-return 且不置 enteringPhase）。避免 Hub 失败时"当轮停 + 显示已进入"却无人推进的静默卡死。
+      const advanced = choice === "进入流程规划" && state.enteringPhase === "plan";
+      // R6：修订分支（已登记 pendingRevise）也当轮停，交空闲 agent_end 单一驱动修订轮。
+      const stopNow = advanced || state.pendingRevise !== undefined;
       return {
         content: [
           {
             type: "text" as const,
-            text: `候选需求已准备（第 ${revision} 版），等待用户确认后写入正式终稿。\n\n${candidate.markdown}`,
+            text:
+              choice === "进入流程规划"
+                ? advanced
+                  ? "候选需求已确认，进入流程规划。"
+                  : "需求阶段同步未成功，请稍后重新确认。"
+                : "已收到补充，正在按你的意见修订需求。",
           },
         ],
         details: { candidateId: candidate.id, revision },
+        // R3/R6：进入规划 或 修订 → 当轮停，交空闲 agent_end 驱动（避免流式态 followUp 错乱）
+        terminate: stopNow,
       };
     },
   });
@@ -662,7 +678,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         }),
       ),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, _signal, _onUpdate, ctx: ExtensionContext) {
       validatePlan(params.nodes);
       const revision =
         state.candidate?.kind === "plan" ? state.candidate.revision + 1 : 1;
@@ -682,14 +698,42 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       };
       state.revisionInstruction = undefined;
       persist();
+      // #2（补丁2/R1）：候选全文改由 agent 在调用本工具前于回复中总结呈现（Hub 会丢弃 role=custom 展示消息），此处只弹简短确认卡
+      const choice = await ctx.ui.select(
+        `请查阅上方候选计划（第 ${revision} 版）是否合适、是否需要修改。`,
+        ["进入流程执行", "修改计划"],
+      );
+      if (choice === "进入流程执行") {
+        await acceptPlan(candidate, ctx);
+      } else if (choice !== undefined) {
+        // R5：choice 可能是按钮「修改计划」，也可能是用户自由输入的修改要求。后者原样带给 agent。
+        queueRevision(
+          "plan",
+          choice === "修改计划"
+            ? "请继续修改计划；只询问尚未明确或需要修改的一个问题。"
+            : choice,
+        );
+      }
+      // I1：terminate/话术以 accept 是否真正成功为准（acceptPlan 内 Hub 同步失败会 early-return 且不置 enteringPhase）。
+      const advanced = choice === "进入流程执行" && state.enteringPhase === "execute";
+      // R6：修订分支（已登记 pendingRevise）也当轮停，交空闲 agent_end 单一驱动修订轮。
+      const stopNow = advanced || state.pendingRevise !== undefined;
       return {
         content: [
           {
             type: "text" as const,
-            text: `候选计划已准备（第 ${revision} 版），等待用户确认后写入正式计划。\n\n${candidate.markdown}`,
+            text:
+              choice === "进入流程执行"
+                ? advanced
+                  ? state.executorMode === "external"
+                    ? "候选计划已确认。执行图已生成，请在执行工作台为节点选择智能体并点击“执行”。"
+                    : "候选计划已确认，进入流程执行。"
+                  : "执行阶段同步未成功，请稍后重新确认。"
+                : "已收到修改意见，正在按你的意见修订计划。",
           },
         ],
         details: { candidateId: candidate.id, revision },
+        terminate: stopNow,
       };
     },
   });
@@ -698,11 +742,60 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     terminalStopReason = undefined;
   });
 
+  // R3：空闲态驱动器——turn_end 落地某阶段后由此启下一阶段轮次并持久化分隔符。
+  // 只做驱动+分隔符，绝不含 ctx.ui.select（关卡 select 仍在工具内）。
+  pi.on("agent_end", async () => {
+    // R6：优先消费修订（用户在关卡里补充/改）——空闲态单一驱动，避免流式 followUp 双驱动。
+    const revise = state.pendingRevise;
+    if (revise) {
+      state.pendingRevise = undefined;
+      persist();
+      driveRevision(revise.kind, revise.answer);
+      return;
+    }
+    const target = state.pendingDrive;
+    if (!target) return;
+    state.pendingDrive = undefined;
+    persist();
+    // external 模式的 execute 不驱动模型轮（工作台执行）；plan 与 fallback-execute 需要驱动
+    const needDrive =
+      target === "plan" ||
+      (target === "execute" && state.executorMode !== "external");
+    // external execute：不驱动、也不发续轮消息。agent_end 时 run 尚未 settle（isStreaming 仍 true），
+    // 发无 deliverAs 的消息会被当 steer 多跑一轮 —— 故此处直接返回。
+    // 该阶段的分隔符：实时靠 setPhase 的 setStatus；重载靠 session_start 的 Hub 权威 phase 覆盖。
+    if (!needDrive) return;
+    const content =
+      target === "plan"
+        ? `进入流程规划阶段。读取需求终稿并设计任务节点方案；先在回复列出方案，再调用 commit_plan。`
+        : `进入流程执行阶段。按已确认节点依次执行：\n${renderStepList()}\n全部完成后简要报告产出。`;
+    pi.sendMessage(
+      { customType: `jishu-conductor:phase-enter:${target}`, display: true, content },
+      { triggerTurn: needDrive }, // 驱动下一阶段轮次（plan / fallback-execute）
+    );
+  });
+
   pi.on("turn_end", async (event, ctx) => {
-    extensionCtx = ctx;
     const message = event.message as { stopReason?: string };
     terminalStopReason =
       ctx.signal?.aborted === true ? "aborted" : message.stopReason;
+
+    // 铁律7：轮内确认关卡只登记 enteringPhase，真正 setPhase 在此（轮末）统一落地，
+    // 避免同一 turn 内 lock→commit 一跳到底 / 进入 execute 后立即动写工具。
+    if (state.enteringPhase) {
+      if (terminalStopReason === "aborted") {
+        state.enteringPhase = undefined; // 用户中止 → 不推进，候选/产物保留
+        persist();
+        return;
+      }
+      const next = state.enteringPhase;
+      state.enteringPhase = undefined;
+      setPhase(next, ctx); // setPhase 内部已 persist（此时 enteringPhase 已清空）
+      state.pendingDrive = next; // R3：标记待驱动，空闲 agent_end 消费并启下一阶段轮次+持久化分隔符
+      persist(); // setPhase 后又改了 pendingDrive，需再落盘
+      return; // 本轮仅落阶段，不再跑完成态判定
+    }
+
     if (state.phase === "execute" && terminalStopReason === "stop") {
       // external 模式：完成态由 Hub 权威，turn_end 不推进 done
       if (state.executorMode === "external") return;
@@ -717,59 +810,6 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       for (const step of state.steps) step.status = "done";
       setPhase("done", ctx);
       ctx.ui.notify(`流程执行完成。共 ${state.steps.length} 个节点。`, "info");
-    }
-  });
-
-  pi.on("agent_end", async (_event, ctx) => {
-    extensionCtx = ctx;
-    const gate = state.pendingConfirmation;
-    const candidate = state.candidate;
-    if (terminalStopReason !== "stop" || !gate || !candidate) return;
-    if (gate.candidateId !== candidate.id || gateInFlight === gate.id) return;
-
-    gateInFlight = gate.id;
-    try {
-      if (
-        gate.kind === "requirements-to-plan" &&
-        candidate.kind === "requirements"
-      ) {
-        const choice = await ctx.ui.select(
-          "候选需求已明确，是否进入流程规划？",
-          ["进入流程规划", "继续补充需求"],
-        );
-        if (choice === undefined) return;
-        if (choice === "进入流程规划") {
-          await acceptRequirements(candidate, ctx);
-        } else {
-          queueRevision(
-            "requirements",
-            choice === "继续补充需求"
-              ? "请继续补充需求；只询问尚未明确或需要修改的一个维度。"
-              : choice,
-          );
-        }
-        return;
-      }
-
-      if (gate.kind === "plan-to-execute" && candidate.kind === "plan") {
-        const choice = await ctx.ui.select(
-          "候选计划已明确，是否进入流程执行？",
-          ["进入流程执行", "修改计划"],
-        );
-        if (choice === undefined) return;
-        if (choice === "进入流程执行") {
-          await acceptPlan(candidate, ctx);
-        } else {
-          queueRevision(
-            "plan",
-            choice === "修改计划"
-              ? "请继续修改计划；只询问尚未明确或需要修改的一个问题。"
-              : choice,
-          );
-        }
-      }
-    } finally {
-      gateInFlight = undefined;
     }
   });
 
@@ -828,6 +868,16 @@ export default function conductorExtension(pi: ExtensionAPI): void {
 
   pi.on("before_agent_start", async () => {
     if (state.phase === "idle" || state.phase === "done") return;
+    // #5：external 模式 execute 阶段不注入"执行者"技能，改注入监督/交棒指令
+    if (state.phase === "execute" && state.executorMode === "external") {
+      return {
+        message: {
+          customType: phaseTag(),
+          display: false,
+          content: `[JISHU-TASK:${state.domain}:execute] === 流程执行（监督态）===\n执行由界面工作台驱动（用户为节点选智能体并点击“执行”，由 Orchestrator 引擎执行）。你不执行任何节点、不调用写工具（write/bash/edit）。本阶段无需你的动作；如用户提问可只读查阅后简答。`,
+        },
+      };
+    }
     const skill = loadSkill(state.domain, state.phase as SkillPhase);
     const revisionContext =
       state.revisionInstruction && state.candidate
@@ -863,7 +913,6 @@ export default function conductorExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    extensionCtx = ctx;
     type Entry = {
       type: string;
       customType?: string;
@@ -879,6 +928,10 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       Object.assign(state, last.data, { schemaVersion: 3 });
       state.artifacts ??= {};
       state.steps ??= [];
+      // M3：瞬态驱动字段不跨会话恢复，避免窄窗口崩溃后重载残留 → agent_end 误驱动一轮。
+      state.enteringPhase = undefined;
+      state.pendingDrive = undefined;
+      state.pendingRevise = undefined;
       toolsBeforeWorkflow = last.data.toolsBeforeWorkflow;
     }
 

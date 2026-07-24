@@ -1173,6 +1173,16 @@ export function ChatPage({
 
   const markTaskLaunchSession = useCallback(async (sessionId: string) => {
     if (!projectPathForSettings || !sessionId || sessionId.startsWith("new_session_")) return;
+    // R2: 无真任务 id 时不 mark，避免后端 mark_task_stage_session 生成 uuid 占位任务。
+    // 该函数当前已无调用点（见 discoverConductorTask 处注释），此守卫为防御性措施，
+    // 防未来复用时重新引入占位脏行。
+    if (!activeTaskInstanceIdRef.current) {
+      logTaskPhaseDebug("mark-session:skip-no-task-id", {
+        sessionId,
+        phase: taskLaunchPhaseRef.current,
+      });
+      return;
+    }
     logTaskPhaseDebug("mark-session:start", {
       taskId: activeTaskInstanceIdRef.current,
       sessionId,
@@ -1516,7 +1526,13 @@ export function ChatPage({
         const realId = extractRealSessionId(chunk.data);
         if (realId && realId !== cid) {
           streamStore.alias(cid, realId);
-          if (taskLaunchOpenRef.current) {
+          // R2: 仅当已关联真任务（activeTaskInstanceId 非空）时才 mark。为空说明
+          // Conductor 建的真任务尚未被 discoverConductorTask 发现，此时 mark 会让后端
+          // mark_task_stage_session 的 unwrap_or_else 生成 uuid 占位任务（title="新任务"、
+          // 无图），导致会话列表出现两条数据。跳过 mark，交由 discoverConductorTask 按
+          // requirement_session_id 关联真任务；会话 id 由 Conductor 扩展 conductor_sync_phase
+          // 权威写入，不依赖此处 mark。
+          if (taskLaunchOpenRef.current && activeTaskInstanceIdRef.current) {
             const projectRoot = projectPathRef.current;
             if (projectRoot) {
               invokeCommand<TaskLaunchInstanceSummary>("task_launch_mark_session", {
