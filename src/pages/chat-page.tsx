@@ -44,9 +44,6 @@ import {
   interactionRequestFromEvent,
 } from "@/lib/conversation-interaction";
 import { AgentLogo, useAgent } from "@/agents";
-import {
-  detectMissingTaskPhaseSessionPrompt,
-} from "@/features/task-instance/task-phase-advance";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
 import { TaskPhaseNavBar } from "@/features/task-instance/task-phase-nav-bar";
 import { shouldRenderGlobalChatInput } from "./chat-page-layout";
@@ -56,10 +53,8 @@ import {
   type PhaseDisplayStates,
   type TaskPhase,
 } from "@/features/task-instance/types";
-import type { GraphRevision, TaskGraph } from "@/features/task-instance/graph/use-task-graph";
 import type {
   AgentEventPayload,
-  ChatSession,
   ContentBlock,
   ConversationInteractionRequest,
   ConversationInteractionSubmission,
@@ -1038,55 +1033,6 @@ export function ChatPage({
     });
   }, []);
 
-  const markTaskLaunchSession = useCallback(async (sessionId: string) => {
-    if (!projectPathForSettings || !sessionId || sessionId.startsWith("new_session_")) return;
-    // R2: 无真任务 id 时不 mark，避免后端 mark_task_stage_session 生成 uuid 占位任务。
-    // 该函数当前已无调用点（见 discoverConductorTask 处注释），此守卫为防御性措施，
-    // 防未来复用时重新引入占位脏行。
-    if (!activeTaskInstanceIdRef.current) {
-      logTaskPhaseDebug("mark-session:skip-no-task-id", {
-        sessionId,
-        phase: taskLaunchPhaseRef.current,
-      });
-      return;
-    }
-    logTaskPhaseDebug("mark-session:start", {
-      taskId: activeTaskInstanceIdRef.current,
-      sessionId,
-      phase: taskLaunchPhaseRef.current,
-      skillId: selectedTaskSkillIdRef.current,
-      projectRoot: projectPathForSettings,
-    });
-    try {
-      const record = await invokeCommand<TaskLaunchInstanceSummary>("task_launch_mark_session", {
-        projectRoot: projectPathForSettings,
-        taskId: activeTaskInstanceIdRef.current,
-        sessionId,
-        skillId: selectedTaskSkillIdRef.current,
-        phase: taskLaunchPhaseRef.current,
-        title: null,
-      });
-      logTaskPhaseDebug("mark-session:done", {
-        taskId: record.task_id,
-        sessionId,
-        phase: taskLaunchPhaseRef.current,
-        status: record.status,
-        currentPhase: record.current_phase,
-        requirementSessionId: record.requirement_session_id,
-        planningSessionId: record.planning_session_id,
-      });
-      applyTaskLaunchInstanceSnapshot(record, { detectPhaseAdvance: true });
-      await refreshTaskLaunchSessions();
-    } catch (error) {
-      console.warn("Failed to mark task launch session:", error);
-      logTaskPhaseDebug("mark-session:failed", {
-        taskId: activeTaskInstanceIdRef.current,
-        sessionId,
-        phase: taskLaunchPhaseRef.current,
-      });
-    }
-  }, [applyTaskLaunchInstanceSnapshot, projectPathForSettings, refreshTaskLaunchSessions]);
-
   const handleMessageSent = useCallback((sid: string, msg: string) => {
     // For new sessions, register a stream entry here. For existing sessions,
     // chat-input.tsx already called streamStore.start() before invoking
@@ -1134,7 +1080,7 @@ export function ChatPage({
   }, [selectedSession, currentProject?.path, t]);
 
   // conductor 驱动的任务发现：首条消息激活 conductor 后，conductor 异步创建 TaskInstance（写入 requirement_session_id）。
-  // 轮询任务列表按 requirement_session_id 匹配到该任务后，打开三阶段工作台（不再调 markTaskLaunchSession 避免重复建任务）。
+  // 轮询任务列表按 requirement_session_id 匹配到该任务后，打开三阶段工作台（此处不标记 launch 会话，避免重复建任务；标记由流式 chunk 处理按需触发，见 task_launch_mark_session 内联调用）。
   const discoverConductorTask = useCallback(async (sessionId: string) => {
     if (!projectPathForSettings || !sessionId) return;
     for (let attempt = 0; attempt < 12; attempt++) {
@@ -1282,23 +1228,6 @@ export function ChatPage({
       planningSessionId: taskSession.planning_session_id,
       graphId: taskSession.graph_id,
     });
-    const missingPrompt = detectMissingTaskPhaseSessionPrompt({
-      taskId: taskSession.task_id,
-      requestedPhase: phase === "execution" ? "execution" : "planning",
-      instance: taskSession,
-    });
-    if (phase !== "requirements" && missingPrompt) {
-      logTaskPhaseDebug("workspace:missing-phase-target", {
-        taskId: taskSession.task_id,
-        requestedPhase: phase,
-        toPhase: missingPrompt.toPhase,
-        status: taskSession.status,
-        currentPhase: taskSession.current_phase,
-      });
-      setPhaseAdvancePrompt(missingPrompt);
-      return;
-    }
-
     if (phase !== "execution") {
       await openTaskChatPhase(taskSession, phase, readOnly);
       return;
@@ -2211,7 +2140,7 @@ export function ChatPage({
           </div>
           <div className="px-3 pb-2">
             <button
-              onClick={projectId ? () => handleOpenTaskConversation(null) : undefined}
+              onClick={projectId ? () => handleOpenTaskConversation() : undefined}
               title={projectId ? t("tasks.startTask") : t("sessions.selectProject")}
               className={cn(
                 "flex h-8 w-full items-center gap-2.5 rounded-lg pl-2 pr-2 text-sm text-foreground transition-fast",
@@ -2309,7 +2238,7 @@ export function ChatPage({
           </div>
           <div className="flex items-center justify-center h-10 pb-2">
             <button
-              onClick={projectId ? () => handleOpenTaskConversation(null) : undefined}
+              onClick={projectId ? () => handleOpenTaskConversation() : undefined}
               title={projectId ? t("tasks.startTask") : t("sessions.selectProject")}
               className={cn(
                 "flex h-8 w-8 items-center justify-center rounded-lg transition-fast",
