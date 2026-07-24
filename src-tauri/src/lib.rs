@@ -2109,25 +2109,6 @@ fn orchestrator_delete_graph(
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
-fn orchestrator_list_task_conversations(
-    state: tauri::State<'_, std::sync::Mutex<AppState>>,
-    project_root: String,
-) -> Result<
-    Vec<crate::orchestrator::conversation::TaskConversationSummary>,
-    crate::orchestrator::domain::run::TaskError,
-> {
-    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
-    let task_service = app_state
-        .task_service
-        .lock()
-        .map_err(|e| task_ipc_internal(e.to_string()))?;
-    task_service
-        .list_task_conversations(std::path::Path::new(&project_root))
-        .map_err(Into::into)
-}
-
-#[cfg(feature = "orchestrator")]
-#[tauri::command]
 fn orchestrator_get_task_conversation(
     state: tauri::State<'_, std::sync::Mutex<AppState>>,
     graph_id: String,
@@ -2717,16 +2698,6 @@ fn orchestrator_attach_repair(
 }
 
 #[tauri::command]
-fn task_plan_skill_list() -> Result<Vec<task_plan::TaskPlanSkill>, String> {
-    task_plan::list_task_plan_skills()
-}
-
-#[tauri::command]
-fn task_plan_skill_install(skill_id: String) -> Result<task_plan::TaskPlanSkill, String> {
-    task_plan::install_builtin_skill(&skill_id)
-}
-
-#[tauri::command]
 fn task_launch_list_sessions(
     project_root: String,
 ) -> Result<Vec<task_launch::TaskLaunchInstance>, String> {
@@ -2979,8 +2950,6 @@ pub fn run() {
             #[cfg(feature = "orchestrator")]
             orchestrator_delete_graph,
             #[cfg(feature = "orchestrator")]
-            orchestrator_list_task_conversations,
-            #[cfg(feature = "orchestrator")]
             orchestrator_get_task_conversation,
             #[cfg(feature = "orchestrator")]
             orchestrator_submit_task_interaction,
@@ -3038,8 +3007,6 @@ pub fn run() {
             orchestrator_choose_recovery,
             #[cfg(feature = "orchestrator")]
             orchestrator_attach_repair,
-            task_plan_skill_list,
-            task_plan_skill_install,
             task_launch_list_sessions,
             task_launch_mark_session,
             task_requirement_finalize,
