@@ -186,17 +186,6 @@ interface TaskConversationSummary {
   updated_at: number;
 }
 
-interface TaskPlanSkill {
-  id: string;
-  name: string;
-  description: string;
-  installed: boolean;
-  valid: boolean;
-  installable: boolean;
-  content_hash: string;
-}
-
-type TaskCreationMode = "discussion" | "direct";
 type TaskLaunchPhase = "requirements" | "planning";
 
 interface TaskLaunchInstanceSummary {
@@ -291,9 +280,7 @@ export function ChatPage({
   const [taskLaunchPhase, setTaskLaunchPhase] = useState<TaskLaunchPhase>("requirements");
   const [activeTaskInstanceId, setActiveTaskInstanceId] = useState<string | null>(null);
   const [activeTaskRequirementFile, setActiveTaskRequirementFile] = useState<string | null>(null);
-  const [taskCreationMode, setTaskCreationMode] = useState<TaskCreationMode>("discussion");
   const [pendingTaskPlanInstruction, setPendingTaskPlanInstruction] = useState<string | null>(null);
-  const [taskPlanSkills, setTaskPlanSkills] = useState<TaskPlanSkill[]>([]);
   const [selectedTaskSkillId, setSelectedTaskSkillId] = useState("jishu-conductor-dev");
   const [taskLaunchSessions, setTaskLaunchSessions] = useState<TaskLaunchInstanceSummary[]>([]);
   // 记录上次已知 status，用于检测变化。
@@ -472,19 +459,6 @@ export function ChatPage({
     projectPathForSettings ?? "",
   );
 
-  const refreshTaskPlanSkills = useCallback(async () => {
-    try {
-      const items = await invokeCommand<TaskPlanSkill[]>("task_plan_skill_list");
-      setTaskPlanSkills(items);
-      if (!items.some((item) => item.id === selectedTaskSkillIdRef.current)) {
-        const fallback = items.find((item) => item.id === "jishu-conductor-dev") ?? items[0];
-        if (fallback) setSelectedTaskSkillId(fallback.id);
-      }
-    } catch (error) {
-      console.warn("Failed to load task plan skills:", error);
-    }
-  }, []);
-
   const refreshTaskLaunchSessions = useCallback(async () => {
     if (!projectPathForSettings) {
       setTaskLaunchSessions([]);
@@ -500,10 +474,6 @@ export function ChatPage({
       console.warn("Failed to load task launch sessions:", error);
     }
   }, [projectPathForSettings]);
-
-  useEffect(() => {
-    refreshTaskPlanSkills().catch(console.error);
-  }, [refreshTaskPlanSkills]);
 
   useEffect(() => {
     refreshTaskLaunchSessions().catch(console.error);
@@ -724,18 +694,6 @@ export function ChatPage({
     { value: "chat", label: t("sessions.workMode.chat") },
     { value: "task", label: t("sessions.workMode.task") },
   ], [t]);
-  const taskCreationModeOptions = useMemo(() => [
-    { value: "discussion", label: t("tasks.creationMode.discussion") },
-    { value: "direct", label: t("tasks.creationMode.direct") },
-  ], [t]);
-  const taskSkillOptions = useMemo(() => taskPlanSkills.map((skill) => ({
-    value: skill.id,
-    label: skill.name || skill.id,
-    description: skill.description,
-    installed: skill.installed,
-    valid: skill.valid,
-    installable: skill.installable,
-  })), [taskPlanSkills]);
   const jishuAgent = useMemo(
     () => agents.find((agent) => agent.id === "jishu-self") ?? null,
     [agents],
@@ -815,7 +773,6 @@ export function ChatPage({
     activeTaskInstanceIdRef.current = null;
     activeTaskRequirementFileRef.current = null;
     lastKnownStatusRef.current = null;
-    setTaskCreationMode("discussion");
     setPendingTaskPlanInstruction(null);
     setSelectedSession("new");
     selectedSessionRef.current = "new";
@@ -832,24 +789,6 @@ export function ChatPage({
       chatInputRef.current?.focus();
     });
   }, [activeId, taskModeAgentReady, setActive]);
-
-  const handleTaskSkillInstall = useCallback(async (skillId: string) => {
-    const skill = taskPlanSkills.find((item) => item.id === skillId);
-    const name = skill?.name || skillId;
-    if (!skill?.installable) {
-      await alertDialog({ title: "无法安装", description: `${name} 暂不支持一键安装，请按该技能说明手动安装到任务规划技能目录。` });
-      return;
-    }
-    const confirmed = await confirmDialog({ title: "安装任务规划技能", description: `安装任务规划技能「${name}」？安装后可用于需求讨论、流程规划和任务执行。`, confirmText: "安装", cancelText: "取消" });
-    if (!confirmed) return;
-    try {
-      const installed = await invokeCommand<TaskPlanSkill>("task_plan_skill_install", { skillId });
-      setTaskPlanSkills((current) => current.map((item) => item.id === skillId ? installed : item));
-      setSelectedTaskSkillId(skillId);
-    } catch (error) {
-      await alertDialog({ title: "安装失败", description: `安装失败：${String(error)}` });
-    }
-  }, [taskPlanSkills]);
 
   // 记录哪些 session 已经注入过 launch instruction（只在每个阶段的首条消息注入一次，
   // 后续消息复用 agent 进程上下文，不重复下达阶段指令，避免 agent 误以为每轮都是新阶段开始）。
@@ -1050,7 +989,6 @@ export function ChatPage({
       activeTaskInstanceIdRef.current = null;
       activeTaskRequirementFileRef.current = null;
       lastKnownStatusRef.current = null;
-      setTaskCreationMode("discussion");
       setPendingTaskPlanInstruction(null);
       setSelectedSession("new");
       selectedSessionRef.current = "new";
@@ -2952,17 +2890,6 @@ export function ChatPage({
               workModeOptions={workModeOptions}
               workModeValue={taskLaunchOpen ? "task" : "chat"}
               onWorkModeChange={handleWorkModeChange}
-              taskCreationModeLabel={t("tasks.creationMode.label")}
-              taskCreationModeOptions={taskLaunchOpen && taskLaunchPhase === "requirements" ? taskCreationModeOptions : []}
-              taskCreationModeValue={taskLaunchOpen && taskLaunchPhase === "requirements" ? taskCreationMode : undefined}
-              onTaskCreationModeChange={(value) => {
-                setTaskCreationMode(value === "direct" ? "direct" : "discussion");
-              }}
-              taskSkillLabel={t("tasks.planningSkill")}
-              taskSkillOptions={taskLaunchOpen ? taskSkillOptions : []}
-              taskSkillValue={taskLaunchOpen ? selectedTaskSkillId : undefined}
-              onTaskSkillChange={setSelectedTaskSkillId}
-              onTaskSkillInstall={handleTaskSkillInstall}
               accessModeLabel={accessModeLabel}
               accessModeTitle={supportsAccessModeSwitch ? t("sessions.accessMode") : t("sessions.accessModeReadOnly")}
               accessModeReadOnly={!supportsAccessModeSwitch}

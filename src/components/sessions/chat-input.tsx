@@ -77,22 +77,6 @@ interface ChatInputProps {
   workModeOptions?: Array<{ value: string; label: string }>;
   workModeValue?: string;
   onWorkModeChange?: (value: string) => void | Promise<void>;
-  taskCreationModeLabel?: string;
-  taskCreationModeOptions?: Array<{ value: string; label: string }>;
-  taskCreationModeValue?: string;
-  onTaskCreationModeChange?: (value: string) => void | Promise<void>;
-  taskSkillLabel?: string;
-  taskSkillOptions?: Array<{
-    value: string;
-    label: string;
-    description?: string;
-    installed: boolean;
-    valid: boolean;
-    installable: boolean;
-  }>;
-  taskSkillValue?: string;
-  onTaskSkillChange?: (value: string) => void | Promise<void>;
-  onTaskSkillInstall?: (value: string) => void | Promise<void>;
   accessModeLabel?: string;
   accessModeTitle?: string;
   accessModeReadOnly?: boolean;
@@ -138,15 +122,6 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   workModeOptions = [],
   workModeValue,
   onWorkModeChange,
-  taskCreationModeLabel,
-  taskCreationModeOptions = [],
-  taskCreationModeValue,
-  onTaskCreationModeChange,
-  taskSkillLabel,
-  taskSkillOptions = [],
-  taskSkillValue,
-  onTaskSkillChange,
-  onTaskSkillInstall,
   accessModeLabel,
   accessModeTitle,
   accessModeReadOnly = true,
@@ -167,8 +142,6 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
-  const [taskCreationModeMenuOpen, setTaskCreationModeMenuOpen] = useState(false);
-  const [taskSkillMenuOpen, setTaskSkillMenuOpen] = useState(false);
   const [accessMenuOpen, setAccessMenuOpen] = useState(false);
   const [stagedMessagesBySession, setStagedMessagesBySession] = useState<Record<string, StagedMessage[]>>({});
   const [guideLoading, setGuideLoading] = useState<string | null>(null);
@@ -267,8 +240,6 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
       if (toolbarRef.current?.contains(event.target as Node)) return;
       setToolMenuOpen(false);
       setWorkModeMenuOpen(false);
-      setTaskCreationModeMenuOpen(false);
-      setTaskSkillMenuOpen(false);
       setAccessMenuOpen(false);
     };
     document.addEventListener("mousedown", handler);
@@ -802,8 +773,6 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                 onClick={() => {
                   setToolMenuOpen((open) => !open);
                   setWorkModeMenuOpen(false);
-                  setTaskCreationModeMenuOpen(false);
-                  setTaskSkillMenuOpen(false);
                   setAccessMenuOpen(false);
                 }}
                 disabled={disabled || sending || isStreaming}
@@ -857,8 +826,6 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                     onClick={() => {
                       setWorkModeMenuOpen((open) => !open);
                       setToolMenuOpen(false);
-                      setTaskCreationModeMenuOpen(false);
-                      setTaskSkillMenuOpen(false);
                       setAccessMenuOpen(false);
                     }}
                     className={cn(
@@ -900,139 +867,6 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                   )}
                 </div>
               )}
-              {taskCreationModeOptions.length > 0 && taskCreationModeValue && (
-                <div className="relative">
-                  <button
-                    type="button"
-                    aria-label={taskCreationModeLabel}
-                    aria-haspopup="menu"
-                    aria-expanded={taskCreationModeMenuOpen}
-                    disabled={disabled || sending || isStreaming}
-                    title={taskCreationModeLabel}
-                    onClick={() => {
-                      setTaskCreationModeMenuOpen((open) => !open);
-                      setToolMenuOpen(false);
-                      setWorkModeMenuOpen(false);
-                      setTaskSkillMenuOpen(false);
-                      setAccessMenuOpen(false);
-                    }}
-                    className={cn(
-                      "inline-flex h-8 min-w-[7.75rem] items-center justify-between gap-1.5 rounded-full border border-border/50 bg-background/80 px-3 text-xs text-muted-foreground transition-fast hover:bg-accent/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50",
-                      taskCreationModeMenuOpen && "border-primary/45 bg-primary/8 text-foreground shadow-sm",
-                    )}
-                  >
-                    <span className="min-w-0 truncate">
-                      {taskCreationModeOptions.find((option) => option.value === taskCreationModeValue)?.label ?? taskCreationModeValue}
-                    </span>
-                    <ChevronDown className={cn("h-3 w-3 shrink-0 transition-transform", taskCreationModeMenuOpen && "rotate-180")} />
-                  </button>
-                  {taskCreationModeMenuOpen && (
-                    <div className="absolute left-0 top-[calc(100%+0.45rem)] z-[80] w-40 origin-top-left rounded-xl border border-border bg-popover p-1 shadow-xl">
-                      {taskCreationModeOptions.map((option) => {
-                        const selected = option.value === taskCreationModeValue;
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={() => {
-                              setTaskCreationModeMenuOpen(false);
-                              onTaskCreationModeChange?.(option.value);
-                            }}
-                            className={cn(
-                              "flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left text-xs transition-fast hover:bg-accent/60",
-                              selected ? "font-medium text-foreground" : "text-muted-foreground",
-                            )}
-                          >
-                            <span className={cn(
-                              "h-1.5 w-1.5 shrink-0 rounded-full",
-                              selected ? "bg-primary" : "bg-transparent",
-                            )} />
-                            <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-              {taskSkillOptions.length > 0 && taskSkillValue && (
-                <div className="relative">
-                  <button
-                    type="button"
-                    aria-label={taskSkillLabel}
-                    aria-haspopup="menu"
-                    aria-expanded={taskSkillMenuOpen}
-                    disabled={disabled || sending || isStreaming}
-                    title={taskSkillLabel}
-                    onClick={() => {
-                      setTaskSkillMenuOpen((open) => !open);
-                      setToolMenuOpen(false);
-                      setWorkModeMenuOpen(false);
-                      setTaskCreationModeMenuOpen(false);
-                      setAccessMenuOpen(false);
-                    }}
-                    className={cn(
-                      "inline-flex h-8 max-w-[11rem] items-center justify-between gap-1.5 rounded-full border border-border/50 bg-background/80 px-3 text-xs text-muted-foreground transition-fast hover:bg-accent/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50",
-                      taskSkillMenuOpen && "border-primary/45 bg-primary/8 text-foreground shadow-sm",
-                    )}
-                  >
-                    <Blocks className="h-3.5 w-3.5 shrink-0 text-[var(--icon-config)]" />
-                    <span className="min-w-0 truncate">
-                      {taskSkillOptions.find((option) => option.value === taskSkillValue)?.label ?? taskSkillValue}
-                    </span>
-                    <ChevronDown className={cn("h-3 w-3 shrink-0 transition-transform", taskSkillMenuOpen && "rotate-180")} />
-                  </button>
-                  {taskSkillMenuOpen && (
-                    <div className="absolute left-0 top-[calc(100%+0.45rem)] z-[80] w-72 origin-top-left rounded-xl border border-border bg-popover p-1 shadow-xl">
-                      {taskSkillOptions.map((option) => {
-                        const selected = option.value === taskSkillValue;
-                        const unavailable = !option.installed || !option.valid;
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={async () => {
-                              if (unavailable) {
-                                await onTaskSkillInstall?.(option.value);
-                              } else {
-                                await onTaskSkillChange?.(option.value);
-                              }
-                              setTaskSkillMenuOpen(false);
-                            }}
-                            className={cn(
-                              "flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-fast hover:bg-accent/60",
-                              selected ? "font-medium text-foreground" : "text-muted-foreground",
-                            )}
-                          >
-                            <span className={cn(
-                              "mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full",
-                              selected ? "bg-primary" : "bg-transparent",
-                            )} />
-                            <span className="min-w-0 flex-1">
-                              <span className="flex items-center gap-2">
-                                <span className="truncate">{option.label}</span>
-                                <span className={cn(
-                                  "rounded-full px-1.5 py-0.5 text-[10px] font-normal",
-                                  unavailable
-                                    ? "bg-amber-500/12 text-amber-600"
-                                    : "bg-emerald-500/12 text-emerald-600",
-                                )}>
-                                  {unavailable ? "未安装" : "已安装"}
-                                </span>
-                              </span>
-                              {option.description && (
-                                <span className="mt-1 line-clamp-2 block text-[11px] leading-4 text-muted-foreground">
-                                  {option.description}
-                                </span>
-                              )}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
               {accessModeLabel && (
                 <div className="relative">
                   <button
@@ -1042,8 +876,6 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                       setAccessMenuOpen((open) => !open);
                       setToolMenuOpen(false);
                       setWorkModeMenuOpen(false);
-                      setTaskCreationModeMenuOpen(false);
-                      setTaskSkillMenuOpen(false);
                     }}
                     disabled={disabled || sending || isStreaming}
                     title={accessModeTitle ?? t("sessions.accessMode")}
