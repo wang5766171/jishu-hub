@@ -4,8 +4,6 @@
  * 设计依据：`任务数据结构与生命周期设计_20260622.md` §1.1、§1.2、§2、§3.3.1、§1.3。
  * 与后端 task_launch.rs 的 TaskLaunchInstance 1:1 映射。
  */
-import type { GraphRevision, TaskGraph } from "@/features/task-workbench/use-task-graph";
-
 /** 三阶段生命周期（后端 canonical）。 */
 export type TaskPhase = "requirements" | "planning" | "execution";
 
@@ -122,22 +120,6 @@ export interface NodeSessionInfo {
   session_id: string | null; // Agent 原生会话 ID（用于 get_session_messages）
   status: string;
   agent_id: string | null;
-}
-
-/** 需求终稿确认卡片（嵌入需求讨论会话流）。 */
-export interface RequirementFinalizeCardData {
-  taskId: string;
-  title: string;
-  /** Agent 产出的结构化定稿 markdown（由 skill 约束格式）。 */
-  requirementMarkdown: string;
-}
-
-/** 流程图生成确认卡片（嵌入规划会话流）。 */
-export interface GraphGenerationCardData {
-  taskId: string;
-  graphId: string;
-  graph: TaskGraph;
-  revision: GraphRevision;
 }
 
 // ── Raw → Instance 转换 ──
