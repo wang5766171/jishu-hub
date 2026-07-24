@@ -33,7 +33,7 @@ vi.mock("./use-task-instance", () => ({
   useTaskInstance: () => taskMock,
 }));
 
-vi.mock("@/features/task-workbench/use-task-graph", () => ({
+vi.mock("@/features/task-instance/graph/use-task-graph", () => ({
   useTaskGraph: () => ({
     graph: null,
     loadGraph: vi.fn(),

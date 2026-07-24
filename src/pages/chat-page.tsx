@@ -8,7 +8,6 @@ import { ChatInput, type StagedGuideApi } from "@/components/sessions/chat-input
 import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { clearImageCache } from "@/components/sessions/inline-image";
 import { StatusBar as ObservabilityStatusBar } from "@/components/observability";
-import { TasksPage } from "@/pages/tasks-page";
 // 三阶段任务容器：动态加载，不膨胀 chat-page 初始 bundle。
 // 设计依据：任务入口与容器架构设计_20260622.md §2.1、§2.4。
 const TaskPhaseContainer = lazy(() =>
@@ -57,7 +56,7 @@ import {
   type PhaseDisplayStates,
   type TaskPhase,
 } from "@/features/task-instance/types";
-import type { GraphRevision, TaskGraph } from "@/features/task-workbench/use-task-graph";
+import type { GraphRevision, TaskGraph } from "@/features/task-instance/graph/use-task-graph";
 import type {
   AgentEventPayload,
   ChatSession,
@@ -170,22 +169,6 @@ interface PendingChatInteraction {
   request: ConversationInteractionRequest;
 }
 
-interface TaskConversationSummary {
-  graph_id: string;
-  title: string;
-  original_goal: string;
-  project_root: string;
-  owner_agent_id: string;
-  run_id: string | null;
-  phase: string;
-  current_node_id: string | null;
-  current_node_title: string | null;
-  completed_nodes: number;
-  total_nodes: number;
-  pending_interaction_count: number;
-  updated_at: number;
-}
-
 type TaskLaunchPhase = "requirements" | "planning";
 
 interface TaskLaunchInstanceSummary {
@@ -268,9 +251,7 @@ export function ChatPage({
   const [messageSearchNavigation, setMessageSearchNavigation] = useState<MessageSearchNavigation | null>(null);
   const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
   const [optimisticSessions, setOptimisticSessions] = useState<Session[]>([]);
-  const [taskPanelOpen, setTaskPanelOpen] = useState(false);
-  const [selectedTaskGraphId, setSelectedTaskGraphId] = useState<string | null>(null);
-  // 三阶段任务容器（TaskPhaseContainer）状态。与 taskPanelOpen 共存（渐进迁移）。
+  // 三阶段任务容器（TaskPhaseContainer）状态。唯一任务界面。
   const [taskModeActive, setTaskModeActive] = useState(false);
   const [taskContainerTaskId, setTaskContainerTaskId] = useState<string | null>(null);
   const [taskContainerPhase, setTaskContainerPhase] = useState<TaskPhase>("requirements");
@@ -280,7 +261,6 @@ export function ChatPage({
   const [taskLaunchPhase, setTaskLaunchPhase] = useState<TaskLaunchPhase>("requirements");
   const [activeTaskInstanceId, setActiveTaskInstanceId] = useState<string | null>(null);
   const [activeTaskRequirementFile, setActiveTaskRequirementFile] = useState<string | null>(null);
-  const [pendingTaskPlanInstruction, setPendingTaskPlanInstruction] = useState<string | null>(null);
   const [selectedTaskSkillId, setSelectedTaskSkillId] = useState("jishu-conductor-dev");
   const [taskLaunchSessions, setTaskLaunchSessions] = useState<TaskLaunchInstanceSummary[]>([]);
   // 记录上次已知 status，用于检测变化。
@@ -450,15 +430,6 @@ export function ChatPage({
   // Ref mirror for use inside the mount-only stream listener closure.
   const sessionsRef = useRef<Session[] | null>(null);
   sessionsRef.current = sessions ?? null;
-  const {
-    data: taskConversations,
-    refetch: refetchTaskConversations,
-  } = useInvoke<TaskConversationSummary[]>(
-    projectPathForSettings ? "orchestrator_list_task_conversations" : "",
-    projectPathForSettings ? { projectRoot: projectPathForSettings } : undefined,
-    projectPathForSettings ?? "",
-  );
-
   const refreshTaskLaunchSessions = useCallback(async () => {
     if (!projectPathForSettings) {
       setTaskLaunchSessions([]);
@@ -482,11 +453,10 @@ export function ChatPage({
   useEffect(() => {
     if (!projectPathForSettings) return;
     const timer = window.setInterval(() => {
-      refetchTaskConversations(true).catch(console.error);
       refreshTaskLaunchSessions().catch(console.error);
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [projectPathForSettings, refetchTaskConversations, refreshTaskLaunchSessions]);
+  }, [projectPathForSettings, refreshTaskLaunchSessions]);
 
   useEffect(() => {
     refetchSessionsRef.current = refetchSessions;
@@ -537,18 +507,6 @@ export function ChatPage({
   } else if (!deferredSearchQuery.trim()) {
     displaySessions = uniqueSessionsById([...optimisticSessions, ...displaySessions]);
   }
-  const taskInstanceGraphIds = useMemo(
-    () => new Set(taskLaunchSessions.map((item) => item.graph_id).filter((value): value is string => Boolean(value))),
-    [taskLaunchSessions],
-  );
-  const displayTaskConversations = (taskConversations ?? []).filter((task) => {
-    if (taskInstanceGraphIds.has(task.graph_id)) return false;
-    const query = deferredSearchQuery.trim().toLocaleLowerCase();
-    if (!query) return true;
-    return `${task.title}\n${task.original_goal}\n${task.current_node_title ?? ""}`
-      .toLocaleLowerCase()
-      .includes(query);
-  });
   const displayTaskLaunchSessions = taskLaunchSessions.filter((taskSession) => {
     const query = deferredSearchQuery.trim().toLocaleLowerCase();
     if (!query) return true;
@@ -622,14 +580,11 @@ export function ChatPage({
     selectedSessionRef.current = null;
     setSessionMessages([]);
     setOptimisticSessions([]);
-    setTaskPanelOpen(false);
     setTaskModeActive(false);
     setTaskContainerReadOnly(false);
-    setSelectedTaskGraphId(null);
     setTaskLaunchOpen(false);
     setTaskLaunchReadOnly(false);
     taskLaunchOpenRef.current = false;
-    setPendingTaskPlanInstruction(null);
     sessionMessagesCacheRef.current.clear();
     newSessionStreamIdsRef.current.clear();
     clearImageCache();
@@ -648,14 +603,11 @@ export function ChatPage({
     selectedSessionRef.current = null;
     setSessionMessages([]);
     setOptimisticSessions([]);
-    setTaskPanelOpen(false);
     setTaskModeActive(false);
     setTaskContainerReadOnly(false);
-    setSelectedTaskGraphId(null);
     setTaskLaunchOpen(false);
     setTaskLaunchReadOnly(false);
     taskLaunchOpenRef.current = false;
-    setPendingTaskPlanInstruction(null);
     sessionMessagesCacheRef.current.clear();
     newSessionStreamIdsRef.current.clear();
     setListRefreshKey(Date.now());
@@ -759,10 +711,8 @@ export function ChatPage({
       // 标记本次切换是为进入任务模式，阻止 activeId 变化时的清理 effect 重置任务模式
       enteringTaskModeRef.current = true;
     }
-    setTaskPanelOpen(false);
     setTaskModeActive(false);
     setTaskContainerReadOnly(false);
-    setSelectedTaskGraphId(null);
     setTaskLaunchOpen(nextIsTask);
     setTaskLaunchReadOnly(false);
     setTaskLaunchPhase("requirements");
@@ -773,7 +723,6 @@ export function ChatPage({
     activeTaskInstanceIdRef.current = null;
     activeTaskRequirementFileRef.current = null;
     lastKnownStatusRef.current = null;
-    setPendingTaskPlanInstruction(null);
     setSelectedSession("new");
     selectedSessionRef.current = "new";
     setSessionMessages([]);
@@ -867,10 +816,8 @@ export function ChatPage({
   }, []);
 
   const handleSelectSession = async (sessionId: string) => {
-    setTaskPanelOpen(false);
     setTaskModeActive(false);
     setTaskContainerReadOnly(false);
-    setSelectedTaskGraphId(null);
     setTaskLaunchOpen(false);
     setTaskLaunchReadOnly(false);
     taskLaunchOpenRef.current = false;
@@ -923,7 +870,7 @@ export function ChatPage({
   };
   handleSelectSessionRef.current = handleSelectSession;
 
-  // Listen for cross-page session open requests (from TasksPage)
+  // Listen for cross-page session open requests
   useEffect(() => {
     const onStorage = () => {
       try {
@@ -951,10 +898,8 @@ export function ChatPage({
   const handleNewSession = async () => {
     if (!projectId) return;
 
-    setTaskPanelOpen(false);
     setTaskModeActive(false);
     setTaskContainerReadOnly(false);
-    setSelectedTaskGraphId(null);
     setTaskLaunchOpen(false);
     setTaskLaunchReadOnly(false);
     taskLaunchOpenRef.current = false;
@@ -973,42 +918,26 @@ export function ChatPage({
     });
   };
 
-  const handleOpenTaskConversation = useCallback((graphId: string | null) => {
-    if (!graphId) {
-      setTaskPanelOpen(false);
-      setTaskModeActive(false);
-      setTaskContainerReadOnly(false);
-      setSelectedTaskGraphId(null);
-      setTaskLaunchOpen(true);
-      setTaskLaunchReadOnly(false);
-      setTaskLaunchPhase("requirements");
-      setActiveTaskInstanceId(null);
-      setActiveTaskRequirementFile(null);
-      taskLaunchOpenRef.current = true;
-      taskLaunchPhaseRef.current = "requirements";
-      activeTaskInstanceIdRef.current = null;
-      activeTaskRequirementFileRef.current = null;
-      lastKnownStatusRef.current = null;
-      setPendingTaskPlanInstruction(null);
-      setSelectedSession("new");
-      selectedSessionRef.current = "new";
-      setSessionMessages([]);
-      setPendingSteerDisplay([]);
-      requestAnimationFrame(() => {
-        chatInputRef.current?.focus();
-      });
-      return;
-    }
-    setTaskLaunchOpen(false);
-    setTaskLaunchReadOnly(false);
-    taskLaunchOpenRef.current = false;
+  const handleOpenTaskConversation = useCallback(() => {
     setTaskModeActive(false);
     setTaskContainerReadOnly(false);
-    setSelectedTaskGraphId(graphId);
-    setTaskPanelOpen(true);
-    setSelectedSession(null);
-    selectedSessionRef.current = null;
+    setTaskLaunchOpen(true);
+    setTaskLaunchReadOnly(false);
+    setTaskLaunchPhase("requirements");
+    setActiveTaskInstanceId(null);
+    setActiveTaskRequirementFile(null);
+    taskLaunchOpenRef.current = true;
+    taskLaunchPhaseRef.current = "requirements";
+    activeTaskInstanceIdRef.current = null;
+    activeTaskRequirementFileRef.current = null;
+    lastKnownStatusRef.current = null;
+    setSelectedSession("new");
+    selectedSessionRef.current = "new";
+    setSessionMessages([]);
     setPendingSteerDisplay([]);
+    requestAnimationFrame(() => {
+      chatInputRef.current?.focus();
+    });
   }, []);
 
   const handleResumeSession = async (sessionId: string) => {
@@ -1232,7 +1161,6 @@ export function ChatPage({
           setTaskContainerReadOnly(false);
           setTaskLaunchOpen(false);
           taskLaunchOpenRef.current = false;
-          setTaskPanelOpen(false);
           setTaskLaunchSessions(items);
           return;
         }
@@ -1294,9 +1222,6 @@ export function ChatPage({
     setTaskLaunchPhase(phase);
     taskLaunchOpenRef.current = true;
     taskLaunchPhaseRef.current = phase;
-    setTaskPanelOpen(false);
-    setSelectedTaskGraphId(null);
-    setPendingTaskPlanInstruction(null);
     setPendingSteerDisplay([]);
 
     if (!sessionId || !projectId) {
@@ -1393,8 +1318,6 @@ export function ChatPage({
     setTaskLaunchOpen(false);
     setTaskLaunchReadOnly(false);
     taskLaunchOpenRef.current = false;
-    setTaskPanelOpen(false);
-    setSelectedTaskGraphId(taskSession.graph_id ?? null);
     setSelectedSession(null);
     selectedSessionRef.current = null;
     setPendingSteerDisplay([]);
@@ -2292,7 +2215,7 @@ export function ChatPage({
               title={projectId ? t("tasks.startTask") : t("sessions.selectProject")}
               className={cn(
                 "flex h-8 w-full items-center gap-2.5 rounded-lg pl-2 pr-2 text-sm text-foreground transition-fast",
-                projectId ? (taskPanelOpen || taskLaunchOpen) ? "bg-primary/10 font-medium" : "hover:bg-accent" : "opacity-40 cursor-not-allowed"
+                projectId ? taskLaunchOpen ? "bg-primary/10 font-medium" : "hover:bg-accent" : "opacity-40 cursor-not-allowed"
               )}
             >
               <ClipboardList className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
@@ -2390,7 +2313,7 @@ export function ChatPage({
               title={projectId ? t("tasks.startTask") : t("sessions.selectProject")}
               className={cn(
                 "flex h-8 w-8 items-center justify-center rounded-lg transition-fast",
-                projectId ? (taskPanelOpen || taskLaunchOpen) ? "bg-primary/10" : "hover:bg-accent" : "opacity-40 cursor-not-allowed"
+                projectId ? taskLaunchOpen ? "bg-primary/10" : "hover:bg-accent" : "opacity-40 cursor-not-allowed"
               )}
             >
               <ClipboardList className="h-4 w-4 text-[var(--icon-action)]" />
@@ -2410,7 +2333,7 @@ export function ChatPage({
             <span className="ml-auto tabular-nums">{displaySessions.length}</span>
           </button>
           {regularSessionsOpen && displaySessions.map((session) => {
-            const isActive = session.id === selectedSession && !taskPanelOpen;
+            const isActive = session.id === selectedSession;
             const name = sessionNames?.[session.id] || session.display_name || session.id.slice(0, 8);
             const timeStr = session.last_active
               ? formatRelativeTime(session.last_active, t)
@@ -2482,11 +2405,11 @@ export function ChatPage({
           >
             {taskSessionsOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
             <span>{t("sessions.taskConversations")}</span>
-            <span className="ml-auto tabular-nums">{displayTaskLaunchSessions.length + displayTaskConversations.length}</span>
+            <span className="ml-auto tabular-nums">{displayTaskLaunchSessions.length}</span>
           </button>
           {taskSessionsOpen && displayTaskLaunchSessions.map((taskSession) => {
             const phase = taskSession.current_phase === "planning" ? "planning" : "requirements";
-            const isActive = activeTaskInstanceId === taskSession.task_id && (taskLaunchOpen || taskModeActive) && !taskPanelOpen;
+            const isActive = activeTaskInstanceId === taskSession.task_id && (taskLaunchOpen || taskModeActive);
             return (
               <ContextMenu key={taskSession.task_id}>
                 <ContextMenuTrigger asChild>
@@ -2555,47 +2478,6 @@ export function ChatPage({
               </ContextMenu>
             );
           })}
-          {taskSessionsOpen && displayTaskConversations.map((task) => {
-            const isActive = taskPanelOpen && task.graph_id === selectedTaskGraphId;
-            return (
-              <button
-                key={task.graph_id}
-                type="button"
-                onClick={() => handleOpenTaskConversation(task.graph_id)}
-                className={cn(
-                  "flex w-full flex-col items-start border-b border-border/10 py-2 pl-5 pr-2 text-xs transition-fast",
-                  isActive
-                    ? "bg-primary/10 text-foreground font-medium"
-                    : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
-                )}
-              >
-                <div className="flex w-full items-center gap-3">
-                  <ClipboardList className="h-3 w-3 shrink-0 text-[var(--icon-action)]" />
-                  <span className="min-w-0 flex-1 truncate text-left leading-none">
-                    {task.title}
-                  </span>
-                  {task.pending_interaction_count > 0 ? (
-                    <span className="shrink-0 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-medium text-amber-600">
-                      {task.pending_interaction_count}
-                    </span>
-                  ) : (
-                    <span className="shrink-0 text-[0.65em] tabular-nums text-muted-foreground/40">
-                      {formatRelativeTime(new Date(task.updated_at), t)}
-                    </span>
-                  )}
-                </div>
-                <div className="mt-1.5 flex w-full items-center gap-2 pl-6 text-[10px] text-muted-foreground/70">
-                  <span>{t(`tasks.conversation.phases.${task.phase}`)}</span>
-                  {task.current_node_title && (
-                    <>
-                      <span>·</span>
-                      <span className="min-w-0 truncate">{task.current_node_title}</span>
-                    </>
-                  )}
-                </div>
-              </button>
-            );
-          })}
         </div>
 
         {/* Collapsed: empty body */}
@@ -2604,7 +2486,7 @@ export function ChatPage({
 
       {/* Right: Chat area */}
       <div className="flex-1 flex flex-col min-w-0 bg-background">
-        {projectId && taskLaunchOpen && !taskModeActive && !taskPanelOpen ? (
+        {projectId && taskLaunchOpen && !taskModeActive ? (
           <TaskPhaseNavBar
             title={activeTaskLaunchInstance?.title ?? t("tasks.startTask", "新任务")}
             phases={taskLaunchPhaseStates}
@@ -2682,18 +2564,6 @@ export function ChatPage({
               }}
             />
           </Suspense>
-        ) : taskPanelOpen ? (
-          <TasksPage
-            initialProjectPath={currentProject?.path ?? null}
-            initialGraphId={selectedTaskGraphId}
-            initialPlanInstruction={pendingTaskPlanInstruction}
-            onClose={() => {
-              setTaskPanelOpen(false);
-              setSelectedTaskGraphId(null);
-              setPendingTaskPlanInstruction(null);
-              refetchTaskConversations(true).catch(console.error);
-            }}
-          />
         ) : showStartComposer ? (
           // Start-composer view: the heading + centered ChatInput are rendered
           // in the unified ChatInput block below (kept in ONE React element
@@ -2849,9 +2719,9 @@ export function ChatPage({
             preserves its stagedMessagesBySession state across session switches;
             previously two separate <ChatInput> instances in mutually-exclusive
             branches unmounted/remounted on switch, losing staged guides.
-            taskPanelOpen hides it entirely. Layout adapts via conditional
+            Layout adapts via conditional
             sibling elements + className — ChatInput itself never moves. */}
-        {shouldRenderGlobalChatInput({ projectId, taskPanelOpen, taskModeActive }) && (
+        {shouldRenderGlobalChatInput({ projectId, taskModeActive }) && (
           <div className={showStartComposer
             ? "flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-10"
             : "relative shrink-0"

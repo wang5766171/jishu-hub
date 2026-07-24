@@ -9,7 +9,7 @@
  * 作为独立 chunk 动态加载，chat-page 通过 React.lazy 引入，不膨胀初始 bundle。
  */
 import { useEffect } from "react";
-import { useTaskGraph } from "@/features/task-workbench/use-task-graph";
+import { useTaskGraph } from "@/features/task-instance/graph/use-task-graph";
 import { TaskPhaseNavBar } from "./task-phase-nav-bar";
 import { PhaseRequirementsView } from "./phase-requirements-view";
 import { PhasePlanningView } from "./phase-planning-view";

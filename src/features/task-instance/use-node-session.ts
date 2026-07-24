@@ -9,7 +9,7 @@
  */
 import { useCallback } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
-import type { NodeRunProjection, RunProjection } from "@/features/task-workbench/use-task-graph";
+import type { NodeRunProjection, RunProjection } from "@/features/task-instance/graph/use-task-graph";
 import type { NodeSessionInfo } from "./use-task-instance";
 
 /** orchestrator_get_attempt 返回的 NodeAttempt（精简版，只取需要的字段）。 */

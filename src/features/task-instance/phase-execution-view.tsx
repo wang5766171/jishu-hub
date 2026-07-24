@@ -17,7 +17,7 @@
 import { useEffect, useMemo } from "react";
 import { Play, Pause, Square } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { GraphEditor } from "@/features/task-workbench/graph-editor";
+import { GraphEditor } from "@/features/task-instance/graph/graph-editor";
 import { MessageView } from "@/components/sessions/message-view";
 import { ChatInput } from "@/components/sessions/chat-input";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
@@ -28,7 +28,7 @@ import { useNodeSession } from "./use-node-session";
 import { ExecutionViewSwitcher } from "./execution-view-switcher";
 import { ExecutionChatScopeTabs } from "./execution-chat-scope-tabs";
 import { cn } from "@/lib/utils";
-import type { useTaskGraph, RunProjection } from "@/features/task-workbench/use-task-graph";
+import type { useTaskGraph, RunProjection } from "@/features/task-instance/graph/use-task-graph";
 import type {
   ExecutionChatScope,
   ExecutionView,

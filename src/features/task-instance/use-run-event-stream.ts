@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import type { Message } from "@/types";
-import type { RunProjection, TaskEvent } from "@/features/task-workbench/use-task-graph";
+import type { RunProjection, TaskEvent } from "@/features/task-instance/graph/use-task-graph";
 
 export interface RunEventStreamState {
   /** 投影后的消息列表（按 run_seq 顺序，喂给 MessageView）。 */
