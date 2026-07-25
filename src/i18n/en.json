@@ -11,7 +11,12 @@
     "na": "N/A",
     "loading": "Loading...",
     "reload": "Reload",
-    "delete": "Delete"
+    "delete": "Delete",
+    "back": "Back",
+    "close": "Close",
+    "confirm": "Confirm",
+    "pause": "Pause",
+    "resume": "Resume"
   },
   "time": {
     "justNow": "just now",
@@ -581,5 +586,77 @@
     "light": "Light",
     "colorful": "Colorful",
     "dark": "Dark"
+  },
+  "task": {
+    "untitled": "Untitled task",
+    "phase": {
+      "requirements": "Requirements",
+      "planning": "Planning",
+      "execution": "Execution"
+    },
+    "mode": {
+      "requirements": "Requirements",
+      "planning": "Planning"
+    },
+    "run": {
+      "draft": "Pending",
+      "validating": "Validating",
+      "ready": "Ready",
+      "running": "Running",
+      "paused": "Paused",
+      "awaitingHuman": "Awaiting approval",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
+    "execution": {
+      "start": "Start execution",
+      "canvas": "Canvas",
+      "split": "Split",
+      "chat": "Chat",
+      "mainSession": "Main task",
+      "mainPlaceholder": "View progress… use @steer to intervene",
+      "nodePlaceholder": "Send a message… intervene in this node agent",
+      "error": {
+        "launchFailed": "Failed to start execution",
+        "assignAgentFailed": "Failed to assign agent"
+      }
+    },
+    "event": {
+      "runStarted": "Run started",
+      "nodeReady": "Node ready",
+      "nodeStarted": "Node started",
+      "nodeResolved": "Node finished",
+      "attemptFailed": "Attempt failed",
+      "attemptNumber": "attempt {{n}}",
+      "retryScheduled": "Retry scheduled",
+      "nodeSkipped": "Node skipped",
+      "nodeBlocked": "Node blocked",
+      "approvalRequested": "Approval requested",
+      "approvalNeeded": "Approval needed",
+      "approvalResolved": "Approval",
+      "approvalApproved": "approved",
+      "approvalRejected": "rejected",
+      "budgetExceeded": "Budget exceeded",
+      "runPaused": "Run paused",
+      "runResumed": "Run resumed",
+      "runCancelled": "Run cancelled",
+      "runCompleted": "Run completed",
+      "runFailed": "Run failed"
+    },
+    "nodeStatus": {
+      "blocked": "blocked",
+      "ready": "ready",
+      "leased": "leased",
+      "running": "running",
+      "awaiting_approval": "awaiting approval",
+      "retry_wait": "retry waiting",
+      "repairing": "repairing",
+      "succeeded": "succeeded",
+      "failed": "failed",
+      "skipped": "skipped",
+      "cancelled": "cancelled",
+      "superseded": "superseded"
+    }
   }
 }

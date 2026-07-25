@@ -11,7 +11,12 @@
     "na": "无",
     "loading": "加载中...",
     "reload": "重新加载",
-    "delete": "删除"
+    "delete": "删除",
+    "back": "返回",
+    "close": "关闭",
+    "confirm": "确认",
+    "pause": "暂停",
+    "resume": "恢复"
   },
   "time": {
     "justNow": "刚刚",
@@ -579,5 +584,77 @@
     "light": "浅色",
     "colorful": "色彩",
     "dark": "暗色"
+  },
+  "task": {
+    "untitled": "未命名任务",
+    "phase": {
+      "requirements": "需求讨论",
+      "planning": "流程规划",
+      "execution": "流程执行"
+    },
+    "mode": {
+      "requirements": "需求讨论",
+      "planning": "流程规划"
+    },
+    "run": {
+      "draft": "待执行",
+      "validating": "校验中",
+      "ready": "就绪",
+      "running": "执行中",
+      "paused": "已暂停",
+      "awaitingHuman": "等待审批",
+      "completed": "已完成",
+      "failed": "失败",
+      "cancelled": "已取消"
+    },
+    "execution": {
+      "start": "开始执行",
+      "canvas": "画布",
+      "split": "分栏",
+      "chat": "对话",
+      "mainSession": "主任务",
+      "mainPlaceholder": "查看执行进展…使用 @steer 干预",
+      "nodePlaceholder": "输入消息…干预该节点 agent",
+      "error": {
+        "launchFailed": "启动执行失败",
+        "assignAgentFailed": "指定智能体失败"
+      }
+    },
+    "event": {
+      "runStarted": "运行开始",
+      "nodeReady": "节点就绪",
+      "nodeStarted": "节点开始",
+      "nodeResolved": "节点结束",
+      "attemptFailed": "尝试失败",
+      "attemptNumber": "第 {{n}} 次尝试",
+      "retryScheduled": "已安排重试",
+      "nodeSkipped": "节点跳过",
+      "nodeBlocked": "节点阻塞",
+      "approvalRequested": "审批请求",
+      "approvalNeeded": "需要审批",
+      "approvalResolved": "审批",
+      "approvalApproved": "通过",
+      "approvalRejected": "驳回",
+      "budgetExceeded": "预算超限",
+      "runPaused": "运行已暂停",
+      "runResumed": "运行已恢复",
+      "runCancelled": "运行已取消",
+      "runCompleted": "运行完成",
+      "runFailed": "运行失败"
+    },
+    "nodeStatus": {
+      "blocked": "阻塞",
+      "ready": "就绪",
+      "leased": "已租赁",
+      "running": "执行中",
+      "awaiting_approval": "等待审批",
+      "retry_wait": "待重试",
+      "repairing": "修复中",
+      "succeeded": "成功",
+      "failed": "失败",
+      "skipped": "跳过",
+      "cancelled": "已取消",
+      "superseded": "已替换"
+    }
   }
 }
