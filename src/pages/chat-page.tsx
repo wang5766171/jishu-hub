@@ -205,7 +205,7 @@ export function ChatPage({
   navigateToSession?: string | null;
 }) {
   const { t } = useTranslation();
-  const { agents, activeId, active, capabilities, setActive } = useAgent();
+  const { agents, activeId, active, capabilities, setActive, healthLoading } = useAgent();
   const projectId = currentProject?.encoded_name ?? null;
   const projectPathForSettings = currentProject?.path ?? null;
   const supportsModelPicker = active?.config_surface.kind === "model_store"
@@ -2483,6 +2483,7 @@ export function ChatPage({
               initialPhase={taskContainerPhase}
               initialReadOnly={taskContainerReadOnly}
               agents={agents.map((agent) => ({ id: agent.id, display_name: agent.display_name }))}
+              agentsLoading={healthLoading && agents.length === 0}
               onSidebarUpdate={() => refreshTaskLaunchSessions().catch(console.error)}
               onClose={() => {
                 setTaskModeActive(false);

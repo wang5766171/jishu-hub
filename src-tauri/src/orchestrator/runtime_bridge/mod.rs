@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 
 use crate::acp_runtime::AcpEventEmit;
 use crate::agent::normalized::{ContentBlock, NormalizedEvent, TurnEndReason};
-use crate::agent::{AgentCapabilities, AgentRegistry, TransportSurface};
+use crate::agent::{normalize_agent_id, AgentCapabilities, AgentRegistry, TransportSurface};
 use crate::agent_runtime::{AgentTurnOutput, AgentTurnRequest};
 use crate::orchestrator::domain::graph::GraphNode;
 use crate::orchestrator::domain::run::{
@@ -101,10 +101,16 @@ pub struct RuntimeInvocationRequest {
 }
 
 pub trait TaskAgentRuntime: Send + Sync {
+    /// 解析节点的 agent 绑定。
+    ///
+    /// `default_agent_id`：无 `locked_agent_id` 时的默认执行者
+    /// （= `TaskInstance.planner_agent_id`，即 jishu agent）。`None` 时回落到
+    /// registry 的 active_id。见 [`resolve_agent_assignment`]。
     fn resolve_agent(
         &self,
         node: &GraphNode,
         role_id: &str,
+        default_agent_id: Option<&str>,
     ) -> Result<(AgentAssignment, String), String>;
 
     /// Start a turn and return immediately with a streaming handle. The caller
@@ -148,8 +154,10 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
         &self,
         node: &GraphNode,
         role_id: &str,
+        default_agent_id: Option<&str>,
     ) -> Result<(AgentAssignment, String), String> {
-        let (assignment, transport) = resolve_agent_assignment(&self.registry, node, role_id)?;
+        let (assignment, transport) =
+            resolve_agent_assignment(&self.registry, node, role_id, default_agent_id)?;
         Ok((assignment, transport.as_str().to_string()))
     }
 
@@ -331,10 +339,28 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
     }
 }
 
+/// 解析节点的 agent 绑定。
+///
+/// 优先级（设计 §6.2 / §13 L199）：
+/// 1. `locked_agent_id`（用户在 Inspector 显式指定）——最高，直接收窄候选集
+/// 2. `allowed_agent_ids` / `denied_agent_ids` 约束过滤
+/// 3. `default_agent_id`（= `TaskInstance.planner_agent_id`，即 jishu agent）——
+///    **无锁定时的默认执行者**
+/// 4. 兜底 `registry.active_id()`
+///
+/// 关于第 3 步（B3 项②）：此前无锁定时直接按 `active_id` 排序取首位，而 `active_id`
+/// 是「聊天页当前选中的智能体」这一 GUI 全局态，默认值还是 `claude-code`
+/// （`AgentRegistry::new()` 首个插入者）。这让任务节点该谁执行取决于用户在聊天页选了谁
+/// ——GUI 状态泄漏进编排语义，违反设计要求的「无 locked_agent_id → 回退
+/// planner_agent_id」。现改为显式传入默认执行者。
+///
+/// 注意：`default_agent_id` 会经 [`normalize_agent_id`] 归一（历史数据里
+/// `planner_agent_id` 可能是 `jishu_agent` 下划线形式）。
 pub fn resolve_agent_assignment(
     registry: &AgentRegistry,
     node: &GraphNode,
     role_id: &str,
+    default_agent_id: Option<&str>,
 ) -> Result<(AgentAssignment, TransportSurface), String> {
     let constraint = node.agent_assignment_constraint.as_ref();
     let required = node
@@ -346,8 +372,14 @@ pub fn resolve_agent_assignment(
         .collect::<Vec<_>>();
 
     let mut candidates = registry.list_agents();
+    // 无显式默认时才回落到 active_id（GUI 当前选中态）。
     let active_id = registry.active_id();
-    candidates.sort_by_key(|agent| if agent.id == active_id { 0 } else { 1 });
+    let preferred = default_agent_id
+        .map(normalize_agent_id)
+        .filter(|id| registry.get(id).is_some())
+        .map(|id| id.to_string())
+        .unwrap_or(active_id);
+    candidates.sort_by_key(|agent| if agent.id == preferred { 0 } else { 1 });
 
     if let Some(locked_agent_id) = constraint.and_then(|value| value.locked_agent_id.as_ref()) {
         candidates.retain(|agent| &agent.id == locked_agent_id);
@@ -675,7 +707,7 @@ mod tests {
         });
 
         let (assignment, transport) =
-            resolve_agent_assignment(&registry, &node, "implementer").unwrap();
+            resolve_agent_assignment(&registry, &node, "implementer", None).unwrap();
 
         assert_eq!(assignment.agent_id, "codex");
         assert_eq!(assignment.role_id, "implementer");
@@ -684,13 +716,89 @@ mod tests {
         assert_eq!(transport, TransportSurface::CodexAppServer);
     }
 
+    /// 显式锁定优先于默认执行者：即便传入 default_agent_id，锁定仍然胜出。
+    #[test]
+    fn structured_lock_wins_over_default_agent() {
+        let registry = AgentRegistry::new();
+        let mut node = dispatch_node();
+        node.agent_assignment_constraint = Some(AgentAssignmentConstraint {
+            role_id: "implementer".into(),
+            locked_agent_id: Some("codex".into()),
+            ..Default::default()
+        });
+
+        let (assignment, _) = resolve_agent_assignment(
+            &registry,
+            &node,
+            "implementer",
+            Some(crate::agent::JISHU_SELF_AGENT_ID),
+        )
+        .unwrap();
+
+        assert_eq!(assignment.agent_id, "codex");
+    }
+
+    /// B3 项②核心断言：无 locked_agent_id + 空 capability 要求时，
+    /// 默认执行者必须是 jishu agent，而不是 registry 的 active_id（默认 claude-code）。
+    ///
+    /// 此前该路径按 active_id 排序取首位 —— 任务节点该谁执行取决于用户在聊天页选了谁。
+    #[test]
+    fn assignment_defaults_to_jishu_self_when_no_constraint() {
+        let registry = AgentRegistry::new();
+        let node = dispatch_node();
+        assert!(node.agent_assignment_constraint.is_none());
+        assert!(node.capability_requirements.is_empty());
+
+        let (assignment, _) = resolve_agent_assignment(
+            &registry,
+            &node,
+            "implementer",
+            Some(crate::agent::JISHU_SELF_AGENT_ID),
+        )
+        .unwrap();
+
+        assert_eq!(assignment.agent_id, crate::agent::JISHU_SELF_AGENT_ID);
+    }
+
+    /// 历史数据里 planner_agent_id 可能是下划线形式 `jishu_agent`（SQL 列默认值），
+    /// 与 registry 的 `jishu-self` 不相等。归一化必须生效，否则回退目标查不到、
+    /// 静默落回 active_id。
+    #[test]
+    fn legacy_jishu_agent_alias_is_normalized_for_default() {
+        let registry = AgentRegistry::new();
+        let node = dispatch_node();
+
+        let (assignment, _) = resolve_agent_assignment(
+            &registry,
+            &node,
+            "implementer",
+            Some(crate::agent::LEGACY_JISHU_AGENT_ALIAS),
+        )
+        .unwrap();
+
+        assert_eq!(assignment.agent_id, crate::agent::JISHU_SELF_AGENT_ID);
+    }
+
+    /// 未知的默认 agent id 不应让解析失败，应静默回落到 active_id。
+    #[test]
+    fn unknown_default_agent_falls_back_to_active() {
+        let registry = AgentRegistry::new();
+        let node = dispatch_node();
+
+        let (assignment, _) =
+            resolve_agent_assignment(&registry, &node, "implementer", Some("no-such-agent"))
+                .unwrap();
+
+        assert_eq!(assignment.agent_id, registry.active_id());
+    }
+
     #[test]
     fn assignment_rejects_unknown_required_capability() {
         let registry = AgentRegistry::new();
         let mut node = dispatch_node();
         node.capability_requirements = vec!["nonexistent_capability".into()];
 
-        assert!(resolve_agent_assignment(&registry, &node, "implementer").is_err());
+        assert!(resolve_agent_assignment(&registry, &node, "implementer", None).is_err());
     }
 
     #[test]
@@ -710,7 +818,7 @@ mod tests {
         node.capability_requirements = vec!["task_planning".into()];
 
         let (assignment, transport) =
-            resolve_agent_assignment(&registry, &node, "planner").unwrap();
+            resolve_agent_assignment(&registry, &node, "planner", None).unwrap();
 
         assert_eq!(assignment.role_id, "planner");
         assert!(assignment

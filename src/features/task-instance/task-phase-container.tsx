@@ -25,6 +25,8 @@ export interface TaskPhaseContainerProps {
   initialPhase?: TaskPhase;
   initialReadOnly?: boolean;
   agents?: Array<{ id: string; display_name: string }>;
+  /** agents 是否仍在加载（用于区分「加载中」与「加载失败/为空」）。 */
+  agentsLoading?: boolean;
   onSidebarUpdate?: () => void;
   onClose?: () => void;
 }
@@ -36,6 +38,7 @@ export default function TaskPhaseContainer({
   initialPhase,
   initialReadOnly = false,
   agents,
+  agentsLoading = false,
   onSidebarUpdate,
   onClose,
 }: TaskPhaseContainerProps) {
@@ -150,6 +153,7 @@ export default function TaskPhaseContainer({
             selectedNodeId={task.selectedNodeId}
             nodeSessions={task.nodeSessionMap}
             agents={agents}
+            agentsLoading={agentsLoading}
             onExecutionViewChange={task.setExecutionView}
             onChatScopeChange={task.setChatScope}
             onSelectNode={task.selectNode}

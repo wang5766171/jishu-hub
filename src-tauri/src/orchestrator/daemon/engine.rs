@@ -1815,8 +1815,20 @@ fn prepare_agent_execution(
     };
     resolution
         .map(|(resolution_node, role_id)| {
+            // D3（设计 §6.2 / §13）：节点未显式锁定 agent 时，默认执行者是 jishu agent，
+            // 而非 registry 的 active_id（那是"聊天页当前选中的智能体"这一 GUI 全局态，
+            // 默认值还是 claude-code）。显式传入以免 GUI 状态泄漏进编排语义。
+            //
+            // 这里用常量而非读 TaskInstance.planner_agent_id：orchestrator 不依赖
+            // task_launch 层的概念（保持分层单向）。二者语义一致——planner_agent_id 的
+            // 默认值就是 jishu agent，且 resolve_agent_assignment 会对历史别名
+            // jishu_agent 做归一化。
             runtime
-                .resolve_agent(&resolution_node, &role_id)
+                .resolve_agent(
+                    &resolution_node,
+                    &role_id,
+                    Some(crate::agent::JISHU_SELF_AGENT_ID),
+                )
                 .map(|(assignment, transport)| PreparedAgentExecution {
                     assignment,
                     transport,
@@ -2276,6 +2288,7 @@ mod tests {
             &self,
             _node: &GraphNode,
             role_id: &str,
+            _default_agent_id: Option<&str>,
         ) -> Result<(crate::orchestrator::domain::run::AgentAssignment, String), String> {
             Ok((
                 crate::orchestrator::domain::run::AgentAssignment {
@@ -2334,6 +2347,7 @@ mod tests {
             &self,
             _node: &GraphNode,
             role_id: &str,
+            _default_agent_id: Option<&str>,
         ) -> Result<(crate::orchestrator::domain::run::AgentAssignment, String), String> {
             Ok((
                 crate::orchestrator::domain::run::AgentAssignment {

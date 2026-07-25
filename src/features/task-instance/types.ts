@@ -7,6 +7,26 @@
 /** 三阶段生命周期（后端 canonical）。 */
 export type TaskPhase = "requirements" | "planning" | "execution";
 
+/**
+ * 内置 jishu agent 的权威 id（与后端 `agent::JISHU_SELF_AGENT_ID` 对齐）。
+ *
+ * 命名分层：用户可见一律 `Jishu Agent`（走 `display_name`/i18n，**禁止**在 UI 直出本常量，
+ * 见 DEVELOP_READ §13.6）；内部标识用本常量。
+ */
+export const JISHU_SELF_AGENT_ID = "jishu-self";
+
+/** `planner_agent_id` 的历史遗留别名（下划线），来自 SQL 列默认值。 */
+export const LEGACY_JISHU_AGENT_ALIAS = "jishu_agent";
+
+/**
+ * 把可能来自历史数据的 agent id 归一为 registry 可查的权威 id。
+ * 与后端 `agent::normalize_agent_id` 行为一致。
+ */
+export function normalizeAgentId(raw: string | null | undefined): string {
+  if (!raw) return JISHU_SELF_AGENT_ID;
+  return raw === LEGACY_JISHU_AGENT_ALIAS ? JISHU_SELF_AGENT_ID : raw;
+}
+
 /** TaskInstance 生命周期状态（4 值，持久化到 task_instance.status）。 */
 export type TaskInstanceStatus =
   | "requirements_discussing"
@@ -39,7 +59,12 @@ export interface TaskInstance {
   project_root: string;
   title: string;
   skill_id: string;
-  /** 需求/规划阶段使用的 agent（默认 "jishu_agent"）。 */
+  /**
+   * 需求/规划阶段使用的 agent，也是执行阶段未锁定节点的默认执行者。
+   *
+   * ⚠️ 历史数据可能是下划线形式 `jishu_agent`（SQL 列默认值），与 agent registry
+   * 的 `jishu-self` 不相等。取用前务必经 {@link normalizeAgentId} 归一化。
+   */
   planner_agent_id: string;
   status: TaskInstanceStatus;
   current_phase: TaskPhase;

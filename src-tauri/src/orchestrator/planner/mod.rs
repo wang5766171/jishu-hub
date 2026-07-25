@@ -186,7 +186,12 @@ impl PlannerService {
         let planning_node = planning_node();
         let (planner_assignment, _transport) = self
             .runtime
-            .resolve_agent(&planning_node, "planner")
+            // 规划本身由 jishu agent 承担（与执行阶段未锁定节点的默认执行者一致）。
+            .resolve_agent(
+                &planning_node,
+                "planner",
+                Some(crate::agent::JISHU_SELF_AGENT_ID),
+            )
             .map_err(|error| format!("planner resolution failed: {error}"))?;
         let required_roles = required_role_ids(&skill_manifests);
         let prompt = build_prompt(

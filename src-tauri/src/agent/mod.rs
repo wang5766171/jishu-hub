@@ -186,6 +186,33 @@ pub struct AgentRegistry {
 
 const HEALTH_CACHE_TTL_MS: i64 = 60_000;
 
+/// 内置 jishu agent 的权威 id（registry key、DB 字段、协议 payload 统一用它）。
+///
+/// 命名分层（2026-07-25 确立）：
+/// - 用户可见：`Jishu Agent`（走 `AgentInfo::display_name` / i18n，**禁止**在 UI 直出本常量）
+/// - 内部标识：本常量
+/// - 命令行：`jishu-hub`(CLI) / `jishu agent`(TUI)
+pub const JISHU_SELF_AGENT_ID: &str = "jishu-self";
+
+/// `TaskInstance.planner_agent_id` 的历史遗留别名（下划线）。
+///
+/// 该字段的 SQL 列默认值长期是 `'jishu_agent'`（`task_launch.rs`），与 registry 的
+/// `jishu-self` 不相等。既有数据库里已存在带此值的行，**仅改默认字面量无法回填旧行**，
+/// 故必须在解析层归一化，见 [`normalize_agent_id`]。
+pub const LEGACY_JISHU_AGENT_ALIAS: &str = "jishu_agent";
+
+/// 把可能来自历史数据/外部输入的 agent id 归一为 registry 可查的权威 id。
+///
+/// 目前只处理 `jishu_agent` → `jishu-self` 这一个别名；未知值原样返回，
+/// 由调用方按"查不到"处理。
+pub fn normalize_agent_id(raw: &str) -> &str {
+    if raw == LEGACY_JISHU_AGENT_ALIAS {
+        JISHU_SELF_AGENT_ID
+    } else {
+        raw
+    }
+}
+
 impl AgentRegistry {
     pub fn new() -> Self {
         let mut agents: HashMap<String, Box<dyn AgentPlugin + Send + Sync>> = HashMap::new();

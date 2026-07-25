@@ -36,6 +36,7 @@ import type {
   NodeSessionInfo,
   TaskInstance,
 } from "./types";
+import { normalizeAgentId } from "./types";
 
 // 从 use-task-graph 推导返回类型（避免直接导出复杂的 hook 返回类型）。
 type TaskGraphApi = ReturnType<typeof useTaskGraph>;
@@ -51,6 +52,8 @@ interface PhaseExecutionViewProps {
   nodeSessions: Record<string, NodeSessionInfo>;
   /** 可选智能体列表（用于按节点指定执行 agent）。 */
   agents?: Array<{ id: string; display_name: string }>;
+  /** agents 是否仍在加载。用于区分「加载中」与「加载失败/为空」——二者此前 UI 同形。 */
+  agentsLoading?: boolean;
   onExecutionViewChange: (view: ExecutionView) => void;
   onChatScopeChange: (scope: ExecutionChatScope) => void;
   onSelectNode: (nodeId: string | null) => void;
@@ -68,6 +71,7 @@ export function PhaseExecutionView({
   selectedNodeId,
   nodeSessions,
   agents,
+  agentsLoading = false,
   onExecutionViewChange,
   onChatScopeChange,
   onSelectNode,
@@ -354,6 +358,8 @@ export function PhaseExecutionView({
           nodeSession={currentNodeSession}
           snapshot={taskGraph.snapshot}
           agents={agents ?? []}
+          agentsLoading={agentsLoading}
+          defaultAgentId={normalizeAgentId(instance.planner_agent_id)}
           disabled={runStarted}
           onAssignAgent={handleAssignAgent}
         />
@@ -491,6 +497,8 @@ function NodeInspector({
   nodeSession,
   snapshot,
   agents,
+  agentsLoading,
+  defaultAgentId,
   disabled,
   onAssignAgent,
 }: {
@@ -507,20 +515,37 @@ function NodeInspector({
     }>;
   } | null;
   agents: Array<{ id: string; display_name: string }>;
+  agentsLoading: boolean;
+  /** 未锁定节点的默认执行者（= TaskInstance.planner_agent_id，规范化后）。 */
+  defaultAgentId: string;
   disabled: boolean;
   onAssignAgent: (nodeId: string, agentId: string, roleId: string) => Promise<void>;
 }) {
+  const { t } = useTranslation();
   const node = snapshot?.nodes.find((n) => n.node_id === nodeId);
   const constraint = node?.agent_assignment_constraint;
   const roleRequirement = node?.role_requirement;
   const lockedAgentId = typeof constraint?.locked_agent_id === "string" ? constraint.locked_agent_id : "";
   const roleId = typeof roleRequirement?.role_id === "string" ? roleRequirement.role_id : nodeId;
+
+  /** id → 展示名。用户可见处一律用 display_name，不得暴露内部代号（DEVELOP_READ §13.6）。 */
+  const agentDisplayName = (id: string): string =>
+    agents.find((agent) => agent.id === id)?.display_name ?? id;
+
+  // D3：未锁定节点的默认执行者显示为默认 agent 名，而非「自动选择」。
+  // 引擎侧的同一语义由 resolve_agent_assignment 的显式回退保证（设计 §6.2）。
+  const defaultOptionLabel = agentsLoading
+    ? t("task.execution.agentsLoading", "加载智能体…")
+    : t("task.execution.defaultAgent", "{{name}}（默认）", {
+        name: agentDisplayName(defaultAgentId),
+      });
+
   return (
     <div className="h-32 shrink-0 border-t border-border bg-background px-3 py-2">
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1 text-xs font-medium text-foreground">{nodeTitle}</div>
         <label className="flex items-center gap-2 text-[10px] text-muted-foreground">
-          <span>执行智能体</span>
+          <span>{t("task.execution.executorAgent", "执行智能体")}</span>
           <select
             value={lockedAgentId}
             disabled={disabled || agents.length === 0}
@@ -530,22 +555,39 @@ function NodeInspector({
             }}
             className="h-6 rounded border border-border bg-background px-2 text-[11px] text-foreground disabled:opacity-60"
           >
-            <option value="">自动选择</option>
+            <option value="">{defaultOptionLabel}</option>
             {agents.map((agent) => (
               <option key={agent.id} value={agent.id}>{agent.display_name}</option>
             ))}
           </select>
         </label>
       </div>
+      {/* 项③：加载中与加载失败此前 UI 完全同形（都只是置灰 select），补可辨识提示。 */}
+      {agents.length === 0 && (
+        <div className="mt-1 text-[10px] text-muted-foreground">
+          {agentsLoading
+            ? t("task.execution.agentsLoading", "加载智能体…")
+            : t("task.execution.agentsUnavailable", "智能体列表不可用，请检查智能体配置")}
+        </div>
+      )}
       {node?.description && (
         <div className="mt-1 text-[11px] text-muted-foreground">{node.description}</div>
       )}
       <div className="mt-1 flex items-center gap-3 text-[10px] text-muted-foreground">
         {nodeSession && (
           <>
-            <span>状态：{nodeSession.status}</span>
-            {nodeSession.agent_id && <span>agent：{nodeSession.agent_id}</span>}
-            <span>attempt：{nodeSession.attempt_number}</span>
+            <span>
+              {t("task.execution.nodeStatus", "状态")}：
+              {t(`task.nodeStatus.${nodeSession.status}`, nodeSession.status)}
+            </span>
+            {/* A7：此前直出 nodeSession.agent_id（界面显示 jishu-self 这类内部代号）。 */}
+            {nodeSession.agent_id && (
+              <span>
+                {t("task.execution.executorAgent", "执行智能体")}：
+                {agentDisplayName(nodeSession.agent_id)}
+              </span>
+            )}
+            <span>{t("task.execution.attempt", "尝试")}：{nodeSession.attempt_number}</span>
           </>
         )}
       </div>

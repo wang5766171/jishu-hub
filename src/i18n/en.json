@@ -620,7 +620,13 @@
       "error": {
         "launchFailed": "Failed to start execution",
         "assignAgentFailed": "Failed to assign agent"
-      }
+      },
+      "defaultAgent": "{{name}} (default)",
+      "executorAgent": "Executor agent",
+      "agentsLoading": "Loading agents…",
+      "agentsUnavailable": "Agent list unavailable — check agent configuration",
+      "nodeStatus": "Status",
+      "attempt": "Attempt"
     },
     "event": {
       "runStarted": "Run started",

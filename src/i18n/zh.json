@@ -618,7 +618,13 @@
       "error": {
         "launchFailed": "启动执行失败",
         "assignAgentFailed": "指定智能体失败"
-      }
+      },
+      "defaultAgent": "{{name}}（默认）",
+      "executorAgent": "执行智能体",
+      "agentsLoading": "加载智能体…",
+      "agentsUnavailable": "智能体列表不可用，请检查智能体配置",
+      "nodeStatus": "状态",
+      "attempt": "尝试"
     },
     "event": {
       "runStarted": "运行开始",
