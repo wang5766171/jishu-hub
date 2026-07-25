@@ -668,6 +668,42 @@ async fn pi_rpc_connection_loop(
                                     usage: None,
                                 });
                             }
+                            // Settle fallback (B2.5 T3 / issue R4).
+                            //
+                            // `agent_settled` owns final completion, but it can only
+                            // forward a TurnComplete that some earlier `turn_end`
+                            // produced.  When a tool returns `terminate: true` the
+                            // agent stops *inside* the tool turn, so that final
+                            // `turn_end` carries `stopReason == "toolUse"` and is
+                            // dropped upstream (see the turn_end handler) -- leaving
+                            // `pending_turn_complete` empty.  Without a fallback the
+                            // GUI never receives `turn_complete`, so the streaming
+                            // state is never dropped and the spinner stays on forever.
+                            //
+                            // The CancelPending branch above already synthesises a
+                            // completion for the abort path; this is the symmetric
+                            // case for a normal settle.  Gated on `Prompting` so we
+                            // only ever synthesise while a turn is actually in flight.
+                            if pending_turn_complete.is_none()
+                                && matches!(state, LoopState::Prompting)
+                            {
+                                pending_turn_complete = Some(NormalizedEvent::TurnComplete {
+                                    reason: TurnEndReason::Complete,
+                                    usage: None,
+                                });
+                            }
+                            // A PhaseDivider buffered during the preceding agent_end
+                            // has no next run to be injected into once we settle.
+                            //
+                            // Task mode does NOT render phase dividers -- the
+                            // TaskPhaseNavBar tabs own phase navigation, and they
+                            // derive state from TaskInstance.current_phase, never from
+                            // these events (see derivePhaseDisplayState). So drop the
+                            // stale divider instead of flushing it; keeping it would
+                            // put a redundant separator inside the task conversation.
+                            // Regular (non-task) sessions are unaffected: their
+                            // dividers still flush on the next run's first content.
+                            pending_phase_divider = None;
                             if let Some(completion) = pending_turn_complete.take() {
                                 buf.push(completion);
                             }
@@ -1172,6 +1208,41 @@ mod tests {
         assert!(!pi_prompt_is_settled("agent_end"));
         assert!(!pi_prompt_is_settled("turn_end"));
         assert!(pi_prompt_is_settled("agent_settled"));
+    }
+
+    /// R4 root cause, pinned so a future change cannot silently undo it.
+    ///
+    /// A `turn_end` carrying `stopReason == "toolUse"` yields no events at all --
+    /// intentionally, so a mid-turn tool call cannot make the GUI drop its
+    /// streaming state early.  The consequence is that a tool returning
+    /// `terminate: true` produces *no* TurnComplete anywhere, which is why the
+    /// settle branch in `run_loop` has to synthesise one (B2.5 T3).
+    #[test]
+    fn tool_use_turn_end_yields_no_events() {
+        let events = normalize_pi_agent_event(&json!({
+            "type": "turn_end",
+            "message": { "stopReason": "toolUse" }
+        }));
+        assert!(
+            events.is_empty(),
+            "toolUse turn_end must stay suppressed, got {events:?}"
+        );
+    }
+
+    /// Counterpart to the above: a normal turn boundary does produce the
+    /// completion that `agent_settled` later forwards.
+    #[test]
+    fn normal_turn_end_yields_turn_complete() {
+        let events = normalize_pi_agent_event(&json!({
+            "type": "turn_end",
+            "message": { "stopReason": "end_turn" }
+        }));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, NormalizedEvent::TurnComplete { .. })),
+            "expected TurnComplete, got {events:?}"
+        );
     }
 
     #[test]

@@ -14,8 +14,8 @@
  *   - 节点子代理会话（useChatSession）只挂载当前选中节点
  *   - 切换 chatScope/节点纯前端视图行为，不打断后端执行
  */
-import { useEffect, useMemo } from "react";
-import { Play, Pause, Square } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Play, Pause, Square, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { GraphEditor } from "@/features/task-instance/graph/graph-editor";
 import { MessageView } from "@/components/sessions/message-view";
@@ -28,7 +28,8 @@ import { useNodeSession } from "./use-node-session";
 import { ExecutionViewSwitcher } from "./execution-view-switcher";
 import { ExecutionChatScopeTabs } from "./execution-chat-scope-tabs";
 import { cn } from "@/lib/utils";
-import type { useTaskGraph, RunProjection } from "@/features/task-instance/graph/use-task-graph";
+import type { useTaskGraph, RunProjection, RunStatusValue } from "@/features/task-instance/graph/use-task-graph";
+import { isTerminalRunStatus, taskErrorMessage } from "@/features/task-instance/graph/use-task-graph";
 import type {
   ExecutionChatScope,
   ExecutionView,
@@ -76,11 +77,16 @@ export function PhaseExecutionView({
   const { t } = useTranslation();
   const runId = instance.active_run_id ?? taskGraph.displayedRunId ?? null;
   const runStarted = Boolean(runId || taskGraph.activeRunId);
+  // T5：操作类错误的可见反馈。设计 §12 要求"run 启动失败 → 工作台提示"，
+  // 此前所有错误只 console.error，对用户完全静默。
+  // 用内联错误条而非 toast——全仓当前无 toast 基建，引入通知库属独立技术决策。
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // ── 手动启动执行（UI 驱动）：在最新 revision 上创建 run 并同步 TaskInstance ──
   const handleLaunchRun = async () => {
     const revisionId = taskGraph.revision?.revision_id;
     if (!instance.graph_id || !revisionId) return;
+    setActionError(null);
     try {
       const result = await invokeCommand<{ status: string; run_id: string }>(
         "task_launch_start_run",
@@ -99,12 +105,16 @@ export function PhaseExecutionView({
       }
     } catch (err) {
       console.error("Failed to launch run:", err);
+      setActionError(
+        `${t("task.execution.error.launchFailed", "启动执行失败")}：${taskErrorMessage(err)}`,
+      );
     }
   };
 
   // ── 按节点指定执行 agent：UpdateNode 设置 agent_assignment_constraint.locked_agent_id → 新 revision ──
   const handleAssignAgent = async (nodeId: string, agentId: string, roleId: string) => {
     if (runStarted) return;
+    setActionError(null);
     try {
       await taskGraph.applyCommands([
         {
@@ -124,6 +134,9 @@ export function PhaseExecutionView({
       ]);
     } catch (err) {
       console.error("Failed to assign agent:", err);
+      setActionError(
+        `${t("task.execution.error.assignAgentFailed", "指定智能体失败")}：${taskErrorMessage(err)}`,
+      );
     }
   };
 
@@ -147,7 +160,7 @@ export function PhaseExecutionView({
       run_id: runId,
       graph_id: instance.graph_id ?? "",
       revision_id: taskGraph.activeRunRevisionId ?? taskGraph.revision?.revision_id ?? "",
-      status: taskGraph.runStatus ?? "Draft",
+      status: taskGraph.runStatus ?? "draft",
       run_seq: 0,
       node_runs: taskGraph.nodeRuns as unknown as RunProjection["node_runs"],
     } as RunProjection;
@@ -197,7 +210,7 @@ export function PhaseExecutionView({
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border bg-background px-3">
         <RunStatusBadge status={taskGraph.runStatus} />
         <div className="flex items-center gap-1">
-          {taskGraph.runStatus === "Running" && (
+          {taskGraph.runStatus === "running" && (
             <button
               type="button"
               onClick={() => taskGraph.pauseRun().catch(console.error)}
@@ -207,7 +220,9 @@ export function PhaseExecutionView({
               <Pause className="h-3 w-3" />
             </button>
           )}
-          {taskGraph.runStatus === "Paused" && (
+          {/* Q1（用户 2026-07-25 定）：awaiting_human 不给恢复按钮——该状态的推进方式是审批（B3.5），
+              此处仅由徽章正确显示「等待审批」，避免用户误以为卡死。 */}
+          {taskGraph.runStatus === "paused" && (
             <button
               type="button"
               onClick={() => taskGraph.resumeRun().catch(console.error)}
@@ -228,7 +243,7 @@ export function PhaseExecutionView({
               {t("task.execution.start", "开始执行")}
             </button>
           )}
-          {taskGraph.activeRunId && taskGraph.runStatus !== "Completed" && (
+          {taskGraph.activeRunId && !isTerminalRunStatus(taskGraph.runStatus) && (
             <button
               type="button"
               onClick={() => taskGraph.cancelRun().catch(console.error)}
@@ -243,6 +258,25 @@ export function PhaseExecutionView({
           <ExecutionViewSwitcher value={executionView} onChange={onExecutionViewChange} />
         </div>
       </div>
+
+      {/* T5：操作错误内联提示（设计 §12「run 启动失败 → 工作台提示」） */}
+      {actionError && (
+        <div
+          role="alert"
+          className="flex shrink-0 items-start gap-2 border-b border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-600 dark:text-red-400"
+        >
+          <span className="min-w-0 flex-1 break-words">{actionError}</span>
+          <button
+            type="button"
+            onClick={() => setActionError(null)}
+            className="shrink-0 rounded p-0.5 hover:bg-red-500/20"
+            title={t("common.close", "关闭")}
+            aria-label={t("common.close", "关闭")}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1">
         {/* 画布区（canvas/split 显示） */}
@@ -293,7 +327,7 @@ export function PhaseExecutionView({
               scope={chatScope}
               nodeSessions={nodeSessions}
               nodeTitles={nodeTitles}
-              runActive={taskGraph.runStatus === "Running"}
+              runActive={taskGraph.runStatus === "running"}
               onChange={onChatScopeChange}
             />
             <ExecutionChatPanel
@@ -328,37 +362,55 @@ export function PhaseExecutionView({
   );
 }
 
-/** 运行状态徽章。 */
-function RunStatusBadge({ status }: { status: string | null | undefined }) {
+/**
+ * 运行状态徽章。
+ *
+ * ⚠️ status 值为后端 `RunStatus` 的 serde snake_case 形式（见 `use-task-graph.ts`
+ * 的 `RunStatusValue`）。此前误用 PascalCase 比较，导致所有分支落 default、
+ * 徽章恒显"待执行"。参数改用联合类型后，缺失分支可被 TS 发现。
+ */
+function RunStatusBadge({ status }: { status: RunStatusValue | null | undefined }) {
   const { t } = useTranslation();
   const label = (() => {
     switch (status) {
-      case "Running":
+      case "running":
         return t("task.run.running", "执行中");
-      case "Paused":
+      case "paused":
         return t("task.run.paused", "已暂停");
-      case "Completed":
+      case "awaiting_human":
+        return t("task.run.awaitingHuman", "等待审批");
+      case "completed":
         return t("task.run.completed", "已完成");
-      case "Failed":
+      case "failed":
         return t("task.run.failed", "失败");
-      case "Cancelled":
+      case "cancelled":
         return t("task.run.cancelled", "已取消");
+      case "validating":
+        return t("task.run.validating", "校验中");
+      case "ready":
+        return t("task.run.ready", "就绪");
+      case "draft":
       default:
         return t("task.run.draft", "待执行");
     }
   })();
   const color = (() => {
     switch (status) {
-      case "Running":
+      case "running":
         return "bg-primary/15 text-primary";
-      case "Paused":
+      case "paused":
         return "bg-orange-500/15 text-orange-600";
-      case "Completed":
+      case "awaiting_human":
+        return "bg-amber-500/15 text-amber-600";
+      case "completed":
         return "bg-emerald-500/15 text-emerald-600";
-      case "Failed":
+      case "failed":
         return "bg-red-500/15 text-red-600";
-      case "Cancelled":
-        return "bg-muted text-muted-foreground";
+      case "validating":
+      case "ready":
+        return "bg-sky-500/15 text-sky-600";
+      case "cancelled":
+      case "draft":
       default:
         return "bg-muted text-muted-foreground";
     }

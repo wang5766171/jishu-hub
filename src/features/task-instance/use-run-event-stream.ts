@@ -11,9 +11,12 @@
  * 与"当前选中节点的 useChatSession"并存，切换 chatScope 不影响本 hook 的轮询。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import type { Message } from "@/types";
-import type { RunProjection, TaskEvent } from "@/features/task-instance/graph/use-task-graph";
+import type { RunProjection, TaskEvent, RunStatusValue } from "@/features/task-instance/graph/use-task-graph";
+import { normalizeRunStatusValue } from "@/features/task-instance/graph/use-task-graph";
 
 export interface RunEventStreamState {
   /** 投影后的消息列表（按 run_seq 顺序，喂给 MessageView）。 */
@@ -22,8 +25,8 @@ export interface RunEventStreamState {
   cursor: number;
   /** 是否正在轮询。 */
   polling: boolean;
-  /** 运行状态（来自 RunProjection）。 */
-  runStatus: string | null;
+  /** 运行状态（来自 RunProjection，后端 snake_case 契约）。 */
+  runStatus: RunStatusValue | null;
   /** 错误信息。 */
   error: string | null;
 }
@@ -39,9 +42,9 @@ export interface UseRunEventStreamOptions {
  *
  *  实际渲染时由 MessageView 按 content block 展示。这里只做"事件 → 消息结构"的归一化。
  */
-function eventToMessage(event: TaskEvent): Message | null {
+function eventToMessage(event: TaskEvent, t: TFunction): Message | null {
   const payload = event.payload ?? {};
-  const text = describeEvent(event.event_type, payload);
+  const text = describeEvent(event.event_type, payload, t);
   if (!text) return null;
   return {
     role: "assistant",
@@ -50,58 +53,124 @@ function eventToMessage(event: TaskEvent): Message | null {
   };
 }
 
-/** 将事件类型 + payload 描述为可读文本。 */
+/** 将事件类型 + payload 描述为可读文本。
+ *
+ * ⚠️ 事件名必须与后端 `TaskEventType`（`orchestrator/events/mod.rs:26-61`，带
+ * `#[serde(rename_all = "snake_case")]`）逐字一致。历史坑：此前匹配
+ * `node_started`/`node_succeeded`/`node_failed`/`interaction_request` —— 这四个名字
+ * 在枚举中**根本不存在**，导致节点级进度全部静默丢弃，只剩审批/run 收尾三种可见，
+ * 用户误判"执行没动"。真实名称为 attempt_started / node_resolved / attempt_failed。
+ *
+ * payload 字段同样以后端 `payloads` 模块为准：节点级事件只带 `node_run_id`/`node_id`，
+ * **不含节点标题**；`attempt_failed` 的 `error` 是 `AttemptError` 结构体（取 `.message`）。
+ */
 function describeEvent(
   eventType: string,
   payload: Record<string, unknown>,
+  t: TFunction,
 ): string {
+  /** 取节点可读标识：优先 node_id，回退 node_run_id。 */
+  const nodeLabel = (): string => {
+    const nodeId = payload.node_id;
+    if (typeof nodeId === "string" && nodeId) return nodeId;
+    const nodeRunId = payload.node_run_id;
+    return typeof nodeRunId === "string" ? nodeRunId : "";
+  };
+
   switch (eventType) {
-    case "node_started":
-    case "NodeStarted": {
-      const nodeId = String(payload.node_id ?? "");
-      const title = String(payload.node_title ?? nodeId);
-      return `▶ 节点开始：${title}`;
+    case "run_started":
+      return `● ${t("task.event.runStarted", "运行开始")}`;
+    case "node_ready":
+      return `○ ${t("task.event.nodeReady", "节点就绪")}：${nodeLabel()}`;
+    case "attempt_started": {
+      const attemptNumber = payload.attempt_number;
+      const suffix =
+        typeof attemptNumber === "number" && attemptNumber > 1
+          ? `（${t("task.event.attemptNumber", "第 {{n}} 次尝试", { n: attemptNumber })}）`
+          : "";
+      return `▶ ${t("task.event.nodeStarted", "节点开始")}：${nodeLabel()}${suffix}`;
     }
-    case "node_succeeded":
-    case "NodeSucceeded": {
-      const nodeId = String(payload.node_id ?? "");
-      return `✓ 节点完成：${nodeId}`;
+    case "node_resolved": {
+      const finalStatus = payload.final_status;
+      const status = typeof finalStatus === "string" ? finalStatus : "";
+      const icon = status === "succeeded" ? "✓" : status === "failed" ? "✗" : "•";
+      const statusLabel = status
+        ? `（${t(`task.nodeStatus.${status}`, status)}）`
+        : "";
+      return `${icon} ${t("task.event.nodeResolved", "节点结束")}：${nodeLabel()}${statusLabel}`;
     }
-    case "node_failed":
-    case "NodeFailed": {
-      const nodeId = String(payload.node_id ?? "");
-      const error = String(payload.error ?? "");
-      return `✗ 节点失败：${nodeId}${error ? `（${error}）` : ""}`;
+    case "attempt_failed": {
+      // error 是 AttemptError { category, message, retryable, ... }
+      const error = payload.error;
+      let message = "";
+      if (error && typeof error === "object" && "message" in error) {
+        const raw = (error as { message?: unknown }).message;
+        if (typeof raw === "string") message = raw;
+      } else if (typeof error === "string") {
+        message = error;
+      }
+      return `✗ ${t("task.event.attemptFailed", "尝试失败")}：${nodeLabel()}${message ? `（${message}）` : ""}`;
     }
-    case "approval_requested":
-    case "ApprovalRequested": {
-      const desc = String(payload.description ?? "需要审批");
-      return `⚠ 审批请求：${desc}`;
+    case "retry_scheduled": {
+      const next = payload.next_attempt_number;
+      const suffix =
+        typeof next === "number"
+          ? `（${t("task.event.attemptNumber", "第 {{n}} 次尝试", { n: next })}）`
+          : "";
+      return `↻ ${t("task.event.retryScheduled", "已安排重试")}：${nodeLabel()}${suffix}`;
     }
-    case "interaction_request":
-    case "InteractionRequested": {
-      const prompt = String(payload.prompt ?? "需要交互");
-      return `? 交互请求：${prompt}`;
+    case "node_skipped":
+      return `⤼ ${t("task.event.nodeSkipped", "节点跳过")}：${nodeLabel()}`;
+    case "node_blocked":
+      return `⛔ ${t("task.event.nodeBlocked", "节点阻塞")}：${nodeLabel()}`;
+    case "approval_requested": {
+      const desc =
+        typeof payload.description === "string" && payload.description
+          ? payload.description
+          : t("task.event.approvalNeeded", "需要审批");
+      return `⚠ ${t("task.event.approvalRequested", "审批请求")}：${desc}`;
     }
+    case "approval_resolved": {
+      const approved = payload.approved === true;
+      const verdict = approved
+        ? t("task.event.approvalApproved", "通过")
+        : t("task.event.approvalRejected", "驳回");
+      return `${approved ? "✓" : "✗"} ${t("task.event.approvalResolved", "审批")}${verdict}：${nodeLabel()}`;
+    }
+    case "budget_exceeded": {
+      const budgetType = typeof payload.budget_type === "string" ? payload.budget_type : "";
+      return `⚠ ${t("task.event.budgetExceeded", "预算超限")}${budgetType ? `：${budgetType}` : ""}`;
+    }
+    case "run_paused":
+      return `⏸ ${t("task.event.runPaused", "运行已暂停")}`;
+    case "run_resumed":
+      return `▶ ${t("task.event.runResumed", "运行已恢复")}`;
+    case "run_cancelled":
+      return `● ${t("task.event.runCancelled", "运行已取消")}`;
     case "run_completed":
-    case "RunCompleted":
-      return "● 运行完成";
+      return `● ${t("task.event.runCompleted", "运行完成")}`;
     case "run_failed":
-    case "RunFailed":
-      return "● 运行失败";
+      return `● ${t("task.event.runFailed", "运行失败")}`;
     default:
-      return "";
+      // Q2（用户 2026-07-25 定）：显示兜底而非静默忽略——本次 bug 正因静默丢弃而长期隐藏。
+      return `· ${eventType}`;
   }
 }
 
 export function useRunEventStream(options: UseRunEventStreamOptions): RunEventStreamState {
   const { runId, pollIntervalMs = 1000 } = options;
+  const { t } = useTranslation();
 
   const [projectedMessages, setProjectedMessages] = useState<Message[]>([]);
   const [cursor, setCursor] = useState(0);
   const [polling, setPolling] = useState(false);
-  const [runStatus, setRunStatus] = useState<string | null>(null);
+  const [runStatus, setRunStatus] = useState<RunStatusValue | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // 用 ref 持有 t：poll 的 useCallback 依赖保持为 []，避免语言对象变化重建 poll
+  // 进而重置轮询定时器（见下方 useEffect 依赖 poll）。
+  const tRef = useRef(t);
+  tRef.current = t;
 
   const cursorRef = useRef(0);
   const runIdRef = useRef<string | null>(runId);
@@ -135,7 +204,7 @@ export function useRunEventStream(options: UseRunEventStreamOptions): RunEventSt
           .sort((a, b) => a.run_seq - b.run_seq);
         for (const e of unseen) seenEventIdsRef.current.add(e.event_id);
         const newMessages = unseen
-          .map(eventToMessage)
+          .map((e) => eventToMessage(e, tRef.current))
           .filter((m): m is Message => m !== null);
         if (newMessages.length > 0) {
           setProjectedMessages((prev) => [...prev, ...newMessages]);
@@ -151,7 +220,7 @@ export function useRunEventStream(options: UseRunEventStreamOptions): RunEventSt
         { runId: currentRunId },
       );
       if (projection) {
-        setRunStatus(projection.status);
+        setRunStatus(normalizeRunStatusValue(projection.status));
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

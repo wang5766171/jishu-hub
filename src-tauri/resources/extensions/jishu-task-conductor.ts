@@ -763,7 +763,19 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       (target === "execute" && state.executorMode !== "external");
     // external execute：不驱动、也不发续轮消息。agent_end 时 run 尚未 settle（isStreaming 仍 true），
     // 发无 deliverAs 的消息会被当 steer 多跑一轮 —— 故此处直接返回。
-    // 该阶段的分隔符：实时靠 setPhase 的 setStatus；重载靠 session_start 的 Hub 权威 phase 覆盖。
+    //
+    // 上述结论已于 2026-07-25 用 pi 源码核实（third_party/pi/packages/coding-agent/
+    // src/core/agent-session.ts）：isStreaming 即 _isAgentRunActive（:864），仅在
+    // _emitAgentSettled 的 :561 置 false，而 agent_end 扩展钩子在 :704-705 先运行
+    // ⇒ 此刻 sendCustomMessage(:1417) 必然落入 :1432 的 isStreaming 分支（steer/followUp），
+    // 两者都会多跑一轮。deliverAs:"nextTurn"（:1430）虽不触发轮次，但只 push
+    // _pendingNextTurnMessages（:1431，仅在下次用户 prompt 时作上下文注入，见 :1206-1210），
+    // **不发 message_start、不落盘** ⇒ 界面与重载都看不到，同样达不到目的。
+    //
+    // 本阶段不再补发任何说明消息（2026-07-25 用户决定）：流程规划阶段已逐节点确认过
+    // 职责，execute 阶段无需重复说明。阶段导航由 TaskPhaseNavBar 标签页承担，其状态
+    // 取自 TaskInstance.current_phase（derivePhaseDisplayState），**不依赖分隔符事件**；
+    // 任务模式亦不渲染分隔线（见 06-手测反馈修复.md #3）。
     if (!needDrive) return;
     const content =
       target === "plan"

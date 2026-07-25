@@ -11,7 +11,7 @@ interface TaskError {
   remediation?: string | null;
 }
 
-function taskErrorMessage(error: unknown): string {
+export function taskErrorMessage(error: unknown): string {
   if (typeof error === "string") return error;
   if (error && typeof error === "object") {
     const taskError = error as TaskError;
@@ -95,6 +95,62 @@ export type NodeRunStatus =
   | "skipped"
   | "cancelled"
   | "superseded";
+
+/**
+ * Run 级状态。**必须与后端 `orchestrator::domain::run::RunStatus` 保持一致**
+ * （该枚举带 `#[serde(rename_all = "snake_case")]`，故线上值为下划线小写）。
+ *
+ * 历史坑：此前 runStatus 类型为裸 `string`，`phase-execution-view.tsx` 误按
+ * PascalCase 比较（"Running"/"Paused"/"Completed"），导致暂停/恢复按钮永不显示、
+ * 状态徽章恒显"待执行"，而 TypeScript 结构上无法报错。改为联合类型以防复发。
+ */
+export type RunStatusValue =
+  | "draft"
+  | "validating"
+  | "ready"
+  | "running"
+  | "paused"
+  | "awaiting_human"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+/** Run 终态（不可再流转）。 */
+export const TERMINAL_RUN_STATUSES: readonly RunStatusValue[] = [
+  "completed",
+  "failed",
+  "cancelled",
+];
+
+const RUN_STATUS_VALUES: readonly RunStatusValue[] = [
+  "draft",
+  "validating",
+  "ready",
+  "running",
+  "paused",
+  "awaiting_human",
+  "completed",
+  "failed",
+  "cancelled",
+];
+
+/**
+ * 把 IPC 返回的裸字符串收敛为 `RunStatusValue`。
+ * 未知值返回 null 并告警——后端新增变体时能被发现，而非静默降级。
+ */
+export function normalizeRunStatusValue(raw: string | null | undefined): RunStatusValue | null {
+  if (!raw) return null;
+  if ((RUN_STATUS_VALUES as readonly string[]).includes(raw)) {
+    return raw as RunStatusValue;
+  }
+  console.warn(`[use-task-graph] 未知 run status: ${raw}（前端 RunStatusValue 需同步后端 RunStatus）`);
+  return null;
+}
+
+/** run 是否已进入终态。 */
+export function isTerminalRunStatus(status: RunStatusValue | null | undefined): boolean {
+  return status != null && TERMINAL_RUN_STATUSES.includes(status);
+}
 
 export interface NodeRun {
   node_run_id: string;
@@ -265,7 +321,7 @@ export function useTaskGraph() {
   const [activeRunRevisionId, setActiveRunRevisionId] = useState<string | null>(null);
   const [activeRunSeq, setActiveRunSeq] = useState<number | null>(null);
   const [lastRunId, setLastRunId] = useState<string | null>(null);
-  const [runStatus, setRunStatus] = useState<string | null>(null);
+  const [runStatus, setRunStatus] = useState<RunStatusValue | null>(null);
   const [nodeRuns, setNodeRuns] = useState<Record<string, NodeRun>>({});
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
@@ -338,7 +394,7 @@ export function useTaskGraph() {
     setActiveRunRevisionId(active?.active_revision_id ?? null);
     setActiveRunSeq(active?.run_seq ?? null);
     setLastRunId(active ? null : displayed?.run_id ?? null);
-    setRunStatus(displayed?.status ?? null);
+    setRunStatus(normalizeRunStatusValue(displayed?.status));
     if (!displayed) {
       setNodeRuns({});
       setEvents([]);
@@ -652,7 +708,7 @@ export function useTaskGraph() {
       setActiveRunRevisionId(run.active_revision_id);
       setActiveRunSeq(run.run_seq);
       setLastRunId(null);
-      setRunStatus(run.status);
+      setRunStatus(normalizeRunStatusValue(run.status));
       setNodeRuns({});
       setEvents([]);
       eventRunRef.current = run.run_id;
@@ -704,12 +760,13 @@ export function useTaskGraph() {
           runId: activeRunId,
         });
         setNodeRuns(nodeRunMapFromProjection(projection));
-        setRunStatus(projection.status);
+        const polledStatus = normalizeRunStatusValue(projection.status);
+        setRunStatus(polledStatus);
         setActiveRunRevisionId(projection.revision_id);
         setActiveRunSeq(projection.run_seq);
 
         // Terminal-status handling
-        if (["completed", "failed", "cancelled"].includes(projection.status)) {
+        if (isTerminalRunStatus(polledStatus)) {
           setLastRunId(activeRunId);
           setActiveRunId(null);
           setActiveRunRevisionId(null);
@@ -766,7 +823,7 @@ export function useTaskGraph() {
         runId: activeRunId,
       });
       setNodeRuns(nodeRunMapFromProjection(projection));
-      setRunStatus(projection.status);
+      setRunStatus(normalizeRunStatusValue(projection.status));
       await loadRunDetails(activeRunId);
       return updatedRun;
     } catch (err: unknown) {
