@@ -148,6 +148,7 @@ export default function TaskPhaseContainer({
             projectPath={projectPath}
             encodedProjectId={encodedProjectId}
             taskGraph={taskGraph}
+            readOnly={task.readOnly}
             executionView={task.executionView}
             chatScope={task.chatScope}
             selectedNodeId={task.selectedNodeId}

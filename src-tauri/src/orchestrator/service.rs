@@ -581,6 +581,21 @@ impl TaskService {
 
         // Verify it's still the current draft.
         let graph = store.get_graph(graph_id)?;
+
+        // 完成态只读（簇B / 设计 §11 done）：图已有终态 run（completed/failed/cancelled）时
+        // 禁止再改图。仅终态拦截；运行中/草稿态保留原行为——不误伤 pre-run 编辑，也不影响
+        // hot-swap（其候选走纯函数 `commands::apply_commands`，不经此服务方法）。
+        let runs = store.list_runs(graph_id)?;
+        if runs.iter().any(|run| run.status.is_terminal()) {
+            return Err(TaskServiceError::Conflict {
+                message: format!(
+                    "graph {graph_id} has a terminal run; editing is disabled in done state"
+                ),
+                current_revision: graph.current_draft_revision.clone(),
+                current_run_seq: runs.iter().map(|run| run.run_seq).max(),
+            });
+        }
+
         match &graph.current_draft_revision {
             Some(draft) if draft == expected_revision_id => {}
             Some(draft) => {
@@ -1876,6 +1891,64 @@ mod tests {
         assert!(result.diff.is_some());
         let diff = result.diff.unwrap();
         assert!(diff.nodes_added.contains(&"n1".to_string()));
+    }
+
+    #[test]
+    fn apply_commands_rejected_when_run_is_terminal() {
+        // 簇B 完成态只读（设计 §11 done）：图已有终态 run（completed/failed/cancelled）时，
+        // apply_commands 必须拒绝，防止已完成/失败/取消的任务被继续改图。
+        // 仅终态拦截；运行中/草稿态保留原行为（完成路径在 daemon engine，此处用 store 直写只测守卫）。
+        let svc = TaskService::open_in_memory().unwrap();
+        let input = CreateGraphInput {
+            title: "Test".into(),
+            goal: "Do X".into(),
+            project_root: "/project".into(),
+            owner: "user".into(),
+            ..Default::default()
+        };
+        let (graph, revision) = svc.create_graph(&input).unwrap();
+        let run = svc
+            .start_run(&graph.graph_id, &revision.revision_id)
+            .unwrap();
+
+        // 直接将 run 置为 Completed（完成态）。
+        svc.store
+            .update_run_status(&run.run_id, &RunStatus::Completed, run.run_seq, Some(now_ms()))
+            .unwrap();
+        assert!(svc.get_run(&run.run_id).unwrap().status.is_terminal());
+
+        let commands = vec![GraphCommand::AddNode {
+            command_id: "c1".into(),
+            node: GraphNode {
+                node_id: "n1".into(),
+                parent_id: Some("goal".into()),
+                title: "N1".into(),
+                description: None,
+                node_kind: NodeKind::Executable,
+                input_contract: Default::default(),
+                output_contract: Default::default(),
+                role_requirement: None,
+                capability_requirements: vec![],
+                agent_assignment_constraint: None,
+                policy: Default::default(),
+                metadata: HashMap::new(),
+                executable_payload: Some(ExecutablePayload::Shell {
+                    command: "echo hi".into(),
+                    cwd: None,
+                    timeout_ms: None,
+                }),
+                loop_config: None,
+                approval_gate_config: None,
+            },
+        }];
+
+        let err = svc
+            .apply_commands(&graph.graph_id, &revision.revision_id, &commands, "user")
+            .expect_err("apply_commands must be rejected in done state");
+        assert!(
+            matches!(err, TaskServiceError::Conflict { .. }),
+            "expected Conflict in done state, got {err:?}"
+        );
     }
 
     #[test]

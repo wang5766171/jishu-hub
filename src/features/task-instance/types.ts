@@ -213,17 +213,32 @@ export function taskInstanceFromRaw(raw: TaskInstanceRaw): TaskInstance {
 }
 
 /**
+ * 任务是否已进入完成态。
+ *
+ * 设计 §11 存在第 4 个语义阶段 done（「已完成任务 phase=done 只读」），但它不是
+ * `current_phase` 的取值——后端同样是从 `current_phase == execution && run_status
+ * == completed` 派生（`task_launch.rs` 的 phase 派生逻辑），DB 里不存 done。
+ * 前端沿用同一派生口径，避免引入第四个 TaskPhase 枚举值而牵动大量 switch。
+ */
+export function isTaskCompleted(instance: TaskInstance | null): boolean {
+  if (!instance) return false;
+  return instance.current_phase === "execution" && instance.run_status === "completed";
+}
+
+/**
  * PhaseDisplayState 派生规则（§2.4）。
  *
  * requirements: active=current; planning/execution → done
  * planning: active=planning; execution → done; requirements + requirement_file → done(直接生成); 否则 pending
- * execution: active=execution; 否则 pending
+ * execution: active=execution; run 完成后 → done（设计 §11）
  */
 export function derivePhaseDisplayState(
   phase: TaskPhase,
   instance: TaskInstance | null,
 ): PhaseDisplayState {
   if (!instance) return "pending";
+  // 完成态：三个阶段全部 done，nav 可只读回溯任意阶段。
+  if (isTaskCompleted(instance)) return "done";
   const current = instance.current_phase;
   const order: TaskPhase[] = ["requirements", "planning", "execution"];
   const currentIdx = order.indexOf(current);

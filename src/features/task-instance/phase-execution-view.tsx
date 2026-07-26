@@ -59,6 +59,11 @@ interface PhaseExecutionViewProps {
   onSelectNode: (nodeId: string | null) => void;
   onNodeSessionUpdate: (nodeId: string, info: NodeSessionInfo) => void;
   onSyncRunStatus: (runId: string, status: string) => void;
+  /**
+   * 完成态只读（设计 §11）：run 已 completed 时整个执行视图不可编辑——
+   * 节点会话不可发消息、画布不可增删改。由 container 从 task.readOnly 透传。
+   */
+  readOnly?: boolean;
 }
 
 export function PhaseExecutionView({
@@ -77,6 +82,7 @@ export function PhaseExecutionView({
   onSelectNode,
   onNodeSessionUpdate,
   onSyncRunStatus,
+  readOnly = false,
 }: PhaseExecutionViewProps) {
   const { t } = useTranslation();
   const runId = instance.active_run_id ?? taskGraph.displayedRunId ?? null;
@@ -193,7 +199,8 @@ export function PhaseExecutionView({
     sessionId: shouldUseNodeSession ? nodeSessionId! : "__inactive__",
     projectPath,
     encodedProjectId,
-    readOnly: false,
+    // 完成态下节点子代理会话也只读（不可 steer）。
+    readOnly,
   });
 
   // ── 节点标题映射 ──
@@ -315,6 +322,7 @@ export function PhaseExecutionView({
               canRedo={taskGraph.canRedo}
               undo={() => taskGraph.undo()}
               redo={() => taskGraph.redo()}
+              readOnly={readOnly}
             />
           </div>
         )}
@@ -340,6 +348,7 @@ export function PhaseExecutionView({
               nodeChat={shouldUseNodeSession ? nodeChat : null}
               projectPath={projectPath}
               sessionId={nodeSessionId}
+              readOnly={readOnly}
               placeholder={
                 chatScope.kind === "run"
                   ? t("task.execution.mainPlaceholder", "查看执行进展…使用 @steer 干预")
@@ -433,6 +442,7 @@ function ExecutionChatPanel({
   nodeChat,
   projectPath,
   sessionId,
+  readOnly,
   placeholder,
 }: {
   scope: ExecutionChatScope;
@@ -440,6 +450,7 @@ function ExecutionChatPanel({
   nodeChat: ReturnType<typeof useChatSession> | null;
   projectPath: string;
   sessionId: string | null;
+  readOnly: boolean;
   placeholder: string;
 }) {
   // 主任务会话：渲染 run 事件流投影的消息（只读，干预用 @steer 单独入口）
@@ -478,14 +489,17 @@ function ExecutionChatPanel({
           <StreamingMessage sessionId={sessionId} isComplete={!isStreaming} userMessage={null} />
         </div>
       </div>
-      <div className="shrink-0 border-t border-border bg-background p-2">
-        <ChatInput
-          sessionId={sessionId}
-          projectPath={projectPath}
-          isSessionStreaming={isStreaming}
-          placeholder={placeholder}
-        />
-      </div>
+      {/* 完成态只读：隐藏节点会话输入框（不可 steer），与 PhaseConversationShell 范式一致。 */}
+      {!readOnly && (
+        <div className="shrink-0 border-t border-border bg-background p-2">
+          <ChatInput
+            sessionId={sessionId}
+            projectPath={projectPath}
+            isSessionStreaming={isStreaming}
+            placeholder={placeholder}
+          />
+        </div>
+      )}
     </div>
   );
 }

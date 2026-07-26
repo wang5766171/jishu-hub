@@ -134,6 +134,11 @@ interface GraphEditorProps {
   redo?: () => Promise<void>;
   applyDraftToRun?: () => Promise<unknown>;
   canApplyDraftToRun?: boolean;
+  /**
+   * 完成态只读（设计 §11）：run 已 completed 时画布不可增删改节点/边、不可 undo/redo。
+   * 后端 `apply_commands` 同步有终态 run 守卫兜底，此处是 UX 层（隐藏/禁用变更入口）。
+   */
+  readOnly?: boolean;
 }
 
 export function GraphEditor({
@@ -158,6 +163,7 @@ export function GraphEditor({
   redo,
   applyDraftToRun,
   canApplyDraftToRun,
+  readOnly = false,
 }: GraphEditorProps) {
   const { t } = useTranslation();
   const [nodes, setNodes, onNodesChange] = useNodesState<ReactFlowNode>([]);
@@ -287,6 +293,8 @@ export function GraphEditor({
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z") return;
       const target = event.target as HTMLElement | null;
       if (target?.closest("input, textarea, [contenteditable='true']")) return;
+      // 完成态只读：禁用键盘 undo/redo。
+      if (readOnly) return;
       event.preventDefault();
       if (event.shiftKey) {
         if (canRedo) redo?.().catch(console.error);
@@ -296,14 +304,15 @@ export function GraphEditor({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [canRedo, canUndo, redo, undo]);
+  }, [canRedo, canUndo, redo, undo, readOnly]);
 
   const submitCommand = useCallback(
     (command: GraphCommand) => {
-      if (!applyCommands) return;
+      // 完成态只读：所有走 submitCommand 的变更（加边/加节点/删边/派发表单）一并拦截。
+      if (readOnly || !applyCommands) return;
       applyCommands([command]).catch(console.error);
     },
-    [applyCommands],
+    [applyCommands, readOnly],
   );
 
   const selectNode = useCallback((nodeId: string | null) => {
@@ -536,7 +545,7 @@ export function GraphEditor({
 
   const deleteSelection = useCallback(
     (deletedNodes: ReactFlowNode[], deletedEdges: ReactFlowEdge[]) => {
-      if (!applyCommands) return;
+      if (readOnly || !applyCommands) return;
       const commands: GraphCommand[] = [
         ...deletedEdges.map((edge) => ({
           op: "remove_edge",
@@ -555,7 +564,7 @@ export function GraphEditor({
         applyCommands(commands).catch(console.error);
       }
     },
-    [applyCommands, snapshot],
+    [applyCommands, snapshot, readOnly],
   );
 
   return (
@@ -573,10 +582,10 @@ export function GraphEditor({
         onDelete={({ nodes: deletedNodes, edges: deletedEdges }) =>
           deleteSelection(deletedNodes, deletedEdges)
         }
-        nodesConnectable
-        nodesDraggable
+        nodesConnectable={!readOnly}
+        nodesDraggable={!readOnly}
         elementsSelectable
-        deleteKeyCode={["Backspace", "Delete"]}
+        deleteKeyCode={readOnly ? null : ["Backspace", "Delete"]}
         onNodeClick={handleNodeClick}
         onEdgeClick={handleEdgeClick}
         onPaneClick={handlePaneClick}
@@ -690,7 +699,7 @@ export function GraphEditor({
             type="button"
             className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground shadow-sm hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-40"
             onClick={() => undo?.().catch(console.error)}
-            disabled={!canUndo}
+            disabled={readOnly || !canUndo}
             title={`${t("tasks.workbench.undo")} (Ctrl/Cmd+Z)`}
           >
             {t("tasks.workbench.undo")}
@@ -699,7 +708,7 @@ export function GraphEditor({
             type="button"
             className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground shadow-sm hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-40"
             onClick={() => redo?.().catch(console.error)}
-            disabled={!canRedo}
+            disabled={readOnly || !canRedo}
             title={`${t("tasks.workbench.redo")} (Ctrl/Cmd+Shift+Z)`}
           >
             {t("tasks.workbench.redo")}
@@ -730,6 +739,7 @@ export function GraphEditor({
           )}
           <button
             className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={readOnly}
             onClick={() => {
               if (applyCommands) {
                 const goalNode = snapshot?.nodes.find((node) => node.node_kind === "goal");
@@ -764,6 +774,7 @@ export function GraphEditor({
           <button
             type="button"
             className="rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium text-foreground shadow-sm hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={readOnly}
             onClick={() => setShowDispatchForm(true)}
           >
             {t("tasks.workbench.addAgentStep")}

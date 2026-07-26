@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import {
   deriveAllPhaseStates,
+  isTaskCompleted,
   taskInstanceFromRaw,
   type ExecutionChatScope,
   type ExecutionView,
@@ -42,7 +43,6 @@ export interface UseTaskInstanceResult {
   phaseStates: PhaseDisplayStates;
   /** 当前阶段的活跃 session_id（执行阶段由 chatScope 决定，可能为 null = 主任务会话）。 */
   activeSessionId: string | null;
-  canSend: boolean;
 
   // ── 执行阶段视图 ──
   executionView: ExecutionView;
@@ -134,13 +134,6 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
     return null;
   }, [activeInstance, activePhase, chatScope, nodeSessionMap]);
 
-  const canSend = useMemo(() => {
-    if (readOnly || !activeInstance) return false;
-    // 执行阶段主任务会话不可发送（是 task_event 投影）；节点子代理会话可发送（steer）
-    if (activePhase === "execution" && chatScope.kind === "run") return false;
-    return activePhase === activeInstance.current_phase;
-  }, [readOnly, activeInstance, activePhase, chatScope]);
-
   const upsertLocalInstance = useCallback((instance: TaskInstance) => {
     setInstances((prev) => {
       const idx = prev.findIndex((i) => i.task_id === instance.task_id);
@@ -155,7 +148,9 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
     (taskId: string) => {
       const inst = instances.find((i) => i.task_id === taskId);
       setActiveInstanceId(taskId);
-      setReadOnly(false);
+      // 完成态任务一律只读打开（设计 §11「已完成任务 phase=done 只读」）。
+      // 此前无条件 setReadOnly(false)，重开已完成任务仍可编辑。
+      setReadOnly(isTaskCompleted(inst ?? null));
       if (inst) {
         setActivePhase(inst.current_phase);
         // 进入执行阶段默认主任务会话 + 分屏
@@ -171,12 +166,13 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
   const openPhase = useCallback(
     (phase: TaskPhase, ro = false) => {
       setActivePhase(phase);
-      setReadOnly(ro);
+      // 完成态覆盖调用方意图：即便传 ro=false 也保持只读。
+      setReadOnly(ro || isTaskCompleted(activeInstance));
       if (phase === "execution") {
         setChatScope({ kind: "run" });
       }
     },
-    [],
+    [activeInstance],
   );
 
   const markSession = useCallback(
@@ -343,7 +339,6 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
     readOnly,
     phaseStates,
     activeSessionId,
-    canSend,
     executionView,
     chatScope,
     selectedNodeId,
