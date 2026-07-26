@@ -19,6 +19,7 @@ interface PhasePlanningViewProps {
   projectPath: string;
   encodedProjectId?: string;
   onSessionResolved?: (realSessionId: string) => void;
+  onTurnComplete?: () => void;
 }
 
 export function PhasePlanningView({
@@ -28,6 +29,7 @@ export function PhasePlanningView({
   projectPath,
   encodedProjectId,
   onSessionResolved,
+  onTurnComplete,
 }: PhasePlanningViewProps) {
   const { t } = useTranslation();
 
@@ -49,6 +51,7 @@ export function PhasePlanningView({
       projectPath={projectPath}
       encodedProjectId={encodedProjectId}
       onSessionResolved={onSessionResolved}
+      onTurnComplete={onTurnComplete}
       inputContextFooter={inputContextFooter}
     />
   );

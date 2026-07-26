@@ -1,6 +1,10 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue, lazy, Suspense } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
-import { streamStore, useSessionStream, type SessionStreamState } from "@/hooks/use-stream-store";
+import {
+  streamStore,
+  useSessionStream,
+  type SessionStreamState,
+} from "@/hooks/use-stream-store";
 import { MessageView, type MessageSearchNavigation, type MessageSearchStatus } from "@/components/sessions/message-view";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
 import { RenameTaskSessionDialog } from "@/components/sessions/rename-task-session-dialog";
@@ -166,6 +170,15 @@ interface PendingChatInteraction {
 
 type TaskLaunchPhase = "requirements" | "planning";
 
+// 三阶段顺序（graph 视同 execution 级），用于「阶段标签自动跟随」判定 current_phase
+// 是否前进。conductor 在 turn 内调 conductor_sync_phase 推进 current_phase。
+const PHASE_LAUNCH_RANK: Record<string, number> = {
+  requirements: 0,
+  planning: 1,
+  execution: 2,
+  graph: 2,
+};
+
 interface TaskLaunchInstanceSummary {
   task_id: string;
   project_root: string;
@@ -318,6 +331,10 @@ export function ChatPage({
   const activeIdRef = useRef<string | null>(activeId);
   const taskLaunchOpenRef = useRef(taskLaunchOpen);
   const taskLaunchPhaseRef = useRef<TaskLaunchPhase>(taskLaunchPhase);
+  // 阶段标签自动跟随：跟踪上次 current_phase（数据源为 refreshTaskLaunchSessions 的 3s
+  // 轮询）。follow effect 据此前进检测；守卫 taskLaunchPhase===prev 同时防跨任务误跟随
+  // 与打断手动回看。
+  const prevCurrentPhaseRef = useRef<string | null>(null);
   const activeTaskInstanceIdRef = useRef<string | null>(activeTaskInstanceId);
   // 进入任务模式需切到 Jishu Agent 时置 true：阻止 activeId 变化触发的清理 effect 重置任务模式状态
   const enteringTaskModeRef = useRef(false);
@@ -996,26 +1013,15 @@ export function ChatPage({
     openFloatingSession(sessionId, name, activeId || "", currentProject?.encoded_name || "", active?.display_name);
   }, [sessionNames, sessions, activeId, active, currentProject]);
 
-  const applyTaskLaunchInstanceSnapshot = useCallback((
-    record: TaskLaunchInstanceSummary,
-    options: { detectPhaseAdvance?: boolean } = {},
-  ) => {
+  const applyTaskLaunchInstanceSnapshot = useCallback((record: TaskLaunchInstanceSummary) => {
     const isCurrentTask = !activeTaskInstanceIdRef.current
       || activeTaskInstanceIdRef.current === record.task_id;
-    const previousStatus = lastKnownStatusRef.current;
-    const activePhase = taskLaunchPhaseRef.current;
 
     logTaskPhaseDebug("snapshot:received", {
       taskId: record.task_id,
       isCurrentTask,
-      detectPhaseAdvance: Boolean(options.detectPhaseAdvance),
-      previousStatus,
       status: record.status,
       currentPhase: record.current_phase,
-      activePhase,
-      requirementSessionId: record.requirement_session_id,
-      planningSessionId: record.planning_session_id,
-      graphId: record.graph_id,
     });
 
     if (isCurrentTask) {
@@ -1023,7 +1029,6 @@ export function ChatPage({
       activeTaskRequirementFileRef.current = record.requirement_file ?? null;
       setActiveTaskInstanceId(record.task_id);
       setActiveTaskRequirementFile(record.requirement_file ?? null);
-
       lastKnownStatusRef.current = record.status;
     }
 
@@ -1081,13 +1086,16 @@ export function ChatPage({
 
   // conductor 驱动的任务发现：首条消息激活 conductor 后，conductor 异步创建 TaskInstance（写入 requirement_session_id）。
   // 轮询任务列表按 requirement_session_id 匹配到该任务后，打开三阶段工作台（此处不标记 launch 会话，避免重复建任务；标记由流式 chunk 处理按需触发，见 task_launch_mark_session 内联调用）。
+  // 用 projectPathRef.current（非 state）+ deps=[]，使其引用稳定，可在 mount-only 的
+  // stream listener 闭包内安全调用而不捕获陈旧的 projectPath。
   const discoverConductorTask = useCallback(async (sessionId: string) => {
-    if (!projectPathForSettings || !sessionId) return;
+    const projectRoot = projectPathRef.current;
+    if (!projectRoot || !sessionId) return;
     for (let attempt = 0; attempt < 12; attempt++) {
       try {
         const items = await invokeCommand<TaskLaunchInstanceSummary[]>(
           "task_launch_list_sessions",
-          { projectRoot: projectPathForSettings },
+          { projectRoot },
         );
         const found = items.find((item) => item.requirement_session_id === sessionId);
         if (found) {
@@ -1096,17 +1104,17 @@ export function ChatPage({
             sessionId,
             currentPhase: found.current_phase,
           });
+          // 仅关联任务实例（供 follow effect 监听 current_phase），不切换 UI：需求/规划讨论
+          // 继续留在 taskLaunch 界面，由 follow effect 在阶段推进时按阶段切标签/工作台
+          // （openTaskPhaseWorkspace，execution 分支自行设置 taskContainer*）。此处若
+          // setTaskModeActive(true) 会把需求讨论强行拽入 TaskPhaseContainer，触发 useChatSession
+          // 加载 requirement session 失败（Pi session not found）+ TaskPhaseContainer 重复挂载
+          // （分隔线两次、卡"思考中"）。
           setActiveTaskInstanceId(found.task_id);
           activeTaskInstanceIdRef.current = found.task_id;
           setSelectedTaskSkillId(found.skill_id || "jishu-conductor-dev");
           selectedTaskSkillIdRef.current = found.skill_id || "jishu-conductor-dev";
           lastKnownStatusRef.current = found.status;
-          setTaskModeActive(true);
-          setTaskContainerTaskId(found.task_id);
-          setTaskContainerPhase("requirements");
-          setTaskContainerReadOnly(false);
-          setTaskLaunchOpen(false);
-          taskLaunchOpenRef.current = false;
           setTaskLaunchSessions(items);
           return;
         }
@@ -1116,7 +1124,7 @@ export function ChatPage({
       await new Promise((resolve) => setTimeout(resolve, 400));
     }
     logTaskPhaseDebug("conductor-task:not-found", { sessionId });
-  }, [projectPathForSettings]);
+  }, []);
 
   const handleSessionResolved = useCallback((_pendingSessionId: string, realSessionId: string) => {
     if (!taskLaunchOpenRef.current) {
@@ -1126,14 +1134,15 @@ export function ChatPage({
       });
       return;
     }
+    // realSessionId 来自 send_message 的同步返回值，新 session 时仍为 pending（Pi 真 id 由
+    // session_resolved 流式事件异步送达）。任务关联改在 stream listener 收到 session_resolved
+    // 时用真 id 触发 discoverConductorTask，不在此用 pending 触发（必 not-found）。
     logTaskPhaseDebug("session-resolved", {
       taskId: activeTaskInstanceIdRef.current,
       sessionId: realSessionId,
       phase: taskLaunchPhaseRef.current,
     });
-    // conductor 驱动：发现 conductor 创建的 TaskInstance 并打开工作台。
-    discoverConductorTask(realSessionId).catch(console.error);
-  }, [discoverConductorTask]);
+  }, []);
 
   const openTaskChatPhase = useCallback(async (
     taskSession: TaskLaunchInstanceSummary,
@@ -1251,6 +1260,43 @@ export function ChatPage({
     selectedSessionRef.current = null;
     setPendingSteerDisplay([]);
   }, [openTaskChatPhase]);
+  // taskLaunch 阶段标签自动跟随：refreshTaskLaunchSessions 的 3s 轮询持续刷新
+  // taskLaunchSessions，activeTaskLaunchInstance.current_phase 会自动跟上后端。此 effect
+  // 监听其前进：仅当用户仍停在上一阶段（taskLaunchPhaseRef===prev，未手动挪开）才跟随切 tab
+  // ——requirements→planning 切规划会话，planning→execution 切执行工作台（与手动点 tab 同走
+  // openTaskPhaseWorkspace，行为一致）。不依赖 turn_complete 或 session-id 匹配，数据源即
+  // 既有轮询；守卫 taskLaunchPhase===prev 兼防跨任务误跟随与打断手动回看（M3）。
+  const taskLaunchCurrentPhase = activeTaskLaunchInstance?.current_phase ?? null;
+  useEffect(() => {
+    const prev = prevCurrentPhaseRef.current;
+    const next = taskLaunchCurrentPhase;
+    const advanced = !!next && !!prev && PHASE_LAUNCH_RANK[next] > PHASE_LAUNCH_RANK[prev];
+    if (advanced) {
+      // 结论性诊断：每次检测到 current_phase 前进都记录守卫值。无此日志=轮询没拿到新
+      // phase（后端）；userOnPrev:false=用户已手动挪开（守卫拦截，符合预期）；true 才跟随。
+      const userOnPrev = taskLaunchPhaseRef.current === prev;
+      const launchOpen = taskLaunchOpenRef.current;
+      logTaskPhaseDebug("launch-follow:detected", {
+        taskId: activeTaskLaunchInstance?.task_id,
+        prev,
+        next,
+        userOnPrev,
+        launchOpen,
+      });
+      if (userOnPrev && launchOpen && activeTaskLaunchInstance) {
+        const targetPhase: TaskPhase =
+          next === "execution" || next === "graph" ? "execution" : next;
+        logTaskPhaseDebug("launch-follow:advance", {
+          taskId: activeTaskLaunchInstance.task_id,
+          prev,
+          next,
+          targetPhase,
+        });
+        openTaskPhaseWorkspace(activeTaskLaunchInstance, targetPhase);
+      }
+    }
+    prevCurrentPhaseRef.current = next;
+  }, [taskLaunchCurrentPhase, activeTaskLaunchInstance, openTaskPhaseWorkspace]);
 
   const handleTaskLaunchBeforeSend = useCallback(async (_message: string) => {
     // conductor 驱动的任务模式：首条消息由 prepareTaskLaunchMessage 包装为 /jishu-task 命令激活 conductor，
@@ -1316,6 +1362,19 @@ export function ChatPage({
         const realId = extractRealSessionId(chunk.data);
         if (realId && realId !== cid) {
           streamStore.alias(cid, realId);
+          // 新任务讨论关联：用 Pi 真实 session id（= conductor 写入任务的 requirement_session_id）
+          // 触发 discover。ChatInput 的 onSessionResolved 拿的是 send_message 同步返回值（新 session
+          // 仍为 pending），匹配不到 conductor 写的真 id；只有此处 session_resolved 事件携带真 id。
+          if (taskLaunchOpenRef.current && !activeTaskInstanceIdRef.current) {
+            logTaskPhaseDebug("launch-link:resolve", {
+              pendingId: cid,
+              realId,
+              phase: taskLaunchPhaseRef.current,
+            });
+            discoverConductorTask(realId).catch((e) =>
+              console.warn("discoverConductorTask failed:", e),
+            );
+          }
           // R2: 仅当已关联真任务（activeTaskInstanceId 非空）时才 mark。为空说明
           // Conductor 建的真任务尚未被 discoverConductorTask 发现，此时 mark 会让后端
           // mark_task_stage_session 的 unwrap_or_else 生成 uuid 占位任务（title="新任务"、
@@ -1334,7 +1393,7 @@ export function ChatPage({
                 title: null,
               })
                 .then((record) => {
-                  applyTaskLaunchInstanceSnapshot(record, { detectPhaseAdvance: true });
+                  applyTaskLaunchInstanceSnapshot(record);
                 })
                 .catch((error) => console.warn("Failed to mark task launch session:", error));
             }

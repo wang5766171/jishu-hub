@@ -128,6 +128,7 @@ export default function TaskPhaseContainer({
             projectPath={projectPath}
             encodedProjectId={encodedProjectId}
             onSessionResolved={(sid) => handleSessionResolved(sid, "requirements")}
+            onTurnComplete={() => task.loadInstances()}
           />
         )}
 
@@ -139,6 +140,7 @@ export default function TaskPhaseContainer({
             projectPath={projectPath}
             encodedProjectId={encodedProjectId}
             onSessionResolved={(sid) => handleSessionResolved(sid, "planning")}
+            onTurnComplete={() => task.loadInstances()}
           />
         )}
 

@@ -74,6 +74,12 @@ export interface UseChatSessionOptions {
   prepareMessage?: (message: string) => PreparedMessage;
   /** session 解析为真实 id 后的回调（pending → real）。 */
   onSessionResolved?: (realSessionId: string) => void;
+  /**
+   * 一轮 agent turn 流式结束后的回调（isStreaming 由 true→false）。
+   * 用于阶段推进同步：conductor 在 turn 内调 conductor_sync_phase 推进 current_phase，
+   * turn 结束即已落库，消费方可在此刷新任务实例以感知阶段变化。
+   */
+  onTurnComplete?: () => void;
   /** 交互式问答提交后的回调（用于阶段推进，如需求定稿、生成流程图）。 */
   onInteractionSubmit?: (submission: InteractionSubmission, interaction: PendingChatInteraction) => void;
 }

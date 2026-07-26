@@ -26,6 +26,8 @@ interface PhaseConversationShellProps {
   prepareMessage?: (message: string) => PreparedMessage;
   /** session 解析为真实 id 后的回调。 */
   onSessionResolved?: (realSessionId: string) => void;
+  /** 一轮 agent turn 结束后的回调（阶段推进同步：刷新任务实例感知 current_phase 变化）。 */
+  onTurnComplete?: () => void;
   /** 会话末尾嵌入的确认卡片（如需求定稿卡 / 流程图生成卡）。 */
   embeddedCard?: React.ReactNode;
   /** 输入框底部额外信息（项目名、模型、skill 等）。 */
@@ -57,6 +59,7 @@ export function PhaseConversationShell({
   encodedProjectId,
   prepareMessage,
   onSessionResolved,
+  onTurnComplete,
   embeddedCard,
   inputContextFooter,
 }: PhaseConversationShellProps) {
@@ -67,6 +70,7 @@ export function PhaseConversationShell({
     readOnly,
     prepareMessage,
     onSessionResolved,
+    onTurnComplete,
   });
 
   const scrollRef = useRef<HTMLDivElement | null>(null);

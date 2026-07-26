@@ -21,7 +21,7 @@ const taskMock = vi.hoisted(() => ({
   openPhase: vi.fn(),
   markSession: vi.fn(),
   finalizeRequirements: vi.fn(),
-  attachGraph: vi.fn(),
+  loadInstances: vi.fn(),
   syncRunStatus: vi.fn(),
   setExecutionView: vi.fn(),
   setChatScope: vi.fn(),

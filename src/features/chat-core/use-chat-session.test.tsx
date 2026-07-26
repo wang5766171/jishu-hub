@@ -27,11 +27,12 @@ function chunk(sessionId: string, data: AgentStreamChunk["data"]): AgentStreamCh
   };
 }
 
-function Harness() {
+function Harness({ onTurnComplete }: { onTurnComplete?: () => void }) {
   const chat = useChatSession({
     sessionId: "session-a",
     projectPath: "D:/workspace/demo",
     readOnly: false,
+    onTurnComplete,
   });
 
   return (
@@ -87,5 +88,33 @@ describe("useChatSession agent-event handling", () => {
       expect(screen.getByTestId("stream-text")).not.toHaveTextContent("wrong");
       expect(screen.getByTestId("interactions")).toHaveTextContent("req-a");
     });
+  });
+
+  it("turn_complete 翻转 isStreaming 并触发 onTurnComplete", async () => {
+    const onTurnComplete = vi.fn();
+    render(<Harness onTurnComplete={onTurnComplete} />);
+
+    await waitFor(() => expect(agentEventHandler).toBeTypeOf("function"));
+
+    // 流开始（模拟 send → streamStore.start，isStreaming=true）。
+    act(() => {
+      streamStore.start("session-a", null);
+      streamStore.flushNow();
+    });
+
+    // 流结束：后端发 turn_complete → 监听器调 streamStore.end → isStreaming=false。
+    act(() => {
+      agentEventHandler?.({
+        payload: chunk("session-a", {
+          kind: "turn_complete",
+          reason: "Complete",
+          usage: null,
+        }),
+      });
+      streamStore.flushNow();
+    });
+
+    // isStreaming true→false 边沿 → onTurnComplete 触发一次。
+    await waitFor(() => expect(onTurnComplete).toHaveBeenCalledTimes(1));
   });
 });

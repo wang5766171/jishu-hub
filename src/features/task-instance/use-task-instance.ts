@@ -26,6 +26,13 @@ import {
 
 export type { NodeSessionInfo };
 
+// 三阶段顺序：用于「阶段标签自动跟随」判定 current_phase 是否前进。
+const PHASE_RANK: Record<TaskPhase, number> = {
+  requirements: 0,
+  planning: 1,
+  execution: 2,
+};
+
 export interface UseTaskInstanceOptions {
   projectRoot: string;
   initialTaskId?: string | null;
@@ -58,7 +65,6 @@ export interface UseTaskInstanceResult {
   finalizeRequirements: (
     request: RequirementFinalizeRequest,
   ) => Promise<TaskRequirementFinalized | null>;
-  attachGraph: (graphId: string) => Promise<TaskInstance | null>;
   syncRunStatus: (runId: string, runStatus: string) => Promise<TaskInstance | null>;
   renameTask: (title: string) => Promise<TaskInstance | null>;
   deleteTask: (taskId: string) => Promise<void>;
@@ -121,6 +127,29 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
   }, [activeInstance?.skill_id]);
 
   const phaseStates = useMemo(() => deriveAllPhaseStates(activeInstance), [activeInstance]);
+
+  // B4+ 阶段标签自动跟随：current_phase 前进时自动切 tab。
+  // conductor 在 chat turn 内调 conductor_sync_phase 推进 current_phase，turn 结束后容器
+  // 调 loadInstances 刷新实例 → 此 effect 据此跟随。守卫：仅当用户仍停在刚完成的阶段
+  // （activePhase === prev）才切，避免覆盖手动回看（手动回看时 current_phase 不变，effect 不触发）。
+  const activePhaseRef = useRef(activePhase);
+  activePhaseRef.current = activePhase;
+  const prevCurrentPhaseRef = useRef<TaskPhase | null>(activeInstance?.current_phase ?? null);
+  useEffect(() => {
+    const next = activeInstance?.current_phase ?? null;
+    const prev = prevCurrentPhaseRef.current;
+    if (next && prev && PHASE_RANK[next] > PHASE_RANK[prev]) {
+      // 阶段前进：仅当用户仍停在上一阶段（未手动挪开）才跟随。
+      if (activePhaseRef.current === prev) {
+        setActivePhase(next);
+        if (next === "execution") {
+          setChatScope({ kind: "run" });
+          setExecutionView("split");
+        }
+      }
+    }
+    prevCurrentPhaseRef.current = next;
+  }, [activeInstance?.current_phase]);
 
   const activeSessionId = useMemo(() => {
     if (!activeInstance) return null;
@@ -221,30 +250,6 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
       }
     },
     [projectRoot, activeInstanceId, loadInstances],
-  );
-
-  const attachGraph = useCallback(
-    async (graphId: string): Promise<TaskInstance | null> => {
-      if (!projectRoot || !activeInstanceId) return null;
-      try {
-        const raw = await invokeCommand<TaskInstanceRaw>("task_launch_attach_graph", {
-          projectRoot,
-          taskId: activeInstanceId,
-          graphId,
-        });
-        const instance = taskInstanceFromRaw(raw);
-        upsertLocalInstance(instance);
-        // 自动切到执行阶段
-        setActivePhase("execution");
-        setChatScope({ kind: "run" });
-        setExecutionView("split");
-        return instance;
-      } catch (err) {
-        console.error("attachGraph failed:", err);
-        return null;
-      }
-    },
-    [projectRoot, activeInstanceId, upsertLocalInstance],
   );
 
   const syncRunStatus = useCallback(
@@ -348,7 +353,6 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
     openPhase,
     markSession,
     finalizeRequirements,
-    attachGraph,
     syncRunStatus,
     renameTask,
     deleteTask,

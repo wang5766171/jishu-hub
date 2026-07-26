@@ -18,6 +18,7 @@ interface PhaseRequirementsViewProps {
   projectPath: string;
   encodedProjectId?: string;
   onSessionResolved?: (realSessionId: string) => void;
+  onTurnComplete?: () => void;
 }
 
 export function PhaseRequirementsView({
@@ -27,6 +28,7 @@ export function PhaseRequirementsView({
   projectPath,
   encodedProjectId,
   onSessionResolved,
+  onTurnComplete,
 }: PhaseRequirementsViewProps) {
   const { t } = useTranslation();
 
@@ -48,6 +50,7 @@ export function PhaseRequirementsView({
       projectPath={projectPath}
       encodedProjectId={encodedProjectId}
       onSessionResolved={onSessionResolved}
+      onTurnComplete={onTurnComplete}
       inputContextFooter={inputContextFooter}
     />
   );

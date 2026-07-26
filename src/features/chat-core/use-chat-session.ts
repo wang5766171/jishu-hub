@@ -214,6 +214,7 @@ export function useChatSession(options: UseChatSessionOptions): ChatSessionState
     readOnly,
     prepareMessage,
     onSessionResolved,
+    onTurnComplete,
     onInteractionSubmit,
   } = options;
 
@@ -269,6 +270,8 @@ export function useChatSession(options: UseChatSessionOptions): ChatSessionState
   const [pendingApprovals, setPendingApprovals] = useState<PendingChatApproval[]>([]);
   // resolvedSessionId: 若 pending → real 解析发生，记录真实 id。
   const resolvedSessionIdRef = useRef<string>(sessionId);
+  // 上一帧的 isStreaming：用于检测 true→false（一轮 turn 结束）触发 onTurnComplete。
+  const wasStreamingRef = useRef<boolean>(false);
 
   // 监听 agent-event：只处理与当前 session 相关的 interaction_request / approval_request /
   // session_resolved。其它 chunk 由 streamStore 自己消费（通过 streamStore.push）。
@@ -320,6 +323,14 @@ export function useChatSession(options: UseChatSessionOptions): ChatSessionState
                 onSessionResolved?.(realId);
               }
             }
+
+            // turn_complete → 标记流结束（isStreaming true→false）。useChatSession
+            // 不复刻 chat-page 的消息 commit（消息历史由 loadMessages 从后端拉取），
+            // 仅翻转 isStreaming，让上面的 onTurnComplete effect 据此刷新任务实例
+            // （阶段标签自动跟随）。end() 幂等，重复/spurious 调用无害。
+            if (data?.kind === "turn_complete") {
+              streamStore.end(chunk.session_id);
+            }
           }
         });
       } catch (err) {
@@ -332,6 +343,16 @@ export function useChatSession(options: UseChatSessionOptions): ChatSessionState
       if (unlisten) unlisten();
     };
   }, [sessionId, onSessionResolved]);
+
+  // 一轮 turn 流式结束（isStreaming true→false）→ onTurnComplete。
+  // conductor 在 turn 内推进 current_phase，turn 结束即已落库，消费方据此刷新任务实例。
+  const isStreaming = stream?.isStreaming ?? false;
+  useEffect(() => {
+    if (wasStreamingRef.current && !isStreaming) {
+      onTurnComplete?.();
+    }
+    wasStreamingRef.current = isStreaming;
+  }, [isStreaming, onTurnComplete]);
 
   // 切换 session 时清理 pending（避免上一个 session 的交互串到新 session）。
   useEffect(() => {
