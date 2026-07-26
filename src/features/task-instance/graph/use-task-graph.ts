@@ -334,6 +334,8 @@ export function useTaskGraph() {
   const [planningText, setPlanningText] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 最近一次 apply_commands 返回的 RevisionDiff（编排反馈面展示「本次改了什么」）。
+  const [lastDiff, setLastDiff] = useState<RevisionDiff | null>(null);
   const eventRunRef = useRef<string | null>(null);
   const eventCursorRef = useRef(0);
 
@@ -605,26 +607,29 @@ export function useTaskGraph() {
     }
   }, [graph, revision]);
 
-  const applyCommands = useCallback(async (commands: GraphCommand[]) => {
-    if (!graph || !revision) return;
+  const applyCommands = useCallback(async (commands: GraphCommand[]): Promise<RevisionDiff | null> => {
+    if (!graph || !revision) return null;
     setLoading(true);
     setError(null);
     try {
-      const result = await invoke<{ revision: GraphRevision }>("orchestrator_apply_commands", {
+      const result = await invoke<{ revision: GraphRevision; diff: RevisionDiff | null }>("orchestrator_apply_commands", {
         graphId: graph.graph_id,
         expectedRevisionId: revision.revision_id,
         commands,
         author: "local_user"
       });
-      
+
       const newRev = result.revision as GraphRevision;
       setRevision(newRev);
       setSnapshot(snapshotFromRevision(newRev));
-      
+      // 后端返回本次编排的 RevisionDiff（此前被类型注解丢弃），留作编排反馈面展示。
+      setLastDiff(result.diff ?? null);
+
       // Update graph draft ref
       setGraph(g => g ? { ...g, current_draft_revision: newRev.revision_id } : null);
       setRevisions((current) => [...current, newRev]);
       setRedoRevisionIds([]);
+      return result.diff ?? null;
     } catch (err: unknown) {
       console.error(err);
       setError(taskErrorMessage(err));
@@ -633,6 +638,35 @@ export function useTaskGraph() {
       setLoading(false);
     }
   }, [graph, revision]);
+
+  /// S6 前端 DAG 预校验（设计 §12 双重拦截）：提交前 dry-run 校验命令，返回结构化告警
+  /// （空数组 = 合法）。与后端 apply_commands 内的 graph_validate 互为双保险。
+  const validateCommands = useCallback(async (commands: GraphCommand[]): Promise<string[]> => {
+    if (!revision) return [];
+    try {
+      return await invoke<string[]>("orchestrator_validate_commands", {
+        revisionId: revision.revision_id,
+        commands,
+      });
+    } catch (err: unknown) {
+      // 校验本身失败（如 revision 不存在）按一处错误上报，不阻塞调用方主流程。
+      console.error(err);
+      return [taskErrorMessage(err)];
+    }
+  }, [revision]);
+
+  /// 取两个 revision 之间的 RevisionDiff（编排反馈面 / Revision 历史对比）。
+  const getDiff = useCallback(async (fromRevisionId: string, toRevisionId: string): Promise<RevisionDiff | null> => {
+    try {
+      return await invoke<RevisionDiff>("orchestrator_get_diff", {
+        fromRevisionId,
+        toRevisionId,
+      });
+    } catch (err: unknown) {
+      console.error(err);
+      return null;
+    }
+  }, []);
 
   const checkoutDraftRevision = useCallback(async (targetRevisionId: string) => {
     if (!graph || !revision) return null;
@@ -913,6 +947,7 @@ export function useTaskGraph() {
     planningText,
     loading,
     error,
+    lastDiff,
     loadGraph,
     clearGraph,
     loadLatestGraphForProject,
@@ -921,6 +956,8 @@ export function useTaskGraph() {
     acceptProposal,
     dismissProposal: () => setProposal(null),
     applyCommands,
+    validateCommands,
+    getDiff,
     canUndo: !!revision?.parent_revision_id,
     canRedo: redoRevisionIds.length > 0,
     undo,

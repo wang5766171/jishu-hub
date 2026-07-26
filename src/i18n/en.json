@@ -520,6 +520,34 @@
       "phaseFilter": {
         "all": "All phases"
       }
+    },
+    "orchestration": {
+      "editNode": {
+        "toolbarButton": "Edit selected node",
+        "title": "Adjust node",
+        "subtitle": "Modify the node title, description, or acceptance criteria",
+        "frozenHint": "This node is executing and cannot be edited",
+        "titleLabel": "Title",
+        "descriptionLabel": "Description",
+        "acceptanceLabel": "Acceptance criteria",
+        "cancel": "Cancel",
+        "save": "Save",
+        "titleRequired": "Title cannot be empty"
+      },
+      "diff": {
+        "appliedTitle": "Revision applied",
+        "dismiss": "Dismiss",
+        "comparePrev": "Compare with previous",
+        "hide": "Hide diff",
+        "loading": "Computing diff…",
+        "unavailable": "Diff unavailable",
+        "unchanged": "No changes",
+        "nodesAdded": "{{count}} node(s) added",
+        "nodesUpdated": "{{count}} node(s) updated",
+        "nodesRemoved": "{{count}} node(s) removed",
+        "edgesAdded": "{{count}} edge(s) added",
+        "edgesRemoved": "{{count}} edge(s) removed"
+      }
     }
   },
   "projectConfig": {

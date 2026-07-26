@@ -518,6 +518,34 @@
       "phaseFilter": {
         "all": "全部阶段"
       }
+    },
+    "orchestration": {
+      "editNode": {
+        "toolbarButton": "编辑选中节点",
+        "title": "调整节点",
+        "subtitle": "修改节点标题、描述或验收标准",
+        "frozenHint": "该节点已进入执行，不可编辑",
+        "titleLabel": "标题",
+        "descriptionLabel": "描述",
+        "acceptanceLabel": "验收标准",
+        "cancel": "取消",
+        "save": "保存",
+        "titleRequired": "标题不能为空"
+      },
+      "diff": {
+        "appliedTitle": "已应用修订",
+        "dismiss": "关闭",
+        "comparePrev": "查看与上一版差异",
+        "hide": "收起差异",
+        "loading": "正在计算差异…",
+        "unavailable": "无法获取差异",
+        "unchanged": "无变化",
+        "nodesAdded": "新增 {{count}} 节点",
+        "nodesUpdated": "更新 {{count}} 节点",
+        "nodesRemoved": "删除 {{count}} 节点",
+        "edgesAdded": "新增 {{count}} 连线",
+        "edgesRemoved": "删除 {{count}} 连线"
+      }
     }
   },
   "projectConfig": {

@@ -19,7 +19,7 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import type { GraphCommand, GraphSnapshot, NodeRun, NodeRunStatus } from "./use-task-graph";
+import type { GraphCommand, GraphSnapshot, NodeRun, NodeRunStatus, RevisionDiff } from "./use-task-graph";
 
 function nodeAppearance(status?: NodeRunStatus) {
   switch (status) {
@@ -112,13 +112,31 @@ function nodeKindStyle(nodeKind: string): {
   }
 }
 
+/// B4 冻结 gating（设计 §10.6 / 后端 is_frozen()）：与后端 NodeRunStatus::is_frozen 同口径——
+/// 已租赁/运行中/待审批/已完成/失败/自愈中的节点不可经主编辑路径改动。UI 对这些节点置灰 +
+/// 禁用编辑入口（后端 apply_commands 的 A8 校验兜底）。
+const FROZEN_NODE_RUN_STATUSES: readonly NodeRunStatus[] = [
+  "leased",
+  "running",
+  "awaiting_approval",
+  "succeeded",
+  "failed",
+  "repairing",
+];
+
 interface GraphEditorProps {
   snapshot: GraphSnapshot | null;
   graphId?: string | null;
   currentRevisionId?: string | null;
   selectedNodeId?: string | null;
   onNodeSelect?: (nodeId: string | null) => void;
-  applyCommands?: (commands: GraphCommand[]) => Promise<void>;
+  applyCommands?: (commands: GraphCommand[]) => Promise<RevisionDiff | null>;
+  /** S6 前端 DAG 预校验（设计 §12）：提交前 dry-run，返回告警串数组（空=合法）。 */
+  validateCommands?: (commands: GraphCommand[]) => Promise<string[]>;
+  /** 取两 revision 间 Diff（编排反馈面 / Revision 历史对比）。 */
+  getDiff?: (fromRevisionId: string, toRevisionId: string) => Promise<RevisionDiff | null>;
+  /** 最近一次 apply_commands 的 Diff（编排反馈面展示「本次改了什么」）。 */
+  lastDiff?: RevisionDiff | null;
   activeRunId?: string | null;
   nodeRuns?: Record<string, NodeRun>;
   startRun?: () => Promise<void>;
@@ -148,6 +166,9 @@ export function GraphEditor({
   selectedNodeId,
   onNodeSelect,
   applyCommands,
+  validateCommands,
+  getDiff,
+  lastDiff,
   activeRunId,
   nodeRuns,
   startRun,
@@ -174,6 +195,14 @@ export function GraphEditor({
   const [dispatchTitle, setDispatchTitle] = useState("");
   const [dispatchPrompt, setDispatchPrompt] = useState("");
   const [dispatchAcceptance, setDispatchAcceptance] = useState("");
+  // B4「调整节点」编辑表单（UpdateNode）：标题 / 描述 / 验收。
+  const [showEditForm, setShowEditForm] = useState(false);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editAcceptance, setEditAcceptance] = useState("");
+  const [editErrors, setEditErrors] = useState<string[] | null>(null);
+  // B4 修订 Diff 横幅：applyCommands 返回的 diff，本地 dismiss 态控制显隐。
+  const [diffDismissed, setDiffDismissed] = useState(false);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [phaseFilterId, setPhaseFilterId] = useState<string | null>(null);
   const [semanticZoom, setSemanticZoom] = useState<"detail" | "compact" | "map">("detail");
@@ -193,6 +222,30 @@ export function GraphEditor({
     () => snapshot?.nodes.filter((node) => node.node_kind === "group") ?? [],
     [snapshot],
   );
+
+  // B4 冻结节点集合（用于置灰 + 禁用编辑入口）。
+  const frozenNodeIds = useMemo(() => {
+    const frozen = new Set<string>();
+    if (nodeRuns) {
+      for (const [nodeId, run] of Object.entries(nodeRuns)) {
+        if ((FROZEN_NODE_RUN_STATUSES as readonly string[]).includes(run.status)) {
+          frozen.add(nodeId);
+        }
+      }
+    }
+    return frozen;
+  }, [nodeRuns]);
+
+  const selectedNode = useMemo(
+    () => snapshot?.nodes.find((node) => node.node_id === selectedNodeId) ?? null,
+    [snapshot, selectedNodeId],
+  );
+  const selectedFrozen = !!selectedNodeId && frozenNodeIds.has(selectedNodeId);
+
+  // 每次 applyCommands 产出新 diff 时，重置本地 dismiss 态，重新展示横幅。
+  useEffect(() => {
+    setDiffDismissed(false);
+  }, [lastDiff]);
 
   const visibleSnapshot = useMemo<GraphSnapshot | null>(() => {
     if (!snapshot || !phaseFilterId) return snapshot;
@@ -315,6 +368,74 @@ export function GraphEditor({
     [applyCommands, readOnly],
   );
 
+  // B4「调整节点」：打开编辑表单，预填当前选中节点的标题/描述/验收契约。
+  const openEditForm = useCallback(() => {
+    if (!selectedNode) return;
+    setEditTitle(selectedNode.title);
+    setEditDescription(selectedNode.description ?? "");
+    setEditAcceptance(
+      (selectedNode.output_contract?.description as string | null | undefined) ?? "",
+    );
+    setEditErrors(null);
+    setShowEditForm(true);
+  }, [selectedNode]);
+
+  // 提交 UpdateNode：仅下发改动字段（title/description/output_contract），
+  // 先经 validateCommands 预校验（S6），再 applyCommands。无改动则直接关闭，避免空修订。
+  const submitEdit = useCallback(() => {
+    if (!selectedNode || !applyCommands) return;
+    if (!editTitle.trim()) {
+      setEditErrors([t("tasks.orchestration.editNode.titleRequired")]);
+      return;
+    }
+    const patch: Record<string, unknown> = {};
+    if (editTitle.trim() !== selectedNode.title) patch.title = editTitle.trim();
+    if (editDescription.trim() !== (selectedNode.description ?? "")) {
+      // description 为双层 Option：空串→null（清空），非空→字符串。
+      patch.description = editDescription.trim() || null;
+    }
+    const currentAcceptance =
+      (selectedNode.output_contract?.description as string | null | undefined) ?? null;
+    if (editAcceptance.trim() !== (currentAcceptance ?? "")) {
+      // output_contract 为单层 Option（整体覆盖）：保留既有 artifacts/schema，仅替换 description。
+      patch.output_contract = {
+        ...(selectedNode.output_contract ?? {}),
+        description: editAcceptance.trim() || null,
+      };
+    }
+    if (Object.keys(patch).length === 0) {
+      setShowEditForm(false);
+      return;
+    }
+    const command: GraphCommand = {
+      op: "update_node",
+      command_id: `cmd_${crypto.randomUUID()}`,
+      node_id: selectedNode.node_id,
+      patch,
+    };
+    const run = async () => {
+      if (validateCommands) {
+        const errors = await validateCommands([command]);
+        if (errors.length > 0) {
+          setEditErrors(errors);
+          return;
+        }
+      }
+      setEditErrors(null);
+      await applyCommands([command]);
+      setShowEditForm(false);
+    };
+    run().catch(console.error);
+  }, [
+    selectedNode,
+    editTitle,
+    editDescription,
+    editAcceptance,
+    applyCommands,
+    validateCommands,
+    t,
+  ]);
+
   const selectNode = useCallback((nodeId: string | null) => {
     if (selectedNodeIdRef.current === nodeId) return;
     selectedNodeIdRef.current = nodeId;
@@ -377,11 +498,13 @@ export function GraphEditor({
       const kindStyle = nodeKindStyle(n.node_kind);
       const statusText = status ? ` [${t(`tasks.workbench.status.${status}`)}]` : "";
       const nodeKindText = t(`tasks.workbench.nodeKinds.${n.node_kind}`);
+      // B4 冻结规则 A8：已进入执行的节点不可编辑，标签前置 🔒 提示。
+      const lockPrefix = frozenNodeIds.has(n.node_id) ? "🔒 " : "";
       const label = semanticZoom === "map"
-        ? n.title
+        ? `${lockPrefix}${n.title}`
         : semanticZoom === "compact"
-          ? `${n.title}${statusText}`
-          : `${n.title}\n(${nodeKindText})${statusText}`;
+          ? `${lockPrefix}${n.title}${statusText}`
+          : `${lockPrefix}${n.title}\n(${nodeKindText})${statusText}`;
 
       return {
         id: n.node_id,
@@ -473,7 +596,7 @@ export function GraphEditor({
       }
       didInitialLayoutRef.current = true;
     });
-  }, [visibleSnapshot, semanticZoom, setNodes, setEdges, t]);
+  }, [visibleSnapshot, semanticZoom, setNodes, setEdges, t, frozenNodeIds]);
 
   useEffect(() => {
     setEdges((currentEdges) =>
@@ -501,11 +624,13 @@ export function GraphEditor({
         const kindStyle = nodeKindStyle(graphNode.node_kind);
         const statusText = status ? ` [${t(`tasks.workbench.status.${status}`)}]` : "";
         const nodeKindText = t(`tasks.workbench.nodeKinds.${graphNode.node_kind}`);
+        // B4 冻结规则 A8：与首个 effect 同步，状态刷新时保留 🔒 前缀。
+        const lockPrefix = frozenNodeIds.has(graphNode.node_id) ? "🔒 " : "";
         const label = semanticZoom === "map"
-          ? graphNode.title
+          ? `${lockPrefix}${graphNode.title}`
           : semanticZoom === "compact"
-            ? `${graphNode.title}${statusText}`
-            : `${graphNode.title}\n(${nodeKindText})${statusText}`;
+            ? `${lockPrefix}${graphNode.title}${statusText}`
+            : `${lockPrefix}${graphNode.title}\n(${nodeKindText})${statusText}`;
         return {
           ...node,
           data: {
@@ -522,7 +647,7 @@ export function GraphEditor({
         };
       }),
     );
-  }, [nodeRuns, semanticZoom, setNodes, visibleSnapshot, t]);
+  }, [nodeRuns, semanticZoom, setNodes, visibleSnapshot, t, frozenNodeIds]);
 
   const connectNodes = useCallback(
     (connection: Connection) => {
@@ -779,8 +904,59 @@ export function GraphEditor({
           >
             {t("tasks.workbench.addAgentStep")}
           </button>
+          <button
+            type="button"
+            className="rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium text-foreground shadow-sm hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={readOnly || !selectedNode || selectedFrozen}
+            onClick={openEditForm}
+            title={
+              selectedFrozen
+                ? t("tasks.orchestration.editNode.frozenHint")
+                : t("tasks.orchestration.editNode.toolbarButton")
+            }
+          >
+            {t("tasks.orchestration.editNode.toolbarButton")}
+          </button>
         </div>
       </ReactFlow>
+      {lastDiff && !diffDismissed && (
+        <div className="absolute top-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-3 rounded-xl border border-border bg-[var(--task-canvas-panel-bg)] px-4 py-2.5 text-sm text-foreground shadow-xl backdrop-blur">
+          <span className="font-medium">{t("tasks.orchestration.diff.appliedTitle")}</span>
+          {lastDiff.nodes_added.length > 0 && (
+            <span className="rounded bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-700 dark:text-emerald-400">
+              {t("tasks.orchestration.diff.nodesAdded", { count: lastDiff.nodes_added.length })}
+            </span>
+          )}
+          {lastDiff.nodes_updated.length > 0 && (
+            <span className="rounded bg-blue-500/15 px-2 py-0.5 text-xs text-blue-700 dark:text-blue-400">
+              {t("tasks.orchestration.diff.nodesUpdated", { count: lastDiff.nodes_updated.length })}
+            </span>
+          )}
+          {lastDiff.nodes_removed.length > 0 && (
+            <span className="rounded bg-red-500/15 px-2 py-0.5 text-xs text-red-700 dark:text-red-400">
+              {t("tasks.orchestration.diff.nodesRemoved", { count: lastDiff.nodes_removed.length })}
+            </span>
+          )}
+          {lastDiff.edges_added.length > 0 && (
+            <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+              {t("tasks.orchestration.diff.edgesAdded", { count: lastDiff.edges_added.length })}
+            </span>
+          )}
+          {lastDiff.edges_removed.length > 0 && (
+            <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+              {t("tasks.orchestration.diff.edgesRemoved", { count: lastDiff.edges_removed.length })}
+            </span>
+          )}
+          <button
+            type="button"
+            className="ml-1 text-muted-foreground hover:text-foreground"
+            onClick={() => setDiffDismissed(true)}
+            aria-label={t("tasks.orchestration.diff.dismiss")}
+          >
+            ✕
+          </button>
+        </div>
+      )}
       {selectedEdgeId && snapshot && (
         <div className="absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-4 rounded-xl border border-border bg-[var(--task-canvas-panel-bg)] px-4 py-3 text-sm text-foreground shadow-xl backdrop-blur">
           {(() => {
@@ -991,6 +1167,84 @@ export function GraphEditor({
                 {wizardStep === 3
                   ? t("tasks.workbench.createStep")
                   : t("tasks.workbench.nodeWizard.next")}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      {showEditForm && selectedNode && (
+        <div className="absolute inset-0 z-30 grid place-items-center bg-[var(--task-canvas-overlay-bg)] p-6 backdrop-blur-sm">
+          <form
+            className="w-full max-w-lg rounded-xl border border-border bg-popover p-5 text-popover-foreground shadow-2xl"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitEdit();
+            }}
+          >
+            <h3 className="text-xl font-semibold text-foreground">
+              {t("tasks.orchestration.editNode.title")}
+            </h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {t("tasks.orchestration.editNode.subtitle")}
+            </p>
+            {selectedFrozen && (
+              <p className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                {t("tasks.orchestration.editNode.frozenHint")}
+              </p>
+            )}
+            <div className="mt-4 space-y-4">
+              <label className="block">
+                <span className="text-xs font-medium text-muted-foreground">
+                  {t("tasks.orchestration.editNode.titleLabel")}
+                </span>
+                <input
+                  className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                  value={editTitle}
+                  onChange={(event) => setEditTitle(event.target.value)}
+                  autoFocus
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs font-medium text-muted-foreground">
+                  {t("tasks.orchestration.editNode.descriptionLabel")}
+                </span>
+                <textarea
+                  className="mt-1 h-24 w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                  value={editDescription}
+                  onChange={(event) => setEditDescription(event.target.value)}
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs font-medium text-muted-foreground">
+                  {t("tasks.orchestration.editNode.acceptanceLabel")}
+                </span>
+                <textarea
+                  className="mt-1 h-24 w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                  value={editAcceptance}
+                  onChange={(event) => setEditAcceptance(event.target.value)}
+                />
+              </label>
+              {editErrors && editErrors.length > 0 && (
+                <ul className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  {editErrors.map((error, index) => (
+                    <li key={index}>• {error}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-lg border border-border bg-background px-4 py-2 text-sm text-foreground hover:bg-accent"
+                onClick={() => setShowEditForm(false)}
+              >
+                {t("tasks.orchestration.editNode.cancel")}
+              </button>
+              <button
+                type="submit"
+                className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                {t("tasks.orchestration.editNode.save")}
               </button>
             </div>
           </form>

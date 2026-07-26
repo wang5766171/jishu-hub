@@ -364,6 +364,9 @@ export function PhaseExecutionView({
               resumeRun={() => taskGraph.resumeRun()}
               cancelRun={() => taskGraph.cancelRun()}
               applyCommands={taskGraph.applyCommands}
+              validateCommands={taskGraph.validateCommands}
+              getDiff={taskGraph.getDiff}
+              lastDiff={taskGraph.lastDiff}
               canUndo={taskGraph.canUndo}
               canRedo={taskGraph.canRedo}
               undo={() => taskGraph.undo()}
@@ -420,6 +423,7 @@ export function PhaseExecutionView({
           readOnly={readOnly}
           onResolveApproval={taskGraph.resolveApproval}
           onChooseRecovery={taskGraph.chooseRecovery}
+          getDiff={taskGraph.getDiff}
         />
       </div>
 

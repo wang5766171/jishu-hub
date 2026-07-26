@@ -35,6 +35,7 @@ import type {
   GraphRevision,
   GraphSnapshot,
   NodeRun,
+  RevisionDiff,
 } from "./graph/use-task-graph";
 
 export type GovernanceTab = "approvals" | "intervention" | "artifacts" | "revisions";
@@ -57,6 +58,8 @@ export interface ExecutionGovernanceDrawerProps {
   selectedNodeId: string | null;
   /** 完成态只读：隐藏 approve/recover 决策按钮（设计 §11）。 */
   readOnly: boolean;
+  /** B4 修订对比：取相邻两版差异（orchestrator_get_diff）。 */
+  getDiff?: (fromRevisionId: string, toRevisionId: string) => Promise<RevisionDiff | null>;
   onResolveApproval: (approvalId: string, approved: boolean) => Promise<void>;
   onChooseRecovery: (
     nodeRunId: string,
@@ -80,6 +83,7 @@ export function ExecutionGovernanceDrawer({
   readOnly,
   onResolveApproval,
   onChooseRecovery,
+  getDiff,
 }: ExecutionGovernanceDrawerProps) {
   const { t } = useTranslation();
   // 进行中的异步动作（审批 id 或 recovery 策略），用于禁用按钮防重复点击。
@@ -238,6 +242,7 @@ export function ExecutionGovernanceDrawer({
           <RevisionsTab
             revisions={revisions}
             currentRevisionId={currentRevisionId}
+            getDiff={getDiff}
           />
         )}
       </div>
@@ -472,18 +477,46 @@ function ArtifactsTab({
 function RevisionsTab({
   revisions,
   currentRevisionId,
+  getDiff,
 }: {
   revisions: GraphRevision[];
   currentRevisionId: string | null;
+  getDiff?: (fromRevisionId: string, toRevisionId: string) => Promise<RevisionDiff | null>;
 }) {
   const { t } = useTranslation();
+  // 展开对比的版本 id；与上一版的差异结果。
+  const [diffFor, setDiffFor] = useState<string | null>(null);
+  const [diff, setDiff] = useState<RevisionDiff | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
   if (revisions.length === 0) {
     return <EmptyState label={t("task.governance.empty.revisions", "暂无版本")} />;
   }
+  // 倒序（最新在前）；reversed[i+1] 即 reversed[i] 的上一版（更旧）。
+  const ordered = revisions.slice().reverse();
+  const toggleDiff = (index: number, revisionId: string, prevId: string) => {
+    if (!getDiff) return;
+    // 再次点击同一项则收起。
+    if (diffFor === revisionId) {
+      setDiffFor(null);
+      setDiff(null);
+      return;
+    }
+    setDiffFor(revisionId);
+    setDiff(null);
+    setDiffLoading(true);
+    getDiff(prevId, revisionId)
+      .then((result) => setDiff(result))
+      .catch(() => setDiff(null))
+      .finally(() => setDiffLoading(false));
+  };
   return (
     <div className="space-y-2">
-      {revisions.slice().reverse().map((revision) => {
+      {ordered.map((revision, index) => {
         const isCurrent = revision.revision_id === currentRevisionId;
+        // 倒序中更旧的版本在 index+1；最旧版本无上一版。
+        const prev = ordered[index + 1];
+        const canCompare = !!getDiff && !!prev;
+        const expanded = diffFor === revision.revision_id;
         return (
           <div
             key={revision.revision_id}
@@ -508,9 +541,85 @@ function RevisionsTab({
             <div className="mt-1 break-all font-mono text-[9px] text-muted-foreground">
               {revision.content_hash}
             </div>
+            {canCompare && (
+              <button
+                type="button"
+                className="mt-2 text-[10px] font-medium text-primary hover:underline disabled:opacity-50"
+                onClick={() => toggleDiff(index, revision.revision_id, prev.revision_id)}
+                disabled={diffLoading && expanded}
+              >
+                {expanded
+                  ? t("tasks.orchestration.diff.hide")
+                  : t("tasks.orchestration.diff.comparePrev")}
+              </button>
+            )}
+            {expanded && (
+              <RevisionDiffBody loading={diffLoading} diff={diff} />
+            )}
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// B4 修订对比：相邻两版差异的结构化展示（新增/更新/删除节点 + 边变化）。
+function RevisionDiffBody({ loading, diff }: { loading: boolean; diff: RevisionDiff | null }) {
+  const { t } = useTranslation();
+  if (loading) {
+    return (
+      <div className="mt-2 text-[10px] text-muted-foreground">
+        {t("tasks.orchestration.diff.loading")}
+      </div>
+    );
+  }
+  if (!diff) {
+    return (
+      <div className="mt-2 text-[10px] text-muted-foreground">
+        {t("tasks.orchestration.diff.unavailable")}
+      </div>
+    );
+  }
+  const isEmpty =
+    diff.nodes_added.length === 0 &&
+    diff.nodes_removed.length === 0 &&
+    diff.nodes_updated.length === 0 &&
+    diff.edges_added.length === 0 &&
+    diff.edges_removed.length === 0;
+  if (isEmpty) {
+    return (
+      <div className="mt-2 text-[10px] text-muted-foreground">
+        {t("tasks.orchestration.diff.unchanged")}
+      </div>
+    );
+  }
+  return (
+    <div className="mt-2 space-y-1 text-[10px]">
+      {diff.nodes_added.length > 0 && (
+        <div className="text-emerald-600 dark:text-emerald-400">
+          + {t("tasks.orchestration.diff.nodesAdded", { count: diff.nodes_added.length })}
+        </div>
+      )}
+      {diff.nodes_updated.length > 0 && (
+        <div className="text-blue-600 dark:text-blue-400">
+          ~ {t("tasks.orchestration.diff.nodesUpdated", { count: diff.nodes_updated.length })}
+        </div>
+      )}
+      {diff.nodes_removed.length > 0 && (
+        <div className="text-red-600 dark:text-red-400">
+          − {t("tasks.orchestration.diff.nodesRemoved", { count: diff.nodes_removed.length })}
+        </div>
+      )}
+      {diff.edges_added.length > 0 && (
+        <div className="text-muted-foreground">
+          + {t("tasks.orchestration.diff.edgesAdded", { count: diff.edges_added.length })}
+        </div>
+      )}
+      {diff.edges_removed.length > 0 && (
+        <div className="text-muted-foreground">
+          − {t("tasks.orchestration.diff.edgesRemoved", { count: diff.edges_removed.length })}
+        </div>
+      )}
     </div>
   );
 }
