@@ -661,6 +661,52 @@
       "skipped": "跳过",
       "cancelled": "已取消",
       "superseded": "已替换"
+    },
+    "governance": {
+      "title": "执行治理",
+      "close": "关闭",
+      "open": "执行治理",
+      "needsIntervention": "需干预",
+      "node": "节点",
+      "approvalCard": "审批请求",
+      "resolvedApproved": "已通过",
+      "resolvedRejected": "已驳回",
+      "readOnlyHint": "完成态只读，不可审批",
+      "approve": "通过",
+      "reject": "驳回",
+      "currentRevision": "当前",
+      "tabs": {
+        "approvals": "审批",
+        "intervention": "节点干预",
+        "artifacts": "产物",
+        "revisions": "版本"
+      },
+      "intervention": {
+        "modeLabel": "干预形态",
+        "recoveryTitle": "失败节点干预",
+        "manualReason": "人工干预",
+        "retryNow": "重试",
+        "skipNode": "跳过",
+        "failNode": "失败",
+        "modes": {
+          "editing": "可编辑",
+          "queued_intervention": "排队中",
+          "live_steer": "实时干预",
+          "approval": "待审批",
+          "retry_wait": "待重试",
+          "repairing": "修复中",
+          "acceptance": "已验收",
+          "recovery": "失败恢复",
+          "historical": "已归档"
+        }
+      },
+      "empty": {
+        "approvals": "暂无审批请求",
+        "noNodeSelected": "未选中节点",
+        "noNodeRun": "该节点尚未产生运行记录",
+        "artifacts": "暂无产物",
+        "revisions": "暂无版本"
+      }
     }
   }
 }

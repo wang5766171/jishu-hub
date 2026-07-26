@@ -663,6 +663,52 @@
       "skipped": "skipped",
       "cancelled": "cancelled",
       "superseded": "superseded"
+    },
+    "governance": {
+      "title": "Execution Governance",
+      "close": "Close",
+      "open": "Execution governance",
+      "needsIntervention": "Needs intervention",
+      "node": "Node",
+      "approvalCard": "Approval Request",
+      "resolvedApproved": "Approved",
+      "resolvedRejected": "Rejected",
+      "readOnlyHint": "Read-only in done state",
+      "approve": "Approve",
+      "reject": "Reject",
+      "currentRevision": "Current",
+      "tabs": {
+        "approvals": "Approvals",
+        "intervention": "Intervention",
+        "artifacts": "Artifacts",
+        "revisions": "Revisions"
+      },
+      "intervention": {
+        "modeLabel": "Intervention mode",
+        "recoveryTitle": "Failed node intervention",
+        "manualReason": "Manual intervention",
+        "retryNow": "Retry",
+        "skipNode": "Skip",
+        "failNode": "Fail",
+        "modes": {
+          "editing": "Editable",
+          "queued_intervention": "Queued",
+          "live_steer": "Live steer",
+          "approval": "Awaiting approval",
+          "retry_wait": "Retry wait",
+          "repairing": "Repairing",
+          "acceptance": "Accepted",
+          "recovery": "Recovery",
+          "historical": "Historical"
+        }
+      },
+      "empty": {
+        "approvals": "No approval requests",
+        "noNodeSelected": "No node selected",
+        "noNodeRun": "No run record for this node yet",
+        "artifacts": "No artifacts",
+        "revisions": "No revisions"
+      }
     }
   }
 }

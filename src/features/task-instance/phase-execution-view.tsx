@@ -14,10 +14,11 @@
  *   - 节点子代理会话（useChatSession）只挂载当前选中节点
  *   - 切换 chatScope/节点纯前端视图行为，不打断后端执行
  */
-import { useEffect, useMemo, useState } from "react";
-import { Play, Pause, Square, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Play, Pause, Square, X, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { GraphEditor } from "@/features/task-instance/graph/graph-editor";
+import { ExecutionGovernanceDrawer, type GovernanceTab } from "./execution-governance-drawer";
 import { MessageView } from "@/components/sessions/message-view";
 import { ChatInput } from "@/components/sessions/chat-input";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
@@ -91,6 +92,37 @@ export function PhaseExecutionView({
   // 此前所有错误只 console.error，对用户完全静默。
   // 用内联错误条而非 toast——全仓当前无 toast 基建，引入通知库属独立技术决策。
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // ── 执行治理面（S2）：审批队列 / 失败节点干预 / 产物 / 版本 ──
+  // run 进 awaiting_human 或新审批到来时自动展开（仅边缘触发，用户关闭后不强制重开）。
+  const [governanceOpen, setGovernanceOpen] = useState(false);
+  const [governanceTab, setGovernanceTab] = useState<GovernanceTab>("approvals");
+  const prevPendingRef = useRef(0);
+  const prevAwaitingRef = useRef(false);
+  const pendingApprovals = useMemo(
+    () => taskGraph.approvals.filter((a) => !a.resolved),
+    [taskGraph.approvals],
+  );
+  const isAwaitingHuman = taskGraph.runStatus === "awaiting_human";
+  useEffect(() => {
+    const newPending = pendingApprovals.length > prevPendingRef.current;
+    const newAwaiting = isAwaitingHuman && !prevAwaitingRef.current;
+    if (newPending || newAwaiting) {
+      setGovernanceOpen(true);
+      setGovernanceTab("approvals");
+    }
+    prevPendingRef.current = pendingApprovals.length;
+    prevAwaitingRef.current = isAwaitingHuman;
+  }, [pendingApprovals.length, isAwaitingHuman]);
+
+  // 选中节点是否需要人工干预（NodeInspector 入口按钮显隐）。
+  const selectedNodeRun = selectedNodeId ? taskGraph.nodeRuns[selectedNodeId] ?? null : null;
+  const selectedNeedsIntervention = !!selectedNodeRun && [
+    "failed",
+    "awaiting_approval",
+    "retry_wait",
+    "repairing",
+  ].includes(selectedNodeRun.status);
 
   // ── 手动启动执行（UI 驱动）：在最新 revision 上创建 run 并同步 TaskInstance ──
   const handleLaunchRun = async () => {
@@ -265,6 +297,20 @@ export function PhaseExecutionView({
             </button>
           )}
         </div>
+        <button
+          type="button"
+          onClick={() => setGovernanceOpen((v) => !v)}
+          className="relative flex h-6 items-center gap-1 rounded px-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+          title={t("task.governance.open", "执行治理")}
+          aria-label={t("task.governance.open", "执行治理")}
+        >
+          <ShieldCheck className="h-3.5 w-3.5" />
+          {pendingApprovals.length > 0 && (
+            <span className="grid h-3.5 min-w-3.5 place-items-center rounded-full bg-amber-500 px-1 text-[9px] font-semibold leading-none text-white">
+              {pendingApprovals.length}
+            </span>
+          )}
+        </button>
         <div className="ml-auto">
           <ExecutionViewSwitcher value={executionView} onChange={onExecutionViewChange} />
         </div>
@@ -289,7 +335,7 @@ export function PhaseExecutionView({
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         {/* 画布区（canvas/split 显示） */}
         {showCanvas && (
           <div
@@ -357,6 +403,24 @@ export function PhaseExecutionView({
             />
           </div>
         )}
+
+        {/* 执行治理面（S2）：右浮层，工具栏「治理」按钮切换；awaiting_human/新审批自动展开 */}
+        <ExecutionGovernanceDrawer
+          open={governanceOpen}
+          onClose={() => setGovernanceOpen(false)}
+          tab={governanceTab}
+          onTabChange={setGovernanceTab}
+          approvals={taskGraph.approvals}
+          artifacts={taskGraph.artifacts}
+          revisions={taskGraph.revisions}
+          currentRevisionId={taskGraph.revision?.revision_id ?? null}
+          nodeRuns={taskGraph.nodeRuns}
+          snapshot={taskGraph.snapshot}
+          selectedNodeId={selectedNodeId}
+          readOnly={readOnly}
+          onResolveApproval={taskGraph.resolveApproval}
+          onChooseRecovery={taskGraph.chooseRecovery}
+        />
       </div>
 
       {/* InspectorPanel（选中节点时滑出，简化为底部固定区） */}
@@ -370,7 +434,12 @@ export function PhaseExecutionView({
           agentsLoading={agentsLoading}
           defaultAgentId={normalizeAgentId(instance.planner_agent_id)}
           disabled={runStarted}
+          needsIntervention={selectedNeedsIntervention}
           onAssignAgent={handleAssignAgent}
+          onOpenIntervention={() => {
+            setGovernanceTab("intervention");
+            setGovernanceOpen(true);
+          }}
         />
       )}
     </div>
@@ -514,7 +583,9 @@ function NodeInspector({
   agentsLoading,
   defaultAgentId,
   disabled,
+  needsIntervention,
   onAssignAgent,
+  onOpenIntervention,
 }: {
   nodeId: string;
   nodeTitle: string;
@@ -533,7 +604,10 @@ function NodeInspector({
   /** 未锁定节点的默认执行者（= TaskInstance.planner_agent_id，规范化后）。 */
   defaultAgentId: string;
   disabled: boolean;
+  /** 选中节点 failed/awaiting_approval/retry_wait/repairing 时，显示「需干预」入口直达治理面板。 */
+  needsIntervention: boolean;
   onAssignAgent: (nodeId: string, agentId: string, roleId: string) => Promise<void>;
+  onOpenIntervention: () => void;
 }) {
   const { t } = useTranslation();
   const node = snapshot?.nodes.find((n) => n.node_id === nodeId);
@@ -558,6 +632,17 @@ function NodeInspector({
     <div className="h-32 shrink-0 border-t border-border bg-background px-3 py-2">
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1 text-xs font-medium text-foreground">{nodeTitle}</div>
+        {needsIntervention && (
+          <button
+            type="button"
+            onClick={onOpenIntervention}
+            className="flex h-6 shrink-0 items-center gap-1 rounded bg-amber-500/15 px-2 text-[10px] font-medium text-amber-700 hover:bg-amber-500/25 dark:text-amber-300"
+            title={t("task.governance.needsIntervention", "需干预")}
+          >
+            <ShieldCheck className="h-3 w-3" />
+            {t("task.governance.needsIntervention", "需干预")}
+          </button>
+        )}
         <label className="flex items-center gap-2 text-[10px] text-muted-foreground">
           <span>{t("task.execution.executorAgent", "执行智能体")}</span>
           <select
