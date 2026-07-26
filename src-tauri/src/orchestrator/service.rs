@@ -1426,6 +1426,16 @@ impl TaskService {
             ));
         }
         store.save_approval_execution_update(&node_run, &approval, &events)?;
+        // 审批通过（非 gate）→ node_run 置 Blocked = 就绪重跑。若 run 当前为
+        // AwaitingHuman 必须显式 resume，scheduler 才会重新拾起该节点——对称
+        // `choose_recovery`（service.rs:1505）与 `submit_task_interaction`（:478）。
+        // 不补这步，审批期间因别的原因进入 AwaitingHuman 的 run 会停在死锁态。
+        if node_run.status == NodeRunStatus::Blocked {
+            let latest_run = store.get_run(&approval.run_id)?;
+            if latest_run.status == RunStatus::AwaitingHuman {
+                self.resume_run(&approval.run_id)?;
+            }
+        }
         Ok(approval)
     }
 
@@ -2612,5 +2622,120 @@ mod tests {
         assert!(svc
             .resolve_approval("approval-1", true, "reviewer")
             .is_err());
+    }
+
+    #[test]
+    fn resolve_approval_resumes_awaiting_human_run() {
+        // 审批通过（非 gate）→ node_run Blocked = 就绪重跑。若 run 当前 AwaitingHuman，
+        // resolve_approval 必须显式 resume（对称 choose_recovery:1505 / submit_task_interaction:478），
+        // 否则 scheduler 不会重新拾起该节点 → 死锁。闭合 awaiting_human 全链路的审批路径。
+        let svc = TaskService::open_in_memory().unwrap();
+        let (graph, revision) = svc
+            .create_graph(&CreateGraphInput {
+                title: "Approval resume".into(),
+                goal: "Approve then resume".into(),
+                project_root: "/project".into(),
+                owner: "user".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let mut policy = NodePolicy::default();
+        policy.approval_policy = ApprovalPolicy::Always;
+        policy.permission_scope.can_write_files = true;
+        let result = svc
+            .apply_commands(
+                &graph.graph_id,
+                &revision.revision_id,
+                &[GraphCommand::AddNode {
+                    command_id: "add-write".into(),
+                    node: GraphNode {
+                        node_id: "write".into(),
+                        parent_id: Some("goal".into()),
+                        title: "Write".into(),
+                        description: None,
+                        node_kind: NodeKind::Executable,
+                        input_contract: Default::default(),
+                        output_contract: Default::default(),
+                        role_requirement: None,
+                        capability_requirements: vec![],
+                        agent_assignment_constraint: None,
+                        policy,
+                        metadata: Default::default(),
+                        executable_payload: Some(ExecutablePayload::Write {
+                            path: "out.txt".into(),
+                            content: "ok".into(),
+                            requires_approval: true,
+                        }),
+                        loop_config: None,
+                        approval_gate_config: None,
+                    },
+                }],
+                "user",
+            )
+            .unwrap();
+        let run = svc
+            .start_run(&graph.graph_id, &result.revision.revision_id)
+            .unwrap();
+        let mut node_run = NodeRun::new(
+            "nr-resume",
+            &run.run_id,
+            "write",
+            &result.revision.revision_id,
+        );
+        node_run.status = NodeRunStatus::AwaitingApproval;
+        let approval = ApprovalRequest {
+            approval_id: "approval-resume".into(),
+            run_id: run.run_id.clone(),
+            node_run_id: node_run.node_run_id.clone(),
+            description: "Approve write".into(),
+            risk_level: "high".into(),
+            scope: vec!["attempt:0".into()],
+            requester: "test".into(),
+            resolver: None,
+            resolved: false,
+            approved: None,
+            created_at: 2,
+            resolved_at: None,
+        };
+        let events = vec![build_event(
+            "approval-requested",
+            &run.run_id,
+            2,
+            TaskEventType::ApprovalRequested,
+            "test",
+            2,
+            serde_json::to_value(payloads::ApprovalRequestedPayload {
+                approval_id: approval.approval_id.clone(),
+                node_run_id: node_run.node_run_id.clone(),
+                description: approval.description.clone(),
+                risk_level: approval.risk_level.clone(),
+                scope: approval.scope.clone(),
+            })
+            .unwrap(),
+        )];
+        let current_seq = svc
+            .store
+            .save_approval_execution_update(&node_run, &approval, &events)
+            .unwrap();
+        // 模拟审批期间 run 因别的原因（如另一节点 HumanGate）进入 AwaitingHuman。
+        // 用 save 返回的 current_seq（而非 start_run 返回的旧 run.run_seq），保持
+        // run_seq 与已存事件 seq 一致——否则 resolve_approval 按 run_seq+1 插事件会撞
+        // task_event 的 (run_id, run_seq) UNIQUE 约束。
+        svc.store
+            .update_run_status(&run.run_id, &RunStatus::AwaitingHuman, current_seq, None)
+            .unwrap();
+
+        svc.resolve_approval("approval-resume", true, "reviewer")
+            .unwrap();
+
+        // node_run → Blocked（就绪重跑），且 run 已 resume 回 Running。
+        assert_eq!(
+            svc.get_node_runs(&run.run_id).unwrap()[0].status,
+            NodeRunStatus::Blocked
+        );
+        assert_eq!(
+            svc.store.get_run(&run.run_id).unwrap().status,
+            RunStatus::Running
+        );
     }
 }
