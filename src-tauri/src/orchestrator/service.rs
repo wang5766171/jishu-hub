@@ -618,6 +618,27 @@ impl TaskService {
 
         // Apply commands.
         let base_snapshot = base_revision.snapshot()?;
+
+        // A8 冻结校验（设计 §10.6 / 10 §3.5.6）：已租赁/运行中/待审批/已完成/失败/自愈中
+        // 的节点不可经主编辑路径改动——与 propose_run_revision（:835-879）口径一致，闭合
+        // 「冻结不变量在主编辑路径上不成立」的缺口。首版仅 run-前编排（无 run）时为 no-op；
+        // 图有非终态 run（paused/awaiting_human）编辑草稿时，保护其冻结节点不被静默改动。
+        let frozen_node_ids = frozen_node_ids_for_runs(&self.store, &runs)?;
+        for command in commands {
+            for target in command_target_node_ids(command, &base_snapshot) {
+                if frozen_node_ids.iter().any(|id| id == target) {
+                    return Err(TaskServiceError::Conflict {
+                        message: format!(
+                            "command {} mutates frozen node {target}; frozen nodes cannot be edited via the draft path",
+                            command.command_id()
+                        ),
+                        current_revision: graph.current_draft_revision.clone(),
+                        current_run_seq: runs.iter().map(|run| run.run_seq).max(),
+                    });
+                }
+            }
+        }
+
         let new_snapshot = apply_commands(&base_snapshot, commands)?;
         graph_validate(&new_snapshot)?;
 
@@ -1579,6 +1600,60 @@ fn latest_node_runs_by_id(node_runs: &[NodeRun]) -> std::collections::HashMap<St
     latest
 }
 
+/// Collect node_ids frozen (Leased/Running/AwaitingApproval/Succeeded/Failed/Repairing) across
+/// all non-terminal runs of a graph. Mirrors the per-run computation in `propose_run_revision`
+/// but spans every run — `apply_commands` is graph-scoped, not bound to a single run.
+fn frozen_node_ids_for_runs(
+    store: &TaskStore,
+    runs: &[GraphRun],
+) -> Result<Vec<String>, TaskServiceError> {
+    let mut ids = Vec::new();
+    for run in runs {
+        if run.status.is_terminal() {
+            continue;
+        }
+        let node_runs = store.get_node_runs(&run.run_id)?;
+        for node_run in latest_node_runs_by_id(&node_runs).values() {
+            if node_run.status.is_frozen() {
+                ids.push(node_run.node_id.clone());
+            }
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+/// Node_ids a command mutates, for A8 freeze checking. Edges count only their target — an edge
+/// change alters the target's incoming dependencies, while a frozen node may gain outgoing edges
+/// without affecting its own execution (consistent with `incoming_edge_signature` in
+/// `propose_run_revision`, which guards only incoming edges of frozen nodes). AddNode/SetGoal
+/// introduce new nodes and touch no existing frozen node.
+fn command_target_node_ids<'a>(
+    command: &'a GraphCommand,
+    base_snapshot: &'a crate::orchestrator::domain::graph::GraphSnapshot,
+) -> Vec<&'a str> {
+    match command {
+        GraphCommand::RemoveNode { node_id, .. }
+        | GraphCommand::ReparentNode { node_id, .. }
+        | GraphCommand::ReorderNode { node_id, .. }
+        | GraphCommand::UpdateNode { node_id, .. }
+        | GraphCommand::UpdatePolicy { node_id, .. } => vec![node_id.as_str()],
+        GraphCommand::UngroupNodes { group_node_id, .. } => vec![group_node_id.as_str()],
+        GraphCommand::AddEdge { edge, .. } => vec![edge.target_node_id.as_str()],
+        GraphCommand::RemoveEdge { edge_id, .. } => base_snapshot
+            .edges
+            .iter()
+            .find(|edge| edge.edge_id == *edge_id)
+            .map(|edge| vec![edge.target_node_id.as_str()])
+            .unwrap_or_default(),
+        GraphCommand::GroupNodes { node_ids, .. } => {
+            node_ids.iter().map(String::as_str).collect()
+        }
+        GraphCommand::AddNode { .. } | GraphCommand::SetGoal { .. } => Vec::new(),
+    }
+}
+
 fn incoming_edge_signature(
     snapshot: &crate::orchestrator::domain::graph::GraphSnapshot,
     node_id: &str,
@@ -1962,6 +2037,114 @@ mod tests {
     }
 
     #[test]
+    fn apply_commands_rejected_when_node_is_frozen() {
+        // A8 冻结校验（设计 §10.6 / 10 §3.5.6）：图有非终态 run 时，已租赁/运行中/待审批/
+        // 已完成/失败/自愈中的节点不可经 apply_commands 改动——与 propose_run_revision 口径一致。
+        // 构造一个 Running（冻结）的 node_run：断言 UpdateNode 它被拒、AddNode 新节点放行。
+        let svc = TaskService::open_in_memory().unwrap();
+        let (graph, revision) = svc
+            .create_graph(&CreateGraphInput {
+                title: "Freeze".into(),
+                goal: "Edit frozen".into(),
+                project_root: "/project".into(),
+                owner: "user".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        // pre-run 加一个可执行节点（无冻结）。
+        let added = svc
+            .apply_commands(
+                &graph.graph_id,
+                &revision.revision_id,
+                &[GraphCommand::AddNode {
+                    command_id: "add".into(),
+                    node: GraphNode {
+                        node_id: "write".into(),
+                        parent_id: Some("goal".into()),
+                        title: "Write".into(),
+                        description: None,
+                        node_kind: NodeKind::Executable,
+                        input_contract: Default::default(),
+                        output_contract: Default::default(),
+                        role_requirement: None,
+                        capability_requirements: vec![],
+                        agent_assignment_constraint: None,
+                        policy: Default::default(),
+                        metadata: HashMap::new(),
+                        executable_payload: Some(ExecutablePayload::Shell {
+                            command: "echo hi".into(),
+                            cwd: None,
+                            timeout_ms: None,
+                        }),
+                        loop_config: None,
+                        approval_gate_config: None,
+                    },
+                }],
+                "user",
+            )
+            .unwrap();
+        let draft = added.revision.revision_id.clone();
+        let run = svc.start_run(&graph.graph_id, &draft).unwrap();
+        // 节点 write 进入 Running（冻结态）。
+        let mut node_run = NodeRun::new("nr-write", &run.run_id, "write", &draft);
+        node_run.status = NodeRunStatus::Running;
+        svc.store.save_node_run(&node_run).unwrap();
+
+        // UpdateNode 冻结节点 → Conflict。
+        let frozen_err = svc
+            .apply_commands(
+                &graph.graph_id,
+                &draft,
+                &[GraphCommand::UpdateNode {
+                    command_id: "upd".into(),
+                    node_id: "write".into(),
+                    patch: NodePatch {
+                        title: Some("Write v2".into()),
+                        ..Default::default()
+                    },
+                }],
+                "user",
+            )
+            .expect_err("apply_commands must reject mutating a frozen node");
+        assert!(
+            matches!(frozen_err, TaskServiceError::Conflict { .. }),
+            "expected Conflict on frozen node, got {frozen_err:?}"
+        );
+
+        // AddNode 新节点不触碰冻结节点 → 放行（首版 run-前 编排核心场景：无关节点冻结不误伤）。
+        svc.apply_commands(
+            &graph.graph_id,
+            &draft,
+            &[GraphCommand::AddNode {
+                command_id: "add2".into(),
+                node: GraphNode {
+                    node_id: "extra".into(),
+                    parent_id: Some("goal".into()),
+                    title: "Extra".into(),
+                    description: None,
+                    node_kind: NodeKind::Executable,
+                    input_contract: Default::default(),
+                    output_contract: Default::default(),
+                    role_requirement: None,
+                    capability_requirements: vec![],
+                    agent_assignment_constraint: None,
+                    policy: Default::default(),
+                    metadata: HashMap::new(),
+                    executable_payload: Some(ExecutablePayload::Shell {
+                        command: "echo extra".into(),
+                        cwd: None,
+                        timeout_ms: None,
+                    }),
+                    loop_config: None,
+                    approval_gate_config: None,
+                },
+            }],
+            "user",
+        )
+        .expect("AddNode of a new node must not be blocked by an unrelated frozen node");
+    }
+
+    #[test]
     fn checkout_draft_revision_uses_optimistic_lock() {
         let svc = TaskService::open_in_memory().unwrap();
         let input = CreateGraphInput {
@@ -2207,13 +2390,9 @@ mod tests {
             )
             .unwrap()
             .revision;
-        let run = svc
-            .start_run(&graph.graph_id, &active_revision.revision_id)
-            .unwrap();
-        let mut node_run = NodeRun::new("nr-n1", &run.run_id, "n1", &active_revision.revision_id);
-        node_run.status = NodeRunStatus::Running;
-        svc.store.save_node_run(&node_run).unwrap();
-
+        // 候选 revision 必须在 run 启动（节点冻结）之前构建：B4 起 apply_commands 对冻结节点
+        // 有 A8 校验（见 apply_commands_rejected_when_node_is_frozen），候选触碰冻结节点会被它
+        // 拦下。propose 流程的冻结不变量由 propose_run_revision 在提案时把关，故候选先于 run 建。
         let candidate = svc
             .apply_commands(
                 &graph.graph_id,
@@ -2230,6 +2409,12 @@ mod tests {
             )
             .unwrap()
             .revision;
+        let run = svc
+            .start_run(&graph.graph_id, &active_revision.revision_id)
+            .unwrap();
+        let mut node_run = NodeRun::new("nr-n1", &run.run_id, "n1", &active_revision.revision_id);
+        node_run.status = NodeRunStatus::Running;
+        svc.store.save_node_run(&node_run).unwrap();
 
         let error = svc
             .propose_run_revision(&run.run_id, &candidate.revision_id)

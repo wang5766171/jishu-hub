@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::orchestrator::domain::graph::{
-    AgentAssignmentConstraint, EdgeKind, ExecutablePayload, GraphEdge, GraphNode, GraphSnapshot,
-    LoopControllerConfig, NodeKind, RoleRequirement,
+    AgentAssignmentConstraint, Contract, EdgeKind, ExecutablePayload, GraphEdge, GraphNode,
+    GraphSnapshot, LoopControllerConfig, NodeKind, RoleRequirement,
 };
 use crate::orchestrator::domain::policy::NodePolicy;
 use crate::orchestrator::domain::revision::{
@@ -104,6 +104,11 @@ pub struct NodePatch {
     pub loop_config: Option<Option<LoopControllerConfig>>,
     #[serde(default)]
     pub agent_assignment_constraint: Option<Option<AgentAssignmentConstraint>>,
+    /// 验收契约（output_contract.description 即「验收标准」）。B4 二次编排「调整节点」
+    /// 需可改验收，故补此字段。注：output_contract 本身非 Option（与 executable_payload 不同），
+    /// 故用单层 Option——Some 即覆盖，缺省（None）即不改。
+    #[serde(default)]
+    pub output_contract: Option<Contract>,
 }
 
 /// Input for creating a new task graph.
@@ -237,6 +242,9 @@ fn apply_single_command(
             }
             if let Some(loop_config) = &patch.loop_config {
                 node.loop_config = loop_config.clone();
+            }
+            if let Some(contract) = &patch.output_contract {
+                node.output_contract = contract.clone();
             }
         }
         GraphCommand::AddEdge { edge, .. } => {
