@@ -442,17 +442,27 @@ export function ChatPage({
   // Ref mirror for use inside the mount-only stream listener closure.
   const sessionsRef = useRef<Session[] | null>(null);
   sessionsRef.current = sessions ?? null;
+  // 节点子代理会话 id 集合（常规会话列表过滤用，与 taskLaunchSessions 同节奏刷新）。
+  const [nodeSessionIds, setNodeSessionIds] = useState<string[]>([]);
   const refreshTaskLaunchSessions = useCallback(async () => {
     if (!projectPathForSettings) {
       setTaskLaunchSessions([]);
+      setNodeSessionIds([]);
       return;
     }
     try {
-      const items = await invokeCommand<TaskLaunchInstanceSummary[]>(
-        "task_launch_list_sessions",
-        { projectRoot: projectPathForSettings },
-      );
+      const [items, nodeIds] = await Promise.all([
+        invokeCommand<TaskLaunchInstanceSummary[]>(
+          "task_launch_list_sessions",
+          { projectRoot: projectPathForSettings },
+        ),
+        // 节点子代理会话 id（全局；orchestrator feature 关时命令不注册，降级为空）。
+        invokeCommand<string[]>("orchestrator_list_node_session_ids").catch(
+          () => [] as string[],
+        ),
+      ]);
       setTaskLaunchSessions(items);
+      setNodeSessionIds(nodeIds);
     } catch (error) {
       console.warn("Failed to load task launch sessions:", error);
     }
@@ -493,12 +503,15 @@ export function ChatPage({
   }, [sessions, deferredSearchQuery]);
   const taskLaunchSessionIds = useMemo(
     () => new Set(
-      taskLaunchSessions.flatMap((item) => [
-        item.requirement_session_id,
-        item.planning_session_id,
-      ]).filter((value): value is string => Boolean(value)),
+      [
+        ...taskLaunchSessions.flatMap((item) => [
+          item.requirement_session_id,
+          item.planning_session_id,
+        ]),
+        ...nodeSessionIds,
+      ].filter((value): value is string => Boolean(value)),
     ),
-    [taskLaunchSessions],
+    [taskLaunchSessions, nodeSessionIds],
   );
   const regularSessions = useMemo(
     () => (sessions ?? []).filter((session) => !taskLaunchSessionIds.has(session.id)),
@@ -1284,8 +1297,8 @@ export function ChatPage({
         launchOpen,
       });
       if (userOnPrev && launchOpen && activeTaskLaunchInstance) {
-        const targetPhase: TaskPhase =
-          next === "execution" || next === "graph" ? "execution" : next;
+        const targetPhase: TaskPhase = (
+          next === "execution" || next === "graph" ? "execution" : next) as TaskPhase;
         logTaskPhaseDebug("launch-follow:advance", {
           taskId: activeTaskLaunchInstance.task_id,
           prev,
@@ -1297,6 +1310,36 @@ export function ChatPage({
     }
     prevCurrentPhaseRef.current = next;
   }, [taskLaunchCurrentPhase, activeTaskLaunchInstance, openTaskPhaseWorkspace]);
+
+  // taskLaunch 切标签时的阶段锚点定位：discuss/plan 同一 conductor 会话，切标签需滚到
+  // 对应 PhaseDivider（data-phase），而非总会话顶部。仅在 taskLaunchPhase 变化时定位，
+  // 不打扰用户在当前标签内的浏览。TaskPhaseContainer 路径由 PhaseConversationShell 自身处理。
+  // ⚠️ prevLaunchPhaseRef 只在定位成功后更新——流式期间或消息未加载时不标记完成，
+  // 等 isStreaming 变 false 或 sessionMessages.length 变化后自动重试。
+  const prevLaunchPhaseRef = useRef<TaskLaunchPhase | null>(null);
+  useEffect(() => {
+    if (!taskLaunchOpen || taskModeActive) return;
+    if (!selectedSession || selectedSession === "new") return;
+    if (prevLaunchPhaseRef.current === taskLaunchPhase) return;
+    if (currentStream?.isStreaming) return; // 流式中不抢滚动，等结束后重试
+    const anchor = taskLaunchPhase === "requirements" ? "discuss" : "plan";
+    const container = messageAreaRef.current;
+    if (!container) return;
+    const el = container.querySelector(`[data-phase="${anchor}"]`);
+    if (el) {
+      el.scrollIntoView({ block: "start" });
+      prevLaunchPhaseRef.current = taskLaunchPhase;
+    } else if (anchor === "discuss") {
+      // discuss 锚点对应会话顶部；divider 尚未产生则滚顶（总是成功）。
+      container.scrollTop = 0;
+      prevLaunchPhaseRef.current = taskLaunchPhase;
+    } else if (sessionMessages.length > 0) {
+      // PhaseDivider 是流式瞬态块，不持久化——消息已加载但元素不存在 → 滚到底部（规划内容在末尾）。
+      container.scrollTop = container.scrollHeight;
+      prevLaunchPhaseRef.current = taskLaunchPhase;
+    }
+    // sessionMessages.length === 0 且元素未找到 → 消息尚在加载，等下次 dep 变化重试。
+  }, [taskLaunchOpen, taskModeActive, taskLaunchPhase, selectedSession, currentStream?.isStreaming, sessionMessages.length]);
 
   const handleTaskLaunchBeforeSend = useCallback(async (_message: string) => {
     // conductor 驱动的任务模式：首条消息由 prepareTaskLaunchMessage 包装为 /jishu-task 命令激活 conductor，

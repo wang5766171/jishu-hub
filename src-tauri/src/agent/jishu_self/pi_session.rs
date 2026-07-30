@@ -477,27 +477,41 @@ fn pi_message_positions(content: &str) -> std::collections::HashMap<String, usiz
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        if !matches!(
-            value.get("type").and_then(serde_json::Value::as_str),
-            Some("message") | Some("message_start") | Some("message_end")
-        ) {
-            continue;
+        match value.get("type").and_then(serde_json::Value::as_str) {
+            Some("message") | Some("message_start") | Some("message_end") => {
+                let entry_timestamp = value
+                    .get("timestamp")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(parse_rfc3339_millis);
+                let Some(message) = value
+                    .get("message")
+                    .and_then(|message| parse_pi_message(message, entry_timestamp))
+                else {
+                    continue;
+                };
+                if let Some(id) = value.get("id").and_then(serde_json::Value::as_str) {
+                    positions.insert(id.to_string(), message_index);
+                }
+                message_index += 1;
+                // ⚠️ 必须与 parse_pi_session_jsonl 的分隔线插入保持同步：启动消息后会插入
+                // 一条 discuss 分隔线消息，占一个数组位置；不计入会导致后续消息索引整体前移，
+                // 使按 anchor_message_id 定位的交互卡片落到错误的（前一条 user）消息上。
+                if is_task_launch_message(&message) {
+                    message_index += 1;
+                }
+            }
+            // 与 parse_pi_session_jsonl 同步：phase-enter 标记重建为一条分隔线消息，占一个位置。
+            Some("custom_message") => {
+                let custom_type = value
+                    .get("customType")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if custom_type.starts_with("jishu-conductor:phase-enter:") {
+                    message_index += 1;
+                }
+            }
+            _ => {}
         }
-        let entry_timestamp = value
-            .get("timestamp")
-            .and_then(serde_json::Value::as_str)
-            .and_then(parse_rfc3339_millis);
-        let Some(message) = value
-            .get("message")
-            .and_then(|message| parse_pi_message(message, entry_timestamp))
-        else {
-            continue;
-        };
-        if let Some(id) = value.get("id").and_then(serde_json::Value::as_str) {
-            positions.insert(id.to_string(), message_index);
-        }
-        let _ = message;
-        message_index += 1;
     }
 
     positions
@@ -589,7 +603,51 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
                     if display_name.is_none() && message.role == "user" {
                         display_name = first_text(&message).map(smart_summary);
                     }
+                    let is_launch = is_task_launch_message(&message);
                     messages.push(message);
+                    // 任务启动消息之后插入独立「需求讨论」分隔线——位于用户消息之下，
+                    // 与 plan 分隔线（custom_message 重建）形态一致；不塞进用户消息内部。
+                    if is_launch {
+                        messages.push(crate::session::Message {
+                            role: "assistant".to_string(),
+                            content: vec![crate::session::ContentBlock::PhaseDivider {
+                                phase: "discuss".to_string(),
+                                title: "需求讨论".to_string(),
+                            }],
+                            timestamp: entry_timestamp,
+                        });
+                    }
+                }
+            }
+            // conductor 阶段转场标记（jishu-conductor:phase-enter:<phase>）→ 重建阶段分隔线。
+            // 该标记 display:true 写入 JSONL，但此前落入下方 `_ => {}` 被丢弃，导致会话重载后
+            // 「流程规划/流程执行」分隔线消失（见 docs/task dev/18-阶段会话体验优化 / 19-实施计划）。
+            Some("custom_message") => {
+                let custom_type = value
+                    .get("customType")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("");
+                if let Some(phase) = custom_type.strip_prefix("jishu-conductor:phase-enter:") {
+                    let entry_timestamp = value
+                        .get("timestamp")
+                        .and_then(|v| v.as_str())
+                        .and_then(parse_rfc3339_millis);
+                    let mut content = vec![crate::session::ContentBlock::PhaseDivider {
+                        phase: phase.to_string(),
+                        title: phase_divider_title(phase).to_string(),
+                    }];
+                    if let Some(text) = value.get("content").and_then(|c| c.as_str()) {
+                        if !text.trim().is_empty() {
+                            content.push(crate::session::ContentBlock::Text {
+                                text: text.to_string(),
+                            });
+                        }
+                    }
+                    messages.push(crate::session::Message {
+                        role: "assistant".to_string(),
+                        content,
+                        timestamp: entry_timestamp,
+                    });
                 }
             }
             Some("session_info") => {
@@ -617,6 +675,30 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
         last_active: file_modified_utc(path),
         project_path,
     })
+}
+
+/// 阶段 id → 分隔线中文标题（与 session.rs::parse_message 及流式期 conductor 保持一致）。
+fn phase_divider_title(phase: &str) -> &'static str {
+    match phase {
+        "discuss" => "需求讨论",
+        "plan" => "流程规划",
+        "execute" => "流程执行",
+        "done" => "已完成",
+        _ => "阶段",
+    }
+}
+
+/// 判断是否为 `/jishu-task …` 任务启动用户消息。
+/// conductor 没有为 discuss 发 phase-enter 标记（discuss 由启动命令开启），故从启动文本推导，
+/// 在调用处于此消息之后插入独立「需求讨论」分隔线。
+fn is_task_launch_message(message: &crate::session::Message) -> bool {
+    message.role == "user"
+        && message.content.iter().any(|b| match b {
+            crate::session::ContentBlock::Text { text } => {
+                text.trim_start().starts_with("/jishu-task ")
+            }
+            _ => false,
+        })
 }
 
 fn parse_pi_message(
@@ -981,6 +1063,78 @@ mod tests {
     }
 
     #[test]
+    fn reconstructs_phase_dividers_on_reload() {
+        let root = std::env::temp_dir().join(format!(
+            "jishu-pi-phase-divider-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("sid-div.jsonl");
+        fs::write(
+            &path,
+            [
+                r#"{"type":"session","version":3,"id":"sid-div","timestamp":"2026-06-01T00:00:00.000Z","cwd":"D:\\Work\\app"}"#,
+                r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-06-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"/jishu-task dev 做个登录页"}],"timestamp":1780272001000}}"#,
+                r#"{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-06-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"需求讨论回复"}],"timestamp":1780272002000}}"#,
+                r#"{"type":"custom_message","customType":"jishu-conductor:phase-enter:plan","content":"进入流程规划阶段。","display":true,"id":"c1","parentId":"a1","timestamp":"2026-06-01T00:00:03.000Z"}"#,
+                r#"{"type":"message","id":"a2","parentId":"c1","timestamp":"2026-06-01T00:00:04.000Z","message":{"role":"assistant","content":[{"type":"text","text":"规划回复"}],"timestamp":1780272004000}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let session = load_pi_session(&path).unwrap();
+
+        // 启动消息（user）保持原样，首块是启动文本，不被塞入分隔线。
+        assert_eq!(session.messages[0].role, "user");
+        assert!(
+            matches!(
+                session.messages[0].content[0],
+                ContentBlock::Text { ref text } if text.contains("/jishu-task ")
+            ),
+            "用户启动消息首块应为启动文本（分隔线在其下方独立渲染），实际：{:?}",
+            session.messages[0].content[0]
+        );
+        assert!(
+            !session.messages[0]
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::PhaseDivider { .. })),
+            "用户消息内部不应含分隔线"
+        );
+
+        // 「需求讨论」分隔线作为独立块出现在用户消息之后（并入紧随的助手轮）。
+        assert!(
+            session.messages.iter().any(|m| m
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::PhaseDivider { phase, .. } if phase == "discuss"))),
+            "应重建 discuss 分隔线"
+        );
+
+        // phase-enter:plan 标记重建为「流程规划」分隔线，携带展示文本。
+        let plan_divider = session
+            .messages
+            .iter()
+            .find(|m| {
+                m.content.iter().any(|b| {
+                    matches!(b, ContentBlock::PhaseDivider { phase, .. } if phase == "plan")
+                })
+            })
+            .expect("应重建 plan 分隔线消息");
+        assert!(
+            plan_divider
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("进入流程规划"))),
+            "plan 分隔线消息应携带标记的展示文本"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn persists_pi_interactions_in_sidecar_with_latest_answer() {
         let root = std::env::temp_dir().join(format!(
             "jishu-pi-interaction-sidecar-test-{}",
@@ -1089,6 +1243,78 @@ mod tests {
             session.messages[2].content.as_slice(),
             [ContentBlock::Text { text }] if text == "开始流程规划。"
         ));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn message_anchor_interaction_survives_launch_divider_index_shift() {
+        // 回归：/jishu-task 启动消息会触发 parse_pi_session_jsonl 插入 discuss 分隔线，
+        // 若 pi_message_positions 不同步计入该分隔线，按 anchor_message_id 定位的交互卡片
+        // 会整体前移一格、落到前一条 user 消息上，渲染成多余的用户气泡。
+        let root = std::env::temp_dir().join(format!(
+            "jishu-pi-interaction-divider-shift-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("sid-div-anchor.jsonl");
+        fs::write(
+            &path,
+            [
+                r#"{"type":"session","version":3,"id":"sid-div-anchor","timestamp":"2026-07-16T10:20:32.000Z","cwd":"E:\\test"}"#,
+                r#"{"type":"message","id":"u0","message":{"role":"user","content":[{"type":"text","text":"/jishu-task dev 做个登录页"}]}}"#,
+                r#"{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"用户的回答"}]}}"#,
+                r#"{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"候选需求已提交。"}]}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        // 直接写 sidecar，显式 anchor_message_id=a1、无 tool 锚点 → 走 message-id 定位路径。
+        let sidecar = path.with_extension("jishu-interactions");
+        fs::write(
+            &sidecar,
+            r#"{"type":"interaction","request_id":"gate-1","prompt":"是否进入规划？","options":[],"answer":"进入规划","selected_options":[],"origin":"extension_ui","anchor_message_id":"a1"}"#,
+        )
+        .unwrap();
+
+        let session = load_pi_session(&path).unwrap();
+
+        let assistant_with_anchor = session
+            .messages
+            .iter()
+            .find(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("候选需求已提交")))
+            })
+            .expect("应存在助手锚点消息");
+        assert!(
+            assistant_with_anchor
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Interaction { prompt, .. } if prompt == "是否进入规划？")),
+            "交互卡片应落在助手锚点消息 a1 上，实际内容：{:?}",
+            assistant_with_anchor.content
+        );
+
+        let user_answer = session
+            .messages
+            .iter()
+            .find(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("用户的回答")))
+            })
+            .expect("应存在用户回答消息");
+        assert!(
+            !user_answer
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Interaction { .. })),
+            "交互卡片不应错位落到用户消息上（否则渲染成多余用户气泡），实际内容：{:?}",
+            user_answer.content
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
