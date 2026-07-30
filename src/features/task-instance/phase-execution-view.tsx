@@ -20,9 +20,7 @@ import { useTranslation } from "react-i18next";
 import { GraphEditor } from "@/features/task-instance/graph/graph-editor";
 import { ExecutionGovernanceDrawer, type GovernanceTab } from "./execution-governance-drawer";
 import { MessageView } from "@/components/sessions/message-view";
-import { ChatInput } from "@/components/sessions/chat-input";
-import { StreamingMessage } from "@/components/sessions/streaming-message";
-import { useChatSession } from "@/features/chat-core/use-chat-session";
+import { PhaseConversationShell } from "./phase-conversation-shell";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { useRunEventStream } from "./use-run-event-stream";
 import { useNodeSession } from "./use-node-session";
@@ -225,15 +223,8 @@ export function PhaseExecutionView({
     chatScope.kind === "node" ? nodeSessions[chatScope.nodeId] ?? null : null;
   const nodeSessionId = currentNodeSession?.session_id ?? null;
 
-  // 节点子代理会话 hook（只挂载当前选中节点，按需）。
-  const shouldUseNodeSession = chatScope.kind === "node" && nodeSessionId;
-  const nodeChat = useChatSession({
-    sessionId: shouldUseNodeSession ? nodeSessionId! : "__inactive__",
-    projectPath,
-    encodedProjectId,
-    // 完成态下节点子代理会话也只读（不可 steer）。
-    readOnly,
-  });
+  // 节点子代理会话不再在此挂载——执行面板的节点分支复用 PhaseConversationShell，
+  // 由 shell 内部按 nodeSessionId 唯一挂载 useChatSession（避免与外部双实例重复订阅）。
 
   // ── 节点标题映射 ──
   const nodeTitles = useMemo(() => {
@@ -391,19 +382,24 @@ export function PhaseExecutionView({
               runActive={taskGraph.runStatus === "running"}
               onChange={onChatScopeChange}
             />
-            <ExecutionChatPanel
-              scope={chatScope}
-              runMessages={runStream.projectedMessages}
-              nodeChat={shouldUseNodeSession ? nodeChat : null}
-              projectPath={projectPath}
-              sessionId={nodeSessionId}
-              readOnly={readOnly}
-              placeholder={
-                chatScope.kind === "run"
-                  ? t("task.execution.mainPlaceholder", "查看执行进展…使用 @steer 干预")
-                  : t("task.execution.nodePlaceholder", "输入消息…干预该节点 agent")
-              }
-            />
+            {chatScope.kind === "run" ? (
+              <ExecutionChatPanel
+                runMessages={runStream.projectedMessages}
+                placeholder={t("task.execution.mainPlaceholder", "查看执行进展…使用 @steer 干预")}
+              />
+            ) : nodeSessionId ? (
+              <PhaseConversationShell
+                sessionId={nodeSessionId}
+                readOnly={readOnly}
+                projectPath={projectPath}
+                encodedProjectId={encodedProjectId}
+                placeholder={t("task.execution.nodePlaceholder", "输入消息…干预该节点 agent")}
+              />
+            ) : (
+              <div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">
+                {t("task.execution.nodeNoSession", "节点尚未产生会话…")}
+              </div>
+            )}
           </div>
         )}
 
@@ -422,7 +418,9 @@ export function PhaseExecutionView({
           selectedNodeId={selectedNodeId}
           readOnly={readOnly}
           onResolveApproval={taskGraph.resolveApproval}
-          onChooseRecovery={taskGraph.chooseRecovery}
+          onChooseRecovery={async (nodeRunId, strategy, reason) => {
+            await taskGraph.chooseRecovery(nodeRunId, strategy, reason);
+          }}
           getDiff={taskGraph.getDiff}
         />
       </div>
@@ -508,71 +506,28 @@ function RunStatusBadge({ status }: { status: RunStatusValue | null | undefined 
   );
 }
 
-/** 对话面板：根据 scope 渲染 run 事件流 或 节点会话。 */
+/** 主任务会话面板：渲染 run 事件流投影的消息（只读；干预走 @steer 单独入口）。
+ *  节点子代理会话不再走此组件——复用 PhaseConversationShell（与需求/规划阶段同构）。 */
 function ExecutionChatPanel({
-  scope,
   runMessages,
-  nodeChat,
-  projectPath,
-  sessionId,
-  readOnly,
   placeholder,
 }: {
-  scope: ExecutionChatScope;
   runMessages: ReturnType<typeof useRunEventStream>["projectedMessages"];
-  nodeChat: ReturnType<typeof useChatSession> | null;
-  projectPath: string;
-  sessionId: string | null;
-  readOnly: boolean;
   placeholder: string;
 }) {
-  // 主任务会话：渲染 run 事件流投影的消息（只读，干预用 @steer 单独入口）
-  if (scope.kind === "run") {
-    return (
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <div className="flex-1 overflow-y-auto">
-          <div className="mx-auto flex max-w-[760px] flex-col gap-2 px-3 py-3">
-            {runMessages.length === 0 ? (
-              <div className="py-8 text-center text-xs text-muted-foreground">
-                {placeholder}
-              </div>
-            ) : (
-              <MessageView messages={runMessages} />
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // 节点子代理会话：渲染该节点 agent 的真实会话消息
-  if (!nodeChat || !sessionId) {
-    return (
-      <div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">
-        节点尚未产生会话…
-      </div>
-    );
-  }
-  const isStreaming = nodeChat.stream?.isStreaming ?? false;
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-[760px] flex-col gap-2 px-3 py-3">
-          <MessageView messages={nodeChat.messages} />
-          <StreamingMessage sessionId={sessionId} isComplete={!isStreaming} userMessage={null} />
+          {runMessages.length === 0 ? (
+            <div className="py-8 text-center text-xs text-muted-foreground">
+              {placeholder}
+            </div>
+          ) : (
+            <MessageView messages={runMessages} />
+          )}
         </div>
       </div>
-      {/* 完成态只读：隐藏节点会话输入框（不可 steer），与 PhaseConversationShell 范式一致。 */}
-      {!readOnly && (
-        <div className="shrink-0 border-t border-border bg-background p-2">
-          <ChatInput
-            sessionId={sessionId}
-            projectPath={projectPath}
-            isSessionStreaming={isStreaming}
-            placeholder={placeholder}
-          />
-        </div>
-      )}
     </div>
   );
 }

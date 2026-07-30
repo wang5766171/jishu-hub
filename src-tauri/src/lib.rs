@@ -2095,6 +2095,19 @@ fn orchestrator_list_graphs_for_project(
 
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
+fn orchestrator_list_node_session_ids(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+) -> Result<Vec<String>, crate::orchestrator::domain::run::TaskError> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service.list_node_session_ids().map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
 fn orchestrator_delete_graph(
     state: tauri::State<'_, std::sync::Mutex<AppState>>,
     graph_id: String,
@@ -2947,6 +2960,8 @@ pub fn run() {
             orchestrator_get_latest_graph_for_project,
             #[cfg(feature = "orchestrator")]
             orchestrator_list_graphs_for_project,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_list_node_session_ids,
             #[cfg(feature = "orchestrator")]
             orchestrator_delete_graph,
             #[cfg(feature = "orchestrator")]

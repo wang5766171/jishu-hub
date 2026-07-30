@@ -317,6 +317,11 @@ impl TaskService {
         Ok(self.store.list_graphs_for_project(project_root)?)
     }
 
+    /// 所有节点 attempt 的去重非空 session_id（供前端常规会话列表过滤）。
+    pub fn list_node_session_ids(&self) -> Result<Vec<String>, TaskServiceError> {
+        Ok(self.store.list_node_session_ids()?)
+    }
+
     pub fn delete_graph(&self, graph_id: &str) -> Result<(), TaskServiceError> {
         self.store.delete_graph(graph_id)?;
         Ok(())

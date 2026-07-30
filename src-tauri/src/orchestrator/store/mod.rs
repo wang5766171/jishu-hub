@@ -2158,6 +2158,27 @@ impl TaskStore {
         })
     }
 
+    /// 所有节点 attempt 的去重非空 session_id 列表。
+    ///
+    /// 用于前端把节点子代理会话从常规会话列表过滤（设计 18 §3 / 实施计划 19 T3.1）。
+    /// 全表扫描：session_id 跨项目唯一（Pi session id），前端按当前项目 sessions 过滤时，
+    /// 超集里的他项目 id 不会误伤（不在当前项目 session 列表里自然不匹配）。
+    pub fn list_node_session_ids(&self) -> Result<Vec<String>, StoreError> {
+        let conn = self
+            .reader
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT session_id FROM node_attempt
+             WHERE session_id IS NOT NULL AND session_id <> ''",
+        )?;
+        let ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(ids)
+    }
+
     /// Refresh the heartbeat deadline on the latest attempt's lease for a node run.
     /// Used by the execution heartbeat loop to keep an in-flight lease alive.
     pub fn refresh_lease_heartbeat(
@@ -3665,6 +3686,104 @@ mod tests {
         // Test get_attempt returns NotFound for non-existent attempt.
         let err = store.get_attempt("nr1", 999).unwrap_err();
         assert!(matches!(err, StoreError::NotFound(_)));
+    }
+
+    #[test]
+    fn list_node_session_ids_dedupes_and_skips_empty() {
+        let store = make_test_store();
+
+        // 最小 setup：graph → revision → run → node_run（同 save_and_get_attempt）。
+        store
+            .create_graph(&TaskGraph {
+                graph_id: "g-sess".into(),
+                title: "T".into(),
+                goal: "G".into(),
+                project_root: PathBuf::from("/project"),
+                owner: "user".into(),
+                current_draft_revision: None,
+                created_at: now(),
+                updated_at: now(),
+            })
+            .unwrap();
+        let snapshot = GraphSnapshot {
+            nodes: vec![GraphNode {
+                node_id: "n1".into(),
+                parent_id: None,
+                title: "Node 1".into(),
+                description: None,
+                node_kind: NodeKind::Goal,
+                input_contract: Default::default(),
+                output_contract: Default::default(),
+                role_requirement: None,
+                capability_requirements: vec![],
+                agent_assignment_constraint: None,
+                policy: Default::default(),
+                metadata: Default::default(),
+                executable_payload: None,
+                loop_config: None,
+                approval_gate_config: None,
+            }],
+            edges: vec![],
+        };
+        let revision =
+            GraphRevision::from_snapshot("rev1", "g-sess", None, &snapshot, "user", now()).unwrap();
+        store.save_revision(&revision).unwrap();
+        store
+            .create_run(&crate::orchestrator::domain::run::GraphRun {
+                run_id: "run1".into(),
+                graph_id: "g-sess".into(),
+                active_revision_id: "rev1".into(),
+                status: crate::orchestrator::domain::run::RunStatus::Running,
+                run_seq: 1,
+                budget_state: Default::default(),
+                planning_snapshot: Default::default(),
+                started_at: now(),
+                finished_at: None,
+            })
+            .unwrap();
+        store
+            .save_node_run(&crate::orchestrator::domain::run::NodeRun {
+                node_run_id: "nr1".into(),
+                run_id: "run1".into(),
+                node_id: "n1".into(),
+                status: crate::orchestrator::domain::run::NodeRunStatus::Running,
+                revision_id: "rev1".into(),
+                started_at: Some(now()),
+                finished_at: None,
+                attempt_count: 0,
+                wake_at: None,
+                error: None,
+                loop_iteration: None,
+                superseded: false,
+            })
+            .unwrap();
+
+        // 四个 attempt：有 session / 无 session / 重复 session（验 DISTINCT）/ 另一 session。
+        let mk_attempt = |id: &str, num: u32, sess: Option<&str>| {
+            crate::orchestrator::domain::run::NodeAttempt {
+                attempt_id: id.into(),
+                node_run_id: "nr1".into(),
+                attempt_number: num,
+                agent_assignment: None,
+                transport: None,
+                session_id: sess.map(str::to_string),
+                lease: None,
+                usage: Default::default(),
+                error: None,
+                idempotency_key: None,
+                checkpoint: None,
+                started_at: now(),
+                finished_at: None,
+            }
+        };
+        store.save_attempt(&mk_attempt("att1", 1, Some("sess-a"))).unwrap();
+        store.save_attempt(&mk_attempt("att2", 2, None)).unwrap();
+        store.save_attempt(&mk_attempt("att3", 3, Some("sess-a"))).unwrap();
+        store.save_attempt(&mk_attempt("att4", 4, Some("sess-b"))).unwrap();
+
+        let mut ids = store.list_node_session_ids().unwrap();
+        ids.sort();
+        assert_eq!(ids, vec!["sess-a".to_string(), "sess-b".to_string()]);
     }
 
     #[test]

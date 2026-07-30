@@ -493,7 +493,7 @@ function RevisionsTab({
   }
   // 倒序（最新在前）；reversed[i+1] 即 reversed[i] 的上一版（更旧）。
   const ordered = revisions.slice().reverse();
-  const toggleDiff = (index: number, revisionId: string, prevId: string) => {
+  const toggleDiff = (revisionId: string, prevId: string) => {
     if (!getDiff) return;
     // 再次点击同一项则收起。
     if (diffFor === revisionId) {
@@ -545,7 +545,7 @@ function RevisionsTab({
               <button
                 type="button"
                 className="mt-2 text-[10px] font-medium text-primary hover:underline disabled:opacity-50"
-                onClick={() => toggleDiff(index, revision.revision_id, prev.revision_id)}
+                onClick={() => toggleDiff(revision.revision_id, prev.revision_id)}
                 disabled={diffLoading && expanded}
               >
                 {expanded

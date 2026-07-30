@@ -645,6 +645,7 @@
       "mainSession": "Main task",
       "mainPlaceholder": "View progress… use @steer to intervene",
       "nodePlaceholder": "Send a message… intervene in this node agent",
+      "nodeNoSession": "Node has not started a session yet…",
       "error": {
         "launchFailed": "Failed to start execution",
         "assignAgentFailed": "Failed to assign agent"

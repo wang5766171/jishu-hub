@@ -643,6 +643,7 @@
       "mainSession": "主任务",
       "mainPlaceholder": "查看执行进展…使用 @steer 干预",
       "nodePlaceholder": "输入消息…干预该节点 agent",
+      "nodeNoSession": "节点尚未产生会话…",
       "error": {
         "launchFailed": "启动执行失败",
         "assignAgentFailed": "指定智能体失败"
