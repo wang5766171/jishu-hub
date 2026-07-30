@@ -2310,7 +2310,9 @@ mod tests {
                 assert_eq!(request.agent_id, "fake-agent");
                 assert_eq!(request.role_id, "implementer");
                 assert!(request.prompt.contains("Implement the feature"));
-                assert!(request.prompt.contains("write_files: false"));
+                // 节点 policy 走 NodePolicy::default()，PermissionScope::default() 现授予
+                // can_write_files=true（执行节点默认能写，见 policy.rs）。断言契约注入如实反映。
+                assert!(request.prompt.contains("write_files: true"));
                 let invocation_id = request.invocation_id.clone();
                 Ok(materialize_handle(
                     invocation_id,
@@ -2481,6 +2483,27 @@ mod tests {
         assert!(continuation.reply.contains("方案 A"));
         assert!(continuation.reply.contains("优先保证兼容性"));
         assert!(!continuation.reply.contains("execution contract"));
+    }
+
+    #[test]
+    fn agent_prompt_reflects_permission_scope() {
+        // 契约注入（agent_prompt_with_policy）把 permission_scope 拼成硬执行契约。
+        // default 现授予 read/write=true —— 执行节点默认能读写文件，不再因全 false 空转。
+        let policy = NodePolicy::default();
+        let prompt = agent_prompt_with_policy("do work", &policy);
+        assert!(prompt.contains("read_files: true"));
+        assert!(prompt.contains("write_files: true"));
+        assert!(prompt.contains("run_commands: false"));
+        assert!(prompt.contains("access_network: false"));
+        assert!(prompt.contains("deploy: false"));
+        assert!(prompt.ends_with("do work"));
+
+        // 显式关闭写权限 → 契约注入 write_files:false（覆盖 review-only 节点路径）。
+        let mut review_policy = NodePolicy::default();
+        review_policy.permission_scope.can_write_files = false;
+        let review_prompt = agent_prompt_with_policy("review only", &review_policy);
+        assert!(review_prompt.contains("write_files: false"));
+        assert!(review_prompt.contains("read_files: true"));
     }
 
     #[test]

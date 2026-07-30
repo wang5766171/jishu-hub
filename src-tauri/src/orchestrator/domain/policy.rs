@@ -118,13 +118,32 @@ impl RetryPolicy {
 }
 
 /// What permissions this node requires.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+///
+/// Default grants file read/write: most executable agent nodes need to read and
+/// modify files to do their work, and a node that gets the default must not be
+/// left unable to act (see [`crate::orchestrator::daemon::engine::agent_prompt_with_policy`],
+/// which injects these flags as a hard execution contract). A review-only node
+/// that must not write should explicitly set `can_write_files: false`. Command,
+/// network, and deploy stay opt-in because they are higher risk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionScope {
     pub can_read_files: bool,
     pub can_write_files: bool,
     pub can_run_commands: bool,
     pub can_access_network: bool,
     pub can_deploy: bool,
+}
+
+impl Default for PermissionScope {
+    fn default() -> Self {
+        Self {
+            can_read_files: true,
+            can_write_files: true,
+            can_run_commands: false,
+            can_access_network: false,
+            can_deploy: false,
+        }
+    }
 }
 
 /// When approval is required.
@@ -272,5 +291,18 @@ mod tests {
         assert_eq!(de.timeout_ms, Some(30000));
         assert_eq!(de.priority, 10);
         matches!(de.approval_policy, ApprovalPolicy::Always);
+    }
+
+    #[test]
+    fn permission_scope_default_grants_file_read_and_write() {
+        // 执行节点默认需要读写文件才能干活。agent_prompt_with_policy（engine.rs）会把
+        // 这些标志注入为硬执行契约——若 default 全 false，节点会收到"禁止任何操作"的
+        // 契约从而空转（G5+ 期间暴露的"节点假成功"根因）。
+        let scope = PermissionScope::default();
+        assert!(scope.can_read_files, "default should grant read");
+        assert!(scope.can_write_files, "default should grant write");
+        assert!(!scope.can_run_commands, "commands stay opt-in");
+        assert!(!scope.can_access_network, "network stays opt-in");
+        assert!(!scope.can_deploy, "deploy stays opt-in");
     }
 }

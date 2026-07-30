@@ -447,6 +447,9 @@ mod tests {
     #[test]
     fn declared_write_set_requires_write_permission() {
         let mut node = make_exec("writer");
+        // 显式关闭写权限以触发 mismatch（PermissionScope::default 现授予 can_write_files=true，
+        // 不再因 default 全 false 而误报）。
+        node.policy.permission_scope.can_write_files = false;
         node.policy.write_set = vec![PathBuf::from("src")];
         let snapshot = GraphSnapshot {
             nodes: vec![make_goal(), node],

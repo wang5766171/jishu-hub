@@ -640,7 +640,7 @@ Return exactly one JSON object and no markdown fences:
       "acceptance": ["observable acceptance criterion"],
       "permissions": {{
         "can_read_files": true,
-        "can_write_files": false,
+        "can_write_files": true,
         "can_run_commands": false,
         "can_access_network": false,
         "can_deploy": false
@@ -671,7 +671,7 @@ Rules:
 - Make the resulting graph contain at least one supervisor node after the terminal work branches.
 - Decompose distinct concerns, subsystems, interfaces, implementation workstreams, tests, and acceptance. Never collapse a non-trivial goal into one generic "implement the system" node.
 - Every agent node needs a goal-specific description, a complete execution prompt, and at least one observable acceptance criterion.
-- Request the least permissions needed. Write, command, network, and deploy permissions are high risk.
+- Set permissions truthfully per node's task. A node that creates or modifies files (implementation, scaffolding, code generation) MUST set can_write_files:true; a node that runs builds, tests, or commands MUST set can_run_commands:true. Analysis/review-only nodes keep them false. Request network or deploy only when the task explicitly requires them. Never leave an implementation node with write_files:false — it will receive a contract forbidding action and cannot complete its task.
 - Include explicit verification or review work where the task needs it.
 - Do not call tools, edit files, or start execution. Planning only.
 
@@ -1529,5 +1529,36 @@ Hope this works for you."#;
         assert!(reply.contains("保留前端扩展点"));
         assert!(!reply.contains("JSON"));
         assert!(!reply.contains("execution contract"));
+    }
+
+    #[test]
+    fn build_prompt_instructs_truthful_permissions() {
+        // 修复 1：schema 示例不再诱导 LLM 把实现节点写成 write_files:false，
+        // 且 Rules 明确要求按节点任务如实设权限（G5+ 期间"节点假成功"根因之一）。
+        let snapshot = graph_create(&CreateGraphInput {
+            title: "Task".into(),
+            goal: "Ship safely".into(),
+            project_root: ".".into(),
+            owner: "test".into(),
+            ..Default::default()
+        });
+        let request = PlanningRequest {
+            graph_id: "g".into(),
+            base_revision_id: "r".into(),
+            instruction: "do X".into(),
+        };
+        let prompt = build_prompt(&request, ".", &snapshot, &[], &[]).unwrap();
+        assert!(
+            prompt.contains("\"can_write_files\": true"),
+            "schema 示例应反映实现节点典型需要写文件"
+        );
+        assert!(
+            prompt.contains("MUST set can_write_files:true"),
+            "Rules 应明确指示实现节点必须开启写权限"
+        );
+        assert!(
+            prompt.contains("Never leave an implementation node with write_files:false"),
+            "Rules 应警告不得让实现节点无法行动"
+        );
     }
 }
