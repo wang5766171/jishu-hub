@@ -5,7 +5,7 @@
  * Extracted from message-view.tsx so both regular sessions and task sessions
  * render agent output with the same markdown / thinking / code-block quality.
  */
-import { memo } from "react";
+import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -35,14 +35,21 @@ export const ThinkingBlock = memo(function ThinkingBlock({
   thinking: string;
 }) {
   const { t } = useTranslation();
+  // 懒渲染：折叠时不创建大段 thinking 文本节点，降 DOM/内存（同 message-view.tsx）。
+  const [open, setOpen] = useState(false);
   return (
-    <details className="mt-2 rounded-[6px] border border-border/40 bg-[var(--message-thinking-bg)] px-2.5 py-1.5 text-xs text-muted-foreground">
+    <details
+      className="mt-2 rounded-[6px] border border-border/40 bg-[var(--message-thinking-bg)] px-2.5 py-1.5 text-xs text-muted-foreground"
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
       <summary className="cursor-pointer select-none hover:text-foreground">
         {t("sessions.showThinking")}
       </summary>
-      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
-        {thinking}
-      </pre>
+      {open && (
+        <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
+          {thinking}
+        </pre>
+      )}
     </details>
   );
 });

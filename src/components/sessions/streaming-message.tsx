@@ -10,7 +10,7 @@ import type { ToolCall } from "@/components/observability/tool-call-card";
 import type { ContentBlock } from "@/types";
 import { InteractionCard } from "./interaction-card";
 import { dedupeInteractionItems, isInteractionToolName, isInteractionToolUseBlock } from "@/lib/interaction-tools";
-import { PhaseDivider } from "./conversation-content";
+import { PhaseDivider, ThinkingBlock } from "./conversation-content";
 
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS_COMPLETE = [rehypeHighlight];
@@ -307,14 +307,10 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                           }
                           if (item.block.type === "thinking") {
                             return (
-                              <details key={`thinking-${i}-${idx}`} className="rounded-[6px] border border-border/40 bg-[var(--message-thinking-bg)] px-2.5 py-1.5 text-xs text-muted-foreground">
-                                <summary className="cursor-pointer select-none hover:text-foreground">
-                                  {t("sessions.showThinking")}
-                                </summary>
-                                <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
-                                  {item.block.thinking}
-                                </pre>
-                              </details>
+                              <ThinkingBlock
+                                key={`thinking-${i}-${idx}`}
+                                thinking={item.block.thinking}
+                              />
                             );
                           }
                           if (item.block.type === "text") {

@@ -83,15 +83,23 @@ function highlightText(text: string, query: string, matchOffset: number, current
 
 const ThinkingBlock = memo(function ThinkingBlock({ block }: { block: ContentBlock & { type: "thinking" } }) {
   const { t } = useTranslation();
+  // 懒渲染：折叠时不创建大段 thinking 文本节点（conductor 会话常有 8000+ token 思考块，
+  // 常驻 DOM 会拖累挂载成本与内存）。展开后才渲染 <pre>。
+  const [open, setOpen] = useState(false);
 
   return (
-    <details className="rounded-[6px] border border-border/40 bg-[var(--message-thinking-bg)] px-2.5 py-1.5 text-xs text-muted-foreground">
+    <details
+      className="rounded-[6px] border border-border/40 bg-[var(--message-thinking-bg)] px-2.5 py-1.5 text-xs text-muted-foreground"
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
       <summary className="cursor-pointer select-none hover:text-foreground">
         {t("sessions.showThinking")}
       </summary>
-      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
-        {block.thinking}
-      </pre>
+      {open && (
+        <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
+          {block.thinking}
+        </pre>
+      )}
     </details>
   );
 });
