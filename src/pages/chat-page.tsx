@@ -1467,6 +1467,15 @@ export function ChatPage({
           // injected with launch instruction, the real id is too (same session).
           if (injectedLaunchSessionsRef.current.has(cid)) {
             injectedLaunchSessionsRef.current.add(realId);
+          } else if (taskLaunchOpenRef.current) {
+            // 兜底：任务模式下首条消息发送时 selectedSession 往往还是 null/"new"，
+            // prepareTaskLaunchMessage 不会把 pending id 加入 set（786 行的 if 不满足），
+            // 导致上面的迁移找不到 pending id、real id 永不入 set。此后用户在任务会话里
+            // 发的任何消息都会被误判为首条、重新包装成 /jishu-task 命令——而 Conductor
+            // 命令 handler 见 phase !== "idle" 直接 return，Pi 不启动任何 run，界面卡死
+            // 在"思考中"。任务模式 session resolve 时无条件把 real id 标记为已激活，确保
+            // 后续消息原样透传给已激活的 Conductor。
+            injectedLaunchSessionsRef.current.add(realId);
           }
           setPendingInteractions((current) =>
             current.map((item) =>
