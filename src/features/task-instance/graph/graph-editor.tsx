@@ -159,6 +159,194 @@ interface GraphEditorProps {
   readOnly?: boolean;
 }
 
+/** 添加智能体节点向导（独立组件：表单状态内聚，输入不触发 GraphEditor/ReactFlow 重渲染）。 */
+function DispatchWizardForm({
+  goalNodeId,
+  onSubmit,
+  onCancel,
+}: {
+  goalNodeId: string | null;
+  onSubmit: (command: GraphCommand) => void;
+  onCancel: () => void;
+}) {
+  const { t } = useTranslation();
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [intent, setIntent] = useState<"implement" | "research" | "verify">("implement");
+  const [title, setTitle] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [acceptance, setAcceptance] = useState("");
+
+  return (
+    <div className="absolute inset-0 z-30 grid place-items-center bg-[var(--task-canvas-overlay-bg)] p-6 backdrop-blur-sm">
+      <form
+        className="w-full max-w-lg rounded-xl border border-border bg-popover p-5 text-popover-foreground shadow-2xl"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (step < 3) {
+            setStep((current) => (current === 1 ? 2 : 3));
+            return;
+          }
+          if (!title.trim() || !prompt.trim() || !acceptance.trim()) return;
+          const fullPrompt = [
+            `${t("tasks.workbench.nodeWizard.intent")}: ${t(`tasks.workbench.nodeWizard.intents.${intent}`)}`,
+            prompt.trim(),
+            `${t("tasks.workbench.nodeWizard.acceptance")}: ${acceptance.trim()}`,
+          ].join("\n\n");
+          onSubmit({
+            op: "add_node",
+            command_id: `cmd_${crypto.randomUUID()}`,
+            node: {
+              node_id: `node_${crypto.randomUUID()}`,
+              parent_id: goalNodeId,
+              title: title.trim(),
+              description: prompt.trim(),
+              node_kind: "executable",
+              input_contract: { description: null, artifacts: [], schema: null },
+              output_contract: { description: acceptance.trim(), artifacts: [], schema: null },
+              role_requirement: {
+                role_id: "implementer",
+                responsibility: title.trim(),
+                required_capabilities: [],
+                preferred_capabilities: [],
+              },
+              capability_requirements: [],
+              agent_assignment_constraint: null,
+              policy: {
+                approval_policy: "on_high_risk",
+                permission_scope: {
+                  can_read_files: true,
+                  can_write_files: true,
+                  can_run_commands: false,
+                  can_access_network: false,
+                  can_deploy: false,
+                },
+              },
+              metadata: {
+                intent,
+              },
+              executable_payload: {
+                type: "dispatch",
+                role_id: "implementer",
+                prompt: fullPrompt,
+                project: null,
+                session: null,
+              },
+              loop_config: null,
+              approval_gate_config: null,
+            },
+          });
+        }}
+      >
+        <div className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+          {t("tasks.workbench.nodeWizard.step", { current: step, total: 3 })}
+        </div>
+        <h3 className="mt-2 text-xl font-semibold text-foreground">
+          {t("tasks.workbench.nodeWizard.title")}
+        </h3>
+        {step === 1 && (
+          <div className="mt-5 grid gap-2">
+            {(["implement", "research", "verify"] as const).map((i) => (
+              <button
+                key={i}
+                type="button"
+                className={cn(
+                  "rounded-lg border px-4 py-3 text-left text-sm transition",
+                  intent === i
+                    ? "border-primary/40 bg-primary/10 text-primary"
+                    : "border-border bg-card text-card-foreground hover:bg-accent hover:text-accent-foreground",
+                )}
+                onClick={() => setIntent(i)}
+              >
+                {t(`tasks.workbench.nodeWizard.intents.${i}`)}
+              </button>
+            ))}
+          </div>
+        )}
+        {step === 2 && (
+          <>
+            <label className="mt-5 block text-xs font-medium text-muted-foreground">
+              {t("tasks.workbench.stepTitle")}
+              <input
+                autoFocus
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                className="mt-2 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+              />
+            </label>
+            <label className="mt-4 block text-xs font-medium text-muted-foreground">
+              {t("tasks.workbench.stepPrompt")}
+              <textarea
+                rows={5}
+                value={prompt}
+                onChange={(event) => setPrompt(event.target.value)}
+                className="mt-2 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+              />
+            </label>
+            <label className="mt-4 block text-xs font-medium text-muted-foreground">
+              {t("tasks.workbench.nodeWizard.acceptance")}
+              <textarea
+                rows={3}
+                value={acceptance}
+                onChange={(event) => setAcceptance(event.target.value)}
+                className="mt-2 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+              />
+            </label>
+          </>
+        )}
+        {step === 3 && (
+          <div className="mt-5 space-y-3 rounded-lg border border-border bg-muted/50 p-4 text-sm text-foreground">
+            <div>
+              <span className="text-muted-foreground">{t("tasks.workbench.nodeWizard.intent")}: </span>
+              {t(`tasks.workbench.nodeWizard.intents.${intent}`)}
+            </div>
+            <div>
+              <span className="text-muted-foreground">{t("tasks.workbench.stepTitle")}: </span>
+              {title || "-"}
+            </div>
+            <div>
+              <span className="text-muted-foreground">{t("tasks.workbench.nodeWizard.acceptance")}: </span>
+              {acceptance || "-"}
+            </div>
+          </div>
+        )}
+        <p className="mt-3 text-xs leading-5 text-muted-foreground">
+          {t("tasks.workbench.connectHint")}
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            className="rounded border border-border px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            onClick={onCancel}
+          >
+            {t("common.cancel")}
+          </button>
+          {step > 1 && (
+            <button
+              type="button"
+              className="rounded border border-border px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              onClick={() => setStep((current) => (current === 3 ? 2 : 1))}
+            >
+              {t("tasks.workbench.nodeWizard.back")}
+            </button>
+          )}
+          <button
+            type="submit"
+            disabled={
+              step === 2 &&
+              (!title.trim() || !prompt.trim() || !acceptance.trim())
+            }
+            className="rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
+          >
+            {step === 3
+              ? t("tasks.workbench.createStep")
+              : t("tasks.workbench.nodeWizard.next")}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 export function GraphEditor({
   snapshot,
   graphId,
@@ -167,7 +355,6 @@ export function GraphEditor({
   onNodeSelect,
   applyCommands,
   validateCommands,
-  getDiff,
   lastDiff,
   activeRunId,
   nodeRuns,
@@ -190,11 +377,6 @@ export function GraphEditor({
   const [nodes, setNodes, onNodesChange] = useNodesState<ReactFlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<ReactFlowEdge>([]);
   const [showDispatchForm, setShowDispatchForm] = useState(false);
-  const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
-  const [dispatchIntent, setDispatchIntent] = useState<"implement" | "research" | "verify">("implement");
-  const [dispatchTitle, setDispatchTitle] = useState("");
-  const [dispatchPrompt, setDispatchPrompt] = useState("");
-  const [dispatchAcceptance, setDispatchAcceptance] = useState("");
   // B4「调整节点」编辑表单（UpdateNode）：标题 / 描述 / 验收。
   const [showEditForm, setShowEditForm] = useState(false);
   const [editTitle, setEditTitle] = useState("");
@@ -724,69 +906,9 @@ export function GraphEditor({
         <Controls />
         <MiniMap />
         <Background gap={18} size={1} color="var(--task-canvas-grid)" />
-        <div className="absolute top-4 right-4 z-10 flex max-w-[42rem] flex-wrap items-center justify-end gap-2">
-          <div className="flex items-center gap-2 rounded-lg border border-border bg-[var(--task-canvas-panel-bg)] px-3 py-2 text-xs text-foreground shadow-sm backdrop-blur">
-            <span className="text-muted-foreground">
-              {t("tasks.workbench.revisionStatus.revision")}
-            </span>
-            <span className="font-mono text-foreground">
-              {currentRevisionId ?? "-"}
-            </span>
-            <span
-              className={cn(
-                "rounded px-2 py-0.5 font-medium",
-                canUndo
-                  ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
-                  : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
-              )}
-            >
-              {canUndo
-                ? t("tasks.workbench.revisionStatus.dirty")
-                : t("tasks.workbench.revisionStatus.clean")}
-            </span>
-          </div>
-          <div className="flex items-center gap-2 rounded-lg border border-border bg-[var(--task-canvas-panel-bg)] px-3 py-2 text-xs text-foreground shadow-sm backdrop-blur">
-            <span className="text-muted-foreground">
-              {t("tasks.workbench.semanticZoom.label")}
-            </span>
-            <span className="font-medium">
-              {t(`tasks.workbench.semanticZoom.${semanticZoom}`)}
-            </span>
-          </div>
-          {phaseNodes.length > 0 && (
-            <div className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-border bg-[var(--task-canvas-panel-bg)] p-1 shadow-sm backdrop-blur">
-              <button
-                type="button"
-                className={cn(
-                  "h-7 shrink-0 rounded px-2 text-xs transition",
-                  !phaseFilterId
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                )}
-                onClick={() => setPhaseFilterId(null)}
-              >
-                {t("tasks.workbench.phaseFilter.all")}
-              </button>
-              {phaseNodes.map((phase) => (
-                <button
-                  key={phase.node_id}
-                  type="button"
-                  className={cn(
-                    "h-7 max-w-40 shrink-0 truncate rounded px-2 text-xs transition",
-                    phaseFilterId === phase.node_id
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                  )}
-                  onClick={() => setPhaseFilterId(phase.node_id)}
-                  title={phase.title}
-                >
-                  {phase.title}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-        <div className="absolute top-4 left-4 z-10 flex gap-2">
+        {/* 顶部工具栏：单一容器，左右分组自适应换行，互不遮挡 */}
+        <div className="absolute inset-x-4 top-4 z-20 flex flex-wrap items-start justify-between gap-y-2">
+          <div className="flex flex-wrap items-center gap-2">
           {startRun && (
             <button
               className="cursor-pointer rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
@@ -917,6 +1039,70 @@ export function GraphEditor({
           >
             {t("tasks.orchestration.editNode.toolbarButton")}
           </button>
+          </div>
+          {/* 右侧信息卡片组 */}
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex items-center gap-2 rounded-lg border border-border bg-[var(--task-canvas-panel-bg)] px-3 py-2 text-xs text-foreground shadow-sm backdrop-blur">
+              <span className="text-muted-foreground">
+                {t("tasks.workbench.revisionStatus.revision")}
+              </span>
+              <span className="font-mono text-foreground">
+                {currentRevisionId ?? "-"}
+              </span>
+              <span
+                className={cn(
+                  "rounded px-2 py-0.5 font-medium",
+                  canUndo
+                    ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                    : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+                )}
+              >
+                {canUndo
+                  ? t("tasks.workbench.revisionStatus.dirty")
+                  : t("tasks.workbench.revisionStatus.clean")}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 rounded-lg border border-border bg-[var(--task-canvas-panel-bg)] px-3 py-2 text-xs text-foreground shadow-sm backdrop-blur">
+              <span className="text-muted-foreground">
+                {t("tasks.workbench.semanticZoom.label")}
+              </span>
+              <span className="font-medium">
+                {t(`tasks.workbench.semanticZoom.${semanticZoom}`)}
+              </span>
+            </div>
+            {phaseNodes.length > 0 && (
+              <div className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-border bg-[var(--task-canvas-panel-bg)] p-1 shadow-sm backdrop-blur">
+                <button
+                  type="button"
+                  className={cn(
+                    "h-7 shrink-0 rounded px-2 text-xs transition",
+                    !phaseFilterId
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                  )}
+                  onClick={() => setPhaseFilterId(null)}
+                >
+                  {t("tasks.workbench.phaseFilter.all")}
+                </button>
+                {phaseNodes.map((phase) => (
+                  <button
+                    key={phase.node_id}
+                    type="button"
+                    className={cn(
+                      "h-7 max-w-40 shrink-0 truncate rounded px-2 text-xs transition",
+                      phaseFilterId === phase.node_id
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                    )}
+                    onClick={() => setPhaseFilterId(phase.node_id)}
+                    title={phase.title}
+                  >
+                    {phase.title}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </ReactFlow>
       {lastDiff && !diffDismissed && (
@@ -994,183 +1180,14 @@ export function GraphEditor({
         </div>
       )}
       {showDispatchForm && (
-        <div className="absolute inset-0 z-30 grid place-items-center bg-[var(--task-canvas-overlay-bg)] p-6 backdrop-blur-sm">
-          <form
-            className="w-full max-w-lg rounded-xl border border-border bg-popover p-5 text-popover-foreground shadow-2xl"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (wizardStep < 3) {
-                setWizardStep((current) => (current === 1 ? 2 : 3));
-                return;
-              }
-              if (!dispatchTitle.trim() || !dispatchPrompt.trim() || !dispatchAcceptance.trim()) return;
-              const goalNode = snapshot?.nodes.find((node) => node.node_kind === "goal");
-              const prompt = [
-                `${t("tasks.workbench.nodeWizard.intent")}: ${t(`tasks.workbench.nodeWizard.intents.${dispatchIntent}`)}`,
-                dispatchPrompt.trim(),
-                `${t("tasks.workbench.nodeWizard.acceptance")}: ${dispatchAcceptance.trim()}`,
-              ].join("\n\n");
-              submitCommand({
-                op: "add_node",
-                command_id: `cmd_${crypto.randomUUID()}`,
-                node: {
-                  node_id: `node_${crypto.randomUUID()}`,
-                  parent_id: goalNode?.node_id ?? null,
-                  title: dispatchTitle.trim(),
-                  description: dispatchPrompt.trim(),
-                  node_kind: "executable",
-                  input_contract: { description: null, artifacts: [], schema: null },
-                  output_contract: { description: dispatchAcceptance.trim(), artifacts: [], schema: null },
-                  role_requirement: {
-                    role_id: "implementer",
-                    responsibility: dispatchTitle.trim(),
-                    required_capabilities: [],
-                    preferred_capabilities: [],
-                  },
-                  capability_requirements: [],
-                  agent_assignment_constraint: null,
-                  policy: {
-                    approval_policy: "on_high_risk",
-                    permission_scope: {
-                      can_read_files: true,
-                      can_write_files: false,
-                      can_run_commands: false,
-                      can_access_network: false,
-                      can_deploy: false,
-                    },
-                  },
-                  metadata: {
-                    intent: dispatchIntent,
-                  },
-                  executable_payload: {
-                    type: "dispatch",
-                    role_id: "implementer",
-                    prompt,
-                    project: null,
-                    session: null,
-                  },
-                  loop_config: null,
-                  approval_gate_config: null,
-                },
-              });
-              setWizardStep(1);
-              setDispatchIntent("implement");
-              setDispatchTitle("");
-              setDispatchPrompt("");
-              setDispatchAcceptance("");
-              setShowDispatchForm(false);
-            }}
-          >
-            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-              {t("tasks.workbench.nodeWizard.step", { current: wizardStep, total: 3 })}
-            </div>
-            <h3 className="mt-2 text-xl font-semibold text-foreground">
-              {t("tasks.workbench.nodeWizard.title")}
-            </h3>
-            {wizardStep === 1 && (
-              <div className="mt-5 grid gap-2">
-                {(["implement", "research", "verify"] as const).map((intent) => (
-                  <button
-                    key={intent}
-                    type="button"
-                    className={cn(
-                      "rounded-lg border px-4 py-3 text-left text-sm transition",
-                      dispatchIntent === intent
-                        ? "border-primary/40 bg-primary/10 text-primary"
-                        : "border-border bg-card text-card-foreground hover:bg-accent hover:text-accent-foreground",
-                    )}
-                    onClick={() => setDispatchIntent(intent)}
-                  >
-                    {t(`tasks.workbench.nodeWizard.intents.${intent}`)}
-                  </button>
-                ))}
-              </div>
-            )}
-            {wizardStep === 2 && (
-              <>
-                <label className="mt-5 block text-xs font-medium text-muted-foreground">
-                  {t("tasks.workbench.stepTitle")}
-                  <input
-                    autoFocus
-                    value={dispatchTitle}
-                    onChange={(event) => setDispatchTitle(event.target.value)}
-                    className="mt-2 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
-                  />
-                </label>
-                <label className="mt-4 block text-xs font-medium text-muted-foreground">
-                  {t("tasks.workbench.stepPrompt")}
-                  <textarea
-                    rows={5}
-                    value={dispatchPrompt}
-                    onChange={(event) => setDispatchPrompt(event.target.value)}
-                    className="mt-2 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
-                  />
-                </label>
-                <label className="mt-4 block text-xs font-medium text-muted-foreground">
-                  {t("tasks.workbench.nodeWizard.acceptance")}
-                  <textarea
-                    rows={3}
-                    value={dispatchAcceptance}
-                    onChange={(event) => setDispatchAcceptance(event.target.value)}
-                    className="mt-2 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
-                  />
-                </label>
-              </>
-            )}
-            {wizardStep === 3 && (
-              <div className="mt-5 space-y-3 rounded-lg border border-border bg-muted/50 p-4 text-sm text-foreground">
-                <div>
-                  <span className="text-muted-foreground">{t("tasks.workbench.nodeWizard.intent")}: </span>
-                  {t(`tasks.workbench.nodeWizard.intents.${dispatchIntent}`)}
-                </div>
-                <div>
-                  <span className="text-muted-foreground">{t("tasks.workbench.stepTitle")}: </span>
-                  {dispatchTitle || "-"}
-                </div>
-                <div>
-                  <span className="text-muted-foreground">{t("tasks.workbench.nodeWizard.acceptance")}: </span>
-                  {dispatchAcceptance || "-"}
-                </div>
-              </div>
-            )}
-            <p className="mt-3 text-xs leading-5 text-muted-foreground">
-              {t("tasks.workbench.connectHint")}
-            </p>
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                type="button"
-                className="rounded border border-border px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-                onClick={() => {
-                  setShowDispatchForm(false);
-                  setWizardStep(1);
-                }}
-              >
-                {t("common.cancel")}
-              </button>
-              {wizardStep > 1 && (
-                <button
-                  type="button"
-                  className="rounded border border-border px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-                  onClick={() => setWizardStep((current) => (current === 3 ? 2 : 1))}
-                >
-                  {t("tasks.workbench.nodeWizard.back")}
-                </button>
-              )}
-              <button
-                type="submit"
-                disabled={
-                  wizardStep === 2 &&
-                  (!dispatchTitle.trim() || !dispatchPrompt.trim() || !dispatchAcceptance.trim())
-                }
-                className="rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
-              >
-                {wizardStep === 3
-                  ? t("tasks.workbench.createStep")
-                  : t("tasks.workbench.nodeWizard.next")}
-              </button>
-            </div>
-          </form>
-        </div>
+        <DispatchWizardForm
+          goalNodeId={snapshot?.nodes.find((n) => n.node_kind === "goal")?.node_id ?? null}
+          onSubmit={(cmd) => {
+            submitCommand(cmd);
+            setShowDispatchForm(false);
+          }}
+          onCancel={() => setShowDispatchForm(false)}
+        />
       )}
       {showEditForm && selectedNode && (
         <div className="absolute inset-0 z-30 grid place-items-center bg-[var(--task-canvas-overlay-bg)] p-6 backdrop-blur-sm">
