@@ -1,2 +1,7 @@
 [target.x86_64-pc-windows-gnu]
 linker = "E:\\Claude\\mingw64\\bin\\gcc.exe"
+
+[env]
+# 禁用增量编译：避免 target/debug/incremental 无限累积（曾膨胀到 19G+）。
+# 代价：改代码后全编当前 crate（依赖产物在 deps/ 不重编），开发机可接受。
+CARGO_INCREMENTAL = "0"

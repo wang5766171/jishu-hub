@@ -53,3 +53,9 @@ sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[profile.dev]
+# 缩小 debug 构建产物：默认 debug=2 生成完整调试信息（deps 膨胀主因）。
+# 1 = 只保留行号表（够定位 panic 行、基本栈回溯），deps 显著缩小。
+# 若需 IDE 断点查变量值，临时改回 2。
+debug = 1
