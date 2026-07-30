@@ -2826,6 +2826,15 @@ fn conductor_load_task_state(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // 注册日志后端：pi_rpc_runtime 等模块的 log::info!/warn! 才会真正输出。
+        // dev 模式（npm run tauri dev）打印到终端，release 模式写入日志文件，
+        // 便于排查 Pi RPC 会话卡死等运行时问题（此前 tauri_plugin_log 虽在依赖里
+        // 但未注册，导致所有 log 调用被静默丢弃）。
+        .plugin(
+            tauri_plugin_log::Builder::default()
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
         .setup(|app| {
             let _ = hub::migrate_v0_5_0();
             // Phase 1: 自动注册 Conductor 扩展 + skill pack + 删除旧 skill

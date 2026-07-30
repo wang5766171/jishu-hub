@@ -325,7 +325,7 @@ async fn pi_rpc_connection_loop(
             cmd = cmd_future => {
                 match cmd {
                     Some(AcpCommand::Prompt(msg)) => {
-                        log::info!("Pi RPC loop received Prompt command");
+                        log::info!("Pi RPC loop received Prompt command (state={})", loop_state_name(&state));
                         match &mut state {
                             LoopState::Idle => {
                                 let msg = apply_resolved_session_prompt_injection(
@@ -337,12 +337,14 @@ async fn pi_rpc_connection_loop(
                                     "type": "prompt",
                                     "message": msg
                                 })).await?;
+                                log::info!("Pi RPC prompt sent to Pi ({} bytes)", msg.len());
                                 state = LoopState::Prompting;
                             }
                             LoopState::Prompting => {
                                 log::warn!("Pi RPC prompt ignored: still in Prompting state");
                             }
                             LoopState::CancelPending { pending_prompt } => {
+                                log::warn!("Pi RPC prompt buffered: still CancelPending (awaiting agent_settled after abort)");
                                 *pending_prompt = Some(msg);
                             }
                         }
@@ -455,7 +457,7 @@ async fn pi_rpc_connection_loop(
                                     "prompt" | "steer" | "follow_up" => {
                                         if success {
                                             // Prompt accepted, events will follow
-                                            log::debug!("Pi RPC response for {}: success=true", response_cmd);
+                                            log::info!("Pi RPC response for {}: success=true", response_cmd);
                                         } else {
                                             log::error!("Pi RPC response for {}: success=false", response_cmd);
                                             let err_msg = msg
@@ -662,6 +664,7 @@ async fn pi_rpc_connection_loop(
                             flush_buf(&emit, &session_id, &mut buf);
                             last_flush = std::time::Instant::now();
                         } else if pi_prompt_is_settled(event_type) {
+                            log::info!("Pi RPC agent_settled received (state={})", loop_state_name(&state));
                             if matches!(state, LoopState::CancelPending { .. }) {
                                 pending_turn_complete = Some(NormalizedEvent::TurnComplete {
                                     reason: TurnEndReason::Aborted,
@@ -1189,6 +1192,15 @@ fn handle_hub_invoke(
 
 fn pi_prompt_is_settled(event_type: &str) -> bool {
     event_type == "agent_settled"
+}
+
+/// 诊断辅助：把 LoopState 转成可读名称，用于 log 行。
+fn loop_state_name(state: &LoopState) -> &'static str {
+    match state {
+        LoopState::Idle => "Idle",
+        LoopState::Prompting => "Prompting",
+        LoopState::CancelPending { .. } => "CancelPending",
+    }
 }
 
 fn flush_buf(emit: &AcpEventEmit, session_id: &str, buf: &mut Vec<NormalizedEvent>) {
