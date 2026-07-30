@@ -33,7 +33,7 @@ const pkgsToUpdate = [
   "packages/ai/package.json",
   "packages/coding-agent/package.json",
   "packages/tui/package.json",
-  "packages/orchestrator/package.json",
+  "packages/server/package.json",
 ];
 
 for (const pkgPath of pkgsToUpdate) {
@@ -49,7 +49,7 @@ for (const pkgPath of pkgsToUpdate) {
       "@earendil-works/pi-ai",
       "@earendil-works/pi-tui",
       "@earendil-works/pi-coding-agent",
-      "@earendil-works/pi-orchestrator",
+      "@earendil-works/pi-server",
     ];
     for (const depType of ["dependencies", "devDependencies", "peerDependencies"]) {
       if (json[depType]) {

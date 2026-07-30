@@ -55,9 +55,9 @@
 |------|-----|
 | 上游仓库 | `https://github.com/earendil-works/pi` |
 | 自有 fork | `https://github.com/wang5766171/pi` |
-| 当前维护分支 | `release_v0.80.10-8` |
+| 当前维护分支 | `release_v0.83.0-8` |
 | `.gitmodules` URL | `https://github.com/wang5766171/pi` |
-| `.gitmodules` branch | `release_v0.80.10-8` |
+| `.gitmodules` branch | `release_v0.83.0-8` |
 
 ## 1.5 日常源码变动流程
 
@@ -118,6 +118,57 @@
 ---
 
 # 第二部分：改动记录
+
+## 合并上游 v0.83.0（release_v0.83.0-8）
+
+### 2026-07-30 | 合并上游 v0.83.0 并保留全部第 8 版自研能力
+
+**升级范围**：上游 `earendil-works/pi` 从基线 `v0.80.10` 跨越到 `v0.83.0`（v0.81.0 / v0.81.1 / v0.82.0 / v0.82.1 / v0.83.0 共 5 个版本、204 commits、含一次 TypeBox 1.3.7 breaking change）。按版本规则（§1.3），Pi 版本升至 `0.83.0`、自研尾号顺延保持 `-8`，完整版本号 `0.83.0-8`，新分支 `release_v0.83.0-8`。
+
+### 改动总览（逐项判定上游 v0.83.0 是否已等价实现自研能力）
+
+**结论：本次升级范围内没有任何一项第 8 版自研能力被开源等价实现，全部按新代码结构保留/适配，不做去自研替换。**
+
+| 第 8 版自研能力 | v0.83.0 上游状态 | 处理 |
+|---|---|---|
+| `multiSelect` 扩展 UI API（types/runner/rpc-mode/rpc-types/interactive-mode 五文件） | 上游仍只有 select/confirm/input/notify/editor/setStatus 等，**无 multiSelect** | **适配保留**。test merge 已确认五文件全部 auto-merge 无冲突，按 v0.83.0 新结构通过全仓 tsgo 类型检查与 biome |
+| `agent_end.willContinue` | 上游 v0.80.10 已引入 `agent_settled`，上一版已采用上游；本仓库 `agent-session.ts` 零 fork 改动 | **无需处理**（已与上游对齐，v0.83.0 保留 `agent_settled` 生命周期）|
+| `build-bundle.mjs` + `runtime-deps.json` | 上游无统一依赖清单机制 | **适配保留**，packages 列表由 `orchestrator` 改 `server`（见下）|
+| `husky` prepare 安全化（第1版） | 上游 v0.83.0 仍 `prepare: husky` 强依赖 | **保留** |
+| `packages/ai` build 去 `generate-models` 卡点（第2版） | 上游 v0.83.0 仍 `build: npm run generate-models && build:offline` | **采用上游新结构**（见下「ai build 架构变化」），不再沿用旧自研 |
+| `pi` CLI → `jishu` 命名（第2版） | 上游 v0.83.0 仍 `bin: {pi}` | **保留**（`coding-agent/package.json` 的 `bin.jishu`）|
+| `.publish-stage/` gitignore（第7版） | 上游未覆盖 | **保留** |
+| `request_user_input` 扩展源 | 已移交主仓纳管，fork 无源码 | **无需处理** |
+
+### 上游结构变化与硬适配点
+
+1. **`orchestrator` 包改名为 `server`**（v0.81.0，commit `8495f9d0d`）：npm 名 `@earendil-works/pi-orchestrator` → `@earendil-works/pi-server`。三处同步：
+   - fork `build-bundle.mjs` 的 packages 扫描列表 `'orchestrator'` → `'server'`；
+   - 主仓 `scripts/upgrade-version.mjs` 的 `pkgsToUpdate`（`packages/orchestrator/package.json`→`packages/server/package.json`）与 `internalDeps`（`@earendil-works/pi-orchestrator`→`@earendil-works/pi-server`）；
+   - 主仓 `scripts/publish-pi.mjs` 的 `nameMapping` / `replaceDepWithAlias` / `publishOrder` / shrinkwrap `earendilToJishu` 映射全部 `orchestrator`→`server`。**主仓对外发布的 npm 包名仍保持 `@jishu-hub/jishu-agent-orchestrator` 不变**（仅改 fork 侧 upstream package 引用键），以维持已发布版本名的连续性。
+
+2. **ai build 架构变化（重要，废弃旧自研）**：v0.82.x 上游重构了模型数据机制——旧版（v0.80.10）模型数据以 `src/models.generated.ts`（TS 文件，已提交）形式存在，`tsgo` 编译即含；新版（v0.83.0）拆为 `src/providers/data/*.json`（**未提交、被 .gitignore**）+ 聚合器 `models.generated.ts`（只含 import）。因此 `tsgo` 不再复制 JSON 数据，构建必须：先 `generate-models`（联网生成 data）→ `build:offline`（`check:model-data` 校验 + `tsgo` 编译 + `cp src/providers/data dist/providers/data`）。**旧的「去掉 generate-models 网络卡点、直接 tsgo」自研方案在 v0.83.0 结构下会产出无模型数据的 dist（构建即坏），故废弃旧自研、改采上游 `build: generate-models && build:offline` 完整流程**。generate-models 本身不依赖 canvas（Windows 易失败的 native 依赖），且主仓 Full 打包（pack-pi.mjs）联网环境可正常运行，已验证一次完整 `npm run build` 通过。
+
+3. **新增 `storage/sqlite-node` 与 `evals` 包**：经核查运行时包（agent/ai/coding-agent/tui/server）依赖图**不依赖** `pi-storage` / `pi-evals`（前者是可选会话存储后端、后者是测试框架，均独立 dev 包）。二者**不纳入** runtime-deps 清单与 publish 流水线，无需改造。为让 `npm install` 在 monorepo workspace 内正确解析，已把这两个包内部对 `@earendil-works/*` 的 `^0.83.0` caret 引用钉为 `0.83.0-8`（与其它包一致），避免 npm 去外部 registry 解析 `^0.83.0` 触发 min-release-age 失败。二者自身 version 保留上游 `0.83.0`（非发布包，最小化与上游差异）。
+
+4. **TypeBox 升至 1.3.7（v0.83.0 Breaking Change）**：移除 `Type.Base`/`Type.Awaited`/`Type.Promise`/`Type.Options`/`Value.Mutate` 等废弃 API，修复 nullable array 校验。这是上游源码内部变更，合并自动带上；fork 的 multiSelect / 扩展代码不使用被移除的 API，全仓 tsgo 通过，无需额外适配。
+
+### 锁文件与版本同步
+
+所有 `package.json`（根 + agent/ai/coding-agent/tui/server）version 与内部 `@earendil-works/*` 依赖统一为 `0.83.0-8`；`package-lock.json` 经 `npm install` 同步 v0.83.0 依赖树（含新增 storage/evals workspace）；`npm-shrinkwrap.json` 与 `install-lock` 由上游 `generate-coding-agent-*` 脚本重新生成（coding-agent shrinkwrap 139 包、install-lock 140 包，各 10 platform-specific）。
+
+### 验证结果
+
+- Pi `npm run check` 全套通过：Biome（878 文件无 warning）、pinned-deps、ts-imports、shrinkwrap up-to-date、install-lock up-to-date、全仓 `tsgo --noEmit`、browser-smoke。
+- Pi 全 workspace build 通过（tui→ai[含 generate-models]→agent→storage/sqlite-node→coding-agent[含 build-bundle]→server）；CLI 输出 `0.83.0-8`；`cli.js` / `rpc-entry.js` 各一个 shebang，`index.js` 无 shebang；`runtime-deps.json` 为 27 项（覆盖全部 provider SDK：openai、@anthropic-ai/sdk、@google/genai、@aws-sdk/client-bedrock-runtime、@mistralai/mistralai 等）；multiSelect 代码已正确打包进 cli.js（3 处引用）。
+- husky pre-commit 钩子在 fork 提交时已重跑上述全套 check 并通过（`PI_ALLOW_LOCKFILE_CHANGE=1` 放行 lockfile 变更守卫）。
+- 本次未跑全量 `npm test`：参考上一版（v0.80.10-8）记录，Windows 环境全量测试有历史性不绿项（路径分隔/symlink/权限/缺 fd/全局包探针/trust TUI），本次仅跑类型检查、lint 与 build，不把全量测试结果写成全绿。
+
+### 主仓配套（本次同步落地）
+
+`third_party/pi` 指针指向 fork `release_v0.83.0-8` 的本地 commit `3f3d1d710`；`.gitmodules` branch 改为 `release_v0.83.0-8`；`PI_AGENT_VERSION`（`src-tauri/src/agent/jishu_self/mod.rs`）与 Lite 安装绑定（`src-tauri/src/lib.rs` 的 `JISHU_AGENT_BINDING_START/END` 区块 + 提示日志）同步为 `0.83.0-8`；`scripts/upgrade-version.mjs` 与 `scripts/publish-pi.mjs` 已适配 orchestrator→server 改名。**本次为本地提交，未 push**：fork 远端 `release_v0.83.0-8` 分支与主仓远端均未改动，主仓发版 push 前必须先 `git push origin release_v0.83.0-8`（fork）使该 commit 在远端可达。
+
+---
 
 ## 合并上游 v0.80.10（release_v0.80.10-8）
 

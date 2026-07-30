@@ -922,7 +922,7 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
     eprintln!("[jishu-install] target (pi_agent_dir) = {}", target);
 
     if !source.exists() {
-        eprintln!("[jishu-install] pi-bundle NOT found → Lite mode: npm install -g @jishu-hub/jishu-agent@0.80.2-8");
+        eprintln!("[jishu-install] pi-bundle NOT found → Lite mode: npm install -g @jishu-hub/jishu-agent@0.83.0-8");
         // LITE MODE: If bundled pi is missing, fallback to installing from NPM globally
         // This is safe because if we get here, it means the user clicked install and we are in lite build
         // JISHU_AGENT_BINDING_START
@@ -931,7 +931,7 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
             vec![
                 "install".to_string(),
                 "-g".to_string(),
-                "@jishu-hub/jishu-agent@0.80.10-8".to_string(),
+                "@jishu-hub/jishu-agent@0.83.0-8".to_string(),
             ],
         );
         // JISHU_AGENT_BINDING_END
