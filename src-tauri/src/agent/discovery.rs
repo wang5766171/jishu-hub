@@ -306,6 +306,7 @@ pub fn default_candidates_for(name: &str) -> Vec<String> {
 
         match name {
             "claude" => vec![
+                format!("{}\\.local\\bin\\claude", userprofile),
                 format!("{}\\npm\\claude.cmd", appdata),
                 format!("{}\\.bun\\bin\\claude", userprofile),
             ],
@@ -333,6 +334,7 @@ pub fn default_candidates_for(name: &str) -> Vec<String> {
     {
         match name {
             "claude" => vec![
+                format!("{}/.local/bin/claude", home_str),
                 format!("{}/.bun/bin/claude", home_str),
                 "/usr/local/bin/claude".to_string(),
             ],
