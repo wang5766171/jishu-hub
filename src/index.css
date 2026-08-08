@@ -144,6 +144,14 @@ select option {
   --tool-error: hsl(0 84% 60%);
   --tool-aborted: hsl(240 5% 50%);
 
+  /* Node run status colors (light: grayscale — distinguished by icon shape only) */
+  --node-status-running: var(--color-muted-foreground);
+  --node-status-succeeded: var(--color-muted-foreground);
+  --node-status-failed: var(--color-muted-foreground);
+  --node-status-approval: var(--color-muted-foreground);
+  --node-status-retry: var(--color-muted-foreground);
+  --node-status-skipped: var(--color-muted-foreground);
+
   /* Tool kind badge colors */
   --tool-bg-file-read: hsl(220 90% 96%);
   --tool-bg-file-edit: hsl(150 60% 95%);
@@ -225,6 +233,14 @@ select option {
   --task-node-shadow: 0 10px 24px hsl(221 83% 53% / 0.10);
   --task-edge-control: hsl(221 83% 53%);
   --task-edge-data: hsl(172 66% 38%);
+
+  /* Node run status colors (colorful) */
+  --node-status-running: hsl(217 91% 60%);
+  --node-status-succeeded: hsl(142 71% 45%);
+  --node-status-failed: hsl(0 84% 60%);
+  --node-status-approval: hsl(38 92% 50%);
+  --node-status-retry: hsl(25 95% 53%);
+  --node-status-skipped: hsl(240 5% 50%);
 }
 
 /* === Dark theme === */
@@ -282,6 +298,14 @@ select option {
   --tool-success: hsl(142 71% 55%);
   --tool-error: hsl(0 84% 65%);
   --tool-aborted: hsl(240 5% 45%);
+
+  /* Node run status colors (dark) */
+  --node-status-running: hsl(217 91% 65%);
+  --node-status-succeeded: hsl(142 71% 55%);
+  --node-status-failed: hsl(0 84% 65%);
+  --node-status-approval: hsl(38 92% 55%);
+  --node-status-retry: hsl(25 95% 58%);
+  --node-status-skipped: hsl(240 5% 45%);
 
   --tool-bg-file-read: hsl(220 30% 18%);
   --tool-bg-file-edit: hsl(150 30% 16%);

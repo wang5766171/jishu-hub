@@ -157,15 +157,15 @@ export const ProcessStepsPanel = memo(function ProcessStepsPanel({
   const statusColor = (() => {
     switch (runStatus) {
       case "running":
-        return "text-primary";
+        return "text-[var(--node-status-running)]";
       case "paused":
-        return "text-orange-500";
+        return "text-[var(--node-status-retry)]";
       case "awaiting_human":
-        return "text-amber-500";
+        return "text-[var(--node-status-approval)]";
       case "completed":
-        return "text-emerald-500";
+        return "text-[var(--node-status-succeeded)]";
       case "failed":
-        return "text-red-500";
+        return "text-[var(--node-status-failed)]";
       default:
         return "text-muted-foreground";
     }

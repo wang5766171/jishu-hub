@@ -62,9 +62,11 @@ function normalizeStatus(
  * 与设计 §4.3 表完全对齐。
  *
  * 视觉规则：
- * - 已完成/失败/待审批等终态：实心彩色圆底 + 白色图标，一眼可辨；
+ * - 已完成/失败/待审批等终态：实心圆底 + 白色图标，一眼可辨；
  * - 待执行：灰色空心圆；
- * - 执行中/重试中：主色旋转图标。
+ * - 执行中/重试中：旋转图标。
+ * 颜色全部走 --node-status-* 语义变量：浅色主题下统一灰度（仅靠图标
+ * 形状区分状态），colorful/dark 主题下才彩色化，与 --icon-* 范式一致。
  */
 export function getStepStatusVisual(
   status: NodeRunStatus | null | undefined,
@@ -72,41 +74,43 @@ export function getStepStatusVisual(
   switch (normalizeStatus(status)) {
     case "running":
       return {
-        icon: <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />,
-        colorClass: "text-primary",
+        icon: (
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--node-status-running)]" />
+        ),
+        colorClass: "text-[var(--node-status-running)]",
         labelKey: "task.step.running",
         defaultLabel: "执行中",
       };
     case "succeeded":
       return {
         icon: (
-          <span className={`${statusBadge} bg-emerald-500 text-white`}>
+          <span className={`${statusBadge} bg-[var(--node-status-succeeded)] text-white`}>
             <StatusCheck />
           </span>
         ),
-        colorClass: "text-emerald-500",
+        colorClass: "text-[var(--node-status-succeeded)]",
         labelKey: "task.step.succeeded",
         defaultLabel: "已完成",
       };
     case "failed":
       return {
         icon: (
-          <span className={`${statusBadge} bg-red-500 text-white`}>
+          <span className={`${statusBadge} bg-[var(--node-status-failed)] text-white`}>
             <StatusX />
           </span>
         ),
-        colorClass: "text-red-500",
+        colorClass: "text-[var(--node-status-failed)]",
         labelKey: "task.step.failed",
         defaultLabel: "失败",
       };
     case "awaiting_approval":
       return {
         icon: (
-          <span className={`${statusBadge} bg-amber-500 text-white`}>
+          <span className={`${statusBadge} bg-[var(--node-status-approval)] text-white`}>
             <StatusAlert />
           </span>
         ),
-        colorClass: "text-amber-500",
+        colorClass: "text-[var(--node-status-approval)]",
         labelKey: "task.step.awaitingApproval",
         defaultLabel: "待审批",
       };
@@ -114,22 +118,22 @@ export function getStepStatusVisual(
     case "repairing":
       return {
         icon: (
-          <span className={`${statusBadge} bg-orange-500 text-white`}>
+          <span className={`${statusBadge} bg-[var(--node-status-retry)] text-white`}>
             <StatusRotate animate />
           </span>
         ),
-        colorClass: "text-orange-500",
+        colorClass: "text-[var(--node-status-retry)]",
         labelKey: "task.step.retrying",
         defaultLabel: "重试中",
       };
     case "skipped":
       return {
         icon: (
-          <span className={`${statusBadge} bg-muted-foreground/50 text-white`}>
+          <span className={`${statusBadge} bg-[var(--node-status-skipped)] text-white`}>
             <StatusMinus />
           </span>
         ),
-        colorClass: "text-muted-foreground/40",
+        colorClass: "text-[var(--node-status-skipped)]",
         labelKey: "task.step.skipped",
         defaultLabel: "已跳过",
       };
