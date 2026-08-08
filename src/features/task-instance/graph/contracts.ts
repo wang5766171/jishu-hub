@@ -106,7 +106,7 @@ export const approvalResolutionDraftSchema = z.object({
 
 export type ApprovalResolutionDraft = z.infer<typeof approvalResolutionDraftSchema>;
 
-/** 后端 resolve_approval IPC 实际接收的载荷（camelCase，匹配 use-task-graph.resolveApproval）。 */
+/** 后端 resolve_approval IPC 实际接收的载荷（camelCase）。前端在轮询到 pending approval 时静默自动通过（全自动执行，无人工治理面）。 */
 export interface BackendApprovalResolution {
   approvalId: string;
   approved: boolean;

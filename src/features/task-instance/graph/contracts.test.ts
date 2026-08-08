@@ -7,7 +7,7 @@ import {
   toBackendApprovalResolution,
 } from "./contracts";
 
-describe("task governance contracts (S9)", () => {
+describe("task run contracts (approval resolution + node status)", () => {
   it("NODE_RUN_STATUSES covers the full 12-value node run status set", () => {
     // 与后端 orchestrator::domain::run::NodeRunStatus 的 serde snake_case 值同构。
     expect(NODE_RUN_STATUSES).toEqual([
@@ -27,7 +27,7 @@ describe("task governance contracts (S9)", () => {
   });
 
   it("getInterventionModeForStatus maps every node run status (switch is exhaustive)", () => {
-    // 治理面据此决定渲染审批卡 / recovery 按钮 / 只读。
+    // 节点状态 → 干预形态映射（驱动步骤栏状态图标与状态语义）。
     // 若后端新增状态而本表遗漏，此断言会失败（防静默降级）。
     for (const status of NODE_RUN_STATUSES) {
       const mode = getInterventionModeForStatus(status);

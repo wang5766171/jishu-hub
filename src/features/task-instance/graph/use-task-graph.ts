@@ -1,7 +1,10 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { planPoll, filterUnseenEvents } from "./polling-delta";
+import { useTranslation } from "react-i18next";
+import type { Message } from "@/types";
+import { planPoll, filterUnseenEvents, mergeNodeRunsStable } from "./polling-delta";
+import { eventToMessage } from "../run-event-messages";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -314,6 +317,7 @@ function nodeRunMapFromProjection(projection: RunProjection): Record<string, Nod
 }
 
 export function useTaskGraph() {
+  const { t } = useTranslation();
   const [graph, setGraph] = useState<TaskGraph | null>(null);
   const [snapshot, setSnapshot] = useState<GraphSnapshot | null>(null);
   const [revision, setRevision] = useState<GraphRevision | null>(null);
@@ -324,7 +328,6 @@ export function useTaskGraph() {
   const [runStatus, setRunStatus] = useState<RunStatusValue | null>(null);
   const [nodeRuns, setNodeRuns] = useState<Record<string, NodeRun>>({});
   const [events, setEvents] = useState<TaskEvent[]>([]);
-  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactRef[]>([]);
   const [revisions, setRevisions] = useState<GraphRevision[]>([]);
   const [redoRevisionIds, setRedoRevisionIds] = useState<string[]>([]);
@@ -338,6 +341,45 @@ export function useTaskGraph() {
   const [lastDiff, setLastDiff] = useState<RevisionDiff | null>(null);
   const eventRunRef = useRef<string | null>(null);
   const eventCursorRef = useRef(0);
+  // T8-P1b：自动审批已处理的 approval_id 集合（防重）。用户要求去掉人工审批、全自动执行，
+  // 轮询到 pending approval 时前端自动通过，避免卡在审批 gate（此前点击"开始执行"即卡死的根因）。
+  const autoApprovedRef = useRef<Set<string>>(new Set());
+
+  // F1：轮询路径统一走同值跳变，runStatus 无变化时不触发下游重渲染。
+  const setRunStatusStable = useCallback((next: RunStatusValue | null) => {
+    setRunStatus((prev) => (prev === next ? prev : next));
+  }, []);
+
+  // 节点标题映射：事件 payload 多数只带 node_id，但 attempt_started 等只带 node_run_id
+  //（见 events/mod.rs AttemptStartedPayload —— 无 node_id 字段），需同时按 node_run_id 建索引，
+  // 否则这类事件会回退成裸 node_run_id（如 nr_9d…）。nodeRuns 提供 node_run_id↔node_id 关联。
+  const nodeTitleMap = useMemo(() => {
+    const map = new Map<string, string>();
+    if (snapshot) {
+      for (const n of snapshot.nodes) map.set(n.node_id, n.title);
+    }
+    for (const run of Object.values(nodeRuns)) {
+      if (run.node_run_id && run.node_id) {
+        const title = map.get(run.node_id);
+        if (title) map.set(run.node_run_id, title);
+      }
+    }
+    return map;
+  }, [snapshot, nodeRuns]);
+  const nodeCount = snapshot?.nodes.length ?? 0;
+
+  // F1：主任务会话消息由统一轮询维护的 events 派生（替代已下线的 useRunEventStream）。
+  // T8-P1b：投影为主对话口吻（驱动/监控/汇总），传入节点标题与 run 收尾汇总计数。
+  const projectedMessages = useMemo(() => {
+    const resolved = events.filter((e) => e.event_type === "node_resolved");
+    const summary = {
+      succeeded: resolved.filter((e) => (e.payload as { final_status?: string })?.final_status === "succeeded").length,
+      failed: resolved.filter((e) => (e.payload as { final_status?: string })?.final_status === "failed").length,
+    };
+    return events
+      .map((event) => eventToMessage(event, t, nodeTitleMap, { nodeCount, summary }))
+      .filter((m): m is Message => m !== null);
+  }, [events, t, nodeTitleMap, nodeCount]);
 
   useEffect(() => {
     if (!graph?.graph_id) return;
@@ -361,6 +403,17 @@ export function useTaskGraph() {
     };
   }, [graph?.graph_id]);
 
+  // T8-P1b：自动审批。用户要求去掉人工审批、全自动执行。轮询到 pending approval 时
+  // 前端自动通过（记录已处理 id 防重），让流程不被审批 gate 卡死。
+  const autoApprovePending = useCallback((pending: ApprovalRequest[]) => {
+    for (const a of pending) {
+      if (autoApprovedRef.current.has(a.approval_id)) continue;
+      autoApprovedRef.current.add(a.approval_id);
+      invoke("orchestrator_resolve_approval", { approvalId: a.approval_id, approved: true })
+        .catch((err) => console.warn("auto-approve failed", err));
+    }
+  }, []);
+
   const loadRunDetails = useCallback(async (runId: string) => {
     if (eventRunRef.current !== runId) {
       eventRunRef.current = runId;
@@ -382,9 +435,9 @@ export function useTaskGraph() {
         return unseen.length === 0 ? current : [...current, ...unseen];
       });
     }
-    setApprovals(nextApprovals);
+    autoApprovePending(nextApprovals);
     setArtifacts(nextArtifacts);
-  }, []);
+  }, [autoApprovePending]);
 
   const restoreLatestRun = useCallback(async (graphId: string) => {
     const runs = await invoke<GraphRun[]>("orchestrator_list_runs", { graphId });
@@ -396,20 +449,19 @@ export function useTaskGraph() {
     setActiveRunRevisionId(active?.active_revision_id ?? null);
     setActiveRunSeq(active?.run_seq ?? null);
     setLastRunId(active ? null : displayed?.run_id ?? null);
-    setRunStatus(normalizeRunStatusValue(displayed?.status));
+    setRunStatusStable(normalizeRunStatusValue(displayed?.status));
     if (!displayed) {
       setNodeRuns({});
       setEvents([]);
-      setApprovals([]);
-      setArtifacts([]);
+        setArtifacts([]);
       return;
     }
     const projection = await invoke<RunProjection>("orchestrator_get_run_projection", {
       runId: displayed.run_id,
     });
-    setNodeRuns(nodeRunMapFromProjection(projection));
+    setNodeRuns((current) => mergeNodeRunsStable(current, nodeRunMapFromProjection(projection)));
     await loadRunDetails(displayed.run_id);
-  }, [loadRunDetails]);
+  }, [loadRunDetails, setRunStatusStable]);
 
   const loadGraph = useCallback(async (graphId: string) => {
     setLoading(true);
@@ -457,7 +509,6 @@ export function useTaskGraph() {
     setRunStatus(null);
     setNodeRuns({});
     setEvents([]);
-    setApprovals([]);
     setArtifacts([]);
     setRevisions([]);
     setRedoRevisionIds([]);
@@ -549,8 +600,7 @@ export function useTaskGraph() {
       setRunStatus(null);
       setNodeRuns({});
       setEvents([]);
-      setApprovals([]);
-      setArtifacts([]);
+        setArtifacts([]);
       setProposal(null);
       return g;
     } catch (err: unknown) {
@@ -731,30 +781,7 @@ export function useTaskGraph() {
     setProposal(null);
   }, [applyCommands, proposal, revision]);
 
-  const startRun = useCallback(async () => {
-    if (!graph || !revision) return;
-    try {
-      const run = await invoke<GraphRun>("orchestrator_start_run", {
-        graphId: graph.graph_id,
-        revisionId: revision.revision_id
-      });
-      setActiveRunId(run.run_id);
-      setActiveRunRevisionId(run.active_revision_id);
-      setActiveRunSeq(run.run_seq);
-      setLastRunId(null);
-      setRunStatus(normalizeRunStatusValue(run.status));
-      setNodeRuns({});
-      setEvents([]);
-      eventRunRef.current = run.run_id;
-      eventCursorRef.current = 0;
-      setApprovals([]);
-      setArtifacts([]);
-    } catch (err: unknown) {
-      console.error("Failed to start run:", err);
-      setError(taskErrorMessage(err));
-    }
-  }, [graph, revision]);
-
+  // F1 统一轮询（修 B-1/B-6）：本函数由下方轮询 effect 驱动，不再对外导出。
   const pollRunProjection = useCallback(async () => {
     if (!activeRunId) return;
     try {
@@ -793,9 +820,10 @@ export function useTaskGraph() {
         const projection = await invoke<RunProjection>("orchestrator_get_run_projection", {
           runId: activeRunId,
         });
-        setNodeRuns(nodeRunMapFromProjection(projection));
+        // 引用稳定化：nodeRuns 无实质变化时复用旧对象（frozenNodeIds 等派生不重建）。
+        setNodeRuns((current) => mergeNodeRunsStable(current, nodeRunMapFromProjection(projection)));
         const polledStatus = normalizeRunStatusValue(projection.status);
-        setRunStatus(polledStatus);
+        setRunStatusStable(polledStatus);
         setActiveRunRevisionId(projection.revision_id);
         setActiveRunSeq(projection.run_seq);
 
@@ -818,13 +846,27 @@ export function useTaskGraph() {
             ? invoke<ArtifactRef[]>("orchestrator_list_artifacts", { runId: activeRunId })
             : Promise.resolve([]),
         ]);
-        if (plan.refreshApprovals) setApprovals(nextApprovals);
+        if (plan.refreshApprovals) {
+          autoApprovePending(nextApprovals);
+        }
         if (plan.refreshArtifacts) setArtifacts(nextArtifacts);
       }
     } catch (err) {
       console.error("Failed to poll run projection:", err);
     }
-  }, [activeRunId]);
+  }, [activeRunId, setRunStatusStable, autoApprovePending]);
+
+  // F1 轮询主循环：有活跃 run（非终态）时每秒拉增量事件 → planPoll → 按需拉
+  // projection。终态由 pollRunProjection 内清 activeRunId，本 effect 随之停止。
+  // 空载（无新事件）时本轮零 setState、零额外 IPC。
+  useEffect(() => {
+    if (!activeRunId) return;
+    pollRunProjection().catch(console.error);
+    const timer = setInterval(() => {
+      pollRunProjection().catch(console.error);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [activeRunId, pollRunProjection]);
 
   const applyDraftToRun = useCallback(async () => {
     if (
@@ -856,8 +898,8 @@ export function useTaskGraph() {
       const projection = await invoke<RunProjection>("orchestrator_get_run_projection", {
         runId: activeRunId,
       });
-      setNodeRuns(nodeRunMapFromProjection(projection));
-      setRunStatus(normalizeRunStatusValue(projection.status));
+      setNodeRuns((current) => mergeNodeRunsStable(current, nodeRunMapFromProjection(projection)));
+      setRunStatusStable(normalizeRunStatusValue(projection.status));
       await loadRunDetails(activeRunId);
       return updatedRun;
     } catch (err: unknown) {
@@ -873,6 +915,7 @@ export function useTaskGraph() {
     activeRunSeq,
     loadRunDetails,
     revision,
+    setRunStatusStable,
   ]);
 
   const pauseRun = useCallback(async () => {
@@ -899,35 +942,6 @@ export function useTaskGraph() {
     setActiveRunSeq(null);
   }, [activeRunId, loadRunDetails]);
 
-  const resolveApproval = useCallback(async (approvalId: string, approved: boolean) => {
-    await invoke("orchestrator_resolve_approval", { approvalId, approved });
-    const runId = activeRunId ?? lastRunId;
-    if (runId) {
-      await loadRunDetails(runId);
-    }
-  }, [activeRunId, lastRunId, loadRunDetails]);
-
-  const chooseRecovery = useCallback(async (
-    nodeRunId: string,
-    strategy: "retry_now" | "skip_node" | "fail_node",
-    reason: string,
-  ) => {
-    const updated = await invoke<NodeRun>("orchestrator_choose_recovery", {
-      nodeRunId,
-      strategy,
-      reason,
-    });
-    setNodeRuns((current) => ({
-      ...current,
-      [updated.node_id]: updated,
-    }));
-    const runId = activeRunId ?? lastRunId;
-    if (runId) {
-      await loadRunDetails(runId);
-    }
-    return updated;
-  }, [activeRunId, lastRunId, loadRunDetails]);
-
   return {
     graph,
     snapshot,
@@ -938,7 +952,7 @@ export function useTaskGraph() {
     runStatus,
     nodeRuns,
     events,
-    approvals,
+    projectedMessages,
     artifacts,
     revisions,
     proposal,
@@ -962,18 +976,14 @@ export function useTaskGraph() {
     canRedo: redoRevisionIds.length > 0,
     undo,
     redo,
-    startRun,
     applyDraftToRun,
     canApplyDraftToRun:
       !!activeRunId &&
       !!revision &&
       !!activeRunRevisionId &&
       revision.revision_id !== activeRunRevisionId,
-    pollRunProjection,
     pauseRun,
     resumeRun,
     cancelRun,
-    resolveApproval,
-    chooseRecovery,
   };
 }

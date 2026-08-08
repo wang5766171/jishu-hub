@@ -27,6 +27,29 @@ export function normalizeAgentId(raw: string | null | undefined): string {
   return raw === LEGACY_JISHU_AGENT_ALIAS ? JISHU_SELF_AGENT_ID : raw;
 }
 
+/**
+ * 任务实例摘要（与后端 task_launch.rs 的 TaskLaunchInstance 1:1 映射）。
+ * 原为 chat-page 局部接口，减法重构后抽出为共享类型，供 TaskSidebar 复用。
+ */
+export interface TaskLaunchInstanceSummary {
+  task_id: string;
+  project_root: string;
+  title: string;
+  skill_id: string;
+  planner_agent_id?: string;
+  status: string;
+  current_phase: string;
+  requirement_file?: string | null;
+  requirement_session_id?: string | null;
+  planning_session_id?: string | null;
+  graph_id?: string | null;
+  active_run_id?: string | null;
+  last_run_id?: string | null;
+  run_status?: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
 /** TaskInstance 生命周期状态（4 值，持久化到 task_instance.status）。 */
 export type TaskInstanceStatus =
   | "requirements_discussing"
@@ -46,9 +69,6 @@ export type TaskRunStatus =
 export type ExecutionChatScope =
   | { kind: "run" } // 主任务会话（task_event 投影，无真实 session_id）
   | { kind: "node"; nodeId: string; attemptNumber: number }; // 子代理会话
-
-/** 执行阶段展现形式（与 chatScope 正交）。 */
-export type ExecutionView = "canvas" | "split" | "chat";
 
 /** 阶段显示状态（导航条 done/active/pending）。 */
 export type PhaseDisplayState = "done" | "active" | "pending";

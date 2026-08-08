@@ -127,7 +127,7 @@ fn builtin_skills_for_dir(dir: &Path) -> Result<Vec<BuiltinTaskPlanSkill>, Strin
         .collect())
 }
 
-// ── Pi 扩展自动注册（Hub setup hook 每次启动幂等确保）── // FORCE COMPILER TO RE-READ STATIC EMBEDDED FILE CHANGES V11
+// ── Pi 扩展自动注册（Hub setup hook 每次启动幂等确保）── // FORCE COMPILER TO RE-READ STATIC EMBEDDED FILE CHANGES V12
 const CONDUCTOR_EXTENSION_TS: &str =
     include_str!("../resources/extensions/jishu-task-conductor.ts");
 const CONDUCTOR_DISCUSS_SKILL: &str =

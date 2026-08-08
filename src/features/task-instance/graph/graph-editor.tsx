@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { computeLayout, LAYOUT_NODE_WIDTH, type LayoutGraph, type LayoutResult } from "./layout";
 import { loadViewport, saveViewport } from "./viewport-storage";
@@ -124,6 +124,37 @@ const FROZEN_NODE_RUN_STATUSES: readonly NodeRunStatus[] = [
   "repairing",
 ];
 
+// F2-1：常量提升，避免每次渲染新建数组 prop 击穿 ReactFlow 内部 effect。
+const DELETE_KEY_CODES = ["Backspace", "Delete"];
+
+/**
+ * F2-2（设计 §5 批 F2）：目标节点描述——label/style 的 useMemo 派生物。
+ * 位置不在其中：位置以 ReactFlow 当前 state 为单一来源（F2-3，修 B-3）。
+ */
+interface DesiredNode {
+  id: string;
+  label: string;
+  style: CSSProperties;
+}
+
+/** F2-2：目标边描述（语义字段，diff 比较用；视觉属性由 kind 派生）。 */
+interface DesiredEdge {
+  id: string;
+  source: string;
+  target: string;
+  kind: string;
+  label: string;
+}
+
+/// F2-2 diff 用：节点 style 浅比较（构造方固定 8 个字段，值均为 primitive）。
+function nodeStyleEqual(a: CSSProperties | undefined, b: CSSProperties): boolean {
+  if (!a) return false;
+  const aKeys = Object.keys(a) as Array<keyof CSSProperties>;
+  const bKeys = Object.keys(b) as Array<keyof CSSProperties>;
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((key) => a[key] === b[key]);
+}
+
 interface GraphEditorProps {
   snapshot: GraphSnapshot | null;
   graphId?: string | null;
@@ -162,10 +193,12 @@ interface GraphEditorProps {
 /** 添加智能体节点向导（独立组件：表单状态内聚，输入不触发 GraphEditor/ReactFlow 重渲染）。 */
 function DispatchWizardForm({
   goalNodeId,
+  phaseNodes,
   onSubmit,
   onCancel,
 }: {
   goalNodeId: string | null;
+  phaseNodes: Array<{ node_id: string; title: string }>;
   onSubmit: (command: GraphCommand) => void;
   onCancel: () => void;
 }) {
@@ -175,6 +208,10 @@ function DispatchWizardForm({
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [acceptance, setAcceptance] = useState("");
+  // F4：审批策略选择（默认 on_high_risk；后端 ApprovalPolicy = Never/Once/Always/OnHighRisk）
+  const [approvalPolicy, setApprovalPolicy] = useState<"never" | "on_high_risk" | "always">("on_high_risk");
+  // F5：所属阶段（parent_id）；不选 = 直接挂 goal（与旧逻辑兼容）
+  const [parentPhaseId, setParentPhaseId] = useState<string>("");
 
   return (
     <div className="absolute inset-0 z-30 grid place-items-center bg-[var(--task-canvas-overlay-bg)] p-6 backdrop-blur-sm">
@@ -192,12 +229,14 @@ function DispatchWizardForm({
             prompt.trim(),
             `${t("tasks.workbench.nodeWizard.acceptance")}: ${acceptance.trim()}`,
           ].join("\n\n");
+          // F5：选择了阶段 → parent_id 为阶段 id；否则回退到 goal（兼容旧逻辑）
+          const effectiveParentId = parentPhaseId || goalNodeId;
           onSubmit({
             op: "add_node",
             command_id: `cmd_${crypto.randomUUID()}`,
             node: {
               node_id: `node_${crypto.randomUUID()}`,
-              parent_id: goalNodeId,
+              parent_id: effectiveParentId,
               title: title.trim(),
               description: prompt.trim(),
               node_kind: "executable",
@@ -211,8 +250,9 @@ function DispatchWizardForm({
               },
               capability_requirements: [],
               agent_assignment_constraint: null,
+              // F4：透出审批策略选择；此前硬编码 on_high_risk 导致每个写权限节点必审批。
               policy: {
-                approval_policy: "on_high_risk",
+                approval_policy: approvalPolicy,
                 permission_scope: {
                   can_read_files: true,
                   can_write_files: true,
@@ -291,6 +331,44 @@ function DispatchWizardForm({
                 className="mt-2 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
               />
             </label>
+            {/* F4：审批策略选择 */}
+            <label className="mt-4 block text-xs font-medium text-muted-foreground">
+              {t("tasks.workbench.nodeWizard.approvalPolicy")}
+              <select
+                value={approvalPolicy}
+                onChange={(event) => setApprovalPolicy(event.target.value as typeof approvalPolicy)}
+                className="mt-2 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+              >
+                {(["never", "on_high_risk", "always"] as const).map((p) => (
+                  <option key={p} value={p}>
+                    {t(`tasks.workbench.nodeWizard.approvalPolicies.${p}`)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {approvalPolicy === "never" && (
+              <p className="mt-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+                {t("tasks.workbench.nodeWizard.approvalPolicyHint")}
+              </p>
+            )}
+            {/* F5：所属阶段 */}
+            {phaseNodes.length > 0 && (
+              <label className="mt-4 block text-xs font-medium text-muted-foreground">
+                {t("tasks.workbench.nodeWizard.parentPhase")}
+                <select
+                  value={parentPhaseId}
+                  onChange={(event) => setParentPhaseId(event.target.value)}
+                  className="mt-2 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                >
+                  <option value="">{t("tasks.workbench.nodeWizard.parentPhaseNone")}</option>
+                  {phaseNodes.map((phase) => (
+                    <option key={phase.node_id} value={phase.node_id}>
+                      {phase.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </>
         )}
         {step === 3 && (
@@ -306,6 +384,16 @@ function DispatchWizardForm({
             <div>
               <span className="text-muted-foreground">{t("tasks.workbench.nodeWizard.acceptance")}: </span>
               {acceptance || "-"}
+            </div>
+            <div>
+              <span className="text-muted-foreground">{t("tasks.workbench.nodeWizard.approvalPolicy")}: </span>
+              {t(`tasks.workbench.nodeWizard.approvalPolicies.${approvalPolicy}`)}
+            </div>
+            <div>
+              <span className="text-muted-foreground">{t("tasks.workbench.nodeWizard.parentPhase")}: </span>
+              {parentPhaseId
+                ? phaseNodes.find((p) => p.node_id === parentPhaseId)?.title ?? parentPhaseId
+                : t("tasks.workbench.nodeWizard.parentPhaseNone")}
             </div>
           </div>
         )}
@@ -347,7 +435,7 @@ function DispatchWizardForm({
   );
 }
 
-export function GraphEditor({
+function GraphEditorInner({
   snapshot,
   graphId,
   currentRevisionId,
@@ -383,6 +471,8 @@ export function GraphEditor({
   const [editDescription, setEditDescription] = useState("");
   const [editAcceptance, setEditAcceptance] = useState("");
   const [editErrors, setEditErrors] = useState<string[] | null>(null);
+  // F4：编辑表单的审批策略（从 node.policy.approval_policy 初始化）。
+  const [editApprovalPolicy, setEditApprovalPolicy] = useState<"never" | "on_high_risk" | "always">("on_high_risk");
   // B4 修订 Diff 横幅：applyCommands 返回的 diff，本地 dismiss 态控制显隐。
   const [diffDismissed, setDiffDismissed] = useState(false);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -457,6 +547,77 @@ export function GraphEditor({
     }
   }, [phaseFilterId, phaseNodes]);
 
+  // ── F2-2（设计 §5 批 F2）：快照 + 运行状态 → 目标节点/边描述（label/style）──
+  // 位置不在此派生——位置以 ReactFlow 当前 state 为单一来源（F2-3，修 B-3）。
+  // semanticZoom 只影响 label，不影响位置/布局（F2-6，P-7）。
+  const desiredNodes = useMemo<DesiredNode[]>(() => {
+    if (!visibleSnapshot) return [];
+    return visibleSnapshot.nodes.map((n) => {
+      const status = nodeRuns?.[n.node_id]?.status;
+      const appearance = nodeAppearance(status);
+      const kindStyle = nodeKindStyle(n.node_kind);
+      const statusText = status ? ` [${t(`tasks.workbench.status.${status}`)}]` : "";
+      const nodeKindText = t(`tasks.workbench.nodeKinds.${n.node_kind}`);
+      // B4 冻结规则 A8：已进入执行的节点不可编辑，标签前置 🔒 提示。
+      const lockPrefix = frozenNodeIds.has(n.node_id) ? "🔒 " : "";
+      const label = semanticZoom === "map"
+        ? `${lockPrefix}${n.title}`
+        : semanticZoom === "compact"
+          ? `${lockPrefix}${n.title}${statusText}`
+          : `${lockPrefix}${n.title}\n(${nodeKindText})${statusText}`;
+      return {
+        id: n.node_id,
+        label,
+        style: {
+          border: `${kindStyle.borderWidth}px ${kindStyle.borderStyle} ${appearance.borderColor}`,
+          padding: 10,
+          borderRadius: kindStyle.borderRadius,
+          background: appearance.background,
+          color: appearance.color,
+          width: LAYOUT_NODE_WIDTH,
+          boxShadow: appearance.boxShadow,
+          // F2-4（P-6）：定向过渡，不含 position/size——此前的 "all 0.3s ease"
+          // 会让布局/位置变化也产生动画，是节点「漂移」观感的来源之一。
+          transition: "border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease",
+        },
+      };
+    });
+  }, [visibleSnapshot, nodeRuns, frozenNodeIds, semanticZoom, t]);
+
+  const desiredEdges = useMemo<DesiredEdge[]>(() => {
+    if (!visibleSnapshot) return [];
+    return visibleSnapshot.edges.map((e) => ({
+      id: e.edge_id,
+      source: e.source_node_id,
+      target: e.target_node_id,
+      kind: e.kind,
+      label: t(`tasks.workbench.edgeKinds.${e.kind}`),
+    }));
+  }, [visibleSnapshot, t]);
+
+  // 结构签名：仅节点集合/边拓扑变化时才需要重新布局（worker postMessage /
+  // 同步 computeLayout）；nodeRuns/semanticZoom 变化只走 diff（F2-6，P-7）。
+  const layoutSignature = useMemo(() => {
+    if (!visibleSnapshot) return "";
+    const nodePart = visibleSnapshot.nodes.map((n) => n.node_id).join("|");
+    const edgePart = visibleSnapshot.edges
+      .map((e) => `${e.source_node_id}->${e.target_node_id}`)
+      .join("|");
+    return `${nodePart}#${edgePart}`;
+  }, [visibleSnapshot]);
+
+  // F2：worker 消息回调只注册一次，经 ref 读最新派生物/graphId。
+  const desiredNodesRef = useRef(desiredNodes);
+  desiredNodesRef.current = desiredNodes;
+  const graphIdRef = useRef(graphId);
+  graphIdRef.current = graphId;
+  // F2-3：上次派生 effect 见到的 graphId/结构签名（切图判定 + 布局去重）。
+  const lastGraphIdRef = useRef<string | null>(graphId ?? null);
+  const lastLayoutSignatureRef = useRef("");
+  // F2：handleNodeDragStop 经 ref 读最新 nodes，回调不随 nodes 重建（P-9）。
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+
   // Layout runs in a Web Worker so a large canvas never blocks the main thread
   // (design §13.2). In environments without `Worker` (jsdom tests), `null` falls
   // back to synchronous `computeLayout`, preserving existing behavior.
@@ -481,25 +642,43 @@ export function GraphEditor({
     const applyLayout = (event: MessageEvent<LayoutResult>) => {
       const positions = event.data;
       setNodes((current) => {
+        const currentById = new Map(current.map((node) => [node.id, node] as const));
+        // F2-5（设计 §5 批 F2）：worker 布局返回后，把暂存的 pending 节点一次性带入
+        // （返回前不入画布，消除 {0,0} 闪帧）；已在画布的节点保留当前位置——
+        // 用户拖拽/ savedPositions 还原的节点不被 dagre 结果覆盖。
+        // 注意：F2 修复后同步布局已作为 fallback 给所有节点初始位置，此处主要处理
+        // 后续新增节点（structure 变化）的异步定位。
+        const next: ReactFlowNode[] = [];
         let changed = false;
-        const next = current.map((node) => {
-          // Only place nodes still at the origin (newly added, not yet laid out
-          // or dragged). Nodes the user moved keep their position.
-          if (node.position.x !== 0 || node.position.y !== 0) return node;
-          const placed = positions[node.id];
-          if (!placed) return node;
+        for (const spec of desiredNodesRef.current) {
+          const existing = currentById.get(spec.id);
+          if (existing) {
+            next.push(existing);
+            continue;
+          }
+          const placed = positions[spec.id];
+          if (!placed) continue; // 该结果来自旧一轮布局，等最新一轮返回
           changed = true;
-          return { ...node, position: placed };
-        });
+          next.push({
+            id: spec.id,
+            data: { label: spec.label },
+            position: placed,
+            targetPosition: Position.Left,
+            sourcePosition: Position.Right,
+            style: spec.style,
+          });
+        }
+        if (!changed) return current;
         // Persist dagre-computed positions so re-entry doesn't re-overlap.
-        if (changed && graphId) {
+        const gid = graphIdRef.current;
+        if (gid) {
           const allPositions: Record<string, { x: number; y: number }> = {};
           for (const node of next) {
             allPositions[node.id] = node.position;
           }
-          saveNodePositions(graphId, allPositions);
+          saveNodePositions(gid, allPositions);
         }
-        return changed ? next : current;
+        return next;
       });
     };
     worker.addEventListener("message", applyLayout);
@@ -558,6 +737,13 @@ export function GraphEditor({
     setEditAcceptance(
       (selectedNode.output_contract?.description as string | null | undefined) ?? "",
     );
+    // F4：从节点 policy 初始化审批策略（后端 serde snake_case）。
+    const policy = selectedNode.policy?.approval_policy;
+    setEditApprovalPolicy(
+      policy === "never" || policy === "always" || policy === "on_high_risk"
+        ? policy
+        : "on_high_risk",
+    );
     setEditErrors(null);
     setShowEditForm(true);
   }, [selectedNode]);
@@ -583,6 +769,14 @@ export function GraphEditor({
       patch.output_contract = {
         ...(selectedNode.output_contract ?? {}),
         description: editAcceptance.trim() || null,
+      };
+    }
+    // F4：审批策略变更走 policy patch（后端 apply.rs 支持 policy 部分更新）。
+    const currentPolicy = selectedNode.policy?.approval_policy;
+    if (editApprovalPolicy !== currentPolicy) {
+      patch.policy = {
+        ...selectedNode.policy,
+        approval_policy: editApprovalPolicy,
       };
     }
     if (Object.keys(patch).length === 0) {
@@ -613,6 +807,7 @@ export function GraphEditor({
     editTitle,
     editDescription,
     editAcceptance,
+    editApprovalPolicy,
     applyCommands,
     validateCommands,
     t,
@@ -657,119 +852,158 @@ export function GraphEditor({
   );
 
   // Persist node positions when the user drags a node.
+  // F2-3：这是 savedPositions 的唯一写入入口；F2（P-9）：经 nodesRef 读最新
+  // nodes，回调引用不随 nodes 每次变化重建。
   const handleNodeDragStop = useCallback(() => {
     if (!graphId) return;
     const allPositions: Record<string, { x: number; y: number }> = {};
-    for (const node of nodes) {
+    for (const node of nodesRef.current) {
       allPositions[node.id] = node.position;
     }
     saveNodePositions(graphId, allPositions);
-  }, [graphId, nodes]);
+  }, [graphId]);
 
   useEffect(() => {
     // Switching graphs re-runs the initial fit-or-restore on the next snapshot.
     didInitialLayoutRef.current = false;
   }, [graphId]);
 
+  // F2-2/F2-3（设计 §5 批 F2，修 B-3）：单一「快照 + 状态 → nodes/edges」派生 effect，
+  // 合并原「快照全量重建」与「nodeRuns 重刷样式」两个 effect（原 :674/:796，P-3）。
+  // setNodes/setEdges 内逐条 diff（label/style 全等复用原对象引用），无变化返回原数组——
+  // 空载轮询时（F1 后 nodeRuns 引用稳定，本 effect 不重跑；即便重跑也零更新）。
   useEffect(() => {
     if (!visibleSnapshot) return;
 
-    const rfNodes: ReactFlowNode[] = visibleSnapshot.nodes.map((n) => {
-      const status = nodeRuns?.[n.node_id]?.status;
-      const appearance = nodeAppearance(status);
-      const kindStyle = nodeKindStyle(n.node_kind);
-      const statusText = status ? ` [${t(`tasks.workbench.status.${status}`)}]` : "";
-      const nodeKindText = t(`tasks.workbench.nodeKinds.${n.node_kind}`);
-      // B4 冻结规则 A8：已进入执行的节点不可编辑，标签前置 🔒 提示。
-      const lockPrefix = frozenNodeIds.has(n.node_id) ? "🔒 " : "";
-      const label = semanticZoom === "map"
-        ? `${lockPrefix}${n.title}`
-        : semanticZoom === "compact"
-          ? `${lockPrefix}${n.title}${statusText}`
-          : `${lockPrefix}${n.title}\n(${nodeKindText})${statusText}`;
-
-      return {
-        id: n.node_id,
-        data: {
-          label,
-        },
-        position: { x: 0, y: 0 },
-        targetPosition: Position.Left,
-        sourcePosition: Position.Right,
-        style: {
-          border: `${kindStyle.borderWidth}px ${kindStyle.borderStyle} ${appearance.borderColor}`,
-          padding: 10,
-          borderRadius: kindStyle.borderRadius,
-          background: appearance.background,
-          color: appearance.color,
-          width: LAYOUT_NODE_WIDTH,
-          boxShadow: appearance.boxShadow,
-          transition: "all 0.3s ease"
-        },
-      };
-    });
-
-    const rfEdges: ReactFlowEdge[] = visibleSnapshot.edges.map((e) => {
-      const isControl = e.kind === "control_dependency";
-      const color = isControl ? "var(--task-edge-control)" : "var(--task-edge-data)";
-      return {
-        id: e.edge_id,
-        source: e.source_node_id,
-        target: e.target_node_id,
-        label: t(`tasks.workbench.edgeKinds.${e.kind}`),
-        animated: false,
-        interactionWidth: 28,
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          color,
-          width: 18,
-          height: 18,
-        },
-        labelStyle: { fill: color, fontSize: 12, fontWeight: 600 },
-        labelShowBg: true,
-        labelBgStyle: { fill: "var(--task-canvas-panel-bg)", fillOpacity: 0.96 },
-        labelBgPadding: [6, 4] as [number, number],
-        labelBgBorderRadius: 5,
-        style: {
-          stroke: color,
-          strokeDasharray: isControl ? undefined : "7 7",
-          strokeWidth: 2,
-        },
-      };
-    });
-
-    const layoutGraph: LayoutGraph = {
-      nodes: rfNodes.map((node) => ({ id: node.id })),
-      edges: rfEdges.map((edge) => ({ source: edge.source, target: edge.target })),
-    };
     const layoutWorker = layoutWorkerRef.current;
-    // Load persisted node positions for this graph (prevents re-overlap on
-    // re-entry). Saved positions take priority; dagre fills the rest.
+    const isGraphSwitch = lastGraphIdRef.current !== (graphId ?? null);
+    lastGraphIdRef.current = graphId ?? null;
+
+    // F2-6（P-7）：布局仅随结构/切图重跑。semanticZoom/nodeRuns 变化只走下方 diff，
+    // 不 postMessage、不重算布局。
+    let syncPositions: LayoutResult = {};
+    if (isGraphSwitch || lastLayoutSignatureRef.current !== layoutSignature) {
+      lastLayoutSignatureRef.current = layoutSignature;
+      const layoutGraph: LayoutGraph = {
+        nodes: desiredNodes.map((node) => ({ id: node.id })),
+        edges: desiredEdges.map((edge) => ({ source: edge.source, target: edge.target })),
+      };
+      // 同步布局始终作为 fallback：无 Worker 环境直接使用；有 Worker 时先给节点一个
+      // 立即可见的位置，避免审批通过/组件重挂等场景下 worker 消息延迟或 race 导致画布
+      // 持续空白。Worker 返回后 applyLayout 再把尚未定位的新节点更新为 dagre 结果。
+      syncPositions = computeLayout(layoutGraph);
+      layoutWorker?.postMessage(layoutGraph);
+    }
+
+    // Load persisted node positions for this graph (prevents re-overlap on re-entry).
+    // F2-3 位置优先级（单一来源，修 B-3 核心）：
+    //   1. ReactFlow 当前 state——拖拽中的节点不被任何持久化值覆盖；
+    //   2. savedPositions——仅「该节点当前无位置记录」时生效（初次挂载/切图/新节点），
+    //      不再凌驾当前位置；初次挂载（current 为空）时正常生效，保证重进任务布局还原；
+    //   3. 同步布局 fallback（始终计算，覆盖无 Worker / Worker 延迟返回的情况）。
     const savedPositions = graphId ? loadNodePositions(graphId) : null;
-    // Without a worker (jsdom tests, or browsers where Worker failed to spawn),
-    // compute synchronously — behavior matches the legacy inline layout. With a
-    // worker, new-node positions arrive asynchronously via the message handler.
-    const positions = layoutWorker ? {} : computeLayout(layoutGraph);
+
     setNodes((current) => {
-      const currentPositions = new Map(
-        current.map((node) => [node.id, node.position] as const),
-      );
-      return rfNodes.map((node) => ({
-        ...node,
-        position:
-          savedPositions?.[node.id]
-          ?? currentPositions.get(node.id)
-          ?? positions[node.id]
-          ?? { x: 0, y: 0 },
-      }));
+      const currentById = new Map(current.map((node) => [node.id, node] as const));
+      const next: ReactFlowNode[] = [];
+      let changed = false;
+      for (const spec of desiredNodes) {
+        const existing = currentById.get(spec.id);
+        const position =
+          (!isGraphSwitch ? existing?.position : undefined) ??
+          savedPositions?.[spec.id] ??
+          syncPositions[spec.id];
+        if (!position) continue; // 兜底已保证不会走到这里（computeLayout 始终返回位置）
+        if (
+          existing &&
+          existing.data.label === spec.label &&
+          nodeStyleEqual(existing.style, spec.style)
+        ) {
+          next.push(existing); // 无变化：复用原对象引用
+          continue;
+        }
+        changed = true;
+        next.push(
+          existing
+            ? { ...existing, data: { label: spec.label }, style: spec.style, position }
+            : {
+                id: spec.id,
+                data: { label: spec.label },
+                position,
+                targetPosition: Position.Left,
+                sourcePosition: Position.Right,
+                style: spec.style,
+              },
+        );
+      }
+      if (!changed) {
+        // 全复用时仍需捕获「节点被移除 / 顺序变化」。
+        changed =
+          next.length !== current.length ||
+          next.some((node, index) => node !== current[index]);
+      }
+      return changed ? next : current;
     });
-    layoutWorker?.postMessage(layoutGraph);
-    setEdges(rfEdges);
-    requestAnimationFrame(() => {
+
+    setEdges((current) => {
+      const currentById = new Map(current.map((edge) => [edge.id, edge] as const));
+      const next: ReactFlowEdge[] = [];
+      let changed = false;
+      for (const spec of desiredEdges) {
+        const existing = currentById.get(spec.id);
+        if (
+          existing &&
+          existing.source === spec.source &&
+          existing.target === spec.target &&
+          existing.label === spec.label
+        ) {
+          next.push(existing); // 无变化：复用原对象引用（含 selected 选中态）
+          continue;
+        }
+        changed = true;
+        const isControl = spec.kind === "control_dependency";
+        const color = isControl ? "var(--task-edge-control)" : "var(--task-edge-data)";
+        next.push({
+          id: spec.id,
+          source: spec.source,
+          target: spec.target,
+          label: spec.label,
+          animated: false,
+          interactionWidth: 28,
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            color,
+            width: 18,
+            height: 18,
+          },
+          labelStyle: { fill: color, fontSize: 12, fontWeight: 600 },
+          labelShowBg: true,
+          labelBgStyle: { fill: "var(--task-canvas-panel-bg)", fillOpacity: 0.96 },
+          labelBgPadding: [6, 4] as [number, number],
+          labelBgBorderRadius: 5,
+          style: {
+            stroke: color,
+            strokeDasharray: isControl ? undefined : "7 7",
+            strokeWidth: 2,
+          },
+        });
+      }
+      if (!changed) {
+        changed =
+          next.length !== current.length ||
+          next.some((edge, index) => edge !== current[index]);
+      }
+      return changed ? next : current;
+    });
+  }, [visibleSnapshot, desiredNodes, desiredEdges, layoutSignature, graphId, setNodes, setEdges]);
+
+  // 初始视口（§13.2）：首张快照的节点实际入画布后，恢复保存的视口或 fitView 一次；
+  // 之后保留用户视口。worker 布局路径下节点异步到位（F2-5），故独立观察 nodes。
+  useEffect(() => {
+    if (didInitialLayoutRef.current || nodes.length === 0) return;
+    const frame = requestAnimationFrame(() => {
       const instance = flowRef.current;
-      if (!instance) return;
-      // Only fit/restore once per graph; after that, preserve the user's viewport.
-      if (didInitialLayoutRef.current) return;
+      if (!instance || didInitialLayoutRef.current) return;
       const saved = graphId ? loadViewport(graphId) : null;
       if (saved) {
         instance.setViewport(saved);
@@ -778,7 +1012,8 @@ export function GraphEditor({
       }
       didInitialLayoutRef.current = true;
     });
-  }, [visibleSnapshot, semanticZoom, setNodes, setEdges, t, frozenNodeIds]);
+    return () => cancelAnimationFrame(frame);
+  }, [nodes, graphId]);
 
   useEffect(() => {
     setEdges((currentEdges) =>
@@ -792,44 +1027,6 @@ export function GraphEditor({
       })),
     );
   }, [selectedEdgeId, setEdges]);
-
-  useEffect(() => {
-    const graphNodes = new Map(
-      visibleSnapshot?.nodes.map((candidate) => [candidate.node_id, candidate]) ?? [],
-    );
-    setNodes((currentNodes) =>
-      currentNodes.map((node) => {
-        const graphNode = graphNodes.get(node.id);
-        if (!graphNode) return node;
-        const status = nodeRuns?.[node.id]?.status;
-        const appearance = nodeAppearance(status);
-        const kindStyle = nodeKindStyle(graphNode.node_kind);
-        const statusText = status ? ` [${t(`tasks.workbench.status.${status}`)}]` : "";
-        const nodeKindText = t(`tasks.workbench.nodeKinds.${graphNode.node_kind}`);
-        // B4 冻结规则 A8：与首个 effect 同步，状态刷新时保留 🔒 前缀。
-        const lockPrefix = frozenNodeIds.has(graphNode.node_id) ? "🔒 " : "";
-        const label = semanticZoom === "map"
-          ? `${lockPrefix}${graphNode.title}`
-          : semanticZoom === "compact"
-            ? `${lockPrefix}${graphNode.title}${statusText}`
-            : `${lockPrefix}${graphNode.title}\n(${nodeKindText})${statusText}`;
-        return {
-          ...node,
-          data: {
-            label,
-          },
-          style: {
-            ...node.style,
-            border: `${kindStyle.borderWidth}px ${kindStyle.borderStyle} ${appearance.borderColor}`,
-            borderRadius: kindStyle.borderRadius,
-            background: appearance.background,
-            color: appearance.color,
-            boxShadow: appearance.boxShadow,
-          },
-        };
-      }),
-    );
-  }, [nodeRuns, semanticZoom, setNodes, visibleSnapshot, t, frozenNodeIds]);
 
   const connectNodes = useCallback(
     (connection: Connection) => {
@@ -853,26 +1050,45 @@ export function GraphEditor({
   const deleteSelection = useCallback(
     (deletedNodes: ReactFlowNode[], deletedEdges: ReactFlowEdge[]) => {
       if (readOnly || !applyCommands) return;
+      // F3（设计 §5 批 F3）：前置过滤 frozen / goal 节点。
+      // 后端 A8（service.rs:631-640）会拒绝 frozen 节点删除，MissingGoal 拦截 goal 删除。
+      // 前端先拦避免「本地已删 → 后端拒绝 → 节点消失」的乐观删除 BUG（B-2）。
+      const deletableNodes = deletedNodes.filter((node) => {
+        const graphNode = snapshot?.nodes.find((item) => item.node_id === node.id);
+        if (!graphNode) return false;
+        if (graphNode.node_kind === "goal") return false;
+        if (frozenNodeIds.has(node.id)) return false;
+        return true;
+      });
       const commands: GraphCommand[] = [
         ...deletedEdges.map((edge) => ({
           op: "remove_edge",
           command_id: `cmd_${crypto.randomUUID()}`,
           edge_id: edge.id,
         })),
-        ...deletedNodes
-          .filter((node) => snapshot?.nodes.find((item) => item.node_id === node.id)?.node_kind !== "goal")
-          .map((node) => ({
-            op: "remove_node",
-            command_id: `cmd_${crypto.randomUUID()}`,
-            node_id: node.id,
-          })),
+        ...deletableNodes.map((node) => ({
+          op: "remove_node",
+          command_id: `cmd_${crypto.randomUUID()}`,
+          node_id: node.id,
+        })),
       ];
       if (commands.length > 0) {
         applyCommands(commands).catch(console.error);
       }
     },
-    [applyCommands, snapshot, readOnly],
+    [applyCommands, snapshot, readOnly, frozenNodeIds],
   );
+
+  // F2-1（P-2）：onDelete/onInit 稳定引用，避免击穿 memo 后 ReactFlow 每次重订阅。
+  const handleDelete = useCallback(
+    ({ nodes: deletedNodes, edges: deletedEdges }: { nodes: ReactFlowNode[]; edges: ReactFlowEdge[] }) =>
+      deleteSelection(deletedNodes, deletedEdges),
+    [deleteSelection],
+  );
+
+  const handleInit = useCallback((instance: ReactFlowInstance) => {
+    flowRef.current = instance;
+  }, []);
 
   return (
     <div
@@ -886,21 +1102,17 @@ export function GraphEditor({
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={connectNodes}
-        onDelete={({ nodes: deletedNodes, edges: deletedEdges }) =>
-          deleteSelection(deletedNodes, deletedEdges)
-        }
+        onDelete={handleDelete}
         nodesConnectable={!readOnly}
         nodesDraggable={!readOnly}
         elementsSelectable
-        deleteKeyCode={readOnly ? null : ["Backspace", "Delete"]}
+        deleteKeyCode={readOnly ? null : DELETE_KEY_CODES}
         onNodeClick={handleNodeClick}
         onEdgeClick={handleEdgeClick}
         onPaneClick={handlePaneClick}
         onMoveEnd={handleMoveEnd}
         onNodeDragStop={handleNodeDragStop}
-        onInit={(instance) => {
-          flowRef.current = instance;
-        }}
+        onInit={handleInit}
         colorMode={flowColorMode}
       >
         <Controls />
@@ -1038,6 +1250,37 @@ export function GraphEditor({
             }
           >
             {t("tasks.orchestration.editNode.toolbarButton")}
+          </button>
+          {/* F3（设计 §5 批 F3）：删除节点入口——显性化，前置拦截 goal/frozen。 */}
+          <button
+            type="button"
+            className="rounded-lg border border-destructive/30 bg-background px-3 py-2 text-sm font-medium text-destructive shadow-sm hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={
+              readOnly ||
+              !selectedNode ||
+              selectedNode.node_kind === "goal" ||
+              selectedFrozen
+            }
+            onClick={() => {
+              if (!selectedNode || !applyCommands) return;
+              applyCommands([{
+                op: "remove_node",
+                command_id: `cmd_${crypto.randomUUID()}`,
+                node_id: selectedNode.node_id,
+              }]).catch(console.error);
+              selectNode(null);
+            }}
+            title={
+              !selectedNode
+                ? t("tasks.workbench.deleteNode")
+                : selectedNode.node_kind === "goal"
+                  ? t("tasks.workbench.deleteNodeGoal")
+                  : selectedFrozen
+                    ? t("tasks.workbench.deleteNodeFrozen")
+                    : t("tasks.workbench.deleteNode")
+            }
+          >
+            {t("tasks.workbench.deleteNode")}
           </button>
           </div>
           {/* 右侧信息卡片组 */}
@@ -1182,6 +1425,7 @@ export function GraphEditor({
       {showDispatchForm && (
         <DispatchWizardForm
           goalNodeId={snapshot?.nodes.find((n) => n.node_kind === "goal")?.node_id ?? null}
+          phaseNodes={phaseNodes.map((p) => ({ node_id: p.node_id, title: p.title }))}
           onSubmit={(cmd) => {
             submitCommand(cmd);
             setShowDispatchForm(false);
@@ -1241,6 +1485,23 @@ export function GraphEditor({
                   onChange={(event) => setEditAcceptance(event.target.value)}
                 />
               </label>
+              {/* F4：审批策略编辑 */}
+              <label className="block">
+                <span className="text-xs font-medium text-muted-foreground">
+                  {t("tasks.orchestration.editNode.approvalPolicyLabel")}
+                </span>
+                <select
+                  value={editApprovalPolicy}
+                  onChange={(event) => setEditApprovalPolicy(event.target.value as typeof editApprovalPolicy)}
+                  className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                >
+                  {(["never", "on_high_risk", "always"] as const).map((p) => (
+                    <option key={p} value={p}>
+                      {t(`tasks.workbench.nodeWizard.approvalPolicies.${p}`)}
+                    </option>
+                  ))}
+                </select>
+              </label>
               {editErrors && editErrors.length > 0 && (
                 <ul className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                   {editErrors.map((error, index) => (
@@ -1270,3 +1531,8 @@ export function GraphEditor({
     </div>
   );
 }
+
+// F2-1（设计 §5 批 F2，P-2）：memo 隔离重渲染——父组件轮询状态变化时，
+// props 引用稳定（PhaseExecutionView 侧回调已 useCallback / 直接传稳定方法引用）则不重渲。
+export const GraphEditor = memo(GraphEditorInner);
+GraphEditor.displayName = "GraphEditor";

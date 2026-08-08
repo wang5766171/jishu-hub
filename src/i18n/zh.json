@@ -16,7 +16,8 @@
     "close": "关闭",
     "confirm": "确认",
     "pause": "暂停",
-    "resume": "恢复"
+    "resume": "恢复",
+    "dismiss": "知道了"
   },
   "time": {
     "justNow": "刚刚",
@@ -231,7 +232,8 @@
     "float": "悬浮窗口",
     "floatingIdle": "等待任务...",
     "floatingComplete": "任务已完成",
-    "floatingRestore": "恢复会话"
+    "floatingRestore": "恢复会话",
+    "noTasks": "暂无任务"
   },
   "config": {
     "title": "配置管理",
@@ -465,10 +467,19 @@
         "acceptance": "验收口径",
         "next": "下一步",
         "back": "上一步",
+        "parentPhase": "所属阶段",
+        "parentPhaseNone": "（不属于阶段）",
+        "approvalPolicy": "执行前审批",
+        "approvalPolicyHint": "免审批 + 写权限 = 完全自动执行，请确认信任该节点。注意：免审批仅表示不需要人工审批，节点仍受权限范围约束。",
         "intents": {
           "implement": "实现功能",
           "research": "调研分析",
           "verify": "验证验收"
+        },
+        "approvalPolicies": {
+          "never": "免审批（自动执行）",
+          "on_high_risk": "仅高风险时审批（默认）",
+          "always": "每次都审批"
         }
       },
       "connectHint": "创建后，从源节点拖出连线到目标节点即可建立控制依赖。选中节点或连线后按 Delete 可删除。",
@@ -477,6 +488,12 @@
         "data_dependency": "数据依赖"
       },
       "deleteEdge": "删除依赖",
+      "deleteNode": "删除节点",
+      "deleteNodeConfirm": "确认删除",
+      "deleteNodeCascade": "该节点有 {{edges}} 条依赖边，删除后这些边将被移除。",
+      "deleteNodeFrozen": "该节点正在执行或已完成，不可删除",
+      "deleteNodeGoal": "目标节点不可删除",
+      "deleteFailed": "删除节点失败：{{reason}}",
       "createStep": "创建节点",
       "newPhase": "新阶段",
       "status": {
@@ -523,11 +540,12 @@
       "editNode": {
         "toolbarButton": "编辑选中节点",
         "title": "调整节点",
-        "subtitle": "修改节点标题、描述或验收标准",
+        "subtitle": "修改节点标题、描述、验收标准或审批策略",
         "frozenHint": "该节点已进入执行，不可编辑",
         "titleLabel": "标题",
         "descriptionLabel": "描述",
         "acceptanceLabel": "验收标准",
+        "approvalPolicyLabel": "执行前审批",
         "cancel": "取消",
         "save": "保存",
         "titleRequired": "标题不能为空"
@@ -637,6 +655,13 @@
     },
     "execution": {
       "start": "开始执行",
+      "starting": "启动中…",
+      "confirmTitle": "是否开始执行？",
+      "confirmDesc": "流程共 {{count}} 个步骤，开始后将按依赖顺序依次执行。",
+      "confirmDescEmpty": "流程尚未生成步骤，请先在下方对话中让任务助手补全流程。",
+      "confirmHint": "暂不执行也可以：在下方对话中让任务助手调整流程，或点击右侧「编排」进入流程画布手动调整。",
+      "adjustFirst": "先调整流程",
+      "awaitingStart": "流程尚未开始。可继续在下方对话中调整流程，或在右侧步骤栏点击「开始执行」。",
       "canvas": "画布",
       "split": "分栏",
       "chat": "对话",
@@ -653,29 +678,32 @@
       "agentsLoading": "加载智能体…",
       "agentsUnavailable": "智能体列表不可用，请检查智能体配置",
       "nodeStatus": "状态",
-      "attempt": "尝试"
+      "attempt": "尝试",
+      "nodeNotStarted": "该步骤尚未开始执行，执行后会在此显示它的会话。"
     },
     "event": {
-      "runStarted": "运行开始",
-      "nodeReady": "节点就绪",
-      "nodeStarted": "节点开始",
-      "nodeResolved": "节点结束",
-      "attemptFailed": "尝试失败",
+      "runStarted": "我已经开始执行这个流程（共 {{count}} 个步骤），会逐个驱动并监控每个节点的执行。",
+      "nodeReady": "📋 准备执行：{{label}}",
+      "nodeStarted": "▶ 正在执行：{{label}}{{suffix}}",
+      "nodeResolvedOk": "✅ {{label}} 已完成",
+      "nodeResolvedFail": "❌ {{label}} 执行失败",
+      "nodeResolved": "• {{label}}{{status}}",
+      "attemptFailed": "❌ {{label}} 第 {{n}} 次尝试失败{{message}}",
       "attemptNumber": "第 {{n}} 次尝试",
-      "retryScheduled": "已安排重试",
-      "nodeSkipped": "节点跳过",
-      "nodeBlocked": "节点阻塞",
+      "retryScheduled": "↻ {{label}} 已安排第 {{n}} 次重试",
+      "nodeSkipped": "⤼ {{label}} 已跳过",
+      "nodeBlocked": "⛔ {{label}} 暂被阻塞，将自动重试",
       "approvalRequested": "审批请求",
       "approvalNeeded": "需要审批",
       "approvalResolved": "审批",
       "approvalApproved": "通过",
       "approvalRejected": "驳回",
-      "budgetExceeded": "预算超限",
-      "runPaused": "运行已暂停",
-      "runResumed": "运行已恢复",
-      "runCancelled": "运行已取消",
-      "runCompleted": "运行完成",
-      "runFailed": "运行失败"
+      "budgetExceeded": "⚠ 预算超限{{type}}",
+      "runPaused": "⏸ 流程已暂停",
+      "runResumed": "▶ 流程已恢复",
+      "runCancelled": "● 流程已取消",
+      "runCompleted": "🎉 全部步骤执行完成。成功 {{ok}} 个，失败 {{fail}} 个，我已对整体结果做了统一汇总。",
+      "runFailed": "⚠ 流程执行失败，请查看上方各节点执行详情。"
     },
     "nodeStatus": {
       "blocked": "阻塞",
@@ -691,51 +719,20 @@
       "cancelled": "已取消",
       "superseded": "已替换"
     },
-    "governance": {
-      "title": "执行治理",
-      "close": "关闭",
-      "open": "执行治理",
-      "needsIntervention": "需干预",
-      "node": "节点",
-      "approvalCard": "审批请求",
-      "resolvedApproved": "已通过",
-      "resolvedRejected": "已驳回",
-      "readOnlyHint": "完成态只读，不可审批",
-      "approve": "通过",
-      "reject": "驳回",
-      "currentRevision": "当前",
-      "tabs": {
-        "approvals": "审批",
-        "intervention": "节点干预",
-        "artifacts": "产物",
-        "revisions": "版本"
-      },
-      "intervention": {
-        "modeLabel": "干预形态",
-        "recoveryTitle": "失败节点干预",
-        "manualReason": "人工干预",
-        "retryNow": "重试",
-        "skipNode": "跳过",
-        "failNode": "失败",
-        "modes": {
-          "editing": "可编辑",
-          "queued_intervention": "排队中",
-          "live_steer": "实时干预",
-          "approval": "待审批",
-          "retry_wait": "待重试",
-          "repairing": "修复中",
-          "acceptance": "已验收",
-          "recovery": "失败恢复",
-          "historical": "已归档"
-        }
-      },
-      "empty": {
-        "approvals": "暂无审批请求",
-        "noNodeSelected": "未选中节点",
-        "noNodeRun": "该节点尚未产生运行记录",
-        "artifacts": "暂无产物",
-        "revisions": "暂无版本"
-      }
+    "board": {
+      "noGraph": "尚未生成流程图"
+    },
+    "flow": {
+      "modeEdit": "流程编排",
+      "modeBoard": "流程看板",
+      "noGraph": "尚未生成流程图"
+    },
+    "steps": {
+      "collapse": "折叠步骤栏",
+      "hide": "隐藏步骤栏",
+      "show": "显示步骤栏",
+      "empty": "暂无流程节点",
+      "mainTask": "主任务"
     }
   }
 }

@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, Bot } from "lucide-react";
 import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
 import { ToolGroup, classifyToolName } from "@/components/observability/tool-call-card";
@@ -35,6 +35,27 @@ interface MessageViewProps {
   onSearchStatusChange?: (status: MessageSearchStatus) => void;
   flat?: boolean;
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
+  /**
+   * 可选角色解析器（三角色场景）。对 `user` 消息调用，返回非空 `MessageRoleView`
+   * 时按解析结果渲染（如「任务助手」）。返回 `null` 走默认 `user` 渲染。
+   * 默认 undefined 时完全不触发，保护常规会话（需求七）。
+   */
+  roleResolver?: (msg: Message) => MessageRoleView | null;
+}
+
+/**
+ * 三角色渲染视图描述（`MessageView` 的 `roleResolver` 返回值）。
+ * 仅用于覆盖 `user` 消息的默认渲染（真人 vs 主进程派发）。
+ */
+export interface MessageRoleView {
+  /** orchestrator = 主进程派发（任务助手）；其余走默认。 */
+  role: "orchestrator" | "user" | "assistant";
+  /** 气泡顶部标签，如「任务助手」。 */
+  label: string;
+  /** 对齐方向，默认 right（与 user 一致）。 */
+  align?: "left" | "right";
+  /** 色调：primary = 任务助手高亮底色；default = 普通 user。 */
+  tone?: "primary" | "default";
 }
 
 export interface MessageSearchStatus {
@@ -467,6 +488,7 @@ function UserBubble({
   searchOffsets,
   currentOcc,
   messageIndex,
+  roleView,
 }: {
   msg: Message;
   items: RenderItem[];
@@ -474,17 +496,32 @@ function UserBubble({
   searchOffsets: Map<string, number>;
   currentOcc: number;
   messageIndex: number;
+  roleView?: MessageRoleView | null;
 }) {
   const { t } = useTranslation();
   const copyText = extractMessageText(msg);
+
+  // 三角色：roleResolver 解析为 orchestrator（主进程派发）→ 「任务助手」样式。
+  const isOrchestrator = roleView?.role === "orchestrator";
+  const label = isOrchestrator ? roleView!.label : t("sessions.user");
 
   return (
     <div className="w-full flex justify-end">
       <div className="max-w-[88%] min-w-0 flex flex-col items-end">
         <div className="flex items-center gap-2 mb-0.5 text-[11px]">
-          <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>
+          {isOrchestrator && <Bot className="h-3 w-3 text-primary" />}
+          <span className={cn("font-medium", isOrchestrator ? "text-primary" : "text-muted-foreground")}>
+            {label}
+          </span>
         </div>
-        <div className="min-w-0 max-w-full space-y-1.5 rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)]">
+        <div
+          className={cn(
+            "min-w-0 max-w-full space-y-1.5 rounded-xl px-3 py-2",
+            isOrchestrator
+              ? "bg-primary/10 text-foreground"
+              : "bg-[var(--message-user-bg)] text-[var(--message-user-fg)]",
+          )}
+        >
           <InlineImages text={copyText} />
           {items.map((item, idx) => {
             if (item.kind === "tool-group") {
@@ -529,6 +566,7 @@ export const MessageView = memo(function MessageView({
   onSearchStatusChange,
   flat,
   scrollContainerRef,
+  roleResolver,
 }: MessageViewProps) {
   const [localSearchQuery, setLocalSearchQuery] = useState(initialSearchQuery || "");
   const searchQuery = externalSearchQuery ?? localSearchQuery;
@@ -645,6 +683,7 @@ export const MessageView = memo(function MessageView({
 
     const msg = messages[row.messageIndex];
     const items = buildRenderItemsForMessages(messages, [row.messageIndex], resultMap);
+    const roleView = roleResolver ? roleResolver(msg) : null;
     return (
       <UserBubble
         msg={msg}
@@ -653,9 +692,10 @@ export const MessageView = memo(function MessageView({
         searchOffsets={searchState.offsets}
         currentOcc={currentOcc}
         messageIndex={row.messageIndex}
+        roleView={roleView}
       />
     );
-  }, [currentOcc, messages, renderingQuery, resultMap, searchState.offsets]);
+  }, [currentOcc, messages, renderingQuery, resultMap, searchState.offsets, roleResolver]);
 
   const fullMessageList = (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">

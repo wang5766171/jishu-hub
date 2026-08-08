@@ -1006,6 +1006,7 @@ async fn schedule_node(
         error: None,
         idempotency_key: Some(format!("{run_id}:{node_run_id}:{attempt_number}")),
         checkpoint: None,
+        dispatch_prompt: None,
         started_at: now,
         finished_at: None,
     };
@@ -1129,6 +1130,15 @@ async fn schedule_node(
                     attempt_id: attempt_id.clone(),
                 },
                 cancellation.clone(),
+                Some(Arc::new({
+                    let store = store.clone();
+                    let attempt_id = attempt_id.clone();
+                    move |sid: String| {
+                        if let Err(e) = store.set_node_attempt_session_id(&attempt_id, &sid) {
+                            tracing::error!("failed to persist node attempt session_id for {attempt_id}: {e}");
+                        }
+                    }
+                })),
             ) => Some(result),
             _ = wait_for_terminal_run(&store, &run_id) => {
                 cancellation.store(true, Ordering::Release);
@@ -1165,6 +1175,7 @@ async fn schedule_node(
             Ok(output) => {
                 attempt.session_id = output.session_id.clone();
                 attempt.usage = output.usage.clone();
+                attempt.dispatch_prompt = output.dispatch_prompt.clone();
                 if let Some(interaction) = output.interaction {
                     node_run.status = NodeRunStatus::AwaitingApproval;
                     node_run.finished_at = None;
@@ -1536,6 +1547,7 @@ async fn execute_node(
     continuation: Option<TaskContinuation>,
     context: RuntimeEventContext,
     cancellation: Arc<AtomicBool>,
+    on_session_resolved: Option<Arc<dyn Fn(String) + Send + Sync + 'static>>,
 ) -> Result<NodeExecutionOutput, AttemptError> {
     let Some(payload) = &node.executable_payload else {
         return Err(attempt_error(
@@ -1587,6 +1599,7 @@ async fn execute_node(
                 usage: AttemptUsage::default(),
                 session_id: None,
                 interaction: None,
+                dispatch_prompt: None,
             })
         }
         ExecutablePayload::Dispatch {
@@ -1596,6 +1609,10 @@ async fn execute_node(
             ..
         } => {
             let prepared = required_prepared_agent(prepared_agent)?;
+            let resolved_prompt = continuation
+                .as_ref()
+                .map(|value| value.reply.clone())
+                .unwrap_or_else(|| agent_prompt_with_policy(prompt, &node.policy));
             let request = RuntimeInvocationRequest {
                 invocation_id: gen_id("invocation"),
                 agent_id: prepared.assignment.agent_id.clone(),
@@ -1609,17 +1626,27 @@ async fn execute_node(
                     .as_ref()
                     .and_then(|value| value.session_id.clone())
                     .or_else(|| session.clone()),
-                prompt: continuation
-                    .as_ref()
-                    .map(|value| value.reply.clone())
-                    .unwrap_or_else(|| agent_prompt_with_policy(prompt, &node.policy)),
+                prompt: resolved_prompt.clone(),
                 timeout_ms: node.policy.timeout_ms.unwrap_or(600_000),
                 cancellation: cancellation.clone(),
             };
-            execute_agent(runtime, prepared, request, context).await
+            let mut output = execute_agent(
+                runtime,
+                prepared,
+                request,
+                context,
+                on_session_resolved,
+            )
+            .await?;
+            output.dispatch_prompt = Some(resolved_prompt);
+            Ok(output)
         }
         ExecutablePayload::Reflect { question } => {
             let prepared = required_prepared_agent(prepared_agent)?;
+            let resolved_prompt = continuation
+                .as_ref()
+                .map(|value| value.reply.clone())
+                .unwrap_or_else(|| question.clone());
             let request = RuntimeInvocationRequest {
                 invocation_id: gen_id("invocation"),
                 agent_id: prepared.assignment.agent_id.clone(),
@@ -1628,14 +1655,20 @@ async fn execute_node(
                 session_id: continuation
                     .as_ref()
                     .and_then(|value| value.session_id.clone()),
-                prompt: continuation
-                    .as_ref()
-                    .map(|value| value.reply.clone())
-                    .unwrap_or_else(|| question.clone()),
+                prompt: resolved_prompt.clone(),
                 timeout_ms: node.policy.timeout_ms.unwrap_or(600_000),
                 cancellation,
             };
-            execute_agent(runtime, prepared, request, context).await
+            let mut output = execute_agent(
+                runtime,
+                prepared,
+                request,
+                context,
+                on_session_resolved,
+            )
+            .await?;
+            output.dispatch_prompt = Some(resolved_prompt);
+            Ok(output)
         }
     }
 }
@@ -1732,6 +1765,9 @@ struct NodeExecutionOutput {
     usage: AttemptUsage,
     session_id: Option<String>,
     interaction: Option<PendingRuntimeInteraction>,
+    /// 实际派发给子代理的 prompt（用于落库 node_attempt.dispatch_prompt）。
+    /// 仅 Dispatch / Reflect 分支会填充；本地 action 分支为 None。
+    dispatch_prompt: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1856,6 +1892,7 @@ async fn execute_agent(
     prepared: PreparedAgentExecution,
     request: RuntimeInvocationRequest,
     context: RuntimeEventContext,
+    on_session_resolved: Option<Arc<dyn Fn(String) + Send + Sync + 'static>>,
 ) -> Result<NodeExecutionOutput, AttemptError> {
     let mut handle = runtime
         .invoke(request)
@@ -1892,7 +1929,13 @@ async fn execute_agent(
                 RuntimeFact::SessionResolved {
                     session_id: resolved,
                     ..
-                } => session_id = Some(resolved),
+                } => {
+                    session_id = Some(resolved.clone());
+                    // 立即落库，使运行中即可进入节点会话实时查看（Issue 2）。
+                    if let Some(cb) = &on_session_resolved {
+                        cb(resolved);
+                    }
+                }
                 RuntimeFact::Completed {
                     usage: completed_usage,
                     ..
@@ -1970,6 +2013,7 @@ async fn execute_agent(
         usage,
         session_id,
         interaction,
+        dispatch_prompt: None,
     })
 }
 
@@ -2437,6 +2481,7 @@ mod tests {
                 node_run_id: "node-run-1".into(),
                 attempt_id: "attempt-1".into(),
             },
+            None,
         )
         .await
         .unwrap();
@@ -3169,6 +3214,7 @@ mod tests {
             error: None,
             idempotency_key: Some("key".into()),
             checkpoint: None,
+            dispatch_prompt: None,
             started_at: 1,
             finished_at: None,
         };
@@ -3281,6 +3327,7 @@ mod tests {
             error: None,
             idempotency_key: None,
             checkpoint: None,
+            dispatch_prompt: None,
             started_at: 1,
             finished_at: None,
         };
@@ -3365,6 +3412,7 @@ mod tests {
             error: None,
             idempotency_key: None,
             checkpoint: None,
+            dispatch_prompt: None,
             started_at: 1,
             finished_at: None,
         };
@@ -3508,6 +3556,7 @@ mod tests {
             error: None,
             idempotency_key: None,
             checkpoint: None,
+            dispatch_prompt: None,
             started_at: 1,
             finished_at: None,
         };

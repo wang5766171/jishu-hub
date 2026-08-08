@@ -16,7 +16,8 @@
     "close": "Close",
     "confirm": "Confirm",
     "pause": "Pause",
-    "resume": "Resume"
+    "resume": "Resume",
+    "dismiss": "Dismiss"
   },
   "time": {
     "justNow": "just now",
@@ -232,7 +233,8 @@
     "floatingIdle": "Waiting for task...",
     "floatingComplete": "Task completed",
     "floatingRestore": "Restore session",
-    "saveSuccess": "Saved successfully"
+    "saveSuccess": "Saved successfully",
+    "noTasks": "No tasks yet"
   },
   "config": {
     "title": "Configuration",
@@ -467,10 +469,19 @@
         "acceptance": "Acceptance",
         "next": "Next",
         "back": "Back",
+        "parentPhase": "Parent phase",
+        "parentPhaseNone": "(No phase)",
+        "approvalPolicy": "Pre-execution approval",
+        "approvalPolicyHint": "No approval + write permission = fully automatic execution. Make sure you trust this node. Note: \"no approval\" only means no human approval is needed; the node is still subject to permission scope.",
         "intents": {
           "implement": "Implement",
           "research": "Research",
           "verify": "Verify"
+        },
+        "approvalPolicies": {
+          "never": "No approval (auto-run)",
+          "on_high_risk": "Approve on high risk (default)",
+          "always": "Approve every time"
         }
       },
       "connectHint": "After creation, drag a connection from the source node to the target to add a control dependency. Select a node or edge and press Delete to remove it.",
@@ -479,6 +490,12 @@
         "data_dependency": "Data dependency"
       },
       "deleteEdge": "Delete dependency",
+      "deleteNode": "Delete node",
+      "deleteNodeConfirm": "Confirm deletion",
+      "deleteNodeCascade": "This node has {{edges}} dependency edges. They will be removed when the node is deleted.",
+      "deleteNodeFrozen": "This node is executing or completed and cannot be deleted",
+      "deleteNodeGoal": "The goal node cannot be deleted",
+      "deleteFailed": "Failed to delete node: {{reason}}",
       "createStep": "Create step",
       "newPhase": "New phase",
       "status": {
@@ -525,11 +542,12 @@
       "editNode": {
         "toolbarButton": "Edit selected node",
         "title": "Adjust node",
-        "subtitle": "Modify the node title, description, or acceptance criteria",
+        "subtitle": "Modify the node title, description, acceptance criteria, or approval policy",
         "frozenHint": "This node is executing and cannot be edited",
         "titleLabel": "Title",
         "descriptionLabel": "Description",
         "acceptanceLabel": "Acceptance criteria",
+        "approvalPolicyLabel": "Pre-execution approval",
         "cancel": "Cancel",
         "save": "Save",
         "titleRequired": "Title cannot be empty"
@@ -639,6 +657,13 @@
     },
     "execution": {
       "start": "Start execution",
+      "starting": "Starting…",
+      "confirmTitle": "Start execution?",
+      "confirmDesc": "The flow has {{count}} steps and will run in dependency order once started.",
+      "confirmDescEmpty": "The flow has no steps yet — ask the task assistant below to complete it first.",
+      "confirmHint": "Not ready? Ask the task assistant below to adjust the flow, or open the flow canvas via \"Orchestrate\" on the right.",
+      "adjustFirst": "Adjust first",
+      "awaitingStart": "Execution has not started. Keep adjusting the flow below, or click \"Start execution\" in the step panel on the right.",
       "canvas": "Canvas",
       "split": "Split",
       "chat": "Chat",
@@ -655,29 +680,32 @@
       "agentsLoading": "Loading agents…",
       "agentsUnavailable": "Agent list unavailable — check agent configuration",
       "nodeStatus": "Status",
-      "attempt": "Attempt"
+      "attempt": "Attempt",
+      "nodeNotStarted": "This step has not started yet — its session will appear here once it runs."
     },
     "event": {
-      "runStarted": "Run started",
-      "nodeReady": "Node ready",
-      "nodeStarted": "Node started",
-      "nodeResolved": "Node finished",
-      "attemptFailed": "Attempt failed",
+      "runStarted": "I have started executing this flow ({{count}} steps in total). I will drive and monitor each node's execution.",
+      "nodeReady": "📋 Preparing: {{label}}",
+      "nodeStarted": "▶ Running: {{label}}{{suffix}}",
+      "nodeResolvedOk": "✅ {{label}} completed",
+      "nodeResolvedFail": "❌ {{label}} failed",
+      "nodeResolved": "• {{label}}{{status}}",
+      "attemptFailed": "❌ {{label}} attempt {{n}} failed{{message}}",
       "attemptNumber": "attempt {{n}}",
-      "retryScheduled": "Retry scheduled",
-      "nodeSkipped": "Node skipped",
-      "nodeBlocked": "Node blocked",
+      "retryScheduled": "↻ {{label}} retry {{n}} scheduled",
+      "nodeSkipped": "⤼ {{label}} skipped",
+      "nodeBlocked": "⛔ {{label}} blocked, will retry automatically",
       "approvalRequested": "Approval requested",
       "approvalNeeded": "Approval needed",
       "approvalResolved": "Approval",
       "approvalApproved": "approved",
       "approvalRejected": "rejected",
-      "budgetExceeded": "Budget exceeded",
-      "runPaused": "Run paused",
-      "runResumed": "Run resumed",
-      "runCancelled": "Run cancelled",
-      "runCompleted": "Run completed",
-      "runFailed": "Run failed"
+      "budgetExceeded": "⚠ Budget exceeded{{type}}",
+      "runPaused": "⏸ Run paused",
+      "runResumed": "▶ Run resumed",
+      "runCancelled": "● Run cancelled",
+      "runCompleted": "🎉 All steps finished. {{ok}} succeeded, {{fail}} failed. I have compiled an overall summary.",
+      "runFailed": "⚠ Flow execution failed. See each node's details above."
     },
     "nodeStatus": {
       "blocked": "blocked",
@@ -693,51 +721,20 @@
       "cancelled": "cancelled",
       "superseded": "superseded"
     },
-    "governance": {
-      "title": "Execution Governance",
-      "close": "Close",
-      "open": "Execution governance",
-      "needsIntervention": "Needs intervention",
-      "node": "Node",
-      "approvalCard": "Approval Request",
-      "resolvedApproved": "Approved",
-      "resolvedRejected": "Rejected",
-      "readOnlyHint": "Read-only in done state",
-      "approve": "Approve",
-      "reject": "Reject",
-      "currentRevision": "Current",
-      "tabs": {
-        "approvals": "Approvals",
-        "intervention": "Intervention",
-        "artifacts": "Artifacts",
-        "revisions": "Revisions"
-      },
-      "intervention": {
-        "modeLabel": "Intervention mode",
-        "recoveryTitle": "Failed node intervention",
-        "manualReason": "Manual intervention",
-        "retryNow": "Retry",
-        "skipNode": "Skip",
-        "failNode": "Fail",
-        "modes": {
-          "editing": "Editable",
-          "queued_intervention": "Queued",
-          "live_steer": "Live steer",
-          "approval": "Awaiting approval",
-          "retry_wait": "Retry wait",
-          "repairing": "Repairing",
-          "acceptance": "Accepted",
-          "recovery": "Recovery",
-          "historical": "Historical"
-        }
-      },
-      "empty": {
-        "approvals": "No approval requests",
-        "noNodeSelected": "No node selected",
-        "noNodeRun": "No run record for this node yet",
-        "artifacts": "No artifacts",
-        "revisions": "No revisions"
-      }
+    "board": {
+      "noGraph": "No flow graph yet"
+    },
+    "flow": {
+      "modeEdit": "Orchestrate",
+      "modeBoard": "Flow board",
+      "noGraph": "No flow graph yet"
+    },
+    "steps": {
+      "collapse": "Collapse step panel",
+      "hide": "Hide step panel",
+      "show": "Show step panel",
+      "empty": "No flow nodes yet",
+      "mainTask": "Main task"
     }
   }
 }

@@ -163,6 +163,29 @@ impl TaskService {
     pub fn open_default(
         registry: Arc<crate::agent::AgentRegistry>,
     ) -> Result<Self, TaskServiceError> {
+        Self::open_default_inner(registry, None, None)
+    }
+
+    /// Same as [`Self::open_default`], but mirrors node-agent events to the GUI
+    /// via `event_sink` so task node sessions stream through the regular chat
+    /// `agent-event` pipeline, and registers resolved node-session ACP controls
+    /// into the GUI chat state via `acp_register` (so the agent's mid-turn
+    /// interaction/steer during the execution phase resolves correctly).
+    /// Design §3.1/D4 still holds — both are injected closures, not a
+    /// `tauri::AppHandle`.
+    pub fn open_default_with_event_sink(
+        registry: Arc<crate::agent::AgentRegistry>,
+        event_sink: crate::orchestrator::runtime_bridge::NodeEventSink,
+        acp_register: crate::orchestrator::runtime_bridge::NodeAcpRegister,
+    ) -> Result<Self, TaskServiceError> {
+        Self::open_default_inner(registry, Some(event_sink), Some(acp_register))
+    }
+
+    fn open_default_inner(
+        registry: Arc<crate::agent::AgentRegistry>,
+        event_sink: Option<crate::orchestrator::runtime_bridge::NodeEventSink>,
+        acp_register: Option<crate::orchestrator::runtime_bridge::NodeAcpRegister>,
+    ) -> Result<Self, TaskServiceError> {
         let db_path = default_db_path();
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
@@ -171,7 +194,18 @@ impl TaskService {
         }
         let store = TaskStore::open(&db_path)?;
         let store_arc = Arc::new(store);
-        let runtime = Arc::new(DefaultTaskAgentRuntime::new(registry.clone()));
+        let runtime = Arc::new({
+            let mut rt = match event_sink {
+                Some(sink) => {
+                    DefaultTaskAgentRuntime::with_event_sink(registry.clone(), sink)
+                }
+                None => DefaultTaskAgentRuntime::new(registry.clone()),
+            };
+            if let Some(register) = acp_register {
+                rt = rt.with_acp_register(register);
+            }
+            rt
+        });
         let planner = Some(crate::orchestrator::planner::PlannerService::new(
             store_arc.clone(),
             runtime.clone(),
@@ -320,6 +354,22 @@ impl TaskService {
     /// 所有节点 attempt 的去重非空 session_id（供前端常规会话列表过滤）。
     pub fn list_node_session_ids(&self) -> Result<Vec<String>, TaskServiceError> {
         Ok(self.store.list_node_session_ids()?)
+    }
+
+    /// 列出某次 run 下所有节点的最新 attempt 摘要（侧边栏任务二级树用）。
+    pub fn list_node_sessions(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<crate::orchestrator::domain::run::NodeSessionSummary>, TaskServiceError> {
+        Ok(self.store.list_node_sessions(run_id)?)
+    }
+
+    /// 列出某节点所有 attempt 的派发 prompt（三角色识别用）。
+    pub fn list_attempt_dispatches(
+        &self,
+        node_run_id: &str,
+    ) -> Result<Vec<crate::orchestrator::domain::run::AttemptDispatch>, TaskServiceError> {
+        Ok(self.store.list_attempt_dispatches(node_run_id)?)
     }
 
     pub fn delete_graph(&self, graph_id: &str) -> Result<(), TaskServiceError> {

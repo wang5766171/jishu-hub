@@ -14,7 +14,6 @@ import {
   isTaskCompleted,
   taskInstanceFromRaw,
   type ExecutionChatScope,
-  type ExecutionView,
   type NodeSessionInfo,
   type PhaseDisplayStates,
   type RequirementFinalizeRequest,
@@ -52,7 +51,6 @@ export interface UseTaskInstanceResult {
   activeSessionId: string | null;
 
   // ── 执行阶段视图 ──
-  executionView: ExecutionView;
   chatScope: ExecutionChatScope;
   selectedNodeId: string | null;
   nodeSessionMap: Record<string, NodeSessionInfo>;
@@ -68,7 +66,6 @@ export interface UseTaskInstanceResult {
   syncRunStatus: (runId: string, runStatus: string) => Promise<TaskInstance | null>;
   renameTask: (title: string) => Promise<TaskInstance | null>;
   deleteTask: (taskId: string) => Promise<void>;
-  setExecutionView: (view: ExecutionView) => void;
   setChatScope: (scope: ExecutionChatScope) => void;
   selectNode: (nodeId: string | null) => void;
   updateNodeSession: (nodeId: string, info: NodeSessionInfo) => void;
@@ -84,7 +81,6 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
   const [readOnly, setReadOnly] = useState(false);
 
   // 执行阶段视图状态
-  const [executionView, setExecutionView] = useState<ExecutionView>("split");
   const [chatScope, setChatScope] = useState<ExecutionChatScope>({ kind: "run" });
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [nodeSessionMap, setNodeSessionMap] = useState<Record<string, NodeSessionInfo>>({});
@@ -144,7 +140,6 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
         setActivePhase(next);
         if (next === "execution") {
           setChatScope({ kind: "run" });
-          setExecutionView("split");
         }
       }
     }
@@ -185,7 +180,6 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
         // 进入执行阶段默认主任务会话 + 分屏
         if (inst.current_phase === "execution") {
           setChatScope({ kind: "run" });
-          setExecutionView("split");
         }
       }
     },
@@ -344,7 +338,6 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
     readOnly,
     phaseStates,
     activeSessionId,
-    executionView,
     chatScope,
     selectedNodeId,
     nodeSessionMap,
@@ -356,7 +349,6 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
     syncRunStatus,
     renameTask,
     deleteTask,
-    setExecutionView,
     setChatScope,
     selectNode,
     updateNodeSession,

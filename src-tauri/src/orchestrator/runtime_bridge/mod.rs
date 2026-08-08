@@ -133,11 +133,46 @@ pub trait TaskAgentRuntime: Send + Sync {
     }
 }
 
+/// Optional sink that mirrors orchestrator node-agent events to the GUI.
+///
+/// Design §3.1/D4 keeps `tauri::AppHandle` out of the orchestrator core, and it
+/// still does: this is a plain closure injected by the Tauri layer at
+/// construction time, so nothing here depends on `tauri`. The distinction
+/// matters — the channel emitter used by the PiRpc path only feeds the
+/// execution engine, so without this sink a task node session never receives a
+/// single `agent-event` and cannot stream at all. With it, node sessions ride
+/// the exact same `agent-event` → `streamStore` path as regular chat sessions
+/// instead of needing a separate refresh mechanism.
+///
+/// Signature: `(events, session_id, agent_id)`.
+pub type NodeEventSink = Arc<dyn Fn(&[NormalizedEvent], &str, &str) + Send + Sync>;
+
+/// Mirror a resolved node-session ACP control into `chat::ChatState` so the
+/// GUI chat commands (`respond_chat_interaction` / `steer_chat` /
+/// `resolve_chat_permission`) — which only key on `session_id` — can find the
+/// live control for a task node session. Without this, node sessions run via
+/// the orchestrator engine register their `AcpControl` only in `live_controls`
+/// (keyed by `invocation_id`), so answering an agent's mid-turn question during
+/// the execution phase failed with "No active ACP session found for <id>".
+///
+/// Design §3.1/D4 still holds: this is a plain injected closure (supplied by the
+/// Tauri layer in `lib.rs`, which holds the `AppHandle`); the orchestrator core
+/// never sees a `tauri` type — it only holds this `Arc<dyn Fn>`.
+///
+/// Signature: `(resolved_session_id, agent_id, control)`.
+pub type NodeAcpRegister =
+    Arc<dyn Fn(&str, &str, crate::acp_runtime::AcpControl) + Send + Sync>;
+
 pub struct DefaultTaskAgentRuntime {
     registry: Arc<AgentRegistry>,
     /// Live Pi RPC sessions keyed by invocation_id. Used for mid-turn steering/cancel.
     live_controls:
         Arc<std::sync::Mutex<std::collections::HashMap<String, crate::acp_runtime::AcpControl>>>,
+    /// See [`NodeEventSink`]. `None` in tests and headless use.
+    event_sink: Option<NodeEventSink>,
+    /// Optional hook to register a resolved node-session ACP control into the
+    /// GUI chat state. `None` in tests and headless use.
+    acp_register: Option<NodeAcpRegister>,
 }
 
 impl DefaultTaskAgentRuntime {
@@ -145,7 +180,27 @@ impl DefaultTaskAgentRuntime {
         Self {
             registry,
             live_controls: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            event_sink: None,
+            acp_register: None,
         }
+    }
+
+    /// Same as [`Self::new`], plus a sink that mirrors node-agent events to the
+    /// GUI so task node sessions stream like regular chat sessions.
+    pub fn with_event_sink(registry: Arc<AgentRegistry>, event_sink: NodeEventSink) -> Self {
+        Self {
+            registry,
+            live_controls: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            event_sink: Some(event_sink),
+            acp_register: None,
+        }
+    }
+
+    /// Attach the ACP-register hook (see [`NodeAcpRegister`]). Builder-style so it
+    /// composes with [`Self::with_event_sink`].
+    pub fn with_acp_register(mut self, register: NodeAcpRegister) -> Self {
+        self.acp_register = Some(register);
+        self
     }
 }
 
@@ -167,6 +222,8 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
     ) -> Pin<Box<dyn Future<Output = Result<InvocationHandle, String>> + Send>> {
         let registry = self.registry.clone();
         let live_controls = self.live_controls.clone();
+        let event_sink = self.event_sink.clone();
+        let acp_register = self.acp_register.clone();
         Box::pin(async move {
             let invocation_id = request.invocation_id.clone();
 
@@ -213,16 +270,65 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                 // Create event channel + callback emitter.
                 let (event_tx, mut event_rx) =
                     tokio::sync::mpsc::unbounded_channel::<NormalizedEvent>();
-                let emit: AcpEventEmit = Arc::new(move |events: &[NormalizedEvent], _| {
-                    for event in events {
-                        let _ = event_tx.send(event.clone());
-                    }
-                });
+                // Fan out to two consumers: the execution engine (via channel)
+                // and — when the Tauri layer injected a sink — the webview, so
+                // the node session streams through the very same `agent-event`
+                // pipeline a regular chat session uses. `session_id` here is the
+                // resolved one after `SessionResolved` (see pi_rpc_runtime), which
+                // is what the frontend matches the viewed session against.
+                let sink = event_sink.clone();
+                let sink_agent_id = request.agent_id.clone();
+                let emit: AcpEventEmit = Arc::new(
+                    move |events: &[NormalizedEvent], session_id: &str| {
+                        if let Some(sink) = &sink {
+                            sink(events, session_id, &sink_agent_id);
+                        }
+                        for event in events {
+                            let _ = event_tx.send(event.clone());
+                        }
+                    },
+                );
 
                 let pending_session_id = request
                     .session_id
                     .clone()
                     .unwrap_or_else(|| format!("orchestrator-{invocation_id}"));
+
+                // Slot holding the AcpControl so the session-resolved hook (which
+                // runs inside the spawned Pi RPC loop) can mirror it into the GUI
+                // chat state. We fill it right after spawn returns; both the slot
+                // and `live_controls` (populated just below) are set synchronously
+                // before the background loop can emit `session_resolved`, so the
+                // register hook always has a control to hand over.
+                let acp_slot: Arc<
+                    std::sync::Mutex<Option<crate::acp_runtime::AcpControl>>,
+                > = Arc::new(std::sync::Mutex::new(None));
+                let reg_slot = acp_slot.clone();
+                let reg_live = live_controls.clone();
+                let reg_invocation = invocation_id.clone();
+                let reg_agent_id = request.agent_id.clone();
+                let on_session_resolved = move || {
+                    if let Some(reg) = &acp_register {
+                        let control = {
+                            let from_slot =
+                                reg_slot.lock().ok().and_then(|g| g.clone());
+                            from_slot.or_else(|| {
+                                reg_live
+                                    .lock()
+                                    .ok()
+                                    .and_then(|g| g.get(&reg_invocation).cloned())
+                            })
+                        };
+                        if let Some(control) = control {
+                            // The control's resolved session id is set by the Pi
+                            // RPC loop just before this hook fires, so it is
+                            // available here (see pi_rpc_runtime).
+                            if let Some(resolved_id) = control.resolved_session_id() {
+                                reg(&resolved_id, &reg_agent_id, control);
+                            }
+                        }
+                    }
+                };
 
                 // Spawn the persistent session. Returns immediately with AcpControl.
                 let acp_control = crate::pi_rpc_runtime::spawn_pi_rpc_session_with_emitter(
@@ -231,9 +337,11 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                     child,
                     request.prompt,
                     agent.resolved_session_prompt_injection(),
-                    || {},
+                    on_session_resolved,
                     |_sid| {},
                 );
+                *acp_slot.lock().map_err(|e| e.to_string())? =
+                    Some(acp_control.clone());
 
                 // Register the control for mid-turn steering, then move a clone
                 // into the bridge. The original is removed when the bridge ends.

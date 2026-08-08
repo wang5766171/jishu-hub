@@ -2,7 +2,7 @@
  * jishu-task-conductor — Pi 扩展，驱动 discuss→plan→execute 三阶段工作流。
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { createHash } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -314,6 +314,35 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     return join(process.cwd(), ".jishu-hub", "tasks", taskId, "artifacts");
   }
 
+  /**
+   * 任务隔离锚点：把「当前 task_id + 本任务产物绝对路径」显式注入模型上下文。
+   *
+   * 背景（2026-08-02 手测缺陷）：同一 project_root 下发起第二个任务时，进入规划阶段的
+   * 驱动指令只说「读取需求终稿」而不给路径，模型便用 ls/find 在 `.jishu-hub/tasks/`
+   * 下自行搜索，扫到**上一个任务**的 REQUIREMENTS.md，导致第二个任务按第一个任务的
+   * 需求出规划。这里给出唯一权威路径并禁止跨任务目录检索。
+   */
+  function taskAnchor(): string {
+    const taskId = state.artifacts.taskId || "draft";
+    const lines = [
+      "【任务隔离锚点 — 强制遵守】",
+      `- 当前任务 ID：${taskId}`,
+      `- 本任务目录：${join(process.cwd(), ".jishu-hub", "tasks", taskId)}`,
+    ];
+    if (state.artifacts.requirements) {
+      lines.push(`- 需求终稿（唯一权威来源）：${state.artifacts.requirements}`);
+    }
+    if (state.artifacts.flowPlanMd) {
+      lines.push(`- 流程方案：${state.artifacts.flowPlanMd}`);
+    }
+    lines.push(
+      "- 🚫 严禁读取或引用 `.jishu-hub/tasks/` 下**其它任务目录**的任何文件（其它 task_* 的 REQUIREMENTS.md / flow-plan.md 等）。同一项目可能并存多个历史任务，读错即污染本任务。",
+      "- 🚫 严禁用 ls/find/grep 在 `.jishu-hub/tasks/` 下搜索需求或计划文件。只能读上面给出的确切路径；该路径不存在时直接说明，不得寻找替代文件。",
+      "- ✅ 本任务需求以「本会话内已确认的对话内容 + 上述需求终稿路径」为准，二者之外的任何任务产物都与本任务无关。",
+    );
+    return lines.join("\n");
+  }
+
   function writeArtifact(
     subdir: string,
     filename: string,
@@ -324,6 +353,47 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     const fullPath = join(dir, filename);
     writeFileSync(fullPath, content, "utf-8");
     return fullPath;
+  }
+
+  /**
+   * 任务隔离硬闸门：判断某个路径是否越界到别的任务目录。
+   *
+   * 返回 null 放行，否则返回阻断原因。taskAnchor() 是软约束（提示词），
+   * 本函数是硬约束——模型无视提示词去 ls/find `.jishu-hub/tasks/` 时直接 block。
+   */
+  function taskIsolationViolation(rawPath: string | undefined): string | null {
+    if (typeof rawPath !== "string" || !rawPath.trim()) return null;
+    const taskId = state.artifacts.taskId || "draft";
+    const normalized = (isAbsolute(rawPath) ? rawPath : join(process.cwd(), rawPath))
+      .replace(/\\/g, "/")
+      .toLowerCase();
+    const marker = "/.jishu-hub/tasks";
+    const at = normalized.indexOf(marker);
+    if (at === -1) return null;
+    const rest = normalized.slice(at + marker.length).replace(/^\/+/, "");
+    if (!rest) {
+      return `禁止列举/搜索 .jishu-hub/tasks 根目录：那里并存多个历史任务，极易读到别的任务的需求或计划。当前任务是 ${taskId}，只能访问它自己的目录。`;
+    }
+    if (rest.split("/")[0] === taskId.toLowerCase()) return null;
+    return `禁止访问其它任务的目录（当前任务是 ${taskId}）。跨任务读取会让需求/计划串台，请只使用任务隔离锚点里给出的路径。`;
+  }
+
+  /** bash 命令文本里的任务目录越界检测（read/ls/find/grep 之外的旁路）。 */
+  function bashTaskIsolationViolation(command: string): string | null {
+    const lowered = command.replace(/\\/g, "/").toLowerCase();
+    if (!lowered.includes(".jishu-hub/tasks")) return null;
+    const taskId = (state.artifacts.taskId || "draft").toLowerCase();
+    // 用 exec 循环而非 matchAll：扩展由 pi 直接 transpile，不假设 lib/downlevelIteration。
+    const re = /\.jishu-hub\/tasks(\/[^\s"';|&)]*)?/g;
+    let match: RegExpExecArray | null = re.exec(lowered);
+    while (match !== null) {
+      const segment = (match[1] ?? "").replace(/^\/+/, "").split("/")[0];
+      if (segment !== taskId) {
+        return `禁止在命令中访问 .jishu-hub/tasks 下的其它任务目录（当前任务是 ${state.artifacts.taskId || "draft"}）。`;
+      }
+      match = re.exec(lowered);
+    }
+    return null;
   }
 
   // ── Hub 桥接（Phase 2）：通过 select 通道编码调用 Hub 后端命令 ──
@@ -413,6 +483,8 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         display: false,
         content: [
           `继续当前${label}阶段。`,
+          // 同上：followUp 轮不触发 before_agent_start，锚点必须内联，防止跨任务读串。
+          taskAnchor(),
           "以下是上一版候选基线，保留用户未明确否定的内容，只修改受补充影响的字段。",
           baseline,
           `用户补充：${answer}`,
@@ -777,10 +849,22 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     // 取自 TaskInstance.current_phase（derivePhaseDisplayState），**不依赖分隔符事件**；
     // 任务模式亦不渲染分隔线（见 06-手测反馈修复.md #3）。
     if (!needDrive) return;
+    // 注意：本条由 agent_end 发出，落 steer/followUp 分支 ⇒ **不触发 before_agent_start**
+    // （见上方 2026-07-25 pi 源码核实结论），因此任务隔离锚点必须内联进正文，
+    // 不能指望 before_agent_start 注入 —— 否则模型会在 `.jishu-hub/tasks/` 下自行
+    // 搜索需求终稿，扫到同项目的上一个任务（2026-08-02 手测缺陷）。
     const content =
       target === "plan"
-        ? `进入流程规划阶段。读取需求终稿并设计任务节点方案；先在回复列出方案，再调用 commit_plan。`
-        : `进入流程执行阶段。按已确认节点依次执行：\n${renderStepList()}\n全部完成后简要报告产出。`;
+        ? [
+            "进入流程规划阶段。",
+            taskAnchor(),
+            "读取上述需求终稿并设计任务节点方案；先在回复列出方案，再调用 commit_plan。",
+          ].join("\n\n")
+        : [
+            "进入流程执行阶段。",
+            taskAnchor(),
+            `按已确认节点依次执行：\n${renderStepList()}\n全部完成后简要报告产出。`,
+          ].join("\n\n");
     pi.sendMessage(
       { customType: `jishu-conductor:phase-enter:${target}`, display: true, content },
       { triggerTurn: needDrive }, // 驱动下一阶段轮次（plan / fallback-execute）
@@ -905,7 +989,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       message: {
         customType: phaseTag(),
         display: false,
-        content: `[JISHU-TASK:${state.domain}:${state.phase}] === ${phaseDisplayName(state.phase)} ===\n${skill}\n\n${phaseDiscipline(state.phase)}${revisionContext ? `\n\n${revisionContext}` : ""}`,
+        content: `[JISHU-TASK:${state.domain}:${state.phase}] === ${phaseDisplayName(state.phase)} ===\n${skill}\n\n${phaseDiscipline(state.phase)}\n\n${taskAnchor()}${revisionContext ? `\n\n${revisionContext}` : ""}`,
       },
     };
   });
@@ -997,12 +1081,26 @@ export default function conductorExtension(pi: ExtensionAPI): void {
 
   pi.on("tool_call", async (event) => {
     const allowed = allowedToolsFor(state.phase, state.executorMode);
-    if (!allowed) return;
-    if (!allowed.includes(event.toolName)) {
+    if (allowed && !allowed.includes(event.toolName)) {
       return {
         block: true,
         reason: `${state.phase} 阶段不允许 ${event.toolName}`,
       };
+    }
+    if (state.phase === "idle" || state.phase === "done") return;
+
+    // 任务隔离硬闸门：同一 project_root 下并存多个任务时，模型会用 ls/find/read
+    // 在 `.jishu-hub/tasks/` 下"找需求终稿"，从而读到上一个任务的 REQUIREMENTS.md
+    // （2026-08-02 手测缺陷：第二个任务按第一个任务的需求出规划）。锚点提示是软约束，
+    // 这里做硬拦截。
+    const input = (event as { input?: Record<string, unknown> }).input;
+    const pathViolation = taskIsolationViolation(
+      typeof input?.path === "string" ? input.path : undefined,
+    );
+    if (pathViolation) return { block: true, reason: pathViolation };
+    if (event.toolName === "bash" && typeof input?.command === "string") {
+      const cmdViolation = bashTaskIsolationViolation(input.command);
+      if (cmdViolation) return { block: true, reason: cmdViolation };
     }
   });
 }

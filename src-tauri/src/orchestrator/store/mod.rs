@@ -7,8 +7,9 @@ use crate::orchestrator::conversation::{TaskInteractionRequest, TaskInteractionS
 use crate::orchestrator::domain::graph::TaskGraph;
 use crate::orchestrator::domain::revision::GraphRevision;
 use crate::orchestrator::domain::run::{
-    ApprovalRequest, ArtifactRef, BudgetState, GraphRun, NodeAttempt, NodeRun, NodeRunStatus,
-    RunPlanningSnapshot, RunRevisionProposal, RunStatus,
+    AgentAssignment, ApprovalRequest, ArtifactRef, AttemptDispatch, BudgetState, GraphRun,
+    NodeAttempt, NodeRun, NodeRunStatus, NodeSessionSummary, RunPlanningSnapshot,
+    RunRevisionProposal, RunStatus,
 };
 use crate::orchestrator::events::TaskEvent;
 use crate::orchestrator::projections::checkpoint::ProjectionReadModel;
@@ -23,6 +24,37 @@ fn decode_json_column<T: DeserializeOwned>(raw: &str, column: usize) -> rusqlite
             Box::new(error),
         )
     })
+}
+
+/// 对已有库安全补列：列不存在时 ALTER TABLE ADD COLUMN，已存在则跳过。
+///
+/// SQLite 不支持 `ADD COLUMN IF NOT EXISTS`，通过 `pragma_table_info` 检查。
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), StoreError> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        params![table, column],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        // 表可能不存在（首次 create_schema 全新建库）——跳过。
+        let table_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?1",
+            params![table],
+            |row| row.get(0),
+        )?;
+        if table_exists == 0 {
+            return Ok(());
+        }
+        let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {definition}");
+        conn.execute_batch(&sql)?;
+        tracing::info!("migration: added column {table}.{column} {definition}");
+    }
+    Ok(())
 }
 
 /// Error from the task store.
@@ -239,6 +271,7 @@ impl TaskStore {
                 error           TEXT,
                 idempotency_key TEXT,
                 checkpoint      TEXT,
+                dispatch_prompt TEXT,
                 started_at      INTEGER NOT NULL,
                 finished_at     INTEGER
             );
@@ -327,6 +360,12 @@ impl TaskStore {
             );
             "#,
         )?;
+
+        // ── 轻量 migration：对已有库补列（新库 CREATE TABLE 已含）──
+        // dispatch_prompt：T0 新增，node_attempt 派发 prompt（三角色识别用）。
+        // SQLite 没有 ADD COLUMN IF NOT EXISTS，先查 pragma 检查列是否存在。
+        ensure_column(&conn, "node_attempt", "dispatch_prompt", "TEXT")?;
+
         conn.pragma_update(None, "user_version", TASK_STORE_SCHEMA_VERSION)?;
 
         Ok(())
@@ -1756,9 +1795,9 @@ impl TaskStore {
             tx.execute(
                 "INSERT OR REPLACE INTO node_attempt
                  (attempt_id, node_run_id, attempt_number, agent_assignment, transport,
-                  session_id, lease, usage, error, idempotency_key, checkpoint,
+                  session_id, lease, usage, error, idempotency_key, checkpoint, dispatch_prompt,
                   started_at, finished_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     attempt.attempt_id,
                     attempt.node_run_id,
@@ -1774,6 +1813,7 @@ impl TaskStore {
                         .checkpoint
                         .as_ref()
                         .map(|checkpoint| checkpoint.to_string()),
+                    attempt.dispatch_prompt,
                     attempt.started_at,
                     attempt.finished_at,
                 ],
@@ -2026,9 +2066,9 @@ impl TaskStore {
         conn.execute(
             "INSERT OR REPLACE INTO node_attempt
              (attempt_id, node_run_id, attempt_number, agent_assignment, transport,
-              session_id, lease, usage, error, idempotency_key, checkpoint,
+              session_id, lease, usage, error, idempotency_key, checkpoint, dispatch_prompt,
               started_at, finished_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 attempt.attempt_id,
                 attempt.node_run_id,
@@ -2041,9 +2081,29 @@ impl TaskStore {
                 error,
                 attempt.idempotency_key,
                 attempt.checkpoint.as_ref().map(|c| c.to_string()),
+                attempt.dispatch_prompt,
                 attempt.started_at,
                 attempt.finished_at,
             ],
+        )?;
+        Ok(())
+    }
+
+    /// 节点 attempt 开始执行后，runtime 解析出真实 session_id（SessionResolved 事件）。
+    /// 立即落库，使前端在节点**运行中**即可拿到 session_id 进入会话实时查看，
+    /// 不必等到 attempt 完成（此前 session_id 仅完成时落库，导致运行中无法进入节点会话）。
+    pub fn set_node_attempt_session_id(
+        &self,
+        attempt_id: &str,
+        session_id: &str,
+    ) -> Result<(), StoreError> {
+        let conn = self
+            .writer
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        conn.execute(
+            "UPDATE node_attempt SET session_id = ?1 WHERE attempt_id = ?2",
+            params![session_id, attempt_id],
         )?;
         Ok(())
     }
@@ -2055,7 +2115,7 @@ impl TaskStore {
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         conn.query_row(
             "SELECT attempt_id, node_run_id, attempt_number, agent_assignment, transport,
-                    session_id, lease, usage, error, idempotency_key, checkpoint,
+                    session_id, lease, usage, error, idempotency_key, checkpoint, dispatch_prompt,
                     started_at, finished_at
              FROM node_attempt WHERE node_run_id = ?1
              ORDER BY attempt_number DESC LIMIT 1",
@@ -2090,8 +2150,9 @@ impl TaskStore {
                     error,
                     idempotency_key: row.get(9)?,
                     checkpoint,
-                    started_at: row.get(11)?,
-                    finished_at: row.get(12)?,
+                    dispatch_prompt: row.get(11)?,
+                    started_at: row.get(12)?,
+                    finished_at: row.get(13)?,
                 })
             },
         )
@@ -2111,7 +2172,7 @@ impl TaskStore {
             .map_err(|e| StoreError::Lock(e.to_string()))?;
         conn.query_row(
             "SELECT attempt_id, node_run_id, attempt_number, agent_assignment, transport,
-                    session_id, lease, usage, error, idempotency_key, checkpoint,
+                    session_id, lease, usage, error, idempotency_key, checkpoint, dispatch_prompt,
                     started_at, finished_at
              FROM node_attempt WHERE node_run_id = ?1 AND attempt_number = ?2",
             params![node_run_id, attempt_number],
@@ -2145,8 +2206,9 @@ impl TaskStore {
                     error,
                     idempotency_key: row.get(9)?,
                     checkpoint,
-                    started_at: row.get(11)?,
-                    finished_at: row.get(12)?,
+                    dispatch_prompt: row.get(11)?,
+                    started_at: row.get(12)?,
+                    finished_at: row.get(13)?,
                 })
             },
         )
@@ -2177,6 +2239,195 @@ impl TaskStore {
             .filter_map(|r| r.ok())
             .collect();
         Ok(ids)
+    }
+
+    /// 列出某次 run 下所有节点的最新 attempt 摘要（侧边栏任务二级树用）。
+    ///
+    /// 单条 SQL JOIN node_run + node_attempt（取每个 node_run 的最大 attempt_number），
+    /// 避免 N+1 查询。设计 `02-总体设计.md` §6.2。
+    pub fn list_node_sessions(&self, run_id: &str) -> Result<Vec<NodeSessionSummary>, StoreError> {
+        // 1. 取出本 run 下所有节点的最新 attempt（含该节点所属的 revision_id）。
+        //    用独立作用域持有 reader 锁，收集完即释放——避免后续 get_revision 再次加锁死锁。
+        let node_rows: Vec<(
+            String,       // node_id
+            String,       // node_run_id
+            String,       // status
+            u32,          // attempt_number
+            Option<String>, // session_id
+            Option<String>, // agent_id
+            String,       // revision_id
+        )> = {
+            let conn = self
+                .reader
+                .lock()
+                .map_err(|e| StoreError::Lock(e.to_string()))?;
+            let mut stmt = conn.prepare(
+                "SELECT nr.node_id,
+                        nr.node_run_id,
+                        nr.status,
+                        na.attempt_number,
+                        na.session_id,
+                        na.agent_assignment,
+                        nr.revision_id
+                 FROM node_run nr
+                 LEFT JOIN node_attempt na
+                   ON na.node_run_id = nr.node_run_id
+                  AND na.attempt_number = (
+                      SELECT MAX(attempt_number) FROM node_attempt WHERE node_run_id = nr.node_run_id
+                  )
+                 WHERE nr.run_id = ?1
+                 ORDER BY nr.started_at ASC, nr.node_run_id ASC",
+            )?;
+            let rows = stmt.query_map(params![run_id], |row| {
+                let status_raw: String = row.get(2)?;
+                // node_run.status 列存的是 serde_json::to_string 结果（带引号的 JSON 字符串，
+                // 如 `"succeeded"`）。这里解码回枚举再序列化为干净的 snake_case 字符串，
+                // 避免前端拿到带引号的字符串导致状态图标匹配失败（全部走 default 空心圆）。
+                let status = serde_json::from_str::<NodeRunStatus>(&status_raw)
+                    .map(|s| {
+                        serde_json::to_string(&s)
+                            .map(|v| v.trim_matches('"').to_string())
+                            .unwrap_or_else(|_| status_raw.clone())
+                    })
+                    .unwrap_or_else(|_| status_raw.clone());
+                let agent_assignment_json: Option<String> = row.get(5)?;
+                let agent_id = agent_assignment_json
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str::<crate::orchestrator::domain::run::AgentAssignment>(json).ok())
+                    .map(|assignment| assignment.agent_id);
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    status,
+                    row.get::<_, Option<i64>>(3)?.map(|n| n as u32).unwrap_or(0),
+                    row.get(4)?,
+                    agent_id,
+                    row.get::<_, String>(6)?,
+                ))
+            })?;
+            let mut v = Vec::new();
+            for row in rows {
+                v.push(row?);
+            }
+            v
+        };
+
+        if node_rows.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 2. 取 graph 的 current_draft_revision（兜底标题源）。
+        let draft_revision_id: Option<String> = {
+            let conn = self
+                .reader
+                .lock()
+                .map_err(|e| StoreError::Lock(e.to_string()))?;
+            conn.query_row(
+                "SELECT g.current_draft_revision
+                 FROM graph_run r
+                 LEFT JOIN graph g ON g.graph_id = r.graph_id
+                 WHERE r.run_id = ?1",
+                params![run_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+        };
+
+        // 3. 加载需要的 revision，构建 node_id → 中文标题 映射。
+        //    优先用 run 实际执行的 revision（node_id 必然对齐）；draft 仅作兜底。
+        let mut run_title_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut draft_title_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut loaded: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (_, _, _, _, _, _, rev_id) in &node_rows {
+            if rev_id.is_empty() || !loaded.insert(rev_id.clone()) {
+                continue;
+            }
+            if let Ok(rev) = self.get_revision(rev_id) {
+                if let Ok(snap) = rev.canonical_snapshot.to_snapshot() {
+                    for n in snap.nodes {
+                        let t = n.title.trim().to_string();
+                        if !t.is_empty() {
+                            run_title_map.entry(n.node_id.clone()).or_insert(t);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(d) = &draft_revision_id {
+            if !d.is_empty() && loaded.insert(d.clone()) {
+                if let Ok(rev) = self.get_revision(d) {
+                    if let Ok(snap) = rev.canonical_snapshot.to_snapshot() {
+                        for n in snap.nodes {
+                            let t = n.title.trim().to_string();
+                            if !t.is_empty() {
+                                draft_title_map.entry(n.node_id.clone()).or_insert(t);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. 选择展示标题：run revision（对齐）优先，其次 draft，最后才回退裸 node_id。
+        //    过滤掉 "Node n1" 这类占位标题，确保侧边栏永远显示中文标题、绝不出现 N1/N2。
+        let pick = |title: Option<String>, node_id: &str| -> Option<String> {
+            title.filter(|t| {
+                let tt = t.trim();
+                !tt.is_empty()
+                    && !tt.eq_ignore_ascii_case(&format!("Node {node_id}"))
+                    && !tt.starts_with("Node ")
+            })
+        };
+
+        let mut summaries = Vec::with_capacity(node_rows.len());
+        for (node_id, node_run_id, status, attempt_number, session_id, agent_id, _) in node_rows {
+            let title = pick(run_title_map.get(&node_id).cloned(), &node_id)
+                .or_else(|| pick(draft_title_map.get(&node_id).cloned(), &node_id))
+                .unwrap_or_else(|| node_id.clone());
+            summaries.push(NodeSessionSummary {
+                node_id,
+                node_run_id,
+                status,
+                attempt_number,
+                session_id,
+                agent_id,
+                title,
+            });
+        }
+        Ok(summaries)
+    }
+
+    /// 列出某节点所有 attempt 的派发 prompt（三角色识别用，设计 §7.1 方案 A）。
+    ///
+    /// 依赖 `dispatch_prompt` 列（T0 新增）。老库无此列时 SQLite ALTER TABLE ADD COLUMN
+    /// 默认 NULL，返回空 prompt（前端降级为两角色）。
+    pub fn list_attempt_dispatches(
+        &self,
+        node_run_id: &str,
+    ) -> Result<Vec<AttemptDispatch>, StoreError> {
+        let conn = self
+            .reader
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        let mut stmt = conn.prepare(
+            "SELECT attempt_number, started_at, dispatch_prompt
+             FROM node_attempt
+             WHERE node_run_id = ?1 AND dispatch_prompt IS NOT NULL
+             ORDER BY attempt_number ASC",
+        )?;
+        let rows = stmt.query_map(params![node_run_id], |row| {
+            Ok(AttemptDispatch {
+                attempt_number: row.get::<_, i64>(0)? as u32,
+                dispatched_at: row.get(1)?,
+                prompt: row.get(2)?,
+            })
+        })?;
+        let mut dispatches = Vec::new();
+        for row in rows {
+            dispatches.push(row?);
+        }
+        Ok(dispatches)
     }
 
     /// Refresh the heartbeat deadline on the latest attempt's lease for a node run.
@@ -3324,6 +3575,7 @@ mod tests {
                 error: None,
                 idempotency_key: None,
                 checkpoint: None,
+                dispatch_prompt: None,
                 started_at: now(),
                 finished_at: None,
             })
@@ -3672,6 +3924,7 @@ mod tests {
             error: None,
             idempotency_key: None,
             checkpoint: None,
+            dispatch_prompt: None,
             started_at: now(),
             finished_at: None,
         };
@@ -3772,6 +4025,7 @@ mod tests {
                 error: None,
                 idempotency_key: None,
                 checkpoint: None,
+                dispatch_prompt: None,
                 started_at: now(),
                 finished_at: None,
             }
@@ -3784,6 +4038,192 @@ mod tests {
         let mut ids = store.list_node_session_ids().unwrap();
         ids.sort();
         assert_eq!(ids, vec!["sess-a".to_string(), "sess-b".to_string()]);
+    }
+
+    #[test]
+    fn list_node_sessions_returns_latest_attempt_per_node() {
+        let store = make_test_store();
+        setup_run_with_nodes(&store, "run-ls", &[("nr-a", "n-a"), ("nr-b", "n-b")]);
+
+        // nr-a: attempt 1 (old) with session-a → 被_attempt 2 覆盖
+        save_test_attempt(&store, "att-a1", "nr-a", 1, Some("session-a-old"));
+        // nr-a: attempt 2 (最新) with session-a-new
+        save_test_attempt(&store, "att-a2", "nr-a", 2, Some("session-a-new"));
+        // nr-b: 无 attempt（只有 node_run）
+
+        let sessions = store.list_node_sessions("run-ls").unwrap();
+        assert_eq!(sessions.len(), 2);
+
+        let by_node: std::collections::HashMap<&str, &NodeSessionSummary> =
+            sessions.iter().map(|s| (s.node_id.as_str(), s)).collect();
+
+        // nr-a 应取最新 attempt（attempt_number=2, session-a-new）
+        let nr_a = by_node.get("n-a").unwrap();
+        assert_eq!(nr_a.attempt_number, 2);
+        assert_eq!(nr_a.session_id.as_deref(), Some("session-a-new"));
+
+        // nr-b 无 attempt → attempt_number=0, session_id=None
+        let nr_b = by_node.get("n-b").unwrap();
+        assert_eq!(nr_b.attempt_number, 0);
+        assert!(nr_b.session_id.is_none());
+    }
+
+    #[test]
+    fn list_node_sessions_empty_run_returns_empty() {
+        let store = make_test_store();
+        setup_run_with_nodes(&store, "run-empty", &[]);
+        let sessions = store.list_node_sessions("run-empty").unwrap();
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn list_node_sessions_wrong_run_returns_empty() {
+        let store = make_test_store();
+        setup_run_with_nodes(&store, "run-x", &[("nr-x", "n-x")]);
+        // 查不存在的 run
+        let sessions = store.list_node_sessions("run-nonexistent").unwrap();
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn list_attempt_dispatches_returns_prompts() {
+        let store = make_test_store();
+        setup_run_with_nodes(&store, "run-disp", &[("nr-d", "n-d")]);
+
+        // attempt 1 with dispatch_prompt
+        let mut att1 = crate::orchestrator::domain::run::NodeAttempt {
+            attempt_id: "att-d1".into(),
+            node_run_id: "nr-d".into(),
+            attempt_number: 1,
+            agent_assignment: None,
+            transport: None,
+            session_id: Some("sess-d1".into()),
+            lease: None,
+            usage: Default::default(),
+            error: None,
+            idempotency_key: None,
+            checkpoint: None,
+            dispatch_prompt: Some("Task Orchestrator execution contract:...".into()),
+            started_at: 100,
+            finished_at: Some(200),
+        };
+        store.save_attempt(&att1).unwrap();
+
+        // attempt 2 without dispatch_prompt (老数据)
+        att1.attempt_id = "att-d2".into();
+        att1.attempt_number = 2;
+        att1.dispatch_prompt = None;
+        att1.session_id = Some("sess-d2".into());
+        att1.started_at = 300;
+        store.save_attempt(&att1).unwrap();
+
+        let dispatches = store.list_attempt_dispatches("nr-d").unwrap();
+        // 只返回有 dispatch_prompt 的（attempt 2 无 prompt 被过滤）
+        assert_eq!(dispatches.len(), 1);
+        assert_eq!(dispatches[0].attempt_number, 1);
+        assert!(dispatches[0].prompt.starts_with("Task Orchestrator"));
+    }
+
+    /// 辅助：创建 graph + revision + run + N 个 node_run。
+    fn setup_run_with_nodes(store: &TaskStore, run_id: &str, nodes: &[(&str, &str)]) {
+        store
+            .create_graph(&TaskGraph {
+                graph_id: format!("g-{run_id}"),
+                title: "test".into(),
+                goal: "test".into(),
+                project_root: PathBuf::from("/project"),
+                owner: "user".into(),
+                current_draft_revision: None,
+                created_at: now(),
+                updated_at: now(),
+            })
+            .unwrap();
+        let snapshot = GraphSnapshot {
+            nodes: nodes
+                .iter()
+                .map(|(_, node_id)| GraphNode {
+                    node_id: (*node_id).into(),
+                    parent_id: None,
+                    title: format!("Node {node_id}"),
+                    description: None,
+                    node_kind: NodeKind::Goal,
+                    input_contract: Default::default(),
+                    output_contract: Default::default(),
+                    role_requirement: None,
+                    capability_requirements: vec![],
+                    agent_assignment_constraint: None,
+                    policy: Default::default(),
+                    metadata: Default::default(),
+                    executable_payload: None,
+                    loop_config: None,
+                    approval_gate_config: None,
+                })
+                .collect(),
+            edges: vec![],
+        };
+        let revision =
+            GraphRevision::from_snapshot(&format!("rev-{run_id}"), &format!("g-{run_id}"), None, &snapshot, "user", now())
+                .unwrap();
+        store.save_revision(&revision).unwrap();
+        store
+            .create_run(&crate::orchestrator::domain::run::GraphRun {
+                run_id: run_id.into(),
+                graph_id: format!("g-{run_id}"),
+                active_revision_id: format!("rev-{run_id}"),
+                status: crate::orchestrator::domain::run::RunStatus::Running,
+                run_seq: 1,
+                budget_state: Default::default(),
+                planning_snapshot: Default::default(),
+                started_at: now(),
+                finished_at: None,
+            })
+            .unwrap();
+        for (nr_id, node_id) in nodes {
+            store
+                .save_node_run(&crate::orchestrator::domain::run::NodeRun {
+                    node_run_id: (*nr_id).into(),
+                    run_id: run_id.into(),
+                    node_id: (*node_id).into(),
+                    status: crate::orchestrator::domain::run::NodeRunStatus::Running,
+                    revision_id: format!("rev-{run_id}"),
+                    started_at: Some(now()),
+                    finished_at: None,
+                    attempt_count: 0,
+                    wake_at: None,
+                    error: None,
+                    loop_iteration: None,
+                    superseded: false,
+                })
+                .unwrap();
+        }
+    }
+
+    /// 辅助：保存一个测试 attempt。
+    fn save_test_attempt(
+        store: &TaskStore,
+        attempt_id: &str,
+        node_run_id: &str,
+        attempt_number: u32,
+        session_id: Option<&str>,
+    ) {
+        store
+            .save_attempt(&crate::orchestrator::domain::run::NodeAttempt {
+                attempt_id: attempt_id.into(),
+                node_run_id: node_run_id.into(),
+                attempt_number,
+                agent_assignment: None,
+                transport: None,
+                session_id: session_id.map(str::to_string),
+                lease: None,
+                usage: Default::default(),
+                error: None,
+                idempotency_key: None,
+                checkpoint: None,
+                dispatch_prompt: None,
+                started_at: now(),
+                finished_at: None,
+            })
+            .unwrap();
     }
 
     #[test]

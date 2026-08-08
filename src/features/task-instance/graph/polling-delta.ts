@@ -1,4 +1,4 @@
-import type { TaskEvent } from "./use-task-graph";
+import type { NodeRun, TaskEvent } from "./use-task-graph";
 
 const APPROVAL_EVENT_TYPES = new Set(["approval_requested", "approval_resolved"]);
 const ARTIFACT_EVENT_TYPES = new Set(["artifact_produced"]);
@@ -41,4 +41,30 @@ export function planPoll(deltaEvents: TaskEvent[]): PollPlan {
 export function filterUnseenEvents(existing: TaskEvent[], incoming: TaskEvent[]): TaskEvent[] {
   const seenIds = new Set(existing.map((e) => e.event_id));
   return incoming.filter((e) => !seenIds.has(e.event_id));
+}
+
+/** 引用稳定化合并（F1）：新旧 nodeRuns 逐键浅比较
+ *  （node_run_id/status/attempt_count/error 四字段 + 键集合），完全无变化则
+ *  复用旧 Record 对象——避免下游 frozenNodeIds 等派生每轮轮询都新建。 */
+export function mergeNodeRunsStable(
+  prev: Record<string, NodeRun>,
+  next: Record<string, NodeRun>,
+): Record<string, NodeRun> {
+  const prevKeys = Object.keys(prev);
+  const nextKeys = Object.keys(next);
+  if (prevKeys.length !== nextKeys.length) return next;
+  for (const key of nextKeys) {
+    const p = prev[key];
+    const n = next[key];
+    if (
+      !p ||
+      p.node_run_id !== n.node_run_id ||
+      p.status !== n.status ||
+      p.attempt_count !== n.attempt_count ||
+      p.error !== n.error
+    ) {
+      return next;
+    }
+  }
+  return prev;
 }

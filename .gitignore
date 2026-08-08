@@ -42,6 +42,7 @@ docs/
 
 # Runtime data
 .jishu_hub/
+src-tauri/.jishu-hub/
 
 # Claude Code project config
 .claude/

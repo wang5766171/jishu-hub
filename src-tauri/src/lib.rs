@@ -2106,6 +2106,48 @@ fn orchestrator_list_node_session_ids(
     task_service.list_node_session_ids().map_err(Into::into)
 }
 
+/// 列出某次 run 下所有节点的最新 attempt 摘要（侧边栏任务二级树用）。
+/// 设计 `docs/task-exec-dev/02-总体设计.md` §6.2。
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_list_node_sessions(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    run_id: String,
+) -> Result<
+    Vec<crate::orchestrator::domain::run::NodeSessionSummary>,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .list_node_sessions(&run_id)
+        .map_err(Into::into)
+}
+
+/// 列出某节点所有 attempt 的派发 prompt（三角色识别用）。
+/// 设计 `docs/task-exec-dev/02-总体设计.md` §7.1 方案 A。
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+fn orchestrator_list_attempt_dispatches(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    node_run_id: String,
+) -> Result<
+    Vec<crate::orchestrator::domain::run::AttemptDispatch>,
+    crate::orchestrator::domain::run::TaskError,
+> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service
+        .list_attempt_dispatches(&node_run_id)
+        .map_err(Into::into)
+}
+
 #[cfg(feature = "orchestrator")]
 #[tauri::command]
 fn orchestrator_delete_graph(
@@ -2847,10 +2889,74 @@ pub fn run() {
             if let Ok(Some(active_id)) = hub::load_active_agent_id() {
                 let _ = registry.set_active(&active_id);
             }
+            // Mirror orchestrator node-agent events onto the same `agent-event`
+            // channel the chat path uses, so a task node session streams live in
+            // the UI through the identical streamStore pipeline instead of a
+            // bespoke refresh mechanism. The orchestrator core still never sees
+            // an `AppHandle` (design §3.1/D4) — it only holds this closure.
             #[cfg(feature = "orchestrator")]
-            let task_service = std::sync::Mutex::new(
-                crate::orchestrator::TaskService::open_default(registry.clone())?,
-            );
+            let task_service = {
+                let event_app = app.handle().clone();
+                let event_sink: crate::orchestrator::runtime_bridge::NodeEventSink =
+                    Arc::new(move |events, session_id: &str, agent_id: &str| {
+                        let chunks: Vec<crate::cli_runtime::AgentStreamChunk> = events
+                            .iter()
+                            .filter_map(|event| {
+                                let data = serde_json::to_value(event).ok()?;
+                                Some(crate::cli_runtime::AgentStreamChunk {
+                                    agent_id: agent_id.to_string(),
+                                    session_id: session_id.to_string(),
+                                    event_type: event.event_type().to_string(),
+                                    data,
+                                })
+                            })
+                            .collect();
+                        if !chunks.is_empty() {
+                            let _ = event_app.emit("agent-event", &chunks);
+                        }
+                    });
+                // Mirror a resolved node-session ACP control into the GUI chat
+                // state so `respond_chat_interaction` / `steer_chat` /
+                // `resolve_chat_permission` find it by session_id. Without this,
+                // answering an agent's mid-turn question during the execution
+                // phase failed with "No active ACP session found".
+                let reg_app = app.handle().clone();
+                let acp_register: crate::orchestrator::runtime_bridge::NodeAcpRegister =
+                    Arc::new(
+                        move |session_id: &str,
+                              agent_id: &str,
+                              control: crate::acp_runtime::AcpControl| {
+                            if let Ok(mut s) =
+                                reg_app.state::<std::sync::Mutex<chat::ChatState>>().lock()
+                            {
+                                match s.processes.get_mut(session_id) {
+                                    Some(proc) if proc.acp.is_none() => {
+                                        proc.acp = Some(control);
+                                    }
+                                    None => {
+                                        s.processes.insert(
+                                            session_id.to_string(),
+                                            chat::ChatProcess {
+                                                agent_id: agent_id.to_string(),
+                                                process_id: 0,
+                                                stdin: None,
+                                                acp: Some(control),
+                                            },
+                                        );
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        },
+                    );
+                std::sync::Mutex::new(
+                    crate::orchestrator::TaskService::open_default_with_event_sink(
+                        registry.clone(),
+                        event_sink,
+                        acp_register,
+                    )?,
+                )
+            };
             app.manage(Mutex::new(AppState {
                 registry,
                 #[cfg(feature = "orchestrator")]
@@ -2971,6 +3077,10 @@ pub fn run() {
             orchestrator_list_graphs_for_project,
             #[cfg(feature = "orchestrator")]
             orchestrator_list_node_session_ids,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_list_node_sessions,
+            #[cfg(feature = "orchestrator")]
+            orchestrator_list_attempt_dispatches,
             #[cfg(feature = "orchestrator")]
             orchestrator_delete_graph,
             #[cfg(feature = "orchestrator")]

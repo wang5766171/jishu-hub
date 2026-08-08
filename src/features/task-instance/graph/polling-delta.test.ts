@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { planPoll, hasApprovalDelta, hasArtifactDelta, filterUnseenEvents } from "./polling-delta";
-import type { TaskEvent } from "./use-task-graph";
+import { planPoll, hasApprovalDelta, hasArtifactDelta, filterUnseenEvents, mergeNodeRunsStable } from "./polling-delta";
+import type { NodeRun, TaskEvent } from "./use-task-graph";
 
 /** Helper to build a minimal TaskEvent for tests */
 function mkEvent(event_id: string, run_seq: number): TaskEvent {
@@ -275,6 +275,71 @@ describe("polling-delta", () => {
       const incoming: TaskEvent[] = [mkEvent("e5", 5), mkEvent("e3", 3), mkEvent("e4", 4)];
       const result = filterUnseenEvents(existing, incoming);
       expect(result.map((e) => e.event_id)).toEqual(["e5", "e3", "e4"]);
+    });
+  });
+
+  describe("mergeNodeRunsStable", () => {
+    function mkNodeRun(nodeId: string, overrides: Partial<NodeRun> = {}): NodeRun {
+      return {
+        node_run_id: `nr-${nodeId}`,
+        run_id: "run1",
+        node_id: nodeId,
+        status: "running",
+        revision_id: "rev1",
+        started_at: null,
+        finished_at: null,
+        attempt_count: 1,
+        error: null,
+        ...overrides,
+      };
+    }
+
+    it("完全无变化 → 复用旧 Record 引用", () => {
+      const prev: Record<string, NodeRun> = {
+        n1: mkNodeRun("n1"),
+        n2: mkNodeRun("n2", { status: "succeeded", attempt_count: 2 }),
+      };
+      // 新一轮 projection 展开出的等价对象（引用不同、逐字段相同）。
+      const next: Record<string, NodeRun> = {
+        n1: mkNodeRun("n1"),
+        n2: mkNodeRun("n2", { status: "succeeded", attempt_count: 2 }),
+      };
+      expect(mergeNodeRunsStable(prev, next)).toBe(prev);
+    });
+
+    it("status 变化 → 返回新对象", () => {
+      const prev: Record<string, NodeRun> = { n1: mkNodeRun("n1") };
+      const next: Record<string, NodeRun> = { n1: mkNodeRun("n1", { status: "succeeded" }) };
+      const merged = mergeNodeRunsStable(prev, next);
+      expect(merged).toBe(next);
+      expect(merged).not.toBe(prev);
+    });
+
+    it("attempt_count 变化 → 返回新对象", () => {
+      const prev: Record<string, NodeRun> = { n1: mkNodeRun("n1") };
+      const next: Record<string, NodeRun> = { n1: mkNodeRun("n1", { attempt_count: 2 }) };
+      expect(mergeNodeRunsStable(prev, next)).toBe(next);
+    });
+
+    it("error 变化 → 返回新对象", () => {
+      const prev: Record<string, NodeRun> = { n1: mkNodeRun("n1") };
+      const next: Record<string, NodeRun> = { n1: mkNodeRun("n1", { error: "boom" }) };
+      expect(mergeNodeRunsStable(prev, next)).toBe(next);
+    });
+
+    it("node_run_id 变化（重试产生新 node_run）→ 返回新对象", () => {
+      const prev: Record<string, NodeRun> = { n1: mkNodeRun("n1") };
+      const next: Record<string, NodeRun> = {
+        n1: mkNodeRun("n1", { node_run_id: "nr-n1-v2" }),
+      };
+      expect(mergeNodeRunsStable(prev, next)).toBe(next);
+    });
+
+    it("键集合变化（新增/移除节点）→ 返回新对象", () => {
+      const prev: Record<string, NodeRun> = { n1: mkNodeRun("n1") };
+      const grown: Record<string, NodeRun> = { n1: mkNodeRun("n1"), n2: mkNodeRun("n2") };
+      expect(mergeNodeRunsStable(prev, grown)).toBe(grown);
+      expect(mergeNodeRunsStable(grown, prev)).toBe(prev);
     });
   });
 });

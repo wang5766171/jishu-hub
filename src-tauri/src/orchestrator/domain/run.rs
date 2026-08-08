@@ -255,8 +255,43 @@ pub struct NodeAttempt {
     pub idempotency_key: Option<String>,
     /// Checkpoint data for recovery.
     pub checkpoint: Option<serde_json::Value>,
+    /// 派发给子代理的 prompt（三角色识别用；老数据可能为 None）。
+    #[serde(default)]
+    pub dispatch_prompt: Option<String>,
     pub started_at: i64,
     pub finished_at: Option<i64>,
+}
+
+/// 节点会话摘要（侧边栏任务二级树用）。
+///
+/// 设计 `docs/task-exec-dev/02-总体设计.md` §6.2。
+/// 每个节点只返回最新 attempt 的 session_id / agent_id。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeSessionSummary {
+    pub node_id: String,
+    pub node_run_id: String,
+    /// NodeRunStatus 序列化后的字符串（如 "pending" / "running" / "succeeded"）。
+    pub status: String,
+    /// 最新 attempt 编号（从 0 开始；无 attempt 时为 0）。
+    pub attempt_number: u32,
+    /// 子代理 session id（可能为 null——节点尚未产生 attempt）。
+    pub session_id: Option<String>,
+    /// 解析后的 agent id（从 agent_assignment JSON 列提取；可能为 null）。
+    pub agent_id: Option<String>,
+    /// 节点中文标题（来自 run 执行所用 revision，缺失时回退 graph 的 current_draft_revision）。
+    /// 侧边栏二级树直接显示此字段，无需前端再反查 revision。绝不应为裸 node_id（n1/n2）。
+    pub title: String,
+}
+
+/// 单次 attempt 的派发 prompt（三角色识别用）。
+///
+/// 设计 `docs/task-exec-dev/02-总体设计.md` §7.1 方案 A。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttemptDispatch {
+    pub attempt_number: u32,
+    pub dispatched_at: i64,
+    /// 派发给子代理的完整 prompt（含 policy 前缀包装）。
+    pub prompt: String,
 }
 
 /// Usage for a single attempt.
