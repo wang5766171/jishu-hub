@@ -31,6 +31,7 @@ function Harness({ onTurnComplete }: { onTurnComplete?: () => void }) {
   const chat = useChatSession({
     sessionId: "session-a",
     projectPath: "D:/workspace/demo",
+    agentId: "claude-code",
     readOnly: false,
     onTurnComplete,
   });

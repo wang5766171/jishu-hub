@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
+import { useAgent } from "@/agents";
 import { Button } from "@/components/ui/button";
 import { RotateCcw } from "lucide-react";
 import type { BackupEntry } from "@/types";
@@ -11,13 +12,18 @@ interface BackupManagerProps {
 
 export function BackupManager({ onRestored }: BackupManagerProps) {
   const { t } = useTranslation();
-  const { data: backups, loading, refetch } = useInvoke<BackupEntry[]>("list_backups");
+  // v0.7.0 需求一：管理作用域 agent_id（list_backups / restore_backup 必填）。
+  const { manageAgentId } = useAgent();
+  const { data: backups, loading, refetch } = useInvoke<BackupEntry[]>(
+    manageAgentId ? "list_backups" : "",
+    manageAgentId ? { agentId: manageAgentId } : undefined,
+  );
   const [restoring, setRestoring] = useState<string | null>(null);
 
   const handleRestore = async (backup: BackupEntry) => {
     setRestoring(backup.path);
     try {
-      await invokeCommand("restore_backup", { backupPath: backup.path });
+      await invokeCommand("restore_backup", { agentId: manageAgentId ?? "", backupPath: backup.path });
       onRestored();
       refetch();
     } catch (err) {

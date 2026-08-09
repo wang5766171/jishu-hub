@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
+import { useAgent } from "@/agents";
 import { Button } from "@/components/ui/button";
 import { Save, RotateCcw } from "lucide-react";
 
@@ -12,6 +13,8 @@ interface RawConfigEditorProps {
 
 export function RawConfigEditor({ initialContent, format, onSaved }: RawConfigEditorProps) {
   const { t } = useTranslation();
+  // v0.7.0 需求一：管理作用域 agent_id（save_raw_config 必填）。
+  const { manageAgentId } = useAgent();
   const [content, setContent] = useState(initialContent);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -21,7 +24,7 @@ export function RawConfigEditor({ initialContent, format, onSaved }: RawConfigEd
     setSaving(true);
     setError(null);
     try {
-      await invokeCommand("save_raw_config", { content });
+      await invokeCommand("save_raw_config", { agentId: manageAgentId ?? "", content });
       onSaved();
     } catch (err) {
       setError(String(err));

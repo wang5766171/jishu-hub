@@ -1,4 +1,4 @@
-import type { ComponentType } from "react";
+import type { ComponentType, ReactNode } from "react";
 import type { ConfigSurface, AgentStatus } from "../types";
 import { StructuredConfigPage } from "./structured";
 import { ModelStoreConfigPage } from "./model-store";
@@ -15,6 +15,11 @@ export interface AdapterConfigPageProps {
   activeAgent: AgentStatus | null;
   agentRefreshKey: number;
   initialTab?: "edit" | "templates" | "backups";
+  /**
+   * v0.7.0 需求一：智能体切换器插槽，渲染在配置页标题右边。
+   * 由 ConfigPage 外壳注入（管理作用域 AgentSwitcher）。
+   */
+  switcherSlot?: ReactNode;
 }
 
 type ConfigSurfaceKind = ConfigSurface["kind"];

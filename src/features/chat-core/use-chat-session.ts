@@ -240,6 +240,7 @@ export function useChatSession(options: UseChatSessionOptions): ChatSessionState
       setLoadingMessages(true);
       try {
         const result = await invokeCommand<Message[]>("get_session_messages", {
+          agentId: options.agentId,
           sessionId: sid,
           encodedName: encodedProjectId,
         });
@@ -376,6 +377,7 @@ export function useChatSession(options: UseChatSessionOptions): ChatSessionState
       streamStore.start(sessionId, visible);
       try {
         const chatSession = await invokeCommand<ChatSession>("send_message", {
+          agentId: options.agentId,
           projectPath: options.projectPath,
           sessionId,
           message: agent,

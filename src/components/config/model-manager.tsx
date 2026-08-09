@@ -14,6 +14,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
+import { useAgent } from "@/agents";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -148,6 +149,9 @@ export function ModelManager({
 }) {
   const { t } = useTranslation();
   const { confirm: confirmDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
+  // v0.7.0 需求一：管理作用域 agent_id（模型库 IPC 必填）。
+  const { manageAgentId } = useAgent();
+  const agentId = manageAgentId ?? "";
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -168,8 +172,8 @@ export function ModelManager({
     setError(null);
     try {
       const [cfg, act] = await Promise.all([
-        invokeCommand<PiModelsConfig>("get_models_config"),
-        invokeCommand<ActiveModel | null>("get_active"),
+        invokeCommand<PiModelsConfig>("get_models_config", { agentId }),
+        invokeCommand<ActiveModel | null>("get_active", { agentId }),
       ]);
       setConfig(cfg ?? { providers: {} });
       setActive(act);
@@ -191,7 +195,7 @@ export function ModelManager({
     next: PiModelsConfig,
     clearActiveIfMissing?: { provider: string; model: string },
   ) => {
-    await invokeCommand("set_models_config", { config: next });
+    await invokeCommand("set_models_config", { agentId, config: next });
     setConfig(next);
     if (
       clearActiveIfMissing &&
@@ -199,7 +203,7 @@ export function ModelManager({
         next.providers[clearActiveIfMissing.provider]?.models ?? []
       ).some((m) => m.id === clearActiveIfMissing.model)
     ) {
-      await invokeCommand("set_active", { active: null });
+      await invokeCommand("set_active", { agentId, active: null });
       setActive(null);
       onActiveModelChange?.(null);
     }
@@ -398,7 +402,7 @@ export function ModelManager({
     const next: ActiveModel = { provider, model };
     setActive(next);
     try {
-      await invokeCommand("set_active", { active: next });
+      await invokeCommand("set_active", { agentId, active: next });
       onActiveModelChange?.(`${provider}/${model}`);
       onChanged?.();
     } catch (e) {

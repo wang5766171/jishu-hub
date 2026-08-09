@@ -59,6 +59,8 @@ export interface StagedGuideApi {
 interface ChatInputProps {
   sessionId: string | null;
   projectPath: string | null;
+  /** v0.7.0 需求一：会话绑定的智能体 id（send_message 必填）。 */
+  agentId: string | null;
   disabled?: boolean;
   isSessionStreaming?: boolean;
   allowFiles?: boolean;
@@ -104,6 +106,7 @@ function isInsideProject(filePath: string, projectPath: string): boolean {
 const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function ChatInput({
   sessionId,
   projectPath,
+  agentId,
   disabled = false,
   isSessionStreaming: isSessionStreamingProp = false,
   allowFiles = true,
@@ -466,6 +469,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     const chatSession = await invokeCommand<ChatSession>(
       "send_message",
       {
+        agentId: agentId ?? "",
         projectPath,
         sessionId: pendingId,
         message: agentMessage,

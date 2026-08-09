@@ -7,13 +7,38 @@ import { ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { AgentStatus } from "./types";
 
-export const AgentSwitcher = memo(function AgentSwitcher({ children }: { children?: React.ReactNode }) {
+export interface AgentSwitcherProps {
+  /** 当前选中的 agent id（受控） */
+  value: string | null;
+  /** 切换回调（受控） */
+  onChange: (id: string) => void;
+  /** 可选：按钮内额外内容（如名称标签） */
+  children?: React.ReactNode;
+  /** v0.7.0：下拉框向上展开（切换器位于底部如会话 footer 时用）。默认向下。 */
+  dropUp?: boolean;
+}
+
+/**
+ * 智能体切换器（受控组件）。
+ *
+ * v0.7.0 需求一：从全局 setActive 改为受控模式，由各页面传入自身作用域的
+ * value/onChange（会话页用 chatAgentId，管理页用 manageAgentId）。
+ * agents 列表仍从全局 useAgent() 读取（全应用共享）。
+ */
+export const AgentSwitcher = memo(function AgentSwitcher({
+  value,
+  onChange,
+  children,
+  dropUp = false,
+}: AgentSwitcherProps) {
   const { t } = useTranslation();
-  const { agents, activeId, active, setActive, refreshHealth } = useAgent();
+  const { agents, refreshHealth } = useAgent();
   const [open, setOpen] = useState(false);
   const [installDialogOpen, setInstallAgentDialogOpen] = useState(false);
   const [agentToInstall, setInstallAgent] = useState<AgentStatus | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+
+  const active = agents.find((a) => a.id === value) ?? null;
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -56,7 +81,10 @@ export const AgentSwitcher = memo(function AgentSwitcher({ children }: { childre
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-1 w-64 rounded-lg border border-border bg-popover p-2 shadow-lg">
+        <div className={cn(
+          "absolute left-0 z-50 w-64 rounded-lg border border-border bg-popover p-2 shadow-lg",
+          dropUp ? "bottom-full mb-1" : "top-full mt-1",
+        )}>
           <div className="rounded-md bg-accent/30 px-2 py-2">
             <div className="flex items-center gap-2">
               <AgentLogo agentId={active.id} size={18} />
@@ -82,12 +110,12 @@ export const AgentSwitcher = memo(function AgentSwitcher({ children }: { childre
                     setOpen(false);
                     return;
                   }
-                  setActive(agent.id);
+                  onChange(agent.id);
                   setOpen(false);
                 }}
                 className={cn(
                   "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-fast hover:bg-accent/40",
-                  agent.id === activeId && "font-medium"
+                  agent.id === value && "font-medium"
                 )}
               >
                 <AgentLogo agentId={agent.id} size={16} />

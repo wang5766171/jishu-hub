@@ -6,6 +6,7 @@ import { X, ExternalLink, Trash2, Settings } from "lucide-react";
 import { MessageSquare } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
+import { useAgent } from "@/agents";
 import { ProjectSettingsForm } from "@/components/projects/project-settings-form";
 import { ProjectMetaEditor } from "@/components/projects/project-meta-editor";
 import { useInvoke } from "@/hooks/use-invoke";
@@ -34,7 +35,12 @@ export function ProjectDetail({ project, onClose, onViewSessions, onRemoved, pro
   const { t } = useTranslation();
   const { confirm: confirmDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
   const [activeTab, setActiveTab] = useState<"info" | "config">("info");
-  const { data: claudeMd } = useInvoke<string | null>("load_claude_md", { projectPath: project.path });
+  // v0.7.0 需求一：管理作用域 agent_id（load_claude_md 必填）。
+  const { manageAgentId } = useAgent();
+  const { data: claudeMd } = useInvoke<string | null>(
+    manageAgentId ? "load_claude_md" : "",
+    { agentId: manageAgentId ?? "", projectPath: project.path },
+  );
 
   const handleRemove = async () => {
     const confirmed = await confirmDialog({

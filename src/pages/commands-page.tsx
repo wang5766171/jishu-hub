@@ -5,17 +5,22 @@ import { AddCommandDialog } from "@/components/commands/add-command-dialog";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Plus, Play, Pencil, Trash2, Terminal } from "lucide-react";
-import { useAgent } from "@/agents";
+import { useAgent, AgentSwitcher } from "@/agents";
 import type { AgentCommandPreset, CustomCommand } from "@/types";
 
 const COOLDOWN_MS = 2000;
 
 export function CommandsPage() {
   const { t } = useTranslation();
-  const { activeId } = useAgent();
+  // v0.7.0 需求一：管理作用域状态（manageAgentId 替代全局 activeId）。
+  const { manageAgentId: activeId, manageAgent: active, setManageAgent } = useAgent();
   const { data: commands, loading, refetch } = useInvoke<CustomCommand[]>("list_custom_commands");
   const agentRefreshKey = activeId ? Array.from(activeId).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) : 0;
-  const { data: builtInCommands } = useInvoke<AgentCommandPreset[]>("agent_command_presets", undefined, agentRefreshKey);
+  const { data: builtInCommands } = useInvoke<AgentCommandPreset[]>(
+    activeId ? "agent_command_presets" : "",
+    activeId ? { agentId: activeId } : undefined,
+    agentRefreshKey,
+  );
   const [addOpen, setAddOpen] = useState(false);
   const [editCmd, setEditCmd] = useState<CustomCommand | null>(null);
   const [runningKey, setRunningKey] = useState<string | null>(null);
@@ -69,7 +74,14 @@ export function CommandsPage() {
   return (
     <div className="space-y-6 p-6 h-full overflow-auto">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">{t("commands.title")}</h2>
+        <div className="flex items-center gap-3">
+          <h2 className="text-xl font-semibold">{t("commands.title")}</h2>
+          <AgentSwitcher value={activeId} onChange={setManageAgent}>
+            {active && (
+              <span className="text-[11px] font-medium text-muted-foreground">{active.display_name}</span>
+            )}
+          </AgentSwitcher>
+        </div>
         <div className="flex items-center gap-2">
           <Button size="sm" onClick={handleAddNew}>
             <Plus className="h-4 w-4" />

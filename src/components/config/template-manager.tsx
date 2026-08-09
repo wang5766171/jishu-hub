@@ -528,11 +528,24 @@ function toConfigTemplateView(template: ConfigTemplate): ConfigTemplateView {
 
 export function TemplateManager({ onApplied }: TemplateManagerProps) {
   const { t } = useTranslation();
-  const { activeId, active } = useAgent();
+  // v0.7.0 需求一：管理作用域状态（manageAgentId 替代全局 activeId）。
+  const { manageAgentId: activeId, manageAgent: active } = useAgent();
   const agentRefreshKey = activeId ? Array.from(activeId).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) : 0;
-  const { data: systemTemplates, loading: loadingSystem } = useInvoke<ConfigTemplate[]>("list_config_templates", undefined, agentRefreshKey);
-  const { data: userPresets, loading: loadingUser, refetch: refetchPresets } = useInvoke<Preset[]>("list_presets", undefined, agentRefreshKey);
-  const { data: currentConfig } = useInvoke<ClaudeConfig>(activeId ? "load_config" : "", undefined, agentRefreshKey);
+  const { data: systemTemplates, loading: loadingSystem } = useInvoke<ConfigTemplate[]>(
+    activeId ? "list_config_templates" : "",
+    activeId ? { agentId: activeId } : undefined,
+    agentRefreshKey,
+  );
+  const { data: userPresets, loading: loadingUser, refetch: refetchPresets } = useInvoke<Preset[]>(
+    activeId ? "list_presets" : "",
+    activeId ? { agentId: activeId } : undefined,
+    agentRefreshKey,
+  );
+  const { data: currentConfig } = useInvoke<ClaudeConfig>(
+    activeId ? "load_config" : "",
+    activeId ? { agentId: activeId } : undefined,
+    agentRefreshKey,
+  );
   const [applyError, setApplyError] = useState<string | null>(null);
 
   // Save current as preset dialog
@@ -568,7 +581,7 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
   const doApplyConfig = async (config: ClaudeConfig) => {
     setApplyError(null);
     try {
-      await invokeCommand("save_config", { config });
+      await invokeCommand("save_config", { agentId: activeId ?? "", config });
       onApplied();
     } catch (err) {
       console.error("Failed to apply template:", err);
@@ -587,7 +600,7 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
         config: currentConfig,
         createdAt: new Date().toISOString(),
       };
-      await invokeCommand("save_preset", { preset });
+      await invokeCommand("save_preset", { agentId: activeId ?? "", preset });
       setSaveOpen(false);
       setSaveName("");
       setSaveDesc("");
@@ -607,13 +620,13 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
       config,
       createdAt: new Date().toISOString(),
     };
-    await invokeCommand("save_preset", { preset });
+    await invokeCommand("save_preset", { agentId: activeId ?? "", preset });
     refetchPresets();
   };
 
   const handleApplyUser = async (id: string) => {
     try {
-      await invokeCommand("apply_preset", { id });
+      await invokeCommand("apply_preset", { agentId: activeId ?? "", id });
       onApplied();
     } catch (err) {
       console.error("Failed to apply user template:", err);
@@ -623,7 +636,7 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
 
   const handleDelete = async (id: string) => {
     try {
-      await invokeCommand("delete_preset", { id });
+      await invokeCommand("delete_preset", { agentId: activeId ?? "", id });
       refetchPresets();
     } catch (err) {
       console.error("Failed to delete template:", err);
@@ -639,7 +652,7 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
       config,
       createdAt: detailTarget?.createdAt ?? new Date().toISOString(),
     };
-    await invokeCommand("save_preset", { preset });
+    await invokeCommand("save_preset", { agentId: activeId ?? "", preset });
     refetchPresets();
   };
 

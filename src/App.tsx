@@ -16,7 +16,6 @@ import { cn } from "@/lib/utils";
 import { useTheme, type Theme, ThemeProvider } from "@/hooks/use-theme";
 import { useFontSize, type FontLevel } from "@/hooks/use-font-size";
 import { AgentProvider, useAgent } from "@/agents";
-import { AgentSwitcher } from "@/agents";
 import { FileViewerProvider } from "@/components/file-viewer";
 import { ErrorBoundary } from "@/components/error-boundary";
 import type { Page, Project, ProjectMeta } from "@/types";
@@ -98,7 +97,6 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
   const { theme, setTheme } = useTheme();
   const logo = theme === "light" ? logoLightSvg : logoSvg;
   const { fontSizeBase, fontSizeProse, setFontSizeBase, setFontSizeProse } = useFontSize();
-  const { active } = useAgent();
   const aboutRef = useRef<HTMLDivElement>(null);
   const fontRef = useRef<HTMLDivElement>(null);
   const aboutTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -364,13 +362,6 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
           {pinned ? <PinOff className="h-3.5 w-3.5 text-[var(--icon-pin)]" /> : <Pin className="h-3.5 w-3.5 text-[var(--icon-pin)]" />}
           <span>{pinned ? t("about.unpin") : t("about.pin")}</span>
         </button>
-        <div className="flex items-center ml-1 mr-2 px-1.5 py-0.5 rounded-full bg-accent/20 border border-border/30 hover:bg-accent/40 transition-colors">
-          <AgentSwitcher>
-            {active && (
-              <span className="text-[11px] font-medium text-muted-foreground">{active.display_name}</span>
-            )}
-          </AgentSwitcher>
-        </div>
       </div>
       <div className="min-w-8 flex-1 self-stretch" onDoubleClick={toggleMaximizeWindow} />
       <div className="ml-2 flex h-full items-stretch" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
@@ -407,7 +398,8 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
 }
 
 function AppContent() {
-  const { activeId, setActive } = useAgent();
+  // v0.7.0 需求一：会话作用域状态。项目/会话/元数据随会话作用域 agent 切换重新拉取。
+  const { chatAgentId, setChatAgent } = useAgent();
   const [currentPage, setCurrentPage] = useState<Page>("chat");
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [projectSessionsLoading, setProjectSessionsLoading] = useState(false);
@@ -476,7 +468,7 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
-    if (!activeId) return;
+    if (!chatAgentId) return;
     const silent = !activeRefreshReadyRef.current;
     activeRefreshReadyRef.current = true;
     refetchProjects(silent)
@@ -489,7 +481,7 @@ function AppContent() {
       .catch(console.error);
     refetchNames(true).catch(console.error);
     refetchProjectMetas(true).catch(console.error);
-  }, [activeId, refetchProjects, refetchNames, refetchProjectMetas]);
+  }, [chatAgentId, refetchProjects, refetchNames, refetchProjectMetas]);
 
   const currentProjectMeta = currentProject ? projectMetas?.[currentProject.encoded_name] : undefined;
 
@@ -501,9 +493,9 @@ function AppContent() {
     listen<{ sessionId: string; agentId: string; projectEncoded: string }>("floating-restore", async (event) => {
       if (cancelled) return;
       const { sessionId, agentId, projectEncoded } = event.payload;
-      // Switch agent if needed
-      if (agentId && agentId !== activeId) {
-        await setActive(agentId);
+      // v0.7.0：会话作用域切换（浮动窗口恢复属于会话场景）
+      if (agentId && agentId !== chatAgentId) {
+        setChatAgent(agentId);
       }
       // Switch project if needed
       if (projectEncoded) {
@@ -525,7 +517,7 @@ function AppContent() {
       else unlistenFn = fn;
     });
     return () => { cancelled = true; unlistenFn?.(); };
-  }, [activeId, projects, setActive]);
+  }, [chatAgentId, projects, setChatAgent]);
 
   // Diagnostic: surface the REAL transport dispatch path in the F12 console so
   // the actual command route (ACP vs CLI) is inspectable at runtime — this is

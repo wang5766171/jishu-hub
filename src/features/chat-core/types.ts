@@ -68,6 +68,11 @@ export interface UseChatSessionOptions {
   projectPath: string;
   /** 项目编码名（用于 get_session_messages 等）。 */
   encodedProjectId?: string;
+  /**
+   * 智能体 id（v0.7.0 需求一：send_message / get_session_messages 等 IPC 必填）。
+   * 常规会话由消费方传入会话作用域的 chatAgentId；任务阶段/节点会话传入对应 agent_id。
+   */
+  agentId: string;
   /** 是否只读（回溯历史阶段时为 true）。只读时禁用发送与交互提交。 */
   readOnly: boolean;
   /** 发送前的消息预处理（注入阶段专属隐藏指令）。不传则 visible === agent。 */

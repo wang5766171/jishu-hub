@@ -57,6 +57,7 @@ describe("ChatInput interaction submission", () => {
       <ChatInput
         sessionId="session-1"
         projectPath={"D:\\project"}
+        agentId="claude-code"
         interactionRequest={request}
         onInteractionSubmit={onInteractionSubmit}
       />,
@@ -84,6 +85,7 @@ describe("ChatInput interaction submission", () => {
       <ChatInput
         sessionId="session-1"
         projectPath={"D:\\project"}
+        agentId="claude-code"
         isSessionStreaming
         interactionRequest={request}
         onInteractionSubmit={onInteractionSubmit}
@@ -114,6 +116,7 @@ describe("ChatInput interaction submission", () => {
       <ChatInput
         sessionId="session-a"
         projectPath={"D:\\project"}
+        agentId="claude-code"
         isSessionStreaming
       />,
     );
@@ -128,6 +131,7 @@ describe("ChatInput interaction submission", () => {
       <ChatInput
         sessionId="session-b"
         projectPath={"D:\\project"}
+        agentId="claude-code"
         isSessionStreaming
       />,
     );
@@ -138,6 +142,7 @@ describe("ChatInput interaction submission", () => {
       <ChatInput
         sessionId="session-a"
         projectPath={"D:\\project"}
+        agentId="claude-code"
         isSessionStreaming
       />,
     );
@@ -155,6 +160,7 @@ describe("ChatInput interaction submission", () => {
       <ChatInput
         sessionId="session-a"
         projectPath={"D:\\project"}
+        agentId="claude-code"
         isSessionStreaming
         stagedApiRef={stagedApiRef}
       />,
@@ -172,6 +178,7 @@ describe("ChatInput interaction submission", () => {
       <ChatInput
         sessionId="session-b"
         projectPath={"D:\\project"}
+        agentId="claude-code"
         isSessionStreaming
         stagedApiRef={stagedApiRef}
       />,
@@ -196,6 +203,7 @@ describe("ChatInput interaction submission", () => {
       <ChatInput
         sessionId="session-a"
         projectPath={"D:\\project"}
+        agentId="claude-code"
         isSessionStreaming
         stagedApiRef={stagedApiRef}
       />,

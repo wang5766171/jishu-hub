@@ -24,7 +24,7 @@ interface ProjectsPageProps {
 export function ProjectsPage({ projects, projectMetas, refetchProjects, refetchProjectMetas, onEnterProject }: ProjectsPageProps) {
   const { t } = useTranslation();
   const { alert: alertDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
-  const { agents, activeId } = useAgent();
+  const { agents, manageAgentId: activeId } = useAgent();
   // merges 只用于「已合并」标记，轻量，保留在本组件加载；不阻塞列表渲染。
   const { data: merges, refetch: refetchMerges } = useInvoke<ProjectMergeInfo>("get_project_merges");
   // 复用 App 已加载的 projects，不再每次挂载重复 scan_projects。
@@ -73,7 +73,7 @@ export function ProjectsPage({ projects, projectMetas, refetchProjects, refetchP
     try {
       const selected = await openDialog({ directory: true, multiple: false });
       if (!selected) return;
-      const project = await invokeCommand<Project>("add_project", { path: selected });
+      const project = await invokeCommand<Project>("add_project", { agentId: activeId ?? "", path: selected });
       refetchProjects();
       onEnterProject?.(project);
     } catch (err) {

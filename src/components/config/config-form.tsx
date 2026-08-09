@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
+import { useAgent } from "@/agents";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -54,6 +55,8 @@ export function ConfigForm({
   };
 }) {
   const { t } = useTranslation();
+  // v0.7.0 需求一：管理作用域 agent_id（save_config 必填）。
+  const { manageAgentId } = useAgent();
   const [config, setConfig] = useState<ClaudeConfig>(initialConfig);
   const [saving, setSaving] = useState(false);
 
@@ -182,7 +185,7 @@ export function ConfigForm({
   const handleSave = async () => {
     setSaving(true);
     try {
-      await invokeCommand("save_config", { config });
+      await invokeCommand("save_config", { agentId: manageAgentId ?? "", config });
       onSaved(config);
     } catch (err) {
       console.error("Failed to save config:", err);

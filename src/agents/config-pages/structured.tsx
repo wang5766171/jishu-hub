@@ -20,14 +20,17 @@ export function StructuredConfigPage({
   activeAgent,
   agentRefreshKey,
   initialTab = "edit",
+  switcherSlot,
 }: AdapterConfigPageProps) {
   const { t } = useTranslation();
   const surface = configSurface.kind === "structured" ? configSurface : undefined;
   const schemaId = surface?.schema_id ?? "";
+  // v0.7.0 需求一：管理作用域 agent_id（load_config / export/import 必填）。
+  const agentId = activeAgent?.id ?? "";
 
   const { data: config, loading, refetch } = useInvoke<ClaudeConfig>(
-    "load_config",
-    undefined,
+    agentId ? "load_config" : "",
+    agentId ? { agentId } : undefined,
     agentRefreshKey,
   );
 
@@ -39,7 +42,7 @@ export function StructuredConfigPage({
 
   const handleExport = async () => {
     try {
-      await invokeCommand("export_config_dialog");
+      await invokeCommand("export_config_dialog", { agentId });
     } catch (err) {
       if (!String(err).includes("USER_CANCELLED")) {
         console.error("Export failed:", err);
@@ -49,7 +52,7 @@ export function StructuredConfigPage({
 
   const handleImport = async () => {
     try {
-      await invokeCommand("import_config_dialog");
+      await invokeCommand("import_config_dialog", { agentId });
       refetch();
     } catch (err) {
       if (!String(err).includes("USER_CANCELLED")) {
@@ -75,13 +78,9 @@ export function StructuredConfigPage({
   return (
     <div className="flex flex-col h-full p-6">
       <div className="flex items-center justify-between">
-        <div>
+        <div className="flex items-center gap-3">
           <h2 className="text-xl font-semibold">{t("config.title")}</h2>
-          {activeAgent && (
-            <p className="mt-1 text-xs text-muted-foreground">
-              {activeAgent.display_name}
-            </p>
-          )}
+          {switcherSlot}
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={handleExport}>

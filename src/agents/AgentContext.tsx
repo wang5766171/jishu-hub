@@ -21,12 +21,26 @@ async function safeInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
   }
 }
 
+const CHAT_AGENT_KEY = "jishu-hub.chatAgentId";
+const MANAGE_AGENT_KEY = "jishu-hub.manageAgentId";
+
 interface AgentContextValue {
+  /** 全部智能体列表（全局共享，无作用域） */
   agents: AgentStatus[];
-  activeId: string | null;
-  active: AgentStatus | null;
-  capabilities: CapabilitySet | null;
-  setActive: (id: string) => Promise<void>;
+  /** 会话作用域选中的智能体 id（驱动会话派发与左侧列表） */
+  chatAgentId: string | null;
+  /** 管理作用域选中的智能体 id（驱动配置/命令页） */
+  manageAgentId: string | null;
+  /** 派生：会话作用域的 AgentStatus 对象 */
+  chatAgent: AgentStatus | null;
+  /** 派生：管理作用域的 AgentStatus 对象 */
+  manageAgent: AgentStatus | null;
+  /** 派生：会话作用域能力集 */
+  chatCapabilities: CapabilitySet | null;
+  /** 设置会话作用域智能体（仅前端状态，不入参后端持久化） */
+  setChatAgent: (id: string) => void;
+  /** 设置管理作用域智能体（仅前端状态，不入参后端持久化） */
+  setManageAgent: (id: string) => void;
   /**
    * Re-probe agent health and refresh the cached list.
    * Pass `silent: true` for local refreshes after a single-item install —
@@ -35,7 +49,6 @@ interface AgentContextValue {
    * spinner (installingId / installingMcpId / installingBridgeId).
    */
   refreshHealth: (opts?: { silent?: boolean }) => Promise<void>;
-  installHint: (id: string) => string | null;
   /** True while the initial health probe is in flight. */
   healthLoading: boolean;
 }
@@ -44,17 +57,26 @@ export const AgentContext = createContext<AgentContextValue>(null!);
 
 export function AgentProvider({ children }: { children: ReactNode }) {
   const [agents, setAgents] = useState<AgentStatus[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [chatAgentId, setChatAgentIdState] = useState<string | null>(null);
+  const [manageAgentId, setManageAgentIdState] = useState<string | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
-      const [list, active] = await Promise.all([
-        safeInvoke<AgentStatus[]>("agent_list_statuses"),
-        safeInvoke<string>("agent_get_active"),
-      ]);
-      if (list) setAgents(list);
-      if (active) setActiveId(active);
+      // v0.7.0：全局 active agent 已移除。初始化只拉取 agents 列表，
+      // 会话/管理作用域的选择从 localStorage 记忆恢复，兜底首个可用 agent。
+      const list = await safeInvoke<AgentStatus[]>("agent_list_statuses");
+      if (list && list.length > 0) {
+        setAgents(list);
+        // 恢复会话作用域记忆，兜底第一个 agent
+        const savedChat = localStorage.getItem(CHAT_AGENT_KEY);
+        const fallbackChat = list.find((a) => a.health.installed)?.id ?? list[0].id;
+        setChatAgentIdState(savedChat && list.some((a) => a.id === savedChat) ? savedChat : fallbackChat);
+        // 恢复管理作用域记忆
+        const savedManage = localStorage.getItem(MANAGE_AGENT_KEY);
+        const fallbackManage = list.find((a) => a.health.installed)?.id ?? list[0].id;
+        setManageAgentIdState(savedManage && list.some((a) => a.id === savedManage) ? savedManage : fallbackManage);
+      }
       setHealthLoading(true);
       await safeInvoke("agent_refresh_health");
       const refreshed = await safeInvoke<AgentStatus[]>("agent_list_statuses");
@@ -63,9 +85,14 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     })();
   }, []);
 
-  const setActive = useCallback(async (id: string) => {
-    await safeInvoke("agent_set_active", { id });
-    setActiveId(id);
+  const setChatAgent = useCallback((id: string) => {
+    localStorage.setItem(CHAT_AGENT_KEY, id);
+    setChatAgentIdState(id);
+  }, []);
+
+  const setManageAgent = useCallback((id: string) => {
+    localStorage.setItem(MANAGE_AGENT_KEY, id);
+    setManageAgentIdState(id);
   }, []);
 
   const refreshHealth = useCallback(
@@ -83,31 +110,33 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     []
   );
 
-  const active = useMemo(
-    () => agents.find((a) => a.id === activeId) ?? null,
-    [agents, activeId],
+  const chatAgent = useMemo(
+    () => agents.find((a) => a.id === chatAgentId) ?? null,
+    [agents, chatAgentId],
   );
 
-  const capabilities = useMemo(
-    () => (active ? new CapabilitySet(active.capabilities) : null),
-    [active],
+  const manageAgent = useMemo(
+    () => agents.find((a) => a.id === manageAgentId) ?? null,
+    [agents, manageAgentId],
   );
 
-  const installHint = useCallback(
-    (id: string) => agents.find((a) => a.id === id)?.install_hint ?? null,
-    [agents],
+  const chatCapabilities = useMemo(
+    () => (chatAgent ? new CapabilitySet(chatAgent.capabilities) : null),
+    [chatAgent],
   );
 
   return (
     <AgentContext.Provider
       value={{
         agents,
-        activeId,
-        active,
-        capabilities,
-        setActive,
+        chatAgentId,
+        manageAgentId,
+        chatAgent,
+        manageAgent,
+        chatCapabilities,
+        setChatAgent,
+        setManageAgent,
         refreshHealth,
-        installHint,
         healthLoading,
       }}
     >
