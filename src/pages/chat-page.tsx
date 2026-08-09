@@ -398,16 +398,6 @@ export function ChatPage({
   const taskGraphRef = useRef(taskGraph);
   taskGraphRef.current = taskGraph;
 
-  const fileToolCount = useMemo(() => {
-    return sessionMessages.reduce((count, msg) => (
-      count + msg.content.filter((block) => {
-        if (block.type !== "tool_use") return false;
-        const name = block.name.toLowerCase();
-        return name.includes("read") || name.includes("edit") || name.includes("write");
-      }).length
-    ), 0);
-  }, [sessionMessages]);
-
   useEffect(() => {
     activeIdRef.current = activeId;
   }, [activeId]);

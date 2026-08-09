@@ -432,14 +432,6 @@ class StreamStore {
     return this.getState(sid) !== null;
   }
 
-  getStreamingIds(): string[] {
-    const ids: string[] = [];
-    for (const [key, value] of this.sessions) {
-      if (value.isStreaming) ids.push(key);
-    }
-    return ids;
-  }
-
   subscribe = (l: Listener): (() => void) => {
     this.listeners.add(l);
     return () => {
