@@ -294,6 +294,9 @@ where
     {
         crate::process_command::tokio_no_window(&mut command);
     }
+    // v0.7.0：补充用户级 PATH（npm 全局 bin、~/.local/bin 等），
+    // 确保 dev/release 都能找到 codex/claude/claude-agent-acp 等 CLI。
+    crate::process_command::extend_path_for_child_tokio(&mut command);
 
     let child = command.spawn().map_err(|e| {
         format!(
@@ -440,6 +443,7 @@ fn run_pi_rpc_turn_blocking(
     }
     cmd.kill_on_drop(true);
     crate::process_command::tokio_no_window(&mut cmd);
+    crate::process_command::extend_path_for_child_tokio(&mut cmd);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -727,6 +731,7 @@ fn run_acp_turn_blocking(
     }
     cmd.kill_on_drop(true);
     crate::process_command::tokio_no_window(&mut cmd);
+    crate::process_command::extend_path_for_child_tokio(&mut cmd);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

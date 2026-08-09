@@ -669,6 +669,10 @@ fn handle_line(
                     reason,
                     usage: None,
                 });
+                // v0.7.0：turn/completed 是 turn 的最后一条消息，之后 codex 进入 idle，
+                // 没有更多事件触发 flush_maybe。必须强制 flush，否则 TurnComplete 留在
+                // buf 里永远不发出，前端流式永不结束（一直显示"处理中"）。
+                flush_buf(emit, session_id, buf);
                 match state {
                     LoopState::Prompting { active_turn_id } => {
                         *state = LoopState::Idle {
@@ -1104,6 +1108,23 @@ fn normalize_notification(method: &str, params: &Value) -> Vec<NormalizedEvent> 
             } else {
                 vec![NormalizedEvent::TextDelta {
                     delta: delta.to_string(),
+                }]
+            }
+        }
+        // v0.7.0：codex 可能不发 delta 而是直接发 item/completed（完整回复）。
+        // 提取 item.text 作为 TextDelta；streamStore 的 snapshot-echo guard 会
+        // 去重（如果 delta 已经发过同样的文本）。
+        "item/completed" => {
+            let text = params
+                .get("item")
+                .and_then(|i| i.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if text.is_empty() {
+                vec![]
+            } else {
+                vec![NormalizedEvent::TextDelta {
+                    delta: text.to_string(),
                 }]
             }
         }

@@ -946,7 +946,10 @@ async fn acp_connection_loop(
     let init_id = writer
         .request("initialize", acp_initialize_params())
         .await?;
-    wait_for_response(&mut stdout_rx, init_id).await?;
+    // v0.7.0：握手失败时附带 stderr 内容，帮助诊断 claude-agent-acp 桥为何提前退出。
+    if let Err(e) = wait_for_response(&mut stdout_rx, init_id).await {
+        return Err(enrich_handshake_error(e, &stderr_buf).await);
+    }
 
     let session_result = if let Some(session_id) = requested_session_id.as_deref() {
         let resume_id = writer
@@ -959,7 +962,12 @@ async fn acp_connection_loop(
                 }),
             )
             .await?;
-        wait_for_response(&mut stdout_rx, resume_id).await?
+        match wait_for_response(&mut stdout_rx, resume_id).await {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(enrich_handshake_error(e, &stderr_buf).await);
+            }
+        }
     } else {
         let new_id = writer
             .request(
@@ -970,7 +978,12 @@ async fn acp_connection_loop(
                 }),
             )
             .await?;
-        wait_for_response(&mut stdout_rx, new_id).await?
+        match wait_for_response(&mut stdout_rx, new_id).await {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(enrich_handshake_error(e, &stderr_buf).await);
+            }
+        }
     };
     // session/new returns { sessionId, configOptions }; session/resume returns
     // only { configOptions } — opencode does not echo the sessionId back on
@@ -1671,6 +1684,21 @@ fn handle_prompt_response(
 // ---------------------------------------------------------------------------
 // Internal: handshake response reader (channel-based with timeout)
 // ---------------------------------------------------------------------------
+
+/// v0.7.0：握手失败时附带 stderr 内容（桥提前退出的诊断信息）。
+async fn enrich_handshake_error(e: String, stderr_buf: &Arc<TokioMutex<String>>) -> String {
+    let stderr = stderr_buf.lock().await;
+    let stderr_tail = if stderr.len() > 800 {
+        &stderr[stderr.len() - 800..]
+    } else {
+        stderr.as_str()
+    };
+    if stderr_tail.trim().is_empty() {
+        e
+    } else {
+        format!("{e}\n--- agent stderr ---\n{}", stderr_tail.trim())
+    }
+}
 
 async fn wait_for_response(
     stdout_rx: &mut tokio::sync::mpsc::Receiver<String>,
