@@ -413,6 +413,15 @@ class StreamStore {
     return this.getState(sid)?.isStreaming ?? false;
   }
 
+  /** v0.7.0 诊断：返回所有正在 streaming 的 session key（用于排查 turn_complete 丢失）。 */
+  getStreamingIds(): string[] {
+    const ids: string[] = [];
+    for (const [key, value] of this.sessions) {
+      if (value.isStreaming) ids.push(key);
+    }
+    return ids;
+  }
+
   /** 当前会话的 conductor phase（从 phase_divider 事件跟踪），drop 后仍可读。 */
   getConductorPhase(sid: string | null | undefined): string | null {
     if (!sid) return null;

@@ -183,7 +183,13 @@ const TaskRow = memo(function TaskRow({
                   <button
                     key={node.node_run_id}
                     type="button"
-                    onClick={() => onSelectNode(task, node)}
+                    onClick={(e) => {
+                      // 阻止冒泡到任务行按钮 / ContextMenuTrigger 包裹层，
+                      // 确保只触发节点选中，不触发任务选中
+                      //（v0.7.0 需求二-问题2）。
+                      e.stopPropagation();
+                      onSelectNode(task, node);
+                    }}
                     className={cn(
                       "flex w-full items-center gap-2 py-1.5 pl-9 pr-2 text-[11px] transition-fast",
                       isNodeActive

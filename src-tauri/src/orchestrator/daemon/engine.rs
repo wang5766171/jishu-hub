@@ -1630,14 +1630,8 @@ async fn execute_node(
                 timeout_ms: node.policy.timeout_ms.unwrap_or(600_000),
                 cancellation: cancellation.clone(),
             };
-            let mut output = execute_agent(
-                runtime,
-                prepared,
-                request,
-                context,
-                on_session_resolved,
-            )
-            .await?;
+            let mut output =
+                execute_agent(runtime, prepared, request, context, on_session_resolved).await?;
             output.dispatch_prompt = Some(resolved_prompt);
             Ok(output)
         }
@@ -1659,14 +1653,8 @@ async fn execute_node(
                 timeout_ms: node.policy.timeout_ms.unwrap_or(600_000),
                 cancellation,
             };
-            let mut output = execute_agent(
-                runtime,
-                prepared,
-                request,
-                context,
-                on_session_resolved,
-            )
-            .await?;
+            let mut output =
+                execute_agent(runtime, prepared, request, context, on_session_resolved).await?;
             output.dispatch_prompt = Some(resolved_prompt);
             Ok(output)
         }
@@ -1726,8 +1714,11 @@ fn agent_prompt_with_policy(
     policy: &crate::orchestrator::domain::policy::NodePolicy,
 ) -> String {
     let permissions = &policy.permission_scope;
+    // v0.7.0 需求二-问题4：用 [JISHU-PROMT:开始]...[JISHU-PROMT:结束] 配对块标记包裹
+    // 系统内部契约提示词，前端渲染时统一剥离，不向用户展示。
     format!(
-        "Task Orchestrator execution contract:\n\
+        "[JISHU-PROMT:开始]\n\
+Task Orchestrator execution contract:\n\
 - read_files: {}\n\
 - write_files: {}\n\
 - run_commands: {}\n\
@@ -1735,7 +1726,8 @@ fn agent_prompt_with_policy(
 - deploy: {}\n\
 Do not perform or ask a sub-agent to perform any action marked false. \
 Stay within the project root and the declared task scope. \
-Return concrete output and acceptance evidence.\n\n{}",
+Return concrete output and acceptance evidence.\n\
+[JISHU-PROMT:结束]\n\n{}",
         permissions.can_read_files,
         permissions.can_write_files,
         permissions.can_run_commands,

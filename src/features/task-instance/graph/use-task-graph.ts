@@ -925,10 +925,15 @@ export function useTaskGraph() {
   }, [activeRunId]);
 
   const resumeRun = useCallback(async () => {
-    if (!activeRunId) return;
-    await invoke("orchestrator_resume_run", { runId: activeRunId });
+    // v0.7.0：run 进入终态后 activeRunId 被清空（pollRunProjection L833），但 lastRunId
+    // 保留了最后的 run id。用 displayedRunId（activeRunId ?? lastRunId）恢复执行，
+    // resume 后重新设 activeRunId 启动轮询，让节点状态实时更新。
+    const runId = activeRunId ?? lastRunId;
+    if (!runId) return;
+    await invoke("orchestrator_resume_run", { runId });
+    setActiveRunId(runId);
     setRunStatus("running");
-  }, [activeRunId]);
+  }, [activeRunId, lastRunId]);
 
   const cancelRun = useCallback(async () => {
     if (!activeRunId) return;

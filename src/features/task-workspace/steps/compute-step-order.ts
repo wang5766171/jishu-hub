@@ -98,3 +98,21 @@ export function computeStepOrder(
 
   return result;
 }
+
+/**
+ * 计算可执行步骤节点数（排除 goal/group 根节点）。
+ *
+ * 与 `process-steps-panel` 的 `stepNodeIds` 过滤同口径，避免步骤数显示与步骤栏不一致。
+ * 设计依据：v0.7.0 需求二-问题1（规划 N 节点显示 N+1 步骤，根因是未过滤 Goal 根节点）。
+ *
+ * @param snapshot 流程图快照。undefined/null 时返回 0。
+ * @returns 排除 goal/group 后的节点数。
+ */
+export function countExecutableSteps(
+  snapshot: GraphSnapshot | null | undefined,
+): number {
+  if (!snapshot) return 0;
+  return snapshot.nodes.filter(
+    (n) => n.node_kind !== "goal" && n.node_kind !== "group",
+  ).length;
+}

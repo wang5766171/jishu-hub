@@ -482,6 +482,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         customType: `jishu-conductor:revise:${kind}`,
         display: false,
         content: [
+          "[JISHU-PROMT:开始]",
           `继续当前${label}阶段。`,
           // 同上：followUp 轮不触发 before_agent_start，锚点必须内联，防止跨任务读串。
           taskAnchor(),
@@ -489,6 +490,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
           baseline,
           `用户补充：${answer}`,
           `修订完成后重新调用 ${tool}，提交完整合并后的候选${label}。`,
+          "[JISHU-PROMT:结束]",
         ].join("\n\n"),
       },
       { triggerTurn: true, deliverAs: "followUp" },
@@ -856,14 +858,18 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     const content =
       target === "plan"
         ? [
+            "[JISHU-PROMT:开始]",
             "进入流程规划阶段。",
             taskAnchor(),
             "读取上述需求终稿并设计任务节点方案；先在回复列出方案，再调用 commit_plan。",
+            "[JISHU-PROMT:结束]",
           ].join("\n\n")
         : [
+            "[JISHU-PROMT:开始]",
             "进入流程执行阶段。",
             taskAnchor(),
             `按已确认节点依次执行：\n${renderStepList()}\n全部完成后简要报告产出。`,
+            "[JISHU-PROMT:结束]",
           ].join("\n\n");
     pi.sendMessage(
       { customType: `jishu-conductor:phase-enter:${target}`, display: true, content },
@@ -893,8 +899,44 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     }
 
     if (state.phase === "execute" && terminalStopReason === "stop") {
-      // external 模式：完成态由 Hub 权威，turn_end 不推进 done
-      if (state.executorMode === "external") return;
+      // external 模式：完成态由 Hub 权威，turn_end 不推进 done。
+      // v0.7.0 需求：节点失败后用户通过会话"继续/重试"时，检查 run 是否处于 failed
+      // 终态，若是则通过 hubInvoke 创建新 run 重新执行（failed→running 状态机不允许，
+      // 必须 start 新 run）。成功后通知前端 taskGraph 自动感知新 run（active_run_id 变化）。
+      if (state.executorMode === "external") {
+        if (state.artifacts.taskId) {
+          const hubState = await hubInvoke(ctx, "conductor_load_task_state", {
+            project_root: process.cwd(),
+            task_id: state.artifacts.taskId,
+          });
+          const runStatus = hubState?.success
+            ? (hubState.data as { instance?: { run_status?: string | null } | undefined })
+                ?.instance?.run_status
+            : undefined;
+          if (runStatus === "failed") {
+            // run 失败，触发重新执行（创建新 run）
+            const restartResult = await hubInvoke(
+              ctx,
+              "orchestrator_start_run_from_revision",
+              {
+                task_id: state.artifacts.taskId,
+                project_root: process.cwd(),
+                idempotency_key: `retry_${Date.now().toString(36)}`,
+              },
+              10000,
+            );
+            if (restartResult?.success) {
+              ctx.ui.notify("已重新启动流程执行。", "info");
+            } else if (restartResult && !restartResult.success) {
+              ctx.ui.notify(
+                restartResult.error ?? "重新启动执行失败",
+                "error",
+              );
+            }
+          }
+        }
+        return;
+      }
       const synced = await syncHubPhase(ctx, {
         task_id: state.artifacts.taskId ?? "draft",
         project_root: process.cwd(),
@@ -958,7 +1000,9 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       }
 
       setPhase("discuss", ctx);
-      pi.sendUserMessage(`/jishu-task ${args}`);
+      // v0.7.0 需求二-问题4：/jishu-task 命令包装是系统内部指令，用 [JISHU-PROMT:] 配对块标记
+      // 包裹，前端渲染时剥离，不向用户展示命令本身。
+      pi.sendUserMessage(`[JISHU-PROMT:开始]\n/jishu-task ${args}\n[JISHU-PROMT:结束]\n${goal}`);
     },
   });
 

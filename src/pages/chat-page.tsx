@@ -11,7 +11,6 @@ import { RenameTaskSessionDialog } from "@/components/sessions/rename-task-sessi
 import { ChatInput, type StagedGuideApi } from "@/components/sessions/chat-input";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { clearImageCache } from "@/components/sessions/inline-image";
-import { StatusBar as ObservabilityStatusBar } from "@/components/observability";
 // 会话二级树（T3）：侧边栏任务会话区
 import { TaskSessionTree } from "@/features/task-workspace/sidebar/task-session-tree";
 // 任务模式右侧栏（减法重构：仅渲染任务步骤面板 + 治理面 + 画布，主会话区复用 chat-page）。
@@ -21,6 +20,7 @@ import { useTaskGraph, taskErrorMessage } from "@/features/task-instance/graph/u
 // T8-P1 三段合流：执行段的「流程执行」分隔线 + 会话区「是否开始执行」确认卡。
 import { PhaseDivider } from "@/components/sessions/conversation-content";
 import { ExecutionStartPrompt } from "@/features/task-workspace/execution-start-prompt";
+import { countExecutableSteps } from "@/features/task-workspace/steps/compute-step-order";
 import { startTaskRun } from "@/features/task-instance/start-run";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,7 +52,7 @@ import {
   formatInteractionResponseValue,
   interactionRequestFromEvent,
 } from "@/lib/conversation-interaction";
-import { AgentLogo, useAgent } from "@/agents";
+import { AgentLogo, AgentSwitcher, useAgent } from "@/agents";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
 import { resolvePhaseSessionId, shouldRenderGlobalChatInput } from "./chat-page-layout";
 import { type TaskPhase, type TaskLaunchInstanceSummary } from "@/features/task-instance/types";
@@ -198,7 +198,11 @@ export function ChatPage({
   navigateToSession?: string | null;
 }) {
   const { t } = useTranslation();
-  const { agents, activeId, active, capabilities, setActive, healthLoading } = useAgent();
+  // v0.7.0 需求一：会话作用域状态（chatAgentId 替代全局 activeId）。
+  const { agents, chatAgentId, chatAgent, chatCapabilities: capabilities, setChatAgent, healthLoading } = useAgent();
+  // 兼容别名：active / activeId 在本文件大量使用，统一指向会话作用域。
+  const activeId = chatAgentId;
+  const active = chatAgent;
   const projectId = currentProject?.encoded_name ?? null;
   const projectPathForSettings = currentProject?.path ?? null;
   const supportsModelPicker = active?.config_surface.kind === "model_store"
@@ -243,6 +247,9 @@ export function ChatPage({
   const [taskModeActive, setTaskModeActive] = useState(false);
   // 任务模式下选中的节点（步骤栏高亮 + 主区切换为该节点会话）。null = 未选节点。
   const [taskSelectedNodeId, setTaskSelectedNodeId] = useState<string | null>(null);
+  // v0.7.0 需求二-问题3：选中节点会话绑定的 agent_id（节点子代理可能是非 jishu-self，
+  // 加载节点会话消息需用此 agent_id 而非主会话的 activeId）。
+  const [taskNodeSessionAgentId, setTaskNodeSessionAgentId] = useState<string | null>(null);
   // 任务侧边栏显隐（执行阶段的「显示/隐藏步骤栏」切换，P4c）。需求/规划阶段不显示侧边栏（P4a）。
   const [taskSidebarHidden, setTaskSidebarHidden] = useState(false);
   const [taskLaunchOpen, setTaskLaunchOpen] = useState(false);
@@ -275,8 +282,9 @@ export function ChatPage({
       const [config, act] = await Promise.all([
         invokeCommand<{ providers?: Record<string, { models?: { id: string }[] }> }>(
           "get_models_config",
+          { agentId: activeId ?? "" },
         ),
-        invokeCommand<{ provider: string; model: string } | null>("get_active"),
+        invokeCommand<{ provider: string; model: string } | null>("get_active", { agentId: activeId ?? "" }),
       ]);
       const opts: { provider: string; model: string }[] = [];
       for (const [provider, value] of Object.entries(config?.providers ?? {})) {
@@ -316,6 +324,11 @@ export function ChatPage({
   // 与打断手动回看。
   const prevCurrentPhaseRef = useRef<string | null>(null);
   const activeTaskInstanceIdRef = useRef<string | null>(activeTaskInstanceId);
+  // v0.7.0：记录当前选中的节点 id，用于短路重复点击（同一节点再点不触发任何逻辑）。
+  const taskSelectedNodeIdRef = useRef<string | null>(taskSelectedNodeId);
+  taskSelectedNodeIdRef.current = taskSelectedNodeId;
+  // v0.7.0：记录上次轮询到的 instance active_run_id，检测 conductor 重试创建新 run。
+  const lastInstanceRunIdRef = useRef<string | null>(null);
   // 进入任务模式需切到 Jishu Agent 时置 true：阻止 activeId 变化触发的清理 effect 重置任务模式状态
   const enteringTaskModeRef = useRef(false);
   const activeTaskRequirementFileRef = useRef<string | null>(activeTaskRequirementFile);
@@ -381,6 +394,9 @@ export function ChatPage({
   const currentStream = useSessionStream(selectedSession);
   // 任务图数据：无条件持有（无 graph 时无副作用）。任务模式主区（run 流）与右侧 TaskSidebar 共享。
   const taskGraph = useTaskGraph();
+  // v0.7.0：ref 镜像，供轮询回调（非 React 闭包）读 taskGraph 而不进入依赖数组。
+  const taskGraphRef = useRef(taskGraph);
+  taskGraphRef.current = taskGraph;
 
   const fileToolCount = useMemo(() => {
     return sessionMessages.reduce((count, msg) => (
@@ -419,8 +435,8 @@ export function ChatPage({
   // Single hook for current project's sessions
   const [listRefreshKey, setListRefreshKey] = useState(0);
   const { data: sessions, loading: sessionsLoading, setData: setSessions, refetch: refetchSessions } = useInvoke<Session[]>(
-    projectId ? "list_sessions" : "",
-    projectId ? { encodedName: projectId } : undefined,
+    projectId && activeId ? "list_sessions" : "",
+    projectId && activeId ? { agentId: activeId, encodedName: projectId } : undefined,
     activeId + "_" + listRefreshKey,
   );
   // Ref mirror for use inside the mount-only stream listener closure.
@@ -447,6 +463,23 @@ export function ChatPage({
       ]);
       setTaskLaunchSessions(items);
       setNodeSessionIds(nodeIds);
+
+      // v0.7.0：检测当前任务的 active_run_id 变化（conductor 重试创建新 run）。
+      // 只在轮询回调里、且 run id 真正变化时 loadGraph，不会死循环。
+      // 注意：通过 ref 读 taskGraph，避免把它放进依赖数组（它是每次渲染的新对象，
+      // 会导致 useCallback 重建 → useEffect 重跑 → 死循环 → 界面一直加载中）。
+      const tg = taskGraphRef.current;
+      const activeInst = items.find((it) => it.task_id === activeTaskInstanceIdRef.current);
+      const newRunId = activeInst?.active_run_id ?? null;
+      if (
+        newRunId
+        && newRunId !== lastInstanceRunIdRef.current
+        && activeInst?.graph_id
+        && tg && tg.displayedRunId !== newRunId
+      ) {
+        lastInstanceRunIdRef.current = newRunId;
+        tg.loadGraph(activeInst.graph_id).catch(console.error);
+      }
     } catch (error) {
       console.warn("Failed to load task launch sessions:", error);
     }
@@ -542,8 +575,8 @@ export function ChatPage({
   // T7：taskLaunchPhaseStates（三阶段 tab 的 done/active/pending 派生）随 TaskPhaseNavBar 一并退役。
   const [accessRefreshKey, setAccessRefreshKey] = useState(0);
   const { data: projectSettings } = useInvoke<ProjectSettings>(
-    supportsAccessModeSwitch && projectPathForSettings ? "load_project_settings_local" : "",
-    supportsAccessModeSwitch && projectPathForSettings ? { projectPath: projectPathForSettings } : undefined,
+    supportsAccessModeSwitch && projectPathForSettings && activeId ? "load_project_settings_local" : "",
+    supportsAccessModeSwitch && projectPathForSettings && activeId ? { agentId: activeId, projectPath: projectPathForSettings } : undefined,
     accessRefreshKey,
   );
   const messageSearchTotal = showMessageSearchControls ? messageSearchStatus.total : 0;
@@ -668,9 +701,9 @@ export function ChatPage({
       env: projectSettings?.env ?? null,
       model: projectSettings?.model ?? null,
     };
-    await invokeCommand("save_project_settings_local", { projectPath: projectPathForSettings, settings: nextSettings });
+    await invokeCommand("save_project_settings_local", { agentId: activeId ?? "", projectPath: projectPathForSettings, settings: nextSettings });
     setAccessRefreshKey(Date.now());
-  }, [projectPathForSettings, projectSettings, supportsAccessModeSwitch]);
+  }, [activeId, projectPathForSettings, projectSettings, supportsAccessModeSwitch]);
 
   useEffect(() => {
     if (!taskLaunchOpen || agents.length === 0) return;
@@ -682,14 +715,12 @@ export function ChatPage({
       return;
     }
     if (activeId !== "jishu-self") {
+      // v0.7.0：会话作用域切换（任务模式属于会话场景）。
       // 标记本次切换是为进入任务模式，阻止上面的清理 effect 重置任务模式状态
       enteringTaskModeRef.current = true;
-      setActive("jishu-self").catch((error) => {
-        console.warn("Failed to switch to Jishu Agent for task mode:", error);
-        enteringTaskModeRef.current = false;
-      });
+      setChatAgent("jishu-self");
     }
-  }, [activeId, agents.length, setActive, taskLaunchOpen, taskModeAgentReady]);
+  }, [activeId, agents.length, setChatAgent, taskLaunchOpen, taskModeAgentReady]);
 
   const handleWorkModeChange = useCallback(async (value: string) => {
     const nextIsTask = value === "task";
@@ -727,17 +758,14 @@ export function ChatPage({
     selectedSessionRef.current = "new";
     setSessionMessages([]);
     setPendingSteerDisplay([]);
-    // 确认切换后主动切到 Jishu Agent（enteringTaskModeRef 已置，清理 effect 会跳过任务模式重置）
+    // v0.7.0：确认切换后主动切到 Jishu Agent（会话作用域；enteringTaskModeRef 已置，清理 effect 会跳过任务模式重置）
     if (nextIsTask && activeId !== "jishu-self") {
-      setActive("jishu-self").catch((error) => {
-        console.warn("Failed to switch to Jishu Agent for task mode:", error);
-        enteringTaskModeRef.current = false;
-      });
+      setChatAgent("jishu-self");
     }
     requestAnimationFrame(() => {
       chatInputRef.current?.focus();
     });
-  }, [activeId, taskModeAgentReady, setActive]);
+  }, [activeId, taskModeAgentReady, setChatAgent]);
 
   // 记录哪些 session 已经注入过 launch instruction（只在每个阶段的首条消息注入一次，
   // 后续消息复用 agent 进程上下文，不重复下达阶段指令，避免 agent 误以为每轮都是新阶段开始）。
@@ -846,6 +874,7 @@ export function ChatPage({
     } else {
       try {
         const messages = await invokeCommand<Message[]>("get_session_messages", {
+          agentId: activeId ?? "",
           sessionId,
           encodedName: projectId,
         });
@@ -912,7 +941,11 @@ export function ChatPage({
     }
 
     let cancelled = false;
+    // v0.7.0 需求二-问题3：节点会话用节点 attempt 绑定的 agent_id 加载消息
+    // （节点子代理可能是 claude-code/codex 等非 jishu-self，消息存在各自 session 存储）。
+    const nodeAgentId = isNodeSession ? (taskNodeSessionAgentId ?? activeId ?? "") : (activeId ?? "");
     invokeCommand<Message[]>("get_session_messages", {
+      agentId: nodeAgentId,
       sessionId: selectedSession,
       encodedName: projectId,
     })
@@ -929,7 +962,7 @@ export function ChatPage({
     return () => {
       cancelled = true;
     };
-  }, [taskModeActive, selectedSession, projectId, taskSelectedNodeId]);
+  }, [taskModeActive, selectedSession, projectId, taskSelectedNodeId, taskNodeSessionAgentId, activeId]);
 
   const handleNewSession = async () => {
     if (!projectId) return;
@@ -989,12 +1022,13 @@ export function ChatPage({
       const cwd = session?.project_path || currentProject?.path;
       if (!cwd) return;
       const pid = await invokeCommand<number>("open_in_terminal", {
+        agentId: activeId ?? "",
         projectPath: cwd,
         resumeSessionId: sessionId,
       });
       await invokeCommand("register_terminal_session", {
         sessionId, pid, projectPath: cwd,
-        agentId: activeId,
+        agentId: activeId ?? "",
       });
     } catch (err) {
       console.error("Failed to resume session:", err);
@@ -1016,6 +1050,7 @@ export function ChatPage({
       if (streamStore.hasState(selectedSession)) return;
       try {
         const msgs = await invokeCommand<Message[]>("get_session_messages", {
+          agentId: activeId ?? "",
           sessionId: selectedSession,
           encodedName: projectId,
         });
@@ -1174,6 +1209,16 @@ export function ChatPage({
     phase: TaskPhase,
     readOnly = false,
   ) => {
+    // 短路：已是同一任务同一阶段（且非只读切换），避免重复清空 selectedNodeId 引起
+    // 节点会话闪烁/竞态（v0.7.0 需求二-问题2：节点选中后再次点击变任务选中效果）。
+    if (
+      activeTaskInstanceIdRef.current === taskSession.task_id &&
+      activeTaskLaunchInstance?.current_phase === taskSession.current_phase &&
+      taskModeActive &&
+      !readOnly
+    ) {
+      return;
+    }
     logTaskPhaseDebug("workspace:open", {
       taskId: taskSession.task_id,
       phase,
@@ -1208,33 +1253,59 @@ export function ChatPage({
   }, []);
   // 任务侧边栏节点选择 → 同步主区会话 + 步骤栏高亮
   const handleTaskSelectNode = useCallback((nodeId: string | null) => {
+    // v0.7.0 需求二：重复点击同一节点不触发任何逻辑（与左侧列表行为一致，
+    // 只点一下选中，再点不清空内容）。nodeId 相同时直接 return。
+    if (nodeId !== null && nodeId === taskSelectedNodeIdRef.current) {
+      return;
+    }
     setTaskSelectedNodeId(nodeId);
     if (!nodeId) {
-      // 取消节点选择：主区恢复阶段会话（需求/规划/执行——执行阶段同样回 conductor 会话）
+      // 取消节点选择：清空节点会话 agent_id，主区恢复阶段会话
+      setTaskNodeSessionAgentId(null);
       const sess = resolvePhaseSessionId(
         activeTaskLaunchInstance,
         activeTaskLaunchInstance?.current_phase,
       );
       setSelectedSession(sess);
       selectedSessionRef.current = sess;
+    } else {
+      // v0.7.0 需求二-问题3：选中节点立即切到 pending-node 占位，清空上一个节点的
+      // 会话残留。session_id 回填后由 handleTaskNodeSessionChange 更新为真实节点会话。
+      // 此前不立即清空，导致新节点 session_id 回填前主区仍显示上一个节点的会话内容。
+      setTaskNodeSessionAgentId(null);
+      setSelectedSession("pending-node");
+      selectedSessionRef.current = "pending-node";
+      setSessionMessages([]);
     }
   }, [activeTaskLaunchInstance]);
 
-  // 选中节点的会话回填 → 主区渲染该节点会话（复用 chat-page 的 MessageView/ChatInput）
-  const handleTaskNodeSessionChange = useCallback((sessionId: string | null) => {
-    if (sessionId) {
-      setSelectedSession(sessionId);
-      selectedSessionRef.current = sessionId;
-    }
-  }, []);
+  // 选中节点的会话信息回填 → 主区渲染该节点会话（复用 chat-page 的 MessageView/ChatInput）
+  // v0.7.0 需求二-问题3：接收完整 info（含 agent_id），节点会话消息加载用节点绑定的 agent。
+  // 节点已运行但 session_id 尚未回填时，用 pending 标记占位，避免主区显示主流程会话。
+  const handleTaskNodeSessionChange = useCallback(
+    (info: { session_id: string | null; agent_id: string | null } | null) => {
+      if (info && info.session_id) {
+        setSelectedSession(info.session_id);
+        selectedSessionRef.current = info.session_id;
+      } else if (info) {
+        // 节点已运行但 session_id 未回填（attempt 存在但 Pi RPC SessionResolved 未到）
+        setSelectedSession("pending-node");
+        selectedSessionRef.current = "pending-node";
+      }
+      setTaskNodeSessionAgentId(info?.agent_id ?? null);
+    },
+    [],
+  );
 
-  // 退出任务模式时清理图数据，避免残留 run 状态
+  // 退出任务模式时清理图数据，避免残留 run 状态。
+  // 注意：不依赖 taskGraph（每次渲染是新对象，会导致死循环），通过 ref 调用。
   useEffect(() => {
     if (!taskModeActive) {
-      taskGraph.clearGraph();
+      taskGraphRef.current.clearGraph();
       setTaskSidebarHidden(false);
     }
-  }, [taskModeActive, taskGraph]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskModeActive]);
 
   // 任务模式 + 执行阶段 + 未选节点 = 三段合流视图：
   // conductor 会话（需求 + 规划）→「流程执行」分隔线 →（未启动：确认卡 / 已启动：run 事件流）。
@@ -1246,7 +1317,7 @@ export function ChatPage({
   // - 重进已完成任务 → 回退成「是否开始执行」卡，且分隔线下的执行内容被挡住不显示；
   // - live 跑完那一刻 pollRunProjection 清 activeRunId，也会闪回开始卡。
   const taskRunStarted = Boolean(taskGraph.displayedRunId ?? activeTaskLaunchInstance?.active_run_id);
-  const taskStepCount = taskGraph.snapshot?.nodes.length ?? 0;
+  const taskStepCount = countExecutableSteps(taskGraph.snapshot);
 
   // 活跃任务的真节点标题（与右侧步骤栏同源，来自 taskGraph.snapshot），
   // 透传给左侧任务树覆盖 use-task-node-sessions 用 revision 取的占位标题（"A"/"B"）。
@@ -1262,11 +1333,21 @@ export function ChatPage({
 
   // 选中一个还没跑过的步骤时，主区给出明确占位——否则会继续显示上一个会话，
   // 用户以为点击没生效（需求：「点击右侧每一行都能看到每一条的执行情况」）。
-  // 依据 attempt_count 本地判定，不必等 node session 查询回来，避免闪烁。
+  // v0.7.0 需求二-问题3：改按 node run 状态判定。只有完全不存在或状态为
+  // blocked/ready 才算"未开始"；一旦状态进入 leased/running（即使 session_id 暂为 null），
+  // 让出主区给节点会话渲染（显示流式占位而非"未开始"），避免节点内容延迟到完成才显示。
+  const selectedNodeRun = taskSelectedNodeId ? taskGraph.nodeRuns[taskSelectedNodeId] : undefined;
   const taskSelectedNodeNotStarted =
     taskModeActive &&
     !!taskSelectedNodeId &&
-    ((taskGraph.nodeRuns[taskSelectedNodeId]?.attempt_count ?? 0) <= 0);
+    (!selectedNodeRun ||
+     selectedNodeRun.attempt_count <= 0 ||
+     selectedNodeRun.status === "blocked" ||
+     selectedNodeRun.status === "ready");
+  // v0.7.0 需求二-问题3：节点已进入 leased/running 但 session_id 尚未由 Pi RPC
+  // SessionResolved 回填（selectedSession 为 "pending-node" 占位）。此时主区显示
+  // "正在建立会话"占位，而非主流程会话内容，避免节点会话和主流程混在一起。
+  const taskSelectedNodeStarting = selectedSession === "pending-node";
 
   // T8-P10：节点会话的流式输出与常规会话**同一套机制**——
   // `agent-event` → `streamStore` → `useSessionStream` → `StreamingMessage`。
@@ -1831,6 +1912,7 @@ export function ChatPage({
               ?? sessionList?.find(s => s.id === cid)?.path
               ?? "";
             invokeCommand("persist_interaction_blocks", {
+              agentId: activeIdRef.current ?? "",
               sessionPath,
               sessionId: finalKey,
               encodedName: projectIdRef.current,
@@ -1863,6 +1945,7 @@ export function ChatPage({
               ?? sessionList?.find(s => s.id === cid)?.path
               ?? "";
             invokeCommand("persist_partial_assistant", {
+              agentId: activeIdRef.current ?? "",
               sessionPath: partialSessionPath,
               sessionId: finalKey,
               encodedName: projectIdRef.current,
@@ -1964,6 +2047,7 @@ export function ChatPage({
             void (async () => {
               try {
                 await invokeCommand("send_message", {
+                  agentId: activeIdRef.current ?? "",
                   projectPath: guideProjectPath,
                   sessionId: finalKey,
                   message: guideText,
@@ -2023,6 +2107,7 @@ export function ChatPage({
               void (async () => {
                 try {
                   await invokeCommand("send_message", {
+                    agentId: activeIdRef.current ?? "",
                     projectPath,
                     sessionId: finalKey,
                     message: merged,
@@ -2068,18 +2153,19 @@ export function ChatPage({
       ? taskGraph.snapshot?.nodes.find((n) => n.node_id === taskSelectedNodeId)?.title ?? displayName
       : displayName;
   const activeApproval = pendingApprovals[0] ?? null;
+  // v0.7.0 需求二：节点会话的 interaction 来自节点子代理（agent_id 可能是非 activeId
+  // 的 claude-code/codex 等）。匹配只按 sessionId（已唯一标识会话），不限制 agentId，
+  // 否则节点执行阶段的 agent 问答无法显示和提交。
   const activeInteraction = pendingInteractions.find(
-    (item) =>
-      item.agentId === activeId
-      && item.sessionId === selectedSession,
+    (item) => item.sessionId === selectedSession,
   ) ?? null;
   const handleInteractionSubmit = useCallback(async (
     submission: ConversationInteractionSubmission,
   ) => {
+    // v0.7.0 需求二：节点会话 interaction 匹配只按 sessionId + requestId（不限制 agentId）。
     const interaction = pendingInteractions.find(
       (item) =>
-        item.agentId === activeId
-        && item.sessionId === selectedSession
+        item.sessionId === selectedSession
         && item.request.requestId === submission.requestId,
     );
     if (!interaction) return;
@@ -2155,6 +2241,7 @@ export function ChatPage({
     handleMessageSent(interaction.sessionId, replyText);
     try {
       await invokeCommand("send_message", {
+        agentId: activeIdRef.current ?? "",
         projectPath: projectPathRef.current ?? "",
         sessionId: interaction.sessionId,
         message: replyText,
@@ -2167,6 +2254,7 @@ export function ChatPage({
   }, [
     handleMessageSent,
     pendingInteractions,
+    selectedSession,
   ]);
   const resolveActiveApproval = useCallback(async (approved: boolean) => {
     if (!activeApproval || approvalResolving) return;
@@ -2240,7 +2328,7 @@ export function ChatPage({
                           setActiveModel(next);
                           setModelMenuOpen(false);
                           try {
-                            await invokeCommand("set_active", { active: next });
+                            await invokeCommand("set_active", { agentId: activeId ?? "", active: next });
                           } catch (err) {
                             console.warn("set_active failed:", err);
                           }
@@ -2264,10 +2352,20 @@ export function ChatPage({
           )}
         </span>
       ) : null}
-      <span className="inline-flex min-w-0 items-center gap-1.5" title={active?.display_name ?? ""}>
-        {active ? <AgentLogo agentId={active.id} size={14} /> : null}
-        <span className="truncate">{active?.display_name ?? t("sessions.currentAgent")}</span>
-      </span>
+      {/* v0.7.0 需求一：原静态智能体展示位改为可切换（AgentSwitcher 受控）。
+          新会话可切换（切换 = 新建会话）；任务态只有 jishu agent 可用，保持静态展示。 */}
+      {taskLaunchOpen ? (
+        <span className="inline-flex min-w-0 items-center gap-1.5" title={active?.display_name ?? ""}>
+          {active ? <AgentLogo agentId={active.id} size={14} /> : null}
+          <span className="truncate">{active?.display_name ?? t("sessions.currentAgent")}</span>
+        </span>
+      ) : (
+        <AgentSwitcher value={activeId} onChange={setChatAgent} dropUp>
+          {active && (
+            <span className="truncate">{active.display_name}</span>
+          )}
+        </AgentSwitcher>
+      )}
       {projectPath && (
         <span className="min-w-0 flex-1 truncate text-right font-mono text-[0.92em]" title={`${t("sessions.projectPath")}: ${projectPath}`}>
           {projectPath}
@@ -2553,10 +2651,17 @@ export function ChatPage({
             onSelectNode={(task, node) => {
               const instance = findTaskInstance(task.task_id);
               if (!instance) return;
-              // openTaskPhaseWorkspace 会重置 taskSelectedNodeId，随后指定目标节点，
-              // TaskSidebar 收到受控 prop 后自行拉取节点会话并高亮。
-              openTaskPhaseWorkspace(instance, "execution");
-              setTaskSelectedNodeId(node.node_id);
+              // 若目标任务尚未激活，先进任务执行 workspace（会重置 selectedNodeId），
+              // 随后指定目标节点，TaskSidebar 收到受控 prop 后自行拉取节点会话并高亮。
+              // 若任务已激活（含再次点击当前节点），直接切节点，不再调 openTaskPhaseWorkspace，
+              // 避免重复清空 selectedNodeId 引起节点会话→任务主会话的闪烁/竞态
+              //（v0.7.0 需求二-问题2：节点选中后再次点击变任务选中效果）。
+              if (activeTaskInstanceIdRef.current !== task.task_id || !taskModeActive) {
+                openTaskPhaseWorkspace(instance, "execution");
+              }
+              // v0.7.0 需求二-问题3：统一走 handleTaskSelectNode，立即切 pending-node
+              // 占位，避免新节点 session_id 回填前主区显示上一个节点的会话。
+              handleTaskSelectNode(node.node_id);
             }}
             onRenameTask={(task) => setRenameTaskTarget(findTaskInstance(task.task_id))}
             onDeleteTask={async (task) => {
@@ -2648,13 +2753,6 @@ export function ChatPage({
           <>
             {!taskLaunchOpen ? (
               <>
-            {!taskModeActive && (
-              <ObservabilityStatusBar
-                model={active?.display_name}
-                turns={sessionMessages.length}
-                fileCount={fileToolCount}
-              />
-            )}
             {/* Session header */}
             {selectedSession && selectedSession !== "new" ? (
               <div className="flex items-center justify-between px-5 h-[44px] border-b border-border/30" style={{ background: "var(--color-layer-1)" }}>
@@ -2708,6 +2806,12 @@ export function ChatPage({
                   // 选中的步骤还没执行过——直接说明，而不是把上一段会话继续摆在这里。
                   <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4 py-8 text-center text-[12px] text-muted-foreground">
                     {t("task.execution.nodeNotStarted", "该步骤尚未开始执行，执行后会在此显示它的会话。")}
+                  </div>
+                ) : taskSelectedNodeStarting ? (
+                  // v0.7.0 需求二-问题3：节点正在执行但会话尚未建立（session_id 待 Pi RPC 回填）。
+                  // 显示占位而非主流程会话，避免节点会话和主流程混在一起。
+                  <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4 py-8 text-center text-[12px] text-muted-foreground">
+                    {t("task.execution.nodeStarting", "该步骤正在执行，正在建立会话，建立后在此显示会话内容。")}
                   </div>
                 ) : selectedSession && selectedSession !== "new" ? (
                   <MessageView
@@ -2861,6 +2965,7 @@ export function ChatPage({
               ref={chatInputRef}
               sessionId={selectedSession === "new" ? null : selectedSession}
               projectPath={currentProject?.path ?? null}
+              agentId={activeId}
               stagedApiRef={stagedApiRef}
               onMessageSent={handleMessageSent}
               onSessionResolved={handleSessionResolved}
@@ -2929,6 +3034,7 @@ export function ChatPage({
                         ?? sessionList?.find(s => s.id === selectedSession)?.path
                         ?? "";
                       invokeCommand("persist_interaction_blocks", {
+                        agentId: activeId ?? "",
                         sessionPath,
                         sessionId: finalKey,
                         encodedName: projectId,
@@ -2956,6 +3062,7 @@ export function ChatPage({
                         ?? sessionList?.find(s => s.id === selectedSession)?.path
                         ?? "";
                       invokeCommand("persist_partial_assistant", {
+                        agentId: activeId ?? "",
                         sessionPath: partialSessionPath,
                         sessionId: finalKey,
                         encodedName: projectId,
@@ -2988,6 +3095,7 @@ export function ChatPage({
                     // we genuinely have nothing cached for this session.
                     try {
                       const msgs = await invokeCommand<Message[]>("get_session_messages", {
+                        agentId: activeId ?? "",
                         sessionId: selectedSession,
                         encodedName: projectId,
                       });
@@ -3177,12 +3285,34 @@ function stripTaskLaunchInstructionFromMessages(messages: Message[]): Message[] 
       ...message,
       content: message.content.map((block) => {
         if (block.type !== "text") return block;
+        // v0.7.0 需求二-问题4：先剥离 [JISHU-PROMT:] 配对块标记的系统内部提示词，
+        // 再剥离旧版 <jishu-task-*> 标签指令。
+        const promtStripped = stripJishuPromt(block.text);
         return {
           ...block,
-          text: stripTaskLaunchInstruction(block.text),
+          text: stripTaskLaunchInstruction(promtStripped),
         };
       }),
-    }));
+    }))
+    // v0.7.0：剥离后内容为空的 user 消息（纯系统提示词）整条过滤掉，不向用户展示。
+    .filter((message) => {
+      if (message.role !== "user") return true;
+      const hasVisibleContent = message.content.some((block) => {
+        if (block.type === "text") return block.text.trim().length > 0;
+        return true; // 非文本块（interaction/tool 等）保留
+      });
+      return hasVisibleContent;
+    });
+}
+
+/**
+ * v0.7.0 需求二-问题4：剥离 [JISHU-PROMT:开始]...[JISHU-PROMT:结束] 配对块标记
+ * 及其包裹的系统内部提示词。标记外的用户真实指令保留。跨行匹配，非贪婪。
+ */
+const JISHU_PROMT_PATTERN = /\[JISHU-PROMT:开始\][\s\S]*?\[JISHU-PROMT:结束\]\s*/g;
+
+function stripJishuPromt(text: string): string {
+  return text.replace(JISHU_PROMT_PATTERN, "").trim();
 }
 
 function stripTaskLaunchInstruction(text: string): string {

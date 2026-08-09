@@ -43,8 +43,10 @@ export interface TaskSidebarProps {
   selectedNodeId?: string | null;
   /** 节点选择变化（步骤栏点击）→ 上浮 chat-page 以同步主区。 */
   onSelectNode?: (nodeId: string | null) => void;
-  /** 选中节点的会话 id 回填（供 chat-page 主区渲染该节点会话）。 */
-  onNodeSessionChange?: (sessionId: string | null) => void;
+  /** 选中节点的会话信息回填（供 chat-page 主区渲染该节点会话，含 agent_id）。
+   *  v0.7.0 需求二-问题3：传完整 info 而非仅 session_id，以便节点会话消息加载
+   *  用节点绑定的 agent_id（节点子代理可能是 claude-code/codex 等非 jishu-self）。 */
+  onNodeSessionChange?: (info: { session_id: string | null; agent_id: string | null } | null) => void;
   /** 「隐藏步骤栏」（P4c）：收起整个侧边栏，由 chat-page 提供重开入口。 */
   onHide?: () => void;
 }
@@ -130,22 +132,29 @@ export function TaskSidebar({
   const selectedAttemptCount = selectedNodeId
     ? (taskGraph.nodeRuns[selectedNodeId]?.attempt_count ?? 0)
     : 0;
+  // v0.7.0 需求二-问题3：额外监听选中节点的 status 与 session_id 变化——
+  // 节点进入 running 态但 session_id 尚未由 Pi RPC SessionResolved 回填时，
+  // 主区会卡在"未开始"占位。依赖 status/session_id 确保 session_id 回填后立即重查，
+  // 让节点会话内容在运行阶段就显示，而非等到完成。
+  const selectedNodeStatus = selectedNodeId
+    ? (taskGraph.nodeRuns[selectedNodeId]?.status ?? null)
+    : null;
   useEffect(() => {
     task.selectNode(selectedNodeId ?? null);
     if (selectedNodeId && runId) {
       nodeSession.fetchNodeSession(selectedNodeId).catch(console.error);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedNodeId, runId, selectedAttemptCount]);
+  }, [selectedNodeId, runId, selectedAttemptCount, selectedNodeStatus]);
 
-  // 选中节点的会话 id 上浮 chat-page（主区渲染用）
+  // 选中节点的会话信息上浮 chat-page（主区渲染用）
   useEffect(() => {
     if (!selectedNodeId) {
       onNodeSessionChange?.(null);
       return;
     }
     const info = task.nodeSessionMap[selectedNodeId];
-    onNodeSessionChange?.(info?.session_id ?? null);
+    onNodeSessionChange?.(info ? { session_id: info.session_id, agent_id: info.agent_id } : null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNodeId, task.nodeSessionMap]);
 
