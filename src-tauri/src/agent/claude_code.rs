@@ -520,6 +520,10 @@ impl SessionAdapter for ClaudeCodeAgent {
         }
 
         all_sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        // v0.7.0 需求一：回填 agent_id（通用 load_session 不知 agent，adapter 补齐）。
+        for session in &mut all_sessions {
+            session.agent_id = Some("claude-code".to_string());
+        }
         Ok(all_sessions)
     }
 

@@ -2249,13 +2249,13 @@ impl TaskStore {
         // 1. 取出本 run 下所有节点的最新 attempt（含该节点所属的 revision_id）。
         //    用独立作用域持有 reader 锁，收集完即释放——避免后续 get_revision 再次加锁死锁。
         let node_rows: Vec<(
-            String,       // node_id
-            String,       // node_run_id
-            String,       // status
-            u32,          // attempt_number
+            String,         // node_id
+            String,         // node_run_id
+            String,         // status
+            u32,            // attempt_number
             Option<String>, // session_id
             Option<String>, // agent_id
-            String,       // revision_id
+            String,         // revision_id
         )> = {
             let conn = self
                 .reader
@@ -2293,7 +2293,12 @@ impl TaskStore {
                 let agent_assignment_json: Option<String> = row.get(5)?;
                 let agent_id = agent_assignment_json
                     .as_deref()
-                    .and_then(|json| serde_json::from_str::<crate::orchestrator::domain::run::AgentAssignment>(json).ok())
+                    .and_then(|json| {
+                        serde_json::from_str::<crate::orchestrator::domain::run::AgentAssignment>(
+                            json,
+                        )
+                        .ok()
+                    })
                     .map(|assignment| assignment.agent_id);
                 Ok((
                     row.get(0)?,
@@ -2336,8 +2341,10 @@ impl TaskStore {
 
         // 3. 加载需要的 revision，构建 node_id → 中文标题 映射。
         //    优先用 run 实际执行的 revision（node_id 必然对齐）；draft 仅作兜底。
-        let mut run_title_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        let mut draft_title_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut run_title_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut draft_title_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         let mut loaded: std::collections::HashSet<String> = std::collections::HashSet::new();
         for (_, _, _, _, _, _, rev_id) in &node_rows {
             if rev_id.is_empty() || !loaded.insert(rev_id.clone()) {
@@ -4030,10 +4037,16 @@ mod tests {
                 finished_at: None,
             }
         };
-        store.save_attempt(&mk_attempt("att1", 1, Some("sess-a"))).unwrap();
+        store
+            .save_attempt(&mk_attempt("att1", 1, Some("sess-a")))
+            .unwrap();
         store.save_attempt(&mk_attempt("att2", 2, None)).unwrap();
-        store.save_attempt(&mk_attempt("att3", 3, Some("sess-a"))).unwrap();
-        store.save_attempt(&mk_attempt("att4", 4, Some("sess-b"))).unwrap();
+        store
+            .save_attempt(&mk_attempt("att3", 3, Some("sess-a")))
+            .unwrap();
+        store
+            .save_attempt(&mk_attempt("att4", 4, Some("sess-b")))
+            .unwrap();
 
         let mut ids = store.list_node_session_ids().unwrap();
         ids.sort();
@@ -4161,9 +4174,15 @@ mod tests {
                 .collect(),
             edges: vec![],
         };
-        let revision =
-            GraphRevision::from_snapshot(&format!("rev-{run_id}"), &format!("g-{run_id}"), None, &snapshot, "user", now())
-                .unwrap();
+        let revision = GraphRevision::from_snapshot(
+            &format!("rev-{run_id}"),
+            &format!("g-{run_id}"),
+            None,
+            &snapshot,
+            "user",
+            now(),
+        )
+        .unwrap();
         store.save_revision(&revision).unwrap();
         store
             .create_run(&crate::orchestrator::domain::run::GraphRun {

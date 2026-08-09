@@ -75,8 +75,6 @@ pub struct AppState {
     pub font_size_base: Option<String>,
     pub font_size_prose: Option<String>,
     #[serde(default)]
-    pub active_agent_id: Option<String>,
-    #[serde(default)]
     pub agent_binary_paths: HashMap<String, String>,
     #[serde(default)]
     pub agent_last_health: HashMap<String, serde_json::Value>,
@@ -122,22 +120,10 @@ pub fn migrate_v0_5_0() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let mut state = load_state().unwrap_or_default();
-    if state.active_agent_id.is_none() {
-        state.active_agent_id = Some("claude-code".to_string());
-        save_state(&state)?;
-    }
+    // v0.7.0：全局 active_agent_id 概念已移除（需求一：智能体切换去全局化）。
+    // 旧 state.json 中的 active_agent_id 字段会被 serde 静默忽略（AppState 未启用
+    // deny_unknown_fields），无需数据迁移。
     Ok(())
-}
-
-pub fn load_active_agent_id() -> Result<Option<String>, Box<dyn std::error::Error>> {
-    Ok(load_state()?.active_agent_id)
-}
-
-pub fn save_active_agent_id(id: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut state = load_state().unwrap_or_default();
-    state.active_agent_id = Some(id.to_string());
-    save_state(&state)
 }
 
 pub fn load_language() -> Result<Option<String>, Box<dyn std::error::Error>> {

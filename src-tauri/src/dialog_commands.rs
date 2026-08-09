@@ -6,14 +6,8 @@ const USER_CANCELLED: &str = "USER_CANCELLED";
 pub fn export_config_dialog(
     app: tauri::AppHandle,
     state: tauri::State<'_, std::sync::Mutex<crate::AppState>>,
+    agent_id: String,
 ) -> Result<(), String> {
-    let agent_id = {
-        let s = state
-            .lock()
-            .map_err(|_| "App state lock poisoned".to_string())?;
-        s.registry.active_id().to_string()
-    };
-
     let default_name = format!("{}-settings.json", agent_id);
     let path = app
         .dialog()
@@ -32,13 +26,16 @@ pub fn export_config_dialog(
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.active().export_config(&path_str)
+    s.registry
+        .require_agent(&agent_id)?
+        .export_config(&path_str)
 }
 
 #[tauri::command]
 pub fn import_config_dialog(
     app: tauri::AppHandle,
     state: tauri::State<'_, std::sync::Mutex<crate::AppState>>,
+    agent_id: String,
 ) -> Result<(), String> {
     let path = app
         .dialog()
@@ -56,7 +53,9 @@ pub fn import_config_dialog(
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.active().import_config(&path_str)?;
+    s.registry
+        .require_agent(&agent_id)?
+        .import_config(&path_str)?;
     Ok(())
 }
 
@@ -64,14 +63,15 @@ pub fn import_config_dialog(
 pub fn export_raw_config_dialog(
     app: tauri::AppHandle,
     state: tauri::State<'_, std::sync::Mutex<crate::AppState>>,
+    agent_id: String,
 ) -> Result<(), String> {
     let (content, format) = {
         let s = state
             .lock()
             .map_err(|_| "App state lock poisoned".to_string())?;
-        let active = s.registry.active();
-        let content = active.load_raw_config()?;
-        let format = active.config_format().unwrap_or_else(|| "json".to_string());
+        let agent = s.registry.require_agent(&agent_id)?;
+        let content = agent.load_raw_config()?;
+        let format = agent.config_format().unwrap_or_else(|| "json".to_string());
         (content, format)
     };
 

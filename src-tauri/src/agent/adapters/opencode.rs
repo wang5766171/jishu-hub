@@ -271,6 +271,7 @@ fn parse_session_list(
                 display_name: entry.title.filter(|title| !title.trim().is_empty()),
                 last_active,
                 project_path: Some(project_path.to_string()),
+                agent_id: Some("opencode".to_string()),
             }
         })
         .collect::<Vec<_>>();
@@ -590,6 +591,7 @@ fn list_sessions_from_db(
             display_name: Some(title).filter(|t| !t.trim().is_empty()),
             last_active: datetime_from_millis(updated),
             project_path: Some(project_path.to_string()),
+            agent_id: Some("opencode".to_string()),
         });
     }
 

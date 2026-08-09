@@ -82,6 +82,10 @@ pub struct Session {
     pub last_active: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_path: Option<String>,
+    /// v0.7.0 需求一：该会话绑定的智能体 id。
+    /// 历史会话无此值（不做数据迁移，Option 兜底）；新版会话由各 adapter 回填。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 /// Parse an ai-title line from JSONL, returns the aiTitle string if found
@@ -1054,6 +1058,7 @@ where
         display_name,
         last_active: None,
         project_path,
+        agent_id: None,
     })
 }
 

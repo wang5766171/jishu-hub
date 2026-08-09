@@ -163,11 +163,28 @@ impl TransportAdapter for CodexAdapter {
         &self,
         _req: &ChatRequest,
     ) -> Result<crate::agent::AcpCommandSpec, String> {
-        Ok(crate::agent::AcpCommandSpec {
-            program: "codex".to_string(),
-            args: vec!["app-server".to_string()],
-            envs: Vec::new(),
-        })
+        // v0.7.0：Windows 上 npm 全局 bin 是 .cmd shim，CreateProcess 无法直接解析，
+        // 必须用 cmd /C 包装（与 claude-agent-acp 的 Windows 处理一致）。
+        #[cfg(target_os = "windows")]
+        {
+            Ok(crate::agent::AcpCommandSpec {
+                program: "cmd".to_string(),
+                args: vec![
+                    "/C".to_string(),
+                    "codex".to_string(),
+                    "app-server".to_string(),
+                ],
+                envs: Vec::new(),
+            })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Ok(crate::agent::AcpCommandSpec {
+                program: "codex".to_string(),
+                args: vec!["app-server".to_string()],
+                envs: Vec::new(),
+            })
+        }
     }
 
     fn build_chat_command(&self, req: ChatRequest) -> tokio::process::Command {
@@ -420,59 +437,69 @@ impl SessionAdapter for CodexAdapter {
     fn list_sessions(&self, encoded_name: &str) -> Result<Vec<crate::session::Session>, String> {
         let decoded_path = crate::project::decode_project_path(encoded_name);
         let home = dirs::home_dir().ok_or("Cannot find home directory")?;
-        let index_path = home.join(".codex").join("session_index.jsonl");
-        if !index_path.exists() {
+
+        // v0.7.0：codex app-server 模式不写 session_index.jsonl，会话记录在
+        // ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl。直接扫描 rollout 文件，
+        // 按 cwd 过滤当前项目，不依赖 session_index。
+        let sessions_dir = home.join(".codex").join("sessions");
+        if !sessions_dir.exists() {
             return Ok(vec![]);
         }
 
-        let content = std::fs::read_to_string(&index_path).map_err(|e| e.to_string())?;
         let mut sessions = Vec::new();
-
-        for line in content.lines().rev() {
-            if let Ok(item) = serde_json::from_str::<serde_json::Value>(line) {
-                let id = item
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let thread_name = item
-                    .get("thread_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let updated_at_str = item
-                    .get("updated_at")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-
-                if id.is_empty() {
-                    continue;
-                }
-
-                if let Some(rollout_path) = self.find_rollout_file(&id, updated_at_str) {
-                    if let Ok(cwd) = self.get_rollout_cwd(&rollout_path) {
-                        if cwd == decoded_path {
-                            let last_active = chrono::DateTime::parse_from_rfc3339(updated_at_str)
-                                .ok()
-                                .map(|dt| dt.with_timezone(&chrono::Utc));
-
-                            let messages =
-                                parse_rollout_messages(&rollout_path).unwrap_or_default();
-
-                            sessions.push(crate::session::Session {
-                                id,
-                                path: rollout_path,
-                                messages,
-                                started_at: last_active, // Approximating
-                                display_name: Some(thread_name),
-                                last_active,
-                                project_path: Some(cwd),
-                            });
-                        }
-                    }
-                }
+        // 递归扫描所有 rollout-*.jsonl 文件
+        let rollout_files = collect_rollout_files(&sessions_dir);
+        for rollout_path in rollout_files {
+            // 读取 cwd 和 session id（从文件首行）
+            let (cwd, session_id, started_at) = match read_rollout_header(&rollout_path) {
+                Some(v) => v,
+                None => continue,
+            };
+            // 只返回匹配当前项目的会话
+            if cwd != decoded_path {
+                continue;
             }
+            let messages = parse_rollout_messages(&rollout_path).unwrap_or_default();
+            // 文件修改时间作为 last_active
+            let last_active = std::fs::metadata(&rollout_path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| {
+                        chrono::DateTime::<chrono::Utc>::from_timestamp(
+                            d.as_secs() as i64,
+                            d.subsec_nanos(),
+                        )
+                        .unwrap_or_default()
+                    })
+                });
+            // 显示名：取首条 user message 的摘要，或用 session_id 前 8 位
+            let display_name = messages
+                .iter()
+                .find(|m| m.role == "user")
+                .and_then(|m| {
+                    m.content.first().and_then(|b| match b {
+                        crate::session::ContentBlock::Text { text } => {
+                            Some(text.chars().take(50).collect::<String>())
+                        }
+                        _ => None,
+                    })
+                })
+                .or_else(|| Some(session_id.chars().take(8).collect::<String>()));
+
+            sessions.push(crate::session::Session {
+                id: session_id,
+                path: rollout_path,
+                messages,
+                started_at,
+                display_name,
+                last_active,
+                project_path: Some(cwd),
+                agent_id: Some("codex".to_string()),
+            });
         }
+        // 按最后活跃时间降序排列
+        sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
         Ok(sessions)
     }
 
@@ -741,6 +768,7 @@ impl CodexAdapter {
                             display_name: Some(thread_name),
                             last_active,
                             project_path: Some(cwd),
+                            agent_id: Some("codex".to_string()),
                         });
                     }
                 }
@@ -874,6 +902,73 @@ fn parse_rollout_messages(path: &std::path::Path) -> Result<Vec<crate::session::
         });
     }
     Ok(messages)
+}
+
+/// v0.7.0：递归收集 sessions 目录下所有 rollout-*.jsonl 文件。
+fn collect_rollout_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return files;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(collect_rollout_files(&path));
+        } else if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with("rollout-") && n.ends_with(".jsonl"))
+            .unwrap_or(false)
+        {
+            files.push(path);
+        }
+    }
+    files
+}
+
+/// v0.7.0：读取 rollout 文件首行，提取 (cwd, session_id, started_at)。
+fn read_rollout_header(
+    path: &std::path::Path,
+) -> Option<(String, String, Option<chrono::DateTime<chrono::Utc>>)> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    use std::io::BufRead;
+    let first_line = reader.lines().next()?.ok()?;
+    let val: serde_json::Value = serde_json::from_str(&first_line).ok()?;
+    let payload = val.get("payload")?;
+    let cwd = payload.get("cwd").and_then(|v| v.as_str())?.to_string();
+    // session id 从 rollout 文件名提取（rollout-{timestamp}-{id}.jsonl）
+    let session_id = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|name| {
+            // rollout-2026-08-10T01-08-55-019fe77f-bb4f-7b52-97e6-2405442d98f3.jsonl
+            // id 是最后一个 - 后面、.jsonl 前面的 UUID 部分
+            let stem = name.strip_suffix(".jsonl")?;
+            // 找到第一个 UUID 格式的段（8-4-4-4-12）
+            let parts: Vec<&str> = stem.split('-').collect();
+            if parts.len() >= 5 {
+                let uuid_start = parts.len() - 5;
+                Some(parts[uuid_start..].join("-"))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            // fallback: 用 payload 的 threadId 或 rollout 文件名
+            payload
+                .get("thread_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| path.to_string_lossy().to_string())
+        });
+    // started_at 从 timestamp 字段或文件名时间戳提取
+    let started_at = val
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc));
+    Some((cwd, session_id, started_at))
 }
 
 fn now_ms() -> i64 {

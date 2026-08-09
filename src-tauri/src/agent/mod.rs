@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod adapters;
@@ -180,7 +180,6 @@ pub struct TransportBridgeStatus {
 
 pub struct AgentRegistry {
     agents: HashMap<String, Box<dyn AgentPlugin + Send + Sync>>,
-    active_id: RwLock<String>,
     health_cache: Arc<Mutex<HashMap<String, AgentHealth>>>,
 }
 
@@ -217,8 +216,8 @@ impl AgentRegistry {
     pub fn new() -> Self {
         let mut agents: HashMap<String, Box<dyn AgentPlugin + Send + Sync>> = HashMap::new();
         let claude_code = ClaudeCodeAgent::new();
-        let id = claude_code.info().id.clone();
-        agents.insert(id.clone(), Box::new(claude_code));
+        let claude_code_id = claude_code.info().id.clone();
+        agents.insert(claude_code_id, Box::new(claude_code));
 
         let codex = adapters::codex::CodexAdapter::new();
         let codex_id = codex.info().id.clone();
@@ -234,24 +233,21 @@ impl AgentRegistry {
 
         Self {
             agents,
-            active_id: RwLock::new(id),
             health_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub fn active(&self) -> &dyn AgentPlugin {
-        let active_id = self.active_id();
+    /// v0.7.0：全局 active agent 概念已移除（需求一：智能体切换去全局化）。
+    /// 各模块（会话/管理）按自身作用域选择 agent，通过 agent_id 入参显式指定；
+    /// 会话与智能体在 Session 层绑定。本 registry 仅负责插件解析，不再持有"当前选中"态。
+    pub fn require_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<&(dyn AgentPlugin + Send + Sync), String> {
         self.agents
-            .get(&active_id)
+            .get(agent_id)
             .map(|a| a.as_ref())
-            .expect("AgentRegistry: active_id references a non-existent agent — this is a bug")
-    }
-
-    pub fn active_id(&self) -> String {
-        self.active_id
-            .read()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone()
+            .ok_or_else(|| format!("Unknown agent id: {}", agent_id))
     }
 
     pub fn list_agents(&self) -> Vec<AgentInfo> {
@@ -332,18 +328,6 @@ impl AgentRegistry {
                 }
             })
             .collect()
-    }
-
-    pub fn set_active(&self, id: &str) -> Result<(), String> {
-        if self.agents.contains_key(id) {
-            *self
-                .active_id
-                .write()
-                .unwrap_or_else(|error| error.into_inner()) = id.to_string();
-            Ok(())
-        } else {
-            Err(format!("Agent not found: {}", id))
-        }
     }
 
     pub fn get(&self, id: &str) -> Option<&(dyn AgentPlugin + Send + Sync)> {
@@ -484,14 +468,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn active_agent_selection_is_shared_across_registry_owners() {
-        let registry = Arc::new(AgentRegistry::new());
-        let runtime_registry = registry.clone();
+    fn require_agent_resolves_registered_plugin() {
+        let registry = AgentRegistry::new();
 
-        registry.set_active("codex").unwrap();
+        // 已注册的 agent 能解析
+        let plugin = registry
+            .require_agent("codex")
+            .expect("codex should be registered");
+        assert_eq!(plugin.info().id, "codex");
 
-        assert_eq!(runtime_registry.active_id(), "codex");
-        assert_eq!(runtime_registry.active().info().id, "codex");
+        // 未注册的 agent 返回错误
+        assert!(registry.require_agent("no-such-agent").is_err());
     }
 
     #[test]

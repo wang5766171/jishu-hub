@@ -13,7 +13,8 @@ pub fn run(action: AgentAction, ctx: &ExecutionContext) -> Result<(), CliError> 
 
 fn list(ctx: &ExecutionContext) -> Result<(), CliError> {
     let registry = AgentRegistry::new();
-    let active_id = registry.active_id().to_string();
+    // v0.7.0：全局 active agent 概念已移除，CLI 列表不再标记 active。
+    let active_id: Option<String> = None;
 
     // Probe each agent so the version reflects the actually-installed CLI,
     // not the static placeholder in AgentInfo.version.
@@ -39,7 +40,7 @@ fn list(ctx: &ExecutionContext) -> Result<(), CliError> {
                 .expect("AgentStatus serializes to object");
             map.insert(
                 "active".into(),
-                serde_json::Value::Bool(status.id == active_id),
+                serde_json::Value::Bool(active_id.as_deref() == Some(status.id.as_str())),
             );
             writer.emit(&entry)?;
         }
@@ -48,7 +49,11 @@ fn list(ctx: &ExecutionContext) -> Result<(), CliError> {
 
     // Human-readable table
     for status in &statuses {
-        let marker = if status.id == active_id { "*" } else { " " };
+        let marker = if active_id.as_deref() == Some(status.id.as_str()) {
+            "*"
+        } else {
+            " "
+        };
         let version = status
             .health
             .version

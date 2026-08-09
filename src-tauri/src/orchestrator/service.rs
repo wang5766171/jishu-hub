@@ -196,9 +196,7 @@ impl TaskService {
         let store_arc = Arc::new(store);
         let runtime = Arc::new({
             let mut rt = match event_sink {
-                Some(sink) => {
-                    DefaultTaskAgentRuntime::with_event_sink(registry.clone(), sink)
-                }
+                Some(sink) => DefaultTaskAgentRuntime::with_event_sink(registry.clone(), sink),
                 None => DefaultTaskAgentRuntime::new(registry.clone()),
             };
             if let Some(register) = acp_register {
@@ -1702,9 +1700,7 @@ fn command_target_node_ids<'a>(
             .find(|edge| edge.edge_id == *edge_id)
             .map(|edge| vec![edge.target_node_id.as_str()])
             .unwrap_or_default(),
-        GraphCommand::GroupNodes { node_ids, .. } => {
-            node_ids.iter().map(String::as_str).collect()
-        }
+        GraphCommand::GroupNodes { node_ids, .. } => node_ids.iter().map(String::as_str).collect(),
         GraphCommand::AddNode { .. } | GraphCommand::SetGoal { .. } => Vec::new(),
     }
 }
@@ -2053,7 +2049,12 @@ mod tests {
 
         // 直接将 run 置为 Completed（完成态）。
         svc.store
-            .update_run_status(&run.run_id, &RunStatus::Completed, run.run_seq, Some(now_ms()))
+            .update_run_status(
+                &run.run_id,
+                &RunStatus::Completed,
+                run.run_seq,
+                Some(now_ms()),
+            )
             .unwrap();
         assert!(svc.get_run(&run.run_id).unwrap().status.is_terminal());
 

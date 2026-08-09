@@ -39,23 +39,27 @@ impl ChatState {
 pub async fn send_message(
     app: AppHandle,
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     project_path: String,
     session_id: Option<String>,
     message: String,
 ) -> Result<ChatSession, String> {
     log::info!(
-        "send_message: project={}, session={:?}, message_len={}",
+        "send_message: agent={}, project={}, session={:?}, message_len={}",
+        agent_id,
         project_path,
         session_id,
         message.len()
     );
 
-    let agent_id = {
+    // v0.7.0 需求一：agent_id 由前端按会话作用域传入，不再从全局 active 读取。
+    // 校验 agent_id 合法性（require_agent 返回错误时提前失败）。
+    {
         let s = state
             .lock()
             .map_err(|_| "App state lock poisoned".to_string())?;
-        s.registry.active_id().to_string()
-    };
+        s.registry.require_agent(&agent_id)?;
+    }
 
     if let Some(ref sid) = session_id {
         if let Some((acp, pid)) = existing_acp_session(&app, sid, &agent_id)? {

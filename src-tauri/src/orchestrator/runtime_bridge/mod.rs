@@ -104,8 +104,8 @@ pub trait TaskAgentRuntime: Send + Sync {
     /// 解析节点的 agent 绑定。
     ///
     /// `default_agent_id`：无 `locked_agent_id` 时的默认执行者
-    /// （= `TaskInstance.planner_agent_id`，即 jishu agent）。`None` 时回落到
-    /// registry 的 active_id。见 [`resolve_agent_assignment`]。
+    /// （= `TaskInstance.planner_agent_id`，即 jishu agent）。v0.7.0 起 `None`
+    /// 时不再回落到全局 active（已移除），保持候选原始顺序由约束筛选。
     fn resolve_agent(
         &self,
         node: &GraphNode,
@@ -160,8 +160,7 @@ pub type NodeEventSink = Arc<dyn Fn(&[NormalizedEvent], &str, &str) + Send + Syn
 /// never sees a `tauri` type — it only holds this `Arc<dyn Fn>`.
 ///
 /// Signature: `(resolved_session_id, agent_id, control)`.
-pub type NodeAcpRegister =
-    Arc<dyn Fn(&str, &str, crate::acp_runtime::AcpControl) + Send + Sync>;
+pub type NodeAcpRegister = Arc<dyn Fn(&str, &str, crate::acp_runtime::AcpControl) + Send + Sync>;
 
 pub struct DefaultTaskAgentRuntime {
     registry: Arc<AgentRegistry>,
@@ -278,16 +277,15 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                 // is what the frontend matches the viewed session against.
                 let sink = event_sink.clone();
                 let sink_agent_id = request.agent_id.clone();
-                let emit: AcpEventEmit = Arc::new(
-                    move |events: &[NormalizedEvent], session_id: &str| {
+                let emit: AcpEventEmit =
+                    Arc::new(move |events: &[NormalizedEvent], session_id: &str| {
                         if let Some(sink) = &sink {
                             sink(events, session_id, &sink_agent_id);
                         }
                         for event in events {
                             let _ = event_tx.send(event.clone());
                         }
-                    },
-                );
+                    });
 
                 let pending_session_id = request
                     .session_id
@@ -300,9 +298,8 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                 // and `live_controls` (populated just below) are set synchronously
                 // before the background loop can emit `session_resolved`, so the
                 // register hook always has a control to hand over.
-                let acp_slot: Arc<
-                    std::sync::Mutex<Option<crate::acp_runtime::AcpControl>>,
-                > = Arc::new(std::sync::Mutex::new(None));
+                let acp_slot: Arc<std::sync::Mutex<Option<crate::acp_runtime::AcpControl>>> =
+                    Arc::new(std::sync::Mutex::new(None));
                 let reg_slot = acp_slot.clone();
                 let reg_live = live_controls.clone();
                 let reg_invocation = invocation_id.clone();
@@ -310,8 +307,7 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                 let on_session_resolved = move || {
                     if let Some(reg) = &acp_register {
                         let control = {
-                            let from_slot =
-                                reg_slot.lock().ok().and_then(|g| g.clone());
+                            let from_slot = reg_slot.lock().ok().and_then(|g| g.clone());
                             from_slot.or_else(|| {
                                 reg_live
                                     .lock()
@@ -340,8 +336,7 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                     on_session_resolved,
                     |_sid| {},
                 );
-                *acp_slot.lock().map_err(|e| e.to_string())? =
-                    Some(acp_control.clone());
+                *acp_slot.lock().map_err(|e| e.to_string())? = Some(acp_control.clone());
 
                 // Register the control for mid-turn steering, then move a clone
                 // into the bridge. The original is removed when the bridge ends.
@@ -454,13 +449,11 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
 /// 2. `allowed_agent_ids` / `denied_agent_ids` 约束过滤
 /// 3. `default_agent_id`（= `TaskInstance.planner_agent_id`，即 jishu agent）——
 ///    **无锁定时的默认执行者**
-/// 4. 兜底 `registry.active_id()`
 ///
-/// 关于第 3 步（B3 项②）：此前无锁定时直接按 `active_id` 排序取首位，而 `active_id`
-/// 是「聊天页当前选中的智能体」这一 GUI 全局态，默认值还是 `claude-code`
-/// （`AgentRegistry::new()` 首个插入者）。这让任务节点该谁执行取决于用户在聊天页选了谁
-/// ——GUI 状态泄漏进编排语义，违反设计要求的「无 locked_agent_id → 回退
-/// planner_agent_id」。现改为显式传入默认执行者。
+/// v0.7.0：全局 active agent 概念已移除（需求一）。此前无锁定时兜底 `registry.active_id()`
+/// 的逻辑已删除——那会让任务节点该谁执行取决于用户在聊天页选了谁（GUI 状态泄漏进编排语义）。
+/// 现在无 default_agent_id 时保持 candidates 原始顺序，由后续 capability/锁定约束筛选。
+/// 调用方（engine.rs）应始终传入 default_agent_id。
 ///
 /// 注意：`default_agent_id` 会经 [`normalize_agent_id`] 归一（历史数据里
 /// `planner_agent_id` 可能是 `jishu_agent` 下划线形式）。
@@ -480,14 +473,18 @@ pub fn resolve_agent_assignment(
         .collect::<Vec<_>>();
 
     let mut candidates = registry.list_agents();
-    // 无显式默认时才回落到 active_id（GUI 当前选中态）。
-    let active_id = registry.active_id();
+    // v0.7.0：全局 active agent 已移除。无显式 default_agent_id 时不再回落到
+    // GUI 全局态（那会让任务节点该谁执行取决于用户在聊天页选了谁，GUI 状态泄漏进编排语义）。
+    // 现在仅按 default_agent_id 排序；无默认时 candidates 保持原始顺序，由后续
+    // capability/锁定约束筛选决定。调用方（engine.rs）应始终传入 default_agent_id
+    //（= TaskInstance.planner_agent_id，即 jishu agent）。
     let preferred = default_agent_id
         .map(normalize_agent_id)
         .filter(|id| registry.get(id).is_some())
-        .map(|id| id.to_string())
-        .unwrap_or(active_id);
-    candidates.sort_by_key(|agent| if agent.id == preferred { 0 } else { 1 });
+        .map(|id| id.to_string());
+    if let Some(ref preferred_id) = preferred {
+        candidates.sort_by_key(|agent| if &agent.id == preferred_id { 0 } else { 1 });
+    }
 
     if let Some(locked_agent_id) = constraint.and_then(|value| value.locked_agent_id.as_ref()) {
         candidates.retain(|agent| &agent.id == locked_agent_id);
@@ -887,9 +884,10 @@ mod tests {
         assert_eq!(assignment.agent_id, crate::agent::JISHU_SELF_AGENT_ID);
     }
 
-    /// 未知的默认 agent id 不应让解析失败，应静默回落到 active_id。
+    /// 未知的默认 agent id 不应让解析失败，应静默忽略并按候选顺序解析首个可用 agent。
+    /// v0.7.0：全局 active 已移除，不再有"回落到 active_id"语义。
     #[test]
-    fn unknown_default_agent_falls_back_to_active() {
+    fn unknown_default_agent_falls_back_to_first_candidate() {
         let registry = AgentRegistry::new();
         let node = dispatch_node();
 
@@ -897,7 +895,8 @@ mod tests {
             resolve_agent_assignment(&registry, &node, "implementer", Some("no-such-agent"))
                 .unwrap();
 
-        assert_eq!(assignment.agent_id, registry.active_id());
+        // 未知名被忽略后，按 candidates 原始顺序取首个满足 capability 的 agent。
+        assert!(registry.get(&assignment.agent_id).is_some());
     }
 
     #[test]

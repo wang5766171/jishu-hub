@@ -68,15 +68,16 @@ async fn scan_projects(
 #[tauri::command]
 fn add_project(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     path: String,
 ) -> Result<project::Project, String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
-        .active()
+        .require_agent(&agent_id)?
         .add_project(&path)
-        .ok_or_else(|| format!("No .claude directory found at: {}", path))
+        .ok_or_else(|| format!("No project directory found at: {}", path))
 }
 
 #[tauri::command]
@@ -87,17 +88,21 @@ fn remove_project(encoded_name: String) -> Result<(), String> {
 #[tauri::command]
 async fn list_sessions(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     encoded_name: String,
 ) -> Result<Vec<session::Session>, String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.active().list_sessions(&encoded_name)
+    s.registry
+        .require_agent(&agent_id)?
+        .list_sessions(&encoded_name)
 }
 
 #[tauri::command]
 async fn get_session_messages(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     session_id: String,
     encoded_name: String,
 ) -> Result<Vec<session::Message>, String> {
@@ -105,32 +110,35 @@ async fn get_session_messages(
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
-        .active()
+        .require_agent(&agent_id)?
         .get_session_messages(&session_id, &encoded_name)
 }
 
-/// Persist interaction Q&A pairs through the active agent's session adapter so
+/// Persist interaction Q&A pairs through the agent's session adapter so
 /// they survive app restarts without the IPC layer knowing the native store.
 #[tauri::command]
 async fn persist_interaction_blocks(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     session_path: String,
     session_id: Option<String>,
     encoded_name: Option<String>,
     interactions: Vec<serde_json::Value>,
 ) -> Result<(), String> {
-    log::info!("persist_interaction_blocks called: session_path='{}', session_id={:?}, encoded_name={:?}, count={}",
-        session_path, session_id, encoded_name, interactions.len());
+    log::info!("persist_interaction_blocks called: agent={}, session_path='{}', session_id={:?}, encoded_name={:?}, count={}",
+        agent_id, session_path, session_id, encoded_name, interactions.len());
 
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.active().persist_interaction_blocks(
-        (!session_path.trim().is_empty()).then_some(session_path.as_str()),
-        session_id.as_deref(),
-        encoded_name.as_deref(),
-        interactions,
-    )
+    s.registry
+        .require_agent(&agent_id)?
+        .persist_interaction_blocks(
+            (!session_path.trim().is_empty()).then_some(session_path.as_str()),
+            session_id.as_deref(),
+            encoded_name.as_deref(),
+            interactions,
+        )
 }
 
 /// Persist the in-progress assistant text/thinking of a CANCELLED turn so it
@@ -139,6 +147,7 @@ async fn persist_interaction_blocks(
 #[tauri::command]
 async fn persist_partial_assistant(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     session_path: String,
     session_id: Option<String>,
     encoded_name: Option<String>,
@@ -148,13 +157,15 @@ async fn persist_partial_assistant(
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.active().persist_partial_assistant(
-        (!session_path.trim().is_empty()).then_some(session_path.as_str()),
-        session_id.as_deref(),
-        encoded_name.as_deref(),
-        &text,
-        &thinking,
-    )
+    s.registry
+        .require_agent(&agent_id)?
+        .persist_partial_assistant(
+            (!session_path.trim().is_empty()).then_some(session_path.as_str()),
+            session_id.as_deref(),
+            encoded_name.as_deref(),
+            &text,
+            &thinking,
+        )
 }
 
 #[tauri::command]
@@ -200,61 +211,67 @@ fn delete_session_name(session_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn load_config(state: tauri::State<'_, Mutex<AppState>>) -> Result<serde_json::Value, String> {
+fn load_config(
+    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
+) -> Result<serde_json::Value, String> {
     // Each adapter owns its typed config surface. The frontend decides
     // which command to call from AgentStatus.config_surface.
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.active().load_config()
+    s.registry.require_agent(&agent_id)?.load_config()
 }
 
-/// Read the active agent's model store config (routes through adapter).
+/// Read the agent's model store config (routes through adapter).
 #[tauri::command]
 fn get_models_config(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
 ) -> Result<serde_json::Value, String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    let agent = s.registry.active();
+    let agent = s.registry.require_agent(&agent_id)?;
     if !matches!(
         agent.config_surface(),
         agent::ConfigSurface::ModelStore { .. }
     ) {
-        return Err("Active agent does not support model store".to_string());
+        return Err("Agent does not support model store".to_string());
     }
     agent.load_model_store()
 }
 
-/// Write the active agent's model store config (routes through adapter).
+/// Write the agent's model store config (routes through adapter).
 #[tauri::command]
 fn set_models_config(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     config: serde_json::Value,
 ) -> Result<(), String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    let agent = s.registry.active();
+    let agent = s.registry.require_agent(&agent_id)?;
     if !matches!(
         agent.config_surface(),
         agent::ConfigSurface::ModelStore { .. }
     ) {
-        return Err("Active agent does not support model store".to_string());
+        return Err("Agent does not support model store".to_string());
     }
     agent.save_model_store(&config)
 }
 
-/// Read the active agent's active model selection (routes through adapter).
+/// Read the agent's active model selection (routes through adapter).
 #[tauri::command]
 fn get_active(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
 ) -> Result<Option<serde_json::Value>, String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    let agent = s.registry.active();
+    let agent = s.registry.require_agent(&agent_id)?;
     if !matches!(
         agent.config_surface(),
         agent::ConfigSurface::ModelStore { .. }
@@ -268,17 +285,18 @@ fn get_active(
 #[tauri::command]
 fn set_active(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     active: Option<serde_json::Value>,
 ) -> Result<(), String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    let agent = s.registry.active();
+    let agent = s.registry.require_agent(&agent_id)?;
     if !matches!(
         agent.config_surface(),
         agent::ConfigSurface::ModelStore { .. }
     ) {
-        return Err("Active agent does not support model store".to_string());
+        return Err("Agent does not support model store".to_string());
     }
     agent.set_active_model(active.as_ref())
 }
@@ -290,70 +308,80 @@ struct RawConfigInfo {
 }
 
 #[tauri::command]
-fn load_raw_config(state: tauri::State<'_, Mutex<AppState>>) -> Result<RawConfigInfo, String> {
+fn load_raw_config(
+    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
+) -> Result<RawConfigInfo, String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    let active = s.registry.active();
-    let format = active
+    let agent = s.registry.require_agent(&agent_id)?;
+    let format = agent
         .config_format()
         .unwrap_or_else(|| "unknown".to_string());
-    let content = active.load_raw_config()?;
+    let content = agent.load_raw_config()?;
     Ok(RawConfigInfo { content, format })
 }
 
 #[tauri::command]
 fn save_raw_config(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     content: String,
 ) -> Result<(), String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.active().save_raw_config(&content)
+    s.registry
+        .require_agent(&agent_id)?
+        .save_raw_config(&content)
 }
 
 #[tauri::command]
 async fn load_history(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
 ) -> Result<Vec<history::HistoryEntry>, String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    Ok(s.registry.active().load_history())
+    Ok(s.registry.require_agent(&agent_id)?.load_history())
 }
 
 #[tauri::command]
 fn save_config(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     config: serde_json::Value,
 ) -> Result<(), String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.active().save_config(&config)
+    s.registry.require_agent(&agent_id)?.save_config(&config)
 }
 
 #[tauri::command]
 fn list_backups(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
 ) -> Result<Vec<config::BackupEntry>, String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.active().list_backups()
+    s.registry.require_agent(&agent_id)?.list_backups()
 }
 
 #[tauri::command]
 fn restore_backup(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     backup_path: String,
 ) -> Result<(), String> {
     {
         let s = state
             .lock()
             .map_err(|_| "App state lock poisoned".to_string())?;
-        let backups = s.registry.active().list_backups()?;
+        let backups = s.registry.require_agent(&agent_id)?.list_backups()?;
         let valid = backups.iter().any(|b| b.path == backup_path);
         if !valid {
             return Err("Backup path not found in backup list".to_string());
@@ -362,7 +390,9 @@ fn restore_backup(
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.active().restore_backup(&backup_path)
+    s.registry
+        .require_agent(&agent_id)?
+        .restore_backup(&backup_path)
 }
 
 #[tauri::command]
@@ -445,11 +475,12 @@ fn list_custom_commands() -> Result<Vec<command::CustomCommand>, String> {
 #[tauri::command]
 fn agent_command_presets(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
 ) -> Result<Vec<agent::command_config::AgentCommandPreset>, String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    Ok(s.registry.active().built_in_commands())
+    Ok(s.registry.require_agent(&agent_id)?.built_in_commands())
 }
 
 #[tauri::command]
@@ -465,6 +496,7 @@ fn delete_custom_command(id: String) -> Result<(), String> {
 #[tauri::command]
 fn open_in_terminal(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     project_path: String,
     resume_session_id: Option<String>,
 ) -> Result<u32, String> {
@@ -477,7 +509,7 @@ fn open_in_terminal(
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
-        .active()
+        .require_agent(&agent_id)?
         .open_in_terminal(&project_path, resume_session_id.as_deref())
         .map_err(|e| e.to_string())
 }
@@ -488,15 +520,9 @@ fn register_terminal_session(
     session_id: String,
     pid: u32,
     project_path: String,
-    agent_id: Option<String>,
+    agent_id: String,
 ) -> Result<(), String> {
-    let fallback_agent_id = {
-        let s = state
-            .lock()
-            .map_err(|_| "App state lock poisoned".to_string())?;
-        s.registry.active_id().to_string()
-    };
-    let agent_id = agent_id.unwrap_or(fallback_agent_id);
+    // v0.7.0：agent_id 改为必填入参（前端从会话作用域传入），不再从全局 active 兜底。
     let window_id = agent::command_config::terminal_window_id(&agent_id, &session_id);
     hub::register_terminal_session(session_id, pid, project_path, agent_id, window_id)
         .map_err(|e| e.to_string())
@@ -520,12 +546,15 @@ fn cleanup_dead_sessions() -> Result<u32, String> {
 #[tauri::command]
 fn init_project(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     project_path: String,
 ) -> Result<bool, String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.active().init_project(&project_path)
+    s.registry
+        .require_agent(&agent_id)?
+        .init_project(&project_path)
 }
 
 #[tauri::command]
@@ -536,30 +565,35 @@ fn run_in_terminal(command_str: String, cwd: Option<String>) -> Result<bool, Str
 #[tauri::command]
 fn load_project_settings(
     state: tauri::State<'_, Mutex<AppState>>,
-    project_path: String,
-) -> Result<project_config::ProjectSettings, String> {
-    let s = state
-        .lock()
-        .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.active().load_project_settings(&project_path)
-}
-
-#[tauri::command]
-fn load_project_settings_local(
-    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     project_path: String,
 ) -> Result<project_config::ProjectSettings, String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
-        .active()
+        .require_agent(&agent_id)?
+        .load_project_settings(&project_path)
+}
+
+#[tauri::command]
+fn load_project_settings_local(
+    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
+    project_path: String,
+) -> Result<project_config::ProjectSettings, String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
+    s.registry
+        .require_agent(&agent_id)?
         .load_project_settings_local(&project_path)
 }
 
 #[tauri::command]
 fn save_project_settings(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     project_path: String,
     settings: project_config::ProjectSettings,
 ) -> Result<(), String> {
@@ -567,13 +601,14 @@ fn save_project_settings(
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
-        .active()
+        .require_agent(&agent_id)?
         .save_project_settings(&project_path, &settings)
 }
 
 #[tauri::command]
 fn save_project_settings_local(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     project_path: String,
     settings: project_config::ProjectSettings,
 ) -> Result<(), String> {
@@ -581,19 +616,22 @@ fn save_project_settings_local(
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
-        .active()
+        .require_agent(&agent_id)?
         .save_project_settings_local(&project_path, &settings)
 }
 
 #[tauri::command]
 fn load_claude_md(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     project_path: String,
 ) -> Result<Option<String>, String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.active().load_claude_md(&project_path)
+    s.registry
+        .require_agent(&agent_id)?
+        .load_claude_md(&project_path)
 }
 
 #[tauri::command]
@@ -609,13 +647,15 @@ fn save_project_meta(encoded_name: String, meta: hub::ProjectMeta) -> Result<(),
 #[tauri::command]
 fn get_level1_dir_cmd(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     encoded_name: String,
 ) -> Result<Option<String>, String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    let decoded = s.registry.active().decode_project_path(&encoded_name);
-    Ok(s.registry.active().get_level1_dir(&decoded))
+    let agent = s.registry.require_agent(&agent_id)?;
+    let decoded = agent.decode_project_path(&encoded_name);
+    Ok(agent.get_level1_dir(&decoded))
 }
 
 #[tauri::command]
@@ -659,55 +699,66 @@ fn get_merged_secondaries(primary: String) -> Result<Vec<String>, String> {
 #[tauri::command]
 fn list_config_templates(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
 ) -> Result<Vec<hub::ConfigTemplate>, String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    Ok(s.registry.active().config_templates())
+    Ok(s.registry.require_agent(&agent_id)?.config_templates())
 }
 
 #[tauri::command]
-fn list_presets(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<hub::Preset>, String> {
-    let s = state
+fn list_presets(
+    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
+) -> Result<Vec<hub::Preset>, String> {
+    let _s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    let agent_id = s.registry.active_id().to_string();
     hub::list_presets(&agent_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn save_preset(
     state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
     preset: hub::Preset,
 ) -> Result<(), String> {
-    let s = state
+    let _s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    let agent_id = s.registry.active_id().to_string();
     hub::save_preset(&agent_id, preset).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn delete_preset(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
-    let s = state
+fn delete_preset(
+    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
+    id: String,
+) -> Result<(), String> {
+    let _s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    let agent_id = s.registry.active_id().to_string();
     hub::delete_preset(&agent_id, &id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn apply_preset(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
+fn apply_preset(
+    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
+    id: String,
+) -> Result<(), String> {
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    let agent_id = s.registry.active_id().to_string();
     let presets = hub::list_presets(&agent_id).map_err(|e| e.to_string())?;
     let preset = presets
         .into_iter()
         .find(|p| p.id == id)
         .ok_or("Preset not found")?;
-    s.registry.active().save_config(&preset.config)
+    s.registry
+        .require_agent(&agent_id)?
+        .save_config(&preset.config)
 }
 
 #[tauri::command]
@@ -718,23 +769,6 @@ fn agent_list_statuses(
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
     Ok(s.registry.list_agent_statuses())
-}
-
-#[tauri::command]
-fn agent_set_active(state: tauri::State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
-    let mut s = state
-        .lock()
-        .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.set_active(&id)?;
-    hub::save_active_agent_id(&id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn agent_get_active(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
-    let s = state
-        .lock()
-        .map_err(|_| "App state lock poisoned".to_string())?;
-    Ok(s.registry.active_id().to_string())
 }
 
 #[tauri::command]
@@ -2122,9 +2156,7 @@ fn orchestrator_list_node_sessions(
         .task_service
         .lock()
         .map_err(|e| task_ipc_internal(e.to_string()))?;
-    task_service
-        .list_node_sessions(&run_id)
-        .map_err(Into::into)
+    task_service.list_node_sessions(&run_id).map_err(Into::into)
 }
 
 /// 列出某节点所有 attempt 的派发 prompt（三角色识别用）。
@@ -2886,9 +2918,9 @@ pub fn run() {
             // 部署 session-context 扩展（session_id 注入 system prompt，取代 user message 注入）
             task_plan::ensure_session_context_extension();
             let registry = Arc::new(agent::AgentRegistry::new());
-            if let Ok(Some(active_id)) = hub::load_active_agent_id() {
-                let _ = registry.set_active(&active_id);
-            }
+            // v0.7.0：全局 active agent 已移除（需求一：智能体切换去全局化）。
+            // 各模块按自身作用域选择 agent，通过 agent_id 入参显式指定；
+            // 会话与智能体在 Session 层绑定。启动时不再加载/设置全局 active。
             // Mirror orchestrator node-agent events onto the same `agent-event`
             // channel the chat path uses, so a task node session streams live in
             // the UI through the identical streamStore pipeline instead of a
@@ -2921,34 +2953,33 @@ pub fn run() {
                 // answering an agent's mid-turn question during the execution
                 // phase failed with "No active ACP session found".
                 let reg_app = app.handle().clone();
-                let acp_register: crate::orchestrator::runtime_bridge::NodeAcpRegister =
-                    Arc::new(
-                        move |session_id: &str,
-                              agent_id: &str,
-                              control: crate::acp_runtime::AcpControl| {
-                            if let Ok(mut s) =
-                                reg_app.state::<std::sync::Mutex<chat::ChatState>>().lock()
-                            {
-                                match s.processes.get_mut(session_id) {
-                                    Some(proc) if proc.acp.is_none() => {
-                                        proc.acp = Some(control);
-                                    }
-                                    None => {
-                                        s.processes.insert(
-                                            session_id.to_string(),
-                                            chat::ChatProcess {
-                                                agent_id: agent_id.to_string(),
-                                                process_id: 0,
-                                                stdin: None,
-                                                acp: Some(control),
-                                            },
-                                        );
-                                    }
-                                    _ => {}
+                let acp_register: crate::orchestrator::runtime_bridge::NodeAcpRegister = Arc::new(
+                    move |session_id: &str,
+                          agent_id: &str,
+                          control: crate::acp_runtime::AcpControl| {
+                        if let Ok(mut s) =
+                            reg_app.state::<std::sync::Mutex<chat::ChatState>>().lock()
+                        {
+                            match s.processes.get_mut(session_id) {
+                                Some(proc) if proc.acp.is_none() => {
+                                    proc.acp = Some(control);
                                 }
+                                None => {
+                                    s.processes.insert(
+                                        session_id.to_string(),
+                                        chat::ChatProcess {
+                                            agent_id: agent_id.to_string(),
+                                            process_id: 0,
+                                            stdin: None,
+                                            acp: Some(control),
+                                        },
+                                    );
+                                }
+                                _ => {}
                             }
-                        },
-                    );
+                        }
+                    },
+                );
                 std::sync::Mutex::new(
                     crate::orchestrator::TaskService::open_default_with_event_sink(
                         registry.clone(),
@@ -3041,8 +3072,6 @@ pub fn run() {
             apply_preset,
             get_app_dir,
             agent_list_statuses,
-            agent_set_active,
-            agent_get_active,
             agent_refresh_health,
             check_prerequisite,
             install_agent_command,

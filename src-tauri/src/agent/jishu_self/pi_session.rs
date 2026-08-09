@@ -674,6 +674,7 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
         display_name,
         last_active: file_modified_utc(path),
         project_path,
+        agent_id: Some(crate::agent::JISHU_SELF_AGENT_ID.to_string()),
     })
 }
 
@@ -1106,10 +1107,9 @@ mod tests {
 
         // 「需求讨论」分隔线作为独立块出现在用户消息之后（并入紧随的助手轮）。
         assert!(
-            session.messages.iter().any(|m| m
-                .content
-                .iter()
-                .any(|b| matches!(b, ContentBlock::PhaseDivider { phase, .. } if phase == "discuss"))),
+            session.messages.iter().any(|m| m.content.iter().any(
+                |b| matches!(b, ContentBlock::PhaseDivider { phase, .. } if phase == "discuss")
+            )),
             "应重建 discuss 分隔线"
         );
 
@@ -1118,9 +1118,9 @@ mod tests {
             .messages
             .iter()
             .find(|m| {
-                m.content.iter().any(|b| {
-                    matches!(b, ContentBlock::PhaseDivider { phase, .. } if phase == "plan")
-                })
+                m.content.iter().any(
+                    |b| matches!(b, ContentBlock::PhaseDivider { phase, .. } if phase == "plan"),
+                )
             })
             .expect("应重建 plan 分隔线消息");
         assert!(
@@ -1284,9 +1284,9 @@ mod tests {
             .messages
             .iter()
             .find(|m| {
-                m.content
-                    .iter()
-                    .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("候选需求已提交")))
+                m.content.iter().any(
+                    |b| matches!(b, ContentBlock::Text { text } if text.contains("候选需求已提交")),
+                )
             })
             .expect("应存在助手锚点消息");
         assert!(
@@ -1302,9 +1302,9 @@ mod tests {
             .messages
             .iter()
             .find(|m| {
-                m.content
-                    .iter()
-                    .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("用户的回答")))
+                m.content.iter().any(
+                    |b| matches!(b, ContentBlock::Text { text } if text.contains("用户的回答")),
+                )
             })
             .expect("应存在用户回答消息");
         assert!(
