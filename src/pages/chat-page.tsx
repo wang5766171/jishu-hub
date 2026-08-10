@@ -2795,13 +2795,13 @@ export function ChatPage({
                 {taskSelectedNodeNotStarted ? (
                   // 选中的步骤还没执行过——直接说明，而不是把上一段会话继续摆在这里。
                   <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4 py-8 text-center text-[12px] text-muted-foreground">
-                    {t("task.execution.nodeNotStarted", "该步骤尚未开始执行，执行后会在此显示它的会话。")}
+                    {t("task.execution.nodeNotStarted")}
                   </div>
                 ) : taskSelectedNodeStarting ? (
                   // v0.7.0 需求二-问题3：节点正在执行但会话尚未建立（session_id 待 Pi RPC 回填）。
                   // 显示占位而非主流程会话，避免节点会话和主流程混在一起。
                   <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4 py-8 text-center text-[12px] text-muted-foreground">
-                    {t("task.execution.nodeStarting", "该步骤正在执行，正在建立会话，建立后在此显示会话内容。")}
+                    {t("task.execution.nodeStarting")}
                   </div>
                 ) : selectedSession && selectedSession !== "new" ? (
                   <MessageView

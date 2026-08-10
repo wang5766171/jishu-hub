@@ -679,7 +679,8 @@
       "agentsUnavailable": "智能体列表不可用，请检查智能体配置",
       "nodeStatus": "状态",
       "attempt": "尝试",
-      "nodeNotStarted": "该步骤尚未开始执行，执行后会在此显示它的会话。"
+      "nodeNotStarted": "该步骤尚未开始执行，执行后会在此显示它的会话。",
+      "nodeStarting": "该步骤正在执行，正在建立会话，建立后在此显示会话内容。"
     },
     "event": {
       "runStarted": "我已经开始执行这个流程（共 {{count}} 个步骤），会逐个驱动并监控每个节点的执行。",

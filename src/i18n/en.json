@@ -681,7 +681,8 @@
       "agentsUnavailable": "Agent list unavailable — check agent configuration",
       "nodeStatus": "Status",
       "attempt": "Attempt",
-      "nodeNotStarted": "This step has not started yet — its session will appear here once it runs."
+      "nodeNotStarted": "This step has not started yet — its session will appear here once it runs.",
+      "nodeStarting": "Step is running: setting up the session, content will appear here once ready."
     },
     "event": {
       "runStarted": "I have started executing this flow ({{count}} steps in total). I will drive and monitor each node's execution.",
