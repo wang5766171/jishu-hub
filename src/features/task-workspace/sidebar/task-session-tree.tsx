@@ -126,18 +126,18 @@ const TaskRow = memo(function TaskRow({
             type="button"
             onClick={() => onSelectTask(task)}
             className={cn(
-              "group flex w-full items-center gap-1.5 border-b border-border/10 py-2 pl-2.5 pr-2 text-xs transition-fast",
+              // 与常规会话项对齐：pl-5(1.25rem) + gap-3，图标 h-3 w-3，避免整体右移。
+              "group flex w-full items-center gap-3 border-b border-border/10 py-2 pl-5 pr-2 text-xs transition-fast",
               isActive
                 ? "bg-primary/15 text-foreground font-medium"
                 : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
             )}
           >
-            <span className="h-5 w-5 shrink-0" />
-            <MessageSquare className="h-3.5 w-3.5 shrink-0 text-[var(--icon-message)]" />
-            <span className="min-w-0 flex-1 truncate text-left leading-none">
+            <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
+            <span className="min-w-0 flex-1 truncate text-left leading-none pt-[1px]">
               {task.title}
             </span>
-            <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium text-primary">
+            <span className="shrink-0 rounded-full bg-primary/10 px-1 py-0.5 text-[9px] font-medium leading-none text-primary">
               {phase}
             </span>
             {/* 展开/折叠箭头（移到标题右侧，仅有节点时显示） */}
@@ -155,16 +155,16 @@ const TaskRow = memo(function TaskRow({
                     setExpanded((v) => !v);
                   }
                 }}
-                className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+                className="flex h-3.5 w-3.5 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground/70 hover:bg-accent hover:text-foreground"
               >
                 {expanded ? (
-                  <ChevronDown className="size-3.5" />
+                  <ChevronDown className="size-3" />
                 ) : (
-                  <ChevronRight className="size-3.5" />
+                  <ChevronRight className="size-3" />
                 )}
               </span>
             ) : (
-              <span className="h-5 w-5 shrink-0" />
+              <span className="h-3.5 w-3.5 shrink-0" />
             )}
           </button>
 
@@ -191,14 +191,18 @@ const TaskRow = memo(function TaskRow({
                       onSelectNode(task, node);
                     }}
                     className={cn(
-                      "flex w-full items-center gap-2 py-1.5 pl-9 pr-2 text-[11px] transition-fast",
+                      // 字体与常规/任务会话项统一为 text-xs；图标走缩放容器，
+                      // 与上方 MessageSquare(h-3 w-3) 视觉大小一致。
+                      "flex w-full items-center gap-2 py-1.5 pl-7 pr-2 text-xs transition-fast",
                       isNodeActive
                         ? "bg-primary/5 font-medium text-foreground"
                         : "text-muted-foreground/80 hover:bg-accent/30 hover:text-foreground",
                     )}
                   >
-                    <StepStatusIcon status={node.status as never} />
-                    <span className="min-w-0 flex-1 truncate text-left">{title}</span>
+                    <span className="inline-flex shrink-0 scale-[0.8]">
+                      <StepStatusIcon status={node.status as never} />
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-left leading-none pt-[1px]">{title}</span>
                     {agentName && (
                       <span className="shrink-0 truncate text-[9px] text-muted-foreground/60">
                         {agentName}
