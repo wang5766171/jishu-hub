@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, memo } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { FileText } from "lucide-react";
+import { ImageViewer } from "./image-viewer";
 
 export interface FileRef {
   label: string;
@@ -92,6 +93,7 @@ export function clearImageCache() {
 export const InlineImageDisplay = memo(function InlineImageDisplay({ path }: { path: string }) {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [error, setError] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -113,11 +115,16 @@ export const InlineImageDisplay = memo(function InlineImageDisplay({ path }: { p
   }
 
   return (
-    <img
-      src={dataUrl}
-      className="max-h-[120px] rounded cursor-pointer hover:opacity-80 transition-opacity"
-      onClick={() => window.open(dataUrl, "_blank")}
-    />
+    <>
+      <img
+        src={dataUrl}
+        className="max-h-[120px] rounded cursor-pointer hover:opacity-80 transition-opacity"
+        onClick={() => setPreviewing(true)}
+      />
+      {previewing && (
+        <ImageViewer src={dataUrl} onClose={() => setPreviewing(false)} />
+      )}
+    </>
   );
 });
 
