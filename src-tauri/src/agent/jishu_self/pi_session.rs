@@ -601,7 +601,12 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
                     .and_then(parse_rfc3339_millis);
                 if let Some(message) = parse_pi_message(value.get("message")?, entry_timestamp) {
                     if display_name.is_none() && message.role == "user" {
-                        display_name = first_text(&message).map(smart_summary);
+                        // 剥离 [JISHU-PROMT:] 系统内部契约标记后再取摘要；
+                        // 剥离后为空（纯系统提示词）则跳过，display_name 继续找下一条 user 消息。
+                        display_name = first_text(&message)
+                            .map(|t| strip_jishu_promt(&t))
+                            .filter(|t| !t.trim().is_empty())
+                            .map(smart_summary);
                     }
                     let is_launch = is_task_launch_message(&message);
                     messages.push(message);
@@ -835,6 +840,34 @@ fn first_text(message: &crate::session::Message) -> Option<String> {
     })
 }
 
+/// 剥离 `[JISHU-PROMT:开始]...[JISHU-PROMT:结束]` 配对块标记及其包裹的
+/// 系统内部提示词（Task Orchestrator 执行契约）。
+///
+/// 该标记由 orchestrator daemon 在节点执行时注入到 user 消息前
+///（见 `engine.rs::agent_prompt_with_policy`），仅是给 agent 的内部契约，
+/// 不应出现在会话标题等面向用户的摘要里。纯字符串实现，避免引入 regex 依赖。
+fn strip_jishu_promt(text: &str) -> String {
+    const START: &str = "[JISHU-PROMT:开始]";
+    const END: &str = "[JISHU-PROMT:结束]";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start_idx) = rest.find(START) {
+        out.push_str(&rest[..start_idx]);
+        let after_start = &rest[start_idx + START.len()..];
+        match after_start.find(END) {
+            Some(end_idx) => {
+                rest = &after_start[end_idx + END.len()..];
+            }
+            None => {
+                // 未配对的开始标记（异常）：丢弃其后内容，跳出循环。
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn smart_summary(text: String) -> String {
     let text = text.trim();
     let first = text
@@ -1013,6 +1046,30 @@ mod tests {
                 r"C:\Users\tester\.jishu-agent\sessions\--D--MyCodes-unified-auth-system--"
             )
         );
+    }
+
+    #[test]
+    fn strip_jishu_promt_removes_paired_block() {
+        // 含执行契约块的完整消息：剥离后应保留用户真实指令。
+        let raw = "[JISHU-PROMT:开始]\n\
+Task Orchestrator execution contract:\n\
+- read_files: true\n\
+- write_files: false\n\
+[JISHU-PROMT:结束]\n\n请帮我实现登录页面";
+        assert_eq!(strip_jishu_promt(raw).trim(), "请帮我实现登录页面");
+    }
+
+    #[test]
+    fn strip_jishu_promt_no_block_untouched() {
+        // 无标记的普通文本应原样返回。
+        assert_eq!(strip_jishu_promt("登录 Demo 页面"), "登录 Demo 页面");
+    }
+
+    #[test]
+    fn strip_jishu_promt_pure_block_becomes_empty() {
+        // 纯系统提示词（仅含配对块）剥离后为空。
+        let raw = "[JISHU-PROMT:开始]\ncontract\n[JISHU-PROMT:结束]";
+        assert_eq!(strip_jishu_promt(raw).trim(), "");
     }
 
     #[test]
