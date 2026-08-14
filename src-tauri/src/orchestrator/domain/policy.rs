@@ -121,7 +121,7 @@ impl RetryPolicy {
 ///
 /// Default grants file read/write: most executable agent nodes need to read and
 /// modify files to do their work, and a node that gets the default must not be
-/// left unable to act (see [`crate::orchestrator::daemon::engine::agent_prompt_with_policy`],
+/// left unable to act (see [`crate::orchestrator::daemon::engine::execute::agent_prompt_with_policy`],
 /// which injects these flags as a hard execution contract). A review-only node
 /// that must not write should explicitly set `can_write_files: false`. Command,
 /// network, and deploy stay opt-in because they are higher risk.
