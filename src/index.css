@@ -2,6 +2,18 @@
 @source "./src";
 @source "../index.html";
 
+/* 把 Tailwind 的 dark: variant 绑定到应用的 data-theme 机制（取代默认的
+   @media (prefers-color-scheme: dark)）。此前缺失该声明，导致「应用内切到
+   暗色（data-theme="dark"）但操作系统为亮色」时，所有 dark: 工具类不生效，
+   出现浅色文字落在浅色背景上看不清的问题（v0.7.2 需求 3）。
+   :where() 保持零特异性，与 Tailwind 默认 variant 的特异性行为一致。 */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* v0.7.2 需求 6：colorful 主题专用 variant。让"彩色"只在 data-theme="colorful" 生效，
+   light 主题用灰白默认，dark 用暗色——避免 light/colorful 因都"非 dark"而被一起命中。
+   :where() 保持零特异性，与 dark variant 行为一致。 */
+@custom-variant colorful (&:where([data-theme="colorful"], [data-theme="colorful"] *));
+
 /* Fix dark mode issue for native select dropdowns */
 select option {
   background-color: var(--color-background);

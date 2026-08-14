@@ -40,9 +40,9 @@ export function ExecutionStartPrompt({
 
   return (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4 py-2">
-      <div className="rounded-xl border border-emerald-200/70 bg-emerald-50/60 p-4 dark:border-emerald-900/60 dark:bg-emerald-950/30">
+      <div className="rounded-xl border border-border bg-muted/60 p-4 colorful:border-emerald-200/70 colorful:bg-emerald-50/60 dark:border-emerald-900/60 dark:bg-emerald-950/30">
         <div className="flex items-start gap-2.5">
-          <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+          <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground colorful:bg-emerald-500/15 colorful:text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400">
             <Sparkles className="h-3.5 w-3.5" />
           </span>
           <div className="min-w-0 flex-1">

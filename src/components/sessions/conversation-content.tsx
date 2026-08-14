@@ -82,30 +82,32 @@ export function renderContentBlock(block: ContentBlock): React.ReactNode {
 
 export function PhaseDivider({ phase, title }: { phase: string; title: string }) {
   const theme = (() => {
+    // v0.7.2 需求 6：浅色主题下阶段分割线改灰白基调（bg/text/border/shadow 用 muted），
+    // 仅保留 dot 的 phase 颜色做语义区分；暗色（dark:*）保持不变。
     switch (phase) {
       case "discuss":
         return {
-          bg: "bg-indigo-50/80 dark:bg-indigo-950/40",
-          text: "text-indigo-600 dark:text-indigo-400",
-          border: "border-indigo-200/60 dark:border-indigo-900/60",
+          bg: "bg-muted/80 colorful:bg-indigo-50/80 dark:bg-indigo-950/40",
+          text: "text-muted-foreground colorful:text-indigo-600 dark:text-indigo-400",
+          border: "border-border colorful:border-indigo-200/60 dark:border-indigo-900/60",
           dot: "bg-indigo-500",
-          shadow: "shadow-sm shadow-indigo-100/50 dark:shadow-none"
+          shadow: "colorful:shadow-sm colorful:shadow-indigo-100/50 dark:shadow-none"
         };
       case "plan":
         return {
-          bg: "bg-amber-50/80 dark:bg-amber-950/40",
-          text: "text-amber-600 dark:text-amber-400",
-          border: "border-amber-200/60 dark:border-amber-900/60",
+          bg: "bg-muted/80 colorful:bg-amber-50/80 dark:bg-amber-950/40",
+          text: "text-muted-foreground colorful:text-amber-600 dark:text-amber-400",
+          border: "border-border colorful:border-amber-200/60 dark:border-amber-900/60",
           dot: "bg-amber-500",
-          shadow: "shadow-sm shadow-amber-100/50 dark:shadow-none"
+          shadow: "colorful:shadow-sm colorful:shadow-amber-100/50 dark:shadow-none"
         };
       case "execute":
         return {
-          bg: "bg-emerald-50/80 dark:bg-emerald-950/40",
-          text: "text-emerald-600 dark:text-emerald-400",
-          border: "border-emerald-200/60 dark:border-emerald-900/60",
+          bg: "bg-muted/80 colorful:bg-emerald-50/80 dark:bg-emerald-950/40",
+          text: "text-muted-foreground colorful:text-emerald-600 dark:text-emerald-400",
+          border: "border-border colorful:border-emerald-200/60 dark:border-emerald-900/60",
           dot: "bg-emerald-500",
-          shadow: "shadow-sm shadow-emerald-100/50 dark:shadow-none"
+          shadow: "colorful:shadow-sm colorful:shadow-emerald-100/50 dark:shadow-none"
         };
       default:
         return {
