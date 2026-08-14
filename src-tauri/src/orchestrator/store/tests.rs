@@ -1,8 +1,6 @@
 use super::*;
 use crate::agent::normalized::InteractionOption;
-use crate::orchestrator::domain::graph::{
-    EdgeKind, GraphEdge, GraphNode, GraphSnapshot, NodeKind,
-};
+use crate::orchestrator::domain::graph::{EdgeKind, GraphEdge, GraphNode, GraphSnapshot, NodeKind};
 use crate::orchestrator::domain::revision::GraphRevision;
 use crate::orchestrator::domain::run::ArtifactSensitivity;
 use crate::orchestrator::events::{build_event, payloads, TaskEventType};
@@ -264,8 +262,8 @@ fn list_revisions_ordered() {
 
     let snapshot = GraphSnapshot::default();
     let r1 = GraphRevision::from_snapshot("r1", "g1", None, &snapshot, "u", 100).unwrap();
-    let r2 = GraphRevision::from_snapshot("r2", "g1", Some("r1".into()), &snapshot, "u", 200)
-        .unwrap();
+    let r2 =
+        GraphRevision::from_snapshot("r2", "g1", Some("r1".into()), &snapshot, "u", 200).unwrap();
     store.save_revision(&r1).unwrap();
     store.save_revision(&r2).unwrap();
 
@@ -347,8 +345,7 @@ fn draft_update_conflict_rolls_back_new_revision() {
         }],
         edges: vec![],
     };
-    let revision =
-        GraphRevision::from_snapshot("r1", "g1", None, &snapshot, "u", now()).unwrap();
+    let revision = GraphRevision::from_snapshot("r1", "g1", None, &snapshot, "u", now()).unwrap();
     let graph = TaskGraph {
         graph_id: "g1".into(),
         title: "T".into(),
@@ -362,8 +359,7 @@ fn draft_update_conflict_rolls_back_new_revision() {
     store.create_graph_with_revision(&graph, &revision).unwrap();
 
     let next =
-        GraphRevision::from_snapshot("r2", "g1", Some("r1".into()), &snapshot, "u", now())
-            .unwrap();
+        GraphRevision::from_snapshot("r2", "g1", Some("r1".into()), &snapshot, "u", now()).unwrap();
     assert!(store
         .save_revision_and_update_draft("g1", "stale", &next, now())
         .is_err());
@@ -508,8 +504,7 @@ fn lists_project_graphs_by_most_recent_update() {
 fn delete_graph_removes_all_related_task_data() {
     let store = make_test_store();
     let snapshot = GraphSnapshot::default();
-    let revision =
-        GraphRevision::from_snapshot("rev1", "g1", None, &snapshot, "u", now()).unwrap();
+    let revision = GraphRevision::from_snapshot("rev1", "g1", None, &snapshot, "u", now()).unwrap();
     let graph = TaskGraph {
         graph_id: "g1".into(),
         title: "T".into(),
@@ -998,8 +993,8 @@ fn list_node_session_ids_dedupes_and_skips_empty() {
         .unwrap();
 
     // 四个 attempt：有 session / 无 session / 重复 session（验 DISTINCT）/ 另一 session。
-    let mk_attempt = |id: &str, num: u32, sess: Option<&str>| {
-        crate::orchestrator::domain::run::NodeAttempt {
+    let mk_attempt =
+        |id: &str, num: u32, sess: Option<&str>| crate::orchestrator::domain::run::NodeAttempt {
             attempt_id: id.into(),
             node_run_id: "nr1".into(),
             attempt_number: num,
@@ -1014,8 +1009,7 @@ fn list_node_session_ids_dedupes_and_skips_empty() {
             dispatch_prompt: None,
             started_at: now(),
             finished_at: None,
-        }
-    };
+        };
     store
         .save_attempt(&mk_attempt("att1", 1, Some("sess-a")))
         .unwrap();
