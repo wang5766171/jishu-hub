@@ -72,7 +72,7 @@ function cleanDirectory(dir) {
 
 cleanDirectory(piBundle);
 
-// 6.5 Fix double shebang in entry points (shared implementation with publish-pi.mjs)
+// 6.5 Fix double shebang in entry points (shared implementation in scripts/lib/pi-common.mjs)
 console.log("Fixing double shebangs...");
 fixShebang(join(piBundle, "packages", "coding-agent", "dist"));
 
@@ -97,11 +97,10 @@ if (existsSync(nodeModulesPath)) {
 
 // 8. Assert every runtime dependency in build-bundle's manifest is physically
 // present in pi-bundle's node_modules. The manifest is the single source of
-// truth shared with publish-pi.mjs (Lite): Full satisfies it by baking the deps
-// in locally, Lite satisfies it by declaring the same set in package.json. This
-// guard fails the build loudly if a runtime dep is missing — the exact failure
-// mode that previously broke Lite (ERR_MODULE_NOT_FOUND) but was silently masked
-// in Full by the workspace over-install.
+// truth for which runtime deps the bundled cli.js needs. Full satisfies it by
+// baking the deps in locally. This guard fails the build loudly if a runtime
+// dep is missing — the exact failure (ERR_MODULE_NOT_FOUND) that was previously
+// silently masked by the workspace over-install.
 console.log("Verifying runtime dependency manifest against node_modules...");
 const runtimeDeps = readRuntimeDeps(join(piBundle, "packages", "coding-agent", "dist"));
 const missing = Object.keys(runtimeDeps).filter(

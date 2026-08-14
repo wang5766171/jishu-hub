@@ -43,10 +43,9 @@ export function fixShebang(distDir) {
  * Read the runtime dependency manifest emitted by build-bundle.mjs.
  *
  * This manifest is the single source of truth for which non-@earendil-works
- * dependencies the bundled cli.js requires at runtime. pack-pi.mjs (Full)
- * asserts these are present in node_modules; publish-pi.mjs (Lite) declares
- * them in the published package.json. Deriving both from the same file is what
- * keeps the two packaging paths from drifting.
+ * dependencies the bundled cli.js requires at runtime. pack-pi.mjs asserts
+ * these are present in node_modules, failing the build loudly if any runtime
+ * dep is missing.
  *
  * @param {string} distDir - the dist/ directory containing runtime-deps.json
  * @returns {Record<string, string>} map of dependency name -> version

@@ -164,12 +164,10 @@ Agent Adapter -> AcpCommandSpec(codex app-server) -> AgentRuntime -> Codex App S
 
 ```text
 1. JISHU_PI_BIN 环境变量      -> 开发/调试覆盖
-2. ~/.jishu-agent/.../cli.js  -> 用户通过 UI 安装的版本
-3. 安装目录/third_party/pi-bundle/.../cli.js -> Full 版捆绑的 Node.js Agent
-4. PATH 中查找 "jishu"        -> npm 全局安装的版本（Lite 版走此路径）
+2. ~/.jishu-agent/.../cli.js  -> 用户通过 UI 或安装器自动装入的版本
+3. 安装目录/third_party/pi-bundle/.../cli.js -> 内嵌的 Node.js Agent（开箱即用兜底）
 ```
 
-由于 Rust CLI 已改名为 `jishu-cli`，第 4 步在 PATH 中查找 `jishu` 时不会再误匹配到 Rust 外壳。
 
 ### 4.3 CLI transport 使用规则
 

@@ -36,28 +36,12 @@ jobs:
       - name: Build Full version
         run: npm run tauri build
 
-      - name: Rename Full artifacts
+      - name: Rename artifacts
         run: |
-          mv src-tauri/target/release/bundle/dmg/*.dmg "src-tauri/target/release/bundle/dmg/Jishu Hub Full.dmg"
+          mv src-tauri/target/release/bundle/dmg/*.dmg "src-tauri/target/release/bundle/dmg/Jishu Hub.dmg"
 
-      - name: Upload Full artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: JishuHub-Full-macOS
-          path: src-tauri/target/release/bundle/dmg/*.dmg
-
-      - name: Clean up old DMG
-        run: rm -rf src-tauri/target/release/bundle/dmg/*
-
-      - name: Build Lite version
-        run: npm run tauri build -- --config src-tauri/tauri.conf.lite.json
-
-      - name: Rename Lite artifacts
-        run: |
-          mv src-tauri/target/release/bundle/dmg/*.dmg "src-tauri/target/release/bundle/dmg/Jishu Hub Lite.dmg"
-
-      - name: Upload Lite artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: JishuHub-Lite-macOS
+          name: JishuHub-macOS
           path: src-tauri/target/release/bundle/dmg/*.dmg

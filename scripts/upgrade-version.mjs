@@ -100,27 +100,6 @@ try {
   process.exit(1);
 }
 
-// 4. Update Jishu Hub Backend Binding
-console.log(`\n[4] Binding Jishu Hub Lite to Jishu Agent @${newVersion}...`);
-const libRsPath = path.resolve(process.cwd(), "src-tauri", "src", "lib.rs");
-if (fs.existsSync(libRsPath)) {
-  let content = fs.readFileSync(libRsPath, "utf-8");
-  // Regex to match the binding section exactly
-  // Format-agnostic: match from the START marker through @jishu-hub/jishu-agent@<version>"
-  // up to the END marker, so rustfmt's multi-line `vec![...]` layout (each element on its
-  // own line, `],` / `);` on separate lines) matches just as well as the old single-line form.
-  const regex = /(\/\/ JISHU_AGENT_BINDING_START[\s\S]*?@jishu-hub\/jishu-agent@)[^"]+("[\s\S]*?\/\/ JISHU_AGENT_BINDING_END)/;
-  
-  const match = content.match(regex);
-  if (match) {
-    content = content.replace(regex, `$1${newVersion}$2`);
-    fs.writeFileSync(libRsPath, content);
-    console.log(`  - Successfully updated src-tauri/src/lib.rs`);
-  } else {
-    console.warn(`  ⚠️ Could not find binding marker in lib.rs. Please update it manually.`);
-  }
-}
-
 // 4.5 Update Jishu Agent Version Constant
 console.log(`\n[4.5] Updating Jishu Agent Version constant in Rust...`);
 const modRsPath = path.resolve(process.cwd(), "src-tauri", "src", "agent", "jishu_self", "mod.rs");
@@ -176,6 +155,4 @@ console.log(`   git push -u origin release_v${newVersion}`);
 console.log(`3. Commit the changes in jishu-hub:`);
 console.log(`   cd ../..`);
 console.log(`   git commit -am "chore: upgrade jishu-agent binding to ${newVersion}"`);
-console.log(`4. Run the publish script to push to NPM:`);
-console.log(`   node scripts/publish-pi.mjs --scope @jishu-hub`);
 console.log(`=============================================\n`);

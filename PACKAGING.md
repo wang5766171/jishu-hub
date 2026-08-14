@@ -1,134 +1,71 @@
 # Jishu Hub 打包与发布指南
 
-本文档详细说明了如何构建和发布 Jishu Hub 的不同版本安装包，包括 **Windows 本地打包 (Full 和 Lite 版)** 以及 **macOS 云端自动化打包**。
+本文档说明如何构建和发布 Jishu Hub 安装包，包括 **Windows 本地打包** 与 **macOS 云端自动化打包**。
 
-## 1. 概念说明
+## 1. 版本说明
 
-- **Full 版 (全量版)**：内置了底层的 `pi` 源码。打包时，系统会自动利用 esbuild 将 `coding-agent` 的各模块及依赖项打包为单一混淆过的 `cli.js`，并自动清理 TS 源码文件（如 `src` 文件夹）和无用配置（如 `.git` 文件夹），彻底去除了项目原始代码结构的清晰度。这有效缩减了体积且满足了代码闭源与混淆的诉求。安装后，Jishu Hub 会直接调用安装目录下 `third_party/pi-bundle` 中打包好的 `cli.js` 启动 Agent，实现了**真正的开箱即用**和**离线包效果**，无需再将其提取至用户目录或重新执行 `npm install`。
-- **Lite 版 (精简版)**：仅包含 Jishu Hub 界面和原生的 `jishu` CLI 命令行工具。不内置底层 `pi` 引擎的任何代码。用户在使用时如果本地没有安装过 `pi`，可以选择在线一键安装（通过执行环境的包管理器如 `npm` 自动拉取源码）。体积较小（约十几兆）。
+Jishu Hub 只发布一个发行版：内嵌 `pi` 引擎（jishu agent）的**全量版**。
+
+- 打包时 esbuild 将 `coding-agent` 各模块及依赖打包为单一混淆的 `cli.js`，并清理 TS 源码（`src`）、无用配置（`.git`）等，满足闭源与混淆诉求。
+- 安装器在安装/覆盖更新时会自动把 `pi-bundle` 装入用户目录（`~/.jishu-agent`），实现**开箱即用**与**离线运行**，用户无需手动 `npm install`。
+- 卸载时会清理 agent 本体（`packages`/`node_modules`），避免残留冲突；用户数据按「删除用户数据」勾选决定。
+
+> v0.7.2 起移除了精简版（Lite），agent 完全随 hub 安装包分发。
 
 ---
 
-## 2. Windows 平台打包 (本地构建)
+## 2. Windows 平台打包（本地构建）
 
-在执行打包前，请确保已经安装并配置好 **Node.js** 和 **Rust** 环境。
+打包前确保已安装 **Node.js** 与 **Rust**。
 
-### 第一步：打包全量版 (Full)
-
-1. 在项目根目录执行打包命令：
+1. 在项目根目录执行：
    ```bash
    npm run build
    ```
-2. 构建脚本会自动执行前端编译、内置 Pi 引擎打包、Rust 后端编译，以及 Tauri 安装包生成。
-3. 打包完成后，脚本会**自动**重命名输出文件，最终的安装包将生成在以下路径：
-   `src-tauri/target/release/bundle/nsis/Jishu Hub Full_<版本号>_x64-setup.exe`
+2. 构建脚本自动完成：前端编译 → 内置 pi 引擎打包（`pack-pi.mjs`）→ Rust 后端编译 → `jishu-cli` sidecar → Tauri 安装包生成。
+3. 安装包输出在：
+   `src-tauri/target/release/bundle/nsis/Jishu Hub_<版本号>_x64-setup.exe`
 
-### 第二步：打包精简版 (Lite)
-
-1. 全量版打包完成后，接着执行精简版打包命令：
-   ```bash
-   npm run build -- --lite
-   ```
-2. 构建脚本会自动跳过 Pi 引擎的打包，仅打包界面和 `jishu` CLI 命令行工具，并**自动**重命名输出包。
-3. 最终的安装包会生成在同一路径：
-   `src-tauri/target/release/bundle/nsis/Jishu Hub Lite_<版本号>_x64-setup.exe`
-
-> **原理解释（为何不直接改 Tauri 配置里的 productName）**：
-> Tauri 的安装包文件名是由配置中的 `productName` 决定的。如果直接在配置文件把名字设为 "Jishu Hub Full"，会导致用户最终安装时的默认路径、开始菜单名、卸载列表全变成 "Jishu Hub Full"，使得 Full 版和 Lite 版不再能无缝互相覆盖更新。因此，业界标准做法是保持安装后的应用名为 "Jishu Hub" 不变，并在打包结束后由自动化脚本去重命名带有后缀的 `.exe` 安装包文件。
-
-至此，你的 Windows 全量版和精简版安装包就都准备就绪了。
+> 安装器（NSIS）在 POSTINSTALL 阶段调用 `Jishu Hub.exe --install-agent` 把 pi-bundle 装到 `~/.jishu-agent`；POSTUNINSTALL 阶段清理 agent 本体。这样安装/更新 hub 即自动安装/更新 agent，卸载 hub 即清理 agent。
 
 ---
 
-## 3. Lite 版前置依赖：发布 NPM 核心包
+## 3. 打包流水线：单一依赖真相
 
-精简版 (Lite) 不内置核心的 Agent 引擎代码。如果底层逻辑（如 `third_party/pi` 子模块）发生了更新，或者你想向外发布一个全新的 Agent 引擎版本供 Lite 版云端拉取安装，你必须将最新的底层代码发布到 NPM 官方仓库。
+`third_party/pi/packages/coding-agent/build-bundle.mjs` 在 esbuild 打包后输出 `dist/runtime-deps.json`，记录所有被 externalize（未打进 bundle、需运行时提供）的非 `@earendil-works` 依赖。
 
-由于我们在架构中实现了 **“无侵入式别名发布”**（将 `@earendil-works` 原生无缝映射为 `@jishu-hub` 下的私有包），因此发布流程不再使用 `pi` 目录下的命令，而是使用主仓库提供的专属构建流水线脚本。
+- 键为依赖名、值为版本；同一依赖在多个子包出现时取最高 semver。
+- esbuild 的 `external` 列表也由这份清单的键派生，保证「打包留在外部的」与「清单声明的」一致。
 
-1. **回到 `jishu-hub` 根目录**（不要进入 `third_party/pi`！）：
-   ```bash
-   cd D:/MyCodes/jishu-hub
-   ```
-2. 登录 NPM 官方仓库（如果你还没有登录过，确保登入 `@jishu-hub` 权限账号）：
-   ```bash
-   npm login --registry=https://registry.npmjs.org/
-   ```
-3. 运行一键发布脚本：
-   ```bash
-   node scripts/publish-pi.mjs
-   ```
-   > **原理解释**：此脚本会自动在后台跑 `npm install` 与 `npm run build`，随后在临时目录 `.publish-stage` 中使用 NPM Alias 特性将包的引用于发布前替换为 `@jishu-hub/jishu-agent` 等系列名称。脚本不仅会变换 `package.json` 中的依赖声明，还会同步变换 `npm-shrinkwrap.json` 中的包名和 tarball 解析地址，确保 npm 在安装时优先使用 shrinkwrap 中的正确 URL，而不会错误地尝试拉取原始的 `@earendil-works/*` 包。该脚本内部已经强制绑定了 `https://registry.npmjs.org/` 作为发布源，所以即便你配置了淘宝镜像等，也完全不必担心报错 403 权限异常！
+`scripts/pack-pi.mjs` 把依赖**烘焙**进 `pi-bundle/node_modules`（`npm install` 后 `npm prune --omit=dev`），并在打包末尾**断言**每个依赖都物理存在——缺失即构建失败、大声报错（这正是过去被 workspace 全量安装掩盖的失败点，现在本地就能提前暴露）。
 
-发布成功后，全球范围内的 Lite 客户端即可在界面一键拉取安装你刚刚上线的最新核心代码！
+共享工具库 `scripts/lib/pi-common.mjs`：`fixShebang(distDir)` 规范化入口 shebang，`readRuntimeDeps(distDir)` 读取并校验清单。
 
 ---
 
-## 4. Full/Lite 统一打包流水线（单一依赖真相）
+## 4. macOS 平台打包（GitHub Actions 自动构建）
 
-> 本节说明 Full 与 Lite 打包脚本的共享逻辑。Full（`scripts/pack-pi.mjs`）与 Lite（`scripts/publish-pi.mjs`）历史上是**两套独立脚本**，各自维护运行时依赖集合，长期漂移导致 Lite 连环翻车（缺 provider SDK → `ERR_MODULE_NOT_FOUND`；双 shebang → Node `SyntaxError`）。现已统一为**共享同一份依赖清单**，唯一的差别只在依赖的交付方式。
-
-### 4.1 单一真相：runtime-deps.json
-
-`third_party/pi/packages/coding-agent/build-bundle.mjs` 在 esbuild 打包后会输出 `dist/runtime-deps.json`，记录**所有被 esbuild externalize（未打进 bundle、需运行时提供）的非 `@earendil-works` 依赖**：
-
-- 键为依赖名、值为版本；同一依赖在多个子包出现时取最高 semver，与 npm 解析一致。
-- esbuild 的 `external` 列表本身也由这份清单的键派生，保证“打包时留在外部的”与“清单声明的”永远一致。
-
-这份清单是 Full 与 Lite **唯一共同的依赖真相**——任何一方都不再自行推导依赖集。
-
-### 4.2 共享脚本库：scripts/lib/pi-common.mjs
-
-两个打包脚本共用同一份工具库：
-
-- `fixShebang(distDir)`：规范化 esbuild 入口文件的 shebang。可执行入口 `cli.js` 与 `rpc-entry.js` 各保留恰好一个，库入口 `index.js` 不保留。`rpc-entry.js` 是 Pi v0.80.10 新增的独立 RPC 启动入口，Full/Lite 必须与 CLI 入口一起构建和交付。
-- `readRuntimeDeps(distDir)`：读取并解析 `runtime-deps.json`，缺失则直接报错（提示先跑 coding-agent 构建以生成它）。
-
-### 4.3 两条路径如何消费同一份清单
-
-| 路径 | 脚本 | 如何满足清单 | 缺失时的行为 |
-|------|------|-------------|-------------|
-| **Full** | `pack-pi.mjs` | 把依赖**烘焙**进 `pi-bundle/node_modules`（`npm install` 后 `npm prune --omit=dev`） | 打包末尾**断言**每个依赖都物理存在，缺失即构建失败、大声报错 |
-| **Lite** | `publish-pi.mjs` | 把依赖**声明**进发布 `package.json` 的 `dependencies`，由用户 `npm install` 在线拉取 | npm 安装时若拉取不到才报错（声明集与 esbuild 实际需要的一致，故不会缺） |
-
-### 4.4 唯一的区别：依赖的交付方式
-
-```
-                 ┌─ 同一组 esbuild bundle（cli.js / rpc-entry.js / index.js）
-Full / Lite 共享 ─┼─ 同一份 runtime-deps.json（单一真相）
-                 └─ 同一个 fixShebang 处理
-        │
-        ├─ Full：依赖烘焙进 pi-bundle/node_modules ─→ 离线运行，开箱即用
-        └─ Lite：依赖声明进 package.json ─→ 用户 npm install 在线拉取
-```
-
-构建、混淆、shebang 处理逻辑完全一致，二者在结构上不再可能漂移。Full 打包时新增的**清单断言**（4.3 节）正是过去 Lite 翻车、却被 Full 的 workspace 全量安装安静掩盖的那个失败点——现在 Full 也会在同样的问题上立即失败，从而在本地就能提前暴露。
-
----
-
-## 5. macOS 平台打包 (GitHub Actions 自动构建)
-
-由于跨平台编译 macOS 原生应用（`.app` / `.dmg`）较为困难，我们已配置好了 GitHub Actions 流水线，完全免除了本地配置苹果环境的烦恼。
+跨平台编译 macOS 原生应用（`.app` / `.dmg`）较困难，已配置 GitHub Actions 流水线。
 
 ### 触发自动打包
 
-1. 确保你的本地代码已全部提交 (Commit)。
-2. 将代码推送到 GitHub 的默认分支（或当前工作分支）：
+1. 确保本地代码已全部提交。
+2. 推送到 GitHub 默认分支（或当前工作分支）：
    ```bash
    git push
    ```
-3. 代码推送后，GitHub Actions 会**自动触发**名为 `MacOS Build` 的工作流任务。
+3. GitHub Actions 自动触发 `MacOS Build` 工作流。
 
 ### 获取打包结果
 
-1. 打开项目的 GitHub 仓库页面，点击上方的 **Actions** 标签。
-2. 找到最新运行的 `MacOS Build` 任务并点击进入。
-3. 往下滑动至底部的 **Artifacts** 区域，你会看到打包好的 macOS 应用：
-   - `Jishu-Hub-Mac-Full.dmg`
-   - `Jishu-Hub-Mac-Lite.dmg`
-   （流水线脚本已自动帮你完成了重命名操作，下载后解压即可发布）。
+1. 打开仓库 **Actions** 标签。
+2. 找到最新的 `MacOS Build` 任务并进入。
+3. 底部 **Artifacts** 区域下载 `JishuHub-macOS`（解压得 `Jishu Hub.dmg`）。
+
+> macOS/Linux 无 NSIS POSTINSTALL 机制，agent 自动安装目前仅 Windows 覆盖；macOS/Linux 用户仍可在应用内「环境检测」页手动点「安装」（`install_internal_jishu_agent` 的 GUI 路径不变）。
 
 ---
 
 ## 附录：关于 jishu CLI
-无论是全量版还是精简版，在最新架构中，均通过 Tauri Sidecar 机制注入了由 Rust 编写的 `jishu` 全局命令行程序（导致精简版体积相比老版本增加了 10M 左右）。用户安装任何版本后，终端均可直接调用 `jishu` 命令行，保持了极佳的灵活性。
+
+通过 Tauri Sidecar 机制注入由 Rust 编写的 `jishu` 全局命令行程序，安装时自动加入用户 PATH。用户安装后终端可直接调用 `jishu` 命令行。
