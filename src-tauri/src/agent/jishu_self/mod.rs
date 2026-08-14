@@ -42,9 +42,6 @@ impl JishuSelfAgent {
         #[cfg(target_os = "windows")]
         crate::process_command::tokio_no_window(&mut cmd);
 
-        if let Some(dir) = pi_agent_dir() {
-            cmd.env("PI_CODING_AGENT_DIR", &dir);
-        }
 
         let output = cmd
             .output()
@@ -67,10 +64,20 @@ pub(crate) fn pi_agent_dir() -> Option<String> {
     Some(home.join(".jishu-agent").to_string_lossy().to_string())
 }
 
+/// pi 运行数据目录（models.json/settings.json/sessions/extensions 等）。
+/// pi 原生 getAgentDir() = ~/{piConfig.configDir}/agent = ~/.jishu-agent/agent。
+/// hub 端读写 pi 数据必须用此路径与 pi 对齐（agent 本体仍用 pi_agent_dir）。
+pub(crate) fn pi_config_dir() -> Option<String> {
+    let home = dirs::home_dir()?;
+    Some(home.join(".jishu-agent").join("agent").to_string_lossy().to_string())
+}
+
 pub(crate) const JISHU_AGENT_IDENTITY_PROMPT: &str =
     "You are jishu agent, the built-in assistant inside Jishu Hub. \
 You are not Pi. Use Pi's runtime, tools, and session engine invisibly, \
-but present yourself as jishu agent. Reply naturally in the user's language.";
+but present yourself as jishu agent. Reply naturally in the user's language. \
+When replying in Chinese, your name is 「机枢 agent」(机枢); \
+never transliterate jishu as 「极数」 or anything else.";
 
 pub(crate) fn resolve_jishu_cli_binary() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("JISHU_CLI_BIN") {
@@ -116,7 +123,7 @@ use crate::agent::traits::{
     TransportAdapter,
 };
 // JISHU_AGENT_VERSION_START (auto-updated by upgrade-version.mjs)
-pub const PI_AGENT_VERSION: &str = "0.83.0-8";
+pub const PI_AGENT_VERSION: &str = "0.84.2-9";
 // JISHU_AGENT_VERSION_END
 
 impl AgentManifest for JishuSelfAgent {
@@ -413,7 +420,7 @@ impl ConfigAdapter for JishuSelfAgent {
         self.migrate_mcp_if_needed();
 
         let agent_dir =
-            pi_agent_dir().ok_or_else(|| "Cannot resolve ~/.jishu-agent directory".to_string())?;
+            pi_config_dir().ok_or_else(|| "Cannot resolve ~/.jishu-agent/agent directory".to_string())?;
         // pi install <npm:pkg> stores the package in
         // <PI_CODING_AGENT_DIR>/npm/node_modules/<pkg>, not under packages/.
         let adapter_dir = std::path::Path::new(&agent_dir)
@@ -533,9 +540,7 @@ impl TransportAdapter for JishuSelfAgent {
         args.extend(pi_model::build_pi_model_args_from_active()?);
 
         let mut envs = Vec::new();
-        if let Some(dir) = pi_agent_dir() {
-            envs.push(("PI_CODING_AGENT_DIR".to_string(), dir));
-        }
+        envs.push(("PI_SKIP_VERSION_CHECK".to_string(), "1".to_string()));
 
         // Always resolve the CLI explicitly for spawned Pi processes. Debug
         // resolves to target/debug/jishu-cli(.exe); installed builds resolve

@@ -187,7 +187,7 @@ pub struct PiModelOverride {
 /// so the agent dir becomes `~/.jishu-agent/` and models lives here.
 pub fn default_models_path() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or_else(|| "Cannot find home directory".to_string())?;
-    Ok(home.join(".jishu-agent").join("models.json"))
+    Ok(home.join(".jishu-agent").join("agent").join("models.json"))
 }
 
 pub fn load() -> Result<PiModelsConfig, String> {
@@ -394,7 +394,7 @@ mod tests {
         // path-bound helpers. For convenience we touch the file directly
         // and use upsert_provider on a real-ish path.
         let home = dirs::home_dir().unwrap();
-        let _ = std::fs::create_dir_all(home.join(".jishu-agent"));
+        let _ = std::fs::create_dir_all(home.join(".jishu-agent").join("agent"));
         // Use a non-default name to avoid clobbering a real file.
         let probe_name = format!("__test_zhipu_{}", std::process::id());
         let probe = sample_zhipu();

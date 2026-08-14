@@ -28,7 +28,7 @@ pub struct ModelStore {
 impl ModelStore {
     fn models_path() -> Result<std::path::PathBuf, String> {
         let home = dirs::home_dir().ok_or("Cannot find home directory")?;
-        Ok(home.join(".jishu-agent").join("models.json"))
+        Ok(home.join(".jishu-agent").join("agent").join("models.json"))
     }
 
     pub fn load() -> Result<Self, String> {

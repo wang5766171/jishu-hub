@@ -7,7 +7,7 @@ pub(crate) fn pi_session_dir_for_home(home: &Path, project_path: &str) -> PathBu
 }
 
 pub(crate) fn pi_sessions_root_for_home(home: &Path) -> PathBuf {
-    home.join(".jishu-agent").join("sessions")
+    home.join(".jishu-agent").join("agent").join("sessions")
 }
 
 pub(crate) fn pi_sessions_root() -> Result<PathBuf, String> {
@@ -88,7 +88,7 @@ pub(crate) struct PiSessionLocation {
 
 pub(crate) fn find_pi_session_location(session_id: &str) -> Result<PiSessionLocation, String> {
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
-    find_pi_session_location_in_agent_dir(&home.join(".jishu-agent"), session_id)
+    find_pi_session_location_in_agent_dir(&home.join(".jishu-agent").join("agent"), session_id)
 }
 
 pub(crate) fn find_pi_session_location_in_agent_dir(
@@ -1043,7 +1043,7 @@ mod tests {
         assert_eq!(
             dir,
             PathBuf::from(
-                r"C:\Users\tester\.jishu-agent\sessions\--D--MyCodes-unified-auth-system--"
+                r"C:\Users\tester\.jishu-agent\agent\sessions\--D--MyCodes-unified-auth-system--"
             )
         );
     }
@@ -1439,7 +1439,7 @@ Task Orchestrator execution contract:\n\
             "jishu-pi-session-location-test-{}",
             std::process::id()
         ));
-        let agent_dir = root.join(".jishu-agent");
+        let agent_dir = root.join(".jishu-agent").join("agent");
         let project_path = r"D:\Work\app";
         let session_dir = agent_dir
             .join("sessions")
@@ -1502,6 +1502,7 @@ Task Orchestrator execution contract:\n\
         assert_eq!(
             pi_session_dir_for_home(home, project_path),
             home.join(".jishu-agent")
+                .join("agent")
                 .join("sessions")
                 .join("--D--My Codes-app--")
         );

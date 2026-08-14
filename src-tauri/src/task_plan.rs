@@ -101,7 +101,7 @@ fn default_receive_rework() -> bool {
 
 fn jishu_agent_dir() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or_else(|| "Cannot find home directory".to_string())?;
-    Ok(home.join(".jishu-agent"))
+    Ok(home.join(".jishu-agent").join("agent"))  // pi 原生 getAgentDir() 路径
 }
 
 pub fn task_plan_dir() -> Result<PathBuf, String> {
@@ -189,7 +189,7 @@ pub fn ensure_conductor_extension() {
     let Some(home) = dirs::home_dir() else {
         return;
     };
-    ensure_conductor_extension_in(&home.join(".jishu-agent"));
+    ensure_conductor_extension_in(&home.join(".jishu-agent").join("agent"));
 }
 
 fn ensure_conductor_extension_in(agent_dir: &Path) {
@@ -221,7 +221,7 @@ pub fn ensure_request_user_input_extension() {
     let Some(home) = dirs::home_dir() else {
         return;
     };
-    ensure_request_user_input_extension_in(&home.join(".jishu-agent"));
+    ensure_request_user_input_extension_in(&home.join(".jishu-agent").join("agent"));
 }
 
 fn ensure_request_user_input_extension_in(agent_dir: &Path) {
@@ -237,7 +237,7 @@ pub fn ensure_session_context_extension() {
     let Some(home) = dirs::home_dir() else {
         return;
     };
-    ensure_session_context_extension_in(&home.join(".jishu-agent"));
+    ensure_session_context_extension_in(&home.join(".jishu-agent").join("agent"));
 }
 
 fn ensure_session_context_extension_in(agent_dir: &Path) {

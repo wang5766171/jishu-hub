@@ -221,9 +221,7 @@ fn build_jishu_self_interactive_invocation(
     args.push(crate::agent::jishu_self::JISHU_AGENT_IDENTITY_PROMPT.to_string());
 
     let mut envs = Vec::new();
-    if let Some(dir) = crate::agent::jishu_self::pi_agent_dir() {
-        envs.push(("PI_CODING_AGENT_DIR".to_string(), dir));
-    }
+    envs.push(("PI_SKIP_VERSION_CHECK".to_string(), "1".to_string()));
 
     ProcessInvocation {
         program: runtime.program,
