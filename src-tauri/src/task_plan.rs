@@ -101,7 +101,7 @@ fn default_receive_rework() -> bool {
 
 fn jishu_agent_dir() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or_else(|| "Cannot find home directory".to_string())?;
-    Ok(home.join(".jishu-agent").join("agent"))  // pi 原生 getAgentDir() 路径
+    Ok(home.join(".jishu-agent").join("agent")) // pi 原生 getAgentDir() 路径
 }
 
 pub fn task_plan_dir() -> Result<PathBuf, String> {

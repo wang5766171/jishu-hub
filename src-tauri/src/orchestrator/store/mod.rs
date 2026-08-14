@@ -174,10 +174,7 @@ impl TaskStore {
                 );
                 Self::cleanup_old_backups(db_path);
             }
-            Err(e) => log::warn!(
-                "taskstore 迁移前备份失败 ({})；继续迁移（无备份兜底）",
-                e
-            ),
+            Err(e) => log::warn!("taskstore 迁移前备份失败 ({})；继续迁移（无备份兜底）", e),
         }
     }
 

@@ -42,7 +42,6 @@ impl JishuSelfAgent {
         #[cfg(target_os = "windows")]
         crate::process_command::tokio_no_window(&mut cmd);
 
-
         let output = cmd
             .output()
             .await
@@ -69,7 +68,12 @@ pub(crate) fn pi_agent_dir() -> Option<String> {
 /// hub 端读写 pi 数据必须用此路径与 pi 对齐（agent 本体仍用 pi_agent_dir）。
 pub(crate) fn pi_config_dir() -> Option<String> {
     let home = dirs::home_dir()?;
-    Some(home.join(".jishu-agent").join("agent").to_string_lossy().to_string())
+    Some(
+        home.join(".jishu-agent")
+            .join("agent")
+            .to_string_lossy()
+            .to_string(),
+    )
 }
 
 pub(crate) const JISHU_AGENT_IDENTITY_PROMPT: &str =
@@ -419,8 +423,8 @@ impl ConfigAdapter for JishuSelfAgent {
         // Auto-migrate on check (idempotent).
         self.migrate_mcp_if_needed();
 
-        let agent_dir =
-            pi_config_dir().ok_or_else(|| "Cannot resolve ~/.jishu-agent/agent directory".to_string())?;
+        let agent_dir = pi_config_dir()
+            .ok_or_else(|| "Cannot resolve ~/.jishu-agent/agent directory".to_string())?;
         // pi install <npm:pkg> stores the package in
         // <PI_CODING_AGENT_DIR>/npm/node_modules/<pkg>, not under packages/.
         let adapter_dir = std::path::Path::new(&agent_dir)

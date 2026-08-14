@@ -52,9 +52,18 @@ fn setup_panic_hook() {
             let _ = std::fs::create_dir_all(&crash_dir);
             let path = crash_dir.join(format!("crash-{}.log", now.format("%Y%m%d-%H%M%S")));
             let _ = std::fs::write(&path, &report);
-            let _ = writeln!(std::io::stderr(), "PANIC report written to {}:\n{}", path.display(), report);
+            let _ = writeln!(
+                std::io::stderr(),
+                "PANIC report written to {}:\n{}",
+                path.display(),
+                report
+            );
         } else {
-            let _ = writeln!(std::io::stderr(), "PANIC (no data_dir available):\n{}", report);
+            let _ = writeln!(
+                std::io::stderr(),
+                "PANIC (no data_dir available):\n{}",
+                report
+            );
         }
 
         default_hook(info);

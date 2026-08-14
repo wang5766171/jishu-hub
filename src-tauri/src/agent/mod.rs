@@ -373,10 +373,7 @@ impl AgentRegistry {
                 .into_iter()
                 .map(|(id, agent)| scope.spawn(move || (id, agent.probe_sync())))
                 .collect();
-            handles
-                .into_iter()
-                .filter_map(|h| h.join().ok())
-                .collect()
+            handles.into_iter().filter_map(|h| h.join().ok()).collect()
         });
         let mut cache = self.health_cache.lock().unwrap_or_else(|e| e.into_inner());
         for (id, health) in results {

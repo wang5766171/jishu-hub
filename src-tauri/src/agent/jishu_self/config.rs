@@ -47,7 +47,7 @@ pub struct JishuConfig {
 
 fn jishu_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
-    Ok(home.join(".jishu-agent").join("agent"))  // pi 原生 getAgentDir() 路径
+    Ok(home.join(".jishu-agent").join("agent")) // pi 原生 getAgentDir() 路径
 }
 
 pub fn jishu_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
