@@ -301,7 +301,7 @@ export function ProjectsPage({ projects, projectMetas, refetchProjects, refetchP
           <span className="text-sm">{t("projects.selected", { count: checkedProjects.size })}</span>
           <div className="flex gap-2">
             <Button variant="outline" onClick={clearSelection}>{t("projects.deselect")}</Button>
-            <Button onClick={() => setMergeDialogOpen(true)}>{t("projects.merge")}</Button>
+            <Button onClick={() => setMergeDialogOpen(true)}>{t("projects.merge", "合并")}</Button>
           </div>
         </div>
       )}
