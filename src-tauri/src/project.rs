@@ -27,6 +27,9 @@ pub fn scan_projects() -> Vec<Project> {
     };
     let projects_dir = home.join(".claude").join("projects");
 
+    // v0.7.2 需求 1 / M4.1：一次性加载隐藏集合，避免每个项目重读 hidden_projects.json
+    let hidden = crate::hub::load_hidden_set();
+
     let mut projects = Vec::new();
     let mut seen_encoded = std::collections::HashSet::new();
 
@@ -35,7 +38,7 @@ pub fn scan_projects() -> Vec<Project> {
         if let Ok(entries) = std::fs::read_dir(&projects_dir) {
             for entry in entries.flatten() {
                 let encoded_name = entry.file_name().to_string_lossy().to_string();
-                if crate::hub::is_project_hidden(&encoded_name).unwrap_or(false) {
+                if hidden.contains(&encoded_name) {
                     continue;
                 }
                 if let Some(project) = parse_project(&projects_dir, &encoded_name) {
@@ -53,7 +56,7 @@ pub fn scan_projects() -> Vec<Project> {
             if seen_encoded.contains(&encoded) {
                 continue;
             }
-            if crate::hub::is_project_hidden(&encoded).unwrap_or(false) {
+            if hidden.contains(&encoded) {
                 continue;
             }
             if let Some(project) = build_project_from_path(path) {

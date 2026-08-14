@@ -120,7 +120,19 @@ impl TaskStore {
         // This prevents unbounded WAL growth under sustained writes.
         writer_conn.pragma_update(None, "wal_autocheckpoint", 1000)?;
 
-        Self::create_schema(&writer_conn)?;
+        // v0.7.2 需求 1 / M1.4：schema 版本即将变更（create_schema 会 DROP 全表
+        // 重建）前，先把 WAL 合并回主库并整体备份。此前版本一变即清空，且
+        // execute_batch 中途失败会留下半迁移 DB，导致后续启动反复崩溃。
+        Self::backup_before_migrate(&writer_conn, db_path);
+
+        if let Err(e) = Self::create_schema(&writer_conn) {
+            log::error!(
+                "taskstore create_schema 失败 (db={}, err={})；旧库已备份，上层将降级到内存库",
+                db_path.display(),
+                e
+            );
+            return Err(e);
+        }
 
         // Open a separate read connection.
         let reader_conn = Connection::open(db_path)?;
@@ -131,6 +143,73 @@ impl TaskStore {
             reader: Mutex::new(reader_conn),
             db_path: db_path.to_path_buf(),
         })
+    }
+
+    /// 迁移前备份：若 user_version 与当前 schema 版本不一致（即 create_schema 即将
+    /// DROP 全表重建），先把 WAL 合并回主库文件，复制一份带版本与时间戳的备份。
+    /// 全新库（version=0）或版本一致时跳过。备份保留最近 5 份，超出清理。
+    fn backup_before_migrate(conn: &Connection, db_path: &Path) {
+        let current_version: i64 =
+            match conn.pragma_query_value(None, "user_version", |row| row.get(0)) {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+        if current_version == 0 || current_version == TASK_STORE_SCHEMA_VERSION {
+            return;
+        }
+        // 把 WAL 合并进主库文件，保证备份完整（WAL 模式下部分数据在 -wal 文件）。
+        let _ = conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
+        let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let backup = db_path.with_file_name(format!(
+            "taskstore.db.v{}-to-v{}.{}.bak",
+            current_version, TASK_STORE_SCHEMA_VERSION, ts
+        ));
+        match std::fs::copy(db_path, &backup) {
+            Ok(_) => {
+                log::warn!(
+                    "taskstore schema 升级 {} → {}：已备份旧库至 {}",
+                    current_version,
+                    TASK_STORE_SCHEMA_VERSION,
+                    backup.display()
+                );
+                Self::cleanup_old_backups(db_path);
+            }
+            Err(e) => log::warn!(
+                "taskstore 迁移前备份失败 ({})；继续迁移（无备份兜底）",
+                e
+            ),
+        }
+    }
+
+    /// 只保留最近 5 份迁移备份（taskstore.db.v*.bak），避免无限堆积。
+    fn cleanup_old_backups(db_path: &Path) {
+        let dir = match db_path.parent() {
+            Some(d) => d,
+            None => return,
+        };
+        let mut backups: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with("taskstore.db.v") && name.ends_with(".bak") {
+                    let path = entry.path();
+                    let mtime = entry
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .unwrap_or(std::time::UNIX_EPOCH);
+                    backups.push((path, mtime));
+                }
+            }
+        }
+        if backups.len() <= 5 {
+            return;
+        }
+        // 按修改时间倒序，保留最新的 5 份，删除其余。
+        backups.sort_by(|a, b| b.1.cmp(&a.1));
+        for (path, _) in backups.into_iter().skip(5) {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     /// Open an in-memory store for testing.

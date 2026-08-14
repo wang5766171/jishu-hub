@@ -192,7 +192,21 @@ impl TaskService {
                 TaskServiceError::Internal(format!("failed to create db directory: {e}"))
             })?;
         }
-        let store = TaskStore::open(&db_path)?;
+        // v0.7.2 需求 1 / M1.1+M1.2：文件 DB 打开失败（损坏/权限/迁移失败）时回退到
+        // 内存数据库，保证应用仍可启动。崩溃 1 根因：此前这里的 `?` 失败会让 setup
+        // 返回 Err → 末尾 .expect() panic 闪退。降级态下任务数据不持久化（重启丢失），
+        // 但会话/项目扫描等主功能不受影响；日志会记录降级原因。
+        let store = match TaskStore::open(&db_path) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!(
+                    "TaskStore 在 {} 打开失败 ({})；回退到内存数据库降级模式，任务数据本次不会持久化。",
+                    db_path.display(),
+                    e
+                );
+                TaskStore::open_in_memory()?
+            }
+        };
         let store_arc = Arc::new(store);
         let runtime = Arc::new({
             let mut rt = match event_sink {

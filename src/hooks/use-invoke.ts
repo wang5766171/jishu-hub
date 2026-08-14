@@ -42,7 +42,7 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
     }
     lastCommandRef.current = command;
     lastArgsRef.current = JSON.stringify(args);
-    return invoke<T>(command, args)
+    return timedInvoke<T>(command, args)
       .then((result) => {
         if (runId !== runIdRef.current) return result;
         setData(result);
@@ -67,5 +67,17 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
 }
 
 export async function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  return timedInvoke<T>(command, args);
+}
+
+// v0.7.2 需求 1 / M5.3：开发模式下打印每个 IPC 命令耗时，便于在 DevTools 量化启动性能。
+// 生产构建被 import.meta.env.DEV 短路，零开销。
+function timedInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (import.meta.env.DEV) {
+    const t = performance.now();
+    return invoke<T>(command, args).finally(() => {
+      console.info(`[ipc] ${command}: ${(performance.now() - t).toFixed(0)}ms`);
+    });
+  }
   return invoke<T>(command, args);
 }

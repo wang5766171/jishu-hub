@@ -105,12 +105,17 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
     invokeCommand<boolean>("load_always_on_top").then(setPinned).catch(console.error);
     getVersion().then((v) => setVersion(v)).catch(() => setVersion(""));
     appWindow?.isMaximized().then(setMaximized).catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
-    // Background auto-update: check + download a newer installer on startup.
-    invokeCommand<{ version: string | null; installer_path: string | null }>("download_update")
-      .then((r) => {
-        if (r.installer_path && r.version) setUpdateReady({ version: r.version, path: r.installer_path });
-      })
-      .catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
+    // v0.7.2 需求 1 / M3.1：自动更新检查延后到启动高峰之后（配合后端 M3.2 的 24h
+    // 冷却），避免启动瞬间 spawn 多个 PowerShell（google 探测 + gitee/github release
+    // + 下载安装包）与项目扫描抢资源。更新不急，延迟 8s 不影响体验。
+    const updateTimer = setTimeout(() => {
+      invokeCommand<{ version: string | null; installer_path: string | null }>("download_update")
+        .then((r) => {
+          if (r.installer_path && r.version) setUpdateReady({ version: r.version, path: r.installer_path });
+        })
+        .catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
+    }, 8000);
+    return () => clearTimeout(updateTimer);
   }, []);
 
   useEffect(() => {
@@ -469,9 +474,14 @@ function AppContent() {
 
   useEffect(() => {
     if (!chatAgentId) return;
-    const silent = !activeRefreshReadyRef.current;
-    activeRefreshReadyRef.current = true;
-    refetchProjects(silent)
+    // v0.7.2 需求 1：启动时 chatAgentId 从 null→value 的首次刷新与上面 useInvoke
+    // 初始化的 scan_projects 重复（都会全量扫描）。首次仅置位标记、跳过；后续真正
+    // 的 agent 切换才刷新。减少启动期一次全量扫描。
+    if (!activeRefreshReadyRef.current) {
+      activeRefreshReadyRef.current = true;
+      return;
+    }
+    refetchProjects(false)
       .then((newProjects) => {
         setCurrentProject((prev) => {
           if (!prev) return null;

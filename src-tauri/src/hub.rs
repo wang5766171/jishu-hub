@@ -78,6 +78,9 @@ pub struct AppState {
     pub agent_binary_paths: HashMap<String, String>,
     #[serde(default)]
     pub agent_last_health: HashMap<String, serde_json::Value>,
+    /// 上次自动更新检查的时间戳（epoch ms），用于 24h 冷却（v0.7.2 需求 1 / M3.2）。
+    #[serde(default)]
+    pub last_update_check: Option<i64>,
 }
 
 fn state_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -159,6 +162,18 @@ pub fn save_last_project(encoded_name: &str) -> Result<(), Box<dyn std::error::E
     save_state(&state)
 }
 
+/// 读取上次自动更新检查时间戳（epoch ms）。
+pub fn load_last_update_check() -> Option<i64> {
+    load_state().ok().and_then(|s| s.last_update_check)
+}
+
+/// 记录本次自动更新检查时间戳（v0.7.2 需求 1 / M3.2 冷却用）。
+pub fn save_last_update_check(ts: i64) -> Result<(), Box<dyn std::error::Error>> {
+    let mut state = load_state().unwrap_or_default();
+    state.last_update_check = Some(ts);
+    save_state(&state)
+}
+
 pub fn load_font_sizes() -> Result<(Option<String>, Option<String>), Box<dyn std::error::Error>> {
     let state = load_state()?;
     Ok((state.font_size_base, state.font_size_prose))
@@ -210,6 +225,22 @@ pub fn is_project_hidden(encoded_name: &str) -> Result<bool, Box<dyn std::error:
     }
     let data: HiddenProjects = read_json(&path)?;
     Ok(data.encoded_names.contains(&encoded_name.to_string()))
+}
+
+/// 一次性加载全部隐藏项目 encoded_name 集合（v0.7.2 需求 1 / M4.1）。
+/// 供扫描时批量判断，避免每个项目都重读 hidden_projects.json（N 项目 = N 次磁盘读）。
+pub fn load_hidden_set() -> std::collections::HashSet<String> {
+    let path = match hidden_projects_path() {
+        Ok(p) => p,
+        Err(_) => return std::collections::HashSet::new(),
+    };
+    if !path.exists() {
+        return std::collections::HashSet::new();
+    }
+    match read_json::<HiddenProjects>(&path) {
+        Ok(data) => data.encoded_names.into_iter().collect(),
+        Err(_) => std::collections::HashSet::new(),
+    }
 }
 
 // --- Manual Projects ---

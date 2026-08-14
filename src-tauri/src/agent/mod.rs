@@ -357,6 +357,33 @@ impl AgentRegistry {
         }
     }
 
+    /// 同步并发探测所有 agent 健康状态并更新缓存（v0.7.2 需求 1 / M2.3）。
+    ///
+    /// 用 scoped threads 并发跑 `probe_sync`（每个 agent 一个线程），把 N 个 agent
+    /// 的探测耗时从"顺序之和"降到"最慢单项"。设计为同步方法，供命令层用
+    /// `spawn_blocking` 调用以免阻塞 tokio worker。
+    pub fn refresh_health_blocking(&self) {
+        let agents: Vec<(String, &(dyn AgentPlugin + Send + Sync))> = self
+            .agents
+            .iter()
+            .map(|(id, p)| (id.clone(), p.as_ref()))
+            .collect();
+        let results: Vec<(String, AgentHealth)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = agents
+                .into_iter()
+                .map(|(id, agent)| scope.spawn(move || (id, agent.probe_sync())))
+                .collect();
+            handles
+                .into_iter()
+                .filter_map(|h| h.join().ok())
+                .collect()
+        });
+        let mut cache = self.health_cache.lock().unwrap_or_else(|e| e.into_inner());
+        for (id, health) in results {
+            cache.insert(id, health);
+        }
+    }
+
     /// Collect (id, &(dyn AgentPlugin + Send + Sync)) pairs for synchronous probing
     pub fn agents_info(&self) -> Vec<(String, &(dyn AgentPlugin + Send + Sync))> {
         self.agents
@@ -366,40 +393,47 @@ impl AgentRegistry {
     }
 
     pub fn scan_projects(&self) -> Vec<crate::project::Project> {
-        // Phase 1 (main thread): determine which agents are eligible,
-        // then spawn one thread per eligible agent via scoped threads.
-        let agents = &self.agents;
-        let health_cache = &self.health_cache;
-
+        // v0.7.2 需求 1 / M2.1：每个 agent 一个 scoped thread，把「installed 检查 +
+        // 探测 + 扫描」整体并发。此前 filter 在主线程顺序 probe_sync 全部 agent，冷启动
+        // 耗时为各项之和（实测 ~20s，Node CLI --version 各 3-5s）；改为并发后降为最慢单项。
         let per_agent: Vec<Vec<crate::project::Project>> = std::thread::scope(|scope| {
-            agents
+            let handles: Vec<_> = self
+                .agents
                 .iter()
-                .filter(|(id, agent)| {
-                    if agent.requires_installation_for_project_scan() {
-                        let now = now_ms();
-                        let installed = health_cache
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .get(*id)
-                            .map(|h| {
-                                now.saturating_sub(h.last_checked_at) < HEALTH_CACHE_TTL_MS
-                                    && h.installed
-                            })
-                            .unwrap_or(false);
-                        if !installed {
-                            let health = agent.probe_sync();
-                            let inst = health.installed;
-                            health_cache
+                .map(|(id, agent)| {
+                    scope.spawn(move || {
+                        if agent.requires_installation_for_project_scan() {
+                            let now = now_ms();
+                            let cached_installed = self
+                                .health_cache
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
-                                .insert((*id).to_string(), health);
-                            return inst;
+                                .get(id)
+                                .map(|h| {
+                                    now.saturating_sub(h.last_checked_at) < HEALTH_CACHE_TTL_MS
+                                        && h.installed
+                                })
+                                .unwrap_or(false);
+                            if !cached_installed {
+                                // miss：探测在锁外执行，不阻塞其它 agent 线程
+                                let health = agent.probe_sync();
+                                let installed = health.installed;
+                                self.health_cache
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .insert(id.to_string(), health);
+                                if !installed {
+                                    return Vec::new();
+                                }
+                            }
                         }
-                    }
-                    true
+                        agent.scan_projects()
+                    })
                 })
-                .map(|(_, agent)| scope.spawn(move || agent.scan_projects()))
-                .map(|handle| handle.join().unwrap_or_default())
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap_or_default())
                 .collect()
         });
 
