@@ -47,6 +47,20 @@ pub struct AppState {
     pub task_service: std::sync::Mutex<orchestrator::TaskService>,
 }
 
+/// 安全访问 AppState：若 Mutex 中毒（某持锁线程 panic），强制恢复内部数据继续
+/// 服务而非返回错误（v0.7.2 需求 1 / M1.6）。中毒本身说明发生过 panic，根源仍需
+/// 配合 panic 日志排查；此为兜底，避免单点 panic 传染为全功能瘫痪。
+fn with_app_state<T>(
+    state: &tauri::State<'_, Mutex<AppState>>,
+    f: impl FnOnce(&AppState) -> T,
+) -> Result<T, String> {
+    let guard = state.lock().unwrap_or_else(|poisoned| {
+        log::error!("AppState lock 中毒，已强制恢复（曾有持锁线程 panic）");
+        poisoned.into_inner()
+    });
+    Ok(f(&guard))
+}
+
 #[tauri::command]
 fn list_agents(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<agent::AgentInfo>, String> {
     let s = state
@@ -59,10 +73,16 @@ fn list_agents(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<agent::Ag
 async fn scan_projects(
     state: tauri::State<'_, Mutex<AppState>>,
 ) -> Result<Vec<project::Project>, String> {
-    let s = state
-        .lock()
-        .map_err(|_| "App state lock poisoned".to_string())?;
-    Ok(s.registry.scan_projects())
+    // v0.7.2 需求 1 / M2.1：只极短持锁克隆 Arc<registry>，立即释放，再放到
+    // spawn_blocking 跑扫描。此前整个扫描期间持 std::sync::Mutex，把阻塞 IO +
+    // 子进程 spawn 锁在临界区内，饿死 tokio worker 并串行化所有 AppState 命令。
+    let __t = std::time::Instant::now();
+    let registry = with_app_state(&state, |s| s.registry.clone())?;
+    let result = tauri::async_runtime::spawn_blocking(move || registry.scan_projects())
+        .await
+        .map_err(|e| e.to_string());
+    log::info!("[startup] scan_projects: {:?} ({} projects)", __t.elapsed(), result.as_ref().map(|v| v.len()).unwrap_or(0));
+    result
 }
 
 #[tauri::command]
@@ -773,23 +793,15 @@ fn agent_list_statuses(
 
 #[tauri::command]
 async fn agent_refresh_health(state: tauri::State<'_, Mutex<AppState>>) -> Result<(), String> {
-    let results: Vec<(String, agent::AgentHealth)> = {
-        let s = state
-            .lock()
-            .map_err(|_| "App state lock poisoned".to_string())?;
-        // Each agent's probe_sync() is synchronous 鈥?no await needed
-        s.registry
-            .agents_info()
-            .iter()
-            .map(|(id, plugin)| (id.clone(), plugin.probe_sync()))
-            .collect()
-    };
-
-    // Re-lock to update cache
-    let s = state
-        .lock()
-        .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.update_health_cache(results);
+    // v0.7.2 需求 1 / M2.2+M2.3：脱锁取 Arc<registry>，用 spawn_blocking 调
+    // refresh_health_blocking（scoped threads 并发 probe_sync）。此前命令持锁顺序
+    // probe_sync 4 个 agent，耗时为各项之和且阻塞所有 AppState 命令。
+    let __t = std::time::Instant::now();
+    let registry = with_app_state(&state, |s| s.registry.clone())?;
+    tauri::async_runtime::spawn_blocking(move || registry.refresh_health_blocking())
+        .await
+        .map_err(|e| e.to_string())?;
+    log::info!("[startup] agent_refresh_health: {:?}", __t.elapsed());
     Ok(())
 }
 
@@ -936,80 +948,102 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
         .path()
         .resource_dir()
         .map_err(|e| format!("Failed to resolve resource directory: {}", e))?;
-    eprintln!("[jishu-install] resource_dir = {}", res_dir.display());
     let mut source = res_dir.join("third_party").join("pi-bundle");
-    eprintln!(
-        "[jishu-install] source candidate 1 = {} (exists={})",
-        source.display(),
-        source.exists()
-    );
     if !source.exists() {
         source = res_dir.join("_up_").join("third_party").join("pi-bundle");
-        eprintln!(
-            "[jishu-install] source candidate 2 (_up_) = {} (exists={})",
-            source.display(),
-            source.exists()
-        );
     }
+    install_pi_bundle_from(&source)
+}
 
+/// 核心：把 pi-bundle 源目录安装到 ~/.jishu-agent（备份+覆盖+回滚）。
+/// v0.7.2 需求 5：GUI（install_internal_jishu_agent）与 CLI（run_install_agent_cli，
+/// 由 NSIS 安装器在 POSTINSTALL 调用）共用此内核，确保安装/更新 hub 时 agent 一致地
+/// 落到用户目录。需求 4 已移除 lite 的 npm 在线回退，pi-bundle 不存在即报错。
+fn install_pi_bundle_from(source: &std::path::Path) -> Result<String, String> {
     let target = crate::agent::jishu_self::pi_agent_dir().ok_or("Failed to get target dir")?;
-    eprintln!("[jishu-install] target (pi_agent_dir) = {}", target);
-
     if !source.exists() {
-        eprintln!("[jishu-install] pi-bundle NOT found → Lite mode: npm install -g @jishu-hub/jishu-agent@0.83.0-8");
-        // LITE MODE: If bundled pi is missing, fallback to installing from NPM globally
-        // This is safe because if we get here, it means the user clicked install and we are in lite build
-        // JISHU_AGENT_BINDING_START
-        let mut cmd = shell_command(
-            "npm",
-            vec![
-                "install".to_string(),
-                "-g".to_string(),
-                "@jishu-hub/jishu-agent@0.83.0-8".to_string(),
-            ],
-        );
-        // JISHU_AGENT_BINDING_END
-        let mut installer = crate::process_command::tokio_no_window(&mut cmd);
-
-        let output = installer.output().await.map_err(|e| {
-            eprintln!("[jishu-install] npm spawn failed: {e}");
-            e.to_string()
-        })?;
-        eprintln!(
-            "[jishu-install] npm install -g exit={} stdout={} stderr={}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        if output.status.success() {
-            return Ok("Pi agent installed globally from NPM (Lite version).".to_string());
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("NPM installation failed: {}", stderr));
-        }
+        return Err(format!("bundled pi-bundle not found at {}", source.display()));
     }
-
-    eprintln!("[jishu-install] pi-bundle found → Full mode: replace bundled runtime");
-    // Preserve user settings/sessions/extensions, but replace managed runtime
-    // directories so stale or partially copied dependency files cannot survive.
     if let Err(e) = std::fs::create_dir_all(&target) {
-        eprintln!("[jishu-install] create_dir_all failed: {e}");
         return Err(format!("Failed to create target directory: {}", e));
     }
-
     let backup = backup_managed_pi_runtime(std::path::Path::new(&target))?;
-    if let Err(e) = copy_dir_recursive(&source, std::path::Path::new(&target)) {
-        eprintln!("[jishu-install] copy_dir_recursive failed: {e}");
+    if let Err(e) = copy_dir_recursive(source, std::path::Path::new(&target)) {
         let _ = restore_managed_pi_runtime(std::path::Path::new(&target), &backup);
         return Err(format!("Failed to copy bundled pi agent files: {}", e));
     }
-    eprintln!("[jishu-install] copy_dir_recursive OK");
-    // pack-pi.mjs already installs, prunes, and verifies every runtime
-    // dependency before bundling. Re-running npm here only delays the IPC and
-    // makes a completed update appear stuck in the UI.
     let _ = std::fs::remove_dir_all(&backup);
+    register_jishu_cli_shim(std::path::Path::new(&target));
     Ok("Bundled Jishu Agent runtime installed.".to_string())
+}
+
+/// 在 hub 安装目录创建 `jishu` CLI shim，指向 ~/.jishu-agent 的 pi cli.js。
+/// hub 安装目录由 NSIS 加入 PATH（installer.nsh -AddToPath），故 `jishu` 命令行可用，
+/// 替代 lite 版的 npm bin 全局注册。Windows 用 jishu.cmd，macOS/Linux 用无扩展脚本 +x。
+fn register_jishu_cli_shim(agent_dir: &std::path::Path) {
+    let cli_js = agent_dir
+        .join("packages")
+        .join("coding-agent")
+        .join("dist")
+        .join("cli.js");
+    if !cli_js.exists() {
+        return;
+    }
+    let exe_dir = match std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_path_buf()))
+    {
+        Some(d) => d,
+        None => return,
+    };
+    let cli_display = cli_js.display();
+    #[cfg(target_os = "windows")]
+    {
+        let shim = exe_dir.join("jishu.cmd");
+        let content = format!("@echo off\r\nset PI_SKIP_VERSION_CHECK=1\r\nnode \"{cli_display}\" %*\r\n");
+        let _ = std::fs::write(&shim, content);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let shim = exe_dir.join("jishu");
+        let content = format!("#!/bin/sh\nexec node \"{cli_display}\" \"$@\"\n");
+        if std::fs::write(&shim, content).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = std::fs::metadata(&shim) {
+                    let mut perm = meta.permissions();
+                    perm.set_mode(0o755);
+                    let _ = std::fs::set_permissions(&shim, perm);
+                }
+            }
+        }
+    }
+}
+
+/// CLI 模式入口（v0.7.2 需求 5）：`Jishu Hub --install-agent`，由 NSIS 安装器在
+/// POSTINSTALL 阶段调用，把内嵌 pi-bundle 装到 ~/.jishu-agent。用 current_exe 推导
+/// 源路径，安装后返回退出码，不启动 GUI（windows_subsystem=windows 下不弹窗）。
+pub fn run_install_agent_cli() -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("[install-agent] current_exe failed: {e}");
+            return 1;
+        }
+    };
+    let exe_dir = exe.parent().unwrap_or(std::path::Path::new("."));
+    let mut source = exe_dir.join("third_party").join("pi-bundle");
+    if !source.exists() {
+        source = exe_dir.join("_up_").join("third_party").join("pi-bundle");
+    }
+    match install_pi_bundle_from(&source) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("[install-agent] FAILED: {e}");
+            1
+        }
+    }
 }
 
 /// Check MCP adapter installation status for a specific agent (routed through adapter contract).
@@ -1804,6 +1838,22 @@ async fn download_to_file(url: &str, dest: &std::path::Path) -> Result<(), Strin
 /// Triggered automatically (async) on app startup.
 #[tauri::command]
 async fn download_update() -> DownloadResult {
+    // v0.7.2 需求 1 / M3.2：24h 冷却，避免每次启动都跑网络探测（google 探测 +
+    // gitee/github release + 可能下载安装包）。前端 M3.1 已把调用延后到启动高峰
+    // 之后，这里进一步限频。即使本次探测失败也记录冷却，保证启动不被频繁网络请求拖累。
+    const UPDATE_CHECK_COOLDOWN_MS: i64 = 24 * 60 * 60 * 1000;
+    let now_ms = chrono::Local::now().timestamp_millis();
+    if let Some(last) = crate::hub::load_last_update_check() {
+        if now_ms - last < UPDATE_CHECK_COOLDOWN_MS {
+            return DownloadResult {
+                version: None,
+                installer_path: None,
+                error: None,
+            };
+        }
+    }
+    let _ = crate::hub::save_last_update_check(now_ms);
+
     let current = env!("CARGO_PKG_VERSION").to_string();
     let release = match fetch_latest_release().await {
         Ok((_, _, r)) => r,
@@ -2910,6 +2960,7 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            let __setup_t0 = std::time::Instant::now();
             let _ = hub::migrate_v0_5_0();
             // Phase 1: 自动注册 Conductor 扩展 + skill pack + 删除旧 skill
             task_plan::ensure_conductor_extension();
@@ -3001,6 +3052,7 @@ pub fn run() {
                     }
                 }
             }
+            log::info!("[startup] setup 闭包总耗时: {:?}", __setup_t0.elapsed());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
