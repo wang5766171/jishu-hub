@@ -843,7 +843,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                     <ChevronDown className={cn("h-3 w-3 shrink-0 transition-transform", workModeMenuOpen && "rotate-180")} />
                   </button>
                   {workModeMenuOpen && (
-                    <div className="absolute left-0 top-[calc(100%+0.45rem)] z-[80] w-32 origin-top-left rounded-xl border border-border bg-popover p-1 shadow-xl">
+                    <div className="absolute bottom-[calc(100%+0.45rem)] left-0 z-[80] w-32 origin-bottom-left rounded-xl border border-border bg-popover p-1 shadow-xl">
                       {workModeOptions.map((option) => {
                         const selected = option.value === workModeValue;
                         return (

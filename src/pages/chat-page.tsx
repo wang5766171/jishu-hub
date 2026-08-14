@@ -2304,7 +2304,7 @@ export function ChatPage({
                 <ChevronDown className={cn("h-3 w-3 shrink-0 transition-transform", modelMenuOpen && "rotate-180")} />
               </button>
               {modelMenuOpen && (
-                <div className="absolute left-5 top-[calc(100%+0.45rem)] z-[80] max-h-64 w-48 origin-top-left overflow-y-auto rounded-xl border border-border bg-popover p-1 shadow-xl">
+                <div className="absolute bottom-[calc(100%+0.45rem)] left-5 z-[80] max-h-64 w-48 origin-bottom-left overflow-y-auto rounded-xl border border-border bg-popover p-1 shadow-xl">
                   {modelOptions.map((o) => {
                     const value = `${o.provider}/${o.model}`;
                     const selected = activeModel?.provider === o.provider && activeModel?.model === o.model;
