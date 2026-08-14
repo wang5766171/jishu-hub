@@ -57,11 +57,8 @@ export const AgentSwitcher = memo(function AgentSwitcher({
     <div ref={ref} className="relative">
       <button
         onClick={() => {
-          if (!activeInstalled) {
-            setInstallAgent(active);
-            setInstallAgentDialogOpen(true);
-            return;
-          }
+          // v0.7.2：当前 agent 未安装也必须能打开下拉（否则无法切换到其它 agent，
+          // 死锁）。"未安装"确认只在下拉里选中未安装目标时弹（见下方 agent 按钮）。
           setOpen(!open);
           if (!open) refreshHealth({ silent: true });
         }}
