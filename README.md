@@ -6,7 +6,7 @@
 
 [![Version](https://img.shields.io/github/v/release/wang5766171/jishu-hub?color=blue&label=version)](https://github.com/wang5766171/jishu-hub/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://github.com/wang5766171/jishu-hub/releases)
-[![Size](https://img.shields.io/badge/size-<10MB-blue.svg)](https://github.com/wang5766171/jishu-hub/releases/latest)
+[![Size](https://img.shields.io/badge/size-<30MB-blue.svg)](https://github.com/wang5766171/jishu-hub/releases/latest)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
 
 [English](#) | [中文](README_ZH.md)
@@ -24,7 +24,7 @@ AI coding agents are evolving rapidly — Claude Code, OpenAI Codex, Open Code, 
 > **Zero overhead · Zero risk · Zero bloat**
 >
 > - **Native CLI passthrough** — connects directly to existing agent CLIs, no proxies, no wrappers, zero extra resource consumption
-> - **Instant launch, tiny footprint** — built on Tauri v2 + Rust, installer under 10 MB, cold start in under a second
+> - **Instant launch, tiny footprint** — built on Tauri v2 + Rust, installer under 30 MB, cold start in under a second
 > - **Your data stays yours** — session history lives alongside each project in its own directory; Hub metadata stored locally in `~/.jishu-hub/`; nothing is ever uploaded
 
 ## Quick Start

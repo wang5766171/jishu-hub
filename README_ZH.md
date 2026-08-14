@@ -6,7 +6,7 @@
 
 [![Version](https://img.shields.io/github/v/release/wang5766171/jishu-hub?color=blue&label=版本)](https://gitee.com/wangzwa/jishu-hub/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://gitee.com/wangzwa/jishu-hub/releases)
-[![Size](https://img.shields.io/badge/size-<10MB-blue.svg)](https://github.com/wang5766171/jishu-hub/releases/latest)
+[![Size](https://img.shields.io/badge/size-<30MB-blue.svg)](https://github.com/wang5766171/jishu-hub/releases/latest)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
 
 [English](README.md) | [中文](#)
@@ -24,7 +24,7 @@ AI 编程智能体正在快速演进 —— Claude Code、OpenAI Codex、Open Co
 > **零开销 · 零风险 · 零臃肿**
 >
 > - **原生 CLI 对接** — 直接连接已有的智能体命令行，无需代理、无需包装，零额外性能消耗
-> - **极速启动，极小体量** — 基于 Tauri v2 + Rust 构建，安装包不到 10 MB，冷启动不到 1 秒
+> - **极速启动，极小体量** — 基于 Tauri v2 + Rust 构建，安装包不到 30 MB，冷启动不到 1 秒
 > - **极致数据安全** — 会话历史保存在各项目目录下；软件元数据存储在本地 `~/.jishu-hub/`；任何数据都不会上传
 
 ## 快速开始
