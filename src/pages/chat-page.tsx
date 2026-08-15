@@ -572,6 +572,41 @@ export function ChatPage({
 
   const accessModeValue = projectSettings?.permissions?.defaultMode || "default";
   const accessModeLabel = accessModeOptions.find((option) => option.value === accessModeValue)?.label ?? t("sessions.accessDefault");
+  // ── 斜杠命令面板（A2）：GUI 本地命令注册表，不透传给 agent ──────────────
+  const hasSelectedSession = Boolean(selectedSession && selectedSession !== "new");
+  const slashCommands = useMemo(
+    () => [
+      { name: "new", label: t("sessions.slashNew"), available: Boolean(projectId) },
+      { name: "task", label: t("sessions.slashTask"), available: Boolean(projectId) },
+      { name: "rename", label: t("sessions.slashRename"), available: hasSelectedSession },
+      { name: "terminal", label: t("sessions.slashTerminal"), available: hasSelectedSession },
+      { name: "float", label: t("sessions.slashFloat"), available: hasSelectedSession },
+    ],
+    [hasSelectedSession, projectId, t],
+  );
+  const handleSlashCommand = useCallback(
+    (name: string) => {
+      switch (name) {
+        case "new":
+          handleNewSession();
+          break;
+        case "task":
+          handleOpenTaskConversation();
+          break;
+        case "rename":
+          setRenameOpen(true);
+          break;
+        case "terminal":
+          if (selectedSession) void handleResumeSession(selectedSession);
+          break;
+        case "float":
+          if (selectedSession) handleFloatSession(selectedSession);
+          break;
+      }
+    },
+    [selectedSession],
+  );
+
   const workModeOptions = useMemo(() => [
     { value: "chat", label: t("sessions.workMode.chat") },
     { value: "task", label: t("sessions.workMode.task") },
@@ -2885,6 +2920,8 @@ export function ChatPage({
               initialDraft={getSessionDraft(draftSessionKey)}
               historyScope={projectId}
               onDraftChange={(v) => setSessionDraft(draftSessionKey, v)}
+              slashCommands={slashCommands}
+              onSlashCommand={handleSlashCommand}
               containerClassName={showStartComposer ? "mx-auto w-full max-w-[var(--message-content-max-width)] px-0 pb-0 pt-0" : undefined}
               panelClassName={showStartComposer ? "rounded-[22px] border-border/70 bg-card/98 shadow-[0_18px_48px_rgba(0,0,0,0.10)]" : undefined}
               contextFooter={startComposerFooter}

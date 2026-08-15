@@ -11,6 +11,9 @@ import { MessageStaging, type StagedMessage } from "./message-staging";
 import { open } from "@tauri-apps/plugin-dialog";
 import { formatInteractionReply } from "@/lib/conversation-interaction";
 import { getInputHistory, pushInputHistory } from "@/lib/input-history";
+import { fuzzyRank } from "@/lib/fuzzy-match";
+import { useProjectFiles } from "@/lib/project-files";
+import { Command, FileText } from "lucide-react";
 import type {
   ChatSession,
   ConversationInteractionRequest,
@@ -71,6 +74,10 @@ interface ChatInputProps {
   initialDraft?: string;
   /** 输入历史的作用域（项目维度；空则禁用历史导航）。 */
   historyScope?: string | null;
+  /** 斜杠命令清单（A2）：行首 `/` 触发，available=false 的命令不显示。 */
+  slashCommands?: Array<{ name: string; label: string; available: boolean }>;
+  /** 斜杠命令执行回调：命令面板选中后调用，输入框自动清空。 */
+  onSlashCommand?: (name: string) => void;
   onDraftChange?: (value: string) => void;
   onBeforeSend?: (message: string) => Promise<boolean | void> | boolean | void;
   prepareMessageForAgent?: (message: string) => Promise<string> | string;
@@ -119,6 +126,8 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   placeholder: placeholderOverride,
   initialDraft,
   historyScope,
+  slashCommands,
+  onSlashCommand,
   onDraftChange,
   onBeforeSend,
   prepareMessageForAgent,
@@ -182,6 +191,120 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     setMessage(initialDraftRef.current ?? "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
+
+  // ── 输入建议（A2 斜杠命令 + A1 @ 文件引用）───────────────────────────────
+  // slashFilter：行首 "/" 且未出现空白时激活命令面板；
+  // atToken：光标前最近的 @ token（@ 前须为行首/空白）激活文件补全。
+  const [slashFilter, setSlashFilter] = useState<string | null>(null);
+  const [atToken, setAtToken] = useState<string | null>(null);
+  const [suggestIndex, setSuggestIndex] = useState(0);
+  const atActive = atToken !== null && allowFiles;
+  const projectFiles = useProjectFiles(projectPath, atActive);
+
+  const slashFilterText = slashFilter ?? "";
+  const slashItems = (slashCommands ?? []).filter(
+    (cmd) =>
+      cmd.available &&
+      (slashFilterText === "" ||
+        cmd.name.toLowerCase().includes(slashFilterText.toLowerCase()) ||
+        cmd.label.toLowerCase().includes(slashFilterText.toLowerCase())),
+  );
+  const fileItems = atToken !== null ? fuzzyRank(atToken, projectFiles, (f) => f, 12) : [];
+  const suggestionsActive = slashFilter !== null ? slashItems.length > 0 : fileItems.length > 0;
+
+  const closeSuggestions = useCallback(() => {
+    setSlashFilter(null);
+    setAtToken(null);
+    setSuggestIndex(0);
+  }, []);
+
+  const updateSuggestions = useCallback(
+    (value: string, caret: number) => {
+      // 斜杠：行首 / 开头且尚无空白（不支持参数，输入空格即关闭）
+      if (value.startsWith("/") && !/\s/.test(value)) {
+        setSlashFilter(value.slice(1));
+        setAtToken(null);
+        setSuggestIndex(0);
+        return;
+      }
+      setSlashFilter(null);
+      // @ 文件：光标前最近 @，@ 之前须为行首或空白，token 内无空白
+      if (!allowFiles) {
+        setAtToken(null);
+        return;
+      }
+      const beforeCaret = value.slice(0, caret);
+      const atIdx = beforeCaret.lastIndexOf("@");
+      if (
+        atIdx >= 0 &&
+        (atIdx === 0 || /\s/.test(beforeCaret[atIdx - 1])) &&
+        !/\s/.test(beforeCaret.slice(atIdx + 1))
+      ) {
+        setAtToken(beforeCaret.slice(atIdx + 1));
+        setSuggestIndex(0);
+      } else {
+        setAtToken(null);
+      }
+    },
+    [allowFiles],
+  );
+
+  const commitSlash = useCallback(
+    (name: string) => {
+      closeSuggestions();
+      setMessage("");
+      onDraftChange?.("");
+      onSlashCommand?.(name);
+    },
+    [closeSuggestions, onDraftChange, onSlashCommand],
+  );
+
+  const commitFile = useCallback(
+    (relPath: string) => {
+      const textarea = textareaRef.current;
+      const caret = textarea?.selectionStart ?? message.length;
+      const beforeCaret = message.slice(0, caret);
+      const atIdx = beforeCaret.lastIndexOf("@");
+      if (atIdx < 0) {
+        closeSuggestions();
+        return;
+      }
+      const basename = relPath.split("/").pop() || relPath;
+      const next =
+        message.slice(0, atIdx) + basename + message.slice(caret);
+      closeSuggestions();
+      setMessage(next);
+      onDraftChange?.(next);
+      // 复用既有附件管线：项目内文件以路径引用（发送时拼 JISHU_HUB_IMAGES 块）
+      if (projectPath) {
+        const localPath = `${projectPath.replace(/[\\/]+$/, "")}/${relPath}`;
+        setFiles((prev) => {
+          if (prev.some((f) => f.localPath?.replace(/\\/g, "/").toLowerCase() === localPath.replace(/\\/g, "/").toLowerCase())) {
+            return prev;
+          }
+          const ext = basename.includes(".") ? basename.split(".").pop()!.toLowerCase() : "";
+          const imageExts = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico"]);
+          return [
+            ...prev,
+            {
+              id: `at-${Date.now()}`,
+              data: "",
+              filename: basename,
+              label: basename.replace(/\.\w+$/, ""),
+              isImage: imageExts.has(ext),
+              localPath,
+            },
+          ];
+        });
+      }
+      requestAnimationFrame(() => {
+        const pos = atIdx + basename.length;
+        textarea?.setSelectionRange(pos, pos);
+        textarea?.focus();
+      });
+    },
+    [closeSuggestions, message, onDraftChange, projectPath],
+  );
   // Always-fresh mirror of the ENTIRE stagedMessagesBySession map so the
   // stagedApiRef methods (set up once) can target ANY session's staging array
   // by key — not just the currently-viewed session. This is what lets Route 2
@@ -731,6 +854,30 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // ── 输入建议键盘交互（A2/A1）：激活时优先于发送与历史导航 ─────────────
+    if (suggestionsActive) {
+      const listLength = slashFilter !== null ? slashItems.length : fileItems.length;
+      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        e.preventDefault();
+        const delta = e.key === "ArrowUp" ? -1 : 1;
+        setSuggestIndex((prev) => (prev + delta + listLength) % listLength);
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        if (slashFilter !== null) {
+          commitSlash(slashItems[Math.min(suggestIndex, listLength - 1)].name);
+        } else {
+          commitFile(fileItems[Math.min(suggestIndex, listLength - 1)].item);
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeSuggestions();
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -816,6 +963,61 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         )}
         <FilePreview files={files} onLabelChange={handleLabelChange} onRemove={handleRemoveFile} />
 
+        {(suggestionsActive || slashFilter !== null || atToken !== null) && (
+          <div className="absolute bottom-[calc(100%-0.35rem)] left-3 z-[90] max-h-56 w-80 overflow-auto rounded-xl border border-border bg-popover p-1.5 shadow-xl">
+            {slashFilter !== null ? (
+              slashItems.length > 0 ? (
+                slashItems.map((cmd, i) => (
+                  <button
+                    key={cmd.name}
+                    type="button"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      commitSlash(cmd.name);
+                    }}
+                    onMouseEnter={() => setSuggestIndex(i)}
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-fast",
+                      i === Math.min(suggestIndex, slashItems.length - 1)
+                        ? "bg-accent/70 text-foreground"
+                        : "text-muted-foreground hover:bg-accent/40",
+                    )}
+                  >
+                    <Command className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
+                    <span className="font-mono font-medium">/{cmd.name}</span>
+                    <span className="min-w-0 flex-1 truncate text-muted-foreground/70">{cmd.label}</span>
+                  </button>
+                ))
+              ) : (
+                <div className="px-2.5 py-2 text-xs text-muted-foreground/70">{t("sessions.slashNoMatch")}</div>
+              )
+            ) : fileItems.length > 0 ? (
+              fileItems.map(({ item }, i) => (
+                <button
+                  key={item}
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    commitFile(item);
+                  }}
+                  onMouseEnter={() => setSuggestIndex(i)}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-fast",
+                    i === Math.min(suggestIndex, fileItems.length - 1)
+                      ? "bg-accent/70 text-foreground"
+                      : "text-muted-foreground hover:bg-accent/40",
+                  )}
+                >
+                  <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--icon-folder)]" />
+                  <span className="truncate font-mono" dir="ltr">{item}</span>
+                </button>
+              ))
+            ) : (
+              <div className="px-2.5 py-2 text-xs text-muted-foreground/70">{t("sessions.atFileNoMatch")}</div>
+            )}
+          </div>
+        )}
+
         <textarea
           ref={textareaRef}
           value={message}
@@ -825,8 +1027,11 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
               setHistoryPos(null);
               draftBeforeHistoryRef.current = "";
             }
-            setMessage(e.target.value);
-            onDraftChange?.(e.target.value);
+            const value = e.target.value;
+            const caret = e.target.selectionStart ?? value.length;
+            setMessage(value);
+            updateSuggestions(value, caret);
+            onDraftChange?.(value);
           }}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}

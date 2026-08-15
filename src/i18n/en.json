@@ -240,7 +240,14 @@
     "usageTokensOut": "Output tokens",
     "usageCost": "Cost",
     "usageContextRemaining": "Context left ",
-    "usageAriaLabel": "Session usage"
+    "usageAriaLabel": "Session usage",
+    "slashNew": "New chat",
+    "slashTask": "Start a task",
+    "slashRename": "Rename current session",
+    "slashTerminal": "Open session in terminal",
+    "slashFloat": "Floating window",
+    "slashNoMatch": "No matching command",
+    "atFileNoMatch": "No matching project file"
   },
   "config": {
     "title": "Configuration",

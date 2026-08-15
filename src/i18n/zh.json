@@ -239,7 +239,14 @@
     "usageTokensOut": "输出 tokens",
     "usageCost": "成本",
     "usageContextRemaining": "上下文剩余 ",
-    "usageAriaLabel": "会话用量"
+    "usageAriaLabel": "会话用量",
+    "slashNew": "新对话",
+    "slashTask": "发起任务",
+    "slashRename": "重命名当前会话",
+    "slashTerminal": "在终端中打开会话",
+    "slashFloat": "悬浮窗口",
+    "slashNoMatch": "没有匹配的命令",
+    "atFileNoMatch": "没有匹配的项目文件"
   },
   "config": {
     "title": "配置管理",
