@@ -10,6 +10,7 @@ import { InteractionComposer } from "./interaction-composer";
 import { MessageStaging, type StagedMessage } from "./message-staging";
 import { open } from "@tauri-apps/plugin-dialog";
 import { formatInteractionReply } from "@/lib/conversation-interaction";
+import { getInputHistory, pushInputHistory } from "@/lib/input-history";
 import type {
   ChatSession,
   ConversationInteractionRequest,
@@ -66,6 +67,10 @@ interface ChatInputProps {
   allowFiles?: boolean;
   agentDisplayName?: string;
   placeholder?: string;
+  /** 切换会话时恢复的草稿文本（v0.7.3 需求2-A6）。 */
+  initialDraft?: string;
+  /** 输入历史的作用域（项目维度；空则禁用历史导航）。 */
+  historyScope?: string | null;
   onDraftChange?: (value: string) => void;
   onBeforeSend?: (message: string) => Promise<boolean | void> | boolean | void;
   prepareMessageForAgent?: (message: string) => Promise<string> | string;
@@ -112,6 +117,8 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   allowFiles = true,
   agentDisplayName,
   placeholder: placeholderOverride,
+  initialDraft,
+  historyScope,
   onDraftChange,
   onBeforeSend,
   prepareMessageForAgent,
@@ -157,6 +164,24 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   // auto-send via stagedApiRef in the parent), so whichever claims first wins
   // and the other short-circuits — exactly-once across the race window.
   const claimedStagedIdsBySessionRef = useRef<Map<string, Set<string>>>(new Map());
+  // ── 输入历史（v0.7.3 需求2-A6）──────────────────────────────────────────
+  // historyPos：null = 不在历史浏览；数字 = 当前指向的历史下标。
+  // 浏览前的输入文本存 ref，Down 回到底部或用户编辑时恢复。
+  const [historyPos, setHistoryPos] = useState<number | null>(null);
+  const draftBeforeHistoryRef = useRef("");
+  const historyListRef = useRef<string[]>([]);
+  historyListRef.current = getInputHistory(historyScope);
+
+  // 切换会话时恢复该会话的草稿（此前行为是残留上一会话的文本，改为按会话恢复）。
+  // 初始挂载也走此路径；initialDraft 仅在 sessionId 变化时读取，避免父组件
+  // 每次 render 的新字符串导致输入被意外重置。
+  const initialDraftRef = useRef(initialDraft);
+  initialDraftRef.current = initialDraft;
+  useEffect(() => {
+    setHistoryPos(null);
+    setMessage(initialDraftRef.current ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
   // Always-fresh mirror of the ENTIRE stagedMessagesBySession map so the
   // stagedApiRef methods (set up once) can target ANY session's staging array
   // by key — not just the currently-viewed session. This is what lets Route 2
@@ -510,6 +535,10 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     setSending(true);
     try {
       let fullMessage = message.trim();
+      // 输入历史记录用户原始输入（A6）：发送即入列，与附件组装后的内容无关
+      pushInputHistory(historyScope, message);
+      setHistoryPos(null);
+      draftBeforeHistoryRef.current = "";
 
       const localFiles = files.filter((f) => f.localPath && projectPath && isInsideProject(f.localPath, projectPath));
       const externalPathFiles = files.filter((f) => f.localPath && !(projectPath && isInsideProject(f.localPath, projectPath!)));
@@ -705,6 +734,48 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+      return;
+    }
+    // ── 输入历史导航（A6）───────────────────────────────────────────────────
+    // ↑：输入为空，或光标位于首行行首时进入/后退历史（多行编辑的行首 ↑ 不劫持）。
+    // ↓：仅在历史浏览中响应，回退到更近的历史，浏览到底则恢复浏览前草稿。
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      const textarea = e.currentTarget as HTMLTextAreaElement;
+      const history = historyListRef.current;
+      const caretToEnd = (text: string) => {
+        requestAnimationFrame(() => {
+          textarea.setSelectionRange(text.length, text.length);
+        });
+      };
+      if (e.key === "ArrowUp" && history.length > 0) {
+        const beforeCaret = message.slice(0, textarea.selectionStart ?? 0);
+        const firstLine = !beforeCaret.includes("\n");
+        const atLineStart = beforeCaret.length === 0 || beforeCaret.endsWith("\n");
+        if (message.length === 0 || (firstLine && atLineStart)) {
+          e.preventDefault();
+          const nextPos = historyPos === null ? 0 : Math.min(historyPos + 1, history.length - 1);
+          if (historyPos === null) draftBeforeHistoryRef.current = message;
+          setHistoryPos(nextPos);
+          setMessage(history[nextPos]);
+          caretToEnd(history[nextPos]);
+          return;
+        }
+      }
+      if (e.key === "ArrowDown" && historyPos !== null) {
+        e.preventDefault();
+        if (historyPos > 0) {
+          const nextPos = historyPos - 1;
+          setHistoryPos(nextPos);
+          setMessage(history[nextPos]);
+          caretToEnd(history[nextPos]);
+        } else {
+          setHistoryPos(null);
+          setMessage(draftBeforeHistoryRef.current);
+          caretToEnd(draftBeforeHistoryRef.current);
+          draftBeforeHistoryRef.current = "";
+        }
+        return;
+      }
     }
   };
 
@@ -749,6 +820,11 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
           ref={textareaRef}
           value={message}
           onChange={(e) => {
+            if (historyPos !== null) {
+              // 用户在历史浏览中编辑：退出浏览模式，从当前显示文本继续
+              setHistoryPos(null);
+              draftBeforeHistoryRef.current = "";
+            }
             setMessage(e.target.value);
             onDraftChange?.(e.target.value);
           }}

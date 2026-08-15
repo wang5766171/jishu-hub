@@ -54,6 +54,7 @@ import {
 import { AgentLogo, AgentSwitcher, useAgent } from "@/agents";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
 import { resolvePhaseSessionId, shouldRenderGlobalChatInput } from "./chat-page-layout";
+import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
 import {
   buildAssistantContentFromStreamState,
   extractRealSessionId,
@@ -132,6 +133,8 @@ export function ChatPage({
 
   // selectedSession: null or real backend UUID — never fake IDs
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
+  // 输入历史/草稿作用域（A6）：草稿按 项目+会话 维度，历史按项目维度。
+  const draftSessionKey = projectId ? `${projectId}:${selectedSession ?? "new"}` : null;
   const [sessionMessages, setSessionMessages] = useState<Message[]>([]);
   const [renameOpen, setRenameOpen] = useState(false);
   // 正在重命名的任务会话；为 null 时弹窗关闭。用对象引用区分"重命名哪个任务会话"。
@@ -2865,6 +2868,9 @@ export function ChatPage({
               allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
               agentDisplayName={active?.display_name}
               disabled={taskLaunchOpen && (!taskModeCanSend || taskLaunchReadOnly)}
+              initialDraft={getSessionDraft(draftSessionKey)}
+              historyScope={projectId}
+              onDraftChange={(v) => setSessionDraft(draftSessionKey, v)}
               containerClassName={showStartComposer ? "mx-auto w-full max-w-[var(--message-content-max-width)] px-0 pb-0 pt-0" : undefined}
               panelClassName={showStartComposer ? "rounded-[22px] border-border/70 bg-card/98 shadow-[0_18px_48px_rgba(0,0,0,0.10)]" : undefined}
               contextFooter={startComposerFooter}
