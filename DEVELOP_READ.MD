@@ -131,7 +131,7 @@ Agent Adapter -> AcpCommandSpec(codex app-server) -> AgentRuntime -> Codex App S
 当前实现锚点：
 
 - `src-tauri/src/agent_runtime.rs`：通过 adapter 的 `resolve_transport()` 选择 transport（ACP/PiRPC/CodexAppServer/CLI），GUI 流式与自治阻塞路径分派。
-- `src-tauri/src/acp_runtime.rs`：通用 ACP JSON-RPC 2.0 client runtime（含 `request_permission` 审批回填与 `elicitation/create` 业务提问回填）。
+- `src-tauri/src/acp_runtime/`：通用 ACP JSON-RPC 2.0 client runtime（连接循环与 LoopState 在 `mod.rs`；协议帧/审批与提问交互路由/elicitation 解析/事件归一化分属 `protocol.rs`/`interaction.rs`/`elicitation.rs`/`normalize.rs`，v0.7.3 需求1 拆分）。
 - `src-tauri/src/pi_rpc_runtime.rs`：Pi 原生 RPC 协议 runtime。
 - `src-tauri/src/codex_app_server_runtime.rs`：Codex app-server 协议 runtime。
 - `src-tauri/src/agent/mod.rs`：`TransportSurface` 枚举（`AcpPreferred`、`PiRpc`、`CodexAppServer`、`Cli`、`Embedded`）。
@@ -196,6 +196,7 @@ CLI transport 用于两类场景：
 - 终端启动/恢复命令。
 - 流式事件归一化。
 - 权限、工具、审批能力声明。
+- 权限模式声明与读写（v0.7.3 需求2 P-3）：`permission_modes()` 声明可选模式与读写提供方 `PermissionModeProvider`——`ProjectSettings`（agent 自己的项目设置，如 claude 三态）、`HubToolMode`（Hub 全局工具模式，如 jishu 的完整/只读）、`AgentConfig`（agent 自己的配置文件，如 codex 的 approval_policy，须实现 `get/set_permission_mode`）。AgentStatus 透出 `permission_modes` / `permission_mode_provider`，GUI 只按 capability 与 provider 值渲染和路由，禁止 agentId 分支。GUI 侧仅维护"模式值 → 本地化文案"的展示字典（值即契约）。
 
 禁止：
 
@@ -630,3 +631,32 @@ Harmes 或类似自学习能力应作为学习/evaluation/policy 层接入，不
 1. **沙箱与容错原则**：所有 macOS 下调用的 Shell 命令或路径操作，必须有 `Err()` 的兜底匹配。比如在遇到没有安装 Homebrew 时，`brew install` 执行会失败，不可令线程直接崩溃，须结构化地将无环境警告透传到前端界面。
 2. **拒绝字符串拼装路径**：跨平台文件路径全程必须使用 `std::path::PathBuf` 和 `.join()` 进行构建，严格禁止在代码中拼凑使用硬编码的 `/` 或反斜杠 `\`。
 3. **原生抽象优先**：只要需求能够通过 Rust 标准库解决（例如创建目录 `std::fs::create_dir_all`、跨系统读取环境变量 `std::env::var`），坚决不能为了图省事而借助 `shell_command` 调用 OS 底层指令（如执行系统级 `mkdir` 或 `echo`），从而最大化抹平平台的命令语义差异。
+
+
+## 18. 代码组织与文件规模约束（v0.7.3 需求1 沉淀）
+
+> 来源：v0.7.3 需求1「大文件大模块拆分」的实践结论（详见 `docs/v0.7.3/需求1-大文件大模块拆分/`）。本节为开发期的强制约束：**新增代码不允许持续堆积进既有大文件**，与分层约束同级生效。
+
+### 18.1 规模阈值与三问判定
+
+- Rust 官方无行数限制，行数只是**审视触发器**：<500 行正常；500–1000 留意；1000–2500 必须给出拆分方案或不拆理由；>2500 默认必须处置。
+- 拆分前过**三问**（全过才拆，任一不过则保留并记录理由）：
+  1. **职责问**：文件内是否存在 ≥2 个可独立命名、独立演化的关注点？
+  2. **边界问**：关注点间是否只经窄接口耦合？强耦合状态机（如连接循环与其状态枚举）必须整体保留，禁止按行切割。
+  3. **收益问**：能否**零逻辑变更**完成纯移动（不加 trait、不改签名、不引入新抽象）？需要新抽象才能拆说明边界不成熟。
+
+### 18.2 拆分手法（全部零 API 变更）
+
+1. **同类型多 `impl` 块分布多文件**：巨型 `impl TaskStore/TaskService` 按聚合/用例拆到子模块（`store/graph.rs`、`service/run.rs`…），`mod.rs` 留类型定义、构造器与跨聚合共享助手。子模块经 `use super::*` 访问父模块私有项；跨子模块项仅允许 `pub(super)` / `pub(crate)` 两档。
+2. **IPC 命令按领域分文件**：新 Tauri 命令一律进 `src-tauri/src/commands/<领域>.rs`（agents/config/projects/sessions/settings/custom_commands/terminal/presets/models/orchestrator/task/env_check/agent_install/update），`lib.rs` 只保留 `AppState`、`run()` 与 `generate_handler` 注册表；注册表用 `commands::领域::命令` 路径（Tauri 生成宏的作用域要求）。
+3. **执行引擎/transport 按职责块拆**：`daemon/engine/{schedule,execute,loops,budget,lease}.rs`；transport 的连接循环与状态机整体留在各自 `mod.rs`。
+4. **测试文件化**：跨聚合集成测试独立为同级 `tests.rs`（`#[cfg(test)] mod tests;` 文件即模块）；同模块单测随实现走。测试只移动不修改。
+5. 原 `pub` 项经根 `pub use` 重导出，外部调用路径不变。
+
+### 18.3 现行基线（v0.7.3 拆分后）
+
+`lib.rs` ~360 行（141 命令）；`store/mod.rs` ~320；`service/mod.rs` ~400；`engine/mod.rs` ~340；`acp_runtime/mod.rs` ~1050（连接循环整体保留）；`task_launch/mod.rs` ~390；单文件实现文件目标 <900 行。新需求触碰上述文件时，若为该文件新增 >100 行职责，必须评估是否新开子模块而非追加。
+
+### 18.4 前端对应约束
+
+页面级组件（如 chat-page）新增逻辑优先提取：纯函数/类型/常量 → `*-utils.ts`；成组状态 → `features/*/hooks`；可复用 UI → 子组件。对 hook 数十处互锁的 god-component，禁止机械切割，需人工设计 props/上下文边界后分批实施（chat-page 的裁决记录见需求1 04 文档）。
