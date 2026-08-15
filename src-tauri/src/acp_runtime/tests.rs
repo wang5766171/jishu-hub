@@ -184,6 +184,7 @@ fn normalizes_usage_update() {
     let events = normalize_acp_update(&params, &mut usage);
     assert!(events.is_empty());
     assert_eq!(usage.as_ref().unwrap().context_remaining, Some(195000));
+    assert_eq!(usage.as_ref().unwrap().context_window_total, Some(200_000));
     assert_eq!(usage.as_ref().unwrap().total_cost, Some(0.01));
 }
 

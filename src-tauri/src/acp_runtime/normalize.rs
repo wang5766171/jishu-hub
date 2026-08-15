@@ -150,6 +150,8 @@ pub(crate) fn normalize_acp_update(
                     .and_then(|v| v.as_u64())
                     .zip(update.get("used").and_then(|v| v.as_u64()))
                     .map(|(size, used)| size.saturating_sub(used)),
+                // usage_update 自带上下文总量（size），转发给 GUI 做水位百分比
+                context_window_total: update.get("size").and_then(|v| v.as_u64()),
             });
             vec![]
         }

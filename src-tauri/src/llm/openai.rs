@@ -209,6 +209,7 @@ fn process_sse_chunks(
                 output_tokens: u.get("completion_tokens").and_then(|v| v.as_u64()),
                 total_cost: None,
                 context_remaining: None,
+                context_window_total: None,
             });
         }
     }

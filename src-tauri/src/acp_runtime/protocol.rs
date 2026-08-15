@@ -191,6 +191,7 @@ pub(super) fn handle_prompt_response(
                 output_tokens: u.get("outputTokens").and_then(|v| v.as_u64()),
                 total_cost: None,
                 context_remaining: None,
+                context_window_total: None,
             });
         }
 

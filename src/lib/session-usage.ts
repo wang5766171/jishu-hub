@@ -14,6 +14,7 @@ export interface TurnUsagePayload {
   output_tokens?: number | null;
   total_cost?: number | null;
   context_remaining?: number | null;
+  context_window_total?: number | null;
 }
 
 export interface SessionUsage {
@@ -22,6 +23,8 @@ export interface SessionUsage {
   totalCost: number;
   /** 最近一次上报的剩余上下文（绝对 token 数；缺省为 null）。 */
   contextRemaining: number | null;
+  /** 最近一次上报的上下文总窗口（水位百分比分母；缺省为 null）。 */
+  contextWindowTotal: number | null;
   updatedAt: number;
 }
 
@@ -48,7 +51,8 @@ export function recordSessionUsage(sessionId: string, payload: TurnUsagePayload 
     payload.input_tokens != null
     || payload.output_tokens != null
     || payload.total_cost != null
-    || payload.context_remaining != null;
+    || payload.context_remaining != null
+    || payload.context_window_total != null;
   if (!hasAny) return;
 
   const prev = store.get(sessionId);
@@ -57,6 +61,7 @@ export function recordSessionUsage(sessionId: string, payload: TurnUsagePayload 
     outputTokens: (prev?.outputTokens ?? 0) + (payload.output_tokens ?? 0),
     totalCost: (prev?.totalCost ?? 0) + (payload.total_cost ?? 0),
     contextRemaining: payload.context_remaining ?? prev?.contextRemaining ?? null,
+    contextWindowTotal: payload.context_window_total ?? prev?.contextWindowTotal ?? null,
     updatedAt: Date.now(),
   });
   emit();

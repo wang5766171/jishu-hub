@@ -950,6 +950,7 @@ mod tests {
                     output_tokens: Some(20),
                     total_cost: Some(0.25),
                     context_remaining: None,
+                    context_window_total: None,
                 }),
             },
         );
@@ -976,6 +977,7 @@ mod tests {
                         output_tokens: Some(2),
                         total_cost: Some(0.1),
                         context_remaining: None,
+                        context_window_total: None,
                     }),
                 },
             ],

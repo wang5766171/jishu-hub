@@ -247,7 +247,8 @@
     "slashTerminal": "Open session in terminal",
     "slashFloat": "Floating window",
     "slashNoMatch": "No matching command",
-    "atFileNoMatch": "No matching project file"
+    "atFileNoMatch": "No matching project file",
+    "usageContextUsed": "Context {{percent}}% used"
   },
   "config": {
     "title": "Configuration",

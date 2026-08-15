@@ -63,6 +63,7 @@ impl TaskAgentRuntime for FakeAgentRuntime {
                                 output_tokens: Some(20),
                                 total_cost: Some(0.1),
                                 context_remaining: None,
+                                context_window_total: None,
                             }),
                         },
                     ],

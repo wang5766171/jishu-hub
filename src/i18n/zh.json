@@ -246,7 +246,8 @@
     "slashTerminal": "在终端中打开会话",
     "slashFloat": "悬浮窗口",
     "slashNoMatch": "没有匹配的命令",
-    "atFileNoMatch": "没有匹配的项目文件"
+    "atFileNoMatch": "没有匹配的项目文件",
+    "usageContextUsed": "上下文已用 {{percent}}%"
   },
   "config": {
     "title": "配置管理",

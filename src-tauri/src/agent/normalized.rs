@@ -442,6 +442,9 @@ pub struct UsageStats {
     pub output_tokens: Option<u64>,
     pub total_cost: Option<f64>,
     pub context_remaining: Option<u64>,
+    /// 上下文总窗口（v0.7.3 需求2：水位百分比的分母；ACP usage_update 的 size /
+    /// PiRpc 由 get_state 的 model.contextWindow 提供）。
+    pub context_window_total: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

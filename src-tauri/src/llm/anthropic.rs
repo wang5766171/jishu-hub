@@ -242,6 +242,7 @@ fn process_non_streaming_response(
             output_tokens,
             total_cost: None,
             context_remaining: None,
+            context_window_total: None,
         })
     } else {
         None
@@ -515,6 +516,7 @@ fn process_sse_chunks(
             output_tokens,
             total_cost: None,
             context_remaining: None,
+            context_window_total: None,
         })
     } else {
         None

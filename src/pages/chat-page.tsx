@@ -1608,6 +1608,7 @@ export function ChatPage({
               output_tokens?: number | null;
               total_cost?: number | null;
               context_remaining?: number | null;
+              context_window_total?: number | null;
             });
           }
           // Spurious-completion guard: when a follow-up streaming state was just

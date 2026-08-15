@@ -23,6 +23,7 @@ describe("session-usage", () => {
       output_tokens: 30,
       total_cost: 0.02,
       context_remaining: 7000,
+      context_window_total: 200_000,
     });
     const snap = getSessionUsageSnapshotForTest("s1");
     expect(snap).not.toBeNull();
@@ -30,6 +31,15 @@ describe("session-usage", () => {
     expect(snap!.outputTokens).toBe(80);
     expect(Math.abs(snap!.totalCost - 0.03)).toBeLessThan(1e-9);
     expect(snap!.contextRemaining).toBe(7000);
+    expect(snap!.contextWindowTotal).toBe(200_000);
+  });
+
+  it("context_window_total 缺省时保留上一次值（覆盖语义）", () => {
+    recordSessionUsage("s1", { input_tokens: 1, context_window_total: 100_000 });
+    recordSessionUsage("s1", { input_tokens: 1, context_remaining: 50_000 });
+    const snap = getSessionUsageSnapshotForTest("s1")!;
+    expect(snap.contextWindowTotal).toBe(100_000);
+    expect(snap.contextRemaining).toBe(50_000);
   });
 
   it("context_remaining 缺省时保留上一次值", () => {

@@ -20,7 +20,7 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::acp_runtime::{tauri_event_emitter, AcpCommand, AcpControl, AcpEventEmit};
 use crate::agent::normalized::{
     interaction_requests_from_tool_call, InteractionDeliveryHint, InteractionOption,
-    InteractionOrigin, InteractionTransport, NormalizedEvent, TurnEndReason,
+    InteractionOrigin, InteractionTransport, NormalizedEvent, TurnEndReason, UsageStats,
 };
 use crate::agent::ResolvedSessionPromptInjection;
 
@@ -233,6 +233,7 @@ async fn pi_rpc_connection_loop(
     send_pi_command(&stdin_arc, &json!({"type": "get_state"})).await?;
 
     // Read lines until we get the get_state response
+    let mut context_window: Option<u64> = None;
     let session_id = loop {
         let line = tokio::time::timeout(Duration::from_secs(30), stdout_rx.recv())
             .await
@@ -254,6 +255,12 @@ async fn pi_rpc_connection_loop(
                     .and_then(|d| d.get("sessionId"))
                     .and_then(|v| v.as_str())
                 {
+                    // 需求2：捕获 model.contextWindow 作为水位百分比分母（缺失则仅显示绝对值）
+                    context_window = msg
+                        .get("data")
+                        .and_then(|d| d.get("model"))
+                        .and_then(|m| m.get("contextWindow"))
+                        .and_then(|v| v.as_u64());
                     break sid.to_string();
                 }
             }
@@ -588,7 +595,7 @@ async fn pi_rpc_connection_loop(
                             .get("type")
                             .and_then(|v| v.as_str())
                             .unwrap_or_default();
-                        let events = normalize_pi_agent_event(&msg);
+                        let events = normalize_pi_agent_event(&msg, context_window);
 
                         if matches!(event_type, "agent_start" | "turn_start")
                             && !matches!(state, LoopState::CancelPending { .. })
@@ -825,7 +832,54 @@ async fn stdout_reader(stdout: tokio::process::ChildStdout, tx: tokio::sync::mps
 /// - `turn_start`, `turn_end`
 /// - `message_start`, `message_update`, `message_end`
 /// - `tool_execution_start`, `tool_execution_update`, `tool_execution_end`
-pub(crate) fn normalize_pi_agent_event(event: &serde_json::Value) -> Vec<NormalizedEvent> {
+/// 从 turn_end 的 message.usage 构造 UsageStats（v0.7.3 需求2：jishu-self 用量与水位）。
+/// context_tokens 公式对齐 pi `calculateContextTokens`（totalTokens 优先，否则四项求和）；
+/// context_window 来自启动时 get_state 的 model.contextWindow，缺失时仅报 in/out/cost。
+fn pi_turn_usage(event: &serde_json::Value, context_window: Option<u64>) -> Option<UsageStats> {
+    let usage = event.get("message").and_then(|m| m.get("usage"))?;
+    let num = |key: &str| usage.get(key).and_then(|v| v.as_f64()).map(|v| v as u64);
+    let input = num("input");
+    let output = num("output");
+    let cache_read = num("cacheRead");
+    let cache_write = num("cacheWrite");
+    let total_tokens = num("totalTokens");
+    let total_cost = usage
+        .get("cost")
+        .and_then(|c| c.get("total"))
+        .and_then(|v| v.as_f64());
+    if input.is_none()
+        && output.is_none()
+        && total_cost.is_none()
+        && total_tokens.is_none()
+        && cache_read.is_none()
+        && cache_write.is_none()
+    {
+        return None;
+    }
+    let context_tokens = total_tokens.filter(|v| *v > 0).or_else(|| {
+        Some(
+            input.unwrap_or(0)
+                + output.unwrap_or(0)
+                + cache_read.unwrap_or(0)
+                + cache_write.unwrap_or(0),
+        )
+    });
+    let context_remaining = context_window
+        .zip(context_tokens)
+        .map(|(total, used)| total.saturating_sub(used));
+    Some(UsageStats {
+        input_tokens: input,
+        output_tokens: output,
+        total_cost,
+        context_remaining,
+        context_window_total: context_window,
+    })
+}
+
+pub(crate) fn normalize_pi_agent_event(
+    event: &serde_json::Value,
+    context_window: Option<u64>,
+) -> Vec<NormalizedEvent> {
     let event_type = match event.get("type").and_then(|v| v.as_str()) {
         Some(t) => t,
         None => return vec![],
@@ -952,7 +1006,7 @@ pub(crate) fn normalize_pi_agent_event(event: &serde_json::Value) -> Vec<Normali
             };
             vec![NormalizedEvent::TurnComplete {
                 reason,
-                usage: None,
+                usage: pi_turn_usage(event, context_window),
             }]
         }
 
@@ -1213,6 +1267,66 @@ fn flush_buf(emit: &AcpEventEmit, session_id: &str, buf: &mut Vec<NormalizedEven
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pi_turn_usage_maps_turn_end_usage_with_watermark() {
+        let event = serde_json::json!({
+            "type": "turn_end",
+            "message": {
+                "stopReason": "end_turn",
+                "usage": {
+                    "input": 1000,
+                    "output": 300,
+                    "cacheRead": 60000,
+                    "cacheWrite": 0,
+                    "totalTokens": 61300,
+                    "cost": { "total": 0.05 }
+                }
+            }
+        });
+        let usage = pi_turn_usage(&event, Some(128_000)).unwrap();
+        assert_eq!(usage.input_tokens, Some(1000));
+        assert_eq!(usage.output_tokens, Some(300));
+        assert_eq!(usage.total_cost, Some(0.05));
+        assert_eq!(usage.context_window_total, Some(128_000));
+        // totalTokens 优先（对齐 pi calculateContextTokens），remaining = 128k - 61.3k
+        assert_eq!(usage.context_remaining, Some(128_000 - 61_300));
+
+        // totalTokens 缺省时回退四项求和
+        let event2 = serde_json::json!({
+            "message": { "usage": { "input": 10, "output": 5, "cacheRead": 5, "cacheWrite": 0 } }
+        });
+        let usage2 = pi_turn_usage(&event2, Some(100)).unwrap();
+        assert_eq!(usage2.context_remaining, Some(80));
+
+        // 无 usage / 全空 → None
+        assert!(pi_turn_usage(&serde_json::json!({ "message": {} }), Some(100)).is_none());
+        // ctx 未知 → remaining/total 为 None，in/out 仍上报
+        let usage3 = pi_turn_usage(&event2, None).unwrap();
+        assert_eq!(usage3.context_remaining, None);
+        assert_eq!(usage3.input_tokens, Some(10));
+    }
+
+    #[test]
+    fn turn_end_maps_usage_into_turn_complete() {
+        let event = serde_json::json!({
+            "type": "turn_end",
+            "message": {
+                "stopReason": "end_turn",
+                "usage": { "input": 10, "output": 2, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 12, "cost": { "total": 0.01 } }
+            }
+        });
+        let events = normalize_pi_agent_event(&event, Some(1000));
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            NormalizedEvent::TurnComplete { usage, .. } => {
+                let u = usage.as_ref().unwrap();
+                assert_eq!(u.context_window_total, Some(1000));
+                assert_eq!(u.context_remaining, Some(988));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -1231,10 +1345,13 @@ mod tests {
     /// settle branch in `run_loop` has to synthesise one (B2.5 T3).
     #[test]
     fn tool_use_turn_end_yields_no_events() {
-        let events = normalize_pi_agent_event(&json!({
-            "type": "turn_end",
-            "message": { "stopReason": "toolUse" }
-        }));
+        let events = normalize_pi_agent_event(
+            &json!({
+                "type": "turn_end",
+                "message": { "stopReason": "toolUse" }
+            }),
+            None,
+        );
         assert!(
             events.is_empty(),
             "toolUse turn_end must stay suppressed, got {events:?}"
@@ -1245,10 +1362,13 @@ mod tests {
     /// completion that `agent_settled` later forwards.
     #[test]
     fn normal_turn_end_yields_turn_complete() {
-        let events = normalize_pi_agent_event(&json!({
-            "type": "turn_end",
-            "message": { "stopReason": "end_turn" }
-        }));
+        let events = normalize_pi_agent_event(
+            &json!({
+                "type": "turn_end",
+                "message": { "stopReason": "end_turn" }
+            }),
+            None,
+        );
         assert!(
             events
                 .iter()
@@ -1259,31 +1379,37 @@ mod tests {
 
     #[test]
     fn ignores_request_user_input_tool_start_until_extension_ui_request_arrives() {
-        let events = normalize_pi_agent_event(&json!({
-            "type": "tool_execution_start",
-            "toolCallId": "call-1",
-            "toolName": "request_user_input",
-            "args": {
-                "question": "请选择发布方式",
-                "options": ["A", "B"]
-            }
-        }));
+        let events = normalize_pi_agent_event(
+            &json!({
+                "type": "tool_execution_start",
+                "toolCallId": "call-1",
+                "toolName": "request_user_input",
+                "args": {
+                    "question": "请选择发布方式",
+                    "options": ["A", "B"]
+                }
+            }),
+            None,
+        );
 
         assert!(events.is_empty());
     }
 
     #[test]
     fn detects_custom_role_phase_enter_marker() {
-        let events = normalize_pi_agent_event(&json!({
-            "type": "message_start",
-            "message": {
-                "role": "custom",
-                "customType": "jishu-conductor:phase-enter:plan",
-                "content": "进入流程规划阶段",
-                "display": true,
-                "timestamp": 0
-            }
-        }));
+        let events = normalize_pi_agent_event(
+            &json!({
+                "type": "message_start",
+                "message": {
+                    "role": "custom",
+                    "customType": "jishu-conductor:phase-enter:plan",
+                    "content": "进入流程规划阶段",
+                    "display": true,
+                    "timestamp": 0
+                }
+            }),
+            None,
+        );
 
         match events.as_slice() {
             [NormalizedEvent::PhaseDivider { phase, title }] => {
@@ -1297,14 +1423,17 @@ mod tests {
     #[test]
     fn surfaces_user_role_message_start_as_steer_injected() {
         // Pi emits this for a queued steer delivered at a tool-call gap.
-        let events = normalize_pi_agent_event(&json!({
-            "type": "message_start",
-            "message": {
-                "role": "user",
-                "content": [{ "type": "text", "text": "改用 TypeScript 实现" }],
-                "timestamp": 0
-            }
-        }));
+        let events = normalize_pi_agent_event(
+            &json!({
+                "type": "message_start",
+                "message": {
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "改用 TypeScript 实现" }],
+                    "timestamp": 0
+                }
+            }),
+            None,
+        );
 
         match events.as_slice() {
             [NormalizedEvent::SteerInjected { content }] => {
@@ -1318,28 +1447,34 @@ mod tests {
     fn ignores_assistant_role_message_start() {
         // Assistant content arrives via message_update, so the assistant
         // message_start must not be surfaced (it carries no steer).
-        let events = normalize_pi_agent_event(&json!({
-            "type": "message_start",
-            "message": {
-                "role": "assistant",
-                "content": [{ "type": "text", "text": "" }],
-                "timestamp": 0
-            }
-        }));
+        let events = normalize_pi_agent_event(
+            &json!({
+                "type": "message_start",
+                "message": {
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "" }],
+                    "timestamp": 0
+                }
+            }),
+            None,
+        );
         assert!(events.is_empty());
     }
 
     #[test]
     fn ignores_message_end_for_steer() {
         // Only message_start is converted; message_end is a duplicate marker.
-        let events = normalize_pi_agent_event(&json!({
-            "type": "message_end",
-            "message": {
-                "role": "user",
-                "content": [{ "type": "text", "text": "steer text" }],
-                "timestamp": 0
-            }
-        }));
+        let events = normalize_pi_agent_event(
+            &json!({
+                "type": "message_end",
+                "message": {
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "steer text" }],
+                    "timestamp": 0
+                }
+            }),
+            None,
+        );
         assert!(events.is_empty());
     }
 
