@@ -394,6 +394,7 @@
     "noModels": "No models configured",
     "noModelsDesc": "Click 'Add Model' above to configure your first model",
     "testModel": "Test connectivity",
+    "testModelOk": "Connected",
     "removeModel": "Remove model",
     "activeModel": "Currently active",
     "setActiveModel": "Set as active",

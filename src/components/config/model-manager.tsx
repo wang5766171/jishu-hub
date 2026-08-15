@@ -33,6 +33,7 @@ import {
   Pencil,
   Power,
   X,
+  Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -528,6 +529,33 @@ function ProviderCard({
   onSetActive: (modelId: string) => void;
 }) {
   const { t } = useTranslation();
+  const [testingId, setTestingId] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; text: string }>>({});
+
+  const runTest = async (modelId: string) => {
+    if (testingId) return;
+    setTestingId(modelId);
+    setTestResults((prev) => {
+      const next = { ...prev };
+      delete next[modelId];
+      return next;
+    });
+    try {
+      const result = await invokeCommand<{ response?: string | null; usage?: unknown }>("test_model", { id: modelId });
+      const reply = (result?.response ?? "").toString().trim();
+      setTestResults((prev) => ({
+        ...prev,
+        [modelId]: { ok: true, text: reply ? reply.slice(0, 120) : t("config.testModelOk") },
+      }));
+    } catch (e) {
+      setTestResults((prev) => ({
+        ...prev,
+        [modelId]: { ok: false, text: String(e).slice(0, 200) },
+      }));
+    } finally {
+      setTestingId(null);
+    }
+  };
   return (
     <div
       className={cn(
@@ -619,12 +647,13 @@ function ProviderCard({
                 <li
                   key={m.id}
                   className={cn(
-                    "flex items-center gap-2 rounded border px-2 py-1.5",
+                    "rounded border px-2 py-1.5 space-y-1",
                     isCurrent
                       ? "border-primary/60 bg-primary/10"
                       : "border-border/30",
                   )}
                 >
+                  <div className="flex items-center gap-2">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-xs truncate">
@@ -673,6 +702,20 @@ function ProviderCard({
                     variant="ghost"
                     size="sm"
                     className="h-6 px-1.5"
+                    onClick={() => void runTest(m.id)}
+                    disabled={testingId !== null}
+                    title={t("config.testModel")}
+                  >
+                    {testingId === m.id ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Zap className="h-3 w-3" />
+                    )}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-1.5"
                     onClick={() => onEditModel(m.id)}
                     title={t("config.editModel")}
                   >
@@ -687,6 +730,21 @@ function ProviderCard({
                   >
                     <Trash2 className="h-3 w-3" />
                   </Button>
+                  </div>
+                  {testResults[m.id] && (
+                    <div
+                      className={cn(
+                        "rounded px-2 py-1 text-[10px] font-mono break-all",
+                        testResults[m.id].ok
+                          ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                          : "bg-red-500/10 text-red-400",
+                      )}
+                      title={testResults[m.id].text}
+                    >
+                      {testResults[m.id].ok ? "✓ " : "✗ "}
+                      {testResults[m.id].text}
+                    </div>
+                  )}
                 </li>
               );
             })}

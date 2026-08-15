@@ -115,17 +115,16 @@ export function ChatPage({
     && projectSettingsSurface.scopes.includes("local")
     && projectSettingsSurface.access_modes.length > 0;
 
-  // Mid-turn steer (inject guidance without stopping output) is only possible
-  // for agents running a persistent Pi-RPC connection: that runtime delivers
-  // the steer as a real mid-turn injection and emits a `steer_injected` event
-  // so the UI can interleave the guide at its real position. ACP (claude-code
-  // / acp_preferred) has NO mid-turn steer — its `steer_chat` just queues a
-  // follow-up prompt for the next turn and never emits `steer_injected`, so
-  // the steer UI path (optimistic bubble + turn_complete commit) never fires
-  // and the guide is lost. For ACP, guide must fall back to stop+send
-  // (handled by chat-input.tsx's default path), which matches ACP's actual
-  // "steer = new prompt" semantics.
-  const supportsSteer = active?.transport === "pi_rpc";
+  // Mid-turn steer (inject guidance without stopping output) is possible for
+  // transports with a native steer channel: Pi-RPC (`steer` command, real
+  // mid-turn injection + `steer_injected` event) and Codex app-server
+  // (`turn/steer`). ACP (claude-code / acp_preferred) has NO mid-turn steer —
+  // its `steer_chat` just queues a follow-up prompt for the next turn and
+  // never emits `steer_injected`, so the steer UI path (optimistic bubble +
+  // turn_complete commit) never fires and the guide is lost. For ACP, guide
+  // must fall back to stop+send (handled by chat-input.tsx's default path),
+  // which matches ACP's actual "steer = new prompt" semantics.
+  const supportsSteer = active?.transport === "pi_rpc" || active?.transport === "codex_app_server";
   // Fresh mirror for the mount-only agent-event listener (whose useEffect deps
   // are [], so it closes over a stale `supportsSteer`). Updated every render.
   const supportsSteerRef = useRef(supportsSteer);

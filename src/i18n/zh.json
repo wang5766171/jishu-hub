@@ -392,6 +392,7 @@
     "noModels": "暂无模型配置",
     "noModelsDesc": "点击上方「添加模型」按钮配置第一个模型",
     "testModel": "测试连通性",
+    "testModelOk": "连接成功",
     "removeModel": "删除模型",
     "activeModel": "当前激活",
     "setActiveModel": "设为激活",
