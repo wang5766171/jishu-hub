@@ -78,6 +78,8 @@ interface ChatInputProps {
   slashCommands?: Array<{ name: string; label: string; available: boolean }>;
   /** 斜杠命令执行回调：命令面板选中后调用，输入框自动清空。 */
   onSlashCommand?: (name: string) => void;
+  /** 渲染在发送按钮左侧同一行的控件（v0.7.3 需求2：模型选择器+水位圆环）。 */
+  trailingControls?: ReactNode;
   onDraftChange?: (value: string) => void;
   onBeforeSend?: (message: string) => Promise<boolean | void> | boolean | void;
   prepareMessageForAgent?: (message: string) => Promise<string> | string;
@@ -128,6 +130,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   historyScope,
   slashCommands,
   onSlashCommand,
+  trailingControls,
   onDraftChange,
   onBeforeSend,
   prepareMessageForAgent,
@@ -1196,7 +1199,10 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
             </div>
           </div>
 
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5">
+            {trailingControls ? (
+              <span className="mr-2.5 inline-flex items-center">{trailingControls}</span>
+            ) : null}
             {isStreaming && !(message.trim() || files.length > 0) ? (
               <Button
                 type="button"

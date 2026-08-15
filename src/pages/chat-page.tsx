@@ -32,8 +32,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
-import {
-  HardDrive, MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, PanelRightOpen, ArrowRight, ChevronUp, ChevronDown, ChevronRight, PictureInPicture2,
+import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, PanelRightOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
@@ -56,7 +55,7 @@ import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
 import { resolvePhaseSessionId, shouldRenderGlobalChatInput } from "./chat-page-layout";
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
 import { recordSessionUsage } from "@/lib/session-usage";
-import { SessionUsageBar } from "@/components/sessions/session-usage-bar";
+import { ContextRing } from "@/components/sessions/context-ring";
 import {
   buildAssistantContentFromStreamState,
   extractRealSessionId,
@@ -2224,15 +2223,12 @@ export function ChatPage({
   const activeModelLabel = activeModel
     ? `${activeModel.provider}/${activeModel.model}`
     : (t("sessions.activeModel") || "Pick model");
-  const startComposerFooter = currentProject ? (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border/40 bg-muted/45 px-4 py-2.5 text-xs text-muted-foreground">
-      <span className="inline-flex min-w-0 items-center gap-1.5">
-        <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[var(--icon-folder)]" />
-        <span className="truncate font-medium text-foreground" title={projectDisplayName}>{projectDisplayName}</span>
-      </span>
-      {supportsModelPicker ? (
-        <span ref={modelMenuRef} className="relative inline-flex min-w-0 items-center gap-1.5">
-          <HardDrive className="h-3.5 w-3.5 shrink-0 text-[var(--icon-config)]" />
+  // 模型选择器+水位圆环（v0.7.3 需求2 收尾）：移至发送按钮左侧同一行（trailingControls）。
+  const modelTrailingControls = (
+    supportsModelPicker ? (
+        <span ref={modelMenuRef} className="relative inline-flex shrink-0 min-w-0 items-center gap-1.5">
+          {/* 水位圆环贴模型按钮左侧；整体渲染于发送按钮同一行（trailingControls） */}
+          <ContextRing sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null} />
           {modelOptions.length === 0 ? (
             <span className="truncate text-amber-400">
               {t("sessions.modelNotConfigured") || "No models — open 管理-配置"}
@@ -2247,15 +2243,15 @@ export function ChatPage({
                 title={activeModelLabel}
                 onClick={() => setModelMenuOpen((open) => !open)}
                 className={cn(
-                  "inline-flex h-8 min-w-[8.5rem] max-w-[11rem] items-center justify-between gap-1.5 rounded-full border border-border/50 bg-background/80 px-2.5 text-xs font-mono text-muted-foreground transition-fast hover:bg-accent/45 hover:text-foreground",
-                  modelMenuOpen && "border-primary/45 bg-primary/8 text-foreground shadow-sm",
+                  "inline-flex h-7 max-w-[11rem] items-center gap-1.5 rounded-md text-xs font-mono text-muted-foreground transition-fast hover:bg-accent/30 hover:text-foreground",
+                  modelMenuOpen && "bg-accent/30 text-foreground",
                 )}
               >
                 <span className="min-w-0 truncate">{activeModelLabel}</span>
-                <ChevronDown className={cn("h-3 w-3 shrink-0 transition-transform", modelMenuOpen && "rotate-180")} />
+                <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", modelMenuOpen && "rotate-180")} />
               </button>
               {modelMenuOpen && (
-                <div className="absolute bottom-[calc(100%+0.45rem)] left-5 z-[80] max-h-64 w-48 origin-bottom-left overflow-y-auto rounded-xl border border-border bg-popover p-1 shadow-xl">
+                <div className="absolute bottom-full right-0 mb-1 z-50 max-h-64 w-48 overflow-y-auto rounded-lg border border-border bg-popover p-2 shadow-lg">
                   {modelOptions.map((o) => {
                     const value = `${o.provider}/${o.model}`;
                     const selected = activeModel?.provider === o.provider && activeModel?.model === o.model;
@@ -2292,7 +2288,31 @@ export function ChatPage({
             </>
           )}
         </span>
-      ) : null}
+      ) : null
+  );
+
+  const startComposerFooter = currentProject ? (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border/40 bg-muted/45 px-4 py-2.5 text-xs text-muted-foreground">
+      {projectPath && (
+        <span className="inline-flex min-w-0 items-center gap-1">
+          <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[var(--icon-folder)]" />
+          <span className="min-w-0 max-w-[45%] truncate text-left font-mono text-[0.92em]" title={`${t("sessions.projectPath")}: ${projectPath}`}>
+            {projectPath}
+          </span>
+          {/* 单个左右堆叠箭头图标：进入项目管理页（切换项目） */}
+          <button
+            type="button"
+            onClick={onSwitchProject}
+            title={t("sessions.switchProject")}
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-fast hover:bg-accent/45 hover:text-foreground"
+          >
+            <ArrowLeftRight className="h-3.5 w-3.5" />
+          </button>
+        </span>
+      )}
+      {!supportsModelPicker && (
+        <ContextRing sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null} />
+      )}
       {/* v0.7.0 需求一：原静态智能体展示位改为可切换（AgentSwitcher 受控）。
           新会话可切换（切换 = 新建会话）；任务态只有 jishu agent 可用，保持静态展示。 */}
       {taskLaunchOpen ? (
@@ -2306,11 +2326,6 @@ export function ChatPage({
             <span className="truncate">{active.display_name}</span>
           )}
         </AgentSwitcher>
-      )}
-      {projectPath && (
-        <span className="min-w-0 flex-1 truncate text-right font-mono text-[0.92em]" title={`${t("sessions.projectPath")}: ${projectPath}`}>
-          {projectPath}
-        </span>
       )}
     </div>
   ) : null;
@@ -2327,32 +2342,13 @@ export function ChatPage({
         {/* Expanded sidebar */}
         <div className={cn("flex flex-col", sidebarCollapsed && "hidden")} style={{ background: "var(--color-layer-1)" }}>
           {/* Project card */}
-          {currentProject ? (
-            <div className="flex items-center gap-2 px-3 h-10 border-b border-border/20">
-              <FolderOpen className="h-5 w-5 shrink-0 ml-1 text-[var(--icon-folder)]" />
-              <span className="truncate text-sm font-semibold text-foreground flex-1 min-w-0 leading-none pt-[1px]" title={projectDisplayName}>{projectDisplayName}</span>
-              <button
-                onClick={onSwitchProject}
-                className="shrink-0 px-1.5 h-6 flex items-center gap-0.5 rounded-md text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-fast"
-                title={t("sessions.switchProject")}
-              >
-                <span className="leading-none pt-[1px]">{t("sessions.switchProject")}</span>
-                <ArrowRight className="h-3 w-3" />
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 px-3 h-10 border-b border-border/20">
-              <FolderOpen className="h-5 w-5 shrink-0 ml-1 text-muted-foreground/40" />
-              <span className="text-sm font-semibold text-muted-foreground leading-none pt-[1px] flex-1">{t("sessions.noProject")}</span>
-              <button
-                onClick={onSwitchProject}
-                className="shrink-0 px-1.5 h-6 flex items-center gap-0.5 rounded-md text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-fast"
-              >
-                <span className="leading-none pt-[1px]">{t("sessions.switchProject")}</span>
-                <ArrowRight className="h-3 w-3" />
-              </button>
-            </div>
-          )}
+          {/* v0.7.3 需求2：项目切换移至输入区 footer（目录旁左右箭头），左上角仅展示项目名 */}
+          <div className="flex items-center gap-2 px-3 h-10 border-b border-border/20">
+            <FolderOpen className={cn("h-5 w-5 shrink-0 ml-1", currentProject ? "text-[var(--icon-folder)]" : "text-muted-foreground/40")} />
+            <span className={cn("truncate text-sm font-semibold flex-1 min-w-0 leading-none pt-[1px]", currentProject ? "text-foreground" : "text-muted-foreground")} title={currentProject ? projectDisplayName : undefined}>
+              {currentProject ? projectDisplayName : t("sessions.noProject")}
+            </span>
+          </div>
           {/* Actions */}
           <div className="flex items-center gap-1.5 px-3 h-11 pt-2 pb-1">
             <button
@@ -2447,14 +2443,8 @@ export function ChatPage({
         {/* Collapsed sidebar header */}
         <div className={cn("flex flex-col", !sidebarCollapsed && "hidden")} style={{ background: "var(--color-layer-1)" }}>
           {/* Row 1: Project icon */}
-          <div className="flex items-center justify-center h-10 border-b border-border/20">
-            <button
-              onClick={onSwitchProject}
-              className="h-7 w-7 flex items-center justify-center rounded-lg hover:bg-accent/50 transition-fast"
-              title={currentProject?.name ?? t("sessions.noProject")}
-            >
-              <FolderOpen className="h-4 w-4 text-[var(--icon-folder)]" />
-            </button>
+          <div className="flex items-center justify-center h-10 border-b border-border/20" title={currentProject?.name ?? t("sessions.noProject")}>
+            <FolderOpen className={cn("h-4 w-4", currentProject ? "text-[var(--icon-folder)]" : "text-muted-foreground/40")} />
           </div>
           {/* Row 2: Expand button */}
           <div className="flex items-center justify-center h-11 pt-2 pb-1">
@@ -2902,9 +2892,6 @@ export function ChatPage({
                 <ChevronDown className="h-4 w-4" strokeWidth={2.5} />
               </button>
             ) : null}
-            {!showStartComposer && (
-              <SessionUsageBar sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null} />
-            )}
             <ChatInput
               ref={chatInputRef}
               sessionId={selectedSession === "new" ? null : selectedSession}
@@ -2922,6 +2909,7 @@ export function ChatPage({
               historyScope={projectId}
               onDraftChange={(v) => setSessionDraft(draftSessionKey, v)}
               slashCommands={slashCommands}
+              trailingControls={modelTrailingControls}
               onSlashCommand={handleSlashCommand}
               containerClassName={showStartComposer ? "mx-auto w-full max-w-[var(--message-content-max-width)] px-0 pb-0 pt-0" : undefined}
               panelClassName={showStartComposer ? "rounded-[22px] border-border/70 bg-card/98 shadow-[0_18px_48px_rgba(0,0,0,0.10)]" : undefined}

@@ -235,11 +235,6 @@
     "floatingComplete": "任务已完成",
     "floatingRestore": "恢复会话",
     "noTasks": "暂无任务",
-    "usageTokensIn": "输入 tokens",
-    "usageTokensOut": "输出 tokens",
-    "usageCost": "成本",
-    "usageContextRemaining": "上下文剩余 ",
-    "usageAriaLabel": "会话用量",
     "slashNew": "新对话",
     "slashTask": "发起任务",
     "slashRename": "重命名当前会话",
@@ -247,7 +242,12 @@
     "slashFloat": "悬浮窗口",
     "slashNoMatch": "没有匹配的命令",
     "atFileNoMatch": "没有匹配的项目文件",
-    "usageContextUsed": "上下文已用 {{percent}}%"
+    "usageContextUsed": "上下文已用 {{percent}}%",
+    "usageTokensIn": "输入 tokens",
+    "usageTokensOut": "输出 tokens",
+    "usageCost": "成本",
+    "usageWatermarkDetail": "剩余 {{remaining}} / {{total}} tokens",
+    "usageRuntimeNote": "计数自本次启动应用起累计"
   },
   "config": {
     "title": "配置管理",

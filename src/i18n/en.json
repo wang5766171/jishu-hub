@@ -236,11 +236,6 @@
     "floatingRestore": "Restore session",
     "saveSuccess": "Saved successfully",
     "noTasks": "No tasks yet",
-    "usageTokensIn": "Input tokens",
-    "usageTokensOut": "Output tokens",
-    "usageCost": "Cost",
-    "usageContextRemaining": "Context left ",
-    "usageAriaLabel": "Session usage",
     "slashNew": "New chat",
     "slashTask": "Start a task",
     "slashRename": "Rename current session",
@@ -248,7 +243,12 @@
     "slashFloat": "Floating window",
     "slashNoMatch": "No matching command",
     "atFileNoMatch": "No matching project file",
-    "usageContextUsed": "Context {{percent}}% used"
+    "usageContextUsed": "Context {{percent}}% used",
+    "usageTokensIn": "Input tokens",
+    "usageTokensOut": "Output tokens",
+    "usageCost": "Cost",
+    "usageWatermarkDetail": "{{remaining}} / {{total}} tokens left",
+    "usageRuntimeNote": "Accumulated since this app launch"
   },
   "config": {
     "title": "Configuration",
