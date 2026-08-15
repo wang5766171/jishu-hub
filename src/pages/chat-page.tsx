@@ -55,6 +55,8 @@ import { AgentLogo, AgentSwitcher, useAgent } from "@/agents";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
 import { resolvePhaseSessionId, shouldRenderGlobalChatInput } from "./chat-page-layout";
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
+import { recordSessionUsage } from "@/lib/session-usage";
+import { SessionUsageBar } from "@/components/sessions/session-usage-bar";
 import {
   buildAssistantContentFromStreamState,
   extractRealSessionId,
@@ -1564,6 +1566,15 @@ export function ChatPage({
           // Build final assistant/user messages from the accumulated state.
           const state = streamStore.getState(cid);
           const finalKey = state?.resolvedId ?? cid;
+          // A4/A10：记录本回合用量（字段可缺省；后续 UI 按有数据项展示）
+          if (chunk.data.usage) {
+            recordSessionUsage(finalKey, chunk.data.usage as {
+              input_tokens?: number | null;
+              output_tokens?: number | null;
+              total_cost?: number | null;
+              context_remaining?: number | null;
+            });
+          }
           // Spurious-completion guard: when a follow-up streaming state was just
           // created at the end of a turn (a manually-guided steer committed as a
           // follow-up, or Route 2 auto-sending staged guides), the (re)launched
@@ -2855,6 +2866,9 @@ export function ChatPage({
                 <ChevronDown className="h-4 w-4" strokeWidth={2.5} />
               </button>
             ) : null}
+            {!showStartComposer && (
+              <SessionUsageBar sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null} />
+            )}
             <ChatInput
               ref={chatInputRef}
               sessionId={selectedSession === "new" ? null : selectedSession}

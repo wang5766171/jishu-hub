@@ -234,7 +234,12 @@
     "floatingIdle": "等待任务...",
     "floatingComplete": "任务已完成",
     "floatingRestore": "恢复会话",
-    "noTasks": "暂无任务"
+    "noTasks": "暂无任务",
+    "usageTokensIn": "输入 tokens",
+    "usageTokensOut": "输出 tokens",
+    "usageCost": "成本",
+    "usageContextRemaining": "上下文剩余 ",
+    "usageAriaLabel": "会话用量"
   },
   "config": {
     "title": "配置管理",

@@ -235,7 +235,12 @@
     "floatingComplete": "Task completed",
     "floatingRestore": "Restore session",
     "saveSuccess": "Saved successfully",
-    "noTasks": "No tasks yet"
+    "noTasks": "No tasks yet",
+    "usageTokensIn": "Input tokens",
+    "usageTokensOut": "Output tokens",
+    "usageCost": "Cost",
+    "usageContextRemaining": "Context left ",
+    "usageAriaLabel": "Session usage"
   },
   "config": {
     "title": "Configuration",
