@@ -85,6 +85,10 @@ pub struct AgentStatus {
     /// Transport-bridge dependency status (only populated when the agent
     /// declares supports_transport_bridge — e.g. claude_code's claude-agent-acp).
     pub transport_bridge: TransportBridgeStatus,
+    /// 可切换的权限模式（空 = 不支持；v0.7.3 需求2 P-3 统一权限入口）。
+    pub permission_modes: Vec<String>,
+    /// 权限模式的读写提供方；无权限模式时为 None。
+    pub permission_mode_provider: Option<PermissionModeProvider>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -107,6 +111,18 @@ pub enum ConfigSurface {
         supports_mcp: bool,
     },
     Unsupported,
+}
+
+/// 权限模式的读写提供方（v0.7.3 需求2 P-3）：决定 GUI 的读写路径。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionModeProvider {
+    /// 模式存于 agent 自己的项目设置（project_settings_surface.access_modes）。
+    ProjectSettings,
+    /// 模式由 Hub 全局管理（agent 工具模式，PiRpc 落 --tools 白名单）。
+    HubToolMode,
+    /// 模式存于 agent 自己的配置文件（如 codex 的 approval_policy）。
+    AgentConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -306,6 +322,11 @@ impl AgentRegistry {
                 } else {
                     TransportBridgeStatus::default()
                 };
+                let (permission_modes, permission_mode_provider) = a
+                    .permission_modes()
+                    .map_or((Vec::new(), None), |(modes, provider)| {
+                        (modes, Some(provider))
+                    });
                 AgentStatus {
                     id: info.id.clone(),
                     display_name: info.display_name.clone(),
@@ -325,6 +346,8 @@ impl AgentRegistry {
                     mcp_installed,
                     mcp_version,
                     transport_bridge,
+                    permission_modes,
+                    permission_mode_provider,
                 }
             })
             .collect()
@@ -544,6 +567,8 @@ mod tests {
             mcp_installed: false,
             mcp_version: None,
             transport_bridge: TransportBridgeStatus::default(),
+            permission_modes: Vec::new(),
+            permission_mode_provider: None,
         };
 
         let value = serde_json::to_value(status).unwrap();

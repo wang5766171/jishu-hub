@@ -248,7 +248,14 @@
     "usageTokensOut": "Output tokens",
     "usageCost": "Cost",
     "usageWatermarkDetail": "{{remaining}} / {{total}} tokens left",
-    "usageRuntimeNote": "Accumulated since this app launch"
+    "usageRuntimeNote": "Accumulated since this app launch",
+    "toolModeFull": "Full access",
+    "toolModeReadonly": "Read-only access",
+    "approvalUntrusted": "Untrusted only",
+    "approvalOnFailure": "Escalate on failure",
+    "approvalOnRequest": "On request",
+    "approvalNever": "Never",
+    "accessUnset": "Not set"
   },
   "config": {
     "title": "Configuration",

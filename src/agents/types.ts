@@ -35,6 +35,10 @@ export interface AgentStatus {
   mcp_version: string | null;
   /** Transport-bridge dependency status (only meaningful when supported). */
   transport_bridge: TransportBridgeStatus;
+  /** 可切换的权限模式（空/缺省 = 不支持；v0.7.3 需求2 P-3）。 */
+  permission_modes?: string[];
+  /** 权限模式读写提供方。 */
+  permission_mode_provider?: "project_settings" | "hub_tool_mode" | "agent_config";
 }
 
 /**

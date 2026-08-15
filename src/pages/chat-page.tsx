@@ -112,10 +112,12 @@ export function ChatPage({
   const supportsModelPicker = active?.config_surface.kind === "model_store"
     ? (active.config_surface.supports_picker ?? false)
     : false;
-  const projectSettingsSurface = active?.project_settings_surface;
-  const supportsAccessModeSwitch = projectSettingsSurface?.kind === "supported"
-    && projectSettingsSurface.scopes.includes("local")
-    && projectSettingsSurface.access_modes.length > 0;
+  // P-3（需求2）：统一权限入口 —— 由 adapter capability（permission_modes）驱动，
+  // 提供方决定读写路径：project_settings=agent 项目设置 / hub_tool_mode=Hub 工具模式 /
+  // agent_config=agent 自己的配置文件。禁止按 agentId 分支。
+  const permissionModes = active?.permission_modes ?? [];
+  const permissionModeProvider = active?.permission_mode_provider ?? null;
+  const supportsAccessModeSwitch = permissionModes.length > 0;
 
   // Mid-turn steer (inject guidance without stopping output) is possible for
   // transports with a native steer channel: Pi-RPC (`steer` command, real
@@ -470,10 +472,24 @@ export function ChatPage({
   // T7：taskLaunchPhaseStates（三阶段 tab 的 done/active/pending 派生）随 TaskPhaseNavBar 一并退役。
   const [accessRefreshKey, setAccessRefreshKey] = useState(0);
   const { data: projectSettings } = useInvoke<ProjectSettings>(
-    supportsAccessModeSwitch && projectPathForSettings && activeId ? "load_project_settings_local" : "",
-    supportsAccessModeSwitch && projectPathForSettings && activeId ? { agentId: activeId, projectPath: projectPathForSettings } : undefined,
+    permissionModeProvider === "project_settings" && projectPathForSettings && activeId ? "load_project_settings_local" : "",
+    permissionModeProvider === "project_settings" && projectPathForSettings && activeId ? { agentId: activeId, projectPath: projectPathForSettings } : undefined,
     accessRefreshKey,
   );
+  // hub_tool_mode / agent_config 提供方的当前模式（project_settings 走上面的 useInvoke）
+  const [externalPermissionMode, setExternalPermissionMode] = useState<string | null>(null);
+  useEffect(() => {
+    if (permissionModeProvider !== "hub_tool_mode" && permissionModeProvider !== "agent_config") {
+      setExternalPermissionMode(null);
+      return;
+    }
+    let cancelled = false;
+    const cmd = permissionModeProvider === "hub_tool_mode" ? "get_agent_tool_mode" : "get_agent_permission_mode";
+    invokeCommand<string | null>(cmd, { agentId: activeId ?? "" })
+      .then((v) => { if (!cancelled) setExternalPermissionMode(v ?? null); })
+      .catch(() => { if (!cancelled) setExternalPermissionMode(null); });
+    return () => { cancelled = true; };
+  }, [permissionModeProvider, activeId, accessRefreshKey]);
   const messageSearchTotal = showMessageSearchControls ? messageSearchStatus.total : 0;
   const messageSearchLabel = messageSearchTotal > 0
     ? `${messageSearchStatus.current}/${messageSearchTotal}`
@@ -557,20 +573,31 @@ export function ChatPage({
   };
 
   const accessModeOptions = useMemo(() => {
-    if (projectSettingsSurface?.kind !== "supported") return [];
     const labels: Record<string, string> = {
       default: t("sessions.accessDefault"),
       bypassPermissions: t("sessions.accessBypass"),
       plan: t("sessions.accessPlan"),
+      full: t("sessions.toolModeFull"),
+      readonly: t("sessions.toolModeReadonly"),
+      untrusted: t("sessions.approvalUntrusted"),
+      "on-failure": t("sessions.approvalOnFailure"),
+      "on-request": t("sessions.approvalOnRequest"),
+      never: t("sessions.approvalNever"),
     };
-    return projectSettingsSurface.access_modes.map((value) => ({
+    return permissionModes.map((value) => ({
       value,
       label: labels[value] ?? value,
     }));
-  }, [projectSettingsSurface, t]);
+  }, [permissionModes, t]);
 
-  const accessModeValue = projectSettings?.permissions?.defaultMode || "default";
-  const accessModeLabel = accessModeOptions.find((option) => option.value === accessModeValue)?.label ?? t("sessions.accessDefault");
+  const accessModeValue = permissionModeProvider === "project_settings"
+    ? projectSettings?.permissions?.defaultMode || "default"
+    : permissionModeProvider === "hub_tool_mode"
+      ? externalPermissionMode ?? "full"
+      : externalPermissionMode;
+  const accessModeLabel = accessModeValue
+    ? accessModeOptions.find((option) => option.value === accessModeValue)?.label ?? accessModeValue
+    : t("sessions.accessUnset");
   // ── 斜杠命令面板（A2）：GUI 本地命令注册表，不透传给 agent ──────────────
   const hasSelectedSession = Boolean(selectedSession && selectedSession !== "new");
   const slashCommands = useMemo(
@@ -620,20 +647,30 @@ export function ChatPage({
   const { confirm: confirmDialog, alert: alertDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
 
   const handleAccessModeChange = useCallback(async (value: string) => {
-    if (!supportsAccessModeSwitch || !projectPathForSettings) return;
-    const nextSettings: ProjectSettings = {
-      permissions: {
-        defaultMode: value === "default" ? null : value,
-        allow: projectSettings?.permissions?.allow ?? null,
-        deny: projectSettings?.permissions?.deny ?? null,
-      },
-      hooks: projectSettings?.hooks ?? null,
-      env: projectSettings?.env ?? null,
-      model: projectSettings?.model ?? null,
-    };
-    await invokeCommand("save_project_settings_local", { agentId: activeId ?? "", projectPath: projectPathForSettings, settings: nextSettings });
-    setAccessRefreshKey(Date.now());
-  }, [activeId, projectPathForSettings, projectSettings, supportsAccessModeSwitch]);
+    if (!supportsAccessModeSwitch || !activeId) return;
+    try {
+      if (permissionModeProvider === "project_settings") {
+        if (!projectPathForSettings) return;
+        const nextSettings: ProjectSettings = {
+          permissions: {
+            defaultMode: value === "default" ? null : value,
+            allow: projectSettings?.permissions?.allow ?? null,
+            deny: projectSettings?.permissions?.deny ?? null,
+          },
+          hooks: projectSettings?.hooks ?? null,
+          env: projectSettings?.env ?? null,
+          model: projectSettings?.model ?? null,
+        };
+        await invokeCommand("save_project_settings_local", { agentId: activeId, projectPath: projectPathForSettings, settings: nextSettings });
+      } else if (permissionModeProvider === "hub_tool_mode") {
+        await invokeCommand("set_agent_tool_mode", { agentId: activeId, mode: value });
+      } else if (permissionModeProvider === "agent_config") {
+        await invokeCommand("set_agent_permission_mode", { agentId: activeId, mode: value });
+      }
+    } finally {
+      setAccessRefreshKey(Date.now());
+    }
+  }, [activeId, permissionModeProvider, projectPathForSettings, projectSettings, supportsAccessModeSwitch]);
 
   useEffect(() => {
     if (!taskLaunchOpen || agents.length === 0) return;
@@ -2922,7 +2959,7 @@ export function ChatPage({
               accessModeTitle={supportsAccessModeSwitch ? t("sessions.accessMode") : t("sessions.accessModeReadOnly")}
               accessModeReadOnly={!supportsAccessModeSwitch}
               accessModeOptions={accessModeOptions}
-              accessModeValue={accessModeValue}
+              accessModeValue={accessModeValue ?? undefined}
               onAccessModeChange={handleAccessModeChange}
               interactionRequest={activeInteraction?.request}
               onInteractionSubmit={handleInteractionSubmit}

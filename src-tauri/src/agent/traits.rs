@@ -146,6 +146,22 @@ pub trait ConfigAdapter {
     // MCP adapter methods — only meaningful when config_surface is ModelStore
     // with supports_mcp = true.
 
+    // 权限模式（v0.7.3 需求2 P-3）：agent 声明可切换的权限模式与读写提供方。
+    // 提供方决定 GUI 的读写路径：ProjectSettings（agent 项目设置）、
+    // HubToolMode（Hub 全局工具模式，PiRpc 落 --tools 白名单）、
+    // AgentConfig（agent 自己的配置文件，需实现下面两个方法）。
+    fn permission_modes(&self) -> Option<(Vec<String>, crate::agent::PermissionModeProvider)> {
+        None
+    }
+    /// 读取当前权限模式（仅 AgentConfig 提供方需要实现）。
+    fn get_permission_mode(&self) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    /// 设置权限模式（仅 AgentConfig 提供方需要实现）。
+    fn set_permission_mode(&self, _mode: &str) -> Result<(), String> {
+        Err("Permission mode not backed by agent config".to_string())
+    }
+
     /// Whether this agent supports MCP tool integration.
     fn supports_mcp(&self) -> bool {
         false

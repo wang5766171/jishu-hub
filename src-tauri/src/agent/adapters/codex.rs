@@ -214,7 +214,54 @@ impl TransportAdapter for CodexAdapter {
     }
 }
 
+impl CodexAdapter {
+    /// codex approval_policy 合法值（v0.7.3 需求2 P-4）。
+    const APPROVAL_MODES: [&'static str; 4] = ["untrusted", "on-failure", "on-request", "never"];
+}
+
 impl ConfigAdapter for CodexAdapter {
+    fn permission_modes(&self) -> Option<(Vec<String>, crate::agent::PermissionModeProvider)> {
+        // P-4：审批策略存于 ~/.codex/config.toml 的 approval_policy。
+        Some((
+            Self::APPROVAL_MODES.iter().map(|s| s.to_string()).collect(),
+            crate::agent::PermissionModeProvider::AgentConfig,
+        ))
+    }
+
+    fn get_permission_mode(&self) -> Result<Option<String>, String> {
+        let raw = self.load_raw_config()?;
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        let value: toml::Value =
+            toml::from_str(&raw).map_err(|e| format!("Invalid TOML: {}", e))?;
+        Ok(value
+            .get("approval_policy")
+            .and_then(|v| v.as_str())
+            .map(String::from))
+    }
+
+    fn set_permission_mode(&self, mode: &str) -> Result<(), String> {
+        if !Self::APPROVAL_MODES.contains(&mode) {
+            return Err(format!("Unknown approval_policy: {}", mode));
+        }
+        let raw = self.load_raw_config()?;
+        let mut toml_val: toml::Value = if raw.is_empty() {
+            toml::Value::Table(toml::map::Map::new())
+        } else {
+            toml::from_str(&raw).map_err(|e| format!("Invalid TOML: {}", e))?
+        };
+        if let Some(table) = toml_val.as_table_mut() {
+            table.insert(
+                "approval_policy".to_string(),
+                toml::Value::String(mode.to_string()),
+            );
+        }
+        let content =
+            toml::to_string_pretty(&toml_val).map_err(|e| format!("Serialization error: {}", e))?;
+        self.save_raw_config(&content)
+    }
+
     fn config_surface(&self) -> crate::agent::ConfigSurface {
         crate::agent::ConfigSurface::Structured {
             schema_id: "codex-config".to_string(),

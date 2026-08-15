@@ -247,7 +247,14 @@
     "usageTokensOut": "输出 tokens",
     "usageCost": "成本",
     "usageWatermarkDetail": "剩余 {{remaining}} / {{total}} tokens",
-    "usageRuntimeNote": "计数自本次启动应用起累计"
+    "usageRuntimeNote": "计数自本次启动应用起累计",
+    "toolModeFull": "完整权限",
+    "toolModeReadonly": "只读权限",
+    "approvalUntrusted": "仅非受信命令",
+    "approvalOnFailure": "失败后提权",
+    "approvalOnRequest": "按请求审批",
+    "approvalNever": "从不审批",
+    "accessUnset": "未设置"
   },
   "config": {
     "title": "配置管理",

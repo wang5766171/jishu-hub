@@ -289,6 +289,15 @@ impl SessionAdapter for JishuSelfAgent {
 }
 
 impl ConfigAdapter for JishuSelfAgent {
+    fn permission_modes(&self) -> Option<(Vec<String>, crate::agent::PermissionModeProvider)> {
+        // P-1：工具模式由 Hub 全局管理；readonly 在 PiRpc spawn 时落 --tools 白名单
+        // （read,grep,find,ls —— pi 内置工具全集去掉 bash/edit/write）。
+        Some((
+            vec!["full".to_string(), "readonly".to_string()],
+            crate::agent::PermissionModeProvider::HubToolMode,
+        ))
+    }
+
     fn config_surface(&self) -> crate::agent::ConfigSurface {
         crate::agent::ConfigSurface::ModelStore {
             provider: "pi".to_string(),
@@ -529,6 +538,14 @@ impl TransportAdapter for JishuSelfAgent {
         // protocol translation (prompt/abort commands, AgentEvent normalization).
         args.push("--mode".to_string());
         args.push("rpc".to_string());
+        // P-1（需求2）：只读工具模式 —— Hub 全局设置为 readonly 时追加 Pi 的
+        // --tools 白名单（内置全集 read/bash/edit/write/grep/find/ls 去掉
+        // bash/edit/write）。工具名与语义是 Pi 私有知识，属于 adapter 职责；
+        // 对此后新 spawn 的进程生效（Pi 每条消息一个进程）。
+        if crate::hub::load_agent_tool_mode("jishu-self").as_deref() == Some("readonly") {
+            args.push("--tools".to_string());
+            args.push("read,grep,find,ls".to_string());
+        }
         // Resume an existing Pi session when a real (non-transient) session id
         // is provided. Without this, Pi creates a fresh session on every process
         // spawn, losing all conversation history (the root cause of "agent

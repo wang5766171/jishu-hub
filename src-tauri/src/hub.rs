@@ -81,10 +81,29 @@ pub struct AppState {
     /// 上次自动更新检查的时间戳（epoch ms），用于 24h 冷却（v0.7.2 需求 1 / M3.2）。
     #[serde(default)]
     pub last_update_check: Option<i64>,
+    /// agent 工具模式（v0.7.3 需求2 P-1）：agent_id -> "full" | "readonly"。
+    /// Hub 全局持久化；PiRpc spawn 时按 readonly 追加 --tools 白名单。
+    #[serde(default)]
+    pub agent_tool_mode: HashMap<String, String>,
 }
 
 fn state_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(hub_dir()?.join("state.json"))
+}
+
+/// 读取某 agent 的工具模式（默认 full）。
+pub fn load_agent_tool_mode(agent_id: &str) -> Option<String> {
+    load_state().ok()?.agent_tool_mode.get(agent_id).cloned()
+}
+
+/// 设置某 agent 的工具模式并持久化（显式存储含 full 在内的所有选择，
+/// 保证读取值与用户选择一致；从未配置时读取为 None，由前端按 full 默认回退）。
+pub fn save_agent_tool_mode(agent_id: &str, mode: &str) -> Result<(), String> {
+    let mut state = load_state().map_err(|e| e.to_string())?;
+    state
+        .agent_tool_mode
+        .insert(agent_id.to_string(), mode.to_string());
+    save_state(&state).map_err(|e| e.to_string())
 }
 
 pub fn load_state() -> Result<AppState, Box<dyn std::error::Error>> {

@@ -396,6 +396,18 @@ impl TransportAdapter for ClaudeCodeAgent {
 }
 
 impl ConfigAdapter for ClaudeCodeAgent {
+    fn permission_modes(&self) -> Option<(Vec<String>, crate::agent::PermissionModeProvider)> {
+        // P-3：值与 project_settings_surface.access_modes 一致，读写仍走项目设置。
+        Some((
+            vec![
+                "default".to_string(),
+                "bypassPermissions".to_string(),
+                "plan".to_string(),
+            ],
+            crate::agent::PermissionModeProvider::ProjectSettings,
+        ))
+    }
+
     fn config_surface(&self) -> crate::agent::ConfigSurface {
         crate::agent::ConfigSurface::Structured {
             schema_id: "claude-config".to_string(),
