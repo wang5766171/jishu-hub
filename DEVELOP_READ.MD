@@ -197,6 +197,9 @@ CLI transport 用于两类场景：
 - 流式事件归一化。
 - 权限、工具、审批能力声明。
 - 权限模式声明与读写（v0.7.3 需求2 P-3）：`permission_modes()` 声明可选模式与读写提供方 `PermissionModeProvider`——`ProjectSettings`（agent 自己的项目设置，如 claude 三态）、`HubToolMode`（Hub 全局工具模式，如 jishu 的完整/只读）、`AgentConfig`（agent 自己的配置文件，如 codex 的 approval_policy，须实现 `get/set_permission_mode`）。AgentStatus 透出 `permission_modes` / `permission_mode_provider`，GUI 只按 capability 与 provider 值渲染和路由，禁止 agentId 分支。GUI 侧仅维护"模式值 → 本地化文案"的展示字典（值即契约）。
+- 内建 agent 标志（v0.7.4 需求3 M1）：`is_builtin()` 声明"随 Hub 分发/升级的内建 agent"（当前仅 jishu-self）；AgentStatus 透出 `builtin`。环境检测置顶展示、安装前置校验（Node 版本）、任务模式引擎查找等共享层分支一律按此标志，禁止写死 agent id。
+- 任务模式能力位（v0.7.4 需求3 M2）：`AgentCapabilities::TASK_MODE`（1<<34）声明"支持任务工作模式（任务图编排会话）"。会话页任务模式可用性 = 内建 agent（引擎）就绪 && 当前 agent 声明 TASK_MODE，两个条件各自语义独立。
+- 思考档位与思考控制（v0.7.4 需求4）：会话页档位选择器显隐一律由 `thinking_levels()` 声明驱动（空 = 不渲染；运行时下发走通用 AcpControl，未实现的 runtime 静默丢弃——未来 agent 支持时声明即出现，零前端改动，架构回归测试锁定）。第三方静态思考控制在配置页暴露：`ConfigSurface::Structured.supports_reasoning_effort`（codex：model_reasoning_effort 五档）与 `supports_thinking_budget`（claude：env MAX_THINKING_TOKENS 预算）。
 
 禁止：
 
