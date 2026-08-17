@@ -4,28 +4,32 @@ import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { ModelManager } from "@/components/config/model-manager";
 import { TemplateManager } from "@/components/config/template-manager";
 import { BackupManager } from "@/components/config/backup-manager";
-import { SectionHelp } from "@/components/config/section-help";
 import { McpEditor } from "@/components/config/mcp-editor";
-import { Button } from "@/components/ui/button";
+import { JishuAgentSettingsBlock } from "@/components/config/jishu-agent-settings";
 import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
-import { Download, Upload, Save } from "lucide-react";
+  ConfigPageShell,
+  AgentStatusBadge,
+  AdvancedBlock,
+  CONFIG_SECTION_META,
+} from "@/components/config/config-page-shell";
+import { Button } from "@/components/ui/button";
+import { Download, Save, Upload } from "lucide-react";
 import type { AdapterConfigPageProps } from "./index";
 
 /**
  * Config page for agents with ModelStore configuration surface.
- * Renders model provider management.
  * Used by: jishu-self.
+ *
+ * v0.7.4 需求2 R4/R5/R6：侧边栏子页导航——模型设置（当前模型大卡 +
+ * 渠道/模型两栏，ModelManager）/ 行为与权限（工具模式两卡，即时保存）/
+ * 配置模版 / 配置备份（备份 + 导出导入）/ 高级设置（MCP）。
+ * 与 structured 页同一导航与骨架，操作逻辑对齐（DEVELOP_READ §5/§8）。
  */
 export function ModelStoreConfigPage({
   configSurface,
   activeAgent,
   agentRefreshKey,
-  initialTab = "edit",
+  configTab = "models",
   switcherSlot,
 }: AdapterConfigPageProps) {
   const { t } = useTranslation();
@@ -40,7 +44,6 @@ export function ModelStoreConfigPage({
 
   const supportsMcp = configSurface.kind === "model_store" && configSurface.supports_mcp;
 
-  const [activeTab, setActiveTab] = useState<"edit" | "templates" | "backups">(initialTab);
   const [mcpSaving, setMcpSaving] = useState(false);
   const [mcpError, setMcpError] = useState<string | null>(null);
   const [mcpSuccess, setMcpSuccess] = useState<string | null>(null);
@@ -66,121 +69,109 @@ export function ModelStoreConfigPage({
     }
   };
 
-  const tabs: Array<{ key: "edit" | "templates" | "backups"; label: string }> = [
-    { key: "edit", label: t("config.editConfig") },
-    { key: "templates", label: t("config.templates") },
-    { key: "backups", label: t("config.backups") },
-  ];
+  const meta = CONFIG_SECTION_META[configTab];
 
   return (
-    <div className="flex flex-col h-full p-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h2 className="text-xl font-semibold">{t("config.title")}</h2>
-          {switcherSlot}
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={handleExport}>
-            <Download className="mr-2 h-4 w-4" />
-            {t("config.export")}
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleImport}>
-            <Upload className="mr-2 h-4 w-4" />
-            {t("config.import")}
-          </Button>
-        </div>
-      </div>
+    <ConfigPageShell
+      switcherSlot={switcherSlot}
+      statusSlot={
+        activeAgent ? (
+          <AgentStatusBadge
+            installed={activeAgent.health.installed}
+            version={activeAgent.health.version}
+          />
+        ) : undefined
+      }
+      title={t(meta.titleKey)}
+      description={t(meta.descKey)}
+    >
+      {/* 模型设置：当前模型大卡 + 服务商管理（ModelManager，即时保存） */}
+      {configTab === "models" && <ModelManager />}
 
-      <div className="flex gap-1 border-b border-border pb-0">
-        {tabs.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
-            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
-              activeTab === tab.key
-                ? "border-primary text-foreground"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="flex-1 min-h-0 overflow-y-auto pt-4">
-        {activeTab === "edit" && (
-          <>
-            {/* Configuration header */}
-            <div className="flex items-center gap-2 mb-4">
-              <h3 className="text-lg font-semibold">{t("config.configuration")}</h3>
-              <SectionHelp content={t("config.fieldMapJishuConfig")} />
+      {/* 行为与权限：Agent 行为参数（Pi 原生 settings 字段）。
+          工具模式（完整/只读）是会话时选择的能力，已在会话页提供入口，
+          不在配置页展示（2026-08-16 用户裁决）。 */}
+      {configTab === "behavior" && (
+        <div className="space-y-6">
+          <div className="space-y-2">
+            <div className="text-xs font-medium text-muted-foreground">
+              {t("config.jishuBehaviorParams")}
             </div>
-            <Accordion type="multiple" defaultValue={["model"]}>
-              <AccordionItem value="model">
-                <AccordionTrigger className="group">
-                  <span>{t("config.modelAccess")}</span>
-                </AccordionTrigger>
-                <AccordionContent>
-                  <ModelManager />
-                </AccordionContent>
-              </AccordionItem>
-              {supportsMcp && (
-                <AccordionItem value="mcp">
-                  <AccordionTrigger className="group">
-                    <span>{t("config.mcpServers")}</span>
-                  </AccordionTrigger>
-                  <AccordionContent>
-                    {mcpError && (
-                      <div className="mb-2 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-                        {mcpError}
-                      </div>
-                    )}
-                    <McpEditor 
-                      value={(agentConfig?.mcpServers as any) || null} 
-                      actions={({ value, hasError }) => (
-                        <div className="flex items-center gap-3 mr-3">
-                          {mcpSuccess && (
-                            <span className="text-xs text-green-500">{mcpSuccess}</span>
-                          )}
-                          <Button 
-                            size="sm" 
-                            className="h-6 text-xs" 
-                            disabled={hasError || mcpSaving}
-                            onClick={async () => {
-                              setMcpSaving(true);
-                              setMcpError(null);
-                              setMcpSuccess(null);
-                              try {
-                                await invokeCommand("save_config", { agentId, config: { mcpServers: value } });
-                                refetchAgentConfig();
-                                setMcpSuccess(t("config.saveSuccess"));
-                                setTimeout(() => setMcpSuccess(null), 3000);
-                              } catch (err) {
-                                setMcpError(String(err));
-                              } finally {
-                                setMcpSaving(false);
-                              }
-                            }}
-                          >
-                            <Save className="mr-1 h-3 w-3" />
-                            {t("common.save")}
-                          </Button>
-                        </div>
-                      )}
-                    />
-                  </AccordionContent>
-                </AccordionItem>
-              )}
-            </Accordion>
-          </>
-        )}
-        {activeTab === "templates" && (
-          <TemplateManager onApplied={refetchAgentConfig} />
-        )}
-        {activeTab === "backups" && (
+            <p className="text-[11px] leading-relaxed text-muted-foreground/80">
+              {t("config.jishuBehaviorHintV3")}
+            </p>
+            <JishuAgentSettingsBlock agentConfig={agentConfig ?? null} onSaved={refetchAgentConfig} />
+          </div>
+        </div>
+      )}
+
+      {/* 配置模版 */}
+      {configTab === "templates" && <TemplateManager onApplied={refetchAgentConfig} />}
+
+      {/* R5/R6：备份独立子页；导入导出并入本页 */}
+      {configTab === "backups" && (
+        <div className="space-y-4">
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={handleExport}>
+              <Download className="mr-2 h-3.5 w-3.5" />
+              {t("config.export")}
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleImport}>
+              <Upload className="mr-2 h-3.5 w-3.5" />
+              {t("config.import")}
+            </Button>
+          </div>
           <BackupManager onRestored={refetchAgentConfig} />
-        )}
-      </div>
-    </div>
+        </div>
+      )}
+
+      {/* 高级设置：MCP */}
+      {configTab === "advanced" && (
+        <div className="space-y-4">
+          {supportsMcp && (
+            <AdvancedBlock title={t("config.mcpServers")}>
+              {mcpError && (
+                <div className="mb-2 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                  {mcpError}
+                </div>
+              )}
+              <McpEditor
+                value={(agentConfig?.mcpServers as never) || null}
+                actions={({ value, hasError }) => (
+                  <div className="flex items-center gap-3 mr-3">
+                    {mcpSuccess && (
+                      <span className="text-xs text-green-500">{mcpSuccess}</span>
+                    )}
+                    <Button
+                      size="sm"
+                      className="h-6 text-xs"
+                      disabled={hasError || mcpSaving}
+                      onClick={async () => {
+                        setMcpSaving(true);
+                        setMcpError(null);
+                        setMcpSuccess(null);
+                        try {
+                          await invokeCommand("save_config", { agentId, config: { mcpServers: value } });
+                          refetchAgentConfig();
+                          setMcpSuccess(t("config.saveSuccess"));
+                          setTimeout(() => setMcpSuccess(null), 3000);
+                        } catch (err) {
+                          setMcpError(String(err));
+                        } finally {
+                          setMcpSaving(false);
+                        }
+                      }}
+                    >
+                      <Save className="mr-1 h-3 w-3" />
+                      {t("common.save")}
+                    </Button>
+                  </div>
+                )}
+              />
+            </AdvancedBlock>
+          )}
+        </div>
+      )}
+    </ConfigPageShell>
   );
 }

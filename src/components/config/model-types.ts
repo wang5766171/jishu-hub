@@ -44,6 +44,39 @@ export interface HeaderRow {
   value: string;
 }
 
+/** Pi 思考档位全集（顺序即收敛查找顺序）。 */
+export const THINKING_LEVEL_ALL = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+/**
+ * 从 models.json 的 thinkingLevelMap 声明推导「支持的档位」列表。
+ * 语义与 Pi getSupportedThinkingLevels 一致：值为 null = 不支持；
+ * xhigh/max 需显式声明（mapped !== undefined）才支持；无声明时默认
+ * off..high。v0.7.4 A7 修复：GLM-5.3 等不支持关闭思考的模型由此收敛。
+ */
+export function supportedThinkingLevels(map?: Record<string, unknown>): string[] {
+  if (!map) return ["off", "minimal", "low", "medium", "high"];
+  return THINKING_LEVEL_ALL.filter((lvl) => {
+    const mapped = map[lvl];
+    if (mapped === null) return false; // 显式声明不支持
+    if (lvl === "xhigh" || lvl === "max") return mapped !== undefined; // 需显式声明
+    return true; // off..high 未声明 = 默认支持
+  });
+}
+
+/** 由支持的档位列表构造 thinkingLevelMap 声明（全默认时返回 undefined，保持文件干净）。 */
+export function thinkingLevelMapFromSupported(supported: string[]): Record<string, string | null> | undefined {
+  const map: Record<string, string | null> = {};
+  let hasDeclaration = false;
+  for (const lvl of THINKING_LEVEL_ALL) {
+    const isSupported = supported.includes(lvl);
+    const isDefault = lvl !== "xhigh" && lvl !== "max"; // 默认支持 off..high
+    if (isSupported === isDefault) continue;
+    hasDeclaration = true;
+    map[lvl] = isSupported ? lvl : null;
+  }
+  return hasDeclaration ? map : undefined;
+}
+
 export interface ModelFormValue {
   id: string;
   contextWindow: string;
@@ -53,6 +86,8 @@ export interface ModelFormValue {
   inputImage: boolean;
   baseUrl: string;
   api: string;
+  /** 支持的思考档位（reasoning=true 时有意义；见 supportedThinkingLevels）。 */
+  thinkingLevels: string[];
 }
 
 export function emptyModelValue(): ModelFormValue {
@@ -65,6 +100,7 @@ export function emptyModelValue(): ModelFormValue {
     inputImage: false,
     baseUrl: "",
     api: "",
+    thinkingLevels: ["off", "minimal", "low", "medium", "high"],
   };
 }
 
@@ -78,6 +114,7 @@ export function modelToValue(m: PiModelEntry): ModelFormValue {
     inputImage: m.input?.includes("image") ?? false,
     baseUrl: m.baseUrl ?? "",
     api: m.api ?? "",
+    thinkingLevels: supportedThinkingLevels(m.thinkingLevelMap as Record<string, unknown> | undefined),
   };
 }
 
@@ -102,5 +139,9 @@ export function valueToModel(v: ModelFormValue): PiModelEntry {
   if (!Number.isNaN(mt)) entry.maxTokens = mt;
   if (v.api.trim()) entry.api = v.api.trim();
   if (v.baseUrl.trim()) entry.baseUrl = v.baseUrl.trim();
+  if (v.reasoning) {
+    const map = thinkingLevelMapFromSupported(v.thinkingLevels);
+    if (map) entry.thinkingLevelMap = map;
+  }
   return entry;
 }

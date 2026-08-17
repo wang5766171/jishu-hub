@@ -43,6 +43,8 @@ export interface AgentStatus {
   thinking_level?: string | null;
   /** 权限模式读写提供方。 */
   permission_mode_provider?: "project_settings" | "hub_tool_mode" | "agent_config";
+  /** 内建 agent（随 hub 分发/升级；环境检测置顶、任务模式引擎；v0.7.4 需求3 M1）。 */
+  builtin?: boolean;
 }
 
 /**
@@ -73,13 +75,27 @@ export type ConfigSurface =
       supports_proxy_setup?: boolean;
       /** 「测试连接」按钮显隐（v0.7.4 需求2 R2c）。 */
       supports_config_test?: boolean;
+      /** 「推理力度」配置入口显隐（v0.7.4 需求4 B1：codex 声明；新会话生效）。 */
+      supports_reasoning_effort?: boolean;
+      /** 思考预算快捷入口（env.MAX_THINKING_TOKENS）显隐（需求4 B1：claude 声明）。 */
+      supports_thinking_budget?: boolean;
+      /** 模型推荐目录标识（"claude" / "opencode"；缺省 = 仅自由输入）。 */
+      model_catalog?: string | null;
+      /** 自定义模型供应商管理入口显隐（R12：opencode 声明）。 */
+      supports_custom_providers?: boolean;
     }
   | { kind: "raw"; format: string }
   | { kind: "model_store"; provider: string; supports_picker: boolean; supports_mcp: boolean }
   | { kind: "unsupported" };
 
 export type ProjectSettingsSurface =
-  | { kind: "supported"; scopes: ProjectSettingsScope[]; access_modes: string[] }
+  | {
+      kind: "supported";
+      scopes: ProjectSettingsScope[];
+      access_modes: string[];
+      /** 该 agent 项目配置支持的字段（permissions/env/model/hooks/thinking_level 子集）。 */
+      fields?: string[];
+    }
   | { kind: "unsupported"; reason: string | null };
 
 export type ProjectSettingsScope = "shared" | "local";
@@ -138,6 +154,7 @@ export const CapabilityFlags: Record<string, bigint> = {
 
   PRE_EXECUTION_INTERCEPTION: 4294967296n, // 1<<32
   CONTEXT_COMPACT: 8589934592n,            // 1<<33（v0.7.4 需求1 A3）
+  TASK_MODE: 17179869184n,                 // 1<<34（v0.7.4 需求3 M2 任务工作模式）
 
   CONFIG_GLOBAL: 1099511627776n,   // 1<<40
   CONFIG_PROJECT: 2199023255552n,  // 1<<41

@@ -111,9 +111,10 @@ function extractConfigItems(config: ClaudeConfig, t: (k: string, opts?: Record<s
   return items;
 }
 
-function ConfigSummary({ config }: { config: ClaudeConfig }) {
+function ConfigSummary({ config }: { config: Record<string, unknown> }) {
   const { t } = useTranslation();
-  const items = extractConfigItems(config, t);
+  // 摘要仅识别 claude 形状字段，其余结构自然略过。
+  const items = extractConfigItems(config as unknown as ClaudeConfig, t);
 
   if (items.length === 0) return null;
 
@@ -138,7 +139,7 @@ function ConfigSummary({ config }: { config: ClaudeConfig }) {
 interface TemplateCardProps {
   name: string;
   description?: string;
-  config: ClaudeConfig;
+  config: Record<string, unknown>;
   createdAt?: string;
   isSystem?: boolean;
   onApply: () => void;
@@ -208,9 +209,9 @@ function TemplateCard({ name, description, config, createdAt, isSystem, onApply,
 function TemplateDetailDialog({ open, onOpenChange, template, editable, onSave }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  template: { name: string; description?: string; config: ClaudeConfig; createdAt?: string } | null;
+  template: { name: string; description?: string; config: Record<string, unknown>; createdAt?: string } | null;
   editable: boolean;
-  onSave?: (name: string, description: string, config: ClaudeConfig) => void;
+  onSave?: (name: string, description: string, config: Record<string, unknown>) => void;
 }) {
   const { t } = useTranslation();
   const [editName, setEditName] = useState("");
@@ -234,7 +235,7 @@ function TemplateDetailDialog({ open, onOpenChange, template, editable, onSave }
     setSaving(true);
     try {
       const parsed = JSON.parse(editJson);
-      onSave(editName.trim(), editDesc.trim(), parsed as ClaudeConfig);
+      onSave(editName.trim(), editDesc.trim(), parsed as Record<string, unknown>);
       onOpenChange(false);
     } catch {
       setJsonError(t("config.invalidJson"));
@@ -312,14 +313,15 @@ function FillAndApplyDialog({ open, onOpenChange, template, onApply }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   template: ConfigTemplateView | null;
-  onApply: (config: ClaudeConfig) => void;
+  onApply: (config: Record<string, unknown>) => void;
 }) {
   const { t } = useTranslation();
   const [envValues, setEnvValues] = useState<Record<string, string>>({});
   const [modelValue, setModelValue] = useState("");
 
+  const templateEnv = (template?.config.env ?? {}) as Record<string, string>;
   const emptyEnvKeys = template
-    ? Object.entries(template.config.env ?? {})
+    ? Object.entries(templateEnv)
       .filter(([, v]) => !v)
       .map(([k]) => k)
     : [];
@@ -340,9 +342,9 @@ function FillAndApplyDialog({ open, onOpenChange, template, onApply }: {
 
   const handleApply = () => {
     if (!template) return;
-    const config = { ...template.config };
+    const config: Record<string, unknown> = { ...template.config };
     if (Object.keys(envValues).length > 0) {
-      const env = { ...(config.env ?? {}) };
+      const env = { ...templateEnv };
       for (const [k, v] of Object.entries(envValues)) {
         if (v) env[k] = v;
       }
@@ -373,7 +375,7 @@ function FillAndApplyDialog({ open, onOpenChange, template, onApply }: {
         {template && (
           <div className="space-y-4 py-2">
             <p className="text-sm text-muted-foreground">{t("config.fillRequiredDesc")}</p>
-            {template.id === "proxy-config" && (
+            {emptyEnvKeys.includes("ANTHROPIC_BASE_URL") && (
               <div className="space-y-2 mb-4 p-4 border rounded bg-muted/30">
                 <Label>{t("config.presetStepChoose")}</Label>
                 <select
@@ -432,7 +434,7 @@ function FillAndApplyDialog({ open, onOpenChange, template, onApply }: {
   );
 }
 
-function cleanConfigForJson(config: ClaudeConfig): Record<string, unknown> {
+function cleanConfigForJson(config: Record<string, unknown>): Record<string, unknown> {
   const val = JSON.parse(JSON.stringify(config));
   if (val && typeof val === "object") {
     const obj = val as Record<string, unknown>;
@@ -463,64 +465,19 @@ function cleanConfigForJson(config: ClaudeConfig): Record<string, unknown> {
   return val;
 }
 
-type ConfigTemplateView = Omit<ConfigTemplate, "config"> & { config: ClaudeConfig };
+type ConfigTemplateView = Omit<ConfigTemplate, "config"> & { config: Record<string, unknown> };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-function booleanOrNull(value: unknown): boolean | null {
-  return typeof value === "boolean" ? value : null;
-}
-
-function numberOrNull(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function stringArrayOrNull(value: unknown): string[] | null {
-  return Array.isArray(value) && value.every((item) => typeof item === "string")
-    ? value
-    : null;
-}
-
-function stringRecordOrNull(value: unknown): Record<string, string> | null {
-  if (!isRecord(value)) return null;
-  const entries = Object.entries(value).filter(([, val]) => typeof val === "string") as [string, string][];
-  return Object.fromEntries(entries);
-}
-
-function objectOrNull<T>(value: unknown): T | null {
-  return isRecord(value) ? (value as T) : null;
-}
-
-function normalizeClaudeConfig(value: unknown): ClaudeConfig {
-  const config = isRecord(value) ? value : {};
-  return {
-    model: stringOrNull(config.model),
-    env: stringRecordOrNull(config.env),
-    enabledPlugins: objectOrNull<Record<string, boolean>>(config.enabledPlugins),
-    skipDangerousModePermissionPrompt: booleanOrNull(config.skipDangerousModePermissionPrompt),
-    permissions: objectOrNull<ClaudeConfig["permissions"]>(config.permissions),
-    mcpServers: objectOrNull<ClaudeConfig["mcpServers"]>(config.mcpServers),
-    apiProvider: stringOrNull(config.apiProvider),
-    smallModel: stringOrNull(config.smallModel),
-    largeModel: stringOrNull(config.largeModel),
-    allowedTools: stringArrayOrNull(config.allowedTools),
-    disallowedTools: stringArrayOrNull(config.disallowedTools),
-    hooks: objectOrNull<ClaudeConfig["hooks"]>(config.hooks),
-    sandbox: objectOrNull<ClaudeConfig["sandbox"]>(config.sandbox),
-    verbose: booleanOrNull(config.verbose),
-    maxTurns: numberOrNull(config.maxTurns),
-    contextCompaction: objectOrNull<ClaudeConfig["contextCompaction"]>(config.contextCompaction),
-  };
-}
-
+// 适配层驱动：模版 config 原样透传——此前所有模版（含 jishu 用户模版）
+// 都被 normalizeClaudeConfig 剥成 claude 形状，非 claude 字段在应用时
+// 静默丢失。是否需要补填由 ConfigTemplate.requires_fill（各 adapter
+// 在 config_templates() 中声明）决定，前端不嗅探字段猜 agent。
 function toConfigTemplateView(template: ConfigTemplate): ConfigTemplateView {
-  return { ...template, config: normalizeClaudeConfig(template.config) };
+  const raw = template.config;
+  const config =
+    typeof raw === "object" && raw !== null && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
+  return { ...template, config };
 }
 
 export function TemplateManager({ onApplied }: TemplateManagerProps) {
@@ -538,12 +495,18 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
     activeId ? { agentId: activeId } : undefined,
     agentRefreshKey,
   );
-  const { data: currentConfig } = useInvoke<ClaudeConfig>(
+  const { data: currentConfig } = useInvoke<Record<string, unknown>>(
     activeId ? "load_config" : "",
     activeId ? { agentId: activeId } : undefined,
     agentRefreshKey,
   );
   const [applyError, setApplyError] = useState<string | null>(null);
+  // v0.7.4：应用成功反馈（此前静默成功，用户无从确认模版已写入）。
+  const [applySuccess, setApplySuccess] = useState<string | null>(null);
+  const flashApplySuccess = () => {
+    setApplySuccess(t("config.applyTemplateSuccess"));
+    setTimeout(() => setApplySuccess(null), 3000);
+  };
 
   // Save current as preset dialog
   const [saveOpen, setSaveOpen] = useState(false);
@@ -556,7 +519,7 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
 
   // Detail / Edit dialog
   const [detailOpen, setDetailOpen] = useState(false);
-  const [detailTarget, setDetailTarget] = useState<{ name: string; description?: string; config: ClaudeConfig; createdAt?: string } | null>(null);
+  const [detailTarget, setDetailTarget] = useState<{ name: string; description?: string; config: Record<string, unknown>; createdAt?: string } | null>(null);
   const [detailEditable, setDetailEditable] = useState(false);
   const [detailPresetId, setDetailPresetId] = useState<string | null>(null);
 
@@ -565,7 +528,14 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
   const [fillTemplate, setFillTemplate] = useState<ConfigTemplateView | null>(null);
 
   const handleApplySystem = (template: ConfigTemplateView) => {
-    const hasEmptyEnv = Object.values(template.config.env ?? {}).some((v) => !v);
+    // 补填弹窗按 adapter 声明的 requires_fill 门控（claude 模版需要补填
+    // 密钥/模型；jishu 模版直接应用）——适配层驱动，不嗅探配置字段。
+    if (!template.requires_fill) {
+      doApplyConfig(template.config);
+      return;
+    }
+    const env = (template.config.env ?? {}) as Record<string, string>;
+    const hasEmptyEnv = Object.values(env).some((v) => !v);
     const needsModel = !template.config.model;
     if (hasEmptyEnv || needsModel) {
       setFillTemplate(template);
@@ -575,11 +545,12 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
     }
   };
 
-  const doApplyConfig = async (config: ClaudeConfig) => {
+  const doApplyConfig = async (config: Record<string, unknown>) => {
     setApplyError(null);
     try {
       await invokeCommand("save_config", { agentId: activeId ?? "", config });
       onApplied();
+      flashApplySuccess();
     } catch (err) {
       console.error("Failed to apply template:", err);
       setApplyError(String(err));
@@ -609,7 +580,7 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
     }
   };
 
-  const handleNewTemplate = async (name: string, description: string, config: ClaudeConfig) => {
+  const handleNewTemplate = async (name: string, description: string, config: Record<string, unknown>) => {
     const preset: Preset = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       name,
@@ -625,6 +596,7 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
     try {
       await invokeCommand("apply_preset", { agentId: activeId ?? "", id });
       onApplied();
+      flashApplySuccess();
     } catch (err) {
       console.error("Failed to apply user template:", err);
       setApplyError(String(err));
@@ -640,7 +612,7 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
     }
   };
 
-  const handleUpdateUserTemplate = async (name: string, description: string, config: ClaudeConfig) => {
+  const handleUpdateUserTemplate = async (name: string, description: string, config: Record<string, unknown>) => {
     if (!detailPresetId) return;
     const preset: Preset = {
       id: detailPresetId,
@@ -653,7 +625,7 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
     refetchPresets();
   };
 
-  const openDetail = (tpl: { name: string; description?: string; config: ClaudeConfig; createdAt?: string }, editable: boolean, presetId?: string) => {
+  const openDetail = (tpl: { name: string; description?: string; config: Record<string, unknown>; createdAt?: string }, editable: boolean, presetId?: string) => {
     setDetailTarget(tpl);
     setDetailEditable(editable);
     setDetailPresetId(presetId ?? null);
@@ -691,6 +663,11 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
       {applyError && (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
           {applyError}
+        </div>
+      )}
+      {applySuccess && (
+        <div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-600 dark:text-emerald-400">
+          {applySuccess}
         </div>
       )}
 
@@ -738,11 +715,11 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
                 key={tpl.id}
                 name={tpl.name}
                 description={tpl.description}
-                config={normalizeClaudeConfig(tpl.config)}
+                config={(tpl.config ?? {}) as Record<string, unknown>}
                 createdAt={tpl.createdAt}
                 onApply={() => handleApplyUser(tpl.id)}
                 onEdit={() => openDetail(
-                  { name: tpl.name, description: tpl.description, config: normalizeClaudeConfig(tpl.config), createdAt: tpl.createdAt },
+                  { name: tpl.name, description: tpl.description, config: (tpl.config ?? {}) as Record<string, unknown>, createdAt: tpl.createdAt },
                   true,
                   tpl.id,
                 )}
@@ -784,7 +761,7 @@ export function TemplateManager({ onApplied }: TemplateManagerProps) {
       <TemplateDetailDialog
         open={newOpen}
         onOpenChange={setNewOpen}
-        template={{ name: "", description: "", config: {} as ClaudeConfig }}
+        template={{ name: "", description: "", config: {} as Record<string, unknown> }}
         editable
         onSave={handleNewTemplate}
       />

@@ -3,24 +3,25 @@
 // directly, and the active selection lives in
 // `~/.jishu-hub/settings.json`.
 //
-// Two-level UX:
-//   - Top-level: provider cards. Each shows core fields (baseUrl,
-//     api, apiKey, authHeader) and a list of models that belong to
-//     the provider. Buttons: edit provider, delete provider, add
-//     model, set active (per model), edit model, delete model.
-//   - Forms are split: ProviderForm handles provider-level fields;
-//     ModelForm handles per-model fields. The two never mix.
+// Two-column UX (v0.7.4 需求2 R6/R8，参考用户截图，与 claude 页同构):
+//   - 左列「渠道设置」：provider 列表（当前激活渠道带绿点），可添加。
+//   - 右列「模型设置」：当前模型大卡（跨渠道扁平单选）+ 选中渠道的
+//     配置卡（字段行内直接编辑并保存，密钥眼睛切换——R8 对齐 claude
+//     交互，不再经 ProviderForm 编辑）+ 模型列表（设为激活/测试/编辑/
+//     删除）。添加渠道走 ProviderForm，模型增改走 ModelForm，在右列展开。
 //
 // v0.7.4 需求2 R1：ProviderForm/ModelForm 与共享类型已拆出至独立文件
 // （provider-form.tsx / model-form.tsx / model-types.ts，§18 规模约束），
-// 本文件只保留页面编排与 ProviderCard。
+// 本文件只保留页面编排与渠道详情面板。
 
 import { useEffect, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { useAgent } from "@/agents";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Plus,
   Trash2,
@@ -29,6 +30,9 @@ import {
   Pencil,
   Power,
   Zap,
+  Eye,
+  EyeOff,
+  Save,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -40,6 +44,7 @@ import type {
 } from "./model-types";
 import { ProviderForm } from "./provider-form";
 import { ModelForm } from "./model-form";
+import { ActiveModelCard, type ActiveModelOption } from "./active-model-card";
 
 export function ModelManager({
   onChanged,
@@ -67,6 +72,9 @@ export function ModelManager({
   const [modelForm, setModelForm] = useState<
     { providerName: string; mode: "add" } | { providerName: string; mode: "edit"; modelId: string } | null
   >(null);
+
+  // R6 两栏结构：左渠道列表，右选中渠道详情。
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -117,11 +125,6 @@ export function ModelManager({
     setModelForm(null);
     setError(null);
   };
-  const startEditProvider = (name: string) => {
-    setProviderForm({ mode: "edit", name });
-    setModelForm(null);
-    setError(null);
-  };
   const submitProvider = async (payload: {
     name: string;
     provider: PiProviderConfig;
@@ -155,6 +158,7 @@ export function ModelManager({
       }
       next.providers[name] = provider;
       await persistConfig(next);
+      setSelectedProvider(name);
       setProviderForm(null);
     } catch (e) {
       setError(String(e));
@@ -191,7 +195,20 @@ export function ModelManager({
   };
 
   // -------------------- Model ops --------------------
+  // R8：渠道字段行内保存（claude 同构交互）。
+  const saveProviderFields = async (name: string, next: PiProviderConfig) => {
+    setError(null);
+    try {
+      const cfg: PiModelsConfig = { providers: { ...config.providers } };
+      cfg.providers[name] = next;
+      await persistConfig(cfg);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   const startAddModel = (providerName: string) => {
+    setSelectedProvider(providerName);
     setModelForm({ providerName, mode: "add" });
     setProviderForm(null);
     setError(null);
@@ -311,108 +328,213 @@ export function ModelManager({
     }
   };
 
+  // R3/R9：扁平 provider/model 单选（与聊天页模型选择器同一心智）；
+  // hint 显示渠道显示名（providers.<key>.name），无则回退 key。
+  const activeModelOptions: ActiveModelOption[] = providerNames.flatMap((name) => {
+    const displayName = (config.providers[name]?.name as string | undefined) || name;
+    return (config.providers[name]?.models ?? []).map((m) => ({
+      value: `${name}/${m.id}`,
+      label: (m.name as string | undefined) || m.id,
+      hint: displayName,
+    }));
+  });
+  const currentActiveOption = active
+    ? (activeModelOptions.find(
+        (o) => o.value === `${active.provider}/${active.model}`,
+      ) ?? null)
+    : null;
+
+  // 选中项失效（删除/改名/首次加载）时回退到当前激活渠道或首个渠道。
+  const providerKey = providerNames.join("\n");
+  useEffect(() => {
+    if (providerNames.length === 0) {
+      setSelectedProvider(null);
+      return;
+    }
+    if (!providerNames.includes(selectedProvider ?? "")) {
+      setSelectedProvider(
+        providerNames.includes(active?.provider ?? "")
+          ? (active?.provider as string)
+          : providerNames[0],
+      );
+    }
+    // providerKey 已覆盖 providerNames 变化；selectedProvider 为本效应写入项。
+  }, [providerKey, active?.provider]);
+
+  const selectProvider = (name: string) => {
+    setSelectedProvider(name);
+    setProviderForm(null);
+    setModelForm(null);
+    setError(null);
+  };
+
   return (
     <div className="space-y-4">
       {confirmDialogNode}
-      <div className="flex items-center gap-2">
-        <div className="flex-1" />
-        <Button size="sm" className="h-6 text-xs mr-3" onClick={startAddProvider} disabled={loading}>
-          <Plus className="h-3 w-3 mr-1" />
-          {t("config.addProvider")}
-        </Button>
-      </div>
-
-      {error && (
-        <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-          {error}
+      {/* R8：与 claude 模型设置页同构——左「渠道设置」右「模型设置」，
+          当前模型大卡位于右列顶部，渠道配置行内编辑（不用弹层表单）。 */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[240px_1fr]">
+        {/* 左：渠道列表 */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-muted-foreground">
+              {t("config.colChannels")}
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 px-1.5 text-[11px]"
+              onClick={startAddProvider}
+              disabled={loading}
+            >
+              <Plus className="mr-1 h-3 w-3" />
+              {t("common.add")}
+            </Button>
+          </div>
+          <div className="space-y-1 rounded-lg border border-border/40 p-1.5">
+            {loading ? (
+              <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" /> {t("common.loading")}
+              </div>
+            ) : providerNames.length === 0 ? (
+              <p className="px-2 py-3 text-center text-[11px] leading-relaxed text-muted-foreground/70">
+                {t("config.noProviders")}
+              </p>
+            ) : (
+              providerNames.map((name) => {
+                const p = config.providers[name];
+                const isActiveProvider = active?.provider === name;
+                return (
+                  <button
+                    key={name}
+                    type="button"
+                    onClick={() => selectProvider(name)}
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition-fast",
+                      selectedProvider === name
+                        ? "bg-accent text-accent-foreground"
+                        : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "h-1.5 w-1.5 shrink-0 rounded-full",
+                        isActiveProvider ? "bg-emerald-500" : "bg-transparent",
+                      )}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm">
+                        {(p?.name as string | undefined) || name}
+                      </span>
+                      <span className="block truncate font-mono text-[10px] text-muted-foreground/70">
+                        {p?.baseUrl || t("config.noBaseUrl")}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
         </div>
-      )}
 
-      {providerForm && (
-        <ProviderForm
-          existingName={
-            providerForm.mode === "edit" ? providerForm.name : null
-          }
-          existingProvider={
-            providerForm.mode === "edit"
-              ? config.providers[providerForm.name]
-              : undefined
-          }
-          existingProviderKeys={providerNames}
-          saving={saving}
-          onCancel={() => setProviderForm(null)}
-          onSubmit={submitProvider}
-        />
-      )}
-
-      {modelForm && (
-        <ModelForm
-          providerName={modelForm.providerName}
-          provider={config.providers[modelForm.providerName]}
-          existingModel={
-            modelForm.mode === "edit"
-              ? config.providers[modelForm.providerName]?.models?.find(
-                  (m) => m.id === modelForm.modelId,
-                )
-              : undefined
-          }
-          saving={saving}
-          onCancel={() => setModelForm(null)}
-          onSubmit={submitModel}
-        />
-      )}
-
-      {loading ? (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Loader2 className="h-3 w-3 animate-spin" /> {t("common.loading")}
-        </div>
-      ) : providerNames.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border/40 p-6 text-center text-xs text-muted-foreground">
-          {t("config.noProviders")}
-        </div>
-      ) : (
+        {/* 右：模型设置（当前模型 + 渠道配置 + 模型列表） */}
         <div className="space-y-3">
-          {providerNames.map((name) => {
-            const p = config.providers[name];
-            const models = p?.models ?? [];
-            return (
-              <ProviderCard
-                key={name}
-                name={name}
-                provider={p ?? {}}
-                models={models}
-                isActive={
-                  active?.provider === name &&
-                  models.some((m) => m.id === active?.model)
-                }
-                activeModelId={
-                  active?.provider === name ? active.model : null
-                }
-                onEditProvider={() => startEditProvider(name)}
-                onDeleteProvider={() => deleteProvider(name)}
-                onAddModel={() => startAddModel(name)}
-                onEditModel={(modelId) => startEditModel(name, modelId)}
-                onDeleteModel={(modelId) => deleteModel(name, modelId)}
-                onSetActive={(modelId) => setActiveFromPicker(name, modelId)}
-              />
-            );
-          })}
+          {error && (
+            <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+              {error}
+            </div>
+          )}
+          <div className="text-xs font-medium text-muted-foreground">
+            {t("config.colModels")}
+          </div>
+          <ActiveModelCard
+            current={currentActiveOption}
+            options={activeModelOptions}
+            onSelect={(value) => {
+              const sep = value.indexOf("/");
+              if (sep <= 0) return;
+              void setActiveFromPicker(value.slice(0, sep), value.slice(sep + 1));
+            }}
+            emptyHint={t("config.noModelConfigured")}
+            emptyActionLabel={t("config.addProvider")}
+            onEmptyAction={startAddProvider}
+          />
+
+          {providerForm ? (
+            <ProviderForm
+              existingName={null}
+              existingProvider={undefined}
+              existingProviderKeys={providerNames}
+              saving={saving}
+              onCancel={() => setProviderForm(null)}
+              onSubmit={submitProvider}
+            />
+          ) : modelForm ? (
+            <ModelForm
+              providerName={modelForm.providerName}
+              provider={config.providers[modelForm.providerName]}
+              existingModel={
+                modelForm.mode === "edit"
+                  ? config.providers[modelForm.providerName]?.models?.find(
+                      (m) => m.id === modelForm.modelId,
+                    )
+                  : undefined
+              }
+              saving={saving}
+              onCancel={() => setModelForm(null)}
+              onSubmit={submitModel}
+            />
+          ) : selectedProvider && config.providers[selectedProvider] ? (
+            <ProviderDetailPanel
+              name={selectedProvider}
+              provider={config.providers[selectedProvider]}
+              models={config.providers[selectedProvider].models ?? []}
+              isActive={active?.provider === selectedProvider}
+              activeModelId={
+                active?.provider === selectedProvider ? active.model : null
+              }
+              onDeleteProvider={() => deleteProvider(selectedProvider)}
+              onSaveProvider={(next) => saveProviderFields(selectedProvider, next)}
+              onAddModel={() => startAddModel(selectedProvider)}
+              onEditModel={(modelId) => startEditModel(selectedProvider, modelId)}
+              onDeleteModel={(modelId) => deleteModel(selectedProvider, modelId)}
+              onSetActive={(modelId) =>
+                void setActiveFromPicker(selectedProvider, modelId)
+              }
+            />
+          ) : (
+            <p className="py-8 text-center text-sm text-muted-foreground">
+              {t("config.channelSelectHint")}
+            </p>
+          )}
         </div>
-      )}
-
-
+      </div>
     </div>
   );
 }
 
-function ProviderCard({
+const apiSelectClass =
+  "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+const API_OPTIONS = [
+  "anthropic-messages",
+  "openai-completions",
+  "openai-responses",
+];
+
+/**
+ * R8：选中渠道的配置卡 + 模型列表，与 claude 模型设置页的渠道卡同构——
+ * 字段行内直接编辑（显示名 / API 地址 / 协议 / 密钥眼睛切换 + 保存按钮 /
+ * 「当前使用」徽标），保存即时写入 models.json；不再经 ProviderForm 弹层。
+ */
+function ProviderDetailPanel({
   name,
   provider,
   models,
   isActive,
   activeModelId,
-  onEditProvider,
   onDeleteProvider,
+  onSaveProvider,
   onAddModel,
   onEditModel,
   onDeleteModel,
@@ -423,16 +545,61 @@ function ProviderCard({
   models: PiModelEntry[];
   isActive: boolean;
   activeModelId: string | null;
-  onEditProvider: () => void;
   onDeleteProvider: () => void;
+  onSaveProvider: (next: PiProviderConfig) => Promise<void>;
   onAddModel: () => void;
   onEditModel: (modelId: string) => void;
   onDeleteModel: (modelId: string) => void;
   onSetActive: (modelId: string) => void;
 }) {
   const { t } = useTranslation();
+  // 行内编辑草稿：渠道切换（name 变化）时重置为已保存值。
+  const [displayName, setDisplayName] = useState((provider.name as string) ?? "");
+  const [baseUrl, setBaseUrl] = useState(provider.baseUrl ?? "");
+  const [api, setApi] = useState(provider.api ?? "anthropic-messages");
+  const [authHeader, setAuthHeader] = useState(provider.authHeader ?? false);
+  const [apiKey, setApiKey] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; text: string }>>({});
+
+  useEffect(() => {
+    setDisplayName((provider.name as string) ?? "");
+    setBaseUrl(provider.baseUrl ?? "");
+    setApi(provider.api ?? "anthropic-messages");
+    setAuthHeader(provider.authHeader ?? false);
+    setApiKey("");
+    // 仅在切换渠道时重置；保存后的新值经 provider 属性回流。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name]);
+
+  const savedKey = (provider.apiKey as string) ?? "";
+  const dirty =
+    displayName !== ((provider.name as string) ?? "") ||
+    baseUrl !== (provider.baseUrl ?? "") ||
+    api !== (provider.api ?? "anthropic-messages") ||
+    authHeader !== (provider.authHeader ?? false) ||
+    apiKey.trim() !== "";
+
+  const save = async () => {
+    if (!dirty || saving) return;
+    setSaving(true);
+    try {
+      const next: PiProviderConfig = {
+        ...provider,
+        name: displayName || undefined,
+        baseUrl: baseUrl || undefined,
+        api,
+        authHeader,
+      };
+      if (apiKey.trim()) next.apiKey = apiKey.trim();
+      await onSaveProvider(next);
+      setApiKey("");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const runTest = async (modelId: string) => {
     if (testingId) return;
@@ -443,7 +610,7 @@ function ProviderCard({
       return next;
     });
     try {
-      const result = await invokeCommand<{ response?: string | null; usage?: unknown }>("test_model", { id: modelId });
+      const result = await invokeCommand<{ response?: string | null; usage?: unknown }>("test_model", { provider: name, id: modelId });
       const reply = (result?.response ?? "").toString().trim();
       setTestResults((prev) => ({
         ...prev,
@@ -458,70 +625,131 @@ function ProviderCard({
       setTestingId(null);
     }
   };
+
   return (
-    <div
-      className={cn(
-        "rounded-md border p-3 space-y-3",
-        isActive ? "border-primary/60 bg-primary/5" : "border-border/40",
-      )}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-medium truncate">
-              {provider.name || name}
-            </span>
-            {provider.name && (
-              <span className="text-[10px] text-muted-foreground font-mono">
-                ({name})
-              </span>
-            )}
-            <span className="text-[10px] text-muted-foreground">
-              {provider.api ?? "—"}
-            </span>
-            {provider.authHeader && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
-                {t("config.authHeaderBadge")}
-              </span>
-            )}
-          </div>
-          <div className="text-[11px] text-muted-foreground font-mono truncate mt-0.5">
-            {provider.baseUrl || `(${t("config.noBaseUrl")})`}
-          </div>
-          {provider.apiKey && (
-            <div className="text-[10px] text-muted-foreground/70 mt-0.5">
-              apiKey: {provider.apiKey.replace(/(.{4}).+(.{4})/, "$1•••$2")}
-            </div>
+    <div className="space-y-3 rounded-md border border-border/40 bg-muted/20 p-4">
+      {/* 头部：名称 + 当前使用徽标 + 删除 */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-sm font-semibold">{displayName || name}</span>
+          {displayName && displayName !== name && (
+            <span className="shrink-0 font-mono text-[10px] text-muted-foreground">({name})</span>
           )}
-          {provider.headers && Object.keys(provider.headers).length > 0 && (
-            <div className="text-[10px] text-muted-foreground/70 mt-0.5">
-              {Object.keys(provider.headers).length} {t("config.customHeaders")}
-            </div>
+          {provider.authHeader && (
+            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              {t("config.authHeaderBadge")}
+            </span>
+          )}
+          {isActive && (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
+              <Check className="h-3 w-3" />
+              {t("config.channelActive")}
+            </span>
           )}
         </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 px-2"
-            onClick={onEditProvider}
-            title={t("config.editProvider")}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 text-red-400 hover:text-red-300"
+          onClick={onDeleteProvider}
+          title={t("common.delete")}
+        >
+          <Trash2 className="h-3 w-3" />
+        </Button>
+      </div>
+
+      {/* 行内字段（claude 渠道卡同构） */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label htmlFor={`ch-name-${name}`}>{t("config.displayName")}</Label>
+          <Input
+            id={`ch-name-${name}`}
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder={t("config.presetDisplayNamePlaceholder")}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`ch-url-${name}`}>{t("config.baseUrl")}</Label>
+          <Input
+            id={`ch-url-${name}`}
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder="https://..."
+            className="font-mono text-xs"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`ch-api-${name}`}>{t("config.apiProtocol")}</Label>
+          <select
+            id={`ch-api-${name}`}
+            value={api}
+            onChange={(e) => setApi(e.target.value)}
+            className={apiSelectClass}
           >
-            <Pencil className="h-3 w-3" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 px-2 text-red-400 hover:text-red-300"
-            onClick={onDeleteProvider}
-            title={t("common.delete")}
-          >
-            <Trash2 className="h-3 w-3" />
-          </Button>
+            {API_OPTIONS.map((opt) => (
+              <option key={opt} value={opt}>
+                {opt}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`ch-key-${name}`}>{t("config.apiKey")}</Label>
+          <div className="flex gap-2">
+            <Input
+              id={`ch-key-${name}`}
+              type={showKey ? "text" : "password"}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={
+                savedKey
+                  ? `${t("config.channelKeySaved")} ••••${savedKey.slice(-4)}`
+                  : t("config.apiKeyPlaceholder")
+              }
+              autoComplete="off"
+            />
+            <Button
+              variant="outline"
+              size="icon"
+              className="shrink-0"
+              onClick={() => setShowKey((v) => !v)}
+              title={showKey ? t("config.hideKey") : t("config.showKey")}
+            >
+              {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </Button>
+          </div>
+          {savedKey && !apiKey.trim() && (
+            <p className="text-[10px] text-muted-foreground/70">
+              {t("config.channelKeySaved")}
+              {savedKey.length > 8 ? `：••••${savedKey.slice(-4)}` : ""}
+            </p>
+          )}
         </div>
       </div>
 
-      <div className="space-y-1.5">
+      <div className="flex items-center justify-between rounded-md border px-3 py-2.5">
+        <div className="space-y-0.5">
+          <Label className="text-xs">{t("config.authHeader")}</Label>
+          <p className="text-[10px] text-muted-foreground">{t("config.authHeaderHint")}</p>
+        </div>
+        <Switch checked={authHeader} onCheckedChange={setAuthHeader} />
+      </div>
+
+      <div className="flex items-center justify-end gap-2">
+        {dirty && (
+          <span className="text-[10px] text-muted-foreground/70">
+            {t("config.channelDirtyHint")}
+          </span>
+        )}
+        <Button size="sm" disabled={!dirty || saving} onClick={() => void save()}>
+          <Save className="h-3.5 w-3.5" />
+          {saving ? t("common.saving") : t("common.save")}
+        </Button>
+      </div>
+
+      {/* 模型列表 */}
+      <div className="space-y-1.5 border-t border-border/40 pt-3">
         <div className="flex items-center justify-between">
           <Label className="text-[10px] text-muted-foreground/80">
             {t("config.models")} ({models.length})
@@ -538,7 +766,7 @@ function ProviderCard({
         </div>
 
         {models.length === 0 ? (
-          <p className="text-[10px] text-muted-foreground/70 px-1">
+          <p className="px-1 text-[10px] text-muted-foreground/70">
             {t("config.noModelsHint")}
           </p>
         ) : (
@@ -550,88 +778,80 @@ function ProviderCard({
                   key={m.id}
                   className={cn(
                     "rounded border px-2 py-1.5 space-y-1",
-                    isCurrent
-                      ? "border-primary/60 bg-primary/10"
-                      : "border-border/30",
+                    isCurrent ? "border-primary/60 bg-primary/10" : "border-border/30",
                   )}
                 >
                   <div className="flex items-center gap-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-xs truncate">
-                        {m.id}
-                      </span>
-                      {m.contextWindow && (
-                        <span className="text-[10px] text-muted-foreground/70">
-                          {m.contextWindow >= 1000
-                            ? `${Math.round(m.contextWindow / 1000)}K ctx`
-                            : `${m.contextWindow} ctx`}
-                        </span>
-                      )}
-                      {m.maxTokens && (
-                        <span className="text-[10px] text-muted-foreground/70">
-                          {m.maxTokens >= 1000
-                            ? `${Math.round(m.maxTokens / 1000)}K out`
-                            : `${m.maxTokens} out`}
-                        </span>
-                      )}
-                      {m.reasoning && (
-                        <span className="text-[10px] px-1 rounded bg-muted text-muted-foreground">
-                          {t("config.reasoning")}
-                        </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs truncate">{m.id}</span>
+                        {m.contextWindow && (
+                          <span className="text-[10px] text-muted-foreground/70">
+                            {m.contextWindow >= 1000
+                              ? `${Math.round(m.contextWindow / 1000)}K ctx`
+                              : `${m.contextWindow} ctx`}
+                          </span>
+                        )}
+                        {m.maxTokens && (
+                          <span className="text-[10px] text-muted-foreground/70">
+                            {m.maxTokens >= 1000
+                              ? `${Math.round(m.maxTokens / 1000)}K out`
+                              : `${m.maxTokens} out`}
+                          </span>
+                        )}
+                        {m.reasoning && (
+                          <span className="text-[10px] px-1 rounded bg-muted text-muted-foreground">
+                            {t("config.reasoning")}
+                          </span>
+                        )}
+                      </div>
+                      {m.baseUrl && (
+                        <div className="text-[10px] text-muted-foreground/60 font-mono truncate">
+                          {m.baseUrl}
+                        </div>
                       )}
                     </div>
-                    {m.baseUrl && (
-                      <div className="text-[10px] text-muted-foreground/60 font-mono truncate">
-                        {m.baseUrl}
-                      </div>
-                    )}
-                  </div>
-                  <Button
-                    size="sm"
-                    variant={isCurrent ? "default" : "outline"}
-                    className="h-6 text-xs"
-                    onClick={() => onSetActive(m.id)}
-                    title={t("config.setActive")}
-                  >
-                    {isCurrent ? (
-                      <Check className="h-3 w-3" />
-                    ) : (
-                      <Power className="h-3 w-3" />
-                    )}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 px-1.5"
-                    onClick={() => void runTest(m.id)}
-                    disabled={testingId !== null}
-                    title={t("config.testModel")}
-                  >
-                    {testingId === m.id ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : (
-                      <Zap className="h-3 w-3" />
-                    )}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 px-1.5"
-                    onClick={() => onEditModel(m.id)}
-                    title={t("config.editModel")}
-                  >
-                    <Pencil className="h-3 w-3" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 px-1.5 text-red-400 hover:text-red-300"
-                    onClick={() => onDeleteModel(m.id)}
-                    title={t("common.delete")}
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
+                    <Button
+                      size="sm"
+                      variant={isCurrent ? "default" : "outline"}
+                      className="h-6 text-xs"
+                      onClick={() => onSetActive(m.id)}
+                      title={t("config.setActive")}
+                    >
+                      {isCurrent ? <Check className="h-3 w-3" /> : <Power className="h-3 w-3" />}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-1.5"
+                      onClick={() => void runTest(m.id)}
+                      disabled={testingId !== null}
+                      title={t("config.testModel")}
+                    >
+                      {testingId === m.id ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Zap className="h-3 w-3" />
+                      )}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-1.5"
+                      onClick={() => onEditModel(m.id)}
+                      title={t("config.editModel")}
+                    >
+                      <Pencil className="h-3 w-3" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-1.5 text-red-400 hover:text-red-300"
+                      onClick={() => onDeleteModel(m.id)}
+                      title={t("common.delete")}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
                   </div>
                   {testResults[m.id] && (
                     <div
@@ -643,7 +863,7 @@ function ProviderCard({
                       )}
                       title={testResults[m.id].text}
                     >
-                      {testResults[m.id].ok ? "✓ " : "✗ "}
+                      {testResults[m.id].ok ? "\u2713 " : "\u2717 "}
                       {testResults[m.id].text}
                     </div>
                   )}

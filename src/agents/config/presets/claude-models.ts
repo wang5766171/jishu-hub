@@ -1,4 +1,4 @@
-// v0.7.4 需求2 R2a：claude 模型推荐目录（config-form 模型 combobox 数据源）。
+// v0.7.4 需求2 R2a：claude 模型推荐目录（config-sections 模型区数据源）。
 // 替代旧硬编码 MODEL_OPTIONS（仅 3 项）；目录值均可被自由输入覆盖，
 // 当前已配置值会自动置顶显示。新模型发布未收录时直接手输即可。
 

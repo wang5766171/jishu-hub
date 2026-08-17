@@ -26,11 +26,27 @@
     "daysAgo": "{{count}} days ago"
   },
   "nav": {
-    "projects": "Projects",
     "sessions": "Sessions",
-    "config": "Manage",
-    "commands": "Commands",
-    "environment": "Environment"
+    "config": "Manage"
+  },
+  "manage": {
+    "back": "Back to workspace",
+    "groupWorkspace": "Workspace",
+    "groupAgent": "Agent Settings",
+    "groupSystem": "System",
+    "menuModels": "Models",
+    "menuBehavior": "Behavior & Permissions",
+    "menuTemplates": "Templates",
+    "menuAdvanced": "Advanced",
+    "pageDescModels": "Choose the active model and how to reach it",
+    "pageDescBehavior": "Permission modes and tool usage rules",
+    "pageDescTemplates": "Save the current config as a template, or apply one",
+    "pageDescAdvanced": "Env vars, plugins, MCP, backups and other low-frequency settings",
+    "menuProjects": "Project Management",
+    "menuCommands": "Quick Commands",
+    "menuEnv": "Environment Check",
+    "menuBackups": "Config Backups",
+    "pageDescBackups": "Restore configuration snapshots, or import/export configs"
   },
   "env": {
     "title": "Environment Check",
@@ -79,11 +95,16 @@
     "bridge": "Bridge",
     "bridgeDesc": "Runs claude_code over ACP via this bridge, enabling mid-turn structured questions; falls back to CLI mode when absent",
     "cliNotInstalled": "Command-line tool not installed",
-    "cliDesc": "To conveniently launch Jishu Hub from external terminals, installing the jishu command is strongly recommended (requires authorization)."
+    "cliDesc": "To conveniently launch Jishu Hub from external terminals, installing the jishu command is strongly recommended (requires authorization).",
+    "elevationTitle": "Administrator privileges required",
+    "elevationDesc": "Installing \"{{name}}\" writes to system directories (the Chocolatey install location), so it must run as administrator. After you choose \"Continue\", a system authorization (UAC) window will appear — click \"Yes\" there to grant it. Choosing \"Cancel\" aborts the install.",
+    "elevationConfirm": "Continue"
   },
   "status": {
     "model": "Model: {{model}}",
-    "projects": "Projects: {{count}}"
+    "projects": "Projects: {{count}}",
+    "installed": "Installed",
+    "notInstalled": "Not installed"
   },
   "projects": {
     "title": "Projects",
@@ -127,7 +148,10 @@
     "management": "Management",
     "clearFilter": "Clear Filter",
     "selected": "{{count}} projects selected",
-    "deselect": "Deselect"
+    "deselect": "Deselect",
+    "projectSettingsUnsupported": "This agent does not support project-level settings yet",
+    "noRecognizedAgents": "No agent recognizes this project yet — open it under an agent first",
+    "collapsePanel": "Collapse panel"
   },
   "sessions": {
     "regularConversations": "Regular conversations",
@@ -318,29 +342,51 @@
     "presetApiHint": "Auto-filled for the chosen provider; usually no change needed",
     "presetSelectPlaceholder": "-- Choose a provider --",
     "preset": {
-      "zhipu": { "name": "Zhipu AI" },
-      "deepseek": { "name": "DeepSeek" },
-      "moonshot": { "name": "Kimi (Moonshot)" },
-      "anthropic": { "name": "Anthropic (official)" },
-      "openai": { "name": "OpenAI" },
-      "custom": { "name": "Custom" }
+      "zhipu": {
+        "name": "Zhipu AI"
+      },
+      "deepseek": {
+        "name": "DeepSeek"
+      },
+      "moonshot": {
+        "name": "Kimi (Moonshot)"
+      },
+      "anthropic": {
+        "name": "Anthropic (official)"
+      },
+      "openai": {
+        "name": "OpenAI"
+      },
+      "custom": {
+        "name": "Custom"
+      }
     },
     "testConnection": "Test connection",
     "testConnectionHint": "Sends a minimal test message and shows the reply",
     "testConnectionHeaderHint": "Test API connectivity with the current draft (unsaved edits included)",
+    "currentModel": "Current model",
+    "noModelConfigured": "No model configured yet",
+    "activeModelCustomHint": "No match — type a model ID and press Enter",
+    "providersSection": "Providers & models",
+    "tools": "Tools",
+    "toolMode": {
+      "full": {
+        "title": "Full capabilities",
+        "desc": "Read/write files and run commands (sensitive ops confirmed per permission mode)"
+      },
+      "readonly": {
+        "title": "Read-only mode",
+        "desc": "Read and search only — no file edits, no commands; safest"
+      },
+      "restartHint": "Live sessions restart automatically to apply the change (history preserved)."
+    },
     "testConnectionOk": "Connected",
     "testConnectionFailed": "Connection failed",
     "modelSuggestLabel": "Recommended models",
     "modelSuggestPlaceholder": "Pick a recommended model to auto-fill",
     "modelSuggestHint": "Auto-fills context window and other params; you can still type manually",
-    "quickSetupTitle": "Quick setup",
-    "quickSetupDesc": "Pick a provider to auto-fill the endpoint; then just paste your API key (saved to the env vars below)",
-    "quickSetupActive": "Proxy: {{provider}}",
-    "quickSetupClear": "Use direct",
-    "quickSetupClearHint": "Remove proxy env vars and restore the official endpoint",
     "quickSetupKeyPlaceholder": "Paste the provider API key",
     "quickSetupApplyKey": "Save key",
-    "quickSetupOfficialHint": "No setup needed if you sign in with a subscription or can reach Anthropic directly.",
     "modelComboboxPlaceholder": "Pick a recommended model, or type any model ID",
     "modelComboboxOptional": "Leave empty for default; any model ID accepted",
     "modelComboboxToggle": "Open model list",
@@ -386,7 +432,7 @@
     "required": "required",
     "exists": "already exists",
     "notFound": "not found",
-    "modelId": "ID",
+    "modelId": "Model ID",
     "editModel": "Edit model",
     "deleteModelConfirm": "Delete model '{{model}}' (under provider {{provider}})?",
     "setActive": "Set active",
@@ -529,7 +575,50 @@
     "currentActiveModel": "Current active model",
     "noActiveModel": "No active model — activate a model above",
     "activeModelSyncHint": "Auto-synced from the model list above. Use the power icon on a preset to switch.",
-    "deactivateModel": "Deactivate"
+    "deactivateModel": "Deactivate",
+    "connectProxy": "Use Proxy",
+    "connectDirect": "Direct",
+    "connectDirectHint": "Direct connection: sign in with a Claude subscription, or reach the official API directly — no channel needed. Switch to \"Use Proxy\" for third-party channels.",
+    "colChannels": "Channels",
+    "colModels": "Models",
+    "channelPickHint": "Picking a channel auto-fills its base URL and recommended model; the green dot marks the channel in effect.",
+    "channelActive": "In use",
+    "channelKeySaved": "Key saved",
+    "channelSaveHint": "Switching channels or saving a key only updates the draft; press \"Save\" in the header to write the config file.",
+    "channelCustomHint": "Custom channel: set ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN under Advanced → Environment Variables.",
+    "channelSelectHint": "Select a channel on the left, or press \"Add\" to create one",
+    "showKey": "Show key",
+    "hideKey": "Hide key",
+    "channelDirtyHint": "Unsaved changes",
+    "applyTemplateSuccess": "Template applied and written to the config file",
+    "jishuBehaviorParams": "Default behavior",
+    "thinkingLevelsLabel": "Supported thinking levels",
+    "thinkingLevelsHint": "Tick the levels this model actually supports: the chat selector only offers ticked levels, and an unsupported persisted level snaps to the nearest one. Presets come pre-filled from official docs.",
+    "reasoningEffortLabel": "Reasoning effort",
+    "reasoningEffortHint": "Controls reasoning depth (codex model_reasoning_effort). Takes effect for new sessions; xhigh only on some newer models.",
+    "thinkingBudgetTitle": "Thinking budget",
+    "thinkingBudgetHint": "MAX_THINKING_TOKENS: larger = deeper thinking; 0 = disable thinking; remove the variable to follow defaults. New sessions only.",
+    "thinkingBudgetAdd": "Add thinking budget",
+    "reasoningEffort": {
+      "minimal": "Minimal",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "xhigh": "Xhigh"
+    },
+    "opencodeModel": {
+      "glm51": "GLM-5.1 (Zhipu Coding Plan)",
+      "gpt51codex": "GPT-5.1 Codex (OpenCode Zen)",
+      "sonnet4": "Claude Sonnet 4",
+      "gpt51": "GPT-5.1 (OpenAI)"
+    },
+    "customProvidersLabel": "Custom providers",
+    "customProvidersEmpty": "No custom providers yet",
+    "customProvidersEmptyHint": "Enter a provider id (e.g. zhipu) on the left and add it; after configuring the URL and key, its models appear in the model card above",
+    "customProviderIdPlaceholder": "provider id (e.g. zhipu)",
+    "customProvidersHint": "Model ids use the provider/model form; save (header) writes the provider section of opencode.json.",
+    "jishuBehaviorHintV3": "Sets the global default thinking level for new sessions. In-session controls (tool mode full/readonly, temporary thinking level) live next to the chat input; model choice is under Models.",
+    "defaultThinkingLevelHelp": "Writes the jishu agent's global default thinking level (defaultThinkingLevel); applies to newly started sessions. In-session switching is unaffected."
   },
   "commands": {
     "title": "Commands",
@@ -717,7 +806,14 @@
     "notesColon": "Notes:",
     "notesPlaceholder": "Enter notes",
     "addMetaHint": "Click edit to add a custom name, tags, or notes",
-    "matcher": "Matcher"
+    "matcher": "Matcher",
+    "fieldMapThinkingLevel": "Default thinking level for this project (jishu: defaultThinkingLevel in .pi/settings.json; in-session switching still applies on top).",
+    "compaction": "Context compaction",
+    "compactionEnabled": "Enable auto compaction",
+    "compactionReserve": "Reserve tokens",
+    "compactionKeepRecent": "Keep-recent tokens",
+    "fieldMapCompaction": "Automatic summarization when context nears the window (compaction). Defaults to enabled (reserve 16384 / keep-recent 20000) when unset; disabling or tuning writes the project settings.",
+    "modelUnsetHint": "No project default model yet — pick one from this agent's model list"
   },
   "about": {
     "title": "About",

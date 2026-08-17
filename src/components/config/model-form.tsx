@@ -12,10 +12,13 @@ import {
   emptyModelValue,
   modelToValue,
   valueToModel,
+  supportedThinkingLevels,
+  THINKING_LEVEL_ALL,
   type PiModelEntry,
   type PiProviderConfig,
   type ModelFormValue,
 } from "./model-types";
+import { thinkingLevelLabel } from "@/components/sessions/thinking-level-select";
 import { matchPresetByBaseUrl } from "@/agents/config/presets/provider-presets";
 
 const selectClass =
@@ -56,11 +59,17 @@ export function ModelForm({
       contextWindow: String(m.contextWindow ?? prev.contextWindow),
       maxTokens: String(m.maxTokens ?? prev.maxTokens),
       reasoning: m.reasoning ?? prev.reasoning,
+      // 预设模型的档位声明一并带入（如 glm-5.3 不支持关闭）。
+      thinkingLevels: m.reasoning
+        ? supportedThinkingLevels(m.thinkingLevelMap as Record<string, unknown> | undefined)
+        : prev.thinkingLevels,
     }));
   };
 
   const submit = () => {
     const model = valueToModel(value);
+    // 编辑时保留表单未暴露的预设声明（如智谱的 forceAdaptiveThinking）。
+    if (existingModel?.compat) model.compat = existingModel.compat;
     onSubmit({ providerName, model });
   };
 
@@ -184,6 +193,39 @@ export function ModelForm({
           </div>
         </div>
       </div>
+
+      {/* A7：模型档位声明——预设自动带入；自定义模型由用户勾选。
+          会话页选择器按此列表渲染，选到不支持的档位时 Pi 就近收敛回传。 */}
+      {value.reasoning && (
+        <div className="space-y-1.5 rounded-md border border-border/40 bg-muted/20 p-3">
+          <Label>{t("config.thinkingLevelsLabel")}</Label>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
+            {THINKING_LEVEL_ALL.map((lvl) => (
+              <label key={lvl} className="inline-flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={value.thinkingLevels.includes(lvl)}
+                  onChange={(e) =>
+                    setValue((prev) => ({
+                      ...prev,
+                      thinkingLevels: e.target.checked
+                        ? [...THINKING_LEVEL_ALL].filter(
+                            (l) => prev.thinkingLevels.includes(l) || l === lvl,
+                          )
+                        : prev.thinkingLevels.filter((l) => l !== lvl),
+                    }))
+                  }
+                  className="h-3 w-3"
+                />
+                {thinkingLevelLabel(t, lvl)}
+              </label>
+            ))}
+          </div>
+          <p className="text-[10px] leading-relaxed text-muted-foreground/70">
+            {t("config.thinkingLevelsHint")}
+          </p>
+        </div>
+      )}
 
       <div className="flex justify-end gap-2">
         <Button variant="outline" size="sm" onClick={onCancel}>

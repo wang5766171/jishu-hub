@@ -81,6 +81,39 @@ describe("presetModelToEntry", () => {
     const entry = presetModelToEntry({ id: "m", displayName: "M" });
     expect(entry.contextWindow).toBeUndefined();
     expect(entry.maxTokens).toBeUndefined();
+    expect(entry.thinkingLevelMap).toBeUndefined();
+  });
+
+  it("carries thinkingLevelMap through to the models.json entry", () => {
+    const entry = presetModelToEntry({
+      id: "glm-5.3",
+      displayName: "GLM-5.3",
+      reasoning: true,
+      thinkingLevelMap: { off: null },
+    });
+    expect(entry.thinkingLevelMap).toEqual({ off: null });
+  });
+
+  it("zhipu models use adaptive effort mapping without off (endpoint reality)", () => {
+    // 端点实测：disabled/budget 被忽略，仅 adaptive+effort 生效（无关闭档）。
+    const zhipu = PROVIDER_PRESETS.find((p) => p.id === "zhipu");
+    for (const m of zhipu?.models ?? []) {
+      expect(m.compat).toEqual({ forceAdaptiveThinking: true });
+      expect(m.thinkingLevelMap?.off).toBeNull();
+      expect(m.thinkingLevelMap?.minimal).toBe("low");
+      expect(m.thinkingLevelMap?.max).toBe("max");
+    }
+  });
+
+  it("presetModelToEntry carries compat through", () => {
+    const entry = presetModelToEntry({
+      id: "glm-5.2",
+      displayName: "GLM-5.2",
+      reasoning: true,
+      compat: { forceAdaptiveThinking: true },
+      thinkingLevelMap: { off: null },
+    });
+    expect(entry.compat).toEqual({ forceAdaptiveThinking: true });
   });
 });
 

@@ -1,5 +1,6 @@
 import type { ComponentType, ReactNode } from "react";
 import type { ConfigSurface, AgentStatus } from "../types";
+import type { AgentConfigSection } from "@/types";
 import { StructuredConfigPage } from "./structured";
 import { ModelStoreConfigPage } from "./model-store";
 import { RawConfigPage } from "./raw";
@@ -8,13 +9,14 @@ import { UnsupportedConfigPage } from "./unsupported";
 /**
  * Common props for every adapter config page.
  * Each page is self-contained: it manages its own data loading,
- * state, tabs, and layout internally.
+ * state, and layout internally.
  */
 export interface AdapterConfigPageProps {
   configSurface: ConfigSurface;
   activeAgent: AgentStatus | null;
   agentRefreshKey: number;
-  initialTab?: "edit" | "templates" | "backups";
+  /** v0.7.4 需求2 R4：智能体设置子页（模型/行为与权限/模板/高级）。 */
+  configTab?: AgentConfigSection;
   /**
    * v0.7.0 需求一：智能体切换器插槽，渲染在配置页标题右边。
    * 由 ConfigPage 外壳注入（管理作用域 AgentSwitcher）。

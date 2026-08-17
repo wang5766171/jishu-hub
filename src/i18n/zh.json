@@ -26,11 +26,27 @@
     "daysAgo": "{{count}} 天前"
   },
   "nav": {
-    "projects": "项目",
     "sessions": "会话",
-    "config": "管理",
-    "commands": "命令",
-    "environment": "环境"
+    "config": "管理"
+  },
+  "manage": {
+    "back": "返回工作区",
+    "groupWorkspace": "工作区",
+    "groupAgent": "智能体设置",
+    "groupSystem": "系统",
+    "menuModels": "模型设置",
+    "menuBehavior": "行为与权限",
+    "menuTemplates": "配置模版",
+    "menuAdvanced": "高级设置",
+    "pageDescModels": "选择当前使用的模型与接入方式",
+    "pageDescBehavior": "权限模式与工具使用规则",
+    "pageDescTemplates": "保存当前配置为模版，或应用已有模版",
+    "pageDescAdvanced": "环境变量、插件、MCP、备份等低频配置",
+    "menuProjects": "项目管理",
+    "menuCommands": "快捷命令",
+    "menuEnv": "环境检测",
+    "menuBackups": "配置备份",
+    "pageDescBackups": "配置快照的恢复，以及配置的导入导出"
   },
   "env": {
     "title": "环境检测",
@@ -79,11 +95,16 @@
     "bridge": "桥",
     "bridgeDesc": "claude_code 借此桥以 ACP 协议运行，启用会话中途的结构化提问；缺失将降级为命令行模式",
     "cliNotInstalled": "未安装命令行工具",
-    "cliDesc": "为了在外部终端中便捷唤起 Jishu Hub，强烈建议安装 jishu 命令 (需授权)。"
+    "cliDesc": "为了在外部终端中便捷唤起 Jishu Hub，强烈建议安装 jishu 命令 (需授权)。",
+    "elevationTitle": "需要管理员权限",
+    "elevationDesc": "安装「{{name}}」需要写入系统目录（Chocolatey 安装位置），因此需要以管理员身份执行。点击「同意并继续」后将弹出系统授权窗口（UAC），请在其中点击「是」完成授权；选择「取消」则不会安装。",
+    "elevationConfirm": "同意并继续"
   },
   "status": {
     "model": "模型：{{model}}",
-    "projects": "项目：{{count}}"
+    "projects": "项目：{{count}}",
+    "installed": "已安装",
+    "notInstalled": "未安装"
   },
   "projects": {
     "title": "项目",
@@ -127,7 +148,10 @@
     "management": "管理",
     "clearFilter": "清除筛选",
     "selected": "已选择 {{count}} 个项目",
-    "deselect": "取消选择"
+    "deselect": "取消选择",
+    "projectSettingsUnsupported": "该智能体暂不支持项目级配置",
+    "noRecognizedAgents": "尚未有智能体识别到该项目，先在任意智能体下打开该项目",
+    "collapsePanel": "收起面板"
   },
   "sessions": {
     "regularConversations": "常规会话",
@@ -317,29 +341,51 @@
     "presetApiHint": "已按所选服务商自动填好，一般无需修改",
     "presetSelectPlaceholder": "-- 选择服务商 --",
     "preset": {
-      "zhipu": { "name": "智谱 AI" },
-      "deepseek": { "name": "DeepSeek" },
-      "moonshot": { "name": "Kimi（月之暗面）" },
-      "anthropic": { "name": "Anthropic 官方" },
-      "openai": { "name": "OpenAI" },
-      "custom": { "name": "自定义" }
+      "zhipu": {
+        "name": "智谱 AI"
+      },
+      "deepseek": {
+        "name": "DeepSeek"
+      },
+      "moonshot": {
+        "name": "Kimi（月之暗面）"
+      },
+      "anthropic": {
+        "name": "Anthropic 官方"
+      },
+      "openai": {
+        "name": "OpenAI"
+      },
+      "custom": {
+        "name": "自定义"
+      }
     },
     "testConnection": "测试连接",
     "testConnectionHint": "将发送一条最短测试消息并显示回复",
     "testConnectionHeaderHint": "按当前表单草稿（未保存的修改也会生效）测试 API 连通性",
+    "currentModel": "当前模型",
+    "noModelConfigured": "尚未配置模型",
+    "activeModelCustomHint": "没有匹配项，可直接输入模型 ID 后回车",
+    "providersSection": "服务商与模型",
+    "tools": "工具",
+    "toolMode": {
+      "full": {
+        "title": "完整能力",
+        "desc": "允许读写文件与执行命令（每次敏感操作前按权限模式确认）"
+      },
+      "readonly": {
+        "title": "只读模式",
+        "desc": "仅允许读取与搜索，不修改文件、不执行命令，最安全"
+      },
+      "restartHint": "切换后进行中的会话将自动重启以生效（历史完整保留）。"
+    },
     "testConnectionOk": "连接成功",
     "testConnectionFailed": "连接失败",
     "modelSuggestLabel": "推荐模型",
     "modelSuggestPlaceholder": "选择推荐模型，自动填入参数",
     "modelSuggestHint": "选择后自动填入上下文窗口等参数，也可以直接手动填写",
-    "quickSetupTitle": "快速配置",
-    "quickSetupDesc": "选择服务商自动填好接入地址，只需再填 API 密钥（配置保存在下方「环境变量」中）",
-    "quickSetupActive": "当前代理：{{provider}}",
-    "quickSetupClear": "还原直连",
-    "quickSetupClearHint": "清除代理相关环境变量，恢复官方直连",
     "quickSetupKeyPlaceholder": "粘贴服务商 API 密钥",
     "quickSetupApplyKey": "保存密钥",
-    "quickSetupOfficialHint": "使用订阅登录、或网络可直连 Anthropic 官方的用户无需任何配置。",
     "modelComboboxPlaceholder": "选择推荐模型，或直接输入任意模型 ID",
     "modelComboboxOptional": "留空使用默认；可输入任意模型 ID",
     "modelComboboxToggle": "展开模型列表",
@@ -385,7 +431,7 @@
     "required": "必填",
     "exists": "已存在",
     "notFound": "未找到",
-    "modelId": "标识 ID",
+    "modelId": "模型 ID",
     "editModel": "编辑模型",
     "deleteModelConfirm": "确定删除模型 「{{model}}」 吗? (在接入 {{provider}} 下)",
     "setActive": "设为激活",
@@ -527,7 +573,50 @@
     "currentActiveModel": "当前活动模型",
     "noActiveModel": "尚未激活模型 — 请在上方激活任一模型",
     "activeModelSyncHint": "由上方模型列表自动同步。点击预设上的电源图标切换。",
-    "deactivateModel": "取消激活"
+    "deactivateModel": "取消激活",
+    "connectProxy": "配置代理",
+    "connectDirect": "官方直连",
+    "connectDirectHint": "当前为官方直连：使用 Claude 订阅登录，或网络可直达 Anthropic 官方，无需配置渠道。切换到「配置代理」可使用第三方渠道。",
+    "colChannels": "渠道设置",
+    "colModels": "模型设置",
+    "channelPickHint": "选择渠道自动填入接入地址与推荐模型；左侧绿点为当前生效渠道。",
+    "channelActive": "当前使用",
+    "channelKeySaved": "已保存密钥",
+    "channelSaveHint": "切换渠道或保存密钥仅更新草稿，点击页头「保存」后写入配置文件。",
+    "channelCustomHint": "自定义渠道：在「高级设置 → 环境变量」中配置 ANTHROPIC_BASE_URL 与 ANTHROPIC_AUTH_TOKEN。",
+    "channelSelectHint": "选择左侧渠道查看详情，或点击「添加」新建渠道",
+    "showKey": "显示密钥",
+    "hideKey": "隐藏密钥",
+    "channelDirtyHint": "修改尚未保存",
+    "applyTemplateSuccess": "模版已应用并写入配置文件",
+    "jishuBehaviorParams": "默认行为",
+    "thinkingLevelsLabel": "支持思考档位",
+    "thinkingLevelsHint": "勾选该模型实际支持的档位：会话页只显示勾选的档位；选到不支持的档位会自动就近生效。预设模型已按官方资料预填。",
+    "reasoningEffortLabel": "推理力度",
+    "reasoningEffortHint": "控制模型推理深度（codex 的 model_reasoning_effort）。修改后新会话生效；xhigh 仅部分新模型支持。",
+    "thinkingBudgetTitle": "思考预算",
+    "thinkingBudgetHint": "MAX_THINKING_TOKENS：数值越大思考越深；0 = 关闭思考；删除该变量 = 跟随默认。新会话生效。",
+    "thinkingBudgetAdd": "添加思考预算",
+    "reasoningEffort": {
+      "minimal": "极简",
+      "low": "低",
+      "medium": "中",
+      "high": "高",
+      "xhigh": "超高"
+    },
+    "opencodeModel": {
+      "glm51": "GLM-5.1（智谱 Coding Plan）",
+      "gpt51codex": "GPT-5.1 Codex（OpenCode Zen）",
+      "sonnet4": "Claude Sonnet 4",
+      "gpt51": "GPT-5.1（OpenAI）"
+    },
+    "customProvidersLabel": "自定义供应商",
+    "customProvidersEmpty": "还没有自定义供应商",
+    "customProvidersEmptyHint": "在左侧输入供应商标识（如 zhipu）点击添加，配置地址与密钥后即可在上方模型卡选择其模型",
+    "customProviderIdPlaceholder": "供应商标识（如 zhipu）",
+    "customProvidersHint": "模型 ID 为 provider/model 形式；保存（页头）后写入 opencode.json 的 provider 段。",
+    "jishuBehaviorHintV3": "此处设置的是新会话的全局默认思考档位。会话内的即时控制（工具模式 完整/只读、思考档位临时切换）在会话页输入框旁进行；模型选择在「模型设置」。",
+    "defaultThinkingLevelHelp": "写入 jishu agent 的全局默认思考档位（defaultThinkingLevel），对之后新开的会话生效；会话内的档位切换不受影响。"
   },
   "commands": {
     "title": "快捷命令",
@@ -715,7 +804,14 @@
     "notesColon": "备注：",
     "notesPlaceholder": "输入备注",
     "addMetaHint": "点击编辑按钮添加自定义名称、标签或备注",
-    "matcher": "匹配器"
+    "matcher": "匹配器",
+    "fieldMapThinkingLevel": "该项目的默认思考档位（jishu：.pi/settings.json 的 defaultThinkingLevel，未跟随后续会话内切换）。",
+    "compaction": "上下文压缩",
+    "compactionEnabled": "启用自动压缩",
+    "compactionReserve": "预留 tokens",
+    "compactionKeepRecent": "保留近期 tokens",
+    "fieldMapCompaction": "上下文接近窗口时的自动摘要压缩（compaction）。未配置时默认启用（预留 16384 / 保留近期 20000）；关闭或调整数值将写入项目设置。",
+    "modelUnsetHint": "未设置项目默认模型——点开从该智能体的模型列表中选择"
   },
   "about": {
     "title": "关于",

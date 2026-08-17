@@ -177,6 +177,10 @@ export interface ClaudeConfig {
   permissions: PermissionsConfig | null;
   mcpServers: Record<string, McpServerConfig> | null;
   apiProvider: string | null;
+  /** 推理力度（v0.7.4 需求4 B1：codex 专用，其余 agent 为 null）。 */
+  reasoningEffort: string | null;
+  /** 自定义模型供应商（v0.7.4 R12：opencode 的 provider 段；其余 agent 为 null）。 */
+  customProviders: Record<string, Record<string, unknown>> | null;
   smallModel: string | null;
   largeModel: string | null;
   allowedTools: string[] | null;
@@ -193,6 +197,8 @@ export interface ConfigTemplate {
   name: string;
   description: string;
   config: unknown;
+  /** 应用前需补填（adapter 在 config_templates() 中声明，后端 serde 默认 false） */
+  requires_fill?: boolean;
 }
 
 export interface Preset {
@@ -211,7 +217,23 @@ export interface BackupEntry {
 
 export type Page = "chat" | "manage";
 
-export type ManageTab = "projects" | "config" | "commands" | "env";
+/** 智能体设置子页（v0.7.4 需求2 R4/R5：侧边栏「智能体设置」分组下的独立页面）。 */
+export type AgentConfigSection =
+  | "models"
+  | "behavior"
+  | "templates"
+  | "backups"
+  | "advanced";
+
+export type ManageTab =
+  | "projects"
+  | "agent-models"
+  | "agent-behavior"
+  | "agent-templates"
+  | "agent-backups"
+  | "agent-advanced"
+  | "commands"
+  | "env";
 
 export interface CustomCommand {
   id: string;
@@ -247,6 +269,14 @@ export interface ProjectSettings {
   hooks: Record<string, HookEntry[]> | null;
   env: Record<string, string> | null;
   model: string | null;
+  /** 默认思考档位（jishu 项目配置 defaultThinkingLevel；其余 agent 忽略）。 */
+  thinkingLevel?: string | null;
+  /** 上下文压缩（jishu 项目配置 compaction；其余 agent 忽略）。 */
+  compaction?: {
+    enabled?: boolean | null;
+    reserveTokens?: number | null;
+    keepRecentTokens?: number | null;
+  } | null;
 }
 
 export interface ProjectMergeInfo {

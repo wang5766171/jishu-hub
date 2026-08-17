@@ -21,6 +21,14 @@ export interface ProviderModelPreset {
   maxTokens?: number;
   /** 预填推理能力标记 */
   reasoning?: boolean;
+  /** 档位映射声明（透传 Pi thinkingLevelMap）：值为 null 表示该档位
+   * 不被模型支持——Pi 会把它从可用档位剔除并在请求时收敛到最近档位，
+   * 同时不再向 API 发送对应的 thinking 参数。 */
+  thinkingLevelMap?: Record<string, string | null>;
+  /** 透传 Pi 模型 compat（如 forceAdaptiveThinking：智谱端点仅
+   * adaptive+effort 档位真实生效，budget/disabled 均被忽略——2026-08-16
+   * 端点实测）。 */
+  compat?: Record<string, unknown>;
 }
 
 export interface ProviderPreset {
@@ -49,9 +57,62 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     apiKeyUrl: "https://open.bigmodel.cn/usercenter/apikeys",
     docsUrl: "https://docs.bigmodel.cn/cn/guide/develop/claude/introduction",
     models: [
-      { id: "glm-5.3", displayName: "GLM-5.3", contextWindow: 200000, maxTokens: 32768, reasoning: true },
-      { id: "glm-5.2", displayName: "GLM-5.2", contextWindow: 200000, maxTokens: 32768, reasoning: true },
-      { id: "glm-5.2[1m]", displayName: "GLM-5.2（100 万上下文）", contextWindow: 1000000, maxTokens: 32768, reasoning: true },
+      // 智谱 anthropic 兼容端点实测（2026-08-16）：thinking disabled 与
+      // budget_tokens 均被忽略；仅 adaptive + output_config.effort 生效
+      // （effort=low 无思考输出、max 深度思考）。故声明 forceAdaptiveThinking
+      // + 档位映射；off 对端点不存在 → 声明 null，UI 选「关闭」回落「极简」
+      // （= effort low，实测无思考内容）。
+      {
+        id: "glm-5.3",
+        displayName: "GLM-5.3",
+        contextWindow: 200000,
+        maxTokens: 32768,
+        reasoning: true,
+        compat: { forceAdaptiveThinking: true },
+        thinkingLevelMap: {
+          off: null,
+          minimal: "low",
+          low: "low",
+          medium: "medium",
+          high: "high",
+          xhigh: "xhigh",
+          max: "max",
+        },
+      },
+      {
+        id: "glm-5.2",
+        displayName: "GLM-5.2",
+        contextWindow: 200000,
+        maxTokens: 32768,
+        reasoning: true,
+        compat: { forceAdaptiveThinking: true },
+        thinkingLevelMap: {
+          off: null,
+          minimal: "low",
+          low: "low",
+          medium: "medium",
+          high: "high",
+          xhigh: "xhigh",
+          max: "max",
+        },
+      },
+      {
+        id: "glm-5.2[1m]",
+        displayName: "GLM-5.2（100 万上下文）",
+        contextWindow: 1000000,
+        maxTokens: 32768,
+        reasoning: true,
+        compat: { forceAdaptiveThinking: true },
+        thinkingLevelMap: {
+          off: null,
+          minimal: "low",
+          low: "low",
+          medium: "medium",
+          high: "high",
+          xhigh: "xhigh",
+          max: "max",
+        },
+      },
     ],
   },
   {
@@ -146,6 +207,8 @@ export function presetModelToEntry(preset: ProviderModelPreset): {
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   contextWindow?: number;
   maxTokens?: number;
+  thinkingLevelMap?: Record<string, string | null>;
+  compat?: Record<string, unknown>;
 } {
   const entry: {
     id: string;
@@ -155,6 +218,8 @@ export function presetModelToEntry(preset: ProviderModelPreset): {
     cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
     contextWindow?: number;
     maxTokens?: number;
+    thinkingLevelMap?: Record<string, string | null>;
+    compat?: Record<string, unknown>;
   } = {
     id: preset.id,
     name: preset.displayName,
@@ -164,5 +229,7 @@ export function presetModelToEntry(preset: ProviderModelPreset): {
   };
   if (preset.contextWindow) entry.contextWindow = preset.contextWindow;
   if (preset.maxTokens) entry.maxTokens = preset.maxTokens;
+  if (preset.thinkingLevelMap) entry.thinkingLevelMap = preset.thinkingLevelMap;
+  if (preset.compat) entry.compat = preset.compat;
   return entry;
 }

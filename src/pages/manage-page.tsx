@@ -5,9 +5,20 @@ import { ProjectsPage } from "./projects-page";
 import { ConfigPage } from "./config-page";
 import { CommandsPage } from "./commands-page";
 import { EnvCheckPage } from "./env-check-page";
-import { FolderOpen, Settings, Rocket, ArrowLeft, Activity, Globe } from "lucide-react";
+import {
+  FolderOpen,
+  Rocket,
+  ArrowLeft,
+  Activity,
+  Globe,
+  Box,
+  ShieldCheck,
+  LayoutTemplate,
+  Settings2,
+  DatabaseBackup,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { ManageTab, Project, ProjectMeta } from "@/types";
+import type { AgentConfigSection, ManageTab, Project, ProjectMeta } from "@/types";
 
 interface ManagePageProps {
   onBack: () => void;
@@ -19,12 +30,53 @@ interface ManagePageProps {
   refetchProjectMetas: (silent?: boolean) => Promise<Record<string, ProjectMeta>>;
 }
 
-const tabs: { id: ManageTab; icon: typeof FolderOpen; labelKey: string; fallback: string; iconColor: string }[] = [
-  { id: "projects", icon: FolderOpen, labelKey: "nav.projects", fallback: "Projects", iconColor: "text-[var(--icon-folder)]" },
-  { id: "config", icon: Settings, labelKey: "config.configuration", fallback: "Config", iconColor: "text-[var(--icon-action)]" },
-  { id: "commands", icon: Rocket, labelKey: "nav.commands", fallback: "Commands", iconColor: "text-[var(--icon-action)]" },
-  { id: "env", icon: Activity, labelKey: "nav.environment", fallback: "Env", iconColor: "text-[var(--icon-env)]" },
+interface ManageMenuItem {
+  id: ManageTab;
+  icon: typeof FolderOpen;
+  labelKey: string;
+  fallback: string;
+}
+
+// v0.7.4 需求2 R4/R5：侧边栏分组菜单（参考用户截图）——工作区 / 智能体设置 /
+// 系统。智能体设置分组下五个子页，每个子页独立页面（configTab 传入 ConfigPage）。
+// R5：菜单名与导航键解耦（项目管理/快捷命令/环境检测），备份独立子页。
+const menuGroups: { titleKey: string; titleFallback: string; items: ManageMenuItem[] }[] = [
+  {
+    titleKey: "manage.groupWorkspace",
+    titleFallback: "工作区",
+    items: [
+      { id: "projects", icon: FolderOpen, labelKey: "manage.menuProjects", fallback: "项目管理" },
+    ],
+  },
+  {
+    titleKey: "manage.groupAgent",
+    titleFallback: "智能体设置",
+    items: [
+      { id: "agent-models", icon: Box, labelKey: "manage.menuModels", fallback: "模型设置" },
+      { id: "agent-behavior", icon: ShieldCheck, labelKey: "manage.menuBehavior", fallback: "行为与权限" },
+      { id: "agent-advanced", icon: Settings2, labelKey: "manage.menuAdvanced", fallback: "高级设置" },
+      { id: "agent-templates", icon: LayoutTemplate, labelKey: "manage.menuTemplates", fallback: "配置模版" },
+      { id: "agent-backups", icon: DatabaseBackup, labelKey: "manage.menuBackups", fallback: "配置备份" },
+    ],
+  },
+  {
+    titleKey: "manage.groupSystem",
+    titleFallback: "系统",
+    items: [
+      { id: "commands", icon: Rocket, labelKey: "manage.menuCommands", fallback: "快捷命令" },
+      { id: "env", icon: Activity, labelKey: "manage.menuEnv", fallback: "环境检测" },
+    ],
+  },
 ];
+
+/** 智能体设置子页 tab → ConfigPage 的 configTab。 */
+const agentTabSection: Partial<Record<ManageTab, AgentConfigSection>> = {
+  "agent-models": "models",
+  "agent-behavior": "behavior",
+  "agent-templates": "templates",
+  "agent-backups": "backups",
+  "agent-advanced": "advanced",
+};
 
 export function ManagePage({ onBack, onEnterProject, navigateToProjects, projects, projectMetas, refetchProjects, refetchProjectMetas }: ManagePageProps) {
   const { t, i18n } = useTranslation();
@@ -43,51 +95,65 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, project
     onBack();
   };
 
+  const tr = (key: string, fallback: string) => (t(key) === key ? fallback : t(key));
+  const agentSection = agentTabSection[activeTab];
+
   return (
     <div className="flex h-full">
-      {/* Left: Tab navigation */}
-      <div className="w-16 flex flex-col items-center border-r border-border/30 py-4 gap-1" style={{ background: "var(--color-layer-1)" }}>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          onClick={handleBack}
-          className="mb-4 text-muted-foreground hover:text-foreground"
-          title={t("sessions.title")}
-        >
-          <ArrowLeft className="h-4 w-4" />
-        </Button>
-        {tabs.map(({ id, icon: Icon, labelKey, fallback, iconColor }) => {
-          const label = t(labelKey) === labelKey ? fallback : t(labelKey);
-          return (
-          <button
-            key={id}
-            onClick={() => setActiveTab(id)}
-            className={cn(
-              "flex flex-col items-center gap-1 w-12 py-2 rounded-lg text-xs transition-fast",
-              activeTab === id
-                ? "bg-accent/80 text-accent-foreground font-medium"
-                : "text-muted-foreground hover:bg-accent/30 hover:text-foreground"
-            )}
-            title={label}
+      {/* Left: grouped menu sidebar（v0.7.4 R4：加宽分组菜单） */}
+      <div
+        className="flex w-52 shrink-0 flex-col border-r border-border/30 py-4"
+        style={{ background: "var(--color-layer-1)" }}
+      >
+        <div className="px-3">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleBack}
+            className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
+            title={t("sessions.title")}
           >
-            <Icon className={cn("h-4 w-4", activeTab !== id && iconColor)} />
-            <span className="truncate w-full text-center">{label}</span>
-          </button>
-          );
-        })}
+            <ArrowLeft className="h-4 w-4" />
+            <span className="text-sm">{t("manage.back")}</span>
+          </Button>
+        </div>
 
-        <div className="flex-1" />
+        <nav className="mt-4 flex-1 space-y-5 overflow-y-auto px-3">
+          {menuGroups.map((group) => (
+            <div key={group.titleKey} className="space-y-1">
+              <div className="px-2 pb-0.5 text-[11px] font-medium tracking-wide text-muted-foreground/70">
+                {tr(group.titleKey, group.titleFallback)}
+              </div>
+              {group.items.map(({ id, icon: Icon, labelKey, fallback }) => (
+                <button
+                  key={id}
+                  onClick={() => setActiveTab(id)}
+                  className={cn(
+                    "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-fast",
+                    activeTab === id
+                      ? "bg-accent text-accent-foreground font-medium"
+                      : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
+                  )}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span className="truncate">{tr(labelKey, fallback)}</span>
+                </button>
+              ))}
+            </div>
+          ))}
+        </nav>
+
         <button
           onClick={() => {
             const newLang = i18n.language.startsWith('zh') ? 'en' : 'zh';
             i18n.changeLanguage(newLang);
           }}
-          className="flex flex-col items-center gap-1 w-12 py-2 rounded-lg text-xs transition-fast text-muted-foreground hover:bg-accent/30 hover:text-foreground mt-2"
+          className="mx-3 flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-fast text-muted-foreground hover:bg-accent/30 hover:text-foreground"
           title={i18n.language.startsWith('zh') ? "Switch to English" : "切换到中文"}
         >
-          <Globe className="h-4 w-4" />
-          <span className="truncate w-full text-center">
-            {i18n.language.startsWith('zh') ? "En" : "中"}
+          <Globe className="h-4 w-4 shrink-0" />
+          <span className="truncate">
+            {i18n.language.startsWith('zh') ? "English" : "中文"}
           </span>
         </button>
       </div>
@@ -103,7 +169,7 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, project
             onEnterProject={onEnterProject}
           />
         )}
-        {activeTab === "config" && <ConfigPage initialTab="edit" />}
+        {agentSection !== undefined && <ConfigPage configTab={agentSection} />}
         {activeTab === "commands" && <CommandsPage />}
         {activeTab === "env" && <EnvCheckPage />}
       </div>
