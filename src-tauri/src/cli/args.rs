@@ -312,8 +312,8 @@ pub enum ModelAction {
 
     /// Test a model connection.
     Test {
-        /// Model identifier.
-        id: String,
+        /// Target model as `<provider>/<model>` (see `list`).
+        target: String,
     },
 }
 
