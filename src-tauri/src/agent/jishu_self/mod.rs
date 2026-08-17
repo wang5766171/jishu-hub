@@ -155,6 +155,19 @@ impl AgentManifest for JishuSelfAgent {
             | AgentCapabilities::FILE_INPUT
             | AgentCapabilities::TASK_PLANNING
             | AgentCapabilities::TASK_SUPERVISION
+            // v0.7.4 需求1 B4：常规会话删除（Pi 会话 JSONL + 交互 sidecar）。
+            | AgentCapabilities::SESSION_DELETE
+            // v0.7.4 需求1 A3：手动 + 自动上下文压缩（Pi 原生 compact RPC）。
+            | AgentCapabilities::CONTEXT_COMPACT
+    }
+
+    fn thinking_levels(&self) -> Vec<String> {
+        // Pi 全集七档（EXTENDED_THINKING_LEVELS）；Pi 按当前模型 clamp 并
+        // 经 thinking_level_changed 事件回传生效值（v0.7.4 需求1 A7）。
+        ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
     }
 
     fn probe_sync(&self) -> crate::agent::capability::AgentHealth {
@@ -285,6 +298,10 @@ impl SessionAdapter for JishuSelfAgent {
 
     fn load_history(&self) -> Vec<crate::history::HistoryEntry> {
         Vec::new()
+    }
+
+    fn delete_session(&self, session_id: &str, encoded_name: &str) -> Result<(), String> {
+        pi_session::delete_pi_session(session_id, encoded_name)
     }
 }
 

@@ -204,6 +204,8 @@ impl AgentManifest for ClaudeCodeAgent {
         use AgentCapabilities as C;
         C::RESUME_BY_ID
             | C::SESSION_LIST
+            // v0.7.4 需求1 B4：常规会话删除（projects 目录下的会话 JSONL）。
+            | C::SESSION_DELETE
             | C::IMAGE_INPUT
             | C::FILE_INPUT
             | C::STREAM_TEXT_DELTA
@@ -415,6 +417,8 @@ impl ConfigAdapter for ClaudeCodeAgent {
             supports_small_model: true,
             supports_large_model: true,
             supports_api_provider: true,
+            supports_proxy_setup: true,
+            supports_config_test: true,
         }
     }
 
@@ -537,6 +541,24 @@ impl SessionAdapter for ClaudeCodeAgent {
             session.agent_id = Some("claude-code".to_string());
         }
         Ok(all_sessions)
+    }
+
+    fn delete_session(&self, session_id: &str, encoded_name: &str) -> Result<(), String> {
+        // Session ids are UUIDs; reject anything that could escape the
+        // project directory via path separators.
+        if session_id.is_empty() || session_id.contains(['/', '\\']) || session_id.contains("..") {
+            return Err(format!("Invalid session id: {session_id}"));
+        }
+        let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+        let path = home
+            .join(".claude")
+            .join("projects")
+            .join(encoded_name)
+            .join(format!("{session_id}.jsonl"));
+        if !path.is_file() {
+            return Err(format!("Session file not found: {session_id}"));
+        }
+        std::fs::remove_file(&path).map_err(|e| format!("Failed to delete session file: {e}"))
     }
 
     fn get_session_messages(

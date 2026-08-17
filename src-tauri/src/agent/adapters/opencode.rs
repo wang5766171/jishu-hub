@@ -1077,7 +1077,9 @@ impl AgentManifest for OpencodeAdapter {
         C::RESUME_BY_ID
             | C::SESSION_FORK
             | C::SESSION_LIST
-            | C::SESSION_DELETE
+            // SESSION_DELETE 先前已声明但从未实现（opencode 会话存于其
+            // SQLite 存储）；在 adapter 真正实现 delete_session 前移除
+            // 声明（v0.7.4 需求1 B4——不能假装支持，DEVELOP_READ §11）。
             | C::SESSION_EXPORT
             | C::SESSION_IMPORT
             | C::IMAGE_INPUT
@@ -1188,6 +1190,8 @@ impl ConfigAdapter for OpencodeAdapter {
             supports_small_model: false,
             supports_large_model: false,
             supports_api_provider: false,
+            supports_proxy_setup: false,
+            supports_config_test: false,
         }
     }
 

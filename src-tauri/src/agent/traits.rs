@@ -16,6 +16,13 @@ pub trait AgentManifest {
     fn capabilities(&self) -> AgentCapabilities {
         AgentCapabilities::empty()
     }
+    /// Selectable thinking levels (v0.7.4 需求1 A7). Empty = the agent has no
+    /// thinking-level control (UI hides the selector). Values are the agent's
+    /// own level ids (pi: off/minimal/low/medium/high/xhigh/max); the agent
+    /// clamps per-model and reports the effective level back via events.
+    fn thinking_levels(&self) -> Vec<String> {
+        Vec::new()
+    }
     fn install_hint(&self) -> Option<String> {
         None
     }
@@ -247,6 +254,12 @@ pub trait SessionAdapter {
     }
     fn load_history(&self) -> Vec<HistoryEntry> {
         vec![]
+    }
+    /// Delete a native session (v0.7.4 需求1 B4). Adapters that declare the
+    /// SESSION_DELETE capability must implement this; the default returns a
+    /// structured "not supported" error so the IPC layer can surface it.
+    fn delete_session(&self, _session_id: &str, _encoded_name: &str) -> Result<(), String> {
+        Err("Session deletion is not supported by this agent adapter".to_string())
     }
 }
 

@@ -49,6 +49,44 @@ pub(crate) fn list_pi_sessions(encoded_name: &str) -> Result<Vec<crate::session:
     Ok(sessions)
 }
 
+/// Delete a Pi session scoped to the project's session directory
+/// (v0.7.4 需求1 B4). The session id is matched by loading each JSONL in
+/// the directory, so a forged or foreign id can never delete a file
+/// outside its project dir. The interaction sidecar is removed with it.
+pub(crate) fn delete_pi_session(session_id: &str, encoded_name: &str) -> Result<(), String> {
+    let project_path = crate::project::decode_project_path(encoded_name);
+    let session_dir = pi_session_dir(&project_path)?;
+    delete_pi_session_in_dir(&session_dir, session_id)
+}
+
+pub(crate) fn delete_pi_session_in_dir(session_dir: &Path, session_id: &str) -> Result<(), String> {
+    if !session_dir.is_dir() {
+        return Err(format!("Pi session not found: {session_id}"));
+    }
+
+    let mut target: Option<PathBuf> = None;
+    for entry in fs::read_dir(session_dir).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if !path.extension().map(|ext| ext == "jsonl").unwrap_or(false) {
+            continue;
+        }
+        if let Some(session) = load_pi_session(&path) {
+            if session.id == session_id {
+                target = Some(path);
+                break;
+            }
+        }
+    }
+
+    let path = target.ok_or_else(|| format!("Pi session not found: {session_id}"))?;
+    let sidecar = interaction_sidecar_path(&path);
+    fs::remove_file(&path).map_err(|e| format!("Failed to delete session file: {e}"))?;
+    if sidecar.is_file() {
+        let _ = fs::remove_file(&sidecar);
+    }
+    Ok(())
+}
+
 pub(crate) fn load_pi_session_messages(
     session_id: &str,
     encoded_name: &str,
@@ -1046,6 +1084,51 @@ mod tests {
                 r"C:\Users\tester\.jishu-agent\agent\sessions\--D--MyCodes-unified-auth-system--"
             )
         );
+    }
+
+    fn write_delete_fixture(root: &Path) {
+        fs::create_dir_all(root).unwrap();
+        fs::write(
+            root.join("sid-del.jsonl"),
+            [
+                r#"{"type":"session","version":3,"id":"sid-del","timestamp":"2026-08-15T00:00:00.000Z","cwd":"D:\\Work\\app"}"#,
+                r#"{"type":"message_start","id":"u1","parentId":null,"timestamp":"2026-08-15T00:00:01.000Z","message":{"role":"user","content":"hello","timestamp":1780272001000}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        fs::write(root.join("sid-keep.jsonl"), "").unwrap();
+    }
+
+    #[test]
+    fn delete_pi_session_removes_target_and_sidecar_only() {
+        // v0.7.4 需求1 B4：按 id 匹配删除目标会话 + sidecar，同目录其他会话不动。
+        let root =
+            std::env::temp_dir().join(format!("jishu-pi-delete-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        write_delete_fixture(&root);
+        let sidecar = root.join("sid-del.jishu-interactions");
+        fs::write(&sidecar, "{}").unwrap();
+
+        delete_pi_session_in_dir(&root, "sid-del").unwrap();
+
+        assert!(!root.join("sid-del.jsonl").exists());
+        assert!(!sidecar.exists());
+        assert!(root.join("sid-keep.jsonl").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_pi_session_unknown_id_and_missing_dir_error() {
+        let root =
+            std::env::temp_dir().join(format!("jishu-pi-delete-test2-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        write_delete_fixture(&root);
+
+        assert!(delete_pi_session_in_dir(&root, "sid-missing").is_err());
+        // 目录不存在 → 结构化错误（不 panic）。
+        assert!(delete_pi_session_in_dir(&root.join("nope"), "any").is_err());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

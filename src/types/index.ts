@@ -310,6 +310,7 @@ export type NormalizedEvent =
       correlation?: InteractionCorrelation | null;
     }
   | { kind: "session_resolved"; session_id: string }
+  | { kind: "thinking_level_changed"; level: string }
   | { kind: "steer_injected"; content: string }
   | { kind: "turn_complete"; reason: string; usage: unknown | null }
   | { kind: "error"; message: string; recoverable: boolean }

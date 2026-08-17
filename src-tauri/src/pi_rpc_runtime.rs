@@ -42,13 +42,19 @@ pub fn spawn_pi_rpc_session(
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
 ) -> AcpControl {
-    let emit = tauri_event_emitter(app, agent_id);
+    let emit = tauri_event_emitter(app, agent_id.clone());
+    // 需求1 A7：Hub 侧 thinking 档位偏好（state.json），spawn 时应用。
+    let thinking_pref = crate::hub::load_agent_thinking_level(&agent_id);
+    // 需求1 A3：Hub 侧自动压缩偏好，spawn 时应用。
+    let auto_compaction_pref = crate::hub::load_agent_auto_compaction(&agent_id);
     spawn_pi_rpc_session_inner(
         emit,
         pending_session_id,
         child,
         first_message,
         resolved_session_prompt_injection,
+        thinking_pref,
+        auto_compaction_pref,
         on_finish,
         on_session_resolved,
     )
@@ -73,17 +79,23 @@ pub fn spawn_pi_rpc_session_with_emitter(
         child,
         first_message,
         resolved_session_prompt_injection,
+        // 编排器会话无 Hub 偏好上下文，跟随 Pi 自身默认。
+        None,
+        None,
         on_finish,
         on_session_resolved,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_pi_rpc_session_inner(
     emit: AcpEventEmit,
     pending_session_id: String,
     mut child: tokio::process::Child,
     first_message: String,
     resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
+    thinking_pref: Option<String>,
+    auto_compaction_pref: Option<bool>,
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
 ) -> AcpControl {
@@ -131,6 +143,8 @@ fn spawn_pi_rpc_session_inner(
             cmd_rx,
             first_message,
             resolved_session_prompt_injection,
+            thinking_pref,
+            auto_compaction_pref,
             &on_session_resolved,
         )
         .await;
@@ -223,6 +237,8 @@ async fn pi_rpc_connection_loop(
     mut command_rx: tokio::sync::mpsc::Receiver<AcpCommand>,
     first_message: String,
     resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
+    thinking_pref: Option<String>,
+    auto_compaction_pref: Option<bool>,
     on_session_resolved: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<(), String> {
     // 1. stdout reader sub-task
@@ -234,6 +250,8 @@ async fn pi_rpc_connection_loop(
 
     // Read lines until we get the get_state response
     let mut context_window: Option<u64> = None;
+    let mut initial_thinking_level: Option<String> = None;
+    let mut initial_auto_compaction: Option<bool> = None;
     let session_id = loop {
         let line = tokio::time::timeout(Duration::from_secs(30), stdout_rx.recv())
             .await
@@ -261,6 +279,17 @@ async fn pi_rpc_connection_loop(
                         .and_then(|d| d.get("model"))
                         .and_then(|m| m.get("contextWindow"))
                         .and_then(|v| v.as_u64());
+                    // 需求1 A7：捕获当前 thinking 级别作为 UI 初始值。
+                    initial_thinking_level = msg
+                        .get("data")
+                        .and_then(|d| d.get("thinkingLevel"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    // 需求1 A3：捕获自动压缩当前值（Hub 偏好对齐用）。
+                    initial_auto_compaction = msg
+                        .get("data")
+                        .and_then(|d| d.get("autoCompactionEnabled"))
+                        .and_then(|v| v.as_bool());
                     break sid.to_string();
                 }
             }
@@ -289,6 +318,53 @@ async fn pi_rpc_connection_loop(
         }],
         &pending_session_id,
     );
+    // 需求1 A7：应用 Hub 侧 thinking 档位偏好。与 Pi 当前值一致时直接上报
+    // 当前值；不同则下发 set_thinking_level（Pi clamp 后经
+    // thinking_level_changed 事件回传生效值，无需此处回退读取）。
+    match (&thinking_pref, &initial_thinking_level) {
+        (Some(pref), Some(current)) if pref == current => {
+            emit(
+                &[NormalizedEvent::ThinkingLevelChanged {
+                    level: pref.clone(),
+                }],
+                &pending_session_id,
+            );
+        }
+        (Some(pref), _) => {
+            send_pi_command(
+                &stdin_arc,
+                &json!({
+                    "type": "set_thinking_level",
+                    "level": pref
+                }),
+            )
+            .await?;
+            log::debug!("Pi RPC applied hub thinking level at spawn: {pref}");
+        }
+        (None, Some(current)) => {
+            emit(
+                &[NormalizedEvent::ThinkingLevelChanged {
+                    level: current.clone(),
+                }],
+                &pending_session_id,
+            );
+        }
+        (None, None) => {}
+    }
+    // 需求1 A3：应用 Hub 侧自动压缩偏好（仅当与 Pi 当前值不同时发送）。
+    if let Some(pref) = auto_compaction_pref {
+        if Some(pref) != initial_auto_compaction {
+            send_pi_command(
+                &stdin_arc,
+                &json!({
+                    "type": "set_auto_compaction",
+                    "enabled": pref
+                }),
+            )
+            .await?;
+            log::debug!("Pi RPC applied hub auto compaction at spawn: {pref}");
+        }
+    }
     on_session_resolved(&session_id);
 
     // 3. Send first prompt
@@ -323,6 +399,10 @@ async fn pi_rpc_connection_loop(
     // Pi may run awaited agent_end handlers and queue another core run after the
     // final turn_end, so keep the GUI stream alive until agent_settled.
     let mut pending_turn_complete: Option<NormalizedEvent> = None;
+    // 需求1 A3：进行中的 compact 请求回填通道（响应到达时 resolve IPC）。
+    let mut pending_compact: Option<
+        tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+    > = None;
 
     loop {
         let cmd_future = command_rx.recv();
@@ -365,6 +445,38 @@ async fn pi_rpc_connection_loop(
                             "message": msg
                         })).await?;
                         log::debug!("Pi RPC steer sent");
+                        false
+                    }
+                    Some(AcpCommand::SetThinkingLevel(level)) => {
+                        // 需求1 A7：Pi 原生 set_thinking_level。Pi 会把请求值
+                        // clamp 到当前模型支持的档位并持久化为默认级别，随后广播
+                        // thinking_level_changed 事件（归一化后回传生效值）。
+                        send_pi_command(&stdin_arc, &json!({
+                            "type": "set_thinking_level",
+                            "level": level
+                        })).await?;
+                        log::debug!("Pi RPC set_thinking_level sent: {level}");
+                        false
+                    }
+                    Some(AcpCommand::Compact { instructions, response }) => {
+                        // 需求1 A3：手动压缩。Pi 压缩期间排队消息、完成后经
+                        // compact 响应回填结果（见 stdout 分支）。
+                        let mut payload = json!({ "type": "compact" });
+                        if let Some(instr) = instructions {
+                            payload["customInstructions"] = json!(instr);
+                        }
+                        send_pi_command(&stdin_arc, &payload).await?;
+                        pending_compact = Some(response);
+                        log::info!("Pi RPC compact requested");
+                        false
+                    }
+                    Some(AcpCommand::SetAutoCompaction(enabled)) => {
+                        // 需求1 A3：自动压缩开关（fire-and-forget，pi 会话级状态）。
+                        send_pi_command(&stdin_arc, &json!({
+                            "type": "set_auto_compaction",
+                            "enabled": enabled
+                        })).await?;
+                        log::debug!("Pi RPC set_auto_compaction sent: {enabled}");
                         false
                     }
                     Some(AcpCommand::Cancel) => {
@@ -490,6 +602,26 @@ async fn pi_rpc_connection_loop(
                                         // session.abort() responds after awaited agent_end
                                         // handlers and emits agent_settled, which owns final
                                         // completion and the local Idle transition.
+                                        continue;
+                                    }
+                                    "compact" => {
+                                        // 需求1 A3：压缩完成/失败——回填 IPC（不进
+                                        // 通用 error 分支，避免误发 TurnComplete）。
+                                        if let Some(tx) = pending_compact.take() {
+                                            let result = if success {
+                                                Ok(msg
+                                                    .get("data")
+                                                    .cloned()
+                                                    .unwrap_or(serde_json::Value::Null))
+                                            } else {
+                                                Err(msg
+                                                    .get("error")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("compaction failed")
+                                                    .to_string())
+                                            };
+                                            let _ = tx.send(result);
+                                        }
                                         continue;
                                     }
                                     _ => {
@@ -1091,6 +1223,20 @@ pub(crate) fn normalize_pi_agent_event(
                 vec![]
             } else {
                 vec![NormalizedEvent::SteerInjected { content }]
+            }
+        }
+
+        // 需求1 A7：thinking 级别变更（Pi clamp 后的生效值）。
+        "thinking_level_changed" => {
+            let level = event
+                .get("level")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if level.is_empty() {
+                vec![]
+            } else {
+                vec![NormalizedEvent::ThinkingLevelChanged { level }]
             }
         }
 

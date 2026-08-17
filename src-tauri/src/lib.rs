@@ -173,6 +173,7 @@ pub fn run() {
             commands::projects::remove_project,
             commands::sessions::list_sessions,
             commands::sessions::get_session_messages,
+            commands::sessions::delete_agent_session,
             commands::sessions::persist_interaction_blocks,
             commands::sessions::persist_partial_assistant,
             commands::sessions::read_text_file,
@@ -257,6 +258,10 @@ pub fn run() {
             chat::send_message,
             chat::abort_chat,
             chat::steer_chat,
+            chat::set_agent_thinking_level,
+            chat::compact_agent_session,
+            chat::get_agent_auto_compaction,
+            chat::set_agent_auto_compaction,
             chat::resolve_chat_permission,
             chat::respond_chat_interaction,
             image::save_session_files,
@@ -359,6 +364,7 @@ pub fn run() {
             commands::models::test_model,
             commands::models::set_model_key,
             commands::models::mask_model_key,
+            commands::models::test_llm_connection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

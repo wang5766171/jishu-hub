@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Trash2, Sparkles, Pencil, Eye, User, Plus } from "lucide-react";
 import { useAgent } from "@/agents";
+import { CLAUDE_PROXY_PRESETS } from "@/agents/config/presets/claude-presets";
 import type { ConfigTemplate, ClaudeConfig, Preset } from "@/types";
 
 interface TemplateManagerProps {
@@ -302,13 +303,9 @@ function TemplateDetailDialog({ open, onOpenChange, template, editable, onSave }
   );
 }
 
-const PROXY_PROVIDERS = [
-  { label: "智谱 (Zhipu)", url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-plus" },
-  { label: "阿里 (Aliyun)", url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-max" },
-  { label: "Minimax", url: "https://api.minimax.chat/v1", model: "abab6.5-chat" },
-  { label: "DeepSeek", url: "https://api.deepseek.com/v1", model: "deepseek-chat" },
-  { label: "自定义 (Custom)", url: "", model: "" }
-];
+// v0.7.4 需求2 R1：供应商清单改引自共享注册表（旧 PROXY_PROVIDERS 删除），
+// 且端点统一为 Anthropic 兼容地址（旧表是 openai 兼容地址，对
+// ANTHROPIC_BASE_URL 不生效）。
 
 /** Dialog to fill in empty env values and model before applying a system template */
 function FillAndApplyDialog({ open, onOpenChange, template, onApply }: {
@@ -378,19 +375,19 @@ function FillAndApplyDialog({ open, onOpenChange, template, onApply }: {
             <p className="text-sm text-muted-foreground">{t("config.fillRequiredDesc")}</p>
             {template.id === "proxy-config" && (
               <div className="space-y-2 mb-4 p-4 border rounded bg-muted/30">
-                <Label>选择供应商 / Choose Provider</Label>
-                <select 
-                  className={selectClass} 
+                <Label>{t("config.presetStepChoose")}</Label>
+                <select
+                  className={selectClass}
                   onChange={(e) => {
-                    const p = PROXY_PROVIDERS.find(x => x.label === e.target.value);
-                    if (p && p.url) {
-                       setEnvValues(prev => ({ ...prev, "ANTHROPIC_BASE_URL": p.url, "ANTHROPIC_MODEL": p.model }));
+                    const p = CLAUDE_PROXY_PRESETS.find(x => x.id === e.target.value);
+                    if (p && p.baseUrl) {
+                       setEnvValues(prev => ({ ...prev, "ANTHROPIC_BASE_URL": p.baseUrl, "ANTHROPIC_MODEL": p.model }));
                        if (needModel) setModelValue(p.model);
                     }
                   }}
                 >
-                  <option value="">-- 选择供应商 --</option>
-                  {PROXY_PROVIDERS.map(p => <option key={p.label} value={p.label}>{p.label}</option>)}
+                  <option value="">{t("config.presetSelectPlaceholder")}</option>
+                  {CLAUDE_PROXY_PRESETS.map(p => <option key={p.id} value={p.id}>{t(p.labelKey)}</option>)}
                 </select>
               </div>
             )}

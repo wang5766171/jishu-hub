@@ -28,6 +28,9 @@ bitflags::bitflags! {
         /// declare this only once their transport actually implements pre-execution
         /// interception + same-native-request resume.
         const PRE_EXECUTION_INTERCEPTION = 1 << 32;
+        /// Manual + automatic context compaction (v0.7.4 需求1 A3). Only
+        /// transports with a native compact mechanism (Pi RPC) declare this.
+        const CONTEXT_COMPACT = 1 << 33;
 
         const CONFIG_GLOBAL        = 1 << 40;
         const CONFIG_PROJECT       = 1 << 41;

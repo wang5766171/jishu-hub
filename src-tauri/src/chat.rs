@@ -345,6 +345,142 @@ pub async fn steer_chat(app: AppHandle, session_id: String, message: String) -> 
     acp.steer(message).await
 }
 
+/// Set the agent's thinking level (v0.7.4 需求1 A7). Hub-side persistence
+/// (applied at PiRpc spawn) + best-effort immediate push to the live
+/// session when one exists. Capability-gated on the adapter's declared
+/// `thinking_levels()`.
+#[tauri::command]
+pub async fn set_agent_thinking_level(
+    app: AppHandle,
+    session_id: Option<String>,
+    agent_id: String,
+    level: String,
+) -> Result<(), String> {
+    // 防御层：UI 已按 capability 隐藏入口，此处再校验声明，避免绕过。
+    let app_state = app.state::<Mutex<crate::AppState>>();
+    let supported = {
+        let s = app_state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        s.registry
+            .require_agent(&agent_id)?
+            .thinking_levels()
+            .contains(&level)
+    };
+    if !supported {
+        return Err(format!(
+            "Thinking level '{level}' is not supported by this agent"
+        ));
+    }
+
+    // 1) Hub 侧持久化（spawn 时应用，Pi 也会把它持久化为默认级别）。
+    crate::hub::save_agent_thinking_level(&agent_id, &level)?;
+
+    // 2) 活跃会话即时下发（无活跃进程时仅持久化，下条消息 spawn 生效）。
+    if let Some(session_id) = session_id {
+        let acp = {
+            let chat_state = app.state::<Mutex<ChatState>>();
+            let state = chat_state
+                .lock()
+                .map_err(|_| "Chat state lock poisoned".to_string())?;
+            state
+                .processes
+                .get(&session_id)
+                .and_then(|process| process.acp.clone())
+        };
+        if let Some(acp) = acp {
+            acp.set_thinking_level(level).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Look up an agent's live AcpControls (v0.7.4 需求1 A3 helper): every
+/// session process owned by the agent.
+fn live_acp_controls_for_agent(
+    app: &AppHandle,
+    agent_id: &str,
+) -> Vec<crate::acp_runtime::AcpControl> {
+    let chat_state = app.state::<Mutex<ChatState>>();
+    let state = match chat_state.lock() {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    state
+        .processes
+        .values()
+        .filter(|process| process.agent_id == agent_id)
+        .filter_map(|process| process.acp.clone())
+        .collect()
+}
+
+fn agent_supports_compact(app: &AppHandle, agent_id: &str) -> Result<bool, String> {
+    let app_state = app.state::<Mutex<crate::AppState>>();
+    let s = app_state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
+    Ok(s.registry
+        .require_agent(agent_id)?
+        .capabilities()
+        .contains(crate::agent::AgentCapabilities::CONTEXT_COMPACT))
+}
+
+/// Manually compact the session context (v0.7.4 需求1 A3). Capability-gated
+/// (CONTEXT_COMPACT); resolves when compaction finishes.
+#[tauri::command]
+pub async fn compact_agent_session(
+    app: AppHandle,
+    session_id: String,
+    instructions: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let (acp, agent_id) = {
+        let chat_state = app.state::<Mutex<ChatState>>();
+        let state = chat_state
+            .lock()
+            .map_err(|_| "Chat state lock poisoned".to_string())?;
+        let process = state
+            .processes
+            .get(&session_id)
+            .ok_or_else(|| format!("No active ACP session found for {session_id}"))?;
+        (
+            process
+                .acp
+                .clone()
+                .ok_or_else(|| format!("No active ACP session found for {session_id}"))?,
+            process.agent_id.clone(),
+        )
+    };
+    if !agent_supports_compact(&app, &agent_id)? {
+        return Err("Context compaction is not supported by this agent".to_string());
+    }
+    acp.compact(instructions).await
+}
+
+/// Read the agent's auto-compaction preference (v0.7.4 需求1 A3).
+/// None = follow the agent's own default.
+#[tauri::command]
+pub fn get_agent_auto_compaction(agent_id: String) -> Option<bool> {
+    crate::hub::load_agent_auto_compaction(&agent_id)
+}
+
+/// Set the agent's auto-compaction preference (v0.7.4 需求1 A3): persist in
+/// Hub state + best-effort push to the agent's live sessions.
+#[tauri::command]
+pub async fn set_agent_auto_compaction(
+    app: AppHandle,
+    agent_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    if !agent_supports_compact(&app, &agent_id)? {
+        return Err("Context compaction is not supported by this agent".to_string());
+    }
+    crate::hub::save_agent_auto_compaction(&agent_id, enabled)?;
+    for acp in live_acp_controls_for_agent(&app, &agent_id) {
+        acp.set_auto_compaction(enabled).await?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn resolve_chat_permission(
     app: AppHandle,

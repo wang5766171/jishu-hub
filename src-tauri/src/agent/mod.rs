@@ -89,6 +89,11 @@ pub struct AgentStatus {
     pub permission_modes: Vec<String>,
     /// 权限模式的读写提供方；无权限模式时为 None。
     pub permission_mode_provider: Option<PermissionModeProvider>,
+    /// 可选 thinking 档位（空 = 不支持，UI 隐藏选择器；v0.7.4 需求1 A7）。
+    pub thinking_levels: Vec<String>,
+    /// Hub 侧持久化的当前 thinking 档位（未配置 = 跟随 agent 默认；会话内
+    /// 生效值以 thinking_level_changed 事件为准）。
+    pub thinking_level: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -100,6 +105,12 @@ pub enum ConfigSurface {
         supports_small_model: bool,
         supports_large_model: bool,
         supports_api_provider: bool,
+        /// 快速配置（代理服务商引导）入口显隐（v0.7.4 需求2 R2a）。
+        #[serde(default)]
+        supports_proxy_setup: bool,
+        /// 「测试连接」按钮显隐（v0.7.4 需求2 R2c）。
+        #[serde(default)]
+        supports_config_test: bool,
     },
     Raw {
         format: String,
@@ -327,6 +338,12 @@ impl AgentRegistry {
                     .map_or((Vec::new(), None), |(modes, provider)| {
                         (modes, Some(provider))
                     });
+                let thinking_levels = a.thinking_levels();
+                let thinking_level = if thinking_levels.is_empty() {
+                    None
+                } else {
+                    crate::hub::load_agent_thinking_level(&info.id)
+                };
                 AgentStatus {
                     id: info.id.clone(),
                     display_name: info.display_name.clone(),
@@ -348,6 +365,8 @@ impl AgentRegistry {
                     transport_bridge,
                     permission_modes,
                     permission_mode_provider,
+                    thinking_levels,
+                    thinking_level,
                 }
             })
             .collect()
@@ -569,6 +588,8 @@ mod tests {
             transport_bridge: TransportBridgeStatus::default(),
             permission_modes: Vec::new(),
             permission_mode_provider: None,
+            thinking_levels: Vec::new(),
+            thinking_level: None,
         };
 
         let value = serde_json::to_value(status).unwrap();
@@ -614,6 +635,8 @@ mod tests {
                 supports_small_model: false,
                 supports_large_model: false,
                 supports_api_provider: false,
+                supports_proxy_setup: false,
+                supports_config_test: false,
             }
         );
 

@@ -269,6 +269,8 @@ impl ConfigAdapter for CodexAdapter {
             supports_small_model: false,
             supports_large_model: false,
             supports_api_provider: false,
+            supports_proxy_setup: false,
+            supports_config_test: false,
         }
     }
 

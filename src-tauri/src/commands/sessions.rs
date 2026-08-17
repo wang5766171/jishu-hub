@@ -45,6 +45,24 @@ pub(crate) async fn get_session_messages(
         .get_session_messages(&session_id, &encoded_name)
 }
 
+/// Delete a native session through the agent's session adapter
+/// (v0.7.4 需求1 B4). UI entry is capability-gated (SESSION_DELETE);
+/// this returns the adapter's structured error for agents without it.
+#[tauri::command]
+pub(crate) async fn delete_agent_session(
+    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
+    session_id: String,
+    encoded_name: String,
+) -> Result<(), String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
+    s.registry
+        .require_agent(&agent_id)?
+        .delete_session(&session_id, &encoded_name)
+}
+
 /// Persist interaction Q&A pairs through the agent's session adapter so
 /// they survive app restarts without the IPC layer knowing the native store.
 #[tauri::command]

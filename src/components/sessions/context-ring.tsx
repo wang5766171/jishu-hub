@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDownToLine, ArrowUpFromLine, Coins } from "lucide-react";
+import { ArrowDownToLine, ArrowUpFromLine, Coins, Loader2, Minimize2 } from "lucide-react";
 import { useSessionUsage } from "@/lib/session-usage";
 import { cn } from "@/lib/utils";
 
@@ -9,7 +9,18 @@ import { cn } from "@/lib/utils";
  * 数据源为 session-usage store（turn_complete usage）；总量或剩余缺失
  * （codex / 未对话的新会话）时不渲染。颜色分级与 TUI footer 一致：
  * ≤70% 灰、>70% 琥珀、>90% 红。
+ *
+ * v0.7.4 需求1 A3：compact prop 提供时（capability CONTEXT_COMPACT 门控，
+ * 由调用方决定），弹层内渲染「立即压缩」按钮与「自动压缩」开关。
  */
+
+export interface ContextRingCompactControls {
+  onCompact: () => void;
+  compacting: boolean;
+  /** Hub 偏好；null = 跟随 agent 默认（未配置） */
+  autoCompaction: boolean | null;
+  onAutoCompactionChange: (enabled: boolean) => void;
+}
 
 function formatTokens(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
@@ -19,8 +30,10 @@ function formatTokens(value: number): string {
 
 export const ContextRing = memo(function ContextRing({
   sessionId,
+  compact,
 }: {
   sessionId: string | null;
+  compact?: ContextRingCompactControls;
 }) {
   const { t } = useTranslation();
   const usage = useSessionUsage(sessionId);
@@ -115,6 +128,37 @@ export const ContextRing = memo(function ContextRing({
                   <span>{`$${usage.totalCost.toFixed(3)}`}</span>
                 </div>
               )}
+            </div>
+          )}
+          {compact && (
+            <div className="mt-1.5 space-y-1.5 border-t border-border/40 pt-1.5">
+              <button
+                type="button"
+                disabled={compact.compacting}
+                onClick={compact.onCompact}
+                className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border/60 px-2 py-1.5 text-[11px] transition-fast hover:bg-accent/40 disabled:opacity-60"
+              >
+                {compact.compacting ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Minimize2 className="h-3 w-3" />
+                )}
+                {compact.compacting
+                  ? t("sessions.compactRunning")
+                  : t("sessions.compactNow")}
+              </button>
+              <label className="flex cursor-pointer items-center justify-between text-[11px] text-muted-foreground">
+                <span>{t("sessions.autoCompaction")}</span>
+                <input
+                  type="checkbox"
+                  className="h-3 w-3"
+                  checked={compact.autoCompaction ?? true}
+                  onChange={(e) => compact.onAutoCompactionChange(e.target.checked)}
+                />
+              </label>
+              <p className="text-[10px] leading-tight text-muted-foreground/60">
+                {t("sessions.compactHint")}
+              </p>
             </div>
           )}
           <div className="mt-1.5 border-t border-border/40 pt-1.5 text-[10px] leading-tight text-muted-foreground/60">

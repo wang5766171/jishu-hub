@@ -37,6 +37,10 @@ export interface AgentStatus {
   transport_bridge: TransportBridgeStatus;
   /** 可切换的权限模式（空/缺省 = 不支持；v0.7.3 需求2 P-3）。 */
   permission_modes?: string[];
+  /** 可选 thinking 档位（空/缺省 = 不支持，隐藏选择器；v0.7.4 需求1 A7）。 */
+  thinking_levels?: string[];
+  /** Hub 侧持久化的当前档位（会话内生效值以 thinking_level_changed 事件为准）。 */
+  thinking_level?: string | null;
   /** 权限模式读写提供方。 */
   permission_mode_provider?: "project_settings" | "hub_tool_mode" | "agent_config";
 }
@@ -58,7 +62,18 @@ export interface TransportBridgeStatus {
 }
 
 export type ConfigSurface =
-  | { kind: "structured"; schema_id: string; supports_model_picker: boolean; supports_small_model: boolean; supports_large_model: boolean; supports_api_provider: boolean }
+  | {
+      kind: "structured";
+      schema_id: string;
+      supports_model_picker: boolean;
+      supports_small_model: boolean;
+      supports_large_model: boolean;
+      supports_api_provider: boolean;
+      /** 快速配置（代理服务商引导）入口显隐（v0.7.4 需求2 R2a）。 */
+      supports_proxy_setup?: boolean;
+      /** 「测试连接」按钮显隐（v0.7.4 需求2 R2c）。 */
+      supports_config_test?: boolean;
+    }
   | { kind: "raw"; format: string }
   | { kind: "model_store"; provider: string; supports_picker: boolean; supports_mcp: boolean }
   | { kind: "unsupported" };
@@ -120,6 +135,9 @@ export const CapabilityFlags: Record<string, bigint> = {
 
   ABORT: 1073741824n,
   APPROVAL_REQUEST: 2147483648n,
+
+  PRE_EXECUTION_INTERCEPTION: 4294967296n, // 1<<32
+  CONTEXT_COMPACT: 8589934592n,            // 1<<33（v0.7.4 需求1 A3）
 
   CONFIG_GLOBAL: 1099511627776n,   // 1<<40
   CONFIG_PROJECT: 2199023255552n,  // 1<<41

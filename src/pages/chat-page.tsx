@@ -32,7 +32,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
-import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, PanelRightOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2,
+import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, PanelRightOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2, Trash2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
@@ -56,6 +56,7 @@ import { resolvePhaseSessionId, shouldRenderGlobalChatInput } from "./chat-page-
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
 import { recordSessionUsage } from "@/lib/session-usage";
 import { ContextRing } from "@/components/sessions/context-ring";
+import { ThinkingLevelSelect } from "@/components/sessions/thinking-level-select";
 import {
   buildAssistantContentFromStreamState,
   extractRealSessionId,
@@ -118,6 +119,71 @@ export function ChatPage({
   const permissionModes = active?.permission_modes ?? [];
   const permissionModeProvider = active?.permission_mode_provider ?? null;
   const supportsAccessModeSwitch = permissionModes.length > 0;
+  // 应用内确认/提示弹窗（替代系统原生 confirm/message，样式与应用统一）。
+  // 注意：解构必须先于所有把 confirmDialog/alertDialog 写进 useCallback
+  // 依赖数组的 handler——依赖数组在渲染期求值，靠后的 const 会触发 TDZ
+  // （测试期修复：Cannot access 'alertDialog' before initialization）。
+  const { confirm: confirmDialog, alert: alertDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
+  // 需求1 A7：thinking 档位（adapter capability 声明档位清单；当前值优先取
+  // 会话内 thinking_level_changed 事件回传的生效值，回退 Hub 持久化值）。
+  const thinkingLevels = active?.thinking_levels ?? [];
+  const [liveThinkingLevel, setLiveThinkingLevel] = useState<string | null>(null);
+  const thinkingLevelValue = liveThinkingLevel ?? active?.thinking_level ?? null;
+  const handleThinkingLevelChange = useCallback(async (level: string) => {
+    if (!activeId) return;
+    setLiveThinkingLevel(level);
+    try {
+      await invokeCommand("set_agent_thinking_level", {
+        agentId: activeId,
+        sessionId: selectedSessionRef.current,
+        level,
+      });
+    } catch (err) {
+      console.error("Failed to set thinking level:", err);
+    }
+  }, [activeId]);
+
+  // 切换 agent 时清除会话内生效值（下一轮事件/Hub 持久化值接管显示）。
+  useEffect(() => {
+    setLiveThinkingLevel(null);
+  }, [activeId]);
+
+  // 需求1 A3：上下文压缩（capability CONTEXT_COMPACT 门控）。
+  const supportsCompact = capabilities?.has("CONTEXT_COMPACT") ?? false;
+  const [compacting, setCompacting] = useState(false);
+  const { data: autoCompactionPref } = useInvoke<boolean | null>(
+    supportsCompact && activeId ? "get_agent_auto_compaction" : "",
+    supportsCompact && activeId ? { agentId: activeId } : undefined,
+    activeId,
+  );
+  const handleCompactSession = useCallback(async () => {
+    const sessionId = selectedSessionRef.current;
+    if (!sessionId || sessionId === "new" || compacting) return;
+    setCompacting(true);
+    try {
+      await invokeCommand("compact_agent_session", {
+        sessionId,
+        instructions: null,
+      });
+    } catch (err) {
+      console.error("Compact failed:", err);
+      void alertDialog(String(err));
+    } finally {
+      setCompacting(false);
+    }
+  }, [compacting, alertDialog]);
+  const handleAutoCompactionChange = useCallback(async (enabled: boolean) => {
+    if (!activeId) return;
+    try {
+      await invokeCommand("set_agent_auto_compaction", {
+        agentId: activeId,
+        enabled,
+      });
+    } catch (err) {
+      console.error("Set auto compaction failed:", err);
+      void alertDialog(String(err));
+    }
+  }, [activeId, alertDialog]);
 
   // Mid-turn steer (inject guidance without stopping output) is possible for
   // transports with a native steer channel: Pi-RPC (`steer` command, real
@@ -607,8 +673,9 @@ export function ChatPage({
       { name: "rename", label: t("sessions.slashRename"), available: hasSelectedSession },
       { name: "terminal", label: t("sessions.slashTerminal"), available: hasSelectedSession },
       { name: "float", label: t("sessions.slashFloat"), available: hasSelectedSession },
+      { name: "compact", label: t("sessions.slashCompact"), available: hasSelectedSession && supportsCompact },
     ],
-    [hasSelectedSession, projectId, t],
+    [hasSelectedSession, projectId, supportsCompact, t],
   );
   const handleSlashCommand = useCallback(
     (name: string) => {
@@ -628,9 +695,12 @@ export function ChatPage({
         case "float":
           if (selectedSession) handleFloatSession(selectedSession);
           break;
+        case "compact":
+          void handleCompactSession();
+          break;
       }
     },
-    [selectedSession],
+    [selectedSession, handleCompactSession],
   );
 
   const workModeOptions = useMemo(() => [
@@ -643,8 +713,6 @@ export function ChatPage({
   );
   const taskModeAgentReady = Boolean(jishuAgent?.health.installed);
   const taskModeCanSend = taskModeAgentReady && activeId === "jishu-self";
-  // 应用内确认/提示弹窗（替代系统原生 confirm/message，样式与应用统一）
-  const { confirm: confirmDialog, alert: alertDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
 
   const handleAccessModeChange = useCallback(async (value: string) => {
     if (!supportsAccessModeSwitch || !activeId) return;
@@ -1003,6 +1071,35 @@ export function ChatPage({
       setLoadingSessionId(null);
     }
   };
+
+  // v0.7.4 需求1 B4：删除常规会话（capability SESSION_DELETE 门控；入口在
+  // 会话右键菜单）。删除当前打开的会话后自动新建空会话。
+  const handleDeleteSession = useCallback(async (sessionId: string) => {
+    if (!activeId || !projectId) return;
+    const session = sessions?.find(s => s.id === sessionId);
+    const name = sessionNames?.[sessionId] || session?.display_name || sessionId.slice(0, 8);
+    const confirmed = await confirmDialog({
+      title: t("sessions.deleteTitle"),
+      description: t("sessions.deleteConfirm", { name }),
+      variant: "destructive",
+    });
+    if (!confirmed) return;
+    try {
+      await invokeCommand("delete_agent_session", {
+        agentId: activeId,
+        sessionId,
+        encodedName: projectId,
+      });
+      setOptimisticSessions(prev => prev.filter(s => s.id !== sessionId));
+      setListRefreshKey(k => k + 1);
+      if (selectedSession === sessionId) {
+        void handleNewSession();
+      }
+    } catch (err) {
+      console.error("Failed to delete session:", err);
+      await alertDialog(String(err));
+    }
+  }, [activeId, projectId, sessions, sessionNames, confirmDialog, alertDialog, t, selectedSession]);
 
   const handleRefreshMessages = useCallback(async () => {
     if (selectedSession && projectId) {
@@ -1533,6 +1630,11 @@ export function ChatPage({
             );
             return exists ? current : [...current, next];
           });
+        }
+
+        // 需求1 A7：会话内 thinking 生效值（Pi clamp 后）回传。
+        if (chunk.data.kind === "thinking_level_changed") {
+          setLiveThinkingLevel(chunk.data.level);
         }
 
         // Detect resolved session id and register it as an alias before pushing
@@ -2265,7 +2367,20 @@ export function ChatPage({
     supportsModelPicker ? (
         <span ref={modelMenuRef} className="relative inline-flex shrink-0 min-w-0 items-center gap-1.5">
           {/* 水位圆环贴模型按钮左侧；整体渲染于发送按钮同一行（trailingControls） */}
-          <ContextRing sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null} />
+          <ContextRing
+            sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null}
+            compact={supportsCompact ? {
+              onCompact: () => void handleCompactSession(),
+              compacting,
+              autoCompaction: autoCompactionPref ?? null,
+              onAutoCompactionChange: (enabled) => void handleAutoCompactionChange(enabled),
+            } : undefined}
+          />
+          <ThinkingLevelSelect
+            levels={thinkingLevels}
+            value={thinkingLevelValue}
+            onChange={(level) => void handleThinkingLevelChange(level)}
+          />
           {modelOptions.length === 0 ? (
             <span className="truncate text-amber-400">
               {t("sessions.modelNotConfigured") || "No models — open 管理-配置"}
@@ -2348,7 +2463,15 @@ export function ChatPage({
         </span>
       )}
       {!supportsModelPicker && (
-        <ContextRing sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null} />
+        <ContextRing
+            sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null}
+            compact={supportsCompact ? {
+              onCompact: () => void handleCompactSession(),
+              compacting,
+              autoCompaction: autoCompactionPref ?? null,
+              onAutoCompactionChange: (enabled) => void handleAutoCompactionChange(enabled),
+            } : undefined}
+          />
       )}
       {/* v0.7.0 需求一：原静态智能体展示位改为可切换（AgentSwitcher 受控）。
           新会话可切换（切换 = 新建会话）；任务态只有 jishu agent 可用，保持静态展示。 */}
@@ -2590,6 +2713,12 @@ export function ChatPage({
                     <Pencil className="h-3.5 w-3.5 mr-2" />
                     {t("sessions.rename")}
                   </ContextMenuItem>
+                  {capabilities?.has("SESSION_DELETE") && (
+                    <ContextMenuItem onClick={() => void handleDeleteSession(session.id)}>
+                      <Trash2 className="h-3.5 w-3.5 mr-2 text-red-400" />
+                      {t("sessions.delete")}
+                    </ContextMenuItem>
+                  )}
                   <ContextMenuItem onClick={() => handleRefreshMessages()}>
                     <RotateCw className="h-3.5 w-3.5 mr-2" />
                     {t("sessions.refresh")}

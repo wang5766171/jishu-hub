@@ -158,6 +158,13 @@ pub enum NormalizedEvent {
     SessionResolved {
         session_id: String,
     },
+    /// Thinking level changed (v0.7.4 需求1 A7). `level` is the *effective*
+    /// value after the agent clamps the request to what the current model
+    /// supports (pi semantics), so the UI should display this, not the
+    /// requested value.
+    ThinkingLevelChanged {
+        level: String,
+    },
     /// A steering user message was injected mid-turn. Pi emits a
     /// `message_start`/`message_end` pair with `role=user` for the queued
     /// steer at a tool-call gap. Carries the steer text so the frontend can
@@ -214,6 +221,7 @@ impl NormalizedEvent {
             NormalizedEvent::ApprovalRequest { .. } => "approval_request",
             NormalizedEvent::InteractionRequest { .. } => "interaction_request",
             NormalizedEvent::SessionResolved { .. } => "session_resolved",
+            NormalizedEvent::ThinkingLevelChanged { .. } => "thinking_level_changed",
             NormalizedEvent::SteerInjected { .. } => "steer_injected",
             NormalizedEvent::TurnComplete { .. } => "turn_complete",
             NormalizedEvent::Error { .. } => "error",

@@ -698,6 +698,11 @@ pub fn map_normalized_event(context: &RuntimeEventContext, event: &NormalizedEve
             context: context.clone(),
             session_id: session_id.clone(),
         },
+        // 会话级 UI 状态（v0.7.4 需求1 A7），对任务编排无事实意义。
+        NormalizedEvent::ThinkingLevelChanged { .. } => RuntimeFact::Diagnostic {
+            context: context.clone(),
+            payload: serde_json::json!({ "kind": "thinking_level_changed", "event": event }),
+        },
         NormalizedEvent::TurnComplete { reason, usage } => {
             let usage = usage
                 .as_ref()

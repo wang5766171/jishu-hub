@@ -34,6 +34,21 @@ pub enum AcpCommand {
     /// Steer (mid-turn text injection). Pi RPC: sends {"type":"steer","message":...}.
     /// ACP: sends a follow_up prompt after the current turn.
     Steer(String),
+    /// Set the agent's thinking level (v0.7.4 需求1 A7). Only the Pi RPC
+    /// runtime translates this (native `set_thinking_level`); the ACP loop
+    /// logs-and-drops it — the IPC layer capability-gates the entry for
+    /// agents without thinking levels, so it never arrives in practice.
+    SetThinkingLevel(String),
+    /// Manually compact the session context (v0.7.4 需求1 A3). Only the Pi
+    /// RPC runtime implements this (native `compact`, optional custom
+    /// summary instructions); the oneshot resolves with the compact result.
+    Compact {
+        instructions: Option<String>,
+        response: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+    },
+    /// Toggle the agent's auto-compaction (v0.7.4 需求1 A3). Pi RPC native
+    /// `set_auto_compaction`; fire-and-forget.
+    SetAutoCompaction(bool),
     Cancel,
     /// Respond to a structured interaction answer. Routed by the connection loop
     /// to the transport's mid-turn write-back channel:
@@ -95,6 +110,39 @@ impl AcpControl {
     pub async fn steer(&self, message: String) -> Result<(), String> {
         self.tx
             .send(AcpCommand::Steer(message))
+            .await
+            .map_err(|_| "ACP connection closed".to_string())
+    }
+
+    /// Set the session's thinking level (v0.7.4 需求1 A7). Translated by the
+    /// Pi RPC runtime; no-op (logged) on transports without the concept.
+    pub async fn set_thinking_level(&self, level: String) -> Result<(), String> {
+        self.tx
+            .send(AcpCommand::SetThinkingLevel(level))
+            .await
+            .map_err(|_| "ACP connection closed".to_string())
+    }
+
+    /// Manually compact the session context (v0.7.4 需求1 A3). Resolves when
+    /// the agent finishes compaction (or with its structured error).
+    pub async fn compact(&self, instructions: Option<String>) -> Result<serde_json::Value, String> {
+        let (response, receiver) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(AcpCommand::Compact {
+                instructions,
+                response,
+            })
+            .await
+            .map_err(|_| "ACP connection closed".to_string())?;
+        receiver
+            .await
+            .map_err(|_| "ACP compact response channel closed".to_string())?
+    }
+
+    /// Toggle auto-compaction for the session (v0.7.4 需求1 A3).
+    pub async fn set_auto_compaction(&self, enabled: bool) -> Result<(), String> {
+        self.tx
+            .send(AcpCommand::SetAutoCompaction(enabled))
             .await
             .map_err(|_| "ACP connection closed".to_string())
     }
@@ -574,6 +622,23 @@ async fn acp_connection_loop(
                                 );
                             }
                         }
+                        false
+                    }
+                    Some(AcpCommand::SetThinkingLevel(level)) => {
+                        // ACP 协议无 thinking 概念；IPC 层已按 adapter capability
+                        // 门控，此分支仅为枚举完备性兜底（log-and-drop）。
+                        log::warn!("ACP runtime received SetThinkingLevel({level}) — not supported, dropping");
+                        false
+                    }
+                    Some(AcpCommand::Compact { response, .. }) => {
+                        // ACP 协议无 compact 概念（文本透传是否被桥解释未验证）。
+                        let _ = response.send(Err(
+                            "Context compaction is not supported by this agent".to_string(),
+                        ));
+                        false
+                    }
+                    Some(AcpCommand::SetAutoCompaction(enabled)) => {
+                        log::warn!("ACP runtime received SetAutoCompaction({enabled}) — not supported, dropping");
                         false
                     }
                     Some(AcpCommand::RespondToInput {

@@ -12,27 +12,21 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import { Save, Plus, Trash2 } from "lucide-react";
+import { Save, Plus, Trash2, Zap, Loader2 } from "lucide-react";
 import type { ClaudeConfig } from "@/types";
 import { SectionHelp } from "./section-help";
 import { McpEditor } from "./mcp-editor";
-
-const MODEL_OPTIONS = [
-  { value: "claude-sonnet-4-6", labelKey: "modelSonnet46" },
-  { value: "claude-opus-4-7", labelKey: "modelOpus47" },
-  { value: "claude-haiku-4-5-20251001", labelKey: "modelHaiku45" },
-];
+import { QuickSetupSection } from "./quick-setup-section";
+import { ModelCombobox } from "./model-combobox";
+import { PermissionModeCards } from "./permission-cards";
+import { RuleQuickAdd } from "./rule-quick-add";
+import { ConnectionTestBadge, type ConnectionTestResult } from "./connection-test-badge";
+import { CLAUDE_MODEL_CATALOG } from "@/agents/config/presets/claude-models";
 
 const API_PROVIDERS = [
   { value: "anthropic", labelKey: "providerAnthropic" },
   { value: "bedrock", labelKey: "providerBedrock" },
   { value: "vertex", labelKey: "providerVertex" },
-];
-
-const PERMISSION_MODES = [
-  { value: "default", labelKey: "modeDefault" },
-  { value: "bypassPermissions", labelKey: "modeBypass" },
-  { value: "plan", labelKey: "modePlan" },
 ];
 
 const selectClass =
@@ -52,6 +46,8 @@ export function ConfigForm({
     supports_small_model: boolean;
     supports_large_model: boolean;
     supports_api_provider: boolean;
+    supports_proxy_setup?: boolean;
+    supports_config_test?: boolean;
   };
 }) {
   const { t } = useTranslation();
@@ -59,12 +55,56 @@ export function ConfigForm({
   const { manageAgentId } = useAgent();
   const [config, setConfig] = useState<ClaudeConfig>(initialConfig);
   const [saving, setSaving] = useState(false);
+  // v0.7.4 需求2 R2c：配置草稿连通性测试（supports_config_test 门控）。
+  const supportsConfigTest = surface?.supports_config_test ?? false;
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
+
+  const runConfigTest = async () => {
+    if (testing) return;
+    const env = config.env ?? {};
+    const key =
+      env["ANTHROPIC_AUTH_TOKEN"]?.trim() || env["ANTHROPIC_API_KEY"]?.trim() || "";
+    const model = config.model || env["ANTHROPIC_MODEL"] || "";
+    if (!key) {
+      setTestResult({ ok: false, text: t("config.testNoKeyHint") });
+      return;
+    }
+    if (!model) {
+      setTestResult({ ok: false, text: t("config.testNoModelHint") });
+      return;
+    }
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await invokeCommand<{ response?: string | null; latency_ms?: number }>(
+        "test_llm_connection",
+        {
+          api: "anthropic-messages",
+          baseUrl: env["ANTHROPIC_BASE_URL"]?.trim() || "https://api.anthropic.com",
+          apiKey: key,
+          model,
+        },
+      );
+      const reply = (result?.response ?? "").toString().trim();
+      setTestResult({
+        ok: true,
+        latencyMs: result?.latency_ms,
+        text: reply ? reply.slice(0, 120) : "",
+      });
+    } catch (e) {
+      setTestResult({ ok: false, text: String(e).slice(0, 200) });
+    } finally {
+      setTesting(false);
+    }
+  };
 
   // Use capability flags from surface, default to true for backward compatibility if undefined
   const supportsModelPicker = surface?.supports_model_picker ?? true;
   const supportsSmallModel = surface?.supports_small_model ?? true;
   const supportsLargeModel = surface?.supports_large_model ?? true;
   const supportsApiProvider = surface?.supports_api_provider ?? true;
+  const supportsProxySetup = surface?.supports_proxy_setup ?? false;
   const showAdvancedModels = supportsSmallModel || supportsLargeModel || supportsApiProvider;
 
   // List pattern inputs
@@ -195,11 +235,10 @@ export function ConfigForm({
   };
 
   const hasChanges = JSON.stringify(config) !== JSON.stringify(initialConfig);
-  const modelOptions = MODEL_OPTIONS.some((m) => m.value === config.model)
-    ? MODEL_OPTIONS
-    : config.model
-      ? [{ value: config.model, labelKey: "", label: config.model }, ...MODEL_OPTIONS]
-      : MODEL_OPTIONS;
+  const modelOptions = CLAUDE_MODEL_CATALOG.map((m) => ({
+    value: m.value,
+    label: t(`config.${m.labelKey.replace("config.", "")}`),
+  }));
 
   // Sections with content come first, empty ones last
   type SectionId = "env" | "plugins" | "mcp" | "permissions" | "model" | "advanced";
@@ -221,15 +260,38 @@ export function ConfigForm({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Sticky header: title + save */}
+      {/* Sticky header: title + test + save */}
       <div className="sticky top-0 z-10 bg-background pb-3 border-b border-border mb-3">
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-semibold">{t("config.configuration")}</h3>
-          <Button onClick={handleSave} disabled={!hasChanges || saving} size="sm">
-            <Save className="h-4 w-4" />
-            {saving ? t("common.saving") : t("common.save")}
-          </Button>
+          <div className="flex items-center gap-2">
+            {supportsConfigTest && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={runConfigTest}
+                disabled={testing}
+                title={t("config.testConnectionHeaderHint")}
+              >
+                {testing ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Zap className="h-4 w-4" />
+                )}
+                {t("config.testConnection")}
+              </Button>
+            )}
+            <Button onClick={handleSave} disabled={!hasChanges || saving} size="sm">
+              <Save className="h-4 w-4" />
+              {saving ? t("common.saving") : t("common.save")}
+            </Button>
+          </div>
         </div>
+        {testResult && (
+          <div className="mt-2">
+            <ConnectionTestBadge result={testResult} />
+          </div>
+        )}
       </div>
 
       {/* Scrollable accordion area */}
@@ -241,22 +303,24 @@ export function ConfigForm({
               <AccordionTrigger className="group"><span>{t("config.modelSettings")}<SectionHelp content={t("config.fieldMapModel")} /></span></AccordionTrigger>
               <AccordionContent>
                 <div className="space-y-4 pt-2">
+                  {supportsProxySetup && (
+                    <QuickSetupSection
+                      env={config.env ?? {}}
+                      model={config.model ?? ""}
+                      onEnvChange={(env) => updateConfig({ env })}
+                      onModelChange={(model) => updateConfig({ model: model || null })}
+                    />
+                  )}
                   <div className="space-y-2">
                     <Label htmlFor="model">{t("config.model")}</Label>
                     {supportsModelPicker ? (
-                      <select
+                      <ModelCombobox
                         id="model"
                         value={config.model || ""}
-                        onChange={(e) => handleModelChange(e.target.value)}
-                        className={selectClass}
-                      >
-                        <option value="">{t("common.default")}</option>
-                        {modelOptions.map((m) => (
-                          <option key={m.value} value={m.value}>
-                            {"label" in m ? m.label : t(`config.${m.labelKey}`)}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={handleModelChange}
+                        options={modelOptions}
+                        placeholder={t("config.modelComboboxPlaceholder")}
+                      />
                     ) : (
                       <Input
                         id="model"
@@ -272,11 +336,12 @@ export function ConfigForm({
                       {supportsSmallModel && (
                         <div className="space-y-2">
                           <Label htmlFor="smallModel">{t("config.smallModel")}</Label>
-                          <Input
+                          <ModelCombobox
                             id="smallModel"
                             value={config.smallModel || ""}
-                            onChange={(e) => handleSmallModelChange(e.target.value)}
-                            placeholder="e.g., claude-haiku-4-5-20251001"
+                            onChange={handleSmallModelChange}
+                            options={modelOptions}
+                            placeholder={t("config.modelComboboxOptional")}
                           />
                         </div>
                       )}
@@ -284,11 +349,12 @@ export function ConfigForm({
                       {supportsLargeModel && (
                         <div className="space-y-2">
                           <Label htmlFor="largeModel">{t("config.largeModel")}</Label>
-                          <Input
+                          <ModelCombobox
                             id="largeModel"
                             value={config.largeModel || ""}
-                            onChange={(e) => handleLargeModelChange(e.target.value)}
-                            placeholder="e.g., claude-opus-4-7"
+                            onChange={handleLargeModelChange}
+                            options={modelOptions}
+                            placeholder={t("config.modelComboboxOptional")}
                           />
                         </div>
                       )}
@@ -325,23 +391,21 @@ export function ConfigForm({
                 <div className="space-y-4 pt-2">
                   <div className="space-y-2">
                     <Label htmlFor="permMode">{t("config.permissionMode")}</Label>
-                    <select
-                      id="permMode"
+                    <PermissionModeCards
                       value={config.permissions?.defaultMode || ""}
-                      onChange={(e) => handlePermissionMode(e.target.value)}
-                      className={selectClass}
-                    >
-                      <option value="">{t("common.default")}</option>
-                      {PERMISSION_MODES.map((m) => (
-                        <option key={m.value} value={m.value}>
-                          {t(`config.${m.labelKey}`)}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={handlePermissionMode}
+                    />
                   </div>
 
                   <div className="space-y-2">
                     <Label>{t("config.allowList")}</Label>
+                    <RuleQuickAdd
+                      patterns={config.permissions?.allow ?? []}
+                      onAdd={(pattern) => {
+                        const allow = [...(config.permissions?.allow ?? []), pattern];
+                        updatePermissions({ allow });
+                      }}
+                    />
                     <div className="space-y-2">
                       {(config.permissions?.allow ?? []).map((pattern, idx) => (
                         <div key={idx} className="flex items-center gap-2">
@@ -369,6 +433,13 @@ export function ConfigForm({
 
                   <div className="space-y-2">
                     <Label>{t("config.denyList")}</Label>
+                    <RuleQuickAdd
+                      patterns={config.permissions?.deny ?? []}
+                      onAdd={(pattern) => {
+                        const deny = [...(config.permissions?.deny ?? []), pattern];
+                        updatePermissions({ deny });
+                      }}
+                    />
                     <div className="space-y-2">
                       {(config.permissions?.deny ?? []).map((pattern, idx) => (
                         <div key={idx} className="flex items-center gap-2">

@@ -85,6 +85,15 @@ pub struct AppState {
     /// Hub 全局持久化；PiRpc spawn 时按 readonly 追加 --tools 白名单。
     #[serde(default)]
     pub agent_tool_mode: HashMap<String, String>,
+    /// agent thinking 档位（v0.7.4 需求1 A7）：agent_id -> agent 自己的
+    /// level id（pi: off..max）。Hub 侧权威持久化；PiRpc spawn 完成
+    /// get_state 后应用（与 Pi 自身的默认级别持久化保持一致）。
+    #[serde(default)]
+    pub agent_thinking_level: HashMap<String, String>,
+    /// agent 自动压缩开关（v0.7.4 需求1 A3）：agent_id -> bool。未配置 =
+    /// 跟随 agent 自身默认；PiRpc spawn 完成 get_state 后应用。
+    #[serde(default)]
+    pub agent_auto_compaction: HashMap<String, bool>,
 }
 
 fn state_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -103,6 +112,43 @@ pub fn save_agent_tool_mode(agent_id: &str, mode: &str) -> Result<(), String> {
     state
         .agent_tool_mode
         .insert(agent_id.to_string(), mode.to_string());
+    save_state(&state).map_err(|e| e.to_string())
+}
+
+/// 读取某 agent 的 thinking 档位（未配置 = 跟随 agent 自身默认）。
+pub fn load_agent_thinking_level(agent_id: &str) -> Option<String> {
+    load_state()
+        .ok()?
+        .agent_thinking_level
+        .get(agent_id)
+        .cloned()
+}
+
+/// 设置某 agent 的 thinking 档位并持久化（合法值以 adapter 声明的
+/// thinking_levels 为准，由 IPC 层校验）。
+pub fn save_agent_thinking_level(agent_id: &str, level: &str) -> Result<(), String> {
+    let mut state = load_state().map_err(|e| e.to_string())?;
+    state
+        .agent_thinking_level
+        .insert(agent_id.to_string(), level.to_string());
+    save_state(&state).map_err(|e| e.to_string())
+}
+
+/// 读取某 agent 的自动压缩偏好（未配置 = 跟随 agent 默认）。
+pub fn load_agent_auto_compaction(agent_id: &str) -> Option<bool> {
+    load_state()
+        .ok()?
+        .agent_auto_compaction
+        .get(agent_id)
+        .copied()
+}
+
+/// 设置某 agent 的自动压缩偏好并持久化。
+pub fn save_agent_auto_compaction(agent_id: &str, enabled: bool) -> Result<(), String> {
+    let mut state = load_state().map_err(|e| e.to_string())?;
+    state
+        .agent_auto_compaction
+        .insert(agent_id.to_string(), enabled);
     save_state(&state).map_err(|e| e.to_string())
 }
 

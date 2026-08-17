@@ -774,6 +774,24 @@ async fn handle_command(
                 log::warn!("codex turn/steer ignored: no active turn to steer");
             }
         }
+        Some(AcpCommand::SetThinkingLevel(level)) => {
+            // codex app-server 协议无 thinking 概念（reasoning effort 参数位
+            // 未实测）；IPC 层已按 capability 门控，此分支仅兜底。
+            log::warn!(
+                "codex runtime received SetThinkingLevel({level}) — not supported, dropping"
+            );
+        }
+        Some(AcpCommand::Compact { response, .. }) => {
+            // codex app-server 协议未见 compact 方法（TUI 有 /compact 但协议未暴露）。
+            let _ = response.send(Err(
+                "Context compaction is not supported by this agent".to_string()
+            ));
+        }
+        Some(AcpCommand::SetAutoCompaction(enabled)) => {
+            log::warn!(
+                "codex runtime received SetAutoCompaction({enabled}) — not supported, dropping"
+            );
+        }
         Some(AcpCommand::Cancel) => {
             let active_turn_id = active_turn_of(state);
             if let Some(turn_id) = active_turn_id.as_ref() {
