@@ -4,11 +4,18 @@ use std::path::PathBuf;
 
 use crate::config::{BackupEntry, McpServerConfig};
 
+/// Pi RetrySettings（settings-manager.ts:29-34）中与行为页相关的子集。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct ContextCompaction {
-    pub threshold: Option<f64>,
-    pub method: Option<String>,
+pub struct PiRetrySettings {
+    pub enabled: Option<bool>,
+    pub max_retries: Option<u32>,
+    #[serde(
+        rename = "baseDelayMs",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub base_delay_ms: Option<u64>,
 }
 
 /// Jishu self-agent config schema. Independent of ClaudeConfig — each agent
@@ -21,6 +28,9 @@ pub struct JishuConfig {
     /// 均不在 Pi Settings schema 中，已删除——历史文件里的这些键经合并逻辑
     /// 原样保留、Pi 忽略）。真活的全局默认模型/激活模型在 Hub 侧
     ///（~/.jishu-hub/settings.json）与 models.json。
+    /// v0.7.5：补回 Pi schema 中行为相关的真实字段 compaction/defaultTools/
+    /// retry（R15 只保留了 defaultThinkingLevel，行为页设置项不完整）；
+    /// 移除死字段 contextCompaction（Pi 键名为 compaction，历史键原样保留）。
     #[serde(
         rename = "defaultThinkingLevel",
         skip_serializing_if = "Option::is_none",
@@ -28,13 +38,29 @@ pub struct JishuConfig {
     )]
     pub default_thinking_level: Option<String>,
 
+    /// Pi CompactionSettings：全局默认上下文压缩策略（项目级深合并覆盖）。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub compaction: Option<crate::project_config::ProjectCompaction>,
+
+    /// Pi defaultTools：初始激活的内置工具集（全集 read/bash/edit/write/
+    /// grep/find/ls；未设置时 Pi 默认 read/bash/edit/write）。
+    #[serde(
+        rename = "defaultTools",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub default_tools: Option<Vec<String>>,
+
+    /// Pi RetrySettings：模型请求失败重试策略。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub retry: Option<PiRetrySettings>,
+
     pub env: Option<HashMap<String, String>>,
 
     pub mcp_servers: Option<HashMap<String, McpServerConfig>>,
 
     pub system_instructions: Option<String>,
     pub global_memory: Option<String>,
-    pub context_compaction: Option<ContextCompaction>,
     pub theme: Option<String>,
 }
 
@@ -166,8 +192,30 @@ pub fn load_jishu_config() -> Result<serde_json::Value, Box<dyn std::error::Erro
     Ok(value)
 }
 
+/// 键级覆盖合并（v0.7.5 修复「恢复默认无法保存」）：
+/// 前端 save_config 只传变更键（思考档位/压缩/工具/重试/MCP 各自独立保存），
+/// patch 中显式 `null` = 从落盘对象删除该键（恢复 Pi 默认），非 null = 写入/
+/// 整组替换，未提及的键保留 existing 原值。此前实现把「null 删除」误当成
+/// 「未提及」从 existing 恢复旧值，导致行为页选「默认」永远存不上。
+fn merge_config_patch(
+    existing: Option<serde_json::Map<String, serde_json::Value>>,
+    patch: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut merged = existing.unwrap_or_default();
+    for (key, value) in patch {
+        if value.is_null() {
+            merged.remove(key);
+        } else {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    merged
+}
+
 pub fn save_jishu_config(config: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
-    let typed: JishuConfig = serde_json::from_value(config.clone())?;
+    let patch = config
+        .as_object()
+        .ok_or("config must be a JSON object for key-level patching")?;
     let path = jishu_config_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -175,31 +223,22 @@ pub fn save_jishu_config(config: &serde_json::Value) -> Result<(), Box<dyn std::
     backup_jishu_config()?;
 
     let existing = if path.exists() {
-        let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        serde_json::from_str::<serde_json::Value>(&content).ok()
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+            .and_then(|v| v.as_object().cloned())
     } else {
         None
     };
 
-    let mut new_value = serde_json::to_value(&typed).map_err(|e| e.to_string())?;
+    let merged = merge_config_patch(existing, patch);
 
-    if let Some(obj) = new_value.as_object_mut() {
-        obj.retain(|_, v| !v.is_null());
-    }
+    // 校验合并结果仍可解析为 JishuConfig（未知键忽略；类型错配在此暴露），
+    // 并提取 typed 用于 mcp.json 同步。
+    let typed: JishuConfig = serde_json::from_value(serde_json::to_value(&merged)?)?;
 
-    if let (Some(existing_obj), Some(new_obj)) = (existing, new_value.as_object_mut()) {
-        for (key, value) in existing_obj.as_object().unwrap_or(&serde_json::Map::new()) {
-            if !new_obj.contains_key(key) {
-                new_obj.insert(key.clone(), value.clone());
-            }
-        }
-    }
-
-    let json = serde_json::to_string_pretty(&new_value).map_err(|e| e.to_string())?;
-    crate::util::atomic_write(&path, json.as_bytes()).map_err(|e| e.to_string())?;
-
-    let written = std::fs::read_to_string(&path)?;
-    let _: JishuConfig = serde_json::from_str(&written)?;
+    let json = serde_json::to_string_pretty(&merged)?;
+    crate::util::atomic_write(&path, json.as_bytes())?;
 
     // Sync mcpServers to ~/.jishu-agent/mcp.json for pi-mcp-adapter
     sync_mcp_json(&typed)?;
@@ -399,10 +438,28 @@ mod tests {
 
     #[test]
     fn jishu_config_round_trip() {
-        // R15 死字段整改后：真实字段 = defaultThinkingLevel / env / mcpServers /
-        // systemInstructions / globalMemory / contextCompaction / theme。
+        // R15 死字段整改 + v0.7.5 补全后：真实字段 = defaultThinkingLevel /
+        // compaction / defaultTools / retry / env / mcpServers /
+        // systemInstructions / globalMemory / theme。
         let cfg = JishuConfig {
             default_thinking_level: Some("high".to_string()),
+            compaction: Some(crate::project_config::ProjectCompaction {
+                enabled: Some(false),
+                reserve_tokens: Some(8192),
+                keep_recent_tokens: Some(20000),
+            }),
+            default_tools: Some(vec![
+                "read".to_string(),
+                "bash".to_string(),
+                "edit".to_string(),
+                "write".to_string(),
+                "grep".to_string(),
+            ]),
+            retry: Some(PiRetrySettings {
+                enabled: Some(true),
+                max_retries: Some(5),
+                base_delay_ms: Some(2000),
+            }),
             env: Some({
                 let mut m = HashMap::new();
                 m.insert("FOO".to_string(), "bar".to_string());
@@ -411,15 +468,14 @@ mod tests {
             mcp_servers: Some(HashMap::new()),
             system_instructions: Some("You are a coding assistant".to_string()),
             global_memory: Some("remember the user's preferences".to_string()),
-            context_compaction: Some(ContextCompaction {
-                threshold: Some(0.85),
-                method: Some("summary".to_string()),
-            }),
             theme: Some("dark".to_string()),
         };
         let value = serde_json::to_value(cfg.clone()).unwrap();
         let restored: JishuConfig = serde_json::from_value(value).unwrap();
         assert_eq!(restored.default_thinking_level, cfg.default_thinking_level);
+        assert_eq!(restored.compaction, cfg.compaction);
+        assert_eq!(restored.default_tools, cfg.default_tools);
+        assert_eq!(restored.retry.unwrap().enabled, cfg.retry.as_ref().unwrap().enabled);
         assert_eq!(restored.theme, cfg.theme);
     }
 
@@ -427,20 +483,60 @@ mod tests {
     fn jishu_config_camel_case_field_names() {
         let value = serde_json::to_value(JishuConfig {
             default_thinking_level: Some("low".to_string()),
+            default_tools: Some(vec!["read".to_string()]),
             system_instructions: Some("hi".to_string()),
             global_memory: Some("mem".to_string()),
-            context_compaction: Some(ContextCompaction {
-                threshold: Some(0.5),
-                method: Some("truncate".to_string()),
+            compaction: Some(crate::project_config::ProjectCompaction {
+                enabled: Some(true),
+                reserve_tokens: Some(16384),
+                keep_recent_tokens: None,
+            }),
+            retry: Some(PiRetrySettings {
+                enabled: None,
+                max_retries: Some(3),
+                base_delay_ms: None,
             }),
             ..Default::default()
         })
         .unwrap();
         let obj = value.as_object().unwrap();
         assert!(obj.contains_key("defaultThinkingLevel"));
+        assert!(obj.contains_key("defaultTools"));
+        assert!(obj.contains_key("compaction"));
+        assert!(obj.contains_key("retry"));
         assert!(obj.contains_key("systemInstructions"));
         assert!(obj.contains_key("globalMemory"));
-        assert!(obj.contains_key("contextCompaction"));
         assert!(!obj.contains_key("default_thinking_level"));
+        assert!(!obj.contains_key("contextCompaction"));
+    }
+
+    #[test]
+    fn merge_config_patch_null_deletes_and_unmentioned_preserved() {
+        // v0.7.5「恢复默认无法保存」回归锁定：null 必须删除键，而非从
+        // existing 恢复；未提及键原样保留（含 Pi/用户手写的未知键）。
+        let existing = serde_json::json!({
+            "defaultThinkingLevel": "low",
+            "compaction": { "enabled": false },
+            "extensions": ["extensions/jishu-task-conductor.ts"],
+            "theme": "dark"
+        });
+        let merged = merge_config_patch(
+            existing.as_object().cloned(),
+            serde_json::json!({ "defaultThinkingLevel": null, "compaction": { "enabled": true, "reserveTokens": 16384 } })
+                .as_object()
+                .unwrap(),
+        );
+        let merged = serde_json::Value::Object(merged);
+        assert!(merged.get("defaultThinkingLevel").is_none(), "null deletes");
+        assert_eq!(merged["compaction"]["enabled"], serde_json::json!(true));
+        assert_eq!(
+            merged["compaction"]["reserveTokens"],
+            serde_json::json!(16384)
+        );
+        assert_eq!(
+            merged["extensions"],
+            serde_json::json!(["extensions/jishu-task-conductor.ts"])
+        );
+        assert_eq!(merged["theme"], serde_json::json!("dark"));
     }
 }

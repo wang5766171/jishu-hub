@@ -88,9 +88,9 @@ export function ModelStoreConfigPage({
       {/* 模型设置：当前模型大卡 + 服务商管理（ModelManager，即时保存） */}
       {configTab === "models" && <ModelManager />}
 
-      {/* 行为与权限：Agent 行为参数（Pi 原生 settings 字段）。
-          工具模式（完整/只读）是会话时选择的能力，已在会话页提供入口，
-          不在配置页展示（2026-08-16 用户裁决）。 */}
+      {/* 行为与权限：Pi Settings 真实行为字段（v0.7.5 补全：思考档位/压缩/
+          初始工具/重试）。工具模式（完整/只读）是会话时选择的能力，已在会话页
+          提供入口，不在配置页展示（2026-08-16 用户裁决）。 */}
       {configTab === "behavior" && (
         <div className="space-y-6">
           <div className="space-y-2">
