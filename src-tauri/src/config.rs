@@ -92,6 +92,22 @@ pub struct ContextCompactionConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClaudeConfig {
     pub model: Option<String>,
+    /// 推理力度（v0.7.4 需求4 B1：codex 的 model_reasoning_effort 映射；
+    /// claude/opencode 不使用，序列化为 null 时由各 adapter 自行取舍）。
+    #[serde(
+        rename = "reasoningEffort",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub reasoning_effort: Option<String>,
+    /// 自定义模型供应商（v0.7.4 R12：opencode 的 provider.<id> 段
+    ///（name/npm/options/models），UI 全量带回、未知键保留；仅 opencode 使用）。
+    #[serde(
+        rename = "customProviders",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub custom_providers: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(deserialize_with = "deserialize_flex_env")]
     pub env: Option<HashMap<String, String>>,
     #[serde(rename = "enabledPlugins")]

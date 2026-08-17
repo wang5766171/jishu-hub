@@ -12,6 +12,36 @@ pub struct ProjectSettings {
     pub env: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// 默认思考档位（v0.7.4 项目配置适配：jishu 的 defaultThinkingLevel；
+    /// claude 等无此概念的 agent 忽略——skip_serializing_if 保证不落盘）。
+    #[serde(
+        rename = "thinkingLevel",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub thinking_level: Option<String>,
+    /// 上下文压缩设置（jishu 的 compaction；Pi 真实字段。claude 忽略）。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub compaction: Option<ProjectCompaction>,
+}
+
+/// Pi CompactionSettings（settings-manager.ts:12-16）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ProjectCompaction {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub enabled: Option<bool>,
+    #[serde(
+        rename = "reserveTokens",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub reserve_tokens: Option<u64>,
+    #[serde(
+        rename = "keepRecentTokens",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub keep_recent_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

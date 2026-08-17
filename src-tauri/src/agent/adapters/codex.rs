@@ -271,6 +271,12 @@ impl ConfigAdapter for CodexAdapter {
             supports_api_provider: false,
             supports_proxy_setup: false,
             supports_config_test: false,
+            // v0.7.4 需求4 B1：model_reasoning_effort 五档（minimal/low/
+            // medium/high/xhigh），静态配置、新会话生效。
+            model_catalog: None,
+            supports_custom_providers: false,
+            supports_thinking_budget: false,
+            supports_reasoning_effort: true,
         }
     }
 
@@ -285,6 +291,10 @@ impl ConfigAdapter for CodexAdapter {
 
         if let Some(model) = toml_val.get("model").and_then(|v| v.as_str()) {
             config_json["model"] = serde_json::Value::String(model.to_string());
+        }
+
+        if let Some(effort) = toml_to_reasoning_effort(&toml_val) {
+            config_json["reasoningEffort"] = serde_json::Value::String(effort);
         }
 
         if let Some(env) = toml_val
@@ -336,6 +346,9 @@ impl ConfigAdapter for CodexAdapter {
             if let Some(model) = config.get("model").and_then(|v| v.as_str()) {
                 table.insert("model".to_string(), toml::Value::String(model.to_string()));
             }
+
+            // v0.7.4 需求4 B1：推理力度（见 apply_reasoning_effort）。
+            apply_reasoning_effort(table, config);
 
             if let Some(env_obj) = config.get("env").and_then(|v| v.as_object()) {
                 let sep = table
@@ -632,31 +645,92 @@ impl TerminalAdapter for CodexAdapter {
     }
 }
 
+/// 遍历 ~/.codex/sessions 下的 rollout-*.jsonl，按首行 payload.cwd 统计
+/// 每个项目根的会话数与最近修改时间（v0.7.4：纯 CLI 用户无 electron roots
+/// 与 session_index，rollout 是唯一可靠来源）。
+fn rollout_stats_from_dir(
+    sessions_dir: &std::path::Path,
+) -> std::collections::HashMap<String, (usize, Option<std::time::SystemTime>)> {
+    use std::collections::HashMap;
+    let mut stats: HashMap<String, (usize, Option<std::time::SystemTime>)> = HashMap::new();
+    let mut stack = vec![sessions_dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if !name.starts_with("rollout-") || !name.ends_with(".jsonl") {
+                continue;
+            }
+            let Some(cwd) = rollout_cwd_of(&path) else {
+                continue;
+            };
+            let mtime = path.metadata().ok().and_then(|m| m.modified().ok());
+            let e = stats.entry(cwd).or_insert((0, None));
+            e.0 += 1;
+            if mtime > e.1 {
+                e.1 = mtime;
+            }
+        }
+    }
+    stats
+}
+
+fn rollout_cwd_of(path: &std::path::Path) -> Option<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = String::new();
+    if reader.read_line(&mut line).ok()? == 0 {
+        return None;
+    }
+    serde_json::from_str::<serde_json::Value>(&line)
+        .ok()?
+        .get("payload")?
+        .get("cwd")?
+        .as_str()
+        .map(str::to_string)
+}
+
 impl ProjectAdapter for CodexAdapter {
     fn scan_projects(&self) -> Vec<crate::project::Project> {
         let home = match dirs::home_dir() {
             Some(h) => h,
             None => return Vec::new(),
         };
-        let state_path = home.join(".codex").join(".codex-global-state.json");
-        if !state_path.exists() {
-            return Vec::new();
+        // v0.7.4 修复：项目根来源取并集——
+        // ① electron-saved-workspace-roots（仅桌面版写入；CLI 用户没有）
+        // ② session rollout 文件首行的 payload.cwd（CLI 会话的真实落盘，
+        //    ~/.codex/sessions/**/rollout-*.jsonl；此前仅靠 ①+session_index
+        //    导致纯 CLI 用户项目识别不到 codex）。
+        let mut roots: Vec<String> = Vec::new();
+        if let Ok(content) =
+            std::fs::read_to_string(home.join(".codex").join(".codex-global-state.json"))
+        {
+            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(arr) = state
+                    .get("electron-saved-workspace-roots")
+                    .and_then(|v| v.as_array())
+                {
+                    roots.extend(arr.iter().filter_map(|v| v.as_str().map(str::to_string)));
+                }
+            }
         }
-
-        let content = std::fs::read_to_string(&state_path).unwrap_or_default();
-        let state: serde_json::Value =
-            serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
-
-        let roots = state
-            .get("electron-saved-workspace-roots")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let rollout_stats = rollout_stats_from_dir(&home.join(".codex").join("sessions"));
+        for cwd in rollout_stats.keys() {
+            if !roots.iter().any(|r| r == cwd) {
+                roots.push(cwd.clone());
+            }
+        }
 
         let mut projects = Vec::new();
         let session_counts = self.session_counts_by_cwd();
@@ -677,8 +751,15 @@ impl ProjectAdapter for CodexAdapter {
                 name,
                 path: path.to_path_buf(),
                 encoded_name: encoded,
-                session_count: session_counts.get(&path_str).copied().unwrap_or(0),
-                last_active: None,
+                session_count: rollout_stats
+                    .get(&path_str)
+                    .map(|(c, _)| *c)
+                    .unwrap_or(0)
+                    .max(session_counts.get(&path_str).copied().unwrap_or(0)),
+                last_active: rollout_stats.get(&path_str).and_then(|(_, t)| *t).map(|t| {
+                    let dt: chrono::DateTime<chrono::Local> = t.into();
+                    dt.format("%Y-%m-%d %H:%M").to_string()
+                }),
                 has_claude_md: path.join(".claude").join("CLAUDE.md").exists(),
                 agent_ids: vec!["codex".to_string()],
                 initialized: true,
@@ -710,18 +791,29 @@ impl ProjectAdapter for CodexAdapter {
             .map_err(|e| e.to_string())
     }
 
+    fn project_settings_surface(&self) -> crate::agent::ProjectSettingsSurface {
+        // v0.7.4 项目配置适配：codex 原生无项目级配置文件（全局
+        // ~/.codex/config.toml + 项目内 AGENTS.md 指令），如实声明。
+        crate::agent::ProjectSettingsSurface::Unsupported {
+            reason: Some(
+                "codex 的配置为全局 config.toml，项目级仅支持 AGENTS.md 指令文件，暂无可配置项"
+                    .to_string(),
+            ),
+        }
+    }
+
     fn load_project_settings(
         &self,
         _path: &str,
     ) -> Result<crate::project_config::ProjectSettings, String> {
-        Ok(crate::project_config::ProjectSettings::default())
+        Err("codex 不支持项目级配置（仅全局 config.toml 与 AGENTS.md）".to_string())
     }
 
     fn load_project_settings_local(
         &self,
         _path: &str,
     ) -> Result<crate::project_config::ProjectSettings, String> {
-        Ok(crate::project_config::ProjectSettings::default())
+        Err("codex 不支持项目级配置（仅全局 config.toml 与 AGENTS.md）".to_string())
     }
 
     fn save_project_settings(
@@ -1024,10 +1116,121 @@ fn now_ms() -> i64 {
     crate::util::now_ms()
 }
 
+/// v0.7.4 需求4 B1：reasoningEffort ↔ model_reasoning_effort 的纯映射，
+/// 抽出以便不触碰真实 ~/.codex/config.toml 做单测。
+fn toml_to_reasoning_effort(toml_val: &toml::Value) -> Option<String> {
+    toml_val
+        .get("model_reasoning_effort")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+fn apply_reasoning_effort(
+    table: &mut toml::map::Map<String, toml::Value>,
+    config: &serde_json::Value,
+) {
+    // 有值写入，null/缺省移除键（「默认」= 不出现在 config.toml）。
+    match config.get("reasoningEffort").and_then(|v| v.as_str()) {
+        Some(effort) if !effort.is_empty() => {
+            table.insert(
+                "model_reasoning_effort".to_string(),
+                toml::Value::String(effort.to_string()),
+            );
+        }
+        _ => {
+            table.remove("model_reasoning_effort");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::normalized::{NormalizedEvent, TurnEndReason};
+
+    #[test]
+    fn rollout_stats_derive_cwd_counts_and_mtime() {
+        let dir = std::env::temp_dir().join(format!("codex-rollout-{}", uuid::Uuid::new_v4()));
+        let day = dir.join("sessions").join("2026").join("08").join("17");
+        std::fs::create_dir_all(&day).unwrap();
+
+        let meta = |cwd: &str| {
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"{cwd}\"}}}}
+"
+            )
+        };
+        std::fs::write(
+            day.join("rollout-2026-08-17T10-00-00-a.jsonl"),
+            meta("E:/JishuTest"),
+        )
+        .unwrap();
+        std::fs::write(
+            day.join("rollout-2026-08-17T11-00-00-b.jsonl"),
+            meta("E:/JishuTest"),
+        )
+        .unwrap();
+        std::fs::write(
+            day.join("rollout-2026-08-17T12-00-00-c.jsonl"),
+            meta("D:/Other"),
+        )
+        .unwrap();
+        std::fs::write(day.join("notes.txt"), "not a rollout").unwrap();
+
+        let stats = super::rollout_stats_from_dir(&dir.join("sessions"));
+        assert_eq!(stats.len(), 2, "one entry per distinct cwd");
+        assert_eq!(stats["E:/JishuTest"].0, 2);
+        assert!(stats["E:/JishuTest"].1.is_some(), "mtime captured");
+        assert_eq!(stats["D:/Other"].0, 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rollout_cwd_tolerates_missing_payload() {
+        let dir = std::env::temp_dir().join(format!("codex-cwd-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("rollout-x.jsonl");
+        std::fs::write(
+            &p,
+            "{\"type\":\"session_meta\"}
+",
+        )
+        .unwrap();
+        assert!(super::rollout_cwd_of(&p).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reasoning_effort_maps_between_toml_and_shared_config() {
+        // TOML → 共享配置
+        let toml_val: toml::Value = toml::from_str(r#"model_reasoning_effort = "high""#).unwrap();
+        assert_eq!(
+            toml_to_reasoning_effort(&toml_val),
+            Some("high".to_string())
+        );
+        assert_eq!(
+            toml_to_reasoning_effort(&toml::from_str("model = \"gpt-5.1\"").unwrap()),
+            None
+        );
+
+        // 共享配置 → TOML：写入
+        let mut table = toml::map::Map::new();
+        apply_reasoning_effort(
+            &mut table,
+            &serde_json::json!({ "reasoningEffort": "xhigh" }),
+        );
+        assert_eq!(
+            table.get("model_reasoning_effort").and_then(|v| v.as_str()),
+            Some("xhigh")
+        );
+
+        // null/缺省 → 移除键（「默认」）
+        apply_reasoning_effort(&mut table, &serde_json::json!({ "reasoningEffort": null }));
+        assert!(table.get("model_reasoning_effort").is_none());
+        apply_reasoning_effort(&mut table, &serde_json::json!({}));
+        assert!(table.get("model_reasoning_effort").is_none());
+    }
 
     #[test]
     fn normalizes_codex_message_delta() {
