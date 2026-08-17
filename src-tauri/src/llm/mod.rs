@@ -1,4 +1,3 @@
-pub mod agent_loop;
 pub mod anthropic;
 pub mod config;
 pub mod http;

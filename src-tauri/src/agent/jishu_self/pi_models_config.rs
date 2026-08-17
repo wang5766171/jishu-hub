@@ -217,13 +217,69 @@ pub fn save_to(path: &Path, config: &PiModelsConfig) -> Result<(), String> {
         fs::create_dir_all(parent)
             .map_err(|e| format!("Cannot create directory {}: {e}", parent.display()))?;
     }
+    // v0.7.4：渠道配置（apiKey/名称等）落盘前自动备份旧 models.json，
+    // 与 settings.json 的自动备份同一目录（<agent>/backups）、同一保留策略。
+    backup_models_file(path)?;
     // 2-space indent matches Pi's own JSON style and keeps diffs
     // against Pi-authored models.json readable.
     let json = serde_json::to_string_pretty(config)
-        .map_err(|e| format!("Cannot serialize models.json: {e}"))?;
+        .map_err(|e| format!("Cannot serialize models.json: {e}",))?;
     fs::write(path, format!("{json}\n"))
         .map_err(|e| format!("Cannot write models.json to {}: {e}", path.display()))?;
     Ok(())
+}
+
+/// 备份已存在的 models.json 到同目录 backups/models_<时间戳>.json，
+/// 保留最近 10 份；文件不存在（首次配置）时不产生备份。
+fn backup_models_file(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let backup_dir = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("backups");
+    fs::create_dir_all(&backup_dir).map_err(|e| {
+        format!(
+            "Cannot create backup directory {}: {e}",
+            backup_dir.display()
+        )
+    })?;
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let dst = backup_dir.join(format!("models_{timestamp}.json"));
+    fs::copy(path, &dst).map_err(|e| {
+        format!(
+            "Cannot back up models.json {} -> {}: {e}",
+            path.display(),
+            dst.display()
+        )
+    })?;
+    cleanup_old_models_backups(&backup_dir, 10);
+    Ok(())
+}
+
+fn cleanup_old_models_backups(backup_dir: &Path, keep: usize) {
+    let Ok(entries) = fs::read_dir(backup_dir) else {
+        return;
+    };
+    let mut backups: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "json")
+                .unwrap_or(false)
+                && e.file_name().to_string_lossy().starts_with("models_")
+        })
+        .map(|e| e.path())
+        .collect();
+    if backups.len() <= keep {
+        return;
+    }
+    backups.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    for old in backups.iter().skip(keep) {
+        let _ = fs::remove_file(old);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +307,45 @@ pub fn get_provider(name: &str) -> Result<Option<PiProviderConfig>, String> {
 
 pub fn list_providers() -> Result<Vec<(String, PiProviderConfig)>, String> {
     Ok(load()?.providers.into_iter().collect())
+}
+
+/// 由渠道 + 模型条目构造最小连通性测试用的 ModelPreset（GUI test_model
+/// 与 CLI `agent model test` 共用）：模型级 api/baseUrl 覆盖渠道级，
+/// 协议缺省 anthropic-messages，密钥取渠道级 apiKey。
+pub fn to_test_preset(
+    provider: &str,
+    provider_cfg: &PiProviderConfig,
+    model: &PiModelDefinition,
+) -> Result<crate::llm::config::ModelPreset, String> {
+    let api = model
+        .api
+        .as_deref()
+        .or(provider_cfg.api.as_deref())
+        .unwrap_or("anthropic-messages");
+    let base_url = model
+        .base_url
+        .as_deref()
+        .or(provider_cfg.base_url.as_deref())
+        .unwrap_or("");
+    if base_url.trim().is_empty() {
+        return Err(format!("Provider '{provider}' has no base URL configured"));
+    }
+    Ok(crate::llm::config::ModelPreset {
+        id: format!("{provider}/{}", model.id),
+        display_name: model.name.clone(),
+        protocol: crate::llm::config::protocol_for_pi_api(api)?.to_string(),
+        base_url: base_url.to_string(),
+        model: model.id.clone(),
+        api_key: provider_cfg
+            .api_key
+            .clone()
+            .filter(|k| !k.trim().is_empty()),
+        api_key_env: None,
+        max_tokens: 64,
+        temperature: 0.0,
+        supports_tools: false,
+        supports_thinking: false,
+    })
 }
 
 #[cfg(test)]
@@ -405,5 +500,142 @@ mod tests {
         assert!(removed);
         let after = get_provider(&probe_name).unwrap();
         assert!(after.is_none(), "provider should be gone after delete");
+    }
+
+    #[test]
+    fn save_to_backs_up_previous_models_json() {
+        let dir = unique_tmp("backup");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("models.json");
+        std::fs::write(&path, "{\"providers\":{\"old\":{}}}").unwrap();
+
+        save_to(&path, &PiModelsConfig::default()).unwrap();
+
+        let backups_dir = dir.join("backups");
+        let entries: Vec<std::path::PathBuf> = std::fs::read_dir(&backups_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .collect();
+        assert_eq!(entries.len(), 1, "one backup per save");
+        let name = entries[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert!(
+            name.starts_with("models_") && name.ends_with(".json"),
+            "unexpected backup name: {name}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&entries[0]).unwrap(),
+            "{\"providers\":{\"old\":{}}}",
+            "backup should hold the pre-save content"
+        );
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("providers"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_to_skips_backup_when_file_missing() {
+        let dir = unique_tmp("nobackup");
+        let path = dir.join("models.json");
+
+        save_to(&path, &PiModelsConfig::default()).unwrap();
+
+        assert!(path.exists());
+        let backups_dir = dir.join("backups");
+        let backups = if backups_dir.exists() {
+            std::fs::read_dir(&backups_dir).unwrap().count()
+        } else {
+            0
+        };
+        assert_eq!(backups, 0, "first-time save must not create a backup");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn sample_model_for_preset(id: &str) -> PiModelDefinition {
+        PiModelDefinition {
+            id: id.to_string(),
+            name: format!("Model {id}"),
+            api: None,
+            base_url: None,
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            cost: PiModelCost {
+                input: 0.0,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            context_window: 128000,
+            max_tokens: 8192,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    #[test]
+    fn test_preset_resolves_provider_fields_with_model_overrides() {
+        let mut provider = PiProviderConfig::new();
+        provider.base_url = Some("https://provider.example".to_string());
+        provider.api = Some("anthropic-messages".to_string());
+        provider.api_key = Some("sk-test".to_string());
+        let mut model = sample_model_for_preset("glm-5.3");
+        model.base_url = Some("https://model-level.example".to_string());
+        model.api = Some("openai-completions".to_string());
+
+        let preset = to_test_preset("zhipu", &provider, &model).unwrap();
+        // 模型级 api/baseUrl 覆盖渠道级；协议映射到内部 llm 协议。
+        assert_eq!(preset.protocol, "openai");
+        assert_eq!(preset.base_url, "https://model-level.example");
+        assert_eq!(preset.model, "glm-5.3");
+        assert_eq!(preset.id, "zhipu/glm-5.3");
+        assert_eq!(preset.api_key.as_deref(), Some("sk-test"));
+    }
+
+    #[test]
+    fn test_preset_defaults_to_anthropic_messages_protocol() {
+        let mut provider = PiProviderConfig::new();
+        provider.base_url = Some("https://provider.example".to_string());
+        let preset = to_test_preset("p", &provider, &sample_model_for_preset("m")).unwrap();
+        assert_eq!(preset.protocol, "anthropic");
+        assert_eq!(preset.base_url, "https://provider.example");
+        assert!(preset.api_key.is_none());
+    }
+
+    #[test]
+    fn test_preset_errors_without_any_base_url() {
+        let provider = PiProviderConfig::new();
+        let err = to_test_preset("p", &provider, &sample_model_for_preset("m")).unwrap_err();
+        assert!(err.contains("no base URL"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn cleanup_keeps_most_recent_models_backups_only() {
+        let dir = unique_tmp("cleanup");
+        let backups = dir.join("backups");
+        std::fs::create_dir_all(&backups).unwrap();
+        for i in 0..12 {
+            std::fs::write(backups.join(format!("models_20260101_{i:06}.json")), "{}").unwrap();
+        }
+        std::fs::write(backups.join("settings_20260101_000000.json"), "{}").unwrap();
+
+        super::cleanup_old_models_backups(&backups, 10);
+
+        let models_count = std::fs::read_dir(&backups)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("models_"))
+            .count();
+        assert_eq!(models_count, 10, "models_ backups capped at 10");
+        // settings_ 前缀不受 models 清理影响；保留时间戳最大的 10 份。
+        assert!(backups.join("settings_20260101_000000.json").exists());
+        assert!(!backups.join("models_20260101_000001.json").exists());
+        assert!(backups.join("models_20260101_000011.json").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

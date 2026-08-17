@@ -1,86 +1,33 @@
 use crate::agent;
 use crate::llm;
 
-// 鈹€鈹€ Model management IPC commands 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Model test IPC commands ──────────────────────────────────────────────────
+// v0.7.4 清理：v0.6 旧版模型库命令（list/add/update/remove/set_active/
+// deactivate/set_key/mask，基于 {presets,active} 格式）已删除——前端自
+// v0.6.x 起走 get_models_config/set_models_config/get_active/set_active
+// （Pi 格式），旧命令若被调用会把 models.json 覆盖回旧格式。
 
+/// 按 Pi 格式 models.json 解析被测模型并连通性测试（解析规则见
+/// pi_models_config::to_test_preset）。
 #[tauri::command]
-pub(crate) fn list_models() -> Result<serde_json::Value, String> {
-    let store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
-    let mut val = serde_json::to_value(store).map_err(|e| e.to_string())?;
-    // Mask api_key before sending to frontend 鈥?plaintext never leaves the backend
-    if let Some(presets) = val.get_mut("presets").and_then(|p| p.as_array_mut()) {
-        for preset in presets {
-            if let Some(key) = preset.get("api_key").and_then(|k| k.as_str()) {
-                if !key.is_empty() {
-                    preset["api_key"] = serde_json::Value::String(llm::http::mask_key(key));
-                }
-            }
-        }
-    }
-    Ok(val)
-}
-
-#[tauri::command]
-pub(crate) fn add_model(preset: serde_json::Value) -> Result<(), String> {
-    let mut store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
-    let preset: llm::config::ModelPreset =
-        serde_json::from_value(preset).map_err(|e| e.to_string())?;
-    store.add(preset).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub(crate) fn update_model(id: String, preset: serde_json::Value) -> Result<(), String> {
-    let mut store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
-    let preset: llm::config::ModelPreset =
-        serde_json::from_value(preset).map_err(|e| e.to_string())?;
-    store.update(&id, preset).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub(crate) fn remove_model(id: String) -> Result<(), String> {
-    let mut store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
-    store.remove(&id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub(crate) fn set_active_model(id: String) -> Result<(), String> {
-    let mut store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
-    store.set_active(&id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub(crate) fn deactivate_model() -> Result<(), String> {
-    let mut store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
-    store.clear_active().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub(crate) async fn test_model(id: String) -> Result<serde_json::Value, String> {
-    let store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
-    let preset = store
-        .presets
-        .iter()
-        .find(|p| p.id == id)
-        .ok_or_else(|| format!("Model '{id}' not found"))?
-        .clone();
-
+pub(crate) async fn test_model(provider: String, id: String) -> Result<serde_json::Value, String> {
+    let config = crate::agent::jishu_self::pi_models_config::load()?;
+    let provider_cfg = config
+        .providers
+        .get(&provider)
+        .ok_or_else(|| format!("Provider '{provider}' not found"))?;
+    let model = provider_cfg
+        .models
+        .as_ref()
+        .and_then(|ms| ms.iter().find(|m| m.id == id))
+        .ok_or_else(|| format!("Model '{id}' not found in provider '{provider}'"))?;
+    let preset =
+        crate::agent::jishu_self::pi_models_config::to_test_preset(&provider, provider_cfg, model)?;
     stream_minimal_chat(&preset).await
 }
 
-/// Map a pi-style provider `api` value to the internal llm protocol id.
-/// Only the two protocols the internal llm client implements are testable.
-fn llm_protocol_for_api(api: &str) -> Result<&'static str, String> {
-    match api {
-        "anthropic-messages" => Ok("anthropic"),
-        "openai-completions" | "openai-responses" => Ok("openai"),
-        other => Err(format!(
-            "Connection test does not support protocol '{other}'"
-        )),
-    }
-}
-
 /// v0.7.4 需求2：草稿态连通性测试。用前端表单当前值构造临时 preset
-/// 发一条最小消息，不落盘（区别于 test_model 按 id 测试已保存模型）。
+/// 发一条最小消息，不落盘（区别于 test_model 按渠道+模型测试已保存模型）。
 #[tauri::command]
 pub(crate) async fn test_llm_connection(
     api: String,
@@ -99,7 +46,7 @@ pub(crate) async fn test_llm_connection(
     let preset = llm::config::ModelPreset {
         id: "connection-test".to_string(),
         display_name: "connection test".to_string(),
-        protocol: llm_protocol_for_api(api.trim())?.to_string(),
+        protocol: llm::config::protocol_for_pi_api(api.trim())?.to_string(),
         base_url,
         model,
         api_key: if api_key.trim().is_empty() {
@@ -126,8 +73,8 @@ pub(crate) async fn test_llm_connection(
 }
 
 /// Send a one-message minimal chat request and collect the reply text,
-/// stop reason and usage. Shared by test_model (saved preset) and
-/// test_llm_connection (ad-hoc draft preset).
+/// stop reason and usage. Shared by test_model (saved provider model)
+/// and test_llm_connection (ad-hoc draft preset).
 async fn stream_minimal_chat(
     preset: &llm::config::ModelPreset,
 ) -> Result<serde_json::Value, String> {
@@ -181,21 +128,4 @@ async fn stream_minimal_chat(
         "stop_reason": format!("{:?}", turn.stop_reason),
         "usage": usage_val,
     }))
-}
-
-#[tauri::command]
-pub(crate) fn set_model_key(id: String, key: String) -> Result<(), String> {
-    let mut store = llm::config::ModelStore::load().map_err(|e| e.to_string())?;
-    let preset = store
-        .presets
-        .iter_mut()
-        .find(|p| p.id == id)
-        .ok_or_else(|| format!("Model '{id}' not found"))?;
-    preset.api_key = if key.is_empty() { None } else { Some(key) };
-    store.save().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub(crate) fn mask_model_key(key: String) -> String {
-    llm::http::mask_key(&key)
 }
