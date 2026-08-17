@@ -37,6 +37,18 @@ fn is_allowed_install_command(cmd: &str) -> bool {
     false
 }
 
+/// 该（已过白名单的）安装命令是否需要管理员权限。前端据此在触发
+/// UAC 前弹应用内说明并征得用户同意（v0.7.4：升权原因先告知用户）。
+#[tauri::command]
+pub(crate) fn install_command_needs_elevation(command: String) -> Result<bool, String> {
+    if !is_allowed_install_command(&command) {
+        return Err(format!("Install command not allowed: {}", command));
+    }
+    Ok(crate::os_adapter::shell::command_requires_elevation(
+        &command,
+    ))
+}
+
 #[tauri::command]
 pub(crate) async fn install_agent_command(
     app: tauri::AppHandle,

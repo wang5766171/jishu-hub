@@ -54,6 +54,8 @@ interface CheckItem {
   npmPackage?: string;
   /** Original agent ID for MCP status lookup (only for agent items). */
   agentId?: string;
+  /** 内建 agent 标志（v0.7.4 需求3 M1：安装前置校验等共享层分支用）。 */
+  agentBuiltin?: boolean;
   /** 若设置，安装按钮禁用并显示该原因（如 Node 版本过低）。 */
   installBlockedReason?: string;
 }
@@ -124,7 +126,7 @@ function StatusIndicator({
 
 export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
   const { t } = useTranslation();
-  const { alert: alertDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
+  const { alert: alertDialog, confirm: confirmDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
   const [env, setEnv] = useState<EnvData | null>(null);
   const { agents, refreshHealth, healthLoading } = useAgent();
   // Tracks every item currently being installed/updated concurrently.
@@ -239,16 +241,18 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       })
     : [];
 
+  // v0.7.4 需求3 M1：内建 agent 置顶按 builtin 标志（adapter 声明），
+  // 不写死 agent id。
   const sortedAgents = [...agents].sort((a, b) => {
-    if (a.id === "jishu-self") return -1;
-    if (b.id === "jishu-self") return 1;
+    if (a.builtin) return -1;
+    if (b.builtin) return 1;
     return 0;
   });
 
   const agentItems: CheckItem[] = sortedAgents.map((agent) => {
     let desc = agent.install_hint?.replace("npm install -g ", "") || "";
     let installBlockedReason: string | undefined;
-    if (agent.id === "jishu-self") {
+    if (agent.builtin) {
       desc = t("env.jishuAgentImportance", "Jishu Agent 是本应用的核心智能体引擎。安装它能解锁完整的文件系统操作、原生命令行执行以及强大的 MCP 服务支持，强烈建议安装。");
       if (
         env?.node_version &&
@@ -276,6 +280,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
         ?.replace("npm install -g ", "")
         ?.trim(),
       agentId: agent.id,
+      agentBuiltin: agent.builtin,
       installBlockedReason,
     };
   });
@@ -294,9 +299,10 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
   };
 
   const handleInstall = async (item: CheckItem) => {
-    // jishu-self 安装前校验 Node.js 版本（pi 要求 >=22.19），过低直接提示升级、不执行安装。
+    // 内建 agent（pi 运行时）安装前校验 Node.js 版本（要求 >=22.19），
+    // 过低直接提示升级、不执行安装。v0.7.4 需求3 M1：按 builtin 标志分支。
     if (
-      item.agentId === "jishu-self" &&
+      item.agentBuiltin &&
       env?.node_version &&
       !nodeVersionSatisfies(env.node_version, MIN_NODE_VERSION)
     ) {
@@ -313,6 +319,29 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       ? item.updateCommand
       : item.installCommand ?? item.updateCommand;
     if (!command) return;
+    // v0.7.4：需要管理员权限的安装（choco）先在应用内说明升权原因并征得
+    // 同意，再触发系统 UAC——避免用户在无预期的情况下看到系统授权弹窗。
+    try {
+      const needsElevation = await invokeCommand<boolean>(
+        "install_command_needs_elevation",
+        { command },
+      );
+      if (needsElevation) {
+        const agreed = await confirmDialog({
+          title: t("env.elevationTitle", "需要管理员权限"),
+          description: t("env.elevationDesc", {
+            defaultValue: `安装「${item.name}」需要写入系统目录（Chocolatey 安装位置），因此需要以管理员身份执行。点击「同意并继续」后将弹出系统授权窗口（UAC），请在其中点击「是」完成授权；选择「取消」则不会安装。`,
+            name: item.name,
+          }),
+          confirmText: t("env.elevationConfirm", "同意并继续"),
+          cancelText: t("common.cancel", "取消"),
+        });
+        if (!agreed) return;
+      }
+    } catch (err) {
+      // 查询失败不阻断：按无需提权继续，由安装命令自身给出结果。
+      console.warn("elevation query failed:", err);
+    }
     setInstallingIds((prev) => new Set(prev).add(item.id));
     try {
       await invokeCommand("install_agent_command", {
