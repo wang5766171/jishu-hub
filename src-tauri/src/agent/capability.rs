@@ -31,6 +31,10 @@ bitflags::bitflags! {
         /// Manual + automatic context compaction (v0.7.4 需求1 A3). Only
         /// transports with a native compact mechanism (Pi RPC) declare this.
         const CONTEXT_COMPACT = 1 << 33;
+        /// Supports the task work mode (orchestrated task-graph sessions;
+        /// v0.7.4 需求3 M2). Replaces the hardcoded `agentId === "jishu-self"`
+        /// gating in the chat page with a capability check.
+        const TASK_MODE = 1 << 34;
 
         const CONFIG_GLOBAL        = 1 << 40;
         const CONFIG_PROJECT       = 1 << 41;

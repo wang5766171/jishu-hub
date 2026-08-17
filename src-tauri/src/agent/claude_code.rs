@@ -419,6 +419,10 @@ impl ConfigAdapter for ClaudeCodeAgent {
             supports_api_provider: true,
             supports_proxy_setup: true,
             supports_config_test: true,
+            model_catalog: Some("claude".to_string()),
+            supports_custom_providers: false,
+            supports_thinking_budget: true,
+            supports_reasoning_effort: false,
         }
     }
 
@@ -694,6 +698,12 @@ impl ProjectAdapter for ClaudeCodeAgent {
                 "default".to_string(),
                 "bypassPermissions".to_string(),
                 "plan".to_string(),
+            ],
+            fields: vec![
+                "permissions".to_string(),
+                "env".to_string(),
+                "model".to_string(),
+                "hooks".to_string(),
             ],
         }
     }

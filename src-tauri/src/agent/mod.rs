@@ -94,6 +94,10 @@ pub struct AgentStatus {
     /// Hub 侧持久化的当前 thinking 档位（未配置 = 跟随 agent 默认；会话内
     /// 生效值以 thinking_level_changed 事件为准）。
     pub thinking_level: Option<String>,
+    /// 内建 agent（随 hub 分发/升级；环境检测置顶、任务模式引擎）。
+    /// v0.7.4 需求3：共享层按此标志分支，不写死 agent id。
+    #[serde(default)]
+    pub builtin: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -111,6 +115,23 @@ pub enum ConfigSurface {
         /// 「测试连接」按钮显隐（v0.7.4 需求2 R2c）。
         #[serde(default)]
         supports_config_test: bool,
+        /// 「推理力度」配置入口显隐（v0.7.4 需求4 B1：codex 声明；静态
+        /// 配置字段，新会话生效——与 jishu 的运行时档位能力不同类）。
+        #[serde(default)]
+        supports_reasoning_effort: bool,
+        /// 思考预算快捷入口（env.MAX_THINKING_TOKENS）显隐（需求4 B1：
+        /// claude 声明；数字预算，0=禁用）。
+        #[serde(default)]
+        supports_thinking_budget: bool,
+        /// 模型推荐目录标识（v0.7.4：adapter 声明自己的目录——"claude" /
+        /// "opencode"，前端据此渲染当前模型大卡与 small/large 下拉的候选项，
+        /// 不按 agentId 分支；None = 仅自由输入）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_catalog: Option<String>,
+        /// 支持自定义模型供应商管理（v0.7.4 R12：opencode 的 provider 段，
+        /// 模型设置页提供添加/编辑供应商与模型的管理块）。
+        #[serde(default)]
+        supports_custom_providers: bool,
     },
     Raw {
         format: String,
@@ -122,6 +143,16 @@ pub enum ConfigSurface {
         supports_mcp: bool,
     },
     Unsupported,
+}
+
+impl ConfigSurface {
+    /// Structured 面声明的模型推荐目录标识；其余面返回 None。
+    pub fn model_catalog_id(&self) -> Option<&str> {
+        match self {
+            ConfigSurface::Structured { model_catalog, .. } => model_catalog.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 /// 权限模式的读写提供方（v0.7.3 需求2 P-3）：决定 GUI 的读写路径。
@@ -142,10 +173,24 @@ pub enum ProjectSettingsSurface {
     Supported {
         scopes: Vec<ProjectSettingsScope>,
         access_modes: Vec<String>,
+        /// 该 agent 项目配置实际支持的字段（v0.7.4 项目配置适配）：
+        /// permissions / env / model / hooks / thinking_level 的子集——
+        /// 前端表单按此渲染，adapter 只落盘自己真实支持的字段。
+        #[serde(default = "default_project_settings_fields")]
+        fields: Vec<String>,
     },
     Unsupported {
         reason: Option<String>,
     },
+}
+
+fn default_project_settings_fields() -> Vec<String> {
+    vec![
+        "permissions".to_string(),
+        "env".to_string(),
+        "model".to_string(),
+        "hooks".to_string(),
+    ]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -367,6 +412,7 @@ impl AgentRegistry {
                     permission_mode_provider,
                     thinking_levels,
                     thinking_level,
+                    builtin: a.is_builtin(),
                 }
             })
             .collect()
@@ -590,6 +636,7 @@ mod tests {
             permission_mode_provider: None,
             thinking_levels: Vec::new(),
             thinking_level: None,
+            builtin: false,
         };
 
         let value = serde_json::to_value(status).unwrap();
@@ -597,6 +644,8 @@ mod tests {
             value["capabilities"],
             serde_json::Value::String("1152921506754330624".to_string())
         );
+        // v0.7.4 需求3 M1：builtin 序列化为布尔（缺省 false，旧状态兼容）。
+        assert_eq!(value["builtin"], serde_json::Value::Bool(false));
     }
 
     #[test]
@@ -622,11 +671,57 @@ mod tests {
             jishu.available_version.as_deref(),
             Some(crate::agent::jishu_self::PI_AGENT_VERSION)
         );
+        // v0.7.4 需求3 M1/M2：内建标志与任务模式能力位经 adapter 声明。
+        assert!(jishu.builtin, "jishu-self should declare is_builtin");
+        // v0.7.4 需求4：会话页思考档位选择器按 thinking_levels 声明显隐
+        //（adapter 驱动，未来 agent 支持动态档位时只需声明即可出现）。
+        assert_eq!(
+            jishu.thinking_levels.len(),
+            7,
+            "jishu-self declares the pi level set"
+        );
+        let jishu_caps = jishu
+            .capabilities
+            .parse::<u64>()
+            .expect("capabilities decimal string");
+        assert!(
+            AgentCapabilities::from_bits_retain(jishu_caps).contains(AgentCapabilities::TASK_MODE),
+            "jishu-self should declare TASK_MODE"
+        );
+
+        // v0.7.4：模型推荐目录由 adapter 声明（前端按目录渲染候选，无 agentId 分支）。
+        let claude = statuses
+            .iter()
+            .find(|status| status.id == "claude-code")
+            .expect("claude-code status should exist");
+        assert_eq!(
+            claude.config_surface.model_catalog_id(),
+            Some("claude"),
+            "claude-code should declare its model catalog"
+        );
+        let opencode_status = statuses
+            .iter()
+            .find(|status| status.id == "opencode")
+            .expect("opencode status should exist");
+        assert_eq!(
+            opencode_status.config_surface.model_catalog_id(),
+            Some("opencode"),
+            "opencode should declare its model catalog"
+        );
 
         let codex = statuses
             .iter()
             .find(|status| status.id == "codex")
             .expect("codex status should exist");
+        assert!(!codex.builtin, "non-managed agents are not builtin");
+        assert_eq!(codex.config_surface.model_catalog_id(), None);
+        for status in statuses.iter().filter(|s| s.id != "jishu-self") {
+            assert!(
+                status.thinking_levels.is_empty(),
+                "{} must not declare thinking levels until its transport supports it",
+                status.id
+            );
+        }
         assert_eq!(
             codex.config_surface,
             ConfigSurface::Structured {
@@ -637,6 +732,10 @@ mod tests {
                 supports_api_provider: false,
                 supports_proxy_setup: false,
                 supports_config_test: false,
+                supports_reasoning_effort: true,
+                supports_thinking_budget: false,
+                model_catalog: None,
+                supports_custom_providers: false,
             }
         );
 
@@ -665,8 +764,42 @@ mod tests {
                     "bypassPermissions".to_string(),
                     "plan".to_string()
                 ],
+                fields: vec![
+                    "permissions".to_string(),
+                    "env".to_string(),
+                    "model".to_string(),
+                    "hooks".to_string(),
+                ],
             }
         );
+
+        // v0.7.4 项目配置适配：jishu（.pi/settings.json，model+思考档位）与
+        // opencode（项目 opencode.json，model）声明各自真实支持的字段；
+        // codex 原生无项目配置文件，如实 Unsupported（带原因）。
+        assert_eq!(
+            jishu.project_settings_surface,
+            ProjectSettingsSurface::Supported {
+                scopes: vec![ProjectSettingsScope::Shared],
+                access_modes: Vec::new(),
+                fields: vec![
+                    "model".to_string(),
+                    "thinking_level".to_string(),
+                    "compaction".to_string()
+                ],
+            }
+        );
+        assert_eq!(
+            opencode.project_settings_surface,
+            ProjectSettingsSurface::Supported {
+                scopes: vec![ProjectSettingsScope::Shared],
+                access_modes: Vec::new(),
+                fields: vec!["model".to_string()],
+            }
+        );
+        assert!(matches!(
+            &codex.project_settings_surface,
+            ProjectSettingsSurface::Unsupported { reason: Some(_) }
+        ));
 
         // Transport bridge: claude_code declares a claude-agent-acp dependency
         // (others default to unsupported). `installed`/`version` depend on the

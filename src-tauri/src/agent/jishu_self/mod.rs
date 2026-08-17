@@ -159,6 +159,14 @@ impl AgentManifest for JishuSelfAgent {
             | AgentCapabilities::SESSION_DELETE
             // v0.7.4 需求1 A3：手动 + 自动上下文压缩（Pi 原生 compact RPC）。
             | AgentCapabilities::CONTEXT_COMPACT
+            // v0.7.4 需求3 M2：任务工作模式（任务图编排会话）。
+            | AgentCapabilities::TASK_MODE
+    }
+
+    fn is_builtin(&self) -> bool {
+        // v0.7.4 需求3 M1：内建 agent——随 hub 分发/升级，环境检测置顶展示，
+        // 并作为任务模式引擎。共享层按此标志分支，不写死 agent id。
+        true
     }
 
     fn thinking_levels(&self) -> Vec<String> {
@@ -220,25 +228,72 @@ impl ProjectAdapter for JishuSelfAgent {
         crate::project::get_level1_dir(path)
     }
 
-    fn load_project_settings(&self, path: &str) -> Result<ProjectSettings, String> {
-        crate::project_config::load_project_settings(path).map_err(|e| e.to_string())
+    fn project_settings_surface(&self) -> crate::agent::ProjectSettingsSurface {
+        // v0.7.4 项目配置适配：Pi 原生项目级设置 <project>/.pi/settings.json
+        //（深合并覆盖全局）。真实字段为 defaultModel / defaultThinkingLevel；
+        // permissions/env/hooks 不在 Pi Settings schema 中（不声明即不渲染）。
+        crate::agent::ProjectSettingsSurface::Supported {
+            scopes: vec![crate::agent::ProjectSettingsScope::Shared],
+            access_modes: Vec::new(),
+            fields: vec![
+                "model".to_string(),
+                "thinking_level".to_string(),
+                "compaction".to_string(),
+            ],
+        }
     }
 
-    fn load_project_settings_local(&self, path: &str) -> Result<ProjectSettings, String> {
-        crate::project_config::load_project_settings_local(path).map_err(|e| e.to_string())
+    fn load_project_settings(&self, path: &str) -> Result<ProjectSettings, String> {
+        // Pi 原生项目设置 .pi/settings.json（v0.7.4 项目配置适配：此前误用
+        // claude 的 .claude/settings.json 读写）。仅映射真实存在的字段：
+        // defaultModel → model、defaultThinkingLevel → thinkingLevel。
+        let raw = config::load_pi_project_settings_raw(path).map_err(|e| e.to_string())?;
+        // Pi 按 (defaultProvider, defaultModel) 二元组解析——拼回 "provider/model"。
+        let model = match (
+            raw.get("defaultProvider").and_then(|v| v.as_str()),
+            raw.get("defaultModel").and_then(|v| v.as_str()),
+        ) {
+            (Some(p), Some(m)) if !m.is_empty() => Some(format!("{p}/{m}")),
+            _ => None,
+        };
+        let compaction = raw
+            .get("compaction")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok());
+        Ok(ProjectSettings {
+            permissions: None,
+            hooks: None,
+            env: None,
+            model,
+            thinking_level: raw
+                .get("defaultThinkingLevel")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            compaction,
+        })
+    }
+
+    fn load_project_settings_local(&self, _path: &str) -> Result<ProjectSettings, String> {
+        // Pi 项目设置只有 shared 一档（无 .pi/settings.local.json）。
+        Err("Pi 项目设置仅支持共享档（.pi/settings.json）".to_string())
     }
 
     fn save_project_settings(&self, path: &str, settings: &ProjectSettings) -> Result<(), String> {
-        crate::project_config::save_project_settings(path, settings).map_err(|e| e.to_string())
+        config::save_pi_project_settings_fields(
+            path,
+            settings.model.as_deref(),
+            settings.thinking_level.as_deref(),
+            settings.compaction.as_ref(),
+        )
+        .map_err(|e| e.to_string())
     }
 
     fn save_project_settings_local(
         &self,
-        path: &str,
-        settings: &ProjectSettings,
+        _path: &str,
+        _settings: &ProjectSettings,
     ) -> Result<(), String> {
-        crate::project_config::save_project_settings_local(path, settings)
-            .map_err(|e| e.to_string())
+        Err("Pi 项目设置仅支持共享档（.pi/settings.json）".to_string())
     }
 
     fn load_claude_md(&self, path: &str) -> Result<Option<String>, String> {
@@ -332,60 +387,34 @@ impl ConfigAdapter for JishuSelfAgent {
     }
 
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
+        // v0.7.4 R15 死字段整改：原「默认/安全/高效」模版写入的 permissions/
+        // temperature 等不在 Pi Settings schema 中（无效）。重写为仅含真实
+        // 字段的思考档位预设；行为控制（工具模式/会话内档位）在会话页。
         vec![
             crate::hub::ConfigTemplate {
-                id: "jishu-default".into(),
-                name: "默认配置 (Default)".into(),
-                description: "标准配置：开启思考模式，默认 token 限制。".into(),
-                config: serde_json::json!({
-                    "activeModel": null,
-                    "temperature": 0.7,
-                    "maxTokens": 8192,
-                    "thinkingEnabled": true,
-                    "permissions": {
-                        "allow": ["Read", "Bash", "Edit", "Write", "Grep", "Find"],
-                        "deny": [],
-                        "defaultMode": "acceptEdits"
-                    }
-                }),
+                requires_fill: false,
+                id: "jishu-thinking-max".into(),
+                name: "深度思考 (Max)".into(),
+                description: "全局默认思考档位设为最大：疑难问题深推理，耗时与 token 消耗最高。"
+                    .into(),
+                config: serde_json::json!({ "defaultThinkingLevel": "max" }),
             },
             crate::hub::ConfigTemplate {
-                id: "jishu-safe".into(),
-                name: "安全模式 (Safe)".into(),
-                description: "限制危险操作，每次修改需确认。适合新手或不熟悉的代码库。".into(),
-                config: serde_json::json!({
-                    "activeModel": null,
-                    "temperature": 0.5,
-                    "maxTokens": 4096,
-                    "thinkingEnabled": true,
-                    "permissions": {
-                        "allow": ["Read", "Grep", "Find"],
-                        "deny": ["Bash"],
-                        "defaultMode": "default"
-                    },
-                    "skipDangerous": true
-                }),
+                requires_fill: false,
+                id: "jishu-thinking-high".into(),
+                name: "均衡思考 (High)".into(),
+                description: "全局默认思考档位设为高：日常开发的平衡选择（推荐）。".into(),
+                config: serde_json::json!({ "defaultThinkingLevel": "high" }),
             },
             crate::hub::ConfigTemplate {
-                id: "jishu-power".into(),
-                name: "高效模式 (Power)".into(),
-                description: "宽松权限，跳过确认，适合快速迭代。".into(),
-                config: serde_json::json!({
-                    "activeModel": null,
-                    "temperature": 0.7,
-                    "maxTokens": 16384,
-                    "thinkingEnabled": true,
-                    "permissions": {
-                        "allow": ["Read", "Bash", "Edit", "Write", "Grep", "Find"],
-                        "deny": [],
-                        "defaultMode": "bypassPermissions"
-                    },
-                    "skipDangerous": false
-                }),
+                requires_fill: false,
+                id: "jishu-thinking-low".into(),
+                name: "快速响应 (Low)".into(),
+                description: "全局默认思考档位设为低：几乎不思考、响应最快，适合简单问答。".into(),
+                config: serde_json::json!({ "defaultThinkingLevel": "low" }),
             },
         ]
     }
-
     fn config_format(&self) -> Option<String> {
         Some("json".to_string())
     }

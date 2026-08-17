@@ -702,6 +702,44 @@ fn read_opencode_config_value() -> Result<serde_json::Value, Box<dyn std::error:
     parse_json_or_jsonc(&content).map_err(|e| e.into())
 }
 
+/// 项目根 opencode.json / opencode.jsonc 读取（v0.7.4 项目配置适配）。
+fn load_project_opencode_json(
+    project_path: &str,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let base = std::path::Path::new(project_path);
+    for name in ["opencode.json", "opencode.jsonc"] {
+        let p = base.join(name);
+        if p.exists() {
+            let content = std::fs::read_to_string(&p)?;
+            return Ok(parse_json_or_jsonc(&content)?);
+        }
+    }
+    Ok(serde_json::json!({}))
+}
+
+/// 写项目 opencode.json 的 model 键（其余字段原样保留；空 = 删除键）。
+/// 始终写 opencode.json（.jsonc 项目里也以 json 落盘，opencode 兼容读取）。
+fn save_project_opencode_model(
+    project_path: &str,
+    model: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::path::Path::new(project_path).join("opencode.json");
+    let mut value = load_project_opencode_json(project_path)?;
+    let obj = value
+        .as_object_mut()
+        .ok_or("project opencode config must be an object")?;
+    match model {
+        Some(m) if !m.is_empty() => {
+            obj.insert("model".to_string(), serde_json::json!(m));
+        }
+        _ => {
+            obj.remove("model");
+        }
+    }
+    crate::util::atomic_write(&path, serde_json::to_string_pretty(&value)?.as_bytes())?;
+    Ok(())
+}
+
 fn parse_json_or_jsonc(raw: &str) -> Result<serde_json::Value, serde_json::Error> {
     serde_json::from_str(raw).or_else(|_| serde_json::from_str(&strip_json_comments(raw)))
 }
@@ -774,6 +812,10 @@ fn opencode_value_to_shared_config(
         .get("model")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    // v0.7.4 R12：自定义供应商段原样透出（UI 全量带回，未知键保留）。
+    if let Some(providers) = value.get("provider").and_then(|v| v.as_object()) {
+        config.custom_providers = Some(providers.clone());
+    }
     config.small_model = value
         .get("small_model")
         .or_else(|| value.get("smallModel"))
@@ -875,6 +917,19 @@ fn merge_opencode_config(
 
     set_or_remove_string(obj, "model", config.model.as_deref());
     set_or_remove_string(obj, "small_model", config.small_model.as_deref());
+
+    // v0.7.4 R12：自定义供应商段。前端编辑时全量带回（含未知键），整体
+    // 替换以支持删除供应商；None = 本次未涉及，保留文件原样。
+    if let Some(providers) = &config.custom_providers {
+        if providers.is_empty() {
+            obj.remove("provider");
+        } else {
+            obj.insert(
+                "provider".to_string(),
+                serde_json::Value::Object(providers.clone()),
+            );
+        }
+    }
 
     if let Some(plugins) = &config.enabled_plugins {
         let enabled = plugins
@@ -1186,12 +1241,16 @@ impl ConfigAdapter for OpencodeAdapter {
     fn config_surface(&self) -> crate::agent::ConfigSurface {
         crate::agent::ConfigSurface::Structured {
             schema_id: "opencode-config".to_string(),
-            supports_model_picker: false,
-            supports_small_model: false,
+            supports_model_picker: true,
+            supports_small_model: true,
             supports_large_model: false,
             supports_api_provider: false,
             supports_proxy_setup: false,
             supports_config_test: false,
+            model_catalog: Some("opencode".to_string()),
+            supports_custom_providers: true,
+            supports_thinking_budget: false,
+            supports_reasoning_effort: false,
         }
     }
 
@@ -1209,6 +1268,7 @@ impl ConfigAdapter for OpencodeAdapter {
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
         vec![
             crate::hub::ConfigTemplate {
+                requires_fill: false,
                 id: "opencode-default".to_string(),
                 name: "opencode 默认配置".to_string(),
                 description: "保留 opencode 默认模型与 MCP 设置，仅创建基础配置结构".to_string(),
@@ -1216,6 +1276,7 @@ impl ConfigAdapter for OpencodeAdapter {
                     .unwrap_or_default(),
             },
             crate::hub::ConfigTemplate {
+                requires_fill: false,
                 id: "opencode-glm".to_string(),
                 name: "opencode GLM 模型".to_string(),
                 description: "设置 opencode 的主模型与小模型为 GLM".to_string(),
@@ -1463,26 +1524,44 @@ impl ProjectAdapter for OpencodeAdapter {
             .map_err(|e| e.to_string())
     }
 
+    fn project_settings_surface(&self) -> crate::agent::ProjectSettingsSurface {
+        // v0.7.4 项目配置适配：opencode 原生项目配置 <project>/opencode.json
+        //（与全局同 schema）。共享字段映射 model（"provider/model"）；
+        // permissions/env/hooks 形态不同不映射（可经 raw/文档编辑）。
+        crate::agent::ProjectSettingsSurface::Supported {
+            scopes: vec![crate::agent::ProjectSettingsScope::Shared],
+            access_modes: Vec::new(),
+            fields: vec!["model".to_string()],
+        }
+    }
+
     fn load_project_settings(
         &self,
-        _path: &str,
+        path: &str,
     ) -> Result<crate::project_config::ProjectSettings, String> {
-        Ok(crate::project_config::ProjectSettings::default())
+        let raw = load_project_opencode_json(path).map_err(|e| e.to_string())?;
+        Ok(crate::project_config::ProjectSettings {
+            model: raw
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            ..Default::default()
+        })
     }
 
     fn load_project_settings_local(
         &self,
         _path: &str,
     ) -> Result<crate::project_config::ProjectSettings, String> {
-        Ok(crate::project_config::ProjectSettings::default())
+        Err("opencode 项目配置仅支持项目根 opencode.json（单档）".to_string())
     }
 
     fn save_project_settings(
         &self,
-        _path: &str,
-        _settings: &crate::project_config::ProjectSettings,
+        path: &str,
+        settings: &crate::project_config::ProjectSettings,
     ) -> Result<(), String> {
-        Err("Not supported".to_string())
+        save_project_opencode_model(path, settings.model.as_deref()).map_err(|e| e.to_string())
     }
 
     fn save_project_settings_local(
@@ -1537,6 +1616,41 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn project_opencode_model_round_trip_preserves_unknown_keys() {
+        let dir = std::env::temp_dir().join(format!("oc-proj-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let proj = dir.to_string_lossy().to_string();
+
+        // 预置含其他字段的项目 opencode.json
+        std::fs::write(
+            dir.join("opencode.json"),
+            r#"{ "small_model": "anthropic/claude-haiku-4-5", "plugin": ["x"] }"#,
+        )
+        .unwrap();
+
+        super::save_project_opencode_model(&proj, Some("zhipu/glm-5.3")).unwrap();
+        let raw = super::load_project_opencode_json(&proj).unwrap();
+        assert_eq!(raw["model"], serde_json::json!("zhipu/glm-5.3"));
+        assert_eq!(
+            raw["small_model"],
+            serde_json::json!("anthropic/claude-haiku-4-5"),
+            "unknown keys preserved"
+        );
+        assert_eq!(raw["plugin"], serde_json::json!(["x"]));
+
+        super::save_project_opencode_model(&proj, None).unwrap();
+        let raw = super::load_project_opencode_json(&proj).unwrap();
+        assert!(raw.get("model").is_none(), "None removes the key");
+        assert_eq!(
+            raw["small_model"],
+            serde_json::json!("anthropic/claude-haiku-4-5")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
     use crate::agent::normalized::{NormalizedEvent, TurnEndReason};
 
@@ -1911,6 +2025,53 @@ mod tests {
         assert_eq!(merged["model"], "new/model");
         assert_eq!(merged["small_model"], "new/small");
         assert_eq!(merged["plugin"][0], "@example/plugin");
+    }
+
+    #[test]
+    fn custom_providers_round_trip_preserves_unknown_keys() {
+        let value = serde_json::json!({
+            "provider": {
+                "zhipu": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": { "baseURL": "https://api.example", "apiKey": "sk-1" },
+                    "models": { "glm-5.1": { "name": "GLM-5.1" } },
+                    "customExtra": true
+                }
+            }
+        });
+        let config = super::opencode_value_to_shared_config(&value).unwrap();
+        let providers = config.custom_providers.expect("providers loaded");
+        assert_eq!(
+            providers["zhipu"]["options"]["baseURL"],
+            serde_json::json!("https://api.example")
+        );
+
+        // 编辑后全量带回（未知键保留）→ merge 整体替换 provider 段（支持删除供应商）。
+        let mut edited = providers.clone();
+        edited["zhipu"]["options"]["apiKey"] = serde_json::json!("sk-2");
+        let merged = super::merge_opencode_config(
+            serde_json::json!({ "model": "zhipu/glm-5.1", "provider": { "old": {} } }),
+            &crate::config::ClaudeConfig {
+                model: Some("zhipu/glm-5.1".to_string()),
+                custom_providers: Some(edited),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(merged["provider"]["zhipu"]["options"]["apiKey"], "sk-2");
+        assert!(merged["provider"].get("old").is_none(), "wholesale replace");
+        assert_eq!(
+            merged["provider"]["zhipu"]["customExtra"],
+            serde_json::json!(true)
+        );
+
+        // 未携带该字段 = 本次未涉及，保留文件原样。
+        let untouched = super::merge_opencode_config(
+            serde_json::json!({ "provider": { "keep": {} } }),
+            &crate::config::ClaudeConfig::default(),
+        )
+        .unwrap();
+        assert!(untouched["provider"].get("keep").is_some());
     }
 
     #[test]
