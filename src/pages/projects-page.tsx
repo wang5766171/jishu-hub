@@ -148,7 +148,8 @@ export function ProjectsPage({ projects, projectMetas, refetchProjects, refetchP
   }
 
   return (
-    <div className="space-y-6 p-6 h-full overflow-auto pb-20">
+    <div className="relative h-full">
+      <div className="space-y-6 p-6 h-full overflow-auto pb-20">
       {confirmDialogNode}
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">{t("projects.title")}</h2>
@@ -282,18 +283,28 @@ export function ProjectsPage({ projects, projectMetas, refetchProjects, refetchP
         </div>
       )}
 
+      </div>
+
       {selectedProject && (
-        <ProjectDetail
-          project={selectedProject}
-          onClose={() => setSelectedProject(null)}
-          onViewSessions={(_name) => {}}
-          onRemoved={() => { setSelectedProject(null); refetchProjects(); }}
-          projectMetas={projectMetas ?? undefined}
-          onUpdateMetas={refetchProjectMetas}
-          merges={merges ?? undefined}
-          onSplit={handleMergeComplete}
-          agentNames={Object.fromEntries(agents.map(agent => [agent.id, agent.display_name]))}
-        />
+        <>
+          {/* 点击空白折叠抽屉（v0.7.4 R18） */}
+          <div
+            className="absolute inset-0 z-10"
+            onClick={() => setSelectedProject(null)}
+          />
+          {/* 抽屉锚定项目区域（absolute 而非 fixed，不顶标题栏/底栏） */}
+          <ProjectDetail
+            project={selectedProject}
+            onClose={() => setSelectedProject(null)}
+            onViewSessions={(_name) => {}}
+            onRemoved={() => { setSelectedProject(null); refetchProjects(); }}
+            projectMetas={projectMetas ?? undefined}
+            onUpdateMetas={refetchProjectMetas}
+            merges={merges ?? undefined}
+            onSplit={handleMergeComplete}
+            agentNames={Object.fromEntries(agents.map(agent => [agent.id, agent.display_name]))}
+          />
+        </>
       )}
 
       {managementMode && checkedProjects.size >= 2 && (

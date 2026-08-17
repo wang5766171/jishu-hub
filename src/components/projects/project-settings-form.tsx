@@ -4,15 +4,12 @@ import { Input } from "@/components/ui/input";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { useTranslation } from "react-i18next";
 import { Plus, Trash2, Save } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import type { ProjectSettings } from "@/types";
+import type { ProjectSettingsSurface } from "@/agents";
 import { SectionHelp } from "@/components/config/section-help";
-
-const MODEL_OPTIONS = [
-  { value: "", labelKey: "common.default" },
-  { value: "claude-sonnet-4-6", labelKey: "config.modelSonnet46" },
-  { value: "claude-opus-4-7", labelKey: "config.modelOpus47" },
-  { value: "claude-haiku-4-5-20251001", labelKey: "config.modelHaiku45" },
-];
+import { ActiveModelCard } from "@/components/config/active-model-card";
 
 const MODE_OPTIONS = [
   { value: "default", labelKey: "config.modeDefault" },
@@ -22,9 +19,20 @@ const MODE_OPTIONS = [
 
 interface ProjectSettingsFormProps {
   projectPath: string;
+  /** 项目设置按 agent 读写（v0.7.0 需求一 adapter 路由；修复缺参报错）。 */
+  agentId: string;
+  /** 该 agent 的项目配置面（fields/scopes 驱动表单渲染，v0.7.4 适配）。 */
+  surface: ProjectSettingsSurface;
+  /** 该 agent 的真实模型候选项（jishu=models.json 扁平；claude/opencode=目录）。 */
+  modelOptions?: { value: string; label: string; hint?: string }[];
 }
 
-export function ProjectSettingsForm({ projectPath }: ProjectSettingsFormProps) {
+export function ProjectSettingsForm({
+  agentId,
+  projectPath,
+  surface,
+  modelOptions,
+}: ProjectSettingsFormProps) {
   const { t } = useTranslation();
   const [target, setTarget] = useState<"shared" | "local">("shared");
   const [saving, setSaving] = useState(false);
@@ -32,10 +40,21 @@ export function ProjectSettingsForm({ projectPath }: ProjectSettingsFormProps) {
   const [newDeny, setNewDeny] = useState("");
   const [newEnvKey, setNewEnvKey] = useState("");
 
-  const loadCmd = target === "shared" ? "load_project_settings" : "load_project_settings_local";
-  const saveCmd = target === "shared" ? "save_project_settings" : "save_project_settings_local";
+  const fields = surface.kind === "supported" ? (surface.fields ?? []) : [];
+  const hasLocal = surface.kind === "supported" && surface.scopes.includes("local");
+  const effectiveTarget = hasLocal ? target : "shared";
+  const loadCmd = agentId
+    ? effectiveTarget === "shared"
+      ? "load_project_settings"
+      : "load_project_settings_local"
+    : "";
+  const saveCmd =
+    effectiveTarget === "shared" ? "save_project_settings" : "save_project_settings_local";
 
-  const { data: loadedSettings, loading, error, refetch } = useInvoke<ProjectSettings>(loadCmd, { projectPath });
+  const { data: loadedSettings, loading, error, refetch } = useInvoke<ProjectSettings>(
+    loadCmd,
+    agentId ? { agentId, projectPath } : undefined,
+  );
   const [editedSettings, setEditedSettings] = useState<ProjectSettings | null>(null);
 
   const settings = editedSettings ?? loadedSettings ?? { permissions: null, hooks: null, env: null, model: null };
@@ -59,7 +78,7 @@ export function ProjectSettingsForm({ projectPath }: ProjectSettingsFormProps) {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await invokeCommand(saveCmd, { projectPath, settings });
+      await invokeCommand(saveCmd, { agentId, projectPath, settings });
       setEditedSettings(null);
       refetch();
     } catch (err) {
@@ -79,42 +98,155 @@ export function ProjectSettingsForm({ projectPath }: ProjectSettingsFormProps) {
 
   return (
     <div className="space-y-4">
-      {/* File target toggle */}
-      <div className="flex gap-2">
-        <Button
-          size="sm"
-          variant={target === "shared" ? "default" : "outline"}
-          onClick={() => { setTarget("shared"); setEditedSettings(null); }}
-        >
-          {t("projectConfig.sharedSettings")}
-        </Button>
-        <Button
-          size="sm"
-          variant={target === "local" ? "default" : "outline"}
-          onClick={() => { setTarget("local"); setEditedSettings(null); }}
-        >
-          {t("projectConfig.localSettings")}
-        </Button>
-      </div>
-      <p className="text-xs text-muted-foreground">
-        {target === "shared" ? t("projectConfig.sharedDesc") : t("projectConfig.localDesc")}
-      </p>
+      {/* File target toggle（仅支持 local 档的 agent 显示，如 claude；
+          jishu/.pi 与 opencode/opencode.json 均为单档） */}
+      {hasLocal && (
+        <>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant={target === "shared" ? "default" : "outline"}
+              onClick={() => { setTarget("shared"); setEditedSettings(null); }}
+            >
+              {t("projectConfig.sharedSettings")}
+            </Button>
+            <Button
+              size="sm"
+              variant={target === "local" ? "default" : "outline"}
+              onClick={() => { setTarget("local"); setEditedSettings(null); }}
+            >
+              {t("projectConfig.localSettings")}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {target === "shared" ? t("projectConfig.sharedDesc") : t("projectConfig.localDesc")}
+          </p>
+        </>
+      )}
 
-      {/* Model */}
-      <div>
-        <span className="text-sm font-medium inline-flex items-center gap-1">{t("config.model")}<SectionHelp content={t("projectConfig.fieldMapModel")} /></span>
-        <select
-          className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-          value={settings.model ?? ""}
-          onChange={(e) => update({ model: e.target.value || null })}
-        >
-          {MODEL_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>{t(opt.labelKey)}</option>
-          ))}
-        </select>
-      </div>
+      {/* Model（候选项按 agent 真实模型列表；与配置页/会话页同一选择体验） */}
+      {fields.includes("model") && (
+        <>
+          <div>
+            <span className="text-sm font-medium inline-flex items-center gap-1">{t("config.model")}<SectionHelp content={t("projectConfig.fieldMapModel")} /></span>
+            <div className="mt-1">
+              <ActiveModelCard
+                current={
+                  settings.model
+                    ? {
+                        value: settings.model,
+                        label:
+                          modelOptions?.find((o) => o.value === settings.model)?.label ??
+                          settings.model,
+                      }
+                    : null
+                }
+                options={
+                  modelOptions?.map((o) => ({
+                    value: o.value,
+                    label: o.label,
+                    hint: o.hint,
+                  })) ?? []
+                }
+                onSelect={(v) => update({ model: v || null })}
+                allowCustom
+                customPlaceholder={t("config.modelComboboxPlaceholder")}
+                emptyHint={t("projectConfig.modelUnsetHint")}
+              />
+            </div>
+          </div>
+        </>
+      )}
 
-      {/* Default Mode */}
+      {/* 上下文压缩（jishu：.pi/settings.json 的 compaction） */}
+      {fields.includes("compaction") && (
+        <div className="space-y-2">
+          <span className="text-sm font-medium inline-flex items-center gap-1">
+            {t("projectConfig.compaction")}
+            <SectionHelp content={t("projectConfig.fieldMapCompaction")} />
+          </span>
+          <div className="flex items-center justify-between rounded-md border px-3 py-2.5">
+            <span className="text-sm">{t("projectConfig.compactionEnabled")}</span>
+            <Switch
+              checked={settings.compaction?.enabled !== false}
+              onCheckedChange={(v) =>
+                update({
+                  compaction: {
+                    enabled: v,
+                    reserveTokens: settings.compaction?.reserveTokens ?? null,
+                    keepRecentTokens: settings.compaction?.keepRecentTokens ?? null,
+                  },
+                })
+              }
+            />
+          </div>
+          <div className="grid grid-cols-2 items-start gap-3">
+            <div className="space-y-1.5">
+              <Label className="truncate text-xs">{t("projectConfig.compactionReserve")}</Label>
+              <Input
+                type="number"
+                min="0"
+                className="h-9 text-sm"
+                value={settings.compaction?.reserveTokens ?? ""}
+                onChange={(e) =>
+                  update({
+                    compaction: {
+                      enabled: settings.compaction?.enabled ?? null,
+                      reserveTokens: e.target.value ? Number(e.target.value) : null,
+                      keepRecentTokens: settings.compaction?.keepRecentTokens ?? null,
+                    },
+                  })
+                }
+                placeholder="16384"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="truncate text-xs">{t("projectConfig.compactionKeepRecent")}</Label>
+              <Input
+                type="number"
+                min="0"
+                className="h-9 text-sm"
+                value={settings.compaction?.keepRecentTokens ?? ""}
+                onChange={(e) =>
+                  update({
+                    compaction: {
+                      enabled: settings.compaction?.enabled ?? null,
+                      reserveTokens: settings.compaction?.reserveTokens ?? null,
+                      keepRecentTokens: e.target.value ? Number(e.target.value) : null,
+                    },
+                  })
+                }
+                placeholder="20000"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 默认思考档位（jishu：.pi/settings.json 的 defaultThinkingLevel） */}
+      {fields.includes("thinking_level") && (
+        <div>
+          <span className="text-sm font-medium inline-flex items-center gap-1">
+            {t("sessions.thinkingLevel.title")}
+            <SectionHelp content={t("projectConfig.fieldMapThinkingLevel")} />
+          </span>
+          <select
+            className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+            value={settings.thinkingLevel ?? ""}
+            onChange={(e) => update({ thinkingLevel: e.target.value || null })}
+          >
+            <option value="">{t("sessions.thinkingLevel.unset")}</option>
+            {["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((lvl) => (
+              <option key={lvl} value={lvl}>
+                {t(`sessions.thinkingLevel.${lvl}`)}
+              </option>
+            ))}
+          </select>
+        </div>
+      )
+      }
+{fields.includes("permissions") && (
+        <>      {/* Default Mode */}
       <div>
         <span className="text-sm font-medium inline-flex items-center gap-1">{t("projectConfig.defaultMode")}<SectionHelp content={t("projectConfig.fieldMapMode")} /></span>
         <select
@@ -128,8 +260,10 @@ export function ProjectSettingsForm({ projectPath }: ProjectSettingsFormProps) {
           ))}
         </select>
       </div>
-
-      {/* Allow List */}
+        </>
+      )}
+{fields.includes("permissions") && (
+        <>      {/* Allow List */}
       <div>
         <span className="text-sm font-medium inline-flex items-center gap-1">{t("projectConfig.allowList")}<SectionHelp content={t("projectConfig.fieldMapAllow")} /></span>
         <div className="mt-1 space-y-1">
@@ -180,8 +314,10 @@ export function ProjectSettingsForm({ projectPath }: ProjectSettingsFormProps) {
           </div>
         </div>
       </div>
-
-      {/* Deny List */}
+        </>
+      )}
+{fields.includes("permissions") && (
+        <>      {/* Deny List */}
       <div>
         <span className="text-sm font-medium inline-flex items-center gap-1">{t("projectConfig.denyList")}<SectionHelp content={t("projectConfig.fieldMapDeny")} /></span>
         <div className="mt-1 space-y-1">
@@ -232,7 +368,10 @@ export function ProjectSettingsForm({ projectPath }: ProjectSettingsFormProps) {
           </div>
         </div>
       </div>
-
+        </>
+      )}
+{fields.includes("hooks") && (
+        <>
       {/* Hooks (read-only view) */}
       <div>
         <span className="text-sm font-medium inline-flex items-center gap-1">{t("projectConfig.hooks")}<SectionHelp content={t("projectConfig.fieldMapHooks")} /></span>
@@ -277,7 +416,11 @@ export function ProjectSettingsForm({ projectPath }: ProjectSettingsFormProps) {
           <p className="mt-1 text-xs text-muted-foreground">{t("projectConfig.noHooks")}</p>
         )}
       </div>
+        </>
+      )}
 
+{fields.includes("env") && (
+        <>
       {/* Environment Variables */}
       <div>
         <span className="text-sm font-medium inline-flex items-center gap-1">{t("config.envVars")}<SectionHelp content={t("projectConfig.fieldMapEnv")} /></span>
@@ -338,6 +481,8 @@ export function ProjectSettingsForm({ projectPath }: ProjectSettingsFormProps) {
           </div>
         </div>
       </div>
+        </>
+      )}
 
       {/* Save button */}
       <Button className="w-full" onClick={handleSave} disabled={!hasChanges || saving}>

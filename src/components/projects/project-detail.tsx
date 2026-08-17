@@ -2,14 +2,17 @@ import { useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { X, ExternalLink, Trash2, Settings } from "lucide-react";
+import { ExternalLink, Trash2, Settings, ChevronRight } from "lucide-react";
 import { MessageSquare } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { useAgent } from "@/agents";
-import { ProjectSettingsForm } from "@/components/projects/project-settings-form";
-import { ProjectMetaEditor } from "@/components/projects/project-meta-editor";
 import { useInvoke } from "@/hooks/use-invoke";
+import { CLAUDE_MODEL_CATALOG } from "@/agents/config/presets/claude-models";
+import { OPENCODE_MODEL_CATALOG } from "@/agents/config/presets/opencode-models";
+import { ProjectSettingsForm } from "@/components/projects/project-settings-form";
+import { AgentSelect } from "@/components/projects/agent-select";
+import { ProjectMetaEditor } from "@/components/projects/project-meta-editor";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { Project, ProjectMeta, ProjectMergeInfo } from "@/types";
 
@@ -36,10 +39,53 @@ export function ProjectDetail({ project, onClose, onViewSessions, onRemoved, pro
   const { confirm: confirmDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
   const [activeTab, setActiveTab] = useState<"info" | "config">("info");
   // v0.7.0 需求一：管理作用域 agent_id（load_claude_md 必填）。
-  const { manageAgentId } = useAgent();
+  const { agents, manageAgentId } = useAgent();
+  // 项目配置按「识别本项目的智能体」切换（agent_ids 来自各 agent 的项目扫描，
+  // 项目列表筛选同源）；表单内容按各 agent 的 project_settings_surface 适配。
+  const projectAgents = agents.filter((a) => (project.agent_ids ?? []).includes(a.id));
+  const [settingsAgentId, setSettingsAgentId] = useState<string>("");
+  const effectiveSettingsAgentId =
+    settingsAgentId && projectAgents.some((a) => a.id === settingsAgentId)
+      ? settingsAgentId
+      : (projectAgents.find((a) => a.id === manageAgentId)?.id ??
+        projectAgents[0]?.id ??
+        "");
+  const settingsAgent = projectAgents.find((a) => a.id === effectiveSettingsAgentId) ?? null;
+  const settingsSurface = settingsAgent?.project_settings_surface ?? { kind: "unsupported" as const, reason: null };
+
+  // v0.7.4：项目默认模型的候选项按 agent 真实列表——model_store（jishu）
+  // 取 models.json 扁平 provider/model；claude/opencode 取各自目录。
+  const settingsAgentIsModelStore =
+    settingsAgent?.config_surface?.kind === "model_store";
+  const { data: modelStoreConfig } = useInvoke<{
+    providers?: Record<
+      string,
+      { name?: string; models?: { id: string; name?: string }[] }
+    >;
+  }>(
+    settingsAgentIsModelStore && effectiveSettingsAgentId ? "get_models_config" : "",
+    settingsAgentIsModelStore && effectiveSettingsAgentId
+      ? { agentId: effectiveSettingsAgentId }
+      : undefined,
+  );
+  const modelOptions: { value: string; label: string; hint?: string }[] =
+    settingsAgentIsModelStore
+      ? Object.entries(modelStoreConfig?.providers ?? {}).flatMap(([pid, prov]) =>
+          (prov.models ?? []).map((m) => ({
+            value: `${pid}/${m.id}`,
+            label: m.name || m.id,
+            hint: prov.name || pid,
+          })),
+        )
+      : settingsSurface.kind === "supported" && settingsSurface.fields?.includes("model")
+        ? settingsAgent?.config_surface?.kind === "structured" &&
+            settingsAgent.config_surface.model_catalog === "opencode"
+          ? OPENCODE_MODEL_CATALOG.map((m) => ({ value: m.value, label: t(m.labelKey) }))
+          : CLAUDE_MODEL_CATALOG.map((m) => ({ value: m.value, label: t(m.labelKey) }))
+        : [];
   const { data: claudeMd } = useInvoke<string | null>(
-    manageAgentId ? "load_claude_md" : "",
-    { agentId: manageAgentId ?? "", projectPath: project.path },
+    effectiveSettingsAgentId ? "load_claude_md" : "",
+    { agentId: effectiveSettingsAgentId, projectPath: project.path },
   );
 
   const handleRemove = async () => {
@@ -59,14 +105,26 @@ export function ProjectDetail({ project, onClose, onViewSessions, onRemoved, pro
   };
 
   return (
-    <div className="fixed inset-y-0 right-0 z-10 w-[28rem] border-l border-border bg-card shadow-lg flex flex-col">
+    <div className="absolute inset-y-0 right-0 z-20 w-[28rem] border-l border-border bg-card shadow-lg flex flex-col">
       {confirmDialogNode}
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border p-4">
-        <h2 className="font-semibold truncate">{projectMetas?.[project.encoded_name]?.custom_name || project.name}</h2>
-        <Button variant="ghost" size="icon" onClick={onClose}>
-          <X className="h-4 w-4" />
-        </Button>
+      {/* 折叠手柄：左缘中部（IDE 侧栏实践），点击收起面板；空白处点击同样折叠 */}
+      <button
+        type="button"
+        onClick={onClose}
+        title={t("projects.collapsePanel")}
+        className="absolute -left-4 top-1/2 z-30 flex h-16 w-4 -translate-y-1/2 items-center justify-center rounded-l-md border border-r-0 border-border bg-card text-muted-foreground shadow-md transition-fast hover:text-foreground"
+      >
+        <ChevronRight className="h-3.5 w-3.5" />
+      </button>
+      {/* Header：项目名 + 智能体下拉紧贴其右（信息/配置/终端共用同一选中智能体） */}
+      <div className="flex items-center gap-2 border-b border-border p-4">
+        <h2 className="min-w-0 truncate font-semibold">{projectMetas?.[project.encoded_name]?.custom_name || project.name}</h2>
+        <AgentSelect
+          agents={projectAgents}
+          value={effectiveSettingsAgentId}
+          onChange={setSettingsAgentId}
+        />
+        <div className="flex-1" />
       </div>
 
       {/* Tab bar */}
@@ -163,7 +221,17 @@ export function ProjectDetail({ project, onClose, onViewSessions, onRemoved, pro
                 <MessageSquare className="h-4 w-4" />
                 {t("projects.viewSessions")}
               </Button>
-              <Button variant="outline" className="w-full justify-start gap-2" onClick={() => invokeCommand("open_in_terminal", { projectPath: project.path })}>
+              <Button
+                variant="outline"
+                className="w-full justify-start gap-2"
+                disabled={!effectiveSettingsAgentId}
+                onClick={() =>
+                  void invokeCommand("open_in_terminal", {
+                    agentId: effectiveSettingsAgentId,
+                    projectPath: project.path,
+                  }).catch((err) => console.error("open_in_terminal failed:", err))
+                }
+              >
                 <ExternalLink className="h-4 w-4" />
                 {t("projects.openInTerminal")}
               </Button>
@@ -191,7 +259,28 @@ export function ProjectDetail({ project, onClose, onViewSessions, onRemoved, pro
             </div>
           </>
         ) : (
-          <ProjectSettingsForm projectPath={project.path} />
+          <div className="space-y-4">
+            {projectAgents.length > 0 ? (
+              <>
+                {settingsSurface.kind === "supported" ? (
+                  <ProjectSettingsForm
+                    agentId={effectiveSettingsAgentId}
+                    projectPath={project.path}
+                    surface={settingsSurface}
+                    modelOptions={modelOptions}
+                  />
+                ) : (
+                  <p className="rounded-md border border-dashed border-border/40 px-4 py-8 text-center text-sm text-muted-foreground">
+                    {settingsSurface.reason ?? t("projects.projectSettingsUnsupported")}
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="rounded-md border border-dashed border-border/40 px-4 py-8 text-center text-sm text-muted-foreground">
+                {t("projects.noRecognizedAgents", "尚未有智能体识别到该项目")}
+              </p>
+            )}
+          </div>
         )}
       </div>
     </div>
