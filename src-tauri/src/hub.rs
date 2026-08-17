@@ -723,6 +723,11 @@ pub struct ConfigTemplate {
     pub name: String,
     pub description: String,
     pub config: serde_json::Value,
+    /// 应用前需要用户补填信息（密钥/模型等）。由各 adapter 在
+    /// config_templates() 中声明——前端据此决定是否弹出补填对话框，
+    /// 适配层驱动，前端不按 agent 写死判断（DEVELOP_READ §5）。
+    #[serde(default)]
+    pub requires_fill: bool,
 }
 
 pub fn list_config_templates() -> Vec<ConfigTemplate> {
@@ -732,12 +737,14 @@ pub fn list_config_templates() -> Vec<ConfigTemplate> {
             name: "原生 API (Native)".into(),
             description: "使用 Anthropic 官方 API，直接触发原生授权引导。".into(),
             config: anthropic_official_config(),
+            requires_fill: true,
         },
         ConfigTemplate {
             id: "proxy-config".into(),
             name: "中转配置 (Proxy)".into(),
             description: "使用国内主流模型供应商（如智谱、阿里、Minimax）进行中转。".into(),
             config: third_party_proxy_config(),
+            requires_fill: true,
         },
     ]
 }

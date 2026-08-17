@@ -243,6 +243,7 @@ pub fn run() {
             commands::agents::set_agent_permission_mode,
             commands::env_check::check_prerequisite,
             commands::agent_install::install_agent_command,
+            commands::agent_install::install_command_needs_elevation,
             commands::env_check::check_environment,
             commands::agents::check_mcp_adapter,
             commands::agents::install_mcp_adapter,
@@ -355,15 +356,7 @@ pub fn run() {
             commands::task::task_launch_delete_task,
             commands::task::conductor_sync_phase,
             commands::task::conductor_load_task_state,
-            commands::models::list_models,
-            commands::models::add_model,
-            commands::models::update_model,
-            commands::models::remove_model,
-            commands::models::set_active_model,
-            commands::models::deactivate_model,
             commands::models::test_model,
-            commands::models::set_model_key,
-            commands::models::mask_model_key,
             commands::models::test_llm_connection,
         ])
         .run(tauri::generate_context!())
