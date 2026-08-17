@@ -47,7 +47,9 @@ export function ThinkingLevelSelect({
   }, [open]);
 
   if (levels.length === 0) return null;
-  const current = value && levels.includes(value) ? value : null;
+  // 值可能来自 Hub 持久化（上一个模型的档位）而不在当前模型支持列表——
+  // 如实显示该值；Pi 会在下一轮就近收敛并经事件回传更新。
+  const current = value ?? null;
 
   return (
     <div ref={rootRef} className="relative inline-flex shrink-0">

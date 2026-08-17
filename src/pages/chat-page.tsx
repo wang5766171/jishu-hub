@@ -56,6 +56,7 @@ import { resolvePhaseSessionId, shouldRenderGlobalChatInput } from "./chat-page-
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
 import { recordSessionUsage } from "@/lib/session-usage";
 import { ContextRing } from "@/components/sessions/context-ring";
+import { supportedThinkingLevels } from "@/components/config/model-types";
 import { ThinkingLevelSelect } from "@/components/sessions/thinking-level-select";
 import {
   buildAssistantContentFromStreamState,
@@ -154,7 +155,7 @@ export function ChatPage({
   const { data: autoCompactionPref } = useInvoke<boolean | null>(
     supportsCompact && activeId ? "get_agent_auto_compaction" : "",
     supportsCompact && activeId ? { agentId: activeId } : undefined,
-    activeId,
+    activeId ?? undefined,
   );
   const handleCompactSession = useCallback(async () => {
     const sessionId = selectedSessionRef.current;
@@ -167,7 +168,7 @@ export function ChatPage({
       });
     } catch (err) {
       console.error("Compact failed:", err);
-      void alertDialog(String(err));
+      void alertDialog({ title: "压缩失败", description: String(err) });
     } finally {
       setCompacting(false);
     }
@@ -181,7 +182,7 @@ export function ChatPage({
       });
     } catch (err) {
       console.error("Set auto compaction failed:", err);
-      void alertDialog(String(err));
+      void alertDialog({ title: "设置自动压缩失败", description: String(err) });
     }
   }, [activeId, alertDialog]);
 
@@ -242,6 +243,10 @@ export function ChatPage({
   // Quick model picker for Pi-backed model stores. The adapter declares
   // this surface; the page does not inspect the agent id.
   const [modelOptions, setModelOptions] = useState<{ provider: string; model: string }[]>([]);
+  // 渠道 key → 显示名（models.json providers.<key>.name，缺省回退 key）。
+  const [providerDisplayNames, setProviderDisplayNames] = useState<Record<string, string>>({});
+  // "provider/model" → 该模型声明的支持思考档位（A7：选择器按模型渲染）。
+  const [modelThinkingLevels, setModelThinkingLevels] = useState<Record<string, string[]>>({});
   const [activeModel, setActiveModel] = useState<{ provider: string; model: string } | null>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLSpanElement>(null);
@@ -253,21 +258,38 @@ export function ChatPage({
     }
     try {
       const [config, act] = await Promise.all([
-        invokeCommand<{ providers?: Record<string, { models?: { id: string }[] }> }>(
-          "get_models_config",
-          { agentId: activeId ?? "" },
-        ),
+        invokeCommand<{
+          providers?: Record<
+            string,
+            {
+              name?: string;
+              models?: { id: string; reasoning?: boolean; thinkingLevelMap?: Record<string, unknown> }[];
+            }
+          >;
+        }>("get_models_config", { agentId: activeId ?? "" }),
         invokeCommand<{ provider: string; model: string } | null>("get_active", { agentId: activeId ?? "" }),
       ]);
       const opts: { provider: string; model: string }[] = [];
+      const displayNames: Record<string, string> = {};
+      // 每个模型声明的支持档位（thinkingLevelMap 语义与 Pi 一致）：
+      // 会话页档位选择器按当前模型渲染，而非 agent 全量档位（A7）。
+      const levelMap: Record<string, string[]> = {};
       for (const [provider, value] of Object.entries(config?.providers ?? {})) {
+        displayNames[provider] =
+          typeof value.name === "string" && value.name.trim() ? value.name.trim() : provider;
         for (const m of value.models ?? []) {
           if (typeof m.id === "string") {
             opts.push({ provider, model: m.id });
+            levelMap[`${provider}/${m.id}`] =
+              m.reasoning === false
+                ? ["off"]
+                : supportedThinkingLevels(m.thinkingLevelMap);
           }
         }
       }
       setModelOptions(opts);
+      setProviderDisplayNames(displayNames);
+      setModelThinkingLevels(levelMap);
       setActiveModel(act);
     } catch (e) {
       console.warn("Model picker refresh failed:", e);
@@ -707,12 +729,15 @@ export function ChatPage({
     { value: "chat", label: t("sessions.workMode.chat") },
     { value: "task", label: t("sessions.workMode.task") },
   ], [t]);
-  const jishuAgent = useMemo(
-    () => agents.find((agent) => agent.id === "jishu-self") ?? null,
+  // 任务模式引擎 = 内建 agent（builtin，adapter 声明）；当前 agent 是否
+  // 支持任务模式看 TASK_MODE 能力位。v0.7.4 需求3 M2：替换 agentId 写死判断。
+  const taskEngineAgent = useMemo(
+    () => agents.find((agent) => agent.builtin) ?? null,
     [agents],
   );
-  const taskModeAgentReady = Boolean(jishuAgent?.health.installed);
-  const taskModeCanSend = taskModeAgentReady && activeId === "jishu-self";
+  const taskModeAgentReady = Boolean(taskEngineAgent?.health.installed);
+  const taskModeCanSend =
+    taskModeAgentReady && (capabilities?.has("TASK_MODE") ?? false);
 
   const handleAccessModeChange = useCallback(async (value: string) => {
     if (!supportsAccessModeSwitch || !activeId) return;
@@ -749,18 +774,22 @@ export function ChatPage({
       });
       return;
     }
-    if (activeId !== "jishu-self") {
+    const engineId = taskEngineAgent?.id;
+    if (engineId && activeId !== engineId) {
       // v0.7.0：会话作用域切换（任务模式属于会话场景）。
       // 标记本次切换是为进入任务模式，阻止上面的清理 effect 重置任务模式状态
       enteringTaskModeRef.current = true;
-      setChatAgent("jishu-self");
+      setChatAgent(engineId);
     }
-  }, [activeId, agents.length, setChatAgent, taskLaunchOpen, taskModeAgentReady]);
+  }, [activeId, agents.length, setChatAgent, taskLaunchOpen, taskModeAgentReady, taskEngineAgent]);
 
   const handleWorkModeChange = useCallback(async (value: string) => {
     const nextIsTask = value === "task";
-    // 方式2：进入任务模式时若当前不是 Jishu Agent，弹窗确认后自动切换（仅 Jishu Agent 支持任务模式）。
-    if (nextIsTask && activeId !== "jishu-self") {
+    // 方式2：进入任务模式时若当前 agent 不支持任务模式（无 TASK_MODE 能力位），
+    // 弹窗确认后自动切到内建引擎 agent（v0.7.4 需求3 M2：去 agentId 写死）。
+    const engineId = taskEngineAgent?.id ?? "";
+    const needEngineSwitch = engineId !== "" && activeId !== engineId;
+    if (nextIsTask && needEngineSwitch) {
       if (!taskModeAgentReady) {
         await alertDialog({
           title: "无法进入任务模式",
@@ -768,9 +797,10 @@ export function ChatPage({
         });
         return;
       }
+      const engineName = taskEngineAgent?.display_name ?? "Jishu Agent";
       const confirmed = await confirmDialog({
-        title: "切换到 Jishu Agent",
-        description: "任务模式由 Jishu Agent 提供。将切换到 Jishu Agent 并进入任务模式，是否继续？",
+        title: `切换到 ${engineName}`,
+        description: `任务模式由 ${engineName} 提供。将切换到 ${engineName} 并进入任务模式，是否继续？`,
         confirmText: "切换并继续",
         cancelText: "取消",
       });
@@ -793,14 +823,14 @@ export function ChatPage({
     selectedSessionRef.current = "new";
     setSessionMessages([]);
     setPendingSteerDisplay([]);
-    // v0.7.0：确认切换后主动切到 Jishu Agent（会话作用域；enteringTaskModeRef 已置，清理 effect 会跳过任务模式重置）
-    if (nextIsTask && activeId !== "jishu-self") {
-      setChatAgent("jishu-self");
+    // v0.7.0：确认切换后主动切到引擎 agent（会话作用域；enteringTaskModeRef 已置，清理 effect 会跳过任务模式重置）
+    if (nextIsTask && needEngineSwitch) {
+      setChatAgent(engineId);
     }
     requestAnimationFrame(() => {
       chatInputRef.current?.focus();
     });
-  }, [activeId, taskModeAgentReady, setChatAgent]);
+  }, [activeId, taskModeAgentReady, setChatAgent, taskEngineAgent]);
 
   // 记录哪些 session 已经注入过 launch instruction（只在每个阶段的首条消息注入一次，
   // 后续消息复用 agent 进程上下文，不重复下达阶段指令，避免 agent 误以为每轮都是新阶段开始）。
@@ -1097,7 +1127,7 @@ export function ChatPage({
       }
     } catch (err) {
       console.error("Failed to delete session:", err);
-      await alertDialog(String(err));
+      await alertDialog({ title: "删除会话失败", description: String(err) });
     }
   }, [activeId, projectId, sessions, sessionNames, confirmDialog, alertDialog, t, selectedSession]);
 
@@ -2359,8 +2389,11 @@ export function ChatPage({
   }, [activeApproval, approvalResolving]);
   const projectDisplayName = currentProjectMeta?.custom_name || currentProject?.name || t("sessions.noProject");
   const projectPath = currentProject?.path ?? "";
+  // 显示渠道显示名（providers.<key>.name），而非原始渠道 key。
+  const modelOptionLabel = (provider: string, model: string) =>
+    `${providerDisplayNames[provider] ?? provider}/${model}`;
   const activeModelLabel = activeModel
-    ? `${activeModel.provider}/${activeModel.model}`
+    ? modelOptionLabel(activeModel.provider, activeModel.model)
     : (t("sessions.activeModel") || "Pick model");
   // 模型选择器+水位圆环（v0.7.3 需求2 收尾）：移至发送按钮左侧同一行（trailingControls）。
   const modelTrailingControls = (
@@ -2377,7 +2410,10 @@ export function ChatPage({
             } : undefined}
           />
           <ThinkingLevelSelect
-            levels={thinkingLevels}
+            levels={
+              (activeModel && modelThinkingLevels[`${activeModel.provider}/${activeModel.model}`]) ||
+              thinkingLevels
+            }
             value={thinkingLevelValue}
             onChange={(level) => void handleThinkingLevelChange(level)}
           />
@@ -2431,7 +2467,7 @@ export function ChatPage({
                           "h-1.5 w-1.5 shrink-0 rounded-full",
                           selected ? "bg-primary" : "bg-transparent",
                         )} />
-                        <span className="min-w-0 flex-1 truncate">{value}</span>
+                        <span className="min-w-0 flex-1 truncate">{modelOptionLabel(o.provider, o.model)}</span>
                       </button>
                     );
                   })}
