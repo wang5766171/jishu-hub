@@ -1860,7 +1860,7 @@ dependencies = [
 
 [[package]]
 name = "jishu-hub"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "base64 0.22.1",
  "bitflags 2.11.1",
