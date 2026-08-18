@@ -15,17 +15,14 @@ import {
 import { Trash2, Sparkles, Pencil, Eye, User, Plus } from "lucide-react";
 import { useAgent } from "@/agents";
 import { CLAUDE_PROXY_PRESETS } from "@/agents/config/presets/claude-presets";
+import { PERMISSION_MODE_LABEL_KEYS } from "@/agents/permissions";
 import type { ConfigTemplate, ClaudeConfig, Preset } from "@/types";
 
 interface TemplateManagerProps {
   onApplied: () => void;
 }
 
-const MODE_LABELS: Record<string, string> = {
-  default: "config.modeDefault",
-  bypassPermissions: "config.modeBypass",
-  plan: "config.modePlan",
-};
+const MODE_LABELS: Record<string, string> = PERMISSION_MODE_LABEL_KEYS;
 
 const PROVIDER_LABELS: Record<string, string> = {
   anthropic: "config.providerAnthropic",

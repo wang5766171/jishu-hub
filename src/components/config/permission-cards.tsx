@@ -5,6 +5,7 @@
 import { useTranslation } from "react-i18next";
 import { Check, MessageSquare, ShieldOff, ShieldQuestion, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { ClaudePermissionMode, ToolMode } from "@/agents/permissions";
 
 export interface ModeCardOption {
   value: string;
@@ -87,8 +88,9 @@ export function ModeCards({
   );
 }
 
-/** claude 权限三卡（R2b 交付，值仍写 permissions.defaultMode）。 */
-export const PERMISSION_MODE_CARDS: ModeCardOption[] = [
+/** claude 权限三卡（R2b 交付，值仍写 permissions.defaultMode；值集单一来源
+ *  见 @/agents/permissions）。 */
+export const PERMISSION_MODE_CARDS: Array<ModeCardOption & { value: ClaudePermissionMode }> = [
   {
     value: "default",
     labelKey: "config.permCard.default.title",
@@ -121,7 +123,7 @@ export function PermissionModeCards({
 }
 
 /** jishu 工具模式两卡（R3：写 Hub agent_tool_mode，完整/只读）。 */
-export const TOOL_MODE_CARDS: ModeCardOption[] = [
+export const TOOL_MODE_CARDS: Array<ModeCardOption & { value: ToolMode }> = [
   {
     value: "full",
     labelKey: "config.toolMode.full.title",

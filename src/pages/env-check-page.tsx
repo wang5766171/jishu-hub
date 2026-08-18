@@ -383,8 +383,20 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
     } catch (err) {
       console.error(err);
       // Backend may surface an empty detail when npm/winget fail; never
-      // show a bare "安装失败:" with no reason.
-      const reason = String(err).trim() || t("env.installFailedUnknown", "未知错误，请查看控制台日志");
+      // show a bare "安装失败:" with no reason. UAC 取消走稳定错误码
+      //（shell.rs B1）映射本地化提示，不算失败。
+      const errText = String(err);
+      if (errText.includes("UAC_CANCELLED")) {
+        await alertDialog({
+          title: t("env.title", "环境检测"),
+          description: t(
+            "env.uacCancelled",
+            "已取消管理员授权，安装未执行。可重新安装并在授权弹窗中选择「是」。",
+          ),
+        });
+        return;
+      }
+      const reason = errText.trim() || t("env.installFailedUnknown", "未知错误，请查看控制台日志");
       await alertDialog({ title: t("env.title", "环境检测"), description: `安装失败: ${reason}` });
     } finally {
       setInstallingIds((prev) => {

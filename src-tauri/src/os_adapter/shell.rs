@@ -267,9 +267,9 @@ async fn run_elevated_choco_install(command: &str) -> Result<String, String> {
         return Ok(String::from_utf8_lossy(&output.stdout).to_string());
     }
     if output.status.code() == Some(1223) {
-        return Err(
-            "已取消管理员授权，安装未执行。请重新安装并在授权弹窗中选择「是」。".to_string(),
-        );
+        // v0.7.4 审查 B1：稳定错误码而非中文直出——前端（env-check 安装
+        // 流程）按码映射本地化提示，与导出对话框 USER_CANCELLED 同一惯例。
+        return Err("UAC_CANCELLED".to_string());
     }
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();

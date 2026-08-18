@@ -438,7 +438,24 @@ impl ConfigAdapter for ClaudeCodeAgent {
     }
 
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
-        crate::hub::list_config_templates()
+        // v0.7.4 审查 A4：模版内容是 claude 私有知识，从 hub 层迁回 adapter
+        //（对比 jishu 模版内聚在 jishu_self），hub 层只留 ConfigTemplate 契约类型。
+        vec![
+            crate::hub::ConfigTemplate {
+                id: "native-api".into(),
+                name: "原生 API (Native)".into(),
+                description: "使用 Anthropic 官方 API，直接触发原生授权引导。".into(),
+                config: anthropic_official_config(),
+                requires_fill: true,
+            },
+            crate::hub::ConfigTemplate {
+                id: "proxy-config".into(),
+                name: "中转配置 (Proxy)".into(),
+                description: "使用国内主流模型供应商（如智谱、阿里、Minimax）进行中转。".into(),
+                config: third_party_proxy_config(),
+                requires_fill: true,
+            },
+        ]
     }
 
     fn config_format(&self) -> Option<String> {
@@ -991,4 +1008,35 @@ mod tests {
         assert_eq!(status["name"], serde_json::json!("claude-agent-acp"));
         assert!(status["installed"].is_boolean());
     }
+}
+
+/// 「原生 API」模版配置：Anthropic 官方直连（v0.7.4 审查 A4 从 hub 层迁入）。
+fn anthropic_official_config() -> serde_json::Value {
+    let config = crate::config::ClaudeConfig {
+        api_provider: Some("anthropic".into()),
+        model: Some("claude-sonnet-4-6".into()),
+        env: Some({
+            let mut env = std::collections::HashMap::new();
+            env.insert("ANTHROPIC_AUTH_TOKEN".into(), String::new());
+            env
+        }),
+        ..Default::default()
+    };
+    serde_json::to_value(config).unwrap_or_default()
+}
+
+/// 「中转配置」模版配置：国内中转供应商（baseURL/token/model 三项补填）。
+fn third_party_proxy_config() -> serde_json::Value {
+    let config = crate::config::ClaudeConfig {
+        api_provider: Some("anthropic".into()),
+        env: Some({
+            let mut env = std::collections::HashMap::new();
+            env.insert("ANTHROPIC_BASE_URL".into(), String::new());
+            env.insert("ANTHROPIC_AUTH_TOKEN".into(), String::new());
+            env.insert("ANTHROPIC_MODEL".into(), String::new());
+            env
+        }),
+        ..Default::default()
+    };
+    serde_json::to_value(config).unwrap_or_default()
 }

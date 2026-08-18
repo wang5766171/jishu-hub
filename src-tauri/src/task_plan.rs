@@ -100,8 +100,7 @@ fn default_receive_rework() -> bool {
 }
 
 fn jishu_agent_dir() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Cannot find home directory".to_string())?;
-    Ok(home.join(".jishu-agent").join("agent")) // pi 原生 getAgentDir() 路径
+    crate::agent::jishu_self::paths::agent_dir().map_err(|e| e.to_string())
 }
 
 pub fn task_plan_dir() -> Result<PathBuf, String> {
@@ -186,10 +185,10 @@ fn register_extension_in_settings(agent_dir: &Path, rel_path: &str) {
 /// 自动注册 Conductor 扩展 + skill pack + settings.json extensions + 删除旧 skill。
 /// 在 Hub setup hook 调用，每次启动自动确保。
 pub fn ensure_conductor_extension() {
-    let Some(home) = dirs::home_dir() else {
+    let Ok(agent_dir) = jishu_agent_dir() else {
         return;
     };
-    ensure_conductor_extension_in(&home.join(".jishu-agent").join("agent"));
+    ensure_conductor_extension_in(&agent_dir);
 }
 
 fn ensure_conductor_extension_in(agent_dir: &Path) {
@@ -218,10 +217,10 @@ fn ensure_conductor_extension_in(agent_dir: &Path) {
 /// 自动部署 `request_user_input` 扩展（conductor 的 discuss/plan 阶段依赖此工具）。
 /// 在 Hub setup hook 调用，每次启动自动确保。
 pub fn ensure_request_user_input_extension() {
-    let Some(home) = dirs::home_dir() else {
+    let Ok(agent_dir) = jishu_agent_dir() else {
         return;
     };
-    ensure_request_user_input_extension_in(&home.join(".jishu-agent").join("agent"));
+    ensure_request_user_input_extension_in(&agent_dir);
 }
 
 fn ensure_request_user_input_extension_in(agent_dir: &Path) {
@@ -234,10 +233,10 @@ fn ensure_request_user_input_extension_in(agent_dir: &Path) {
 /// 供 conductor 将当前 Pi 会话关联到 TaskInstance，
 /// 取代往 user message 拼提示词的旧做法（避免污染会话列表名/内容/搜索）。
 pub fn ensure_session_context_extension() {
-    let Some(home) = dirs::home_dir() else {
+    let Ok(agent_dir) = jishu_agent_dir() else {
         return;
     };
-    ensure_session_context_extension_in(&home.join(".jishu-agent").join("agent"));
+    ensure_session_context_extension_in(&agent_dir);
 }
 
 fn ensure_session_context_extension_in(agent_dir: &Path) {

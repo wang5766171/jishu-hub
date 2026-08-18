@@ -186,8 +186,7 @@ pub struct PiModelOverride {
 /// and we set `PI_CODING_AGENT_DIR` to `~/.jishu-agent` when spawning Pi,
 /// so the agent dir becomes `~/.jishu-agent/` and models lives here.
 pub fn default_models_path() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Cannot find home directory".to_string())?;
-    Ok(home.join(".jishu-agent").join("agent").join("models.json"))
+    super::paths::models_path().map_err(|e| e.to_string())
 }
 
 pub fn load() -> Result<PiModelsConfig, String> {

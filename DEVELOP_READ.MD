@@ -318,6 +318,7 @@ Hub 与 MCP 子系统的交互必须通过 `ConfigAdapter` trait，禁止在页�
 2. 前端只根据 surface 渲染对应编辑器。
 3. 新增 agent 配置时，先定义 schema 或 model-store contract，再接页面。
 4. 配置错误要返回结构化错误，页面只负责展示，不解析 agent 私有文件。
+5. 命名约定（v0.7.4 审查 D1 固化）：`ConfigSurface`/`AgentStatus` 等跨端序列化字段一律 snake_case（既有 camelCase 字段维持现状不回改，新字段禁止再引入 camelCase）。
 
 ## 9. 会话系统
 

@@ -1,5 +1,6 @@
 pub(crate) mod config;
 pub(crate) mod jishu_settings;
+pub(crate) mod paths;
 pub(crate) mod pi_model;
 pub(crate) mod pi_models_config;
 pub(crate) mod pi_runtime;
@@ -59,21 +60,18 @@ impl JishuSelfAgent {
 }
 
 pub(crate) fn pi_agent_dir() -> Option<String> {
-    let home = dirs::home_dir()?;
-    Some(home.join(".jishu-agent").to_string_lossy().to_string())
+    paths::agent_root()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
 }
 
 /// pi 运行数据目录（models.json/settings.json/sessions/extensions 等）。
 /// pi 原生 getAgentDir() = ~/{piConfig.configDir}/agent = ~/.jishu-agent/agent。
 /// hub 端读写 pi 数据必须用此路径与 pi 对齐（agent 本体仍用 pi_agent_dir）。
 pub(crate) fn pi_config_dir() -> Option<String> {
-    let home = dirs::home_dir()?;
-    Some(
-        home.join(".jishu-agent")
-            .join("agent")
-            .to_string_lossy()
-            .to_string(),
-    )
+    paths::agent_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
 }
 
 pub(crate) const JISHU_AGENT_IDENTITY_PROMPT: &str =
@@ -229,8 +227,9 @@ impl ProjectAdapter for JishuSelfAgent {
     }
 
     fn project_settings_surface(&self) -> crate::agent::ProjectSettingsSurface {
-        // v0.7.4 项目配置适配：Pi 原生项目级设置 <project>/.pi/settings.json
-        //（深合并覆盖全局）。真实字段为 defaultModel / defaultThinkingLevel；
+        // v0.7.4 项目配置适配 + v0.7.5 路径修正：Pi 原生项目级设置
+        // <project>/.jishu-agent/settings.json（fork configDir；深合并覆盖全局）。
+        // 真实字段为 defaultModel / defaultThinkingLevel / compaction；
         // permissions/env/hooks 不在 Pi Settings schema 中（不声明即不渲染）。
         crate::agent::ProjectSettingsSurface::Supported {
             scopes: vec![crate::agent::ProjectSettingsScope::Shared],
@@ -244,8 +243,10 @@ impl ProjectAdapter for JishuSelfAgent {
     }
 
     fn load_project_settings(&self, path: &str) -> Result<ProjectSettings, String> {
-        // Pi 原生项目设置 .pi/settings.json（v0.7.4 项目配置适配：此前误用
-        // claude 的 .claude/settings.json 读写）。仅映射真实存在的字段：
+        // Pi 原生项目设置 .jishu-agent/settings.json（v0.7.4 项目配置适配：
+        // 此前误用 claude 的 .claude/settings.json 读写；v0.7.5 修正目录名
+        // ——fork configDir 为 .jishu-agent 而非上游 .pi，不留兼容）。
+        // 仅映射真实存在的字段：
         // defaultModel → model、defaultThinkingLevel → thinkingLevel。
         let raw = config::load_pi_project_settings_raw(path).map_err(|e| e.to_string())?;
         // Pi 按 (defaultProvider, defaultModel) 二元组解析——拼回 "provider/model"。
@@ -274,8 +275,11 @@ impl ProjectAdapter for JishuSelfAgent {
     }
 
     fn load_project_settings_local(&self, _path: &str) -> Result<ProjectSettings, String> {
-        // Pi 项目设置只有 shared 一档（无 .pi/settings.local.json）。
-        Err("Pi 项目设置仅支持共享档（.pi/settings.json）".to_string())
+        // Pi 项目设置只有 shared 一档（无 settings.local.json）。
+        Err(
+            "Pi project settings support only the shared scope (.jishu-agent/settings.json)"
+                .to_string(),
+        )
     }
 
     fn save_project_settings(&self, path: &str, settings: &ProjectSettings) -> Result<(), String> {
@@ -293,7 +297,10 @@ impl ProjectAdapter for JishuSelfAgent {
         _path: &str,
         _settings: &ProjectSettings,
     ) -> Result<(), String> {
-        Err("Pi 项目设置仅支持共享档（.pi/settings.json）".to_string())
+        Err(
+            "Pi project settings support only the shared scope (.jishu-agent/settings.json)"
+                .to_string(),
+        )
     }
 
     fn load_claude_md(&self, path: &str) -> Result<Option<String>, String> {

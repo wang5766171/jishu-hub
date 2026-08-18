@@ -3,6 +3,10 @@
 // 由 ConfigSurface.model_catalog = "opencode" 声明启用（adapter 驱动）。
 // 目录值均可被自由输入覆盖；新模型未收录时直接手输即可。
 
+/** 自定义供应商新建时的默认 npm 适配器（opencode 生态知识，v0.7.4 审查 A6：
+ *  从 opencode-providers 组件移入数据层，与目录同文件归口）。 */
+export const OPENCODE_DEFAULT_PROVIDER_NPM = "@ai-sdk/openai-compatible";
+
 export interface OpencodeModelOption {
   value: string;
   /** i18n key（config.opencodeModel.<key>） */

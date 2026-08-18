@@ -7,7 +7,7 @@ pub(crate) fn pi_session_dir_for_home(home: &Path, project_path: &str) -> PathBu
 }
 
 pub(crate) fn pi_sessions_root_for_home(home: &Path) -> PathBuf {
-    home.join(".jishu-agent").join("agent").join("sessions")
+    super::paths::agent_dir_for_home(home).join("sessions")
 }
 
 pub(crate) fn pi_sessions_root() -> Result<PathBuf, String> {
@@ -125,8 +125,8 @@ pub(crate) struct PiSessionLocation {
 }
 
 pub(crate) fn find_pi_session_location(session_id: &str) -> Result<PiSessionLocation, String> {
-    let home = dirs::home_dir().ok_or("Cannot find home directory")?;
-    find_pi_session_location_in_agent_dir(&home.join(".jishu-agent").join("agent"), session_id)
+    let agent_dir = super::paths::agent_dir().map_err(|e| e.to_string())?;
+    find_pi_session_location_in_agent_dir(&agent_dir, session_id)
 }
 
 pub(crate) fn find_pi_session_location_in_agent_dir(

@@ -1553,7 +1553,10 @@ impl ProjectAdapter for OpencodeAdapter {
         &self,
         _path: &str,
     ) -> Result<crate::project_config::ProjectSettings, String> {
-        Err("opencode 项目配置仅支持项目根 opencode.json（单档）".to_string())
+        Err(
+            "opencode project settings support only the project-root opencode.json (single scope)"
+                .to_string(),
+        )
     }
 
     fn save_project_settings(

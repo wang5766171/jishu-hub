@@ -8,14 +8,14 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import type { ProjectSettings } from "@/types";
 import type { ProjectSettingsSurface } from "@/agents";
+import { CLAUDE_PERMISSION_MODES, PERMISSION_MODE_LABEL_KEYS } from "@/agents/permissions";
 import { SectionHelp } from "@/components/config/section-help";
 import { ActiveModelCard } from "@/components/config/active-model-card";
 
-const MODE_OPTIONS = [
-  { value: "default", labelKey: "config.modeDefault" },
-  { value: "bypassPermissions", labelKey: "config.modeBypass" },
-  { value: "plan", labelKey: "config.modePlan" },
-];
+const MODE_OPTIONS = CLAUDE_PERMISSION_MODES.map((value) => ({
+  value,
+  labelKey: PERMISSION_MODE_LABEL_KEYS[value],
+}));
 
 interface ProjectSettingsFormProps {
   projectPath: string;
@@ -99,7 +99,7 @@ export function ProjectSettingsForm({
   return (
     <div className="space-y-4">
       {/* File target toggle（仅支持 local 档的 agent 显示，如 claude；
-          jishu/.pi 与 opencode/opencode.json 均为单档） */}
+          jishu/.jishu-agent 与 opencode/opencode.json 均为单档） */}
       {hasLocal && (
         <>
           <div className="flex gap-2">
@@ -158,7 +158,7 @@ export function ProjectSettingsForm({
         </>
       )}
 
-      {/* 上下文压缩（jishu：.pi/settings.json 的 compaction） */}
+      {/* 上下文压缩（jishu：.jishu-agent/settings.json 的 compaction） */}
       {fields.includes("compaction") && (
         <div className="space-y-2">
           <span className="text-sm font-medium inline-flex items-center gap-1">
@@ -223,7 +223,7 @@ export function ProjectSettingsForm({
         </div>
       )}
 
-      {/* 默认思考档位（jishu：.pi/settings.json 的 defaultThinkingLevel） */}
+      {/* 默认思考档位（jishu：.jishu-agent/settings.json 的 defaultThinkingLevel） */}
       {fields.includes("thinking_level") && (
         <div>
           <span className="text-sm font-medium inline-flex items-center gap-1">

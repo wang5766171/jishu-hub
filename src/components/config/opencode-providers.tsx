@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Eye, EyeOff, Plus, Save, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { OPENCODE_DEFAULT_PROVIDER_NPM } from "@/agents/config/presets/opencode-models";
 
 type ProviderObj = Record<string, unknown>;
 type ModelObj = Record<string, unknown>;
@@ -67,7 +68,7 @@ export function OpencodeProvidersBlock({
     const next = { ...(providers ?? {}) };
     next[id] = {
       name: id,
-      npm: "@ai-sdk/openai-compatible",
+      npm: OPENCODE_DEFAULT_PROVIDER_NPM,
       options: { baseURL: "", apiKey: "" },
       models: {},
     };

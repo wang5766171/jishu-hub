@@ -717,6 +717,8 @@ pub fn cleanup_dead_sessions() -> Result<u32, Box<dyn std::error::Error>> {
 
 // --- Config Templates ---
 
+/// 模版类型定义（数据内聚在各 adapter 的 config_templates() 中——
+/// v0.7.4 审查 A4：claude 模版已迁回 claude_code.rs，hub 层只留契约类型）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigTemplate {
     pub id: String,
@@ -728,54 +730,6 @@ pub struct ConfigTemplate {
     /// 适配层驱动，前端不按 agent 写死判断（DEVELOP_READ §5）。
     #[serde(default)]
     pub requires_fill: bool,
-}
-
-pub fn list_config_templates() -> Vec<ConfigTemplate> {
-    vec![
-        ConfigTemplate {
-            id: "native-api".into(),
-            name: "原生 API (Native)".into(),
-            description: "使用 Anthropic 官方 API，直接触发原生授权引导。".into(),
-            config: anthropic_official_config(),
-            requires_fill: true,
-        },
-        ConfigTemplate {
-            id: "proxy-config".into(),
-            name: "中转配置 (Proxy)".into(),
-            description: "使用国内主流模型供应商（如智谱、阿里、Minimax）进行中转。".into(),
-            config: third_party_proxy_config(),
-            requires_fill: true,
-        },
-    ]
-}
-
-fn anthropic_official_config() -> serde_json::Value {
-    let config = crate::config::ClaudeConfig {
-        api_provider: Some("anthropic".into()),
-        model: Some("claude-sonnet-4-6".into()),
-        env: Some({
-            let mut env = std::collections::HashMap::new();
-            env.insert("ANTHROPIC_AUTH_TOKEN".into(), String::new());
-            env
-        }),
-        ..Default::default()
-    };
-    serde_json::to_value(config).unwrap_or_default()
-}
-
-fn third_party_proxy_config() -> serde_json::Value {
-    let config = crate::config::ClaudeConfig {
-        api_provider: Some("anthropic".into()),
-        env: Some({
-            let mut env = std::collections::HashMap::new();
-            env.insert("ANTHROPIC_BASE_URL".into(), String::new());
-            env.insert("ANTHROPIC_AUTH_TOKEN".into(), String::new());
-            env.insert("ANTHROPIC_MODEL".into(), String::new());
-            env
-        }),
-        ..Default::default()
-    };
-    serde_json::to_value(config).unwrap_or_default()
 }
 
 // --- User Presets (per-agent) ---
