@@ -30,7 +30,9 @@ pub struct JishuConfig {
     ///（~/.jishu-hub/settings.json）与 models.json。
     /// v0.7.5：补回 Pi schema 中行为相关的真实字段 compaction/defaultTools/
     /// retry（R15 只保留了 defaultThinkingLevel，行为页设置项不完整）；
-    /// 移除死字段 contextCompaction（Pi 键名为 compaction，历史键原样保留）。
+    /// 移除死字段 contextCompaction 与 env/systemInstructions/globalMemory
+    ///（v0.7.4 审查 C1：经 Pi settings schema 复核确认均不存在，历史键
+    /// 原样保留、Pi 忽略）。
     #[serde(
         rename = "defaultThinkingLevel",
         skip_serializing_if = "Option::is_none",
@@ -55,34 +57,28 @@ pub struct JishuConfig {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub retry: Option<PiRetrySettings>,
 
-    pub env: Option<HashMap<String, String>>,
-
     pub mcp_servers: Option<HashMap<String, McpServerConfig>>,
 
-    pub system_instructions: Option<String>,
-    pub global_memory: Option<String>,
     pub theme: Option<String>,
 }
 
 fn jishu_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let home = dirs::home_dir().ok_or("Cannot find home directory")?;
-    Ok(home.join(".jishu-agent").join("agent")) // pi 原生 getAgentDir() 路径
+    super::paths::agent_dir()
 }
 
 pub fn jishu_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    Ok(jishu_dir()?.join("settings.json"))
+    super::paths::settings_path()
 }
 
 fn jishu_backup_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    Ok(jishu_dir()?.join("backups"))
+    super::paths::backups_dir()
 }
 
 /// Sync mcpServers from JishuConfig to ~/.jishu-agent/mcp.json.
 /// pi-mcp-adapter reads MCP server definitions from <Pi agent dir>/mcp.json,
 /// not from settings.json's mcpServers field.
 pub fn sync_mcp_json(config: &JishuConfig) -> Result<(), Box<dyn std::error::Error>> {
-    let dir = jishu_dir()?;
-    let mcp_path = dir.join("mcp.json");
+    let mcp_path = super::paths::mcp_json_path()?;
 
     let mcp_content = if let Some(servers) = &config.mcp_servers {
         // Pass through all fields including `headers` for url-based servers.
@@ -103,12 +99,17 @@ pub fn sync_mcp_json(config: &JishuConfig) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-/// Pi 原生项目级设置：<project>/.pi/settings.json（深合并覆盖全局；
+/// Pi 原生项目级设置：`<project>/.jishu-agent/settings.json`（深合并覆盖全局；
 /// 字段为 Pi Settings schema：defaultModel / defaultThinkingLevel 等，
 /// 不含 permissions/env——行为参数块那些字段 Pi 并不读取）。
+///
+/// 路径依据：fork 的 `piConfig.configDir = ".jishu-agent"`（package.json），
+/// Pi `FileSettingsStorage` 取 `join(cwd, CONFIG_DIR_NAME, "settings.json")`
+///（settings-manager.js:47）。v0.7.4 R16 误按上游 `.pi` 目录名核查，
+/// 写入目录 Pi 从未读取（v0.7.5 需求3 修正，不留兼容）。
 pub fn pi_project_settings_path(project_path: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(std::path::Path::new(project_path)
-        .join(".pi")
+        .join(".jishu-agent")
         .join("settings.json"))
 }
 
@@ -126,8 +127,8 @@ pub fn load_pi_project_settings_raw(
     Ok(serde_json::from_str(&content)?)
 }
 
-/// 写项目 .pi/settings.json：只改 defaultModel / defaultThinkingLevel 两键，
-/// 其余（含用户手写的 Pi 字段）原样保留；null = 删除该键。
+/// 写项目 .jishu-agent/settings.json：只改 defaultModel / defaultThinkingLevel /
+/// compaction 三组键，其余（含用户手写的 Pi 字段）原样保留；null = 删除该键。
 pub fn save_pi_project_settings_fields(
     project_path: &str,
     model: Option<&str>,
@@ -141,7 +142,7 @@ pub fn save_pi_project_settings_fields(
     let mut value = load_pi_project_settings_raw(project_path)?;
     let obj = value
         .as_object_mut()
-        .ok_or(".pi/settings.json must be an object")?;
+        .ok_or("project settings.json must be an object")?;
     // Pi 按 (defaultProvider, defaultModel) 二元组解析（model-resolver.ts:671），
     // "provider/model" 拆分写入；None/无法拆分 = 删除整组。
     match model.and_then(|m| m.split_once('/')) {
@@ -180,7 +181,7 @@ pub fn load_jishu_config() -> Result<serde_json::Value, Box<dyn std::error::Erro
         return Ok(serde_json::to_value(JishuConfig::default())?);
     }
     let content = std::fs::read_to_string(&path)?;
-    let value: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+    let mut value: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
         format!(
             "Failed to parse {}: {}",
             path.file_name()
@@ -189,7 +190,41 @@ pub fn load_jishu_config() -> Result<serde_json::Value, Box<dyn std::error::Erro
             e
         )
     })?;
+    // 返回「有效配置视图」：剔除死键（含历史残留），行为页/高级设置/模版
+    // 快照看到的都是真实生效的字段；文件中的残留待下次保存时落盘清除。
+    strip_dead_keys(&mut value);
     Ok(value)
+}
+
+/// Pi Settings schema 中不存在的死键（R15 + 需求2 C1 逐一经
+/// settings-manager.ts 核实）：旧版 UI 误写入或旧结构体残留，Pi 从不读取。
+/// 保存时主动剔除（v0.7.5 需求4：模版快照与应用模版都会经此清理，
+/// 历史 settings.json 中的残留随任一次 GUI 保存自然清除）。
+const KNOWN_DEAD_KEYS: &[&str] = &[
+    // v0.7.4 R15 整改清单
+    "activeModel",
+    "temperature",
+    "maxTokens",
+    "thinkingEnabled",
+    "permissions",
+    "skipDangerous",
+    "skipDangerousModePermissionPrompt",
+    "verbose",
+    "maxTurns",
+    // v0.7.5 需求2 C1 复核追加
+    "env",
+    "systemInstructions",
+    "globalMemory",
+    "contextCompaction",
+];
+
+/// 从配置 JSON 对象中就地剔除死键（load 的「有效配置视图」用）。
+fn strip_dead_keys(value: &mut serde_json::Value) {
+    if let Some(obj) = value.as_object_mut() {
+        for key in KNOWN_DEAD_KEYS {
+            obj.remove(*key);
+        }
+    }
 }
 
 /// 键级覆盖合并（v0.7.5 修复「恢复默认无法保存」）：
@@ -197,12 +232,20 @@ pub fn load_jishu_config() -> Result<serde_json::Value, Box<dyn std::error::Erro
 /// patch 中显式 `null` = 从落盘对象删除该键（恢复 Pi 默认），非 null = 写入/
 /// 整组替换，未提及的键保留 existing 原值。此前实现把「null 删除」误当成
 /// 「未提及」从 existing 恢复旧值，导致行为页选「默认」永远存不上。
+/// 合并前后均剔除 KNOWN_DEAD_KEYS（含 patch 中出现的——应用带死键的旧
+/// 模版同样免疫）。
 fn merge_config_patch(
     existing: Option<serde_json::Map<String, serde_json::Value>>,
     patch: &serde_json::Map<String, serde_json::Value>,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut merged = existing.unwrap_or_default();
+    for key in KNOWN_DEAD_KEYS {
+        merged.remove(*key);
+    }
     for (key, value) in patch {
+        if KNOWN_DEAD_KEYS.contains(&key.as_str()) {
+            continue;
+        }
         if value.is_null() {
             merged.remove(key);
         } else {
@@ -438,9 +481,9 @@ mod tests {
 
     #[test]
     fn jishu_config_round_trip() {
-        // R15 死字段整改 + v0.7.5 补全后：真实字段 = defaultThinkingLevel /
-        // compaction / defaultTools / retry / env / mcpServers /
-        // systemInstructions / globalMemory / theme。
+        // R15 死字段整改 + v0.7.5 补全/清理后：真实字段 = defaultThinkingLevel /
+        // compaction / defaultTools / retry / mcpServers / theme（env/
+        // systemInstructions/globalMemory/contextCompaction 均已核实为死字段删除）。
         let cfg = JishuConfig {
             default_thinking_level: Some("high".to_string()),
             compaction: Some(crate::project_config::ProjectCompaction {
@@ -460,14 +503,7 @@ mod tests {
                 max_retries: Some(5),
                 base_delay_ms: Some(2000),
             }),
-            env: Some({
-                let mut m = HashMap::new();
-                m.insert("FOO".to_string(), "bar".to_string());
-                m
-            }),
             mcp_servers: Some(HashMap::new()),
-            system_instructions: Some("You are a coding assistant".to_string()),
-            global_memory: Some("remember the user's preferences".to_string()),
             theme: Some("dark".to_string()),
         };
         let value = serde_json::to_value(cfg.clone()).unwrap();
@@ -475,7 +511,10 @@ mod tests {
         assert_eq!(restored.default_thinking_level, cfg.default_thinking_level);
         assert_eq!(restored.compaction, cfg.compaction);
         assert_eq!(restored.default_tools, cfg.default_tools);
-        assert_eq!(restored.retry.unwrap().enabled, cfg.retry.as_ref().unwrap().enabled);
+        assert_eq!(
+            restored.retry.unwrap().enabled,
+            cfg.retry.as_ref().unwrap().enabled
+        );
         assert_eq!(restored.theme, cfg.theme);
     }
 
@@ -484,8 +523,6 @@ mod tests {
         let value = serde_json::to_value(JishuConfig {
             default_thinking_level: Some("low".to_string()),
             default_tools: Some(vec!["read".to_string()]),
-            system_instructions: Some("hi".to_string()),
-            global_memory: Some("mem".to_string()),
             compaction: Some(crate::project_config::ProjectCompaction {
                 enabled: Some(true),
                 reserve_tokens: Some(16384),
@@ -504,25 +541,31 @@ mod tests {
         assert!(obj.contains_key("defaultTools"));
         assert!(obj.contains_key("compaction"));
         assert!(obj.contains_key("retry"));
-        assert!(obj.contains_key("systemInstructions"));
-        assert!(obj.contains_key("globalMemory"));
+        assert!(obj.contains_key("theme"));
         assert!(!obj.contains_key("default_thinking_level"));
         assert!(!obj.contains_key("contextCompaction"));
+        assert!(!obj.contains_key("systemInstructions"));
+        assert!(!obj.contains_key("globalMemory"));
+        assert!(!obj.contains_key("env"));
     }
 
     #[test]
     fn merge_config_patch_null_deletes_and_unmentioned_preserved() {
         // v0.7.5「恢复默认无法保存」回归锁定：null 必须删除键，而非从
-        // existing 恢复；未提及键原样保留（含 Pi/用户手写的未知键）。
+        // existing 恢复；未提及键原样保留（含 Pi/用户手写的未知键）；
+        // 已知死键（v0.7.4 旧 UI 写入的 permissions 等）无论来自 existing
+        // 还是 patch 一律剔除。
         let existing = serde_json::json!({
             "defaultThinkingLevel": "low",
             "compaction": { "enabled": false },
             "extensions": ["extensions/jishu-task-conductor.ts"],
-            "theme": "dark"
+            "theme": "dark",
+            "permissions": { "defaultMode": "bypassPermissions" },
+            "temperature": 0.7
         });
         let merged = merge_config_patch(
             existing.as_object().cloned(),
-            serde_json::json!({ "defaultThinkingLevel": null, "compaction": { "enabled": true, "reserveTokens": 16384 } })
+            serde_json::json!({ "defaultThinkingLevel": null, "compaction": { "enabled": true, "reserveTokens": 16384 }, "env": { "FOO": "bar" } })
                 .as_object()
                 .unwrap(),
         );
@@ -538,5 +581,36 @@ mod tests {
             serde_json::json!(["extensions/jishu-task-conductor.ts"])
         );
         assert_eq!(merged["theme"], serde_json::json!("dark"));
+        assert!(
+            merged.get("permissions").is_none(),
+            "dead key purged from existing"
+        );
+        assert!(merged.get("temperature").is_none());
+        assert!(
+            merged.get("env").is_none(),
+            "dead key in patch never written"
+        );
+    }
+
+    #[test]
+    fn strip_dead_keys_builds_effective_view() {
+        // load_config 的「有效配置视图」：死键（含历史残留）不出现在 UI/
+        // 模版快照中；活键（Pi schema 字段与用户手写键）原样保留。
+        let mut value = serde_json::json!({
+            "defaultThinkingLevel": "medium",
+            "permissions": { "defaultMode": "bypassPermissions" },
+            "temperature": 0.7,
+            "extensions": ["extensions/session-context.ts"],
+            "theme": "dark"
+        });
+        strip_dead_keys(&mut value);
+        assert!(value.get("permissions").is_none());
+        assert!(value.get("temperature").is_none());
+        assert_eq!(value["defaultThinkingLevel"], serde_json::json!("medium"));
+        assert_eq!(
+            value["extensions"],
+            serde_json::json!(["extensions/session-context.ts"])
+        );
+        assert_eq!(value["theme"], serde_json::json!("dark"));
     }
 }

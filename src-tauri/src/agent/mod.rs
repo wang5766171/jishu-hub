@@ -773,7 +773,7 @@ mod tests {
             }
         );
 
-        // v0.7.4 项目配置适配：jishu（.pi/settings.json，model+思考档位）与
+        // v0.7.4 项目配置适配 + v0.7.5 路径修正：jishu（.jishu-agent/settings.json）与
         // opencode（项目 opencode.json，model）声明各自真实支持的字段；
         // codex 原生无项目配置文件，如实 Unsupported（带原因）。
         assert_eq!(
