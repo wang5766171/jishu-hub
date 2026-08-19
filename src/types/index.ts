@@ -181,6 +181,10 @@ export interface ClaudeConfig {
   reasoningEffort: string | null;
   /** 自定义模型供应商（v0.7.4 R12：opencode 的 provider 段；其余 agent 为 null）。 */
   customProviders: Record<string, Record<string, unknown>> | null;
+  /** codex 顶层 model_provider（v0.7.5 需求7：直连=null / 中转=provider id）。 */
+  modelProvider?: string | null;
+  /** codex [model_providers.*]（name/base_url/wire_api/env_key，原生键名）。 */
+  modelProviders?: Record<string, Record<string, unknown>> | null;
   smallModel: string | null;
   largeModel: string | null;
   allowedTools: string[] | null;
@@ -199,6 +203,9 @@ export interface ConfigTemplate {
   config: unknown;
   /** 应用前需补填（adapter 在 config_templates() 中声明，后端 serde 默认 false） */
   requires_fill?: boolean;
+  /** 模型库写入声明（v0.7.5 需求6）：存在 = 应用时还需经 set_models_config
+   * 合并写入渠道/模型；providers 空骨架 = 由用户在补填弹窗选服务商预设组装。 */
+  model_store_patch?: { providers?: Record<string, unknown> } | null;
 }
 
 export interface Preset {

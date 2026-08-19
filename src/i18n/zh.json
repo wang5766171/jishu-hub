@@ -308,6 +308,7 @@
     "presetDisplayNamePlaceholder": "服务商显示名（可选）",
     "presetApiHint": "已按所选服务商自动填好，一般无需修改",
     "presetSelectPlaceholder": "-- 选择服务商 --",
+    "presetKeyHint": "前往 {{url}} 获取",
     "preset": {
       "zhipu": {
         "name": "智谱 AI"
@@ -552,7 +553,11 @@
     "deactivateModel": "取消激活",
     "connectProxy": "配置代理",
     "connectDirect": "官方直连",
+    "proxyIdPlaceholder": "渠道标识（如 deepseek）",
+    "codexCustomChannelHint": "填写渠道标识、端点地址与密钥创建自定义中转；端点必须支持 OpenAI Responses API。创建后可在左侧渠道列表切换。",
+    "proxyNameLabel": "渠道名称",
     "connectDirectHint": "当前为官方直连：使用 Claude 订阅登录，或网络可直达 Anthropic 官方，无需配置渠道。切换到「配置代理」可使用第三方渠道。",
+    "codexDirectHint": "当前为官方直连：使用 codex login 或 OpenAI 官方密钥认证，无需配置渠道。切换到「配置代理」可选择第三方渠道（DeepSeek / 智谱 / 自定义）。",
     "colChannels": "渠道设置",
     "colModels": "模型设置",
     "channelPickHint": "选择渠道自动填入接入地址与推荐模型；左侧绿点为当前生效渠道。",
@@ -565,6 +570,9 @@
     "hideKey": "隐藏密钥",
     "channelDirtyHint": "修改尚未保存",
     "applyTemplateSuccess": "模版已应用并写入配置文件",
+    "templateModelStoreHint": "应用时将把所选渠道合并写入模型库（已有渠道保留），行为配置写入全局设置。",
+    "templateProvidersHint": "应用时将把该渠道合并进现有供应商列表（其他渠道保留），主/小模型按模版设置。",
+    "proxyResponsesHint": "端点必须支持 OpenAI Responses API（Chat Completions 兼容端点不可用）。",
     "jishuBehaviorParams": "默认行为",
     "thinkingLevelsLabel": "支持思考档位",
     "thinkingLevelsHint": "勾选该模型实际支持的档位：会话页只显示勾选的档位；选到不支持的档位会自动就近生效。预设模型已按官方资料预填。",

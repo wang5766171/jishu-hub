@@ -24,6 +24,7 @@ import { AdvancedBlock } from "./config-page-shell";
 import { CLAUDE_MODEL_CATALOG } from "@/agents/config/presets/claude-models";
 import { OPENCODE_MODEL_CATALOG } from "@/agents/config/presets/opencode-models";
 import { OpencodeProvidersBlock } from "./opencode-providers";
+import { CodexProvidersBlock } from "./codex-providers";
 import {
   CLAUDE_PROXY_PRESETS,
   applyProxyPresetToEnv,
@@ -92,6 +93,8 @@ export interface ConfigSurfaceFlags {
   supports_thinking_budget?: boolean;
   model_catalog?: string | null;
   supports_custom_providers?: boolean;
+  /** v0.7.5 需求7：codex model_providers 渠道管理。 */
+  supports_model_providers?: boolean;
 }
 
 /** 「模型设置」子页（R6 两栏结构，参考用户截图）。
@@ -142,7 +145,13 @@ export function ConfigModelsZone({
       onSelect={(model) => onChange({ model: model || null })}
       allowCustom
       customPlaceholder={t("config.modelComboboxPlaceholder")}
-      emptyHint={t("config.connectDirectHint")}
+      // 模型卡空态提示按 agent 语义区分（迭代四：codex 不再显示 claude 的
+      // 订阅/Anthropic 文案）。claude 保持原键。
+      emptyHint={
+        surface?.supports_model_providers
+          ? t("config.codexDirectHint")
+          : t("config.connectDirectHint")
+      }
     />
   );
 
@@ -162,8 +171,23 @@ export function ConfigModelsZone({
 
   const savedToken = env["ANTHROPIC_AUTH_TOKEN"]?.trim() || env["ANTHROPIC_API_KEY"]?.trim() || "";
 
-  // 无代理能力的 structured agent：模型卡 +（声明时）自定义供应商管理块。
+  // 无代理能力的 structured agent：opencode = 模型卡 + 自定义供应商管理块；
+  // codex = CodexProvidersBlock（自带直连态/代理双栏布局，模型卡由其承载——
+  // 迭代五：布局完全对齐 claude 的左右双栏结构）。
   if (!supportsProxySetup) {
+    if (surface?.supports_model_providers) {
+      return (
+        <CodexProvidersBlock
+          modelProvider={(config as { modelProvider?: string | null }).modelProvider ?? null}
+          modelProviders={
+            (config as unknown as { modelProviders?: Record<string, unknown> }).modelProviders ?? null
+          }
+          env={(config.env ?? {}) as Record<string, string>}
+          modelCard={modelCard}
+          onChange={(patch) => onChange(patch as Partial<ClaudeConfig>)}
+        />
+      );
+    }
     return (
       <div className="space-y-4">
         {modelCard}

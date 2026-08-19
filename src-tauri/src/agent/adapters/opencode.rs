@@ -1249,6 +1249,7 @@ impl ConfigAdapter for OpencodeAdapter {
             supports_config_test: false,
             model_catalog: Some("opencode".to_string()),
             supports_custom_providers: true,
+            supports_model_providers: false,
             supports_thinking_budget: false,
             supports_reasoning_effort: false,
         }
@@ -1266,26 +1267,81 @@ impl ConfigAdapter for OpencodeAdapter {
     }
 
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
+        // v0.7.5 需求6：按服务商路线重建模版（模型 + 渠道 + 主/小模型，
+        // 全部 requires_fill 补填密钥）。opencode 真实可配字段仅
+        // model/small_model/provider/mcp（permissions/env 形态不同不映射，
+        // 不写死字段——R15 教训）；provider 经共享配置 customProviders
+        // 通道写入，应用时前端与现有渠道合并（保存侧整段替换语义由前端
+        // 全量组装保证不删用户渠道）。智谱/MiniMax 为 opencode 内置 coding
+        // plan provider（仅需 apiKey）；自定义渠道 npm 值与前端
+        // OPENCODE_DEFAULT_PROVIDER_NPM 常量保持同步。
         vec![
             crate::hub::ConfigTemplate {
-                requires_fill: false,
-                id: "opencode-default".to_string(),
-                name: "opencode 默认配置".to_string(),
-                description: "保留 opencode 默认模型与 MCP 设置，仅创建基础配置结构".to_string(),
-                config: serde_json::to_value(crate::config::ClaudeConfig::default())
-                    .unwrap_or_default(),
+                requires_fill: true,
+                model_store_patch: None,
+                id: "opencode-zhipu-coding-plan".to_string(),
+                name: "智谱 Coding Plan（GLM）".to_string(),
+                description: "智谱编码套餐内置通道：主/小模型设为 GLM-5.3，应用时填入\
+                              智谱 API 密钥即用。适合日常开发与迭代，无需自建端点。"
+                    .to_string(),
+                config: serde_json::json!({
+                    "model": "zhipuai-coding-plan/GLM-5.3",
+                    "smallModel": "zhipuai-coding-plan/GLM-5.3",
+                    "customProviders": {
+                        "zhipuai-coding-plan": {
+                            "models": { "GLM-5.3": { "name": "GLM-5.3" } },
+                            "options": { "apiKey": "" }
+                        }
+                    }
+                }),
             },
             crate::hub::ConfigTemplate {
-                requires_fill: false,
-                id: "opencode-glm".to_string(),
-                name: "opencode GLM 模型".to_string(),
-                description: "设置 opencode 的主模型与小模型为 GLM".to_string(),
-                config: serde_json::to_value(crate::config::ClaudeConfig {
-                    model: Some("zhipuai-coding-plan/glm-5.1".to_string()),
-                    small_model: Some("zhipuai-coding-plan/glm-5.1".to_string()),
-                    ..Default::default()
-                })
-                .unwrap_or_default(),
+                requires_fill: true,
+                model_store_patch: None,
+                id: "opencode-minimax-coding-plan".to_string(),
+                name: "MiniMax Coding Plan（M3）".to_string(),
+                description: "MiniMax 编码套餐内置通道：主/小模型设为 MiniMax-M3\
+                              （百万上下文），应用时填入 MiniMax API 密钥即用。\
+                              适合超长上下文与大批量文件的任务。"
+                    .to_string(),
+                config: serde_json::json!({
+                    "model": "minimax-cn-coding-plan/MiniMax-M3",
+                    "smallModel": "minimax-cn-coding-plan/MiniMax-M3",
+                    "customProviders": {
+                        "minimax-cn-coding-plan": {
+                            "models": {
+                                "MiniMax-M3": {
+                                    "name": "MiniMax-M3",
+                                    "attachment": true,
+                                    "limit": { "context": 1000000, "output": 65536 },
+                                    "temperature": true,
+                                    "tool_call": true
+                                }
+                            },
+                            "options": { "apiKey": "" }
+                        }
+                    }
+                }),
+            },
+            crate::hub::ConfigTemplate {
+                requires_fill: true,
+                model_store_patch: None,
+                id: "opencode-custom-openai".to_string(),
+                name: "自定义渠道（OpenAI 兼容）".to_string(),
+                description: "任意 OpenAI 兼容服务商（DeepSeek/Kimi/官方 OpenAI 等）：\
+                              应用时填入渠道地址与密钥，并至少添加一个模型 ID。\
+                              已有渠道不受影响。"
+                    .to_string(),
+                config: serde_json::json!({
+                    "customProviders": {
+                        "custom": {
+                            "name": "自定义渠道",
+                            "npm": "@ai-sdk/openai-compatible",
+                            "options": { "baseURL": "", "apiKey": "" },
+                            "models": {}
+                        }
+                    }
+                }),
             },
         ]
     }

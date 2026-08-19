@@ -394,31 +394,56 @@ impl ConfigAdapter for JishuSelfAgent {
     }
 
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
-        // v0.7.4 R15 死字段整改：原「默认/安全/高效」模版写入的 permissions/
-        // temperature 等不在 Pi Settings schema 中（无效）。重写为仅含真实
-        // 字段的思考档位预设；行为控制（工具模式/会话内档位）在会话页。
+        // v0.7.5 需求6：模版按使用场景区分（模型 + 行为与权限全量），全部
+        // requires_fill + model_store_patch——应用时选服务商预设/填密钥/勾模型，
+        // 渠道合并写 models.json（现有渠道保留），行为字段写 settings.json。
+        // 旧的三个纯思考档位模版（R15 产物，单键无法形成可用配置）已移除。
         vec![
             crate::hub::ConfigTemplate {
-                requires_fill: false,
-                id: "jishu-thinking-max".into(),
-                name: "深度思考 (Max)".into(),
-                description: "全局默认思考档位设为最大：疑难问题深推理，耗时与 token 消耗最高。"
+                requires_fill: true,
+                id: "jishu-daily-dev".into(),
+                name: "日常开发".into(),
+                description: "日常编码与迭代的均衡配置：高档思考、默认工具集（读写/终端/编辑）、\
+                              标准自动重试、常规上下文压缩。适合大多数开发任务，速度与质量平衡。"
                     .into(),
-                config: serde_json::json!({ "defaultThinkingLevel": "max" }),
+                config: serde_json::json!({
+                    "defaultThinkingLevel": "high",
+                    "compaction": { "enabled": true, "reserveTokens": 16384, "keepRecentTokens": 20000 },
+                    "defaultTools": ["read", "bash", "edit", "write"],
+                    "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }
+                }),
+                model_store_patch: Some(serde_json::json!({ "providers": {} })),
             },
             crate::hub::ConfigTemplate {
-                requires_fill: false,
-                id: "jishu-thinking-high".into(),
-                name: "均衡思考 (High)".into(),
-                description: "全局默认思考档位设为高：日常开发的平衡选择（推荐）。".into(),
-                config: serde_json::json!({ "defaultThinkingLevel": "high" }),
+                requires_fill: true,
+                id: "jishu-deep-dive".into(),
+                name: "深度攻坚".into(),
+                description:
+                    "疑难问题与大型重构：最大档思考、全部内置工具（含内容搜索/文件查找/列目录）、\
+                              更强重试与更大上下文保留，长会话不丢关键信息。耗时与 token 消耗最高。"
+                        .into(),
+                config: serde_json::json!({
+                    "defaultThinkingLevel": "max",
+                    "compaction": { "enabled": true, "reserveTokens": 32768, "keepRecentTokens": 40000 },
+                    "defaultTools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
+                    "retry": { "enabled": true, "maxRetries": 5, "baseDelayMs": 2000 }
+                }),
+                model_store_patch: Some(serde_json::json!({ "providers": {} })),
             },
             crate::hub::ConfigTemplate {
-                requires_fill: false,
-                id: "jishu-thinking-low".into(),
-                name: "快速响应 (Low)".into(),
-                description: "全局默认思考档位设为低：几乎不思考、响应最快，适合简单问答。".into(),
-                config: serde_json::json!({ "defaultThinkingLevel": "low" }),
+                requires_fill: true,
+                id: "jishu-quick-qa".into(),
+                name: "快速问答".into(),
+                description: "简单问题与轻量任务：低档思考几乎即问即答、默认工具集、标准重试。\
+                              响应最快、消耗最低，适合答疑、查询、小改动确认。"
+                    .into(),
+                config: serde_json::json!({
+                    "defaultThinkingLevel": "low",
+                    "compaction": { "enabled": true, "reserveTokens": 16384, "keepRecentTokens": 20000 },
+                    "defaultTools": ["read", "bash", "edit", "write"],
+                    "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }
+                }),
+                model_store_patch: Some(serde_json::json!({ "providers": {} })),
             },
         ]
     }

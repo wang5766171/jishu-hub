@@ -83,6 +83,9 @@ export type ConfigSurface =
       model_catalog?: string | null;
       /** 自定义模型供应商管理入口显隐（R12：opencode 声明）。 */
       supports_custom_providers?: boolean;
+      /** model_providers 渠道管理入口显隐（v0.7.5 需求7：codex 声明——
+       * config.toml 的直连/中转切换，与 opencode provider 段机制不同）。 */
+      supports_model_providers?: boolean;
     }
   | { kind: "raw"; format: string }
   | { kind: "model_store"; provider: string; supports_picker: boolean; supports_mcp: boolean }

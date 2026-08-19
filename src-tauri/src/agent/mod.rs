@@ -132,6 +132,12 @@ pub enum ConfigSurface {
         /// 模型设置页提供添加/编辑供应商与模型的管理块）。
         #[serde(default)]
         supports_custom_providers: bool,
+        /// 支持 model_providers 渠道管理（v0.7.5 需求7：codex 的
+        /// config.toml `[model_providers]` + 顶层 `model_provider` 直连/中转
+        /// 切换，密钥经 env_key 环境变量在 spawn 时注入——与 opencode 的
+        /// provider 段机制不同，单独声明）。前端据此渲染渠道管理块。
+        #[serde(default)]
+        supports_model_providers: bool,
     },
     Raw {
         format: String,
@@ -736,6 +742,8 @@ mod tests {
                 supports_thinking_budget: false,
                 model_catalog: None,
                 supports_custom_providers: false,
+                // v0.7.5 需求7：codex 渠道管理（model_providers 直连/中转）。
+                supports_model_providers: true,
             }
         );
 

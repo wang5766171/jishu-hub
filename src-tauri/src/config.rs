@@ -158,6 +158,26 @@ pub struct ClaudeConfig {
 
     #[serde(rename = "contextCompaction")]
     pub context_compaction: Option<ContextCompactionConfig>,
+
+    /// codex 顶层 model_provider（v0.7.5 需求7：直连/中转切换——选中的
+    /// model_providers 条目 id；None = 官方直连）。仅 codex 使用（联合结构
+    /// 渐进路线，per-agent 拆分见 v0.7.4 审查 A3）。
+    #[serde(
+        rename = "modelProvider",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub model_provider: Option<String>,
+
+    /// codex `[model_providers.*]` 表（键为 codex 原生：name/base_url/
+    /// wire_api/env_key；wire_api 固定 "responses"——Responses API 兼容端点
+    /// 才可接入，官方/DeepSeek/智谱 Coding Plan 均已官方支持）。仅 codex 使用。
+    #[serde(
+        rename = "modelProviders",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub model_providers: Option<std::collections::BTreeMap<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -421,6 +421,7 @@ impl ConfigAdapter for ClaudeCodeAgent {
             supports_config_test: true,
             model_catalog: Some("claude".to_string()),
             supports_custom_providers: false,
+            supports_model_providers: false,
             supports_thinking_budget: true,
             supports_reasoning_effort: false,
         }
@@ -447,6 +448,7 @@ impl ConfigAdapter for ClaudeCodeAgent {
                 description: "使用 Anthropic 官方 API，直接触发原生授权引导。".into(),
                 config: anthropic_official_config(),
                 requires_fill: true,
+                model_store_patch: None,
             },
             crate::hub::ConfigTemplate {
                 id: "proxy-config".into(),
@@ -454,6 +456,7 @@ impl ConfigAdapter for ClaudeCodeAgent {
                 description: "使用国内主流模型供应商（如智谱、阿里、Minimax）进行中转。".into(),
                 config: third_party_proxy_config(),
                 requires_fill: true,
+                model_store_patch: None,
             },
         ]
     }
@@ -1010,11 +1013,19 @@ mod tests {
     }
 }
 
-/// 「原生 API」模版配置：Anthropic 官方直连（v0.7.4 审查 A4 从 hub 层迁入）。
+/// 「原生 API」模版配置：Anthropic 官方直连（v0.7.4 审查 A4 从 hub 层迁入；
+/// v0.7.5 需求6 迭代三补 permissions.defaultMode 行为字段——claude settings
+/// 真实字段，与模型配置一同构成完整模版）。
 fn anthropic_official_config() -> serde_json::Value {
     let config = crate::config::ClaudeConfig {
         api_provider: Some("anthropic".into()),
         model: Some("claude-sonnet-4-6".into()),
+        permissions: Some(crate::config::PermissionsConfig {
+            allow: None,
+            deny: None,
+            default_mode: Some("default".into()),
+            additional_directories: None,
+        }),
         env: Some({
             let mut env = std::collections::HashMap::new();
             env.insert("ANTHROPIC_AUTH_TOKEN".into(), String::new());
@@ -1029,6 +1040,12 @@ fn anthropic_official_config() -> serde_json::Value {
 fn third_party_proxy_config() -> serde_json::Value {
     let config = crate::config::ClaudeConfig {
         api_provider: Some("anthropic".into()),
+        permissions: Some(crate::config::PermissionsConfig {
+            allow: None,
+            deny: None,
+            default_mode: Some("default".into()),
+            additional_directories: None,
+        }),
         env: Some({
             let mut env = std::collections::HashMap::new();
             env.insert("ANTHROPIC_BASE_URL".into(), String::new());

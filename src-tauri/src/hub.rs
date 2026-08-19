@@ -730,6 +730,13 @@ pub struct ConfigTemplate {
     /// 适配层驱动，前端不按 agent 写死判断（DEVELOP_READ §5）。
     #[serde(default)]
     pub requires_fill: bool,
+    /// 模型库写入声明（v0.7.5 需求6）：Some = 应用本模版时除 config（经
+    /// save_config 写 agent 配置）外，还需经模型库通道（set_models_config）
+    /// 写入渠道/模型。值为模型库增量骨架（`{ "providers": {} }` = 渠道由
+    /// 用户在补填弹窗选择服务商预设后组装，前端与模型设置页共用同一预设
+    /// 注册表）；adapter 也可直接预置渠道数据作为预填。不声明则不触碰模型库。
+    #[serde(default)]
+    pub model_store_patch: Option<serde_json::Value>,
 }
 
 // --- User Presets (per-agent) ---

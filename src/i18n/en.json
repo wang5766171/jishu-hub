@@ -308,6 +308,7 @@
     "presetDisplayNamePlaceholder": "Display name (optional)",
     "presetApiHint": "Auto-filled for the chosen provider; usually no change needed",
     "presetSelectPlaceholder": "-- Choose a provider --",
+    "presetKeyHint": "Get one at {{url}}",
     "preset": {
       "zhipu": {
         "name": "Zhipu AI"
@@ -552,7 +553,11 @@
     "deactivateModel": "Deactivate",
     "connectProxy": "Use Proxy",
     "connectDirect": "Direct",
+    "proxyIdPlaceholder": "provider id (e.g. deepseek)",
+    "proxyNameLabel": "Provider name",
     "connectDirectHint": "Direct connection: sign in with a Claude subscription, or reach the official API directly — no channel needed. Switch to \"Use Proxy\" for third-party channels.",
+    "codexDirectHint": "Currently direct: authenticate via codex login or an official OpenAI key; no provider needed. Switch to \"Proxy\" to use a third-party provider (DeepSeek / Zhipu / custom).",
+    "codexCustomChannelHint": "Create a custom provider with an id, endpoint and key; the endpoint must support the OpenAI Responses API. It appears in the channel list after creation.",
     "colChannels": "Channels",
     "colModels": "Models",
     "channelPickHint": "Picking a channel auto-fills its base URL and recommended model; the green dot marks the channel in effect.",
@@ -565,6 +570,9 @@
     "hideKey": "Hide key",
     "channelDirtyHint": "Unsaved changes",
     "applyTemplateSuccess": "Template applied and written to the config file",
+    "templateModelStoreHint": "The chosen provider is merged into the model store (existing providers kept); behavior settings go to the global config.",
+    "templateProvidersHint": "The provider is merged into your existing provider list (others kept); main/small models follow the template.",
+    "proxyResponsesHint": "The endpoint must support the OpenAI Responses API (Chat Completions-compatible endpoints will not work).",
     "jishuBehaviorParams": "Default behavior",
     "thinkingLevelsLabel": "Supported thinking levels",
     "thinkingLevelsHint": "Tick the levels this model actually supports: the chat selector only offers ticked levels, and an unsupported persisted level snaps to the nearest one. Presets come pre-filled from official docs.",

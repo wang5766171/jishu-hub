@@ -2,6 +2,7 @@ use crate::agent::{
     normalized::{NormalizedEvent, TurnEndReason},
     AgentCapabilities, AgentHealth, AgentInfo, AgentPlugin, ChatRequest,
 };
+use serde::Deserialize;
 use std::io::BufRead;
 
 pub struct CodexAdapter;
@@ -163,6 +164,10 @@ impl TransportAdapter for CodexAdapter {
         &self,
         _req: &ChatRequest,
     ) -> Result<crate::agent::AcpCommandSpec, String> {
+        // v0.7.5 需求7：中转密钥注入——codex 的 model_providers.env_key 指向
+        // 进程环境变量（config.toml 无密钥存放处），Hub 在 spawn 时把配置 env
+        //（含补填密钥，落盘于 shell_environment_policy.set）注入进程环境。
+        let envs = codex_spawn_envs();
         // v0.7.0：Windows 上 npm 全局 bin 是 .cmd shim，CreateProcess 无法直接解析，
         // 必须用 cmd /C 包装（与 claude-agent-acp 的 Windows 处理一致）。
         #[cfg(target_os = "windows")]
@@ -174,7 +179,7 @@ impl TransportAdapter for CodexAdapter {
                     "codex".to_string(),
                     "app-server".to_string(),
                 ],
-                envs: Vec::new(),
+                envs,
             })
         }
         #[cfg(not(target_os = "windows"))]
@@ -182,7 +187,7 @@ impl TransportAdapter for CodexAdapter {
             Ok(crate::agent::AcpCommandSpec {
                 program: "codex".to_string(),
                 args: vec!["app-server".to_string()],
-                envs: Vec::new(),
+                envs,
             })
         }
     }
@@ -195,6 +200,9 @@ impl TransportAdapter for CodexAdapter {
             args.push(sid.clone());
         }
 
+        // v0.7.5 需求7：CLI 自治路径同样注入密钥环境变量。
+        let envs = codex_spawn_envs();
+
         #[cfg(target_os = "windows")]
         {
             let mut full_args = vec!["/C".to_string(), "codex".to_string()];
@@ -202,6 +210,7 @@ impl TransportAdapter for CodexAdapter {
             let mut cmd = tokio::process::Command::new("cmd");
             cmd.args(&full_args).current_dir(&req.project_path);
             crate::process_command::tokio_no_window(&mut cmd);
+            cmd.envs(envs.clone());
             cmd
         }
 
@@ -209,9 +218,28 @@ impl TransportAdapter for CodexAdapter {
         {
             let mut cmd = tokio::process::Command::new("codex");
             cmd.args(&args).current_dir(&req.project_path);
+            cmd.envs(envs.clone());
             cmd
         }
     }
+}
+
+/// v0.7.5 需求7：从 codex 配置 env（shell_environment_policy.set，含中转
+/// 密钥）提取需要注入进程环境的键值。读取失败/无配置时为空（不影响直连）。
+fn codex_spawn_envs() -> Vec<(String, String)> {
+    let mut envs = Vec::new();
+    if let Ok(config) = <CodexAdapter as ConfigAdapter>::load_config(&CodexAdapter::new()) {
+        if let Some(env_obj) = config.get("env").and_then(|v| v.as_object()) {
+            for (k, v) in env_obj {
+                if let Some(s) = v.as_str() {
+                    if !s.is_empty() {
+                        envs.push((k.clone(), s.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    envs
 }
 
 impl CodexAdapter {
@@ -275,6 +303,7 @@ impl ConfigAdapter for CodexAdapter {
             // medium/high/xhigh），静态配置、新会话生效。
             model_catalog: None,
             supports_custom_providers: false,
+            supports_model_providers: true,
             supports_thinking_budget: false,
             supports_reasoning_effort: true,
         }
@@ -291,6 +320,17 @@ impl ConfigAdapter for CodexAdapter {
 
         if let Some(model) = toml_val.get("model").and_then(|v| v.as_str()) {
             config_json["model"] = serde_json::Value::String(model.to_string());
+        }
+
+        // v0.7.5 需求7：直连/中转——顶层 model_provider 与 [model_providers.*]
+        // 表（键为 codex 原生 snake_case，前端按原样编辑）。
+        if let Some(provider) = toml_val.get("model_provider").and_then(|v| v.as_str()) {
+            config_json["modelProvider"] = serde_json::Value::String(provider.to_string());
+        }
+        if let Some(providers) = toml_val.get("model_providers").and_then(|v| v.as_table()) {
+            if let Ok(json_v) = serde_json::to_value(providers) {
+                config_json["modelProviders"] = json_v;
+            }
         }
 
         if let Some(effort) = toml_to_reasoning_effort(&toml_val) {
@@ -345,6 +385,34 @@ impl ConfigAdapter for CodexAdapter {
         if let Some(table) = toml_val.as_table_mut() {
             if let Some(model) = config.get("model").and_then(|v| v.as_str()) {
                 table.insert("model".to_string(), toml::Value::String(model.to_string()));
+            }
+
+            // v0.7.5 需求7：直连/中转。显式 null = 删除 model_provider 回直连；
+            // modelProviders 整组替换（未知 provider 键同理以提交方全量为准——
+            // 与 opencode provider 段一致的前端全量组装约定）。
+            match config.get("modelProvider") {
+                Some(serde_json::Value::String(provider)) => {
+                    table.insert(
+                        "model_provider".to_string(),
+                        toml::Value::String(provider.clone()),
+                    );
+                }
+                Some(serde_json::Value::Null) => {
+                    table.remove("model_provider");
+                }
+                _ => {}
+            }
+            if let Some(providers) = config.get("modelProviders").and_then(|v| v.as_object()) {
+                let mut toml_providers = toml::map::Map::new();
+                for (id, provider) in providers {
+                    if let Ok(toml_v) = toml::Value::deserialize(provider.clone()) {
+                        toml_providers.insert(id.clone(), toml_v);
+                    }
+                }
+                table.insert(
+                    "model_providers".to_string(),
+                    toml::Value::Table(toml_providers),
+                );
             }
 
             // v0.7.4 需求4 B1：推理力度（见 apply_reasoning_effort）。
@@ -444,7 +512,50 @@ impl ConfigAdapter for CodexAdapter {
     }
 
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
-        vec![]
+        // v0.7.5 需求7（迭代三用户裁决）：对齐 claude 双模版体系——仅「官方
+        // 直连」与「中转配置」两个模版；中转的供应商（DeepSeek/智谱/自定义）
+        // 在补填弹窗下拉选择（前端 CODEX_PROXY_PRESETS 注册表，与 claude 的
+        // CLAUDE_PROXY_PRESETS 同层）。行为（推理力度）由配置页独立承载，
+        // 不再用模版表达。
+        //
+        // 中转机制 = config.toml 顶层 model_provider + [model_providers.*]
+        //（base_url/wire_api="responses"/env_key），密钥经 env_key 环境变量
+        // 在 spawn 时注入（codex_spawn_envs）。预设依据：DeepSeek 官方原生
+        // 支持 Responses API（api-docs.deepseek.com「接入 Codex」）；智谱
+        // 官方 Responses 端点 open.bigmodel.cn/api/v1（GLM Coding Plan 官方
+        // Codex 接入文档；早期 issue #39 的「不支持」已过时）；自定义覆盖
+        // 任意 Responses 兼容端点。
+        vec![
+            crate::hub::ConfigTemplate {
+                requires_fill: false,
+                model_store_patch: None,
+                id: "codex-direct-openai".to_string(),
+                name: "官方直连（OpenAI）".to_string(),
+                description: "移除中转配置，回到 codex 官方通道（需已通过 codex login                               或官方 API 密钥完成认证）。模型与推理力度保持现状。"
+                    .to_string(),
+                config: serde_json::json!({ "modelProvider": null }),
+            },
+            crate::hub::ConfigTemplate {
+                requires_fill: true,
+                model_store_patch: None,
+                id: "codex-proxy".to_string(),
+                name: "中转配置 (Proxy)".to_string(),
+                description: "选择服务商（DeepSeek / 智谱 GLM / 自定义 Responses 端点）                              并填入密钥：base_url、环境变量名与默认模型按所选供应商                              自动填入，可修改。已有渠道不受影响。"
+                    .to_string(),
+                config: serde_json::json!({
+                    "modelProvider": "proxy",
+                    "modelProviders": {
+                        "proxy": {
+                            "name": "中转",
+                            "base_url": "",
+                            "wire_api": "responses",
+                            "env_key": "PROXY_API_KEY"
+                        }
+                    },
+                    "env": { "PROXY_API_KEY": "" }
+                }),
+            },
+        ]
     }
 
     fn config_format(&self) -> Option<String> {
