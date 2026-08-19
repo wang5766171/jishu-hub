@@ -3118,7 +3118,11 @@ export function ChatPage({
               contextFooter={startComposerFooter}
               workModeLabel={t("sessions.workMode.label")}
               workModeOptions={workModeOptions}
-              workModeValue={taskLaunchOpen ? "task" : "chat"}
+              // 工作模式显示反映「当前会话处于任务上下文」的两种形态：任务
+              // 发起弹窗（taskLaunchOpen）或已打开任务工作台（taskModeActive，
+              // 含重进打开已有任务——修复重进后输入框误显示会话模式）。切换
+              // 到会话模式走 handleWorkModeChange 的全量重置（两者均覆盖）。
+              workModeValue={taskLaunchOpen || taskModeActive ? "task" : "chat"}
               onWorkModeChange={handleWorkModeChange}
               accessModeLabel={accessModeLabel}
               accessModeTitle={supportsAccessModeSwitch ? t("sessions.accessMode") : t("sessions.accessModeReadOnly")}

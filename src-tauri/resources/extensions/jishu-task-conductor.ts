@@ -304,6 +304,13 @@ export default function conductorExtension(pi: ExtensionAPI): void {
   };
   let toolsBeforeWorkflow: string[] | undefined;
   let terminalStopReason: string | undefined;
+  // v0.7.5 需求5：会话恢复时的「中断态」标记（瞬态，不落盘）。上次停在
+  // 候选待确认（pendingConfirmation）或修订待执行（revisionInstruction）
+  // 时进程退出——确认卡片随进程丢失、修订轮从未发生，但会话历史里旧工具
+  // 结果（如"已收到补充，正在修订"）会让模型误以为修订/提交已完成，只做
+  // 文字总结等待并不存在的卡片 → 死锁。恢复后置位，由 before_agent_start
+  // 注入恢复指引，模型重新调用提交工具后清除。
+  let interruptedResume = false;
 
   const persist = (): void => {
     pi.appendEntry("jishu-conductor", { ...state, toolsBeforeWorkflow });
@@ -674,6 +681,8 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       ),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx: ExtensionContext) {
+      // v0.7.5 需求5：中断恢复后模型已重新提交，恢复指引使命完成。
+      interruptedResume = false;
       const revision =
         state.candidate?.kind === "requirements"
           ? state.candidate.revision + 1
@@ -753,6 +762,8 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       ),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx: ExtensionContext) {
+      // v0.7.5 需求5：中断恢复后模型已重新提交，恢复指引使命完成。
+      interruptedResume = false;
       validatePlan(params.nodes);
       const revision =
         state.candidate?.kind === "plan" ? state.candidate.revision + 1 : 1;
@@ -1029,11 +1040,25 @@ export default function conductorExtension(pi: ExtensionAPI): void {
             "只修改受补充影响的内容，保留未被明确否定的字段；完成后提交完整替代候选。",
           ].join("\n\n")
         : "";
+    // v0.7.5 需求5：中断恢复指引。历史工具结果（"已收到补充，正在修订"/
+    // "等待确认"）是中断前的旧状态——修订轮与确认卡片均未完成。不注入此段
+    // 时模型会把旧结果当作已完成，只输出文字总结等一张不存在的卡片 → 死锁
+    //（2026-08-18 实测：恢复轮模型声称"已提交 lock_requirement"但未调用工具）。
+    const resumeGuidance = interruptedResume
+      ? [
+          "[会话恢复提示 — 强制遵守]",
+          "上次会话在本阶段中断：用户确认卡片已随中断丢失，修订轮从未执行；历史工具结果里的“正在修订/等待确认”均未完成。",
+          `用户要求继续时：基于 REVISION CONTEXT（如有）完成修订，并必须重新调用 ${
+            state.phase === "discuss" ? "lock_requirement" : "commit_plan"
+          } 提交完整候选——只有重新调用该工具才会重新弹出用户确认卡片。`,
+          "禁止只输出文字总结声称“已提交/等待卡片确认”，那会永久卡住流程。",
+        ].join("\n")
+      : "";
     return {
       message: {
         customType: phaseTag(),
         display: false,
-        content: `[JISHU-TASK:${state.domain}:${state.phase}] === ${phaseDisplayName(state.phase)} ===\n${skill}\n\n${phaseDiscipline(state.phase)}\n\n${taskAnchor()}${revisionContext ? `\n\n${revisionContext}` : ""}`,
+        content: `[JISHU-TASK:${state.domain}:${state.phase}] === ${phaseDisplayName(state.phase)} ===\n${skill}\n\n${phaseDiscipline(state.phase)}\n\n${taskAnchor()}${resumeGuidance ? `\n\n${resumeGuidance}` : ""}${revisionContext ? `\n\n${revisionContext}` : ""}`,
       },
     };
   });
@@ -1073,6 +1098,15 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       state.pendingDrive = undefined;
       state.pendingRevise = undefined;
       toolsBeforeWorkflow = last.data.toolsBeforeWorkflow;
+      // v0.7.5 需求5：中断态检测——停在候选待确认/修订待执行时进程退出，
+      // 卡片与修订轮均未发生，需要恢复指引纠正模型的"已完成"错觉。
+      if (
+        (state.phase === "discuss" || state.phase === "plan") &&
+        (state.pendingConfirmation !== undefined ||
+          state.revisionInstruction !== undefined)
+      ) {
+        interruptedResume = true;
+      }
     }
 
     // Phase 2（任务 2.6）：从 Hub 拉取 TaskInstance 权威状态，覆盖 appendEntry。
