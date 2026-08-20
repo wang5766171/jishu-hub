@@ -45,6 +45,11 @@ import type {
 import { ProviderForm } from "./provider-form";
 import { ModelForm } from "./model-form";
 import { ActiveModelCard, type ActiveModelOption } from "./active-model-card";
+import { ChannelSidebar, type ChannelSidebarItem } from "./channel-sidebar";
+import {
+  PROVIDER_PRESETS,
+  matchPresetByBaseUrl,
+} from "@/agents/config/presets/provider-presets";
 
 export function ModelManager({
   onChanged,
@@ -66,8 +71,10 @@ export function ModelManager({
 
   // At most one form open at a time; either an edit / add provider
   // form, or an edit / add model form scoped to a single provider.
+  // v0.7.6 需求3：add 模式携带 presetId（左栏点击未添加预置渠道 /
+  // 底部「添加自定义渠道」= "custom" 时预选）。
   const [providerForm, setProviderForm] = useState<
-    { mode: "add" } | { mode: "edit"; name: string } | null
+    { mode: "add"; presetId?: string } | { mode: "edit"; name: string } | null
   >(null);
   const [modelForm, setModelForm] = useState<
     { providerName: string; mode: "add" } | { providerName: string; mode: "edit"; modelId: string } | null
@@ -368,74 +375,86 @@ export function ModelManager({
     setError(null);
   };
 
+  // v0.7.6 需求3：左栏 = 预置渠道（默认全量显示，无需先添加）+ 自定义渠道
+  //（baseUrl 未命中任何预设的 provider）。已添加预置点击进详情，未添加
+  // 预置点击展开预选该预设的添加表单。
+  const presetChannels = PROVIDER_PRESETS.filter((p) => p.id !== "custom");
+  const providerMatchedPresetId = (name: string): string | null =>
+    matchPresetByBaseUrl(config.providers[name]?.baseUrl)?.id ?? null;
+
+  const sidebarChannels: ChannelSidebarItem[] = [
+    ...presetChannels.map((p): ChannelSidebarItem => {
+      const matchedKey = providerNames.find((n) => providerMatchedPresetId(n) === p.id);
+      return {
+        id: `preset:${p.id}`,
+        label: t(p.id_label),
+        sub: p.baseUrl,
+        active: matchedKey ? active?.provider === matchedKey : false,
+        added: Boolean(matchedKey),
+      };
+    }),
+    ...providerNames
+      .filter((name) => !providerMatchedPresetId(name))
+      .map((name): ChannelSidebarItem => {
+        const p = config.providers[name];
+        return {
+          id: `provider:${name}`,
+          label: (p?.name as string | undefined) || name,
+          sub: p?.baseUrl || t("config.noBaseUrl"),
+          active: active?.provider === name,
+        };
+      }),
+  ];
+
+  const sidebarSelectedId = providerForm
+    ? providerForm.mode === "add" && providerForm.presetId && providerForm.presetId !== "custom"
+      ? `preset:${providerForm.presetId}`
+      : null
+    : selectedProvider
+      ? providerMatchedPresetId(selectedProvider)
+        ? `preset:${providerMatchedPresetId(selectedProvider)}`
+        : `provider:${selectedProvider}`
+      : null;
+
+  const handleSidebarSelect = (id: string) => {
+    if (id.startsWith("preset:")) {
+      const presetId = id.slice("preset:".length);
+      const matchedKey = providerNames.find((n) => providerMatchedPresetId(n) === presetId);
+      if (matchedKey) {
+        selectProvider(matchedKey);
+      } else {
+        setSelectedProvider(null);
+        setModelForm(null);
+        setProviderForm({ mode: "add", presetId });
+        setError(null);
+      }
+      return;
+    }
+    if (id.startsWith("provider:")) {
+      selectProvider(id.slice("provider:".length));
+    }
+  };
+
   return (
     <div className="space-y-4">
       {confirmDialogNode}
-      {/* R8：与 claude 模型设置页同构——左「渠道设置」右「模型设置」，
-          当前模型大卡位于右列顶部，渠道配置行内编辑（不用弹层表单）。 */}
+      {/* v0.7.6 需求3：统一两栏——左 ChannelSidebar（预置渠道默认全量显示
+          + 自定义渠道 + 底部添加按钮），右「模型设置」（当前模型大卡 +
+          添加表单/模型表单/渠道详情）。 */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[240px_1fr]">
-        {/* 左：渠道列表 */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-muted-foreground">
-              {t("config.colChannels")}
-            </span>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 px-1.5 text-[11px]"
-              onClick={startAddProvider}
-              disabled={loading}
-            >
-              <Plus className="mr-1 h-3 w-3" />
-              {t("common.add")}
-            </Button>
-          </div>
-          <div className="space-y-1 rounded-lg border border-border/40 p-1.5">
-            {loading ? (
-              <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground">
-                <Loader2 className="h-3 w-3 animate-spin" /> {t("common.loading")}
-              </div>
-            ) : providerNames.length === 0 ? (
-              <p className="px-2 py-3 text-center text-[11px] leading-relaxed text-muted-foreground/70">
-                {t("config.noProviders")}
-              </p>
-            ) : (
-              providerNames.map((name) => {
-                const p = config.providers[name];
-                const isActiveProvider = active?.provider === name;
-                return (
-                  <button
-                    key={name}
-                    type="button"
-                    onClick={() => selectProvider(name)}
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition-fast",
-                      selectedProvider === name
-                        ? "bg-accent text-accent-foreground"
-                        : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "h-1.5 w-1.5 shrink-0 rounded-full",
-                        isActiveProvider ? "bg-emerald-500" : "bg-transparent",
-                      )}
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm">
-                        {(p?.name as string | undefined) || name}
-                      </span>
-                      <span className="block truncate font-mono text-[10px] text-muted-foreground/70">
-                        {p?.baseUrl || t("config.noBaseUrl")}
-                      </span>
-                    </span>
-                  </button>
-                );
-              })
-            )}
-          </div>
-        </div>
+        {/* 左：渠道列表（统一侧栏） */}
+        <ChannelSidebar
+          loading={loading}
+          channels={sidebarChannels}
+          selectedId={sidebarSelectedId}
+          onSelect={handleSidebarSelect}
+          onAddCustom={() => {
+            setSelectedProvider(null);
+            setModelForm(null);
+            setProviderForm({ mode: "add", presetId: "custom" });
+            setError(null);
+          }}
+        />
 
         {/* 右：模型设置（当前模型 + 渠道配置 + 模型列表） */}
         <div className="space-y-3">
@@ -462,9 +481,18 @@ export function ModelManager({
 
           {providerForm ? (
             <ProviderForm
+              // key 强制在「表单打开状态下切换到另一预置渠道」时重建表单
+              //（否则组件实例保留首次挂载的预设 state，第二次切换不生效——
+              // v0.7.6 需求3 测试期迭代二）。
+              key={
+                providerForm.mode === "add"
+                  ? providerForm.presetId ?? "custom"
+                  : `edit:${providerForm.name}`
+              }
               existingName={null}
               existingProvider={undefined}
               existingProviderKeys={providerNames}
+              initialPresetId={providerForm.mode === "add" ? providerForm.presetId : undefined}
               saving={saving}
               onCancel={() => setProviderForm(null)}
               onSubmit={submitProvider}
@@ -493,6 +521,12 @@ export function ModelManager({
               activeModelId={
                 active?.provider === selectedProvider ? active.model : null
               }
+              onEnableProvider={() => {
+                // v0.7.6 需求3 迭代三：启用渠道 = 激活该渠道第一个模型
+                //（切换渠道的明确操作方式；后续可在模型列表改选其他模型）。
+                const first = config.providers[selectedProvider]?.models?.[0]?.id;
+                if (first) void setActiveFromPicker(selectedProvider, first);
+              }}
               onDeleteProvider={() => deleteProvider(selectedProvider)}
               onSaveProvider={(next) => saveProviderFields(selectedProvider, next)}
               onAddModel={() => startAddModel(selectedProvider)}
@@ -533,6 +567,7 @@ function ProviderDetailPanel({
   models,
   isActive,
   activeModelId,
+  onEnableProvider,
   onDeleteProvider,
   onSaveProvider,
   onAddModel,
@@ -545,6 +580,8 @@ function ProviderDetailPanel({
   models: PiModelEntry[];
   isActive: boolean;
   activeModelId: string | null;
+  /** 启用此渠道（激活该渠道第一个模型；v0.7.6 需求3 迭代三）。 */
+  onEnableProvider: () => void;
   onDeleteProvider: () => void;
   onSaveProvider: (next: PiProviderConfig) => Promise<void>;
   onAddModel: () => void;
@@ -640,11 +677,22 @@ function ProviderDetailPanel({
               {t("config.authHeaderBadge")}
             </span>
           )}
-          {isActive && (
+          {isActive ? (
             <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
               <Check className="h-3 w-3" />
               {t("config.channelActive")}
             </span>
+          ) : (
+            models.length > 0 && (
+              <Button
+                size="sm"
+                className="h-7 shrink-0 text-xs"
+                onClick={onEnableProvider}
+              >
+                <Power className="mr-1 h-3 w-3" />
+                {t("config.channelEnable")}
+              </Button>
+            )
           )}
         </div>
         <Button

@@ -250,6 +250,7 @@ pub fn run() {
             commands::agents::update_mcp_adapter,
             commands::agents::check_transport_bridge,
             commands::agents::install_transport_bridge,
+            commands::agents::agent_official_auth,
             commands::update::check_available_updates,
             commands::update::check_for_update,
             commands::update::download_update,

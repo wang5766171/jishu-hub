@@ -15,6 +15,8 @@ export interface ClaudeProxyPreset {
   baseUrl: string;
   /** 写入 env.ANTHROPIC_MODEL 的推荐模型 */
   model: string;
+  /** 渠道可用模型候选（v0.7.6 需求2：代理态模型下拉只显示渠道模型） */
+  models: string[];
   /** 「获取密钥」官方外链 */
   apiKeyUrl?: string;
   /** 自定义入口（baseUrl 为空 = 不自动填） */
@@ -29,6 +31,7 @@ export const CLAUDE_PROXY_PRESETS: ClaudeProxyPreset[] = [
     labelKey: p.id_label,
     baseUrl: p.baseUrl,
     model: p.models[0]?.id ?? "",
+    models: p.models.map((m) => m.id),
     apiKeyUrl: p.apiKeyUrl,
   })),
   {
@@ -36,6 +39,7 @@ export const CLAUDE_PROXY_PRESETS: ClaudeProxyPreset[] = [
     labelKey: "config.preset.custom.name",
     baseUrl: "",
     model: "",
+    models: [],
     custom: true,
   },
 ];

@@ -78,6 +78,16 @@ const agentTabSection: Partial<Record<ManageTab, AgentConfigSection>> = {
   "agent-advanced": "advanced",
 };
 
+/** 反查：AgentConfigSection → 侧边栏 tab id（v0.7.6 需求2：配置页内部
+ *  跳转子页，如模型页 env 块「前往高级设置修改」）。 */
+const agentSectionTab: Partial<Record<AgentConfigSection, ManageTab>> = {
+  models: "agent-models",
+  behavior: "agent-behavior",
+  templates: "agent-templates",
+  backups: "agent-backups",
+  advanced: "agent-advanced",
+};
+
 export function ManagePage({ onBack, onEnterProject, navigateToProjects, projects, projectMetas, refetchProjects, refetchProjectMetas }: ManagePageProps) {
   const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<ManageTab>("projects");
@@ -97,6 +107,12 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, project
 
   const tr = (key: string, fallback: string) => (t(key) === key ? fallback : t(key));
   const agentSection = agentTabSection[activeTab];
+
+  /** 配置页内部跳转（v0.7.6 需求2）：切侧边栏 tab 到目标智能体设置子页。 */
+  const handleNavigateAgentSection = (section: AgentConfigSection) => {
+    const tab = agentSectionTab[section];
+    if (tab) setActiveTab(tab);
+  };
 
   return (
     <div className="flex h-full">
@@ -169,7 +185,12 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, project
             onEnterProject={onEnterProject}
           />
         )}
-        {agentSection !== undefined && <ConfigPage configTab={agentSection} />}
+        {agentSection !== undefined && (
+          <ConfigPage
+            configTab={agentSection}
+            onNavigateSection={handleNavigateAgentSection}
+          />
+        )}
         {activeTab === "commands" && <CommandsPage />}
         {activeTab === "env" && <EnvCheckPage />}
       </div>

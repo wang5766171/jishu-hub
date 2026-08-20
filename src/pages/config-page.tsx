@@ -15,8 +15,11 @@ import type { AgentConfigSection } from "@/types";
  */
 export function ConfigPage({
   configTab = "models",
+  onNavigateSection,
 }: {
   configTab?: AgentConfigSection;
+  /** v0.7.6 需求2：跳转智能体设置子页（透传给 adapter 配置页组件）。 */
+  onNavigateSection?: (section: AgentConfigSection) => void;
 }) {
   // v0.7.0：管理作用域状态（manageAgentId 替代全局 activeId）。
   const { manageAgentId, manageAgent, setManageAgent } = useAgent();
@@ -36,6 +39,7 @@ export function ConfigPage({
           activeAgent={active ?? null}
           agentRefreshKey={agentRefreshKey}
           configTab={configTab}
+          onNavigateSection={onNavigateSection}
           switcherSlot={
             <AgentSwitcher value={activeId} onChange={setManageAgent}>
               {active && (

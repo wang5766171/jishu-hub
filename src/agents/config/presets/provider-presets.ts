@@ -116,15 +116,46 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     ],
   },
   {
-    id: "deepseek",
-    id_label: "config.preset.deepseek.name",
-    baseUrl: "https://api.deepseek.com/anthropic",
+    // v0.7.6 需求3：阿里云百炼（DashScope）Anthropic 兼容端点。
+    // 地址为 Token Plan（个人版/团队版）订阅专用（2026-08-20 官方文档
+    // help.aliyun.com/zh/model-studio/claude-code 核对）——与按量计费
+    // 地址/密钥互不相通，混用报 401 invalid_api_key。模型可加 "[1m]"
+    // 后缀启用 100 万上下文（如 qwen3.7-plus[1m]）。
+    id: "dashscope",
+    id_label: "config.preset.dashscope.name",
+    baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
     api: "anthropic-messages",
-    apiKeyUrl: "https://platform.deepseek.com/api_keys",
-    docsUrl: "https://api-docs.deepseek.com",
+    apiKeyUrl: "https://bailian.console.aliyun.com/?apiKey=1",
+    docsUrl: "https://help.aliyun.com/zh/model-studio/claude-code",
     models: [
-      { id: "deepseek-chat", displayName: "DeepSeek V3（对话）", contextWindow: 128000, maxTokens: 8192, reasoning: false },
-      { id: "deepseek-reasoner", displayName: "DeepSeek R1（深度思考）", contextWindow: 128000, maxTokens: 65536, reasoning: true },
+      {
+        id: "qwen3.8-max",
+        displayName: "Qwen3.8-Max",
+        contextWindow: 983616,
+        maxTokens: 65536,
+        reasoning: true,
+      },
+      {
+        id: "qwen3.7-max",
+        displayName: "Qwen3.7-Max",
+        contextWindow: 262144,
+        maxTokens: 65536,
+        reasoning: true,
+      },
+      {
+        id: "qwen3.7-plus",
+        displayName: "Qwen3.7-Plus",
+        contextWindow: 262144,
+        maxTokens: 32768,
+        reasoning: false,
+      },
+      {
+        id: "qwen3.6-flash",
+        displayName: "Qwen3.6-Flash",
+        contextWindow: 262144,
+        maxTokens: 32768,
+        reasoning: false,
+      },
     ],
   },
   {
@@ -137,6 +168,18 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     models: [
       { id: "kimi-k2-0905-preview", displayName: "Kimi K2", contextWindow: 262144, maxTokens: 8192, reasoning: false },
       { id: "kimi-k2-turbo-preview", displayName: "Kimi K2（极速）", contextWindow: 262144, maxTokens: 8192, reasoning: false },
+    ],
+  },
+  {
+    id: "deepseek",
+    id_label: "config.preset.deepseek.name",
+    baseUrl: "https://api.deepseek.com/anthropic",
+    api: "anthropic-messages",
+    apiKeyUrl: "https://platform.deepseek.com/api_keys",
+    docsUrl: "https://api-docs.deepseek.com",
+    models: [
+      { id: "deepseek-chat", displayName: "DeepSeek V3（对话）", contextWindow: 128000, maxTokens: 8192, reasoning: false },
+      { id: "deepseek-reasoner", displayName: "DeepSeek R1（深度思考）", contextWindow: 128000, maxTokens: 65536, reasoning: true },
     ],
   },
   {

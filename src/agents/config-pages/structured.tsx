@@ -33,6 +33,7 @@ export function StructuredConfigPage({
   agentRefreshKey,
   configTab = "models",
   switcherSlot,
+  onNavigateSection,
 }: AdapterConfigPageProps) {
   const { t } = useTranslation();
   const surface = configSurface.kind === "structured" ? configSurface : undefined;
@@ -204,7 +205,13 @@ export function StructuredConfigPage({
             </div>
           )}
           {draft && (
-            <ConfigModelsZone config={draft} onChange={update} surface={surface} />
+            <ConfigModelsZone
+              config={draft}
+              onChange={update}
+              surface={surface}
+              onNavigateSection={onNavigateSection}
+              agentId={agentId || undefined}
+            />
           )}
         </>
       )}

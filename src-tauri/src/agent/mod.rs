@@ -256,6 +256,19 @@ pub struct TransportBridgeStatus {
     pub name: Option<String>,
 }
 
+/// 官方直连认证状态（v0.7.6 需求3）。仅对有「官方渠道 + OAuth 登录」概念
+/// 的 agent（codex / claude_code）有意义——`AgentManifest::official_auth`
+/// 返回 None 时 UI 不渲染认证卡。authenticated 基于本机凭证文件存在性
+/// （尽力而为：Linux/macOS 凭证在 keychain，探测不到时返回 false 并给出
+/// 登录入口，不误报已认证）。login_command 供前端 run_in_terminal 触发
+/// 官方登录流程（codex login 自动打开浏览器；claude 在 REPL 内 /login）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OfficialAuthStatus {
+    pub authenticated: bool,
+    /// 官方登录命令（在终端中执行）。
+    pub login_command: String,
+}
+
 pub struct AgentRegistry {
     agents: HashMap<String, Box<dyn AgentPlugin + Send + Sync>>,
     health_cache: Arc<Mutex<HashMap<String, AgentHealth>>>,

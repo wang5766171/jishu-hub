@@ -47,6 +47,9 @@ export function ProviderForm({
   existingName,
   existingProvider,
   existingProviderKeys,
+  /** v0.7.6 需求3：新增模式下预选的预设 id（左栏点击未添加预置渠道 /
+   *  底部「添加自定义渠道」= "custom"）。 */
+  initialPresetId,
   saving,
   onCancel,
   onSubmit,
@@ -55,6 +58,7 @@ export function ProviderForm({
   existingProvider: PiProviderConfig | undefined;
   /** 当前已有 provider key 列表（新增时用于推荐 key 去重） */
   existingProviderKeys: string[];
+  initialPresetId?: string;
   saving: boolean;
   onCancel: () => void;
   onSubmit: (payload: { name: string; provider: PiProviderConfig }) => void;
@@ -64,14 +68,31 @@ export function ProviderForm({
   const initialPreset =
     existingProvider && existingName
       ? (matchPresetByBaseUrl(existingProvider.baseUrl) ?? PROVIDER_PRESETS[PROVIDER_PRESETS.length - 1])
-      : null;
+      : initialPresetId
+        ? (PROVIDER_PRESETS.find((p) => p.id === initialPresetId) ?? null)
+        : null;
 
+  // v0.7.6 需需求3 迭代：左栏点击预置渠道进入时预设已确定（非 custom），
+  // 隐藏「选择服务商」卡片网格——右栏直接是渠道配置（密钥 + 预置模型
+  // chips + 自定义模型添加 + 高级选项）。custom（底部添加按钮）仍显示
+  // 网格供选择。
+  const presetLocked =
+    Boolean(initialPresetId && initialPresetId !== "custom") && initialPreset !== null;
+
+  // 预选预设时同步回填（与 selectPreset 一致的初始态：推荐 key / 地址 / 协议 / 模型）。
   const [preset, setPreset] = useState<ProviderPreset | null>(initialPreset);
-  const [name, setName] = useState(existingName ?? "");
+  const [name, setName] = useState(
+    existingName ??
+      (initialPreset && initialPreset.id !== "custom"
+        ? suggestProviderKey(initialPreset, existingProviderKeys)
+        : ""),
+  );
   const [displayName, setDisplayName] = useState(existingProvider?.name ?? "");
-  const [baseUrl, setBaseUrl] = useState(existingProvider?.baseUrl ?? "");
+  const [baseUrl, setBaseUrl] = useState(
+    existingProvider?.baseUrl ?? (initialPreset && initialPreset.id !== "custom" ? initialPreset.baseUrl : ""),
+  );
   const [apiKey, setApiKey] = useState(existingProvider?.apiKey ?? "");
-  const [api, setApi] = useState(existingProvider?.api ?? "anthropic-messages");
+  const [api, setApi] = useState(existingProvider?.api ?? initialPreset?.api ?? "anthropic-messages");
   const [authHeader, setAuthHeader] = useState(existingProvider?.authHeader ?? false);
   const [headers, setHeaders] = useState<HeaderRow[]>(
     Object.entries(existingProvider?.headers ?? {}).map(([key, value]) => ({ key, value })),
@@ -83,8 +104,13 @@ export function ProviderForm({
     existingProvider?.modelOverrides ? JSON.stringify(existingProvider.modelOverrides, null, 2) : "",
   );
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>(
-    existingProvider?.models?.map((m) => m.id) ?? [],
+    existingProvider?.models?.map((m) => m.id) ??
+      (initialPreset && initialPreset.id !== "custom" ? initialPreset.models.map((m) => m.id) : []),
   );
+  // v0.7.6 需求3 迭代：预设渠道支持添加自定义模型（应对后续上新）——
+  // 与预设 chips 分开管理，生成基础模型条目（详情面板可再补全字段）。
+  const [customModels, setCustomModels] = useState<string[]>([]);
+  const [customModelInput, setCustomModelInput] = useState("");
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
 
@@ -113,6 +139,17 @@ export function ProviderForm({
     setSelectedModelIds((prev) =>
       prev.includes(modelId) ? prev.filter((id) => id !== modelId) : [...prev, modelId],
     );
+    setTestResult(null);
+  };
+
+  /** 添加自定义模型（去重；不与预设 chips 混管，生成基础条目）。 */
+  const addCustomModel = () => {
+    const id = customModelInput.trim();
+    if (!id) return;
+    if (!customModels.includes(id) && !selectedModelIds.includes(id)) {
+      setCustomModels((prev) => [...prev, id]);
+    }
+    setCustomModelInput("");
     setTestResult(null);
   };
 
@@ -183,15 +220,24 @@ export function ProviderForm({
     }
 
     if (preset && preset.id !== "custom") {
-      // 预设模型 chips：按勾选生成条目；编辑模式下保留用户自定义过的
-      // 既有条目（不在预设清单里的不丢）。
+      // 预设模型 chips：按勾选生成条目；自定义添加的模型生成基础条目；
+      // 编辑模式下保留用户自定义过的既有条目（不在预设清单里的不丢）。
       const presetEntries = preset.models
         .filter((m) => selectedModelIds.includes(m.id))
         .map(presetModelToEntry);
+      const customEntries = customModels
+        .filter((id) => !preset.models.some((pm) => pm.id === id))
+        .map((id) => ({
+          id,
+          name: id,
+          input: ["text"],
+          reasoning: false,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        }));
       const extraExisting = (existingProvider?.models ?? []).filter(
         (m) => !preset.models.some((pm) => pm.id === m.id),
       );
-      const models = [...presetEntries, ...extraExisting];
+      const models = [...presetEntries, ...customEntries, ...extraExisting];
       if (models.length > 0) provider.models = models;
     } else if (existingProvider?.models) {
       provider.models = existingProvider.models;
@@ -203,43 +249,49 @@ export function ProviderForm({
   return (
     <div className="rounded-md border border-border/40 bg-muted/30 p-4 space-y-4">
       <div className="text-sm font-medium">
-        {isEdit ? `${t("config.editProvider")}: ${existingName}` : t("config.addProvider")}
+        {isEdit
+          ? `${t("config.editProvider")}: ${existingName}`
+          : presetLocked && preset
+            ? `${t("config.addProvider")}: ${t(preset.id_label)}`
+            : t("config.addProvider")}
       </div>
 
-      {/* ① 选择服务商 */}
-      <div className="space-y-2">
-        <Label className="text-xs text-muted-foreground">
-          {t("config.presetStepChoose")}
-        </Label>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-          {PROVIDER_PRESETS.map((p) => {
-            const active = preset?.id === p.id;
-            return (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => selectPreset(p)}
-                className={cn(
-                  "rounded-md border px-3 py-2.5 text-left transition-colors",
-                  active
-                    ? "border-primary/60 bg-primary/10"
-                    : "border-border/40 hover:border-border bg-background/40",
-                )}
-              >
-                <div className="flex items-center justify-between gap-1">
-                  <span className="text-xs font-medium truncate">{t(p.id_label)}</span>
-                  {active && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
-                </div>
-                {p.models.length > 0 && (
-                  <div className="mt-0.5 text-[10px] text-muted-foreground truncate">
-                    {p.models.map((m) => m.displayName).join(" · ")}
+      {/* ① 选择服务商（预设已由左栏锁定时隐藏——右栏即渠道配置） */}
+      {!presetLocked && (
+        <div className="space-y-2">
+          <Label className="text-xs text-muted-foreground">
+            {t("config.presetStepChoose")}
+          </Label>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {PROVIDER_PRESETS.map((p) => {
+              const active = preset?.id === p.id;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => selectPreset(p)}
+                  className={cn(
+                    "rounded-md border px-3 py-2.5 text-left transition-colors",
+                    active
+                      ? "border-primary/60 bg-primary/10"
+                      : "border-border/40 hover:border-border bg-background/40",
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-xs font-medium truncate">{t(p.id_label)}</span>
+                    {active && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
                   </div>
-                )}
-              </button>
-            );
-          })}
+                  {p.models.length > 0 && (
+                    <div className="mt-0.5 text-[10px] text-muted-foreground truncate">
+                      {p.models.map((m) => m.displayName).join(" · ")}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* ② API Key（预设已定时唯一必填项） */}
       {preset && preset.id !== "custom" && (
@@ -247,15 +299,14 @@ export function ProviderForm({
           <div className="flex items-center justify-between">
             <Label htmlFor="provider-apikey">{t("config.apiKey")}</Label>
             {preset.apiKeyUrl && (
-              <a
-                href={preset.apiKeyUrl}
-                target="_blank"
-                rel="noreferrer"
+              <button
+                type="button"
+                onClick={() => void invokeCommand("open_url", { url: preset.apiKeyUrl })}
                 className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
               >
                 {t("config.presetGetKey")}
                 <ExternalLink className="h-3 w-3" />
-              </a>
+              </button>
             )}
           </div>
           <Input
@@ -299,6 +350,48 @@ export function ProviderForm({
                 </button>
               );
             })}
+            {/* 已添加的自定义模型（可删除） */}
+            {customModels.map((id) => (
+              <span
+                key={id}
+                className="inline-flex items-center gap-1 rounded-full border border-primary/60 bg-primary/10 px-2.5 py-1 font-mono text-[11px] text-primary"
+              >
+                {id}
+                <button
+                  type="button"
+                  onClick={() => setCustomModels((prev) => prev.filter((m) => m !== id))}
+                  className="hover:text-foreground"
+                  title={t("common.delete")}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+          {/* 自定义模型添加（应对渠道上新模型；详情面板可再补全字段） */}
+          <div className="flex items-center gap-2">
+            <Input
+              value={customModelInput}
+              onChange={(e) => setCustomModelInput(e.target.value)}
+              placeholder={t("config.modelIdPlaceholder")}
+              className="h-7 max-w-[240px] font-mono text-xs"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && customModelInput.trim()) {
+                  e.preventDefault();
+                  addCustomModel();
+                }
+              }}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              disabled={!customModelInput.trim()}
+              onClick={addCustomModel}
+            >
+              <Plus className="mr-1 h-3 w-3" />
+              {t("config.addModel")}
+            </Button>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -393,15 +486,14 @@ export function ProviderForm({
                   <div className="flex items-center justify-between">
                     <Label htmlFor="provider-apikey-custom">{t("config.apiKey")}</Label>
                     {preset.apiKeyUrl && (
-                      <a
-                        href={preset.apiKeyUrl}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => void invokeCommand("open_url", { url: preset.apiKeyUrl })}
                         className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
                       >
                         {t("config.presetGetKey")}
                         <ExternalLink className="h-3 w-3" />
-                      </a>
+                      </button>
                     )}
                   </div>
                   <Input

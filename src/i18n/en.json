@@ -70,6 +70,7 @@
     "installFailed": "Failed",
     "installFailedUnknown": "Unknown error, check the console log",
     "uacCancelled": "Administrator authorization was cancelled; nothing was installed. Retry and choose Yes in the authorization dialog.",
+    "pathAddedHint": "Installed successfully. The npm global bin directory was missing from PATH and has been added to your user PATH: {{dir}}. Open a new terminal window for the command to be recognized (already-open windows will not inherit it).",
     "checking": "Checking environment...",
     "enterWorkspace": "Enter Workspace",
     "selectModule": "View more",
@@ -312,6 +313,9 @@
     "preset": {
       "zhipu": {
         "name": "Zhipu AI"
+      },
+      "dashscope": {
+        "name": "Alibaba DashScope"
       },
       "deepseek": {
         "name": "DeepSeek"
@@ -556,14 +560,30 @@
     "proxyIdPlaceholder": "provider id (e.g. deepseek)",
     "proxyNameLabel": "Provider name",
     "connectDirectHint": "Direct connection: sign in with a Claude subscription, or reach the official API directly — no channel needed. Switch to \"Use Proxy\" for third-party channels.",
-    "codexDirectHint": "Currently direct: authenticate via codex login or an official OpenAI key; no provider needed. Switch to \"Proxy\" to use a third-party provider (DeepSeek / Zhipu / custom).",
+    "codexDirectHint": "Currently direct: authenticate with your OpenAI account (codex login) to use official models; no provider needed. Pick a third-party channel on the left (Zhipu / DashScope / Kimi / DeepSeek) to switch to a proxy.",
     "codexCustomChannelHint": "Create a custom provider with an id, endpoint and key; the endpoint must support the OpenAI Responses API. It appears in the channel list after creation.",
+    "codexCustomModelHint": "Custom models are remembered locally per channel (never written into codex config files) for newly released models; press the button on the right to set one as current.",
     "colChannels": "Channels",
     "colModels": "Models",
     "channelPickHint": "Picking a channel auto-fills its base URL and recommended model; the green dot marks the channel in effect.",
     "channelActive": "In use",
     "channelKeySaved": "Key saved",
     "channelSaveHint": "Switching channels or saving a key only updates the draft; press \"Save\" in the header to write the config file.",
+    "modelEnvTitle": "Active environment variables",
+    "modelEnvEdit": "Edit in advanced settings",
+    "modelEnvEmpty": "No model-related environment variables configured yet (ANTHROPIC_MODEL / ANTHROPIC_BASE_URL, etc.).",
+    "modelEnvHint": "These are the environment variables actually in effect for the model path (secrets masked); edit them under Environment Variables in advanced settings.",
+    "channelAddCustom": "Add custom channel",
+    "channelAdded": "Added",
+    "channelEnable": "Enable channel",
+    "customChannelApply": "Save & activate",
+    "proxyChatHint": "This endpoint is OpenAI Chat Completions compatible (wire_api = chat).",
+    "officialAuthTitle": "Official auth",
+    "officialAuthOk": "Authenticated",
+    "officialAuthGo": "Authenticate",
+    "officialAuthHintCodex": "Direct connection requires an OpenAI account: press \"Authenticate\" to run codex login in a terminal; the browser opens automatically to finish authorization.",
+    "officialAuthHintClaude": "Direct connection requires an Anthropic subscription: press \"Authenticate\" to open a terminal running claude, then type /login inside it to finish browser authorization.",
+    "officialAuthRefreshHint": "Re-enter this page after finishing to refresh the status.",
     "channelCustomHint": "Custom channel: set ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN under Advanced → Environment Variables.",
     "channelSelectHint": "Select a channel on the left, or press \"Add\" to create one",
     "showKey": "Show key",

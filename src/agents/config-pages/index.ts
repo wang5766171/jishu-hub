@@ -22,6 +22,12 @@ export interface AdapterConfigPageProps {
    * 由 ConfigPage 外壳注入（管理作用域 AgentSwitcher）。
    */
   switcherSlot?: ReactNode;
+  /**
+   * v0.7.6 需求2：跳转到指定智能体设置子页（模型页 env 块
+   * 「前往高级设置修改」）。由 ConfigPage 外壳注入；未提供时相关
+   * 跳转按钮隐藏（渐进降级）。
+   */
+  onNavigateSection?: (section: AgentConfigSection) => void;
 }
 
 type ConfigSurfaceKind = ConfigSurface["kind"];

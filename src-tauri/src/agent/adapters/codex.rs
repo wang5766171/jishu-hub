@@ -123,6 +123,20 @@ impl AgentManifest for CodexAdapter {
         Some("npm install -g @openai/codex".to_string())
     }
 
+    /// v0.7.6 需求3：官方直连认证——`~/.codex/auth.json` 存在即视为已认证
+    /// （codex login 的 OAuth 产物）；登录入口 = 终端跑 `codex login`（自动
+    /// 打开浏览器完成授权）。
+    fn official_auth(&self) -> Option<crate::agent::OfficialAuthStatus> {
+        let auth_file = dirs::home_dir()?.join(".codex").join("auth.json");
+        let authenticated = std::fs::metadata(&auth_file)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false);
+        Some(crate::agent::OfficialAuthStatus {
+            authenticated,
+            login_command: "codex login".to_string(),
+        })
+    }
+
     fn install_package_manager(&self) -> Option<String> {
         Some("choco".to_string())
     }

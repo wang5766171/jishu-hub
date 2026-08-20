@@ -223,6 +223,21 @@ impl AgentManifest for ClaudeCodeAgent {
         Some("npm install -g @anthropic-ai/claude-code".to_string())
     }
 
+    /// v0.7.6 需求3：官方直连认证——Windows 凭证文件 `~/.claude/.credentials.json`
+    /// 存在即视为已认证；Linux/macOS 凭证在 keychain 探测不到（返回未认证
+    /// 并给登录入口，不误报）。claude 无独立 login 子命令，登录入口 = 终端
+    /// 启动 `claude` 后在 REPL 内执行 /login（OAuth 浏览器流程）。
+    fn official_auth(&self) -> Option<crate::agent::OfficialAuthStatus> {
+        let cred_file = dirs::home_dir()?.join(".claude").join(".credentials.json");
+        let authenticated = std::fs::metadata(&cred_file)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false);
+        Some(crate::agent::OfficialAuthStatus {
+            authenticated,
+            login_command: "claude".to_string(),
+        })
+    }
+
     fn native_install_command(&self) -> Option<String> {
         Some("winget install Anthropic.ClaudeCode".to_string())
     }

@@ -118,6 +118,23 @@ pub(crate) fn check_transport_bridge(
     agent.check_transport_bridge()
 }
 
+/// 官方直连认证状态（v0.7.6 需求3，adapter contract 路由）。None = 该
+/// agent 无官方认证概念（UI 不渲染认证卡）。
+#[tauri::command]
+pub(crate) fn agent_official_auth(
+    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
+) -> Result<Option<agent::OfficialAuthStatus>, String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
+    let agent = s
+        .registry
+        .get(&agent_id)
+        .ok_or_else(|| format!("Agent not found: {}", agent_id))?;
+    Ok(agent.official_auth())
+}
+
 /// Install transport bridge for a specific agent (routed through adapter
 /// contract). The MutexGuard is released before .await to keep the future
 /// Send-safe (mirrors install_mcp_adapter).

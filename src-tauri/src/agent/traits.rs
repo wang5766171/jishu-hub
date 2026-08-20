@@ -32,6 +32,12 @@ pub trait AgentManifest {
     fn install_hint(&self) -> Option<String> {
         None
     }
+    /// 官方直连认证状态（v0.7.6 需求3）。None = 该 agent 无官方渠道认证
+    /// 概念（UI 不渲染认证卡）；Some 时前端按状态渲染徽标并提供「前往
+    /// 认证」（run_in_terminal 跑 login_command）。
+    fn official_auth(&self) -> Option<super::OfficialAuthStatus> {
+        None
+    }
     fn native_install_command(&self) -> Option<String> {
         None
     }
