@@ -367,6 +367,14 @@ async fn codex_connection_loop(
     );
     on_session_resolved(&thread_id);
 
+    // v0.7.6 需求4：thread 建立后事件 envelope 切换为真实 thread id（对齐
+    // ACP/PiRpc runtime）。此前全程用 pending id：第一轮结束前端 drop 清掉
+    // alias 后，第二轮（复用进程，session id 相同不触发 alias 重建）的全部
+    // 事件经 pushTracked 落入无人订阅的孤儿 entry——UI 永远「思考中」、
+    // 切回会话后回复成对重复渲染。SessionResolved 之前的握手事件仍用
+    // pending id（前端尚未建立 alias）。主循环内的命令/通知 flush 同改。
+    let envelope_id = thread_id.clone();
+
     // 3. turn/start (first message). The response carries the Turn id; the turn
     //    keeps streaming afterwards and ends with turn/completed.
     let turn_start_id = writer
@@ -409,7 +417,7 @@ async fn codex_connection_loop(
                     &mut pending_user_inputs,
                     &mut pending_approvals,
                     &emit,
-                    &pending_session_id,
+                    &envelope_id,
                     &mut buf,
                 )
                 .await?
@@ -422,10 +430,10 @@ async fn codex_connection_loop(
                         &mut pending_user_inputs,
                         &mut pending_approvals,
                         &emit,
-                        &pending_session_id,
+                        &envelope_id,
                         &mut buf,
                     );
-                    flush_maybe(&emit, &pending_session_id, &mut buf, &mut last_flush);
+                    flush_maybe(&emit, &envelope_id, &mut buf, &mut last_flush);
                     false
                 }
                 None => {
@@ -450,7 +458,7 @@ async fn codex_connection_loop(
     }
 
     if !buf.is_empty() {
-        flush_buf(&emit, &pending_session_id, &mut buf);
+        flush_buf(&emit, &envelope_id, &mut buf);
     }
     Ok(())
 }
