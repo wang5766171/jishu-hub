@@ -344,9 +344,25 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
     }
     setInstallingIds((prev) => new Set(prev).add(item.id));
     try {
-      await invokeCommand("install_agent_command", {
+      const installResult = await invokeCommand<string>("install_agent_command", {
         command,
       });
+      // v0.7.6 需求1：npm 全局命令目录缺失时后端已自动补入用户 PATH，
+      // 弹提示告知新开终端才生效（已打开的窗口不继承新 PATH）。
+      const pathAdded = installResult
+        ?.split("\n")
+        .find((line) => line.startsWith("[PATH_ADDED]"))
+        ?.slice("[PATH_ADDED]".length);
+      if (pathAdded) {
+        await alertDialog({
+          title: t("env.title", "环境检测"),
+          description: t("env.pathAddedHint", {
+            defaultValue:
+              "安装成功。检测到 npm 全局命令目录不在 PATH 中，已自动加入用户 PATH：{{dir}}。请新开一个终端窗口后命令行即可识别（已打开的窗口不会自动继承）。",
+            dir: pathAdded,
+          }),
+        });
+      }
       if (item.id.startsWith("agent-")) {
         await refreshHealth({ silent: true });
         if (item.availableVersion && item.installed) {

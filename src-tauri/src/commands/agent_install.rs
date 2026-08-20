@@ -60,7 +60,17 @@ pub(crate) async fn install_agent_command(
     if command == "jishu-hub-internal-install" {
         return install_internal_jishu_agent(app).await;
     }
-    crate::os_adapter::shell::run_install_command(&command, None).await
+    let output = crate::os_adapter::shell::run_install_command(&command, None).await?;
+    // v0.7.6 需求1：npm 全局安装成功后确保全局命令目录在用户 PATH——
+    // Node 装到自定义路径的机器可能缺失该条目（Hub 显示已安装但命令行
+    // 无法识别）。返回值带 [PATH_ADDED] 标记供前端弹提示；补全失败静默
+    // 降级，不阻断安装结果。
+    if command.starts_with("npm install -g") {
+        if let Some(dir) = crate::os_adapter::path_env::ensure_npm_global_bin_on_user_path().await {
+            return Ok(format!("{output}\n[PATH_ADDED]{dir}"));
+        }
+    }
+    Ok(output)
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
