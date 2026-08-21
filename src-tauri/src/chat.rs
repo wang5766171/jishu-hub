@@ -461,29 +461,17 @@ pub async fn compact_agent_session(
 /// afterwards the process map is re-keyed to the branch id so the next
 /// message flows to the forked session. The original session file/entry is
 /// untouched and respawns on demand when reopened.
+///
+/// 历史会话（无活跃进程：本运行期未发过消息、或闲置 >10 分钟被回收）会
+/// **静默拉起一个仅 resume 的进程**（`--session-id` 恢复、不发首条消息，
+/// 零历史污染）再 clone——用户点「创建分支」直接成功，无需先发消息。
 #[tauri::command]
 pub async fn fork_agent_session(
     app: AppHandle,
+    agent_id: String,
+    project_path: String,
     session_id: String,
 ) -> Result<serde_json::Value, String> {
-    let (acp, agent_id, process) = {
-        let chat_state = app.state::<Mutex<ChatState>>();
-        let state = chat_state
-            .lock()
-            .map_err(|_| "Chat state lock poisoned".to_string())?;
-        let process = state
-            .processes
-            .get(&session_id)
-            .ok_or_else(|| {
-                "No active session process found — open the session and send at least one message first".to_string()
-            })?
-            .clone();
-        let acp = process
-            .acp
-            .clone()
-            .ok_or_else(|| "This session has no forkable runtime".to_string())?;
-        (acp, process.agent_id.clone(), process)
-    };
     {
         let app_state = app.state::<Mutex<crate::AppState>>();
         let s = app_state
@@ -498,7 +486,23 @@ pub async fn fork_agent_session(
             return Err("Session fork is not supported by this agent".to_string());
         }
     }
-    let result = acp.fork_session().await?;
+
+    let (acp, process) = match existing_chat_process(&app, &session_id, &agent_id) {
+        Some(process) => (
+            process
+                .acp
+                .clone()
+                .ok_or_else(|| "This session has no forkable runtime".to_string())?,
+            process,
+        ),
+        None => spawn_resume_fork_process(&app, &agent_id, &project_path, &session_id).await?,
+    };
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(45), acp.fork_session())
+        .await
+        .map_err(|_| {
+            "Fork timed out — the agent took too long to clone the session".to_string()
+        })??;
     let Some(new_session_id) = result
         .get("new_session_id")
         .and_then(|v| v.as_str())
@@ -506,8 +510,8 @@ pub async fn fork_agent_session(
     else {
         return Err("Fork finished but the branch session id is missing".to_string());
     };
-    // 进程已重绑到分支会话：按 pid 清掉旧键（含 pending 别名），以分支 id
-    // 重新挂载。原会话不再持有进程，重新打开时按需 spawn（既有机制）。
+    // 进程已重绑到分支会话：按 pid 清掉旧键（含 pending 别名/resume 拉起的键），
+    // 以分支 id 重新挂载。原会话不再持有进程，重新打开时按需 spawn（既有机制）。
     {
         let chat_state = app.state::<Mutex<ChatState>>();
         let mut state = chat_state
@@ -522,6 +526,103 @@ pub async fn fork_agent_session(
         "fork_agent_session: session {session_id} forked; process re-keyed to {new_session_id}"
     );
     Ok(result)
+}
+
+fn existing_chat_process(app: &AppHandle, session_id: &str, agent_id: &str) -> Option<ChatProcess> {
+    let chat_state = app.state::<Mutex<ChatState>>();
+    let state = chat_state.lock().ok()?;
+    let process = state.processes.get(session_id)?;
+    (process.agent_id == agent_id).then(|| process.clone())
+}
+
+/// 历史会话 fork 的静默 resume：拉起一个仅恢复会话、不发首条消息的 PiRpc
+/// 进程（start_gui_piresume_session，first_message=None），注册进进程表并
+/// 等待会话解析完成后返回。clone 由调用方经 AcpControl 发起。
+async fn spawn_resume_fork_process(
+    app: &AppHandle,
+    agent_id: &str,
+    project_path: &str,
+    session_id: &str,
+) -> Result<(crate::acp_runtime::AcpControl, ChatProcess), String> {
+    let prepared = {
+        let app_state = app.state::<Mutex<crate::AppState>>();
+        let s = app_state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        agent_runtime::prepare_gui_turn(
+            &s.registry,
+            AgentTurnRequest {
+                agent_id: agent_id.to_string(),
+                project_path: project_path.to_string(),
+                session_id: Some(session_id.to_string()),
+                message: String::new(),
+                timeout_secs: 0,
+            },
+        )?
+    };
+
+    // 进程退出（含闲置回收）时清理进程表；会话解析别名注册与 send_message
+    // 同款（resume 场景 real id 通常等于请求 id，别名分支自然跳过）。
+    let cleanup_pid = Arc::new(Mutex::new(None::<u32>));
+    let cleanup_pid_for_finish = cleanup_pid.clone();
+    let app_for_finish = app.clone();
+    let app_for_resolve = app.clone();
+    let sid_for_resolve = session_id.to_string();
+    let handle = agent_runtime::start_gui_piresume_session(
+        app.clone(),
+        prepared,
+        move || {
+            let pid = cleanup_pid_for_finish
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .to_owned();
+            let _ = remove_process_entries(&app_for_finish, pid, None);
+        },
+        move |real_id: &str| {
+            if real_id == sid_for_resolve {
+                return;
+            }
+            let state = app_for_resolve.state::<Mutex<ChatState>>();
+            if let Ok(mut s) = state.lock() {
+                if let Some(process) = s.processes.get(&sid_for_resolve).cloned() {
+                    s.processes.insert(real_id.to_string(), process);
+                }
+            };
+        },
+    )
+    .await?;
+    *cleanup_pid.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle.process_id);
+
+    let acp = handle
+        .acp
+        .clone()
+        .ok_or_else(|| "resume-fork spawn returned no runtime control".to_string())?;
+    let process = ChatProcess {
+        agent_id: agent_id.to_string(),
+        process_id: handle.process_id,
+        stdin: None,
+        acp: Some(acp.clone()),
+    };
+    {
+        let chat_state = app.state::<Mutex<ChatState>>();
+        let mut state = chat_state
+            .lock()
+            .map_err(|_| "Chat state lock poisoned".to_string())?;
+        state
+            .processes
+            .insert(session_id.to_string(), process.clone());
+    }
+
+    // 等待会话解析（resume attach 完成）再放行 clone——同时对齐 get_state
+    // 的 30s 超时，进程启动即崩时不至于挂在 clone 上。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while acp.resolved_session_id().is_none() {
+        if std::time::Instant::now() > deadline {
+            return Err("Resuming the session for fork timed out".to_string());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Ok((acp, process))
 }
 
 /// Read the agent's auto-compaction preference (v0.7.4 需求1 A3).

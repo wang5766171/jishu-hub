@@ -705,7 +705,11 @@ export function ChatPage({
     try {
       const result = await invokeCommand<{ new_session_id: string }>(
         "fork_agent_session",
-        { sessionId },
+        {
+          agentId: activeId,
+          projectPath: currentProject?.path || "",
+          sessionId,
+        },
       );
       const newId = result?.new_session_id;
       if (!newId || newId === sessionId) {

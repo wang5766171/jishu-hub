@@ -37,7 +37,7 @@ pub fn spawn_pi_rpc_session(
     mut child: tokio::process::Child,
     _project_path: String,
     _requested_session_id: Option<String>,
-    first_message: String,
+    first_message: Option<String>,
     resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
@@ -68,7 +68,7 @@ pub fn spawn_pi_rpc_session_with_emitter(
     emit: AcpEventEmit,
     pending_session_id: String,
     child: tokio::process::Child,
-    first_message: String,
+    first_message: Option<String>,
     resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
@@ -92,7 +92,7 @@ fn spawn_pi_rpc_session_inner(
     emit: AcpEventEmit,
     pending_session_id: String,
     mut child: tokio::process::Child,
-    first_message: String,
+    first_message: Option<String>,
     resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
     thinking_pref: Option<String>,
     auto_compaction_pref: Option<bool>,
@@ -235,7 +235,7 @@ async fn pi_rpc_connection_loop(
     acp_session_id: Arc<std::sync::Mutex<Option<String>>>,
     stdout: tokio::process::ChildStdout,
     mut command_rx: tokio::sync::mpsc::Receiver<AcpCommand>,
-    first_message: String,
+    first_message: Option<String>,
     resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
     thinking_pref: Option<String>,
     auto_compaction_pref: Option<bool>,
@@ -369,21 +369,23 @@ async fn pi_rpc_connection_loop(
     }
     on_session_resolved(&session_id);
 
-    // 3. Send first prompt
-    let first_message = apply_resolved_session_prompt_injection(
-        first_message,
-        &session_id,
-        resolved_session_prompt_injection.as_ref(),
-    );
-    send_pi_command(
-        &stdin_arc,
-        &json!({"type": "prompt", "message": first_message}),
-    )
-    .await?;
-    log::debug!("Pi RPC sent first prompt");
-
-    // 4. Main loop
-    let mut state = LoopState::Prompting;
+    // 3. Send first prompt. v0.8.0 需求1 A5：resume-fork 形态传 None——不发
+    // prompt，连接停在 Idle 等待 ForkSession（历史会话静默分支，零历史污染）。
+    let mut state = LoopState::Idle;
+    if let Some(first_message) = first_message {
+        let first_message = apply_resolved_session_prompt_injection(
+            first_message,
+            &session_id,
+            resolved_session_prompt_injection.as_ref(),
+        );
+        send_pi_command(
+            &stdin_arc,
+            &json!({"type": "prompt", "message": first_message}),
+        )
+        .await?;
+        log::debug!("Pi RPC sent first prompt");
+        state = LoopState::Prompting;
+    }
     // 当前 pending 的 extension_ui_request id（select/input 等待用户响应时）。
     // abort 时用它发 cancelled response 释放 pi 的阻塞，否则 pi 卡在等响应、abort 推进不了。
     let mut pending_interaction_id: Option<String> = None;

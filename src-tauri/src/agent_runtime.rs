@@ -180,7 +180,36 @@ where
         PreparedGuiTurn::Cli(turn) => {
             start_gui_cli_turn(app, turn, on_finish, on_session_resolved).await
         }
-        PreparedGuiTurn::Acp(turn) => start_gui_acp_turn(app, turn, on_finish, on_session_resolved),
+        PreparedGuiTurn::Acp(turn) => {
+            let message = turn.message.clone();
+            start_gui_acp_turn(app, turn, Some(message), on_finish, on_session_resolved)
+        }
+    }
+}
+
+/// v0.8.0 需求1 A5：为「历史会话 fork」拉起一个仅 resume、不发首条消息的
+/// PiRpc 会话进程（first_message=None：get_state 解析后停在 Idle，等待
+/// ForkSession 的 clone）。仅支持 PiRpc transport（clone 是 Pi 原生能力）。
+pub async fn start_gui_piresume_session<Finish, Resolve>(
+    app: AppHandle,
+    prepared: PreparedGuiTurn,
+    on_finish: Finish,
+    on_session_resolved: Resolve,
+) -> Result<GuiTurnHandle, String>
+where
+    Finish: FnOnce() + Send + 'static,
+    Resolve: Fn(&str) + Send + Sync + 'static,
+{
+    match prepared {
+        PreparedGuiTurn::Cli(_) => {
+            Err("Session fork requires a stream transport session".to_string())
+        }
+        PreparedGuiTurn::Acp(turn) => {
+            if turn.transport != TransportSurface::PiRpc {
+                return Err("Session fork is not supported by this agent".to_string());
+            }
+            start_gui_acp_turn(app, turn, None, on_finish, on_session_resolved)
+        }
     }
 }
 
@@ -271,6 +300,7 @@ where
 fn start_gui_acp_turn<Finish, Resolve>(
     app: AppHandle,
     turn: PreparedAcpTurn,
+    first_message: Option<String>,
     on_finish: Finish,
     on_session_resolved: Resolve,
 ) -> Result<GuiTurnHandle, String>
@@ -342,7 +372,7 @@ where
             child,
             turn.project_path,
             turn.native_session_id,
-            turn.message,
+            first_message,
             turn.resolved_session_prompt_injection,
             on_finish,
             on_session_resolved,
@@ -355,7 +385,7 @@ where
                 child,
                 turn.project_path,
                 turn.native_session_id,
-                turn.message,
+                first_message.unwrap_or_else(|| turn.message.clone()),
                 on_finish,
                 on_session_resolved,
             )
@@ -367,7 +397,7 @@ where
             child,
             turn.project_path,
             turn.native_session_id,
-            turn.message,
+            first_message.unwrap_or_else(|| turn.message.clone()),
             on_finish,
             on_session_resolved,
         ),

@@ -331,7 +331,7 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                     emit,
                     pending_session_id,
                     child,
-                    request.prompt,
+                    Some(request.prompt),
                     agent.resolved_session_prompt_injection(),
                     on_session_resolved,
                     |_sid| {},
