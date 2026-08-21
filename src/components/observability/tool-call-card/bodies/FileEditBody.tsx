@@ -1,7 +1,8 @@
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { buildDiffPreview, getReadableInputPreview, getToolPath, type DiffPreview, type DiffRow } from "@/lib/text-preview";
+import { wordDiff, type DiffToken } from "@/lib/word-diff";
 
 export const FileReadBody = memo(function FileReadBody({
   input,
@@ -46,7 +47,47 @@ export const FileReadBody = memo(function FileReadBody({
   );
 });
 
+// v0.8.0 需求1 B2：词级高亮的性能护栏——超出任一上限时保持行级渲染。
+const WORD_DIFF_MAX_ROWS = 2000;
+const WORD_DIFF_MAX_PAIRS = 500;
+
+/**
+ * 对相邻的 remove/add 行对逐对做词级比对，返回按行索引存放的 token 序列
+ * （未配对/完全一致的行为 null，走整行渲染）。remove 与 add 逐位配对
+ * （经典 diff hunk 语义），多余的不配对行保持整行着色。
+ */
+function computeWordHighlights(rows: DiffRow[]): (DiffToken[] | null)[] {
+  if (rows.length === 0 || rows.length > WORD_DIFF_MAX_ROWS) return [];
+  const highlights: (DiffToken[] | null)[] = new Array(rows.length).fill(null);
+  let pairs = 0;
+  let i = 0;
+  while (i < rows.length) {
+    if (rows[i].kind !== "remove") {
+      i += 1;
+      continue;
+    }
+    let removeEnd = i;
+    while (removeEnd < rows.length && rows[removeEnd].kind === "remove") removeEnd += 1;
+    let addEnd = removeEnd;
+    while (addEnd < rows.length && rows[addEnd].kind === "add") addEnd += 1;
+    if (addEnd > removeEnd) {
+      const pairCount = Math.min(removeEnd - i, addEnd - removeEnd);
+      for (let p = 0; p < pairCount; p += 1) {
+        pairs += 1;
+        if (pairs > WORD_DIFF_MAX_PAIRS) return highlights;
+        const result = wordDiff(rows[i + p].text, rows[removeEnd + p].text);
+        if (!result) continue;
+        highlights[i + p] = result.oldTokens;
+        highlights[removeEnd + p] = result.newTokens;
+      }
+    }
+    i = addEnd;
+  }
+  return highlights;
+}
+
 function InlineDiff({ diff }: { diff: DiffPreview }) {
+  const wordHighlights = useMemo(() => computeWordHighlights(diff.rows), [diff.rows]);
   return (
     <div className="overflow-hidden rounded-[6px] border border-border/50 bg-background/45">
       <div className="flex items-center gap-2 border-b border-border/40 bg-[var(--tool-card-header-bg)] px-2.5 py-1.5">
@@ -58,7 +99,7 @@ function InlineDiff({ diff }: { diff: DiffPreview }) {
       <div className="max-h-72 overflow-auto font-mono text-[0.95em]">
         <div className="inline-block min-w-full">
           {diff.rows.map((row, index) => (
-            <DiffLine key={index} row={row} />
+            <DiffLine key={index} row={row} tokens={wordHighlights[index] ?? null} />
           ))}
         </div>
       </div>
@@ -66,7 +107,7 @@ function InlineDiff({ diff }: { diff: DiffPreview }) {
   );
 }
 
-function DiffLine({ row }: { row: DiffRow }) {
+function DiffLine({ row, tokens }: { row: DiffRow; tokens?: DiffToken[] | null }) {
   return (
     <div
       className={cn(
@@ -83,7 +124,23 @@ function DiffLine({ row }: { row: DiffRow }) {
       </span>
       <span className="whitespace-pre px-2 py-0.5">
         {row.kind === "add" ? "+" : row.kind === "remove" ? "-" : " "}
-        {row.text || " "}
+        {tokens && tokens.length > 0
+          ? tokens.map((token, index) =>
+              token.changed ? (
+                <span
+                  key={index}
+                  className={cn(
+                    "rounded-[2px]",
+                    row.kind === "add" ? "bg-emerald-500/35" : "bg-red-500/35",
+                  )}
+                >
+                  {token.text}
+                </span>
+              ) : (
+                <span key={index}>{token.text}</span>
+              ),
+            )
+          : row.text || " "}
       </span>
     </div>
   );
