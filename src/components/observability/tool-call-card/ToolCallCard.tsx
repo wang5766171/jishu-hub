@@ -1,4 +1,5 @@
 import { memo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { ToolCall } from "./types";
 import { StatusBadge } from "./status-badge";
@@ -38,6 +39,7 @@ const statusBorder: Record<ToolCall["status"], string> = {
 export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCall }) {
   const [expanded, setExpanded] = useState(call.status === "error");
   const { openViewer } = useFileViewer();
+  const { t } = useTranslation();
   const diff = call.kind === "file_edit" || call.kind === "file_write" ? buildDiffPreview(call.input) : null;
   const path = getToolPath(call.input) || (call.input.command as string) || (call.input.pattern as string) || "";
   const shortPath = path.length > 60 ? "..." + path.slice(path.length - 55) : path;
@@ -73,7 +75,7 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
           <span
             role="button"
             tabIndex={0}
-            title="Open file"
+            title={t("fileViewer.openFile", "打开文件")}
             onClick={(event) => {
               event.stopPropagation();
               openViewer({ kind: diff ? "diff" : "file", path, diff });

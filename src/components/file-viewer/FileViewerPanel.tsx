@@ -1,8 +1,11 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
-import { FileText, GitCompare, Loader2, X } from "lucide-react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
+import { ExternalLink, FileText, FolderSearch, GitCompare, Loader2, X } from "lucide-react";
 import { invokeCommand } from "@/hooks/use-invoke";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
 import type { DiffPreview, DiffRow } from "@/lib/text-preview";
+import { clampPanelWidth, fitPanelWidth, loadPanelWidth, savePanelWidth } from "./panel-width";
 
 export type ViewerTarget =
   | { kind: "file"; path: string; line?: number }
@@ -26,12 +29,89 @@ interface TextFilePreview {
 const FileViewerContext = createContext<FileViewerContextValue>(null!);
 
 export function FileViewerProvider({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
+  const { alert: alertDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
   const [open, setOpen] = useState(false);
   const [target, setTarget] = useState<ViewerTarget | null>(null);
   const [content, setContent] = useState<TextFilePreview | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<"preview" | "diff">("preview");
+
+  // v0.8.0 需求4：面板宽度（null = 未设置，回退默认 min(560px,44vw)）。
+  const [width, setWidth] = useState<number | null>(() => loadPanelWidth());
+  const widthRef = useRef<number | null>(width);
+  widthRef.current = width;
+  const contentScrollRef = useRef<HTMLDivElement | null>(null);
+
+  const applyWidth = useCallback((next: number) => {
+    const clamped = clampPanelWidth(next, window.innerWidth);
+    widthRef.current = clamped;
+    setWidth(clamped);
+  }, []);
+
+  // 窗口尺寸变化时被动 clamp（不持久化，下次恢复用户设置的值）。
+  useEffect(() => {
+    const onResize = () => {
+      if (widthRef.current !== null) {
+        setWidth(clampPanelWidth(widthRef.current, window.innerWidth));
+      }
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // 左缘拖拽调整宽度（v0.8.0 需求4）。pointer capture 全程接管；拖拽中
+  // 禁用文本选择，防止拖过消息区时误选内容。
+  const handleResizeStart = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    document.body.style.userSelect = "none";
+  }, []);
+
+  const handleResizeMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      applyWidth(window.innerWidth - event.clientX);
+    }
+  }, [applyWidth]);
+
+  const handleResizeEnd = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    document.body.style.userSelect = "";
+    if (widthRef.current !== null) savePanelWidth(widthRef.current);
+  }, []);
+
+  // 双击自适应：按当前内容自然宽度（scrollWidth，whitespace-pre 不折行）放宽。
+  const handleFitWidth = useCallback(() => {
+    const scrollWidth = contentScrollRef.current?.scrollWidth;
+    if (!scrollWidth || scrollWidth <= 0) {
+      widthRef.current = null;
+      setWidth(null);
+      return;
+    }
+    applyWidth(fitPanelWidth(scrollWidth, window.innerWidth));
+    savePanelWidth(widthRef.current ?? clampPanelWidth(scrollWidth, window.innerWidth));
+  }, [applyWidth]);
+
+  // v0.8.0 需求4：资源管理器定位 / 关联应用打开（失败弹结构化错误）。
+  const handleReveal = useCallback(async () => {
+    if (!target?.path) return;
+    try {
+      await invokeCommand("reveal_in_file_manager", { path: target.path });
+    } catch (err) {
+      void alertDialog({ title: t("fileViewer.revealFailedTitle", "打开资源管理器失败"), description: String(err) });
+    }
+  }, [target?.path, alertDialog, t]);
+
+  const handleOpenWith = useCallback(async () => {
+    if (!target?.path) return;
+    try {
+      await invokeCommand("open_with_default_app", { path: target.path });
+    } catch (err) {
+      void alertDialog({ title: t("fileViewer.openFailedTitle", "打开文件失败"), description: String(err) });
+    }
+  }, [target?.path, alertDialog, t]);
 
   const openViewer = useCallback((t: ViewerTarget) => {
     setTarget(t);
@@ -68,17 +148,54 @@ export function FileViewerProvider({ children }: { children: ReactNode }) {
   }, [open, target?.path]);
 
   const diff = target?.kind === "diff" ? target.diff : null;
+  const hasPath = Boolean(target?.path);
 
   return (
     <FileViewerContext.Provider value={{ open, target, openViewer, closeViewer }}>
       {children}
       {open && target && (
-        <div className="fixed right-0 top-11 bottom-6 z-40 flex w-[min(560px,44vw)] min-w-[420px] flex-col border-l border-border bg-[var(--color-card)] shadow-lg">
+        <div
+          className={cn(
+            "fixed right-0 top-11 bottom-6 z-40 flex min-w-[420px] flex-col border-l border-border bg-[var(--color-card)] shadow-lg",
+            width === null && "w-[min(560px,44vw)]",
+          )}
+          style={width !== null ? { width: `${width}px` } : undefined}
+        >
+          {/* 左缘拖拽条：拖动调宽，双击自适应内容宽度（v0.8.0 需求4） */}
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={t("fileViewer.resizeHandle", "调整预览宽度")}
+            onPointerDown={handleResizeStart}
+            onPointerMove={handleResizeMove}
+            onPointerUp={handleResizeEnd}
+            onPointerCancel={handleResizeEnd}
+            onDoubleClick={handleFitWidth}
+            className="absolute left-0 top-0 bottom-0 z-10 w-1.5 cursor-ew-resize hover:bg-primary/40 active:bg-primary/60"
+          />
           <div className="flex items-center gap-2 border-b border-border/30 px-3 py-2">
             <FileText className="h-4 w-4 shrink-0 text-[var(--icon-action)]" />
             <span className="min-w-0 flex-1 truncate text-sm font-medium" title={target.path}>
               {target.path}
             </span>
+            {hasPath && (
+              <>
+                <button
+                  onClick={() => void handleReveal()}
+                  title={t("fileViewer.reveal", "在资源管理器中显示")}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  <FolderSearch className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => void handleOpenWith()}
+                  title={t("fileViewer.openWith", "用关联应用打开")}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                </button>
+              </>
+            )}
             <button
               onClick={closeViewer}
               className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -89,33 +206,34 @@ export function FileViewerProvider({ children }: { children: ReactNode }) {
 
           <div className="flex items-center gap-1 border-b border-border/30 px-3 pt-2">
             <TabButton active={tab === "preview"} onClick={() => setTab("preview")} icon={<FileText className="h-3.5 w-3.5" />}>
-              预览
+              {t("fileViewer.preview", "预览")}
             </TabButton>
             {target.kind === "diff" && (
               <TabButton active={tab === "diff"} onClick={() => setTab("diff")} icon={<GitCompare className="h-3.5 w-3.5" />}>
-                变更
+                {t("fileViewer.changes", "变更")}
               </TabButton>
             )}
           </div>
 
-          <div className="flex-1 overflow-auto bg-background/35">
+          <div ref={contentScrollRef} className="flex-1 overflow-auto bg-background/35">
             {tab === "diff" && target.kind === "diff" ? (
-              diff ? <DiffTable diff={diff} /> : <EmptyState text="没有可展示的变更比对" />
+              diff ? <DiffTable diff={diff} /> : <EmptyState text={t("fileViewer.noDiff", "没有可展示的变更比对")} />
             ) : loading ? (
               <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                正在读取文本...
+                {t("fileViewer.loading", "正在读取文本...")}
               </div>
             ) : error ? (
               <EmptyState text={error} />
             ) : content ? (
               <TextPreview content={content.content} truncated={content.truncated} />
             ) : (
-              <EmptyState text="没有可预览的文本内容" />
+              <EmptyState text={t("fileViewer.empty", "没有可预览的文本内容")} />
             )}
           </div>
         </div>
       )}
+      {confirmDialogNode}
     </FileViewerContext.Provider>
   );
 }
@@ -148,6 +266,7 @@ function TabButton({
 }
 
 function TextPreview({ content, truncated }: { content: string; truncated: boolean }) {
+  const { t } = useTranslation();
   const lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
   return (
     <div className="font-mono text-[var(--font-size-prose)]">
@@ -161,7 +280,7 @@ function TextPreview({ content, truncated }: { content: string; truncated: boole
       ))}
       {truncated && (
         <div className="border-t border-border/40 px-3 py-2 text-sm text-muted-foreground">
-          内容过长，已截断显示。
+          {t("fileViewer.truncated", "内容过长，已截断显示。")}
         </div>
       )}
     </div>

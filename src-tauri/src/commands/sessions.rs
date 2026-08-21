@@ -149,6 +149,18 @@ pub(crate) fn get_session_names() -> Result<HashMap<String, String>, String> {
     hub::get_session_names().map_err(|e| e.to_string())
 }
 
+/// 在系统文件管理器中定位文件（v0.8.0 需求4：文档预览「在资源管理器中显示」）。
+#[tauri::command]
+pub(crate) fn reveal_in_file_manager(path: String) -> Result<(), String> {
+    crate::os_adapter::file_reveal::reveal_in_file_manager(&path)
+}
+
+/// 用系统关联应用打开文件本体（v0.8.0 需求4：文档预览「用关联应用打开」）。
+#[tauri::command]
+pub(crate) fn open_with_default_app(path: String) -> Result<(), String> {
+    crate::os_adapter::file_reveal::open_with_default_app(&path)
+}
+
 #[tauri::command]
 pub(crate) fn rename_session(session_id: String, name: String) -> Result<(), String> {
     hub::rename_session(session_id, name).map_err(|e| e.to_string())

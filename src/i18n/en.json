@@ -935,5 +935,19 @@
       "empty": "No flow nodes yet",
       "mainTask": "Main task"
     }
+  },
+  "fileViewer": {
+    "openFile": "Open file",
+    "preview": "Preview",
+    "changes": "Changes",
+    "loading": "Loading text...",
+    "empty": "No text content to preview",
+    "truncated": "Content too long — truncated.",
+    "noDiff": "No diff to display",
+    "reveal": "Reveal in file manager",
+    "openWith": "Open with default app",
+    "revealFailedTitle": "Failed to open file manager",
+    "openFailedTitle": "Failed to open file",
+    "resizeHandle": "Resize preview (double-click to fit content)"
   }
 }

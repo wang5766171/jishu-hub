@@ -177,6 +177,8 @@ pub fn run() {
             commands::sessions::persist_interaction_blocks,
             commands::sessions::persist_partial_assistant,
             commands::sessions::read_text_file,
+            commands::sessions::reveal_in_file_manager,
+            commands::sessions::open_with_default_app,
             commands::sessions::get_session_names,
             commands::sessions::rename_session,
             commands::sessions::delete_session_name,
