@@ -800,6 +800,13 @@ async fn handle_command(
                 "codex runtime received SetAutoCompaction({enabled}) — not supported, dropping"
             );
         }
+        Some(AcpCommand::ForkSession { response }) => {
+            // codex thread 无会话分支概念；IPC 层已按 SESSION_FORK capability
+            // 门控（v0.8.0 需求1 A5 已回收 codex 的虚假声明），此分支仅兜底。
+            let _ = response.send(Err(
+                "Session fork is not supported by this agent".to_string()
+            ));
+        }
         Some(AcpCommand::Cancel) => {
             let active_turn_id = active_turn_of(state);
             if let Some(turn_id) = active_turn_id.as_ref() {

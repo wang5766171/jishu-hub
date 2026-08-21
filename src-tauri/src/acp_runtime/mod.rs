@@ -49,6 +49,13 @@ pub enum AcpCommand {
     /// Toggle the agent's auto-compaction (v0.7.4 需求1 A3). Pi RPC native
     /// `set_auto_compaction`; fire-and-forget.
     SetAutoCompaction(bool),
+    /// Fork the live session at its current end (v0.8.0 需求1 A5). Only the
+    /// Pi RPC runtime implements this (native `clone` RPC: copies the session
+    /// tree to a branch file and rebinds the process to it); the oneshot
+    /// resolves with `{ "new_session_id": ... }` once the forked id is known.
+    ForkSession {
+        response: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+    },
     Cancel,
     /// Respond to a structured interaction answer. Routed by the connection loop
     /// to the transport's mid-turn write-back channel:
@@ -145,6 +152,20 @@ impl AcpControl {
             .send(AcpCommand::SetAutoCompaction(enabled))
             .await
             .map_err(|_| "ACP connection closed".to_string())
+    }
+
+    /// Fork the live session at its current end (v0.8.0 需求1 A5). Resolves
+    /// with `{ "new_session_id": ... }` once the Pi RPC runtime has cloned
+    /// the session tree and learned the branch id.
+    pub async fn fork_session(&self) -> Result<serde_json::Value, String> {
+        let (response, receiver) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(AcpCommand::ForkSession { response })
+            .await
+            .map_err(|_| "ACP connection closed".to_string())?;
+        receiver
+            .await
+            .map_err(|_| "ACP fork response channel closed".to_string())?
     }
 
     /// Respond to a structured interaction answer (PiRpc `extension_ui`, or ACP
@@ -639,6 +660,14 @@ async fn acp_connection_loop(
                     }
                     Some(AcpCommand::SetAutoCompaction(enabled)) => {
                         log::warn!("ACP runtime received SetAutoCompaction({enabled}) — not supported, dropping");
+                        false
+                    }
+                    Some(AcpCommand::ForkSession { response }) => {
+                        // ACP 协议无会话分支概念（Pi JSONL 树原生能力）；
+                        // IPC 层已按 SESSION_FORK capability 门控，此分支仅兜底。
+                        let _ = response.send(Err(
+                            "Session fork is not supported by this agent".to_string(),
+                        ));
                         false
                     }
                     Some(AcpCommand::RespondToInput {

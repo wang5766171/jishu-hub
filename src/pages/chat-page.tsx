@@ -32,7 +32,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
-import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, PanelRightOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2, Trash2,
+import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, PanelRightOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2, Trash2, GitBranch,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
@@ -686,8 +686,58 @@ export function ChatPage({
   const accessModeLabel = accessModeValue
     ? accessModeOptions.find((option) => option.value === accessModeValue)?.label ?? accessModeValue
     : t("sessions.accessUnset");
+  // v0.8.0 需求1 A5：从当前会话末尾创建分支（capability SESSION_FORK 门控；
+  // 仅 jishu-self——Pi 原生 clone RPC 复制整棵会话树并重绑进程）。后端返回
+  // 分支会话 id 并把进程重挂到分支；此处以乐观条目挂载分支并切换加载历史，
+  // 原会话条目与文件保留、后续可独立打开。流式中禁止（重绑竞态）。
+  // handleSelectSession 在下方以普通函数定义，经回调体延迟引用（不进 deps）。
+  const [forking, setForking] = useState(false);
+  const handleForkSession = useCallback(async (sessionId: string) => {
+    if (!activeId || !projectId || sessionId === "new" || forking) return;
+    if (streamStore.isStreaming(sessionId)) {
+      void alertDialog({
+        title: t("sessions.forkFailedTitle", "创建分支失败"),
+        description: t("sessions.forkStreamingHint", "会话正在回复中，请等待本轮完成后再创建分支"),
+      });
+      return;
+    }
+    setForking(true);
+    try {
+      const result = await invokeCommand<{ new_session_id: string }>(
+        "fork_agent_session",
+        { sessionId },
+      );
+      const newId = result?.new_session_id;
+      if (!newId || newId === sessionId) {
+        throw new Error(t("sessions.forkNoBranchId", "未返回分支会话 id"));
+      }
+      const session = sessions?.find(s => s.id === sessionId);
+      const name = sessionNames?.[sessionId] || session?.display_name || sessionId.slice(0, 8);
+      const forkEntry: Session = {
+        id: newId,
+        path: currentProject?.path || "",
+        messages: [],
+        display_name: `${name}${t("sessions.forkSuffix", " (分支)")}`,
+        started_at: new Date().toISOString(),
+        last_active: new Date().toISOString(),
+      };
+      setOptimisticSessions(prev => [forkEntry, ...prev.filter(s => s.id !== newId)]);
+      // 分支历史在 Pi 侧 JSONL 已就绪，经 get_session_messages 加载（清掉可能
+      // 残留的同 id 缓存，避免读到分支前的旧数据）。
+      sessionMessagesCacheRef.current.delete(newId);
+      await handleSelectSession(newId);
+    } catch (err) {
+      console.error("Failed to fork session:", err);
+      await alertDialog({ title: t("sessions.forkFailedTitle", "创建分支失败"), description: String(err) });
+    } finally {
+      setForking(false);
+    }
+  }, [activeId, projectId, forking, sessions, sessionNames, currentProject?.path, alertDialog, t]);
+
   // ── 斜杠命令面板（A2）：GUI 本地命令注册表，不透传给 agent ──────────────
   const hasSelectedSession = Boolean(selectedSession && selectedSession !== "new");
+  // v0.8.0 需求1 A5：会话分支（capability SESSION_FORK；仅 jishu-self）。
+  const supportsFork = capabilities?.has("SESSION_FORK") ?? false;
   const slashCommands = useMemo(
     () => [
       { name: "new", label: t("sessions.slashNew"), available: Boolean(projectId) },
@@ -696,8 +746,9 @@ export function ChatPage({
       { name: "terminal", label: t("sessions.slashTerminal"), available: hasSelectedSession },
       { name: "float", label: t("sessions.slashFloat"), available: hasSelectedSession },
       { name: "compact", label: t("sessions.slashCompact"), available: hasSelectedSession && supportsCompact },
+      { name: "fork", label: t("sessions.slashFork", "创建会话分支"), available: hasSelectedSession && supportsFork && !currentStream?.isStreaming },
     ],
-    [hasSelectedSession, projectId, supportsCompact, t],
+    [hasSelectedSession, projectId, supportsCompact, supportsFork, currentStream?.isStreaming, t],
   );
   const handleSlashCommand = useCallback(
     (name: string) => {
@@ -720,9 +771,12 @@ export function ChatPage({
         case "compact":
           void handleCompactSession();
           break;
+        case "fork":
+          if (selectedSession) void handleForkSession(selectedSession);
+          break;
       }
     },
-    [selectedSession, handleCompactSession],
+    [selectedSession, handleCompactSession, handleForkSession],
   );
 
   const workModeOptions = useMemo(() => [
@@ -2749,6 +2803,15 @@ export function ChatPage({
                     <Pencil className="h-3.5 w-3.5 mr-2" />
                     {t("sessions.rename")}
                   </ContextMenuItem>
+                  {capabilities?.has("SESSION_FORK") && (
+                    <ContextMenuItem
+                      disabled={forking || streamStore.isStreaming(session.id)}
+                      onClick={() => void handleForkSession(session.id)}
+                    >
+                      <GitBranch className="h-3.5 w-3.5 mr-2" />
+                      {t("sessions.fork", "创建分支")}
+                    </ContextMenuItem>
+                  )}
                   {capabilities?.has("SESSION_DELETE") && (
                     <ContextMenuItem onClick={() => void handleDeleteSession(session.id)}>
                       <Trash2 className="h-3.5 w-3.5 mr-2 text-red-400" />

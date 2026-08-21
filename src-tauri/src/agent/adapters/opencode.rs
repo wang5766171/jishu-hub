@@ -1130,13 +1130,11 @@ impl AgentManifest for OpencodeAdapter {
     fn capabilities(&self) -> AgentCapabilities {
         use AgentCapabilities as C;
         C::RESUME_BY_ID
-            | C::SESSION_FORK
+            // SESSION_FORK / SESSION_EXPORT / SESSION_IMPORT 先前已声明但从未
+            // 实现（opencode 会话存于其 SQLite 存储，无分支/导出接口）；在
+            // adapter 真正实现前移除声明——不能假装支持（v0.8.0 需求1 A5
+            // 回收，DEVELOP_READ §11）。
             | C::SESSION_LIST
-            // SESSION_DELETE 先前已声明但从未实现（opencode 会话存于其
-            // SQLite 存储）；在 adapter 真正实现 delete_session 前移除
-            // 声明（v0.7.4 需求1 B4——不能假装支持，DEVELOP_READ §11）。
-            | C::SESSION_EXPORT
-            | C::SESSION_IMPORT
             | C::IMAGE_INPUT
             | C::FILE_INPUT
             | C::STREAM_TEXT_DELTA

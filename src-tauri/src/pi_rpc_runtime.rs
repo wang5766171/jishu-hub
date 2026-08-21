@@ -252,7 +252,9 @@ async fn pi_rpc_connection_loop(
     let mut context_window: Option<u64> = None;
     let mut initial_thinking_level: Option<String> = None;
     let mut initial_auto_compaction: Option<bool> = None;
-    let session_id = loop {
+    // v0.8.0 需求1 A5：fork 后进程重绑到分支会话，此变量随之更新——
+    // 事件 envelope、prompt 注入、日志统一引用最新会话 id。
+    let mut session_id = loop {
         let line = tokio::time::timeout(Duration::from_secs(30), stdout_rx.recv())
             .await
             .map_err(|_| "Pi RPC get_state timeout (30s)".to_string())?
@@ -403,6 +405,13 @@ async fn pi_rpc_connection_loop(
     let mut pending_compact: Option<
         tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
     > = None;
+    // 需求1 A5（v0.8.0）：fork 会话两段式回填。clone 响应不携带新会话 id，
+    // 需再发一次 get_state 取 data.sessionId（clone → get_state → resolve IPC）。
+    // 元组第一项标记已进入第二段（等待 get_state 响应）。
+    let mut pending_fork: Option<(
+        bool,
+        tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+    )> = None;
 
     loop {
         let cmd_future = command_rx.recv();
@@ -477,6 +486,23 @@ async fn pi_rpc_connection_loop(
                             "enabled": enabled
                         })).await?;
                         log::debug!("Pi RPC set_auto_compaction sent: {enabled}");
+                        false
+                    }
+                    Some(AcpCommand::ForkSession { response }) => {
+                        // 需求1 A5（v0.8.0）：从当前会话末尾创建分支。Pi 的 clone
+                        // 复制整棵会话树到新分支文件并重绑本进程；新会话 id 经随后
+                        // 的 get_state 响应回填（见 stdout 分支）。原会话文件保留。
+                        // 流式期间禁止（重绑与流式事件竞态）——IPC 层前置校验，
+                        // 此处再挡一道。
+                        if matches!(state, LoopState::Idle) {
+                            send_pi_command(&stdin_arc, &json!({ "type": "clone" })).await?;
+                            pending_fork = Some((false, response));
+                            log::info!("Pi RPC clone requested for session {}", session_id);
+                        } else {
+                            let _ = response.send(Err(
+                                "Cannot fork while the session is streaming — wait for the turn to finish".to_string(),
+                            ));
+                        }
                         false
                     }
                     Some(AcpCommand::Cancel) => {
@@ -623,6 +649,67 @@ async fn pi_rpc_connection_loop(
                                             let _ = tx.send(result);
                                         }
                                         continue;
+                                    }
+                                    "clone" => {
+                                        // 需求1 A5（v0.8.0）：clone 完成/失败。成功后
+                                        // 进程已重绑到分支会话，再发 get_state 取新
+                                        // 会话 id（不进通用 error 分支）。
+                                        if let Some((_, tx)) = pending_fork.take() {
+                                            if success {
+                                                send_pi_command(
+                                                    &stdin_arc,
+                                                    &json!({"type": "get_state"}),
+                                                )
+                                                .await?;
+                                                pending_fork = Some((true, tx));
+                                                log::info!("Pi RPC clone succeeded, resolving branch session id");
+                                            } else {
+                                                let err = msg
+                                                    .get("error")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("fork failed");
+                                                let _ = tx.send(Err(err.to_string()));
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    "get_state" => {
+                                        // 需求1 A5（v0.8.0）：fork 第二段——clone 后的
+                                        // get_state 响应携带分支会话 id。进程重绑后，
+                                        // 后续事件 envelope 全部切换为新 id。
+                                        if let Some((_, tx)) = pending_fork.take() {
+                                            let branch_id = msg
+                                                .get("data")
+                                                .and_then(|d| d.get("sessionId"))
+                                                .and_then(|v| v.as_str());
+                                            match branch_id {
+                                                Some(new_id) => {
+                                                    session_id = new_id.to_string();
+                                                    {
+                                                        let mut guard = acp_session_id
+                                                            .lock()
+                                                            .unwrap_or_else(|e| e.into_inner());
+                                                        *guard = Some(new_id.to_string());
+                                                    }
+                                                    log::info!(
+                                                        "Pi RPC forked session; process rebound to {}",
+                                                        new_id
+                                                    );
+                                                    let _ = tx.send(Ok(json!({
+                                                        "new_session_id": new_id
+                                                    })));
+                                                }
+                                                None => {
+                                                    let _ = tx.send(Err(
+                                                        "fork succeeded but branch session id is unknown"
+                                                            .to_string(),
+                                                    ));
+                                                }
+                                            }
+                                            continue;
+                                        }
+                                        // 非 fork 期间的 get_state 响应：落入通用处理
+                                        //（与原先 `_` 分支行为一致）。
                                     }
                                     _ => {
                                         // Other responses (set_model, etc.) - ignore

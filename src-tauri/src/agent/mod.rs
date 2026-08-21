@@ -766,6 +766,40 @@ mod tests {
             .expect("opencode status should exist");
         assert_eq!(opencode.transport, TransportSurface::AcpPreferred);
 
+        // v0.8.0 需求1 A5：会话分支仅 jishu-self（Pi 原生 clone RPC）真实实现；
+        // codex/opencode 的历史虚假声明已回收——实现前不声明（不能假装支持）。
+        assert!(
+            AgentCapabilities::from_bits_retain(jishu_caps)
+                .contains(AgentCapabilities::SESSION_FORK),
+            "jishu-self should declare SESSION_FORK (native clone RPC)"
+        );
+        let codex_caps = codex
+            .capabilities
+            .parse::<u64>()
+            .expect("codex capabilities decimal string");
+        assert!(
+            !AgentCapabilities::from_bits_retain(codex_caps)
+                .contains(AgentCapabilities::SESSION_FORK),
+            "codex must not declare SESSION_FORK until its adapter implements it"
+        );
+        let opencode_caps = opencode_status
+            .capabilities
+            .parse::<u64>()
+            .expect("opencode capabilities decimal string");
+        let opencode_bits = AgentCapabilities::from_bits_retain(opencode_caps);
+        assert!(
+            !opencode_bits.contains(AgentCapabilities::SESSION_FORK),
+            "opencode must not declare SESSION_FORK until its adapter implements it"
+        );
+        assert!(
+            !opencode_bits.contains(AgentCapabilities::SESSION_EXPORT),
+            "opencode must not declare SESSION_EXPORT until its adapter implements it"
+        );
+        assert!(
+            !opencode_bits.contains(AgentCapabilities::SESSION_IMPORT),
+            "opencode must not declare SESSION_IMPORT until its adapter implements it"
+        );
+
         // MCP: only jishu-self declares supports_mcp; others should have defaults.
         assert!(!codex.mcp_installed);
         assert!(codex.mcp_version.is_none());

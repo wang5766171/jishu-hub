@@ -107,7 +107,9 @@ impl AgentManifest for CodexAdapter {
         use AgentCapabilities as C;
         C::RESUME_LATEST
             | C::RESUME_PICKER
-            | C::SESSION_FORK
+            // SESSION_FORK 先前已声明但从未实现（codex thread 无会话分支
+            // 概念）；实现前不声明——不能假装支持（v0.8.0 需求1 A5 回收，
+            // DEVELOP_READ §11）。
             | C::SESSION_LIST
             | C::IMAGE_INPUT
             | C::FILE_INPUT

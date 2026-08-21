@@ -155,6 +155,9 @@ impl AgentManifest for JishuSelfAgent {
             | AgentCapabilities::TASK_SUPERVISION
             // v0.7.4 需求1 B4：常规会话删除（Pi 会话 JSONL + 交互 sidecar）。
             | AgentCapabilities::SESSION_DELETE
+            // v0.8.0 需求1 A5：会话分支（Pi 原生 clone RPC，从当前末尾复制整棵
+            // 会话树；runtime 侧 AcpCommand::ForkSession 实现）。
+            | AgentCapabilities::SESSION_FORK
             // v0.7.4 需求1 A3：手动 + 自动上下文压缩（Pi 原生 compact RPC）。
             | AgentCapabilities::CONTEXT_COMPACT
             // v0.7.4 需求3 M2：任务工作模式（任务图编排会话）。

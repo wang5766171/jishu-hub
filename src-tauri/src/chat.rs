@@ -456,6 +456,74 @@ pub async fn compact_agent_session(
     acp.compact(instructions).await
 }
 
+/// Fork the live session at its current end (v0.8.0 需求1 A5). The Pi RPC
+/// runtime clones the session tree and rebinds its process to the branch;
+/// afterwards the process map is re-keyed to the branch id so the next
+/// message flows to the forked session. The original session file/entry is
+/// untouched and respawns on demand when reopened.
+#[tauri::command]
+pub async fn fork_agent_session(
+    app: AppHandle,
+    session_id: String,
+) -> Result<serde_json::Value, String> {
+    let (acp, agent_id, process) = {
+        let chat_state = app.state::<Mutex<ChatState>>();
+        let state = chat_state
+            .lock()
+            .map_err(|_| "Chat state lock poisoned".to_string())?;
+        let process = state
+            .processes
+            .get(&session_id)
+            .ok_or_else(|| {
+                "No active session process found — open the session and send at least one message first".to_string()
+            })?
+            .clone();
+        let acp = process
+            .acp
+            .clone()
+            .ok_or_else(|| "This session has no forkable runtime".to_string())?;
+        (acp, process.agent_id.clone(), process)
+    };
+    {
+        let app_state = app.state::<Mutex<crate::AppState>>();
+        let s = app_state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        if !s
+            .registry
+            .require_agent(&agent_id)?
+            .capabilities()
+            .contains(crate::agent::AgentCapabilities::SESSION_FORK)
+        {
+            return Err("Session fork is not supported by this agent".to_string());
+        }
+    }
+    let result = acp.fork_session().await?;
+    let Some(new_session_id) = result
+        .get("new_session_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+    else {
+        return Err("Fork finished but the branch session id is missing".to_string());
+    };
+    // 进程已重绑到分支会话：按 pid 清掉旧键（含 pending 别名），以分支 id
+    // 重新挂载。原会话不再持有进程，重新打开时按需 spawn（既有机制）。
+    {
+        let chat_state = app.state::<Mutex<ChatState>>();
+        let mut state = chat_state
+            .lock()
+            .map_err(|_| "Chat state lock poisoned".to_string())?;
+        state
+            .processes
+            .retain(|_, item| item.process_id != process.process_id);
+        state.processes.insert(new_session_id.clone(), process);
+    }
+    log::info!(
+        "fork_agent_session: session {session_id} forked; process re-keyed to {new_session_id}"
+    );
+    Ok(result)
+}
+
 /// Read the agent's auto-compaction preference (v0.7.4 需求1 A3).
 /// None = follow the agent's own default.
 #[tauri::command]
