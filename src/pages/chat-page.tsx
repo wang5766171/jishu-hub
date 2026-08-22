@@ -84,6 +84,23 @@ import type {
   SessionSearchResult,
 } from "@/types";
 
+// v0.8.0 需求7：会话消息缓存提升为模块级。chat 页切到管理页会被整体卸载
+// （app.tsx 条件渲染），组件级缓存随之销毁，而 streamStore（模块级）与后端
+// 回合仍在运行；重挂载后 handleSelectSession 缓存必 miss → 重读 JSONL，CLI
+// 已落盘的当前回合用户消息与流式气泡的 pendingUserMessage 各渲染一次（用户
+// 问题出现两次）。模块级缓存让「流式期间不重读 JSONL」的不变量跨页面切换
+// 保持。
+const sessionMessagesCache = new Map<string, Message[]>();
+
+// 切换项目/agent 或组件重挂载时收缩缓存：仍处流式中的条目是流式气泡的消息
+// 基线，必须保留（丢了会复现重复渲染）；其余全部驱逐（点击时从 JSONL 重读，
+// 与组件级缓存的既有行为一致，也顺带完成内存回收）。
+function evictIdleSessionMessagesCache() {
+  for (const key of Array.from(sessionMessagesCache.keys())) {
+    if (!streamStore.hasState(key)) sessionMessagesCache.delete(key);
+  }
+}
+
 
 export function ChatPage({
   currentProject,
@@ -371,7 +388,7 @@ export function ChatPage({
    * been written to JSONL by the CLI but is also being rendered live by
    * `<StreamingMessage>` from the pending state.
    */
-  const sessionMessagesCacheRef = useRef<Map<string, Message[]>>(new Map());
+  const sessionMessagesCacheRef = useRef<Map<string, Message[]>>(sessionMessagesCache);
   // Steered user messages queued while the agent is mid-turn. They are NOT
   // inserted into sessionMessages immediately — doing so while the first
   // turn's assistant reply is still streaming (not yet committed to
@@ -623,7 +640,7 @@ export function ChatPage({
     setTaskLaunchOpen(false);
     setTaskLaunchReadOnly(false);
     taskLaunchOpenRef.current = false;
-    sessionMessagesCacheRef.current.clear();
+    evictIdleSessionMessagesCache();
     newSessionStreamIdsRef.current.clear();
     clearImageCache();
   }, [projectId]);
@@ -645,7 +662,7 @@ export function ChatPage({
     setTaskLaunchOpen(false);
     setTaskLaunchReadOnly(false);
     taskLaunchOpenRef.current = false;
-    sessionMessagesCacheRef.current.clear();
+    evictIdleSessionMessagesCache();
     newSessionStreamIdsRef.current.clear();
     setListRefreshKey(Date.now());
     refetchNames(true).catch(console.error);
@@ -1005,7 +1022,25 @@ export function ChatPage({
           sessionId,
           encodedName: projectId,
         });
-        const visibleMessages = stripTaskLaunchInstructionFromMessages(messages);
+        let visibleMessages = stripTaskLaunchInstructionFromMessages(messages);
+        // v0.8.0 需求7：缓存缺失但该会话正在流式输出（本应用生命周期内首次
+        // 打开的后台流式会话）——CLI 已把当前回合的用户消息落盘，直接渲染会
+        // 与流式气泡的 pendingUserMessage 各出现一次。从最后一条与回合
+        // prompt 相同的 user 消息处截断：其后是本回合的 steer 与增量回复，
+        // 均由流式气泡负责渲染。文本精确匹配，不匹配（CLI 改写 prompt 等）
+        // 时退回原样渲染。
+        const pending = streamStore.getState(sessionId)?.pendingUserMessage ?? null;
+        if (streamStore.isStreaming(sessionId) && pending != null) {
+          for (let i = visibleMessages.length - 1; i >= 0; i--) {
+            const m = visibleMessages[i];
+            if (m.role !== "user") continue;
+            const text = m.content.find((c) => c.type === "text")?.text ?? null;
+            if (text === pending) {
+              visibleMessages = visibleMessages.slice(0, i);
+              break;
+            }
+          }
+        }
         sessionMessagesCacheRef.current.set(sessionId, visibleMessages);
         setSessionMessages(visibleMessages);
       } catch {
@@ -1024,6 +1059,35 @@ export function ChatPage({
     }
   };
   handleSelectSessionRef.current = handleSelectSession;
+
+  // v0.8.0 需求7：重挂载对账。agent-event 监听随组件卸载移除，卸载期间
+  // 结束的回合收不到 turn_complete，streamStore 会永远停在 isStreaming
+  // （气泡冻结、「刷新会话」被流式守卫拒绝、列表动效常转）。挂载时逐一
+  // 询问后端回合真值（chat_turn_active）：已结束的丢弃流式状态并清其缓存
+  // 条目，点击时重读 JSONL 拿完整历史；若正查看该会话则立即重载一次。
+  useEffect(() => {
+    const streamingIds = streamStore.getStreamingIds();
+    if (streamingIds.length === 0) return;
+    let cancelled = false;
+    for (const sid of streamingIds) {
+      invokeCommand<boolean>("chat_turn_active", { sessionId: sid })
+        .then((active) => {
+          if (cancelled || active) return;
+          streamStore.drop(sid);
+          sessionMessagesCacheRef.current.delete(sid);
+          if (selectedSessionRef.current === sid) {
+            handleSelectSessionRef.current(sid);
+          }
+        })
+        .catch(() => {
+          // 查询失败（后端未就绪等）：保守保留本地状态——宁可有重复
+          // 渲染，也不中断仍在进行的直播。
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Listen for cross-page session open requests
   useEffect(() => {

@@ -265,6 +265,7 @@ pub fn run() {
             chat::set_agent_thinking_level,
             chat::compact_agent_session,
             chat::fork_agent_session,
+            chat::chat_turn_active,
             chat::get_agent_auto_compaction,
             chat::set_agent_auto_compaction,
             chat::resolve_chat_permission,

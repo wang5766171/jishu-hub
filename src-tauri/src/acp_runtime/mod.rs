@@ -86,6 +86,12 @@ pub struct AcpControl {
     pub(crate) tx: tokio::sync::mpsc::Sender<AcpCommand>,
     pub(crate) acp_session_id: Arc<std::sync::Mutex<Option<String>>>,
     pub(crate) supports_interaction_mid_turn: Arc<AtomicBool>,
+    /// v0.8.0 需求7：该会话是否有进行中的回合（prompt/turn-start 已发出、
+    /// TurnComplete 尚未到达）。连接循环每轮头部与 LoopState 同步，循环退出
+    /// 时清零。GUI 的 agent-event 监听随 chat 页卸载移除，卸载期间结束的
+    /// 回合其 turn_complete 无法送达前端（streamStore 永远停在 isStreaming），
+    /// 前端重挂载时经 `chat_turn_active` 以此标志对账。
+    pub(crate) turn_active: Arc<AtomicBool>,
 }
 
 impl AcpControl {
@@ -105,6 +111,12 @@ impl AcpControl {
 
     pub fn supports_interaction_mid_turn(&self) -> bool {
         self.supports_interaction_mid_turn.load(Ordering::Relaxed)
+    }
+
+    /// 回合是否进行中。无 `AcpControl` 的 CLI 会话（进程即回合，回合结束
+    /// 进程即退出）由 `chat_turn_active` 以「进程条目存在」等价判定。
+    pub fn turn_active(&self) -> bool {
+        self.turn_active.load(Ordering::Relaxed)
     }
 
     pub async fn send_cancel(&self) {
@@ -355,8 +367,12 @@ pub fn spawn_acp_session(
         tx: cmd_tx,
         acp_session_id: acp_session_id.clone(),
         supports_interaction_mid_turn: Arc::new(AtomicBool::new(true)),
+        // 首回合 prompt 在连接初始化后立即发出，构造时即为 true。
+        turn_active: Arc::new(AtomicBool::new(true)),
     };
     let control_clone = control.clone();
+    let turn_active_for_loop = control.turn_active.clone();
+    let turn_active_for_exit = control.turn_active.clone();
 
     tauri::async_runtime::spawn(async move {
         let result = acp_connection_loop(
@@ -370,6 +386,7 @@ pub fn spawn_acp_session(
             stderr_buf,
             cmd_rx,
             first_message,
+            turn_active_for_loop,
             &on_session_resolved,
         )
         .await;
@@ -407,6 +424,9 @@ pub fn spawn_acp_session(
             }
         }
 
+        // v0.8.0 需求7：循环已退出（正常或出错），回合必然不再进行。
+        turn_active_for_exit.store(false, Ordering::Relaxed);
+
         on_finish();
     });
 
@@ -428,6 +448,7 @@ async fn acp_connection_loop(
     stderr_buf: Arc<TokioMutex<String>>,
     mut command_rx: tokio::sync::mpsc::Receiver<AcpCommand>,
     first_message: String,
+    turn_active: Arc<AtomicBool>,
     on_session_resolved: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<(), String> {
     let mut writer = AcpWriter::new(stdin_arc);
@@ -549,6 +570,9 @@ async fn acp_connection_loop(
     let mut last_ask_user_prompts: Option<Vec<String>> = None;
 
     loop {
+        // v0.8.0 需求7：每轮头部把回合真值同步到 AcpControl 共享标志——
+        // 状态迁移都发生在 select 分支内，此处统一收口，避免逐点翻转移漏。
+        turn_active.store(!matches!(state, LoopState::Idle), Ordering::Relaxed);
         let cmd_future = command_rx.recv();
         let idle_deadline = tokio::time::Instant::now() + IDLE_TIMEOUT;
 

@@ -21,7 +21,7 @@
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -116,13 +116,17 @@ fn spawn_codex_app_server_session_inner(
 
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(8);
     let supports_interaction_mid_turn = Arc::new(AtomicBool::new(true));
+    // v0.8.0 需求7：codex turn/start 在连接初始化后立即发出（初始即 Prompting）。
+    let turn_active = Arc::new(AtomicBool::new(true));
 
     let control = AcpControl {
         tx: cmd_tx,
         acp_session_id: acp_session_id.clone(),
         supports_interaction_mid_turn: supports_interaction_mid_turn.clone(),
+        turn_active: turn_active.clone(),
     };
     let control_clone = control.clone();
+    let turn_active_for_exit = turn_active.clone();
 
     tauri::async_runtime::spawn(async move {
         let result = codex_connection_loop(
@@ -137,6 +141,7 @@ fn spawn_codex_app_server_session_inner(
             first_message,
             &on_session_resolved,
             supports_interaction_mid_turn,
+            turn_active,
         )
         .await;
 
@@ -190,6 +195,9 @@ fn spawn_codex_app_server_session_inner(
                 let _ = crate::process_control::terminate_process_tree(pid);
             }
         }
+
+        // v0.8.0 需求7：循环已退出（正常或出错），回合必然不再进行。
+        turn_active_for_exit.store(false, Ordering::Relaxed);
 
         on_finish();
     });
@@ -281,6 +289,7 @@ async fn codex_connection_loop(
     first_message: String,
     on_session_resolved: &(dyn Fn(&str) + Send + Sync),
     supports_interaction_mid_turn: Arc<AtomicBool>,
+    turn_active: Arc<AtomicBool>,
 ) -> Result<(), String> {
     // stdout reader sub-task.
     let (stdout_tx, mut stdout_rx) = tokio::sync::mpsc::channel(64);
@@ -405,6 +414,10 @@ async fn codex_connection_loop(
 
     // 4. Main loop.
     loop {
+        // v0.8.0 需求7：每轮头部把回合真值同步到 AcpControl 共享标志——
+        // 状态迁移都发生在各分支内，此处统一收口，避免逐点翻转移漏。
+        // CancelPending 期间旧回合尚未收到 TurnComplete，仍算进行中。
+        turn_active.store(!matches!(state, LoopState::Idle { .. }), Ordering::Relaxed);
         let idle_deadline = tokio::time::Instant::now() + IDLE_TIMEOUT;
 
         let exit = tokio::select! {

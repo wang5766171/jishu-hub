@@ -10,7 +10,7 @@
 //! - Events (stdout):   AgentEvent objects (`message_update`, `tool_execution_*`, …)
 
 use serde_json::json;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -130,8 +130,14 @@ fn spawn_pi_rpc_session_inner(
         tx: cmd_tx,
         acp_session_id: acp_session_id.clone(),
         supports_interaction_mid_turn: Arc::new(AtomicBool::new(true)),
+        // v0.8.0 需求7：初始值随形态——常规形态连接建立即发首条 prompt
+        // （true）；resume-fork 形态 first_message=None，停在 Idle 等待
+        // ForkSession（false）。
+        turn_active: Arc::new(AtomicBool::new(first_message.is_some())),
     };
     let control_clone = control.clone();
+    let turn_active_for_loop = control.turn_active.clone();
+    let turn_active_for_exit = control.turn_active.clone();
 
     tauri::async_runtime::spawn(async move {
         let result = pi_rpc_connection_loop(
@@ -145,6 +151,7 @@ fn spawn_pi_rpc_session_inner(
             resolved_session_prompt_injection,
             thinking_pref,
             auto_compaction_pref,
+            turn_active_for_loop,
             &on_session_resolved,
         )
         .await;
@@ -198,6 +205,9 @@ fn spawn_pi_rpc_session_inner(
             }
         }
 
+        // v0.8.0 需求7：循环已退出（正常或出错），回合必然不再进行。
+        turn_active_for_exit.store(false, Ordering::Relaxed);
+
         on_finish();
     });
 
@@ -239,6 +249,7 @@ async fn pi_rpc_connection_loop(
     resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
     thinking_pref: Option<String>,
     auto_compaction_pref: Option<bool>,
+    turn_active: Arc<AtomicBool>,
     on_session_resolved: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<(), String> {
     // 1. stdout reader sub-task
@@ -416,6 +427,10 @@ async fn pi_rpc_connection_loop(
     )> = None;
 
     loop {
+        // v0.8.0 需求7：每轮头部把回合真值同步到 AcpControl 共享标志——
+        // 状态迁移都发生在 select 分支内，此处统一收口，避免逐点翻转移漏。
+        // CancelPending 期间旧回合尚未收到 TurnComplete，仍算进行中。
+        turn_active.store(!matches!(state, LoopState::Idle), Ordering::Relaxed);
         let cmd_future = command_rx.recv();
         let idle_deadline = tokio::time::Instant::now() + IDLE_TIMEOUT;
 

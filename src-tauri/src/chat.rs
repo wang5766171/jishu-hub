@@ -625,6 +625,28 @@ async fn spawn_resume_fork_process(
     Ok((acp, process))
 }
 
+/// v0.8.0 需求7：查询某会话是否有进行中的回合。GUI 的 agent-event 监听随
+/// chat 页卸载而移除，卸载期间结束的回合其 turn_complete 永远无法送达前端
+/// （streamStore 停在 isStreaming）。前端重挂载时以本命令对账：返回 false
+/// 的流式会话丢弃本地流式状态并重读 JSONL。ACP/Pi/Codex 会话由连接循环维护
+/// 的 turn_active 标志回答；CLI 会话（acp=None，进程即回合，回合结束进程即
+/// 被 on_finish 移除）以「进程条目存在」等价判定。查无进程（含 fork 重键后
+/// 的旧 id）视为不在进行中。
+#[tauri::command]
+pub fn chat_turn_active(app: AppHandle, session_id: String) -> bool {
+    let chat_state = app.state::<Mutex<ChatState>>();
+    let Ok(state) = chat_state.lock() else {
+        return false;
+    };
+    match state.processes.get(&session_id) {
+        Some(process) => match &process.acp {
+            Some(acp) => acp.turn_active(),
+            None => true,
+        },
+        None => false,
+    }
+}
+
 /// Read the agent's auto-compaction preference (v0.7.4 需求1 A3).
 /// None = follow the agent's own default.
 #[tauri::command]
