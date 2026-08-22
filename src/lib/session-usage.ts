@@ -5,8 +5,10 @@
  * input_tokens / output_tokens / total_cost / context_remaining，均可缺省）。
  * 按会话 id（优先 resolved id）累加，GUI 内跨页面共享。
  *
- * v1 限制（记录在案）：只统计本次应用运行期间的事件，不回放 agent 的
- * JSONL 历史用量；重启后计数从零开始。
+ * v0.8.0 需求8：累计值持久化到 localStorage（jishu:session-usage，v1 结构，
+ * 按 updatedAt 保留最近 500 个会话防无界增长）——重启后圆环立即可见，
+ * 不必等新一轮 turn_complete。读写失败静默降级（隐私模式/存储损坏时
+ * 回退为旧的易失行为）。
  */
 
 export interface TurnUsagePayload {
@@ -28,7 +30,63 @@ export interface SessionUsage {
   updatedAt: number;
 }
 
-const store = new Map<string, SessionUsage>();
+interface PersistedUsageV1 {
+  v: 1;
+  sessions: Record<string, SessionUsage>;
+}
+
+const STORAGE_KEY = "jishu:session-usage";
+const MAX_PERSISTED_SESSIONS = 500;
+
+function isValidUsage(value: unknown): value is SessionUsage {
+  if (typeof value !== "object" || value === null) return false;
+  const u = value as Record<string, unknown>;
+  return (
+    typeof u.inputTokens === "number" && Number.isFinite(u.inputTokens)
+    && typeof u.outputTokens === "number" && Number.isFinite(u.outputTokens)
+    && typeof u.totalCost === "number" && Number.isFinite(u.totalCost)
+    && (u.contextRemaining === null || (typeof u.contextRemaining === "number" && Number.isFinite(u.contextRemaining)))
+    && (u.contextWindowTotal === null || (typeof u.contextWindowTotal === "number" && Number.isFinite(u.contextWindowTotal)))
+    && typeof u.updatedAt === "number" && Number.isFinite(u.updatedAt)
+  );
+}
+
+function loadPersisted(): Map<string, SessionUsage> {
+  const map = new Map<string, SessionUsage>();
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return map;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return map;
+    const container = parsed as { v?: unknown; sessions?: unknown };
+    if (container.v !== 1 || typeof container.sessions !== "object" || container.sessions === null) {
+      return map;
+    }
+    for (const [id, entry] of Object.entries(container.sessions as Record<string, unknown>)) {
+      if (id && isValidUsage(entry)) map.set(id, entry);
+    }
+  } catch {
+    // 存储损坏/不可用：回退空表，运行期重新累计。
+  }
+  return map;
+}
+
+function persistStore(): void {
+  try {
+    let entries = Array.from(store.entries());
+    if (entries.length > MAX_PERSISTED_SESSIONS) {
+      entries = entries
+        .sort(([, a], [, b]) => b.updatedAt - a.updatedAt)
+        .slice(0, MAX_PERSISTED_SESSIONS);
+    }
+    const payload: PersistedUsageV1 = { v: 1, sessions: Object.fromEntries(entries) };
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // 写入失败（隐私模式/超限）静默放弃——仅失去跨重启持久化。
+  }
+}
+
+const store = loadPersisted();
 const listeners = new Set<() => void>();
 let version = 0;
 
@@ -65,11 +123,15 @@ export function recordSessionUsage(sessionId: string, payload: TurnUsagePayload 
     updatedAt: Date.now(),
   });
   emit();
+  persistStore();
 }
 
 /** 清空某会话累计（会话删除等场景预留）。 */
 export function clearSessionUsage(sessionId: string): void {
-  if (store.delete(sessionId)) emit();
+  if (store.delete(sessionId)) {
+    persistStore();
+    emit();
+  }
 }
 
 function subscribe(listener: () => void): () => void {
@@ -93,9 +155,14 @@ export function useSessionUsage(sessionId: string | null | undefined): SessionUs
   );
 }
 
-/** 测试辅助：清空全部累计。 */
+/** 测试辅助：清空全部累计（连同持久化副本）。 */
 export function resetAllSessionUsageForTest(): void {
   store.clear();
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // 忽略：测试环境存储不可用。
+  }
   emit();
 }
 
