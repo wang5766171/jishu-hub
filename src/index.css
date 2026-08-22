@@ -86,6 +86,21 @@ select option {
   animation: breathing 2.5s ease-in-out infinite;
 }
 
+/* v0.8.0 需求6：ActivitySpinner 的单根竖线——12 根围成圆圈，1.2s 周期
+   渐隐，组件侧按索引错开 delay 形成绕圈亮段。 */
+@keyframes activity-spinner-bar {
+  0% { opacity: 1; }
+  100% { opacity: 0.15; }
+}
+.activity-spinner-bar {
+  left: 50%;
+  top: 50%;
+  width: 1.5px;
+  height: 4px;
+  margin: -2px 0 0 -0.75px;
+  animation: activity-spinner-bar 1.2s linear infinite;
+}
+
 @keyframes processing-marquee {
   0% { background-position: 200% center; }
   100% { background-position: -200% center; }

@@ -33,11 +33,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
-import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, PanelRightOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2, Trash2, GitBranch, Loader2,
+import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, PanelRightOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2, Trash2, GitBranch,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { cn } from "@/lib/utils";
 import { searchSessions } from "@/lib/session-search";
 import { openFloatingSession } from "@/lib/floating-window";
@@ -2871,7 +2872,7 @@ export function ChatPage({
                       {rowRefreshing ? (
                         <RotateCw className="h-3 w-3 shrink-0 animate-spin text-[var(--icon-action)]" />
                       ) : rowStreaming ? (
-                        <Loader2 className="h-3 w-3 shrink-0 animate-spin text-[var(--icon-action)]" />
+                        <ActivitySpinner className="h-3.5 w-3.5 text-[var(--icon-action)]" />
                       ) : (
                         <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
                       )}
