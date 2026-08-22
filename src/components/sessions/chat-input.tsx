@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { streamStore, useIsSessionStreaming } from "@/hooks/use-stream-store";
 import { Button } from "@/components/ui/button";
-import { Blocks, Check, ChevronDown, KeyRound, Paperclip, Plus, Send, Square, Sparkles } from "lucide-react";
+import { Blocks, Check, ChevronDown, KeyRound, MessagesSquare, Paperclip, Plus, Send, Square, Sparkles } from "lucide-react";
 import { FilePreview } from "./file-preview";
 import { InteractionComposer } from "./interaction-composer";
 import { MessageStaging, type StagedMessage } from "./message-staging";
@@ -1050,9 +1050,12 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
           }}
         />
 
-        <div className="flex items-end justify-between pl-2 pr-2.5 pb-2 pt-0">
-          <div className="flex items-center gap-1">
-            <div ref={toolbarRef} className="relative flex items-center gap-1">
+        {/* v0.8.0 需求4 补充：底部两侧允许换行 + min-w-0——右侧预览顶开
+            聊天区收窄时，模式/权限/模型等 chips 折行而不是溢出输入框。
+            行上声明 @container：行宽 <560px 时各 chip 切换为图标展示。 */}
+        <div className="@container flex items-end justify-between gap-2 pl-2 pr-2.5 pb-2 pt-0">
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
+            <div ref={toolbarRef} className="relative flex min-w-0 flex-wrap items-center gap-1">
               <Button
                 type="button"
                 variant="ghost"
@@ -1117,11 +1120,12 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                       setAccessMenuOpen(false);
                     }}
                     className={cn(
-                      "inline-flex h-8 min-w-[7.5rem] items-center justify-between gap-1.5 rounded-full border border-border/50 bg-background/80 px-3 text-xs text-muted-foreground transition-fast hover:bg-accent/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50",
+                      "inline-flex h-8 min-w-[5.5rem] max-w-[9rem] items-center justify-between gap-1.5 rounded-full border border-border/50 bg-background/80 px-3 text-xs text-muted-foreground transition-fast hover:bg-accent/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 @max-[559px]:min-w-0 @max-[559px]:px-2",
                       workModeMenuOpen && "border-primary/45 bg-primary/8 text-foreground shadow-sm",
                     )}
                   >
-                    <span className="min-w-0 truncate">
+                    <MessagesSquare className="hidden h-3.5 w-3.5 @max-[559px]:inline-flex" />
+                    <span className="min-w-0 truncate @max-[559px]:hidden">
                       {workModeOptions.find((option) => option.value === workModeValue)?.label ?? workModeValue}
                     </span>
                     <ChevronDown className={cn("h-3 w-3 shrink-0 transition-transform", workModeMenuOpen && "rotate-180")} />
@@ -1172,8 +1176,8 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                       accessModeReadOnly && "cursor-default hover:bg-background/80 hover:text-muted-foreground",
                     )}
                   >
-                    <KeyRound className="h-3.5 w-3.5 text-[var(--icon-config)]" />
-                    <span className="max-w-[8rem] truncate">{accessModeLabel}</span>
+                    <KeyRound className="h-3.5 w-3.5 shrink-0 text-[var(--icon-config)]" />
+                    <span className="max-w-[8rem] truncate @max-[559px]:hidden">{accessModeLabel}</span>
                     {!accessModeReadOnly && <ChevronDown className="h-3 w-3" />}
                   </button>
                   {accessMenuOpen && !accessModeReadOnly && (
@@ -1199,9 +1203,9 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
             {trailingControls ? (
-              <span className="mr-2.5 inline-flex items-center">{trailingControls}</span>
+              <span className="mr-2.5 inline-flex min-w-0 flex-wrap items-center justify-end gap-1.5">{trailingControls}</span>
             ) : null}
             {isStreaming && !(message.trim() || files.length > 0) ? (
               <Button

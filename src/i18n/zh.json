@@ -951,6 +951,7 @@
     "openWith": "用关联应用打开",
     "revealFailedTitle": "打开资源管理器失败",
     "openFailedTitle": "打开文件失败",
-    "resizeHandle": "调整预览宽度（双击自适应内容宽度）"
+    "resizeHandle": "调整预览宽度（双击自适应内容宽度）",
+    "collapse": "收起预览"
   }
 }

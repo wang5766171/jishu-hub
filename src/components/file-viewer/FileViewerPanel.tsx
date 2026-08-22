@@ -1,11 +1,16 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ExternalLink, FileText, FolderSearch, GitCompare, Loader2, X } from "lucide-react";
+import { ExternalLink, FileText, FolderSearch, GitCompare, Loader2, PanelRightClose } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { DiffPreview, DiffRow } from "@/lib/text-preview";
-import { clampPanelWidth, fitPanelWidth, loadPanelWidth, savePanelWidth } from "./panel-width";
+import { clampPanelWidth, defaultPanelWidth, fitPanelWidth, loadPanelWidth, savePanelWidth } from "./panel-width";
+import { resolveViewerPath } from "./path-resolve";
 
 export type ViewerTarget =
   | { kind: "file"; path: string; line?: number }
@@ -15,6 +20,8 @@ export type ViewerTarget =
 interface FileViewerContextValue {
   open: boolean;
   target: ViewerTarget | null;
+  /** 面板实际占宽（含默认值回退），供「三栏顶开」的布局 margin 共用。 */
+  effectiveWidth: number;
   openViewer: (target: ViewerTarget) => void;
   closeViewer: () => void;
 }
@@ -28,7 +35,7 @@ interface TextFilePreview {
 
 const FileViewerContext = createContext<FileViewerContextValue>(null!);
 
-export function FileViewerProvider({ children }: { children: ReactNode }) {
+export function FileViewerProvider({ children, projectPath }: { children: ReactNode; projectPath?: string | null }) {
   const { t } = useTranslation();
   const { alert: alertDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
   const [open, setOpen] = useState(false);
@@ -37,9 +44,14 @@ export function FileViewerProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<"preview" | "diff">("preview");
+  const projectPathRef = useRef(projectPath);
+  projectPathRef.current = projectPath;
 
   // v0.8.0 需求4：面板宽度（null = 未设置，回退默认 min(560px,44vw)）。
   const [width, setWidth] = useState<number | null>(() => loadPanelWidth());
+  // v0.8.0 需求4 补充：跟踪视口宽，默认宽度（窗口 25%）与三栏 margin 随窗口变化。
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  const effectiveWidth = width ?? defaultPanelWidth(viewportWidth);
   const widthRef = useRef<number | null>(width);
   widthRef.current = width;
   const contentScrollRef = useRef<HTMLDivElement | null>(null);
@@ -53,6 +65,7 @@ export function FileViewerProvider({ children }: { children: ReactNode }) {
   // 窗口尺寸变化时被动 clamp（不持久化，下次恢复用户设置的值）。
   useEffect(() => {
     const onResize = () => {
+      setViewportWidth(window.innerWidth);
       if (widthRef.current !== null) {
         setWidth(clampPanelWidth(widthRef.current, window.innerWidth));
       }
@@ -114,8 +127,12 @@ export function FileViewerProvider({ children }: { children: ReactNode }) {
   }, [target?.path, alertDialog, t]);
 
   const openViewer = useCallback((t: ViewerTarget) => {
-    setTarget(t);
-    setTab(t.kind === "diff" ? "diff" : "preview");
+    // v0.8.0 需求4 补充：read 工具的路径可为相对路径，打开时以当前项目根
+    // 解析为绝对路径（详见 path-resolve.ts）。ref 取值避免 projectPath 变化
+    // 重建回调。
+    const resolved = { ...t, path: resolveViewerPath(t.path, projectPathRef.current) };
+    setTarget(resolved);
+    setTab(resolved.kind === "diff" ? "diff" : "preview");
     setOpen(true);
   }, []);
 
@@ -149,17 +166,17 @@ export function FileViewerProvider({ children }: { children: ReactNode }) {
 
   const diff = target?.kind === "diff" ? target.diff : null;
   const hasPath = Boolean(target?.path);
+  // v0.8.0 需求4 补充：md 文件按主流 agent 预览方式渲染（正文自动换行，
+  // 内嵌代码块横向滚动），其余文本文件按行号源码视图（长行随宽度换行）。
+  const isMarkdown = /\.(md|markdown|mdx)$/i.test(target?.path ?? "");
 
   return (
-    <FileViewerContext.Provider value={{ open, target, openViewer, closeViewer }}>
+    <FileViewerContext.Provider value={{ open, target, effectiveWidth, openViewer, closeViewer }}>
       {children}
       {open && target && (
         <div
-          className={cn(
-            "fixed right-0 top-11 bottom-6 z-40 flex min-w-[420px] flex-col border-l border-border bg-[var(--color-card)] shadow-lg",
-            width === null && "w-[min(560px,44vw)]",
-          )}
-          style={width !== null ? { width: `${width}px` } : undefined}
+          className="fixed right-0 top-11 bottom-6 z-40 flex flex-col border-l border-border bg-[var(--color-card)] shadow-lg"
+          style={{ width: `${effectiveWidth}px` }}
         >
           {/* 左缘拖拽条：拖动调宽，双击自适应内容宽度（v0.8.0 需求4） */}
           <div
@@ -173,35 +190,45 @@ export function FileViewerProvider({ children }: { children: ReactNode }) {
             onDoubleClick={handleFitWidth}
             className="absolute left-0 top-0 bottom-0 z-10 w-1.5 cursor-ew-resize hover:bg-primary/40 active:bg-primary/60"
           />
-          <div className="flex items-center gap-2 border-b border-border/30 px-3 py-2">
-            <FileText className="h-4 w-4 shrink-0 text-[var(--icon-action)]" />
-            <span className="min-w-0 flex-1 truncate text-sm font-medium" title={target.path}>
+          {/* v0.8.0 需求4 补充：首行样式与会话区域标题行一致（px-5/44px/
+              layer-1 底/同款 ghost icon-xs 按钮），去掉前置文件图标。 */}
+          <div
+            className="flex items-center justify-between px-5 h-[44px] border-b border-border/30"
+            style={{ background: "var(--color-layer-1)" }}
+          >
+            <span className="min-w-0 flex-1 truncate font-medium text-sm" title={target.path}>
               {target.path}
             </span>
-            {hasPath && (
-              <>
-                <button
-                  onClick={() => void handleReveal()}
-                  title={t("fileViewer.reveal", "在资源管理器中显示")}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-                >
-                  <FolderSearch className="h-4 w-4" />
-                </button>
-                <button
-                  onClick={() => void handleOpenWith()}
-                  title={t("fileViewer.openWith", "用关联应用打开")}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-                >
-                  <ExternalLink className="h-4 w-4" />
-                </button>
-              </>
-            )}
-            <button
-              onClick={closeViewer}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            <div className="flex items-center gap-1">
+              {hasPath && (
+                <>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={() => void handleReveal()}
+                    title={t("fileViewer.reveal", "在资源管理器中显示")}
+                  >
+                    <FolderSearch className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={() => void handleOpenWith()}
+                    title={t("fileViewer.openWith", "用关联应用打开")}
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </Button>
+                </>
+              )}
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={closeViewer}
+                title={t("fileViewer.collapse", "收起预览")}
+              >
+                <PanelRightClose className="h-3.5 w-3.5" />
+              </Button>
+            </div>
           </div>
 
           <div className="flex items-center gap-1 border-b border-border/30 px-3 pt-2">
@@ -212,6 +239,15 @@ export function FileViewerProvider({ children }: { children: ReactNode }) {
               <TabButton active={tab === "diff"} onClick={() => setTab("diff")} icon={<GitCompare className="h-3.5 w-3.5" />}>
                 {t("fileViewer.changes", "变更")}
               </TabButton>
+            )}
+            {/* v0.8.0 需求4 补充：变更行数收敛到 tab 行右侧——diff 视图原有
+                独立文件名头（第三行）与其他预览不一致，已移除；仅在「变更」
+                tab 激活时展示（用户复验反馈）。 */}
+            {tab === "diff" && target.kind === "diff" && diff && (
+              <span className="ml-auto inline-flex shrink-0 items-center gap-1 pb-1 font-mono text-sm font-semibold">
+                <span className="text-green-600">+{diff.added}</span>
+                <span className="text-red-600">-{diff.removed}</span>
+              </span>
             )}
           </div>
 
@@ -226,7 +262,11 @@ export function FileViewerProvider({ children }: { children: ReactNode }) {
             ) : error ? (
               <EmptyState text={error} />
             ) : content ? (
-              <TextPreview content={content.content} truncated={content.truncated} />
+              isMarkdown ? (
+                <MarkdownPreview content={content.content} truncated={content.truncated} />
+              ) : (
+                <TextPreview content={content.content} truncated={content.truncated} />
+              )
             ) : (
               <EmptyState text={t("fileViewer.empty", "没有可预览的文本内容")} />
             )}
@@ -275,7 +315,9 @@ function TextPreview({ content, truncated }: { content: string; truncated: boole
           <span className="select-none border-r border-border/35 px-3 py-0.5 text-right text-muted-foreground/70">
             {index + 1}
           </span>
-          <span className="whitespace-pre px-3 py-0.5 text-foreground/80">{line || " "}</span>
+          {/* v0.8.0 需求4 补充：长行随面板宽度换行（行号按逻辑行对齐），
+              不再被 whitespace-pre 挤出横向滚动。 */}
+          <span className="whitespace-pre-wrap break-words px-3 py-0.5 text-foreground/80">{line || " "}</span>
         </div>
       ))}
       {truncated && (
@@ -287,16 +329,35 @@ function TextPreview({ content, truncated }: { content: string; truncated: boole
   );
 }
 
+const REMARK_PLUGINS = [remarkGfm];
+const REHYPE_PLUGINS = [rehypeHighlight];
+
+/** v0.8.0 需求4 补充：md 渲染预览。复用消息区的 markdown-prose 样式
+ * （pre 已带 overflow-x:auto，代码块单独横向滚动），正文随面板宽度换行。 */
+function MarkdownPreview({ content, truncated }: { content: string; truncated: boolean }) {
+  const { t } = useTranslation();
+  return (
+    <div className="px-4 py-3">
+      <div className="markdown-prose">
+        <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
+          {content}
+        </ReactMarkdown>
+      </div>
+      {truncated && (
+        <div className="mt-2 border-t border-border/40 pt-2 text-sm text-muted-foreground">
+          {t("fileViewer.truncated", "内容过长，已截断显示。")}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DiffTable({ diff }: { diff: DiffPreview }) {
   return (
     <div className="font-mono text-[var(--font-size-prose)]">
-      <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/40 bg-[var(--color-card)] px-3 py-2">
-        <FileText className="h-4 w-4 text-[var(--icon-action)]" />
-        <span className="flex-1 truncate font-sans text-sm font-medium">{diff.fileName}</span>
-        <span className="font-sans text-sm font-semibold text-green-600">+{diff.added}</span>
-        <span className="font-sans text-sm font-semibold text-red-600">-{diff.removed}</span>
-      </div>
-      <div className="inline-block min-w-full">
+      {/* v0.8.0 需求4 补充：diff 行随面板宽度换行（容器占满宽度，行内
+          文本列 minmax(0,1fr) 约束），不再横向撑出滚动。 */}
+      <div className="w-full">
         {diff.rows.map((row, index) => (
           <DiffLine key={index} row={row} />
         ))}
@@ -309,7 +370,7 @@ function DiffLine({ row }: { row: DiffRow }) {
   return (
     <div
       className={cn(
-        "grid min-w-full grid-cols-[3rem_3rem_max-content]",
+        "grid w-full grid-cols-[3rem_3rem_minmax(0,1fr)]",
         row.kind === "add" && "bg-[var(--diff-added)] text-[var(--diff-added-fg)]",
         row.kind === "remove" && "bg-[var(--diff-removed)] text-[var(--diff-removed-fg)]",
       )}
@@ -320,7 +381,7 @@ function DiffLine({ row }: { row: DiffRow }) {
       <span className="select-none border-r border-border/25 px-2 py-0.5 text-right text-muted-foreground/70">
         {row.newLine ?? ""}
       </span>
-      <span className="whitespace-pre px-3 py-0.5">
+      <span className="whitespace-pre-wrap break-words px-3 py-0.5">
         {row.kind === "add" ? "+" : row.kind === "remove" ? "-" : " "}
         {row.text || " "}
       </span>

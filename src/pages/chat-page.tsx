@@ -33,12 +33,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
-import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, PanelRightOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2, Trash2, GitBranch,
+import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, PanelRightOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2, Trash2, GitBranch, Cpu,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
+import { useFileViewer } from "@/components/file-viewer";
 import { cn } from "@/lib/utils";
 import { searchSessions } from "@/lib/session-search";
 import { openFloatingSession } from "@/lib/floating-window";
@@ -409,6 +410,8 @@ export function ChatPage({
   // v0.8.0 需求6：正在输出的会话集合（含后台会话）。驱动会话列表行的加载动效；
   // 快照仅在集合成员变化时更新，流式内容增量不会引起列表重渲染。
   const streamingSessionIds = useStreamingSessionIds();
+  // v0.8.0 需求4 补充：切换会话时自动收起右侧文件预览面板。
+  const { closeViewer } = useFileViewer();
   // 任务图数据：无条件持有（无 graph 时无副作用）。任务模式主区（run 流）与右侧 TaskSidebar 共享。
   const taskGraph = useTaskGraph();
   // v0.7.0：ref 镜像，供轮询回调（非 React 闭包）读 taskGraph 而不进入依赖数组。
@@ -995,6 +998,10 @@ export function ChatPage({
     taskLaunchOpenRef.current = false;
     if (sessionId === selectedSession || !projectId) return;
 
+    // v0.8.0 需求4 补充：切换会话自动收起右侧预览——预览的文件属于上一会话
+    // 上下文，跨会话保留易误导。同会话重复点击已被上方守卫拦截。
+    closeViewer();
+
     if (selectedSession && messageAreaRef.current) {
       scrollMemory.current.set(selectedSession, messageAreaRef.current.scrollTop);
     }
@@ -1158,6 +1165,9 @@ export function ChatPage({
 
   const handleNewSession = async () => {
     if (!projectId) return;
+
+    // v0.8.0 需求4 补充：新建会话同样视为切换，收起右侧预览。
+    closeViewer();
 
     setTaskModeActive(false);
     setTaskLaunchOpen(false);
@@ -2547,8 +2557,14 @@ export function ChatPage({
   // 模型选择器+水位圆环（v0.7.3 需求2 收尾）：移至发送按钮左侧同一行（trailingControls）。
   const modelTrailingControls = (
     supportsModelPicker ? (
-        <span ref={modelMenuRef} className="relative inline-flex shrink-0 min-w-0 items-center gap-1.5">
-          {/* 水位圆环贴模型按钮左侧；整体渲染于发送按钮同一行（trailingControls） */}
+        // v0.8.0 需求4 补充：min-w-0 + flex-wrap（去 shrink-0）——聊天区被
+        // 预览顶窄时模型名/思考档/水位环在右侧组内折行，而不是向左溢出
+        // 盖住会话模式 chip（重叠缺陷修复）。
+        <span ref={modelMenuRef} className="relative inline-flex min-w-0 flex-wrap items-center justify-end gap-1.5">
+          {/* v0.8.0 需求4 补充（用户定序）：水位圆环 | 模型 | 思考强度——
+              模型居中，圆环在其左（未对话/无用量数据时不渲染），思考档在其右。
+              行宽 <560px 时模型名与思考档标签切换为图标（@container 由
+              ChatInput 底部行声明，作用于整组）。 */}
           <ContextRing
             sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null}
             compact={supportsCompact ? {
@@ -2557,14 +2573,6 @@ export function ChatPage({
               autoCompaction: autoCompactionPref ?? null,
               onAutoCompactionChange: (enabled) => void handleAutoCompactionChange(enabled),
             } : undefined}
-          />
-          <ThinkingLevelSelect
-            levels={
-              (activeModel && modelThinkingLevels[`${activeModel.provider}/${activeModel.model}`]) ||
-              thinkingLevels
-            }
-            value={thinkingLevelValue}
-            onChange={(level) => void handleThinkingLevelChange(level)}
           />
           {modelOptions.length === 0 ? (
             <span className="truncate text-amber-400">
@@ -2584,7 +2592,8 @@ export function ChatPage({
                   modelMenuOpen && "bg-accent/30 text-foreground",
                 )}
               >
-                <span className="min-w-0 truncate">{activeModelLabel}</span>
+                <Cpu className="hidden h-3.5 w-3.5 @max-[559px]:inline-flex" />
+                <span className="min-w-0 truncate @max-[559px]:hidden">{activeModelLabel}</span>
                 <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", modelMenuOpen && "rotate-180")} />
               </button>
               {modelMenuOpen && (
@@ -2624,6 +2633,15 @@ export function ChatPage({
               )}
             </>
           )}
+          {/* 思考强度居模型右侧（v0.8.0 需求4 补充用户定序）。 */}
+          <ThinkingLevelSelect
+            levels={
+              (activeModel && modelThinkingLevels[`${activeModel.provider}/${activeModel.model}`]) ||
+              thinkingLevels
+            }
+            value={thinkingLevelValue}
+            onChange={(level) => void handleThinkingLevelChange(level)}
+          />
         </span>
       ) : null
   );

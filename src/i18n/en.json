@@ -951,6 +951,7 @@
     "openWith": "Open with default app",
     "revealFailedTitle": "Failed to open file manager",
     "openFailedTitle": "Failed to open file",
-    "resizeHandle": "Resize preview (double-click to fit content)"
+    "resizeHandle": "Resize preview (double-click to fit content)",
+    "collapse": "Collapse preview"
   }
 }
