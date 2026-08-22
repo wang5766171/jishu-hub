@@ -46,9 +46,13 @@ pub enum AcpCommand {
         instructions: Option<String>,
         response: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
     },
-    /// Toggle the agent's auto-compaction (v0.7.4 需求1 A3). Pi RPC native
-    /// `set_auto_compaction`; fire-and-forget.
-    SetAutoCompaction(bool),
+    /// Toggle/adjust the agent's auto-compaction (v0.7.4 需求1 A3；v0.8.0
+    /// 需求9 收尾：两字段均可选——只推送出现的字段，避免热推阈值时误覆盖
+    /// enabled 开关）。Pi RPC native `set_auto_compaction`; fire-and-forget.
+    SetAutoCompaction {
+        enabled: Option<bool>,
+        threshold_percent: Option<u32>,
+    },
     /// Fork the live session at its current end (v0.8.0 需求1 A5). Only the
     /// Pi RPC runtime implements this (native `clone` RPC: copies the session
     /// tree to a branch file and rebinds the process to it); the oneshot
@@ -159,9 +163,16 @@ impl AcpControl {
     }
 
     /// Toggle auto-compaction for the session (v0.7.4 需求1 A3).
-    pub async fn set_auto_compaction(&self, enabled: bool) -> Result<(), String> {
+    pub async fn set_auto_compaction(
+        &self,
+        enabled: Option<bool>,
+        threshold_percent: Option<u32>,
+    ) -> Result<(), String> {
         self.tx
-            .send(AcpCommand::SetAutoCompaction(enabled))
+            .send(AcpCommand::SetAutoCompaction {
+                enabled,
+                threshold_percent,
+            })
             .await
             .map_err(|_| "ACP connection closed".to_string())
     }
@@ -682,8 +693,13 @@ async fn acp_connection_loop(
                         ));
                         false
                     }
-                    Some(AcpCommand::SetAutoCompaction(enabled)) => {
-                        log::warn!("ACP runtime received SetAutoCompaction({enabled}) — not supported, dropping");
+                    Some(AcpCommand::SetAutoCompaction {
+                        enabled,
+                        threshold_percent,
+                    }) => {
+                        log::warn!(
+                            "ACP runtime received SetAutoCompaction(enabled={enabled:?}, threshold={threshold_percent:?}) — not supported, dropping"
+                        );
                         false
                     }
                     Some(AcpCommand::ForkSession { response }) => {

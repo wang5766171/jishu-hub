@@ -173,35 +173,46 @@ export function ProjectSettingsForm({
                 update({
                   compaction: {
                     enabled: v,
-                    reserveTokens: settings.compaction?.reserveTokens ?? null,
+                    thresholdPercent: settings.compaction?.thresholdPercent ?? null,
                     keepRecentTokens: settings.compaction?.keepRecentTokens ?? null,
                   },
                 })
               }
             />
           </div>
-          <div className="grid grid-cols-2 items-start gap-3">
-            <div className="space-y-1.5">
-              <Label className="truncate text-xs">{t("projectConfig.compactionReserve")}</Label>
-              <Input
-                type="number"
-                min="0"
-                className="h-9 text-sm"
-                value={settings.compaction?.reserveTokens ?? ""}
-                onChange={(e) =>
-                  update({
-                    compaction: {
-                      enabled: settings.compaction?.enabled ?? null,
-                      reserveTokens: e.target.value ? Number(e.target.value) : null,
-                      keepRecentTokens: settings.compaction?.keepRecentTokens ?? null,
-                    },
-                  })
-                }
-                placeholder="16384"
-              />
+          {/* v0.8.0 需求9：阈值百分比 + 保留近期 token，说明经问号查看，输入框窄幅。 */}
+          <div className="flex flex-wrap gap-3">
+            <div className="w-36 space-y-1.5">
+              <Label className="inline-flex items-center gap-0.5 truncate text-xs">
+                {t("projectConfig.compactionThreshold")}
+                <SectionHelp content={t("projectConfig.compactionThresholdHelp")} />
+              </Label>
+              <div className="relative">
+                <Input
+                  type="number"
+                  min="1"
+                  max="99"
+                  className="h-9 pr-7 text-sm"
+                  value={settings.compaction?.thresholdPercent ?? ""}
+                  onChange={(e) =>
+                    update({
+                      compaction: {
+                        enabled: settings.compaction?.enabled ?? null,
+                        thresholdPercent: e.target.value ? Number(e.target.value) : null,
+                        keepRecentTokens: settings.compaction?.keepRecentTokens ?? null,
+                      },
+                    })
+                  }
+                  placeholder="90"
+                />
+                <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">%</span>
+              </div>
             </div>
-            <div className="space-y-1.5">
-              <Label className="truncate text-xs">{t("projectConfig.compactionKeepRecent")}</Label>
+            <div className="w-36 space-y-1.5">
+              <Label className="inline-flex items-center gap-0.5 truncate text-xs">
+                {t("projectConfig.compactionKeepRecent")}
+                <SectionHelp content={t("projectConfig.compactionKeepRecentHelp")} />
+              </Label>
               <Input
                 type="number"
                 min="0"
@@ -211,7 +222,7 @@ export function ProjectSettingsForm({
                   update({
                     compaction: {
                       enabled: settings.compaction?.enabled ?? null,
-                      reserveTokens: settings.compaction?.reserveTokens ?? null,
+                      thresholdPercent: settings.compaction?.thresholdPercent ?? null,
                       keepRecentTokens: e.target.value ? Number(e.target.value) : null,
                     },
                   })

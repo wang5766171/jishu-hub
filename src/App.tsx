@@ -11,12 +11,12 @@ import { Gitee } from "@/components/icons/gitee";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { useTheme, type Theme, ThemeProvider } from "@/hooks/use-theme";
 import { useFontSize, type FontLevel } from "@/hooks/use-font-size";
 import { AgentProvider, useAgent } from "@/agents";
-import { FileViewerProvider } from "@/components/file-viewer";
+import { FileViewerProvider, useFileViewer } from "@/components/file-viewer";
 import { ErrorBoundary } from "@/components/error-boundary";
 import type { Page, Project, ProjectMeta } from "@/types";
 
@@ -565,9 +565,12 @@ function AppContent() {
   }, []);
 
   return (
-    <div className="flex flex-col h-screen bg-background relative">
-      <TitleBar currentPage={currentPage} onNavigate={setCurrentPage} disabled={blockingLoading} />
-      <div className="flex-1 overflow-hidden">
+    // v0.8.0 需求4 补充：provider 从根 App() 移入 AppContent——解析 read 类
+    // 工具的相对路径需要当前项目根，只有这里持有 currentProject。
+    <FileViewerProvider projectPath={currentProject?.path ?? null}>
+      <div className="flex flex-col h-screen bg-background relative">
+        <TitleBar currentPage={currentPage} onNavigate={setCurrentPage} disabled={blockingLoading} />
+      <ViewerPushRow>
         <Suspense fallback={<LoadingOverlay />}>
           {currentPage === "chat"
             ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} />
@@ -581,11 +584,28 @@ function AppContent() {
                 refetchProjectMetas={refetchProjectMetas}
               />}
         </Suspense>
+      </ViewerPushRow>
+        <div className="h-6 flex items-center px-4 text-[10px] text-muted-foreground/50 border-t border-border/30">
+          <span>{projects?.length ?? 0} projects</span>
+        </div>
+        {blockingLoading && <LoadingOverlay />}
       </div>
-      <div className="h-6 flex items-center px-4 text-[10px] text-muted-foreground/50 border-t border-border/30">
-        <span>{projects?.length ?? 0} projects</span>
-      </div>
-      {blockingLoading && <LoadingOverlay />}
+    </FileViewerProvider>
+  );
+}
+
+/** v0.8.0 需求4 补充（第三批）：三栏顶开——右侧预览展开时把会话/管理区
+ * 往左顶（margin = 面板实际占宽），不再遮挡内容。面板与 margin 共用
+ * effectiveWidth（含默认值回退与 420px 下限），拖动调宽时两边即时同步；
+ * 子树元素引用稳定，宽度变化只重渲染本行容器。 */
+function ViewerPushRow({ children }: { children: ReactNode }) {
+  const viewer = useFileViewer();
+  return (
+    <div
+      className="flex-1 overflow-hidden"
+      style={{ marginRight: viewer.open ? viewer.effectiveWidth : 0 }}
+    >
+      {children}
     </div>
   );
 }
@@ -613,11 +633,9 @@ function App() {
   return (
     <ThemeProvider>
       <AgentProvider>
-        <FileViewerProvider>
-          <ErrorBoundary>
-            <AppContentWrapper />
-          </ErrorBoundary>
-        </FileViewerProvider>
+        <ErrorBoundary>
+          <AppContentWrapper />
+        </ErrorBoundary>
       </AgentProvider>
     </ThemeProvider>
   );

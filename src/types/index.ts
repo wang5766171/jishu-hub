@@ -278,10 +278,11 @@ export interface ProjectSettings {
   model: string | null;
   /** 默认思考档位（jishu 项目配置 defaultThinkingLevel；其余 agent 忽略）。 */
   thinkingLevel?: string | null;
-  /** 上下文压缩（jishu 项目配置 compaction；其余 agent 忽略）。 */
+  /** 上下文压缩（jishu 项目配置 compaction；其余 agent 忽略。v0.8.0 需求9：
+   *  阈值按窗口百分比，默认 90%；保留近期 token 为压缩执行参数，默认 20000）。 */
   compaction?: {
     enabled?: boolean | null;
-    reserveTokens?: number | null;
+    thresholdPercent?: number | null;
     keepRecentTokens?: number | null;
   } | null;
 }

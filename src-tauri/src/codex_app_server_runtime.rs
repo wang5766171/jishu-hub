@@ -808,9 +808,12 @@ async fn handle_command(
                 "Context compaction is not supported by this agent".to_string()
             ));
         }
-        Some(AcpCommand::SetAutoCompaction(enabled)) => {
+        Some(AcpCommand::SetAutoCompaction {
+            enabled,
+            threshold_percent,
+        }) => {
             log::warn!(
-                "codex runtime received SetAutoCompaction({enabled}) — not supported, dropping"
+                "codex runtime received SetAutoCompaction(enabled={enabled:?}, threshold={threshold_percent:?}) — not supported, dropping"
             );
         }
         Some(AcpCommand::ForkSession { response }) => {

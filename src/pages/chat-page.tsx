@@ -2566,6 +2566,7 @@ export function ChatPage({
               行宽 <560px 时模型名与思考档标签切换为图标（@container 由
               ChatInput 底部行声明，作用于整组）。 */}
           <ContextRing
+            agentId={activeId}
             sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null}
             compact={supportsCompact ? {
               onCompact: () => void handleCompactSession(),
@@ -2667,6 +2668,7 @@ export function ChatPage({
       )}
       {!supportsModelPicker && (
         <ContextRing
+            agentId={activeId}
             sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null}
             compact={supportsCompact ? {
               onCompact: () => void handleCompactSession(),

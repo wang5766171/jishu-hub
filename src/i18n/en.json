@@ -37,7 +37,6 @@
     "menuTemplates": "Templates",
     "menuAdvanced": "Advanced",
     "pageDescModels": "Choose the active model and how to reach it",
-    "pageDescBehavior": "Permission modes and tool usage rules",
     "pageDescTemplates": "Save the current config as a template, or apply one",
     "pageDescAdvanced": "Env vars, plugins, MCP, backups and other low-frequency settings",
     "menuProjects": "Project Management",
@@ -266,7 +265,7 @@
     "usageTokensIn": "Input tokens",
     "usageTokensOut": "Output tokens",
     "usageCost": "Cost",
-    "usageWatermarkDetail": "{{remaining}} / {{total}} tokens left",
+    "usageWatermarkDetail": "{{used}} / {{total}} tokens used",
     "usageRuntimeNote": "Accumulated since this app launch",
     "toolModeFull": "Full access",
     "toolModeReadonly": "Read-only access",
@@ -277,7 +276,8 @@
     "accessUnset": "Not set",
     "refreshSession": "Refresh session",
     "refreshBlockedTitle": "Refresh unavailable",
-    "refreshFailedTitle": "Failed to refresh session"
+    "refreshFailedTitle": "Failed to refresh session",
+    "usageCompactionBudget": "Compacts at {{tokens}} tokens ({{percent}}%)"
   },
   "config": {
     "title": "Configuration",
@@ -602,7 +602,6 @@
     "templateModelStoreHint": "The chosen provider is merged into the model store (existing providers kept); behavior settings go to the global config.",
     "templateProvidersHint": "The provider is merged into your existing provider list (others kept); main/small models follow the template.",
     "proxyResponsesHint": "The endpoint must support the OpenAI Responses API (Chat Completions-compatible endpoints will not work).",
-    "jishuBehaviorParams": "Default behavior",
     "thinkingLevelsLabel": "Supported thinking levels",
     "thinkingLevelsHint": "Tick the levels this model actually supports: the chat selector only offers ticked levels, and an unsupported persisted level snaps to the nearest one. Presets come pre-filled from official docs.",
     "reasoningEffortLabel": "Reasoning effort",
@@ -632,8 +631,7 @@
     "defaultThinkingLevelHelp": "Writes the jishu agent's global default thinking level (defaultThinkingLevel); applies to newly started sessions. In-session switching is unaffected.",
     "resetToDefault": "Reset to default",
     "compactionTitle": "Context compaction",
-    "compactionHelp": "Automatic summarization when context nears the window (compaction). This is the global default; project settings take precedence.",
-    "compactionDefaultHint": "When unset it is enabled by default: reserve 16384 tokens, keep recent 20000 tokens. Empty fields fall back to defaults.",
+    "compactionHelp": "Auto-compaction (summarize) when context usage reaches the given percentage of the model's window. This is the global default; project config overrides it.",
     "defaultToolsTitle": "Initial tools",
     "defaultToolsHelp": "Built-in tools active at session start (defaultTools). This is the agent's tool whitelist; the in-session tool mode (full/readonly) narrows it further.",
     "toolPresetType": "Type",
@@ -822,10 +820,12 @@
     "fieldMapThinkingLevel": "Default thinking level for this project (jishu: defaultThinkingLevel in .jishu-agent/settings.json; in-session switching still applies on top).",
     "compaction": "Context compaction",
     "compactionEnabled": "Enable auto compaction",
-    "compactionReserve": "Reserve tokens",
+    "compactionThreshold": "Compaction threshold",
     "compactionKeepRecent": "Keep-recent tokens",
-    "fieldMapCompaction": "Automatic summarization when context nears the window (compaction). Defaults to enabled (reserve 16384 / keep-recent 20000) when unset; disabling or tuning writes the project settings.",
-    "modelUnsetHint": "No project default model yet — pick one from this agent's model list"
+    "fieldMapCompaction": "Auto-compaction when context usage reaches the given percentage of the model window (default 90%). Enabled by default; toggling or adjusting writes to project settings.",
+    "modelUnsetHint": "No project default model yet — pick one from this agent's model list",
+    "compactionThresholdHelp": "When context usage reaches this percentage of the current model's window (default 90%), earlier history is summarized to free space. The window adapts to the selected model automatically.",
+    "compactionKeepRecentHelp": "Budget (tokens, default 20000) of recent content kept verbatim at compaction: the conversation after the cut point is preserved as-is for continuity; earlier history is replaced by a summary."
   },
   "about": {
     "title": "About",

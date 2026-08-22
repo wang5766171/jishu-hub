@@ -411,7 +411,7 @@ impl ConfigAdapter for JishuSelfAgent {
                     .into(),
                 config: serde_json::json!({
                     "defaultThinkingLevel": "high",
-                    "compaction": { "enabled": true, "reserveTokens": 16384, "keepRecentTokens": 20000 },
+                    "compaction": { "enabled": true, "thresholdPercent": 90, "keepRecentTokens": 20000 },
                     "defaultTools": ["read", "bash", "edit", "write"],
                     "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }
                 }),
@@ -427,7 +427,7 @@ impl ConfigAdapter for JishuSelfAgent {
                         .into(),
                 config: serde_json::json!({
                     "defaultThinkingLevel": "max",
-                    "compaction": { "enabled": true, "reserveTokens": 32768, "keepRecentTokens": 40000 },
+                    "compaction": { "enabled": true, "thresholdPercent": 85, "keepRecentTokens": 40000 },
                     "defaultTools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
                     "retry": { "enabled": true, "maxRetries": 5, "baseDelayMs": 2000 }
                 }),
@@ -442,7 +442,7 @@ impl ConfigAdapter for JishuSelfAgent {
                     .into(),
                 config: serde_json::json!({
                     "defaultThinkingLevel": "low",
-                    "compaction": { "enabled": true, "reserveTokens": 16384, "keepRecentTokens": 20000 },
+                    "compaction": { "enabled": true, "thresholdPercent": 90, "keepRecentTokens": 20000 },
                     "defaultTools": ["read", "bash", "edit", "write"],
                     "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }
                 }),

@@ -397,7 +397,7 @@ pub async fn set_agent_thinking_level(
 
 /// Look up an agent's live AcpControls (v0.7.4 需求1 A3 helper): every
 /// session process owned by the agent.
-fn live_acp_controls_for_agent(
+pub(crate) fn live_acp_controls_for_agent(
     app: &AppHandle,
     agent_id: &str,
 ) -> Vec<crate::acp_runtime::AcpControl> {
@@ -667,7 +667,7 @@ pub async fn set_agent_auto_compaction(
     }
     crate::hub::save_agent_auto_compaction(&agent_id, enabled)?;
     for acp in live_acp_controls_for_agent(&app, &agent_id) {
-        acp.set_auto_compaction(enabled).await?;
+        acp.set_auto_compaction(Some(enabled), None).await?;
     }
     Ok(())
 }

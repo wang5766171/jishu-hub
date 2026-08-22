@@ -496,13 +496,24 @@ async fn pi_rpc_connection_loop(
                         log::info!("Pi RPC compact requested");
                         false
                     }
-                    Some(AcpCommand::SetAutoCompaction(enabled)) => {
-                        // 需求1 A3：自动压缩开关（fire-and-forget，pi 会话级状态）。
-                        send_pi_command(&stdin_arc, &json!({
-                            "type": "set_auto_compaction",
-                            "enabled": enabled
-                        })).await?;
-                        log::debug!("Pi RPC set_auto_compaction sent: {enabled}");
+                    Some(AcpCommand::SetAutoCompaction {
+                        enabled,
+                        threshold_percent,
+                    }) => {
+                        // 需求1 A3 + v0.8.0 需求9 收尾：自动压缩开关/阈值热推
+                        // （fire-and-forget；两字段均可选，只发送出现的字段）。
+                        let mut payload = serde_json::Map::new();
+                        payload.insert("type".into(), json!("set_auto_compaction"));
+                        if let Some(enabled) = enabled {
+                            payload.insert("enabled".into(), json!(enabled));
+                        }
+                        if let Some(threshold) = threshold_percent {
+                            payload.insert("thresholdPercent".into(), json!(threshold));
+                        }
+                        send_pi_command(&stdin_arc, &serde_json::Value::Object(payload)).await?;
+                        log::debug!(
+                            "Pi RPC set_auto_compaction sent: enabled={enabled:?}, threshold={threshold_percent:?}"
+                        );
                         false
                     }
                     Some(AcpCommand::ForkSession { response }) => {

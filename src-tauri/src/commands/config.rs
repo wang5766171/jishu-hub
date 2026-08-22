@@ -143,15 +143,37 @@ pub(crate) async fn load_history(
 }
 
 #[tauri::command]
-pub(crate) fn save_config(
+pub(crate) async fn save_config(
+    app: tauri::AppHandle,
     state: tauri::State<'_, Mutex<AppState>>,
     agent_id: String,
     config: serde_json::Value,
 ) -> Result<(), String> {
-    let s = state
-        .lock()
-        .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.require_agent(&agent_id)?.save_config(&config)
+    {
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        s.registry.require_agent(&agent_id)?.save_config(&config)?;
+    }
+
+    // v0.8.0 需求9 收尾：保存含 compaction 键时，向该 agent 的活跃会话热推
+    // 出现的字段（运行中的 pi 进程不重读配置文件，阈值改动须经 RPC 下发才
+    // 能对进行中的会话生效）。两字段均可选，只推送保存值里出现的字段。
+    if let Some(compaction) = config.get("compaction").and_then(|v| v.as_object()) {
+        let enabled = compaction.get("enabled").and_then(|v| v.as_bool());
+        let threshold_percent = compaction
+            .get("thresholdPercent")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32);
+        if enabled.is_some() || threshold_percent.is_some() {
+            for acp in crate::chat::live_acp_controls_for_agent(&app, &agent_id) {
+                let _ = acp
+                    .set_auto_compaction(enabled, threshold_percent)
+                    .await;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]

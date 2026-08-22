@@ -21,7 +21,7 @@ export interface WordDiffResult {
   newTokens: DiffToken[];
 }
 
-function assemble(tokens: string[], prefix: number, suffix: number, midMarks: boolean[]): DiffToken[] {
+function assemble(tokens: string[], prefix: number, midMarks: boolean[]): DiffToken[] {
   return tokens.map((text, index) => {
     const midIndex = index - prefix;
     const inMid = midIndex >= 0 && midIndex < midMarks.length;
@@ -64,8 +64,8 @@ export function wordDiff(oldLine: string, newLine: string): WordDiffResult | nul
 
   if (oldMid.length > MAX_MID_TOKENS || newMid.length > MAX_MID_TOKENS) {
     return {
-      oldTokens: assemble(oldTokens, prefix, suffix, oldMid.map(() => true)),
-      newTokens: assemble(newTokens, prefix, suffix, newMid.map(() => true)),
+      oldTokens: assemble(oldTokens, prefix, oldMid.map(() => true)),
+      newTokens: assemble(newTokens, prefix, newMid.map(() => true)),
     };
   }
 
@@ -99,7 +99,7 @@ export function wordDiff(oldLine: string, newLine: string): WordDiffResult | nul
   }
 
   return {
-    oldTokens: assemble(oldTokens, prefix, suffix, oldMarks),
-    newTokens: assemble(newTokens, prefix, suffix, newMarks),
+    oldTokens: assemble(oldTokens, prefix, oldMarks),
+    newTokens: assemble(newTokens, prefix, newMarks),
   };
 }

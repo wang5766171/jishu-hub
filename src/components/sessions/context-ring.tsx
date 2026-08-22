@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, ArrowUpFromLine, Coins, Loader2, Minimize2 } from "lucide-react";
 import { useSessionUsage } from "@/lib/session-usage";
+import { useInvoke } from "@/hooks/use-invoke";
 import { cn } from "@/lib/utils";
 
 /**
@@ -30,15 +31,36 @@ function formatTokens(value: number): string {
 
 export const ContextRing = memo(function ContextRing({
   sessionId,
+  agentId,
   compact,
 }: {
   sessionId: string | null;
+  /** v0.8.0 需求9 收尾：用于回填时重读全局压缩阈值配置。 */
+  agentId?: string | null;
   compact?: ContextRingCompactControls;
 }) {
   const { t } = useTranslation();
   const usage = useSessionUsage(sessionId);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLSpanElement>(null);
+
+  // v0.8.0 需求9 收尾：压缩触发点 = 窗口 × 阈值%（用户口径：90% 即用到
+  // 900k 时压缩）。随用量回填实时重读全局阈值（refreshKey = usage.updatedAt，
+  // 每轮 turn_complete 变化）——配置改动下一轮回填即生效，不缓存创建时的值。
+  const { data: agentConfig } = useInvoke<Record<string, unknown>>(
+    agentId && sessionId ? "load_config" : "",
+    agentId && sessionId ? { agentId } : undefined,
+    usage?.updatedAt,
+  );
+  const thresholdPercent = (() => {
+    const raw = (agentConfig?.compaction as { thresholdPercent?: unknown } | undefined)?.thresholdPercent;
+    const pct = typeof raw === "number" && Number.isFinite(raw) ? Math.round(raw) : 90;
+    return Math.min(99, Math.max(1, pct));
+  })();
+  const compactionTriggerTokens =
+    usage?.contextWindowTotal && usage.contextWindowTotal > 0
+      ? Math.floor((usage.contextWindowTotal * thresholdPercent) / 100)
+      : null;
 
   useEffect(() => {
     if (!open) return;
@@ -98,8 +120,12 @@ export const ContextRing = memo(function ContextRing({
         <div className="absolute bottom-[calc(100%+0.45rem)] right-0 z-[90] w-56 rounded-xl border border-border bg-popover p-2.5 text-xs shadow-xl">
           <div className={cn("font-medium leading-tight", tone)}>{title}</div>
           <div className="mt-1 text-muted-foreground tabular-nums">
+            {/* v0.8.0 需求9 收尾：分子改为已用量（used/total 惯例），
+                原先分子放剩余量与直觉相反。 */}
             {t("sessions.usageWatermarkDetail", {
-              remaining: formatTokens(usage.contextRemaining),
+              used: formatTokens(
+                (usage.contextWindowTotal ?? 0) - (usage.contextRemaining ?? 0),
+              ),
               total: formatTokens(usage.contextWindowTotal),
             })}
           </div>
@@ -156,6 +182,14 @@ export const ContextRing = memo(function ContextRing({
                   onChange={(e) => compact.onAutoCompactionChange(e.target.checked)}
                 />
               </label>
+              {compactionTriggerTokens !== null && (
+                <p className="text-[10px] leading-tight text-muted-foreground/70 tabular-nums">
+                  {t("sessions.usageCompactionBudget", {
+                    tokens: formatTokens(compactionTriggerTokens),
+                    percent: String(thresholdPercent),
+                  })}
+                </p>
+              )}
               <p className="text-[10px] leading-tight text-muted-foreground/60">
                 {t("sessions.compactHint")}
               </p>

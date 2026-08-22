@@ -37,7 +37,6 @@
     "menuTemplates": "配置模版",
     "menuAdvanced": "高级设置",
     "pageDescModels": "选择当前使用的模型与接入方式",
-    "pageDescBehavior": "权限模式与工具使用规则",
     "pageDescTemplates": "保存当前配置为模版，或应用已有模版",
     "pageDescAdvanced": "环境变量、插件、MCP、备份等低频配置",
     "menuProjects": "项目管理",
@@ -266,7 +265,7 @@
     "usageTokensIn": "输入 tokens",
     "usageTokensOut": "输出 tokens",
     "usageCost": "成本",
-    "usageWatermarkDetail": "剩余 {{remaining}} / {{total}} tokens",
+    "usageWatermarkDetail": "已用 {{used}} / {{total}} tokens",
     "usageRuntimeNote": "计数自本次启动应用起累计",
     "toolModeFull": "完整权限",
     "toolModeReadonly": "只读权限",
@@ -277,7 +276,8 @@
     "accessUnset": "未设置",
     "refreshSession": "刷新会话",
     "refreshBlockedTitle": "暂时无法刷新",
-    "refreshFailedTitle": "刷新会话失败"
+    "refreshFailedTitle": "刷新会话失败",
+    "usageCompactionBudget": "达到 {{tokens}} tokens 时压缩（阈值 {{percent}}%）"
   },
   "config": {
     "title": "配置管理",
@@ -602,7 +602,6 @@
     "templateModelStoreHint": "应用时将把所选渠道合并写入模型库（已有渠道保留），行为配置写入全局设置。",
     "templateProvidersHint": "应用时将把该渠道合并进现有供应商列表（其他渠道保留），主/小模型按模版设置。",
     "proxyResponsesHint": "端点必须支持 OpenAI Responses API（Chat Completions 兼容端点不可用）。",
-    "jishuBehaviorParams": "默认行为",
     "thinkingLevelsLabel": "支持思考档位",
     "thinkingLevelsHint": "勾选该模型实际支持的档位：会话页只显示勾选的档位；选到不支持的档位会自动就近生效。预设模型已按官方资料预填。",
     "reasoningEffortLabel": "推理力度",
@@ -632,8 +631,7 @@
     "defaultThinkingLevelHelp": "写入 jishu agent 的全局默认思考档位（defaultThinkingLevel），对之后新开的会话生效；会话内的档位切换不受影响。",
     "resetToDefault": "恢复默认",
     "compactionTitle": "上下文压缩",
-    "compactionHelp": "上下文接近窗口时的自动摘要压缩（compaction）。此处为全局默认，项目配置里的压缩设置优先于它。",
-    "compactionDefaultHint": "未配置时默认启用：预留 16384 tokens、保留近期 20000 tokens。留空的数值沿用默认。",
+    "compactionHelp": "上下文用量达到模型窗口的指定百分比时自动摘要压缩（compaction）。此处为全局默认，项目配置优先于它。",
     "defaultToolsTitle": "初始工具集",
     "defaultToolsHelp": "新会话初始激活的内置工具（defaultTools）。这是智能体可用的工具白名单；会话页的工具模式（完整/只读）在此基础上进一步收窄。",
     "toolPresetType": "类型",
@@ -822,10 +820,12 @@
     "fieldMapThinkingLevel": "该项目的默认思考档位（jishu：.jishu-agent/settings.json 的 defaultThinkingLevel，未跟随后续会话内切换）。",
     "compaction": "上下文压缩",
     "compactionEnabled": "启用自动压缩",
-    "compactionReserve": "预留 tokens",
-    "compactionKeepRecent": "保留近期 tokens",
-    "fieldMapCompaction": "上下文接近窗口时的自动摘要压缩（compaction）。未配置时默认启用（预留 16384 / 保留近期 20000）；关闭或调整数值将写入项目设置。",
-    "modelUnsetHint": "未设置项目默认模型——点开从该智能体的模型列表中选择"
+    "compactionThreshold": "压缩阈值",
+    "compactionKeepRecent": "保留近期 token",
+    "fieldMapCompaction": "上下文用量达到模型窗口的指定百分比（默认 90%）时自动摘要压缩。未配置时默认启用；关闭或调整数值将写入项目设置。",
+    "modelUnsetHint": "未设置项目默认模型——点开从该智能体的模型列表中选择",
+    "compactionThresholdHelp": "上下文用量达到当前模型窗口的该百分比（默认 90%）时，自动将较早历史摘要压缩以释放空间。窗口大小随所选模型自适应，无需按模型分别设置。",
+    "compactionKeepRecentHelp": "压缩执行时保留的近期内容预算（token，默认 20000）：切割点之后的近期对话原文保留，保证进行中任务的连续性；更早的历史被摘要替代。"
   },
   "about": {
     "title": "关于",

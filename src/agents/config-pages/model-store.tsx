@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { ModelManager } from "@/components/config/model-manager";
@@ -9,7 +9,6 @@ import { JishuAgentSettingsBlock } from "@/components/config/jishu-agent-setting
 import {
   ConfigPageShell,
   AgentStatusBadge,
-  AdvancedBlock,
   CONFIG_SECTION_META,
 } from "@/components/config/config-page-shell";
 import { Button } from "@/components/ui/button";
@@ -47,6 +46,37 @@ export function ModelStoreConfigPage({
   const [mcpSaving, setMcpSaving] = useState(false);
   const [mcpError, setMcpError] = useState<string | null>(null);
   const [mcpSuccess, setMcpSuccess] = useState<string | null>(null);
+  // v0.8.0 需求9 收尾：保存按钮上移至页头（与大标题同行）。行为块经
+  // onSaveStateChange/registerSave 上报；MCP 编辑器经 onStateChange 上报。
+  const [behaviorSaveState, setBehaviorSaveState] = useState({ dirty: false, saving: false });
+  const behaviorSaveRef = useRef<() => void>(() => {});
+  const registerBehaviorSave = useCallback((save: () => void) => {
+    behaviorSaveRef.current = save;
+  }, []);
+  const [mcpEditorState, setMcpEditorState] = useState<{
+    value: Record<string, unknown> | null;
+    hasError: boolean;
+  } | null>(null);
+
+  const handleSaveMcp = async () => {
+    if (mcpSaving || mcpEditorState?.hasError) return;
+    setMcpSaving(true);
+    setMcpError(null);
+    setMcpSuccess(null);
+    try {
+      await invokeCommand("save_config", {
+        agentId,
+        config: { mcpServers: mcpEditorState?.value ?? null },
+      });
+      refetchAgentConfig();
+      setMcpSuccess(t("config.saveSuccess"));
+      setTimeout(() => setMcpSuccess(null), 3000);
+    } catch (err) {
+      setMcpError(String(err));
+    } finally {
+      setMcpSaving(false);
+    }
+  };
 
   const handleExport = async () => {
     try {
@@ -84,25 +114,43 @@ export function ModelStoreConfigPage({
       }
       title={t(meta.titleKey)}
       description={t(meta.descKey)}
+      actionsSlot={
+        configTab === "behavior" ? (
+          <Button size="sm" disabled={!behaviorSaveState.dirty || behaviorSaveState.saving} onClick={() => behaviorSaveRef.current()}>
+            <Save className="h-3.5 w-3.5" />
+            {behaviorSaveState.saving ? t("common.saving") : t("common.save")}
+          </Button>
+        ) : configTab === "advanced" && supportsMcp ? (
+          <div className="flex items-center gap-3">
+            {mcpSuccess && (
+              <span className="text-xs text-green-500">{mcpSuccess}</span>
+            )}
+            <Button
+              size="sm"
+              disabled={mcpSaving || (mcpEditorState?.hasError ?? true)}
+              onClick={() => void handleSaveMcp()}
+            >
+              <Save className="h-3.5 w-3.5" />
+              {t("common.save")}
+            </Button>
+          </div>
+        ) : undefined
+      }
     >
       {/* 模型设置：当前模型大卡 + 服务商管理（ModelManager，即时保存） */}
       {configTab === "models" && <ModelManager />}
 
       {/* 行为与权限：Pi Settings 真实行为字段（v0.7.5 补全：思考档位/压缩/
           初始工具/重试）。工具模式（完整/只读）是会话时选择的能力，已在会话页
-          提供入口，不在配置页展示（2026-08-16 用户裁决）。 */}
+          提供入口，不在配置页展示（2026-08-16 用户裁决）。说明文案合并为
+          页描述一段（2026-08-22 用户裁决：去掉两个小标题）。 */}
       {configTab === "behavior" && (
-        <div className="space-y-6">
-          <div className="space-y-2">
-            <div className="text-xs font-medium text-muted-foreground">
-              {t("config.jishuBehaviorParams")}
-            </div>
-            <p className="text-[11px] leading-relaxed text-muted-foreground/80">
-              {t("config.jishuBehaviorHintV3")}
-            </p>
-            <JishuAgentSettingsBlock agentConfig={agentConfig ?? null} onSaved={refetchAgentConfig} />
-          </div>
-        </div>
+        <JishuAgentSettingsBlock
+          agentConfig={agentConfig ?? null}
+          onSaved={refetchAgentConfig}
+          onSaveStateChange={setBehaviorSaveState}
+          registerSave={registerBehaviorSave}
+        />
       )}
 
       {/* 配置模版 */}
@@ -125,11 +173,12 @@ export function ModelStoreConfigPage({
         </div>
       )}
 
-      {/* 高级设置：MCP */}
+      {/* 高级设置：MCP（v0.8.0 需求9 收尾：去掉「MCP 服务」小标题行，
+          保存按钮在页头；错误提示保留在编辑器上方）。 */}
       {configTab === "advanced" && (
         <div className="space-y-4">
           {supportsMcp && (
-            <AdvancedBlock title={t("config.mcpServers")}>
+            <div className="space-y-2">
               {mcpError && (
                 <div className="mb-2 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
                   {mcpError}
@@ -137,38 +186,9 @@ export function ModelStoreConfigPage({
               )}
               <McpEditor
                 value={(agentConfig?.mcpServers as never) || null}
-                actions={({ value, hasError }) => (
-                  <div className="flex items-center gap-3 mr-3">
-                    {mcpSuccess && (
-                      <span className="text-xs text-green-500">{mcpSuccess}</span>
-                    )}
-                    <Button
-                      size="sm"
-                      className="h-6 text-xs"
-                      disabled={hasError || mcpSaving}
-                      onClick={async () => {
-                        setMcpSaving(true);
-                        setMcpError(null);
-                        setMcpSuccess(null);
-                        try {
-                          await invokeCommand("save_config", { agentId, config: { mcpServers: value } });
-                          refetchAgentConfig();
-                          setMcpSuccess(t("config.saveSuccess"));
-                          setTimeout(() => setMcpSuccess(null), 3000);
-                        } catch (err) {
-                          setMcpError(String(err));
-                        } finally {
-                          setMcpSaving(false);
-                        }
-                      }}
-                    >
-                      <Save className="mr-1 h-3 w-3" />
-                      {t("common.save")}
-                    </Button>
-                  </div>
-                )}
+                onStateChange={setMcpEditorState}
               />
-            </AdvancedBlock>
+            </div>
           )}
         </div>
       )}
