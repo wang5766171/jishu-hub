@@ -274,7 +274,10 @@
     "approvalOnFailure": "Escalate on failure",
     "approvalOnRequest": "On request",
     "approvalNever": "Never",
-    "accessUnset": "Not set"
+    "accessUnset": "Not set",
+    "refreshSession": "Refresh session",
+    "refreshBlockedTitle": "Refresh unavailable",
+    "refreshFailedTitle": "Failed to refresh session"
   },
   "config": {
     "title": "Configuration",

@@ -274,7 +274,10 @@
     "approvalOnFailure": "失败后提权",
     "approvalOnRequest": "按请求审批",
     "approvalNever": "从不审批",
-    "accessUnset": "未设置"
+    "accessUnset": "未设置",
+    "refreshSession": "刷新会话",
+    "refreshBlockedTitle": "暂时无法刷新",
+    "refreshFailedTitle": "刷新会话失败"
   },
   "config": {
     "title": "配置管理",

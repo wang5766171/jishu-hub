@@ -1189,31 +1189,53 @@ export function ChatPage({
     }
   }, [activeId, projectId, sessions, sessionNames, confirmDialog, alertDialog, t, selectedSession]);
 
-  const handleRefreshMessages = useCallback(async () => {
-    if (selectedSession && projectId) {
-      // Refuse to reload from JSONL while this session has a live streaming
-      // state. Pi writes the user message and each assistant segment to JSONL
-      // as they're produced, so a mid-turn reload overlaps the live
-      // StreamingMessage bubble (duplicate rows) AND overwrites the
-      // turn-snapshot cache that turn_complete appends to — causing
-      // turn_complete to re-append the in-progress turn. The header button is
-      // disabled while streaming; this guard also covers the session-list
-      // context-menu entry that calls the same handler.
-      if (streamStore.hasState(selectedSession)) return;
-      try {
-        const msgs = await invokeCommand<Message[]>("get_session_messages", {
-          agentId: activeId ?? "",
-          sessionId: selectedSession,
-          encodedName: projectId,
-        });
-        const visibleMessages = stripTaskLaunchInstructionFromMessages(msgs);
-        sessionMessagesCacheRef.current.set(selectedSession, visibleMessages);
-        setSessionMessages(visibleMessages);
-      } catch (e) {
-        console.error(e);
-      }
+  // v0.8.0 需求5：刷新会话（右键菜单与会话头部按钮统一入口，作用于指定
+  // 会话）。反馈三层：refreshingSessionId 驱动头部按钮/被刷新行的旋转动画、
+  // 最短 400ms 呈现（快于视觉阈值时不再“无感”）、失败经 alertDialog 弹窗。
+  const [refreshingSessionId, setRefreshingSessionId] = useState<string | null>(null);
+  const handleRefreshSession = useCallback(async (sessionId: string) => {
+    if (!sessionId || sessionId === "new" || !projectId || !activeId) return;
+    if (refreshingSessionId === sessionId) return;
+    // 与头部按钮的禁用条件同源：会话存在流式状态（本轮未收尾）时拒绝重载，
+    // 否则 JSONL 半截内容会与直播气泡重叠（重复行）。此处给出弹窗反馈而非
+    // 静默返回——菜单点击必须可感知。
+    if (streamStore.hasState(sessionId)) {
+      void alertDialog({
+        title: t("sessions.refreshBlockedTitle", "暂时无法刷新"),
+        description: t("sessions.refreshDisabledWhileStreaming"),
+      });
+      return;
     }
-  }, [selectedSession, projectId]);
+    setRefreshingSessionId(sessionId);
+    const startedAt = Date.now();
+    try {
+      const [msgs] = await Promise.all([
+        invokeCommand<Message[]>("get_session_messages", {
+          agentId: activeId,
+          sessionId,
+          encodedName: projectId,
+        }),
+        // 最短呈现 400ms：保证旋转/高亮反馈可被肉眼捕捉。
+        new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, 400 - (Date.now() - startedAt)))),
+      ]);
+      const visibleMessages = stripTaskLaunchInstructionFromMessages(msgs);
+      sessionMessagesCacheRef.current.set(sessionId, visibleMessages);
+      if (selectedSessionRef.current === sessionId) {
+        setSessionMessages(visibleMessages);
+      }
+      // 同时刷新列表元数据（名称/排序/活跃时间）——非选中会话刷新时列表
+      // 变化即点击反馈的一部分。
+      setListRefreshKey((k) => k + 1);
+    } catch (e) {
+      console.error(e);
+      void alertDialog({
+        title: t("sessions.refreshFailedTitle", "刷新会话失败"),
+        description: String(e),
+      });
+    } finally {
+      setRefreshingSessionId(null);
+    }
+  }, [refreshingSessionId, projectId, activeId, alertDialog, t]);
 
   const handleFloatSession = useCallback((sessionId: string) => {
     const name = sessionNames?.[sessionId]
@@ -2758,6 +2780,9 @@ export function ChatPage({
                 ? formatRelativeTime(session.started_at, t)
                 : null;
             const searchHit = searchResults.find((r: SessionSearchResult) => r.sessionId === session.id);
+            // v0.8.0 需求5：该会话刷新中（右键/头部刷新）——行图标转圈 + 高亮，
+            // 让「点击过了」在非选中会话上同样可感知。
+            const rowRefreshing = refreshingSessionId === session.id;
             return (
               <ContextMenu key={session.id}>
                 <ContextMenuTrigger asChild>
@@ -2767,11 +2792,16 @@ export function ChatPage({
                       "flex flex-col w-full items-start pl-5 pr-2 py-2 text-xs transition-fast border-b border-border/10",
                       isActive
                         ? "bg-primary/10 text-foreground font-medium"
-                        : "text-muted-foreground hover:bg-accent/30 hover:text-foreground"
+                        : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
+                      rowRefreshing && "bg-primary/15",
                     )}
                   >
                     <div className="flex items-center gap-3 w-full">
-                      <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
+                      {rowRefreshing ? (
+                        <RotateCw className="h-3 w-3 shrink-0 animate-spin text-[var(--icon-action)]" />
+                      ) : (
+                        <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
+                      )}
                       <span className="truncate flex-1 text-left min-w-0 leading-none pt-[1px]">{name}</span>
                       {searchHit ? (
                         <span className="shrink-0 rounded-full bg-primary/20 text-primary px-1.5 py-0.5 text-[9px] font-medium leading-none">
@@ -2822,9 +2852,12 @@ export function ChatPage({
                       {t("sessions.delete")}
                     </ContextMenuItem>
                   )}
-                  <ContextMenuItem onClick={() => handleRefreshMessages()}>
-                    <RotateCw className="h-3.5 w-3.5 mr-2" />
-                    {t("sessions.refresh")}
+                  <ContextMenuItem
+                    disabled={streamStore.hasState(session.id) || refreshingSessionId === session.id}
+                    onClick={() => void handleRefreshSession(session.id)}
+                  >
+                    <RotateCw className={cn("h-3.5 w-3.5 mr-2", refreshingSessionId === session.id && "animate-spin")} />
+                    {t("sessions.refreshSession", "刷新会话")}
                   </ContextMenuItem>
                 </ContextMenuContent>
               </ContextMenu>
@@ -2972,11 +3005,11 @@ export function ChatPage({
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    onClick={handleRefreshMessages}
-                    disabled={Boolean(currentStream)}
-                    title={currentStream ? t("sessions.refreshDisabledWhileStreaming") : t("sessions.refresh")}
+                    onClick={() => void handleRefreshSession(selectedSession)}
+                    disabled={Boolean(currentStream) || refreshingSessionId === selectedSession}
+                    title={currentStream ? t("sessions.refreshDisabledWhileStreaming") : t("sessions.refreshSession", "刷新会话")}
                   >
-                    <RotateCw className="h-3.5 w-3.5" />
+                    <RotateCw className={cn("h-3.5 w-3.5", refreshingSessionId === selectedSession && "animate-spin")} />
                   </Button>
                   <Button
                     variant="ghost"
