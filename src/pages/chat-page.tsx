@@ -3,6 +3,7 @@ import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import {
   streamStore,
   useSessionStream,
+  useStreamingSessionIds,
 } from "@/hooks/use-stream-store";
 import { MessageView, type MessageSearchNavigation, type MessageSearchStatus } from "@/components/sessions/message-view";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
@@ -32,7 +33,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
-import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, PanelRightOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2, Trash2, GitBranch,
+import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, PanelRightOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2, Trash2, GitBranch, Loader2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
@@ -387,6 +388,9 @@ export function ChatPage({
   // Subscribe to streaming state for the currently-selected session. Drives
   // whether the streaming bubble is rendered and whether the input is in Stop mode.
   const currentStream = useSessionStream(selectedSession);
+  // v0.8.0 需求6：正在输出的会话集合（含后台会话）。驱动会话列表行的加载动效；
+  // 快照仅在集合成员变化时更新，流式内容增量不会引起列表重渲染。
+  const streamingSessionIds = useStreamingSessionIds();
   // 任务图数据：无条件持有（无 graph 时无副作用）。任务模式主区（run 流）与右侧 TaskSidebar 共享。
   const taskGraph = useTaskGraph();
   // v0.7.0：ref 镜像，供轮询回调（非 React 闭包）读 taskGraph 而不进入依赖数组。
@@ -2783,6 +2787,9 @@ export function ChatPage({
             // v0.8.0 需求5：该会话刷新中（右键/头部刷新）——行图标转圈 + 高亮，
             // 让「点击过了」在非选中会话上同样可感知。
             const rowRefreshing = refreshingSessionId === session.id;
+            // v0.8.0 需求6：该会话正在流式输出（含后台输出）——行图标换为
+            // 加载中动效，无需选中即可从列表分辨哪些会话仍在生成。
+            const rowStreaming = streamingSessionIds.includes(session.id);
             return (
               <ContextMenu key={session.id}>
                 <ContextMenuTrigger asChild>
@@ -2799,6 +2806,8 @@ export function ChatPage({
                     <div className="flex items-center gap-3 w-full">
                       {rowRefreshing ? (
                         <RotateCw className="h-3 w-3 shrink-0 animate-spin text-[var(--icon-action)]" />
+                      ) : rowStreaming ? (
+                        <Loader2 className="h-3 w-3 shrink-0 animate-spin text-[var(--icon-action)]" />
                       ) : (
                         <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
                       )}
