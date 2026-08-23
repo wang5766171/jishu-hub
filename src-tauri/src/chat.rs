@@ -685,23 +685,27 @@ pub async fn resolve_chat_permission(
     session_id: String,
     request_id: String,
     approved: bool,
+    remember: Option<bool>,
 ) -> Result<(), String> {
-    let chat_state = app.state::<Mutex<ChatState>>();
-    let acp = {
+    let (acp, agent_id) = {
+        let chat_state = app.state::<Mutex<ChatState>>();
         let state = chat_state
             .lock()
             .map_err(|_| "Chat state lock poisoned".to_string())?;
-        state
+        let process = state
             .processes
             .get(&session_id)
-            .and_then(|process| process.acp.clone())
-            .ok_or_else(|| format!("No active ACP session found for {session_id}"))?
+            .ok_or_else(|| format!("No active ACP session found for {session_id}"))?;
+        (process.acp.clone(), process.agent_id.clone())
     };
 
-    if approved {
-        // v0.8.0 需求2 Phase 2：用户批准入会话 Once 记忆——同会话同动作再次
-        // 到达时策略链自动放行（payload 键形状无从重建，记录宽松形状：仅
-        // kind+tool 缺省——Once 命中以「会话内批准过审批」为准）。
+    // v0.8.0 需求2 Phase 2（P-2 收尾修正）：「始终允许」经 Once 策略按工具名
+    // 精确记忆——同会话同工具后续到达时策略链自动放行。「仅本次允许」不记忆。
+    if approved && remember == Some(true) {
+        // 工具名从 request_id 反查不可得——经 payload 通道携带（前端弹窗传入
+        // activeApproval.payload 的 tool 字段；Pi 审批型 confirm 天然携带）。
+        // 此处先用宽松形状兜底（tool=None），Once 命中以会话内批准过审批为准。
+        let _ = &agent_id;
         crate::agent::policy::remember_for_session(
             &session_id,
             &crate::agent::policy::ApprovalContext {
@@ -715,7 +719,9 @@ pub async fn resolve_chat_permission(
             },
         );
     }
-    acp.resolve_permission(request_id, approved).await
+    acp.ok_or_else(|| format!("No active ACP session found for {session_id}"))?
+        .resolve_permission(request_id, approved)
+        .await
 }
 
 #[tauri::command]

@@ -848,9 +848,11 @@ async fn pi_rpc_connection_loop(
                                     payload_declares: false,
                                     high_risk: false,
                                 };
-                                // 模式选链：smart=交互默认链；ask_always=空链（每次弹窗）。
+                                // 模式选链：smart=[Once, LowRisk]（读类免打扰）；
+                                // ask_always=[Once]（全部弹窗但记忆「始终允许」）。
+                                // 两档的差异只在 LowRiskAutoAllow 是否在链上。
                                 let approval_chain = if mode == "ask_always" {
-                                    crate::agent::policy::PolicyChain::empty()
+                                    crate::agent::policy::for_ask_always_session(&session_id)
                                 } else {
                                     crate::agent::policy::for_interactive_session(&session_id)
                                 };

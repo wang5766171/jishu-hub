@@ -286,7 +286,9 @@
     "toolModeFullApproveDesc": "写文件、执行命令等每次都需确认",
     "toolModeSmartApprove": "智能审批",
     "toolModeSmartApproveDesc": "读取类自动放行，变更类首次需确认",
-    "toolModeReadonlyDesc": "仅允许读取和搜索，禁止写入"
+    "toolModeReadonlyDesc": "仅允许读取和搜索，禁止写入",
+    "permissionApproveOnce": "仅本次允许",
+    "permissionApproveAlways": "始终允许"
   },
   "config": {
     "title": "配置管理",

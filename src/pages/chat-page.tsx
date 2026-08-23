@@ -2525,7 +2525,7 @@ export function ChatPage({
     pendingInteractions,
     selectedSession,
   ]);
-  const resolveActiveApproval = useCallback(async (approved: boolean) => {
+  const resolveActiveApproval = useCallback(async (approved: boolean, remember = false) => {
     if (!activeApproval || approvalResolving) return;
     setApprovalResolving(true);
     try {
@@ -2533,6 +2533,7 @@ export function ChatPage({
         sessionId: activeApproval.sessionId,
         requestId: activeApproval.requestId,
         approved,
+        remember,
       });
       setPendingApprovals((current) =>
         current.filter(
@@ -3569,7 +3570,7 @@ export function ChatPage({
           <pre className="max-h-72 overflow-auto rounded-md border border-border/60 bg-muted/50 p-3 text-xs whitespace-pre-wrap break-all">
             {JSON.stringify(activeApproval?.payload ?? {}, null, 2)}
           </pre>
-          <DialogFooter>
+          <DialogFooter className="flex-wrap gap-2 sm:flex-nowrap">
             <Button
               variant="outline"
               disabled={approvalResolving}
@@ -3578,12 +3579,19 @@ export function ChatPage({
               {t("sessions.permissionReject")}
             </Button>
             <Button
+              variant="outline"
               disabled={approvalResolving}
-              onClick={() => void resolveActiveApproval(true)}
+              onClick={() => void resolveActiveApproval(true, false)}
+            >
+              {t("sessions.permissionApproveOnce")}
+            </Button>
+            <Button
+              disabled={approvalResolving}
+              onClick={() => void resolveActiveApproval(true, true)}
             >
               {approvalResolving
                 ? t("sessions.permissionResolving")
-                : t("sessions.permissionApprove")}
+                : t("sessions.permissionApproveAlways")}
             </Button>
           </DialogFooter>
         </DialogContent>

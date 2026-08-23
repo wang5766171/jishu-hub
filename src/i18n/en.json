@@ -286,7 +286,9 @@
     "toolModeFullApproveDesc": "Writes and commands need confirmation each time",
     "toolModeSmartApprove": "Smart approval",
     "toolModeSmartApproveDesc": "Reads auto-approved; changes confirm on first use",
-    "toolModeReadonlyDesc": "Read and search only, no writes"
+    "toolModeReadonlyDesc": "Read and search only, no writes",
+    "permissionApproveOnce": "Allow once",
+    "permissionApproveAlways": "Always allow"
   },
   "config": {
     "title": "Configuration",

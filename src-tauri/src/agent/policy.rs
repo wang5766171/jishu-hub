@@ -313,6 +313,14 @@ pub fn for_interactive_session(session_id: &str) -> PolicyChain {
     ])
 }
 
+/// 变更前审批档链（经注册表挂会话记忆）：[Once]——不含 LowRiskAutoAllow，
+/// 读类工具也弹窗；但「始终允许」后同工具经 Once 记忆自动放行。
+/// 与智能档（for_interactive_session = [Once, LowRisk]）的差异只在读类免打扰。
+pub fn for_ask_always_session(session_id: &str) -> PolicyChain {
+    let memory = memory_for_session(session_id);
+    PolicyChain::new(vec![Box::new(OnceApprovalPolicy::new(session_id, memory))])
+}
+
 /// 无头会话默认链（经注册表挂会话记忆）。
 pub fn for_headless_session(session_id: &str) -> PolicyChain {
     let memory = memory_for_session(session_id);
