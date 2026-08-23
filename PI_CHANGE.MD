@@ -55,9 +55,9 @@
 |------|-----|
 | 上游仓库 | `https://github.com/earendil-works/pi` |
 | 自有 fork | `https://github.com/wang5766171/pi` |
-| 当前维护分支 | `release_v0.84.2-10` |
+| 当前维护分支 | `release_v0.84.2-11` |
 | `.gitmodules` URL | `https://github.com/wang5766171/pi` |
-| `.gitmodules` branch | `release_v0.84.2-10` |
+| `.gitmodules` branch | `release_v0.84.2-11` |
 
 ## 1.5 日常源码变动流程
 
@@ -118,6 +118,22 @@
 ---
 
 # 第二部分：改动记录
+
+## 2026-08-23 | 内置 jishu-tool-approval 逐次工具审批扩展（release_v0.84.2-11）
+
+**版本**：自研内容升级，尾号顺延 `-10` → `-11`，分支 `release_v0.84.2-11`，submodule 提交 `a2681485`。
+
+**动机**（jishu-hub v0.8.0 需求1 P-2，前置需求2 Phase 2 已合入）：jishu 会话此前无逐次工具审批——fork 内置审批扩展，决策交 hub 策略链（只读自动放行/会话 Once 记忆/弹窗），与 ACP/codex 审批同链同 UI。
+
+**改动清单**：
+1. 新内置扩展 `src/extensions/jishu-approval/index.ts`（hidden）：`tool_call` 处理器经 `ui.confirm` 请求审批（标题 `[jishu-tool-approval]<mode>|<tool>`，正文输入摘要截断 200 字符，120s 超时默认拒绝）；拒绝 → `{block, reason}`（模型可见）。模式读 `settings.toolApproval`（smart 默认/ask_always/off；off 直接放行零开销，每次评估无缓存——hub 保存即时生效）。
+2. **协议常量（两端同源，hub 侧 pi_rpc_runtime 同字符串）**：标题前缀 `[jishu-tool-approval]`、模式分隔 `|`、settings 键 `toolApproval`。
+3. 扩展 API 扩展：`ExtensionAPI.context` getter（桥 ExtensionContext——runner `createContext()` 写回 `runtime.context`，loader 的 api 对象读取）；`ExtensionContext.getSetting(key)`（runner 注入 settingsManager.getSetting）；`Settings.toolApproval` 字段。
+4. 注册：`extensions/index.ts` builtInExtensions 增 jishu-tool-approval。
+
+**主仓配套**（同日 hub 提交）：pi_rpc_runtime 识别审批型 confirm → 策略链（smart=交互链/ask_always=空链）→ Allow/Deny 直接 extension_ui_response 回写，Delegate 转 ApprovalRequest + `AcpCommand::ResolvePermission` 回写（原恒报错分支）；jishu_self 声明 APPROVAL_REQUEST + PRE_EXECUTION_INTERCEPTION（后者自定义以来首次真实声明）。
+
+**验证**：tsgo 剩余 5 报错为已知环境预存（与 -10 批次相同）；compaction 24 项通过；hub cargo 468 全绿（含 P-2 能力位断言）。
 
 ## 2026-08-22 | 自动压缩阈值改按上下文窗口百分比（release_v0.84.2-10）
 

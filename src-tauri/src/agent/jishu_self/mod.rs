@@ -162,6 +162,12 @@ impl AgentManifest for JishuSelfAgent {
             | AgentCapabilities::CONTEXT_COMPACT
             // v0.7.4 需求3 M2：任务工作模式（任务图编排会话）。
             | AgentCapabilities::TASK_MODE
+            // v0.8.0 需求1 P-2：逐次工具审批——fork 内置 jishu-tool-approval
+            // 扩展经 beforeToolCall 阻塞/放行（APPROVAL_REQUEST 声明审批事件
+            // 通道；PRE_EXECUTION_INTERCEPTION 自 v0.7.x 定义以来首次被真实
+            // 声明）。
+            | AgentCapabilities::APPROVAL_REQUEST
+            | AgentCapabilities::PRE_EXECUTION_INTERCEPTION
     }
 
     fn is_builtin(&self) -> bool {

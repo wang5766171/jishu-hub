@@ -409,6 +409,9 @@ async fn pi_rpc_connection_loop(
     // 当前 pending 的 extension_ui_request id（select/input 等待用户响应时）。
     // abort 时用它发 cancelled response 释放 pi 的阻塞，否则 pi 卡在等响应、abort 推进不了。
     let mut pending_interaction_id: Option<String> = None;
+    // v0.8.0 需求1 P-2：待回写的审批型 extension_ui（Delegate 弹窗路径）。
+    let mut pending_tool_approvals: std::collections::HashMap<String, PiToolApproval> =
+        std::collections::HashMap::new();
     let mut buf: Vec<NormalizedEvent> = Vec::with_capacity(32);
     let mut last_flush = std::time::Instant::now();
     // Track call IDs of interaction tools whose tool_execution_start was
@@ -605,10 +608,30 @@ async fn pi_rpc_connection_loop(
                         let _ = response.send(result);
                         false
                     }
-                    Some(AcpCommand::ResolvePermission { response, .. }) => {
-                        let _ = response.send(Err(
-                            "Pi RPC does not use the ACP permission response channel".to_string(),
-                        ));
+                    Some(AcpCommand::ResolvePermission { request_id, approved, response }) => {
+                        // v0.8.0 需求1 P-2：审批型 extension_ui 的用户裁决回写
+                        // （此前 Pi 无审批通道，此分支恒报错）。
+                        let result = match pending_tool_approvals.remove(&request_id) {
+                            Some(_approval) => {
+                                let _ = send_pi_command(
+                                    &stdin_arc,
+                                    &json!({
+                                        "type": "extension_ui_response",
+                                        "id": request_id,
+                                        "confirmed": approved
+                                    }),
+                                )
+                                .await;
+                                log::info!(
+                                    "Pi tool approval resolved: approved={approved} (session {session_id})"
+                                );
+                                Ok(())
+                            }
+                            None => Err(format!(
+                                "No pending Pi tool approval for request {request_id}"
+                            )),
+                        };
+                        let _ = response.send(result);
                         false
                     }
                     Some(AcpCommand::Shutdown) => {
@@ -791,6 +814,103 @@ async fn pi_rpc_connection_loop(
                             // title 以 "\x00hub_invoke:" 开头时，Hub 直接执行命令并响应，不经过前端。
                             let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
                             let title = msg.get("title").and_then(|v| v.as_str()).unwrap_or("");
+
+                            // ── v0.8.0 需求1 P-2：审批型 confirm（jishu-tool-approval
+                            // 扩展）。标题格式 "[jishu-tool-approval]<mode>|<tool>"。
+                            // 先过策略链（Phase 2 挂载点的 Pi 版）：Allow/Deny 直接
+                            // extension_ui_response 回写；Delegate 转 ApprovalRequest
+                            // 走前端审批弹窗（复用 resolve_chat_permission 回写路径）。
+                            if method == "confirm" && title.starts_with("[jishu-tool-approval") {
+                                let request_id = msg
+                                    .get("id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let meta = title
+                                    .strip_prefix("[jishu-tool-approval]")
+                                    .unwrap_or("");
+                                let (mode, tool) = meta.split_once('|').unwrap_or(("smart", meta));
+                                let message = msg
+                                    .get("message")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string();
+                                let approval_ctx = crate::agent::policy::ApprovalContext {
+                                    channel: crate::agent::policy::DecisionChannel::Interactive,
+                                    kind: crate::agent::policy::ApprovalKindWire::Other,
+                                    session_id: session_id.clone(),
+                                    tool: Some(tool.to_string()),
+                                    payload: serde_json::json!({
+                                        "tool": tool,
+                                        "summary": message,
+                                        "mode": mode,
+                                    }),
+                                    payload_declares: false,
+                                    high_risk: false,
+                                };
+                                // 模式选链：smart=交互默认链；ask_always=空链（每次弹窗）。
+                                let approval_chain = if mode == "ask_always" {
+                                    crate::agent::policy::PolicyChain::empty()
+                                } else {
+                                    crate::agent::policy::for_interactive_session(&session_id)
+                                };
+                                match approval_chain.evaluate(&approval_ctx) {
+                                    crate::agent::policy::ChainOutcome::Allow(policy_id) => {
+                                        let _ = send_pi_command(
+                                            &stdin_arc,
+                                            &json!({
+                                                "type": "extension_ui_response",
+                                                "id": request_id,
+                                                "confirmed": true
+                                            }),
+                                        )
+                                        .await;
+                                        log::info!(
+                                            "Pi tool approval auto-allowed by policy {policy_id} (session {session_id})"
+                                        );
+                                    }
+                                    crate::agent::policy::ChainOutcome::Deny(policy_id) => {
+                                        let _ = send_pi_command(
+                                            &stdin_arc,
+                                            &json!({
+                                                "type": "extension_ui_response",
+                                                "id": request_id,
+                                                "confirmed": false
+                                            }),
+                                        )
+                                        .await;
+                                        log::info!(
+                                            "Pi tool approval auto-denied by policy {policy_id} (session {session_id})"
+                                        );
+                                    }
+                                    crate::agent::policy::ChainOutcome::Delegate => {
+                                        // 登记待审批表（ResolvePermission 回写用）并
+                                        // 转标准 ApprovalRequest 事件给前端弹窗。
+                                        pending_tool_approvals.insert(
+                                            request_id.clone(),
+                                            PiToolApproval {
+                                                request_id: request_id.clone(),
+                                                tool: tool.to_string(),
+                                                summary: message.clone(),
+                                            },
+                                        );
+                                        buf.push(NormalizedEvent::ApprovalRequest {
+                                            request_id,
+                                            approval_kind: crate::agent::normalized::ApprovalKind::Other,
+                                            payload: serde_json::json!({
+                                                "tool": tool,
+                                                "summary": message,
+                                                "mode": mode,
+                                                "origin": "jishu-tool-approval",
+                                            }),
+                                        });
+                                        flush_buf(&emit, &session_id, &mut buf);
+                                        last_flush = std::time::Instant::now();
+                                    }
+                                }
+                                continue;
+                            }
+
                             if method == "select" && title.starts_with("\x00hub_invoke:") {
                                 let payload_str = title
                                     .strip_prefix("\x00hub_invoke:")
@@ -1577,6 +1697,13 @@ pub(crate) fn normalize_pi_agent_event(
 /// Pi's extension_ui protocol emits requests for select/input/confirm. Only
 /// `select` and `input` are converted (they require a user response). Fire-and-
 /// forget methods (notify, setStatus, etc.) are ignored.
+/// v0.8.0 需求1 P-2：审批型 extension_ui 的待回写登记（Delegate 路径）。
+struct PiToolApproval {
+    request_id: String,
+    tool: String,
+    summary: String,
+}
+
 fn convert_extension_ui_request(msg: &serde_json::Value) -> Option<NormalizedEvent> {
     let method = msg.get("method").and_then(|v| v.as_str())?;
     let id = msg.get("id").and_then(|v| v.as_str())?.to_string();

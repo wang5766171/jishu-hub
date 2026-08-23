@@ -775,6 +775,18 @@ mod tests {
                 .contains(AgentCapabilities::SESSION_FORK),
             "jishu-self should declare SESSION_FORK (native clone RPC)"
         );
+        // v0.8.0 需求1 P-2：逐次工具审批——jishu 真实声明（fork 内置
+        // jishu-tool-approval 扩展 + hub 策略链接入）。
+        assert!(
+            AgentCapabilities::from_bits_retain(jishu_caps)
+                .contains(AgentCapabilities::APPROVAL_REQUEST),
+            "jishu-self should declare APPROVAL_REQUEST (tool approval extension)"
+        );
+        assert!(
+            AgentCapabilities::from_bits_retain(jishu_caps)
+                .contains(AgentCapabilities::PRE_EXECUTION_INTERCEPTION),
+            "jishu-self should declare PRE_EXECUTION_INTERCEPTION (beforeToolCall)"
+        );
         let codex_caps = codex
             .capabilities
             .parse::<u64>()
