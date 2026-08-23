@@ -75,3 +75,4 @@ run-kiro.ps1
 .superpowers/
 third_party/pi-bundle/
 /.github/prompts/
+nsis_macro_test.exe
