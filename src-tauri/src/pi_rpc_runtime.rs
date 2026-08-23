@@ -905,7 +905,10 @@ async fn pi_rpc_connection_loop(
                                         );
                                         buf.push(NormalizedEvent::ApprovalRequest {
                                             request_id,
-                                            approval_kind: crate::agent::normalized::ApprovalKind::Other,
+                                            // 审批类型按工具名分类（bash→命令执行，
+                                            // write/edit→文件写入），弹窗显示正确类型。
+                                            approval_kind:
+                                                crate::agent::normalized::ApprovalKind::for_tool(tool),
                                             payload: serde_json::json!({
                                                 "tool": tool,
                                                 "summary": message,

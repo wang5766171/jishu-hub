@@ -1060,16 +1060,24 @@ async fn acp_connection_loop(
                             let params = msg.get("params").cloned().unwrap_or_default();
                             // v0.8.0 需求2 Phase 2 挂载点 1：审批到达先过策略
                             // 链——Allow/Deny 直接回写不打扰用户；Delegate 走
-                            // 原有弹 UI 流程。工具名取首个选项 kind（run_command
-                            // / read_file 等，classify_name 模糊项覆盖读类）。
+                            // 原有弹 UI 流程。动作标识优先取 params.content.type
+                            //（协议的动作描述）；options[].kind 是选项语义
+                            //（allow_once/reject 等），仅作无 content 时的兜底。
                             let tool_hint = params
-                                .get("options")
-                                .and_then(serde_json::Value::as_array)
-                                .and_then(|opts| opts.first())
-                                .and_then(|o| o.get("kind"))
+                                .get("content")
+                                .and_then(|c| c.get("type"))
                                 .and_then(serde_json::Value::as_str)
-                                .unwrap_or_default()
-                                .to_string();
+                                .map(str::to_string)
+                                .unwrap_or_else(|| {
+                                    params
+                                        .get("options")
+                                        .and_then(serde_json::Value::as_array)
+                                        .and_then(|opts| opts.first())
+                                        .and_then(|o| o.get("kind"))
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_string()
+                                });
                             let approval_ctx = crate::agent::policy::ApprovalContext {
                                 channel: crate::agent::policy::DecisionChannel::Interactive,
                                 kind: crate::agent::policy::ApprovalKindWire::Other,
@@ -1128,7 +1136,23 @@ async fn acp_connection_loop(
                                     );
                                     buf.push(NormalizedEvent::ApprovalRequest {
                                         request_id,
-                                        approval_kind: crate::agent::normalized::ApprovalKind::Other,
+                                        // 审批类型取 params.content.type（ACP 协议的
+                                        // 动作描述：command=命令执行、diff=文件写入）。
+                                        // 注意 options[].kind 是选项语义（allow_once/
+                                        // reject 等），不是动作类型，不能作分类源。
+                                        approval_kind: match params
+                                            .get("content")
+                                            .and_then(|c| c.get("type"))
+                                            .and_then(serde_json::Value::as_str)
+                                        {
+                                            Some("command") => {
+                                                crate::agent::normalized::ApprovalKind::Command
+                                            }
+                                            Some("diff") => {
+                                                crate::agent::normalized::ApprovalKind::FileWrite
+                                            }
+                                            _ => crate::agent::normalized::ApprovalKind::Other,
+                                        },
                                         payload: params,
                                     });
                                     flush_buf(&emit, &session_id, &mut buf);

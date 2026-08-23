@@ -464,6 +464,21 @@ pub enum ApprovalKind {
     Other,
 }
 
+impl ApprovalKind {
+    /// 按工具名映射审批类型（复用 tool_view 渲染分类，单一分类源）：
+    /// shell → 命令执行；文件写/改/删 → 文件写入；其余（读/搜/思考/MCP）→ 其他。
+    /// 审批弹窗据此显示正确类型，不再恒为 Other。
+    pub fn for_tool(tool: &str) -> Self {
+        match crate::agent::tool_view::classify_name(tool) {
+            crate::agent::tool_view::ToolViewKind::ShellExec => ApprovalKind::Command,
+            crate::agent::tool_view::ToolViewKind::FileWrite
+            | crate::agent::tool_view::ToolViewKind::FileEdit
+            | crate::agent::tool_view::ToolViewKind::FileDelete => ApprovalKind::FileWrite,
+            _ => ApprovalKind::Other,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UsageStats {
     pub input_tokens: Option<u64>,
@@ -509,6 +524,20 @@ pub enum AgentError {
 #[cfg(test)]
 mod tests_v6 {
     use super::*;
+
+    #[test]
+    fn approval_kind_for_tool_classifies_shell_and_file_writes() {
+        // Pi 内置工具名（bash/write/edit/read/grep/find/ls）+ 通用方言名。
+        assert_eq!(ApprovalKind::for_tool("bash"), ApprovalKind::Command);
+        assert_eq!(ApprovalKind::for_tool("execute_command"), ApprovalKind::Command);
+        assert_eq!(ApprovalKind::for_tool("write"), ApprovalKind::FileWrite);
+        assert_eq!(ApprovalKind::for_tool("edit"), ApprovalKind::FileWrite);
+        assert_eq!(ApprovalKind::for_tool("apply_patch"), ApprovalKind::FileWrite);
+        // 读/搜/思考与未知（MCP 等）→ Other。
+        assert_eq!(ApprovalKind::for_tool("read"), ApprovalKind::Other);
+        assert_eq!(ApprovalKind::for_tool("grep"), ApprovalKind::Other);
+        assert_eq!(ApprovalKind::for_tool("mcp__x__y"), ApprovalKind::Other);
+    }
 
     #[test]
     fn task_step_roundtrip() {

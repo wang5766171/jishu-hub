@@ -2425,6 +2425,15 @@ export function ChatPage({
       ? taskGraph.snapshot?.nodes.find((n) => n.node_id === taskSelectedNodeId)?.title ?? displayName
       : displayName;
   const activeApproval = pendingApprovals[0] ?? null;
+  // 审批类型 → 弹窗描述文案（后端按工具分类：bash→命令、write/edit→文件写入；
+  // wire 值 PascalCase，兼容 snake_case 历史值）。
+  const approvalKindRaw = (activeApproval?.approvalKind ?? "").toLowerCase();
+  const approvalDescKey =
+    approvalKindRaw === "command"
+      ? "sessions.permissionDescCommand"
+      : approvalKindRaw === "filewrite" || approvalKindRaw === "file_write"
+        ? "sessions.permissionDescFileWrite"
+        : "sessions.permissionDescOther";
   // v0.7.0 需求二：节点会话的 interaction 来自节点子代理（agent_id 可能是非 activeId
   // 的 claude-code/codex 等）。匹配只按 sessionId（已唯一标识会话），不限制 agentId，
   // 否则节点执行阶段的 agent 问答无法显示和提交。
@@ -3564,11 +3573,7 @@ export function ChatPage({
         <DialogContent showCloseButton={false}>
           <DialogHeader>
             <DialogTitle>{t("sessions.permissionTitle")}</DialogTitle>
-            <DialogDescription>
-              {t("sessions.permissionDescription", {
-                kind: activeApproval?.approvalKind ?? "other",
-              })}
-            </DialogDescription>
+            <DialogDescription>{t(approvalDescKey)}</DialogDescription>
           </DialogHeader>
           <pre className="max-h-72 overflow-auto rounded-md border border-border/60 bg-muted/50 p-3 text-xs whitespace-pre-wrap break-all">
             {JSON.stringify(activeApproval?.payload ?? {}, null, 2)}
