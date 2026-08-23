@@ -17,6 +17,28 @@ pub(crate) fn load_config(
     s.registry.require_agent(&agent_id)?.load_config()
 }
 
+/// v0.8.0 需求3：模型选择聚合——models.json 的 thinkingLevelMap/reasoning
+/// 解析唯一化在后端，前端（会话页 picker/模型表单/行为页）消费聚合结果。
+/// 仅 model-store surface 支持（能力路由，不出现 agentId 分支）。
+#[tauri::command]
+pub(crate) fn get_model_picker_options(
+    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
+) -> Result<Vec<agent::jishu_self::model_picker::ModelPickerOption>, String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
+    let agent = s.registry.require_agent(&agent_id)?;
+    if !matches!(
+        agent.config_surface(),
+        agent::ConfigSurface::ModelStore { .. }
+    ) {
+        return Ok(Vec::new());
+    }
+    let config = agent.load_model_store()?;
+    Ok(agent::jishu_self::model_picker::picker_options_from_config(&config))
+}
+
 /// Read the agent's model store config (routes through adapter).
 #[tauri::command]
 pub(crate) fn get_models_config(

@@ -26,7 +26,6 @@ import { Switch } from "@/components/ui/switch";
 import { RotateCcw } from "lucide-react";
 import { SectionHelp } from "./section-help";
 
-const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const PI_BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
 const PI_DEFAULT_TOOLS = ["read", "bash", "edit", "write"] as readonly string[];
 /** 只读预设（同 PiRpc readonly 模式白名单：全集去掉 bash/edit/write）。 */
@@ -76,7 +75,12 @@ export function JishuAgentSettingsBlock({
   registerSave?: (save: () => void) => void;
 }) {
   const { t } = useTranslation();
-  const { manageAgentId } = useAgent();
+  const { manageAgentId, manageAgent } = useAgent();
+  // v0.8.0 需求3（B2-② 收敛）：档位全集来自 AgentStatus（adapter 声明），
+  // 不再前端硬编码 PI_THINKING_LEVELS。
+  const manageThinkingLevels = manageAgent?.thinking_levels ?? [
+    "off", "minimal", "low", "medium", "high",
+  ];
   const agentId = manageAgentId ?? "";
 
   const savedThinking =
@@ -186,16 +190,12 @@ export function JishuAgentSettingsBlock({
         </Label>
         <select
           id="jishu-default-thinking"
-          value={
-            PI_THINKING_LEVELS.includes(thinking as (typeof PI_THINKING_LEVELS)[number])
-              ? thinking
-              : ""
-          }
+          value={manageThinkingLevels.includes(thinking) ? thinking : ""}
           onChange={(e) => setThinking(e.target.value)}
           className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <option value="">{t("sessions.thinkingLevel.unset")}</option>
-          {PI_THINKING_LEVELS.map((lvl) => (
+          {manageThinkingLevels.map((lvl) => (
             <option key={lvl} value={lvl}>
               {t(`sessions.thinkingLevel.${lvl}`)}
             </option>

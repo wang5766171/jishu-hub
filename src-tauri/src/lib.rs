@@ -189,6 +189,7 @@ pub fn run() {
             commands::config::load_history,
             commands::config::save_config,
             commands::config::get_models_config,
+            commands::config::get_model_picker_options,
             commands::config::set_models_config,
             commands::config::get_active,
             commands::config::set_active,

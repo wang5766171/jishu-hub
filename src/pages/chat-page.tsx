@@ -59,7 +59,8 @@ import { resolvePhaseSessionId, shouldRenderGlobalChatInput } from "./chat-page-
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
 import { setSessionUsage } from "@/lib/session-usage";
 import { ContextRing } from "@/components/sessions/context-ring";
-import { supportedThinkingLevels } from "@/components/config/model-types";
+import { useModelPicker } from "@/features/chat-core/use-model-picker";
+import { useCompaction } from "@/features/chat-core/use-compaction";
 import { ThinkingLevelSelect } from "@/components/sessions/thinking-level-select";
 import {
   buildAssistantContentFromStreamState,
@@ -145,9 +146,9 @@ export function ChatPage({
   // 依赖数组的 handler——依赖数组在渲染期求值，靠后的 const 会触发 TDZ
   // （测试期修复：Cannot access 'alertDialog' before initialization）。
   const { confirm: confirmDialog, alert: alertDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
-  // 需求1 A7：thinking 档位（adapter capability 声明档位清单；当前值优先取
-  // 会话内 thinking_level_changed 事件回传的生效值，回退 Hub 持久化值）。
-  const thinkingLevels = active?.thinking_levels ?? [];
+  // 需求1 A7：thinking 档位当前值（优先取会话内 thinking_level_changed
+  // 事件回传的生效值，回退 Hub 持久化值）。候选档位已改由 useModelPicker
+  // 按当前模型派生（v0.8.0 需求3 聚合 IPC）。
   const [liveThinkingLevel, setLiveThinkingLevel] = useState<string | null>(null);
   const thinkingLevelValue = liveThinkingLevel ?? active?.thinking_level ?? null;
   const handleThinkingLevelChange = useCallback(async (level: string) => {
@@ -169,37 +170,25 @@ export function ChatPage({
     setLiveThinkingLevel(null);
   }, [activeId]);
 
-  // 需求1 A3：上下文压缩（capability CONTEXT_COMPACT 门控）。
+  // 需求1 A3：上下文压缩（capability CONTEXT_COMPACT 门控）。v0.8.0
+  // 需求3：压缩控制域拆分至 use-compaction（IPC 与状态内聚）。
   const supportsCompact = capabilities?.has("CONTEXT_COMPACT") ?? false;
-  const [compacting, setCompacting] = useState(false);
-  const { data: autoCompactionPref } = useInvoke<boolean | null>(
-    supportsCompact && activeId ? "get_agent_auto_compaction" : "",
-    supportsCompact && activeId ? { agentId: activeId } : undefined,
-    activeId ?? undefined,
-  );
+  const compaction = useCompaction(activeId, supportsCompact);
+  const { compacting, autoCompaction: autoCompactionPref } = compaction;
   const handleCompactSession = useCallback(async () => {
     const sessionId = selectedSessionRef.current;
     if (!sessionId || sessionId === "new" || compacting) return;
-    setCompacting(true);
     try {
-      await invokeCommand("compact_agent_session", {
-        sessionId,
-        instructions: null,
-      });
+      await compaction.runCompact(sessionId, null);
     } catch (err) {
       console.error("Compact failed:", err);
       void alertDialog({ title: "压缩失败", description: String(err) });
-    } finally {
-      setCompacting(false);
     }
-  }, [compacting, alertDialog]);
+  }, [compacting, alertDialog, compaction]);
   const handleAutoCompactionChange = useCallback(async (enabled: boolean) => {
     if (!activeId) return;
     try {
-      await invokeCommand("set_agent_auto_compaction", {
-        agentId: activeId,
-        enabled,
-      });
+      await compaction.setAuto(enabled);
     } catch (err) {
       console.error("Set auto compaction failed:", err);
       void alertDialog({ title: "设置自动压缩失败", description: String(err) });
@@ -260,64 +249,15 @@ export function ChatPage({
   const [pendingInteractions, setPendingInteractions] = useState<PendingChatInteraction[]>([]);
   const [approvalResolving, setApprovalResolving] = useState(false);
 
-  // Quick model picker for Pi-backed model stores. The adapter declares
-  // this surface; the page does not inspect the agent id.
-  const [modelOptions, setModelOptions] = useState<{ provider: string; model: string }[]>([]);
-  // 渠道 key → 显示名（models.json providers.<key>.name，缺省回退 key）。
-  const [providerDisplayNames, setProviderDisplayNames] = useState<Record<string, string>>({});
-  // "provider/model" → 该模型声明的支持思考档位（A7：选择器按模型渲染）。
-  const [modelThinkingLevels, setModelThinkingLevels] = useState<Record<string, string[]>>({});
-  const [activeModel, setActiveModel] = useState<{ provider: string; model: string } | null>(null);
+  // v0.8.0 需求3：模型选择域拆分至 use-model-picker——候选/档位来自聚合
+  // IPC（get_model_picker_options，Pi 语义解析唯一化在后端），前端解析块
+  // 与三份双源（model-types 解析 / PI_THINKING_LEVELS 常量）一并消除。
+  const modelPicker = useModelPicker(activeId, supportsModelPicker, () => {
+    setAccessRefreshKey(Date.now());
+  });
+  const { options: modelOptions, activeValue: activeModelValue } = modelPicker;
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLSpanElement>(null);
-  const refreshModelPicker = useCallback(async () => {
-    if (!supportsModelPicker) {
-      setModelOptions([]);
-      setActiveModel(null);
-      return;
-    }
-    try {
-      const [config, act] = await Promise.all([
-        invokeCommand<{
-          providers?: Record<
-            string,
-            {
-              name?: string;
-              models?: { id: string; reasoning?: boolean; thinkingLevelMap?: Record<string, unknown> }[];
-            }
-          >;
-        }>("get_models_config", { agentId: activeId ?? "" }),
-        invokeCommand<{ provider: string; model: string } | null>("get_active", { agentId: activeId ?? "" }),
-      ]);
-      const opts: { provider: string; model: string }[] = [];
-      const displayNames: Record<string, string> = {};
-      // 每个模型声明的支持档位（thinkingLevelMap 语义与 Pi 一致）：
-      // 会话页档位选择器按当前模型渲染，而非 agent 全量档位（A7）。
-      const levelMap: Record<string, string[]> = {};
-      for (const [provider, value] of Object.entries(config?.providers ?? {})) {
-        displayNames[provider] =
-          typeof value.name === "string" && value.name.trim() ? value.name.trim() : provider;
-        for (const m of value.models ?? []) {
-          if (typeof m.id === "string") {
-            opts.push({ provider, model: m.id });
-            levelMap[`${provider}/${m.id}`] =
-              m.reasoning === false
-                ? ["off"]
-                : supportedThinkingLevels(m.thinkingLevelMap);
-          }
-        }
-      }
-      setModelOptions(opts);
-      setProviderDisplayNames(displayNames);
-      setModelThinkingLevels(levelMap);
-      setActiveModel(act);
-    } catch (e) {
-      console.warn("Model picker refresh failed:", e);
-    }
-  }, [supportsModelPicker]);
-  useEffect(() => {
-    void refreshModelPicker();
-  }, [refreshModelPicker]);
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
@@ -2600,11 +2540,8 @@ export function ChatPage({
   }, [activeApproval, approvalResolving]);
   const projectDisplayName = currentProjectMeta?.custom_name || currentProject?.name || t("sessions.noProject");
   const projectPath = currentProject?.path ?? "";
-  // 显示渠道显示名（providers.<key>.name），而非原始渠道 key。
-  const modelOptionLabel = (provider: string, model: string) =>
-    `${providerDisplayNames[provider] ?? provider}/${model}`;
-  const activeModelLabel = activeModel
-    ? modelOptionLabel(activeModel.provider, activeModel.model)
+  const activeModelLabel = activeModelValue
+    ? modelPicker.labelFor(activeModelValue)
     : (t("sessions.activeModel") || "Pick model");
   // 模型选择器+水位圆环（v0.7.3 需求2 收尾）：移至发送按钮左侧同一行（trailingControls）。
   const modelTrailingControls = (
@@ -2651,47 +2588,34 @@ export function ChatPage({
               </button>
               {modelMenuOpen && (
                 <div className="absolute bottom-full right-0 mb-1 z-50 max-h-64 w-48 overflow-y-auto rounded-lg border border-border bg-popover p-2 shadow-lg">
-                  {modelOptions.map((o) => {
-                    const value = `${o.provider}/${o.model}`;
-                    const selected = activeModel?.provider === o.provider && activeModel?.model === o.model;
-                    return (
-                      <button
-                        key={value}
-                        type="button"
-                        title={value}
-                        onClick={async () => {
-                          const next = { provider: o.provider, model: o.model };
-                          setActiveModel(next);
-                          setModelMenuOpen(false);
-                          try {
-                            await invokeCommand("set_active", { agentId: activeId ?? "", active: next });
-                          } catch (err) {
-                            console.warn("set_active failed:", err);
-                          }
-                        }}
-                        className={cn(
-                          "flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left text-xs font-mono transition-fast hover:bg-accent/60",
-                          selected ? "font-medium text-foreground" : "text-muted-foreground",
-                        )}
-                      >
-                        <span className={cn(
-                          "h-1.5 w-1.5 shrink-0 rounded-full",
-                          selected ? "bg-primary" : "bg-transparent",
-                        )} />
-                        <span className="min-w-0 flex-1 truncate">{modelOptionLabel(o.provider, o.model)}</span>
-                      </button>
-                    );
-                  })}
+                  {modelOptions.map((o) => (
+                    <button
+                      key={o.value}
+                      type="button"
+                      title={o.value}
+                      onClick={() => {
+                        setModelMenuOpen(false);
+                        void modelPicker.select(o.value);
+                      }}
+                      className={cn(
+                        "flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left text-xs font-mono transition-fast hover:bg-accent/60",
+                        o.value === activeModelValue ? "font-medium text-foreground" : "text-muted-foreground",
+                      )}
+                    >
+                      <span className={cn(
+                        "h-1.5 w-1.5 shrink-0 rounded-full",
+                        o.value === activeModelValue ? "bg-primary" : "bg-transparent",
+                      )} />
+                      <span className="min-w-0 flex-1 truncate">{o.label}</span>
+                    </button>
+                  ))}
                 </div>
               )}
             </>
           )}
           {/* 思考强度居模型右侧（v0.8.0 需求4 补充用户定序）。 */}
           <ThinkingLevelSelect
-            levels={
-              (activeModel && modelThinkingLevels[`${activeModel.provider}/${activeModel.model}`]) ||
-              thinkingLevels
-            }
+            levels={modelPicker.thinkingLevels}
             value={thinkingLevelValue}
             onChange={(level) => void handleThinkingLevelChange(level)}
           />
