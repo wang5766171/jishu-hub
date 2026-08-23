@@ -489,11 +489,21 @@ cargo test --manifest-path src-tauri\Cargo.toml registry_exposes_adapter_surface
 cargo test --manifest-path src-tauri\Cargo.toml jishu_interactive_invocation_uses_pi_without_bridge_or_json_mode
 ```
 
-若改动 `third_party/pi_agent_rust` 的 ACP/session/model/tools：
+前端（src/）改动时，至少执行（v0.8.0 固化）：
 
 ```powershell
-cargo fmt --manifest-path third_party\pi_agent_rust\Cargo.toml
-cargo test --manifest-path third_party\pi_agent_rust\Cargo.toml acp --lib
+npx tsc -b        # ⚠️ 必须带 -b：根 tsconfig 为 solution 引用式，tsc --noEmit 不检查任何项目（退出码恒 0，曾致语法错误漏检）
+npx vitest run
+npx vite build    # 涉及 chat-page 等无测试覆盖的大文件时必跑（转换期才暴露解析错误）
+```
+
+若改动 `third_party/pi`（TS submodule，PI_CHANGE.MD 记录义务）：
+
+```powershell
+cd third_party/pi/packages/coding-agent
+npx vitest run test/<相关文件>.test.ts
+cd ../..
+npx tsgo --noEmit   # 环境预存的 grok-mermaid 缺包等 5 个报错为已知，与改动无关
 ```
 
 用户主要做 GUI 功能验证，开发者负责打包、基础命令检查、Rust/前端构建检查和测试文档。
