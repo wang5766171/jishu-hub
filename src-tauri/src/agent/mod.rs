@@ -5,7 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod adapters;
 pub mod capability;
-pub mod classify;
+pub mod tool_view;
+// v0.8.0 需求2 Phase 1：classify.rs（死代码，01 §4.1）已删除，分类唯一权威在 tool_view.rs。
 pub mod claude_code;
 pub mod command_config;
 pub mod discovery;

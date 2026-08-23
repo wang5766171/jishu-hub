@@ -88,10 +88,12 @@ fn normalize_claude_assistant(event: &serde_json::Value) -> Vec<NormalizedEvent>
                 .get("input")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            let view = crate::agent::tool_view::classify_tool_view(&tool, &input);
             normalized.push(NormalizedEvent::ToolUseStart {
                 call_id,
                 tool,
                 input,
+                view: Some(view),
             });
         }
     }
@@ -874,7 +876,14 @@ mod tests {
                 call_id: "toolu_1".to_string(),
                 tool: "Read".to_string(),
                 input: serde_json::json!({ "file_path": "README.md" }),
-            }]
+                view: Some(crate::agent::tool_view::ToolView {
+                    kind: crate::agent::tool_view::ToolViewKind::FileRead,
+                    locations: vec![crate::agent::tool_view::ViewLocation {
+                        path: "README.md".to_string(),
+                        line: None,
+                    }],
+                }),
+        }]
         );
     }
 

@@ -60,6 +60,10 @@ fn normalizes_tool_call() {
             call_id: "call_001".to_string(),
             tool: "Reading file".to_string(),
             input: serde_json::Value::Null,
+            view: Some(crate::agent::tool_view::ToolView {
+                kind: crate::agent::tool_view::ToolViewKind::FileRead,
+                locations: vec![],
+            }),
         }]
     );
 }

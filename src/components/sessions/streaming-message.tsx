@@ -5,7 +5,8 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { useSessionStream } from "@/hooks/use-stream-store";
 import { InlineImages, stripImagePrompt } from "./inline-image";
-import { ToolGroup, classifyToolName } from "@/components/observability/tool-call-card";
+import { ToolGroup } from "@/components/observability/tool-call-card";
+import { resolveToolKind } from "@/components/observability/tool-call-card/types";
 import type { ToolCall } from "@/components/observability/tool-call-card";
 import type { ContentBlock } from "@/types";
 import { InteractionCard } from "./interaction-card";
@@ -84,7 +85,8 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
     .map((tool, i) => ({
     id: tool.id || `stream-${i}-${tool.name}`,
     toolName: tool.name,
-    kind: classifyToolName(tool.name),
+    kind: resolveToolKind(tool.name, tool.view),
+    view: tool.view,
     status: tool.isError ? "error" : isComplete || tool.output !== undefined ? "success" : "running",
     input: (typeof tool.input === "object" && tool.input !== null) ? (tool.input as Record<string, unknown>) : {},
     output: tool.output === undefined ? undefined : (

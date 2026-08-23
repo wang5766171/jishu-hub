@@ -32,6 +32,7 @@ export function buildAssistantContentFromStreamState(state: SessionStreamState |
       id,
       name: tool.name,
       input: tool.input,
+      view: tool.view,
     });
     if (tool.output !== undefined) {
       assistantContent.push({

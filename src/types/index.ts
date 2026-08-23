@@ -94,7 +94,7 @@ export interface ConversationInteractionSubmission {
 
 export type ContentBlock =
   | { type: "text"; text: string; frozen?: boolean }
-  | { type: "tool_use"; id: string; name: string; input: unknown }
+  | { type: "tool_use"; id: string; name: string; input: unknown; view?: ToolView }
   | { type: "tool_result"; tool_use_id: string; content: unknown }
   | { type: "thinking"; thinking: string; frozen?: boolean }
   | {
@@ -318,7 +318,7 @@ export type AgentEventPayload = AgentStreamChunk[] | AgentStreamChunk;
 export type NormalizedEvent =
   | { kind: "text_delta"; delta: string }
   | { kind: "message"; content: ContentBlock[] }
-  | { kind: "tool_use_start"; call_id: string; tool: string; input: unknown }
+  | { kind: "tool_use_start"; call_id: string; tool: string; input: unknown; view?: ToolView }
   | { kind: "tool_use_result"; call_id: string; output: unknown; is_error: boolean }
   | { kind: "thinking"; delta: string }
   | { kind: "approval_request"; request_id: string; approval_kind: string; payload: unknown }
@@ -358,6 +358,22 @@ export type NormalizedEvent =
   | { kind: "raw"; agent: string; raw: unknown }
   | { kind: "phase_divider"; phase: string; title: string }
   | { kind: "compaction_status"; active: boolean; reason: string };
+
+/** v0.8.0 需求2 Phase 1：渲染意图（Rust tool_view 镜像）——UI 只做
+ * 「意图→组件」映射；locations 为归一化层一次提取的位置信息。 */
+export interface ViewLocation {
+  path: string;
+  line?: number;
+}
+
+export type ToolViewKind =
+  | "file_read" | "file_write" | "file_edit" | "file_delete"
+  | "shell_exec" | "search" | "web" | "think" | "subtask" | "other";
+
+export interface ToolView {
+  kind: ToolViewKind;
+  locations?: ViewLocation[];
+}
 
 export interface InputFile {
   data: string;

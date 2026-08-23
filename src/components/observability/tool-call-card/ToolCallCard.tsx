@@ -41,7 +41,14 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
   const { openViewer } = useFileViewer();
   const { t } = useTranslation();
   const diff = call.kind === "file_edit" || call.kind === "file_write" ? buildDiffPreview(call.input) : null;
-  const path = getToolPath(call.input) || (call.input.command as string) || (call.input.pattern as string) || "";
+  // v0.8.0 需求2 Phase 1：位置优先取渲染意图（归一化层提取），
+  // 缺失（历史数据）回退输入解析。
+  const viewPath = call.view?.locations?.[0]?.path;
+  const path = viewPath
+    || getToolPath(call.input)
+    || (call.input.command as string)
+    || (call.input.pattern as string)
+    || "";
   const shortPath = path.length > 60 ? "..." + path.slice(path.length - 55) : path;
   const duration = call.startedAt && call.endedAt ? ((call.endedAt - call.startedAt) / 1000).toFixed(1) + "s" : null;
   const isFile = call.kind.startsWith("file_") && path;

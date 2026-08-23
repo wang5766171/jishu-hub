@@ -8,7 +8,8 @@ import rehypeHighlight from "rehype-highlight";
 import { Check, Copy, Bot } from "lucide-react";
 import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
-import { ToolGroup, classifyToolName } from "@/components/observability/tool-call-card";
+import { ToolGroup } from "@/components/observability/tool-call-card";
+import { resolveToolKind } from "@/components/observability/tool-call-card/types";
 import type { ToolCall } from "@/components/observability/tool-call-card";
 import { InteractionCard } from "./interaction-card";
 import type { InteractionCardItem } from "./interaction-card";
@@ -361,7 +362,8 @@ function buildRenderItemsForMessages(messages: Message[], messageIndices: number
         pendingTools.push({
           id,
           toolName: block.name,
-          kind: classifyToolName(block.name),
+          kind: resolveToolKind(block.name, block.view),
+          view: block.view,
           status: "success",
           input: typeof block.input === "object" && block.input !== null
             ? (block.input as Record<string, unknown>)

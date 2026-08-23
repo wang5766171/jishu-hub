@@ -1190,9 +1190,138 @@ fn normalize_notification(method: &str, params: &Value) -> Vec<NormalizedEvent> 
                 }]
             }
         }
+        // v0.8.0 需求2 Phase 1：codex 工具事件投影——commandExecution /
+        // fileChange item 的 started/updated/completed 生命周期映射为
+        // ToolUseStart/ToolUseResult（带渲染意图 view），让 codex 会话出现
+        // 工具卡片（此前完全没有，01 §2）。payload 结构按 codex app-server
+        // 协议（itemId / command / exitCode / stdout / changeType / path）。
+        "item/commandExecution/started" | "item/commandExecution/updated" => {
+            let item = params.get("item");
+            let call_id = item
+                .and_then(|i| i.get("id").or_else(|| params.get("itemId")))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if call_id.is_empty() {
+                return vec![];
+            }
+            let command = item
+                .and_then(|i| i.get("command"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let cwd = item
+                .and_then(|i| i.get("cwd"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let input = serde_json::json!({ "command": command, "cwd": cwd });
+            let view = crate::agent::tool_view::classify_tool_view("bash", &input);
+            vec![NormalizedEvent::ToolUseStart {
+                call_id,
+                tool: "bash".to_string(),
+                input,
+                view: Some(view),
+            }]
+        }
+        "item/commandExecution/completed" => {
+            let item = params.get("item");
+            let call_id = item
+                .and_then(|i| i.get("id").or_else(|| params.get("itemId")))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if call_id.is_empty() {
+                return vec![];
+            }
+            let exit_code = item
+                .and_then(|i| i.get("exitCode"))
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let stdout = item
+                .and_then(|i| i.get("stdout"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let output = serde_json::json!({
+                "exitCode": exit_code,
+                "stdout": truncate_str(&stdout, 2000),
+            });
+            vec![NormalizedEvent::ToolUseResult {
+                call_id,
+                output,
+                is_error: exit_code != 0,
+            }]
+        }
+        "item/fileChange/started" | "item/fileChange/updated" => {
+            let item = params.get("item");
+            let call_id = item
+                .and_then(|i| i.get("id").or_else(|| params.get("itemId")))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if call_id.is_empty() {
+                return vec![];
+            }
+            let change_type = item
+                .and_then(|i| i.get("changeType"))
+                .and_then(Value::as_str)
+                .unwrap_or("modify")
+                .to_string();
+            let path = item
+                .and_then(|i| i.get("path").or_else(|| i.get("file")))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            // 变更类型 → 工具方言名：create→write / delete→bash 删档展示 / 其他→edit。
+            let tool_name = match change_type.as_str() {
+                "create" => "write",
+                "delete" => "edit",
+                _ => "edit",
+            };
+            let input = serde_json::json!({ "path": path, "changeType": change_type });
+            let view = crate::agent::tool_view::classify_tool_view(tool_name, &input);
+            vec![NormalizedEvent::ToolUseStart {
+                call_id,
+                tool: tool_name.to_string(),
+                input,
+                view: Some(view),
+            }]
+        }
+        "item/fileChange/completed" => {
+            let item = params.get("item");
+            let call_id = item
+                .and_then(|i| i.get("id").or_else(|| params.get("itemId")))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if call_id.is_empty() {
+                return vec![];
+            }
+            let path = item
+                .and_then(|i| i.get("path").or_else(|| i.get("file")))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            vec![NormalizedEvent::ToolUseResult {
+                call_id,
+                output: serde_json::json!({ "path": path, "status": "done" }),
+                is_error: false,
+            }]
+        }
         // thread/started and turn/started carry only state we track directly in
         // handle_line (session already resolved at handshake; turn id captured).
         _ => vec![],
+    }
+}
+
+/// 截断长输出（工具结果摘要用）。
+fn truncate_str(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_chars).collect();
+        format!("{truncated}…")
     }
 }
 

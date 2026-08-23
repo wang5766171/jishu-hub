@@ -236,10 +236,12 @@ fn process_sse_chunks(
             }
         };
 
+        let view = crate::agent::tool_view::classify_tool_view(&name, &args);
         emitter(NormalizedEvent::ToolUseStart {
             call_id: id.clone(),
             tool: name.clone(),
             input: args.clone(),
+            view: Some(view),
         });
 
         final_tool_calls.push(LlmToolCall {
@@ -435,7 +437,7 @@ mod tests {
         // Should have: ToolUseStart, TurnComplete
         assert_eq!(events.len(), 2);
         assert!(
-            matches!(&events[0], NormalizedEvent::ToolUseStart { call_id, tool, input }
+            matches!(&events[0], NormalizedEvent::ToolUseStart { call_id, tool, input, .. }
                 if call_id == "call_abc" && tool == "get_weather"
                 && input == &serde_json::json!({"city": "Beijing"})
             )

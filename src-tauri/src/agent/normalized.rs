@@ -115,6 +115,10 @@ pub enum NormalizedEvent {
         call_id: String,
         tool: String,
         input: serde_json::Value,
+        /// v0.8.0 需求2 Phase 1：渲染意图（分类 + 位置），归一化层产出；
+        /// UI 只做「意图→组件」映射。旧事件反序列化得 None，兼容。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        view: Option<crate::agent::tool_view::ToolView>,
     },
     ToolUseResult {
         call_id: String,
@@ -252,6 +256,11 @@ impl NormalizedEvent {
 /// `tool_use_result` only arrives after the user answers — producing a
 /// phantom "Tool" card with no useful content.
 pub fn is_elicitation_only_tool(tool_name: &str) -> bool {
+    // v0.8.0 需求2 Phase 1（02 §1.6 偏离修正）：保留原 3 名**传输特定**语义
+    // 不委托 tool_view 的 8 名并集——这 3 个工具在 ACP 传输上由
+    // elicitation/create 通道完整渲染 UI，tool_call 镜像事件必须整体抑制，
+    // 否则双通道重复渲染（回归测试 ask_user_question_tool_call_is_suppressed
+    // 锁定）。渲染语义的权威名单在 tool_view::is_interaction_tool。
     let normalized_name = tool_name
         .rsplit(['/', ':'])
         .next()
@@ -404,6 +413,9 @@ pub enum ContentBlock {
         id: String,
         name: String,
         input: serde_json::Value,
+        /// v0.8.0 需求2 Phase 1：随块持久化的渲染意图（直播与回放同源）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        view: Option<crate::agent::tool_view::ToolView>,
     },
     ToolResult {
         tool_use_id: String,

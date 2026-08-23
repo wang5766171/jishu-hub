@@ -9,6 +9,8 @@ export interface StreamToolUse {
   input: unknown;
   output?: unknown;
   isError?: boolean;
+  /** v0.8.0 需求2 Phase 1：渲染意图（tool_use_start 携带，提交时随块持久化）。 */
+  view?: import("@/types").ToolView;
 }
 
 export interface StepInfo {
@@ -197,8 +199,10 @@ class StreamStore {
       error = data.message;
     } else if (data.kind === "tool_use_start") {
       if (!tools.some((tool) => tool.id === data.call_id)) {
-        tools = [...tools, { id: data.call_id, name: data.tool, input: data.input }];
-        content = [...content, { type: "tool_use", id: data.call_id, name: data.tool, input: data.input }];
+        // v0.8.0 需求2 Phase 1：view 随事件透传（tools 与 content 同源），
+        // turn 提交时 content 中的 tool_use 块即带 view 持久化。
+        tools = [...tools, { id: data.call_id, name: data.tool, input: data.input, view: data.view }];
+        content = [...content, { type: "tool_use", id: data.call_id, name: data.tool, input: data.input, view: data.view }];
       }
     } else if (data.kind === "tool_use_result") {
       tools = tools.map((tool) => (

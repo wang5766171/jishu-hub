@@ -117,10 +117,12 @@ fn normalize_opencode_tool_use(event: &serde_json::Value) -> Vec<NormalizedEvent
         return raw(event);
     }
 
+    let view = crate::agent::tool_view::classify_tool_view(&tool, &input);
     let mut normalized = vec![NormalizedEvent::ToolUseStart {
         call_id: call_id.clone(),
         tool,
         input,
+        view: Some(view),
     }];
 
     if let Some(output) = state.get("output").or_else(|| part.get("output")).cloned() {

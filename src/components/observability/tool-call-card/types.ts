@@ -12,6 +12,8 @@ export type ToolKind =
   | "other";
 
 export interface ToolCall {
+  /** v0.8.0 需求2 Phase 1：事件/持久化块携带的渲染意图（优先于名称分类）。 */
+  view?: import("@/types").ToolView;
   id: string;
   toolName: string;
   kind: ToolKind;
@@ -21,6 +23,21 @@ export interface ToolCall {
   error?: string;
   startedAt?: number;
   endedAt?: number;
+}
+
+/** v0.8.0 需求2 Phase 1：优先用事件携带的渲染意图；缺失（v1 之前的
+ * 持久化块/旧版本事件）回退名称分类。分类唯一权威在 Rust tool_view.rs，
+ * classifyToolName 仅为历史数据 fallback。 */
+const VALID_KINDS: ReadonlySet<string> = new Set([
+  "file_read", "file_write", "file_edit", "file_delete",
+  "shell_exec", "search", "web", "think", "subtask", "other",
+]);
+
+export function resolveToolKind(name: string, view?: import("@/types").ToolView): ToolKind {
+  const kind = view?.kind;
+  // wire 来源的 kind 不可全信（旧版本/异常数据）——非法值回退名称分类。
+  if (typeof kind === "string" && VALID_KINDS.has(kind)) return kind as ToolKind;
+  return classifyToolName(name);
 }
 
 export function classifyToolName(name: string): ToolKind {
