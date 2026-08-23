@@ -131,7 +131,7 @@
 3. 扩展 API 扩展：`ExtensionAPI.context` getter（桥 ExtensionContext——runner `createContext()` 写回 `runtime.context`，loader 的 api 对象读取）；`ExtensionContext.getSetting(key)`（runner 注入 settingsManager.getSetting）；`Settings.toolApproval` 字段。
 4. 注册：`extensions/index.ts` builtInExtensions 增 jishu-tool-approval。
 
-**主仓配套**（同日 hub 提交）：pi_rpc_runtime 识别审批型 confirm → 策略链（smart=交互链/ask_always=空链）→ Allow/Deny 直接 extension_ui_response 回写，Delegate 转 ApprovalRequest + `AcpCommand::ResolvePermission` 回写（原恒报错分支）；jishu_self 声明 APPROVAL_REQUEST + PRE_EXECUTION_INTERCEPTION（后者自定义以来首次真实声明）。
+**主仓配套**（同日 hub 提交）：pi_rpc_runtime 识别审批型 confirm → 策略链（smart=[Once, LowRisk]；ask_always=[LowRisk]——读类放行、变更类每次弹窗不记忆，08-23 用户裁决修正：变更前审批只拦「变更」）→ Allow/Deny 直接 extension_ui_response 回写，Delegate 转 ApprovalRequest + `AcpCommand::ResolvePermission` 回写（原恒报错分支）；jishu_self 声明 APPROVAL_REQUEST + PRE_EXECUTION_INTERCEPTION（后者自定义以来首次真实声明）。
 
 **验证**：tsgo 剩余 5 报错为已知环境预存（与 -10 批次相同）；compaction 24 项通过；hub cargo 468 全绿（含 P-2 能力位断言）。
 

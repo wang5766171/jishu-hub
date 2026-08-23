@@ -313,12 +313,11 @@ pub fn for_interactive_session(session_id: &str) -> PolicyChain {
     ])
 }
 
-/// 变更前审批档链（经注册表挂会话记忆）：[Once]——不含 LowRiskAutoAllow，
-/// 读类工具也弹窗；但「始终允许」后同工具经 Once 记忆自动放行。
-/// 与智能档（for_interactive_session = [Once, LowRisk]）的差异只在读类免打扰。
-pub fn for_ask_always_session(session_id: &str) -> PolicyChain {
-    let memory = memory_for_session(session_id);
-    PolicyChain::new(vec![Box::new(OnceApprovalPolicy::new(session_id, memory))])
+/// 变更前审批档链：[LowRisk]——读类自动放行（变更前审批只拦「变更」，
+/// 读取不该打扰）；写/执行类**每次**弹窗，不含 Once 记忆（用户裁决：
+/// 该档语义是每次变更亲自确认，与智能档的差异就在是否记住「始终允许」）。
+pub fn for_ask_always_session(_session_id: &str) -> PolicyChain {
+    PolicyChain::new(vec![Box::new(LowRiskAutoAllowPolicy)])
 }
 
 /// 无头会话默认链（经注册表挂会话记忆）。
@@ -479,6 +478,21 @@ mod tests {
             chain.evaluate(&ctx(DecisionChannel::HeadlessTask, Some("bash"))),
             ChainOutcome::Deny("headless-deny")
         );
+    }
+
+    #[test]
+    fn ask_always_chain_allows_reads_and_ignores_once_memory() {
+        // 变更前审批档 = [LowRisk]：读类放行（只拦「变更」）；写/执行类每次
+        // 委托弹窗——即使此前写入过「始终允许」记忆（该档链不挂 Once）。
+        let chain = for_ask_always_session("s1");
+        assert_eq!(
+            chain.evaluate(&ctx(DecisionChannel::Interactive, Some("read"))),
+            ChainOutcome::Allow("low-risk-auto-allow")
+        );
+        let write = ctx(DecisionChannel::Interactive, Some("bash"));
+        assert_eq!(chain.evaluate(&write), ChainOutcome::Delegate);
+        remember_for_session("s1", &write);
+        assert_eq!(chain.evaluate(&write), ChainOutcome::Delegate);
     }
 
     #[test]

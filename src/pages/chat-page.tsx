@@ -657,6 +657,9 @@ export function ChatPage({
     : permissionModeProvider === "hub_tool_mode"
       ? externalPermissionMode ?? "full"
       : externalPermissionMode;
+  // 变更前审批档的策略链不含 Once 记忆，审批弹窗不提供「始终允许」。
+  const approvalAlwaysHidden =
+    permissionModeProvider === "hub_tool_mode" && accessModeValue === "full-approve";
   const accessModeLabel = accessModeValue
     ? accessModeOptions.find((option) => option.value === accessModeValue)?.label ?? accessModeValue
     : t("sessions.accessUnset");
@@ -3585,14 +3588,18 @@ export function ChatPage({
             >
               {t("sessions.permissionApproveOnce")}
             </Button>
-            <Button
-              disabled={approvalResolving}
-              onClick={() => void resolveActiveApproval(true, true)}
-            >
-              {approvalResolving
-                ? t("sessions.permissionResolving")
-                : t("sessions.permissionApproveAlways")}
-            </Button>
+            {/* 变更前审批档（full-approve）策略链不含 Once 记忆（每次变更都
+                确认），「始终允许」在该档不生效——隐藏第三键。 */}
+            {approvalAlwaysHidden ? null : (
+              <Button
+                disabled={approvalResolving}
+                onClick={() => void resolveActiveApproval(true, true)}
+              >
+                {approvalResolving
+                  ? t("sessions.permissionResolving")
+                  : t("sessions.permissionApproveAlways")}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
