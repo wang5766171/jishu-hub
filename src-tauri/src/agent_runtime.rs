@@ -948,8 +948,10 @@ async fn acp_wait_for_response(
                 if let Some(option_id) = crate::acp_runtime::permission_option_id(&params, false) {
                     crate::acp_runtime::write_permission_response(stdin, &id, &option_id).await?;
                 }
+                // v0.8.0 需求2 Phase 2：无头审批应由策略链（挂载点 1）在到达
+                // 前以 headless-deny 拒绝并回写；此处为防御断言兜底。
                 return Err(
-                    "ACP tool permission denied because task execution has no interactive approval channel"
+                    "ACP tool permission denied by policy headless-deny (task execution has no interactive approval channel)"
                         .to_string(),
                 );
             }

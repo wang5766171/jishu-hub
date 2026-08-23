@@ -62,6 +62,7 @@ pub fn spawn_codex_app_server_session(
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
 ) -> AcpControl {
+    let policy = crate::agent::policy::for_interactive_session(&pending_session_id);
     let emit = tauri_event_emitter(app, agent_id);
     spawn_codex_app_server_session_inner(
         emit,
@@ -70,6 +71,34 @@ pub fn spawn_codex_app_server_session(
         project_path,
         requested_session_id,
         first_message,
+        policy,
+        on_finish,
+        on_session_resolved,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_codex_app_server_session_with_policy(
+    app: tauri::AppHandle,
+    agent_id: String,
+    pending_session_id: String,
+    child: tokio::process::Child,
+    project_path: String,
+    requested_session_id: Option<String>,
+    first_message: String,
+    policy: crate::agent::policy::PolicyChain,
+    on_finish: impl FnOnce() + Send + 'static,
+    on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
+) -> AcpControl {
+    let emit = tauri_event_emitter(app, agent_id);
+    spawn_codex_app_server_session_inner(
+        emit,
+        pending_session_id,
+        child,
+        project_path,
+        requested_session_id,
+        first_message,
+        policy,
         on_finish,
         on_session_resolved,
     )
@@ -83,6 +112,7 @@ fn spawn_codex_app_server_session_inner(
     project_path: String,
     requested_session_id: Option<String>,
     first_message: String,
+    policy: crate::agent::policy::PolicyChain,
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
 ) -> AcpControl {
@@ -141,6 +171,7 @@ fn spawn_codex_app_server_session_inner(
             first_message,
             &on_session_resolved,
             supports_interaction_mid_turn,
+            policy,
             turn_active,
         )
         .await;
@@ -289,6 +320,7 @@ async fn codex_connection_loop(
     first_message: String,
     on_session_resolved: &(dyn Fn(&str) + Send + Sync),
     supports_interaction_mid_turn: Arc<AtomicBool>,
+    policy: crate::agent::policy::PolicyChain,
     turn_active: Arc<AtomicBool>,
 ) -> Result<(), String> {
     // stdout reader sub-task.
@@ -445,7 +477,10 @@ async fn codex_connection_loop(
                         &emit,
                         &envelope_id,
                         &mut buf,
-                    );
+                        &policy,
+                        Some(&writer),
+                    )
+                    .await;
                     flush_maybe(&emit, &envelope_id, &mut buf, &mut last_flush);
                     false
                 }
@@ -574,6 +609,8 @@ async fn wait_for_response(
                 // Unmatched response — ignore.
             }
             LineKind::ServerRequest { id, method, params } => {
+                // 握手/首回合等待窗内的审批请求：空链（直接注册弹 UI），
+                // 行为与改造前一致；主循环（handle_line）才是策略链主场。
                 register_server_request(
                     &id,
                     &method,
@@ -584,7 +621,10 @@ async fn wait_for_response(
                     emit,
                     session_id,
                     buf,
-                );
+                    &crate::agent::policy::PolicyChain::empty(),
+                    None,
+                )
+                .await;
                 flush_buf(emit, session_id, buf);
             }
             LineKind::Notification { method, params } => {
@@ -653,7 +693,7 @@ fn classify_line(msg: &Value) -> LineKind {
 /// Process one stdout line. Sync because it runs in the select branch; the only
 /// stdin writes happen later when the user answers (command path).
 #[allow(clippy::too_many_arguments)]
-fn handle_line(
+async fn handle_line(
     line: &str,
     state: &mut LoopState,
     pending_user_inputs: &mut HashMap<String, PendingUserInput>,
@@ -661,6 +701,8 @@ fn handle_line(
     emit: &AcpEventEmit,
     session_id: &str,
     buf: &mut Vec<NormalizedEvent>,
+    policy: &crate::agent::policy::PolicyChain,
+    writer: Option<&CodexWriter>,
 ) {
     if line.trim().is_empty() {
         return;
@@ -736,7 +778,10 @@ fn handle_line(
                 emit,
                 session_id,
                 buf,
-            );
+                policy,
+                writer,
+            )
+            .await;
         }
         LineKind::Other => {}
     }
@@ -902,7 +947,8 @@ async fn handle_command(
 /// Register a server request and emit the matching NormalizedEvent. No stdin
 /// write — the write-back happens when the user later answers (command path).
 #[allow(clippy::too_many_arguments)]
-fn register_server_request(
+#[allow(clippy::too_many_arguments)]
+async fn register_server_request(
     id: &Value,
     method: &str,
     params: &Value,
@@ -912,6 +958,8 @@ fn register_server_request(
     emit: &AcpEventEmit,
     session_id: &str,
     buf: &mut Vec<NormalizedEvent>,
+    policy: &crate::agent::policy::PolicyChain,
+    writer: Option<&CodexWriter>,
 ) {
     let turn = params
         .get("turnId")
@@ -985,7 +1033,7 @@ fn register_server_request(
                 }
             }
         }
-        "item/commandExecution/requestApproval" => register_approval(
+        "item/commandExecution/requestApproval" => try_policy_or_register(
             id,
             params,
             thread,
@@ -996,8 +1044,11 @@ fn register_server_request(
             emit,
             session_id,
             buf,
-        ),
-        "item/fileChange/requestApproval" => register_approval(
+            policy,
+            writer,
+        )
+        .await,
+        "item/fileChange/requestApproval" => try_policy_or_register(
             id,
             params,
             thread,
@@ -1008,8 +1059,11 @@ fn register_server_request(
             emit,
             session_id,
             buf,
-        ),
-        "item/permissions/requestApproval" => register_approval(
+            policy,
+            writer,
+        )
+        .await,
+        "item/permissions/requestApproval" => try_policy_or_register(
             id,
             params,
             thread,
@@ -1020,7 +1074,10 @@ fn register_server_request(
             emit,
             session_id,
             buf,
-        ),
+            policy,
+            writer,
+        )
+        .await,
         other => {
             // Unhandled server request (e.g. mcpServer/elicitation/request).
             // We cannot answer it correctly without the schema; left unregistered
@@ -1033,6 +1090,64 @@ fn register_server_request(
             );
         }
     }
+}
+
+
+/// v0.8.0 需求2 Phase 2 挂载点 1（codex）：审批到达先过策略链——
+/// Allow/Deny 直接 `respond` 回写不打扰用户；Delegate 走 register_approval
+/// 弹 UI。回写结果形状对齐 codex 协议（decision: approved/denied）。
+async fn try_policy_or_register(
+    id: &Value,
+    params: &Value,
+    thread: &str,
+    turn: &str,
+    kind: ApprovalKind,
+    writeback: ApprovalWriteback,
+    pending_approvals: &mut HashMap<String, PendingApproval>,
+    emit: &AcpEventEmit,
+    session_id: &str,
+    buf: &mut Vec<NormalizedEvent>,
+    policy: &crate::agent::policy::PolicyChain,
+    writer: Option<&CodexWriter>,
+) {
+    let ctx = crate::agent::policy::ApprovalContext {
+        channel: crate::agent::policy::DecisionChannel::Interactive,
+        kind: crate::agent::policy::ApprovalKindWire::Other,
+        session_id: session_id.to_string(),
+        tool: None,
+        payload: params.clone(),
+        payload_declares: false,
+        high_risk: false,
+    };
+    let decision = policy.evaluate(&ctx);
+    let approved = match decision {
+        crate::agent::policy::ChainOutcome::Allow(policy_id) => Some((true, policy_id)),
+        crate::agent::policy::ChainOutcome::Deny(policy_id) => Some((false, policy_id)),
+        crate::agent::policy::ChainOutcome::Delegate => None,
+    };
+    if let Some((allow, policy_id)) = approved {
+        let result = serde_json::json!({ "decision": if allow { "approved" } else { "denied" } });
+        if let Some(writer) = writer {
+            let _ = writer.respond(id, result).await;
+        }
+        log::info!(
+            "codex approval auto-{} by policy {policy_id} (session {session_id})",
+            if allow { "allowed" } else { "denied" }
+        );
+        return;
+    }
+    register_approval(
+        id,
+        params,
+        thread,
+        turn,
+        kind,
+        writeback,
+        pending_approvals,
+        emit,
+        session_id,
+        buf,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -698,6 +698,23 @@ pub async fn resolve_chat_permission(
             .ok_or_else(|| format!("No active ACP session found for {session_id}"))?
     };
 
+    if approved {
+        // v0.8.0 需求2 Phase 2：用户批准入会话 Once 记忆——同会话同动作再次
+        // 到达时策略链自动放行（payload 键形状无从重建，记录宽松形状：仅
+        // kind+tool 缺省——Once 命中以「会话内批准过审批」为准）。
+        crate::agent::policy::remember_for_session(
+            &session_id,
+            &crate::agent::policy::ApprovalContext {
+                channel: crate::agent::policy::DecisionChannel::Interactive,
+                kind: crate::agent::policy::ApprovalKindWire::Other,
+                session_id: session_id.clone(),
+                tool: None,
+                payload: serde_json::Value::Null,
+                payload_declares: false,
+                high_risk: false,
+            },
+        );
+    }
     acp.resolve_permission(request_id, approved).await
 }
 

@@ -338,10 +338,40 @@ pub fn spawn_acp_session(
     app: tauri::AppHandle,
     agent_id: String,
     pending_session_id: String,
+    child: tokio::process::Child,
+    project_path: String,
+    requested_session_id: Option<String>,
+    first_message: String,
+    on_finish: impl FnOnce() + Send + 'static,
+    on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
+) -> AcpControl {
+    let policy = crate::agent::policy::for_interactive_session(&pending_session_id);
+    spawn_acp_session_with_policy(
+        app,
+        agent_id,
+        pending_session_id,
+        child,
+        project_path,
+        requested_session_id,
+        first_message,
+        policy,
+        on_finish,
+        on_session_resolved,
+    )
+}
+
+/// v0.8.0 需求2 Phase 2 挂载点 1：调用方按通道装配策略链——chat 用
+/// for_interactive_session / 无头用 for_headless_session。
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_acp_session_with_policy(
+    app: tauri::AppHandle,
+    agent_id: String,
+    pending_session_id: String,
     mut child: tokio::process::Child,
     project_path: String,
     requested_session_id: Option<String>,
     first_message: String,
+    policy: crate::agent::policy::PolicyChain,
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
 ) -> AcpControl {
@@ -389,7 +419,7 @@ pub fn spawn_acp_session(
         let result = acp_connection_loop(
             emit,
             pending_session_id.clone(),
-            stdin_arc,
+            stdin_arc.clone(),
             acp_session_id,
             stdout_rx,
             project_path,
@@ -397,6 +427,7 @@ pub fn spawn_acp_session(
             stderr_buf,
             cmd_rx,
             first_message,
+            policy,
             turn_active_for_loop,
             &on_session_resolved,
         )
@@ -459,6 +490,7 @@ async fn acp_connection_loop(
     stderr_buf: Arc<TokioMutex<String>>,
     mut command_rx: tokio::sync::mpsc::Receiver<AcpCommand>,
     first_message: String,
+    policy: crate::agent::policy::PolicyChain,
     turn_active: Arc<AtomicBool>,
     on_session_resolved: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<(), String> {
@@ -1026,22 +1058,77 @@ async fn acp_connection_loop(
                                 continue;
                             };
                             let params = msg.get("params").cloned().unwrap_or_default();
-                            let request_id = permission_request_key(&rpc_id);
-                            pending_permissions.insert(
-                                request_id.clone(),
-                                PendingPermission {
-                                    rpc_id,
-                                    allow_option_id: permission_option_id(&params, true),
-                                    reject_option_id: permission_option_id(&params, false),
-                                },
-                            );
-                            buf.push(NormalizedEvent::ApprovalRequest {
-                                request_id,
-                                approval_kind: crate::agent::normalized::ApprovalKind::Other,
-                                payload: params,
-                            });
-                            flush_buf(&emit, &session_id, &mut buf);
-                            last_flush = std::time::Instant::now();
+                            // v0.8.0 需求2 Phase 2 挂载点 1：审批到达先过策略
+                            // 链——Allow/Deny 直接回写不打扰用户；Delegate 走
+                            // 原有弹 UI 流程。工具名取首个选项 kind（run_command
+                            // / read_file 等，classify_name 模糊项覆盖读类）。
+                            let tool_hint = params
+                                .get("options")
+                                .and_then(serde_json::Value::as_array)
+                                .and_then(|opts| opts.first())
+                                .and_then(|o| o.get("kind"))
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_string();
+                            let approval_ctx = crate::agent::policy::ApprovalContext {
+                                channel: crate::agent::policy::DecisionChannel::Interactive,
+                                kind: crate::agent::policy::ApprovalKindWire::Other,
+                                session_id: session_id.clone(),
+                                tool: Some(tool_hint),
+                                payload: params.clone(),
+                                payload_declares: false,
+                                high_risk: false,
+                            };
+                            match policy.evaluate(&approval_ctx) {
+                                crate::agent::policy::ChainOutcome::Allow(policy_id) => {
+                                    if let Some(option_id) = permission_option_id(&params, true) {
+                                        let writer_stdin = writer.stdin.clone();
+                                        let mut stdin_guard = writer_stdin.lock().await;
+                                        let _ = crate::acp_runtime::write_permission_response(
+                                            &mut *stdin_guard,
+                                            &rpc_id,
+                                            &option_id,
+                                        )
+                                        .await;
+                                    }
+                                    log::info!(
+                                        "ACP permission auto-allowed by policy {policy_id} (session {session_id})"
+                                    );
+                                }
+                                crate::agent::policy::ChainOutcome::Deny(policy_id) => {
+                                    if let Some(option_id) = permission_option_id(&params, false) {
+                                        let writer_stdin = writer.stdin.clone();
+                                        let mut stdin_guard = writer_stdin.lock().await;
+                                        let _ = crate::acp_runtime::write_permission_response(
+                                            &mut *stdin_guard,
+                                            &rpc_id,
+                                            &option_id,
+                                        )
+                                        .await;
+                                    }
+                                    log::info!(
+                                        "ACP permission auto-denied by policy {policy_id} (session {session_id})"
+                                    );
+                                }
+                                crate::agent::policy::ChainOutcome::Delegate => {
+                                    let request_id = permission_request_key(&rpc_id);
+                                    pending_permissions.insert(
+                                        request_id.clone(),
+                                        PendingPermission {
+                                            rpc_id,
+                                            allow_option_id: permission_option_id(&params, true),
+                                            reject_option_id: permission_option_id(&params, false),
+                                        },
+                                    );
+                                    buf.push(NormalizedEvent::ApprovalRequest {
+                                        request_id,
+                                        approval_kind: crate::agent::normalized::ApprovalKind::Other,
+                                        payload: params,
+                                    });
+                                    flush_buf(&emit, &session_id, &mut buf);
+                                    last_flush = std::time::Instant::now();
+                                }
+                            }
                         } else if msg.get("method").and_then(|v| v.as_str())
                             == Some("elicitation/create")
                         {

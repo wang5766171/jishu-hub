@@ -157,11 +157,31 @@ pub(super) fn approval_requirement(
         || node.policy.permission_scope.can_access_network
         || node.policy.permission_scope.can_deploy;
 
-    let required = match node.policy.approval_policy {
-        ApprovalPolicy::Never => payload_requires_approval,
-        ApprovalPolicy::Once | ApprovalPolicy::Always => true,
-        ApprovalPolicy::OnHighRisk => high_risk,
+    // v0.8.0 需求2 Phase 2：内联 match 收敛为策略链评估（同语义）——
+    // Allow=无需审批；Delegate=需要（Once 的历史放行由 schedule 侧
+    // store 检查承担，与原实现一致）。
+    let approval_ctx = crate::agent::policy::ApprovalContext {
+        channel: crate::agent::policy::DecisionChannel::Orchestrator,
+        kind: crate::agent::policy::ApprovalKindWire::Other,
+        session_id: node.node_id.clone(),
+        tool: Some(node.title.clone()),
+        payload: serde_json::Value::Null,
+        payload_declares: payload_requires_approval,
+        high_risk,
     };
+    let chain = match node.policy.approval_policy {
+        ApprovalPolicy::Never => crate::agent::policy::PolicyChain::new(vec![
+            Box::new(crate::agent::policy::PayloadGatePolicy),
+        ]),
+        ApprovalPolicy::Once | ApprovalPolicy::Always => crate::agent::policy::PolicyChain::empty(),
+        ApprovalPolicy::OnHighRisk => crate::agent::policy::PolicyChain::new(vec![
+            Box::new(crate::agent::policy::HighRiskGatePolicy),
+        ]),
+    };
+    let required = !matches!(
+        chain.evaluate(&approval_ctx),
+        crate::agent::policy::ChainOutcome::Allow(_)
+    );
     required.then(|| ApprovalRequirement {
         description: format!("Approve execution of node '{}'", node.title),
         risk_level: if high_risk { "high" } else { "medium" }.into(),
