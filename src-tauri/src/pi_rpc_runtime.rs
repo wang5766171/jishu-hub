@@ -888,7 +888,13 @@ async fn pi_rpc_connection_loop(
                                     }
                                     crate::agent::policy::ChainOutcome::Delegate => {
                                         // 登记待审批表（ResolvePermission 回写用）并
-                                        // 转标准 ApprovalRequest 事件给前端弹窗。
+                                        // 转标准 ApprovalRequest 事件给前端弹窗；
+                                        // 到达上下文按 request_id 登记——「始终允许」
+                                        // 取回同形状回写 Once 记忆（见 chat.rs）。
+                                        crate::agent::policy::register_arrival_context(
+                                            &request_id,
+                                            &approval_ctx,
+                                        );
                                         pending_tool_approvals.insert(
                                             request_id.clone(),
                                             PiToolApproval {

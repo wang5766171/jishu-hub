@@ -687,7 +687,7 @@ pub async fn resolve_chat_permission(
     approved: bool,
     remember: Option<bool>,
 ) -> Result<(), String> {
-    let (acp, agent_id) = {
+    let (acp, _agent_id) = {
         let chat_state = app.state::<Mutex<ChatState>>();
         let state = chat_state
             .lock()
@@ -699,25 +699,14 @@ pub async fn resolve_chat_permission(
         (process.acp.clone(), process.agent_id.clone())
     };
 
-    // v0.8.0 需求2 Phase 2（P-2 收尾修正）：「始终允许」经 Once 策略按工具名
-    // 精确记忆——同会话同工具后续到达时策略链自动放行。「仅本次允许」不记忆。
-    if approved && remember == Some(true) {
-        // 工具名从 request_id 反查不可得——经 payload 通道携带（前端弹窗传入
-        // activeApproval.payload 的 tool 字段；Pi 审批型 confirm 天然携带）。
-        // 此处先用宽松形状兜底（tool=None），Once 命中以会话内批准过审批为准。
-        let _ = &agent_id;
-        crate::agent::policy::remember_for_session(
-            &session_id,
-            &crate::agent::policy::ApprovalContext {
-                channel: crate::agent::policy::DecisionChannel::Interactive,
-                kind: crate::agent::policy::ApprovalKindWire::Other,
-                session_id: session_id.clone(),
-                tool: None,
-                payload: serde_json::Value::Null,
-                payload_declares: false,
-                high_risk: false,
-            },
-        );
+    // v0.8.0 需求2 Phase 2：「始终允许」按到达时登记的原始上下文回写 Once
+    // 记忆（register_arrival_context / take_arrival_context）——action_key 含
+    // tool/kind/payload 键，必须与链评估完全同形状，否则记忆永不命中（此前
+    // 宽松兜底 tool=None 导致「始终允许」无效）。任何选择都取回（清理登记）。
+    if let Some(arrival) = crate::agent::policy::take_arrival_context(&request_id) {
+        if approved && remember == Some(true) {
+            crate::agent::policy::remember_for_session(&arrival.session_id, &arrival);
+        }
     }
     acp.ok_or_else(|| format!("No active ACP session found for {session_id}"))?
         .resolve_permission(request_id, approved)

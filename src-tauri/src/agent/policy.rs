@@ -304,6 +304,39 @@ pub fn remember_for_session(session_id: &str, ctx: &ApprovalContext) {
     };
 }
 
+// ---------------------------------------------------------------------------
+// 到达上下文登记（「始终允许」形状一致回写）：Delegate 弹窗时按 request_id
+// 登记链评估所用的原始 ApprovalContext；resolve_chat_permission 取回并以
+// 同一形状回写 Once 记忆。action_key 含 tool/kind/payload 键——到达与回写
+// 两侧形状不一致 = 记忆永不命中（曾因宽松兜底 tool=None 导致「始终允许」
+// 无效）。登记在 resolve 时取回即清理；超时被 agent 自答的残留条目靠
+// 容量上限兜底清理。
+// ---------------------------------------------------------------------------
+
+fn arrival_contexts() -> &'static Mutex<HashMap<String, ApprovalContext>> {
+    static REGISTRY: std::sync::OnceLock<Mutex<HashMap<String, ApprovalContext>>> =
+        std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Delegate（转弹窗）时登记：三个到达点（Pi 审批型 confirm / ACP
+/// request_permission / codex try_policy_or_register）各以 request_id 为键。
+pub fn register_arrival_context(request_id: &str, ctx: &ApprovalContext) {
+    let mut map = arrival_contexts().lock().unwrap_or_else(|e| e.into_inner());
+    if map.len() >= 256 {
+        map.clear();
+    }
+    map.insert(request_id.to_string(), ctx.clone());
+}
+
+/// resolve 时取回并清理；未登记（异常路径）返回 None。
+pub fn take_arrival_context(request_id: &str) -> Option<ApprovalContext> {
+    arrival_contexts()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(request_id)
+}
+
 /// 交互会话默认链（经注册表挂会话记忆）。
 pub fn for_interactive_session(session_id: &str) -> PolicyChain {
     let memory = memory_for_session(session_id);
@@ -493,6 +526,28 @@ mod tests {
         assert_eq!(chain.evaluate(&write), ChainOutcome::Delegate);
         remember_for_session("s1", &write);
         assert_eq!(chain.evaluate(&write), ChainOutcome::Delegate);
+    }
+
+    #[test]
+    fn arrival_context_roundtrip_makes_always_allow_hit() {
+        // 真实链路：到达（Delegate 弹窗）登记 → 「始终允许」取回同形状回写 →
+        // 同动作再次到达经 Once 命中。形状（tool/kind/payload 键）任一侧漂移
+        // 记忆即失效——曾因回写侧 tool=None 兜底导致「始终允许」无效。
+        let mut arrival = ctx(DecisionChannel::Interactive, Some("bash"));
+        arrival.payload = serde_json::json!({ "tool": "bash", "summary": "rm -rf", "mode": "smart" });
+        let chain = for_interactive_session("s1");
+        assert_eq!(chain.evaluate(&arrival), ChainOutcome::Delegate);
+        register_arrival_context("req-1", &arrival);
+        // resolve「始终允许」：取回原始上下文回写（chat.rs 同逻辑）。
+        let replayed = take_arrival_context("req-1").expect("arrival registered");
+        remember_for_session(&replayed.session_id, &replayed);
+        assert_eq!(chain.evaluate(&arrival), ChainOutcome::Allow("once-approval"));
+        // 登记已被取走清理；同动作不同工具仍委托（action_key 含工具名）。
+        assert!(take_arrival_context("req-1").is_none());
+        let mut other_tool = arrival.clone();
+        other_tool.tool = Some("write".into());
+        other_tool.payload = serde_json::json!({ "tool": "write", "summary": "x", "mode": "smart" });
+        assert_eq!(chain.evaluate(&other_tool), ChainOutcome::Delegate);
     }
 
     #[test]

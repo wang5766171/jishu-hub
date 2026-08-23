@@ -1136,6 +1136,9 @@ async fn try_policy_or_register(
         );
         return;
     }
+    // 到达上下文按 request_id 登记——「始终允许」取回同形状回写 Once 记忆
+    //（见 chat.rs）。request_id 与 register_approval 内部生成的键同源（同 id）。
+    crate::agent::policy::register_arrival_context(&approval_request_id(id), &ctx);
     register_approval(
         id,
         params,

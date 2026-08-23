@@ -1112,6 +1112,12 @@ async fn acp_connection_loop(
                                 }
                                 crate::agent::policy::ChainOutcome::Delegate => {
                                     let request_id = permission_request_key(&rpc_id);
+                                    // 到达上下文按 request_id 登记——「始终允许」
+                                    // 取回同形状回写 Once 记忆（见 chat.rs）。
+                                    crate::agent::policy::register_arrival_context(
+                                        &request_id,
+                                        &approval_ctx,
+                                    );
                                     pending_permissions.insert(
                                         request_id.clone(),
                                         PendingPermission {
