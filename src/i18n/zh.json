@@ -263,8 +263,8 @@
     "atFileNoMatch": "没有匹配的项目文件",
     "usageContextUsed": "上下文已用 {{percent}}%",
     "usageWatermarkDetail": "已用 {{used}} / {{total}} tokens",
-    "toolModeFull": "完整权限",
-    "toolModeReadonly": "只读权限",
+    "toolModeFull": "完全访问",
+    "toolModeReadonly": "只读模式",
     "approvalUntrusted": "仅非受信命令",
     "approvalOnFailure": "失败后提权",
     "approvalOnRequest": "按请求审批",
@@ -280,7 +280,13 @@
     "usageCompactions": "已压缩 {{count}} 次",
     "usageEstMessage": "消息",
     "usageEstHelp": "按生成内容（估算）的构成占比：消息=正文文本；思考=推理过程；工具（含 MCP）=工具调用参数。",
-    "usageCacheHit": "平均缓存命中率"
+    "usageCacheHit": "平均缓存命中率",
+    "toolModeFullApprove": "变更前审批",
+    "toolModeFullDesc": "所有工具直接执行，无需确认",
+    "toolModeFullApproveDesc": "写文件、执行命令等每次都需确认",
+    "toolModeSmartApprove": "智能审批",
+    "toolModeSmartApproveDesc": "读取类自动放行，变更类首次需确认",
+    "toolModeReadonlyDesc": "仅允许读取和搜索，禁止写入"
   },
   "config": {
     "title": "配置管理",

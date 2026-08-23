@@ -381,8 +381,16 @@ impl ConfigAdapter for JishuSelfAgent {
     fn permission_modes(&self) -> Option<(Vec<String>, crate::agent::PermissionModeProvider)> {
         // P-1：工具模式由 Hub 全局管理；readonly 在 PiRpc spawn 时落 --tools 白名单
         // （read,grep,find,ls —— pi 内置工具全集去掉 bash/edit/write）。
+        // v0.8.0 需求1 P-2 收尾（用户裁决融入会话工具模式）：新增 full-approve
+        // 档 = full 工具集 + 逐次审批（toolApproval=smart 写 Pi settings），
+        // 与完整/只读同列选择；full 档写 toolApproval=off（原行为）。
         Some((
-            vec!["full".to_string(), "readonly".to_string()],
+            vec![
+                "full".to_string(),
+                "full-approve".to_string(),
+                "smart-approve".to_string(),
+                "readonly".to_string(),
+            ],
             crate::agent::PermissionModeProvider::HubToolMode,
         ))
     }
@@ -630,9 +638,14 @@ impl TransportAdapter for JishuSelfAgent {
         // --tools 白名单（内置全集 read/bash/edit/write/grep/find/ls 去掉
         // bash/edit/write）。工具名与语义是 Pi 私有知识，属于 adapter 职责；
         // 对此后新 spawn 的进程生效（Pi 每条消息一个进程）。
-        if crate::hub::load_agent_tool_mode("jishu-self").as_deref() == Some("readonly") {
-            args.push("--tools".to_string());
-            args.push("read,grep,find,ls".to_string());
+        match crate::hub::load_agent_tool_mode("jishu-self").as_deref() {
+            Some("readonly") => {
+                args.push("--tools".to_string());
+                args.push("read,grep,find,ls".to_string());
+            }
+            // full-approve 与 full 工具集相同，差异只在 toolApproval 审批
+            // 开关（set_agent_tool_mode 已联动写入 Pi settings）。
+            _ => {}
         }
         // Resume an existing Pi session when a real (non-transient) session id
         // is provided. Without this, Pi creates a fresh session on every process

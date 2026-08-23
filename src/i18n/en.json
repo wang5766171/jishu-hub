@@ -264,7 +264,7 @@
     "usageContextUsed": "Context {{percent}}% used",
     "usageWatermarkDetail": "{{used}} / {{total}} tokens used",
     "toolModeFull": "Full access",
-    "toolModeReadonly": "Read-only access",
+    "toolModeReadonly": "Read only",
     "approvalUntrusted": "Untrusted only",
     "approvalOnFailure": "Escalate on failure",
     "approvalOnRequest": "On request",
@@ -280,7 +280,13 @@
     "usageCompactions": "Compacted {{count}} times",
     "usageEstMessage": "Messages",
     "usageEstHelp": "Composition of generated content (estimated): messages = prose text; thinking = reasoning; tools (incl. MCP) = tool-call arguments.",
-    "usageCacheHit": "Avg. cache hit rate"
+    "usageCacheHit": "Avg. cache hit rate",
+    "toolModeFullApprove": "Approve changes",
+    "toolModeFullDesc": "All tools execute without confirmation",
+    "toolModeFullApproveDesc": "Writes and commands need confirmation each time",
+    "toolModeSmartApprove": "Smart approval",
+    "toolModeSmartApproveDesc": "Reads auto-approved; changes confirm on first use",
+    "toolModeReadonlyDesc": "Read and search only, no writes"
   },
   "config": {
     "title": "Configuration",

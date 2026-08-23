@@ -195,6 +195,20 @@ pub(crate) async fn set_agent_tool_mode(
         return Err(format!("Unknown tool mode: {}", mode));
     }
 
+    // v0.8.0 需求1 P-2 收尾（融入会话工具模式，用户裁决）：full-approve 档
+    // 联动写 Pi settings 的 toolApproval=smart（逐次审批扩展读此键）；
+    // full 档写 off（原行为）。工具集本身两档相同（full），审批开关是唯一
+    // 差异——重启会话使内存设置即时生效（扩展每次评估读内存设置）。
+    let tool_approval = match mode.as_str() {
+        "full-approve" => "ask_always",
+        "smart-approve" => "smart",
+        "full" => "off",
+        _ => "off", // readonly 工具白名单已限制写操作，审批关闭
+    };
+    let _ = crate::agent::jishu_self::config::save_jishu_config(&serde_json::json!({
+        "toolApproval": tool_approval
+    }));
+
     // 仅当实际生效的模式变化时才重启会话：未配置（None）语义上等同 full，
     // 首次显式选择 full 不触发 shutdown，避免无谓打断进行中的会话。
     let previous =

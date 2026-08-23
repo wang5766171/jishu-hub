@@ -96,7 +96,7 @@ interface ChatInputProps {
   accessModeLabel?: string;
   accessModeTitle?: string;
   accessModeReadOnly?: boolean;
-  accessModeOptions?: Array<{ value: string; label: string }>;
+  accessModeOptions?: Array<{ value: string; label: string; description?: string }>;
   accessModeValue?: string;
   onAccessModeChange?: (value: string) => void | Promise<void>;
   interactionRequest?: ConversationInteractionRequest | null;
@@ -1181,7 +1181,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                     {!accessModeReadOnly && <ChevronDown className="h-3 w-3" />}
                   </button>
                   {accessMenuOpen && !accessModeReadOnly && (
-                    <div className="absolute bottom-[calc(100%+0.45rem)] left-0 z-[80] w-44 rounded-xl border border-border bg-popover p-1.5 shadow-xl">
+                    <div className="absolute bottom-[calc(100%+0.45rem)] left-0 z-[80] w-60 rounded-xl border border-border bg-popover p-1.5 shadow-xl">
                       {accessModeOptions.map((option) => (
                         <button
                           key={option.value}
@@ -1190,10 +1190,24 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                             setAccessMenuOpen(false);
                             onAccessModeChange?.(option.value);
                           }}
-                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-fast hover:bg-accent/60"
+                          className={cn(
+                            "flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left transition-fast hover:bg-accent/60",
+                            option.value === accessModeValue ? "bg-accent/30" : "",
+                          )}
                         >
-                          <span className="flex-1">{option.label}</span>
-                          {option.value === accessModeValue && <Check className="h-4 w-4 text-[var(--icon-action)]" />}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 text-sm text-foreground">
+                              <span>{option.label}</span>
+                            </div>
+                            {option.description && (
+                              <div className="mt-0.5 text-[10px] leading-tight text-muted-foreground/70">
+                                {option.description}
+                              </div>
+                            )}
+                          </div>
+                          {option.value === accessModeValue && (
+                            <Check className="mt-1 h-4 w-4 shrink-0 text-[var(--icon-action)]" />
+                          )}
                         </button>
                       ))}
                     </div>

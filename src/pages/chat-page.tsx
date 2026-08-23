@@ -631,15 +631,24 @@ export function ChatPage({
       bypassPermissions: t("sessions.accessBypass"),
       plan: t("sessions.accessPlan"),
       full: t("sessions.toolModeFull"),
+      "full-approve": t("sessions.toolModeFullApprove"),
+      "smart-approve": t("sessions.toolModeSmartApprove"),
       readonly: t("sessions.toolModeReadonly"),
       untrusted: t("sessions.approvalUntrusted"),
       "on-failure": t("sessions.approvalOnFailure"),
       "on-request": t("sessions.approvalOnRequest"),
       never: t("sessions.approvalNever"),
     };
+    const descriptions: Record<string, string> = {
+      full: t("sessions.toolModeFullDesc"),
+      "full-approve": t("sessions.toolModeFullApproveDesc"),
+      "smart-approve": t("sessions.toolModeSmartApproveDesc"),
+      readonly: t("sessions.toolModeReadonlyDesc"),
+    };
     return permissionModes.map((value) => ({
       value,
       label: labels[value] ?? value,
+      description: descriptions[value],
     }));
   }, [permissionModes, t]);
 
