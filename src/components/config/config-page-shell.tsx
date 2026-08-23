@@ -2,7 +2,7 @@
 // R3 三区式单页 → R4 拆为侧边栏导航的独立子页（模型设置 / 行为与权限 /
 // 配置模版 / 高级设置），本组件只保留页头（switcher + 状态 + 动作槽）与
 // 子页标题。纯呈现层：加载哪个页面、子页内容仍由 ConfigSurface /
-// capability 组合决定（DEVELOP_READ §5/§8，无 agentId 分支）。
+// capability 组合决定（DEVELOP_READ §7，无 agentId 分支）。
 
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";

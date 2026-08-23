@@ -54,7 +54,7 @@ export function NodeInspector({
     typeof constraint?.locked_agent_id === "string" ? constraint.locked_agent_id : "";
   const roleId = typeof roleRequirement?.role_id === "string" ? roleRequirement.role_id : nodeId;
 
-  /** id → 展示名。用户可见处一律用 display_name，不得暴露内部代号（DEVELOP_READ §13.6）。 */
+  /** id → 展示名。用户可见处一律用 display_name，不得暴露内部代号（DEVELOP_READ §7）。 */
   const agentDisplayName = (id: string): string =>
     agents.find((agent) => agent.id === id)?.display_name ?? id;
 

@@ -18,7 +18,7 @@ pub trait AgentManifest {
     }
     /// 本应用内建管理的 agent（随 hub 分发/升级；环境检测置顶展示、
     /// 承担任务模式引擎等核心职责）。v0.7.4 需求3：共享层按此标志分支，
-    /// 不得写死 agent id（DEVELOP_READ §5）。
+    /// 不得写死 agent id（DEVELOP_READ §7）。
     fn is_builtin(&self) -> bool {
         false
     }

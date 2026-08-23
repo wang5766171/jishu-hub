@@ -1,7 +1,7 @@
 //! jishu agent 目录路径的单一来源（v0.7.4 审查 A8 收敛，v0.7.5 实施）。
 //!
 //! Pi fork 经 `PI_CODING_AGENT_DIR=~/.jishu-agent` 隔离自有 runtime 数据
-//!（DEVELOP_READ §7.1）。两层结构：
+//!（DEVELOP_READ §8）。两层结构：
 //! - 根目录 `~/.jishu-agent`：环境变量指向值（agent 本体/npm 装载）；
 //! - agent 目录 `~/.jishu-agent/agent`：Pi 原生 `getAgentDir()`，
 //!   settings.json / models.json / sessions / extensions / backups 所在。

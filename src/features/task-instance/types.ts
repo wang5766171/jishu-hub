@@ -11,7 +11,7 @@ export type TaskPhase = "requirements" | "planning" | "execution";
  * 内置 jishu agent 的权威 id（与后端 `agent::JISHU_SELF_AGENT_ID` 对齐）。
  *
  * 命名分层：用户可见一律 `Jishu Agent`（走 `display_name`/i18n，**禁止**在 UI 直出本常量，
- * 见 DEVELOP_READ §13.6）；内部标识用本常量。
+ * 见 DEVELOP_READ §7）；内部标识用本常量。
  */
 export const JISHU_SELF_AGENT_ID = "jishu-self";
 

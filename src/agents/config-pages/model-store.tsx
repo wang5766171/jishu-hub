@@ -22,7 +22,7 @@ import type { AdapterConfigPageProps } from "./index";
  * v0.7.4 需求2 R4/R5/R6：侧边栏子页导航——模型设置（当前模型大卡 +
  * 渠道/模型两栏，ModelManager）/ 行为与权限（工具模式两卡，即时保存）/
  * 配置模版 / 配置备份（备份 + 导出导入）/ 高级设置（MCP）。
- * 与 structured 页同一导航与骨架，操作逻辑对齐（DEVELOP_READ §5/§8）。
+ * 与 structured 页同一导航与骨架，操作逻辑对齐（DEVELOP_READ §7）。
  */
 export function ModelStoreConfigPage({
   configSurface,

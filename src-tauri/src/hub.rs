@@ -727,7 +727,7 @@ pub struct ConfigTemplate {
     pub config: serde_json::Value,
     /// 应用前需要用户补填信息（密钥/模型等）。由各 adapter 在
     /// config_templates() 中声明——前端据此决定是否弹出补填对话框，
-    /// 适配层驱动，前端不按 agent 写死判断（DEVELOP_READ §5）。
+    /// 适配层驱动，前端不按 agent 写死判断（DEVELOP_READ §7）。
     #[serde(default)]
     pub requires_fill: bool,
     /// 模型库写入声明（v0.7.5 需求6）：Some = 应用本模版时除 config（经

@@ -1,7 +1,7 @@
 //! 审批策略链（Approval Policy Chain，v0.8.0 需求2 Phase 2）。
 //!
 //! 把「允许吗？」决策统一为可组合的 waterfall 链（DSH tools/pre-execute 语义
-//! 对应物；DEVELOP_READ §11 目标态）。铁律：策略**拥有决策就短路返回
+//! 对应物；DEVELOP_READ §6 目标态）。铁律：策略**拥有决策就短路返回
 //! Allow/Deny**；否则**必须委托下家**；全链 Delegate = 交给既有交互路径
 //! （弹 UI / 无头默认拒绝）。
 //!
