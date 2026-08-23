@@ -262,11 +262,7 @@
     "slashNoMatch": "No matching command",
     "atFileNoMatch": "No matching project file",
     "usageContextUsed": "Context {{percent}}% used",
-    "usageTokensIn": "Input tokens",
-    "usageTokensOut": "Output tokens",
-    "usageCost": "Cost",
     "usageWatermarkDetail": "{{used}} / {{total}} tokens used",
-    "usageRuntimeNote": "Accumulated since this app launch",
     "toolModeFull": "Full access",
     "toolModeReadonly": "Read-only access",
     "approvalUntrusted": "Untrusted only",
@@ -277,7 +273,14 @@
     "refreshSession": "Refresh session",
     "refreshBlockedTitle": "Refresh unavailable",
     "refreshFailedTitle": "Failed to refresh session",
-    "usageCompactionBudget": "Compacts at {{tokens}} tokens ({{percent}}%)"
+    "usageCompactionBudget": "Compacts at {{tokens}} tokens ({{percent}}%)",
+    "usageEstGroup": "Output composition",
+    "usageEstThinking": "Thinking",
+    "usageEstTool": "Tools",
+    "usageCompactions": "Compacted {{count}} times",
+    "usageEstMessage": "Messages",
+    "usageEstHelp": "Composition of generated content (estimated): messages = prose text; thinking = reasoning; tools (incl. MCP) = tool-call arguments.",
+    "usageCacheHit": "Avg. cache hit rate"
   },
   "config": {
     "title": "Configuration",

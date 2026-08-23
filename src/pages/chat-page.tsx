@@ -57,7 +57,7 @@ import { AgentLogo, AgentSwitcher, useAgent } from "@/agents";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
 import { resolvePhaseSessionId, shouldRenderGlobalChatInput } from "./chat-page-layout";
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
-import { recordSessionUsage } from "@/lib/session-usage";
+import { setSessionUsage } from "@/lib/session-usage";
 import { ContextRing } from "@/components/sessions/context-ring";
 import { supportedThinkingLevels } from "@/components/config/model-types";
 import { ThinkingLevelSelect } from "@/components/sessions/thinking-level-select";
@@ -1056,6 +1056,9 @@ export function ChatPage({
       }
     }
 
+    // 会话打开即拉取权威用量（含重启后的历史累计）。
+    refreshSessionUsage(sessionId);
+
     if (isFirstVisit) {
       scrollAction.current = { type: "bottom" };
       visitedSessions.current.add(sessionId);
@@ -1067,6 +1070,50 @@ export function ChatPage({
     }
   };
   handleSelectSessionRef.current = handleSelectSession;
+
+  // v0.8.0 需求10：从 Hub SQLite（get_session_usage）拉取会话累计用量写入
+  // 前端缓存。回合结束与会话打开两个时机调用；失败静默（保留旧缓存）。
+  const refreshSessionUsage = (sessionId: string) => {
+    invokeCommand<{
+      input_tokens: number;
+      output_tokens: number;
+      cache_read: number;
+      cache_write: number;
+      total_cost: number;
+      context_remaining: number | null;
+      context_window_total: number | null;
+      est_thinking: number;
+      est_text: number;
+      est_builtin_tool: number;
+      est_mcp_tool: number;
+      est_tool_results: number;
+      tool_calls: number;
+      segments: number;
+      compactions: number;
+      updated_at: number;
+    }>("get_session_usage", { sessionId })
+      .then((row) => {
+        setSessionUsage(sessionId, {
+          inputTokens: row.input_tokens ?? 0,
+          outputTokens: row.output_tokens ?? 0,
+          cacheRead: row.cache_read ?? 0,
+          cacheWrite: row.cache_write ?? 0,
+          totalCost: row.total_cost ?? 0,
+          contextRemaining: row.context_remaining ?? null,
+          contextWindowTotal: row.context_window_total ?? null,
+          estThinking: row.est_thinking ?? 0,
+          estText: row.est_text ?? 0,
+          estBuiltinTool: row.est_builtin_tool ?? 0,
+          estMcpTool: row.est_mcp_tool ?? 0,
+          estToolResults: row.est_tool_results ?? 0,
+          toolCalls: row.tool_calls ?? 0,
+          segments: row.segments ?? 0,
+          compactions: row.compactions ?? 0,
+          updatedAt: row.updated_at ?? 0,
+        });
+      })
+      .catch(() => {});
+  };
 
   // v0.8.0 需求7：重挂载对账。agent-event 监听随组件卸载移除，卸载期间
   // 结束的回合收不到 turn_complete，streamStore 会永远停在 isStreaming
@@ -1826,6 +1873,18 @@ export function ChatPage({
           setLiveThinkingLevel(chunk.data.level);
         }
 
+        // v0.8.0 需求10：上下文压缩状态——压缩进度由内容流中的两态分隔线
+        // （压缩中… → 已压缩）呈现；此处在压缩结束沿即时刷新圆环用量
+        // （record_compaction 已把水位更新为 窗口-压缩后规模），会话完成
+        // 后 turn_complete 沿再刷新一次。
+        if (chunk.data.kind === "compaction_status") {
+          if (!chunk.data.active) {
+            const usageSid = streamStore.getState(cid)?.resolvedId ?? cid;
+            void refreshSessionUsage(usageSid);
+          }
+          continue;
+        }
+
         // Detect resolved session id and register it as an alias before pushing
         // (so subsequent chunks under the real id route to the same entry).
         const realId = extractRealSessionId(chunk.data);
@@ -1928,16 +1987,9 @@ export function ChatPage({
           // Build final assistant/user messages from the accumulated state.
           const state = streamStore.getState(cid);
           const finalKey = state?.resolvedId ?? cid;
-          // A4/A10：记录本回合用量（字段可缺省；后续 UI 按有数据项展示）
-          if (chunk.data.usage) {
-            recordSessionUsage(finalKey, chunk.data.usage as {
-              input_tokens?: number | null;
-              output_tokens?: number | null;
-              total_cost?: number | null;
-              context_remaining?: number | null;
-              context_window_total?: number | null;
-            });
-          }
+          // v0.8.0 需求10：用量以 Hub SQLite 为权威（Rust turn_end 记账，
+          // 与页面在场无关）；回合结束后拉取最新行刷新前端缓存（圆环数据源）。
+          void refreshSessionUsage(finalKey);
           // Spurious-completion guard: when a follow-up streaming state was just
           // created at the end of a turn (a manually-guided steer committed as a
           // follow-up, or Route 2 auto-sending staged guides), the (re)launched

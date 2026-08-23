@@ -647,6 +647,13 @@ pub fn chat_turn_active(app: AppHandle, session_id: String) -> bool {
     }
 }
 
+/// v0.8.0 需求10：读取会话累计用量（SQLite 权威来源；无记录返回全零行）。
+/// 记账在 Rust turn_end 侧完成（usage_store），前端只读展示。
+#[tauri::command]
+pub fn get_session_usage(session_id: String) -> Result<crate::usage_store::SessionUsageRow, String> {
+    crate::usage_store::get(&session_id)
+}
+
 /// Read the agent's auto-compaction preference (v0.7.4 需求1 A3).
 /// None = follow the agent's own default.
 #[tauri::command]

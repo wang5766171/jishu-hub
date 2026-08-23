@@ -262,11 +262,7 @@
     "slashNoMatch": "没有匹配的命令",
     "atFileNoMatch": "没有匹配的项目文件",
     "usageContextUsed": "上下文已用 {{percent}}%",
-    "usageTokensIn": "输入 tokens",
-    "usageTokensOut": "输出 tokens",
-    "usageCost": "成本",
     "usageWatermarkDetail": "已用 {{used}} / {{total}} tokens",
-    "usageRuntimeNote": "计数自本次启动应用起累计",
     "toolModeFull": "完整权限",
     "toolModeReadonly": "只读权限",
     "approvalUntrusted": "仅非受信命令",
@@ -277,7 +273,14 @@
     "refreshSession": "刷新会话",
     "refreshBlockedTitle": "暂时无法刷新",
     "refreshFailedTitle": "刷新会话失败",
-    "usageCompactionBudget": "达到 {{tokens}} tokens 时压缩（阈值 {{percent}}%）"
+    "usageCompactionBudget": "达到 {{tokens}} tokens 时压缩（阈值 {{percent}}%）",
+    "usageEstGroup": "输出构成",
+    "usageEstThinking": "思考",
+    "usageEstTool": "工具",
+    "usageCompactions": "已压缩 {{count}} 次",
+    "usageEstMessage": "消息",
+    "usageEstHelp": "按生成内容（估算）的构成占比：消息=正文文本；思考=推理过程；工具（含 MCP）=工具调用参数。",
+    "usageCacheHit": "平均缓存命中率"
   },
   "config": {
     "title": "配置管理",

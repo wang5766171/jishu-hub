@@ -554,7 +554,7 @@ fn run_pi_rpc_turn_blocking(
                     break;
                 }
 
-                let normalized = crate::pi_rpc_runtime::normalize_pi_agent_event(&message, None);
+                let normalized = crate::pi_rpc_runtime::normalize_pi_agent_event(&message, None, &mut Vec::new());
                 completed = normalized
                     .iter()
                     .any(|event| matches!(event, NormalizedEvent::TurnComplete { .. }));

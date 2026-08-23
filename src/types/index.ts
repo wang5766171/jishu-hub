@@ -356,7 +356,8 @@ export type NormalizedEvent =
   | { kind: "sub_agent_dispatch"; run_id: string; step_id: string; target_agent: string; sub_run_id?: string; request: unknown }
   | { kind: "sub_agent_event"; run_id: string; step_id: string; sub_event: NormalizedEvent }
   | { kind: "raw"; agent: string; raw: unknown }
-  | { kind: "phase_divider"; phase: string; title: string };
+  | { kind: "phase_divider"; phase: string; title: string }
+  | { kind: "compaction_status"; active: boolean; reason: string };
 
 export interface InputFile {
   data: string;

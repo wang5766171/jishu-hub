@@ -16,6 +16,7 @@ mod llm;
 mod orchestrator;
 pub mod os_adapter;
 mod pi_rpc_runtime;
+mod usage_store;
 mod process_command;
 mod process_control;
 mod project;
@@ -266,6 +267,7 @@ pub fn run() {
             chat::compact_agent_session,
             chat::fork_agent_session,
             chat::chat_turn_active,
+            chat::get_session_usage,
             chat::get_agent_auto_compaction,
             chat::set_agent_auto_compaction,
             chat::resolve_chat_permission,

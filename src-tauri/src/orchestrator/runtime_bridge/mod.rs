@@ -304,6 +304,7 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                 let reg_live = live_controls.clone();
                 let reg_invocation = invocation_id.clone();
                 let reg_agent_id = request.agent_id.clone();
+                let usage_agent_id = reg_agent_id.clone();
                 let on_session_resolved = move || {
                     if let Some(reg) = &acp_register {
                         let control = {
@@ -329,6 +330,7 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                 // Spawn the persistent session. Returns immediately with AcpControl.
                 let acp_control = crate::pi_rpc_runtime::spawn_pi_rpc_session_with_emitter(
                     emit,
+                    usage_agent_id,
                     pending_session_id,
                     child,
                     Some(request.prompt),
@@ -773,7 +775,8 @@ pub fn map_normalized_event(context: &RuntimeEventContext, event: &NormalizedEve
         | NormalizedEvent::SubAgentDispatch { .. }
         | NormalizedEvent::SteerInjected { .. }
         | NormalizedEvent::Raw { .. }
-        | NormalizedEvent::PhaseDivider { .. } => RuntimeFact::Diagnostic {
+        | NormalizedEvent::PhaseDivider { .. }
+        | NormalizedEvent::CompactionStatus { .. } => RuntimeFact::Diagnostic {
             context: context.clone(),
             payload: serde_json::to_value(event).unwrap_or_default(),
         },

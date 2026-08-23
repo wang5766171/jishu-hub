@@ -49,6 +49,7 @@ pub fn spawn_pi_rpc_session(
     let auto_compaction_pref = crate::hub::load_agent_auto_compaction(&agent_id);
     spawn_pi_rpc_session_inner(
         emit,
+        agent_id,
         pending_session_id,
         child,
         first_message,
@@ -66,6 +67,7 @@ pub fn spawn_pi_rpc_session(
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_pi_rpc_session_with_emitter(
     emit: AcpEventEmit,
+    agent_id: String,
     pending_session_id: String,
     child: tokio::process::Child,
     first_message: Option<String>,
@@ -75,6 +77,7 @@ pub fn spawn_pi_rpc_session_with_emitter(
 ) -> AcpControl {
     spawn_pi_rpc_session_inner(
         emit,
+        agent_id,
         pending_session_id,
         child,
         first_message,
@@ -90,6 +93,7 @@ pub fn spawn_pi_rpc_session_with_emitter(
 #[allow(clippy::too_many_arguments)]
 fn spawn_pi_rpc_session_inner(
     emit: AcpEventEmit,
+    agent_id: String,
     pending_session_id: String,
     mut child: tokio::process::Child,
     first_message: Option<String>,
@@ -142,6 +146,7 @@ fn spawn_pi_rpc_session_inner(
     tauri::async_runtime::spawn(async move {
         let result = pi_rpc_connection_loop(
             emit.clone(),
+            agent_id.clone(),
             pending_session_id.clone(),
             stdin_arc,
             acp_session_id,
@@ -240,6 +245,7 @@ pub(crate) fn apply_resolved_session_prompt_injection(
 #[allow(clippy::too_many_arguments)]
 async fn pi_rpc_connection_loop(
     emit: AcpEventEmit,
+    agent_id: String,
     pending_session_id: String,
     stdin_arc: Arc<TokioMutex<ChildStdin>>,
     acp_session_id: Arc<std::sync::Mutex<Option<String>>>,
@@ -397,6 +403,9 @@ async fn pi_rpc_connection_loop(
         log::debug!("Pi RPC sent first prompt");
         state = LoopState::Prompting;
     }
+    // v0.8.0 需求10：经 Steer 命令注入的文本登记——用于区分 pi 回显的
+    // message_start(role=user) 是真引导还是普通 prompt 送达。
+    let mut steer_texts: Vec<String> = Vec::new();
     // 当前 pending 的 extension_ui_request id（select/input 等待用户响应时）。
     // abort 时用它发 cancelled response 释放 pi 的阻塞，否则 pi 卡在等响应、abort 推进不了。
     let mut pending_interaction_id: Option<String> = None;
@@ -466,6 +475,7 @@ async fn pi_rpc_connection_loop(
                     Some(AcpCommand::Steer(msg)) => {
                         // Pi RPC native steer: inject text into the current turn.
                         // The agent considers it while continuing — no turn restart.
+                        steer_texts.push(msg.clone());
                         send_pi_command(&stdin_arc, &json!({
                             "type": "steer",
                             "message": msg
@@ -842,7 +852,35 @@ async fn pi_rpc_connection_loop(
                             .get("type")
                             .and_then(|v| v.as_str())
                             .unwrap_or_default();
-                        let events = normalize_pi_agent_event(&msg, context_window);
+                        let events = normalize_pi_agent_event(&msg, context_window, &mut steer_texts);
+
+                        // v0.8.0 需求10：回合用量按【分段】入 SQLite（记录类
+                        // 数据优先 SQLite 的开发原则）。pi 的 turn_end 每个生成
+                        // 分段都携带 usage——工具循环的中间段以 toolUse 停止、
+                        // 不发 TurnComplete，按 TurnComplete 记账会漏掉这些分段
+                        // 的生成量（长文分段写文件场景尤甚），故在分段级记账；
+                        // 同时按消息内容块归因（思考/文本/内置工具/MCP/工具结果，
+                        // 估算口径见 usage_store）。
+                        if event_type == "turn_end" {
+                            if let Some(seg) = pi_segment_usage(&msg, context_window) {
+                                crate::usage_store::record_segment(
+                                    &agent_id,
+                                    &session_id,
+                                    &seg,
+                                );
+                            }
+                        }
+
+                        // v0.8.0 需求10：压缩事件入 usage_compaction 表（压缩
+                        // 前后规模 + firstKeptEntryId 数据定位 + 摘要调用开销
+                        // 并入总量），为后续会话索引等能力提供数据支撑。
+                        if event_type == "compaction_end" {
+                            crate::usage_store::record_compaction(
+                                &agent_id,
+                                &session_id,
+                                &pi_compaction_record(&msg),
+                            );
+                        }
 
                         if matches!(event_type, "agent_start" | "turn_start")
                             && !matches!(state, LoopState::CancelPending { .. })
@@ -1123,9 +1161,135 @@ fn pi_turn_usage(event: &serde_json::Value, context_window: Option<u64>) -> Opti
     })
 }
 
+/// v0.8.0 需求10：分段用量 + 内容归因。usage 部分复用 pi_turn_usage（精确）；
+/// 归因部分对 turn_end 的 message.content 逐块估算（thinking/text/toolCall），
+/// toolResults 估算为工具结果进入后续上下文的规模。
+fn pi_segment_usage(event: &serde_json::Value, context_window: Option<u64>) -> Option<crate::usage_store::SegmentUsage> {
+    let base = pi_turn_usage(event, context_window)?;
+    let mut seg = crate::usage_store::SegmentUsage {
+        stop_reason: event
+            .get("message")
+            .and_then(|m| m.get("stopReason"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        input_tokens: base.input_tokens.unwrap_or(0),
+        output_tokens: base.output_tokens.unwrap_or(0),
+        cache_read: event
+            .get("message")
+            .and_then(|m| m.get("usage"))
+            .and_then(|u| u.get("cacheRead"))
+            .and_then(|v| v.as_f64())
+            .map(|v| v as u64)
+            .unwrap_or(0),
+        cache_write: event
+            .get("message")
+            .and_then(|m| m.get("usage"))
+            .and_then(|u| u.get("cacheWrite"))
+            .and_then(|v| v.as_f64())
+            .map(|v| v as u64)
+            .unwrap_or(0),
+        total_tokens: 0,
+        total_cost: base.total_cost.unwrap_or(0.0),
+        context_remaining: base.context_remaining,
+        context_window_total: base.context_window_total,
+        ..Default::default()
+    };
+    seg.total_tokens = event
+        .get("message")
+        .and_then(|m| m.get("usage"))
+        .and_then(|u| u.get("totalTokens"))
+        .and_then(|v| v.as_f64())
+        .map(|v| v as u64)
+        .unwrap_or(0);
+
+    if let Some(blocks) = event
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    {
+        for block in blocks {
+            let kind = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            match kind {
+                "thinking" => {
+                    seg.est_thinking += est_block_tokens(block.get("thinking"));
+                }
+                "text" => {
+                    seg.est_text += est_block_tokens(block.get("text"));
+                }
+                "toolCall" => {
+                    // pi-mcp-adapter 注册的 MCP 工具在 toolCall 块上无标志
+                    // （实测仅 type/id/name/arguments 四字段），按用户裁决统一
+                    // 归入工具桶；est_mcp_tool/mcp_calls 列留作前向预留。
+                    let _name = block.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let est = est_block_tokens(Some(&serde_json::Value::Null)) +
+                        est_block_tokens(block.get("arguments"));
+                    seg.est_builtin_tool += est;
+                    seg.tool_calls += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(results) = event.get("toolResults").and_then(|v| v.as_array()) {
+        for r in results {
+            seg.est_tool_results += est_block_tokens(Some(r));
+        }
+    }
+    Some(seg)
+}
+
+/// 从 pi compaction_end 事件提取压缩记录（CompactionResult 字段）。
+fn pi_compaction_record(event: &serde_json::Value) -> crate::usage_store::CompactionRecord {
+    let num = |v: Option<&serde_json::Value>| {
+        v.and_then(|x| x.as_f64()).map(|x| x as u64).unwrap_or(0)
+    };
+    let result = event.get("result");
+    let usage = result.and_then(|r| r.get("usage"));
+    let cost = usage
+        .and_then(|u| u.get("cost"))
+        .and_then(|c| c.get("total"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let summary_len = result
+        .and_then(|r| r.get("summary"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.chars().count())
+        .unwrap_or(0) as u64;
+    crate::usage_store::CompactionRecord {
+        reason: event
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        aborted: event.get("aborted").and_then(|v| v.as_bool()).unwrap_or(false),
+        tokens_before: num(result.and_then(|r| r.get("tokensBefore"))),
+        tokens_after: num(result.and_then(|r| r.get("estimatedTokensAfter"))),
+        first_kept_entry_id: result
+            .and_then(|r| r.get("firstKeptEntryId"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        summary_input: num(usage.and_then(|u| u.get("input"))),
+        summary_output: num(usage.and_then(|u| u.get("output"))),
+        summary_cost: cost,
+        est_summary: ((summary_len as f64) / 2.5).ceil() as u64,
+    }
+}
+
+/// 估算口径：≈2.5 字符/token（中英混合粗估，构成对比用，非计费值）。
+fn est_block_tokens(value: Option<&serde_json::Value>) -> u64 {
+    let text = match value {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+        None => return 0,
+    };
+    ((text.chars().count() as f64) / 2.5).ceil() as u64
+}
+
 pub(crate) fn normalize_pi_agent_event(
     event: &serde_json::Value,
     context_window: Option<u64>,
+    pending_steers: &mut Vec<String>,
 ) -> Vec<NormalizedEvent> {
     let event_type = match event.get("type").and_then(|v| v.as_str()) {
         Some(t) => t,
@@ -1133,6 +1297,38 @@ pub(crate) fn normalize_pi_agent_event(
     };
 
     match event_type {
+        // v0.8.0 需求10：上下文压缩生命周期——开始→状态指示；结束→状态清除
+        // + phase_divider(compaction) 分隔线（进内容流，turn_complete 时随
+        // content 一并提交，重载时由 pi_session 的 compaction 条目重建）。
+        "compaction_start" | "compaction_end" => {
+            let active = event_type == "compaction_start";
+            let reason = event
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            // 分隔线两态：开始即入列「上下文压缩中…」，结束时 store 原地替换
+            // 为「上下文已压缩」（见 use-stream-store phase_divider 分支）——
+            // 用户可从分隔线本身看出压缩进度。
+            if active {
+                vec![
+                    NormalizedEvent::PhaseDivider {
+                        phase: "compaction".to_string(),
+                        title: "上下文压缩中…".to_string(),
+                    },
+                    NormalizedEvent::CompactionStatus { active: true, reason },
+                ]
+            } else {
+                vec![
+                    NormalizedEvent::CompactionStatus { active: false, reason },
+                    NormalizedEvent::PhaseDivider {
+                        phase: "compaction".to_string(),
+                        title: "上下文已压缩".to_string(),
+                    },
+                ]
+            }
+        }
+
         // -- Streaming text/thinking from assistant message ---------------
         "message_update" => {
             let ame = match event.get("assistantMessageEvent") {
@@ -1335,9 +1531,18 @@ pub(crate) fn normalize_pi_agent_event(
                 })
                 .unwrap_or_default();
             if content.is_empty() {
-                vec![]
-            } else {
-                vec![NormalizedEvent::SteerInjected { content }]
+                return vec![];
+            }
+            // v0.8.0 需求10 修复：pi 对**每条**送达的用户消息都回显
+            // message_start(role=user)——含正常 prompt 与压缩前排队的消息；
+            // 只有经 Steer 命令注入的文本才是真正的引导（连接循环登记，
+            // 此处按文匹配消费），否则会把用户消息误标为「已引导」并重复渲染。
+            match pending_steers.iter().position(|s| s == &content) {
+                Some(idx) => {
+                    pending_steers.remove(idx);
+                    vec![NormalizedEvent::SteerInjected { content }]
+                }
+                None => vec![],
             }
         }
 
@@ -1529,6 +1734,87 @@ fn flush_buf(emit: &AcpEventEmit, session_id: &str, buf: &mut Vec<NormalizedEven
 #[cfg(test)]
 mod tests {
     #[test]
+    /// 真实形态回归：写小说场景的分段（thinking + text + toolCall=write +
+    /// toolResults），验证分段记账的精确字段与内容归因。
+    #[test]
+    fn pi_segment_usage_attributes_realistic_turn_end() {
+        let event = serde_json::json!({
+            "type": "turn_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "toolUse",
+                "content": [
+                    {"type": "thinking", "thinking": "规划第一章结构", "thinkingSignature": "sig"},
+                    {"type": "text", "text": "我先写入第一章。"},
+                    {"type": "toolCall", "id": "call_1", "name": "write",
+                     "arguments": {"path": "novel.md", "content": "第一章 雾夜坠楼。江州的雾，是有脾气的。"}}
+                ],
+                "usage": {
+                    "input": 1166, "output": 1380, "cacheRead": 113472,
+                    "cacheWrite": 0, "totalTokens": 116018,
+                    "cost": {"total": 0.0123}
+                }
+            },
+            "toolResults": [
+                {"role": "toolResult", "toolCallId": "call_1", "toolName": "write",
+                 "content": [{"type": "text", "text": "Written 42 lines."}]}
+            ]
+        });
+        let seg = pi_segment_usage(&event, Some(1_000_000)).unwrap();
+        assert_eq!(seg.stop_reason, "toolUse");
+        assert_eq!(seg.input_tokens, 1166);
+        assert_eq!(seg.output_tokens, 1380);
+        assert_eq!(seg.cache_read, 113_472);
+        assert_eq!(seg.total_tokens, 116_018);
+        assert!((seg.total_cost - 0.0123).abs() < 1e-9);
+        assert_eq!(seg.context_remaining, Some(1_000_000 - 116_018));
+        // 归因：三块皆有值；工具调用一次（MCP 无标志并入工具桶）。
+        assert!(seg.est_thinking > 0);
+        assert!(seg.est_text > 0);
+        assert!(seg.est_builtin_tool > 0);
+        assert_eq!(seg.est_mcp_tool, 0);
+        assert_eq!(seg.tool_calls, 1);
+        assert_eq!(seg.mcp_calls, 0);
+        assert!(seg.est_tool_results > 0);
+    }
+
+    /// 真实形态回归：compaction_end（threshold 触发，含 CompactionResult）。
+    #[test]
+    fn pi_compaction_record_extracts_result_fields() {
+        let event = serde_json::json!({
+            "type": "compaction_end",
+            "reason": "threshold",
+            "aborted": false,
+            "result": {
+                "summary": "## Goal
+- 用户要求写 20 万字小说",
+                "firstKeptEntryId": "entry-42",
+                "tokensBefore": 118_910,
+                "estimatedTokensAfter": 62_389,
+                "usage": {"input": 110_000, "output": 6_340, "totalTokens": 116_340,
+                          "cost": {"total": 0.08}}
+            }
+        });
+        let rec = pi_compaction_record(&event);
+        assert_eq!(rec.reason, "threshold");
+        assert!(!rec.aborted);
+        assert_eq!(rec.tokens_before, 118_910);
+        assert_eq!(rec.tokens_after, 62_389);
+        assert_eq!(rec.first_kept_entry_id.as_deref(), Some("entry-42"));
+        assert_eq!(rec.summary_input, 110_000);
+        assert_eq!(rec.summary_output, 6_340);
+        assert!((rec.summary_cost - 0.08).abs() < 1e-9);
+        assert!(rec.est_summary > 0);
+
+        // result 缺失（压缩失败）——字段全缺省，不 panic。
+        let empty = pi_compaction_record(&serde_json::json!({
+            "type": "compaction_end", "reason": "manual", "aborted": true
+        }));
+        assert!(empty.aborted);
+        assert_eq!(empty.tokens_before, 0);
+        assert_eq!(empty.first_kept_entry_id, None);
+    }
+
     fn pi_turn_usage_maps_turn_end_usage_with_watermark() {
         let event = serde_json::json!({
             "type": "turn_end",
@@ -1576,7 +1862,7 @@ mod tests {
                 "usage": { "input": 10, "output": 2, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 12, "cost": { "total": 0.01 } }
             }
         });
-        let events = normalize_pi_agent_event(&event, Some(1000));
+        let events = normalize_pi_agent_event(&event, Some(1000), &mut Vec::new());
         assert_eq!(events.len(), 1);
         match &events[0] {
             NormalizedEvent::TurnComplete { usage, .. } => {
@@ -1612,7 +1898,8 @@ mod tests {
                 "message": { "stopReason": "toolUse" }
             }),
             None,
-        );
+            &mut Vec::new(),
+ );;
         assert!(
             events.is_empty(),
             "toolUse turn_end must stay suppressed, got {events:?}"
@@ -1629,7 +1916,8 @@ mod tests {
                 "message": { "stopReason": "end_turn" }
             }),
             None,
-        );
+            &mut Vec::new(),
+ );;
         assert!(
             events
                 .iter()
@@ -1651,7 +1939,8 @@ mod tests {
                 }
             }),
             None,
-        );
+            &mut Vec::new(),
+ );;
 
         assert!(events.is_empty());
     }
@@ -1670,7 +1959,8 @@ mod tests {
                 }
             }),
             None,
-        );
+            &mut Vec::new(),
+ );;
 
         match events.as_slice() {
             [NormalizedEvent::PhaseDivider { phase, title }] => {
@@ -1683,25 +1973,43 @@ mod tests {
 
     #[test]
     fn surfaces_user_role_message_start_as_steer_injected() {
-        // Pi emits this for a queued steer delivered at a tool-call gap.
-        let events = normalize_pi_agent_event(
-            &json!({
-                "type": "message_start",
-                "message": {
-                    "role": "user",
-                    "content": [{ "type": "text", "text": "改用 TypeScript 实现" }],
-                    "timestamp": 0
-                }
-            }),
-            None,
-        );
+        // Pi 对每条送达的用户消息都回显 message_start(role=user)——只有
+        // 经 Steer 命令注入（连接循环登记进 pending_steers）的才是真引导。
+        let event = json!({
+            "type": "message_start",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": "改用 TypeScript 实现" }],
+                "timestamp": 0
+            }
+        });
 
+        // 登记过的 steer 文本 → SteerInjected（并消费登记）。
+        let mut steers = vec!["改用 TypeScript 实现".to_string()];
+        let events = normalize_pi_agent_event(&event, None, &mut steers);
         match events.as_slice() {
             [NormalizedEvent::SteerInjected { content }] => {
                 assert_eq!(content, "改用 TypeScript 实现");
             }
             other => panic!("expected [SteerInjected], got {other:?}"),
         }
+        assert!(steers.is_empty(), "steer 登记应被消费");
+
+        // 未登记（普通 prompt / 压缩前排队的消息回显）→ 不产生事件，
+        // 否则用户消息会被误标「已引导」并重复渲染（v0.8.0 需求10 修复）。
+        let events = normalize_pi_agent_event(
+            &json!({
+                "type": "message_start",
+                "message": {
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "继续" }],
+                    "timestamp": 0
+                }
+            }),
+            None,
+            &mut Vec::new(),
+        );
+        assert!(events.is_empty(), "prompt 回显不应产生 steer 事件: {events:?}");
     }
 
     #[test]
@@ -1718,7 +2026,8 @@ mod tests {
                 }
             }),
             None,
-        );
+            &mut Vec::new(),
+ );;
         assert!(events.is_empty());
     }
 
@@ -1735,7 +2044,8 @@ mod tests {
                 }
             }),
             None,
-        );
+            &mut Vec::new(),
+ );;
         assert!(events.is_empty());
     }
 

@@ -208,6 +208,13 @@ pub enum NormalizedEvent {
         phase: String,
         title: String,
     },
+    /// v0.8.0 需求10：上下文压缩状态（pi compaction_start / compaction_end）。
+    /// active=true 进行中（GUI 在会话区显示「压缩中」指示）；false 结束——
+    /// 归一化层随同下发 phase_divider(compaction) 在内容流中呈现分隔线。
+    CompactionStatus {
+        active: bool,
+        reason: String,
+    },
 }
 
 impl NormalizedEvent {
@@ -229,6 +236,7 @@ impl NormalizedEvent {
             NormalizedEvent::SubAgentDispatch { .. } => "sub_agent_dispatch",
             NormalizedEvent::Raw { .. } => "raw",
             NormalizedEvent::PhaseDivider { .. } => "phase_divider",
+            NormalizedEvent::CompactionStatus { .. } => "compaction_status",
         }
     }
 }

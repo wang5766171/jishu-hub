@@ -255,15 +255,39 @@ class StreamStore {
       // inline in the message stream at the position it occurred. setStatus
       // and explicit phase-enter can report the same boundary consecutively.
       content = freezeLastBlock(content);
-      const last = content[content.length - 1];
-      if (
-        last?.type !== "phase_divider"
-        || last.phase !== data.phase
-        || last.title !== data.title
-      ) {
-        content = [...content, { type: "phase_divider" as const, phase: data.phase, title: data.title }];
+      let handled = false;
+      // v0.8.0 需求10 修复：压缩分隔线两态——结束分隔线（上下文已压缩）
+      // 全内容查找既有压缩分隔线（上下文压缩中…）并**原位替换其标题**，
+      // 而非追加。压缩中间可能插入摘要生成等内容块，不能只看末位；由此
+      // 保证任意时刻内容流中至多一条压缩分隔线。
+      if (data.phase === "compaction") {
+        let compactionIdx = -1;
+        for (let k = content.length - 1; k >= 0; k--) {
+          const block = content[k];
+          if (block.type === "phase_divider" && block.phase === "compaction") {
+            compactionIdx = k;
+            break;
+          }
+        }
+        if (compactionIdx >= 0) {
+          const next = [...content];
+          next[compactionIdx] = { type: "phase_divider" as const, phase: data.phase, title: data.title };
+          content = next;
+          this.conductorPhases.set(key, data.phase);
+          handled = true;
+        }
       }
-      this.conductorPhases.set(key, data.phase);
+      if (!handled) {
+        const last = content[content.length - 1];
+        if (
+          last?.type !== "phase_divider"
+          || last.phase !== data.phase
+          || last.title !== data.title
+        ) {
+          content = [...content, { type: "phase_divider" as const, phase: data.phase, title: data.title }];
+        }
+        this.conductorPhases.set(key, data.phase);
+      }
     } else if (data.kind === "interaction_request") {
       if (!interactionSplits.some((item) => item.requestId === data.request_id)) {
         interactionSplits = [

@@ -693,6 +693,23 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
                     });
                 }
             }
+            // v0.8.0 需求10：compaction 条目 → 上下文压缩分隔线（实时链由
+            // pi_rpc_runtime 的 compaction_end 下发同款 phase_divider，此处
+            // 保证重载后仍可见；摘要正文暂不展示）。
+            Some("compaction") => {
+                let entry_timestamp = value
+                    .get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .and_then(parse_rfc3339_millis);
+                messages.push(crate::session::Message {
+                    role: "assistant".to_string(),
+                    content: vec![crate::session::ContentBlock::PhaseDivider {
+                        phase: "compaction".to_string(),
+                        title: "上下文已压缩".to_string(),
+                    }],
+                    timestamp: entry_timestamp,
+                });
+            }
             Some("session_info") => {
                 display_name = value
                     .get("name")
