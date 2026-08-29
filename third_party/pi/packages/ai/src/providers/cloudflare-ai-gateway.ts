@@ -9,7 +9,7 @@ import { cloudflareStreams } from "./cloudflare-stream.ts";
 export function cloudflareAIGatewayProvider(): Provider<
 	"anthropic-messages" | "openai-completions" | "openai-responses"
 > {
-	return createProvider<"anthropic-messages" | "openai-completions" | "openai-responses">({
+	return createProvider({
 		id: "cloudflare-ai-gateway",
 		name: "Cloudflare AI Gateway",
 		auth: { apiKey: cloudflareAIGatewayAuth() },
