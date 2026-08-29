@@ -13,6 +13,7 @@ mod history;
 mod hub;
 mod image;
 mod llm;
+mod memory_store;
 mod orchestrator;
 pub mod os_adapter;
 mod pi_rpc_runtime;
@@ -35,6 +36,10 @@ use tauri::{Emitter, Manager};
 
 pub struct AppState {
     pub registry: Arc<agent::AgentRegistry>,
+    /// 工具插件装载快照（v0.8.1 需求7）：与 registry 的 agent 插件同一份
+    /// plugins.json 启停配置；plugin_reload 命令重建两者并广播
+    /// plugins-changed 事件。
+    pub tool_plugins: std::sync::Mutex<Vec<agent::tool_plugin::ToolPlugin>>,
     #[cfg(feature = "orchestrator")]
     pub task_service: std::sync::Mutex<orchestrator::TaskService>,
 }
@@ -75,6 +80,9 @@ pub fn run() {
             let _ = hub::migrate_v0_5_0();
             // Phase 1: 自动注册 Conductor 扩展 + skill pack + 删除旧 skill
             task_plan::ensure_conductor_extension();
+            // v0.8.1 需求9/10：内置自适应插件（任务需求/流程规划）随包分发，
+            // 首启落 ~/.jishu-hub/agents/（幂等）。
+            agent::plugin::ensure_builtin_adaptive_plugins();
             // 自动部署 request_user_input 扩展（conductor 的 discuss/plan 阶段依赖此工具）
             task_plan::ensure_request_user_input_extension();
             // 部署 session-context 扩展（session_id 注入 system prompt，取代 user message 注入）
@@ -152,6 +160,9 @@ pub fn run() {
             };
             app.manage(Mutex::new(AppState {
                 registry,
+                tool_plugins: std::sync::Mutex::new(agent::tool_plugin::load_tool_plugins(
+                    &agent::plugin::load_plugin_config().disabled.iter().cloned().collect(),
+                )),
                 #[cfg(feature = "orchestrator")]
                 task_service,
             }));
@@ -255,6 +266,21 @@ pub fn run() {
             commands::agents::check_transport_bridge,
             commands::agents::install_transport_bridge,
             commands::agents::agent_official_auth,
+            commands::agents::agent_manifest_errors,
+            commands::agents::plugin_list,
+            commands::agents::plugin_set_enabled,
+            commands::agents::plugin_remove,
+            commands::agents::plugin_reload,
+            commands::agents::plugin_create,
+            commands::agents::plugin_get,
+            commands::agents::plugin_update,
+            commands::agents::session_tool_list,
+            commands::agents::session_set_tools,
+            commands::sessions::persist_agent_turn,
+            commands::memory::memory_set,
+            commands::memory::memory_get,
+            commands::memory::memory_list,
+            commands::memory::memory_delete,
             commands::update::check_available_updates,
             commands::update::check_for_update,
             commands::update::download_update,

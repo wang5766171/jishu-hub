@@ -6,6 +6,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::ChildStdin;
 
 use crate::agent_runtime::{self, AgentTurnRequest};
+use crate::agent;
 use crate::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +34,36 @@ impl ChatState {
             processes: HashMap::new(),
         }
     }
+}
+
+/// v0.8.1 需求7：会话启用工具集非空时，把工具说明块前缀附加到 prompt。
+/// ACP 存活会话早退路径与新回合路径共用（P0 修复：早退路径曾跳过注入，
+/// 持久进程第二轮起注入块从未附加）。
+fn compose_tool_message(
+    state: &tauri::State<'_, Mutex<AppState>>,
+    session_id: &str,
+    message: String,
+) -> String {
+    let Ok(s) = state.lock() else {
+        return message;
+    };
+    let tool_ids = agent::tool_plugin::get_session_tools(session_id);
+    if tool_ids.is_empty() {
+        return message;
+    }
+    let tools = s.tool_plugins.lock().unwrap_or_else(|e| e.into_inner());
+    let matched: Vec<&agent::tool_plugin::ToolPlugin> = tools
+        .iter()
+        .filter(|t| tool_ids.iter().any(|id| id == t.id()))
+        .collect();
+    if matched.is_empty() {
+        return message;
+    }
+    let block = agent::tool_plugin::render_tool_block(&matched);
+    if block.trim().is_empty() {
+        return message;
+    }
+    format!("{block}\n\n{message}")
 }
 
 #[tauri::command]
@@ -63,7 +94,9 @@ pub async fn send_message(
 
     if let Some(ref sid) = session_id {
         if let Some((acp, pid)) = existing_acp_session(&app, sid, &agent_id)? {
-            match acp.send_prompt(message.clone()).await {
+            // 工具注入（35ee638a）：早退路径同样附加会话启用工具的说明块。
+            let outgoing = compose_tool_message(&state, sid, message.clone());
+            match acp.send_prompt(outgoing).await {
                 Ok(()) => {
                     return Ok(ChatSession {
                         agent_id,
@@ -82,6 +115,10 @@ pub async fn send_message(
     let pending_session_id = session_id
         .clone()
         .unwrap_or_else(|| format!("pending-{}", uuid::Uuid::new_v4()));
+
+    // 工具注入：会话启用集合非空 → 说明块前缀附加到 prompt（无头任务路径
+    // 不注入——边界：工具插件是 GUI 会话能力）。
+    let message = compose_tool_message(&state, &pending_session_id, message);
 
     let prepared = {
         let s = state

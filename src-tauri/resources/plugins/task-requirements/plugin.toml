@@ -1,0 +1,16 @@
+schema = 1
+kind = "tool"
+
+[info]
+id = "task-requirements"
+display_name = "需求讨论"
+
+[pi_extension]
+entry = "discuss.ts"
+target_agent = "jishu-self"
+
+[tool]
+description = "提交结构化需求文档（产出 REQUIREMENTS.md，适合需求需要收敛或记录的场景）"
+usage = "jishu-cli task-artifact lock-requirement --title <标题> --goal <目标> --scope <范围;分隔> --acceptance <验收标准;分隔> --project $JISHU_PROJECT_PATH"
+example = "jishu-cli task-artifact lock-requirement --title '修复登录超时' --goal '解决高并发登录问题' --scope 'auth模块;session管理' --acceptance '1000并发成功率>99%' --project $JISHU_PROJECT_PATH"
+notes = "参数需完整；产物写入 .jishu-hub/tasks/ 目录。需求模糊时先调此工具收敛需求；需求明确可跳过直接做。"

@@ -23,6 +23,29 @@ pub struct AgentTurnRequest {
     pub timeout_secs: u64,
 }
 
+/// hub 上下文环境变量（v0.8.1 需求8 P1）：GUI 会话 spawn 智能体进程时
+/// 注入。智能体的 shell 工具继承 env，因此工具插件 / 自研 CLI 同样可读
+/// （`echo $JISHU_PROJECT_PATH` / `jishu-cli memory set --project ...`）。
+/// ACP 与 CLI 两条 turn 路径共用；无头任务路径不注入（边界）。
+pub fn hub_context_envs(
+    agent_id: &str,
+    project_path: &str,
+    session_id: Option<&str>,
+) -> Vec<(String, String)> {
+    vec![
+        ("JISHU_AGENT_ID".to_string(), agent_id.to_string()),
+        ("JISHU_PROJECT_PATH".to_string(), project_path.to_string()),
+        (
+            "JISHU_SESSION_ID".to_string(),
+            session_id.unwrap_or("").to_string(),
+        ),
+        (
+            "JISHU_HUB_HOME".to_string(),
+            crate::agent::manifest::hub_home().to_string_lossy().to_string(),
+        ),
+    ]
+}
+
 pub struct RuntimeStdinBridge {
     pub receiver: tokio::sync::mpsc::UnboundedReceiver<String>,
     pub cancelled: Arc<Mutex<bool>>,
@@ -50,6 +73,9 @@ pub struct PreparedCliTurn {
     pub normalizer: crate::agent::StreamEventNormalizer,
     pub stderr_relay: bool,
     pub eof_is_complete: bool,
+    /// hub 上下文 env 注入源（v0.8.1 需求8 P1）：spawn 时附加
+    /// JISHU_AGENT_ID / JISHU_PROJECT_PATH / JISHU_SESSION_ID / JISHU_HUB_HOME。
+    pub project_path: String,
 }
 
 pub struct PreparedAcpTurn {
@@ -133,7 +159,15 @@ pub fn prepare_gui_turn(
                 session_id: native_session_id.clone(),
                 message: request.message.clone(),
             };
-            let command = agent.build_acp_command(&req)?;
+            let mut command = agent.build_acp_command(&req)?;
+            // hub 上下文 env 注入（v0.8.1 需求8 P1）：ACP 会话进程同样可读。
+            command
+                .envs
+                .extend(hub_context_envs(
+                    &request.agent_id,
+                    &request.project_path,
+                    gui_session_id.as_deref(),
+                ));
             Ok(PreparedGuiTurn::Acp(PreparedAcpTurn {
                 agent_id: request.agent_id,
                 project_path: request.project_path,
@@ -146,21 +180,31 @@ pub fn prepare_gui_turn(
             }))
         }
         TransportSurface::Cli | TransportSurface::Embedded => {
+            let project_path = request.project_path.clone();
             let req = ChatRequest {
                 project_path: request.project_path.clone(),
                 session_id: native_session_id,
                 message: request.message.clone(),
             };
+            let mut command = agent.build_chat_command(req);
+            for (key, value) in hub_context_envs(
+                &request.agent_id,
+                &request.project_path,
+                gui_session_id.as_deref(),
+            ) {
+                command.env(key, value);
+            }
             Ok(PreparedGuiTurn::Cli(PreparedCliTurn {
                 agent_id: request.agent_id,
                 session_id: gui_session_id,
                 message: request.message,
-                command: agent.build_chat_command(req),
+                command,
                 pipe_stdin: agent.pipe_chat_stdin(),
                 consumes_stdin: agent.consumes_stdin_message(),
                 normalizer: agent.stream_event_normalizer(),
                 stderr_relay: agent.stderr_relay_as_events(),
                 eof_is_complete: agent.treat_eof_as_complete_after_output(),
+                project_path,
             }))
         }
     }

@@ -5,15 +5,25 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod adapters;
 pub mod capability;
-pub mod tool_view;
 pub mod policy;
+pub mod tool_view;
 // v0.8.0 需求2 Phase 1：classify.rs（死代码，01 §4.1）已删除，分类唯一权威在 tool_view.rs。
 pub mod claude_code;
 pub mod command_config;
+// v0.8.1 需求1 M1：ConfigAdapter 角色拆分（raw/备份/模型库/MCP/bridge/权限模式六角色）。
+pub mod config_roles;
+// v0.8.1 需求1 M4：Once 审批记忆 SQLite 持久化（approval.db）。
 pub mod discovery;
 pub mod interaction;
 pub mod jishu_self;
+pub mod policy_store;
+// v0.8.1 需求1 M2（Phase 3）：声明式 agent manifest——标准形态 CLI/ACP agent 零代码接入。
+pub mod manifest;
 pub mod normalized;
+// v0.8.1 需求2：统一插件模型（内建/manifest 插件的描述符、启停配置、装配管线）。
+pub mod adaptive;
+pub mod plugin;
+pub mod tool_plugin;
 pub mod traits;
 
 pub use capability::{AgentCapabilities, AgentHealth};
@@ -274,6 +284,11 @@ pub struct OfficialAuthStatus {
 pub struct AgentRegistry {
     agents: HashMap<String, Box<dyn AgentPlugin + Send + Sync>>,
     health_cache: Arc<Mutex<HashMap<String, AgentHealth>>>,
+    /// manifest 加载失败清单（文件名, 原因），环境检测页与插件管理页展示
+    /// （v0.8.1 需求1 M2：fail loud 但局部——单文件拒绝不拖垮启动）。
+    pub manifest_errors: Vec<(String, String)>,
+    /// 装载结果快照（v0.8.1 需求2：内建 + manifest 插件统一描述符）。
+    plugins: Vec<plugin::PluginDescriptor>,
 }
 
 const HEALTH_CACHE_TTL_MS: i64 = 60_000;
@@ -307,27 +322,65 @@ pub fn normalize_agent_id(raw: &str) -> &str {
 
 impl AgentRegistry {
     pub fn new() -> Self {
-        let mut agents: HashMap<String, Box<dyn AgentPlugin + Send + Sync>> = HashMap::new();
-        let claude_code = ClaudeCodeAgent::new();
-        let claude_code_id = claude_code.info().id.clone();
-        agents.insert(claude_code_id, Box::new(claude_code));
-
-        let codex = adapters::codex::CodexAdapter::new();
-        let codex_id = codex.info().id.clone();
-        agents.insert(codex_id, Box::new(codex));
-
-        let opencode = adapters::opencode::OpencodeAdapter::new();
-        let opencode_id = opencode.info().id.clone();
-        agents.insert(opencode_id, Box::new(opencode));
-
-        let jishu_self = jishu_self::JishuSelfAgent::new();
-        let jishu_self_id = jishu_self.info().id.clone();
-        agents.insert(jishu_self_id, Box::new(jishu_self));
+        // v0.8.1 需求2：装载统一走插件管线——内建插件工厂清单注入（替换原
+        // 硬编码 insert，行为等价）+ manifest 声明式插件（需求1 M2）+ 用户
+        // 启停过滤（plugins.json，core 插件恒装载）。
+        let builtins: Vec<(Box<dyn AgentPlugin + Send + Sync>, bool)> =
+            plugin::builtin_plugin_specs()
+                .into_iter()
+                .map(|(factory, core)| (factory(), core))
+                .collect();
+        let builtin_ids: Vec<String> = builtins.iter().map(|(p, _)| p.info().id).collect();
+        let (manifests, _tool_manifests, manifest_errors) = manifest::load_manifests(&builtin_ids);
+        for (file_name, reason) in &manifest_errors {
+            log::error!("[manifest] skipped {file_name}: {reason}");
+        }
+        let config = plugin::load_plugin_config();
+        let disabled: std::collections::HashSet<String> = config.disabled.iter().cloned().collect();
+        let manifests: Vec<(
+            std::sync::Arc<manifest::schema::AgentManifestFile>,
+            std::path::PathBuf,
+        )> = manifests
+            .into_iter()
+            .map(|(file, path)| (std::sync::Arc::new(file), path))
+            .collect();
+        let (agents, plugins) = plugin::assemble(builtins, manifests, &disabled);
 
         Self {
             agents,
             health_cache: Arc::new(Mutex::new(HashMap::new())),
+            manifest_errors,
+            plugins,
         }
+    }
+
+    /// 插件清单（装载结果快照；manifest 插件版本经 health_cache 回填）。
+    pub fn list_plugins(&self) -> Vec<plugin::PluginDescriptor> {
+        let health_cache = self.health_cache.lock().unwrap_or_else(|e| e.into_inner());
+        self.plugins
+            .iter()
+            .map(|p| {
+                let mut descriptor = p.clone();
+                if descriptor.kind == plugin::PluginKind::Manifest {
+                    if let Some(health) = health_cache.get(&descriptor.id) {
+                        descriptor.version = health.version.clone();
+                    }
+                }
+                descriptor
+            })
+            .collect()
+    }
+
+    /// 热重建后保留旧实例的健康缓存（按 id 原样继承）：禁用/启用/重载不
+    /// 改变智能体健康状态，避免全局闪回「未探测/未安装」假象与无谓重探测。
+    /// 新装 manifest 插件无旧条目，自然保持未探测（由 refresh 流程补）。
+    pub fn retain_health_from(&self, previous: &AgentRegistry) {
+        let inherited = previous
+            .health_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        *self.health_cache.lock().unwrap_or_else(|e| e.into_inner()) = inherited;
     }
 
     /// v0.7.0：全局 active agent 概念已移除（需求一：智能体切换去全局化）。
@@ -365,23 +418,24 @@ impl AgentRegistry {
                         binary_path: None,
                         last_checked_at: 0,
                     });
-                let (mcp_installed, mcp_version) = if a.supports_mcp() {
-                    // Auto-migrate on first status check.
-                    a.migrate_mcp_if_needed();
-                    match a.check_mcp() {
-                        Ok(v) => (
-                            v.get("installed")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false),
-                            v.get("version").and_then(|v| v.as_str()).map(String::from),
-                        ),
-                        Err(_) => (false, None),
+                let (mcp_installed, mcp_version) = match a.as_mcp() {
+                    Some(mcp) => {
+                        // Auto-migrate on first status check.
+                        mcp.migrate_mcp_if_needed();
+                        match mcp.check_mcp() {
+                            Ok(v) => (
+                                v.get("installed")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false),
+                                v.get("version").and_then(|v| v.as_str()).map(String::from),
+                            ),
+                            Err(_) => (false, None),
+                        }
                     }
-                } else {
-                    (false, None)
+                    None => (false, None),
                 };
-                let transport_bridge = if a.supports_transport_bridge() {
-                    match a.check_transport_bridge() {
+                let transport_bridge = match a.as_transport_bridge() {
+                    Some(bridge) => match bridge.check_transport_bridge() {
                         Ok(v) => TransportBridgeStatus {
                             supported: true,
                             installed: v
@@ -395,9 +449,8 @@ impl AgentRegistry {
                             supported: true,
                             ..Default::default()
                         },
-                    }
-                } else {
-                    TransportBridgeStatus::default()
+                    },
+                    None => TransportBridgeStatus::default(),
                 };
                 let (permission_modes, permission_mode_provider) = a
                     .permission_modes()
