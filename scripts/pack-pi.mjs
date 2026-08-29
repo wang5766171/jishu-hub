@@ -76,6 +76,22 @@ cleanDirectory(piBundle);
 console.log("Fixing double shebangs...");
 fixShebang(join(piBundle, "packages", "coding-agent", "dist"));
 
+// 6.6 Embed portable Node.js runtime (v0.8.1 需求10 修复：新机器无 Node 时
+// jishu-self 报未安装/无法对话——pi-bundle 此前只含 JS 代码，node.exe 依赖
+// 用户 PATH。把当前构建机的 node 复制到 pi-bundle/bin/，安装时随 pi-bundle
+// 落到 ~/.jishu-agent/bin/，resolve_pi_runtime 优先使用）。
+const nodeBinDir = join(piBundle, "bin");
+const nodeBinaryName = process.platform === "win32" ? "node.exe" : "node";
+const nodeSource = process.execPath; // 当前运行的 node 可执行文件路径
+if (existsSync(nodeSource)) {
+  if (!existsSync(nodeBinDir)) {
+    cpSync(nodeSource, join(nodeBinDir, nodeBinaryName));
+    console.log(`Embedded portable node: ${nodeSource} → ${nodeBinDir}/${nodeBinaryName}`);
+  }
+} else {
+  console.warn(`WARNING: cannot find node binary at ${nodeSource} to embed.`);
+}
+
 // 7. Clean broken symlinks in node_modules
 console.log("Cleaning broken symlinks in node_modules...");
 const nodeModulesPath = join(piBundle, "node_modules");
