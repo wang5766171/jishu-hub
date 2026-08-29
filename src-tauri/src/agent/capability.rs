@@ -46,6 +46,12 @@ bitflags::bitflags! {
         const TASK_PLANNING        = 1 << 52;
         const TASK_SUPERVISION     = 1 << 53;
 
+        /// Session history is persisted on the hub side (manifest agents with
+        /// store="hub"; v0.8.1 需求1 M2). The chat page's turn_complete hook
+        /// calls `persist_agent_turn` only when this bit is declared —
+        /// declaration-driven, no agentId branching.
+        const HUB_SESSION_PERSIST  = 1 << 54;
+
         const RPC_BIDIRECTIONAL    = 1 << 60;
     }
 }

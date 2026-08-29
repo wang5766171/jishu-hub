@@ -40,9 +40,22 @@ pub(crate) async fn get_session_messages(
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry
+    let mut messages = s
+        .registry
         .require_agent(&agent_id)?
-        .get_session_messages(&session_id, &encoded_name)
+        .get_session_messages(&session_id, &encoded_name)?;
+    // v0.8.1 需求7：剥离工具插件注入块——agent 原生历史（自写 JSONL）记录的
+    // 是带前缀的消息，回放统一还原为用户原文（集中一处，覆盖全部 adapter）。
+    for message in &mut messages {
+        if message.role == "user" {
+            for block in &mut message.content {
+                if let crate::session::ContentBlock::Text { text } = block {
+                    *text = crate::agent::tool_plugin::strip_tool_block(text);
+                }
+            }
+        }
+    }
+    Ok(messages)
 }
 
 /// Delete a native session through the agent's session adapter
@@ -61,6 +74,27 @@ pub(crate) async fn delete_agent_session(
     s.registry
         .require_agent(&agent_id)?
         .delete_session(&session_id, &encoded_name)
+}
+
+/// Persist one turn's messages through the agent's session adapter
+/// (v0.8.1 需求1 M2). Frontend calls this on turn_complete for agents that
+/// declare HUB_SESSION_PERSIST; builtin adapters no-op (their native store
+/// is written by the CLI process itself).
+#[tauri::command]
+pub(crate) async fn persist_agent_turn(
+    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
+    session_id: String,
+    encoded_name: Option<String>,
+    messages: Vec<crate::session::Message>,
+) -> Result<(), String> {
+    let encoded = encoded_name.unwrap_or_default();
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
+    s.registry
+        .require_agent(&agent_id)?
+        .persist_turn_messages(&session_id, &encoded, &messages)
 }
 
 /// Persist interaction Q&A pairs through the agent's session adapter so
