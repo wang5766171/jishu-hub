@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { useSessionStream } from "@/hooks/use-stream-store";
 import { InlineImages, stripImagePrompt } from "./inline-image";
+import { parseEmbeddedTools, EmbeddedToolPills } from "./embedded-tools";
 import { ToolGroup } from "@/components/observability/tool-call-card";
 import { resolveToolKind } from "@/components/observability/tool-call-card/types";
 import type { ToolCall } from "@/components/observability/tool-call-card";
@@ -226,17 +227,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
       {/* User message bubble */}
       {resolvedUserMessage && (
-        <div className="w-full flex justify-end" data-user-message="true">
-          <div className="max-w-[88%] min-w-0 flex flex-col items-end">
-            <div className="flex items-center gap-2 mb-0.5 text-[11px]">
-              <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>
-            </div>
-            <div className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full" style={{ fontSize: "var(--font-size-prose)" }}>
-              <InlineImages text={resolvedUserMessage} />
-              {stripImagePrompt(resolvedUserMessage)}
-            </div>
-          </div>
-        </div>
+        <StreamingUserBubble text={resolvedUserMessage} />
       )}
 
       {/* Assistant streaming response — one bubble per segment, with an inline
@@ -429,8 +420,31 @@ function StepStatusIcon({ kind }: { kind: string }) {
  * (right-aligned user bubble + amber "已引导" chip) so the transition from
  * bottom placeholder → inline, and later → committed message, is seamless.
  */
+/** 流式阶段主用户消息（v0.8.1 需求7 08f8f9f2：parseEmbeddedTools 剥
+ * [JISHU-TOOLS] 标记并渲染 pill——此前只有 steer UserBubble 有解析，主消息
+ * 内联渲染直接显示原始标记）。 */
+function StreamingUserBubble({ text }: { text: string }) {
+  const { t } = useTranslation();
+  const { text: displayText, toolIds } = parseEmbeddedTools(text);
+  return (
+    <div className="w-full flex justify-end" data-user-message="true">
+      <div className="max-w-[88%] min-w-0 flex flex-col items-end">
+        <div className="flex items-center gap-2 mb-0.5 text-[11px]">
+          <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>
+        </div>
+        <div className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full" style={{ fontSize: "var(--font-size-prose)" }}>
+          <EmbeddedToolPills toolIds={toolIds} toolNames={{}} />
+          <InlineImages text={displayText} />
+          {stripImagePrompt(displayText)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function UserBubble({ text, guided }: { text: string; guided?: boolean }) {
   const { t } = useTranslation();
+  const { text: displayText, toolIds } = parseEmbeddedTools(text);
   return (
     <div className="w-full flex justify-end" data-user-message="true">
       <div className="max-w-[88%] min-w-0 flex flex-col items-end">
@@ -447,7 +461,8 @@ function UserBubble({ text, guided }: { text: string; guided?: boolean }) {
           className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full"
           style={{ fontSize: "var(--font-size-prose)" }}
         >
-          {text}
+          <EmbeddedToolPills toolIds={toolIds} toolNames={{}} />
+          {displayText}
         </div>
       </div>
     </div>

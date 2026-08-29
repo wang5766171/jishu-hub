@@ -39,6 +39,7 @@
     "pageDescModels": "Choose the active model and how to reach it",
     "pageDescTemplates": "Save the current config as a template, or apply one",
     "pageDescAdvanced": "Env vars, plugins, MCP, backups and other low-frequency settings",
+    "menuPlugins": "Plugins",
     "menuProjects": "Project Management",
     "menuCommands": "Quick Commands",
     "menuEnv": "Environment Check",

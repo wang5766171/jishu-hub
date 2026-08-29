@@ -39,6 +39,7 @@
     "pageDescModels": "选择当前使用的模型与接入方式",
     "pageDescTemplates": "保存当前配置为模版，或应用已有模版",
     "pageDescAdvanced": "环境变量、插件、MCP、备份等低频配置",
+    "menuPlugins": "插件管理",
     "menuProjects": "项目管理",
     "menuCommands": "快捷命令",
     "menuEnv": "环境检测",

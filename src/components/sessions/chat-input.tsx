@@ -21,6 +21,60 @@ import type {
   SavedFile,
 } from "@/types";
 import { cn } from "@/lib/utils";
+import { EmbeddedToolPill } from "./embedded-tools";
+
+/** 会话工具插件条目（v0.8.1 需求7，后端 session_tool_list）。 */
+interface SessionTool {
+  id: string;
+  display_name: string;
+  description: string;
+  usage: string;
+  enabled: boolean;
+}
+
+/** 内联工具 token：`@[显示名]`（v0.8.1 需求7）。全局正则——用前 reset /
+ * 用后 reset，避免 lastIndex 残留（有 /g 标志时 test 会推进状态）。 */
+const TOOL_TOKEN_RE = /@\[([^\]]+)\]/g;
+
+/** 解析消息中的工具 token：剥离文本并把显示名归一为插件 id
+ * （35ee638a P0：归一缺失会让后端 set_session_tools 拒绝未知 id）。
+ * 未匹配任何插件的 token 原样保留（避免吞字）。 */
+function extractToolTokens(text: string, tools: SessionTool[]): { text: string; toolIds: string[] } {
+  const ids: string[] = [];
+  const replaced = text.replace(TOOL_TOKEN_RE, (match, name: string) => {
+    const tool = tools.find((t) => t.display_name === name);
+    if (!tool) return match;
+    ids.push(tool.id);
+    return "";
+  });
+  TOOL_TOKEN_RE.lastIndex = 0;
+  return { text: replaced.trimStart(), toolIds: ids };
+}
+
+/** 是否含工具 token（无副作用：独立正则，不动全局 RE 的 lastIndex）。 */
+function messageHasToolToken(text: string): boolean {
+  return /@\[([^\]]+)\]/.test(text);
+}
+
+/** mirror 层文本：把 `@[显示名]` 渲染为 pill，其余文本原样（v0.8.1 需求7
+ * ——与 textarea 同字体同 padding，文字层透明时用户看到的是这层）。 */
+function renderMirrorText(text: string, tools: SessionTool[]) {
+  const parts: import("react").ReactNode[] = [];
+  let last = 0;
+  let match: RegExpExecArray | null;
+  TOOL_TOKEN_RE.lastIndex = 0;
+  while ((match = TOOL_TOKEN_RE.exec(text)) !== null) {
+    const name = match[1];
+    const tool = tools.find((t) => t.display_name === name);
+    if (!tool) continue; // 未匹配插件的 token 按 plain text 走（mirror 层与剥离逻辑一致）
+    if (match.index > last) parts.push(text.slice(last, match.index));
+    parts.push(<EmbeddedToolPill key={`${match.index}-${name}`} name={name} />);
+    last = match.index + match[0].length;
+  }
+  TOOL_TOKEN_RE.lastIndex = 0;
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
 
 interface AttachedFile {
   id: string;
@@ -166,6 +220,8 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
   const [accessMenuOpen, setAccessMenuOpen] = useState(false);
   const [stagedMessagesBySession, setStagedMessagesBySession] = useState<Record<string, StagedMessage[]>>({});
+  // v0.8.1 需求7：会话工具插件（+[菜单] 列表 + token 归一依据）。
+  const [sessionTools, setSessionTools] = useState<SessionTool[]>([]);
   const [guideLoading, setGuideLoading] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -342,6 +398,41 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   const setCurrentStagedMessages = useCallback((updater: StagedMessageUpdater) => {
     setStagedMessagesForSession(stagingSessionKey, updater);
   }, [setStagedMessagesForSession, stagingSessionKey]);
+
+  // v0.8.1 需求7：按会话加载工具插件启用集（暂存 key 与真实 session id 同源）。
+  useEffect(() => {
+    const key = activeSessionId ?? "__new_session__";
+    let cancelled = false;
+    invokeCommand<SessionTool[]>("session_tool_list", { sessionId: key })
+      .then((tools) => {
+        if (!cancelled) setSessionTools(tools);
+      })
+      .catch(() => {
+        if (!cancelled) setSessionTools([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId]);
+
+  /** 在光标处插入 `@[显示名] ` token（+ 菜单点击入口）。 */
+  const insertToolToken = useCallback((displayName: string) => {
+    const textarea = textareaRef.current;
+    const token = `@[${displayName}] `;
+    if (!textarea) {
+      setMessage((prev) => prev + token);
+      return;
+    }
+    const caret = textarea.selectionStart ?? message.length;
+    const next = message.slice(0, caret) + token + message.slice(caret);
+    setMessage(next);
+    onDraftChange?.(next);
+    requestAnimationFrame(() => {
+      const pos = caret + token.length;
+      textarea.setSelectionRange(pos, pos);
+      textarea.focus();
+    });
+  }, [message, onDraftChange]);
 
   useImperativeHandle(ref, () => textareaRef.current!, []);
 
@@ -661,6 +752,26 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     setSending(true);
     try {
       let fullMessage = message.trim();
+      // v0.8.1 内联工具 pill：解析文本中的 @[显示名] token——归一为插件 id
+      // 后剥除发送，并同步会话工具启用集（空 token = 本条不带工具，所见即
+      // 所得）。有工具时在消息前嵌入 [JISHU-TOOLS:id1,id2] 标记，渲染层
+      // 检测并显示 pill。
+      const toolKey = activeSessionId ?? "__new_session__";
+      const hasTokens = TOOL_TOKEN_RE.test(fullMessage);
+      TOOL_TOKEN_RE.lastIndex = 0;
+      if (hasTokens || sessionTools.some((t) => t.enabled)) {
+        const { text: strippedText, toolIds } = extractToolTokens(fullMessage, sessionTools);
+        fullMessage = strippedText;
+        if (toolIds.length > 0) {
+          fullMessage = `[JISHU-TOOLS:${toolIds.join(",")}] ${fullMessage}`;
+        }
+        invokeCommand("session_set_tools", { sessionId: toolKey, toolIds }).catch((err) =>
+          console.warn("Failed to sync session tools:", err),
+        );
+        setSessionTools((prev) =>
+          prev.map((t) => ({ ...t, enabled: toolIds.includes(t.id) })),
+        );
+      }
       // 输入历史记录用户原始输入（A6）：发送即入列，与附件组装后的内容无关
       pushInputHistory(historyScope, message);
       setHistoryPos(null);
@@ -1021,34 +1132,48 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
           </div>
         )}
 
-        <textarea
-          ref={textareaRef}
-          value={message}
-          onChange={(e) => {
-            if (historyPos !== null) {
-              // 用户在历史浏览中编辑：退出浏览模式，从当前显示文本继续
-              setHistoryPos(null);
-              draftBeforeHistoryRef.current = "";
-            }
-            const value = e.target.value;
-            const caret = e.target.selectionStart ?? value.length;
-            setMessage(value);
-            updateSuggestions(value, caret);
-            onDraftChange?.(value);
-          }}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          placeholder={placeholder}
-          disabled={disabled}
-          rows={1}
-          className="w-full resize-none bg-transparent px-4 py-3 text-sm focus:outline-none min-h-[76px] max-h-[220px]"
-          style={{ height: "auto", overflow: "hidden" }}
-          onInput={(e) => {
-            const target = e.target as HTMLTextAreaElement;
-            target.style.height = "auto";
-            target.style.height = Math.min(target.scrollHeight, 220) + "px";
-          }}
-        />
+        {/* v0.8.1 需求7 内联工具 pill：mirror 层方案——textarea 文字透明
+            （caret 仍可见），下方同字体同 padding 视觉层把 `@[显示名]`
+            token 渲染成 pill，其余文本原样显示。 */}
+        <div className="relative min-h-[76px]">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 z-0 w-full overflow-hidden whitespace-pre-wrap break-words px-4 py-3 text-sm"
+          >
+            {renderMirrorText(message, sessionTools)}
+          </div>
+          <textarea
+            ref={textareaRef}
+            value={message}
+            onChange={(e) => {
+              if (historyPos !== null) {
+                // 用户在历史浏览中编辑：退出浏览模式，从当前显示文本继续
+                setHistoryPos(null);
+                draftBeforeHistoryRef.current = "";
+              }
+              const value = e.target.value;
+              const caret = e.target.selectionStart ?? value.length;
+              setMessage(value);
+              updateSuggestions(value, caret);
+              onDraftChange?.(value);
+            }}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            placeholder={placeholder}
+            disabled={disabled}
+            rows={1}
+            className={cn(
+              "relative z-10 w-full resize-none bg-transparent px-4 py-3 text-sm focus:outline-none min-h-[76px] max-h-[220px]",
+              messageHasToolToken(message) && "text-transparent caret-foreground",
+            )}
+            style={{ height: "auto", overflow: "hidden" }}
+            onInput={(e) => {
+              const target = e.target as HTMLTextAreaElement;
+              target.style.height = "auto";
+              target.style.height = Math.min(target.scrollHeight, 220) + "px";
+            }}
+          />
+        </div>
 
         {/* v0.8.0 需求4 补充：底部两侧允许换行 + min-w-0——右侧预览顶开
             聊天区收窄时，模式/权限/模型等 chips 折行而不是溢出输入框。
@@ -1094,15 +1219,29 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                     <span className="flex-1">{t("sessions.skillsComingSoon")}</span>
                     <span className="text-[0.72em]">{t("sessions.comingSoon")}</span>
                   </button>
-                  <button
-                    type="button"
-                    disabled
-                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-muted-foreground opacity-55"
-                  >
-                    <Blocks className="h-4 w-4 text-[var(--icon-config)]" />
-                    <span className="flex-1">{t("sessions.pluginsComingSoon")}</span>
-                    <span className="text-[0.72em]">{t("sessions.comingSoon")}</span>
-                  </button>
+                  {sessionTools.length > 0 && (
+                    <div className="my-1 border-t border-border/60 pt-1">
+                      <div className="px-2.5 pb-1 pt-0.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/70">
+                        {t("sessions.pluginsSection", "插件")}
+                      </div>
+                      {sessionTools.map((tool) => (
+                        <button
+                          key={tool.id}
+                          type="button"
+                          onClick={() => {
+                            setToolMenuOpen(false);
+                            insertToolToken(tool.display_name);
+                          }}
+                          disabled={disabled || sending || isStreaming}
+                          title={tool.description}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-fast hover:bg-accent/60 disabled:cursor-not-allowed disabled:opacity-45"
+                        >
+                          <Blocks className="h-4 w-4 shrink-0 text-[var(--icon-config)]" />
+                          <span className="flex-1 truncate">{tool.display_name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
               {workModeOptions.length > 0 && workModeValue && (

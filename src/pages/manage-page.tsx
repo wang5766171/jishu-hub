@@ -5,11 +5,13 @@ import { ProjectsPage } from "./projects-page";
 import { ConfigPage } from "./config-page";
 import { CommandsPage } from "./commands-page";
 import { EnvCheckPage } from "./env-check-page";
+import { PluginsPage } from "./plugins-page";
 import {
   FolderOpen,
   Rocket,
   ArrowLeft,
   Activity,
+  Blocks,
   Globe,
   Box,
   ShieldCheck,
@@ -46,6 +48,7 @@ const menuGroups: { titleKey: string; titleFallback: string; items: ManageMenuIt
     titleFallback: "工作区",
     items: [
       { id: "projects", icon: FolderOpen, labelKey: "manage.menuProjects", fallback: "项目管理" },
+      { id: "plugins", icon: Blocks, labelKey: "manage.menuPlugins", fallback: "插件管理" },
     ],
   },
   {
@@ -191,6 +194,7 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, project
             onNavigateSection={handleNavigateAgentSection}
           />
         )}
+        {activeTab === "plugins" && <PluginsPage />}
         {activeTab === "commands" && <CommandsPage />}
         {activeTab === "env" && <EnvCheckPage />}
       </div>

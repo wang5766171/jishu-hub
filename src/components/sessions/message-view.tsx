@@ -8,6 +8,7 @@ import rehypeHighlight from "rehype-highlight";
 import { Check, Copy, Bot } from "lucide-react";
 import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
+import { parseEmbeddedTools, EmbeddedToolPills } from "./embedded-tools";
 import { ToolGroup } from "@/components/observability/tool-call-card";
 import { resolveToolKind } from "@/components/observability/tool-call-card/types";
 import type { ToolCall } from "@/components/observability/tool-call-card";
@@ -501,6 +502,11 @@ function UserBubble({
   roleView?: MessageRoleView | null;
 }) {
   const { t } = useTranslation();
+  // v0.8.1 需求7：首文本块剥 [JISHU-TOOLS] 标记 → pill（displayText 供
+  // InlineImages 与渲染，copyText 保留标记以便复制原语义）。
+  const firstTextBlock = msg.content.find((b) => b.type === "text");
+  const rawText = firstTextBlock && firstTextBlock.type === "text" ? firstTextBlock.text : "";
+  const { text: displayText, toolIds } = parseEmbeddedTools(rawText);
   const copyText = extractMessageText(msg);
 
   // 三角色：roleResolver 解析为 orchestrator（主进程派发）→ 「任务助手」样式。
@@ -524,7 +530,8 @@ function UserBubble({
               : "bg-[var(--message-user-bg)] text-[var(--message-user-fg)]",
           )}
         >
-          <InlineImages text={copyText} />
+          <EmbeddedToolPills toolIds={toolIds} toolNames={{}} />
+          <InlineImages text={displayText || copyText} />
           {items.map((item, idx) => {
             if (item.kind === "tool-group") {
               return <ToolGroup key={`tg-${idx}`} calls={item.calls} />;
