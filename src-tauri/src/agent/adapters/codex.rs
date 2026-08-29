@@ -272,40 +272,6 @@ impl ConfigAdapter for CodexAdapter {
         ))
     }
 
-    fn get_permission_mode(&self) -> Result<Option<String>, String> {
-        let raw = self.load_raw_config()?;
-        if raw.is_empty() {
-            return Ok(None);
-        }
-        let value: toml::Value =
-            toml::from_str(&raw).map_err(|e| format!("Invalid TOML: {}", e))?;
-        Ok(value
-            .get("approval_policy")
-            .and_then(|v| v.as_str())
-            .map(String::from))
-    }
-
-    fn set_permission_mode(&self, mode: &str) -> Result<(), String> {
-        if !Self::APPROVAL_MODES.contains(&mode) {
-            return Err(format!("Unknown approval_policy: {}", mode));
-        }
-        let raw = self.load_raw_config()?;
-        let mut toml_val: toml::Value = if raw.is_empty() {
-            toml::Value::Table(toml::map::Map::new())
-        } else {
-            toml::from_str(&raw).map_err(|e| format!("Invalid TOML: {}", e))?
-        };
-        if let Some(table) = toml_val.as_table_mut() {
-            table.insert(
-                "approval_policy".to_string(),
-                toml::Value::String(mode.to_string()),
-            );
-        }
-        let content =
-            toml::to_string_pretty(&toml_val).map_err(|e| format!("Serialization error: {}", e))?;
-        self.save_raw_config(&content)
-    }
-
     fn config_surface(&self) -> crate::agent::ConfigSurface {
         crate::agent::ConfigSurface::Structured {
             schema_id: "codex-config".to_string(),
@@ -326,7 +292,7 @@ impl ConfigAdapter for CodexAdapter {
     }
 
     fn load_config(&self) -> Result<serde_json::Value, String> {
-        let raw = self.load_raw_config()?;
+        let raw = crate::agent::config_roles::RawConfigStore::load_raw_config(self)?;
         let mut config_json = serde_json::json!({});
         if raw.is_empty() {
             return Ok(config_json);
@@ -391,7 +357,7 @@ impl ConfigAdapter for CodexAdapter {
     }
 
     fn save_config(&self, config: &serde_json::Value) -> Result<(), String> {
-        let raw = self.load_raw_config()?;
+        let raw = crate::agent::config_roles::RawConfigStore::load_raw_config(self)?;
         let mut toml_val: toml::Value = if raw.is_empty() {
             toml::Value::Table(toml::map::Map::new())
         } else {
@@ -524,7 +490,7 @@ impl ConfigAdapter for CodexAdapter {
 
         let new_content =
             toml::to_string_pretty(&toml_val).map_err(|e| format!("Serialization error: {}", e))?;
-        self.save_raw_config(&new_content)
+        crate::agent::config_roles::RawConfigStore::save_raw_config(self, &new_content)
     }
 
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
@@ -574,6 +540,20 @@ impl ConfigAdapter for CodexAdapter {
         ]
     }
 
+    // v0.8.1 M1：codex 不声明 ConfigBackupStore（原「空列表」是伪支持——
+    // save_raw_config 写 ~/.codex/backups/ 但无恢复入口），按能力诚实原则
+    // 不覆写 as_backup_store，配置页备份区随之隐藏。
+    fn as_raw_config(&self) -> Option<&dyn crate::agent::config_roles::RawConfigStore> {
+        Some(self)
+    }
+
+    fn as_permission_mode_config(&self) -> Option<&dyn crate::agent::config_roles::PermissionModeConfig> {
+        Some(self)
+    }
+
+}
+
+impl crate::agent::config_roles::RawConfigStore for CodexAdapter {
     fn config_format(&self) -> Option<String> {
         Some("toml".to_string())
     }
@@ -605,21 +585,43 @@ impl ConfigAdapter for CodexAdapter {
         crate::util::atomic_write(&config_path, content.as_bytes()).map_err(|e| e.to_string())
     }
 
-    fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String> {
-        Ok(vec![])
+}
+
+impl crate::agent::config_roles::PermissionModeConfig for CodexAdapter {
+    fn get_permission_mode(&self) -> Result<Option<String>, String> {
+        let raw = crate::agent::config_roles::RawConfigStore::load_raw_config(self)?;
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        let value: toml::Value =
+            toml::from_str(&raw).map_err(|e| format!("Invalid TOML: {}", e))?;
+        Ok(value
+            .get("approval_policy")
+            .and_then(|v| v.as_str())
+            .map(String::from))
     }
 
-    fn restore_backup(&self, _path: &str) -> Result<(), String> {
-        Err("Not supported".to_string())
+    fn set_permission_mode(&self, mode: &str) -> Result<(), String> {
+        if !Self::APPROVAL_MODES.contains(&mode) {
+            return Err(format!("Unknown approval_policy: {}", mode));
+        }
+        let raw = crate::agent::config_roles::RawConfigStore::load_raw_config(self)?;
+        let mut toml_val: toml::Value = if raw.is_empty() {
+            toml::Value::Table(toml::map::Map::new())
+        } else {
+            toml::from_str(&raw).map_err(|e| format!("Invalid TOML: {}", e))?
+        };
+        if let Some(table) = toml_val.as_table_mut() {
+            table.insert(
+                "approval_policy".to_string(),
+                toml::Value::String(mode.to_string()),
+            );
+        }
+        let content =
+            toml::to_string_pretty(&toml_val).map_err(|e| format!("Serialization error: {}", e))?;
+        crate::agent::config_roles::RawConfigStore::save_raw_config(self, &content)
     }
 
-    fn export_config(&self, _path: &str) -> Result<(), String> {
-        Err("Not supported".to_string())
-    }
-
-    fn import_config(&self, _path: &str) -> Result<serde_json::Value, String> {
-        Err("Not supported".to_string())
-    }
 }
 
 impl SessionAdapter for CodexAdapter {

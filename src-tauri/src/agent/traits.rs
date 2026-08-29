@@ -117,7 +117,7 @@ pub trait TransportAdapter {
     }
 }
 
-pub trait ConfigAdapter {
+pub trait ConfigAdapter: Send + Sync {
     fn config_surface(&self) -> ConfigSurface {
         ConfigSurface::Unsupported
     }
@@ -126,110 +126,30 @@ pub trait ConfigAdapter {
     fn config_templates(&self) -> Vec<crate::hub::ConfigTemplate> {
         vec![]
     }
-    fn config_format(&self) -> Option<String> {
-        None
-    }
-    fn load_raw_config(&self) -> Result<String, String> {
-        Err("Raw config not supported".to_string())
-    }
-    fn save_raw_config(&self, _content: &str) -> Result<(), String> {
-        Err("Raw config not supported".to_string())
-    }
-    fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String> {
-        Err("Not supported".to_string())
-    }
-    fn restore_backup(&self, _path: &str) -> Result<(), String> {
-        Err("Not supported".to_string())
-    }
-    fn export_config(&self, _path: &str) -> Result<(), String> {
-        Err("Not supported".to_string())
-    }
-    fn import_config(&self, _path: &str) -> Result<Value, String> {
-        Err("Not supported".to_string())
-    }
-
-    // Model store methods — only meaningful when config_surface is ModelStore.
-    fn load_model_store(&self) -> Result<Value, String> {
-        Err("Model store not supported".to_string())
-    }
-    fn save_model_store(&self, _config: &Value) -> Result<(), String> {
-        Err("Model store not supported".to_string())
-    }
-    fn get_active_model(&self) -> Result<Option<Value>, String> {
-        Err("Active model not supported".to_string())
-    }
-    fn set_active_model(&self, _active: Option<&Value>) -> Result<(), String> {
-        Err("Active model not supported".to_string())
-    }
-
-    // MCP adapter methods — only meaningful when config_surface is ModelStore
-    // with supports_mcp = true.
-
-    // 权限模式（v0.7.3 需求2 P-3）：agent 声明可切换的权限模式与读写提供方。
-    // 提供方决定 GUI 的读写路径：ProjectSettings（agent 项目设置）、
-    // HubToolMode（Hub 全局工具模式，PiRpc 落 --tools 白名单）、
-    // AgentConfig（agent 自己的配置文件，需实现下面两个方法）。
+    /// 权限档位声明（surface 性质声明）：可选档位列表 + 读写提供方。
+    /// get/set 才是角色方法（PermissionModeConfig）。
     fn permission_modes(&self) -> Option<(Vec<String>, crate::agent::PermissionModeProvider)> {
         None
     }
-    /// 读取当前权限模式（仅 AgentConfig 提供方需要实现）。
-    fn get_permission_mode(&self) -> Result<Option<String>, String> {
-        Ok(None)
-    }
-    /// 设置权限模式（仅 AgentConfig 提供方需要实现）。
-    fn set_permission_mode(&self, _mode: &str) -> Result<(), String> {
-        Err("Permission mode not backed by agent config".to_string())
-    }
 
-    /// Whether this agent supports MCP tool integration.
-    fn supports_mcp(&self) -> bool {
-        false
+    // ---- 角色访问器（v0.8.1 M1）：能力即接口，默认 None ----
+    fn as_raw_config(&self) -> Option<&dyn crate::agent::config_roles::RawConfigStore> {
+        None
     }
-    /// Check MCP adapter installation status.
-    fn check_mcp(&self) -> Result<Value, String> {
-        Ok(serde_json::json!({"installed": false, "version": null}))
+    fn as_backup_store(&self) -> Option<&dyn crate::agent::config_roles::ConfigBackupStore> {
+        None
     }
-    /// Install the MCP adapter for this agent.
-    fn install_mcp(
-        &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
-    {
-        Box::pin(async { Err("MCP not supported".to_string()) })
+    fn as_model_store(&self) -> Option<&dyn crate::agent::config_roles::ModelStore> {
+        None
     }
-    /// Update the installed MCP adapter for this agent.
-    fn update_mcp(
-        &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
-    {
-        Box::pin(async { Err("MCP update not supported".to_string()) })
+    fn as_mcp(&self) -> Option<&dyn crate::agent::config_roles::McpIntegration> {
+        None
     }
-    /// Run one-time migration of MCP config if needed (idempotent).
-    fn migrate_mcp_if_needed(&self) {}
-
-    // Transport-bridge methods — meaningful only for agents whose EFFECTIVE
-    // transport depends on an external binary that is NOT bundled with the
-    // agent CLI. E.g. claude_code reaches `AcpPreferred` (mid-turn
-    // `elicitation/create` business questions) only when the `claude-agent-acp`
-    // npm bridge is installed; when it is absent `resolve_transport()` falls
-    // back to `Cli`. The env-check page detects + installs it the same way the
-    // MCP adapter is handled. Mirrors the MCP adapter methods' shape.
-
-    /// Whether this agent depends on an external transport bridge binary.
-    fn supports_transport_bridge(&self) -> bool {
-        false
+    fn as_transport_bridge(&self) -> Option<&dyn crate::agent::config_roles::TransportBridgeDependency> {
+        None
     }
-    /// Check transport-bridge installation status.
-    /// Returns `{ installed, version, name }` (`name` is the human-facing
-    /// binary label, e.g. `claude-agent-acp`).
-    fn check_transport_bridge(&self) -> Result<Value, String> {
-        Ok(serde_json::json!({"installed": false, "version": null, "name": null}))
-    }
-    /// Install the transport bridge for this agent.
-    fn install_transport_bridge(
-        &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
-    {
-        Box::pin(async { Err("Transport bridge not supported".to_string()) })
+    fn as_permission_mode_config(&self) -> Option<&dyn crate::agent::config_roles::PermissionModeConfig> {
+        None
     }
 }
 
@@ -261,6 +181,17 @@ pub trait SessionAdapter {
         _encoded_name: Option<&str>,
         _text: &str,
         _thinking: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    /// Persist a completed turn's messages for hub-session agents
+    /// (HUB_SESSION_PERSIST capability, v0.8.1 需求1 M2). Builtin adapters
+    /// no-op — their native store is written by the CLI process itself.
+    fn persist_turn_messages(
+        &self,
+        _session_id: &str,
+        _encoded_name: &str,
+        _messages: &[Message],
     ) -> Result<(), String> {
         Ok(())
     }

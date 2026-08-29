@@ -28,6 +28,8 @@ pub fn export_config_dialog(
         .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .require_agent(&agent_id)?
+        .as_backup_store()
+        .ok_or("Agent does not support config export")?
         .export_config(&path_str)
 }
 
@@ -55,6 +57,8 @@ pub fn import_config_dialog(
         .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .require_agent(&agent_id)?
+        .as_backup_store()
+        .ok_or("Agent does not support config import")?
         .import_config(&path_str)?;
     Ok(())
 }
@@ -70,8 +74,11 @@ pub fn export_raw_config_dialog(
             .lock()
             .map_err(|_| "App state lock poisoned".to_string())?;
         let agent = s.registry.require_agent(&agent_id)?;
-        let content = agent.load_raw_config()?;
-        let format = agent.config_format().unwrap_or_else(|| "json".to_string());
+        let raw = agent
+            .as_raw_config()
+            .ok_or("Agent does not support raw config")?;
+        let content = raw.load_raw_config()?;
+        let format = raw.config_format().unwrap_or_else(|| "json".to_string());
         (content, format)
     };
 

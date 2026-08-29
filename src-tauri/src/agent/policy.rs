@@ -13,7 +13,7 @@
 //! 打扰用户）。`PRE_EXECUTION_INTERCEPTION` 能力位留给进程内/fork 钩子路径
 //! （需求1 P-2 将以 beforeToolCall 真实声明）。
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// 决策通道：审批请求来自哪条执行路径。
@@ -185,12 +185,12 @@ impl ApprovalPolicy for AlwaysAskPolicy {
 /// 的持久化 Once 由 store 支撑的 StoreOncePolicy 承担。
 pub struct OnceApprovalPolicy {
     session: String,
-    memory: Arc<Mutex<HashSet<String>>>,
+    memory: Arc<dyn crate::agent::policy_store::OnceMemory>,
 }
 
 impl OnceApprovalPolicy {
     /// 同一会话的多轮审批共享同一 memory 实例（装配助手持有）。
-    fn new(session: &str, memory: Arc<Mutex<HashSet<String>>>) -> Self {
+    fn new(session: &str, memory: Arc<dyn crate::agent::policy_store::OnceMemory>) -> Self {
         Self {
             session: session.to_string(),
             memory,
@@ -224,84 +224,19 @@ impl ApprovalPolicy for OnceApprovalPolicy {
     fn evaluate(&self, ctx: &ApprovalContext) -> PolicyDecision {
         if ctx.session_id == self.session {
             let key = Self::action_key(ctx);
-            if let Ok(mem) = self.memory.lock() {
-                if mem.contains(&key) {
-                    return PolicyDecision::Allow;
-                }
+            if self.memory.has_once(&self.session, &key) {
+                return PolicyDecision::Allow;
             }
         }
         PolicyDecision::Delegate
     }
 }
 
-/// 记录一次批准（resolve_chat_permission 允许后调用，供 Once 命中）。
-pub fn remember_approval(chain_memory: &ChainMemory, ctx: &ApprovalContext) {
-    let key = OnceApprovalPolicy::action_key(ctx);
-    if let Ok(mut mem) = chain_memory.0.lock() {
-        mem.insert(key);
-    }
-}
-
-/// 会话级 Once 记忆句柄（装配时创建，随链共享）。
-pub struct ChainMemory(Arc<Mutex<HashSet<String>>>);
-
-impl Default for ChainMemory {
-    fn default() -> Self {
-        Self(Arc::new(Mutex::new(HashSet::new())))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 装配助手：三通道默认链（02 §2.3）
-// ---------------------------------------------------------------------------
-
-/// chat（Interactive）默认链：[Once, LowRisk] → Delegate 弹 UI。
-pub fn for_chat(session_id: &str, memory: ChainMemory) -> (PolicyChain, ChainMemory) {
-    let chain = PolicyChain::new(vec![
-        Box::new(OnceApprovalPolicy::new(session_id, memory.0.clone())),
-        Box::new(LowRiskAutoAllowPolicy),
-    ]);
-    (chain, memory)
-}
-
-/// 无头任务默认链：[Once, LowRisk, HeadlessDeny]。
-pub fn for_headless_task(session_id: &str, memory: ChainMemory) -> (PolicyChain, ChainMemory) {
-    let chain = PolicyChain::new(vec![
-        Box::new(OnceApprovalPolicy::new(session_id, memory.0.clone())),
-        Box::new(LowRiskAutoAllowPolicy),
-        Box::new(HeadlessDenyPolicy),
-    ]);
-    (chain, memory)
-}
-
-// ---------------------------------------------------------------------------
-// 会话级 Once 记忆注册表（跨命令回填）：spawn 装配与 resolve_chat_permission
-// 分属不同调用域，经此按 session_id 共享同一记忆实例（进程生命周期）。
-// ---------------------------------------------------------------------------
-
-use std::collections::HashMap;
-
-fn once_memories() -> &'static Mutex<HashMap<String, Arc<Mutex<HashSet<String>>>>> {
-    static REGISTRY: std::sync::OnceLock<Mutex<HashMap<String, Arc<Mutex<HashSet<String>>>>>> =
-        std::sync::OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn memory_for_session(session_id: &str) -> Arc<Mutex<HashSet<String>>> {
-    let reg = once_memories();
-    let mut map = reg.lock().unwrap_or_else(|e| e.into_inner());
-    map.entry(session_id.to_string())
-        .or_insert_with(|| Arc::new(Mutex::new(HashSet::new())))
-        .clone()
-}
-
-/// 记录一次用户批准（resolve_chat_permission 允许后调用）。
+/// 记录一次用户批准（resolve_chat_permission 允许后调用）：经默认
+/// SQLite 记忆落库，跨重启有效（v0.8.1 需求1 M4）。
 pub fn remember_for_session(session_id: &str, ctx: &ApprovalContext) {
     let key = OnceApprovalPolicy::action_key(ctx);
-    let memory = memory_for_session(session_id);
-    if let Ok(mut mem) = memory.lock() {
-        mem.insert(key);
-    };
+    crate::agent::policy_store::default_memory().remember_once(session_id, &key);
 }
 
 // ---------------------------------------------------------------------------
@@ -337,11 +272,13 @@ pub fn take_arrival_context(request_id: &str) -> Option<ApprovalContext> {
         .remove(request_id)
 }
 
-/// 交互会话默认链（经注册表挂会话记忆）。
+/// 交互会话默认链（挂持久化 Once 记忆，v0.8.1 M4 起跨重启）。
 pub fn for_interactive_session(session_id: &str) -> PolicyChain {
-    let memory = memory_for_session(session_id);
     PolicyChain::new(vec![
-        Box::new(OnceApprovalPolicy::new(session_id, memory)),
+        Box::new(OnceApprovalPolicy::new(
+            session_id,
+            crate::agent::policy_store::default_memory(),
+        )),
         Box::new(LowRiskAutoAllowPolicy),
     ])
 }
@@ -353,11 +290,39 @@ pub fn for_ask_always_session(_session_id: &str) -> PolicyChain {
     PolicyChain::new(vec![Box::new(LowRiskAutoAllowPolicy)])
 }
 
+/// 按 hub 工具档位选审批链（v0.8.1 修复：完全访问模式审批窗——修前
+/// [Once, LowRisk]，完全访问档下部分命令仍弹审批窗——v0.8.0 四档接入只
+/// 覆盖了 PiRpc 的 toolApproval 机制，外部 transport 的审批链漏配）。
+///
+/// - full（缺省，完全访问）→ [AlwaysAllow]：全部自动放行，不打扰
+/// - full-approve（变更前审批）→ [LowRisk]：读放行、变更每次弹窗
+/// - smart-approve（智能审批）→ [Once, LowRisk]：读放行 + 「始终允许」记忆
+/// - readonly → [LowRisk]：ACP/codex 无工具白名单语义（真白名单仅 PiRpc
+///   的 --tools 机制），与变更前审批同链——写类弹窗由用户亲自拒绝
+/// - 未知值 → 保守走智能审批链
+pub fn for_session_tool_mode(agent_id: &str, session_id: &str) -> PolicyChain {
+    chain_for_tool_mode(
+        crate::hub::load_agent_tool_mode(agent_id).as_deref(),
+        session_id,
+    )
+}
+
+/// 纯函数分派（单测面）：mode 缺省/未知与 full 同为完全访问。
+fn chain_for_tool_mode(mode: Option<&str>, session_id: &str) -> PolicyChain {
+    match mode {
+        Some("full-approve") | Some("readonly") => for_ask_always_session(session_id),
+        Some("smart-approve") => for_interactive_session(session_id),
+        None | Some("full") | Some(_) => PolicyChain::new(vec![Box::new(AlwaysAllowPolicy)]),
+    }
+}
+
 /// 无头会话默认链（经注册表挂会话记忆）。
 pub fn for_headless_session(session_id: &str) -> PolicyChain {
-    let memory = memory_for_session(session_id);
     PolicyChain::new(vec![
-        Box::new(OnceApprovalPolicy::new(session_id, memory)),
+        Box::new(OnceApprovalPolicy::new(
+            session_id,
+            crate::agent::policy_store::default_memory(),
+        )),
         Box::new(LowRiskAutoAllowPolicy),
         Box::new(HeadlessDenyPolicy),
     ])
@@ -479,16 +444,19 @@ mod tests {
 
     #[test]
     fn once_memory_hits_within_same_session_and_action_shape() {
-        let memory = ChainMemory::default();
-        let (chain, memory) = {
-            let (c, m) = for_chat("s1", memory);
-            (c, m)
-        };
+        // v0.8.1 M4：Once 记忆经 OnceMemory trait 注入（测试用内存实现，
+        // 不写真实 approval.db）。
+        let memory: std::sync::Arc<dyn crate::agent::policy_store::OnceMemory> =
+            std::sync::Arc::new(crate::agent::policy_store::InMemoryOnceMemory::new());
+        let chain = PolicyChain::new(vec![
+            Box::new(OnceApprovalPolicy::new("s1", memory.clone())),
+            Box::new(LowRiskAutoAllowPolicy),
+        ]);
         // 首次：委托。
         let first = ctx(DecisionChannel::Interactive, Some("bash"));
         assert_eq!(chain.evaluate(&first), ChainOutcome::Delegate);
         // 记录批准后：同会话同动作形状 → once 命中放行。
-        remember_approval(&memory, &first);
+        memory.remember_once("s1", &OnceApprovalPolicy::action_key(&first));
         assert_eq!(chain.evaluate(&first), ChainOutcome::Allow("once-approval"));
         // 不同会话不共享记忆。
         let other_session = ApprovalContext { session_id: "s2".into(), ..ctx(DecisionChannel::Interactive, Some("bash")) };
@@ -502,7 +470,14 @@ mod tests {
 
     #[test]
     fn headless_task_chain_denies_unknown_and_allows_readonly() {
-        let (chain, _m) = for_headless_task("s1", ChainMemory::default());
+        let chain = PolicyChain::new(vec![
+            Box::new(OnceApprovalPolicy::new(
+                "s1",
+                std::sync::Arc::new(crate::agent::policy_store::InMemoryOnceMemory::new()),
+            )),
+            Box::new(LowRiskAutoAllowPolicy),
+            Box::new(HeadlessDenyPolicy),
+        ]);
         assert_eq!(
             chain.evaluate(&ctx(DecisionChannel::HeadlessTask, Some("read"))),
             ChainOutcome::Allow("low-risk-auto-allow")

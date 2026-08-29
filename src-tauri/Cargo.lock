@@ -1860,7 +1860,7 @@ dependencies = [
 
 [[package]]
 name = "jishu-hub"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "base64 0.22.1",
  "bitflags 2.11.1",
@@ -1870,6 +1870,7 @@ dependencies = [
  "futures-util",
  "log",
  "open",
+ "regex",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",

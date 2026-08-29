@@ -1346,6 +1346,17 @@ impl ConfigAdapter for OpencodeAdapter {
         ]
     }
 
+    fn as_raw_config(&self) -> Option<&dyn crate::agent::config_roles::RawConfigStore> {
+        Some(self)
+    }
+
+    fn as_backup_store(&self) -> Option<&dyn crate::agent::config_roles::ConfigBackupStore> {
+        Some(self)
+    }
+
+}
+
+impl crate::agent::config_roles::RawConfigStore for OpencodeAdapter {
     fn config_format(&self) -> Option<String> {
         Some("json".to_string())
     }
@@ -1370,6 +1381,9 @@ impl ConfigAdapter for OpencodeAdapter {
         crate::util::atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())
     }
 
+}
+
+impl crate::agent::config_roles::ConfigBackupStore for OpencodeAdapter {
     fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String> {
         list_opencode_backups().map_err(|e| e.to_string())
     }

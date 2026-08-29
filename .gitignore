@@ -76,3 +76,9 @@ run-kiro.ps1
 third_party/pi-bundle/
 /.github/prompts/
 nsis_macro_test.exe
+
+# v0.8.1 恢复工具的中间产物（脚本与 README 入库，快照不入库）
+scripts/recover-v081/snapshot/
+scripts/recover-v081/snapshot-manifest.json
+scripts/recover-v081/apply-report.json
+scripts/recover-v081/ops.json

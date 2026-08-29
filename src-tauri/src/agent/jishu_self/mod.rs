@@ -465,6 +465,25 @@ impl ConfigAdapter for JishuSelfAgent {
             },
         ]
     }
+    fn as_raw_config(&self) -> Option<&dyn crate::agent::config_roles::RawConfigStore> {
+        Some(self)
+    }
+
+    fn as_backup_store(&self) -> Option<&dyn crate::agent::config_roles::ConfigBackupStore> {
+        Some(self)
+    }
+
+    fn as_model_store(&self) -> Option<&dyn crate::agent::config_roles::ModelStore> {
+        Some(self)
+    }
+
+    fn as_mcp(&self) -> Option<&dyn crate::agent::config_roles::McpIntegration> {
+        Some(self)
+    }
+
+}
+
+impl crate::agent::config_roles::RawConfigStore for JishuSelfAgent {
     fn config_format(&self) -> Option<String> {
         Some("json".to_string())
     }
@@ -477,6 +496,9 @@ impl ConfigAdapter for JishuSelfAgent {
         config::save_raw_jishu_config(content).map_err(|e| e.to_string())
     }
 
+}
+
+impl crate::agent::config_roles::ConfigBackupStore for JishuSelfAgent {
     fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String> {
         config::list_jishu_backups().map_err(|e| e.to_string())
     }
@@ -493,6 +515,9 @@ impl ConfigAdapter for JishuSelfAgent {
         config::import_jishu_config(path).map_err(|e| e.to_string())
     }
 
+}
+
+impl crate::agent::config_roles::ModelStore for JishuSelfAgent {
     fn load_model_store(&self) -> Result<serde_json::Value, String> {
         let config = pi_models_config::load()?;
         serde_json::to_value(&config).map_err(|e| format!("Cannot serialize models config: {e}"))
@@ -520,10 +545,9 @@ impl ConfigAdapter for JishuSelfAgent {
 
     // ── MCP adapter methods ──
 
-    fn supports_mcp(&self) -> bool {
-        true
-    }
+}
 
+impl crate::agent::config_roles::McpIntegration for JishuSelfAgent {
     fn check_mcp(&self) -> Result<serde_json::Value, String> {
         // Auto-migrate on check (idempotent).
         self.migrate_mcp_if_needed();
