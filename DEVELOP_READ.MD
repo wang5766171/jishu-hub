@@ -78,7 +78,7 @@ flowchart TD
 
 Rust 层是微内核形态，四个核心抽象：
 
-1. **AgentPlugin trait 组合**（`agent/traits.rs`）：`AgentManifest + TransportAdapter + ConfigAdapter + SessionAdapter + TerminalAdapter + ProjectAdapter + EventNormalizer`。接入一个新 agent = 实现这组 trait 并注册进 **AgentRegistry**（`agent/mod.rs`），共享层对 agent 的感知只经 registry 查询。「写一份 TOML 就接入标准 CLI agent」的声明式 manifest 留后续（见 `docs/遗留需求/`）。
+1. **AgentPlugin trait 组合**（`agent/traits.rs`）：`AgentManifest + TransportAdapter + ConfigAdapter + SessionAdapter + TerminalAdapter + ProjectAdapter + EventNormalizer`。接入一个新 agent = 实现这组 trait 并注册进 **AgentRegistry**（`agent/mod.rs`），共享层对 agent 的感知只经 registry 查询。装载统一走插件管线（`agent/plugin.rs`）：内建 agent 是随 hub 分发的内建插件（工厂清单注入，jishu-self 为不可禁用的核心引擎），标准形态 agent（CLI 进程 / ACP 兼容进程）可零代码接入——一份 TOML manifest（`~/.jishu-hub/agents/<id>.toml`，`agent/manifest/`），坏文件拒绝但不拖垮启动，其会话历史由 hub 侧存储（`~/.jishu-hub/agent-sessions/`）自持。插件启停持久化于 `plugins.json`（只记禁用集合，默认启用），启停/卸载/重载经热重建 registry 即时生效。ConfigAdapter 按角色拆分为 6 个小 trait（`agent/config_roles.rs`：raw/备份/模型库/MCP/bridge/权限模式），调用方以 `as_xxx()` 访问器判支持性（能力即接口 + 可选向下转型），禁止「调用后 catch Err」判断支持。
 2. **NormalizedEvent**（`agent/normalized.rs`）：所有 transport 事件的**唯一归一化目标**，GUI 与 Task Orchestrator 共同消费同一事件流。事件结构变更必须 wire 兼容（新增字段可缺省，禁止改语义）。
 3. **CapabilitySet 位标志 + Surface 可辨识联合**：agent 支持什么由声明驱动（能力位如 APPROVAL_REQUEST、TASK_MODE；ConfigSurface 如 Raw/Structured/ModelStore/Unsupported；TransportSurface 如 AcpPreferred/PiRpc/CodexAppServer/Cli）。前端按声明渲染，**声明即出现、未声明即隐藏**，未来 agent 支持某能力时零前端改动。
 4. **能力诚实原则**：未支持就声明不支持，禁止假装支持（虚假能力位 = 架构事故）。
@@ -108,7 +108,7 @@ Rust 层是微内核形态，四个核心抽象：
 
 **渲染意图（`agent/tool_view.rs`）**：工具视图分类的**单一权威源**——分类与位置提取一次完成，`view` 随 `ToolUseStart` 事件与持久化 `ContentBlock::ToolUse` 块携带，直播与回放同源渲染，UI 只做「意图→组件」纯映射。新增工具分类只改 Rust；前端 `classifyToolName` 仅为 v1 之前历史数据的回退。
 
-**审批策略链（`agent/policy.rs`）**：所有「这个动作允许吗？」决策统一为可组合 waterfall 链——策略拥有决策就短路 Allow/Deny，否则 Delegate（弹 UI / 无头拒绝）。挂载点：ACP `session/request_permission`、codex `requestApproval`、Pi 审批型 extension confirm 到达时先过链；无头任务链含 `HeadlessDenyPolicy` 自动拒绝；orchestrator 档位门控同链组装。「始终允许」等记忆回写必须与链评估同形状（到达时登记原始上下文，resolve 时取回）。会话工具模式（完全访问/变更前审批/智能审批/只读）只是不同链装配，不改决策机制。审批类型（命令执行/文件写入/其他）按动作真实分类，不恒为 Other。
+**审批策略链（`agent/policy.rs`）**：所有「这个动作允许吗？」决策统一为可组合 waterfall 链——策略拥有决策就短路 Allow/Deny，否则 Delegate（弹 UI / 无头拒绝）。挂载点：ACP `session/request_permission`、codex `requestApproval`、Pi 审批型 extension confirm 到达时先过链；无头任务链含 `HeadlessDenyPolicy` 自动拒绝；orchestrator 档位门控同链组装。「始终允许」等记忆回写必须与链评估同形状（到达时登记原始上下文，resolve 时取回），记忆跨重启持久化于 `~/.jishu-hub/approval.db`（`agent/policy_store.rs`，OnceMemory 抽象）。会话工具模式（完全访问/变更前审批/智能审批/只读）只是不同链装配，不改决策机制。审批类型（命令执行/文件写入/其他）按动作真实分类，不恒为 Other。
 
 ## 7. 硬边界规则
 
@@ -209,4 +209,77 @@ npx vitest run test/<相关文件>.test.ts
 
 - **Harmes 自学习**：作为学习/evaluation/policy 层接入，输入来自任务事实与人工反馈，输出只经 policy/skill/planner hint 影响任务；可追踪、可回滚，禁止隐式修改 adapter 行为。
 - **远程调度会话**：作为 Remote Runtime / Session Broker 层，仍走 adapter contract + NormalizedEvent，GUI 不感知本地/远程差异。
-- **微内核补完**（声明式 TOML manifest、进程外 ACP 插件、ConfigAdapter 角色拆分、渲染意图 v2、Once 记忆持久化）：设计全文 `docs/feature/plugin-architecture-design.md`，剩余项已归档 `docs/遗留需求/`，重启时直接取用。
+- **微内核补完**（v0.8.1 已落地：声明式 TOML manifest、进程外 ACP 插件、ConfigAdapter 角色拆分、Once 记忆 SQLite 持久化 + hub 侧会话存储；剩余：渲染意图 v2 与前端 fallback 删除，v0.9.0 观察期评估）：设计全文 `docs/feature/plugin-architecture-design.md`，演进剩余项见 `docs/遗留需求/`。
+
+## 16. 插件体系（v0.8.1）
+
+### 16.1 统一插件模型
+
+一个 `PluginDescriptor`（id / display_name / kind / version / source_path / core / enabled），三类插件同一描述符、同一管理面（插件页一个条目一个开关）。`PluginKind::{Builtin, Manifest, Tool}`——Builtin = 随 hub 分发的 Rust 实现（agent 适配器）；Manifest = TOML 声明的 agent 插件；Tool = 工具插件（CLI 能力单元，不进 AgentRegistry）。
+
+**装配管线**：`builtin_plugin_specs()`（工厂清单，顺序稳定）→ `manifest::load_manifests()`（只读扫 `~/.jishu-hub/agents/*.toml`，单文件失败局部化）→ `plugin::assemble()`（纯函数，无 IO）。`assemble` 按 `plugins.json` 的 disabled 集合过滤（core 插件恒装载，双层拒绝：API 层 + 装配层）。启停/卸载/重载/创建统一经 `rebuild_registry` 热生效（锁内替换 Arc + `retain_health_from` 保留旧健康缓存 + 广播 `plugins-changed`）。
+
+**内建自适应插件**（task-requirements / task-plan）：hub 二进制内嵌 TOML，启动时 `ensure_builtin_adaptive_plugins()` 幂等部署到 `~/.jishu-hub/agents/`。与用户自建走同一装载管线，但不可卸载（managed 级别，v1 靠启动覆写保证存在）。
+
+### 16.2 Manifest Schema（schema = 1）
+
+全 struct `deny_unknown_fields`，加载期 fail loud（校验失败该文件拒绝、不拖垮启动）。三态：
+
+| 形态 | 段 | 约束 |
+|---|---|---|
+| agent（缺省） | `[info]` `[probe]` `[transport]` `[config]` `[session]` `[capabilities]` | transport 必填；禁止 `[tool]` |
+| tool | `[info]` `[probe]` `[tool]` | 禁止 transport/session/capabilities/config |
+| 自适应 | `[pi_extension]` + `[tool]` 并存 | 同一实体多形态：jishu-self 深度（pi 扩展）+ 所有 agent 通用（CLI 注入） |
+
+`[pi_extension]` 的 `entry` 字段 v1 为预留声明（`adaptive.rs` 的 `resolve_form` 已定义语义但未接线到注入/部署管线——v2 拆分 conductor 后接入）。修改此节需同步更新 `adaptive.rs`。
+
+**校验纪律**：模板变量白名单（`{prompt}/{cwd}/{session_id}`）、`pipe_stdin` 与 `{prompt}` 互斥、ACP 静态 argv 禁止模板变量、schema 版本不识别整文件拒绝。
+
+### 16.3 工具插件与会话注入
+
+**数据流**（v0.8.1 定稿）：+ 菜单点击 → `insertToolToken(display_name)` → 输入框文本内联 `@[显示名]` pill → 发送时 `extractToolTokens` 剥 token → **token→id 归一**（按 id 或显示名双匹配）→ `session_set_tools` 写 `session-tools.json` + 消息头嵌 `[JISHU-TOOLS:id1,id2]` → 后端 `compose_tool_message`（统一入口，ACP 早退与 spawn 两路径共享）→ `render_tool_block` 前缀 `<jishu-tool-plugins>` 块 → agent 经原生 shell 执行，审批走既有策略链。
+
+**标记契约**（三种标记各有剥离责任方）：
+
+| 标记 | 出现位置 | 剥离方 |
+|---|---|---|
+| `@[显示名]` | 输入框（用户可见 pill） | 前端 `extractToolTokens`（发送时） |
+| `[JISHU-TOOLS:id]` | 消息头（pill 渲染依据） | 前端 `parseEmbeddedTools`（渲染时）+ 后端 `strip_all_markers`（标题） |
+| `<jishu-tool-plugins>` | agent 收到的 prompt 前缀 | 后端 `get_session_messages` 统一剥离（回放）+ `strip_all_markers`（标题） |
+
+**禁止复制正则**：标记的正则只允许单一宿主定义——后端 `tool_plugin::strip_all_markers`（Rust）、前端 `embedded-tools.tsx` / `chat-input.tsx`（TS）。任何新增展示/持久化面（导出、搜索、摘要）必须复用 `strip_all_markers`，不得自写剥离逻辑。
+
+**回放渲染**：前端 `parseEmbeddedTools` 检测消息头 `[JISHU-TOOLS:...]`，剥离标记后在用户消息气泡内渲染工具 pill（图标 + 名称，内联流式排列）。流式与历史重载两条渲染路径都必须调用此函数。
+
+### 16.4 适配引擎（adaptive.rs）
+
+`resolve_form(manifest, plugin_dir, target_agent)` → `AdaptiveForm::{PiOnly, CliOnly, Both, None}`——按 `[pi_extension].target_agent` 匹配 + `[tool]` 段存在性判定。这是声明驱动的适配层逻辑核心：插件声明"能做什么"，适配引擎决定"在这个 agent 上走哪条通道"。
+
+**v1 现状**：`resolve_form` 已定义但未接入注入/部署管线（实际适配由 `load_manifests` 的 kind 分流隐式完成）。v2 接线点：注入管线消费 `participates_in_injection`、pi 部署管线消费 `needs_pi_deploy`。
+
+### 16.5 CLI 形态底层
+
+`jishu-cli task-artifact lock-requirement / commit-plan`——工具插件的 CLI 执行体，产出与 conductor 完全一致的 `.jishu-hub/tasks/<id>/artifacts/` 目录（REQUIREMENTS.md / flow-plan-proposal.json + manifest.json 含 content_hash）。普通会话 id 为 `free-<timestamp>`；任务模式经 conductor 状态机（discuss→plan→execute）走正式 task_id。hub spawn 时注入 `JISHU_PROJECT_PATH` 等环境变量供 CLI 引用。
+
+### 16.6 插件管理面
+
+GUI（插件页 + 创建/编辑对话框）与 CLI（`jishu-cli plugins add/list/remove/enable/disable`）共享同一落盘通道（`plugin::install_manifest_file`）、同一校验（schema validate）、同一启停存储（plugins.json）。`plugin_create / plugin_update` 接收前端表单 JSON → 后端 serde 生成 TOML（前端零拼 TOML，转义安全）。编辑时 id 锁定（文件名/会话归属/启停配置均以 id 为键，改名 = 换插件）。
+
+### 16.7 数据落点速查
+
+| 数据 | 位置 | 类型 |
+|---|---|---|
+| 插件声明 | `~/.jishu-hub/agents/*.toml` | TOML（schema=1） |
+| 启停状态 | `~/.jishu-hub/plugins.json` | JSON（只记 disabled 集） |
+| 会话工具选择 | `~/.jishu-hub/session-tools.json` | JSON（session_id → [tool_id]） |
+| 项目记忆 | `~/.jishu-hub/memory.db` | SQLite（§9 原则） |
+| 审批记忆 | `~/.jishu-hub/approval.db` | SQLite（§9 原则） |
+| hub 会话存储 | `~/.jishu-hub/agent-sessions/` | JSONL（manifest agent 专属） |
+| 任务产物 | `<project>/.jishu-hub/tasks/<id>/artifacts/` | Markdown + JSON（随项目走） |
+
+### 16.8 硬边界追加
+
+- **插件标记正则单源**：三种标记（`@[token]` / `[JISHU-TOOLS:id]` / `<jishu-tool-plugins>`）的正则只允许在 `tool_plugin.rs`（后端）和 `embedded-tools.tsx` / `chat-input.tsx`（前端）定义，禁止在其他文件复制。
+- **token→id 归一**：发送路径的 token（可能是显示名）必须在 `chat-input.tsx` 归一为插件 id 后再调 `session_set_tools` / 写入 `[JISHU-TOOLS:...]` 标记——后端严格校验 id。
+- **注入统一入口**：`compose_tool_message` 是工具注入的唯一入口，ACP 早退路径与 spawn 路径都必须经此函数（禁止直接 `send_prompt(原消息)`）。
+- **内建自适应插件不可编辑卸载**：task-requirements / task-plan 由启动管线幂等覆写，GUI/CLI 编辑会被回滚——v1 如实接受（编辑这两个插件无意义），v2 加 managed 标志。
