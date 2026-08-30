@@ -119,6 +119,25 @@
 
 # 第二部分：改动记录
 
+## 2026-08-30 | cloudflare-ai-gateway 类型修复恢复补全（事故重建期重放缺一行）
+
+**背景**：8-29 仓库事故重建时，pi fork 的 cloudflare-ai-gateway 类型修复（原 fork 提交 `c8c230483`，见 8-28 记录）被手工重放到重新 clone 的源码上，**漏掉了 `createProvider` 的显式类型参数一行**——重放版保留了 `["openai-completions" as const]` 计算键，但该键只有在显式钉住三键联合时才能通过 excess property check。后果链：tsgo TS2353 → pi 全量构建失败 → `dist/cli.js` 未产出 → 安装包携带空壳 pi-bundle → 安装后"jishu agent 未安装"。
+
+**改动**（`packages/ai/src/providers/cloudflare-ai-gateway.ts:12-15`）：
+
+```ts
+// 重放丢失的一行（自回收站备份找回的原 fork blob aa3f9177 逐字恢复）：
+return createProvider<"anthropic-messages" | "openai-completions" | "openai-responses">({
+```
+
+原理：`flattenModelCatalog` 的 const 泛型对 JSON import 会把 api 联合收窄为 models 数据里实际出现的键（丢 openai-completions）；显式类型参数钉住三键后 api 记录与返回类型一致。
+
+**主仓配套加固**（同日 hub 提交）：`scripts/pack-pi.mjs` 三个子步骤（npm install / build / prune）增退出码检查，任一失败大声终止；`scripts/build.mjs` 对 pack-pi 失败同样终止整体打包——此前失败被静默放行是本次空包安装包的直接放大器。
+
+**验证**：pack-pi 全绿（`dist/cli.js` 1.77MB + `runtime-deps.json` + 27 项运行时依赖断言全过）；全量 `npm run build` 产出新安装包。
+
+**附带确认**：重建后 fork 其余 0.84.2-11 内容（jishu-tool-approval 扩展、coding-agent build-bundle 修复、内部依赖精确 pin）经比对均完整在位，本次是唯一缺口。
+
 ## 2026-08-23 | 内置 jishu-tool-approval 逐次工具审批扩展（release_v0.84.2-11）
 
 **版本**：自研内容升级，尾号顺延 `-10` → `-11`，分支 `release_v0.84.2-11`，submodule 提交 `a2681485`。
