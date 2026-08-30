@@ -992,6 +992,32 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         return;
       }
     }
+    // ── v0.8.1 需求7：内联工具 pill 整体删除——Backspace/Delete 命中完整
+    // `@[显示名]` token 时一次删整段，不退化为逐字删（mirror 层 pill 的
+    // 原子性对齐：视觉是一个整体，删除也必须是一个整体）。 ──────────────
+    if (e.key === "Backspace" || e.key === "Delete") {
+      const textarea = e.currentTarget as HTMLTextAreaElement;
+      const caret = textarea.selectionStart ?? 0;
+      if (caret === (textarea.selectionEnd ?? caret)) {
+        const before = message.slice(0, caret);
+        const after = message.slice(caret);
+        const hit = e.key === "Backspace" ? before.match(/@\[[^\]]*\]$/) : after.match(/^@\[[^\]]*\]/);
+        if (hit) {
+          e.preventDefault();
+          const next =
+            e.key === "Backspace"
+              ? before.slice(0, before.length - hit[0].length) + after
+              : before + after.slice(hit[0].length);
+          setMessage(next);
+          onDraftChange?.(next);
+          requestAnimationFrame(() => {
+            const pos = e.key === "Backspace" ? before.length - hit[0].length : caret;
+            textarea.setSelectionRange(pos, pos);
+          });
+          return;
+        }
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();

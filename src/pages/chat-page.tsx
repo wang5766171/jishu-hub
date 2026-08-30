@@ -3141,6 +3141,7 @@ export function ChatPage({
                 ) : selectedSession && selectedSession !== "new" ? (
                   <MessageView
                     messages={sessionMessages}
+                    sessionId={selectedSession}
                     searchQuery={searchQuery}
                     searchNavigation={messageSearchNavigation}
                     onSearchStatusChange={handleMessageSearchStatusChange}
@@ -3157,7 +3158,7 @@ export function ChatPage({
                       <PhaseDivider phase="execute" title={t("task.phase.execution", "流程执行")} />
                     </div>
                     {taskRunStarted ? (
-                      <MessageView messages={taskGraph.projectedMessages} flat />
+                      <MessageView messages={taskGraph.projectedMessages} sessionId={selectedSession} flat />
                     ) : showExecutionStartPrompt ? (
                       <ExecutionStartPrompt
                         stepCount={taskStepCount}

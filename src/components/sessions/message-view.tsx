@@ -8,7 +8,7 @@ import rehypeHighlight from "rehype-highlight";
 import { Check, Copy, Bot } from "lucide-react";
 import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
-import { parseEmbeddedTools, EmbeddedToolPills } from "./embedded-tools";
+import { parseEmbeddedTools, EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
 import { ToolGroup } from "@/components/observability/tool-call-card";
 import { resolveToolKind } from "@/components/observability/tool-call-card/types";
 import type { ToolCall } from "@/components/observability/tool-call-card";
@@ -31,6 +31,8 @@ const ROW_STYLE: React.CSSProperties = {
 
 interface MessageViewProps {
   messages: Message[];
+  /** v0.8.1 需求7：会话 id——用户消息 pill 的 id→中文名映射按会话加载。 */
+  sessionId?: string | null;
   initialSearchQuery?: string;
   searchQuery?: string;
   searchNavigation?: MessageSearchNavigation | null;
@@ -142,10 +144,12 @@ const TextBlock = memo(function TextBlock({
 }) {
   if (dark) {
     const display = stripImagePrompt(text);
+    // v0.8.1 需求7（28f37e8e 形态）：用户文本块内联渲染（span 而非 div），
+    // 使其可与插件 pill 在同一行内共处——pill 只是内联视觉元素，不占独立行。
     return (
-      <div className="whitespace-pre-wrap break-all overflow-hidden" style={{ fontSize: "var(--font-size-prose)" }}>
+      <span className="whitespace-pre-wrap break-all" style={{ fontSize: "var(--font-size-prose)" }}>
         {query ? highlightText(display, query, matchOffset ?? 0, currentMatch ?? -1) : display}
-      </div>
+      </span>
     );
   }
 
@@ -492,6 +496,7 @@ function UserBubble({
   currentOcc,
   messageIndex,
   roleView,
+  toolNames,
 }: {
   msg: Message;
   items: RenderItem[];
@@ -500,6 +505,7 @@ function UserBubble({
   currentOcc: number;
   messageIndex: number;
   roleView?: MessageRoleView | null;
+  toolNames: Record<string, string>;
 }) {
   const { t } = useTranslation();
   // v0.8.1 需求7：首文本块剥 [JISHU-TOOLS] 标记 → pill（displayText 供
@@ -530,7 +536,6 @@ function UserBubble({
               : "bg-[var(--message-user-bg)] text-[var(--message-user-fg)]",
           )}
         >
-          <EmbeddedToolPills toolIds={toolIds} toolNames={{}} />
           <InlineImages text={displayText || copyText} />
           {items.map((item, idx) => {
             if (item.kind === "tool-group") {
@@ -546,6 +551,25 @@ function UserBubble({
             }
 
             const offsetKey = `${messageIndex}-${item.blockIndex}`;
+            // v0.8.1 需求7（28f37e8e 形态）：首文本块与插件 pill 同一个内联
+            // 容器——pill 与正文同行流式排列；文本用 displayText（标记已剥，
+            // 不再显示 [JISHU-TOOLS:...] 原文）。
+            if (item.block.type === "text" && item.block === firstTextBlock) {
+              return (
+                <div key={`b-${item.blockIndex}`} className="overflow-hidden">
+                  {toolIds.length > 0 && (
+                    <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
+                  )}
+                  <TextBlock
+                    text={displayText}
+                    query={renderingQuery}
+                    dark
+                    matchOffset={searchOffsets.get(offsetKey) ?? 0}
+                    currentMatch={currentOcc}
+                  />
+                </div>
+              );
+            }
             return (
               <div key={`b-${item.blockIndex}`} className="overflow-hidden">
                 {renderBlock(
@@ -569,6 +593,7 @@ function UserBubble({
 
 export const MessageView = memo(function MessageView({
   messages,
+  sessionId,
   initialSearchQuery,
   searchQuery: externalSearchQuery,
   searchNavigation,
@@ -577,6 +602,8 @@ export const MessageView = memo(function MessageView({
   scrollContainerRef,
   roleResolver,
 }: MessageViewProps) {
+  // v0.8.1 需求7：用户消息 pill 的 id→中文名映射（按会话加载一次）。
+  const toolNames = useSessionToolNames(sessionId ?? null);
   const [localSearchQuery, setLocalSearchQuery] = useState(initialSearchQuery || "");
   const searchQuery = externalSearchQuery ?? localSearchQuery;
   const renderingQuery = useDeferredValue(searchQuery);
@@ -702,9 +729,10 @@ export const MessageView = memo(function MessageView({
         currentOcc={currentOcc}
         messageIndex={row.messageIndex}
         roleView={roleView}
+        toolNames={toolNames}
       />
     );
-  }, [currentOcc, messages, renderingQuery, resultMap, searchState.offsets, roleResolver]);
+  }, [currentOcc, messages, renderingQuery, resultMap, searchState.offsets, roleResolver, toolNames]);
 
   const fullMessageList = (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
