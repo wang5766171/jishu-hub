@@ -829,12 +829,22 @@ async fn pi_rpc_connection_loop(
                                 let meta = title
                                     .strip_prefix("[jishu-tool-approval]")
                                     .unwrap_or("");
-                                let (mode, tool) = meta.split_once('|').unwrap_or(("smart", meta));
+                                let (_mode, tool) = meta.split_once('|').unwrap_or(("", meta));
                                 let message = msg
                                     .get("message")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or_default()
                                     .to_string();
+                                // 档位选链（v0.8.1 修复：完全访问模式仍弹审批窗）：
+                                // 权威档位是 hub 侧 per-agent 工具档（前端访问菜单写入
+                                // hub state，并联动同步 Pi settings），扩展标题里回传的
+                                // mode 只是参考显示——此前按标题 mode 二分
+                                // ask_always/其它，完全访问（full）落进智能链导致
+                                // 插件 bash 仍弹审批。统一走 for_session_tool_mode：
+                                // full→[AlwaysAllow]、full-approve/readonly→[LowRisk]、
+                                // smart-approve→[Once, LowRisk]。
+                                let hub_mode = crate::hub::load_agent_tool_mode(&agent_id)
+                                    .unwrap_or_else(|| "full".to_string());
                                 let approval_ctx = crate::agent::policy::ApprovalContext {
                                     channel: crate::agent::policy::DecisionChannel::Interactive,
                                     kind: crate::agent::policy::ApprovalKindWire::Other,
@@ -843,20 +853,13 @@ async fn pi_rpc_connection_loop(
                                     payload: serde_json::json!({
                                         "tool": tool,
                                         "summary": message,
-                                        "mode": mode,
+                                        "mode": hub_mode,
                                     }),
                                     payload_declares: false,
                                     high_risk: false,
                                 };
-                                // 模式选链：smart=[Once, LowRisk]（读类免打扰，
-                                // 「始终允许」经 Once 记忆生效）；ask_always=
-                                // [LowRisk]（读类放行，变更类每次弹窗、不记忆）。
-                                // 两档的差异只在 Once 记忆是否在链上。
-                                let approval_chain = if mode == "ask_always" {
-                                    crate::agent::policy::for_ask_always_session(&session_id)
-                                } else {
-                                    crate::agent::policy::for_interactive_session(&session_id)
-                                };
+                                let approval_chain =
+                                    crate::agent::policy::for_session_tool_mode(&agent_id, &session_id);
                                 match approval_chain.evaluate(&approval_ctx) {
                                     crate::agent::policy::ChainOutcome::Allow(policy_id) => {
                                         let _ = send_pi_command(
@@ -912,7 +915,7 @@ async fn pi_rpc_connection_loop(
                                             payload: serde_json::json!({
                                                 "tool": tool,
                                                 "summary": message,
-                                                "mode": mode,
+                                                "mode": hub_mode,
                                                 "origin": "jishu-tool-approval",
                                             }),
                                         });
