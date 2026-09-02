@@ -3,6 +3,8 @@ mod acp_runtime;
 mod agent;
 mod agent_runtime;
 mod chat;
+#[cfg(test)]
+mod chat_tests;
 mod cli_runtime;
 mod codex_app_server_runtime;
 mod command;
@@ -158,11 +160,24 @@ pub fn run() {
                     )?,
                 )
             };
+            // v0.8.1 M0：清扫上次运行残留的孤儿 pending-* 会话工具键
+            // （发送中断未迁移的占位条目，防跨草稿会话串扰）。
+            agent::tool_plugin::cleanup_stale_pending_sessions();
+            // v0.8.1 M6：装载期预热工具插件安装探测（PATH where/which 与
+            // --version）——compose_tool_message 持 AppState 锁渲染说明块时
+            // 惰性探测会同步 spawn 子进程并阻塞全部命令，预热后命中缓存。
+            let tool_plugins = {
+                let disabled: std::collections::HashSet<String> =
+                    agent::plugin::load_plugin_config().disabled.iter().cloned().collect();
+                let plugins = agent::tool_plugin::load_tool_plugins(&disabled);
+                for p in &plugins {
+                    let _ = p.installed();
+                }
+                plugins
+            };
             app.manage(Mutex::new(AppState {
                 registry,
-                tool_plugins: std::sync::Mutex::new(agent::tool_plugin::load_tool_plugins(
-                    &agent::plugin::load_plugin_config().disabled.iter().cloned().collect(),
-                )),
+                tool_plugins: std::sync::Mutex::new(tool_plugins),
                 #[cfg(feature = "orchestrator")]
                 task_service,
             }));

@@ -126,9 +126,14 @@ mod tests {
 
     // 测试隔离：hub_home 的 cfg(test) 固定临时目录（需求7 引入），memory.db
     // 天然落隔离目录；并行测试共享同库但用互异 project key 避免串扰。
+    // M7：额外持共享 env 锁——其他模块 set_var(JISHU_HUB_HOME) 期间本模块
+    // 落库路径会被切走导致随机失败。
 
     #[test]
     fn set_get_roundtrip_and_overwrite() {
+        let _g = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         set("p1", "k", "v1").unwrap();
         assert_eq!(get("p1", "k").unwrap().as_deref(), Some("v1"));
         set("p1", "k", "v2").unwrap(); // 覆盖
@@ -139,6 +144,9 @@ mod tests {
 
     #[test]
     fn list_and_delete() {
+        let _g = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         set("p2", "a", "1").unwrap();
         set("p2", "b", "2").unwrap();
         let entries = list("p2").unwrap();

@@ -24,9 +24,27 @@ use std::sync::Arc;
 
 pub struct ManifestAgent {
     file: Arc<AgentManifestFile>,
-    /// abort_bytes 预解析（hex → 字节串，leak 成 'static——manifest 数量
-    /// 个位数、进程生命周期，泄漏量可忽略）。
+    /// abort_bytes 预解析（hex → 字节串）。M6：改为进程级 intern 池——修前
+    /// Box::leak 在每次热重建 new ManifestAgent 时重复泄漏同一份数据，无
+    /// 上限；intern 后同内容只分配一次。
     abort_bytes: Option<&'static [u8]>,
+}
+
+/// abort_bytes intern 池：内容 → 'static 引用（进程生命周期，热重建安全）。
+static ABORT_BYTES_INTERN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<&'static [u8]>>> =
+    std::sync::OnceLock::new();
+
+fn intern_bytes(bytes: Vec<u8>) -> &'static [u8] {
+    let pool_cell = ABORT_BYTES_INTERN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let mut pool = pool_cell
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(existing) = pool.iter().find(|b| **b == bytes.as_slice()) {
+        return existing;
+    }
+    let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+    pool.insert(leaked);
+    leaked
 }
 
 impl ManifestAgent {
@@ -36,7 +54,7 @@ impl ManifestAgent {
             .as_ref()
             .and_then(|t| t.abort_bytes.as_deref())
             .and_then(|hex| schema::parse_abort_bytes(hex).ok())
-            .map(|bytes| Box::leak(bytes.into_boxed_slice()) as &'static [u8]);
+            .map(intern_bytes);
         Self { file, abort_bytes }
     }
 

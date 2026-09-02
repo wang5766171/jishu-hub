@@ -12,6 +12,15 @@ pub mod store;
 
 use std::path::PathBuf;
 
+/// 测试共享锁：所有改 `JISHU_HUB_HOME` 的测试经此串行（M7）——各模块此
+/// 前各持私有锁，跨模块并行时 env 互相踩踏（tool_plugin/chat_tests/
+/// memory_store/plugin.rs 的迁移与落盘断言随机挂）。
+#[cfg(test)]
+pub fn env_test_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 /// hub 数据根目录：`JISHU_HUB_HOME` 环境变量可覆盖（测试隔离），
 /// 缺省 `~/.jishu-hub`。只读解析，零副作用。
 pub fn hub_home() -> PathBuf {

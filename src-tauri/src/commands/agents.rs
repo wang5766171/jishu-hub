@@ -69,18 +69,23 @@ pub(crate) fn plugin_list(state: tauri::State<'_, Mutex<AppState>>) -> PluginLis
 /// 需求7：工具插件装载快照（AppState.tool_plugins）随同一 plugins.json
 /// 启停集合同步重载。
 fn rebuild_registry(app: &tauri::AppHandle, state: &tauri::State<'_, Mutex<AppState>>) {
-    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-    let previous = s.registry.clone();
-    let rebuilt = std::sync::Arc::new(agent::AgentRegistry::new());
-    rebuilt.retain_health_from(&previous);
-    s.registry = rebuilt;
+    // v0.8.1 M6：装载与探测预热在拿 AppState 锁**之前**完成——工具插件的
+    // installed() 首次探测会同步 spawn where/--version，放锁内会阻塞所有命令。
     let disabled: std::collections::HashSet<String> = agent::plugin::load_plugin_config()
         .disabled
         .iter()
         .cloned()
         .collect();
-    *s.tool_plugins.lock().unwrap_or_else(|e| e.into_inner()) =
-        agent::tool_plugin::load_tool_plugins(&disabled);
+    let reloaded_tools = agent::tool_plugin::load_tool_plugins(&disabled);
+    for p in &reloaded_tools {
+        let _ = p.installed();
+    }
+    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+    let previous = s.registry.clone();
+    let rebuilt = std::sync::Arc::new(agent::AgentRegistry::new());
+    rebuilt.retain_health_from(&previous);
+    s.registry = rebuilt;
+    *s.tool_plugins.lock().unwrap_or_else(|e| e.into_inner()) = reloaded_tools;
     use tauri::Emitter;
     let _ = app.emit("plugins-changed", ());
 }
@@ -175,6 +180,9 @@ pub(crate) struct SessionToolInfo {
     pub description: String,
     pub usage: String,
     pub enabled: bool,
+    /// M3：是否可参与 CLI 注入（有 [tool] 段）。false = 仅 pi 扩展形态
+    /// （PiOnly 自适应插件）——前端 + 菜单区分展示，勾选后不会注入说明块。
+    pub injectable: bool,
 }
 
 #[tauri::command]
@@ -207,6 +215,7 @@ pub(crate) fn session_tool_list(
                 .map(|t| t.usage.clone())
                 .unwrap_or_default(),
             enabled: selected.contains(p.id()),
+            injectable: p.file.tool.is_some(),
         })
         .collect()
 }

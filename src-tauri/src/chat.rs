@@ -39,15 +39,24 @@ impl ChatState {
 /// v0.8.1 需求7：会话启用工具集非空时，把工具说明块前缀附加到 prompt。
 /// ACP 存活会话早退路径与新回合路径共用（P0 修复：早退路径曾跳过注入，
 /// 持久进程第二轮起注入块从未附加）。
+/// M0：注入前先把暂存键（新会话输入框勾选）并入本会话键。
+/// M1（prompt 净化）：拼接说明块前先剥前端展示标记（[JISHU-TOOLS:…] 头 +
+/// 残留注入块），保证 agent 只看到 说明块 + 用户正文（§16.8 硬边界）。
+/// M6/P2-2：migrate/get 只操作 session-tools.json、不依赖 AppState——
+/// 移到 state.lock() 之前，锁内只保留真正需要 s.tool_plugins 的渲染段。
 fn compose_tool_message(
     state: &tauri::State<'_, Mutex<AppState>>,
     session_id: &str,
     message: String,
 ) -> String {
+    agent::tool_plugin::migrate_session_tools(
+        agent::tool_plugin::STAGING_SESSION_KEY,
+        session_id,
+    );
+    let tool_ids = agent::tool_plugin::get_session_tools(session_id);
     let Ok(s) = state.lock() else {
         return message;
     };
-    let tool_ids = agent::tool_plugin::get_session_tools(session_id);
     if tool_ids.is_empty() {
         return message;
     }
@@ -63,7 +72,8 @@ fn compose_tool_message(
     if block.trim().is_empty() {
         return message;
     }
-    format!("{block}\n\n{message}")
+    let clean = agent::tool_plugin::strip_all_markers(&message);
+    format!("{block}\n\n{clean}")
 }
 
 #[tauri::command]
@@ -164,6 +174,9 @@ pub async fn send_message(
                     s.processes.insert(real_id.to_string(), process);
                 }
             };
+            // M0：会话工具集随 id 解析搬家（pending-<ts> → 真实 id），第二条
+            // 消息起 compose 按真实键命中注入。
+            agent::tool_plugin::migrate_session_tools(&sid_for_resolve, real_id);
         },
     )
     .await?;
@@ -625,6 +638,9 @@ async fn spawn_resume_fork_process(
                     s.processes.insert(real_id.to_string(), process);
                 }
             };
+            // M0：会话工具集随 id 解析搬家（pending-<ts> → 真实 id），第二条
+            // 消息起 compose 按真实键命中注入。
+            agent::tool_plugin::migrate_session_tools(&sid_for_resolve, real_id);
         },
     )
     .await?;

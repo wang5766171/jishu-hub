@@ -599,6 +599,7 @@ impl AgentRegistry {
         crate::project::merge_projects(per_agent.into_iter().flatten().collect())
     }
 
+    #[allow(dead_code)]
     fn agent_installed_cached(&self, id: &str, agent: &(dyn AgentPlugin + Send + Sync)) -> bool {
         let now = now_ms();
         if let Some(health) = self

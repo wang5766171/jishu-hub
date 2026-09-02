@@ -162,7 +162,9 @@ pub fn install_manifest_file(
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    std::fs::write(&target, content_toml).map_err(|e| e.to_string())?;
+    // M6：原子写（与 plugin_update 一致）——修前裸 fs::write 半写文件可被
+    // 装载管线读到。
+    crate::util::atomic_write(&target, content_toml.as_bytes()).map_err(|e| e.to_string())?;
     log::info!(
         "[plugin] installed manifest plugin {} → {}",
         file.info.id,
@@ -525,11 +527,7 @@ mod tests {
         assert!(!demo.core);
     }
 
-    /// cargo test 默认并行；两个改 JISHU_HUB_HOME 的测试经此锁串行。
-    fn env_test_lock() -> &'static std::sync::Mutex<()> {
-        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        LOCK.get_or_init(|| std::sync::Mutex::new(()))
-    }
+    use crate::agent::manifest::env_test_lock;
 
     #[test]
     fn plugin_config_roundtrip_and_set_enabled_guards() {

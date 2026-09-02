@@ -58,16 +58,24 @@ fn approval_db_path() -> PathBuf {
     crate::agent::manifest::hub_home().join("approval.db")
 }
 
-fn open_connection() -> Connection {
+fn open_connection() -> Option<Connection> {
     let path = approval_db_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let conn = Connection::open(&path).unwrap_or_else(|err| {
-        panic!("failed to open approval db at {}: {err}", path.display())
-    });
+    // M6：建库失败降级 None → 内存实现（fail-soft，与 memory_store 同风
+    // 格）——修前 panic! 会炸掉命令线程（approval.db 损坏/权限问题时），
+    // 与文档自称的 fail-soft 矛盾。
+    let conn = Connection::open(&path).map_err(|err| {
+        log::warn!(
+            "[policy-store] failed to open approval db at {}: {err} (falling back to in-memory)",
+            path.display()
+        );
+        err
+    })
+    .ok()?;
     conn.pragma_update(None, "journal_mode", "WAL").ok();
-    conn
+    Some(conn)
 }
 
 /// SQLite 实现：`once_memory(session_id, action_key)` 两列主键，
@@ -78,8 +86,8 @@ pub struct SqliteOnceMemory {
 }
 
 impl SqliteOnceMemory {
-    fn new() -> Self {
-        let conn = open_connection();
+    fn new() -> Option<Self> {
+        let conn = open_connection()?;
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
@@ -95,9 +103,9 @@ impl SqliteOnceMemory {
                  PRAGMA user_version = 1;",
             );
         }
-        Self {
+        Some(Self {
             conn: Mutex::new(conn),
-        }
+        })
     }
 }
 
@@ -124,11 +132,21 @@ impl OnceMemory for SqliteOnceMemory {
     }
 }
 
-/// 生产记忆（单例）：链装配与回写点共用同一 SQLite 连接。
+/// 生产记忆（单例）：链装配与回写点共用同一 SQLite 连接。建库失败降级
+/// 内存实现（M6 fail-soft）——审批照常工作，仅「始终允许」不跨重启。
+/// 注意（评审 P2-4）：OnceLock 单例意味着降级是**进程内一锤定音**——本
+/// 进程不再重试建库；重启后重新尝试。这是有意取舍（避免每次审批都重试
+/// 失败的建库）。
 pub fn default_memory() -> Arc<dyn OnceMemory> {
-    static MEMORY: OnceLock<Arc<SqliteOnceMemory>> = OnceLock::new();
+    static MEMORY: OnceLock<Arc<dyn OnceMemory>> = OnceLock::new();
     MEMORY
-        .get_or_init(|| Arc::new(SqliteOnceMemory::new()))
+        .get_or_init(|| match SqliteOnceMemory::new() {
+            Some(sqlite) => Arc::new(sqlite) as Arc<dyn OnceMemory>,
+            None => {
+                log::warn!("[policy-store] approval memory degraded to in-memory (won't survive restart)");
+                Arc::new(InMemoryOnceMemory::new())
+            }
+        })
         .clone()
 }
 

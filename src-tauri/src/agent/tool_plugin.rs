@@ -30,6 +30,21 @@ pub struct ToolPlugin {
 }
 
 impl ToolPlugin {
+    /// 测试构造（绕过私有 installed_cache 字段）。
+    #[cfg(test)]
+    pub fn for_test(
+        file: Arc<AgentManifestFile>,
+        source_path: PathBuf,
+        enabled: bool,
+    ) -> Self {
+        Self {
+            file,
+            source_path,
+            enabled,
+            installed_cache: std::sync::Mutex::new(None),
+        }
+    }
+
     /// 命令是否可执行（PATH 解析，缓存）。无 [probe] 段视为未检测到。
     pub fn installed(&self) -> bool {
         let mut cache = self
@@ -93,6 +108,11 @@ fn session_tools_path() -> PathBuf {
     super::manifest::hub_home().join("session-tools.json")
 }
 
+/// session-tools.json 读-改-写互斥（M6：多线程 Tauri 命令并发进入
+/// set/migrate 时 atomic_write 只保证单次写原子，不保证读改写整体——
+/// 两会话同时勾选会丢更新。所有写路径经此锁串行）。
+static SESSION_TOOLS_WRITE_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn load_session_tools_map() -> std::collections::HashMap<String, Vec<String>> {
     let Ok(content) = std::fs::read_to_string(session_tools_path()) else {
         return std::collections::HashMap::new();
@@ -113,6 +133,15 @@ fn save_session_tools_map(map: &std::collections::HashMap<String, Vec<String>>) 
             log::warn!("[tool-plugin] cannot save session-tools.json: {e}");
         }
     }
+}
+
+/// 测试注入：直接覆写 session-tools.json（绕过 unknown-id 校验）。
+#[cfg(test)]
+pub fn set_session_tools_map_for_test(map: &std::collections::HashMap<String, Vec<String>>) {
+    let _guard = SESSION_TOOLS_WRITE_MUTEX
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    save_session_tools_map(map);
 }
 
 /// 读取会话启用的工具 id 集合（按装载顺序稳定排序）。
@@ -136,6 +165,9 @@ pub fn set_session_tools(session_id: &str, tool_ids: &[String]) -> Result<(), St
             return Err(format!("Unknown tool plugin: {id}"));
         }
     }
+    let _guard = SESSION_TOOLS_WRITE_MUTEX
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let mut map = load_session_tools_map();
     if tool_ids.is_empty() {
         map.remove(session_id);
@@ -147,6 +179,58 @@ pub fn set_session_tools(session_id: &str, tool_ids: &[String]) -> Result<(), St
     }
     save_session_tools_map(&map);
     Ok(())
+}
+
+/// 迁移会话工具集：`from` 存在则并入（并集去重）`to` 并删除 `from` 条目。
+/// 两个挂载点（M0）：
+/// 1. send_message 注入前：STAGING_SESSION_KEY → 本条 sessionId——新会话在
+///    输入框勾选的工具（暂存键）随首条消息落到 pending/真实键；
+/// 2. 会话 id 解析回调：pending-<ts> → 真实 session id——首条消息解析出
+///    真实 id 后工具集跟着搬家，第二条消息起按真实键命中注入。
+/// from == to 或 from 不存在时为无操作（幂等）。
+pub fn migrate_session_tools(from: &str, to: &str) {
+    if from == to {
+        return;
+    }
+    let _guard = SESSION_TOOLS_WRITE_MUTEX
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut map = load_session_tools_map();
+    let Some(mut moved) = map.remove(from) else {
+        return;
+    };
+    match map.get_mut(to) {
+        Some(existing) => {
+            existing.append(&mut moved);
+            existing.sort();
+            existing.dedup();
+        }
+        None => {
+            moved.sort();
+            moved.dedup();
+            map.insert(to.to_string(), moved);
+        }
+    }
+    save_session_tools_map(&map);
+}
+
+/// 启动清扫：删除 session-tools.json 中的孤儿 `pending-*` 键（M0）。
+/// pending-<ts> 是一次性的首条消息发送键，正常路径在会话解析时已迁移到
+/// 真实 id；残留（发送中断/崩溃）只占位并可能串扰，统一清理。
+pub fn cleanup_stale_pending_sessions() {
+    let _guard = SESSION_TOOLS_WRITE_MUTEX
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut map = load_session_tools_map();
+    let before = map.len();
+    map.retain(|k, _| !k.starts_with("pending-"));
+    if map.len() != before {
+        save_session_tools_map(&map);
+        log::info!(
+            "[tool-plugin] cleaned {} stale pending-* session tool entries",
+            before - map.len()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -165,11 +249,16 @@ pub fn render_tool_block(plugins: &[&ToolPlugin]) -> String {
         "标注「命令未检测到」的（或用法为能力描述而非命令的），不要尝试按插件名调用命令——按其描述用等效的 shell 方式实现该能力。\n",
     );
     for plugin in plugins {
-        let tool = plugin
-            .file
-            .tool
-            .as_ref()
-            .expect("tool plugin validated to have [tool] section");
+        // M3：无 [tool] 段的自适应 PiOnly 形态（schema 允许 kind=tool 仅含
+        // [pi_extension]）不参与 CLI 注入——跳过而非 panic（schema 校验规则
+        // 与本消费层不变式曾脱节，勾选即崩命令线程）。
+        let Some(tool) = plugin.file.tool.as_ref() else {
+            log::debug!(
+                "[tool-plugin] skip {} in prompt injection (no [tool] section; pi-extension-only)",
+                plugin.id()
+            );
+            continue;
+        };
         out.push_str(&format!(
             "\n## {} — {}\n",
             plugin.file.info.id, tool.description
@@ -199,8 +288,10 @@ pub fn render_tool_block(plugins: &[&ToolPlugin]) -> String {
 /// 标题提取、会话列表名等展示面统一经此清洗。
 pub fn strip_all_markers(text: &str) -> String {
     let stripped_block = strip_tool_block(text);
-    // 剥离前缀标记（可能有多个，循环匹配）。
-    let re = regex::Regex::new(r"^\[JISHU-TOOLS:[^\]]+\]\s?").unwrap();
+    // M6：正则静态化——本函数在标题/列表/注入净化等热路径上，修前每次
+    // 调用重新编译。
+    static MARKER_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = MARKER_RE.get_or_init(|| regex::Regex::new(r"^\[JISHU-TOOLS:[^\]]+\]\s?").unwrap());
     let mut result = stripped_block;
     loop {
         let new = re.replace(&result, "").to_string();
@@ -236,6 +327,36 @@ mod tests {
     use crate::agent::manifest::schema::{
         InfoSection, ManifestKind, ToolSection, TransportSection,
     };
+
+    use crate::agent::manifest::env_test_lock;
+
+    fn tool_plugin_no_tool_section(id: &str) -> ToolPlugin {
+        ToolPlugin {
+            file: Arc::new(AgentManifestFile {
+                schema: 1,
+                kind: ManifestKind::Tool,
+                info: InfoSection {
+                    id: id.to_string(),
+                    display_name: id.to_string(),
+                    icon: String::new(),
+                    install_hint: None,
+                },
+                probe: None,
+                transport: None,
+                config: None,
+                session: None,
+                capabilities: None,
+                pi_extension: Some(super::super::manifest::schema::PiExtensionSection {
+                    entry: "discuss.ts".to_string(),
+                    target_agent: "jishu-self".to_string(),
+                }),
+                tool: None,
+            }),
+            source_path: PathBuf::from(format!("/agents/{id}.toml")),
+            enabled: true,
+            installed_cache: std::sync::Mutex::new(None),
+        }
+    }
 
     fn tool_plugin(
         id: &str,
@@ -372,5 +493,92 @@ usage = "u"
 "#;
         let file: AgentManifestFile = toml::from_str(bad2).unwrap();
         assert!(file.validate().unwrap_err().contains("[tool]"));
+    }
+    // ── M0/M3 回归测试：staging 迁移 / pending 清扫 / 无 [tool] 段 skip ──
+
+    #[test]
+    fn render_skips_plugin_without_tool_section() {
+        // M3：schema 允许 kind=tool 仅含 [pi_extension]——修前 render 的
+        // .expect 直接 panic。现在应跳过该插件，块内只有另一个正常插件。
+        let pi_only = tool_plugin_no_tool_section("pi-only");
+        let normal = tool_plugin("normal", "d", "u", None, None);
+        let block = render_tool_block(&[&pi_only, &normal]);
+        assert!(block.contains("normal"));
+        assert!(!block.contains("pi-only"));
+    }
+
+    #[test]
+    fn session_tools_set_get_and_empty_cleanup() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        // set 校验未知 id 会扫 manifest 目录——用装载目录里不存在的 id 即拒绝
+        assert!(set_session_tools("s1", &["no-such-tool".into()]).is_err());
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    #[test]
+    fn migrate_session_tools_merges_and_clears_source() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        // 直接写 map 文件绕过 unknown-id 校验（迁移逻辑只操作 map）
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "__new_session__".to_string(),
+            vec!["tool-a".to_string()],
+        );
+        map.insert(
+            "target-session".to_string(),
+            vec!["tool-b".to_string()],
+        );
+        save_session_tools_map(&map);
+
+        migrate_session_tools(STAGING_SESSION_KEY, "target-session");
+        let merged = get_session_tools("target-session");
+        assert!(merged.contains(&"tool-a".to_string()));
+        assert!(merged.contains(&"tool-b".to_string()));
+        assert!(get_session_tools(STAGING_SESSION_KEY).is_empty());
+
+        // 幂等：from 不存在时无操作
+        migrate_session_tools(STAGING_SESSION_KEY, "target-session");
+        assert_eq!(get_session_tools("target-session").len(), 2);
+
+        // from == to 无操作
+        migrate_session_tools("target-session", "target-session");
+        assert_eq!(get_session_tools("target-session").len(), 2);
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    #[test]
+    fn cleanup_stale_pending_sessions_removes_only_pending_keys() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let mut map = std::collections::HashMap::new();
+        map.insert("pending-1787962861840".to_string(), vec!["a".to_string()]);
+        map.insert("__new_session__".to_string(), vec!["b".to_string()]);
+        map.insert("real-session".to_string(), vec!["c".to_string()]);
+        save_session_tools_map(&map);
+
+        cleanup_stale_pending_sessions();
+        assert!(get_session_tools("pending-1787962861840").is_empty());
+        assert_eq!(get_session_tools("__new_session__"), vec!["b".to_string()]);
+        assert_eq!(get_session_tools("real-session"), vec!["c".to_string()]);
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    #[test]
+    fn strip_all_markers_removes_prefix_marker() {
+        // M1：compose 净化依赖——[JISHU-TOOLS:...] 头必须剥净
+        assert_eq!(
+            strip_all_markers("[JISHU-TOOLS:a,b] hello world"),
+            "hello world"
+        );
+        assert_eq!(
+            strip_all_markers("[JISHU-TOOLS:a][JISHU-TOOLS:b] hi"),
+            "hi"
+        );
+        assert_eq!(strip_all_markers("plain"), "plain");
     }
 }
