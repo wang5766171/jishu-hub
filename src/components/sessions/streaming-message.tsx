@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { useSessionStream } from "@/hooks/use-stream-store";
 import { InlineImages, stripImagePrompt } from "./inline-image";
-import { parseEmbeddedTools, EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
+import { EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
 import { ToolGroup } from "@/components/observability/tool-call-card";
 import { resolveToolKind } from "@/components/observability/tool-call-card/types";
 import type { ToolCall } from "@/components/observability/tool-call-card";
@@ -28,10 +28,13 @@ interface StreamingMessageProps {
    * message is already rendered by `MessageView`).
    */
   userMessage?: string | null;
+  /** v0.9.0 需求3 方案 C：userMessage 覆盖时配套的工具 id 快照；缺省回落
+   * store 的 pendingToolIds（与 pendingUserMessage 同源）。 */
+  userToolIds?: string[];
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
 }
 
-export const StreamingMessage = memo(function StreamingMessage({ sessionId, isComplete = false, userMessage, scrollContainerRef }: StreamingMessageProps) {
+export const StreamingMessage = memo(function StreamingMessage({ sessionId, isComplete = false, userMessage, userToolIds, scrollContainerRef }: StreamingMessageProps) {
   const state = useSessionStream(sessionId);
   const { t } = useTranslation();
   // v0.8.1 需求7：用户消息气泡内 pill 显示插件中文名（id→显示名映射）。
@@ -46,6 +49,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   const interactionSplits = state?.interactionSplits ?? [];
   const steps = state?.steps ?? [];
   const resolvedUserMessage = userMessage === undefined ? state?.pendingUserMessage ?? undefined : userMessage ?? undefined;
+  const resolvedUserToolIds = userToolIds ?? state?.pendingToolIds ?? [];
   const userScrolledRef = useRef(false);
 
   const isNearBottom = useCallback(() => {
@@ -229,7 +233,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
       {/* User message bubble */}
       {resolvedUserMessage && (
-        <StreamingUserBubble text={resolvedUserMessage} toolNames={toolNames} />
+        <StreamingUserBubble text={resolvedUserMessage} toolIds={resolvedUserToolIds} toolNames={toolNames} />
       )}
 
       {/* Assistant streaming response — one bubble per segment, with an inline
@@ -245,7 +249,6 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
               key={`user-insertion-${i}`}
               text={part.text}
               guided={part.guided}
-              toolNames={toolNames}
             />
           );
         }
@@ -423,12 +426,10 @@ function StepStatusIcon({ kind }: { kind: string }) {
  * (right-aligned user bubble + amber "已引导" chip) so the transition from
  * bottom placeholder → inline, and later → committed message, is seamless.
  */
-/** 流式阶段主用户消息（v0.8.1 需求7 08f8f9f2：parseEmbeddedTools 剥
- * [JISHU-TOOLS] 标记并渲染 pill——此前只有 steer UserBubble 有解析，主消息
- * 内联渲染直接显示原始标记）。 */
-function StreamingUserBubble({ text, toolNames }: { text: string; toolNames: Record<string, string> }) {
+/** 流式阶段主用户消息（v0.9.0 需求3 方案 C：pill 数据源为 toolIds 元数据——
+ * compose 时前端已知、经 streamStore.pendingToolIds 传递；文本标记解析已废弃）。 */
+function StreamingUserBubble({ text, toolIds, toolNames }: { text: string; toolIds: string[]; toolNames: Record<string, string> }) {
   const { t } = useTranslation();
-  const { text: displayText, toolIds } = parseEmbeddedTools(text);
   return (
     <div className="w-full flex justify-end" data-user-message="true">
       <div className="max-w-[88%] min-w-0 flex flex-col items-end">
@@ -437,17 +438,19 @@ function StreamingUserBubble({ text, toolNames }: { text: string; toolNames: Rec
         </div>
         <div className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full" style={{ fontSize: "var(--font-size-prose)" }}>
           <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
-          <InlineImages text={displayText} />
-          {stripImagePrompt(displayText)}
+          <InlineImages text={text} />
+          {stripImagePrompt(text)}
         </div>
       </div>
     </div>
   );
 }
 
-function UserBubble({ text, guided, toolNames }: { text: string; guided?: boolean; toolNames: Record<string, string> }) {
+function UserBubble({ text, guided }: { text: string; guided?: boolean }) {
+  // v0.9.0 需求3 已知取舍：steer 内联气泡（steer_injected echo 驱动）暂无
+  // toolIds 通道（需 SteerInjected 事件链扩字段，见需求3 02 §五偏离2），
+  // pill 不渲染；引导占位与回放面 pill 正常。
   const { t } = useTranslation();
-  const { text: displayText, toolIds } = parseEmbeddedTools(text);
   return (
     <div className="w-full flex justify-end" data-user-message="true">
       <div className="max-w-[88%] min-w-0 flex flex-col items-end">
@@ -464,8 +467,7 @@ function UserBubble({ text, guided, toolNames }: { text: string; guided?: boolea
           className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full"
           style={{ fontSize: "var(--font-size-prose)" }}
         >
-          <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
-          {displayText}
+          {text}
         </div>
       </div>
     </div>

@@ -641,12 +641,12 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
                         if display_name.is_none() && message.role == "user" {
                             // 剥离 [JISHU-PROMT:] 系统内部契约标记后再取摘要；
                             // 剥离后为空（纯系统提示词）则跳过，display_name 继续找下一条 user 消息。
-                            // v0.8.1 需求10：同时剥工具插件标记（注入块 +
-                            // [JISHU-TOOLS:…] 头）——pi JSONL 记录的是 compose 后
-                            // 的完整 prompt，标题必须呈现用户真实问题（§16.3 契约）。
+                            // v0.8.1 需求10 → v0.9.0 需求3：剥工具插件注入块（文本标
+                            // 记已废弃）——pi JSONL 记录的是 compose 后的完整 prompt，
+                            // 标题必须呈现用户真实问题（§16.3 契约）。
                             display_name = first_text(&message)
                                 .map(|t| strip_jishu_promt(&t))
-                                .map(|t| crate::agent::tool_plugin::strip_all_markers(&t))
+                                .map(|t| crate::agent::tool_plugin::strip_tool_block(&t))
                                 .filter(|t| !t.trim().is_empty())
                                 .map(smart_summary);
                         }
@@ -687,6 +687,7 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
                         if !text.trim().is_empty() {
                             content.push(crate::session::ContentBlock::Text {
                                 text: text.to_string(),
+                                tool_ids: Vec::new(),
                             });
                         }
                     }
@@ -759,7 +760,7 @@ fn phase_divider_title(phase: &str) -> &'static str {
 fn is_task_launch_message(message: &crate::session::Message) -> bool {
     message.role == "user"
         && message.content.iter().any(|b| match b {
-            crate::session::ContentBlock::Text { text } => {
+            crate::session::ContentBlock::Text { text, .. } => {
                 text.trim_start().starts_with("/jishu-task ")
             }
             _ => false,
@@ -808,7 +809,7 @@ fn parse_pi_message(
 fn parse_user_content(value: &serde_json::Value) -> Vec<crate::session::ContentBlock> {
     match value {
         serde_json::Value::String(text) if !text.trim().is_empty() => {
-            vec![crate::session::ContentBlock::Text { text: text.clone() }]
+            vec![crate::session::ContentBlock::Text { text: text.clone(), tool_ids: Vec::new() }]
         }
         serde_json::Value::Array(items) => items
             .iter()
@@ -816,10 +817,12 @@ fn parse_user_content(value: &serde_json::Value) -> Vec<crate::session::ContentB
                 Some("text") => item.get("text").and_then(|v| v.as_str()).map(|text| {
                     crate::session::ContentBlock::Text {
                         text: text.to_string(),
+                        tool_ids: Vec::new(),
                     }
                 }),
                 Some("image") => Some(crate::session::ContentBlock::Text {
                     text: "[image omitted]".to_string(),
+                    tool_ids: Vec::new(),
                 }),
                 _ => None,
             })
@@ -838,6 +841,7 @@ fn parse_assistant_content(value: &serde_json::Value) -> Vec<crate::session::Con
                     Some("text") => item.get("text").and_then(|v| v.as_str()).map(|text| {
                         crate::session::ContentBlock::Text {
                             text: text.to_string(),
+                            tool_ids: Vec::new(),
                         }
                     }),
                     Some("thinking") => {
@@ -892,7 +896,7 @@ fn pi_tool_result_content(value: Option<&serde_json::Value>) -> serde_json::Valu
 
 fn first_text(message: &crate::session::Message) -> Option<String> {
     message.content.iter().find_map(|block| match block {
-        crate::session::ContentBlock::Text { text } if !text.trim().is_empty() => {
+        crate::session::ContentBlock::Text { text, .. } if !text.trim().is_empty() => {
             Some(text.clone())
         }
         _ => None,
@@ -1253,7 +1257,7 @@ Task Orchestrator execution contract:\n\
         assert!(
             matches!(
                 session.messages[0].content[0],
-                ContentBlock::Text { ref text } if text.contains("/jishu-task ")
+                ContentBlock::Text { ref text, .. } if text.contains("/jishu-task ")
             ),
             "用户启动消息首块应为启动文本（分隔线在其下方独立渲染），实际：{:?}",
             session.messages[0].content[0]
@@ -1288,7 +1292,7 @@ Task Orchestrator execution contract:\n\
             plan_divider
                 .content
                 .iter()
-                .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("进入流程规划"))),
+                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text.contains("进入流程规划"))),
             "plan 分隔线消息应携带标记的展示文本"
         );
 
@@ -1394,7 +1398,7 @@ Task Orchestrator execution contract:\n\
         assert!(matches!(
             session.messages[1].content.as_slice(),
             [
-                ContentBlock::Text { text },
+                ContentBlock::Text { text, .. },
                 ContentBlock::Interaction { prompt, answer, .. }
             ] if text == "候选需求已提交。"
                 && prompt == "是否进入规划？"
@@ -1402,7 +1406,7 @@ Task Orchestrator execution contract:\n\
         ));
         assert!(matches!(
             session.messages[2].content.as_slice(),
-            [ContentBlock::Text { text }] if text == "开始流程规划。"
+            [ContentBlock::Text { text, .. }] if text == "开始流程规划。"
         ));
 
         let _ = fs::remove_dir_all(&root);
@@ -1446,7 +1450,7 @@ Task Orchestrator execution contract:\n\
             .iter()
             .find(|m| {
                 m.content.iter().any(
-                    |b| matches!(b, ContentBlock::Text { text } if text.contains("候选需求已提交")),
+                    |b| matches!(b, ContentBlock::Text { text, .. } if text.contains("候选需求已提交")),
                 )
             })
             .expect("应存在助手锚点消息");
@@ -1464,7 +1468,7 @@ Task Orchestrator execution contract:\n\
             .iter()
             .find(|m| {
                 m.content.iter().any(
-                    |b| matches!(b, ContentBlock::Text { text } if text.contains("用户的回答")),
+                    |b| matches!(b, ContentBlock::Text { text, .. } if text.contains("用户的回答")),
                 )
             })
             .expect("应存在用户回答消息");
@@ -1518,20 +1522,20 @@ Task Orchestrator execution contract:\n\
         assert!(matches!(
             session.messages[1].content.as_slice(),
             [
-                ContentBlock::Text { text },
+                ContentBlock::Text { text, .. },
                 ContentBlock::Interaction { prompt, answer, .. }
             ] if text == "先明确目标。" && prompt == "主要目的是什么？" && answer == "单页面"
         ));
         assert!(matches!(
             session.messages[2].content.as_slice(),
             [
-                ContentBlock::Text { text },
+                ContentBlock::Text { text, .. },
                 ContentBlock::Interaction { prompt, answer, .. }
             ] if text == "再明确技术栈。" && prompt == "用什么技术栈？" && answer == "原生 HTML"
         ));
         assert!(matches!(
             session.messages[3].content.as_slice(),
-            [ContentBlock::Text { text }] if text == "候选需求已提交。"
+            [ContentBlock::Text { text, .. }] if text == "候选需求已提交。"
         ));
 
         let _ = fs::remove_dir_all(&root);
@@ -1594,7 +1598,7 @@ Task Orchestrator execution contract:\n\
                 .messages
                 .iter()
                 .any(|m| m.role == "assistant"
-                    && m.content.iter().any(|b| matches!(b, crate::session::ContentBlock::Text { text } if text.contains("jishu")))),
+                    && m.content.iter().any(|b| matches!(b, crate::session::ContentBlock::Text { text, .. } if text.contains("jishu")))),
             "real fixture must contain an assistant reply mentioning jishu",
         );
     }

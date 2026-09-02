@@ -38,7 +38,7 @@ fn title_from(messages: &[Message]) -> String {
             m.content
                 .iter()
                 .filter_map(|b| match b {
-                    crate::session::ContentBlock::Text { text } => Some(text.clone()),
+                    crate::session::ContentBlock::Text { text, .. } => Some(text.clone()),
                     _ => None,
                 })
                 .collect::<String>()
@@ -196,7 +196,10 @@ mod tests {
     fn msg(role: &str, text: &str) -> Message {
         Message {
             role: role.to_string(),
-            content: vec![ContentBlock::Text { text: text.to_string() }],
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                tool_ids: Vec::new(),
+            }],
             timestamp: None,
         }
     }

@@ -1350,12 +1350,12 @@ export function ChatPage({
     });
   }, []);
 
-  const handleMessageSent = useCallback((sid: string, msg: string) => {
+  const handleMessageSent = useCallback((sid: string, msg: string, toolIds?: string[]) => {
     // For new sessions, register a stream entry here. For existing sessions,
     // chat-input.tsx already called streamStore.start() before invoking
     // send_message, so we skip to avoid resetting accumulated chunks.
     if (!streamStore.hasState(sid)) {
-      streamStore.start(sid, msg);
+      streamStore.start(sid, msg, toolIds ?? []);
     }
 
     const isNewSessionSend = !selectedSession || selectedSession === "new";
@@ -3215,7 +3215,9 @@ export function ChatPage({
                 return (
                   <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-1">
                     {visible.map((msg, i) => {
-                      const text = msg.content.find((c) => c.type === "text")?.text ?? "";
+                      const textBlock = msg.content.find((c) => c.type === "text");
+                      const text = textBlock?.text ?? "";
+                      const steerToolIds = (textBlock && textBlock.type === "text" ? textBlock.tool_ids : undefined) ?? [];
                       return (
                         <div
                           key={`pending-steer-${steerInjectedCount + i}`}
@@ -3234,7 +3236,7 @@ export function ChatPage({
                               className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] overflow-hidden min-w-0 max-w-full"
                               style={{ fontSize: "var(--font-size-prose)" }}
                             >
-                              <UserTextWithPills text={text} toolNames={steerToolNames} />
+                              <UserTextWithPills text={text} toolIds={steerToolIds} toolNames={steerToolNames} />
                             </div>
                           </div>
                         </div>
@@ -3447,7 +3449,7 @@ export function ChatPage({
                   }
                 }
               }}
-              onGuideStaged={async (content: string) => {
+              onGuideStaged={async (content: string, toolIds?: string[]) => {
                 if (!selectedSession || selectedSession === "new") return;
                 // Pi-RPC delivers the guide as a real mid-turn injection
                 // (steer_chat + steer_injected event). ACP (claude-code) has no
@@ -3474,7 +3476,7 @@ export function ChatPage({
                   ...prev,
                   {
                     role: "user",
-                    content: [{ type: "text", text: content }],
+                    content: [{ type: "text", text: content, tool_ids: toolIds ?? [] }],
                     timestamp: Date.now(),
                   },
                 ]);

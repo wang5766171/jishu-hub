@@ -139,7 +139,7 @@ interface ChatInputProps {
   onDraftChange?: (value: string) => void;
   onBeforeSend?: (message: string) => Promise<boolean | void> | boolean | void;
   prepareMessageForAgent?: (message: string) => Promise<string> | string;
-  onMessageSent?: (chatSessionId: string, userMessage: string) => void;
+  onMessageSent?: (chatSessionId: string, userMessage: string, toolIds?: string[]) => void;
   onSessionResolved?: (pendingSessionId: string, realSessionId: string) => void | Promise<void>;
   onSubmitMessage?: (message: string) => Promise<{ sessionId?: string } | void>;
   containerClassName?: string;
@@ -159,7 +159,7 @@ interface ChatInputProps {
   onInteractionSubmit?: (submission: ConversationInteractionSubmission) => void | Promise<void>;
   /** Called when user clicks "guide" on a staged message during streaming.
    *  For Jishu Agent: steer. For others: parent should stop + send. */
-  onGuideStaged?: (content: string) => Promise<void>;
+  onGuideStaged?: (content: string, toolIds?: string[]) => Promise<void>;
   /** Called when the user clicks the Stop button and the session is aborted. */
   onAbort?: () => void;
   /** When provided, the parent can auto-send staged guides at turn_complete
@@ -683,21 +683,19 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     [sessionId],
   );
 
-  /** M5：发送/引导共用的消息组装（单源）。用户裁决保持 workbuddy 形态：
-   * 本条消息里的 @[token] 集合 = 本条工具集（所见即所得，空 token = 本条
-   * 不带工具，覆盖写入会话集合）。与修前的差异：① 写入键修复
-   * （nextPendingId 同源，修前 activeSessionId 恒 null 落暂存键注入永不命
-   * 中）；② **await 写入完成**后才进入发送——修前 fire-and-forget 与
-   * send_message 的 compose 在后端并发，新会话首条消息（P0-0 红线场景）
-   * 集合可能未落盘 → 不注入（评审 P1-1 竞态）。任何新增的用户消息出口
+  /** M5 → v0.9.0 需求3 方案 C：发送/引导共用的消息组装（单源）。用户裁决保持
+   * workbuddy 形态：本条消息里的 @[token] 集合 = 本条工具集（所见即所得，空
+   * token = 本条不带工具，覆盖写入会话集合）。消息文本不再嵌 [JISHU-TOOLS]
+   * 标记——工具快照以 toolIds 返回值显式传递（流式渲染/引导占位用），回放
+   * 由后端从注入块派生（extract_tool_snapshot）。任何新增的用户消息出口
    * 必须走这里（§16.8 组装单源）。 */
   const composeOutgoing = useCallback(
-    async (rawText: string): Promise<{ message: string; sessionKey: string }> => {
+    async (rawText: string): Promise<{ message: string; sessionKey: string; toolIds: string[] }> => {
       const sessionKey = nextPendingId();
       const hasTokens = TOOL_TOKEN_RE.test(rawText);
       TOOL_TOKEN_RE.lastIndex = 0;
       if (!hasTokens && !sessionTools.some((t) => t.enabled)) {
-        return { message: rawText, sessionKey };
+        return { message: rawText, sessionKey, toolIds: [] };
       }
       const { text: strippedText, toolIds } = extractToolTokens(rawText, sessionTools);
       try {
@@ -710,13 +708,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         // 警告与「工具没生效」的现象回溯——阻塞会导致普通消息也发不出。
         console.warn("Failed to sync session tools:", err);
       }
-      return {
-        message:
-          toolIds.length > 0
-            ? `[JISHU-TOOLS:${toolIds.join(",")}] ${strippedText}`
-            : strippedText,
-        sessionKey,
-      };
+      return { message: strippedText, sessionKey, toolIds };
     },
     [nextPendingId, sessionTools],
   );
@@ -725,6 +717,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     fullMessage: string,
     clearComposer: boolean,
     pendingIdOverride?: string,
+    toolIds?: string[],
   ) => {
     if (!projectPath) {
       throw new Error("project path is required");
@@ -747,7 +740,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     const agentMessage = await prepareMessageForAgent?.(fullMessage) ?? fullMessage;
 
     if (onSubmitMessage) {
-      if (onMessageSent) onMessageSent(pendingId, fullMessage);
+      if (onMessageSent) onMessageSent(pendingId, fullMessage, toolIds);
       const result = await onSubmitMessage(fullMessage);
       if (result?.sessionId && result.sessionId !== pendingId) {
         setActiveSessionId(result.sessionId);
@@ -762,8 +755,8 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
       return;
     }
 
-    streamStore.start(pendingId, fullMessage);
-    if (onMessageSent) onMessageSent(pendingId, fullMessage);
+    streamStore.start(pendingId, fullMessage, toolIds ?? []);
+    if (onMessageSent) onMessageSent(pendingId, fullMessage, toolIds);
 
     const chatSession = await invokeCommand<ChatSession>(
       "send_message",
@@ -809,11 +802,11 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     setSending(true);
     try {
       let fullMessage = message.trim();
-      // v0.8.1 内联工具 pill（M0/M2 修订语义）：
+      // v0.8.1 内联工具 pill（M0/M2 修订语义 → v0.9.0 需求3 元数据化）：
       // - 会话级真源 = + 菜单勾选（session-tools.json，跨消息/重启保持）；
       // - @[token] = 本条追加——归一为 id 后**并集**写入会话集合（不覆盖、
-      //   空消息不再清空勾选），并在消息头嵌 [JISHU-TOOLS:id] 作为本条快照
-      //   （仅回放渲染 pill 用）；
+      //   空消息不再清空勾选）；本条快照以 toolIds 元数据传递（流式渲染/
+      //   引导占位用），回放由后端从注入块派生（extract_tool_snapshot）；
       // - 写入键 = 本条 send_message 携带的 sessionId（nextPendingId 同源，
       //   新会话为 pending-<ts>，续聊为真实 id）——修前用 activeSessionId
       //   （流式引用，非流式恒 null）导致写入全部落到暂存键、注入永不命中。
@@ -869,7 +862,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         fullMessage += `\n\n<!--JISHU_HUB_IMAGES_BEGIN-->\n[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]\n${fileListStr}\n<!--JISHU_HUB_IMAGES_END-->`;
       }
 
-      await sendPreparedMessage(fullMessage, true, pendingId);
+      await sendPreparedMessage(fullMessage, true, pendingId, composed.toolIds);
     } catch (err) {
       console.error("Failed to send message:", err);
       setSending(false);
@@ -895,10 +888,10 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
       // M5：引导路径与普通发送共用同一工具管线——剥 @[token]、归一 id、
       // 写消息头标记（回放 pill）、并集写入会话集（注入生效）。修前引导
       // 完全绕过：token 原文进 prompt、无 pill、无注入。
-      const { message, sessionKey } = await composeOutgoing(rawContent);
+      const { message, sessionKey, toolIds } = await composeOutgoing(rawContent);
       if (onGuideStaged) {
         // Caller handles delivery (steer for Pi RPC / ACP).
-        await onGuideStaged(message);
+        await onGuideStaged(message, toolIds);
       } else {
         // CLI/embedded agents have no mid-turn steer. Stop the current turn
         // first, then send. The abort MUST be awaited so its streamStore.drop
@@ -908,7 +901,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         if (isStreaming) {
           await handleAbort();
         }
-        await sendPreparedMessage(message, true, sessionKey);
+        await sendPreparedMessage(message, true, sessionKey, toolIds);
       }
       setCurrentStagedMessages((prev) => prev.filter((m) => m.id !== id));
     } catch (err) {

@@ -282,25 +282,29 @@ pub fn render_tool_block(plugins: &[&ToolPlugin]) -> String {
     out
 }
 
-/// 剥离所有工具相关标记（v0.8.1 需求10 统一入口）：
-/// 1. `<jishu-tool-plugins>...</jishu-tool-plugins>` 注入块
-/// 2. `[JISHU-TOOLS:...]` 内嵌标记（用户消息前缀）
-/// 标题提取、会话列表名等展示面统一经此清洗。
-pub fn strip_all_markers(text: &str) -> String {
-    let stripped_block = strip_tool_block(text);
-    // M6：正则静态化——本函数在标题/列表/注入净化等热路径上，修前每次
-    // 调用重新编译。
-    static MARKER_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = MARKER_RE.get_or_init(|| regex::Regex::new(r"^\[JISHU-TOOLS:[^\]]+\]\s?").unwrap());
-    let mut result = stripped_block;
-    loop {
-        let new = re.replace(&result, "").to_string();
-        if new == result {
-            break;
+/// 回放派生（v0.9.0 需求3 方案 C）：剥注入块 + 从块内 `## <id> — <desc>`
+/// 头提取本条消息的工具 id 快照。注入块随 compose 后 prompt 持久化进各家
+/// 原生 JSONL，是每条消息工具快照的唯一保真来源（文本标记方案已按版本级
+/// 裁决整体废弃，无旧数据兼容层）。无块时原样返回、快照为空。
+pub fn extract_tool_snapshot(text: &str) -> (String, Vec<String>) {
+    let Some(start) = text.find(TOOL_BLOCK_OPEN) else {
+        return (text.to_string(), Vec::new());
+    };
+    let mut ids: Vec<String> = Vec::new();
+    if let Some(end_rel) = text[start..].find(TOOL_BLOCK_CLOSE) {
+        let block = &text[start..start + end_rel];
+        for line in block.lines() {
+            if let Some(rest) = line.strip_prefix("## ") {
+                if let Some((id, _)) = rest.split_once(" — ") {
+                    let id = id.trim();
+                    if !id.is_empty() && !ids.iter().any(|x| x == id) {
+                        ids.push(id.to_string());
+                    }
+                }
+            }
         }
-        result = new;
     }
-    result.trim_start().to_string()
+    (strip_tool_block(text), ids)
 }
 
 /// 剥离注入块（回放路径）。兼容块后紧跟的空行残留；无标记时原样返回。
@@ -569,16 +573,33 @@ usage = "u"
     }
 
     #[test]
-    fn strip_all_markers_removes_prefix_marker() {
-        // M1：compose 净化依赖——[JISHU-TOOLS:...] 头必须剥净
-        assert_eq!(
-            strip_all_markers("[JISHU-TOOLS:a,b] hello world"),
-            "hello world"
+    fn extract_tool_snapshot_parses_ids_and_strips_block() {
+        // v0.9.0 需求3 方案 C：回放派生契约——注入块内 `## id — desc` 头
+        // 提取 id 快照，块本身剥净。
+        let block = format!(
+            "{}\n## task-requirements — 需求讨论\n用法: x\n\n## task-plan — 方案规划\n用法: y\n{}",
+            TOOL_BLOCK_OPEN, TOOL_BLOCK_CLOSE
         );
-        assert_eq!(
-            strip_all_markers("[JISHU-TOOLS:a][JISHU-TOOLS:b] hi"),
-            "hi"
+        let text = format!("{block}\n\n用户的问题正文");
+        let (clean, ids) = extract_tool_snapshot(&text);
+        assert_eq!(clean, "用户的问题正文");
+        assert_eq!(ids, vec!["task-requirements", "task-plan"]);
+    }
+
+    #[test]
+    fn extract_tool_snapshot_no_block_passthrough() {
+        let (clean, ids) = extract_tool_snapshot("普通消息（无注入块）");
+        assert_eq!(clean, "普通消息（无注入块）");
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn extract_tool_snapshot_dedup_keeps_order() {
+        let block = format!(
+            "{}\n## a — 一\n## a — 重复\n## b — 二\n{}",
+            TOOL_BLOCK_OPEN, TOOL_BLOCK_CLOSE
         );
-        assert_eq!(strip_all_markers("plain"), "plain");
+        let (_, ids) = extract_tool_snapshot(&block);
+        assert_eq!(ids, vec!["a", "b"]);
     }
 }

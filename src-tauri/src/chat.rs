@@ -40,10 +40,11 @@ impl ChatState {
 /// ACP 存活会话早退路径与新回合路径共用（P0 修复：早退路径曾跳过注入，
 /// 持久进程第二轮起注入块从未附加）。
 /// M0：注入前先把暂存键（新会话输入框勾选）并入本会话键。
-/// M1（prompt 净化）：拼接说明块前先剥前端展示标记（[JISHU-TOOLS:…] 头 +
-/// 残留注入块），保证 agent 只看到 说明块 + 用户正文（§16.8 硬边界）。
 /// M6/P2-2：migrate/get 只操作 session-tools.json、不依赖 AppState——
 /// 移到 state.lock() 之前，锁内只保留真正需要 s.tool_plugins 的渲染段。
+/// v0.9.0 需求3 方案 C：前端不再嵌 [JISHU-TOOLS] 文本标记，净化步骤删除
+/// （版本级裁决：手输字面标记亦不防御）；本条消息的工具快照由注入块
+/// 随 prompt 持久化、回放经 extract_tool_snapshot 派生。
 fn compose_tool_message(
     state: &tauri::State<'_, Mutex<AppState>>,
     session_id: &str,
@@ -72,8 +73,7 @@ fn compose_tool_message(
     if block.trim().is_empty() {
         return message;
     }
-    let clean = agent::tool_plugin::strip_all_markers(&message);
-    format!("{block}\n\n{clean}")
+    format!("{block}\n\n{message}")
 }
 
 #[tauri::command]

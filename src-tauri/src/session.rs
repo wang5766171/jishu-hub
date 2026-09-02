@@ -28,7 +28,13 @@ pub struct InteractionOptionInfo {
 #[serde(tag = "type")]
 pub enum ContentBlock {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        /// v0.9.0 需求3 方案 C：本条用户消息关联的工具插件 id 快照（回放时
+        /// 从注入块派生填充，见 tool_plugin::extract_tool_snapshot）。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tool_ids: Vec<String>,
+    },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -156,7 +162,7 @@ fn parse_content_blocks(value: &serde_json::Value) -> Vec<ContentBlock> {
             if s.trim().is_empty() {
                 vec![]
             } else {
-                vec![ContentBlock::Text { text: s.clone() }]
+                vec![ContentBlock::Text { text: s.clone(), tool_ids: Vec::new() }]
             }
         }
         serde_json::Value::Array(arr) => arr
@@ -226,7 +232,7 @@ pub fn parse_message(line: &str) -> Option<Message> {
 
     let is_launch_text = role == "user"
         && filtered.iter().any(|b| match b {
-            ContentBlock::Text { text } => text.trim_start().starts_with("/jishu-task "),
+            ContentBlock::Text { text, .. } => text.trim_start().starts_with("/jishu-task "),
             _ => false,
         });
 
@@ -983,21 +989,21 @@ where
         }
         // Parse conversation messages
         if let Some(mut msg) = parse_message(line) {
-            // v0.8.1 需求7/10：用户消息剥工具插件注入块——agent 原生 JSONL 记录的
-            // 是 compose_tool_message 前缀后的完整 prompt（<jishu-tool-plugins>…），
-            // 展示层统一还原为用户原文（[JISHU-TOOLS:…] 头保留给前端渲染 pill）。
-            // 与 commands::sessions::get_session_messages 的回放剥离同一纪律。
+            // v0.8.1 需求7/10 → v0.9.0 需求3 方案 C：用户消息剥工具插件注入块
+            // 并从块内 `## id — desc` 头派生 tool_ids 元数据（pill 渲染数据源）。
             if msg.role == "user" {
                 for block in &mut msg.content {
-                    if let ContentBlock::Text { text } = block {
-                        *text = crate::agent::tool_plugin::strip_tool_block(text);
+                    if let ContentBlock::Text { text, tool_ids } = block {
+                        let (clean, ids) = crate::agent::tool_plugin::extract_tool_snapshot(text);
+                        *text = clean;
+                        *tool_ids = ids;
                     }
                 }
             }
             // Capture first user message text for smart summary fallback
             if msg.role == "user" && first_user_text.is_none() {
                 for block in &msg.content {
-                    if let ContentBlock::Text { text } = block {
+                    if let ContentBlock::Text { text, .. } = block {
                         if !text.trim().is_empty() {
                             first_user_text = Some(text.clone());
                             break;
@@ -1054,11 +1060,11 @@ where
         .and_then(|m| m.timestamp)
         .map(|ts| DateTime::from_timestamp_millis(ts).unwrap_or_default());
 
-    // v0.8.1 需求10：会话列表名清洗工具标记（注入块 + [JISHU-TOOLS] 头）——
-    // 标题必须呈现用户真实问题，不得泄漏任何插件标记（§16.3 剥离契约）。
+    // v0.8.1 需求10 → v0.9.0 需求3：会话列表名清洗注入块（文本标记已废弃）——
+    // 标题必须呈现用户真实问题，不得泄漏插件注入块（§16.3 剥离契约）。
     let display_name = last_ai_title
-        .map(|t| crate::agent::tool_plugin::strip_all_markers(&t))
-        .or_else(|| first_user_text.map(|t| smart_summary(&crate::agent::tool_plugin::strip_all_markers(&t))));
+        .map(|t| crate::agent::tool_plugin::strip_tool_block(&t))
+        .or_else(|| first_user_text.map(|t| smart_summary(&crate::agent::tool_plugin::strip_tool_block(&t))));
 
     let project_path = path
         .parent()
@@ -1199,7 +1205,7 @@ mod tests {
         // tool_use for request_user_input should be filtered out
         assert_eq!(msg.content.len(), 1);
         match &msg.content[0] {
-            ContentBlock::Text { text } => assert_eq!(text, "Continuing..."),
+            ContentBlock::Text { text, .. } => assert_eq!(text, "Continuing..."),
             other => panic!("Expected Text, got {:?}", other),
         }
     }
@@ -1239,7 +1245,7 @@ mod tests {
 
         assert_eq!(assistant.content.len(), 4);
         match &assistant.content[0] {
-            ContentBlock::Text { text } => assert_eq!(text, "Intro"),
+            ContentBlock::Text { text, .. } => assert_eq!(text, "Intro"),
             other => panic!("Expected intro text, got {:?}", other),
         }
         match &assistant.content[1] {
@@ -1257,7 +1263,7 @@ mod tests {
             other => panic!("Expected Q2 interaction, got {:?}", other),
         }
         match &assistant.content[3] {
-            ContentBlock::Text { text } => assert_eq!(text, "Final summary"),
+            ContentBlock::Text { text, .. } => assert_eq!(text, "Final summary"),
             other => panic!("Expected final text, got {:?}", other),
         }
 
@@ -1393,7 +1399,7 @@ mod tests {
             .find(|m| m.role == "assistant")
             .unwrap();
         match &assistant.content[0] {
-            ContentBlock::Text { text } => assert_eq!(text, "the partial streamed reply"),
+            ContentBlock::Text { text, .. } => assert_eq!(text, "the partial streamed reply"),
             other => panic!("Expected text, got {:?}", other),
         }
 
@@ -1460,7 +1466,7 @@ mod tests {
             .filter(|m| m.role == "assistant")
             .flat_map(|m| m.content.iter())
             .filter_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.as_str()),
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -1505,7 +1511,7 @@ mod tests {
                     assert_eq!(thinking, "private reasoning");
                     has_thinking = true;
                 }
-                ContentBlock::Text { text } => {
+                ContentBlock::Text { text, .. } => {
                     assert_eq!(text, "visible answer");
                     has_text = true;
                 }

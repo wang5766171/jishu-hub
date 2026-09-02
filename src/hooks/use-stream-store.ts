@@ -52,6 +52,9 @@ export interface SessionStreamState {
   error: string;
   tools: StreamToolUse[];
   pendingUserMessage: string | null;
+  /** v0.9.0 需求3 方案 C：本条消息的工具插件 id 快照（compose 时前端已知，
+   * 与 pendingUserMessage 并行；文本标记方案已废弃，不再从文本解析）。 */
+  pendingToolIds: string[];
   /** Real session id if a `session_resolved` event was seen. */
   resolvedId: string | null;
   /** Id to pass to `abort_chat` (matches what the backend tracks). */
@@ -86,7 +89,11 @@ export interface SessionStreamState {
   interactionSplits: InteractionSplit[];
 }
 
-function emptyState(abortKey: string, pendingUserMessage: string | null): SessionStreamState {
+function emptyState(
+  abortKey: string,
+  pendingUserMessage: string | null,
+  pendingToolIds: string[] = [],
+): SessionStreamState {
   return {
     chunks: [],
     content: [],
@@ -95,6 +102,7 @@ function emptyState(abortKey: string, pendingUserMessage: string | null): Sessio
     error: "",
     tools: [],
     pendingUserMessage,
+    pendingToolIds,
     resolvedId: null,
     abortKey,
     isStreaming: true,
@@ -137,11 +145,11 @@ class StreamStore {
   }
 
   /** Begin tracking a session that we just sent a message to. */
-  start(canonicalId: string, pendingUserMessage: string | null): void {
+  start(canonicalId: string, pendingUserMessage: string | null, pendingToolIds: string[] = []): void {
     const key = this.canonical(canonicalId);
     // Reset the state for a new turn, even if the key already exists
     // (e.g. second message in the same session).
-    this.sessions.set(key, emptyState(key, pendingUserMessage));
+    this.sessions.set(key, emptyState(key, pendingUserMessage, pendingToolIds));
     this.scheduleFlush();
   }
 
@@ -170,6 +178,7 @@ class StreamStore {
     const prev = this.sessions.get(key) ?? emptyState(key, null);
 
     let { content, text, thinking, error, tools, resolvedId, steps, steerSplits, steerTexts, interactionSplits } = prev;
+    const pendingToolIds = prev.pendingToolIds;
     const { pendingUserMessage, abortKey, isStreaming } = prev;
     const chunks = [...prev.chunks, chunk];
 
@@ -332,6 +341,7 @@ class StreamStore {
       error,
       tools,
       pendingUserMessage,
+      pendingToolIds,
       resolvedId,
       abortKey,
       isStreaming,

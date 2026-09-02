@@ -44,13 +44,15 @@ pub(crate) async fn get_session_messages(
         .registry
         .require_agent(&agent_id)?
         .get_session_messages(&session_id, &encoded_name)?;
-    // v0.8.1 需求7：剥离工具插件注入块——agent 原生历史（自写 JSONL）记录的
-    // 是带前缀的消息，回放统一还原为用户原文（集中一处，覆盖全部 adapter）。
+    // v0.8.1 需求7 → v0.9.0 需求3 方案 C：剥注入块并派生 tool_ids 元数据
+    // （pill 渲染数据源；集中一处，覆盖全部 adapter 的回放）。
     for message in &mut messages {
         if message.role == "user" {
             for block in &mut message.content {
-                if let crate::session::ContentBlock::Text { text } = block {
-                    *text = crate::agent::tool_plugin::strip_tool_block(text);
+                if let crate::session::ContentBlock::Text { text, tool_ids } = block {
+                    let (clean, ids) = crate::agent::tool_plugin::extract_tool_snapshot(text);
+                    *text = clean;
+                    *tool_ids = ids;
                 }
             }
         }

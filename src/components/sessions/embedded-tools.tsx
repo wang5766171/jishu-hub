@@ -1,30 +1,13 @@
 /**
- * v0.8.1 需求10：消息内嵌工具 pill 渲染——检测 [JISHU-TOOLS:id1,id2] 标记，
- * 剥离标记文本，返回工具 id 列表供渲染层显示 pill（workbuddy 形态）。
+ * v0.9.0 需求3 方案 C：消息内嵌工具 pill 渲染——数据源为消息元数据
+ * `tool_ids`（回放：后端从注入块派生；流式：compose 时前端已知并显式传递）。
+ * 文本标记（[JISHU-TOOLS:...]）方案已按版本级裁决整体废弃，本模块不再
+ * 做任何文本解析。
  */
 
 import { useEffect, useState } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { Blocks } from "lucide-react";
-
-const TOOLS_MARKER_RE = /^\[JISHU-TOOLS:([^\]]+)\]\s?/;
-
-export interface EmbeddedTools {
-  /** 剥离标记后的纯文本 */
-  text: string;
-  /** 标记中的工具 id 列表 */
-  toolIds: string[];
-}
-
-export function parseEmbeddedTools(text: string): EmbeddedTools {
-  const match = text.match(TOOLS_MARKER_RE);
-  if (!match) return { text, toolIds: [] };
-  const toolIds = match[1]
-    .split(",")
-    .map((id) => id.trim())
-    .filter(Boolean);
-  return { text: text.slice(match[0].length), toolIds };
-}
 
 /** 会话工具条目（后端 session_tool_list，与 chat-input 的 SessionTool 同构）。 */
 interface SessionTool {
@@ -108,21 +91,22 @@ export function EmbeddedToolPill({ name }: { name: string }) {
   );
 }
 
-/** 用户消息正文展示统一组件（M5）：剥 [JISHU-TOOLS] 标记 → pill + 正文
- * 同一内联流。四个用户消息展示面（回放/流式/引导占位/暂存）共用，杜绝
- * 新增面漏解析导致标记原文可见（§16.3 单源纪律）。 */
+/** 用户消息正文展示统一组件（M5 → v0.9.0 需求3 元数据化）：tool_ids 快照
+ * → pill + 正文同一内联流。pill 数据一律来自 toolIds 元数据参数，组件本身
+ * 零文本解析（展示面单源纪律 §16.3）。 */
 export function UserTextWithPills({
   text,
+  toolIds,
   toolNames,
 }: {
   text: string;
+  toolIds: string[];
   toolNames: Record<string, string>;
 }) {
-  const { text: display, toolIds } = parseEmbeddedTools(text);
   return (
     <span className="whitespace-pre-wrap break-all">
       <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
-      {display}
+      {text}
     </span>
   );
 }

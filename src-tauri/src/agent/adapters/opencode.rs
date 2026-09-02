@@ -428,6 +428,7 @@ fn append_part_blocks(part: &serde_json::Value, content: &mut Vec<crate::session
                 if !text.trim().is_empty() {
                     content.push(crate::session::ContentBlock::Text {
                         text: text.to_string(),
+                        tool_ids: Vec::new(),
                     });
                 }
             }
@@ -1900,7 +1901,7 @@ mod tests {
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[0].timestamp, Some(100));
         assert!(
-            matches!(&messages[0].content[0], crate::session::ContentBlock::Text { text } if text == "hello world")
+            matches!(&messages[0].content[0], crate::session::ContentBlock::Text { text, .. } if text == "hello world")
         );
 
         // reasoning -> thinking, tool -> tool_use + tool_result
@@ -1967,7 +1968,7 @@ mod tests {
 
         assert_eq!(sessions[0].messages.len(), 1);
         match &sessions[0].messages[0].content[0] {
-            crate::session::ContentBlock::Text { text } => {
+            crate::session::ContentBlock::Text { text, .. } => {
                 assert_eq!(text, "Open Code searchable history");
             }
             _ => panic!("expected hydrated text block"),
@@ -2005,7 +2006,7 @@ mod tests {
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[1].role, "assistant");
         match &messages[1].content[0] {
-            crate::session::ContentBlock::Text { text } => {
+            crate::session::ContentBlock::Text { text, .. } => {
                 assert_eq!(text, "你好！有什么可以帮你的？");
             }
             other => panic!("Expected text block, got {:?}", other),

@@ -8,7 +8,7 @@ import rehypeHighlight from "rehype-highlight";
 import { Check, Copy, Bot } from "lucide-react";
 import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
-import { parseEmbeddedTools, EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
+import { EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
 import { ToolGroup } from "@/components/observability/tool-call-card";
 import { resolveToolKind } from "@/components/observability/tool-call-card/types";
 import type { ToolCall } from "@/components/observability/tool-call-card";
@@ -508,11 +508,12 @@ function UserBubble({
   toolNames: Record<string, string>;
 }) {
   const { t } = useTranslation();
-  // v0.8.1 需求7：首文本块剥 [JISHU-TOOLS] 标记 → pill（displayText 供
-  // InlineImages 与渲染，copyText 保留标记以便复制原语义）。
+  // v0.9.0 需求3 方案 C：pill 数据源为首文本块的 tool_ids 元数据（回放由
+  // 后端 extract_tool_snapshot 从注入块派生）；文本标记解析已废弃。
   const firstTextBlock = msg.content.find((b) => b.type === "text");
   const rawText = firstTextBlock && firstTextBlock.type === "text" ? firstTextBlock.text : "";
-  const { text: displayText, toolIds } = parseEmbeddedTools(rawText);
+  const displayText = rawText;
+  const toolIds = (firstTextBlock && firstTextBlock.type === "text" ? firstTextBlock.tool_ids : undefined) ?? [];
   const copyText = extractMessageText(msg);
 
   // 三角色：roleResolver 解析为 orchestrator（主进程派发）→ 「任务助手」样式。

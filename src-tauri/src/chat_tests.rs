@@ -65,7 +65,9 @@ mod tests {
         )
     }
 
-    /// compose_tool_message 核心序列的纯函数复刻（迁移→读取→过滤→渲染→净化）。
+    /// compose_tool_message 核心序列的纯函数复刻（迁移→读取→过滤→渲染）。
+    /// v0.9.0 需求3 方案 C：前端不再嵌 [JISHU-TOOLS] 文本标记，净化步骤
+    /// 已删除（compose 只做 块前缀 + 原文直拼）。
     fn compose_core(session_id: &str, message: &str, pool: &[tp::ToolPlugin]) -> String {
         tp::migrate_session_tools(tp::STAGING_SESSION_KEY, session_id);
         let ids = tp::get_session_tools(session_id);
@@ -83,7 +85,7 @@ mod tests {
         if block.trim().is_empty() {
             return message.to_string();
         }
-        format!("{block}\n\n{}", tp::strip_all_markers(message))
+        format!("{block}\n\n{message}")
     }
 
     fn lock() -> std::sync::MutexGuard<'static, ()> {
@@ -106,16 +108,14 @@ mod tests {
         tp::set_session_tools_map_for_test(&map);
 
         let pool = vec![injectable_plugin(), pi_only_plugin()];
-        let out = compose_core(
-            "pending-1000",
-            "[JISHU-TOOLS:gh-cli] 列出我的仓库",
-            &pool,
-        );
+        let out = compose_core("pending-1000", "列出我的仓库", &pool);
         // 注入块包含说明
         assert!(out.contains("<jishu-tool-plugins>"));
         assert!(out.contains("gh repo view"));
-        // 正文净化：无展示标记
-        assert!(!out.contains("[JISHU-TOOLS"));
+        // v0.9.0 需求3：回放派生——块剥净、正文还原、id 快照可提取
+        let (clean, ids) = tp::extract_tool_snapshot(&out);
+        assert_eq!(clean, "列出我的仓库");
+        assert_eq!(ids, vec!["gh-cli".to_string()]);
         // 暂存键已清空、内容已迁移到 pending
         assert!(tp::get_session_tools(tp::STAGING_SESSION_KEY).is_empty());
         assert_eq!(
@@ -149,8 +149,11 @@ mod tests {
 
     #[test]
     fn compose_no_tools_returns_message_untouched() {
-        // 无工具时消息原样（标记保留——剥离责任在前端渲染层，分层剥离契约）
+        // 无工具时消息原样（分层契约：无块即无快照，回放派生得空 ids）
         let out = compose_core("s-none", "hello", &[]);
         assert_eq!(out, "hello");
+        let (clean, ids) = tp::extract_tool_snapshot(&out);
+        assert_eq!(clean, "hello");
+        assert!(ids.is_empty());
     }
 }

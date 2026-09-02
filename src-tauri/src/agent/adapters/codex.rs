@@ -670,7 +670,7 @@ impl SessionAdapter for CodexAdapter {
                 .find(|m| m.role == "user")
                 .and_then(|m| {
                     m.content.first().and_then(|b| match b {
-                        crate::session::ContentBlock::Text { text } => {
+                        crate::session::ContentBlock::Text { text, .. } => {
                             Some(text.chars().take(50).collect::<String>())
                         }
                         _ => None,
@@ -1167,6 +1167,7 @@ fn parse_rollout_messages(path: &std::path::Path) -> Result<Vec<crate::session::
             role: role.to_string(),
             content: vec![crate::session::ContentBlock::Text {
                 text: msg.to_string(),
+                tool_ids: Vec::new(),
             }],
             timestamp,
         });

@@ -101,7 +101,9 @@ export function MessageStaging({
           ) : (
             <>
               <p className="min-w-0 flex-1 text-xs leading-5 text-foreground">
-                <UserTextWithPills text={msg.content} toolNames={toolNames ?? {}} />
+                {/* v0.9.0 需求3：暂存预览为 compose 前原文（@[token] 字面显示），
+                    tool_ids 快照在引导发送时才产生（见 chat-input composeOutgoing）。 */}
+                <UserTextWithPills text={msg.content} toolIds={[]} toolNames={toolNames ?? {}} />
               </p>
               <div className="flex shrink-0 items-center gap-1">
                 <button
