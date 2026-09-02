@@ -10,7 +10,15 @@ entry = "plan.ts"
 target_agent = "jishu-self"
 
 [tool]
-description = "提交结构化流程计划（产出 flow-plan.json + flow-plan.md，适合需要分步骤执行的场景）"
+description = "结构化流程规划工具——需求确认后，当任务需要拆分为多个有依赖关系的执行节点时使用。产出 flow-plan.json + flow-plan.md。单步可完成的简单任务不需要流程规划，直接执行。"
 usage = "jishu-cli task-artifact commit-plan --nodes '<JSON数组>' --project $JISHU_PROJECT_PATH"
-example = "jishu-cli task-artifact commit-plan --nodes '[{\"id\":\"n1\",\"title\":\"分析瓶颈\",\"depends_on\":[],\"role\":\"developer\"}]' --project $JISHU_PROJECT_PATH"
-notes = "nodes JSON: [{id, title, responsibility, depends_on, acceptance, role}]。觉得开发不复杂时可不调此工具直接执行。"
+example = "jishu-cli task-artifact commit-plan --nodes '[{\"id\":\"n1\",\"title\":\"分析瓶颈\",\"depends_on\":[],\"role\":\"developer\"},{\"id\":\"n2\",\"title\":\"优化实现\",\"depends_on\":[\"n1\"],\"role\":\"developer\"}]' --project $JISHU_PROJECT_PATH"
+notes = """何时使用（满足全部条件）：
+1. 已有确认过的需求文档（REQUIREMENTS.md）
+2. 任务需要 3 个以上有依赖关系的执行步骤（如：设计→实现→测试→部署）
+3. 不同步骤可能需要不同角色（developer/tester/architect）
+
+何时不用（满足任一条就不要用）：
+- 任务只有 1-2 步就能完成 → 直接实现
+- 没有步骤间依赖（每步独立） → 直接实现，不需要编排
+- 用户要求直接做 → 直接实现"""
