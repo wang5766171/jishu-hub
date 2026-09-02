@@ -117,7 +117,7 @@ fn normalize_opencode_tool_use(event: &serde_json::Value) -> Vec<NormalizedEvent
         return raw(event);
     }
 
-    let view = crate::agent::tool_view::classify_tool_view(&tool, &input);
+    let view = crate::agent::tool_view::classify_tool_view_for("opencode", &tool, &input);
     let mut normalized = vec![NormalizedEvent::ToolUseStart {
         call_id: call_id.clone(),
         tool,

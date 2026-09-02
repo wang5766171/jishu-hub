@@ -88,7 +88,7 @@ fn normalize_claude_assistant(event: &serde_json::Value) -> Vec<NormalizedEvent>
                 .get("input")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
-            let view = crate::agent::tool_view::classify_tool_view(&tool, &input);
+            let view = crate::agent::tool_view::classify_tool_view_for("claude-code", &tool, &input);
             normalized.push(NormalizedEvent::ToolUseStart {
                 call_id,
                 tool,

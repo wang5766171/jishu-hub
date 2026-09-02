@@ -1406,7 +1406,7 @@ fn normalize_notification(method: &str, params: &Value) -> Vec<NormalizedEvent> 
                 .unwrap_or_default()
                 .to_string();
             let input = serde_json::json!({ "command": command, "cwd": cwd });
-            let view = crate::agent::tool_view::classify_tool_view("bash", &input);
+            let view = crate::agent::tool_view::classify_tool_view_for("codex", "bash", &input);
             vec![NormalizedEvent::ToolUseStart {
                 call_id,
                 tool: "bash".to_string(),
@@ -1463,14 +1463,15 @@ fn normalize_notification(method: &str, params: &Value) -> Vec<NormalizedEvent> 
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            // 变更类型 → 工具方言名：create→write / delete→bash 删档展示 / 其他→edit。
+            // 变更类型 → 工具方言名：create→write / delete→file_delete（v2
+            // 激活 FileDelete 死枚举，v0.9.0 需求4）/ 其他→edit。
             let tool_name = match change_type.as_str() {
                 "create" => "write",
-                "delete" => "edit",
+                "delete" => "file_delete",
                 _ => "edit",
             };
             let input = serde_json::json!({ "path": path, "changeType": change_type });
-            let view = crate::agent::tool_view::classify_tool_view(tool_name, &input);
+            let view = crate::agent::tool_view::classify_tool_view_for("codex", tool_name, &input);
             vec![NormalizedEvent::ToolUseStart {
                 call_id,
                 tool: tool_name.to_string(),

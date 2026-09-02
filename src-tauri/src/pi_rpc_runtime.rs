@@ -1523,7 +1523,7 @@ pub(crate) fn normalize_pi_agent_event(
             } else {
                 let interactions = interaction_requests_from_tool_call(&call_id, &tool, &input);
                 if interactions.is_empty() {
-                    let view = crate::agent::tool_view::classify_tool_view(&tool, &input);
+                    let view = crate::agent::tool_view::classify_tool_view_for("jishu-self", &tool, &input);
                     vec![NormalizedEvent::ToolUseStart {
                         call_id,
                         tool,

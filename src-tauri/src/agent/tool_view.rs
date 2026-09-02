@@ -1,12 +1,14 @@
-//! 工具渲染意图（render intent，v0.8.0 需求2 Phase 1）：EventNormalizer
-//! 产出 ToolUseStart 时调用，把 agent 方言的工具名收敛为中立的视图分类 +
-//! 位置信息。前端 UI 只做「意图→组件」纯映射（直播与回放同源），不再解析
-//! 工具输入。
+//! 工具渲染意图（render intent，v0.8.0 需求2 Phase 1 → v0.9.0 需求4 v2）：
+//! EventNormalizer 产出 ToolUseStart 时调用，把 agent 方言的工具名收敛为
+//! 中立的视图分类 + 位置信息。前端 UI 只做「意图→组件」纯映射（直播与
+//! 回放同源），不再解析工具输入。
 //!
-//! v1 规则 = 前端 classifyToolName（tool-call-card/types.ts，2026-08-21
-//! 快照，见 docs/v0.8.0/需求2-插件化架构一期/01 §6）**逐条移植**；迁移期
-//! 两版不一致 = bug；后续新增工具只改这里（前端 classifyToolName 降级为
-//! 历史数据 fallback）。
+//! v1 规则 = 前端 classifyToolName（2026-08-21 快照）逐条移植。v2（需求4）：
+//! ①分类唯一源收敛完成——前端 classifyToolName fallback 已删除（无 view 的
+//! 旧块按 other 渲染，版本级无旧数据兼容裁决）；②contains("read") 模糊项
+//! 收紧为精确项；③FileDelete 死枚举激活（codex fileChange delete）；
+//! ④classify_name_for per-agent 覆写钩子（各 runtime 入口传入 agent id，
+//! 覆写表待 manifest agent 实际案例填入）。后续新增工具分类只改本模块。
 //!
 //! 本模块同时持有**交互工具权威名单**（02 §1.6）：前端 8 名单与后端
 //! is_elicitation_only_tool 3 名单的并集收敛于此；前端名单保留为渲染快
@@ -16,8 +18,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// 中立视图分类（与前端 ToolKind 一一对应，wire 用 snake_case）。
-/// 注意：`FileDelete` 在 v1 规则中无产生分支（前端死枚举值原样移植），
-/// 仅占位保枚举同构；激活留后续独立演进（01 §4.3）。
+/// v2（v0.9.0 需求4）：FileDelete 已激活（file_delete/delete_file/remove_file
+/// 精确项 + codex fileChange delete 变更投影）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolViewKind {
@@ -57,9 +59,38 @@ pub fn classify_tool_view(tool: &str, input: &Value) -> ToolView {
     }
 }
 
-/// v1 分类规则——逐条对齐 01 §6 快照：
-/// - `file_read`：read/view_file/view 精确 + **contains("read")**（TS 唯一
-///   模糊项，原样保留）；
+/// v2 分类 + 提取位置（v0.9.0 需求4）：先查 agent 方言覆写表，未命中回落
+/// 全局规则。各 runtime 归一化入口已知自家 agent id，经此入口分类。
+pub fn classify_tool_view_for(agent: &str, tool: &str, input: &Value) -> ToolView {
+    ToolView {
+        kind: classify_name_for(agent, tool),
+        locations: extract_locations(input),
+    }
+}
+
+/// agent 方言覆写表（v2 声明驱动钩子）：同一工具名在不同 agent 语义不同、
+/// 或全局表未收录的 agent 专属名，在此逐条声明。**初始为空**——填表触发
+/// 条件即归档重启条件：manifest agent 实际出现分类偏差时。
+fn agent_tool_overrides(_agent: &str) -> &'static [(&'static str, ToolViewKind)] {
+    &[]
+}
+
+/// v2：per-agent 分类入口——覆写表优先，全局规则兜底。
+pub fn classify_name_for(agent: &str, name: &str) -> ToolViewKind {
+    if let Some((_, kind)) = agent_tool_overrides(agent)
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+    {
+        return *kind;
+    }
+    classify_name(name)
+}
+
+/// v1→v2 分类规则（v0.9.0 需求4）：
+/// - `file_read`：read/view_file/view 精确 + read_file/view_image（v2 收紧：
+///   删除 contains("read") 唯一模糊项——真实受益者 codex read_file 收编为精确项）；
+/// - `file_delete`：file_delete/delete_file/remove_file 精确（v2 激活死枚举：
+///   codex fileChange 的 delete 变更合成 file_delete）；
 /// - `file_edit`：edit/multiedit/str_replace/patch/replace/edit_file/
 ///   modify_file/file_edit + apply_patch/apply_changes；
 /// - `file_write`：write/create_file/write_file/file_write；
@@ -72,8 +103,11 @@ pub fn classify_tool_view(tool: &str, input: &Value) -> ToolView {
 /// - 兜底 other。
 pub fn classify_name(name: &str) -> ToolViewKind {
     let n = name.to_ascii_lowercase();
-    if n == "read" || n == "view_file" || n == "view" || n.contains("read") {
+    if n == "read" || n == "view_file" || n == "view" || n == "read_file" || n == "view_image" {
         return ToolViewKind::FileRead;
+    }
+    if n == "file_delete" || n == "delete_file" || n == "remove_file" {
+        return ToolViewKind::FileDelete;
     }
     if n == "edit"
         || n == "multiedit"
@@ -169,12 +203,20 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// 01 §6 快照全量用例（与前端 vitest 用例表同源翻译；两版不一致 = bug）。
+    /// v1 快照用例 → v2（v0.9.0 需求4）：模糊项删除 + FileDelete 激活。
     #[test]
-    fn classify_name_matches_frontend_snapshot() {
-        // file_read：精确三连 + 唯一模糊项 contains("read")
-        for name in ["read", "view_file", "view", "ctx_read", "Read"] {
+    fn classify_name_matches_v2_rules() {
+        // file_read：精确表（v2 收紧：contains("read") 已删，read_file/view_image 收编精确）
+        for name in ["read", "view_file", "view", "read_file", "view_image", "Read"] {
             assert_eq!(classify_name(name), ToolViewKind::FileRead, "{name}");
+        }
+        // v2 收紧回归锁：含 read 的未知名不再模糊命中
+        for name in ["ctx_read", "thread_read"] {
+            assert_eq!(classify_name(name), ToolViewKind::Other, "{name}");
+        }
+        // file_delete（v2 激活）
+        for name in ["file_delete", "delete_file", "remove_file"] {
+            assert_eq!(classify_name(name), ToolViewKind::FileDelete, "{name}");
         }
         // file_edit：第一批 + apply_patch 家族
         for name in [
@@ -215,10 +257,10 @@ mod tests {
         // other：未知与大小写规范化
         assert_eq!(classify_name("unknown_tool"), ToolViewKind::Other);
         assert_eq!(classify_name("Bash".to_lowercase().as_str()), ToolViewKind::ShellExec);
-        // 边界：reading 含 read → file_read（模糊项语义）
-        assert_eq!(classify_name("reading_notes"), ToolViewKind::FileRead);
-        // 边界：thread 含子串 "read" → file_read（模糊项语义，与 TS 一致）
-        assert_eq!(classify_name("thread"), ToolViewKind::FileRead);
+        // v2 收紧边界：含 "read" 子串的未知名不再误判（v1 模糊项活证据：
+        // "thread" 含子串 "read" 曾被分类为 file_read）
+        assert_eq!(classify_name("reading_notes"), ToolViewKind::Other);
+        assert_eq!(classify_name("thread"), ToolViewKind::Other);
     }
 
     #[test]
@@ -267,5 +309,17 @@ mod tests {
         assert_eq!(view.kind, ToolViewKind::FileWrite);
         assert_eq!(view.locations.len(), 1);
         assert_eq!(view.locations[0].path, "novel.md");
+    }
+
+    /// v2 per-agent 入口（v0.9.0 需求4）：覆写表（当前空）未命中回落全局，
+    /// 位置提取行为不变。
+    #[test]
+    fn classify_name_for_falls_back_to_global() {
+        assert_eq!(classify_name_for("codex", "bash"), ToolViewKind::ShellExec);
+        assert_eq!(classify_name_for("unknown-agent", "read"), ToolViewKind::FileRead);
+        assert_eq!(classify_name_for("codex", "custom_thing"), ToolViewKind::Other);
+        let view = classify_tool_view_for("codex", "file_delete", &json!({"path": "a.txt"}));
+        assert_eq!(view.kind, ToolViewKind::FileDelete);
+        assert_eq!(view.locations[0].path, "a.txt");
     }
 }

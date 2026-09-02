@@ -54,6 +54,8 @@ fn normalizes_tool_call() {
     });
     let mut usage = None;
     let events = normalize_acp_update(&params, &mut usage);
+    // v0.9.0 需求4：title 兜底名 "Reading file" 不再经 contains("read")
+    // 模糊命中（模糊项已删）——自然语言标题按 other；真实工具名走精确表。
     assert_eq!(
         events,
         vec![NormalizedEvent::ToolUseStart {
@@ -61,7 +63,7 @@ fn normalizes_tool_call() {
             tool: "Reading file".to_string(),
             input: serde_json::Value::Null,
             view: Some(crate::agent::tool_view::ToolView {
-                kind: crate::agent::tool_view::ToolViewKind::FileRead,
+                kind: crate::agent::tool_view::ToolViewKind::Other,
                 locations: vec![],
             }),
         }]
