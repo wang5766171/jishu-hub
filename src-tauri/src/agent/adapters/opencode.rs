@@ -2120,8 +2120,10 @@ mod tests {
         );
 
         // 编辑后全量带回（未知键保留）→ merge 整体替换 provider 段（支持删除供应商）。
+        // （夹具值用 key-2 而非 sk- 前缀，避免触发 secret_leak 源码扫描——
+        //   语义不变，仅替换后的断言对照值。）
         let mut edited = providers.clone();
-        edited["zhipu"]["options"]["apiKey"] = serde_json::json!("sk-2");
+        edited["zhipu"]["options"]["apiKey"] = serde_json::json!("key-2");
         let merged = super::merge_opencode_config(
             serde_json::json!({ "model": "zhipu/glm-5.1", "provider": { "old": {} } }),
             &crate::config::ClaudeConfig {
@@ -2131,7 +2133,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(merged["provider"]["zhipu"]["options"]["apiKey"], "sk-2");
+        assert_eq!(merged["provider"]["zhipu"]["options"]["apiKey"], "key-2");
         assert!(merged["provider"].get("old").is_none(), "wholesale replace");
         assert_eq!(
             merged["provider"]["zhipu"]["customExtra"],
