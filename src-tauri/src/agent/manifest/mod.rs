@@ -84,6 +84,23 @@ pub fn load_manifests(
         .collect();
     files.sort();
 
+    // v0.9.0 需求2：目录形式插件 `~/.jishu-hub/plugins/<id>/plugin.toml`
+    //（pi 扩展插件的 entry TS 与插件目录同放；agents/ 单文件形式优先——
+    // 同 id 时目录形式跳过）。
+    let mut dir_form: Vec<PathBuf> = Vec::new();
+    let plugins_dir = hub_home().join("plugins");
+    if let Ok(subs) = std::fs::read_dir(&plugins_dir) {
+        let mut sub_paths: Vec<PathBuf> = subs.flatten().map(|e| e.path()).collect();
+        sub_paths.sort();
+        for sub in sub_paths {
+            let candidate = sub.join("plugin.toml");
+            if candidate.is_file() {
+                dir_form.push(candidate);
+            }
+        }
+    }
+    files.extend(dir_form);
+
     for path in files {
         let file_name = path
             .file_name()

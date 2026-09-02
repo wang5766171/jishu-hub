@@ -48,6 +48,114 @@ fn tasks_root(project: &str) -> std::path::PathBuf {
         .join("tasks")
 }
 
+/// 分号切分字段非空校验（v0.9.0 需求2：lock-requirement 空项过滤）。
+fn split_non_empty(raw: &str) -> Vec<String> {
+    raw.split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// 计划节点结构校验（v0.9.0 需求2，评审 P3 补齐）：对照 conductor Step
+/// 契约（jishu-task-conductor.ts:23-31）——nodes 为数组、每节点 id/title
+/// 非空且 id 唯一、depends_on 引用存在、依赖无环。
+fn validate_plan_nodes(nodes: &serde_json::Value) -> Result<(), String> {
+    let Some(arr) = nodes.as_array() else {
+        return Err("nodes 必须是数组".to_string());
+    };
+    if arr.is_empty() {
+        return Err("nodes 不能为空".to_string());
+    }
+    let mut ids = std::collections::HashSet::new();
+    for (i, node) in arr.iter().enumerate() {
+        let id = node
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if id.is_empty() {
+            return Err(format!("nodes[{i}].id 不能为空"));
+        }
+        if !ids.insert(id.to_string()) {
+            return Err(format!("nodes[{i}].id 重复：{id}"));
+        }
+        let title = node
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if title.is_empty() {
+            return Err(format!("nodes[{i}].title 不能为空（id={id}）"));
+        }
+    }
+    // depends_on 引用存在性。
+    for (i, node) in arr.iter().enumerate() {
+        let id = node["id"].as_str().unwrap_or_default();
+        if let Some(deps) = node.get("depends_on").and_then(serde_json::Value::as_array) {
+            for dep in deps {
+                let dep = dep.as_str().unwrap_or_default();
+                if !ids.contains(dep) {
+                    return Err(format!(
+                        "nodes[{i}].depends_on 引用不存在的节点：{dep}（id={id}）"
+                    ));
+                }
+            }
+        }
+    }
+    // 依赖无环（DFS 三色标记）。
+    let mut edges = std::collections::HashMap::<&str, Vec<&str>>::new();
+    for node in arr {
+        let id = node["id"].as_str().unwrap_or_default();
+        let deps = node
+            .get("depends_on")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|d| d.as_str())
+                    .filter(|d| ids.contains(*d))
+                    .collect()
+            })
+            .unwrap_or_default();
+        edges.insert(id, deps);
+    }
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mark {
+        White,
+        Gray,
+        Black,
+    }
+    fn dfs<'a>(
+        node: &'a str,
+        edges: &std::collections::HashMap<&'a str, Vec<&'a str>>,
+        marks: &mut std::collections::HashMap<&'a str, Mark>,
+    ) -> bool {
+        match marks.get(node) {
+            Some(Mark::Gray) => return false, // 回边 = 环
+            Some(Mark::Black) => return true,
+            _ => {}
+        }
+        marks.insert(node, Mark::Gray);
+        if let Some(deps) = edges.get(node) {
+            for dep in deps {
+                if !dfs(dep, edges, marks) {
+                    return false;
+                }
+            }
+        }
+        marks.insert(node, Mark::Black);
+        true
+    }
+    let mut marks = std::collections::HashMap::new();
+    for node in arr {
+        let id = node["id"].as_str().unwrap_or_default();
+        if !dfs(id, &edges, &mut marks) {
+            return Err(format!("nodes 依赖存在环（含节点 {id}）"));
+        }
+    }
+    Ok(())
+}
+
 fn lock_requirement(
     title: &str,
     goal: &str,
@@ -58,6 +166,20 @@ fn lock_requirement(
     ctx: &ExecutionContext,
 ) -> Result<(), CliError> {
     let id = task_id.unwrap_or_else(|| format!("free-{}", chrono::Utc::now().timestamp()));
+    // v0.9.0 需求2：空项校验——scope/acceptance 分号切分后须至少一项非空
+    //（渲染模板保持与 conductor 同构，仅过滤空段）。
+    let scope_items = split_non_empty(scope);
+    let acceptance_items = split_non_empty(acceptance);
+    if scope_items.is_empty() {
+        return Err(CliError::InvalidArg(
+            "scope 至少需要一项非空条目（分号分隔）".to_string(),
+        ));
+    }
+    if acceptance_items.is_empty() {
+        return Err(CliError::InvalidArg(
+            "acceptance 至少需要一项非空条目（分号分隔）".to_string(),
+        ));
+    }
     let dir = tasks_root(project)
         .join(&id)
         .join("artifacts")
@@ -67,14 +189,14 @@ fn lock_requirement(
     // REQUIREMENTS.md（与 conductor renderRequirement 模板同构）
     let md = format!(
         "# {title}\n\n## 目标\n{goal}\n\n## 范围\n{}\n\n## 验收标准\n{}\n",
-        scope
-            .split(';')
-            .map(|s| format!("- {}", s.trim()))
+        scope_items
+            .iter()
+            .map(|s| format!("- {s}"))
             .collect::<Vec<_>>()
             .join("\n"),
-        acceptance
-            .split(';')
-            .map(|s| format!("- {}", s.trim()))
+        acceptance_items
+            .iter()
+            .map(|s| format!("- {s}"))
             .collect::<Vec<_>>()
             .join("\n"),
     );
@@ -115,6 +237,9 @@ fn commit_plan(
 ) -> Result<(), CliError> {
     let nodes: serde_json::Value = serde_json::from_str(nodes_json)
         .map_err(|e| CliError::InvalidArg(format!("invalid nodes JSON: {e}")))?;
+    // v0.9.0 需求2：节点结构校验（必填/唯一/引用/无环）——坏计划在落盘前
+    // 拒绝，产物哈希链不接纳非法结构。
+    validate_plan_nodes(&nodes).map_err(CliError::InvalidArg)?;
     let id = task_id.unwrap_or_else(|| format!("free-{}", chrono::Utc::now().timestamp()));
     let dir = tasks_root(project)
         .join(&id)
@@ -154,4 +279,65 @@ fn commit_plan(
         println!("Plan written: {}", out.display());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn node(id: &str, title: &str, deps: &[&str]) -> serde_json::Value {
+        json!({
+            "id": id,
+            "title": title,
+            "responsibility": "",
+            "acceptance": "",
+            "depends_on": deps,
+            "role": "",
+            "status": ""
+        })
+    }
+
+    #[test]
+    fn valid_plan_passes() {
+        let nodes = json!([
+            node("a", "调研", &[]),
+            node("b", "实施", &["a"]),
+            node("c", "验证", &["a", "b"]),
+        ]);
+        assert!(validate_plan_nodes(&nodes).is_ok());
+    }
+
+    #[test]
+    fn missing_title_or_dupe_id_rejected() {
+        let no_title = json!([{ "id": "a", "title": " " }]);
+        assert!(validate_plan_nodes(&no_title).is_err());
+        let dupe = json!([node("a", "一", &[]), node("a", "二", &[])]);
+        assert!(validate_plan_nodes(&dupe).is_err());
+        assert!(validate_plan_nodes(&json!([])).is_err());
+        assert!(validate_plan_nodes(&json!({})).is_err());
+    }
+
+    #[test]
+    fn dangling_depends_on_rejected() {
+        let nodes = json!([node("a", "一", &["ghost"])]);
+        let err = validate_plan_nodes(&nodes).unwrap_err();
+        assert!(err.contains("ghost"), "{err}");
+    }
+
+    #[test]
+    fn dependency_cycle_rejected() {
+        let nodes = json!([
+            node("a", "一", &["b"]),
+            node("b", "二", &["c"]),
+            node("c", "三", &["a"]),
+        ]);
+        assert!(validate_plan_nodes(&nodes).unwrap_err().contains("环"));
+    }
+
+    #[test]
+    fn split_non_empty_filters() {
+        assert_eq!(split_non_empty("a;; b ;"), vec!["a", "b"]);
+        assert!(split_non_empty(" ; ;").is_empty());
+    }
 }

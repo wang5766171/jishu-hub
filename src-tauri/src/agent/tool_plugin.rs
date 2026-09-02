@@ -249,14 +249,17 @@ pub fn render_tool_block(plugins: &[&ToolPlugin]) -> String {
         "标注「命令未检测到」的（或用法为能力描述而非命令的），不要尝试按插件名调用命令——按其描述用等效的 shell 方式实现该能力。\n",
     );
     for plugin in plugins {
-        // M3：无 [tool] 段的自适应 PiOnly 形态（schema 允许 kind=tool 仅含
-        // [pi_extension]）不参与 CLI 注入——跳过而非 panic（schema 校验规则
-        // 与本消费层不变式曾脱节，勾选即崩命令线程）。
-        let Some(tool) = plugin.file.tool.as_ref() else {
+        // M3 → v0.9.0 需求2 接线：注入参与判定收敛到 adaptive 引擎
+        //（participates_in_injection = 有 [tool] 段；PiOnly 形态走 pi 扩展
+        // 部署管线，不进 prompt 注入——跳过而非 panic）。
+        if !super::adaptive::participates_in_injection(&plugin.file) {
             log::debug!(
                 "[tool-plugin] skip {} in prompt injection (no [tool] section; pi-extension-only)",
                 plugin.id()
             );
+            continue;
+        }
+        let Some(tool) = plugin.file.tool.as_ref() else {
             continue;
         };
         out.push_str(&format!(

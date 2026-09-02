@@ -99,7 +99,7 @@ fn default_receive_rework() -> bool {
     true
 }
 
-fn jishu_agent_dir() -> Result<PathBuf, String> {
+pub(crate) fn jishu_agent_dir() -> Result<PathBuf, String> {
     crate::agent::jishu_self::paths::agent_dir().map_err(|e| e.to_string())
 }
 
@@ -141,7 +141,7 @@ const SESSION_CONTEXT_EXTENSION_TS: &str =
     include_str!("../resources/extensions/session-context.ts");
 
 /// 部署内嵌扩展源到 `<agent_dir>/<rel_path>`，自动建父目录；内容相同则跳过写入。
-fn deploy_extension_file(agent_dir: &Path, rel_path: &str, source: &str) {
+pub(crate) fn deploy_extension_file(agent_dir: &Path, rel_path: &str, source: &str) {
     let target = agent_dir.join(rel_path);
     if let Some(parent) = target.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -154,7 +154,7 @@ fn deploy_extension_file(agent_dir: &Path, rel_path: &str, source: &str) {
 /// 在 `settings.json` 的 `extensions` 数组幂等追加 `rel_path`。
 /// settings.json 不存在 → 兜底创建（修复旧版静默跳过的隐患）；
 /// 存在但 JSON 损坏 / 顶层非 object → 保守 return，不动用户文件。
-fn register_extension_in_settings(agent_dir: &Path, rel_path: &str) {
+pub(crate) fn register_extension_in_settings(agent_dir: &Path, rel_path: &str) {
     let settings_path = agent_dir.join("settings.json");
     let content = std::fs::read_to_string(&settings_path).unwrap_or_else(|_| "{}".to_string());
     let mut settings = match serde_json::from_str::<serde_json::Value>(&content) {

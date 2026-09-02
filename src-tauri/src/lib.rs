@@ -85,6 +85,8 @@ pub fn run() {
             // v0.8.1 需求9/10：内置自适应插件（任务需求/流程规划）随包分发，
             // 首启落 ~/.jishu-hub/agents/（幂等）。
             agent::plugin::ensure_builtin_adaptive_plugins();
+            // v0.9.0 需求2：[pi_extension] 声明插件的 entry 部署/回收（幂等）。
+            agent::pi_deploy::ensure_pi_extension_deployments();
             // 自动部署 request_user_input 扩展（conductor 的 discuss/plan 阶段依赖此工具）
             task_plan::ensure_request_user_input_extension();
             // 部署 session-context 扩展（session_id 注入 system prompt，取代 user message 注入）

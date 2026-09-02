@@ -25,6 +25,8 @@ pub mod adaptive;
 // v0.9.0 需求1 P2：hub MCP 聚合 server + 四家配置注入（方案 b 聚合代理）。
 pub mod mcp_inject;
 pub mod mcp_server;
+// v0.9.0 需求2：pi 扩展部署管线（[pi_extension].entry → pi extensions 目录）。
+pub mod pi_deploy;
 pub mod plugin;
 pub mod tool_plugin;
 pub mod traits;

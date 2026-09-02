@@ -1,10 +1,10 @@
 //! 自适应插件适配引擎（v0.8.1 需求10）。
 //!
-//! ⚠️ M6 现状标注：本模块的 resolve_form/needs_pi_deploy/participates_in_injection
-//! 目前**零生产调用**（v1 实际适配由 load_manifests 的 kind 分流隐式完成；
-//! [pi_extension].entry 与 conductor 部署管线也未接线）。保留为需求10
-//! （pi 扩展 × hub 插件统一管理）的骨架，接线点见《插件系统改造实施计划》
-//! §七——排期前保持显式标注的死链状态而非删除。
+//! v0.9.0 需求2 接线完成：needs_pi_deploy/resolve_form 由 pi_deploy 部署
+//! 管线消费（entry → pi extensions 目录 + settings 注册 + 回收）；
+//! participates_in_injection 由 tool_plugin 注入层消费（PiOnly 跳过）。
+//! conductor 自身的部署仍走 task_plan.rs 硬编码通道（迁移留后续，见
+//! docs/v0.9.0/需求2-pi扩展与hub插件结合/02 §一范围裁决）。
 //!
 //! 一个插件实体在不同智能体上自动适配不同执行形态——管理面统一为一个
 //! 插件（一个条目/一个开关），形态是内部实现细节：
