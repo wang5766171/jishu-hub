@@ -291,6 +291,7 @@ pub fn run() {
             commands::agents::plugin_set_enabled,
             commands::agents::plugin_remove,
             commands::agents::plugin_reload,
+            commands::plugin_panel::plugin_panel_run,
             commands::agents::plugin_create,
             commands::agents::plugin_get,
             commands::agents::plugin_update,

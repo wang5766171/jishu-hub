@@ -42,6 +42,27 @@ pub struct AgentManifestFile {
     /// prompt 注入；两者可并存）。
     #[serde(default)]
     pub mcp: Option<McpSection>,
+    /// 声明式面板（v0.9.0 需求8）。
+    #[serde(default)]
+    pub panel: Option<PanelSection>,
+}
+
+/// 声明式面板（v0.9.0 需求8：kind = "tool" 专属段）——插件贡献自己的管理
+/// 页：受限 list 模板（title + 只读命令行），hub 渲染并按需执行展示。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PanelSection {
+    pub title: String,
+    #[serde(default)]
+    pub items: Vec<PanelItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PanelItem {
+    pub label: String,
+    /// 展示时执行的只读命令（与 [tool].usage 同级信任：用户安装插件即信任）。
+    pub command: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -255,10 +276,29 @@ impl AgentManifestFile {
                 return Err("mcp.command must not be empty".to_string());
             }
         }
+        // v0.9.0 需求8：[panel] 段校验。
+        if let Some(panel) = &self.panel {
+            if panel.title.trim().is_empty() {
+                return Err("panel.title must not be empty".to_string());
+            }
+            for (i, item) in panel.items.iter().enumerate() {
+                if item.label.trim().is_empty() {
+                    return Err(format!("panel.items[{i}].label must not be empty"));
+                }
+                if item.command.trim().is_empty() {
+                    return Err(format!("panel.items[{i}].command must not be empty"));
+                }
+            }
+        }
         let tool = match self.tool.as_ref() {
             Some(tool) => tool,
-            // 仅 [pi_extension] 或仅 [mcp] 无 [tool]：合法（深度形态 / 纯结构化工具）。
-            None if self.pi_extension.is_some() || self.mcp.is_some() => return Ok(()),
+            // 仅 [pi_extension]/[mcp]/[panel] 无 [tool]：合法（深度形态 /
+            // 纯结构化工具 / 纯面板插件）。
+            None
+            if self.pi_extension.is_some() || self.mcp.is_some() || self.panel.is_some() =>
+            {
+                return Ok(());
+            }
             None => return Err("kind = \"tool\" requires a [tool] section".to_string()),
         };
         if tool.description.trim().is_empty() {
@@ -277,6 +317,9 @@ impl AgentManifestFile {
         }
         if self.mcp.is_some() {
             return Err("[mcp] is only allowed for tool plugins (kind = \"tool\")".to_string());
+        }
+        if self.panel.is_some() {
+            return Err("[panel] is only allowed for tool plugins (kind = \"tool\")".to_string());
         }
         let transport = self
             .transport
@@ -440,6 +483,7 @@ mod tests {
             capabilities: None,
             pi_extension: None,
             mcp: None,
+            panel: None,
             tool: None,
         }
     }
@@ -622,5 +666,30 @@ kind = "cli"
 chat_command = ["x", "{prompt}"]
 "#;
         assert!(toml::from_str::<AgentManifestFile>(src).is_err());
+    }
+
+    #[test]
+    fn tool_panel_section_validates() {
+        // v0.9.0 需求8：[panel] 解析与校验（合法/空 command 拒绝/agent 禁止/panel-only 合法）。
+        let mut m = base_manifest();
+        m.kind = crate::agent::manifest::schema::ManifestKind::Tool;
+        m.transport = None;
+        m.tool = None;
+        m.panel = Some(crate::agent::manifest::schema::PanelSection {
+            title: "状态".to_string(),
+            items: vec![crate::agent::manifest::schema::PanelItem {
+                label: "版本".to_string(),
+                command: "gh --version".to_string(),
+            }],
+        });
+        assert!(m.validate().is_ok()); // panel-only 合法
+        m.panel.as_mut().unwrap().items[0].command = "  ".to_string();
+        assert!(m.validate().is_err());
+        let mut agent_m = base_manifest();
+        agent_m.panel = Some(crate::agent::manifest::schema::PanelSection {
+            title: "x".to_string(),
+            items: vec![],
+        });
+        assert!(agent_m.validate().is_err()); // agent 插件禁止 [panel]
     }
 }

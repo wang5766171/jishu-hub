@@ -358,6 +358,7 @@ mod tests {
                     target_agent: "jishu-self".to_string(),
                 }),
                 mcp: None,
+                panel: None,
                 tool: None,
             }),
             source_path: PathBuf::from(format!("/agents/{id}.toml")),
@@ -390,6 +391,7 @@ mod tests {
                 capabilities: None,
                 pi_extension: None,
                 mcp: None,
+                panel: None,
                 tool: Some(ToolSection {
                     description: description.to_string(),
                     usage: usage.to_string(),

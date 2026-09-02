@@ -29,6 +29,7 @@ mod tests {
                     target_agent: "jishu-self".into(),
                 }),
                 mcp: None,
+                panel: None,
                 tool: None,
             }),
             Default::default(),
@@ -55,6 +56,7 @@ mod tests {
                 capabilities: None,
                 pi_extension: None,
                 mcp: None,
+                panel: None,
                 tool: Some(ToolSection {
                     description: "GitHub 查询".into(),
                     usage: "gh repo view".into(),

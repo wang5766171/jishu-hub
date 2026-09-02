@@ -48,6 +48,23 @@ pub struct PluginDescriptor {
     pub enabled: bool,
     /// 声明了 [mcp] 段（v0.9.0 需求1：hub 聚合 MCP server 的工具来源）。
     pub has_mcp: bool,
+    /// 声明了 [panel] 段（v0.9.0 需求8：声明式面板）。
+    pub has_panel: bool,
+    /// [panel] 声明详情（has_panel 时非 None；前端面板 Dialog 数据源）。
+    pub panel: Option<PanelDecl>,
+}
+
+/// [panel] 声明的 UI 投影（v0.9.0 需求8）。
+#[derive(Debug, Clone, Serialize)]
+pub struct PanelDecl {
+    pub title: String,
+    pub items: Vec<PanelDeclItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PanelDeclItem {
+    pub label: String,
+    pub command: String,
 }
 
 /// 插件启停配置（`~/.jishu-hub/plugins.json`，hub state 文件同款模式）。
@@ -277,6 +294,8 @@ pub fn assemble(
             core,
             enabled,
             has_mcp: false,
+            has_panel: false,
+            panel: None,
         });
     }
 
@@ -300,6 +319,8 @@ pub fn assemble(
             core: false,
             enabled,
             has_mcp: false,
+            has_panel: false,
+            panel: None,
         });
     }
 
@@ -317,6 +338,18 @@ pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescrip
         core: false,
         enabled: plugin.enabled,
         has_mcp: plugin.file.mcp.is_some(),
+        has_panel: plugin.file.panel.is_some(),
+        panel: plugin.file.panel.as_ref().map(|p| PanelDecl {
+            title: p.title.clone(),
+            items: p
+                .items
+                .iter()
+                .map(|i| PanelDeclItem {
+                    label: i.label.clone(),
+                    command: i.command.clone(),
+                })
+                .collect(),
+        }),
     }
 }
 
@@ -466,6 +499,7 @@ mod tests {
             capabilities: None,
             pi_extension: None,
             mcp: None,
+            panel: None,
             tool: None,
         })
     }

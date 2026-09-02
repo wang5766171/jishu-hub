@@ -339,7 +339,11 @@
     "toggle": "Enable/Disable",
     "createdTitle": "Plugin Created",
     "updatedTitle": "Plugin Saved",
-    "mcpBadge": "MCP tools"
+    "mcpBadge": "MCP tools",
+    "panelButton": "Panel",
+    "panelRun": "Run",
+    "panelRunning": "Running…",
+    "panelDescription": "Read-only command panel declared by the plugin. Click to run and view output."
   },
   "config": {
     "title": "Configuration",

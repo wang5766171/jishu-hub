@@ -9,6 +9,14 @@ import { useTranslation } from "react-i18next";
 import { AlertCircle, Download, Loader2, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import type { AgentStatus } from "@/agents/types";
 import { PluginCreateDialog } from "./plugin-create-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { LayoutDashboard } from "lucide-react";
 
 /** v0.8.1 需求3：插件管理页。数据源 plugin_list（需求2 的统一插件模型），
  * 启停/卸载/重载均热生效（后端重建 registry，无需重启应用）。
@@ -24,6 +32,12 @@ interface PluginDescriptor {
   enabled: boolean;
   /** v0.9.0 需求1：声明了 [mcp] 段（hub 聚合 MCP server 工具来源）。 */
   has_mcp?: boolean;
+  /** v0.9.0 需求8：声明式面板（list 只读模板 MVP）。 */
+  has_panel?: boolean;
+  panel?: {
+    title: string;
+    items: Array<{ label: string; command: string }>;
+  } | null;
 }
 
 interface PluginListResult {
@@ -42,6 +56,28 @@ export function PluginsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   // 编辑模式目标（GUI 反馈：新增插件无法编辑）：manifest 插件可改表单覆盖写回。
   const [editPluginId, setEditPluginId] = useState<string | null>(null);
+  // v0.9.0 需求8：声明式面板 Dialog 状态。
+  const [panelTarget, setPanelTarget] = useState<PluginDescriptor | null>(null);
+  const [panelOutputs, setPanelOutputs] = useState<Record<number, string>>({});
+  const [panelRunning, setPanelRunning] = useState<number | null>(null);
+  const runPanelItem = useCallback(async (pluginId: string, index: number) => {
+    setPanelRunning(index);
+    setPanelOutputs((prev) => ({ ...prev, [index]: "…" }));
+    try {
+      const r = await invokeCommand<{ label: string; output: string; ok: boolean }>(
+        "plugin_panel_run",
+        { pluginId, itemIndex: index },
+      );
+      setPanelOutputs((prev) => ({
+        ...prev,
+        [index]: `${r.output.trim() || "(无输出)"}${r.ok ? "" : "\n[退出码非零]"}`,
+      }));
+    } catch (err) {
+      setPanelOutputs((prev) => ({ ...prev, [index]: `执行失败：${err}` }));
+    } finally {
+      setPanelRunning(null);
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -258,6 +294,19 @@ export function PluginsPage() {
                       {tr("plugins.mcpBadge", "MCP")}
                     </Badge>
                   )}
+                  {plugin.has_panel && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPanelTarget(plugin);
+                        setPanelOutputs({});
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] text-foreground/80 hover:bg-accent/60"
+                    >
+                      <LayoutDashboard className="h-3 w-3" />
+                      {tr("plugins.panelButton", "面板")}
+                    </button>
+                  )}
                   {!plugin.enabled && (
                     <Badge variant="outline" className="text-[10px] px-1.5">
                       {tr("plugins.disabledBadge", "已禁用")}
@@ -346,6 +395,43 @@ export function PluginsPage() {
       <p className="text-xs text-muted-foreground">
         {tr("plugins.hint", "")}
       </p>
+
+      {/* v0.9.0 需求8：声明式面板（list 只读模板）——逐项执行声明命令并展示输出。 */}
+      <Dialog open={!!panelTarget} onOpenChange={(open) => { if (!open) setPanelTarget(null); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{panelTarget?.panel?.title ?? panelTarget?.display_name}</DialogTitle>
+            <DialogDescription>
+              {tr("plugins.panelDescription", "插件声明的只读命令面板，点击执行查看输出。")}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[60vh] space-y-3 overflow-y-auto">
+            {(panelTarget?.panel?.items ?? []).map((item, index) => (
+              <div key={index} className="rounded-md border border-border/60 p-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium truncate">{item.label}</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={panelRunning !== null}
+                    onClick={() => runPanelItem(panelTarget!.id, index)}
+                  >
+                    {panelRunning === index ? tr("plugins.panelRunning", "执行中…") : tr("plugins.panelRun", "执行")}
+                  </Button>
+                </div>
+                <p className="mt-1 truncate text-[11px] text-muted-foreground" title={item.command}>
+                  <code>{item.command}</code>
+                </p>
+                {panelOutputs[index] && (
+                  <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/60 p-2 text-[11px]">
+                    {panelOutputs[index]}
+                  </pre>
+                )}
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

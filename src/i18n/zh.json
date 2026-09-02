@@ -339,7 +339,11 @@
     "toggle": "启用/禁用",
     "createdTitle": "插件已创建",
     "updatedTitle": "插件已保存",
-    "mcpBadge": "MCP 工具"
+    "mcpBadge": "MCP 工具",
+    "panelButton": "面板",
+    "panelRun": "执行",
+    "panelRunning": "执行中…",
+    "panelDescription": "插件声明的只读命令面板，点击执行查看输出。"
   },
   "config": {
     "title": "配置管理",

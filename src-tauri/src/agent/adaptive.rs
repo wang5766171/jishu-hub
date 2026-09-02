@@ -95,6 +95,7 @@ mod tests {
             tool,
             pi_extension: pi,
         mcp: None,
+        panel: None,
         }
     }
 
