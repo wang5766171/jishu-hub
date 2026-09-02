@@ -31,8 +31,44 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::acp_runtime::{tauri_event_emitter, AcpCommand, AcpControl, AcpEventEmit};
 use crate::agent::normalized::{
     ApprovalKind, InteractionCorrelation, InteractionDeliveryHint, InteractionOption,
-    InteractionOrigin, InteractionTransport, NormalizedEvent, TurnEndReason,
+    InteractionOrigin, InteractionTransport, NormalizedEvent, TurnEndReason, UsageStats,
 };
+
+/// codex 用量累积器（v0.9.0 需求5）：Arc 包装跨 spawn 边界共享，轮末 take() 填入
+/// TurnComplete——对齐 ACP runtime 的 usage_acc 模式（acp_runtime/normalize.rs）。
+type UsageCell = std::sync::Mutex<Option<UsageStats>>;
+
+/// v0.9.0 需求5：解析 `thread/tokenUsage/updated`（codex-cli ≥0.148 schema）。
+/// 语义（上游 README）：total.inputTokens + total.outputTokens ≈ 已占上下文；
+/// cachedInputTokens 已含于 inputTokens，不重复累加；cost 无协议来源保持 None。
+fn parse_token_usage(params: &Value) -> Option<UsageStats> {
+    let tu = params.get("tokenUsage")?;
+    let total = tu.get("total")?;
+    let input = total.get("inputTokens").and_then(Value::as_u64);
+    let output = total.get("outputTokens").and_then(Value::as_u64);
+    let window = tu.get("modelContextWindow").and_then(Value::as_u64);
+    let remaining = window
+        .zip(input)
+        .zip(output)
+        .map(|((w, i), o)| w.saturating_sub(i.saturating_add(o)));
+    Some(UsageStats {
+        input_tokens: input,
+        output_tokens: output,
+        total_cost: None,
+        context_remaining: remaining,
+        context_window_total: window,
+    })
+}
+
+/// v0.9.0 需求5：tokenUsage notification 到达即更新累积器（thread/resume 后的
+/// 立即补发同样命中，冷恢复可还原水位）。
+fn capture_token_usage(method: &str, params: &Value, cell: &UsageCell) {
+    if method == "thread/tokenUsage/updated" {
+        if let Some(stats) = parse_token_usage(params) {
+            *cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(stats);
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // request_kind discriminant (design R3)
@@ -157,6 +193,9 @@ fn spawn_codex_app_server_session_inner(
     };
     let control_clone = control.clone();
     let turn_active_for_exit = turn_active.clone();
+    // v0.9.0 需求5：连接循环与错误出口共享的用量累积器。
+    let usage_cell = Arc::new(UsageCell::new(None));
+    let usage_cell_for_loop = usage_cell.clone();
 
     tauri::async_runtime::spawn(async move {
         let result = codex_connection_loop(
@@ -173,6 +212,7 @@ fn spawn_codex_app_server_session_inner(
             supports_interaction_mid_turn,
             policy,
             turn_active,
+            usage_cell_for_loop,
         )
         .await;
 
@@ -202,7 +242,11 @@ fn spawn_codex_app_server_session_inner(
                 },
                 NormalizedEvent::TurnComplete {
                     reason: TurnEndReason::Error,
-                    usage: None,
+                    // v0.9.0 需求5：连接异常退出也带出最后已知用量（可能为 None）。
+                    usage: usage_cell
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take(),
                 },
             ];
             emit(&events, &pending_session_id);
@@ -322,6 +366,7 @@ async fn codex_connection_loop(
     supports_interaction_mid_turn: Arc<AtomicBool>,
     policy: crate::agent::policy::PolicyChain,
     turn_active: Arc<AtomicBool>,
+    usage_cell: Arc<UsageCell>,
 ) -> Result<(), String> {
     // stdout reader sub-task.
     let (stdout_tx, mut stdout_rx) = tokio::sync::mpsc::channel(64);
@@ -370,6 +415,7 @@ async fn codex_connection_loop(
             &mut buf,
             &mut last_flush,
             id,
+            &usage_cell,
         )
         .await
         .map_err(|e| format!("codex thread/resume failed: {e}"))?;
@@ -388,6 +434,7 @@ async fn codex_connection_loop(
             &mut buf,
             &mut last_flush,
             id,
+            &usage_cell,
         )
         .await
         .map_err(|e| format!("codex thread/start failed: {e}"))?;
@@ -436,6 +483,7 @@ async fn codex_connection_loop(
         &mut buf,
         &mut last_flush,
         turn_start_id,
+        &usage_cell,
     )
     .await
     .map_err(|e| format!("codex turn/start failed: {e}"))?;
@@ -464,6 +512,7 @@ async fn codex_connection_loop(
                     &emit,
                     &envelope_id,
                     &mut buf,
+                    &usage_cell,
                 )
                 .await?
             }
@@ -479,6 +528,7 @@ async fn codex_connection_loop(
                         &mut buf,
                         &policy,
                         Some(&writer),
+                        &usage_cell,
                     )
                     .await;
                     flush_maybe(&emit, &envelope_id, &mut buf, &mut last_flush);
@@ -525,6 +575,8 @@ async fn initialize_codex(
     let experimental_id = writer
         .request("initialize", initialize_params(true))
         .await?;
+    // 握手期无 thread，tokenUsage 不可能到达——本地空 cell 满足签名。
+    let handshake_usage_cell = UsageCell::new(None);
     match wait_for_response(
         stdout_rx,
         pending_user_inputs,
@@ -534,6 +586,7 @@ async fn initialize_codex(
         buf,
         last_flush,
         experimental_id,
+        &handshake_usage_cell,
     )
     .await
     {
@@ -554,6 +607,7 @@ async fn initialize_codex(
                 buf,
                 last_flush,
                 baseline_id,
+                &handshake_usage_cell,
             )
             .await
             .map_err(|fallback_err| {
@@ -580,6 +634,7 @@ async fn wait_for_response(
     buf: &mut Vec<NormalizedEvent>,
     last_flush: &mut std::time::Instant,
     expected_id: i64,
+    usage_cell: &UsageCell,
 ) -> Result<Value, String> {
     loop {
         let line = tokio::time::timeout(Duration::from_secs(45), stdout_rx.recv())
@@ -628,6 +683,8 @@ async fn wait_for_response(
                 flush_buf(emit, session_id, buf);
             }
             LineKind::Notification { method, params } => {
+                // v0.9.0 需求5：等待窗内的 tokenUsage（thread/resume 补发）同样捕获。
+                capture_token_usage(&method, &params, usage_cell);
                 for event in normalize_notification(&method, &params) {
                     buf.push(event);
                 }
@@ -703,6 +760,7 @@ async fn handle_line(
     buf: &mut Vec<NormalizedEvent>,
     policy: &crate::agent::policy::PolicyChain,
     writer: Option<&CodexWriter>,
+    usage_cell: &UsageCell,
 ) {
     if line.trim().is_empty() {
         return;
@@ -730,7 +788,11 @@ async fn handle_line(
                     .unwrap_or(TurnEndReason::Complete);
                 buf.push(NormalizedEvent::TurnComplete {
                     reason,
-                    usage: None,
+                    // v0.9.0 需求5：轮末带出累积用量（tokenUsage 累积器 take）。
+                    usage: usage_cell
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take(),
                 });
                 // v0.7.0：turn/completed 是 turn 的最后一条消息，之后 codex 进入 idle，
                 // 没有更多事件触发 flush_maybe。必须强制 flush，否则 TurnComplete 留在
@@ -755,6 +817,11 @@ async fn handle_line(
                 if let Some(id) = extract_turn_id_from_params(&params) {
                     set_active_turn_id(state, Some(id));
                 }
+            }
+            // v0.9.0 需求5：turn 进行中每个模型响应后到达；到达即更新累积器，
+            // 轮末由 turn/completed 带出（与 ACP usage_acc 同模式）。
+            "thread/tokenUsage/updated" => {
+                capture_token_usage(&method, &params, usage_cell);
             }
             _ => {
                 for event in normalize_notification(&method, &params) {
@@ -798,6 +865,7 @@ async fn handle_command(
     emit: &AcpEventEmit,
     session_id: &str,
     buf: &mut Vec<NormalizedEvent>,
+    usage_cell: &UsageCell,
 ) -> Result<bool, String> {
     match cmd {
         Some(AcpCommand::Prompt(msg)) => match state {
@@ -888,7 +956,11 @@ async fn handle_command(
             if active_turn_id.is_none() {
                 buf.push(NormalizedEvent::TurnComplete {
                     reason: TurnEndReason::Aborted,
-                    usage: None,
+                    // v0.9.0 需求5：无活跃回合取消时带出最后已知用量（对齐 ACP cancel）。
+                    usage: usage_cell
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take(),
                 });
                 flush_buf(emit, session_id, buf);
                 *state = LoopState::Idle {
@@ -1908,5 +1980,70 @@ mod tests {
             true
         );
         assert!(initialize_params(false).get("capabilities").is_none());
+    }
+
+    // v0.9.0 需求5：tokenUsage 解析（schema 见 01-分析与实施方案 §二.3）。
+
+    #[test]
+    fn parse_token_usage_full_payload() {
+        let params = json!({
+            "threadId": "t1", "turnId": "tu1",
+            "tokenUsage": {
+                "last": { "inputTokens": 100, "cachedInputTokens": 80,
+                          "cacheWriteInputTokens": 0, "outputTokens": 50,
+                          "reasoningOutputTokens": 10, "totalTokens": 150 },
+                "total": { "inputTokens": 12000, "cachedInputTokens": 9000,
+                           "cacheWriteInputTokens": 0, "outputTokens": 3000,
+                           "reasoningOutputTokens": 500, "totalTokens": 15000 },
+                "modelContextWindow": 200000
+            }
+        });
+        let stats = parse_token_usage(&params).expect("usage");
+        assert_eq!(stats.input_tokens, Some(12000));
+        assert_eq!(stats.output_tokens, Some(3000));
+        assert_eq!(stats.context_window_total, Some(200000));
+        // remaining = window - (input + output)；cached 已含于 input，不重复累加。
+        assert_eq!(stats.context_remaining, Some(200000 - 15000));
+        assert_eq!(stats.total_cost, None);
+    }
+
+    #[test]
+    fn parse_token_usage_null_window() {
+        let params = json!({
+            "tokenUsage": {
+                "total": { "inputTokens": 10, "outputTokens": 5, "totalTokens": 15 },
+                "modelContextWindow": null
+            }
+        });
+        let stats = parse_token_usage(&params).expect("usage");
+        assert_eq!(stats.input_tokens, Some(10));
+        assert_eq!(stats.output_tokens, Some(5));
+        assert_eq!(stats.context_window_total, None);
+        assert_eq!(stats.context_remaining, None);
+    }
+
+    #[test]
+    fn parse_token_usage_missing_total_is_none() {
+        assert!(parse_token_usage(&json!({ "tokenUsage": { "last": {} } })).is_none());
+        assert!(parse_token_usage(&json!({})).is_none());
+    }
+
+    #[test]
+    fn capture_token_usage_updates_cell() {
+        let cell = UsageCell::new(None);
+        let payload = json!({
+            "tokenUsage": {
+                "total": { "inputTokens": 7, "outputTokens": 3, "totalTokens": 10 },
+                "modelContextWindow": 100
+            }
+        });
+        capture_token_usage("thread/tokenUsage/updated", &payload, &cell);
+        assert_eq!(
+            cell.lock().unwrap().as_ref().and_then(|u| u.context_remaining),
+            Some(90)
+        );
+        // 非目标方法不触碰 cell。
+        capture_token_usage("item/completed", &json!({}), &cell);
+        assert!(cell.lock().unwrap().is_some());
     }
 }
