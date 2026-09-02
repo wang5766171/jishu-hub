@@ -1026,6 +1026,29 @@ fn save_opencode_config(
     Ok(())
 }
 
+/// 原始层删除 MCP 条目（v0.9.0 需求1）：opencode 的 merge 语义只增不删，
+/// 经 adapter save 无法回收条目——直接在原始 config（jsonc 容忍）上删
+/// `mcp.<name>`。返回是否实际删除（false = 不存在/形态不符由调用方判断）。
+pub(crate) fn remove_mcp_entry_raw(name: &str) -> Result<bool, String> {
+    let path = opencode_config_path().map_err(|e| e.to_string())?;
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut value = read_opencode_config_value().map_err(|e| e.to_string())?;
+    let Some(mcp) = value.get_mut("mcp").and_then(serde_json::Value::as_object_mut) else {
+        return Ok(false);
+    };
+    if mcp.remove(name).is_none() {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let content = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    crate::util::atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 fn backup_opencode_config() -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     let src = opencode_config_path()?;
     if !src.exists() {

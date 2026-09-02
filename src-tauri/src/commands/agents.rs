@@ -88,6 +88,8 @@ fn rebuild_registry(app: &tauri::AppHandle, state: &tauri::State<'_, Mutex<AppSt
     *s.tool_plugins.lock().unwrap_or_else(|e| e.into_inner()) = reloaded_tools;
     use tauri::Emitter;
     let _ = app.emit("plugins-changed", ());
+    // v0.9.0 需求1 P2：插件集变化后同步四家 MCP 条目（注入/回收，锁外执行）。
+    let _ = crate::agent::mcp_inject::sync_hub_mcp_entries();
 }
 
 /// 启停插件并热生效（core 插件拒绝；写 plugins.json 持久化；agent 与 tool

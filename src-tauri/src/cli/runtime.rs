@@ -51,5 +51,6 @@ fn dispatch(cmd: Commands, ctx: &ExecutionContext) -> Result<(), CliError> {
         Commands::Plugins { action } => commands::plugins::run(action, ctx),
         Commands::TaskArtifact { action } => commands::task_artifact::run_task_artifact(action, ctx),
         Commands::Memory { action } => commands::memory::run(action, ctx),
+        Commands::Mcp { action } => commands::mcp::run(action, ctx),
     }
 }

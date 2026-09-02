@@ -132,6 +132,12 @@ pub enum Commands {
         #[command(subcommand)]
         action: MemoryAction,
     },
+
+    /// hub MCP 聚合 server 与四家注入（v0.9.0 需求1：serve/inject/remove/status）.
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
 }
 
 // ── Agent ────────────────────────────────────────────────────────────────────
@@ -514,4 +520,22 @@ pub enum MemoryAction {
         #[arg(long)]
         key: String,
     },
+}
+
+// ── Mcp（v0.9.0 需求1 P2）────────────────────────────────────────────────────
+
+#[derive(Subcommand, Debug)]
+pub enum McpAction {
+    /// Run the hub MCP aggregation server over stdio (spawned by agents).
+    Serve,
+
+    /// Ensure the `jishu-hub` entry exists in all four agents' MCP configs
+    /// (only when MCP-declaring plugins are enabled; same logic as app sync).
+    Inject,
+
+    /// Remove the `jishu-hub` entry from all four agents' MCP configs.
+    Remove,
+
+    /// Show current sync status (plugin declarations + four-agent entries).
+    Status,
 }

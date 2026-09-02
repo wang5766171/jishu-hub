@@ -22,6 +22,8 @@ interface PluginDescriptor {
   source_path: string | null;
   core: boolean;
   enabled: boolean;
+  /** v0.9.0 需求1：声明了 [mcp] 段（hub 聚合 MCP server 工具来源）。 */
+  has_mcp?: boolean;
 }
 
 interface PluginListResult {
@@ -250,6 +252,11 @@ export function PluginsPage() {
                   </Badge>
                   {plugin.core && (
                     <Badge className="text-[10px] px-1.5">{tr("plugins.coreBadge", "核心引擎")}</Badge>
+                  )}
+                  {plugin.has_mcp && (
+                    <Badge variant="outline" className="text-[10px] px-1.5">
+                      {tr("plugins.mcpBadge", "MCP")}
+                    </Badge>
                   )}
                   {!plugin.enabled && (
                     <Badge variant="outline" className="text-[10px] px-1.5">

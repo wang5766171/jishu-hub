@@ -90,6 +90,9 @@ pub fn run() {
             // 部署 session-context 扩展（session_id 注入 system prompt，取代 user message 注入）
             task_plan::ensure_session_context_extension();
             let registry = Arc::new(agent::AgentRegistry::new());
+            // v0.9.0 需求1 P2：四家 MCP 配置同步（有启用的 [mcp] 插件时注入
+            // jishu-hub 聚合条目，无则回收；单家失败不影响启动）。
+            let _ = agent::mcp_inject::sync_hub_mcp_entries();
             // v0.7.0：全局 active agent 已移除（需求一：智能体切换去全局化）。
             // 各模块按自身作用域选择 agent，通过 agent_id 入参显式指定；
             // 会话与智能体在 Session 层绑定。启动时不再加载/设置全局 active。

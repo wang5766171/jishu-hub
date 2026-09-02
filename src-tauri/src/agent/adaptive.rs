@@ -94,6 +94,7 @@ mod tests {
             capabilities: None,
             tool,
             pi_extension: pi,
+        mcp: None,
         }
     }
 

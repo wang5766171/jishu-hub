@@ -338,7 +338,8 @@
     "remove": "卸载",
     "toggle": "启用/禁用",
     "createdTitle": "插件已创建",
-    "updatedTitle": "插件已保存"
+    "updatedTitle": "插件已保存",
+    "mcpBadge": "MCP 工具"
   },
   "config": {
     "title": "配置管理",

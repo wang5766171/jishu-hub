@@ -46,6 +46,8 @@ pub struct PluginDescriptor {
     pub core: bool,
     /// 当前是否装载（false = 用户禁用，registry 无此 agent；数据保留）。
     pub enabled: bool,
+    /// 声明了 [mcp] 段（v0.9.0 需求1：hub 聚合 MCP server 的工具来源）。
+    pub has_mcp: bool,
 }
 
 /// 插件启停配置（`~/.jishu-hub/plugins.json`，hub state 文件同款模式）。
@@ -274,6 +276,7 @@ pub fn assemble(
             source_path: None,
             core,
             enabled,
+            has_mcp: false,
         });
     }
 
@@ -296,6 +299,7 @@ pub fn assemble(
             source_path: Some(path.to_string_lossy().to_string()),
             core: false,
             enabled,
+            has_mcp: false,
         });
     }
 
@@ -312,6 +316,7 @@ pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescrip
         source_path: Some(plugin.source_path.to_string_lossy().to_string()),
         core: false,
         enabled: plugin.enabled,
+        has_mcp: plugin.file.mcp.is_some(),
     }
 }
 
@@ -460,6 +465,7 @@ mod tests {
             session: None,
             capabilities: None,
             pi_extension: None,
+            mcp: None,
             tool: None,
         })
     }

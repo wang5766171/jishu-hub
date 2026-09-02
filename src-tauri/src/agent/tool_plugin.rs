@@ -354,6 +354,7 @@ mod tests {
                     entry: "discuss.ts".to_string(),
                     target_agent: "jishu-self".to_string(),
                 }),
+                mcp: None,
                 tool: None,
             }),
             source_path: PathBuf::from(format!("/agents/{id}.toml")),
@@ -385,6 +386,7 @@ mod tests {
                 session: None,
                 capabilities: None,
                 pi_extension: None,
+                mcp: None,
                 tool: Some(ToolSection {
                     description: description.to_string(),
                     usage: usage.to_string(),

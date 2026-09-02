@@ -22,6 +22,9 @@ pub mod manifest;
 pub mod normalized;
 // v0.8.1 需求2：统一插件模型（内建/manifest 插件的描述符、启停配置、装配管线）。
 pub mod adaptive;
+// v0.9.0 需求1 P2：hub MCP 聚合 server + 四家配置注入（方案 b 聚合代理）。
+pub mod mcp_inject;
+pub mod mcp_server;
 pub mod plugin;
 pub mod tool_plugin;
 pub mod traits;

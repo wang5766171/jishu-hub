@@ -36,6 +36,12 @@ pub struct AgentManifestFile {
     /// 自适应插件的 pi 扩展形态声明（v0.8.1 需求10）。
     #[serde(default)]
     pub pi_extension: Option<PiExtensionSection>,
+    /// MCP server 声明（v0.9.0 需求1 P2）：插件声明一个外部 MCP stdio
+    /// server，hub 聚合 server（jishu-cli mcp serve）spawn 并转发其工具，
+    /// 四家智能体经单条 jishu-hub 条目获得（结构化通道，区别于 [tool] 的
+    /// prompt 注入；两者可并存）。
+    #[serde(default)]
+    pub mcp: Option<McpSection>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -74,6 +80,20 @@ pub struct PiExtensionSection {
 
 fn default_pi_target() -> String {
     "jishu-self".to_string()
+}
+
+/// MCP server 声明（v0.9.0 需求1 P2，kind = "tool" 专属段）：
+/// command/args/env 描述一个 MCP stdio server 进程，由 hub 聚合 server
+/// spawn 并代理（工具名以插件 id 命名空间隔离）。仅 [mcp] 无 [tool] 合法
+/// （纯结构化工具插件，不参与 prompt 注入）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpSection {
+    pub command: String,
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    #[serde(default)]
+    pub env: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,10 +249,16 @@ impl AgentManifestFile {
                 return Err("pi_extension.entry must not be empty".to_string());
             }
         }
+        // v0.9.0 需求1：[mcp] 段校验（command 非空）。
+        if let Some(mcp) = &self.mcp {
+            if mcp.command.trim().is_empty() {
+                return Err("mcp.command must not be empty".to_string());
+            }
+        }
         let tool = match self.tool.as_ref() {
             Some(tool) => tool,
-            // 仅 [pi_extension] 无 [tool]：合法（仅 jishu-self 深度形态）。
-            None if self.pi_extension.is_some() => return Ok(()),
+            // 仅 [pi_extension] 或仅 [mcp] 无 [tool]：合法（深度形态 / 纯结构化工具）。
+            None if self.pi_extension.is_some() || self.mcp.is_some() => return Ok(()),
             None => return Err("kind = \"tool\" requires a [tool] section".to_string()),
         };
         if tool.description.trim().is_empty() {
@@ -248,6 +274,9 @@ impl AgentManifestFile {
     fn validate_agent(&self) -> Result<(), String> {
         if self.tool.is_some() {
             return Err("[tool] is only allowed for tool plugins (kind = \"tool\")".to_string());
+        }
+        if self.mcp.is_some() {
+            return Err("[mcp] is only allowed for tool plugins (kind = \"tool\")".to_string());
         }
         let transport = self
             .transport
@@ -410,6 +439,7 @@ mod tests {
             session: None,
             capabilities: None,
             pi_extension: None,
+            mcp: None,
             tool: None,
         }
     }
