@@ -1,7 +1,7 @@
 {
   "name": "jishu-hub",
   "private": false,
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "A desktop hub for managing AI agent projects, sessions, and configuration",
   "license": "MIT",
   "repository": {
