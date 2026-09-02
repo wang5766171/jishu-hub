@@ -112,24 +112,37 @@ fn list(ctx: &ExecutionContext) -> Result<(), CliError> {
 }
 
 fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
-    // 与 GUI 的 plugin_remove 同规则：仅 manifest 插件；活跃会话检查不适用
-    // 于 CLI（看不到 GUI 进程的会话表）——删除后 GUI 侧活跃会话行为同禁用。
+    // 与 GUI 的 plugin_remove 同规则：agent manifest + 工具插件均可卸载
+    // （评审 III：修前只查 registry.list_plugins()——tool 插件不在其中，
+    // CLI remove 找不到 → 与 GUI「支持卸载工具插件」不对称）。活跃会话
+    // 检查不适用于 CLI（看不到 GUI 进程的会话表）——删除后 GUI 侧活跃
+    // 会话行为同禁用。
     let registry = agent::AgentRegistry::new();
-    let descriptor = registry
-        .list_plugins()
-        .into_iter()
-        .find(|p| p.id == id)
-        .ok_or_else(|| CliError::InvalidArg(format!("unknown plugin: {id}")))?;
-    if descriptor.core {
-        return Err(CliError::InvalidArg(format!(
-            "plugin {id} is the core engine and cannot be removed"
-        )));
-    }
-    let source = descriptor.source_path.ok_or_else(|| {
+    let registry_plugin = registry.list_plugins().into_iter().find(|p| p.id == id);
+    let tool_plugin = if registry_plugin.is_none() {
+        agent::tool_plugin::load_tool_plugins(&Default::default())
+            .into_iter()
+            .find(|p| p.id() == id)
+    } else {
+        None
+    };
+    let source: Option<std::path::PathBuf> = match (&registry_plugin, &tool_plugin) {
+        (Some(p), _) if p.core => {
+            return Err(CliError::InvalidArg(format!(
+                "plugin {id} is the core engine and cannot be removed"
+            )));
+        }
+        (Some(p), _) => p.source_path.as_ref().map(|s| std::path::PathBuf::from(s)),
+        (None, Some(tp)) => Some(tp.source_path.clone()),
+        (None, None) => {
+            return Err(CliError::InvalidArg(format!("unknown plugin: {id}")));
+        }
+    };
+    let source = source.ok_or_else(|| {
         CliError::InvalidArg(format!("plugin {id} is builtin and cannot be removed"))
     })?;
     std::fs::remove_file(&source)
-        .map_err(|e| CliError::InvalidArg(format!("cannot remove {source}: {e}")))?;
+        .map_err(|e| CliError::InvalidArg(format!("cannot remove {}: {e}", source.display())))?;
     let _ = agent::plugin::set_plugin_enabled(id, true); // 清 disabled 引用
 
     if ctx.json {
@@ -138,7 +151,7 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
             serde_json::json!({"removed": true, "id": id, "path": source})
         );
     } else {
-        println!("Removed plugin {id} ({source})");
+        println!("Removed plugin {id} ({})", source.display());
     }
     Ok(())
 }

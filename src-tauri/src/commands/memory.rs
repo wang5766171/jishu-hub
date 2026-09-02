@@ -1,5 +1,5 @@
 //! 插件基础能力命令面（v0.8.1 需求8 P1）：项目记忆 KV 的 GUI 读写入口。
-//! CLI 侧同名能力在 cli/commands/context.rs（插件脚本/智能体经 shell 消费）。
+//! CLI 侧同名能力在 cli/commands/memory.rs（插件脚本/智能体经 shell 消费）。
 
 use std::sync::Mutex;
 

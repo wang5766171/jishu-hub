@@ -17,6 +17,10 @@ fn cli_command_files_exist() {
         ("orchestrator/daemon.rs", "Daemon command handler"),
         ("doctor.rs", "Doctor command handler"),
         ("acp.rs", "ACP command handler"),
+        // v0.8.1 需求4/8/10（M0-b 接线回归锚点——孤儿模块事故复发即挂）。
+        ("plugins.rs", "Plugins command handler"),
+        ("task_artifact.rs", "Task-artifact command handler"),
+        ("memory.rs", "Memory command handler"),
     ];
 
     for (file, _desc) in &expected {
@@ -33,7 +37,7 @@ fn cli_args_define_all_public_subcommands() {
 
     let expected_variants = [
         "Agents", "Chat", "Doctor", "Plan", "Task", "Event", "Run", "Model", "Daemon", "Evolve",
-        "Acp",
+        "Acp", "Plugins", "TaskArtifact", "Memory",
     ];
 
     for variant in &expected_variants {

@@ -113,6 +113,25 @@ pub enum Commands {
         #[command(subcommand)]
         action: AcpAction,
     },
+
+    /// Manage plugins (v0.8.1 需求4：add/list/remove/enable/disable).
+    Plugins {
+        #[command(subcommand)]
+        action: PluginAction,
+    },
+
+    /// Tool-plugin CLI artifacts (v0.8.1 需求10：lock-requirement/commit-plan).
+    #[command(name = "task-artifact")]
+    TaskArtifact {
+        #[command(subcommand)]
+        action: TaskArtifactAction,
+    },
+
+    /// Project memory KV (v0.8.1 需求8 P1：跨 agent 共享的项目记忆).
+    Memory {
+        #[command(subcommand)]
+        action: MemoryAction,
+    },
 }
 
 // ── Agent ────────────────────────────────────────────────────────────────────
@@ -365,4 +384,134 @@ pub enum AcpAction {
 
     /// List active ACP sessions.
     List,
+}
+
+// ── Plugins（v0.8.1 需求4）────────────────────────────────────────────────────
+
+#[derive(Subcommand, Debug)]
+pub enum PluginAction {
+    /// Install a plugin from a local TOML manifest file (validated on install).
+    Add {
+        /// Path to the plugin manifest TOML.
+        path: String,
+    },
+
+    /// List all plugins (builtin + manifest agents + tool plugins).
+    List,
+
+    /// Remove a non-core plugin by id.
+    Remove {
+        /// Plugin identifier.
+        id: String,
+    },
+
+    /// Enable a plugin.
+    Enable {
+        /// Plugin identifier.
+        id: String,
+    },
+
+    /// Disable a plugin.
+    Disable {
+        /// Plugin identifier.
+        id: String,
+    },
+}
+
+// ── Task artifact（v0.8.1 需求10：自适应插件 CLI 形态）───────────────────────
+
+#[derive(Subcommand, Debug)]
+pub enum TaskArtifactAction {
+    /// Lock the discussed requirements into structured artifacts.
+    #[command(name = "lock-requirement")]
+    LockRequirement {
+        /// Requirement title.
+        #[arg(long)]
+        title: String,
+
+        /// Goal statement.
+        #[arg(long)]
+        goal: String,
+
+        /// Scope items, semicolon-separated.
+        #[arg(long)]
+        scope: String,
+
+        /// Acceptance criteria, semicolon-separated.
+        #[arg(long)]
+        acceptance: String,
+
+        /// Project path.
+        #[arg(long, default_value = ".")]
+        project: String,
+
+        /// Task id (defaults to free-<unix-ts>).
+        #[arg(long)]
+        task_id: Option<String>,
+    },
+
+    /// Commit a flow plan proposal as structured artifacts.
+    #[command(name = "commit-plan")]
+    CommitPlan {
+        /// Plan nodes as JSON.
+        #[arg(long)]
+        nodes: String,
+
+        /// Project path.
+        #[arg(long, default_value = ".")]
+        project: String,
+
+        /// Task id (defaults to free-<unix-ts>).
+        #[arg(long)]
+        task_id: Option<String>,
+    },
+}
+
+// ── Memory（v0.8.1 需求8 P1：项目记忆 KV）────────────────────────────────────
+
+#[derive(Subcommand, Debug)]
+pub enum MemoryAction {
+    /// Set a key-value pair for a project.
+    Set {
+        /// Project path (absolute, or "." for cwd).
+        #[arg(long, default_value = ".")]
+        project: String,
+
+        /// Key.
+        #[arg(long)]
+        key: String,
+
+        /// Value.
+        #[arg(long)]
+        value: String,
+    },
+
+    /// Get a value by key (prints the value, or null).
+    Get {
+        /// Project path.
+        #[arg(long, default_value = ".")]
+        project: String,
+
+        /// Key.
+        #[arg(long)]
+        key: String,
+    },
+
+    /// List all entries for a project.
+    List {
+        /// Project path.
+        #[arg(long, default_value = ".")]
+        project: String,
+    },
+
+    /// Delete a key.
+    Delete {
+        /// Project path.
+        #[arg(long, default_value = ".")]
+        project: String,
+
+        /// Key.
+        #[arg(long)]
+        key: String,
+    },
 }
