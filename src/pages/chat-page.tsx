@@ -1,11 +1,11 @@
-import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import {
   streamStore,
   useSessionStream,
   useStreamingSessionIds,
 } from "@/hooks/use-stream-store";
-import { MessageView, type MessageSearchNavigation, type MessageSearchStatus } from "@/components/sessions/message-view";
+import { MessageView } from "@/components/sessions/message-view";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
 import { RenameTaskSessionDialog } from "@/components/sessions/rename-task-session-dialog";
 import { ChatInput, type StagedGuideApi } from "@/components/sessions/chat-input";
@@ -41,7 +41,6 @@ import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { useFileViewer } from "@/components/file-viewer";
 import { cn } from "@/lib/utils";
-import { searchSessions } from "@/lib/session-search";
 import { openFloatingSession } from "@/lib/floating-window";
 import {
   buildInteractionInsertions,
@@ -62,6 +61,7 @@ import { ContextRing } from "@/components/sessions/context-ring";
 import { UserTextWithPills, useSessionToolNames } from "@/components/sessions/embedded-tools";
 import { useModelPicker } from "@/features/chat-core/use-model-picker";
 import { useCompaction } from "@/features/chat-core/use-compaction";
+import { useMessageSearch } from "@/features/chat-core/use-message-search";
 import { ThinkingLevelSelect } from "@/components/sessions/thinking-level-select";
 import {
   buildAssistantContentFromStreamState,
@@ -220,11 +220,7 @@ export function ChatPage({
   // 正在重命名的任务会话；为 null 时弹窗关闭。用对象引用区分"重命名哪个任务会话"。
   const [renameTaskTarget, setRenameTaskTarget] = useState<TaskLaunchInstanceSummary | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
-  const [messageSearchStatus, setMessageSearchStatus] = useState<MessageSearchStatus>({ current: 0, total: 0 });
-  const [messageSearchNavigation, setMessageSearchNavigation] = useState<MessageSearchNavigation | null>(null);
   const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
   const [optimisticSessions, setOptimisticSessions] = useState<Session[]>([]);
   // 三阶段任务容器（TaskPhaseContainer）状态。唯一任务界面。
@@ -395,6 +391,20 @@ export function ChatPage({
   // Ref mirror for use inside the mount-only stream listener closure.
   const sessionsRef = useRef<Session[] | null>(null);
   sessionsRef.current = sessions ?? null;
+  // v0.9.0 需求7 D 域拆分：搜索状态组出界（useMessageSearch，纯移动）。
+  // 解构别名保持既有 JSX 用名不变。
+  const {
+    query: searchQuery,
+    setQuery: setSearchQuery,
+    deferredQuery: deferredSearchQuery,
+    searchResults,
+    showMessageSearchControls,
+    handleStatusChange: handleMessageSearchStatusChange,
+    navigation: messageSearchNavigation,
+    requestNavigation: requestMessageSearchNavigation,
+    total: messageSearchTotal,
+    label: messageSearchLabel,
+  } = useMessageSearch({ sessions, selectedSession });
   // 节点子代理会话 id 集合（常规会话列表过滤用，与 taskLaunchSessions 同节奏刷新）。
   const [nodeSessionIds, setNodeSessionIds] = useState<string[]>([]);
   const refreshTaskLaunchSessions = useCallback(async () => {
@@ -467,10 +477,6 @@ export function ChatPage({
     return () => onProjectSessionsLoadingChange?.(false);
   }, [onProjectSessionsLoadingChange]);
 
-  const searchResults = useMemo<SessionSearchResult[]>(() => {
-    if (!sessions || !deferredSearchQuery.trim()) return [];
-    return searchSessions(sessions, deferredSearchQuery);
-  }, [sessions, deferredSearchQuery]);
   const taskLaunchSessionIds = useMemo(
     () => new Set(
       [
@@ -510,8 +516,6 @@ export function ChatPage({
       .includes(query);
   });
 
-  const hasSearchQuery = searchQuery.trim().length > 0;
-  const showMessageSearchControls = hasSearchQuery && !!selectedSession && selectedSession !== "new";
   const showStartComposer = !!projectId && (!selectedSession || selectedSession === "new");
   const activeTaskLaunchInstance = useMemo(
     () => activeTaskInstanceId
@@ -546,36 +550,12 @@ export function ChatPage({
       .catch(() => { if (!cancelled) setExternalPermissionMode(null); });
     return () => { cancelled = true; };
   }, [permissionModeProvider, activeId, accessRefreshKey]);
-  const messageSearchTotal = showMessageSearchControls ? messageSearchStatus.total : 0;
-  const messageSearchLabel = messageSearchTotal > 0
-    ? `${messageSearchStatus.current}/${messageSearchTotal}`
-    : "0/0";
-
-  const requestMessageSearchNavigation = useCallback((direction: 1 | -1) => {
-    setMessageSearchNavigation((prev) => ({
-      direction,
-      nonce: (prev?.nonce ?? 0) + 1,
-    }));
-  }, []);
-
-  const handleMessageSearchStatusChange = useCallback((status: MessageSearchStatus) => {
-    setMessageSearchStatus((prev) => (
-      prev.current === status.current && prev.total === status.total ? prev : status
-    ));
-  }, []);
-
   // Auto-clear optimistic sessions once real session appears in backend list
   useEffect(() => {
     if (sessions && optimisticSessions.length > 0) {
       setOptimisticSessions(prev => prev.filter(opt => !sessions.some(s => s.id === opt.id)));
     }
   }, [sessions]);
-
-  useEffect(() => {
-    if (!showMessageSearchControls) {
-      setMessageSearchStatus({ current: 0, total: 0 });
-    }
-  }, [showMessageSearchControls]);
 
   // Clear session state when project changes
   useEffect(() => {
