@@ -434,7 +434,12 @@ function Labeled({
 }
 
 /** manifest JSON（plugin_get 返回）→ 表单状态（buildManifest 的逆映射）。 */
-function parseManifest(json: Record<string, unknown>): FormState {
+function parseManifest(json: Record<string, unknown>): {
+  form: FormState;
+  /** M4：表单不可表达的段（[pi_extension]）——编辑往返原样保留，随提交
+   * 原文透传（修前 parse 丢弃 + build 覆盖写回 = 静默数据丢失）。 */
+  preserved: Record<string, unknown>;
+} {
   const info = (json.info ?? {}) as Record<string, unknown>;
   const probe = json.probe as Record<string, unknown> | undefined;
   const transport = (json.transport ?? {}) as Record<string, unknown>;
@@ -442,7 +447,11 @@ function parseManifest(json: Record<string, unknown>): FormState {
   const session = (json.session ?? {}) as Record<string, unknown>;
   const caps = (json.capabilities ?? {}) as Record<string, unknown>;
   const tool = (json.tool ?? {}) as Record<string, unknown>;
-  return {
+  const preserved: Record<string, unknown> = {};
+  if (json.pi_extension && typeof json.pi_extension === "object") {
+    preserved.pi_extension = json.pi_extension;
+  }
+  const form: FormState = {
     id: String(info.id ?? ""),
     displayName: String(info.display_name ?? ""),
     icon: String(info.icon ?? ""),
@@ -476,6 +485,7 @@ function parseManifest(json: Record<string, unknown>): FormState {
     toolExample: String(tool.example ?? ""),
     toolNotes: String(tool.notes ?? ""),
   };
+  return { form, preserved };
 }
 
 export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId }: CreateProps) {
@@ -483,6 +493,8 @@ export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId
   const { alert: alertDialog, dialogNode } = useConfirmDialog();
   const [templateKey, setTemplateKey] = useState("blank");
   const [form, setForm] = useState<FormState>(templates[0].form);
+  /** M4：编辑时表单不可表达的段（[pi_extension]），提交时原文透传。 */
+  const [preservedSections, setPreservedSections] = useState<Record<string, unknown>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isEdit = !!editPluginId;
@@ -493,7 +505,11 @@ export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId
     setError(null);
     invokeCommand<Record<string, unknown>>("plugin_get", { pluginId: editPluginId })
       .then((json) => {
-        if (json) setForm(parseManifest(json));
+        if (json) {
+          const parsed = parseManifest(json);
+          setForm(parsed.form);
+          setPreservedSections(parsed.preserved);
+        }
       })
       .catch((err) => setError(String(err)));
   }, [open, editPluginId]);
@@ -508,7 +524,13 @@ export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId
     const tp = templates.find((x) => x.key === key);
     if (!tp) return;
     setTemplateKey(key);
-    setForm({ ...tp.form });
+    // M4：编辑模式点模板不再整体重置表单（会覆盖被锁定的 id，提交必然后端
+    // 拒绝）——保留 id/display_name，只带模板的段默认值。
+    setForm((prev) =>
+      isEdit
+        ? { ...tp.form, id: prev.id, displayName: prev.displayName }
+        : { ...tp.form },
+    );
     setError(null);
   };
 
@@ -529,13 +551,16 @@ export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId
     setSubmitting(true);
     setError(null);
     try {
+      // M4：编辑时把表单不可表达的段（[pi_extension]）原样并回 manifest——
+      // 编辑往返不再丢段。
+      const manifest = { ...buildManifest(form), ...preservedSections };
       const created = isEdit
         ? await invokeCommand<{ id: string; path: string }>("plugin_update", {
             pluginId: editPluginId,
-            manifest: buildManifest(form),
+            manifest,
           })
         : await invokeCommand<{ id: string; path: string }>("plugin_create", {
-            manifest: buildManifest(form),
+            manifest,
           });
       onOpenChange(false);
       onCreated();
@@ -565,6 +590,48 @@ export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId
           </DialogHeader>
 
           <div className="space-y-5">
+            {/* M4：插件类型显式单选（需求7 §6——此前只能靠模板隐式决定类型，
+             * 选错类型只能换模板且会重置整个表单）。与模板选择双向联动。 */}
+            <div>
+              <p className="text-xs font-medium mb-2">{tr("plugins.kindSection", "插件类型")}</p>
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  { kind: "agent" as const, icon: <Bot className="h-4 w-4" />, label: tr("plugins.kindAgent", "智能体插件"), desc: tr("plugins.kindAgentDesc", "接入一个新的 CLI/ACP 智能体") },
+                  { kind: "tool" as const, icon: <Terminal className="h-4 w-4" />, label: tr("plugins.kindTool", "工具插件"), desc: tr("plugins.kindToolDesc", "会话中注入用法的 CLI 能力单元") },
+                ]).map((opt) => (
+                  <button
+                    key={opt.kind}
+                    type="button"
+                    role="radio"
+                    aria-checked={form.kind === opt.kind}
+                    disabled={isEdit}
+                    onClick={() => {
+                      // 切类型：保留 info 基本信息，重置另一类型的专属段
+                      patch({ kind: opt.kind });
+                      const tp = templates.find((x) => x.tplKind === opt.kind);
+                      if (tp && !isEdit) setTemplateKey(tp.key);
+                    }}
+                    className={cn(
+                      "flex items-start gap-2 rounded-md border p-3 text-left text-xs transition-colors",
+                      form.kind === opt.kind
+                        ? "border-primary bg-primary/5 text-primary"
+                        : "border-border/60 hover:border-primary/40 text-foreground",
+                      isEdit && "opacity-60 cursor-not-allowed",
+                    )}
+                  >
+                    <span className="mt-0.5 shrink-0">{opt.icon}</span>
+                    <span className="min-w-0">
+                      <span className="block font-medium">{opt.label}</span>
+                      <span className="mt-0.5 block text-[10px] leading-snug text-muted-foreground">{opt.desc}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+              {isEdit && (
+                <FieldHelp>{tr("plugins.hKindLockedEdit", "编辑模式不可更改插件类型（id 与文件名/会话归属均以 id 为键）")}</FieldHelp>
+              )}
+            </div>
+
             {/* 模版选择（按插件类型分组；v0.8.1 需求7：智能体 / 工具两类） */}
             <div>
               <p className="text-xs font-medium mb-2">{tr("plugins.tplSection", "从模版开始")}</p>
@@ -690,11 +757,12 @@ export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId
               </div>
             )}
 
-            {/* 探测 */}
-            {!isTool && (<>
+            {/* 探测（M4：工具插件也显示——需求7 §6 的 tool 表单 = info+probe+[tool]，
+             * 修前 probe 区在 tool 下被隐藏但 buildManifest 仍提交模板默认值，
+             * 用户不可见不可改不可关） */}
             <div className="rounded-md border border-border/50 p-3 space-y-3">
               <div className="flex items-center justify-between">
-                <p className="text-xs font-medium">{tr("plugins.probeSection", "安装探测")}</p>
+                <p className="text-xs font-medium">{tr("plugins.probeSection", "安装探测")}{isTool && <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">{tr("plugins.probeToolHint", "（检测工具命令是否已安装，影响注入块的「状态」行）")}</span>}</p>
                 <Switch
                   checked={form.probeEnabled}
                   onCheckedChange={(v) => patch({ probeEnabled: v })}
@@ -732,7 +800,8 @@ export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId
               )}
             </div>
 
-            {/* 传输 */}
+            {/* 传输（仅智能体插件——工具插件无 transport 段，schema 互斥） */}
+            {!isTool && (
             <div className="rounded-md border border-border/50 p-3 space-y-3">
               <div className="flex items-center gap-2">
                 <p className="text-xs font-medium">{tr("plugins.transportSection", "传输方式")}</p>
@@ -804,8 +873,10 @@ export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId
                 </Labeled>
               )}
             </div>
+            )}
 
-            {/* 配置与会话 */}
+            {/* 配置与会话（仅智能体插件——工具插件 schema 禁止 config/session 段） */}
+            {!isTool && (
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-md border border-border/50 p-3 space-y-3">
                 <div className="flex items-center justify-between">
@@ -885,8 +956,7 @@ export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId
                 <FieldHelp>{tr("plugins.hCaps", "")}</FieldHelp>
               </div>
             </div>
-
-            </>)}
+            )}
 
             {error && (
               <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive break-all">

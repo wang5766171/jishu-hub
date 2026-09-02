@@ -303,7 +303,7 @@ export function PluginsPage() {
                     <Pencil className="h-4 w-4" />
                   </Button>
                 )}
-                {plugin.kind === "manifest" && (
+                {(plugin.kind === "manifest" || plugin.kind === "tool") && (
                   <Button
                     variant="ghost"
                     size="icon"

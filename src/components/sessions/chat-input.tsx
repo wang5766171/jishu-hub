@@ -30,6 +30,8 @@ interface SessionTool {
   description: string;
   usage: string;
   enabled: boolean;
+  /** M3：有 [tool] 段（可 CLI 注入）；false = 仅 pi 扩展形态。 */
+  injectable?: boolean;
 }
 
 /** 内联工具 token：`@[显示名]`（v0.8.1 需求7）。全局正则——用前 reset /
@@ -399,13 +401,15 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     setStagedMessagesForSession(stagingSessionKey, updater);
   }, [setStagedMessagesForSession, stagingSessionKey]);
 
-  // v0.8.1 需求7：按会话加载工具插件启用集（暂存 key 与真实 session id 同源）。
+  // v0.8.1 需求7：按会话加载工具插件启用集（M0 修复：键 = 会话身份
+  // stagingSessionKey——此前误用 activeSessionId（流式中止引用，每轮流结束
+  // 必被置 null），导致切会话不刷新、写入全部落到暂存键）。
+  // Array.isArray 防御：测试/异常环境下后端返回形状不符时不炸渲染。
   useEffect(() => {
-    const key = activeSessionId ?? "__new_session__";
     let cancelled = false;
-    invokeCommand<SessionTool[]>("session_tool_list", { sessionId: key })
+    invokeCommand<SessionTool[]>("session_tool_list", { sessionId: stagingSessionKey })
       .then((tools) => {
-        if (!cancelled) setSessionTools(tools);
+        if (!cancelled) setSessionTools(Array.isArray(tools) ? tools : []);
       })
       .catch(() => {
         if (!cancelled) setSessionTools([]);
@@ -413,7 +417,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     return () => {
       cancelled = true;
     };
-  }, [activeSessionId]);
+  }, [stagingSessionKey]);
 
   /** 在光标处插入 `@[显示名] ` token（+ 菜单点击入口）。 */
   const insertToolToken = useCallback((displayName: string) => {
@@ -434,6 +438,9 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     });
   }, [message, onDraftChange]);
 
+  /** M2：+ 菜单勾选切换会话启用集（会话级真源；乐观更新 + 失败回滚提示，
+   * 不再静默吞错）。key 与发送同源（stagingSessionKey——新会话勾选落暂存
+   * 键，首条消息由后端 compose 前迁移到会话键）。 */
   useImperativeHandle(ref, () => textareaRef.current!, []);
 
   // Expose the staging-area lifecycle to the parent (Route 2: auto-send at
@@ -668,7 +675,57 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     setFiles((prev) => prev.filter((f) => f.id !== id));
   };
 
-  const sendPreparedMessage = async (fullMessage: string, clearComposer: boolean) => {
+  // 发送目标会话 id（M0 修复：与 sendPreparedMessage 同源——续聊用真实
+  // sessionId，新会话用 pending-<ts>；调用方先算好传入，保证工具集写入键
+  // 与 send_message 携带的 sessionId 严格一致，不再各算各的）。
+  const nextPendingId = useCallback(
+    () => sessionId || `pending-${Date.now()}`,
+    [sessionId],
+  );
+
+  /** M5：发送/引导共用的消息组装（单源）。用户裁决保持 workbuddy 形态：
+   * 本条消息里的 @[token] 集合 = 本条工具集（所见即所得，空 token = 本条
+   * 不带工具，覆盖写入会话集合）。与修前的差异：① 写入键修复
+   * （nextPendingId 同源，修前 activeSessionId 恒 null 落暂存键注入永不命
+   * 中）；② **await 写入完成**后才进入发送——修前 fire-and-forget 与
+   * send_message 的 compose 在后端并发，新会话首条消息（P0-0 红线场景）
+   * 集合可能未落盘 → 不注入（评审 P1-1 竞态）。任何新增的用户消息出口
+   * 必须走这里（§16.8 组装单源）。 */
+  const composeOutgoing = useCallback(
+    async (rawText: string): Promise<{ message: string; sessionKey: string }> => {
+      const sessionKey = nextPendingId();
+      const hasTokens = TOOL_TOKEN_RE.test(rawText);
+      TOOL_TOKEN_RE.lastIndex = 0;
+      if (!hasTokens && !sessionTools.some((t) => t.enabled)) {
+        return { message: rawText, sessionKey };
+      }
+      const { text: strippedText, toolIds } = extractToolTokens(rawText, sessionTools);
+      try {
+        await invokeCommand("session_set_tools", { sessionId: sessionKey, toolIds });
+        setSessionTools((prev) =>
+          prev.map((t) => ({ ...t, enabled: toolIds.includes(t.id) })),
+        );
+      } catch (err) {
+        // 写入失败不阻塞发送（消息照发，仅本条不注入）；用户可从控制台
+        // 警告与「工具没生效」的现象回溯——阻塞会导致普通消息也发不出。
+        console.warn("Failed to sync session tools:", err);
+      }
+      return {
+        message:
+          toolIds.length > 0
+            ? `[JISHU-TOOLS:${toolIds.join(",")}] ${strippedText}`
+            : strippedText,
+        sessionKey,
+      };
+    },
+    [nextPendingId, sessionTools],
+  );
+
+  const sendPreparedMessage = async (
+    fullMessage: string,
+    clearComposer: boolean,
+    pendingIdOverride?: string,
+  ) => {
     if (!projectPath) {
       throw new Error("project path is required");
     }
@@ -685,7 +742,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
       return;
     }
 
-    const pendingId = sessionId || `pending-${Date.now()}`;
+    const pendingId = pendingIdOverride ?? (sessionId || `pending-${Date.now()}`);
     setActiveSessionId(pendingId);
     const agentMessage = await prepareMessageForAgent?.(fullMessage) ?? fullMessage;
 
@@ -752,26 +809,17 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     setSending(true);
     try {
       let fullMessage = message.trim();
-      // v0.8.1 内联工具 pill：解析文本中的 @[显示名] token——归一为插件 id
-      // 后剥除发送，并同步会话工具启用集（空 token = 本条不带工具，所见即
-      // 所得）。有工具时在消息前嵌入 [JISHU-TOOLS:id1,id2] 标记，渲染层
-      // 检测并显示 pill。
-      const toolKey = activeSessionId ?? "__new_session__";
-      const hasTokens = TOOL_TOKEN_RE.test(fullMessage);
-      TOOL_TOKEN_RE.lastIndex = 0;
-      if (hasTokens || sessionTools.some((t) => t.enabled)) {
-        const { text: strippedText, toolIds } = extractToolTokens(fullMessage, sessionTools);
-        fullMessage = strippedText;
-        if (toolIds.length > 0) {
-          fullMessage = `[JISHU-TOOLS:${toolIds.join(",")}] ${fullMessage}`;
-        }
-        invokeCommand("session_set_tools", { sessionId: toolKey, toolIds }).catch((err) =>
-          console.warn("Failed to sync session tools:", err),
-        );
-        setSessionTools((prev) =>
-          prev.map((t) => ({ ...t, enabled: toolIds.includes(t.id) })),
-        );
-      }
+      // v0.8.1 内联工具 pill（M0/M2 修订语义）：
+      // - 会话级真源 = + 菜单勾选（session-tools.json，跨消息/重启保持）；
+      // - @[token] = 本条追加——归一为 id 后**并集**写入会话集合（不覆盖、
+      //   空消息不再清空勾选），并在消息头嵌 [JISHU-TOOLS:id] 作为本条快照
+      //   （仅回放渲染 pill 用）；
+      // - 写入键 = 本条 send_message 携带的 sessionId（nextPendingId 同源，
+      //   新会话为 pending-<ts>，续聊为真实 id）——修前用 activeSessionId
+      //   （流式引用，非流式恒 null）导致写入全部落到暂存键、注入永不命中。
+      const pendingId = nextPendingId();
+      const composed = await composeOutgoing(fullMessage);
+      fullMessage = composed.message;
       // 输入历史记录用户原始输入（A6）：发送即入列，与附件组装后的内容无关
       pushInputHistory(historyScope, message);
       setHistoryPos(null);
@@ -821,7 +869,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         fullMessage += `\n\n<!--JISHU_HUB_IMAGES_BEGIN-->\n[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]\n${fileListStr}\n<!--JISHU_HUB_IMAGES_END-->`;
       }
 
-      await sendPreparedMessage(fullMessage, true);
+      await sendPreparedMessage(fullMessage, true, pendingId);
     } catch (err) {
       console.error("Failed to send message:", err);
       setSending(false);
@@ -833,7 +881,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   // mid-turn without interrupting output.
   // For CLI/embedded agents (no onGuideStaged): stop the current generation,
   // then send as a new message.
-  const handleGuideStaged = async (id: string, content: string) => {
+  const handleGuideStaged = async (id: string, rawContent: string) => {
     if (!projectPath || disabled) return;
     // exactly-once: if this staged message was already claimed — by a prior
     // click of the same button (claude multi-click), or by Route 2's auto-send
@@ -844,9 +892,13 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     claimedIds.add(id);
     setGuideLoading(id);
     try {
+      // M5：引导路径与普通发送共用同一工具管线——剥 @[token]、归一 id、
+      // 写消息头标记（回放 pill）、并集写入会话集（注入生效）。修前引导
+      // 完全绕过：token 原文进 prompt、无 pill、无注入。
+      const { message, sessionKey } = await composeOutgoing(rawContent);
       if (onGuideStaged) {
         // Caller handles delivery (steer for Pi RPC / ACP).
-        await onGuideStaged(content);
+        await onGuideStaged(message);
       } else {
         // CLI/embedded agents have no mid-turn steer. Stop the current turn
         // first, then send. The abort MUST be awaited so its streamStore.drop
@@ -856,7 +908,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         if (isStreaming) {
           await handleAbort();
         }
-        await sendPreparedMessage(content, true);
+        await sendPreparedMessage(message, true, sessionKey);
       }
       setCurrentStagedMessages((prev) => prev.filter((m) => m.id !== id));
     } catch (err) {
@@ -1098,6 +1150,11 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
               }
               onSend={handleGuideStaged}
               sendLoadingId={guideLoading}
+              toolNames={Object.fromEntries(
+                Array.isArray(sessionTools)
+                  ? sessionTools.map((t) => [t.id, t.display_name])
+                  : [],
+              )}
             />
           </div>
         )}
@@ -1250,22 +1307,35 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                       <div className="px-2.5 pb-1 pt-0.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/70">
                         {t("sessions.pluginsSection", "插件")}
                       </div>
-                      {sessionTools.map((tool) => (
-                        <button
-                          key={tool.id}
-                          type="button"
-                          onClick={() => {
-                            setToolMenuOpen(false);
-                            insertToolToken(tool.display_name);
-                          }}
-                          disabled={disabled || sending || isStreaming}
-                          title={tool.description}
-                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-fast hover:bg-accent/60 disabled:cursor-not-allowed disabled:opacity-45"
-                        >
-                          <Blocks className="h-4 w-4 shrink-0 text-[var(--icon-config)]" />
-                          <span className="flex-1 truncate">{tool.display_name}</span>
-                        </button>
-                      ))}
+                      {sessionTools.map((tool) => {
+                        // 用户裁决（2026-08-31 晨）：保持 workbuddy 形态——菜单项
+                        // 点击 = 插入 @[显示名] pill 到输入框，消息即所见、发送即
+                        // 本条工具集。M3 的 injectable 保留用于禁用仅 pi 扩展项。
+                        const injectable = tool.injectable !== false;
+                        return (
+                          <button
+                            key={tool.id}
+                            type="button"
+                            onClick={() => {
+                              setToolMenuOpen(false);
+                              insertToolToken(tool.display_name);
+                            }}
+                            disabled={disabled || sending || isStreaming || !injectable}
+                            title={
+                              injectable
+                                ? tool.description
+                                : `${tool.description}（仅 pi 扩展形态，不参与 CLI 注入）`
+                            }
+                            className={cn(
+                              "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-fast hover:bg-accent/60 disabled:cursor-not-allowed",
+                              injectable ? "text-foreground disabled:opacity-45" : "text-muted-foreground opacity-55",
+                            )}
+                          >
+                            <Blocks className={cn("h-4 w-4 shrink-0", injectable ? "text-[var(--icon-config)]" : "opacity-40")} />
+                            <span className="flex-1 truncate">{tool.display_name}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </div>

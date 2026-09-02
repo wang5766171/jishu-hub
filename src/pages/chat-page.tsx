@@ -59,6 +59,7 @@ import { resolvePhaseSessionId, shouldRenderGlobalChatInput } from "./chat-page-
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
 import { setSessionUsage } from "@/lib/session-usage";
 import { ContextRing } from "@/components/sessions/context-ring";
+import { UserTextWithPills, useSessionToolNames } from "@/components/sessions/embedded-tools";
 import { useModelPicker } from "@/features/chat-core/use-model-picker";
 import { useCompaction } from "@/features/chat-core/use-compaction";
 import { ThinkingLevelSelect } from "@/components/sessions/thinking-level-select";
@@ -344,6 +345,8 @@ export function ChatPage({
   // its turn completes and the steer is committed into sessionMessages at its
   // correct position (between the prior reply and the steer's response).
   const [pendingSteerDisplay, setPendingSteerDisplay] = useState<Message[]>([]);
+  // M5：引导占位气泡的 pill 中文名映射（按当前会话加载）。
+  const steerToolNames = useSessionToolNames(selectedSession ?? null);
   // Subscribe to streaming state for the currently-selected session. Drives
   // whether the streaming bubble is rendered and whether the input is in Stop mode.
   const currentStream = useSessionStream(selectedSession);
@@ -3228,10 +3231,10 @@ export function ChatPage({
                               </span>
                             </div>
                             <div
-                              className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full"
+                              className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] overflow-hidden min-w-0 max-w-full"
                               style={{ fontSize: "var(--font-size-prose)" }}
                             >
-                              {text}
+                              <UserTextWithPills text={text} toolNames={steerToolNames} />
                             </div>
                           </div>
                         </div>

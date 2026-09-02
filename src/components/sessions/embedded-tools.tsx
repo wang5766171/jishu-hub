@@ -107,3 +107,22 @@ export function EmbeddedToolPill({ name }: { name: string }) {
     </span>
   );
 }
+
+/** 用户消息正文展示统一组件（M5）：剥 [JISHU-TOOLS] 标记 → pill + 正文
+ * 同一内联流。四个用户消息展示面（回放/流式/引导占位/暂存）共用，杜绝
+ * 新增面漏解析导致标记原文可见（§16.3 单源纪律）。 */
+export function UserTextWithPills({
+  text,
+  toolNames,
+}: {
+  text: string;
+  toolNames: Record<string, string>;
+}) {
+  const { text: display, toolIds } = parseEmbeddedTools(text);
+  return (
+    <span className="whitespace-pre-wrap break-all">
+      <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
+      {display}
+    </span>
+  );
+}

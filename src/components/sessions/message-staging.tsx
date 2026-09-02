@@ -13,6 +13,7 @@ import { useState } from "react";
 import { Edit3, Send, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
+import { UserTextWithPills } from "./embedded-tools";
 
 export interface StagedMessage {
   id: string;
@@ -25,11 +26,14 @@ interface MessageStagingProps {
   onDelete: (id: string) => void;
   onSend: (id: string, content: string) => void;
   sendLabel?: string;
-  /** When set, a guide send is in flight — disable every send button so a
+  /** When set, a guide send is in flight — disable every send buttons so a
    *  rapid double-click (or stacking across messages) can't fire the send
    *  twice. Correctness is also enforced in the parent via a claimed-id set;
    *  this is the UX layer. */
   sendLoadingId?: string | null;
+  /** 工具插件 id→显示名映射（pill 中文名渲染，评审 P2-6——修前传空映射
+   *  回退显示英文 id，与其它三个展示面不一致）。 */
+  toolNames?: Record<string, string>;
 }
 
 export function MessageStaging({
@@ -39,6 +43,7 @@ export function MessageStaging({
   onSend,
   sendLabel,
   sendLoadingId,
+  toolNames,
 }: MessageStagingProps) {
   const { t } = useTranslation();
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -96,7 +101,7 @@ export function MessageStaging({
           ) : (
             <>
               <p className="min-w-0 flex-1 text-xs leading-5 text-foreground">
-                {msg.content}
+                <UserTextWithPills text={msg.content} toolNames={toolNames ?? {}} />
               </p>
               <div className="flex shrink-0 items-center gap-1">
                 <button
