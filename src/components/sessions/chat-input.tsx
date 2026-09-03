@@ -22,6 +22,7 @@ import type {
 } from "@/types";
 import { cn } from "@/lib/utils";
 import { EmbeddedToolPill } from "./embedded-tools";
+import { detectAtToken } from "./at-file";
 
 /** 会话工具插件条目（v0.8.1 需求7，后端 session_tool_list）。 */
 interface SessionTool {
@@ -289,19 +290,15 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         return;
       }
       setSlashFilter(null);
-      // @ 文件：光标前最近 @，@ 之前须为行首或空白，token 内无空白
+      // @ 文件（v0.9.0 需求10：行中触发——@ 前是非 ASCII 词字符即可，中文
+      // 语句中间 @ 可用；邮箱/路径保护与关闭条件见 at-file.ts 规则单点）。
       if (!allowFiles) {
         setAtToken(null);
         return;
       }
-      const beforeCaret = value.slice(0, caret);
-      const atIdx = beforeCaret.lastIndexOf("@");
-      if (
-        atIdx >= 0 &&
-        (atIdx === 0 || /\s/.test(beforeCaret[atIdx - 1])) &&
-        !/\s/.test(beforeCaret.slice(atIdx + 1))
-      ) {
-        setAtToken(beforeCaret.slice(atIdx + 1));
+      const token = detectAtToken(value.slice(0, caret));
+      if (token !== null) {
+        setAtToken(token);
         setSuggestIndex(0);
       } else {
         setAtToken(null);
