@@ -12,7 +12,13 @@ const isNestedBuild = !!process.env.IS_BUILD_MJS;
 
 if (existsSync(piRoot) && !isNestedBuild) {
   console.log("Building bundled pi agent via pack-pi.mjs...");
-  spawnSync("node", ["./scripts/pack-pi.mjs"], { cwd: root, stdio: "inherit", shell: false });
+  const packResult = spawnSync("node", ["./scripts/pack-pi.mjs"], { cwd: root, stdio: "inherit", shell: false });
+  // pi-bundle 构建失败必须终止整体打包（2026-08-30 复盘：曾静默放行产出空
+  // pi-bundle 的安装包，安装后 agent 缺 cli.js 报"未安装"）。
+  if (packResult.status !== 0) {
+    console.error(`[build] pack-pi.mjs failed (exit ${packResult.status}) — aborting.`);
+    process.exit(packResult.status ?? 1);
+  }
 } else {
   console.log("Skipping bundled pi agent build (nested build).");
 }

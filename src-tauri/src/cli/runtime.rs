@@ -48,5 +48,8 @@ fn dispatch(cmd: Commands, ctx: &ExecutionContext) -> Result<(), CliError> {
             dry_run,
         } => commands::orchestrator::evolve::run(plan.as_deref(), &project, dry_run, ctx),
         Commands::Acp { action } => commands::acp::run(action, ctx),
+        Commands::Plugins { action } => commands::plugins::run(action, ctx),
+        Commands::TaskArtifact { action } => commands::task_artifact::run_task_artifact(action, ctx),
+        Commands::Memory { action } => commands::memory::run(action, ctx),
     }
 }

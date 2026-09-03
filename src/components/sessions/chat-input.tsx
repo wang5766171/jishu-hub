@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { streamStore, useIsSessionStreaming } from "@/hooks/use-stream-store";
 import { Button } from "@/components/ui/button";
-import { Blocks, Check, ChevronDown, KeyRound, Paperclip, Plus, Send, Square, Sparkles } from "lucide-react";
+import { Blocks, Check, ChevronDown, KeyRound, MessagesSquare, Paperclip, Plus, Send, Square, Sparkles } from "lucide-react";
 import { FilePreview } from "./file-preview";
 import { InteractionComposer } from "./interaction-composer";
 import { MessageStaging, type StagedMessage } from "./message-staging";
@@ -21,6 +21,62 @@ import type {
   SavedFile,
 } from "@/types";
 import { cn } from "@/lib/utils";
+import { EmbeddedToolPill } from "./embedded-tools";
+
+/** 会话工具插件条目（v0.8.1 需求7，后端 session_tool_list）。 */
+interface SessionTool {
+  id: string;
+  display_name: string;
+  description: string;
+  usage: string;
+  enabled: boolean;
+  /** M3：有 [tool] 段（可 CLI 注入）；false = 仅 pi 扩展形态。 */
+  injectable?: boolean;
+}
+
+/** 内联工具 token：`@[显示名]`（v0.8.1 需求7）。全局正则——用前 reset /
+ * 用后 reset，避免 lastIndex 残留（有 /g 标志时 test 会推进状态）。 */
+const TOOL_TOKEN_RE = /@\[([^\]]+)\]/g;
+
+/** 解析消息中的工具 token：剥离文本并把显示名归一为插件 id
+ * （35ee638a P0：归一缺失会让后端 set_session_tools 拒绝未知 id）。
+ * 未匹配任何插件的 token 原样保留（避免吞字）。 */
+function extractToolTokens(text: string, tools: SessionTool[]): { text: string; toolIds: string[] } {
+  const ids: string[] = [];
+  const replaced = text.replace(TOOL_TOKEN_RE, (match, name: string) => {
+    const tool = tools.find((t) => t.display_name === name);
+    if (!tool) return match;
+    ids.push(tool.id);
+    return "";
+  });
+  TOOL_TOKEN_RE.lastIndex = 0;
+  return { text: replaced.trimStart(), toolIds: ids };
+}
+
+/** 是否含工具 token（无副作用：独立正则，不动全局 RE 的 lastIndex）。 */
+function messageHasToolToken(text: string): boolean {
+  return /@\[([^\]]+)\]/.test(text);
+}
+
+/** mirror 层文本：把 `@[显示名]` 渲染为 pill，其余文本原样（v0.8.1 需求7
+ * ——与 textarea 同字体同 padding，文字层透明时用户看到的是这层）。 */
+function renderMirrorText(text: string, tools: SessionTool[]) {
+  const parts: import("react").ReactNode[] = [];
+  let last = 0;
+  let match: RegExpExecArray | null;
+  TOOL_TOKEN_RE.lastIndex = 0;
+  while ((match = TOOL_TOKEN_RE.exec(text)) !== null) {
+    const name = match[1];
+    const tool = tools.find((t) => t.display_name === name);
+    if (!tool) continue; // 未匹配插件的 token 按 plain text 走（mirror 层与剥离逻辑一致）
+    if (match.index > last) parts.push(text.slice(last, match.index));
+    parts.push(<EmbeddedToolPill key={`${match.index}-${name}`} name={name} />);
+    last = match.index + match[0].length;
+  }
+  TOOL_TOKEN_RE.lastIndex = 0;
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
 
 interface AttachedFile {
   id: string;
@@ -96,7 +152,7 @@ interface ChatInputProps {
   accessModeLabel?: string;
   accessModeTitle?: string;
   accessModeReadOnly?: boolean;
-  accessModeOptions?: Array<{ value: string; label: string }>;
+  accessModeOptions?: Array<{ value: string; label: string; description?: string }>;
   accessModeValue?: string;
   onAccessModeChange?: (value: string) => void | Promise<void>;
   interactionRequest?: ConversationInteractionRequest | null;
@@ -166,6 +222,8 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
   const [accessMenuOpen, setAccessMenuOpen] = useState(false);
   const [stagedMessagesBySession, setStagedMessagesBySession] = useState<Record<string, StagedMessage[]>>({});
+  // v0.8.1 需求7：会话工具插件（+[菜单] 列表 + token 归一依据）。
+  const [sessionTools, setSessionTools] = useState<SessionTool[]>([]);
   const [guideLoading, setGuideLoading] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -343,6 +401,46 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     setStagedMessagesForSession(stagingSessionKey, updater);
   }, [setStagedMessagesForSession, stagingSessionKey]);
 
+  // v0.8.1 需求7：按会话加载工具插件启用集（M0 修复：键 = 会话身份
+  // stagingSessionKey——此前误用 activeSessionId（流式中止引用，每轮流结束
+  // 必被置 null），导致切会话不刷新、写入全部落到暂存键）。
+  // Array.isArray 防御：测试/异常环境下后端返回形状不符时不炸渲染。
+  useEffect(() => {
+    let cancelled = false;
+    invokeCommand<SessionTool[]>("session_tool_list", { sessionId: stagingSessionKey })
+      .then((tools) => {
+        if (!cancelled) setSessionTools(Array.isArray(tools) ? tools : []);
+      })
+      .catch(() => {
+        if (!cancelled) setSessionTools([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [stagingSessionKey]);
+
+  /** 在光标处插入 `@[显示名] ` token（+ 菜单点击入口）。 */
+  const insertToolToken = useCallback((displayName: string) => {
+    const textarea = textareaRef.current;
+    const token = `@[${displayName}] `;
+    if (!textarea) {
+      setMessage((prev) => prev + token);
+      return;
+    }
+    const caret = textarea.selectionStart ?? message.length;
+    const next = message.slice(0, caret) + token + message.slice(caret);
+    setMessage(next);
+    onDraftChange?.(next);
+    requestAnimationFrame(() => {
+      const pos = caret + token.length;
+      textarea.setSelectionRange(pos, pos);
+      textarea.focus();
+    });
+  }, [message, onDraftChange]);
+
+  /** M2：+ 菜单勾选切换会话启用集（会话级真源；乐观更新 + 失败回滚提示，
+   * 不再静默吞错）。key 与发送同源（stagingSessionKey——新会话勾选落暂存
+   * 键，首条消息由后端 compose 前迁移到会话键）。 */
   useImperativeHandle(ref, () => textareaRef.current!, []);
 
   // Expose the staging-area lifecycle to the parent (Route 2: auto-send at
@@ -577,7 +675,57 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     setFiles((prev) => prev.filter((f) => f.id !== id));
   };
 
-  const sendPreparedMessage = async (fullMessage: string, clearComposer: boolean) => {
+  // 发送目标会话 id（M0 修复：与 sendPreparedMessage 同源——续聊用真实
+  // sessionId，新会话用 pending-<ts>；调用方先算好传入，保证工具集写入键
+  // 与 send_message 携带的 sessionId 严格一致，不再各算各的）。
+  const nextPendingId = useCallback(
+    () => sessionId || `pending-${Date.now()}`,
+    [sessionId],
+  );
+
+  /** M5：发送/引导共用的消息组装（单源）。用户裁决保持 workbuddy 形态：
+   * 本条消息里的 @[token] 集合 = 本条工具集（所见即所得，空 token = 本条
+   * 不带工具，覆盖写入会话集合）。与修前的差异：① 写入键修复
+   * （nextPendingId 同源，修前 activeSessionId 恒 null 落暂存键注入永不命
+   * 中）；② **await 写入完成**后才进入发送——修前 fire-and-forget 与
+   * send_message 的 compose 在后端并发，新会话首条消息（P0-0 红线场景）
+   * 集合可能未落盘 → 不注入（评审 P1-1 竞态）。任何新增的用户消息出口
+   * 必须走这里（§16.8 组装单源）。 */
+  const composeOutgoing = useCallback(
+    async (rawText: string): Promise<{ message: string; sessionKey: string }> => {
+      const sessionKey = nextPendingId();
+      const hasTokens = TOOL_TOKEN_RE.test(rawText);
+      TOOL_TOKEN_RE.lastIndex = 0;
+      if (!hasTokens && !sessionTools.some((t) => t.enabled)) {
+        return { message: rawText, sessionKey };
+      }
+      const { text: strippedText, toolIds } = extractToolTokens(rawText, sessionTools);
+      try {
+        await invokeCommand("session_set_tools", { sessionId: sessionKey, toolIds });
+        setSessionTools((prev) =>
+          prev.map((t) => ({ ...t, enabled: toolIds.includes(t.id) })),
+        );
+      } catch (err) {
+        // 写入失败不阻塞发送（消息照发，仅本条不注入）；用户可从控制台
+        // 警告与「工具没生效」的现象回溯——阻塞会导致普通消息也发不出。
+        console.warn("Failed to sync session tools:", err);
+      }
+      return {
+        message:
+          toolIds.length > 0
+            ? `[JISHU-TOOLS:${toolIds.join(",")}] ${strippedText}`
+            : strippedText,
+        sessionKey,
+      };
+    },
+    [nextPendingId, sessionTools],
+  );
+
+  const sendPreparedMessage = async (
+    fullMessage: string,
+    clearComposer: boolean,
+    pendingIdOverride?: string,
+  ) => {
     if (!projectPath) {
       throw new Error("project path is required");
     }
@@ -594,7 +742,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
       return;
     }
 
-    const pendingId = sessionId || `pending-${Date.now()}`;
+    const pendingId = pendingIdOverride ?? (sessionId || `pending-${Date.now()}`);
     setActiveSessionId(pendingId);
     const agentMessage = await prepareMessageForAgent?.(fullMessage) ?? fullMessage;
 
@@ -661,6 +809,17 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     setSending(true);
     try {
       let fullMessage = message.trim();
+      // v0.8.1 内联工具 pill（M0/M2 修订语义）：
+      // - 会话级真源 = + 菜单勾选（session-tools.json，跨消息/重启保持）；
+      // - @[token] = 本条追加——归一为 id 后**并集**写入会话集合（不覆盖、
+      //   空消息不再清空勾选），并在消息头嵌 [JISHU-TOOLS:id] 作为本条快照
+      //   （仅回放渲染 pill 用）；
+      // - 写入键 = 本条 send_message 携带的 sessionId（nextPendingId 同源，
+      //   新会话为 pending-<ts>，续聊为真实 id）——修前用 activeSessionId
+      //   （流式引用，非流式恒 null）导致写入全部落到暂存键、注入永不命中。
+      const pendingId = nextPendingId();
+      const composed = await composeOutgoing(fullMessage);
+      fullMessage = composed.message;
       // 输入历史记录用户原始输入（A6）：发送即入列，与附件组装后的内容无关
       pushInputHistory(historyScope, message);
       setHistoryPos(null);
@@ -710,7 +869,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         fullMessage += `\n\n<!--JISHU_HUB_IMAGES_BEGIN-->\n[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]\n${fileListStr}\n<!--JISHU_HUB_IMAGES_END-->`;
       }
 
-      await sendPreparedMessage(fullMessage, true);
+      await sendPreparedMessage(fullMessage, true, pendingId);
     } catch (err) {
       console.error("Failed to send message:", err);
       setSending(false);
@@ -722,7 +881,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   // mid-turn without interrupting output.
   // For CLI/embedded agents (no onGuideStaged): stop the current generation,
   // then send as a new message.
-  const handleGuideStaged = async (id: string, content: string) => {
+  const handleGuideStaged = async (id: string, rawContent: string) => {
     if (!projectPath || disabled) return;
     // exactly-once: if this staged message was already claimed — by a prior
     // click of the same button (claude multi-click), or by Route 2's auto-send
@@ -733,9 +892,13 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     claimedIds.add(id);
     setGuideLoading(id);
     try {
+      // M5：引导路径与普通发送共用同一工具管线——剥 @[token]、归一 id、
+      // 写消息头标记（回放 pill）、并集写入会话集（注入生效）。修前引导
+      // 完全绕过：token 原文进 prompt、无 pill、无注入。
+      const { message, sessionKey } = await composeOutgoing(rawContent);
       if (onGuideStaged) {
         // Caller handles delivery (steer for Pi RPC / ACP).
-        await onGuideStaged(content);
+        await onGuideStaged(message);
       } else {
         // CLI/embedded agents have no mid-turn steer. Stop the current turn
         // first, then send. The abort MUST be awaited so its streamStore.drop
@@ -745,7 +908,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         if (isStreaming) {
           await handleAbort();
         }
-        await sendPreparedMessage(content, true);
+        await sendPreparedMessage(message, true, sessionKey);
       }
       setCurrentStagedMessages((prev) => prev.filter((m) => m.id !== id));
     } catch (err) {
@@ -881,6 +1044,32 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         return;
       }
     }
+    // ── v0.8.1 需求7：内联工具 pill 整体删除——Backspace/Delete 命中完整
+    // `@[显示名]` token 时一次删整段，不退化为逐字删（mirror 层 pill 的
+    // 原子性对齐：视觉是一个整体，删除也必须是一个整体）。 ──────────────
+    if (e.key === "Backspace" || e.key === "Delete") {
+      const textarea = e.currentTarget as HTMLTextAreaElement;
+      const caret = textarea.selectionStart ?? 0;
+      if (caret === (textarea.selectionEnd ?? caret)) {
+        const before = message.slice(0, caret);
+        const after = message.slice(caret);
+        const hit = e.key === "Backspace" ? before.match(/@\[[^\]]*\]$/) : after.match(/^@\[[^\]]*\]/);
+        if (hit) {
+          e.preventDefault();
+          const next =
+            e.key === "Backspace"
+              ? before.slice(0, before.length - hit[0].length) + after
+              : before + after.slice(hit[0].length);
+          setMessage(next);
+          onDraftChange?.(next);
+          requestAnimationFrame(() => {
+            const pos = e.key === "Backspace" ? before.length - hit[0].length : caret;
+            textarea.setSelectionRange(pos, pos);
+          });
+          return;
+        }
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -961,6 +1150,11 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
               }
               onSend={handleGuideStaged}
               sendLoadingId={guideLoading}
+              toolNames={Object.fromEntries(
+                Array.isArray(sessionTools)
+                  ? sessionTools.map((t) => [t.id, t.display_name])
+                  : [],
+              )}
             />
           </div>
         )}
@@ -1021,38 +1215,55 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
           </div>
         )}
 
-        <textarea
-          ref={textareaRef}
-          value={message}
-          onChange={(e) => {
-            if (historyPos !== null) {
-              // 用户在历史浏览中编辑：退出浏览模式，从当前显示文本继续
-              setHistoryPos(null);
-              draftBeforeHistoryRef.current = "";
-            }
-            const value = e.target.value;
-            const caret = e.target.selectionStart ?? value.length;
-            setMessage(value);
-            updateSuggestions(value, caret);
-            onDraftChange?.(value);
-          }}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          placeholder={placeholder}
-          disabled={disabled}
-          rows={1}
-          className="w-full resize-none bg-transparent px-4 py-3 text-sm focus:outline-none min-h-[76px] max-h-[220px]"
-          style={{ height: "auto", overflow: "hidden" }}
-          onInput={(e) => {
-            const target = e.target as HTMLTextAreaElement;
-            target.style.height = "auto";
-            target.style.height = Math.min(target.scrollHeight, 220) + "px";
-          }}
-        />
+        {/* v0.8.1 需求7 内联工具 pill：mirror 层方案——textarea 文字透明
+            （caret 仍可见），下方同字体同 padding 视觉层把 `@[显示名]`
+            token 渲染成 pill，其余文本原样显示。 */}
+        <div className="relative min-h-[76px]">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 z-0 w-full overflow-hidden whitespace-pre-wrap break-words px-4 py-3 text-sm"
+          >
+            {renderMirrorText(message, sessionTools)}
+          </div>
+          <textarea
+            ref={textareaRef}
+            value={message}
+            onChange={(e) => {
+              if (historyPos !== null) {
+                // 用户在历史浏览中编辑：退出浏览模式，从当前显示文本继续
+                setHistoryPos(null);
+                draftBeforeHistoryRef.current = "";
+              }
+              const value = e.target.value;
+              const caret = e.target.selectionStart ?? value.length;
+              setMessage(value);
+              updateSuggestions(value, caret);
+              onDraftChange?.(value);
+            }}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            placeholder={placeholder}
+            disabled={disabled}
+            rows={1}
+            className={cn(
+              "relative z-10 w-full resize-none bg-transparent px-4 py-3 text-sm focus:outline-none min-h-[76px] max-h-[220px]",
+              messageHasToolToken(message) && "text-transparent caret-foreground",
+            )}
+            style={{ height: "auto", overflow: "hidden" }}
+            onInput={(e) => {
+              const target = e.target as HTMLTextAreaElement;
+              target.style.height = "auto";
+              target.style.height = Math.min(target.scrollHeight, 220) + "px";
+            }}
+          />
+        </div>
 
-        <div className="flex items-end justify-between pl-2 pr-2.5 pb-2 pt-0">
-          <div className="flex items-center gap-1">
-            <div ref={toolbarRef} className="relative flex items-center gap-1">
+        {/* v0.8.0 需求4 补充：底部两侧允许换行 + min-w-0——右侧预览顶开
+            聊天区收窄时，模式/权限/模型等 chips 折行而不是溢出输入框。
+            行上声明 @container：行宽 <560px 时各 chip 切换为图标展示。 */}
+        <div className="@container flex items-end justify-between gap-2 pl-2 pr-2.5 pb-2 pt-0">
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
+            <div ref={toolbarRef} className="relative flex min-w-0 flex-wrap items-center gap-1">
               <Button
                 type="button"
                 variant="ghost"
@@ -1091,15 +1302,42 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                     <span className="flex-1">{t("sessions.skillsComingSoon")}</span>
                     <span className="text-[0.72em]">{t("sessions.comingSoon")}</span>
                   </button>
-                  <button
-                    type="button"
-                    disabled
-                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-muted-foreground opacity-55"
-                  >
-                    <Blocks className="h-4 w-4 text-[var(--icon-config)]" />
-                    <span className="flex-1">{t("sessions.pluginsComingSoon")}</span>
-                    <span className="text-[0.72em]">{t("sessions.comingSoon")}</span>
-                  </button>
+                  {sessionTools.length > 0 && (
+                    <div className="my-1 border-t border-border/60 pt-1">
+                      <div className="px-2.5 pb-1 pt-0.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/70">
+                        {t("sessions.pluginsSection", "插件")}
+                      </div>
+                      {sessionTools.map((tool) => {
+                        // 用户裁决（2026-08-31 晨）：保持 workbuddy 形态——菜单项
+                        // 点击 = 插入 @[显示名] pill 到输入框，消息即所见、发送即
+                        // 本条工具集。M3 的 injectable 保留用于禁用仅 pi 扩展项。
+                        const injectable = tool.injectable !== false;
+                        return (
+                          <button
+                            key={tool.id}
+                            type="button"
+                            onClick={() => {
+                              setToolMenuOpen(false);
+                              insertToolToken(tool.display_name);
+                            }}
+                            disabled={disabled || sending || isStreaming || !injectable}
+                            title={
+                              injectable
+                                ? tool.description
+                                : `${tool.description}（仅 pi 扩展形态，不参与 CLI 注入）`
+                            }
+                            className={cn(
+                              "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-fast hover:bg-accent/60 disabled:cursor-not-allowed",
+                              injectable ? "text-foreground disabled:opacity-45" : "text-muted-foreground opacity-55",
+                            )}
+                          >
+                            <Blocks className={cn("h-4 w-4 shrink-0", injectable ? "text-[var(--icon-config)]" : "opacity-40")} />
+                            <span className="flex-1 truncate">{tool.display_name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
               {workModeOptions.length > 0 && workModeValue && (
@@ -1117,11 +1355,12 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                       setAccessMenuOpen(false);
                     }}
                     className={cn(
-                      "inline-flex h-8 min-w-[7.5rem] items-center justify-between gap-1.5 rounded-full border border-border/50 bg-background/80 px-3 text-xs text-muted-foreground transition-fast hover:bg-accent/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50",
+                      "inline-flex h-8 min-w-[5.5rem] max-w-[9rem] items-center justify-between gap-1.5 rounded-full border border-border/50 bg-background/80 px-3 text-xs text-muted-foreground transition-fast hover:bg-accent/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 @max-[559px]:min-w-0 @max-[559px]:px-2",
                       workModeMenuOpen && "border-primary/45 bg-primary/8 text-foreground shadow-sm",
                     )}
                   >
-                    <span className="min-w-0 truncate">
+                    <MessagesSquare className="hidden h-3.5 w-3.5 @max-[559px]:inline-flex" />
+                    <span className="min-w-0 truncate @max-[559px]:hidden">
                       {workModeOptions.find((option) => option.value === workModeValue)?.label ?? workModeValue}
                     </span>
                     <ChevronDown className={cn("h-3 w-3 shrink-0 transition-transform", workModeMenuOpen && "rotate-180")} />
@@ -1172,12 +1411,12 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                       accessModeReadOnly && "cursor-default hover:bg-background/80 hover:text-muted-foreground",
                     )}
                   >
-                    <KeyRound className="h-3.5 w-3.5 text-[var(--icon-config)]" />
-                    <span className="max-w-[8rem] truncate">{accessModeLabel}</span>
+                    <KeyRound className="h-3.5 w-3.5 shrink-0 text-[var(--icon-config)]" />
+                    <span className="max-w-[8rem] truncate @max-[559px]:hidden">{accessModeLabel}</span>
                     {!accessModeReadOnly && <ChevronDown className="h-3 w-3" />}
                   </button>
                   {accessMenuOpen && !accessModeReadOnly && (
-                    <div className="absolute bottom-[calc(100%+0.45rem)] left-0 z-[80] w-44 rounded-xl border border-border bg-popover p-1.5 shadow-xl">
+                    <div className="absolute bottom-[calc(100%+0.45rem)] left-0 z-[80] w-60 rounded-xl border border-border bg-popover p-1.5 shadow-xl">
                       {accessModeOptions.map((option) => (
                         <button
                           key={option.value}
@@ -1186,10 +1425,24 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                             setAccessMenuOpen(false);
                             onAccessModeChange?.(option.value);
                           }}
-                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-fast hover:bg-accent/60"
+                          className={cn(
+                            "flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left transition-fast hover:bg-accent/60",
+                            option.value === accessModeValue ? "bg-accent/30" : "",
+                          )}
                         >
-                          <span className="flex-1">{option.label}</span>
-                          {option.value === accessModeValue && <Check className="h-4 w-4 text-[var(--icon-action)]" />}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 text-sm text-foreground">
+                              <span>{option.label}</span>
+                            </div>
+                            {option.description && (
+                              <div className="mt-0.5 text-[10px] leading-tight text-muted-foreground/70">
+                                {option.description}
+                              </div>
+                            )}
+                          </div>
+                          {option.value === accessModeValue && (
+                            <Check className="mt-1 h-4 w-4 shrink-0 text-[var(--icon-action)]" />
+                          )}
                         </button>
                       ))}
                     </div>
@@ -1199,9 +1452,9 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
             {trailingControls ? (
-              <span className="mr-2.5 inline-flex items-center">{trailingControls}</span>
+              <span className="mr-2.5 inline-flex min-w-0 flex-wrap items-center justify-end gap-1.5">{trailingControls}</span>
             ) : null}
             {isStreaming && !(message.trim() || files.length > 0) ? (
               <Button

@@ -88,10 +88,12 @@ fn normalize_claude_assistant(event: &serde_json::Value) -> Vec<NormalizedEvent>
                 .get("input")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            let view = crate::agent::tool_view::classify_tool_view(&tool, &input);
             normalized.push(NormalizedEvent::ToolUseStart {
                 call_id,
                 tool,
                 input,
+                view: Some(view),
             });
         }
     }
@@ -476,6 +478,21 @@ impl ConfigAdapter for ClaudeCodeAgent {
         ]
     }
 
+    fn as_raw_config(&self) -> Option<&dyn crate::agent::config_roles::RawConfigStore> {
+        Some(self)
+    }
+
+    fn as_backup_store(&self) -> Option<&dyn crate::agent::config_roles::ConfigBackupStore> {
+        Some(self)
+    }
+
+    fn as_transport_bridge(&self) -> Option<&dyn crate::agent::config_roles::TransportBridgeDependency> {
+        Some(self)
+    }
+
+}
+
+impl crate::agent::config_roles::RawConfigStore for ClaudeCodeAgent {
     fn config_format(&self) -> Option<String> {
         Some("json".to_string())
     }
@@ -497,6 +514,9 @@ impl ConfigAdapter for ClaudeCodeAgent {
         crate::util::atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())
     }
 
+}
+
+impl crate::agent::config_roles::ConfigBackupStore for ClaudeCodeAgent {
     fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String> {
         crate::config::list_backups().map_err(|e| e.to_string())
     }
@@ -520,10 +540,9 @@ impl ConfigAdapter for ClaudeCodeAgent {
     // env-check page surfaces this dependency and installs it on demand, the
     // same way jishu agent handles the pi-mcp-adapter.
 
-    fn supports_transport_bridge(&self) -> bool {
-        true
-    }
+}
 
+impl crate::agent::config_roles::TransportBridgeDependency for ClaudeCodeAgent {
     fn check_transport_bridge(&self) -> Result<serde_json::Value, String> {
         // Same probe that gates resolve_transport(): the effective transport
         // upgrades to AcpPreferred only when this binary is resolvable.
@@ -874,7 +893,14 @@ mod tests {
                 call_id: "toolu_1".to_string(),
                 tool: "Read".to_string(),
                 input: serde_json::json!({ "file_path": "README.md" }),
-            }]
+                view: Some(crate::agent::tool_view::ToolView {
+                    kind: crate::agent::tool_view::ToolViewKind::FileRead,
+                    locations: vec![crate::agent::tool_view::ViewLocation {
+                        path: "README.md".to_string(),
+                        line: None,
+                    }],
+                }),
+        }]
         );
     }
 
@@ -1010,8 +1036,10 @@ mod tests {
 
     #[test]
     fn claude_code_supports_transport_bridge() {
+        // v0.8.1 M1：supports_mcp/supports_transport_bridge 布尔双轨删除，
+        // 改判 as_transport_bridge() 是否 Some。
         let agent = ClaudeCodeAgent::new();
-        assert!(agent.supports_transport_bridge());
+        assert!(agent.as_transport_bridge().is_some());
     }
 
     #[test]
@@ -1021,6 +1049,8 @@ mod tests {
         // fixed contract: it must match what the probe looks for.
         let agent = ClaudeCodeAgent::new();
         let status = agent
+            .as_transport_bridge()
+            .expect("bridge role declared")
             .check_transport_bridge()
             .expect("bridge status should resolve");
         assert_eq!(status["name"], serde_json::json!("claude-agent-acp"));

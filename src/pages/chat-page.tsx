@@ -3,6 +3,7 @@ import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import {
   streamStore,
   useSessionStream,
+  useStreamingSessionIds,
 } from "@/hooks/use-stream-store";
 import { MessageView, type MessageSearchNavigation, type MessageSearchStatus } from "@/components/sessions/message-view";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
@@ -32,11 +33,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
-import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, PanelRightOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2, Trash2,
+import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, PanelRightOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2, Trash2, GitBranch, Cpu,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ActivitySpinner } from "@/components/ui/activity-spinner";
+import { useFileViewer } from "@/components/file-viewer";
 import { cn } from "@/lib/utils";
 import { searchSessions } from "@/lib/session-search";
 import { openFloatingSession } from "@/lib/floating-window";
@@ -54,9 +57,11 @@ import { AgentLogo, AgentSwitcher, useAgent } from "@/agents";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
 import { resolvePhaseSessionId, shouldRenderGlobalChatInput } from "./chat-page-layout";
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
-import { recordSessionUsage } from "@/lib/session-usage";
+import { setSessionUsage } from "@/lib/session-usage";
 import { ContextRing } from "@/components/sessions/context-ring";
-import { supportedThinkingLevels } from "@/components/config/model-types";
+import { UserTextWithPills, useSessionToolNames } from "@/components/sessions/embedded-tools";
+import { useModelPicker } from "@/features/chat-core/use-model-picker";
+import { useCompaction } from "@/features/chat-core/use-compaction";
 import { ThinkingLevelSelect } from "@/components/sessions/thinking-level-select";
 import {
   buildAssistantContentFromStreamState,
@@ -82,6 +87,23 @@ import type {
   Session,
   SessionSearchResult,
 } from "@/types";
+
+// v0.8.0 需求7：会话消息缓存提升为模块级。chat 页切到管理页会被整体卸载
+// （app.tsx 条件渲染），组件级缓存随之销毁，而 streamStore（模块级）与后端
+// 回合仍在运行；重挂载后 handleSelectSession 缓存必 miss → 重读 JSONL，CLI
+// 已落盘的当前回合用户消息与流式气泡的 pendingUserMessage 各渲染一次（用户
+// 问题出现两次）。模块级缓存让「流式期间不重读 JSONL」的不变量跨页面切换
+// 保持。
+const sessionMessagesCache = new Map<string, Message[]>();
+
+// 切换项目/agent 或组件重挂载时收缩缓存：仍处流式中的条目是流式气泡的消息
+// 基线，必须保留（丢了会复现重复渲染）；其余全部驱逐（点击时从 JSONL 重读，
+// 与组件级缓存的既有行为一致，也顺带完成内存回收）。
+function evictIdleSessionMessagesCache() {
+  for (const key of Array.from(sessionMessagesCache.keys())) {
+    if (!streamStore.hasState(key)) sessionMessagesCache.delete(key);
+  }
+}
 
 
 export function ChatPage({
@@ -125,9 +147,9 @@ export function ChatPage({
   // 依赖数组的 handler——依赖数组在渲染期求值，靠后的 const 会触发 TDZ
   // （测试期修复：Cannot access 'alertDialog' before initialization）。
   const { confirm: confirmDialog, alert: alertDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
-  // 需求1 A7：thinking 档位（adapter capability 声明档位清单；当前值优先取
-  // 会话内 thinking_level_changed 事件回传的生效值，回退 Hub 持久化值）。
-  const thinkingLevels = active?.thinking_levels ?? [];
+  // 需求1 A7：thinking 档位当前值（优先取会话内 thinking_level_changed
+  // 事件回传的生效值，回退 Hub 持久化值）。候选档位已改由 useModelPicker
+  // 按当前模型派生（v0.8.0 需求3 聚合 IPC）。
   const [liveThinkingLevel, setLiveThinkingLevel] = useState<string | null>(null);
   const thinkingLevelValue = liveThinkingLevel ?? active?.thinking_level ?? null;
   const handleThinkingLevelChange = useCallback(async (level: string) => {
@@ -149,37 +171,25 @@ export function ChatPage({
     setLiveThinkingLevel(null);
   }, [activeId]);
 
-  // 需求1 A3：上下文压缩（capability CONTEXT_COMPACT 门控）。
+  // 需求1 A3：上下文压缩（capability CONTEXT_COMPACT 门控）。v0.8.0
+  // 需求3：压缩控制域拆分至 use-compaction（IPC 与状态内聚）。
   const supportsCompact = capabilities?.has("CONTEXT_COMPACT") ?? false;
-  const [compacting, setCompacting] = useState(false);
-  const { data: autoCompactionPref } = useInvoke<boolean | null>(
-    supportsCompact && activeId ? "get_agent_auto_compaction" : "",
-    supportsCompact && activeId ? { agentId: activeId } : undefined,
-    activeId ?? undefined,
-  );
+  const compaction = useCompaction(activeId, supportsCompact);
+  const { compacting, autoCompaction: autoCompactionPref } = compaction;
   const handleCompactSession = useCallback(async () => {
     const sessionId = selectedSessionRef.current;
     if (!sessionId || sessionId === "new" || compacting) return;
-    setCompacting(true);
     try {
-      await invokeCommand("compact_agent_session", {
-        sessionId,
-        instructions: null,
-      });
+      await compaction.runCompact(sessionId, null);
     } catch (err) {
       console.error("Compact failed:", err);
       void alertDialog({ title: "压缩失败", description: String(err) });
-    } finally {
-      setCompacting(false);
     }
-  }, [compacting, alertDialog]);
+  }, [compacting, alertDialog, compaction]);
   const handleAutoCompactionChange = useCallback(async (enabled: boolean) => {
     if (!activeId) return;
     try {
-      await invokeCommand("set_agent_auto_compaction", {
-        agentId: activeId,
-        enabled,
-      });
+      await compaction.setAuto(enabled);
     } catch (err) {
       console.error("Set auto compaction failed:", err);
       void alertDialog({ title: "设置自动压缩失败", description: String(err) });
@@ -240,64 +250,15 @@ export function ChatPage({
   const [pendingInteractions, setPendingInteractions] = useState<PendingChatInteraction[]>([]);
   const [approvalResolving, setApprovalResolving] = useState(false);
 
-  // Quick model picker for Pi-backed model stores. The adapter declares
-  // this surface; the page does not inspect the agent id.
-  const [modelOptions, setModelOptions] = useState<{ provider: string; model: string }[]>([]);
-  // 渠道 key → 显示名（models.json providers.<key>.name，缺省回退 key）。
-  const [providerDisplayNames, setProviderDisplayNames] = useState<Record<string, string>>({});
-  // "provider/model" → 该模型声明的支持思考档位（A7：选择器按模型渲染）。
-  const [modelThinkingLevels, setModelThinkingLevels] = useState<Record<string, string[]>>({});
-  const [activeModel, setActiveModel] = useState<{ provider: string; model: string } | null>(null);
+  // v0.8.0 需求3：模型选择域拆分至 use-model-picker——候选/档位来自聚合
+  // IPC（get_model_picker_options，Pi 语义解析唯一化在后端），前端解析块
+  // 与三份双源（model-types 解析 / PI_THINKING_LEVELS 常量）一并消除。
+  const modelPicker = useModelPicker(activeId, supportsModelPicker, () => {
+    setAccessRefreshKey(Date.now());
+  });
+  const { options: modelOptions, activeValue: activeModelValue } = modelPicker;
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLSpanElement>(null);
-  const refreshModelPicker = useCallback(async () => {
-    if (!supportsModelPicker) {
-      setModelOptions([]);
-      setActiveModel(null);
-      return;
-    }
-    try {
-      const [config, act] = await Promise.all([
-        invokeCommand<{
-          providers?: Record<
-            string,
-            {
-              name?: string;
-              models?: { id: string; reasoning?: boolean; thinkingLevelMap?: Record<string, unknown> }[];
-            }
-          >;
-        }>("get_models_config", { agentId: activeId ?? "" }),
-        invokeCommand<{ provider: string; model: string } | null>("get_active", { agentId: activeId ?? "" }),
-      ]);
-      const opts: { provider: string; model: string }[] = [];
-      const displayNames: Record<string, string> = {};
-      // 每个模型声明的支持档位（thinkingLevelMap 语义与 Pi 一致）：
-      // 会话页档位选择器按当前模型渲染，而非 agent 全量档位（A7）。
-      const levelMap: Record<string, string[]> = {};
-      for (const [provider, value] of Object.entries(config?.providers ?? {})) {
-        displayNames[provider] =
-          typeof value.name === "string" && value.name.trim() ? value.name.trim() : provider;
-        for (const m of value.models ?? []) {
-          if (typeof m.id === "string") {
-            opts.push({ provider, model: m.id });
-            levelMap[`${provider}/${m.id}`] =
-              m.reasoning === false
-                ? ["off"]
-                : supportedThinkingLevels(m.thinkingLevelMap);
-          }
-        }
-      }
-      setModelOptions(opts);
-      setProviderDisplayNames(displayNames);
-      setModelThinkingLevels(levelMap);
-      setActiveModel(act);
-    } catch (e) {
-      console.warn("Model picker refresh failed:", e);
-    }
-  }, [supportsModelPicker]);
-  useEffect(() => {
-    void refreshModelPicker();
-  }, [refreshModelPicker]);
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
@@ -370,7 +331,7 @@ export function ChatPage({
    * been written to JSONL by the CLI but is also being rendered live by
    * `<StreamingMessage>` from the pending state.
    */
-  const sessionMessagesCacheRef = useRef<Map<string, Message[]>>(new Map());
+  const sessionMessagesCacheRef = useRef<Map<string, Message[]>>(sessionMessagesCache);
   // Steered user messages queued while the agent is mid-turn. They are NOT
   // inserted into sessionMessages immediately — doing so while the first
   // turn's assistant reply is still streaming (not yet committed to
@@ -384,9 +345,16 @@ export function ChatPage({
   // its turn completes and the steer is committed into sessionMessages at its
   // correct position (between the prior reply and the steer's response).
   const [pendingSteerDisplay, setPendingSteerDisplay] = useState<Message[]>([]);
+  // M5：引导占位气泡的 pill 中文名映射（按当前会话加载）。
+  const steerToolNames = useSessionToolNames(selectedSession ?? null);
   // Subscribe to streaming state for the currently-selected session. Drives
   // whether the streaming bubble is rendered and whether the input is in Stop mode.
   const currentStream = useSessionStream(selectedSession);
+  // v0.8.0 需求6：正在输出的会话集合（含后台会话）。驱动会话列表行的加载动效；
+  // 快照仅在集合成员变化时更新，流式内容增量不会引起列表重渲染。
+  const streamingSessionIds = useStreamingSessionIds();
+  // v0.8.0 需求4 补充：切换会话时自动收起右侧文件预览面板。
+  const { closeViewer } = useFileViewer();
   // 任务图数据：无条件持有（无 graph 时无副作用）。任务模式主区（run 流）与右侧 TaskSidebar 共享。
   const taskGraph = useTaskGraph();
   // v0.7.0：ref 镜像，供轮询回调（非 React 闭包）读 taskGraph 而不进入依赖数组。
@@ -619,7 +587,7 @@ export function ChatPage({
     setTaskLaunchOpen(false);
     setTaskLaunchReadOnly(false);
     taskLaunchOpenRef.current = false;
-    sessionMessagesCacheRef.current.clear();
+    evictIdleSessionMessagesCache();
     newSessionStreamIdsRef.current.clear();
     clearImageCache();
   }, [projectId]);
@@ -641,7 +609,7 @@ export function ChatPage({
     setTaskLaunchOpen(false);
     setTaskLaunchReadOnly(false);
     taskLaunchOpenRef.current = false;
-    sessionMessagesCacheRef.current.clear();
+    evictIdleSessionMessagesCache();
     newSessionStreamIdsRef.current.clear();
     setListRefreshKey(Date.now());
     refetchNames(true).catch(console.error);
@@ -666,15 +634,24 @@ export function ChatPage({
       bypassPermissions: t("sessions.accessBypass"),
       plan: t("sessions.accessPlan"),
       full: t("sessions.toolModeFull"),
+      "full-approve": t("sessions.toolModeFullApprove"),
+      "smart-approve": t("sessions.toolModeSmartApprove"),
       readonly: t("sessions.toolModeReadonly"),
       untrusted: t("sessions.approvalUntrusted"),
       "on-failure": t("sessions.approvalOnFailure"),
       "on-request": t("sessions.approvalOnRequest"),
       never: t("sessions.approvalNever"),
     };
+    const descriptions: Record<string, string> = {
+      full: t("sessions.toolModeFullDesc"),
+      "full-approve": t("sessions.toolModeFullApproveDesc"),
+      "smart-approve": t("sessions.toolModeSmartApproveDesc"),
+      readonly: t("sessions.toolModeReadonlyDesc"),
+    };
     return permissionModes.map((value) => ({
       value,
       label: labels[value] ?? value,
+      description: descriptions[value],
     }));
   }, [permissionModes, t]);
 
@@ -683,11 +660,68 @@ export function ChatPage({
     : permissionModeProvider === "hub_tool_mode"
       ? externalPermissionMode ?? "full"
       : externalPermissionMode;
+  // 变更前审批档的策略链不含 Once 记忆，审批弹窗不提供「始终允许」。
+  const approvalAlwaysHidden =
+    permissionModeProvider === "hub_tool_mode" && accessModeValue === "full-approve";
   const accessModeLabel = accessModeValue
     ? accessModeOptions.find((option) => option.value === accessModeValue)?.label ?? accessModeValue
     : t("sessions.accessUnset");
+  // v0.8.0 需求1 A5：从当前会话末尾创建分支（capability SESSION_FORK 门控；
+  // 仅 jishu-self——Pi 原生 clone RPC 复制整棵会话树并重绑进程）。后端返回
+  // 分支会话 id 并把进程重挂到分支；此处以乐观条目挂载分支并切换加载历史，
+  // 原会话条目与文件保留、后续可独立打开。流式中禁止（重绑竞态）。
+  // handleSelectSession 在下方以普通函数定义，经回调体延迟引用（不进 deps）。
+  const [forking, setForking] = useState(false);
+  const handleForkSession = useCallback(async (sessionId: string) => {
+    if (!activeId || !projectId || sessionId === "new" || forking) return;
+    if (streamStore.isStreaming(sessionId)) {
+      void alertDialog({
+        title: t("sessions.forkFailedTitle", "创建分支失败"),
+        description: t("sessions.forkStreamingHint", "会话正在回复中，请等待本轮完成后再创建分支"),
+      });
+      return;
+    }
+    setForking(true);
+    try {
+      const result = await invokeCommand<{ new_session_id: string }>(
+        "fork_agent_session",
+        {
+          agentId: activeId,
+          projectPath: currentProject?.path || "",
+          sessionId,
+        },
+      );
+      const newId = result?.new_session_id;
+      if (!newId || newId === sessionId) {
+        throw new Error(t("sessions.forkNoBranchId", "未返回分支会话 id"));
+      }
+      const session = sessions?.find(s => s.id === sessionId);
+      const name = sessionNames?.[sessionId] || session?.display_name || sessionId.slice(0, 8);
+      const forkEntry: Session = {
+        id: newId,
+        path: currentProject?.path || "",
+        messages: [],
+        display_name: `${name}${t("sessions.forkSuffix", " (分支)")}`,
+        started_at: new Date().toISOString(),
+        last_active: new Date().toISOString(),
+      };
+      setOptimisticSessions(prev => [forkEntry, ...prev.filter(s => s.id !== newId)]);
+      // 分支历史在 Pi 侧 JSONL 已就绪，经 get_session_messages 加载（清掉可能
+      // 残留的同 id 缓存，避免读到分支前的旧数据）。
+      sessionMessagesCacheRef.current.delete(newId);
+      await handleSelectSession(newId);
+    } catch (err) {
+      console.error("Failed to fork session:", err);
+      await alertDialog({ title: t("sessions.forkFailedTitle", "创建分支失败"), description: String(err) });
+    } finally {
+      setForking(false);
+    }
+  }, [activeId, projectId, forking, sessions, sessionNames, currentProject?.path, alertDialog, t]);
+
   // ── 斜杠命令面板（A2）：GUI 本地命令注册表，不透传给 agent ──────────────
   const hasSelectedSession = Boolean(selectedSession && selectedSession !== "new");
+  // v0.8.0 需求1 A5：会话分支（capability SESSION_FORK；仅 jishu-self）。
+  const supportsFork = capabilities?.has("SESSION_FORK") ?? false;
   const slashCommands = useMemo(
     () => [
       { name: "new", label: t("sessions.slashNew"), available: Boolean(projectId) },
@@ -696,8 +730,9 @@ export function ChatPage({
       { name: "terminal", label: t("sessions.slashTerminal"), available: hasSelectedSession },
       { name: "float", label: t("sessions.slashFloat"), available: hasSelectedSession },
       { name: "compact", label: t("sessions.slashCompact"), available: hasSelectedSession && supportsCompact },
+      { name: "fork", label: t("sessions.slashFork", "创建会话分支"), available: hasSelectedSession && supportsFork && !currentStream?.isStreaming },
     ],
-    [hasSelectedSession, projectId, supportsCompact, t],
+    [hasSelectedSession, projectId, supportsCompact, supportsFork, currentStream?.isStreaming, t],
   );
   const handleSlashCommand = useCallback(
     (name: string) => {
@@ -720,9 +755,12 @@ export function ChatPage({
         case "compact":
           void handleCompactSession();
           break;
+        case "fork":
+          if (selectedSession) void handleForkSession(selectedSession);
+          break;
       }
     },
-    [selectedSession, handleCompactSession],
+    [selectedSession, handleCompactSession, handleForkSession],
   );
 
   const workModeOptions = useMemo(() => [
@@ -915,6 +953,10 @@ export function ChatPage({
     taskLaunchOpenRef.current = false;
     if (sessionId === selectedSession || !projectId) return;
 
+    // v0.8.0 需求4 补充：切换会话自动收起右侧预览——预览的文件属于上一会话
+    // 上下文，跨会话保留易误导。同会话重复点击已被上方守卫拦截。
+    closeViewer();
+
     if (selectedSession && messageAreaRef.current) {
       scrollMemory.current.set(selectedSession, messageAreaRef.current.scrollTop);
     }
@@ -943,13 +985,34 @@ export function ChatPage({
           sessionId,
           encodedName: projectId,
         });
-        const visibleMessages = stripTaskLaunchInstructionFromMessages(messages);
+        let visibleMessages = stripTaskLaunchInstructionFromMessages(messages);
+        // v0.8.0 需求7：缓存缺失但该会话正在流式输出（本应用生命周期内首次
+        // 打开的后台流式会话）——CLI 已把当前回合的用户消息落盘，直接渲染会
+        // 与流式气泡的 pendingUserMessage 各出现一次。从最后一条与回合
+        // prompt 相同的 user 消息处截断：其后是本回合的 steer 与增量回复，
+        // 均由流式气泡负责渲染。文本精确匹配，不匹配（CLI 改写 prompt 等）
+        // 时退回原样渲染。
+        const pending = streamStore.getState(sessionId)?.pendingUserMessage ?? null;
+        if (streamStore.isStreaming(sessionId) && pending != null) {
+          for (let i = visibleMessages.length - 1; i >= 0; i--) {
+            const m = visibleMessages[i];
+            if (m.role !== "user") continue;
+            const text = m.content.find((c) => c.type === "text")?.text ?? null;
+            if (text === pending) {
+              visibleMessages = visibleMessages.slice(0, i);
+              break;
+            }
+          }
+        }
         sessionMessagesCacheRef.current.set(sessionId, visibleMessages);
         setSessionMessages(visibleMessages);
       } catch {
         setSessionMessages([]);
       }
     }
+
+    // 会话打开即拉取权威用量（含重启后的历史累计）。
+    refreshSessionUsage(sessionId);
 
     if (isFirstVisit) {
       scrollAction.current = { type: "bottom" };
@@ -962,6 +1025,79 @@ export function ChatPage({
     }
   };
   handleSelectSessionRef.current = handleSelectSession;
+
+  // v0.8.0 需求10：从 Hub SQLite（get_session_usage）拉取会话累计用量写入
+  // 前端缓存。回合结束与会话打开两个时机调用；失败静默（保留旧缓存）。
+  const refreshSessionUsage = (sessionId: string) => {
+    invokeCommand<{
+      input_tokens: number;
+      output_tokens: number;
+      cache_read: number;
+      cache_write: number;
+      total_cost: number;
+      context_remaining: number | null;
+      context_window_total: number | null;
+      est_thinking: number;
+      est_text: number;
+      est_builtin_tool: number;
+      est_mcp_tool: number;
+      est_tool_results: number;
+      tool_calls: number;
+      segments: number;
+      compactions: number;
+      updated_at: number;
+    }>("get_session_usage", { sessionId })
+      .then((row) => {
+        setSessionUsage(sessionId, {
+          inputTokens: row.input_tokens ?? 0,
+          outputTokens: row.output_tokens ?? 0,
+          cacheRead: row.cache_read ?? 0,
+          cacheWrite: row.cache_write ?? 0,
+          totalCost: row.total_cost ?? 0,
+          contextRemaining: row.context_remaining ?? null,
+          contextWindowTotal: row.context_window_total ?? null,
+          estThinking: row.est_thinking ?? 0,
+          estText: row.est_text ?? 0,
+          estBuiltinTool: row.est_builtin_tool ?? 0,
+          estMcpTool: row.est_mcp_tool ?? 0,
+          estToolResults: row.est_tool_results ?? 0,
+          toolCalls: row.tool_calls ?? 0,
+          segments: row.segments ?? 0,
+          compactions: row.compactions ?? 0,
+          updatedAt: row.updated_at ?? 0,
+        });
+      })
+      .catch(() => {});
+  };
+
+  // v0.8.0 需求7：重挂载对账。agent-event 监听随组件卸载移除，卸载期间
+  // 结束的回合收不到 turn_complete，streamStore 会永远停在 isStreaming
+  // （气泡冻结、「刷新会话」被流式守卫拒绝、列表动效常转）。挂载时逐一
+  // 询问后端回合真值（chat_turn_active）：已结束的丢弃流式状态并清其缓存
+  // 条目，点击时重读 JSONL 拿完整历史；若正查看该会话则立即重载一次。
+  useEffect(() => {
+    const streamingIds = streamStore.getStreamingIds();
+    if (streamingIds.length === 0) return;
+    let cancelled = false;
+    for (const sid of streamingIds) {
+      invokeCommand<boolean>("chat_turn_active", { sessionId: sid })
+        .then((active) => {
+          if (cancelled || active) return;
+          streamStore.drop(sid);
+          sessionMessagesCacheRef.current.delete(sid);
+          if (selectedSessionRef.current === sid) {
+            handleSelectSessionRef.current(sid);
+          }
+        })
+        .catch(() => {
+          // 查询失败（后端未就绪等）：保守保留本地状态——宁可有重复
+          // 渲染，也不中断仍在进行的直播。
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Listen for cross-page session open requests
   useEffect(() => {
@@ -1031,6 +1167,9 @@ export function ChatPage({
 
   const handleNewSession = async () => {
     if (!projectId) return;
+
+    // v0.8.0 需求4 补充：新建会话同样视为切换，收起右侧预览。
+    closeViewer();
 
     setTaskModeActive(false);
     setTaskLaunchOpen(false);
@@ -1131,31 +1270,53 @@ export function ChatPage({
     }
   }, [activeId, projectId, sessions, sessionNames, confirmDialog, alertDialog, t, selectedSession]);
 
-  const handleRefreshMessages = useCallback(async () => {
-    if (selectedSession && projectId) {
-      // Refuse to reload from JSONL while this session has a live streaming
-      // state. Pi writes the user message and each assistant segment to JSONL
-      // as they're produced, so a mid-turn reload overlaps the live
-      // StreamingMessage bubble (duplicate rows) AND overwrites the
-      // turn-snapshot cache that turn_complete appends to — causing
-      // turn_complete to re-append the in-progress turn. The header button is
-      // disabled while streaming; this guard also covers the session-list
-      // context-menu entry that calls the same handler.
-      if (streamStore.hasState(selectedSession)) return;
-      try {
-        const msgs = await invokeCommand<Message[]>("get_session_messages", {
-          agentId: activeId ?? "",
-          sessionId: selectedSession,
-          encodedName: projectId,
-        });
-        const visibleMessages = stripTaskLaunchInstructionFromMessages(msgs);
-        sessionMessagesCacheRef.current.set(selectedSession, visibleMessages);
-        setSessionMessages(visibleMessages);
-      } catch (e) {
-        console.error(e);
-      }
+  // v0.8.0 需求5：刷新会话（右键菜单与会话头部按钮统一入口，作用于指定
+  // 会话）。反馈三层：refreshingSessionId 驱动头部按钮/被刷新行的旋转动画、
+  // 最短 400ms 呈现（快于视觉阈值时不再“无感”）、失败经 alertDialog 弹窗。
+  const [refreshingSessionId, setRefreshingSessionId] = useState<string | null>(null);
+  const handleRefreshSession = useCallback(async (sessionId: string) => {
+    if (!sessionId || sessionId === "new" || !projectId || !activeId) return;
+    if (refreshingSessionId === sessionId) return;
+    // 与头部按钮的禁用条件同源：会话存在流式状态（本轮未收尾）时拒绝重载，
+    // 否则 JSONL 半截内容会与直播气泡重叠（重复行）。此处给出弹窗反馈而非
+    // 静默返回——菜单点击必须可感知。
+    if (streamStore.hasState(sessionId)) {
+      void alertDialog({
+        title: t("sessions.refreshBlockedTitle", "暂时无法刷新"),
+        description: t("sessions.refreshDisabledWhileStreaming"),
+      });
+      return;
     }
-  }, [selectedSession, projectId]);
+    setRefreshingSessionId(sessionId);
+    const startedAt = Date.now();
+    try {
+      const [msgs] = await Promise.all([
+        invokeCommand<Message[]>("get_session_messages", {
+          agentId: activeId,
+          sessionId,
+          encodedName: projectId,
+        }),
+        // 最短呈现 400ms：保证旋转/高亮反馈可被肉眼捕捉。
+        new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, 400 - (Date.now() - startedAt)))),
+      ]);
+      const visibleMessages = stripTaskLaunchInstructionFromMessages(msgs);
+      sessionMessagesCacheRef.current.set(sessionId, visibleMessages);
+      if (selectedSessionRef.current === sessionId) {
+        setSessionMessages(visibleMessages);
+      }
+      // 同时刷新列表元数据（名称/排序/活跃时间）——非选中会话刷新时列表
+      // 变化即点击反馈的一部分。
+      setListRefreshKey((k) => k + 1);
+    } catch (e) {
+      console.error(e);
+      void alertDialog({
+        title: t("sessions.refreshFailedTitle", "刷新会话失败"),
+        description: String(e),
+      });
+    } finally {
+      setRefreshingSessionId(null);
+    }
+  }, [refreshingSessionId, projectId, activeId, alertDialog, t]);
 
   const handleFloatSession = useCallback((sessionId: string) => {
     const name = sessionNames?.[sessionId]
@@ -1667,6 +1828,18 @@ export function ChatPage({
           setLiveThinkingLevel(chunk.data.level);
         }
 
+        // v0.8.0 需求10：上下文压缩状态——压缩进度由内容流中的两态分隔线
+        // （压缩中… → 已压缩）呈现；此处在压缩结束沿即时刷新圆环用量
+        // （record_compaction 已把水位更新为 窗口-压缩后规模），会话完成
+        // 后 turn_complete 沿再刷新一次。
+        if (chunk.data.kind === "compaction_status") {
+          if (!chunk.data.active) {
+            const usageSid = streamStore.getState(cid)?.resolvedId ?? cid;
+            void refreshSessionUsage(usageSid);
+          }
+          continue;
+        }
+
         // Detect resolved session id and register it as an alias before pushing
         // (so subsequent chunks under the real id route to the same entry).
         const realId = extractRealSessionId(chunk.data);
@@ -1769,16 +1942,9 @@ export function ChatPage({
           // Build final assistant/user messages from the accumulated state.
           const state = streamStore.getState(cid);
           const finalKey = state?.resolvedId ?? cid;
-          // A4/A10：记录本回合用量（字段可缺省；后续 UI 按有数据项展示）
-          if (chunk.data.usage) {
-            recordSessionUsage(finalKey, chunk.data.usage as {
-              input_tokens?: number | null;
-              output_tokens?: number | null;
-              total_cost?: number | null;
-              context_remaining?: number | null;
-              context_window_total?: number | null;
-            });
-          }
+          // v0.8.0 需求10：用量以 Hub SQLite 为权威（Rust turn_end 记账，
+          // 与页面在场无关）；回合结束后拉取最新行刷新前端缓存（圆环数据源）。
+          void refreshSessionUsage(finalKey);
           // Spurious-completion guard: when a follow-up streaming state was just
           // created at the end of a turn (a manually-guided steer committed as a
           // follow-up, or Route 2 auto-sending staged guides), the (re)launched
@@ -2262,6 +2428,15 @@ export function ChatPage({
       ? taskGraph.snapshot?.nodes.find((n) => n.node_id === taskSelectedNodeId)?.title ?? displayName
       : displayName;
   const activeApproval = pendingApprovals[0] ?? null;
+  // 审批类型 → 弹窗描述文案（后端按工具分类：bash→命令、write/edit→文件写入；
+  // wire 值 PascalCase，兼容 snake_case 历史值）。
+  const approvalKindRaw = (activeApproval?.approvalKind ?? "").toLowerCase();
+  const approvalDescKey =
+    approvalKindRaw === "command"
+      ? "sessions.permissionDescCommand"
+      : approvalKindRaw === "filewrite" || approvalKindRaw === "file_write"
+        ? "sessions.permissionDescFileWrite"
+        : "sessions.permissionDescOther";
   // v0.7.0 需求二：节点会话的 interaction 来自节点子代理（agent_id 可能是非 activeId
   // 的 claude-code/codex 等）。匹配只按 sessionId（已唯一标识会话），不限制 agentId，
   // 否则节点执行阶段的 agent 问答无法显示和提交。
@@ -2365,7 +2540,7 @@ export function ChatPage({
     pendingInteractions,
     selectedSession,
   ]);
-  const resolveActiveApproval = useCallback(async (approved: boolean) => {
+  const resolveActiveApproval = useCallback(async (approved: boolean, remember = false) => {
     if (!activeApproval || approvalResolving) return;
     setApprovalResolving(true);
     try {
@@ -2373,6 +2548,7 @@ export function ChatPage({
         sessionId: activeApproval.sessionId,
         requestId: activeApproval.requestId,
         approved,
+        remember,
       });
       setPendingApprovals((current) =>
         current.filter(
@@ -2389,18 +2565,22 @@ export function ChatPage({
   }, [activeApproval, approvalResolving]);
   const projectDisplayName = currentProjectMeta?.custom_name || currentProject?.name || t("sessions.noProject");
   const projectPath = currentProject?.path ?? "";
-  // 显示渠道显示名（providers.<key>.name），而非原始渠道 key。
-  const modelOptionLabel = (provider: string, model: string) =>
-    `${providerDisplayNames[provider] ?? provider}/${model}`;
-  const activeModelLabel = activeModel
-    ? modelOptionLabel(activeModel.provider, activeModel.model)
+  const activeModelLabel = activeModelValue
+    ? modelPicker.labelFor(activeModelValue)
     : (t("sessions.activeModel") || "Pick model");
   // 模型选择器+水位圆环（v0.7.3 需求2 收尾）：移至发送按钮左侧同一行（trailingControls）。
   const modelTrailingControls = (
     supportsModelPicker ? (
-        <span ref={modelMenuRef} className="relative inline-flex shrink-0 min-w-0 items-center gap-1.5">
-          {/* 水位圆环贴模型按钮左侧；整体渲染于发送按钮同一行（trailingControls） */}
+        // v0.8.0 需求4 补充：min-w-0 + flex-wrap（去 shrink-0）——聊天区被
+        // 预览顶窄时模型名/思考档/水位环在右侧组内折行，而不是向左溢出
+        // 盖住会话模式 chip（重叠缺陷修复）。
+        <span ref={modelMenuRef} className="relative inline-flex min-w-0 flex-wrap items-center justify-end gap-1.5">
+          {/* v0.8.0 需求4 补充（用户定序）：水位圆环 | 模型 | 思考强度——
+              模型居中，圆环在其左（未对话/无用量数据时不渲染），思考档在其右。
+              行宽 <560px 时模型名与思考档标签切换为图标（@container 由
+              ChatInput 底部行声明，作用于整组）。 */}
           <ContextRing
+            agentId={activeId}
             sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null}
             compact={supportsCompact ? {
               onCompact: () => void handleCompactSession(),
@@ -2408,14 +2588,6 @@ export function ChatPage({
               autoCompaction: autoCompactionPref ?? null,
               onAutoCompactionChange: (enabled) => void handleAutoCompactionChange(enabled),
             } : undefined}
-          />
-          <ThinkingLevelSelect
-            levels={
-              (activeModel && modelThinkingLevels[`${activeModel.provider}/${activeModel.model}`]) ||
-              thinkingLevels
-            }
-            value={thinkingLevelValue}
-            onChange={(level) => void handleThinkingLevelChange(level)}
           />
           {modelOptions.length === 0 ? (
             <span className="truncate text-amber-400">
@@ -2435,46 +2607,43 @@ export function ChatPage({
                   modelMenuOpen && "bg-accent/30 text-foreground",
                 )}
               >
-                <span className="min-w-0 truncate">{activeModelLabel}</span>
+                <Cpu className="hidden h-3.5 w-3.5 @max-[559px]:inline-flex" />
+                <span className="min-w-0 truncate @max-[559px]:hidden">{activeModelLabel}</span>
                 <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", modelMenuOpen && "rotate-180")} />
               </button>
               {modelMenuOpen && (
                 <div className="absolute bottom-full right-0 mb-1 z-50 max-h-64 w-48 overflow-y-auto rounded-lg border border-border bg-popover p-2 shadow-lg">
-                  {modelOptions.map((o) => {
-                    const value = `${o.provider}/${o.model}`;
-                    const selected = activeModel?.provider === o.provider && activeModel?.model === o.model;
-                    return (
-                      <button
-                        key={value}
-                        type="button"
-                        title={value}
-                        onClick={async () => {
-                          const next = { provider: o.provider, model: o.model };
-                          setActiveModel(next);
-                          setModelMenuOpen(false);
-                          try {
-                            await invokeCommand("set_active", { agentId: activeId ?? "", active: next });
-                          } catch (err) {
-                            console.warn("set_active failed:", err);
-                          }
-                        }}
-                        className={cn(
-                          "flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left text-xs font-mono transition-fast hover:bg-accent/60",
-                          selected ? "font-medium text-foreground" : "text-muted-foreground",
-                        )}
-                      >
-                        <span className={cn(
-                          "h-1.5 w-1.5 shrink-0 rounded-full",
-                          selected ? "bg-primary" : "bg-transparent",
-                        )} />
-                        <span className="min-w-0 flex-1 truncate">{modelOptionLabel(o.provider, o.model)}</span>
-                      </button>
-                    );
-                  })}
+                  {modelOptions.map((o) => (
+                    <button
+                      key={o.value}
+                      type="button"
+                      title={o.value}
+                      onClick={() => {
+                        setModelMenuOpen(false);
+                        void modelPicker.select(o.value);
+                      }}
+                      className={cn(
+                        "flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left text-xs font-mono transition-fast hover:bg-accent/60",
+                        o.value === activeModelValue ? "font-medium text-foreground" : "text-muted-foreground",
+                      )}
+                    >
+                      <span className={cn(
+                        "h-1.5 w-1.5 shrink-0 rounded-full",
+                        o.value === activeModelValue ? "bg-primary" : "bg-transparent",
+                      )} />
+                      <span className="min-w-0 flex-1 truncate">{o.label}</span>
+                    </button>
+                  ))}
                 </div>
               )}
             </>
           )}
+          {/* 思考强度居模型右侧（v0.8.0 需求4 补充用户定序）。 */}
+          <ThinkingLevelSelect
+            levels={modelPicker.thinkingLevels}
+            value={thinkingLevelValue}
+            onChange={(level) => void handleThinkingLevelChange(level)}
+          />
         </span>
       ) : null
   );
@@ -2500,6 +2669,7 @@ export function ChatPage({
       )}
       {!supportsModelPicker && (
         <ContextRing
+            agentId={activeId}
             sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null}
             compact={supportsCompact ? {
               onCompact: () => void handleCompactSession(),
@@ -2700,6 +2870,12 @@ export function ChatPage({
                 ? formatRelativeTime(session.started_at, t)
                 : null;
             const searchHit = searchResults.find((r: SessionSearchResult) => r.sessionId === session.id);
+            // v0.8.0 需求5：该会话刷新中（右键/头部刷新）——行图标转圈 + 高亮，
+            // 让「点击过了」在非选中会话上同样可感知。
+            const rowRefreshing = refreshingSessionId === session.id;
+            // v0.8.0 需求6：该会话正在流式输出（含后台输出）——行图标换为
+            // 加载中动效，无需选中即可从列表分辨哪些会话仍在生成。
+            const rowStreaming = streamingSessionIds.includes(session.id);
             return (
               <ContextMenu key={session.id}>
                 <ContextMenuTrigger asChild>
@@ -2709,11 +2885,18 @@ export function ChatPage({
                       "flex flex-col w-full items-start pl-5 pr-2 py-2 text-xs transition-fast border-b border-border/10",
                       isActive
                         ? "bg-primary/10 text-foreground font-medium"
-                        : "text-muted-foreground hover:bg-accent/30 hover:text-foreground"
+                        : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
+                      rowRefreshing && "bg-primary/15",
                     )}
                   >
                     <div className="flex items-center gap-3 w-full">
-                      <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
+                      {rowRefreshing ? (
+                        <RotateCw className="h-3 w-3 shrink-0 animate-spin text-[var(--icon-action)]" />
+                      ) : rowStreaming ? (
+                        <ActivitySpinner className="h-3.5 w-3.5 text-[var(--icon-action)]" />
+                      ) : (
+                        <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
+                      )}
                       <span className="truncate flex-1 text-left min-w-0 leading-none pt-[1px]">{name}</span>
                       {searchHit ? (
                         <span className="shrink-0 rounded-full bg-primary/20 text-primary px-1.5 py-0.5 text-[9px] font-medium leading-none">
@@ -2749,15 +2932,27 @@ export function ChatPage({
                     <Pencil className="h-3.5 w-3.5 mr-2" />
                     {t("sessions.rename")}
                   </ContextMenuItem>
+                  {capabilities?.has("SESSION_FORK") && (
+                    <ContextMenuItem
+                      disabled={forking || streamStore.isStreaming(session.id)}
+                      onClick={() => void handleForkSession(session.id)}
+                    >
+                      <GitBranch className="h-3.5 w-3.5 mr-2" />
+                      {t("sessions.fork", "创建分支")}
+                    </ContextMenuItem>
+                  )}
                   {capabilities?.has("SESSION_DELETE") && (
                     <ContextMenuItem onClick={() => void handleDeleteSession(session.id)}>
                       <Trash2 className="h-3.5 w-3.5 mr-2 text-red-400" />
                       {t("sessions.delete")}
                     </ContextMenuItem>
                   )}
-                  <ContextMenuItem onClick={() => handleRefreshMessages()}>
-                    <RotateCw className="h-3.5 w-3.5 mr-2" />
-                    {t("sessions.refresh")}
+                  <ContextMenuItem
+                    disabled={streamStore.hasState(session.id) || refreshingSessionId === session.id}
+                    onClick={() => void handleRefreshSession(session.id)}
+                  >
+                    <RotateCw className={cn("h-3.5 w-3.5 mr-2", refreshingSessionId === session.id && "animate-spin")} />
+                    {t("sessions.refreshSession", "刷新会话")}
                   </ContextMenuItem>
                 </ContextMenuContent>
               </ContextMenu>
@@ -2905,11 +3100,11 @@ export function ChatPage({
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    onClick={handleRefreshMessages}
-                    disabled={Boolean(currentStream)}
-                    title={currentStream ? t("sessions.refreshDisabledWhileStreaming") : t("sessions.refresh")}
+                    onClick={() => void handleRefreshSession(selectedSession)}
+                    disabled={Boolean(currentStream) || refreshingSessionId === selectedSession}
+                    title={currentStream ? t("sessions.refreshDisabledWhileStreaming") : t("sessions.refreshSession", "刷新会话")}
                   >
-                    <RotateCw className="h-3.5 w-3.5" />
+                    <RotateCw className={cn("h-3.5 w-3.5", refreshingSessionId === selectedSession && "animate-spin")} />
                   </Button>
                   <Button
                     variant="ghost"
@@ -2949,6 +3144,7 @@ export function ChatPage({
                 ) : selectedSession && selectedSession !== "new" ? (
                   <MessageView
                     messages={sessionMessages}
+                    sessionId={selectedSession}
                     searchQuery={searchQuery}
                     searchNavigation={messageSearchNavigation}
                     onSearchStatusChange={handleMessageSearchStatusChange}
@@ -2965,7 +3161,7 @@ export function ChatPage({
                       <PhaseDivider phase="execute" title={t("task.phase.execution", "流程执行")} />
                     </div>
                     {taskRunStarted ? (
-                      <MessageView messages={taskGraph.projectedMessages} flat />
+                      <MessageView messages={taskGraph.projectedMessages} sessionId={selectedSession} flat />
                     ) : showExecutionStartPrompt ? (
                       <ExecutionStartPrompt
                         stepCount={taskStepCount}
@@ -3035,10 +3231,10 @@ export function ChatPage({
                               </span>
                             </div>
                             <div
-                              className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full"
+                              className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] overflow-hidden min-w-0 max-w-full"
                               style={{ fontSize: "var(--font-size-prose)" }}
                             >
-                              {text}
+                              <UserTextWithPills text={text} toolNames={steerToolNames} />
                             </div>
                           </div>
                         </div>
@@ -3381,16 +3577,12 @@ export function ChatPage({
         <DialogContent showCloseButton={false}>
           <DialogHeader>
             <DialogTitle>{t("sessions.permissionTitle")}</DialogTitle>
-            <DialogDescription>
-              {t("sessions.permissionDescription", {
-                kind: activeApproval?.approvalKind ?? "other",
-              })}
-            </DialogDescription>
+            <DialogDescription>{t(approvalDescKey)}</DialogDescription>
           </DialogHeader>
           <pre className="max-h-72 overflow-auto rounded-md border border-border/60 bg-muted/50 p-3 text-xs whitespace-pre-wrap break-all">
             {JSON.stringify(activeApproval?.payload ?? {}, null, 2)}
           </pre>
-          <DialogFooter>
+          <DialogFooter className="flex-wrap gap-2 sm:flex-nowrap">
             <Button
               variant="outline"
               disabled={approvalResolving}
@@ -3399,13 +3591,24 @@ export function ChatPage({
               {t("sessions.permissionReject")}
             </Button>
             <Button
+              variant="outline"
               disabled={approvalResolving}
-              onClick={() => void resolveActiveApproval(true)}
+              onClick={() => void resolveActiveApproval(true, false)}
             >
-              {approvalResolving
-                ? t("sessions.permissionResolving")
-                : t("sessions.permissionApprove")}
+              {t("sessions.permissionApproveOnce")}
             </Button>
+            {/* 变更前审批档（full-approve）策略链不含 Once 记忆（每次变更都
+                确认），「始终允许」在该档不生效——隐藏第三键。 */}
+            {approvalAlwaysHidden ? null : (
+              <Button
+                disabled={approvalResolving}
+                onClick={() => void resolveActiveApproval(true, true)}
+              >
+                {approvalResolving
+                  ? t("sessions.permissionResolving")
+                  : t("sessions.permissionApproveAlways")}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

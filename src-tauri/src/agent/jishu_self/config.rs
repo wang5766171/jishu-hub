@@ -444,7 +444,7 @@ mod tests {
             Some("high"),
             Some(&crate::project_config::ProjectCompaction {
                 enabled: Some(false),
-                reserve_tokens: Some(8192),
+                threshold_percent: Some(90),
                 keep_recent_tokens: None,
             }),
         )
@@ -455,7 +455,7 @@ mod tests {
         assert_eq!(raw["defaultModel"], serde_json::json!("glm-5.3"));
         assert_eq!(raw["defaultThinkingLevel"], serde_json::json!("high"));
         assert_eq!(raw["compaction"]["enabled"], serde_json::json!(false));
-        assert_eq!(raw["compaction"]["reserveTokens"], serde_json::json!(8192));
+        assert_eq!(raw["compaction"]["thresholdPercent"], serde_json::json!(90));
         assert!(
             raw["compaction"].get("keepRecentTokens").is_none(),
             "None 字段不落盘"
@@ -488,7 +488,7 @@ mod tests {
             default_thinking_level: Some("high".to_string()),
             compaction: Some(crate::project_config::ProjectCompaction {
                 enabled: Some(false),
-                reserve_tokens: Some(8192),
+                threshold_percent: Some(90),
                 keep_recent_tokens: Some(20000),
             }),
             default_tools: Some(vec![
@@ -525,7 +525,7 @@ mod tests {
             default_tools: Some(vec!["read".to_string()]),
             compaction: Some(crate::project_config::ProjectCompaction {
                 enabled: Some(true),
-                reserve_tokens: Some(16384),
+                threshold_percent: Some(85),
                 keep_recent_tokens: None,
             }),
             retry: Some(PiRetrySettings {

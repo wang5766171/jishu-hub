@@ -3,6 +3,7 @@ pub(crate) mod agents;
 pub(crate) mod config;
 pub(crate) mod custom_commands;
 pub(crate) mod env_check;
+pub(crate) mod memory;
 pub(crate) mod models;
 #[cfg(feature = "orchestrator")]
 pub(crate) mod orchestrator;
@@ -19,6 +20,7 @@ pub(crate) use agents::*;
 pub(crate) use config::*;
 pub(crate) use custom_commands::*;
 pub(crate) use env_check::*;
+pub(crate) use memory::*;
 pub(crate) use models::*;
 #[cfg(feature = "orchestrator")]
 pub(crate) use orchestrator::*;

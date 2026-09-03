@@ -3,6 +3,8 @@ mod acp_runtime;
 mod agent;
 mod agent_runtime;
 mod chat;
+#[cfg(test)]
+mod chat_tests;
 mod cli_runtime;
 mod codex_app_server_runtime;
 mod command;
@@ -13,9 +15,11 @@ mod history;
 mod hub;
 mod image;
 mod llm;
+mod memory_store;
 mod orchestrator;
 pub mod os_adapter;
 mod pi_rpc_runtime;
+mod usage_store;
 mod process_command;
 mod process_control;
 mod project;
@@ -34,6 +38,10 @@ use tauri::{Emitter, Manager};
 
 pub struct AppState {
     pub registry: Arc<agent::AgentRegistry>,
+    /// 工具插件装载快照（v0.8.1 需求7）：与 registry 的 agent 插件同一份
+    /// plugins.json 启停配置；plugin_reload 命令重建两者并广播
+    /// plugins-changed 事件。
+    pub tool_plugins: std::sync::Mutex<Vec<agent::tool_plugin::ToolPlugin>>,
     #[cfg(feature = "orchestrator")]
     pub task_service: std::sync::Mutex<orchestrator::TaskService>,
 }
@@ -74,6 +82,9 @@ pub fn run() {
             let _ = hub::migrate_v0_5_0();
             // Phase 1: 自动注册 Conductor 扩展 + skill pack + 删除旧 skill
             task_plan::ensure_conductor_extension();
+            // v0.8.1 需求9/10：内置自适应插件（任务需求/流程规划）随包分发，
+            // 首启落 ~/.jishu-hub/agents/（幂等）。
+            agent::plugin::ensure_builtin_adaptive_plugins();
             // 自动部署 request_user_input 扩展（conductor 的 discuss/plan 阶段依赖此工具）
             task_plan::ensure_request_user_input_extension();
             // 部署 session-context 扩展（session_id 注入 system prompt，取代 user message 注入）
@@ -149,8 +160,24 @@ pub fn run() {
                     )?,
                 )
             };
+            // v0.8.1 M0：清扫上次运行残留的孤儿 pending-* 会话工具键
+            // （发送中断未迁移的占位条目，防跨草稿会话串扰）。
+            agent::tool_plugin::cleanup_stale_pending_sessions();
+            // v0.8.1 M6：装载期预热工具插件安装探测（PATH where/which 与
+            // --version）——compose_tool_message 持 AppState 锁渲染说明块时
+            // 惰性探测会同步 spawn 子进程并阻塞全部命令，预热后命中缓存。
+            let tool_plugins = {
+                let disabled: std::collections::HashSet<String> =
+                    agent::plugin::load_plugin_config().disabled.iter().cloned().collect();
+                let plugins = agent::tool_plugin::load_tool_plugins(&disabled);
+                for p in &plugins {
+                    let _ = p.installed();
+                }
+                plugins
+            };
             app.manage(Mutex::new(AppState {
                 registry,
+                tool_plugins: std::sync::Mutex::new(tool_plugins),
                 #[cfg(feature = "orchestrator")]
                 task_service,
             }));
@@ -177,6 +204,8 @@ pub fn run() {
             commands::sessions::persist_interaction_blocks,
             commands::sessions::persist_partial_assistant,
             commands::sessions::read_text_file,
+            commands::sessions::reveal_in_file_manager,
+            commands::sessions::open_with_default_app,
             commands::sessions::get_session_names,
             commands::sessions::rename_session,
             commands::sessions::delete_session_name,
@@ -186,6 +215,7 @@ pub fn run() {
             commands::config::load_history,
             commands::config::save_config,
             commands::config::get_models_config,
+            commands::config::get_model_picker_options,
             commands::config::set_models_config,
             commands::config::get_active,
             commands::config::set_active,
@@ -251,6 +281,21 @@ pub fn run() {
             commands::agents::check_transport_bridge,
             commands::agents::install_transport_bridge,
             commands::agents::agent_official_auth,
+            commands::agents::agent_manifest_errors,
+            commands::agents::plugin_list,
+            commands::agents::plugin_set_enabled,
+            commands::agents::plugin_remove,
+            commands::agents::plugin_reload,
+            commands::agents::plugin_create,
+            commands::agents::plugin_get,
+            commands::agents::plugin_update,
+            commands::agents::session_tool_list,
+            commands::agents::session_set_tools,
+            commands::sessions::persist_agent_turn,
+            commands::memory::memory_set,
+            commands::memory::memory_get,
+            commands::memory::memory_list,
+            commands::memory::memory_delete,
             commands::update::check_available_updates,
             commands::update::check_for_update,
             commands::update::download_update,
@@ -262,6 +307,9 @@ pub fn run() {
             chat::steer_chat,
             chat::set_agent_thinking_level,
             chat::compact_agent_session,
+            chat::fork_agent_session,
+            chat::chat_turn_active,
+            chat::get_session_usage,
             chat::get_agent_auto_compaction,
             chat::set_agent_auto_compaction,
             chat::resolve_chat_permission,

@@ -17,6 +17,25 @@ pub(crate) fn load_config(
     s.registry.require_agent(&agent_id)?.load_config()
 }
 
+/// v0.8.0 需求3：模型选择聚合——models.json 的 thinkingLevelMap/reasoning
+/// 解析唯一化在后端，前端（会话页 picker/模型表单/行为页）消费聚合结果。
+/// 仅 model-store surface 支持（能力路由，不出现 agentId 分支）。
+#[tauri::command]
+pub(crate) fn get_model_picker_options(
+    state: tauri::State<'_, Mutex<AppState>>,
+    agent_id: String,
+) -> Result<Vec<agent::jishu_self::model_picker::ModelPickerOption>, String> {
+    let s = state
+        .lock()
+        .map_err(|_| "App state lock poisoned".to_string())?;
+    let agent = s.registry.require_agent(&agent_id)?;
+    let store = agent
+        .as_model_store()
+        .ok_or("Agent does not support model store")?;
+    let config = store.load_model_store()?;
+    Ok(agent::jishu_self::model_picker::picker_options_from_config(&config))
+}
+
 /// Read the agent's model store config (routes through adapter).
 #[tauri::command]
 pub(crate) fn get_models_config(
@@ -27,13 +46,10 @@ pub(crate) fn get_models_config(
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
     let agent = s.registry.require_agent(&agent_id)?;
-    if !matches!(
-        agent.config_surface(),
-        agent::ConfigSurface::ModelStore { .. }
-    ) {
-        return Err("Agent does not support model store".to_string());
-    }
-    agent.load_model_store()
+    let store = agent
+        .as_model_store()
+        .ok_or("Agent does not support model store")?;
+    store.load_model_store()
 }
 
 /// Write the agent's model store config (routes through adapter).
@@ -47,13 +63,10 @@ pub(crate) fn set_models_config(
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
     let agent = s.registry.require_agent(&agent_id)?;
-    if !matches!(
-        agent.config_surface(),
-        agent::ConfigSurface::ModelStore { .. }
-    ) {
-        return Err("Agent does not support model store".to_string());
-    }
-    agent.save_model_store(&config)
+    let store = agent
+        .as_model_store()
+        .ok_or("Agent does not support model store")?;
+    store.save_model_store(&config)
 }
 
 /// Read the agent's active model selection (routes through adapter).
@@ -66,13 +79,10 @@ pub(crate) fn get_active(
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
     let agent = s.registry.require_agent(&agent_id)?;
-    if !matches!(
-        agent.config_surface(),
-        agent::ConfigSurface::ModelStore { .. }
-    ) {
-        return Ok(None);
-    }
-    agent.get_active_model()
+    let store = agent
+        .as_model_store()
+        .ok_or("Agent does not support model store")?;
+    store.get_active_model()
 }
 
 /// Persist the active model selection (routes through adapter).
@@ -86,13 +96,10 @@ pub(crate) fn set_active(
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
     let agent = s.registry.require_agent(&agent_id)?;
-    if !matches!(
-        agent.config_surface(),
-        agent::ConfigSurface::ModelStore { .. }
-    ) {
-        return Err("Agent does not support model store".to_string());
-    }
-    agent.set_active_model(active.as_ref())
+    let store = agent
+        .as_model_store()
+        .ok_or("Agent does not support model store")?;
+    store.set_active_model(active.as_ref())
 }
 
 #[derive(serde::Serialize)]
@@ -110,10 +117,13 @@ pub(crate) fn load_raw_config(
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
     let agent = s.registry.require_agent(&agent_id)?;
-    let format = agent
+    let raw = agent
+        .as_raw_config()
+        .ok_or("Agent does not support raw config")?;
+    let format = raw
         .config_format()
         .unwrap_or_else(|| "unknown".to_string());
-    let content = agent.load_raw_config()?;
+    let content = raw.load_raw_config()?;
     Ok(RawConfigInfo { content, format })
 }
 
@@ -128,6 +138,8 @@ pub(crate) fn save_raw_config(
         .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .require_agent(&agent_id)?
+        .as_raw_config()
+        .ok_or("Agent does not support raw config")?
         .save_raw_config(&content)
 }
 
@@ -143,15 +155,37 @@ pub(crate) async fn load_history(
 }
 
 #[tauri::command]
-pub(crate) fn save_config(
+pub(crate) async fn save_config(
+    app: tauri::AppHandle,
     state: tauri::State<'_, Mutex<AppState>>,
     agent_id: String,
     config: serde_json::Value,
 ) -> Result<(), String> {
-    let s = state
-        .lock()
-        .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.require_agent(&agent_id)?.save_config(&config)
+    {
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        s.registry.require_agent(&agent_id)?.save_config(&config)?;
+    }
+
+    // v0.8.0 需求9 收尾：保存含 compaction 键时，向该 agent 的活跃会话热推
+    // 出现的字段（运行中的 pi 进程不重读配置文件，阈值改动须经 RPC 下发才
+    // 能对进行中的会话生效）。两字段均可选，只推送保存值里出现的字段。
+    if let Some(compaction) = config.get("compaction").and_then(|v| v.as_object()) {
+        let enabled = compaction.get("enabled").and_then(|v| v.as_bool());
+        let threshold_percent = compaction
+            .get("thresholdPercent")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32);
+        if enabled.is_some() || threshold_percent.is_some() {
+            for acp in crate::chat::live_acp_controls_for_agent(&app, &agent_id) {
+                let _ = acp
+                    .set_auto_compaction(enabled, threshold_percent)
+                    .await;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -162,7 +196,11 @@ pub(crate) fn list_backups(
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry.require_agent(&agent_id)?.list_backups()
+    s.registry
+        .require_agent(&agent_id)?
+        .as_backup_store()
+        .ok_or("Agent does not support config backups")?
+        .list_backups()
 }
 
 #[tauri::command]
@@ -175,7 +213,11 @@ pub(crate) fn restore_backup(
         let s = state
             .lock()
             .map_err(|_| "App state lock poisoned".to_string())?;
-        let backups = s.registry.require_agent(&agent_id)?.list_backups()?;
+        let store = s.registry
+            .require_agent(&agent_id)?
+            .as_backup_store()
+            .ok_or("Agent does not support config backups")?;
+        let backups = store.list_backups()?;
         let valid = backups.iter().any(|b| b.path == backup_path);
         if !valid {
             return Err("Backup path not found in backup list".to_string());
@@ -186,5 +228,7 @@ pub(crate) fn restore_backup(
         .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .require_agent(&agent_id)?
+        .as_backup_store()
+        .ok_or("Agent does not support config backups")?
         .restore_backup(&backup_path)
 }

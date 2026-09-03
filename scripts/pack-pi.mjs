@@ -7,6 +7,18 @@ const root = resolve(process.cwd());
 const piRoot = resolve(root, "third_party", "pi");
 const piBundle = resolve(root, "third_party", "pi-bundle");
 
+// 子步骤失败必须大声失败（2026-08-30 事故复盘：pi 构建 TS 报错曾因三个
+// spawnSync 不查退出码而静默放行，产出无 dist 的 pi-bundle 进了安装包，
+// 安装后"jishu agent 未安装"）。任何一步非零退出立即终止打包。
+function runStep(label, args, cwd) {
+  const result = spawnSync("npm", args, { cwd, stdio: "inherit", shell: true });
+  if (result.status !== 0) {
+    console.error(`\n[pack-pi] FAILED at step: ${label} (exit ${result.status})`);
+    console.error("[pack-pi] 上一行起的报错即根因；pi-bundle 不会被打进安装包。");
+    process.exit(result.status ?? 1);
+  }
+}
+
 console.log("Preparing pi-bundle...");
 
 // 1. Remove old pi-bundle
@@ -30,15 +42,15 @@ cpSync(piRoot, piBundle, {
 // 没装上、tsgo 缺失、build 失败）。pi/ai 不实际 import canvas，跳过其 gyp 无害；
 // tsgo(@typescript/native-preview) 的二进制经 optionalDependencies 预编译提供，不受影响。
 console.log("Installing dependencies in pi-bundle...");
-spawnSync("npm", ["install", "--ignore-scripts"], { cwd: piBundle, stdio: "inherit", shell: true });
+runStep("npm install (pi-bundle)", ["install", "--ignore-scripts"], piBundle);
 
 // 4. Build the project
 console.log("Building pi-bundle...");
-spawnSync("npm", ["run", "build"], { cwd: piBundle, stdio: "inherit", shell: true });
+runStep("npm run build (pi-bundle)", ["run", "build"], piBundle);
 
 // 5. Prune dev dependencies
 console.log("Pruning dev dependencies...");
-spawnSync("npm", ["prune", "--omit=dev"], { cwd: piBundle, stdio: "inherit", shell: true });
+runStep("npm prune (pi-bundle)", ["prune", "--omit=dev"], piBundle);
 
 // 6. Clean up source files to obfuscate and reduce size
 console.log("Cleaning up source files...");
@@ -75,6 +87,22 @@ cleanDirectory(piBundle);
 // 6.5 Fix double shebang in entry points (shared implementation in scripts/lib/pi-common.mjs)
 console.log("Fixing double shebangs...");
 fixShebang(join(piBundle, "packages", "coding-agent", "dist"));
+
+// 6.6 Embed portable Node.js runtime (v0.8.1 需求10 修复：新机器无 Node 时
+// jishu-self 报未安装/无法对话——pi-bundle 此前只含 JS 代码，node.exe 依赖
+// 用户 PATH。把当前构建机的 node 复制到 pi-bundle/bin/，安装时随 pi-bundle
+// 落到 ~/.jishu-agent/bin/，resolve_pi_runtime 优先使用）。
+const nodeBinDir = join(piBundle, "bin");
+const nodeBinaryName = process.platform === "win32" ? "node.exe" : "node";
+const nodeSource = process.execPath; // 当前运行的 node 可执行文件路径
+if (existsSync(nodeSource)) {
+  if (!existsSync(nodeBinDir)) {
+    cpSync(nodeSource, join(nodeBinDir, nodeBinaryName));
+    console.log(`Embedded portable node: ${nodeSource} → ${nodeBinDir}/${nodeBinaryName}`);
+  }
+} else {
+  console.warn(`WARNING: cannot find node binary at ${nodeSource} to embed.`);
+}
 
 // 7. Clean broken symlinks in node_modules
 console.log("Cleaning broken symlinks in node_modules...");

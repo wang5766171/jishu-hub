@@ -94,7 +94,7 @@ export interface ConversationInteractionSubmission {
 
 export type ContentBlock =
   | { type: "text"; text: string; frozen?: boolean }
-  | { type: "tool_use"; id: string; name: string; input: unknown }
+  | { type: "tool_use"; id: string; name: string; input: unknown; view?: ToolView }
   | { type: "tool_result"; tool_use_id: string; content: unknown }
   | { type: "thinking"; thinking: string; frozen?: boolean }
   | {
@@ -234,6 +234,7 @@ export type AgentConfigSection =
 
 export type ManageTab =
   | "projects"
+  | "plugins"
   | "agent-models"
   | "agent-behavior"
   | "agent-templates"
@@ -278,10 +279,11 @@ export interface ProjectSettings {
   model: string | null;
   /** 默认思考档位（jishu 项目配置 defaultThinkingLevel；其余 agent 忽略）。 */
   thinkingLevel?: string | null;
-  /** 上下文压缩（jishu 项目配置 compaction；其余 agent 忽略）。 */
+  /** 上下文压缩（jishu 项目配置 compaction；其余 agent 忽略。v0.8.0 需求9：
+   *  阈值按窗口百分比，默认 90%；保留近期 token 为压缩执行参数，默认 20000）。 */
   compaction?: {
     enabled?: boolean | null;
-    reserveTokens?: number | null;
+    thresholdPercent?: number | null;
     keepRecentTokens?: number | null;
   } | null;
 }
@@ -317,7 +319,7 @@ export type AgentEventPayload = AgentStreamChunk[] | AgentStreamChunk;
 export type NormalizedEvent =
   | { kind: "text_delta"; delta: string }
   | { kind: "message"; content: ContentBlock[] }
-  | { kind: "tool_use_start"; call_id: string; tool: string; input: unknown }
+  | { kind: "tool_use_start"; call_id: string; tool: string; input: unknown; view?: ToolView }
   | { kind: "tool_use_result"; call_id: string; output: unknown; is_error: boolean }
   | { kind: "thinking"; delta: string }
   | { kind: "approval_request"; request_id: string; approval_kind: string; payload: unknown }
@@ -355,7 +357,24 @@ export type NormalizedEvent =
   | { kind: "sub_agent_dispatch"; run_id: string; step_id: string; target_agent: string; sub_run_id?: string; request: unknown }
   | { kind: "sub_agent_event"; run_id: string; step_id: string; sub_event: NormalizedEvent }
   | { kind: "raw"; agent: string; raw: unknown }
-  | { kind: "phase_divider"; phase: string; title: string };
+  | { kind: "phase_divider"; phase: string; title: string }
+  | { kind: "compaction_status"; active: boolean; reason: string };
+
+/** v0.8.0 需求2 Phase 1：渲染意图（Rust tool_view 镜像）——UI 只做
+ * 「意图→组件」映射；locations 为归一化层一次提取的位置信息。 */
+export interface ViewLocation {
+  path: string;
+  line?: number;
+}
+
+export type ToolViewKind =
+  | "file_read" | "file_write" | "file_edit" | "file_delete"
+  | "shell_exec" | "search" | "web" | "think" | "subtask" | "other";
+
+export interface ToolView {
+  kind: ToolViewKind;
+  locations?: ViewLocation[];
+}
 
 export interface InputFile {
   data: string;

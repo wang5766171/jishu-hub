@@ -4,6 +4,8 @@ import type { McpServerConfig } from "@/types";
 
 interface McpEditorBaseProps {
   value: Record<string, McpServerConfig> | null;
+  /** v0.8.0 需求9 收尾：上报解析态与错误态，宿主可在页头渲染保存按钮。 */
+  onStateChange?: (state: { value: Record<string, McpServerConfig> | null; hasError: boolean }) => void;
 }
 
 /**
@@ -11,7 +13,9 @@ interface McpEditorBaseProps {
  * can control when to save. Actions render in a row below the textarea.
  */
 interface McpEditorActionsProps extends McpEditorBaseProps {
-  actions: (state: { value: Record<string, McpServerConfig> | null; hasError: boolean }) => ReactNode;
+  /** v0.8.0 需求9 收尾：可选——不传时编辑器无工具栏，保存按钮由宿主经
+      onStateChange 放到页头。 */
+  actions?: (state: { value: Record<string, McpServerConfig> | null; hasError: boolean }) => ReactNode;
   onChange?: never;
 }
 
@@ -50,6 +54,11 @@ export function McpEditor(props: McpEditorProps) {
     setError("");
     setParsedValue(value ?? null);
   }, [value]);
+
+  // v0.8.0 需求9 收尾：向宿主（页头保存按钮）上报解析态。
+  useEffect(() => {
+    props.onStateChange?.({ value: parsedValue, hasError: !!error });
+  }, [parsedValue, error, props.onStateChange]);
 
   const handleChange = (text: string) => {
     setJson(text);

@@ -8,7 +8,9 @@ import rehypeHighlight from "rehype-highlight";
 import { Check, Copy, Bot } from "lucide-react";
 import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
-import { ToolGroup, classifyToolName } from "@/components/observability/tool-call-card";
+import { parseEmbeddedTools, EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
+import { ToolGroup } from "@/components/observability/tool-call-card";
+import { resolveToolKind } from "@/components/observability/tool-call-card/types";
 import type { ToolCall } from "@/components/observability/tool-call-card";
 import { InteractionCard } from "./interaction-card";
 import type { InteractionCardItem } from "./interaction-card";
@@ -29,6 +31,8 @@ const ROW_STYLE: React.CSSProperties = {
 
 interface MessageViewProps {
   messages: Message[];
+  /** v0.8.1 需求7：会话 id——用户消息 pill 的 id→中文名映射按会话加载。 */
+  sessionId?: string | null;
   initialSearchQuery?: string;
   searchQuery?: string;
   searchNavigation?: MessageSearchNavigation | null;
@@ -140,10 +144,12 @@ const TextBlock = memo(function TextBlock({
 }) {
   if (dark) {
     const display = stripImagePrompt(text);
+    // v0.8.1 需求7（28f37e8e 形态）：用户文本块内联渲染（span 而非 div），
+    // 使其可与插件 pill 在同一行内共处——pill 只是内联视觉元素，不占独立行。
     return (
-      <div className="whitespace-pre-wrap break-all overflow-hidden" style={{ fontSize: "var(--font-size-prose)" }}>
+      <span className="whitespace-pre-wrap break-all" style={{ fontSize: "var(--font-size-prose)" }}>
         {query ? highlightText(display, query, matchOffset ?? 0, currentMatch ?? -1) : display}
-      </div>
+      </span>
     );
   }
 
@@ -361,7 +367,8 @@ function buildRenderItemsForMessages(messages: Message[], messageIndices: number
         pendingTools.push({
           id,
           toolName: block.name,
-          kind: classifyToolName(block.name),
+          kind: resolveToolKind(block.name, block.view),
+          view: block.view,
           status: "success",
           input: typeof block.input === "object" && block.input !== null
             ? (block.input as Record<string, unknown>)
@@ -489,6 +496,7 @@ function UserBubble({
   currentOcc,
   messageIndex,
   roleView,
+  toolNames,
 }: {
   msg: Message;
   items: RenderItem[];
@@ -497,8 +505,14 @@ function UserBubble({
   currentOcc: number;
   messageIndex: number;
   roleView?: MessageRoleView | null;
+  toolNames: Record<string, string>;
 }) {
   const { t } = useTranslation();
+  // v0.8.1 需求7：首文本块剥 [JISHU-TOOLS] 标记 → pill（displayText 供
+  // InlineImages 与渲染，copyText 保留标记以便复制原语义）。
+  const firstTextBlock = msg.content.find((b) => b.type === "text");
+  const rawText = firstTextBlock && firstTextBlock.type === "text" ? firstTextBlock.text : "";
+  const { text: displayText, toolIds } = parseEmbeddedTools(rawText);
   const copyText = extractMessageText(msg);
 
   // 三角色：roleResolver 解析为 orchestrator（主进程派发）→ 「任务助手」样式。
@@ -522,7 +536,7 @@ function UserBubble({
               : "bg-[var(--message-user-bg)] text-[var(--message-user-fg)]",
           )}
         >
-          <InlineImages text={copyText} />
+          <InlineImages text={displayText || copyText} />
           {items.map((item, idx) => {
             if (item.kind === "tool-group") {
               return <ToolGroup key={`tg-${idx}`} calls={item.calls} />;
@@ -537,6 +551,25 @@ function UserBubble({
             }
 
             const offsetKey = `${messageIndex}-${item.blockIndex}`;
+            // v0.8.1 需求7（28f37e8e 形态）：首文本块与插件 pill 同一个内联
+            // 容器——pill 与正文同行流式排列；文本用 displayText（标记已剥，
+            // 不再显示 [JISHU-TOOLS:...] 原文）。
+            if (item.block.type === "text" && item.block === firstTextBlock) {
+              return (
+                <div key={`b-${item.blockIndex}`} className="overflow-hidden">
+                  {toolIds.length > 0 && (
+                    <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
+                  )}
+                  <TextBlock
+                    text={displayText}
+                    query={renderingQuery}
+                    dark
+                    matchOffset={searchOffsets.get(offsetKey) ?? 0}
+                    currentMatch={currentOcc}
+                  />
+                </div>
+              );
+            }
             return (
               <div key={`b-${item.blockIndex}`} className="overflow-hidden">
                 {renderBlock(
@@ -560,6 +593,7 @@ function UserBubble({
 
 export const MessageView = memo(function MessageView({
   messages,
+  sessionId,
   initialSearchQuery,
   searchQuery: externalSearchQuery,
   searchNavigation,
@@ -568,6 +602,8 @@ export const MessageView = memo(function MessageView({
   scrollContainerRef,
   roleResolver,
 }: MessageViewProps) {
+  // v0.8.1 需求7：用户消息 pill 的 id→中文名映射（按会话加载一次）。
+  const toolNames = useSessionToolNames(sessionId ?? null);
   const [localSearchQuery, setLocalSearchQuery] = useState(initialSearchQuery || "");
   const searchQuery = externalSearchQuery ?? localSearchQuery;
   const renderingQuery = useDeferredValue(searchQuery);
@@ -693,9 +729,10 @@ export const MessageView = memo(function MessageView({
         currentOcc={currentOcc}
         messageIndex={row.messageIndex}
         roleView={roleView}
+        toolNames={toolNames}
       />
     );
-  }, [currentOcc, messages, renderingQuery, resultMap, searchState.offsets, roleResolver]);
+  }, [currentOcc, messages, renderingQuery, resultMap, searchState.offsets, roleResolver, toolNames]);
 
   const fullMessageList = (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">

@@ -115,6 +115,10 @@ pub enum NormalizedEvent {
         call_id: String,
         tool: String,
         input: serde_json::Value,
+        /// v0.8.0 需求2 Phase 1：渲染意图（分类 + 位置），归一化层产出；
+        /// UI 只做「意图→组件」映射。旧事件反序列化得 None，兼容。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        view: Option<crate::agent::tool_view::ToolView>,
     },
     ToolUseResult {
         call_id: String,
@@ -208,6 +212,13 @@ pub enum NormalizedEvent {
         phase: String,
         title: String,
     },
+    /// v0.8.0 需求10：上下文压缩状态（pi compaction_start / compaction_end）。
+    /// active=true 进行中（GUI 在会话区显示「压缩中」指示）；false 结束——
+    /// 归一化层随同下发 phase_divider(compaction) 在内容流中呈现分隔线。
+    CompactionStatus {
+        active: bool,
+        reason: String,
+    },
 }
 
 impl NormalizedEvent {
@@ -229,6 +240,7 @@ impl NormalizedEvent {
             NormalizedEvent::SubAgentDispatch { .. } => "sub_agent_dispatch",
             NormalizedEvent::Raw { .. } => "raw",
             NormalizedEvent::PhaseDivider { .. } => "phase_divider",
+            NormalizedEvent::CompactionStatus { .. } => "compaction_status",
         }
     }
 }
@@ -244,6 +256,11 @@ impl NormalizedEvent {
 /// `tool_use_result` only arrives after the user answers — producing a
 /// phantom "Tool" card with no useful content.
 pub fn is_elicitation_only_tool(tool_name: &str) -> bool {
+    // v0.8.0 需求2 Phase 1（02 §1.6 偏离修正）：保留原 3 名**传输特定**语义
+    // 不委托 tool_view 的 8 名并集——这 3 个工具在 ACP 传输上由
+    // elicitation/create 通道完整渲染 UI，tool_call 镜像事件必须整体抑制，
+    // 否则双通道重复渲染（回归测试 ask_user_question_tool_call_is_suppressed
+    // 锁定）。渲染语义的权威名单在 tool_view::is_interaction_tool。
     let normalized_name = tool_name
         .rsplit(['/', ':'])
         .next()
@@ -396,6 +413,9 @@ pub enum ContentBlock {
         id: String,
         name: String,
         input: serde_json::Value,
+        /// v0.8.0 需求2 Phase 1：随块持久化的渲染意图（直播与回放同源）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        view: Option<crate::agent::tool_view::ToolView>,
     },
     ToolResult {
         tool_use_id: String,
@@ -444,6 +464,21 @@ pub enum ApprovalKind {
     Other,
 }
 
+impl ApprovalKind {
+    /// 按工具名映射审批类型（复用 tool_view 渲染分类，单一分类源）：
+    /// shell → 命令执行；文件写/改/删 → 文件写入；其余（读/搜/思考/MCP）→ 其他。
+    /// 审批弹窗据此显示正确类型，不再恒为 Other。
+    pub fn for_tool(tool: &str) -> Self {
+        match crate::agent::tool_view::classify_name(tool) {
+            crate::agent::tool_view::ToolViewKind::ShellExec => ApprovalKind::Command,
+            crate::agent::tool_view::ToolViewKind::FileWrite
+            | crate::agent::tool_view::ToolViewKind::FileEdit
+            | crate::agent::tool_view::ToolViewKind::FileDelete => ApprovalKind::FileWrite,
+            _ => ApprovalKind::Other,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UsageStats {
     pub input_tokens: Option<u64>,
@@ -489,6 +524,20 @@ pub enum AgentError {
 #[cfg(test)]
 mod tests_v6 {
     use super::*;
+
+    #[test]
+    fn approval_kind_for_tool_classifies_shell_and_file_writes() {
+        // Pi 内置工具名（bash/write/edit/read/grep/find/ls）+ 通用方言名。
+        assert_eq!(ApprovalKind::for_tool("bash"), ApprovalKind::Command);
+        assert_eq!(ApprovalKind::for_tool("execute_command"), ApprovalKind::Command);
+        assert_eq!(ApprovalKind::for_tool("write"), ApprovalKind::FileWrite);
+        assert_eq!(ApprovalKind::for_tool("edit"), ApprovalKind::FileWrite);
+        assert_eq!(ApprovalKind::for_tool("apply_patch"), ApprovalKind::FileWrite);
+        // 读/搜/思考与未知（MCP 等）→ Other。
+        assert_eq!(ApprovalKind::for_tool("read"), ApprovalKind::Other);
+        assert_eq!(ApprovalKind::for_tool("grep"), ApprovalKind::Other);
+        assert_eq!(ApprovalKind::for_tool("mcp__x__y"), ApprovalKind::Other);
+    }
 
     #[test]
     fn task_step_roundtrip() {

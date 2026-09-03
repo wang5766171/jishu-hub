@@ -1,7 +1,9 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDownToLine, ArrowUpFromLine, Coins, Loader2, Minimize2 } from "lucide-react";
+import { Loader2, Minimize2 } from "lucide-react";
 import { useSessionUsage } from "@/lib/session-usage";
+import { useInvoke } from "@/hooks/use-invoke";
+import { HelpHint } from "@/components/ui/help-hint";
 import { cn } from "@/lib/utils";
 
 /**
@@ -30,15 +32,36 @@ function formatTokens(value: number): string {
 
 export const ContextRing = memo(function ContextRing({
   sessionId,
+  agentId,
   compact,
 }: {
   sessionId: string | null;
+  /** v0.8.0 需求9 收尾：用于回填时重读全局压缩阈值配置。 */
+  agentId?: string | null;
   compact?: ContextRingCompactControls;
 }) {
   const { t } = useTranslation();
   const usage = useSessionUsage(sessionId);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLSpanElement>(null);
+
+  // v0.8.0 需求9 收尾：压缩触发点 = 窗口 × 阈值%（用户口径：90% 即用到
+  // 900k 时压缩）。随用量回填实时重读全局阈值（refreshKey = usage.updatedAt，
+  // 每轮 turn_complete 变化）——配置改动下一轮回填即生效，不缓存创建时的值。
+  const { data: agentConfig } = useInvoke<Record<string, unknown>>(
+    agentId && sessionId ? "load_config" : "",
+    agentId && sessionId ? { agentId } : undefined,
+    usage?.updatedAt,
+  );
+  const thresholdPercent = (() => {
+    const raw = (agentConfig?.compaction as { thresholdPercent?: unknown } | undefined)?.thresholdPercent;
+    const pct = typeof raw === "number" && Number.isFinite(raw) ? Math.round(raw) : 90;
+    return Math.min(99, Math.max(1, pct));
+  })();
+  const compactionTriggerTokens =
+    usage?.contextWindowTotal && usage.contextWindowTotal > 0
+      ? Math.floor((usage.contextWindowTotal * thresholdPercent) / 100)
+      : null;
 
   useEffect(() => {
     if (!open) return;
@@ -98,34 +121,63 @@ export const ContextRing = memo(function ContextRing({
         <div className="absolute bottom-[calc(100%+0.45rem)] right-0 z-[90] w-56 rounded-xl border border-border bg-popover p-2.5 text-xs shadow-xl">
           <div className={cn("font-medium leading-tight", tone)}>{title}</div>
           <div className="mt-1 text-muted-foreground tabular-nums">
+            {/* v0.8.0 需求9 收尾：分子改为已用量（used/total 惯例），
+                原先分子放剩余量与直觉相反。 */}
             {t("sessions.usageWatermarkDetail", {
-              remaining: formatTokens(usage.contextRemaining),
+              used: formatTokens(
+                (usage.contextWindowTotal ?? 0) - (usage.contextRemaining ?? 0),
+              ),
               total: formatTokens(usage.contextWindowTotal),
             })}
           </div>
           {(usage.inputTokens > 0 || usage.outputTokens > 0 || usage.totalCost > 0) && (
             <div className="mt-1.5 space-y-0.5 border-t border-border/40 pt-1.5 tabular-nums text-muted-foreground">
-              <div className="flex items-center justify-between">
-                <span className="inline-flex items-center gap-1">
-                  <ArrowUpFromLine className="h-3 w-3" />
-                  {t("sessions.usageTokensIn")}
-                </span>
-                <span>{formatTokens(usage.inputTokens)}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="inline-flex items-center gap-1">
-                  <ArrowDownToLine className="h-3 w-3" />
-                  {t("sessions.usageTokensOut")}
-                </span>
-                <span>{formatTokens(usage.outputTokens)}</span>
-              </div>
-              {usage.totalCost > 0 && (
-                <div className="flex items-center justify-between">
-                  <span className="inline-flex items-center gap-1">
-                    <Coins className="h-3 w-3" />
-                    {t("sessions.usageCost")}
-                  </span>
-                  <span>{`$${usage.totalCost.toFixed(3)}`}</span>
+              {/* 不展示累计输入/输出（用户裁决）：任何累计口径都不符合直觉
+                  （输入侧见 usage_segment 注释；输出绝对值随场景差异大）。
+                  保留水位、构成占比、缓存命中率与压缩次数；明细见 SQLite。 */}
+              {/* 构成按输出内容估算的百分比呈现（消息/思考/工具三分全量，
+                  MCP 无归因标志并入工具）；参考 zcode 圆环样式，便于阅读。 */}
+              {(() => {
+                const estTool = usage.estBuiltinTool + usage.estMcpTool;
+                const denom = usage.estThinking + usage.estText + estTool;
+                if (denom <= 0) return null;
+                const pct = (v: number) => `${Math.round((v / denom) * 100)}%`;
+                return (
+                  <div className="space-y-0.5">
+                    {/* 标题用常规行样式，子项缩小淡化为次级（用户裁决互换）。 */}
+                    <div className="flex items-center">
+                      <span>{t("sessions.usageEstGroup")}</span>
+                      <HelpHint content={t("sessions.usageEstHelp")} />
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-muted-foreground/70">
+                      <span>{t("sessions.usageEstMessage")}</span>
+                      <span>{pct(usage.estText)}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-muted-foreground/70">
+                      <span>{t("sessions.usageEstThinking")}</span>
+                      <span>{pct(usage.estThinking)}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-muted-foreground/70">
+                      <span>{t("sessions.usageEstTool")}</span>
+                      <span>{pct(estTool)}</span>
+                    </div>
+                  </div>
+                );
+              })()}
+              {/* 平均缓存命中率 =（输入缓存+输出缓存）/全部处理量（用户口径）。 */}
+              {usage.cacheRead + usage.cacheWrite > 0 && (() => {
+                const cached = usage.cacheRead + usage.cacheWrite;
+                const total = usage.inputTokens + usage.outputTokens + cached;
+                return (
+                  <div className="mt-1 flex items-center justify-between border-t border-border/30 pt-1">
+                    <span>{t("sessions.usageCacheHit")}</span>
+                    <span>{`${Math.round((cached / total) * 100)}%`}</span>
+                  </div>
+                );
+              })()}
+              {usage.compactions > 0 && (
+                <div className="mt-1 border-t border-border/30 pt-1 text-muted-foreground/80">
+                  {t("sessions.usageCompactions", { count: String(usage.compactions) })}
                 </div>
               )}
             </div>
@@ -156,14 +208,19 @@ export const ContextRing = memo(function ContextRing({
                   onChange={(e) => compact.onAutoCompactionChange(e.target.checked)}
                 />
               </label>
+              {compactionTriggerTokens !== null && (
+                <p className="text-[10px] leading-tight text-muted-foreground/70 tabular-nums">
+                  {t("sessions.usageCompactionBudget", {
+                    tokens: formatTokens(compactionTriggerTokens),
+                    percent: String(thresholdPercent),
+                  })}
+                </p>
+              )}
               <p className="text-[10px] leading-tight text-muted-foreground/60">
                 {t("sessions.compactHint")}
               </p>
             </div>
           )}
-          <div className="mt-1.5 border-t border-border/40 pt-1.5 text-[10px] leading-tight text-muted-foreground/60">
-            {t("sessions.usageRuntimeNote")}
-          </div>
         </div>
       )}
     </span>

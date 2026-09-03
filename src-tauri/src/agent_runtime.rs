@@ -23,6 +23,29 @@ pub struct AgentTurnRequest {
     pub timeout_secs: u64,
 }
 
+/// hub 上下文环境变量（v0.8.1 需求8 P1）：GUI 会话 spawn 智能体进程时
+/// 注入。智能体的 shell 工具继承 env，因此工具插件 / 自研 CLI 同样可读
+/// （`echo $JISHU_PROJECT_PATH` / `jishu-cli memory set --project ...`）。
+/// ACP 与 CLI 两条 turn 路径共用；无头任务路径不注入（边界）。
+pub fn hub_context_envs(
+    agent_id: &str,
+    project_path: &str,
+    session_id: Option<&str>,
+) -> Vec<(String, String)> {
+    vec![
+        ("JISHU_AGENT_ID".to_string(), agent_id.to_string()),
+        ("JISHU_PROJECT_PATH".to_string(), project_path.to_string()),
+        (
+            "JISHU_SESSION_ID".to_string(),
+            session_id.unwrap_or("").to_string(),
+        ),
+        (
+            "JISHU_HUB_HOME".to_string(),
+            crate::agent::manifest::hub_home().to_string_lossy().to_string(),
+        ),
+    ]
+}
+
 pub struct RuntimeStdinBridge {
     pub receiver: tokio::sync::mpsc::UnboundedReceiver<String>,
     pub cancelled: Arc<Mutex<bool>>,
@@ -50,6 +73,9 @@ pub struct PreparedCliTurn {
     pub normalizer: crate::agent::StreamEventNormalizer,
     pub stderr_relay: bool,
     pub eof_is_complete: bool,
+    /// hub 上下文 env 注入源（v0.8.1 需求8 P1）：spawn 时附加
+    /// JISHU_AGENT_ID / JISHU_PROJECT_PATH / JISHU_SESSION_ID / JISHU_HUB_HOME。
+    pub project_path: String,
 }
 
 pub struct PreparedAcpTurn {
@@ -133,7 +159,15 @@ pub fn prepare_gui_turn(
                 session_id: native_session_id.clone(),
                 message: request.message.clone(),
             };
-            let command = agent.build_acp_command(&req)?;
+            let mut command = agent.build_acp_command(&req)?;
+            // hub 上下文 env 注入（v0.8.1 需求8 P1）：ACP 会话进程同样可读。
+            command
+                .envs
+                .extend(hub_context_envs(
+                    &request.agent_id,
+                    &request.project_path,
+                    gui_session_id.as_deref(),
+                ));
             Ok(PreparedGuiTurn::Acp(PreparedAcpTurn {
                 agent_id: request.agent_id,
                 project_path: request.project_path,
@@ -146,21 +180,31 @@ pub fn prepare_gui_turn(
             }))
         }
         TransportSurface::Cli | TransportSurface::Embedded => {
+            let project_path = request.project_path.clone();
             let req = ChatRequest {
                 project_path: request.project_path.clone(),
                 session_id: native_session_id,
                 message: request.message.clone(),
             };
+            let mut command = agent.build_chat_command(req);
+            for (key, value) in hub_context_envs(
+                &request.agent_id,
+                &request.project_path,
+                gui_session_id.as_deref(),
+            ) {
+                command.env(key, value);
+            }
             Ok(PreparedGuiTurn::Cli(PreparedCliTurn {
                 agent_id: request.agent_id,
                 session_id: gui_session_id,
                 message: request.message,
-                command: agent.build_chat_command(req),
+                command,
                 pipe_stdin: agent.pipe_chat_stdin(),
                 consumes_stdin: agent.consumes_stdin_message(),
                 normalizer: agent.stream_event_normalizer(),
                 stderr_relay: agent.stderr_relay_as_events(),
                 eof_is_complete: agent.treat_eof_as_complete_after_output(),
+                project_path,
             }))
         }
     }
@@ -180,7 +224,36 @@ where
         PreparedGuiTurn::Cli(turn) => {
             start_gui_cli_turn(app, turn, on_finish, on_session_resolved).await
         }
-        PreparedGuiTurn::Acp(turn) => start_gui_acp_turn(app, turn, on_finish, on_session_resolved),
+        PreparedGuiTurn::Acp(turn) => {
+            let message = turn.message.clone();
+            start_gui_acp_turn(app, turn, Some(message), on_finish, on_session_resolved)
+        }
+    }
+}
+
+/// v0.8.0 需求1 A5：为「历史会话 fork」拉起一个仅 resume、不发首条消息的
+/// PiRpc 会话进程（first_message=None：get_state 解析后停在 Idle，等待
+/// ForkSession 的 clone）。仅支持 PiRpc transport（clone 是 Pi 原生能力）。
+pub async fn start_gui_piresume_session<Finish, Resolve>(
+    app: AppHandle,
+    prepared: PreparedGuiTurn,
+    on_finish: Finish,
+    on_session_resolved: Resolve,
+) -> Result<GuiTurnHandle, String>
+where
+    Finish: FnOnce() + Send + 'static,
+    Resolve: Fn(&str) + Send + Sync + 'static,
+{
+    match prepared {
+        PreparedGuiTurn::Cli(_) => {
+            Err("Session fork requires a stream transport session".to_string())
+        }
+        PreparedGuiTurn::Acp(turn) => {
+            if turn.transport != TransportSurface::PiRpc {
+                return Err("Session fork is not supported by this agent".to_string());
+            }
+            start_gui_acp_turn(app, turn, None, on_finish, on_session_resolved)
+        }
     }
 }
 
@@ -271,6 +344,7 @@ where
 fn start_gui_acp_turn<Finish, Resolve>(
     app: AppHandle,
     turn: PreparedAcpTurn,
+    first_message: Option<String>,
     on_finish: Finish,
     on_session_resolved: Resolve,
 ) -> Result<GuiTurnHandle, String>
@@ -342,7 +416,7 @@ where
             child,
             turn.project_path,
             turn.native_session_id,
-            turn.message,
+            first_message,
             turn.resolved_session_prompt_injection,
             on_finish,
             on_session_resolved,
@@ -355,7 +429,7 @@ where
                 child,
                 turn.project_path,
                 turn.native_session_id,
-                turn.message,
+                first_message.unwrap_or_else(|| turn.message.clone()),
                 on_finish,
                 on_session_resolved,
             )
@@ -367,7 +441,7 @@ where
             child,
             turn.project_path,
             turn.native_session_id,
-            turn.message,
+            first_message.unwrap_or_else(|| turn.message.clone()),
             on_finish,
             on_session_resolved,
         ),
@@ -524,7 +598,7 @@ fn run_pi_rpc_turn_blocking(
                     break;
                 }
 
-                let normalized = crate::pi_rpc_runtime::normalize_pi_agent_event(&message, None);
+                let normalized = crate::pi_rpc_runtime::normalize_pi_agent_event(&message, None, &mut Vec::new());
                 completed = normalized
                     .iter()
                     .any(|event| matches!(event, NormalizedEvent::TurnComplete { .. }));
@@ -918,8 +992,10 @@ async fn acp_wait_for_response(
                 if let Some(option_id) = crate::acp_runtime::permission_option_id(&params, false) {
                     crate::acp_runtime::write_permission_response(stdin, &id, &option_id).await?;
                 }
+                // v0.8.0 需求2 Phase 2：无头审批应由策略链（挂载点 1）在到达
+                // 前以 headless-deny 拒绝并回写；此处为防御断言兜底。
                 return Err(
-                    "ACP tool permission denied because task execution has no interactive approval channel"
+                    "ACP tool permission denied by policy headless-deny (task execution has no interactive approval channel)"
                         .to_string(),
                 );
             }

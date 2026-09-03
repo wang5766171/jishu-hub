@@ -44,6 +44,13 @@ where
         ));
     }
 
+    // v0.8.1 需求10 修复：新机器无 Node.js 时 pi-bundle 不可用（"未安装"
+    // + "无法对话"）。打包脚本把便携 node 嵌入 pi-bundle/bin/，安装时随
+    // pi-bundle 落到 ~/.jishu-agent/bin/。解析顺序：内嵌 → PATH → 裸 node。
+    let node_bin = find_portable_node()
+        .or_else(|| path_lookup("node"))
+        .unwrap_or_else(|| PathBuf::from("node"));
+
     // 2. User-installed Node Module (from UI updates)
     if let Some(agent_dir) = crate::agent::jishu_self::pi_agent_dir() {
         let entry = PathBuf::from(&agent_dir)
@@ -53,7 +60,6 @@ where
             .join("cli.js");
         if file_exists(&entry) {
             let mut base_args = vec![entry.to_string_lossy().to_string()];
-            let node_bin = path_lookup("node").unwrap_or_else(|| PathBuf::from("node"));
             return Ok(PiRuntimeCommand {
                 program: node_bin,
                 base_args,
@@ -78,7 +84,6 @@ where
             .join("cli.js");
         if file_exists(&entry) {
             let mut base_args = vec![entry.to_string_lossy().to_string()];
-            let node_bin = path_lookup("node").unwrap_or_else(|| PathBuf::from("node"));
             return Ok(PiRuntimeCommand {
                 program: node_bin,
                 base_args,
@@ -91,6 +96,38 @@ where
         "Cannot find Pi agent. Ensure Jishu Agent is installed or pi submodule is built."
             .to_string(),
     )
+}
+
+/// 查找内嵌的便携 Node（v0.8.1 需求10：pi-bundle/bin/node.exe）。
+/// 两处可能位置：~/.jishu-agent/bin/（安装后）和 hub 安装目录/third_party/pi-bundle/bin/。
+fn find_portable_node() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let node_name = "node.exe";
+    #[cfg(not(target_os = "windows"))]
+    let node_name = "node";
+
+    // ~/.jishu-agent/bin/
+    if let Some(agent_dir) = crate::agent::jishu_self::pi_agent_dir() {
+        let candidate = PathBuf::from(&agent_dir).join("bin").join(node_name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    // hub 安装目录/third_party/pi-bundle/bin/
+    if let Ok(mut install_dir) = std::env::current_exe() {
+        install_dir.pop();
+        let candidate = install_dir
+            .join("third_party")
+            .join("pi-bundle")
+            .join("bin")
+            .join(node_name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    None
 }
 
 pub(crate) fn build_pi_interactive_args(

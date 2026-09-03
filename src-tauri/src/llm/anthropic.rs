@@ -223,6 +223,7 @@ fn process_non_streaming_response(
                         call_id: id.clone(),
                         tool: name.clone(),
                         input: input.clone(),
+                        view: Some(crate::agent::tool_view::classify_tool_view(&name, &input)),
                     });
 
                     tool_calls.push(LlmToolCall {
@@ -331,10 +332,12 @@ impl ToolUseAccumulator {
             arguments: args.clone(),
         };
 
+        let view = crate::agent::tool_view::classify_tool_view(&block.name, &args);
         emitter(NormalizedEvent::ToolUseStart {
             call_id: block.id.clone(),
             tool: block.name.clone(),
             input: args,
+            view: Some(view),
         });
 
         Some(tool_call)
@@ -808,7 +811,7 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(matches!(
             &events[0],
-            NormalizedEvent::ToolUseStart { call_id, tool, input }
+            NormalizedEvent::ToolUseStart { call_id, tool, input, .. }
             if call_id == "toolu_abc" && tool == "get_weather"
             && input == &serde_json::json!({"city": "Beijing"})
         ));

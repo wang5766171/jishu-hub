@@ -25,17 +25,18 @@ pub struct ProjectSettings {
     pub compaction: Option<ProjectCompaction>,
 }
 
-/// Pi CompactionSettings（settings-manager.ts:12-16）。
+/// Pi CompactionSettings（settings-manager.ts，jishu v0.84.2-10：阈值改按
+/// 窗口百分比，替代绝对 reserveTokens）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct ProjectCompaction {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub enabled: Option<bool>,
     #[serde(
-        rename = "reserveTokens",
+        rename = "thresholdPercent",
         skip_serializing_if = "Option::is_none",
         default
     )]
-    pub reserve_tokens: Option<u64>,
+    pub threshold_percent: Option<u64>,
     #[serde(
         rename = "keepRecentTokens",
         skip_serializing_if = "Option::is_none",

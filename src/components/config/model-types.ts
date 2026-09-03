@@ -53,6 +53,13 @@ export const THINKING_LEVEL_ALL = ["off", "minimal", "low", "medium", "high", "x
  * xhigh/max 需显式声明（mapped !== undefined）才支持；无声明时默认
  * off..high。v0.7.4 A7 修复：GLM-5.3 等不支持关闭思考的模型由此收敛。
  */
+/**
+ * v0.8.0 需求3 边界声明：会话页/行为页的档位候选已收敛至聚合 IPC
+ * （get_model_picker_options，后端唯一解析）。本函数仅服务**模型表单的
+ * 编辑初始化**（把已存在的 thinkingLevelMap 反显为勾选）——与后端
+ * supported_thinking_levels 语义逐条对齐（单测锁定），Pi 语义变化时
+ * 两端同步修改。
+ */
 export function supportedThinkingLevels(map?: Record<string, unknown>): string[] {
   if (!map) return ["off", "minimal", "low", "medium", "high"];
   return THINKING_LEVEL_ALL.filter((lvl) => {

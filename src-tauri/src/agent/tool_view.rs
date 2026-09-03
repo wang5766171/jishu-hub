@@ -1,0 +1,271 @@
+//! 工具渲染意图（render intent，v0.8.0 需求2 Phase 1）：EventNormalizer
+//! 产出 ToolUseStart 时调用，把 agent 方言的工具名收敛为中立的视图分类 +
+//! 位置信息。前端 UI 只做「意图→组件」纯映射（直播与回放同源），不再解析
+//! 工具输入。
+//!
+//! v1 规则 = 前端 classifyToolName（tool-call-card/types.ts，2026-08-21
+//! 快照，见 docs/v0.8.0/需求2-插件化架构一期/01 §6）**逐条移植**；迁移期
+//! 两版不一致 = bug；后续新增工具只改这里（前端 classifyToolName 降级为
+//! 历史数据 fallback）。
+//!
+//! 本模块同时持有**交互工具权威名单**（02 §1.6）：前端 8 名单与后端
+//! is_elicitation_only_tool 3 名单的并集收敛于此；前端名单保留为渲染快
+//! 路径，一致性由 vitest 锁定（名单不经 wire 下发）。
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// 中立视图分类（与前端 ToolKind 一一对应，wire 用 snake_case）。
+/// 注意：`FileDelete` 在 v1 规则中无产生分支（前端死枚举值原样移植），
+/// 仅占位保枚举同构；激活留后续独立演进（01 §4.3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolViewKind {
+    FileRead,
+    FileWrite,
+    FileEdit,
+    FileDelete,
+    ShellExec,
+    Search,
+    Web,
+    Think,
+    Subtask,
+    Other,
+}
+
+/// 位置信息（DSH presentationMeta 思想）：归一化层一次提取，随事件/
+/// 持久化块携带，回放不再解析工具输入。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ViewLocation {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolView {
+    pub kind: ToolViewKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub locations: Vec<ViewLocation>,
+}
+
+/// 分类 + 提取位置。工具名与输入均为 agent 方言原文。
+pub fn classify_tool_view(tool: &str, input: &Value) -> ToolView {
+    ToolView {
+        kind: classify_name(tool),
+        locations: extract_locations(input),
+    }
+}
+
+/// v1 分类规则——逐条对齐 01 §6 快照：
+/// - `file_read`：read/view_file/view 精确 + **contains("read")**（TS 唯一
+///   模糊项，原样保留）；
+/// - `file_edit`：edit/multiedit/str_replace/patch/replace/edit_file/
+///   modify_file/file_edit + apply_patch/apply_changes；
+/// - `file_write`：write/create_file/write_file/file_write；
+/// - `shell_exec`：bash/shell/exec/execute_command/run_shell_command；
+/// - `search`：grep/search_files/ripgrep/grep_search/glob/find_files/
+///   list_files/list_directory；
+/// - `web`：webfetch/fetch/web_fetch/websearch/web_search/google_web_search；
+/// - `subtask`：task 精确 + subagent_ 前缀 + invoke_agent；
+/// - `think`：thinking/think/update_topic；
+/// - 兜底 other。
+pub fn classify_name(name: &str) -> ToolViewKind {
+    let n = name.to_ascii_lowercase();
+    if n == "read" || n == "view_file" || n == "view" || n.contains("read") {
+        return ToolViewKind::FileRead;
+    }
+    if n == "edit"
+        || n == "multiedit"
+        || n == "str_replace"
+        || n == "patch"
+        || n == "replace"
+        || n == "edit_file"
+        || n == "modify_file"
+        || n == "file_edit"
+    {
+        return ToolViewKind::FileEdit;
+    }
+    if n == "write" || n == "create_file" || n == "write_file" || n == "file_write" {
+        return ToolViewKind::FileWrite;
+    }
+    if n == "apply_patch" || n == "apply_changes" {
+        return ToolViewKind::FileEdit;
+    }
+    if n == "bash" || n == "shell" || n == "exec" || n == "execute_command" || n == "run_shell_command" {
+        return ToolViewKind::ShellExec;
+    }
+    if n == "grep" || n == "search_files" || n == "ripgrep" || n == "grep_search" {
+        return ToolViewKind::Search;
+    }
+    if n == "glob" || n == "find_files" || n == "list_files" || n == "list_directory" {
+        return ToolViewKind::Search;
+    }
+    if n == "webfetch" || n == "fetch" || n == "web_fetch" {
+        return ToolViewKind::Web;
+    }
+    if n == "websearch" || n == "web_search" || n == "google_web_search" {
+        return ToolViewKind::Web;
+    }
+    if n == "task" || n.starts_with("subagent_") || n == "invoke_agent" {
+        return ToolViewKind::Subtask;
+    }
+    if n == "thinking" || n == "think" || n == "update_topic" {
+        return ToolViewKind::Think;
+    }
+    ToolViewKind::Other
+}
+
+/// 从工具输入提取位置：常见键 file_path / path / filename / notebook_path
+/// （v1 取第一个命中；含 line 可选整型行号）。输入缺失/非对象 → 空。
+pub fn extract_locations(input: &Value) -> Vec<ViewLocation> {
+    let Some(obj) = input.as_object() else {
+        return Vec::new();
+    };
+    for key in ["file_path", "path", "filename", "notebook_path"] {
+        if let Some(path) = obj.get(key).and_then(Value::as_str) {
+            if path.is_empty() {
+                continue;
+            }
+            let line = obj
+                .get("line")
+                .or_else(|| obj.get("line_number"))
+                .and_then(Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok());
+            return vec![ViewLocation {
+                path: path.to_string(),
+                line,
+            }];
+        }
+    }
+    Vec::new()
+}
+
+/// **交互工具权威名单**（02 §1.6）：前端 interaction-tools.ts 8 名单与
+/// 后端原 is_elicitation_only_tool 3 名单的并集（8 ⊇ 3，收敛为前端全集）。
+/// 判定含与两版一致的规范化（取 `/`、`:` 之后的尾段 + `-`→`_` + 小写）。
+pub fn is_interaction_tool(tool: &str) -> bool {
+    let normalized = tool
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or(tool)
+        .replace('-', "_")
+        .to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "request_user_input"
+            | "ask_user"
+            | "ask_user_input"
+            | "askuserquestion"
+            | "ask_user_question"
+            | "ask_question"
+            | "ask_choice"
+            | "choice_question"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 01 §6 快照全量用例（与前端 vitest 用例表同源翻译；两版不一致 = bug）。
+    #[test]
+    fn classify_name_matches_frontend_snapshot() {
+        // file_read：精确三连 + 唯一模糊项 contains("read")
+        for name in ["read", "view_file", "view", "ctx_read", "Read"] {
+            assert_eq!(classify_name(name), ToolViewKind::FileRead, "{name}");
+        }
+        // file_edit：第一批 + apply_patch 家族
+        for name in [
+            "edit", "multiedit", "str_replace", "patch", "replace", "edit_file", "modify_file",
+            "file_edit", "apply_patch", "apply_changes",
+        ] {
+            assert_eq!(classify_name(name), ToolViewKind::FileEdit, "{name}");
+        }
+        // file_write
+        for name in ["write", "create_file", "write_file", "file_write"] {
+            assert_eq!(classify_name(name), ToolViewKind::FileWrite, "{name}");
+        }
+        // shell_exec
+        for name in ["bash", "shell", "exec", "execute_command", "run_shell_command"] {
+            assert_eq!(classify_name(name), ToolViewKind::ShellExec, "{name}");
+        }
+        // search（两批）
+        for name in [
+            "grep", "search_files", "ripgrep", "grep_search", "glob", "find_files", "list_files",
+            "list_directory",
+        ] {
+            assert_eq!(classify_name(name), ToolViewKind::Search, "{name}");
+        }
+        // web（两批）
+        for name in [
+            "webfetch", "fetch", "web_fetch", "websearch", "web_search", "google_web_search",
+        ] {
+            assert_eq!(classify_name(name), ToolViewKind::Web, "{name}");
+        }
+        // subtask：精确 + 前缀 + invoke_agent
+        for name in ["task", "subagent_researcher", "invoke_agent"] {
+            assert_eq!(classify_name(name), ToolViewKind::Subtask, "{name}");
+        }
+        // think：含 update_topic
+        for name in ["thinking", "think", "update_topic"] {
+            assert_eq!(classify_name(name), ToolViewKind::Think, "{name}");
+        }
+        // other：未知与大小写规范化
+        assert_eq!(classify_name("unknown_tool"), ToolViewKind::Other);
+        assert_eq!(classify_name("Bash".to_lowercase().as_str()), ToolViewKind::ShellExec);
+        // 边界：reading 含 read → file_read（模糊项语义）
+        assert_eq!(classify_name("reading_notes"), ToolViewKind::FileRead);
+        // 边界：thread 含子串 "read" → file_read（模糊项语义，与 TS 一致）
+        assert_eq!(classify_name("thread"), ToolViewKind::FileRead);
+    }
+
+    #[test]
+    fn extract_locations_common_keys_and_missing() {
+        // 四键依序命中，取第一个
+        assert_eq!(
+            extract_locations(&json!({"path": "b.rs"})),
+            vec![ViewLocation { path: "b.rs".into(), line: None }]
+        );
+        assert_eq!(
+            extract_locations(&json!({"file_path": "a.ts", "line": 12})),
+            vec![ViewLocation { path: "a.ts".into(), line: Some(12) }]
+        );
+        assert_eq!(
+            extract_locations(&json!({"filename": "c.md", "line_number": "x"})),
+            vec![ViewLocation { path: "c.md".into(), line: None }]
+        );
+        assert!(extract_locations(&json!({"notebook_path": ""})).is_empty());
+        // 非对象 / 缺全部键 / 值非字符串
+        assert!(extract_locations(&json!("str")).is_empty());
+        assert!(extract_locations(&json!({"command": ["ls"]})).is_empty());
+        assert!(extract_locations(&json!({"path": 42})).is_empty());
+    }
+
+    #[test]
+    fn interaction_tool_union_list() {
+        // 前端 8 名单全集
+        for name in [
+            "request_user_input", "ask_user", "ask_user_input", "askuserquestion",
+            "ask_user_question", "ask_question", "ask_choice", "choice_question",
+        ] {
+            assert!(is_interaction_tool(name), "{name}");
+        }
+        // 后端原 3 名单（并集子集）
+        assert!(is_interaction_tool("AskUserQuestion"));
+        assert!(is_interaction_tool("tools:ask_question"));
+        assert!(is_interaction_tool("mcp/server/ask-user"));
+        // 非交互
+        assert!(!is_interaction_tool("bash"));
+        assert!(!is_interaction_tool("read"));
+    }
+
+    #[test]
+    fn classify_tool_view_combines() {
+        let view = classify_tool_view("Write", &json!({"file_path": "novel.md"}));
+        assert_eq!(view.kind, ToolViewKind::FileWrite);
+        assert_eq!(view.locations.len(), 1);
+        assert_eq!(view.locations[0].path, "novel.md");
+    }
+}

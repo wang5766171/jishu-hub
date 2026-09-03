@@ -6,6 +6,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::ChildStdin;
 
 use crate::agent_runtime::{self, AgentTurnRequest};
+use crate::agent;
 use crate::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +34,46 @@ impl ChatState {
             processes: HashMap::new(),
         }
     }
+}
+
+/// v0.8.1 需求7：会话启用工具集非空时，把工具说明块前缀附加到 prompt。
+/// ACP 存活会话早退路径与新回合路径共用（P0 修复：早退路径曾跳过注入，
+/// 持久进程第二轮起注入块从未附加）。
+/// M0：注入前先把暂存键（新会话输入框勾选）并入本会话键。
+/// M1（prompt 净化）：拼接说明块前先剥前端展示标记（[JISHU-TOOLS:…] 头 +
+/// 残留注入块），保证 agent 只看到 说明块 + 用户正文（§16.8 硬边界）。
+/// M6/P2-2：migrate/get 只操作 session-tools.json、不依赖 AppState——
+/// 移到 state.lock() 之前，锁内只保留真正需要 s.tool_plugins 的渲染段。
+fn compose_tool_message(
+    state: &tauri::State<'_, Mutex<AppState>>,
+    session_id: &str,
+    message: String,
+) -> String {
+    agent::tool_plugin::migrate_session_tools(
+        agent::tool_plugin::STAGING_SESSION_KEY,
+        session_id,
+    );
+    let tool_ids = agent::tool_plugin::get_session_tools(session_id);
+    let Ok(s) = state.lock() else {
+        return message;
+    };
+    if tool_ids.is_empty() {
+        return message;
+    }
+    let tools = s.tool_plugins.lock().unwrap_or_else(|e| e.into_inner());
+    let matched: Vec<&agent::tool_plugin::ToolPlugin> = tools
+        .iter()
+        .filter(|t| tool_ids.iter().any(|id| id == t.id()))
+        .collect();
+    if matched.is_empty() {
+        return message;
+    }
+    let block = agent::tool_plugin::render_tool_block(&matched);
+    if block.trim().is_empty() {
+        return message;
+    }
+    let clean = agent::tool_plugin::strip_all_markers(&message);
+    format!("{block}\n\n{clean}")
 }
 
 #[tauri::command]
@@ -63,7 +104,9 @@ pub async fn send_message(
 
     if let Some(ref sid) = session_id {
         if let Some((acp, pid)) = existing_acp_session(&app, sid, &agent_id)? {
-            match acp.send_prompt(message.clone()).await {
+            // 工具注入（35ee638a）：早退路径同样附加会话启用工具的说明块。
+            let outgoing = compose_tool_message(&state, sid, message.clone());
+            match acp.send_prompt(outgoing).await {
                 Ok(()) => {
                     return Ok(ChatSession {
                         agent_id,
@@ -82,6 +125,10 @@ pub async fn send_message(
     let pending_session_id = session_id
         .clone()
         .unwrap_or_else(|| format!("pending-{}", uuid::Uuid::new_v4()));
+
+    // 工具注入：会话启用集合非空 → 说明块前缀附加到 prompt（无头任务路径
+    // 不注入——边界：工具插件是 GUI 会话能力）。
+    let message = compose_tool_message(&state, &pending_session_id, message);
 
     let prepared = {
         let s = state
@@ -127,6 +174,9 @@ pub async fn send_message(
                     s.processes.insert(real_id.to_string(), process);
                 }
             };
+            // M0：会话工具集随 id 解析搬家（pending-<ts> → 真实 id），第二条
+            // 消息起 compose 按真实键命中注入。
+            agent::tool_plugin::migrate_session_tools(&sid_for_resolve, real_id);
         },
     )
     .await?;
@@ -397,7 +447,7 @@ pub async fn set_agent_thinking_level(
 
 /// Look up an agent's live AcpControls (v0.7.4 需求1 A3 helper): every
 /// session process owned by the agent.
-fn live_acp_controls_for_agent(
+pub(crate) fn live_acp_controls_for_agent(
     app: &AppHandle,
     agent_id: &str,
 ) -> Vec<crate::acp_runtime::AcpControl> {
@@ -456,6 +506,207 @@ pub async fn compact_agent_session(
     acp.compact(instructions).await
 }
 
+/// Fork the live session at its current end (v0.8.0 需求1 A5). The Pi RPC
+/// runtime clones the session tree and rebinds its process to the branch;
+/// afterwards the process map is re-keyed to the branch id so the next
+/// message flows to the forked session. The original session file/entry is
+/// untouched and respawns on demand when reopened.
+///
+/// 历史会话（无活跃进程：本运行期未发过消息、或闲置 >10 分钟被回收）会
+/// **静默拉起一个仅 resume 的进程**（`--session-id` 恢复、不发首条消息，
+/// 零历史污染）再 clone——用户点「创建分支」直接成功，无需先发消息。
+#[tauri::command]
+pub async fn fork_agent_session(
+    app: AppHandle,
+    agent_id: String,
+    project_path: String,
+    session_id: String,
+) -> Result<serde_json::Value, String> {
+    {
+        let app_state = app.state::<Mutex<crate::AppState>>();
+        let s = app_state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        if !s
+            .registry
+            .require_agent(&agent_id)?
+            .capabilities()
+            .contains(crate::agent::AgentCapabilities::SESSION_FORK)
+        {
+            return Err("Session fork is not supported by this agent".to_string());
+        }
+    }
+
+    let (acp, process) = match existing_chat_process(&app, &session_id, &agent_id) {
+        Some(process) => (
+            process
+                .acp
+                .clone()
+                .ok_or_else(|| "This session has no forkable runtime".to_string())?,
+            process,
+        ),
+        None => spawn_resume_fork_process(&app, &agent_id, &project_path, &session_id).await?,
+    };
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(45), acp.fork_session())
+        .await
+        .map_err(|_| {
+            "Fork timed out — the agent took too long to clone the session".to_string()
+        })??;
+    let Some(new_session_id) = result
+        .get("new_session_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+    else {
+        return Err("Fork finished but the branch session id is missing".to_string());
+    };
+    // 进程已重绑到分支会话：按 pid 清掉旧键（含 pending 别名/resume 拉起的键），
+    // 以分支 id 重新挂载。原会话不再持有进程，重新打开时按需 spawn（既有机制）。
+    {
+        let chat_state = app.state::<Mutex<ChatState>>();
+        let mut state = chat_state
+            .lock()
+            .map_err(|_| "Chat state lock poisoned".to_string())?;
+        state
+            .processes
+            .retain(|_, item| item.process_id != process.process_id);
+        state.processes.insert(new_session_id.clone(), process);
+    }
+    log::info!(
+        "fork_agent_session: session {session_id} forked; process re-keyed to {new_session_id}"
+    );
+    Ok(result)
+}
+
+fn existing_chat_process(app: &AppHandle, session_id: &str, agent_id: &str) -> Option<ChatProcess> {
+    let chat_state = app.state::<Mutex<ChatState>>();
+    let state = chat_state.lock().ok()?;
+    let process = state.processes.get(session_id)?;
+    (process.agent_id == agent_id).then(|| process.clone())
+}
+
+/// 历史会话 fork 的静默 resume：拉起一个仅恢复会话、不发首条消息的 PiRpc
+/// 进程（start_gui_piresume_session，first_message=None），注册进进程表并
+/// 等待会话解析完成后返回。clone 由调用方经 AcpControl 发起。
+async fn spawn_resume_fork_process(
+    app: &AppHandle,
+    agent_id: &str,
+    project_path: &str,
+    session_id: &str,
+) -> Result<(crate::acp_runtime::AcpControl, ChatProcess), String> {
+    let prepared = {
+        let app_state = app.state::<Mutex<crate::AppState>>();
+        let s = app_state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        agent_runtime::prepare_gui_turn(
+            &s.registry,
+            AgentTurnRequest {
+                agent_id: agent_id.to_string(),
+                project_path: project_path.to_string(),
+                session_id: Some(session_id.to_string()),
+                message: String::new(),
+                timeout_secs: 0,
+            },
+        )?
+    };
+
+    // 进程退出（含闲置回收）时清理进程表；会话解析别名注册与 send_message
+    // 同款（resume 场景 real id 通常等于请求 id，别名分支自然跳过）。
+    let cleanup_pid = Arc::new(Mutex::new(None::<u32>));
+    let cleanup_pid_for_finish = cleanup_pid.clone();
+    let app_for_finish = app.clone();
+    let app_for_resolve = app.clone();
+    let sid_for_resolve = session_id.to_string();
+    let handle = agent_runtime::start_gui_piresume_session(
+        app.clone(),
+        prepared,
+        move || {
+            let pid = cleanup_pid_for_finish
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .to_owned();
+            let _ = remove_process_entries(&app_for_finish, pid, None);
+        },
+        move |real_id: &str| {
+            if real_id == sid_for_resolve {
+                return;
+            }
+            let state = app_for_resolve.state::<Mutex<ChatState>>();
+            if let Ok(mut s) = state.lock() {
+                if let Some(process) = s.processes.get(&sid_for_resolve).cloned() {
+                    s.processes.insert(real_id.to_string(), process);
+                }
+            };
+            // M0：会话工具集随 id 解析搬家（pending-<ts> → 真实 id），第二条
+            // 消息起 compose 按真实键命中注入。
+            agent::tool_plugin::migrate_session_tools(&sid_for_resolve, real_id);
+        },
+    )
+    .await?;
+    *cleanup_pid.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle.process_id);
+
+    let acp = handle
+        .acp
+        .clone()
+        .ok_or_else(|| "resume-fork spawn returned no runtime control".to_string())?;
+    let process = ChatProcess {
+        agent_id: agent_id.to_string(),
+        process_id: handle.process_id,
+        stdin: None,
+        acp: Some(acp.clone()),
+    };
+    {
+        let chat_state = app.state::<Mutex<ChatState>>();
+        let mut state = chat_state
+            .lock()
+            .map_err(|_| "Chat state lock poisoned".to_string())?;
+        state
+            .processes
+            .insert(session_id.to_string(), process.clone());
+    }
+
+    // 等待会话解析（resume attach 完成）再放行 clone——同时对齐 get_state
+    // 的 30s 超时，进程启动即崩时不至于挂在 clone 上。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while acp.resolved_session_id().is_none() {
+        if std::time::Instant::now() > deadline {
+            return Err("Resuming the session for fork timed out".to_string());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Ok((acp, process))
+}
+
+/// v0.8.0 需求7：查询某会话是否有进行中的回合。GUI 的 agent-event 监听随
+/// chat 页卸载而移除，卸载期间结束的回合其 turn_complete 永远无法送达前端
+/// （streamStore 停在 isStreaming）。前端重挂载时以本命令对账：返回 false
+/// 的流式会话丢弃本地流式状态并重读 JSONL。ACP/Pi/Codex 会话由连接循环维护
+/// 的 turn_active 标志回答；CLI 会话（acp=None，进程即回合，回合结束进程即
+/// 被 on_finish 移除）以「进程条目存在」等价判定。查无进程（含 fork 重键后
+/// 的旧 id）视为不在进行中。
+#[tauri::command]
+pub fn chat_turn_active(app: AppHandle, session_id: String) -> bool {
+    let chat_state = app.state::<Mutex<ChatState>>();
+    let Ok(state) = chat_state.lock() else {
+        return false;
+    };
+    match state.processes.get(&session_id) {
+        Some(process) => match &process.acp {
+            Some(acp) => acp.turn_active(),
+            None => true,
+        },
+        None => false,
+    }
+}
+
+/// v0.8.0 需求10：读取会话累计用量（SQLite 权威来源；无记录返回全零行）。
+/// 记账在 Rust turn_end 侧完成（usage_store），前端只读展示。
+#[tauri::command]
+pub fn get_session_usage(session_id: String) -> Result<crate::usage_store::SessionUsageRow, String> {
+    crate::usage_store::get(&session_id)
+}
+
 /// Read the agent's auto-compaction preference (v0.7.4 需求1 A3).
 /// None = follow the agent's own default.
 #[tauri::command]
@@ -476,7 +727,7 @@ pub async fn set_agent_auto_compaction(
     }
     crate::hub::save_agent_auto_compaction(&agent_id, enabled)?;
     for acp in live_acp_controls_for_agent(&app, &agent_id) {
-        acp.set_auto_compaction(enabled).await?;
+        acp.set_auto_compaction(Some(enabled), None).await?;
     }
     Ok(())
 }
@@ -487,20 +738,32 @@ pub async fn resolve_chat_permission(
     session_id: String,
     request_id: String,
     approved: bool,
+    remember: Option<bool>,
 ) -> Result<(), String> {
-    let chat_state = app.state::<Mutex<ChatState>>();
-    let acp = {
+    let (acp, _agent_id) = {
+        let chat_state = app.state::<Mutex<ChatState>>();
         let state = chat_state
             .lock()
             .map_err(|_| "Chat state lock poisoned".to_string())?;
-        state
+        let process = state
             .processes
             .get(&session_id)
-            .and_then(|process| process.acp.clone())
-            .ok_or_else(|| format!("No active ACP session found for {session_id}"))?
+            .ok_or_else(|| format!("No active ACP session found for {session_id}"))?;
+        (process.acp.clone(), process.agent_id.clone())
     };
 
-    acp.resolve_permission(request_id, approved).await
+    // v0.8.0 需求2 Phase 2：「始终允许」按到达时登记的原始上下文回写 Once
+    // 记忆（register_arrival_context / take_arrival_context）——action_key 含
+    // tool/kind/payload 键，必须与链评估完全同形状，否则记忆永不命中（此前
+    // 宽松兜底 tool=None 导致「始终允许」无效）。任何选择都取回（清理登记）。
+    if let Some(arrival) = crate::agent::policy::take_arrival_context(&request_id) {
+        if approved && remember == Some(true) {
+            crate::agent::policy::remember_for_session(&arrival.session_id, &arrival);
+        }
+    }
+    acp.ok_or_else(|| format!("No active ACP session found for {session_id}"))?
+        .resolve_permission(request_id, approved)
+        .await
 }
 
 #[tauri::command]

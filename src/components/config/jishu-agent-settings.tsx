@@ -2,7 +2,8 @@
 // 设置项不完整。本块暴露 Pi Settings schema（settings-manager.ts）核查过的
 // 行为相关真实字段：
 //  - defaultThinkingLevel：全局默认思考档位
-//  - compaction：{enabled, reserveTokens, keepRecentTokens} 全局默认压缩
+//  - compaction：{enabled, thresholdPercent} 全局默认压缩（v0.8.0 需求9：
+//    阈值按窗口百分比，默认 90%；项目级 .pi/settings.json 深合并覆盖）
 //    （项目级 .pi/settings.json 深合并覆盖）
 //  - defaultTools：新会话初始激活的内置工具（全集 read/bash/edit/write/
 //    grep/find/ls；未设置时 Pi 默认 read/bash/edit/write）。类型选择是
@@ -14,7 +15,7 @@
 // 侧会话时能力（spawn --tools 覆盖 defaultTools），与本页互不冲突。
 // 保存为键级覆盖：null = 删除键恢复 Pi 默认（后端 merge_config_patch）。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { useAgent } from "@/agents";
@@ -22,10 +23,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { RotateCcw, Save } from "lucide-react";
+import { RotateCcw } from "lucide-react";
 import { SectionHelp } from "./section-help";
 
-const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const PI_BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
 const PI_DEFAULT_TOOLS = ["read", "bash", "edit", "write"] as readonly string[];
 /** 只读预设（同 PiRpc readonly 模式白名单：全集去掉 bash/edit/write）。 */
@@ -38,7 +38,7 @@ const PI_ALL_TOOLS = PI_BUILTIN_TOOLS as readonly string[];
 type ToolPresetType = "default" | "readonly" | "all";
 
 /** Pi CompactionSettings 的可编辑子集；null = 未配置（用 Pi 默认）。 */
-type Compaction = { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number };
+type Compaction = { enabled?: boolean; thresholdPercent?: number; keepRecentTokens?: number };
 /** Pi RetrySettings 的可编辑子集；null = 未配置（用 Pi 默认）。 */
 type Retry = { enabled?: boolean; maxRetries?: number; baseDelayMs?: number };
 
@@ -63,12 +63,24 @@ const deriveToolPreset = (tools: string[] | null): ToolPresetType => {
 export function JishuAgentSettingsBlock({
   agentConfig,
   onSaved,
+  onSaveStateChange,
+  registerSave,
 }: {
   agentConfig: Record<string, unknown> | null;
   onSaved: () => void;
+  /** v0.8.0 需求9 收尾：向宿主页头上报保存可用态（按钮渲染在 ConfigPageShell
+      的 actionsSlot，与大标题同行）。 */
+  onSaveStateChange?: (state: { dirty: boolean; saving: boolean }) => void;
+  /** 注册保存函数（宿主页头按钮调用）。 */
+  registerSave?: (save: () => void) => void;
 }) {
   const { t } = useTranslation();
-  const { manageAgentId } = useAgent();
+  const { manageAgentId, manageAgent } = useAgent();
+  // v0.8.0 需求3（B2-② 收敛）：档位全集来自 AgentStatus（adapter 声明），
+  // 不再前端硬编码 PI_THINKING_LEVELS。
+  const manageThinkingLevels = manageAgent?.thinking_levels ?? [
+    "off", "minimal", "low", "medium", "high",
+  ];
   const agentId = manageAgentId ?? "";
 
   const savedThinking =
@@ -135,6 +147,16 @@ export function JishuAgentSettingsBlock({
     }
   };
 
+  // v0.8.0 需求9 收尾：保存按钮移至页头 actionsSlot——上报状态 + 注册保存。
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  useEffect(() => {
+    onSaveStateChange?.({ dirty, saving });
+  }, [dirty, saving, onSaveStateChange]);
+  useEffect(() => {
+    registerSave?.(() => void saveRef.current());
+  }, [registerSave]);
+
   // 联动展示：预设类型决定勾选显示与可编辑性（readonly/all 固定不可勾选）。
   const displayTools =
     toolPreset === "readonly"
@@ -168,16 +190,12 @@ export function JishuAgentSettingsBlock({
         </Label>
         <select
           id="jishu-default-thinking"
-          value={
-            PI_THINKING_LEVELS.includes(thinking as (typeof PI_THINKING_LEVELS)[number])
-              ? thinking
-              : ""
-          }
+          value={manageThinkingLevels.includes(thinking) ? thinking : ""}
           onChange={(e) => setThinking(e.target.value)}
           className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <option value="">{t("sessions.thinkingLevel.unset")}</option>
-          {PI_THINKING_LEVELS.map((lvl) => (
+          {manageThinkingLevels.map((lvl) => (
             <option key={lvl} value={lvl}>
               {t(`sessions.thinkingLevel.${lvl}`)}
             </option>
@@ -211,32 +229,45 @@ export function JishuAgentSettingsBlock({
             onCheckedChange={(checked) =>
               setCompaction({
                 enabled: checked,
-                reserveTokens: compaction?.reserveTokens,
+                thresholdPercent: compaction?.thresholdPercent,
                 keepRecentTokens: compaction?.keepRecentTokens,
               })
             }
           />
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-1">
-            <Label className="truncate text-xs">{t("projectConfig.compactionReserve")}</Label>
-            <Input
-              className="h-8 text-sm"
-              type="number"
-              min={0}
-              placeholder="16384"
-              value={compaction?.reserveTokens ?? ""}
-              onChange={(e) =>
-                setCompaction({
-                  enabled: compaction?.enabled,
-                  keepRecentTokens: compaction?.keepRecentTokens,
-                  reserveTokens: numField(e.target.value),
-                })
-              }
-            />
+        {/* v0.8.0 需求9：阈值按窗口百分比（默认 90%）替代绝对 reserveTokens；
+            保留近期 token（默认 20000）为压缩执行参数——切割点后的近期内容
+            按此预算原文保留，之前的历史被摘要。两项说明经标题旁问号查看。 */}
+        <div className="flex flex-wrap gap-3">
+          <div className="w-36 space-y-1">
+            <Label className="inline-flex items-center gap-0.5 truncate text-xs">
+              {t("projectConfig.compactionThreshold")}
+              <SectionHelp content={t("projectConfig.compactionThresholdHelp")} />
+            </Label>
+            <div className="relative">
+              <Input
+                className="h-8 pr-7 text-sm"
+                type="number"
+                min={1}
+                max={99}
+                placeholder="90"
+                value={compaction?.thresholdPercent ?? ""}
+                onChange={(e) =>
+                  setCompaction({
+                    enabled: compaction?.enabled,
+                    keepRecentTokens: compaction?.keepRecentTokens,
+                    thresholdPercent: numField(e.target.value),
+                  })
+                }
+              />
+              <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">%</span>
+            </div>
           </div>
-          <div className="space-y-1">
-            <Label className="truncate text-xs">{t("projectConfig.compactionKeepRecent")}</Label>
+          <div className="w-36 space-y-1">
+            <Label className="inline-flex items-center gap-0.5 truncate text-xs">
+              {t("projectConfig.compactionKeepRecent")}
+              <SectionHelp content={t("projectConfig.compactionKeepRecentHelp")} />
+            </Label>
             <Input
               className="h-8 text-sm"
               type="number"
@@ -246,16 +277,13 @@ export function JishuAgentSettingsBlock({
               onChange={(e) =>
                 setCompaction({
                   enabled: compaction?.enabled,
-                  reserveTokens: compaction?.reserveTokens,
+                  thresholdPercent: compaction?.thresholdPercent,
                   keepRecentTokens: numField(e.target.value),
                 })
               }
             />
           </div>
         </div>
-        <p className="text-[10px] leading-relaxed text-muted-foreground/70">
-          {t("config.compactionDefaultHint")}
-        </p>
       </div>
 
       {/* 初始工具集 */}
@@ -391,13 +419,6 @@ export function JishuAgentSettingsBlock({
         <p className="text-[10px] leading-relaxed text-muted-foreground/70">
           {t("config.retryDefaultHint")}
         </p>
-      </div>
-
-      <div className="flex items-center justify-end">
-        <Button size="sm" disabled={!dirty || saving} onClick={() => void save()}>
-          <Save className="h-3.5 w-3.5" />
-          {saving ? t("common.saving") : t("common.save")}
-        </Button>
       </div>
     </div>
   );

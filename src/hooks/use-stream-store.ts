@@ -9,6 +9,8 @@ export interface StreamToolUse {
   input: unknown;
   output?: unknown;
   isError?: boolean;
+  /** v0.8.0 需求2 Phase 1：渲染意图（tool_use_start 携带，提交时随块持久化）。 */
+  view?: import("@/types").ToolView;
 }
 
 export interface StepInfo {
@@ -197,8 +199,10 @@ class StreamStore {
       error = data.message;
     } else if (data.kind === "tool_use_start") {
       if (!tools.some((tool) => tool.id === data.call_id)) {
-        tools = [...tools, { id: data.call_id, name: data.tool, input: data.input }];
-        content = [...content, { type: "tool_use", id: data.call_id, name: data.tool, input: data.input }];
+        // v0.8.0 需求2 Phase 1：view 随事件透传（tools 与 content 同源），
+        // turn 提交时 content 中的 tool_use 块即带 view 持久化。
+        tools = [...tools, { id: data.call_id, name: data.tool, input: data.input, view: data.view }];
+        content = [...content, { type: "tool_use", id: data.call_id, name: data.tool, input: data.input, view: data.view }];
       }
     } else if (data.kind === "tool_use_result") {
       tools = tools.map((tool) => (
@@ -255,15 +259,39 @@ class StreamStore {
       // inline in the message stream at the position it occurred. setStatus
       // and explicit phase-enter can report the same boundary consecutively.
       content = freezeLastBlock(content);
-      const last = content[content.length - 1];
-      if (
-        last?.type !== "phase_divider"
-        || last.phase !== data.phase
-        || last.title !== data.title
-      ) {
-        content = [...content, { type: "phase_divider" as const, phase: data.phase, title: data.title }];
+      let handled = false;
+      // v0.8.0 需求10 修复：压缩分隔线两态——结束分隔线（上下文已压缩）
+      // 全内容查找既有压缩分隔线（上下文压缩中…）并**原位替换其标题**，
+      // 而非追加。压缩中间可能插入摘要生成等内容块，不能只看末位；由此
+      // 保证任意时刻内容流中至多一条压缩分隔线。
+      if (data.phase === "compaction") {
+        let compactionIdx = -1;
+        for (let k = content.length - 1; k >= 0; k--) {
+          const block = content[k];
+          if (block.type === "phase_divider" && block.phase === "compaction") {
+            compactionIdx = k;
+            break;
+          }
+        }
+        if (compactionIdx >= 0) {
+          const next = [...content];
+          next[compactionIdx] = { type: "phase_divider" as const, phase: data.phase, title: data.title };
+          content = next;
+          this.conductorPhases.set(key, data.phase);
+          handled = true;
+        }
       }
-      this.conductorPhases.set(key, data.phase);
+      if (!handled) {
+        const last = content[content.length - 1];
+        if (
+          last?.type !== "phase_divider"
+          || last.phase !== data.phase
+          || last.title !== data.title
+        ) {
+          content = [...content, { type: "phase_divider" as const, phase: data.phase, title: data.title }];
+        }
+        this.conductorPhases.set(key, data.phase);
+      }
     } else if (data.kind === "interaction_request") {
       if (!interactionSplits.some((item) => item.requestId === data.request_id)) {
         interactionSplits = [

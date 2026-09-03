@@ -70,6 +70,10 @@ interface ConductorState {
   domain: Domain;
   phase: Phase;
   goal: string;
+  /** 用户裁决（2026-08-31）：true = /jishu-task 启动的正式任务模式（必须走
+   * 完整 discuss→plan→execute）；false/undefined = 普通会话中 agent 触发
+   * （确认卡多一个「需求已明确，直接实施」选项，不强制进入流程模式）。 */
+  taskMode?: boolean;
   artifacts: {
     taskId?: string;
     requirements?: string;
@@ -574,6 +578,41 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     // R3：驱动下一阶段轮次+持久化分隔符移到空闲 agent_end（消费 pendingDrive），此处不再发送。
   }
 
+  /** 用户裁决（2026-08-31）：非任务模式「需求已明确，直接实施」——需求落盘
+   * 保留讨论成果，恢复全部工具，不进入流程规划，直接驱动 agent 实施轮。 */
+  async function implementDirect(
+    candidate: RequirementCandidate,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    writeArtifact("requirements", "REQUIREMENTS.md", candidate.markdown);
+    // 恢复进入讨论前的工具集（discuss 阶段被收窄为只读+lock）
+    if (toolsBeforeWorkflow) pi.setActiveTools(toolsBeforeWorkflow);
+    state.phase = "done";
+    state.taskMode = false;
+    state.candidate = undefined;
+    state.pendingConfirmation = undefined;
+    state.revisionInstruction = undefined;
+    persist();
+    ctx.ui.notify("需求已确认，跳过流程规划，直接实施。", "info");
+    // followUp 轮不触发 before_agent_start——实施指令与需求全文必须内联。
+    pi.sendMessage(
+      {
+        customType: "jishu-conductor:direct-implement",
+        display: false,
+        content: [
+          "[JISHU-PROMT:开始]",
+          "用户已确认以下需求并选择直接实施（不进入流程规划）。请按需求直接开发实现。",
+          "=== 已确认需求 ===",
+          candidate.markdown,
+          "=== 实施要求 ===",
+          "直接开始实现，不需要再提问或确认需求；实现完成后简要汇报。",
+          "[JISHU-PROMT:结束]",
+        ].join("\n\n"),
+      },
+      { triggerTurn: true, deliverAs: "followUp" },
+    );
+  }
+
   async function acceptPlan(
     candidate: PlanCandidate,
     ctx: ExtensionContext,
@@ -683,6 +722,41 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     async execute(_id, params, _signal, _onUpdate, ctx: ExtensionContext) {
       // v0.7.5 需求5：中断恢复后模型已重新提交，恢复指引使命完成。
       interruptedResume = false;
+
+      // 用户裁决（2026-08-31）：普通会话（idle）触发 lock_requirement 时自动
+      // 初始化 conductor 状态（创建 taskId + Hub 同步 discuss + setPhase），
+      // 并标记 taskMode=false——修前从 idle 直接跳 acceptRequirements 会因
+      // Hub 侧无 TaskInstance（"乐观并发冲突: 期望 discuss 实际 idle"）转场
+      // 失败。taskMode=false 时确认卡多「需求已明确，直接实施」选项。
+      if (state.phase === "idle") {
+        state.taskMode = false;
+        if (!state.goal) state.goal = params.title;
+        if (!state.artifacts.taskId) {
+          state.artifacts.taskId = `task_${Date.now().toString(36)}`;
+        }
+        if (!toolsBeforeWorkflow) toolsBeforeWorkflow = pi.getActiveTools();
+        const initSynced = await syncHubPhase(ctx, {
+          task_id: state.artifacts.taskId,
+          project_root: process.cwd(),
+          phase: "discuss",
+          domain: state.domain,
+          expected_phase: "idle",
+          title: params.title.slice(0, 40),
+          session_id: ctx.sessionManager.getSessionId(),
+        });
+        if (!initSynced) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "任务初始化失败（Hub 阶段同步未成功），无法进入需求确认。可稍后重试。",
+              },
+            ],
+            terminate: false,
+          };
+        }
+        setPhase("discuss", ctx);
+      }
       const revision =
         state.candidate?.kind === "requirements"
           ? state.candidate.revision + 1
@@ -703,12 +777,20 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       state.revisionInstruction = undefined;
       persist();
       // #2（补丁2/R1）：候选全文改由 agent 在调用本工具前于回复中总结呈现（Hub 会丢弃 role=custom 展示消息），此处只弹简短确认卡
+      // 用户裁决（2026-08-31）：任务模式（/jishu-task）必须走流程规划（两选）；
+      // 非任务模式（普通会话触发）多一个「需求已明确，直接实施」选项。
+      const options =
+        state.taskMode === false
+          ? ["进入流程规划", "需求已明确，直接实施", "继续补充需求"]
+          : ["进入流程规划", "继续补充需求"];
       const choice = await ctx.ui.select(
         `请查阅上方候选需求（第 ${revision} 版）是否已满足、是否还有补充。`,
-        ["进入流程规划", "继续补充需求"],
+        options,
       );
       if (choice === "进入流程规划") {
         await acceptRequirements(candidate, ctx);
+      } else if (choice === "需求已明确，直接实施") {
+        await implementDirect(candidate, ctx);
       } else if (choice !== undefined) {
         // R5：choice 可能是按钮「继续补充需求」，也可能是用户自由输入的补充内容。
         // 后者必须把用户原话带给 agent（基线行为），否则用户的补充被丢弃、agent 只收到套话。
@@ -721,7 +803,9 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       }
       // I1：terminate/话术以 accept 是否真正成功为准（acceptRequirements 内 Hub 同步失败会
       // early-return 且不置 enteringPhase）。避免 Hub 失败时"当轮停 + 显示已进入"却无人推进的静默卡死。
-      const advanced = choice === "进入流程规划" && state.enteringPhase === "plan";
+      const advanced =
+        (choice === "进入流程规划" && state.enteringPhase === "plan") ||
+        choice === "需求已明确，直接实施";
       // R6：修订分支（已登记 pendingRevise）也当轮停，交空闲 agent_end 单一驱动修订轮。
       const stopNow = advanced || state.pendingRevise !== undefined;
       return {
@@ -733,11 +817,13 @@ export default function conductorExtension(pi: ExtensionAPI): void {
                 ? advanced
                   ? "候选需求已确认，进入流程规划。"
                   : "需求阶段同步未成功，请稍后重新确认。"
-                : "已收到补充，正在按你的意见修订需求。",
+                : choice === "需求已明确，直接实施"
+                  ? "需求已确认，跳过流程规划，直接实施。"
+                  : "已收到补充，正在按你的意见修订需求。",
           },
         ],
         details: { candidateId: candidate.id, revision },
-        // R3/R6：进入规划 或 修订 → 当轮停，交空闲 agent_end 驱动（避免流式态 followUp 错乱）
+        // R3/R6：进入规划 / 直接实施 / 修订 → 当轮停，交空闲 agent_end 驱动（避免流式态 followUp 错乱）
         terminate: stopNow,
       };
     },
@@ -990,6 +1076,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         return;
       }
       state.domain = domainArg;
+      state.taskMode = true; // 用户裁决（2026-08-31）：任务模式必须走完整流程规划
       state.goal = goal;
       state.artifacts.taskId = `task_${Date.now().toString(36)}`;
       if (!toolsBeforeWorkflow) toolsBeforeWorkflow = pi.getActiveTools();

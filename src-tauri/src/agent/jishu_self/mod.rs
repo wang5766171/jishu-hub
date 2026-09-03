@@ -5,6 +5,7 @@ pub(crate) mod pi_model;
 pub(crate) mod pi_models_config;
 pub(crate) mod pi_runtime;
 pub(crate) mod pi_session;
+pub mod model_picker;
 mod probe;
 mod store;
 
@@ -155,10 +156,19 @@ impl AgentManifest for JishuSelfAgent {
             | AgentCapabilities::TASK_SUPERVISION
             // v0.7.4 需求1 B4：常规会话删除（Pi 会话 JSONL + 交互 sidecar）。
             | AgentCapabilities::SESSION_DELETE
+            // v0.8.0 需求1 A5：会话分支（Pi 原生 clone RPC，从当前末尾复制整棵
+            // 会话树；runtime 侧 AcpCommand::ForkSession 实现）。
+            | AgentCapabilities::SESSION_FORK
             // v0.7.4 需求1 A3：手动 + 自动上下文压缩（Pi 原生 compact RPC）。
             | AgentCapabilities::CONTEXT_COMPACT
             // v0.7.4 需求3 M2：任务工作模式（任务图编排会话）。
             | AgentCapabilities::TASK_MODE
+            // v0.8.0 需求1 P-2：逐次工具审批——fork 内置 jishu-tool-approval
+            // 扩展经 beforeToolCall 阻塞/放行（APPROVAL_REQUEST 声明审批事件
+            // 通道；PRE_EXECUTION_INTERCEPTION 自 v0.7.x 定义以来首次被真实
+            // 声明）。
+            | AgentCapabilities::APPROVAL_REQUEST
+            | AgentCapabilities::PRE_EXECUTION_INTERCEPTION
     }
 
     fn is_builtin(&self) -> bool {
@@ -371,8 +381,16 @@ impl ConfigAdapter for JishuSelfAgent {
     fn permission_modes(&self) -> Option<(Vec<String>, crate::agent::PermissionModeProvider)> {
         // P-1：工具模式由 Hub 全局管理；readonly 在 PiRpc spawn 时落 --tools 白名单
         // （read,grep,find,ls —— pi 内置工具全集去掉 bash/edit/write）。
+        // v0.8.0 需求1 P-2 收尾（用户裁决融入会话工具模式）：新增 full-approve
+        // 档 = full 工具集 + 逐次审批（toolApproval=smart 写 Pi settings），
+        // 与完整/只读同列选择；full 档写 toolApproval=off（原行为）。
         Some((
-            vec!["full".to_string(), "readonly".to_string()],
+            vec![
+                "full".to_string(),
+                "full-approve".to_string(),
+                "smart-approve".to_string(),
+                "readonly".to_string(),
+            ],
             crate::agent::PermissionModeProvider::HubToolMode,
         ))
     }
@@ -408,7 +426,7 @@ impl ConfigAdapter for JishuSelfAgent {
                     .into(),
                 config: serde_json::json!({
                     "defaultThinkingLevel": "high",
-                    "compaction": { "enabled": true, "reserveTokens": 16384, "keepRecentTokens": 20000 },
+                    "compaction": { "enabled": true, "thresholdPercent": 90, "keepRecentTokens": 20000 },
                     "defaultTools": ["read", "bash", "edit", "write"],
                     "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }
                 }),
@@ -424,7 +442,7 @@ impl ConfigAdapter for JishuSelfAgent {
                         .into(),
                 config: serde_json::json!({
                     "defaultThinkingLevel": "max",
-                    "compaction": { "enabled": true, "reserveTokens": 32768, "keepRecentTokens": 40000 },
+                    "compaction": { "enabled": true, "thresholdPercent": 85, "keepRecentTokens": 40000 },
                     "defaultTools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
                     "retry": { "enabled": true, "maxRetries": 5, "baseDelayMs": 2000 }
                 }),
@@ -439,7 +457,7 @@ impl ConfigAdapter for JishuSelfAgent {
                     .into(),
                 config: serde_json::json!({
                     "defaultThinkingLevel": "low",
-                    "compaction": { "enabled": true, "reserveTokens": 16384, "keepRecentTokens": 20000 },
+                    "compaction": { "enabled": true, "thresholdPercent": 90, "keepRecentTokens": 20000 },
                     "defaultTools": ["read", "bash", "edit", "write"],
                     "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }
                 }),
@@ -447,6 +465,25 @@ impl ConfigAdapter for JishuSelfAgent {
             },
         ]
     }
+    fn as_raw_config(&self) -> Option<&dyn crate::agent::config_roles::RawConfigStore> {
+        Some(self)
+    }
+
+    fn as_backup_store(&self) -> Option<&dyn crate::agent::config_roles::ConfigBackupStore> {
+        Some(self)
+    }
+
+    fn as_model_store(&self) -> Option<&dyn crate::agent::config_roles::ModelStore> {
+        Some(self)
+    }
+
+    fn as_mcp(&self) -> Option<&dyn crate::agent::config_roles::McpIntegration> {
+        Some(self)
+    }
+
+}
+
+impl crate::agent::config_roles::RawConfigStore for JishuSelfAgent {
     fn config_format(&self) -> Option<String> {
         Some("json".to_string())
     }
@@ -459,6 +496,9 @@ impl ConfigAdapter for JishuSelfAgent {
         config::save_raw_jishu_config(content).map_err(|e| e.to_string())
     }
 
+}
+
+impl crate::agent::config_roles::ConfigBackupStore for JishuSelfAgent {
     fn list_backups(&self) -> Result<Vec<crate::config::BackupEntry>, String> {
         config::list_jishu_backups().map_err(|e| e.to_string())
     }
@@ -475,6 +515,9 @@ impl ConfigAdapter for JishuSelfAgent {
         config::import_jishu_config(path).map_err(|e| e.to_string())
     }
 
+}
+
+impl crate::agent::config_roles::ModelStore for JishuSelfAgent {
     fn load_model_store(&self) -> Result<serde_json::Value, String> {
         let config = pi_models_config::load()?;
         serde_json::to_value(&config).map_err(|e| format!("Cannot serialize models config: {e}"))
@@ -502,10 +545,9 @@ impl ConfigAdapter for JishuSelfAgent {
 
     // ── MCP adapter methods ──
 
-    fn supports_mcp(&self) -> bool {
-        true
-    }
+}
 
+impl crate::agent::config_roles::McpIntegration for JishuSelfAgent {
     fn check_mcp(&self) -> Result<serde_json::Value, String> {
         // Auto-migrate on check (idempotent).
         self.migrate_mcp_if_needed();
@@ -620,9 +662,14 @@ impl TransportAdapter for JishuSelfAgent {
         // --tools 白名单（内置全集 read/bash/edit/write/grep/find/ls 去掉
         // bash/edit/write）。工具名与语义是 Pi 私有知识，属于 adapter 职责；
         // 对此后新 spawn 的进程生效（Pi 每条消息一个进程）。
-        if crate::hub::load_agent_tool_mode("jishu-self").as_deref() == Some("readonly") {
-            args.push("--tools".to_string());
-            args.push("read,grep,find,ls".to_string());
+        match crate::hub::load_agent_tool_mode("jishu-self").as_deref() {
+            Some("readonly") => {
+                args.push("--tools".to_string());
+                args.push("read,grep,find,ls".to_string());
+            }
+            // full-approve 与 full 工具集相同，差异只在 toolApproval 审批
+            // 开关（set_agent_tool_mode 已联动写入 Pi settings）。
+            _ => {}
         }
         // Resume an existing Pi session when a real (non-transient) session id
         // is provided. Without this, Pi creates a fresh session on every process

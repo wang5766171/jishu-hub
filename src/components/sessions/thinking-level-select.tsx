@@ -67,7 +67,9 @@ export function ThinkingLevelSelect({
         )}
       >
         <Brain className="h-3.5 w-3.5" />
-        <span>{current ? thinkingLevelLabel(t, current) : t("sessions.thinkingLevel.unset")}</span>
+        {/* v0.8.0 需求4 补充：窄容器（输入行 <560px）下隐藏文字标签，仅留
+            脑图标 + 下拉箭头；@container 由 ChatInput 底部行声明。 */}
+        <span className="@max-[559px]:hidden">{current ? thinkingLevelLabel(t, current) : t("sessions.thinkingLevel.unset")}</span>
         <ChevronDown className={cn("h-3 w-3 shrink-0 transition-transform", open && "rotate-180")} />
       </button>
       {open && (

@@ -982,7 +982,18 @@ where
             last_ai_title = Some(title);
         }
         // Parse conversation messages
-        if let Some(msg) = parse_message(line) {
+        if let Some(mut msg) = parse_message(line) {
+            // v0.8.1 需求7/10：用户消息剥工具插件注入块——agent 原生 JSONL 记录的
+            // 是 compose_tool_message 前缀后的完整 prompt（<jishu-tool-plugins>…），
+            // 展示层统一还原为用户原文（[JISHU-TOOLS:…] 头保留给前端渲染 pill）。
+            // 与 commands::sessions::get_session_messages 的回放剥离同一纪律。
+            if msg.role == "user" {
+                for block in &mut msg.content {
+                    if let ContentBlock::Text { text } = block {
+                        *text = crate::agent::tool_plugin::strip_tool_block(text);
+                    }
+                }
+            }
             // Capture first user message text for smart summary fallback
             if msg.role == "user" && first_user_text.is_none() {
                 for block in &msg.content {
@@ -1043,7 +1054,11 @@ where
         .and_then(|m| m.timestamp)
         .map(|ts| DateTime::from_timestamp_millis(ts).unwrap_or_default());
 
-    let display_name = last_ai_title.or_else(|| first_user_text.map(|t| smart_summary(&t)));
+    // v0.8.1 需求10：会话列表名清洗工具标记（注入块 + [JISHU-TOOLS] 头）——
+    // 标题必须呈现用户真实问题，不得泄漏任何插件标记（§16.3 剥离契约）。
+    let display_name = last_ai_title
+        .map(|t| crate::agent::tool_plugin::strip_all_markers(&t))
+        .or_else(|| first_user_text.map(|t| smart_summary(&crate::agent::tool_plugin::strip_all_markers(&t))));
 
     let project_path = path
         .parent()

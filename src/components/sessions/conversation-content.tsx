@@ -109,6 +109,15 @@ export function PhaseDivider({ phase, title }: { phase: string; title: string })
           dot: "bg-emerald-500",
           shadow: "colorful:shadow-sm colorful:shadow-emerald-100/50 dark:shadow-none"
         };
+      // v0.8.0 需求10：上下文压缩分隔线（石板灰，与任务阶段区分）。
+      case "compaction":
+        return {
+          bg: "bg-muted/80 colorful:bg-slate-100/80 dark:bg-slate-900/40",
+          text: "text-muted-foreground colorful:text-slate-600 dark:text-slate-400",
+          border: "border-border colorful:border-slate-300/60 dark:border-slate-800/60",
+          dot: "bg-slate-500",
+          shadow: "colorful:shadow-sm colorful:shadow-slate-200/50 dark:shadow-none"
+        };
       default:
         return {
           bg: "bg-muted/80",

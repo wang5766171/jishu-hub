@@ -46,9 +46,20 @@ pub enum AcpCommand {
         instructions: Option<String>,
         response: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
     },
-    /// Toggle the agent's auto-compaction (v0.7.4 需求1 A3). Pi RPC native
-    /// `set_auto_compaction`; fire-and-forget.
-    SetAutoCompaction(bool),
+    /// Toggle/adjust the agent's auto-compaction (v0.7.4 需求1 A3；v0.8.0
+    /// 需求9 收尾：两字段均可选——只推送出现的字段，避免热推阈值时误覆盖
+    /// enabled 开关）。Pi RPC native `set_auto_compaction`; fire-and-forget.
+    SetAutoCompaction {
+        enabled: Option<bool>,
+        threshold_percent: Option<u32>,
+    },
+    /// Fork the live session at its current end (v0.8.0 需求1 A5). Only the
+    /// Pi RPC runtime implements this (native `clone` RPC: copies the session
+    /// tree to a branch file and rebinds the process to it); the oneshot
+    /// resolves with `{ "new_session_id": ... }` once the forked id is known.
+    ForkSession {
+        response: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+    },
     Cancel,
     /// Respond to a structured interaction answer. Routed by the connection loop
     /// to the transport's mid-turn write-back channel:
@@ -79,6 +90,12 @@ pub struct AcpControl {
     pub(crate) tx: tokio::sync::mpsc::Sender<AcpCommand>,
     pub(crate) acp_session_id: Arc<std::sync::Mutex<Option<String>>>,
     pub(crate) supports_interaction_mid_turn: Arc<AtomicBool>,
+    /// v0.8.0 需求7：该会话是否有进行中的回合（prompt/turn-start 已发出、
+    /// TurnComplete 尚未到达）。连接循环每轮头部与 LoopState 同步，循环退出
+    /// 时清零。GUI 的 agent-event 监听随 chat 页卸载移除，卸载期间结束的
+    /// 回合其 turn_complete 无法送达前端（streamStore 永远停在 isStreaming），
+    /// 前端重挂载时经 `chat_turn_active` 以此标志对账。
+    pub(crate) turn_active: Arc<AtomicBool>,
 }
 
 impl AcpControl {
@@ -98,6 +115,12 @@ impl AcpControl {
 
     pub fn supports_interaction_mid_turn(&self) -> bool {
         self.supports_interaction_mid_turn.load(Ordering::Relaxed)
+    }
+
+    /// 回合是否进行中。无 `AcpControl` 的 CLI 会话（进程即回合，回合结束
+    /// 进程即退出）由 `chat_turn_active` 以「进程条目存在」等价判定。
+    pub fn turn_active(&self) -> bool {
+        self.turn_active.load(Ordering::Relaxed)
     }
 
     pub async fn send_cancel(&self) {
@@ -140,11 +163,32 @@ impl AcpControl {
     }
 
     /// Toggle auto-compaction for the session (v0.7.4 需求1 A3).
-    pub async fn set_auto_compaction(&self, enabled: bool) -> Result<(), String> {
+    pub async fn set_auto_compaction(
+        &self,
+        enabled: Option<bool>,
+        threshold_percent: Option<u32>,
+    ) -> Result<(), String> {
         self.tx
-            .send(AcpCommand::SetAutoCompaction(enabled))
+            .send(AcpCommand::SetAutoCompaction {
+                enabled,
+                threshold_percent,
+            })
             .await
             .map_err(|_| "ACP connection closed".to_string())
+    }
+
+    /// Fork the live session at its current end (v0.8.0 需求1 A5). Resolves
+    /// with `{ "new_session_id": ... }` once the Pi RPC runtime has cloned
+    /// the session tree and learned the branch id.
+    pub async fn fork_session(&self) -> Result<serde_json::Value, String> {
+        let (response, receiver) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(AcpCommand::ForkSession { response })
+            .await
+            .map_err(|_| "ACP connection closed".to_string())?;
+        receiver
+            .await
+            .map_err(|_| "ACP fork response channel closed".to_string())?
     }
 
     /// Respond to a structured interaction answer (PiRpc `extension_ui`, or ACP
@@ -294,10 +338,40 @@ pub fn spawn_acp_session(
     app: tauri::AppHandle,
     agent_id: String,
     pending_session_id: String,
+    child: tokio::process::Child,
+    project_path: String,
+    requested_session_id: Option<String>,
+    first_message: String,
+    on_finish: impl FnOnce() + Send + 'static,
+    on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
+) -> AcpControl {
+    let policy = crate::agent::policy::for_interactive_session(&pending_session_id);
+    spawn_acp_session_with_policy(
+        app,
+        agent_id,
+        pending_session_id,
+        child,
+        project_path,
+        requested_session_id,
+        first_message,
+        policy,
+        on_finish,
+        on_session_resolved,
+    )
+}
+
+/// v0.8.0 需求2 Phase 2 挂载点 1：调用方按通道装配策略链——chat 用
+/// for_interactive_session / 无头用 for_headless_session。
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_acp_session_with_policy(
+    app: tauri::AppHandle,
+    agent_id: String,
+    pending_session_id: String,
     mut child: tokio::process::Child,
     project_path: String,
     requested_session_id: Option<String>,
     first_message: String,
+    policy: crate::agent::policy::PolicyChain,
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
 ) -> AcpControl {
@@ -334,14 +408,18 @@ pub fn spawn_acp_session(
         tx: cmd_tx,
         acp_session_id: acp_session_id.clone(),
         supports_interaction_mid_turn: Arc::new(AtomicBool::new(true)),
+        // 首回合 prompt 在连接初始化后立即发出，构造时即为 true。
+        turn_active: Arc::new(AtomicBool::new(true)),
     };
     let control_clone = control.clone();
+    let turn_active_for_loop = control.turn_active.clone();
+    let turn_active_for_exit = control.turn_active.clone();
 
     tauri::async_runtime::spawn(async move {
         let result = acp_connection_loop(
             emit,
             pending_session_id.clone(),
-            stdin_arc,
+            stdin_arc.clone(),
             acp_session_id,
             stdout_rx,
             project_path,
@@ -349,6 +427,8 @@ pub fn spawn_acp_session(
             stderr_buf,
             cmd_rx,
             first_message,
+            policy,
+            turn_active_for_loop,
             &on_session_resolved,
         )
         .await;
@@ -386,6 +466,9 @@ pub fn spawn_acp_session(
             }
         }
 
+        // v0.8.0 需求7：循环已退出（正常或出错），回合必然不再进行。
+        turn_active_for_exit.store(false, Ordering::Relaxed);
+
         on_finish();
     });
 
@@ -407,6 +490,8 @@ async fn acp_connection_loop(
     stderr_buf: Arc<TokioMutex<String>>,
     mut command_rx: tokio::sync::mpsc::Receiver<AcpCommand>,
     first_message: String,
+    policy: crate::agent::policy::PolicyChain,
+    turn_active: Arc<AtomicBool>,
     on_session_resolved: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<(), String> {
     let mut writer = AcpWriter::new(stdin_arc);
@@ -528,6 +613,9 @@ async fn acp_connection_loop(
     let mut last_ask_user_prompts: Option<Vec<String>> = None;
 
     loop {
+        // v0.8.0 需求7：每轮头部把回合真值同步到 AcpControl 共享标志——
+        // 状态迁移都发生在 select 分支内，此处统一收口，避免逐点翻转移漏。
+        turn_active.store(!matches!(state, LoopState::Idle), Ordering::Relaxed);
         let cmd_future = command_rx.recv();
         let idle_deadline = tokio::time::Instant::now() + IDLE_TIMEOUT;
 
@@ -637,8 +725,21 @@ async fn acp_connection_loop(
                         ));
                         false
                     }
-                    Some(AcpCommand::SetAutoCompaction(enabled)) => {
-                        log::warn!("ACP runtime received SetAutoCompaction({enabled}) — not supported, dropping");
+                    Some(AcpCommand::SetAutoCompaction {
+                        enabled,
+                        threshold_percent,
+                    }) => {
+                        log::warn!(
+                            "ACP runtime received SetAutoCompaction(enabled={enabled:?}, threshold={threshold_percent:?}) — not supported, dropping"
+                        );
+                        false
+                    }
+                    Some(AcpCommand::ForkSession { response }) => {
+                        // ACP 协议无会话分支概念（Pi JSONL 树原生能力）；
+                        // IPC 层已按 SESSION_FORK capability 门控，此分支仅兜底。
+                        let _ = response.send(Err(
+                            "Session fork is not supported by this agent".to_string(),
+                        ));
                         false
                     }
                     Some(AcpCommand::RespondToInput {
@@ -957,22 +1058,107 @@ async fn acp_connection_loop(
                                 continue;
                             };
                             let params = msg.get("params").cloned().unwrap_or_default();
-                            let request_id = permission_request_key(&rpc_id);
-                            pending_permissions.insert(
-                                request_id.clone(),
-                                PendingPermission {
-                                    rpc_id,
-                                    allow_option_id: permission_option_id(&params, true),
-                                    reject_option_id: permission_option_id(&params, false),
-                                },
-                            );
-                            buf.push(NormalizedEvent::ApprovalRequest {
-                                request_id,
-                                approval_kind: crate::agent::normalized::ApprovalKind::Other,
-                                payload: params,
-                            });
-                            flush_buf(&emit, &session_id, &mut buf);
-                            last_flush = std::time::Instant::now();
+                            // v0.8.0 需求2 Phase 2 挂载点 1：审批到达先过策略
+                            // 链——Allow/Deny 直接回写不打扰用户；Delegate 走
+                            // 原有弹 UI 流程。动作标识优先取 params.content.type
+                            //（协议的动作描述）；options[].kind 是选项语义
+                            //（allow_once/reject 等），仅作无 content 时的兜底。
+                            let tool_hint = params
+                                .get("content")
+                                .and_then(|c| c.get("type"))
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string)
+                                .unwrap_or_else(|| {
+                                    params
+                                        .get("options")
+                                        .and_then(serde_json::Value::as_array)
+                                        .and_then(|opts| opts.first())
+                                        .and_then(|o| o.get("kind"))
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_string()
+                                });
+                            let approval_ctx = crate::agent::policy::ApprovalContext {
+                                channel: crate::agent::policy::DecisionChannel::Interactive,
+                                kind: crate::agent::policy::ApprovalKindWire::Other,
+                                session_id: session_id.clone(),
+                                tool: Some(tool_hint),
+                                payload: params.clone(),
+                                payload_declares: false,
+                                high_risk: false,
+                            };
+                            match policy.evaluate(&approval_ctx) {
+                                crate::agent::policy::ChainOutcome::Allow(policy_id) => {
+                                    if let Some(option_id) = permission_option_id(&params, true) {
+                                        let writer_stdin = writer.stdin.clone();
+                                        let mut stdin_guard = writer_stdin.lock().await;
+                                        let _ = crate::acp_runtime::write_permission_response(
+                                            &mut *stdin_guard,
+                                            &rpc_id,
+                                            &option_id,
+                                        )
+                                        .await;
+                                    }
+                                    log::info!(
+                                        "ACP permission auto-allowed by policy {policy_id} (session {session_id})"
+                                    );
+                                }
+                                crate::agent::policy::ChainOutcome::Deny(policy_id) => {
+                                    if let Some(option_id) = permission_option_id(&params, false) {
+                                        let writer_stdin = writer.stdin.clone();
+                                        let mut stdin_guard = writer_stdin.lock().await;
+                                        let _ = crate::acp_runtime::write_permission_response(
+                                            &mut *stdin_guard,
+                                            &rpc_id,
+                                            &option_id,
+                                        )
+                                        .await;
+                                    }
+                                    log::info!(
+                                        "ACP permission auto-denied by policy {policy_id} (session {session_id})"
+                                    );
+                                }
+                                crate::agent::policy::ChainOutcome::Delegate => {
+                                    let request_id = permission_request_key(&rpc_id);
+                                    // 到达上下文按 request_id 登记——「始终允许」
+                                    // 取回同形状回写 Once 记忆（见 chat.rs）。
+                                    crate::agent::policy::register_arrival_context(
+                                        &request_id,
+                                        &approval_ctx,
+                                    );
+                                    pending_permissions.insert(
+                                        request_id.clone(),
+                                        PendingPermission {
+                                            rpc_id,
+                                            allow_option_id: permission_option_id(&params, true),
+                                            reject_option_id: permission_option_id(&params, false),
+                                        },
+                                    );
+                                    buf.push(NormalizedEvent::ApprovalRequest {
+                                        request_id,
+                                        // 审批类型取 params.content.type（ACP 协议的
+                                        // 动作描述：command=命令执行、diff=文件写入）。
+                                        // 注意 options[].kind 是选项语义（allow_once/
+                                        // reject 等），不是动作类型，不能作分类源。
+                                        approval_kind: match params
+                                            .get("content")
+                                            .and_then(|c| c.get("type"))
+                                            .and_then(serde_json::Value::as_str)
+                                        {
+                                            Some("command") => {
+                                                crate::agent::normalized::ApprovalKind::Command
+                                            }
+                                            Some("diff") => {
+                                                crate::agent::normalized::ApprovalKind::FileWrite
+                                            }
+                                            _ => crate::agent::normalized::ApprovalKind::Other,
+                                        },
+                                        payload: params,
+                                    });
+                                    flush_buf(&emit, &session_id, &mut buf);
+                                    last_flush = std::time::Instant::now();
+                                }
+                            }
                         } else if msg.get("method").and_then(|v| v.as_str())
                             == Some("elicitation/create")
                         {

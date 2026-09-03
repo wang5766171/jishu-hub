@@ -637,15 +637,19 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
                     .get("timestamp")
                     .and_then(|v| v.as_str())
                     .and_then(parse_rfc3339_millis);
-                if let Some(message) = parse_pi_message(value.get("message")?, entry_timestamp) {
-                    if display_name.is_none() && message.role == "user" {
-                        // 剥离 [JISHU-PROMT:] 系统内部契约标记后再取摘要；
-                        // 剥离后为空（纯系统提示词）则跳过，display_name 继续找下一条 user 消息。
-                        display_name = first_text(&message)
-                            .map(|t| strip_jishu_promt(&t))
-                            .filter(|t| !t.trim().is_empty())
-                            .map(smart_summary);
-                    }
+                    if let Some(message) = parse_pi_message(value.get("message")?, entry_timestamp) {
+                        if display_name.is_none() && message.role == "user" {
+                            // 剥离 [JISHU-PROMT:] 系统内部契约标记后再取摘要；
+                            // 剥离后为空（纯系统提示词）则跳过，display_name 继续找下一条 user 消息。
+                            // v0.8.1 需求10：同时剥工具插件标记（注入块 +
+                            // [JISHU-TOOLS:…] 头）——pi JSONL 记录的是 compose 后
+                            // 的完整 prompt，标题必须呈现用户真实问题（§16.3 契约）。
+                            display_name = first_text(&message)
+                                .map(|t| strip_jishu_promt(&t))
+                                .map(|t| crate::agent::tool_plugin::strip_all_markers(&t))
+                                .filter(|t| !t.trim().is_empty())
+                                .map(smart_summary);
+                        }
                     let is_launch = is_task_launch_message(&message);
                     messages.push(message);
                     // 任务启动消息之后插入独立「需求讨论」分隔线——位于用户消息之下，
@@ -692,6 +696,23 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
                         timestamp: entry_timestamp,
                     });
                 }
+            }
+            // v0.8.0 需求10：compaction 条目 → 上下文压缩分隔线（实时链由
+            // pi_rpc_runtime 的 compaction_end 下发同款 phase_divider，此处
+            // 保证重载后仍可见；摘要正文暂不展示）。
+            Some("compaction") => {
+                let entry_timestamp = value
+                    .get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .and_then(parse_rfc3339_millis);
+                messages.push(crate::session::Message {
+                    role: "assistant".to_string(),
+                    content: vec![crate::session::ContentBlock::PhaseDivider {
+                        phase: "compaction".to_string(),
+                        title: "上下文已压缩".to_string(),
+                    }],
+                    timestamp: entry_timestamp,
+                });
             }
             Some("session_info") => {
                 display_name = value
