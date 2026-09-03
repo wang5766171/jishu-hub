@@ -61,22 +61,6 @@ pub(crate) fn plugin_list(state: tauri::State<'_, Mutex<AppState>>) -> PluginLis
     }
 }
 
-/// MCP 管理面三命令（v0.9.0 需求11：页面能力对齐 CLI）。
-#[tauri::command]
-pub(crate) fn mcp_status() -> agent::mcp_inject::McpStatusReport {
-    agent::mcp_inject::mcp_status()
-}
-
-#[tauri::command]
-pub(crate) fn mcp_inject_all() -> agent::mcp_inject::SyncReport {
-    agent::mcp_inject::force_inject_all()
-}
-
-#[tauri::command]
-pub(crate) fn mcp_remove_all() -> agent::mcp_inject::SyncReport {
-    agent::mcp_inject::remove_all_entries()
-}
-
 /// 锁内热重建 registry（启停/删除/重载/创建的生效通道）：Arc 替换原子完成，
 /// 在途命令用旧实例完成请求（最终一致）；运行中会话进程表在 ChatState
 /// 不受影响。重建后保留旧健康缓存并广播 `plugins-changed`——前端

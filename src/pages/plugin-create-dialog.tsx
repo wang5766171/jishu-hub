@@ -29,9 +29,6 @@ interface CreateProps {
   /** 编辑模式（v0.8.1 GUI 反馈：新增插件无法编辑）：传入插件 id 时对话框
    * 预填其 manifest，id 锁定，提交走 plugin_update 覆盖写回。 */
   editPluginId?: string | null;
-  /** v0.9.0 需求12：打开时预选的模版 key（非编辑模式生效；MCP 卡片
-   * 「添加 MCP 插件」直达 tool-mcp 模版）。 */
-  initialTemplate?: string | null;
 }
 
 /** 表单模型（提交时转换为 manifest JSON wire 结构）。 */
@@ -553,7 +550,7 @@ function parseManifest(json: Record<string, unknown>): {
   return { form, preserved };
 }
 
-export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId, initialTemplate }: CreateProps) {
+export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId }: CreateProps) {
   const { t } = useTranslation();
   const { alert: alertDialog, dialogNode } = useConfirmDialog();
   const [templateKey, setTemplateKey] = useState("blank");
@@ -563,17 +560,6 @@ export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isEdit = !!editPluginId;
-
-  // v0.9.0 需求12：非编辑打开且指定 initialTemplate → 预选该模版。
-  useEffect(() => {
-    if (!open || editPluginId || !initialTemplate) return;
-    const tp = templates.find((x) => x.key === initialTemplate);
-    if (tp) {
-      setTemplateKey(tp.key);
-      setForm({ ...tp.form });
-      setError(null);
-    }
-  }, [open, editPluginId, initialTemplate]);
 
   // 编辑模式：打开时拉取现有 manifest 预填（失败则表单保持原样并提示）。
   useEffect(() => {

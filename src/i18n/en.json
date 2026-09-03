@@ -343,13 +343,6 @@
     "panelRun": "Run",
     "panelRunning": "Running…",
     "panelDescription": "Read-only command panel declared by the plugin. Click to run and view output.",
-    "mcpTitle": "MCP Service",
-    "mcpInject": "Inject",
-    "mcpRemove": "Remove",
-    "mcpInjected": "injected",
-    "mcpProtected": "foreign entry",
-    "mcpNone": "not injected",
-    "mcpAdd": "Add MCP plugin",
     "tplToolMcp": "MCP tool",
     "mcpSection": "MCP server declaration",
     "fMcpCommand": "Command",
@@ -359,11 +352,7 @@
     "hMcpArgs": "Space separated.",
     "hMcpEnv": "One KEY=VALUE per line.",
     "hToolOptionalWithMcp": "With an MCP server declared, description/usage can be empty (pure MCP tool plugin).",
-    "mcpChipNone": "MCP · none",
-    "mcpChipOk": "MCP · synced 4/4",
-    "mcpChipOff": "MCP · not injected",
-    "mcpChipPartial": "MCP · {{n}}/4",
-    "mcpChipTitle": "MCP service: aggregation entry status of the four agents"
+    "unifiedNote": "MCP, skills, panels and other capabilities are managed uniformly through the plugin mechanism"
   },
   "config": {
     "title": "Configuration",

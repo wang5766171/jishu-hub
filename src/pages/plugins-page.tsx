@@ -54,60 +54,12 @@ export function PluginsPage() {
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [installingIds, setInstallingIds] = useState<Set<string>>(new Set());
   const [createOpen, setCreateOpen] = useState(false);
-  // v0.9.0 需求12：MCP 卡片直达 tool-mcp 模版。
-  const [createInitialTemplate, setCreateInitialTemplate] = useState<string | null>(null);
   // 编辑模式目标（GUI 反馈：新增插件无法编辑）：manifest 插件可改表单覆盖写回。
   const [editPluginId, setEditPluginId] = useState<string | null>(null);
   // v0.9.0 需求8：声明式面板 Dialog 状态。
   const [panelTarget, setPanelTarget] = useState<PluginDescriptor | null>(null);
   const [panelOutputs, setPanelOutputs] = useState<Record<number, string>>({});
   const [panelRunning, setPanelRunning] = useState<number | null>(null);
-  // v0.9.0 需求11：MCP 管理面（页面能力对齐 CLI——status/inject/remove）。
-  const [mcpStatus, setMcpStatus] = useState<{
-    plugins: Array<{ id: string; command: string; args: string[] }>;
-    cli_path: string | null;
-    claude_code: string;
-    codex: string;
-    opencode: string;
-    jishu_self: string;
-  } | null>(null);
-  const [mcpBusy, setMcpBusy] = useState(false);
-  const [mcpMessage, setMcpMessage] = useState("");
-  const [mcpDetailOpen, setMcpDetailOpen] = useState(false);
-  const refreshMcpStatus = useCallback(async () => {
-    try {
-      setMcpStatus(await invokeCommand("mcp_status"));
-    } catch (err) {
-      setMcpMessage(`状态加载失败：${err}`);
-    }
-  }, []);
-  const runMcpAction = useCallback(
-    async (action: "mcp_inject_all" | "mcp_remove_all") => {
-      setMcpBusy(true);
-      setMcpMessage("…");
-      try {
-        const r = await invokeCommand<{
-          claude_code: string;
-          codex: string;
-          opencode: string;
-          jishu_self: string;
-        }>(action);
-        setMcpMessage(
-          `claude-code: ${r.claude_code} · codex: ${r.codex} · opencode: ${r.opencode} · jishu-self: ${r.jishu_self}`,
-        );
-        await refreshMcpStatus();
-      } catch (err) {
-        setMcpMessage(`执行失败：${err}`);
-      } finally {
-        setMcpBusy(false);
-      }
-    },
-    [refreshMcpStatus],
-  );
-  useEffect(() => {
-    void refreshMcpStatus();
-  }, [refreshMcpStatus, result]);
-
   const runPanelItem = useCallback(async (pluginId: string, index: number) => {
     setPanelRunning(index);
     setPanelOutputs((prev) => ({ ...prev, [index]: "…" }));
@@ -258,16 +210,6 @@ export function PluginsPage() {
   );
 
   const tr = (key: string, fallback: string) => (t(key) === key ? fallback : t(key));
-  // 页头汇总：无插件 / 未注入 / n/4（tr 键随芯片渲染语言自适应）。
-  const mcpSummary = (() => {
-    if (!mcpStatus) return "MCP …";
-    const states = [mcpStatus.claude_code, mcpStatus.codex, mcpStatus.opencode, mcpStatus.jishu_self];
-    const injected = states.filter((v) => v === "injected").length;
-    if (mcpStatus.plugins.length === 0) return tr("plugins.mcpChipNone", "MCP · 无插件");
-    if (injected === 4) return tr("plugins.mcpChipOk", "MCP · 已同步 4/4");
-    if (injected === 0) return tr("plugins.mcpChipOff", "MCP · 未注入");
-    return tr("plugins.mcpChipPartial", "MCP · {{n}}/4").replace("{{n}}", String(injected));
-  })();
 
 
   return (
@@ -281,30 +223,22 @@ export function PluginsPage() {
         }}
         onCreated={refresh}
         editPluginId={editPluginId}
-      initialTemplate={createInitialTemplate}
-         />
+      />
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold">{tr("plugins.title", "插件管理")}</h2>
           <p className="text-xs text-muted-foreground mt-1">{tr("plugins.desc", "")}</p>
+          {/* v0.9.0 需求11/12 终版裁决：页外零 MCP 入口——MCP/skills 等一切能力
+              经插件机制统一管控（创建走「新建插件」；四家注入由启停/启动自动同步）。 */}
+          <p className="text-[11px] text-muted-foreground/70 mt-0.5">
+            {tr("plugins.unifiedNote", "MCP、skills、面板等能力统一通过插件机制管理")}
+          </p>
         </div>
         <div className="flex items-center gap-2">
-          {/* v0.9.0 需求11/12 交互重构：MCP 管理收编为插件体系分支——页头
-              汇总芯片（点击展开单行详情条），独立大卡片移除（用户裁决：
-              整体协调性）。 */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setMcpDetailOpen((v) => !v)}
-            title={tr("plugins.mcpChipTitle", "MCP 服务：四家智能体聚合条目状态")}
-          >
-            {mcpSummary}
-          </Button>
           <Button
             size="sm"
             onClick={() => {
               setEditPluginId(null);
-              setCreateInitialTemplate(null);
               setCreateOpen(true);
             }}
           >
@@ -317,43 +251,6 @@ export function PluginsPage() {
           </Button>
         </div>
       </div>
-
-      {mcpDetailOpen && (
-        <div className="flex flex-wrap items-center gap-2 rounded-md border border-border/60 p-2 text-xs">
-          <span className="font-medium">{tr("plugins.mcpTitle", "MCP 服务")}</span>
-          {mcpStatus && (["claude_code", "codex", "opencode", "jishu_self"] as const).map((k) => {
-            const v = mcpStatus[k];
-            const label = k === "claude_code" ? "claude-code" : k === "jishu_self" ? "jishu-self" : k;
-            const ok = v === "injected";
-            return (
-              <Badge key={k} variant={ok ? "secondary" : "outline"} className="text-[10px] px-1.5">
-                {label}: {v === "injected" ? tr("plugins.mcpInjected", "已注入") : v === "protected" ? tr("plugins.mcpProtected", "外来同名条目") : v === "none" ? tr("plugins.mcpNone", "未注入") : v}
-              </Badge>
-            );
-          })}
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" disabled={mcpBusy} onClick={() => { setCreateInitialTemplate("tool-mcp"); setCreateOpen(true); }}>
-              <Plus className="h-3.5 w-3.5" />
-              {tr("plugins.mcpAdd", "添加 MCP 插件")}
-            </Button>
-            <Button variant="outline" size="sm" disabled={mcpBusy} onClick={() => void runMcpAction("mcp_inject_all")}>
-              {tr("plugins.mcpInject", "注入")}
-            </Button>
-            <Button variant="outline" size="sm" disabled={mcpBusy} onClick={() => void runMcpAction("mcp_remove_all")}>
-              {tr("plugins.mcpRemove", "回收")}
-            </Button>
-            <Button variant="outline" size="sm" disabled={mcpBusy} onClick={() => void refreshMcpStatus()}>
-              <RefreshCw className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-          {mcpStatus?.cli_path && (
-            <span className="min-w-0 flex-1 truncate text-right text-muted-foreground/70" title={mcpStatus.cli_path}>
-              <code>{mcpStatus.cli_path}</code>
-            </span>
-          )}
-          {mcpMessage && <p className="w-full text-muted-foreground break-all">{mcpMessage}</p>}
-        </div>
-      )}
 
       {result && result.manifest_errors.length > 0 && (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3">
