@@ -667,7 +667,7 @@
     "officialAuthGo": "Authenticate",
     "officialAuthHintCodex": "Direct connection requires an OpenAI account: press \"Authenticate\" to run codex login in a terminal; the browser opens automatically to finish authorization.",
     "officialAuthHintClaude": "Direct connection requires an Anthropic subscription: press \"Authenticate\" to open a terminal running claude, then type /login inside it to finish browser authorization.",
-    "officialAuthRefreshHint": "Re-enter this page after finishing to refresh the status.",
+    "officialAuthRefreshHint": "Status refreshes automatically when you return to this window; the button on the left refreshes it manually.",
     "channelCustomHint": "Custom channel: set ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN under Advanced → Environment Variables.",
     "channelSelectHint": "Select a channel on the left, or press \"Add\" to create one",
     "showKey": "Show key",
@@ -722,7 +722,8 @@
     "retryEnabled": "Enable auto retry",
     "retryMaxRetries": "Max retries",
     "retryBaseDelay": "Base delay (ms)",
-    "retryDefaultHint": "When unset it is enabled by default: up to 3 retries with a 2000ms base delay (exponential backoff). Empty fields fall back to defaults."
+    "retryDefaultHint": "When unset it is enabled by default: up to 3 retries with a 2000ms base delay (exponential backoff). Empty fields fall back to defaults.",
+    "officialAuthRefresh": "Refresh auth status"
   },
   "commands": {
     "title": "Commands",
