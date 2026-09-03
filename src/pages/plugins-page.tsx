@@ -54,6 +54,8 @@ export function PluginsPage() {
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [installingIds, setInstallingIds] = useState<Set<string>>(new Set());
   const [createOpen, setCreateOpen] = useState(false);
+  // v0.9.0 需求12：MCP 卡片直达 tool-mcp 模版。
+  const [createInitialTemplate, setCreateInitialTemplate] = useState<string | null>(null);
   // 编辑模式目标（GUI 反馈：新增插件无法编辑）：manifest 插件可改表单覆盖写回。
   const [editPluginId, setEditPluginId] = useState<string | null>(null);
   // v0.9.0 需求8：声明式面板 Dialog 状态。
@@ -267,7 +269,8 @@ export function PluginsPage() {
         }}
         onCreated={refresh}
         editPluginId={editPluginId}
-      />
+      initialTemplate={createInitialTemplate}
+         />
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold">{tr("plugins.title", "插件管理")}</h2>
@@ -480,7 +483,13 @@ export function PluginsPage() {
                 ))}
               </div>
             ) : (
-              <p className="text-muted-foreground">{tr("plugins.mcpNoPlugins", "暂无启用中的 MCP 插件（plugin.toml 声明 [mcp] 段）")}</p>
+              <div className="flex items-center gap-2">
+                <p className="text-muted-foreground">{tr("plugins.mcpNoPlugins", "暂无启用中的 MCP 插件（plugin.toml 声明 [mcp] 段）")}</p>
+                <Button variant="outline" size="sm" onClick={() => { setCreateInitialTemplate("tool-mcp"); setCreateOpen(true); }}>
+                  <Plus className="h-3.5 w-3.5" />
+                  {tr("plugins.mcpAdd", "添加 MCP 插件")}
+                </Button>
+              </div>
             )}
             {mcpStatus.cli_path && (
               <p className="truncate text-muted-foreground/70" title={mcpStatus.cli_path}>

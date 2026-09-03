@@ -351,7 +351,17 @@
     "mcpInjected": "已注入",
     "mcpProtected": "外来同名条目",
     "mcpNone": "未注入",
-    "mcpNoPlugins": "暂无启用中的 MCP 插件（plugin.toml 声明 [mcp] 段）"
+    "mcpNoPlugins": "暂无启用中的 MCP 插件（plugin.toml 声明 [mcp] 段）",
+    "mcpAdd": "添加 MCP 插件",
+    "tplToolMcp": "MCP 工具",
+    "mcpSection": "MCP server 声明",
+    "fMcpCommand": "命令",
+    "fMcpArgs": "参数",
+    "fMcpEnv": "环境变量",
+    "hMcpCommand": "hub 聚合 server 将 spawn 此 MCP stdio server 并转发其工具（四家智能体共享）；填写后上方工具描述/用法可留空（纯 MCP 插件）。",
+    "hMcpArgs": "空格分隔。",
+    "hMcpEnv": "每行 KEY=VALUE。",
+    "hToolOptionalWithMcp": "填写 MCP server 后，描述/用法可留空（纯 MCP 工具插件）。"
   },
   "config": {
     "title": "配置管理",

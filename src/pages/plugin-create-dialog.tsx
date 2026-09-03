@@ -15,7 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { useTranslation } from "react-i18next";
-import { Bot, Code2, Loader2, Plus, Sparkles, Terminal } from "lucide-react";
+import { Bot, Code2, Loader2, Plus, Sparkles, Terminal , Blocks } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /** v0.8.1 需求6：插件创建可视化界面——模版快速创建（claude/codex/opencode
@@ -29,6 +29,9 @@ interface CreateProps {
   /** 编辑模式（v0.8.1 GUI 反馈：新增插件无法编辑）：传入插件 id 时对话框
    * 预填其 manifest，id 锁定，提交走 plugin_update 覆盖写回。 */
   editPluginId?: string | null;
+  /** v0.9.0 需求12：打开时预选的模版 key（非编辑模式生效；MCP 卡片
+   * 「添加 MCP 插件」直达 tool-mcp 模版）。 */
+  initialTemplate?: string | null;
 }
 
 /** 表单模型（提交时转换为 manifest JSON wire 结构）。 */
@@ -60,6 +63,10 @@ interface FormState {
   toolUsage: string;
   toolExample: string;
   toolNotes: string;
+  /** v0.9.0 需求12：[mcp] 段字段（页面创建 MCP 插件）。 */
+  mcpCommand: string;
+  mcpArgs: string; // 空格分隔
+  mcpEnv: string; // 每行 KEY=VALUE
 }
 
 interface Template {
@@ -101,6 +108,9 @@ const emptyForm: FormState = {
   toolUsage: "",
   toolExample: "",
   toolNotes: "",
+  mcpCommand: "",
+  mcpArgs: "",
+  mcpEnv: "",
 };
 
 /** 模版 = 表单预填常量（用户显式选择的起点，非运行时 agent 分支）。
@@ -287,6 +297,32 @@ notes = "需要 gh auth login 完成登录"
     },
   },
   {
+    key: "tool-mcp",
+    nameKey: "plugins.tplToolMcp",
+    nameFallback: "MCP 工具",
+    icon: <Blocks className="h-4 w-4" />,
+    tplKind: "tool",
+    toml: `schema = 1
+kind = "tool"
+
+[info]
+id = "my-mcp-tool"
+display_name = "My MCP Tool"
+
+[mcp]
+command = "npx"
+args = ["-y", "<mcp-server-package>"]
+`,
+    form: {
+      ...emptyForm,
+      kind: "tool",
+      id: "my-mcp-tool",
+      displayName: "My MCP Tool",
+      mcpCommand: "npx",
+      mcpArgs: "-y <mcp-server-package>",
+    },
+  },
+  {
     key: "tool-dingtalk",
     nameKey: "plugins.tplToolDingtalk",
     nameFallback: "钉钉 CLI 工具",
@@ -336,13 +372,34 @@ function buildManifest(form: FormState): Record<string, unknown> {
         ...(form.icon.trim() ? { icon: form.icon.trim() } : {}),
         ...(form.installHint.trim() ? { install_hint: form.installHint.trim() } : {}),
       },
-      tool: {
+    };
+    // v0.9.0 需求12：[tool] 段条件化——仅 [mcp] 的纯结构化工具插件合法
+    //（schema 既有规则），description/usage 齐备才写入。
+    if (form.toolDescription.trim() && form.toolUsage.trim()) {
+      tool.tool = {
         description: form.toolDescription.trim(),
         usage: form.toolUsage.trim(),
         ...(form.toolExample.trim() ? { example: form.toolExample.trim() } : {}),
         ...(form.toolNotes.trim() ? { notes: form.toolNotes.trim() } : {}),
-      },
-    };
+      };
+    }
+    // v0.9.0 需求12：[mcp] 段——hub 聚合 server spawn 的外部 MCP stdio server。
+    if (form.mcpCommand.trim()) {
+      const envEntries = form.mcpEnv
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((l) => {
+          const i = l.indexOf("=");
+          return i > 0 ? [l.slice(0, i), l.slice(i + 1)] : null;
+        })
+        .filter((x): x is [string, string] => !!x);
+      tool.mcp = {
+        command: form.mcpCommand.trim(),
+        ...(form.mcpArgs.trim() ? { args: form.mcpArgs.split(/\s+/).filter(Boolean) } : {}),
+        ...(envEntries.length > 0 ? { env: Object.fromEntries(envEntries) } : {}),
+      };
+    }
     if (form.probeEnabled && form.probeCommand.trim()) {
       tool.probe = {
         command: form.probeCommand.trim(),
@@ -447,6 +504,7 @@ function parseManifest(json: Record<string, unknown>): {
   const session = (json.session ?? {}) as Record<string, unknown>;
   const caps = (json.capabilities ?? {}) as Record<string, unknown>;
   const tool = (json.tool ?? {}) as Record<string, unknown>;
+  const mcp = json.mcp as Record<string, unknown> | undefined;
   const preserved: Record<string, unknown> = {};
   if (json.pi_extension && typeof json.pi_extension === "object") {
     preserved.pi_extension = json.pi_extension;
@@ -484,11 +542,18 @@ function parseManifest(json: Record<string, unknown>): {
     toolUsage: String(tool.usage ?? ""),
     toolExample: String(tool.example ?? ""),
     toolNotes: String(tool.notes ?? ""),
+    mcpCommand: String(mcp?.command ?? ""),
+    mcpArgs: Array.isArray(mcp?.args) ? (mcp!.args as string[]).join(" ") : "",
+    mcpEnv: mcp && mcp.env && typeof mcp.env === "object"
+      ? Object.entries(mcp.env as Record<string, unknown>)
+          .map(([k, v]) => `${k}=${String(v)}`)
+          .join("\n")
+      : "",
   };
   return { form, preserved };
 }
 
-export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId }: CreateProps) {
+export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId, initialTemplate }: CreateProps) {
   const { t } = useTranslation();
   const { alert: alertDialog, dialogNode } = useConfirmDialog();
   const [templateKey, setTemplateKey] = useState("blank");
@@ -498,6 +563,17 @@ export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isEdit = !!editPluginId;
+
+  // v0.9.0 需求12：非编辑打开且指定 initialTemplate → 预选该模版。
+  useEffect(() => {
+    if (!open || editPluginId || !initialTemplate) return;
+    const tp = templates.find((x) => x.key === initialTemplate);
+    if (tp) {
+      setTemplateKey(tp.key);
+      setForm({ ...tp.form });
+      setError(null);
+    }
+  }, [open, editPluginId, initialTemplate]);
 
   // 编辑模式：打开时拉取现有 manifest 预填（失败则表单保持原样并提示）。
   useEffect(() => {
@@ -542,7 +618,8 @@ export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId
     form.id.trim().length > 0 &&
     form.displayName.trim().length > 0 &&
     (isTool
-      ? form.toolDescription.trim().length > 0 && form.toolUsage.trim().length > 0
+      ? form.mcpCommand.trim().length > 0 ||
+        (form.toolDescription.trim().length > 0 && form.toolUsage.trim().length > 0)
       : form.transportKind === "cli"
         ? form.chatCommand.trim().length > 0
         : form.acpCommand.trim().length > 0);
@@ -752,6 +829,42 @@ export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId
                       placeholder="需要 XXX 环境变量"
                       className="h-8 text-xs"
                     />
+                  </Labeled>
+                </div>
+              </div>
+            )}
+
+            {/* MCP server 声明（v0.9.0 需求12：页面创建 MCP 插件）。 */}
+            {isTool && (
+              <div className="rounded-md border border-border/50 p-3 space-y-3">
+                <p className="text-xs font-medium">{tr("plugins.mcpSection", "MCP server 声明")}</p>
+                <Labeled labelKey="plugins.fMcpCommand" fallback="命令">
+                  <Input
+                    value={form.mcpCommand}
+                    onChange={(e) => patch({ mcpCommand: e.target.value })}
+                    placeholder="npx"
+                    className="h-8 text-xs font-mono"
+                  />
+                  <FieldHelp>{tr("plugins.hMcpCommand", "hub 聚合 server 将 spawn 此 MCP stdio server 并转发其工具（四家智能体共享）；填写后上方工具描述/用法可留空（纯 MCP 插件）。")}</FieldHelp>
+                </Labeled>
+                <div className="grid grid-cols-2 gap-3">
+                  <Labeled labelKey="plugins.fMcpArgs" fallback="参数">
+                    <Input
+                      value={form.mcpArgs}
+                      onChange={(e) => patch({ mcpArgs: e.target.value })}
+                      placeholder="-y @modelcontextprotocol/server-filesystem"
+                      className="h-8 text-xs font-mono"
+                    />
+                    <FieldHelp>{tr("plugins.hMcpArgs", "空格分隔。")}</FieldHelp>
+                  </Labeled>
+                  <Labeled labelKey="plugins.fMcpEnv" fallback="环境变量">
+                    <textarea
+                      value={form.mcpEnv}
+                      onChange={(e) => patch({ mcpEnv: e.target.value })}
+                      placeholder={"API_TOKEN=xxx\nDEBUG=1"}
+                      className="min-h-[2.4rem] w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs font-mono"
+                    />
+                    <FieldHelp>{tr("plugins.hMcpEnv", "每行 KEY=VALUE。")}</FieldHelp>
                   </Labeled>
                 </div>
               </div>

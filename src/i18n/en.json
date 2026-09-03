@@ -351,7 +351,17 @@
     "mcpInjected": "injected",
     "mcpProtected": "foreign entry",
     "mcpNone": "not injected",
-    "mcpNoPlugins": "No enabled MCP plugins (declare an [mcp] section in plugin.toml)"
+    "mcpNoPlugins": "No enabled MCP plugins (declare an [mcp] section in plugin.toml)",
+    "mcpAdd": "Add MCP plugin",
+    "tplToolMcp": "MCP tool",
+    "mcpSection": "MCP server declaration",
+    "fMcpCommand": "Command",
+    "fMcpArgs": "Args",
+    "fMcpEnv": "Environment",
+    "hMcpCommand": "The hub aggregation server spawns this MCP stdio server and forwards its tools (shared by all four agents); with this filled, tool description/usage above can be empty (pure MCP plugin).",
+    "hMcpArgs": "Space separated.",
+    "hMcpEnv": "One KEY=VALUE per line.",
+    "hToolOptionalWithMcp": "With an MCP server declared, description/usage can be empty (pure MCP tool plugin)."
   },
   "config": {
     "title": "Configuration",
