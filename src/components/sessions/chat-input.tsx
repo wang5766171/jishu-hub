@@ -1153,7 +1153,10 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         )}
         <FilePreview files={files} onLabelChange={handleLabelChange} onRemove={handleRemoveFile} />
 
-        {(suggestionsActive || slashFilter !== null || atToken !== null) && (
+        {/* 需求9（回归修复）：@ 无匹配时不弹层——能带出补全才算引入文件，
+            带不出即普通 @ 文本输出（atToken 兜底条件移除；slash 的
+            slashNoMatch 提示保留——命令集合封闭，提示有价值）。 */}
+        {(suggestionsActive || slashFilter !== null) && (
           <div className="absolute bottom-[calc(100%-0.35rem)] left-3 z-[90] max-h-56 w-80 overflow-auto rounded-xl border border-border bg-popover p-1.5 shadow-xl">
             {slashFilter !== null ? (
               slashItems.length > 0 ? (
@@ -1181,7 +1184,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
               ) : (
                 <div className="px-2.5 py-2 text-xs text-muted-foreground/70">{t("sessions.slashNoMatch")}</div>
               )
-            ) : fileItems.length > 0 ? (
+            ) : (
               fileItems.map(({ item }, i) => (
                 <button
                   key={item}
@@ -1202,8 +1205,6 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                   <span className="truncate font-mono" dir="ltr">{item}</span>
                 </button>
               ))
-            ) : (
-              <div className="px-2.5 py-2 text-xs text-muted-foreground/70">{t("sessions.atFileNoMatch")}</div>
             )}
           </div>
         )}

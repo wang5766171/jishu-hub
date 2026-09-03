@@ -263,7 +263,6 @@
     "autoCompaction": "自动压缩",
     "compactHint": "压缩会把历史对话摘要化以释放上下文空间；水位在下一轮对话后刷新。",
     "slashNoMatch": "没有匹配的命令",
-    "atFileNoMatch": "没有匹配的项目文件",
     "usageContextUsed": "上下文已用 {{percent}}%",
     "usageWatermarkDetail": "已用 {{used}} / {{total}} tokens",
     "toolModeFull": "完全访问",

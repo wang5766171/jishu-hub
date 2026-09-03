@@ -263,7 +263,6 @@
     "autoCompaction": "Auto compaction",
     "compactHint": "Compaction summarizes history to free context space; the watermark refreshes after the next turn.",
     "slashNoMatch": "No matching command",
-    "atFileNoMatch": "No matching project file",
     "usageContextUsed": "Context {{percent}}% used",
     "usageWatermarkDetail": "{{used}} / {{total}} tokens used",
     "toolModeFull": "Full access",
