@@ -344,14 +344,11 @@
     "panelRunning": "执行中…",
     "panelDescription": "插件声明的只读命令面板，点击执行查看输出。",
     "mcpTitle": "MCP 服务",
-    "mcpRefresh": "刷新",
     "mcpInject": "注入",
     "mcpRemove": "回收",
-    "mcpDescription": "聚合 server（jishu-cli mcp serve）向四家智能体注入单条 jishu-hub 条目；工具随插件启停动态生效。",
     "mcpInjected": "已注入",
     "mcpProtected": "外来同名条目",
     "mcpNone": "未注入",
-    "mcpNoPlugins": "暂无启用中的 MCP 插件（plugin.toml 声明 [mcp] 段）",
     "mcpAdd": "添加 MCP 插件",
     "tplToolMcp": "MCP 工具",
     "mcpSection": "MCP server 声明",
@@ -361,7 +358,12 @@
     "hMcpCommand": "hub 聚合 server 将 spawn 此 MCP stdio server 并转发其工具（四家智能体共享）；填写后上方工具描述/用法可留空（纯 MCP 插件）。",
     "hMcpArgs": "空格分隔。",
     "hMcpEnv": "每行 KEY=VALUE。",
-    "hToolOptionalWithMcp": "填写 MCP server 后，描述/用法可留空（纯 MCP 工具插件）。"
+    "hToolOptionalWithMcp": "填写 MCP server 后，描述/用法可留空（纯 MCP 工具插件）。",
+    "mcpChipNone": "MCP · 无插件",
+    "mcpChipOk": "MCP · 已同步 4/4",
+    "mcpChipOff": "MCP · 未注入",
+    "mcpChipPartial": "MCP · {{n}}/4",
+    "mcpChipTitle": "MCP 服务：四家智能体聚合条目状态"
   },
   "config": {
     "title": "配置管理",

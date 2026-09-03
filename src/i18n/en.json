@@ -344,14 +344,11 @@
     "panelRunning": "Running…",
     "panelDescription": "Read-only command panel declared by the plugin. Click to run and view output.",
     "mcpTitle": "MCP Service",
-    "mcpRefresh": "Refresh",
     "mcpInject": "Inject",
     "mcpRemove": "Remove",
-    "mcpDescription": "The aggregation server (jishu-cli mcp serve) injects a single jishu-hub entry into all four agents; tools follow plugin enable/disable dynamically.",
     "mcpInjected": "injected",
     "mcpProtected": "foreign entry",
     "mcpNone": "not injected",
-    "mcpNoPlugins": "No enabled MCP plugins (declare an [mcp] section in plugin.toml)",
     "mcpAdd": "Add MCP plugin",
     "tplToolMcp": "MCP tool",
     "mcpSection": "MCP server declaration",
@@ -361,7 +358,12 @@
     "hMcpCommand": "The hub aggregation server spawns this MCP stdio server and forwards its tools (shared by all four agents); with this filled, tool description/usage above can be empty (pure MCP plugin).",
     "hMcpArgs": "Space separated.",
     "hMcpEnv": "One KEY=VALUE per line.",
-    "hToolOptionalWithMcp": "With an MCP server declared, description/usage can be empty (pure MCP tool plugin)."
+    "hToolOptionalWithMcp": "With an MCP server declared, description/usage can be empty (pure MCP tool plugin).",
+    "mcpChipNone": "MCP · none",
+    "mcpChipOk": "MCP · synced 4/4",
+    "mcpChipOff": "MCP · not injected",
+    "mcpChipPartial": "MCP · {{n}}/4",
+    "mcpChipTitle": "MCP service: aggregation entry status of the four agents"
   },
   "config": {
     "title": "Configuration",
