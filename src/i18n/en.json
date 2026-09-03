@@ -342,7 +342,16 @@
     "panelButton": "Panel",
     "panelRun": "Run",
     "panelRunning": "Running…",
-    "panelDescription": "Read-only command panel declared by the plugin. Click to run and view output."
+    "panelDescription": "Read-only command panel declared by the plugin. Click to run and view output.",
+    "mcpTitle": "MCP Service",
+    "mcpRefresh": "Refresh",
+    "mcpInject": "Inject",
+    "mcpRemove": "Remove",
+    "mcpDescription": "The aggregation server (jishu-cli mcp serve) injects a single jishu-hub entry into all four agents; tools follow plugin enable/disable dynamically.",
+    "mcpInjected": "injected",
+    "mcpProtected": "foreign entry",
+    "mcpNone": "not injected",
+    "mcpNoPlugins": "No enabled MCP plugins (declare an [mcp] section in plugin.toml)"
   },
   "config": {
     "title": "Configuration",

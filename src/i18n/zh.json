@@ -342,7 +342,16 @@
     "panelButton": "面板",
     "panelRun": "执行",
     "panelRunning": "执行中…",
-    "panelDescription": "插件声明的只读命令面板，点击执行查看输出。"
+    "panelDescription": "插件声明的只读命令面板，点击执行查看输出。",
+    "mcpTitle": "MCP 服务",
+    "mcpRefresh": "刷新",
+    "mcpInject": "注入",
+    "mcpRemove": "回收",
+    "mcpDescription": "聚合 server（jishu-cli mcp serve）向四家智能体注入单条 jishu-hub 条目；工具随插件启停动态生效。",
+    "mcpInjected": "已注入",
+    "mcpProtected": "外来同名条目",
+    "mcpNone": "未注入",
+    "mcpNoPlugins": "暂无启用中的 MCP 插件（plugin.toml 声明 [mcp] 段）"
   },
   "config": {
     "title": "配置管理",

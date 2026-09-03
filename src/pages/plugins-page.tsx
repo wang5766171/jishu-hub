@@ -60,6 +60,51 @@ export function PluginsPage() {
   const [panelTarget, setPanelTarget] = useState<PluginDescriptor | null>(null);
   const [panelOutputs, setPanelOutputs] = useState<Record<number, string>>({});
   const [panelRunning, setPanelRunning] = useState<number | null>(null);
+  // v0.9.0 需求11：MCP 管理面（页面能力对齐 CLI——status/inject/remove）。
+  const [mcpStatus, setMcpStatus] = useState<{
+    plugins: Array<{ id: string; command: string; args: string[] }>;
+    cli_path: string | null;
+    claude_code: string;
+    codex: string;
+    opencode: string;
+    jishu_self: string;
+  } | null>(null);
+  const [mcpBusy, setMcpBusy] = useState(false);
+  const [mcpMessage, setMcpMessage] = useState("");
+  const refreshMcpStatus = useCallback(async () => {
+    try {
+      setMcpStatus(await invokeCommand("mcp_status"));
+    } catch (err) {
+      setMcpMessage(`状态加载失败：${err}`);
+    }
+  }, []);
+  const runMcpAction = useCallback(
+    async (action: "mcp_inject_all" | "mcp_remove_all") => {
+      setMcpBusy(true);
+      setMcpMessage("…");
+      try {
+        const r = await invokeCommand<{
+          claude_code: string;
+          codex: string;
+          opencode: string;
+          jishu_self: string;
+        }>(action);
+        setMcpMessage(
+          `claude-code: ${r.claude_code} · codex: ${r.codex} · opencode: ${r.opencode} · jishu-self: ${r.jishu_self}`,
+        );
+        await refreshMcpStatus();
+      } catch (err) {
+        setMcpMessage(`执行失败：${err}`);
+      } finally {
+        setMcpBusy(false);
+      }
+    },
+    [refreshMcpStatus],
+  );
+  useEffect(() => {
+    void refreshMcpStatus();
+  }, [refreshMcpStatus, result]);
+
   const runPanelItem = useCallback(async (pluginId: string, index: number) => {
     setPanelRunning(index);
     setPanelOutputs((prev) => ({ ...prev, [index]: "…" }));
@@ -390,6 +435,61 @@ export function PluginsPage() {
             {tr("plugins.empty", "无插件")}
           </p>
         )}
+      </div>
+
+      {/* v0.9.0 需求11：MCP 管理面——状态查看/一键注入/一键回收（对齐 jishu-cli mcp）。 */}
+      <div className="rounded-md border border-border/60 p-3 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold">{tr("plugins.mcpTitle", "MCP 服务")}</h3>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" disabled={mcpBusy} onClick={() => void refreshMcpStatus()}>
+              <RefreshCw className="h-3.5 w-3.5" />
+              {tr("plugins.mcpRefresh", "刷新")}
+            </Button>
+            <Button variant="outline" size="sm" disabled={mcpBusy} onClick={() => void runMcpAction("mcp_inject_all")}>
+              {tr("plugins.mcpInject", "注入")}
+            </Button>
+            <Button variant="outline" size="sm" disabled={mcpBusy} onClick={() => void runMcpAction("mcp_remove_all")}>
+              {tr("plugins.mcpRemove", "回收")}
+            </Button>
+          </div>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {tr("plugins.mcpDescription", "聚合 server（jishu-cli mcp serve）向四家智能体注入单条 jishu-hub 条目；工具随插件启停动态生效。")}
+        </p>
+        {mcpStatus && (
+          <div className="space-y-1 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              {(["claude_code", "codex", "opencode", "jishu_self"] as const).map((k) => {
+                const v = mcpStatus[k];
+                const label = k === "claude_code" ? "claude-code" : k === "jishu_self" ? "jishu-self" : k;
+                const ok = v === "injected";
+                return (
+                  <Badge key={k} variant={ok ? "secondary" : "outline"} className="text-[10px] px-1.5">
+                    {label}: {v === "injected" ? tr("plugins.mcpInjected", "已注入") : v === "protected" ? tr("plugins.mcpProtected", "外来同名条目") : v === "none" ? tr("plugins.mcpNone", "未注入") : v}
+                  </Badge>
+                );
+              })}
+            </div>
+            {mcpStatus.plugins.length > 0 ? (
+              <div className="space-y-0.5">
+                {mcpStatus.plugins.map((pl) => (
+                  <p key={pl.id} className="truncate text-muted-foreground" title={`${pl.command} ${pl.args.join(" ")}`}>
+                    <code className="text-foreground/80">{pl.id}</code> → {pl.command} {pl.args.join(" ")}
+                  </p>
+                ))}
+              </div>
+            ) : (
+              <p className="text-muted-foreground">{tr("plugins.mcpNoPlugins", "暂无启用中的 MCP 插件（plugin.toml 声明 [mcp] 段）")}</p>
+            )}
+            {mcpStatus.cli_path && (
+              <p className="truncate text-muted-foreground/70" title={mcpStatus.cli_path}>
+                CLI: <code>{mcpStatus.cli_path}</code>
+              </p>
+            )}
+          </div>
+        )}
+        {mcpMessage && <p className="text-xs text-muted-foreground break-all">{mcpMessage}</p>}
       </div>
 
       <p className="text-xs text-muted-foreground">
