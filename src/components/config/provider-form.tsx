@@ -367,8 +367,9 @@ export function ProviderForm({
             ))}
           </div>
           {/* 需求16 续：添加模型 = 打开完整表单（模型 ID/baseUrl/协议/上下文
-              窗口/最大输出/能力），保存后收回——不再接受仅输入 ID 的裸添加。 */}
-          <div className="flex items-center gap-2">
+              窗口/最大输出/能力），保存后收回——不再接受仅输入 ID 的裸添加。
+              续四：与测试连接同行（按钮不换行堆叠）。 */}
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               size="sm"
               variant="outline"
@@ -378,24 +379,6 @@ export function ProviderForm({
               <Plus className="mr-1 h-3 w-3" />
               {t("config.addModel")}
             </Button>
-          </div>
-          {inlineFormOpen && (
-            <ModelForm
-              providerName={name || "provider"}
-              provider={{ baseUrl: baseUrl.trim(), api, models: inlineModels }}
-              existingModel={undefined}
-              saving={false}
-              onCancel={() => setInlineFormOpen(false)}
-              onSubmit={({ model }) => {
-                setInlineModels((prev) =>
-                  prev.some((x) => x.id === model.id) ? prev : [...prev, model],
-                );
-                setInlineFormOpen(false);
-                setTestResult(null);
-              }}
-            />
-          )}
-          <div className="flex items-center gap-2">
             <Button
               size="sm"
               variant="outline"
@@ -414,6 +397,22 @@ export function ProviderForm({
               {t("config.testConnectionHint")}
             </span>
           </div>
+          {inlineFormOpen && (
+            <ModelForm
+              providerName={name || "provider"}
+              provider={{ baseUrl: baseUrl.trim(), api, models: inlineModels }}
+              existingModel={undefined}
+              saving={false}
+              onCancel={() => setInlineFormOpen(false)}
+              onSubmit={({ model }) => {
+                setInlineModels((prev) =>
+                  prev.some((x) => x.id === model.id) ? prev : [...prev, model],
+                );
+                setInlineFormOpen(false);
+                setTestResult(null);
+              }}
+            />
+          )}
           {testResult && <ConnectionTestBadge result={testResult} />}
         </div>
       )}
