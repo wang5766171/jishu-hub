@@ -625,6 +625,16 @@ impl crate::agent::config_roles::PermissionModeConfig for CodexAdapter {
                 "approval_policy".to_string(),
                 toml::Value::String(mode.to_string()),
             );
+            // sandbox_mode 联动（需求17）：approval=never 只管「不弹审批」，
+            // codex 的文件系统限制由 sandbox_mode 独立控制（默认 read-only
+            // 导致完全访问模式下仍无法写文件——用户实测反馈）。映射：
+            // never → danger-full-access / 其余 → workspace-write（仍可
+            // 在工作区内工作，越权操作由审批链拦截）。
+            let sandbox = if mode == "never" { "danger-full-access" } else { "workspace-write" };
+            table.insert(
+                "sandbox_mode".to_string(),
+                toml::Value::String(sandbox.to_string()),
+            );
         }
         let content =
             toml::to_string_pretty(&toml_val).map_err(|e| format!("Serialization error: {}", e))?;
