@@ -25,7 +25,8 @@ import {
   Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { HeaderRow, PiProviderConfig } from "./model-types";
+import type { HeaderRow, PiModelEntry, PiProviderConfig } from "./model-types";
+import { ModelForm } from "./model-form";
 import {
   PROVIDER_PRESETS,
   matchPresetByBaseUrl,
@@ -107,10 +108,12 @@ export function ProviderForm({
     existingProvider?.models?.map((m) => m.id) ??
       (initialPreset && initialPreset.id !== "custom" ? initialPreset.models.map((m) => m.id) : []),
   );
-  // v0.7.6 需求3 迭代：预设渠道支持添加自定义模型（应对后续上新）——
-  // 与预设 chips 分开管理，生成基础模型条目（详情面板可再补全字段）。
-  const [customModels, setCustomModels] = useState<string[]>([]);
-  const [customModelInput, setCustomModelInput] = useState("");
+  // 需求16 续：自定义模型经完整 ModelForm 添加（图3 表单：ID/baseUrl/协议/
+  // 上下文/最大输出/能力）——修前的自由输入只录 ID，落盘缺 contextWindow
+  // 等必填字段（保存报 Invalid models config payload）。内嵌展开、保存后
+  // 收回（回到本表单）；渠道详情面板的「添加模型」入口保留不变。
+  const [inlineModels, setInlineModels] = useState<PiModelEntry[]>([]);
+  const [inlineFormOpen, setInlineFormOpen] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
 
@@ -118,7 +121,7 @@ export function ProviderForm({
   const isEdit = !!existingName;
   const canTest =
     baseUrl.trim().length > 0 &&
-    selectedModelIds.length > 0 &&
+    (selectedModelIds.length > 0 || inlineModels.length > 0) &&
     PROTOCOL_OPTIONS.includes(api);
 
   const selectPreset = (p: ProviderPreset) => {
@@ -142,17 +145,6 @@ export function ProviderForm({
     setTestResult(null);
   };
 
-  /** 添加自定义模型（去重；不与预设 chips 混管，生成基础条目）。 */
-  const addCustomModel = () => {
-    const id = customModelInput.trim();
-    if (!id) return;
-    if (!customModels.includes(id) && !selectedModelIds.includes(id)) {
-      setCustomModels((prev) => [...prev, id]);
-    }
-    setCustomModelInput("");
-    setTestResult(null);
-  };
-
   const runTest = async () => {
     if (testing) return;
     setTesting(true);
@@ -160,7 +152,7 @@ export function ProviderForm({
     try {
       const result = await invokeCommand<{ response?: string | null; latency_ms?: number }>(
         "test_llm_connection",
-        { api, baseUrl, apiKey, model: selectedModelIds[0] },
+        { api, baseUrl, apiKey, model: selectedModelIds[0] ?? inlineModels[0]?.id },
       );
       const reply = (result?.response ?? "").toString().trim();
       setTestResult({
@@ -225,15 +217,11 @@ export function ProviderForm({
       const presetEntries = preset.models
         .filter((m) => selectedModelIds.includes(m.id))
         .map(presetModelToEntry);
-      const customEntries = customModels
-        .filter((id) => !preset.models.some((pm) => pm.id === id))
-        .map((id) => ({
-          id,
-          name: id,
-          input: ["text"],
-          reasoning: false,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        }));
+      // 需求16 续：内嵌 ModelForm 产出的完整条目（contextWindow 等必填
+      // 字段齐备），不再是缺字段的基础条目。
+      const customEntries = inlineModels.filter(
+        (m) => !preset.models.some((pm) => pm.id === m.id),
+      );
       const extraExisting = (existingProvider?.models ?? []).filter(
         (m) => !preset.models.some((pm) => pm.id === m.id),
       );
@@ -350,16 +338,16 @@ export function ProviderForm({
                 </button>
               );
             })}
-            {/* 已添加的自定义模型（可删除） */}
-            {customModels.map((id) => (
+            {/* 内嵌表单添加的自定义模型（完整条目，可删除） */}
+            {inlineModels.map((m) => (
               <span
-                key={id}
+                key={m.id}
                 className="inline-flex items-center gap-1 rounded-full border border-primary/60 bg-primary/10 px-2.5 py-1 font-mono text-[11px] text-primary"
               >
-                {id}
+                {m.id}
                 <button
                   type="button"
-                  onClick={() => setCustomModels((prev) => prev.filter((m) => m !== id))}
+                  onClick={() => setInlineModels((prev) => prev.filter((x) => x.id !== m.id))}
                   className="hover:text-foreground"
                   title={t("common.delete")}
                 >
@@ -368,31 +356,35 @@ export function ProviderForm({
               </span>
             ))}
           </div>
-          {/* 自定义模型添加（应对渠道上新模型；详情面板可再补全字段） */}
+          {/* 需求16 续：添加模型 = 打开完整表单（模型 ID/baseUrl/协议/上下文
+              窗口/最大输出/能力），保存后收回——不再接受仅输入 ID 的裸添加。 */}
           <div className="flex items-center gap-2">
-            <Input
-              value={customModelInput}
-              onChange={(e) => setCustomModelInput(e.target.value)}
-              placeholder={t("config.modelIdPlaceholder")}
-              className="h-7 max-w-[240px] font-mono text-xs"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && customModelInput.trim()) {
-                  e.preventDefault();
-                  addCustomModel();
-                }
-              }}
-            />
             <Button
               size="sm"
               variant="outline"
               className="h-7 text-xs"
-              disabled={!customModelInput.trim()}
-              onClick={addCustomModel}
+              onClick={() => setInlineFormOpen((v) => !v)}
             >
               <Plus className="mr-1 h-3 w-3" />
               {t("config.addModel")}
             </Button>
           </div>
+          {inlineFormOpen && (
+            <ModelForm
+              providerName={name || "provider"}
+              provider={{ baseUrl: baseUrl.trim(), api, models: inlineModels }}
+              existingModel={undefined}
+              saving={false}
+              onCancel={() => setInlineFormOpen(false)}
+              onSubmit={({ model }) => {
+                setInlineModels((prev) =>
+                  prev.some((x) => x.id === model.id) ? prev : [...prev, model],
+                );
+                setInlineFormOpen(false);
+                setTestResult(null);
+              }}
+            />
+          )}
           <div className="flex items-center gap-2">
             <Button
               size="sm"
