@@ -1,3 +1,5 @@
+import { Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 // v0.7.4 需求2 R1：模型条目表单（自 model-manager.tsx 拆出）。
 // 供应商命中预设时提供推荐模型下拉（自动预填 ctx/maxTokens/reasoning），
 // 否则保持全手填（原行为）。
@@ -31,6 +33,10 @@ export function ModelForm({
   onSubmit,
   /** 需求16 续三：保存上抛页头（打开即注册提交函数，null=关闭）。 */
   registerSave,
+  /** 需求16 续六：内嵌于 ProviderForm 时显示本地确认按钮（页头保存语义
+   *  歧义——保存渠道还是添加模型？内嵌子表单自带确认更清晰）。 */
+  showLocalSubmit,
+  localSubmitLabel,
 }: {
   providerName: string;
   provider: PiProviderConfig | undefined;
@@ -39,6 +45,8 @@ export function ModelForm({
   onCancel: () => void;
   onSubmit: (payload: { providerName: string; model: PiModelEntry }) => void;
   registerSave?: (fn: (() => void) | null) => void;
+  showLocalSubmit?: boolean;
+  localSubmitLabel?: string;
 }) {
   const { t } = useTranslation();
   void saving; // 保存按钮已上抛页头；保留 prop 兼容既有调用。
@@ -235,7 +243,17 @@ export function ModelForm({
         </div>
       )}
 
-      {/* 需求16 续五：保存统一页头；底部操作行整体移除。 */}
+      {/* 需求16 续五：保存统一页头；底部操作行整体移除。续六：内嵌场景
+          （ProviderForm 里的添加模型）显示本地确认按钮——页头保存语义
+          歧义（保存渠道 vs 添加模型），子表单自带确认。 */}
+      {showLocalSubmit && (
+        <div className="flex justify-end gap-2 pt-2">
+          <Button size="sm" onClick={submit} disabled={saving || !value.id.trim()}>
+            {saving && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+            {localSubmitLabel || t("common.confirm")}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

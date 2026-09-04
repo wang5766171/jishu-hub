@@ -404,8 +404,11 @@ export function ProviderForm({
               provider={{ baseUrl: baseUrl.trim(), api, models: inlineModels }}
               existingModel={undefined}
               saving={false}
+              showLocalSubmit
+              localSubmitLabel={t("common.confirm")}
+              registerSave={undefined}
               onCancel={() => setInlineFormOpen(false)}
-              onSubmit={({ model }) => {
+              onSubmit={({ model}) => {
                 setInlineModels((prev) =>
                   prev.some((x) => x.id === model.id) ? prev : [...prev, model],
                 );
