@@ -53,6 +53,13 @@ export function ModelStoreConfigPage({
   const registerBehaviorSave = useCallback((save: () => void) => {
     behaviorSaveRef.current = save;
   }, []);
+  // 需求16 续三：模型设置保存统一页头（ModelManager 上抛，与 behavior/MCP
+  // 同一 registerSave 模式）。
+  const [modelsSaveState, setModelsSaveState] = useState({ dirty: false, saving: false });
+  const modelsSaveRef = useRef<() => void>(() => {});
+  const registerModelsSave = useCallback((save: (() => void) | null) => {
+    modelsSaveRef.current = save ?? (() => {});
+  }, []);
   const [mcpEditorState, setMcpEditorState] = useState<{
     value: Record<string, unknown> | null;
     hasError: boolean;
@@ -115,7 +122,12 @@ export function ModelStoreConfigPage({
       title={t(meta.titleKey)}
       description={t(meta.descKey)}
       actionsSlot={
-        configTab === "behavior" ? (
+        configTab === "models" ? (
+          <Button size="sm" disabled={!modelsSaveState.dirty || modelsSaveState.saving} onClick={() => modelsSaveRef.current()}>
+            <Save className="h-3.5 w-3.5" />
+            {modelsSaveState.saving ? t("common.saving") : t("common.save")}
+          </Button>
+        ) : configTab === "behavior" ? (
           <Button size="sm" disabled={!behaviorSaveState.dirty || behaviorSaveState.saving} onClick={() => behaviorSaveRef.current()}>
             <Save className="h-3.5 w-3.5" />
             {behaviorSaveState.saving ? t("common.saving") : t("common.save")}
@@ -138,7 +150,12 @@ export function ModelStoreConfigPage({
       }
     >
       {/* 模型设置：当前模型大卡 + 服务商管理（ModelManager，即时保存） */}
-      {configTab === "models" && <ModelManager />}
+      {configTab === "models" && (
+        <ModelManager
+          onSaveStateChange={setModelsSaveState}
+          registerSave={registerModelsSave}
+        />
+      )}
 
       {/* 行为与权限：Pi Settings 真实行为字段（v0.7.5 补全：思考档位/压缩/
           初始工具/重试）。工具模式（完整/只读）是会话时选择的能力，已在会话页

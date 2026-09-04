@@ -14,7 +14,7 @@
 // （provider-form.tsx / model-form.tsx / model-types.ts，§18 规模约束），
 // 本文件只保留页面编排与渠道详情面板。
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { useAgent } from "@/agents";
@@ -32,7 +32,6 @@ import {
   Zap,
   Eye,
   EyeOff,
-  Save,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -54,9 +53,15 @@ import {
 export function ModelManager({
   onChanged,
   onActiveModelChange,
+  /** 需求16 续三：保存统一页头——dirty/saving 状态上抛（页头按钮启停）。 */
+  onSaveStateChange,
+  /** 需求16 续三：当前活动表单/详情的提交函数注册（页头保存按钮触发）。 */
+  registerSave,
 }: {
   onChanged?: () => void;
   onActiveModelChange?: (modelId: string | null) => void;
+  onSaveStateChange?: (state: { dirty: boolean; saving: boolean }) => void;
+  registerSave?: (fn: (() => void) | null) => void;
 }) {
   const { t } = useTranslation();
   const { confirm: confirmDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
@@ -82,6 +87,38 @@ export function ModelManager({
 
   // R6 两栏结构：左渠道列表，右选中渠道详情。
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
+
+  // 需求16 续三：保存统一页头——当前活动保存入口（ProviderForm/ModelForm
+  // 经各自 registerSave 上抛；渠道详情经 detailSaveRef）。聚合后转抛页头。
+  const formSaveRef = useRef<(() => void) | null>(null);
+  const detailSaveRef = useRef<(() => void) | null>(null);
+  const [detailDirty, setDetailDirty] = useState(false);
+  const formActive = providerForm !== null || modelForm !== null;
+  const registerFormSave = useCallback(
+    (fn: (() => void) | null) => {
+      formSaveRef.current = fn;
+      registerSave?.(fn ?? (detailDirty ? () => detailSaveRef.current?.() : null));
+    },
+    [registerSave, detailDirty],
+  );
+  const registerDetailSave = useCallback(
+    (fn: (() => void) | null) => {
+      detailSaveRef.current = fn;
+      registerSave?.(fn ?? (formActive ? () => formSaveRef.current?.() : null));
+    },
+    [registerSave, formActive],
+  );
+  useEffect(() => {
+    onSaveStateChange?.({
+      dirty: formActive || detailDirty,
+      saving,
+    });
+  }, [formActive, detailDirty, saving, onSaveStateChange]);
+  useEffect(() => {
+    if (!formActive) return;
+    registerSave?.(() => formSaveRef.current?.());
+    return () => registerSave?.(detailDirty ? () => detailSaveRef.current?.() : null);
+  }, [formActive, detailDirty, registerSave]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -498,6 +535,7 @@ export function ModelManager({
               saving={saving}
               onCancel={() => setProviderForm(null)}
               onSubmit={submitProvider}
+              registerSave={registerFormSave}
             />
           ) : modelForm ? (
             <ModelForm
@@ -513,6 +551,7 @@ export function ModelManager({
               saving={saving}
               onCancel={() => setModelForm(null)}
               onSubmit={submitModel}
+              registerSave={registerFormSave}
             />
           ) : selectedProvider && config.providers[selectedProvider] ? (
             <ProviderDetailPanel
@@ -531,6 +570,8 @@ export function ModelManager({
               }}
               onDeleteProvider={() => deleteProvider(selectedProvider)}
               onSaveProvider={(next) => saveProviderFields(selectedProvider, next)}
+              registerSave={registerDetailSave}
+              onDirtyChange={setDetailDirty}
               onAddModel={() => startAddModel(selectedProvider)}
               onEditModel={(modelId) => startEditModel(selectedProvider, modelId)}
               onDeleteModel={(modelId) => deleteModel(selectedProvider, modelId)}
@@ -572,6 +613,9 @@ function ProviderDetailPanel({
   onEnableProvider,
   onDeleteProvider,
   onSaveProvider,
+  /** 需求16 续三：保存上抛页头（dirty 时注册提交函数）。 */
+  registerSave,
+  onDirtyChange,
   onAddModel,
   onEditModel,
   onDeleteModel,
@@ -586,6 +630,8 @@ function ProviderDetailPanel({
   onEnableProvider: () => void;
   onDeleteProvider: () => void;
   onSaveProvider: (next: PiProviderConfig) => Promise<void>;
+  registerSave?: (fn: (() => void) | null) => void;
+  onDirtyChange?: (dirty: boolean) => void;
   onAddModel: () => void;
   onEditModel: (modelId: string) => void;
   onDeleteModel: (modelId: string) => void;
@@ -620,6 +666,16 @@ function ProviderDetailPanel({
     api !== (provider.api ?? "anthropic-messages") ||
     authHeader !== (provider.authHeader ?? false) ||
     apiKey.trim() !== "";
+
+  // 需求16 续三：dirty 上抛 + 提交函数注册到页头（保存统一右上角）。
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+    registerSave?.(dirty ? () => void save() : null);
+    return () => {
+      onDirtyChange?.(false);
+      registerSave?.(null);
+    };
+  });
 
   const save = async () => {
     if (!dirty || saving) return;
@@ -786,17 +842,12 @@ function ProviderDetailPanel({
         <Switch checked={authHeader} onCheckedChange={setAuthHeader} />
       </div>
 
-      <div className="flex items-center justify-end gap-2">
-        {dirty && (
-          <span className="text-[10px] text-muted-foreground/70">
-            {t("config.channelDirtyHint")}
-          </span>
-        )}
-        <Button size="sm" disabled={!dirty || saving} onClick={() => void save()}>
-          <Save className="h-3.5 w-3.5" />
-          {saving ? t("common.saving") : t("common.save")}
-        </Button>
-      </div>
+      {/* 需求16 续三：保存统一在页面右上角页头（registerSave 上抛）。 */}
+      {dirty && (
+        <p className="text-right text-[10px] text-muted-foreground/70">
+          {t("config.channelDirtyHint")}
+        </p>
+      )}
 
       {/* 模型列表 */}
       <div className="space-y-1.5 border-t border-border/40 pt-3">

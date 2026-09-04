@@ -2,12 +2,11 @@
 // 供应商命中预设时提供推荐模型下拉（自动预填 ctx/maxTokens/reasoning），
 // 否则保持全手填（原行为）。
 
-import { useState } from "react";
+import { useState , useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Loader2 } from "lucide-react";
 import {
   emptyModelValue,
   modelToValue,
@@ -31,6 +30,8 @@ export function ModelForm({
   saving,
   onCancel,
   onSubmit,
+  /** 需求16 续三：保存上抛页头（打开即注册提交函数，null=关闭）。 */
+  registerSave,
 }: {
   providerName: string;
   provider: PiProviderConfig | undefined;
@@ -38,8 +39,10 @@ export function ModelForm({
   saving: boolean;
   onCancel: () => void;
   onSubmit: (payload: { providerName: string; model: PiModelEntry }) => void;
+  registerSave?: (fn: (() => void) | null) => void;
 }) {
   const { t } = useTranslation();
+  void saving; // 保存按钮已上抛页头；保留 prop 兼容既有调用。
   const [value, setValue] = useState<ModelFormValue>(
     existingModel ? modelToValue(existingModel) : emptyModelValue(),
   );
@@ -72,6 +75,11 @@ export function ModelForm({
     if (existingModel?.compat) model.compat = existingModel.compat;
     onSubmit({ providerName, model });
   };
+  // 需求16 续三：提交函数上抛页头（表单打开期间有效）。
+  useEffect(() => {
+    registerSave?.(submit);
+    return () => registerSave?.(null);
+  });
 
   return (
     <div className="rounded-md border border-border/40 bg-muted/30 p-4 space-y-4">
@@ -231,10 +239,7 @@ export function ModelForm({
         <Button variant="outline" size="sm" onClick={onCancel}>
           {t("common.cancel")}
         </Button>
-        <Button size="sm" onClick={submit} disabled={saving}>
-          {saving && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
-          {t("common.save")}
-        </Button>
+        {/* 需求16 续三：保存统一在页面右上角页头。 */}
       </div>
     </div>
   );

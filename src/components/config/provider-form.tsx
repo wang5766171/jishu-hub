@@ -3,7 +3,7 @@
 // 高级字段（地址/协议/请求头/compat/overrides）折叠收纳，熟练用户零损失。
 // 选中预设即自动回填 baseUrl/api/推荐模型 chips；「自定义」退化为全手填。
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { Button } from "@/components/ui/button";
@@ -54,6 +54,9 @@ export function ProviderForm({
   saving,
   onCancel,
   onSubmit,
+  /** 需求16 续三：保存上抛页头——打开即注册提交函数（父级页头保存按钮触发）。
+   *  注册 null = 表单已关闭（页头按钮随之禁用）。 */
+  registerSave,
 }: {
   existingName: string | null;
   existingProvider: PiProviderConfig | undefined;
@@ -63,8 +66,10 @@ export function ProviderForm({
   saving: boolean;
   onCancel: () => void;
   onSubmit: (payload: { name: string; provider: PiProviderConfig }) => void;
+  registerSave?: (fn: (() => void) | null) => void;
 }) {
   const { t } = useTranslation();
+  void saving; // 保存按钮已上抛页头；保留 prop 兼容既有调用（页头 saving 态由父级管理）。
 
   const initialPreset =
     existingProvider && existingName
@@ -233,6 +238,11 @@ export function ProviderForm({
 
     onSubmit({ name: name.trim(), provider });
   };
+  // 需求16 续三：提交函数上抛页头（表单打开期间有效）。
+  useEffect(() => {
+    registerSave?.(submit);
+    return () => registerSave?.(null);
+  });
 
   return (
     <div className="rounded-md border border-border/40 bg-muted/30 p-4 space-y-4">
@@ -602,10 +612,7 @@ export function ProviderForm({
         <Button variant="outline" size="sm" onClick={onCancel}>
           {t("common.cancel")}
         </Button>
-        <Button size="sm" onClick={submit} disabled={saving}>
-          {saving && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
-          {t("common.save")}
-        </Button>
+        {/* 需求16 续三：保存统一在页面右上角页头（registerSave 上抛）。 */}
       </div>
     </div>
   );
