@@ -4,7 +4,6 @@
 
 import { useState , useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -43,6 +42,7 @@ export function ModelForm({
 }) {
   const { t } = useTranslation();
   void saving; // 保存按钮已上抛页头；保留 prop 兼容既有调用。
+  void onCancel; // 需求16 续五：底部取消移除，保留 prop 兼容。
   const [value, setValue] = useState<ModelFormValue>(
     existingModel ? modelToValue(existingModel) : emptyModelValue(),
   );
@@ -235,12 +235,7 @@ export function ModelForm({
         </div>
       )}
 
-      <div className="flex justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={onCancel}>
-          {t("common.cancel")}
-        </Button>
-        {/* 需求16 续三：保存统一在页面右上角页头。 */}
-      </div>
+      {/* 需求16 续五：保存统一页头；底部操作行整体移除。 */}
     </div>
   );
 }

@@ -70,6 +70,7 @@ export function ProviderForm({
 }) {
   const { t } = useTranslation();
   void saving; // 保存按钮已上抛页头；保留 prop 兼容既有调用（页头 saving 态由父级管理）。
+  void onCancel; // 需求16 续五：底部取消移除，保留 prop 兼容。
 
   const initialPreset =
     existingProvider && existingName
@@ -80,10 +81,10 @@ export function ProviderForm({
 
   // v0.7.6 需需求3 迭代：左栏点击预置渠道进入时预设已确定（非 custom），
   // 隐藏「选择服务商」卡片网格——右栏直接是渠道配置（密钥 + 预置模型
-  // chips + 自定义模型添加 + 高级选项）。custom（底部添加按钮）仍显示
-  // 网格供选择。
-  const presetLocked =
-    Boolean(initialPresetId && initialPresetId !== "custom") && initialPreset !== null;
+  // chips + 自定义模型添加 + 高级选项）。custom（底部添加按钮入口）经
+  // 需求16 续五同样锁定为「自定义」：渠道选择统一由左栏承担，右栏不再
+  // 重复出现预置网格（与左栏六渠道重复、交互混乱）。
+  const presetLocked = initialPreset !== null;
 
   // 预选预设时同步回填（与 selectPreset 一致的初始态：推荐 key / 地址 / 协议 / 模型）。
   const [preset, setPreset] = useState<ProviderPreset | null>(initialPreset);
@@ -607,12 +608,8 @@ export function ProviderForm({
         </AccordionItem>
       </Accordion>
 
-      <div className="flex justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={onCancel}>
-          {t("common.cancel")}
-        </Button>
-        {/* 需求16 续三：保存统一在页面右上角页头（registerSave 上抛）。 */}
-      </div>
+      {/* 需求16 续五：保存统一页头；底部操作行整体移除（关闭表单 = 左栏
+          切换渠道或重新点击当前渠道）。 */}
     </div>
   );
 }
