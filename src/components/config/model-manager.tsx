@@ -127,11 +127,6 @@ export function ModelManager({
   };
 
   // -------------------- Provider ops --------------------
-  const startAddProvider = () => {
-    setProviderForm({ mode: "add" });
-    setModelForm(null);
-    setError(null);
-  };
   const submitProvider = async (payload: {
     name: string;
     provider: PiProviderConfig;
@@ -378,7 +373,15 @@ export function ModelManager({
   // v0.7.6 需求3：左栏 = 预置渠道（默认全量显示，无需先添加）+ 自定义渠道
   //（baseUrl 未命中任何预设的 provider）。已添加预置点击进详情，未添加
   // 预置点击展开预选该预设的添加表单。
-  const presetChannels = PROVIDER_PRESETS.filter((p) => p.id !== "custom");
+  // 需求16：官方直连置顶（anthropic → openai → 其余预置保持原序）——
+  // 排序层实现，PROVIDER_PRESETS 数据序不动（被 claude-presets 等处引用）。
+  const OFFICIAL_DIRECT_PRESET_IDS = ["anthropic", "openai"];
+  const presetChannels = PROVIDER_PRESETS.filter((p) => p.id !== "custom")
+    .sort(
+      (a, b) =>
+        (OFFICIAL_DIRECT_PRESET_IDS.indexOf(a.id) + 1 || 99) -
+        (OFFICIAL_DIRECT_PRESET_IDS.indexOf(b.id) + 1 || 99),
+    );
   const providerMatchedPresetId = (name: string): string | null =>
     matchPresetByBaseUrl(config.providers[name]?.baseUrl)?.id ?? null;
 
@@ -475,8 +478,7 @@ export function ModelManager({
               void setActiveFromPicker(value.slice(0, sep), value.slice(sep + 1));
             }}
             emptyHint={t("config.noModelConfigured")}
-            emptyActionLabel={t("config.addProvider")}
-            onEmptyAction={startAddProvider}
+            // 需求16：不再传 emptyActionLabel/onEmptyAction——右侧无「添加接入」，渠道统一在左栏。
           />
 
           {providerForm ? (
