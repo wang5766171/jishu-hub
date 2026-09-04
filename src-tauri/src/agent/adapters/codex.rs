@@ -1161,35 +1161,87 @@ fn parse_rollout_messages(path: &std::path::Path) -> Result<Vec<crate::session::
         let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
-        if val.get("type").and_then(|v| v.as_str()) != Some("event_msg") {
-            continue;
-        }
-        let Some(payload) = val.get("payload") else {
-            continue;
-        };
-        let p_type = payload.get("type").and_then(|v| v.as_str());
-        let role = match p_type {
-            Some("user_message") => "user",
-            Some("agent_message") => "assistant",
-            _ => continue,
-        };
-        let Some(msg) = payload.get("message").and_then(|v| v.as_str()) else {
-            continue;
-        };
         let timestamp = val
             .get("timestamp")
             .and_then(|v| v.as_str())
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.timestamp_millis());
+        let line_type = val.get("type").and_then(|v| v.as_str());
+        let Some(payload) = val.get("payload") else {
+            continue;
+        };
 
-        messages.push(crate::session::Message {
-            role: role.to_string(),
-            content: vec![crate::session::ContentBlock::Text {
-                text: msg.to_string(),
-                tool_ids: Vec::new(),
-            }],
-            timestamp,
-        });
+        // 需求18：codex 0.153+ rollout 双格式解析——
+        // 新格式 response_item + type=message + role 字段（0.153.1 实测）：
+        // {"type":"response_item","payload":{"type":"message","role":"user/assistant",
+        //  "content":[{"type":"input_text/output_text","text":"..."}]}}
+        // 旧格式 event_msg + type=user_message/agent_message（≤0.148）：
+        // {"type":"event_msg","payload":{"type":"user_message","message":"..."}}
+        if line_type == Some("response_item")
+            && payload.get("type").and_then(|v| v.as_str()) == Some("message")
+        {
+            let role = payload.get("role").and_then(|v| v.as_str());
+            // developer 角色 = 系统/skills 指令，不展示
+            let role = match role {
+                Some("user") => "user",
+                Some("assistant") => "assistant",
+                _ => continue,
+            };
+            let Some(content_arr) = payload.get("content").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            // 拼接 content 数组的文本块（input_text / output_text）
+            let text: String = content_arr
+                .iter()
+                .filter_map(|c| {
+                    let t = c.get("type").and_then(|v| v.as_str())?;
+                    if t == "input_text" || t == "output_text" || t == "text" {
+                        c.get("text").and_then(|v| v.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("
+");
+            // 过滤 codex 注入的系统前导块（skills/plugins 等 XML 标签开头）
+            if role == "user" && text.trim_start().starts_with('<') {
+                continue;
+            }
+            if text.trim().is_empty() {
+                continue;
+            }
+            messages.push(crate::session::Message {
+                role: role.to_string(),
+                content: vec![crate::session::ContentBlock::Text {
+                    text,
+                    tool_ids: Vec::new(),
+                }],
+                timestamp,
+            });
+            continue;
+        }
+
+        // 旧格式兼容（≤0.148 codex）
+        if line_type == Some("event_msg") {
+            let p_type = payload.get("type").and_then(|v| v.as_str());
+            let role = match p_type {
+                Some("user_message") => "user",
+                Some("agent_message") => "assistant",
+                _ => continue,
+            };
+            let Some(msg) = payload.get("message").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            messages.push(crate::session::Message {
+                role: role.to_string(),
+                content: vec![crate::session::ContentBlock::Text {
+                    text: msg.to_string(),
+                    tool_ids: Vec::new(),
+                }],
+                timestamp,
+            });
+        }
     }
     Ok(messages)
 }
