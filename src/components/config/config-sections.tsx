@@ -28,11 +28,11 @@ import { OPENCODE_MODEL_CATALOG } from "@/agents/config/presets/opencode-models"
 import { OpencodeProvidersBlock } from "./opencode-providers";
 import { CodexProvidersBlock } from "./codex-providers";
 import {
-  CODEX_DIRECT_MODELS,
   CODEX_PROXY_PRESETS,
   codexCustomModelsFor,
   rememberCodexCustomModel,
 } from "@/agents/config/presets/codex-presets";
+import { useCodexLiveModels } from "@/hooks/use-codex-live-models";
 import {
   CLAUDE_PROXY_PRESETS,
   applyProxyPresetToEnv,
@@ -79,11 +79,9 @@ function modelCatalogOptionsFor(
 /** codex 渠道的预置模型（v0.7.6 需求2：直连 = OpenAI 官方预置，代理 =
  *  所选渠道预设 models，未知自定义渠道 = 空即纯自由输入），并追加该渠道
  *  记忆的自定义模型（localStorage，防后续上新模型重复手输）。 */
-function codexPresetModelsFor(providerId: string | null): string[] {
-  const presetModels = providerId
-    ? CODEX_PROXY_PRESETS.find((p) => p.id === providerId)?.models ?? []
-    : CODEX_DIRECT_MODELS;
-  const custom = codexCustomModelsFor(providerId ?? "direct");
+function codexPresetModelsFor(providerId: string): string[] {
+  const presetModels = CODEX_PROXY_PRESETS.find((p) => p.id === providerId)?.models ?? [];
+  const custom = codexCustomModelsFor(providerId);
   return [...presetModels, ...custom.filter((m) => !presetModels.includes(m))];
 }
 
@@ -217,6 +215,13 @@ export function ConfigModelsZone({
   const codexProviderId = isCodexProviders
     ? ((config as { modelProvider?: string | null }).modelProvider ?? null)
     : null;
+  // v0.9.0 需求14：codex 直连候选 = app-server model/list 实时拉取
+  //（静态预置表已按用户裁决删除）+ 直连态自定义记忆。
+  const codexDirectModels = useCodexLiveModels(agentId, isCodexProviders && !codexProviderId);
+  const codexDirectCatalog = [
+    ...codexDirectModels,
+    ...codexCustomModelsFor("direct").filter((m) => !codexDirectModels.includes(m)),
+  ];
 
   // 候选项按接入态分流（v0.7.6 需求2）：
   //  - codex：直连 = OpenAI 官方预置，代理 = 渠道预设 models + 自定义记忆；
@@ -226,7 +231,10 @@ export function ConfigModelsZone({
   const seen = new Set<string>();
   const catalogOptions: ActiveModelOption[] = (
     isCodexProviders
-      ? codexPresetModelsFor(codexProviderId).map((m) => ({ value: m, label: m }))
+      ? (codexProviderId
+          ? codexPresetModelsFor(codexProviderId)
+          : codexDirectCatalog
+        ).map((m) => ({ value: m, label: m }))
       : supportsProxySetup && !isDirect
         ? (activePreset?.models ?? []).map((m) => ({ value: m, label: m }))
         : [
@@ -245,7 +253,11 @@ export function ConfigModelsZone({
     onChange({ model: model || null });
     // codex：自由输入的模型不在渠道预置内时记入候选（localStorage 按渠道隔离，
     // 防后续上新模型重复手输）。
-    if (isCodexProviders && model && !codexPresetModelsFor(codexProviderId).includes(model)) {
+    if (
+      isCodexProviders &&
+      model &&
+      !catalogOptions.some((o) => o.value === model)
+    ) {
       rememberCodexCustomModel(codexProviderId ?? "direct", model);
     }
   };

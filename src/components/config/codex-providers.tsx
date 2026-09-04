@@ -8,13 +8,13 @@
 
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { useCodexLiveModels } from "@/hooks/use-codex-live-models";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Check, ExternalLink, Eye, EyeOff, Plus, Power, Trash2 } from "lucide-react";
 import {
-  CODEX_DIRECT_MODELS,
   CODEX_PROXY_PRESETS,
   codexCustomModelsFor,
   rememberCodexCustomModel,
@@ -61,6 +61,8 @@ export function CodexProvidersBlock({
   // 「启用此渠道」（v0.7.6 需求3 迭代三——修复直连态下点击渠道无反馈：
   // 此前直连态左栏 selectedId 被强制置空、右栏只认 modelProvider）。
   const [selectedId, setSelectedId] = useState<string | null>(modelProvider ?? null);
+  // v0.9.0 需求14：直连视图实时模型清单。
+  const directLiveModels = useCodexLiveModels(agentId, selectedId === null);
   // v0.7.6 需求3：custom 从清单一项改为「添加自定义渠道」按钮触发的表单态。
   const [customFormOpen, setCustomFormOpen] = useState(false);
   const [showKey, setShowKey] = useState(false);
@@ -182,9 +184,12 @@ export function CodexProvidersBlock({
             {agentId && (
               <OfficialAuthCard agentId={agentId} hintKey="config.officialAuthHintCodex" />
             )}
+            {/* v0.9.0 需求14：直连候选 = app-server model/list 实时拉取
+                （静态预置表已删——其型号与账号可用集脱节，正是 400 问题源头）；
+                拉取中/失败为空，自由输入仍可手填。 */}
             <CodexChannelModels
               providerId="direct"
-              presetModels={CODEX_DIRECT_MODELS}
+              presetModels={directLiveModels}
               currentModel={model}
               onSelectModel={(m) => onChange({ model: m })}
             />

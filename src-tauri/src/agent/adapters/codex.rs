@@ -272,10 +272,19 @@ impl ConfigAdapter for CodexAdapter {
         ))
     }
 
+    /// v0.9.0 需求14：模型库角色接入（model/list 拉取 + config.toml model 键）。
+    fn as_model_store(
+        &self,
+    ) -> Option<&dyn crate::agent::config_roles::ModelStore> {
+        Some(self)
+    }
+
     fn config_surface(&self) -> crate::agent::ConfigSurface {
         crate::agent::ConfigSurface::Structured {
             schema_id: "codex-config".to_string(),
-            supports_model_picker: false,
+            // v0.9.0 需求14：经 app-server model/list 拉取账号模型清单，
+            // ModelStore 角色接入（本文件 impl ModelStore）。
+            supports_model_picker: true,
             supports_small_model: false,
             supports_large_model: false,
             supports_api_provider: false,
@@ -1270,6 +1279,242 @@ fn apply_reasoning_effort(
         _ => {
             table.remove("model_reasoning_effort");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 模型列表拉取与选择（v0.9.0 需求14）
+// ---------------------------------------------------------------------------
+
+/// app-server `model/list` 返回的账号可用模型（schema 见探测：0.153.1）。
+#[derive(Debug, Clone)]
+pub struct CodexModelInfo {
+    pub id: String,
+    pub display_name: String,
+}
+
+/// 探测结果缓存（10 分钟 TTL——config 页打开/刷新触发，避免每次 spawn）。
+static MODEL_CACHE: std::sync::Mutex<Option<(std::time::Instant, Vec<CodexModelInfo>)>> =
+    std::sync::Mutex::new(None);
+
+/// spawn `codex app-server` → initialize → `model/list` → 退出。
+/// 整体 20s 护栏；失败返回 Err（调用方回退到当前模型单选）。
+fn probe_codex_models() -> Result<Vec<CodexModelInfo>, String> {
+    use std::io::{BufRead, BufReader, Write};
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "codex", "app-server"]);
+        c
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("codex");
+        c.arg("app-server");
+        c
+    };
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn codex app-server failed: {e}"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "codex app-server stdin unavailable".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "codex app-server stdout unavailable".to_string())?;
+    let mut reader = BufReader::new(stdout);
+    let mut writer = stdin;
+
+    fn send(
+        writer: &mut std::process::ChildStdin,
+        obj: serde_json::Value,
+    ) -> Result<(), String> {
+        let mut line = serde_json::to_string(&obj).map_err(|e| e.to_string())?;
+        line.push('\n');
+        writer
+            .write_all(line.as_bytes())
+            .and_then(|_| writer.flush())
+            .map_err(|e| format!("write to codex failed: {e}"))
+    }
+
+    let result = (|| -> Result<Vec<CodexModelInfo>, String> {
+        send(
+            &mut writer,
+            serde_json::json!({
+                "id": 1, "method": "initialize",
+                "params": { "clientInfo": { "name": "jishu-hub", "version": env!("CARGO_PKG_VERSION") } },
+            }),
+        )?;
+        let mut models = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut line = String::new();
+        loop {
+            if std::time::Instant::now() > deadline {
+                return Err("codex model/list probe timeout (20s)".to_string());
+            }
+            line.clear();
+            let n = reader
+                .read_line(&mut line)
+                .map_err(|e| format!("read from codex failed: {e}"))?;
+            if n == 0 {
+                return Err("codex app-server exited before model/list".to_string());
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if v.get("id") == Some(&serde_json::json!(1)) {
+                send(
+                    &mut writer,
+                    serde_json::json!({ "id": 2, "method": "model/list", "params": {} }),
+                )?;
+                continue;
+            }
+            if v.get("id") == Some(&serde_json::json!(2)) {
+                if let Some(err) = v.get("error") {
+                    return Err(format!(
+                        "model/list failed: {}",
+                        err.get("message").and_then(|m| m.as_str()).unwrap_or("?")
+                    ));
+                }
+                if let Some(arr) = v.pointer("/result/data").and_then(|d| d.as_array()) {
+                    for m in arr {
+                        if m.get("hidden").and_then(|h| h.as_bool()).unwrap_or(false) {
+                            continue;
+                        }
+                        let id = m
+                            .get("id")
+                            .or_else(|| m.get("model"))
+                            .and_then(|x| x.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        if id.is_empty() {
+                            continue;
+                        }
+                        models.push(CodexModelInfo {
+                            display_name: m
+                                .get("displayName")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or(&id)
+                                .to_string(),
+                            id,
+                        });
+                    }
+                }
+                return Ok(models);
+            }
+        }
+    })();
+
+    let _ = child.kill();
+    let _ = child.wait();
+    result
+}
+
+fn list_codex_models_cached() -> Result<Vec<CodexModelInfo>, String> {
+    let mut guard = MODEL_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, ref models)) = *guard {
+        if at.elapsed() < std::time::Duration::from_secs(600) {
+            return Ok(models.clone());
+        }
+    }
+    let models = probe_codex_models()?;
+    *guard = Some((std::time::Instant::now(), models.clone()));
+    Ok(models)
+}
+
+impl crate::agent::config_roles::ModelStore for CodexAdapter {
+    /// picker_options_from_config 消费形状：
+    /// {"providers": {"codex": {"name": "Codex", "models": [{id, reasoning}]}}}。
+    /// 探测失败回退为「当前模型单选」（config.toml model 键），选择器仍可用。
+    fn load_model_store(&self) -> Result<serde_json::Value, String> {
+        let models: Vec<serde_json::Value> = match list_codex_models_cached() {
+            Ok(list) if !list.is_empty() => list
+                .iter()
+                .map(|m| serde_json::json!({ "id": m.id, "reasoning": true }))
+                .collect(),
+            _ => {
+                let current = self
+                    .load_config()?
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if current.is_empty() {
+                    return Err(
+                        "无法拉取 codex 模型列表（app-server model/list 失败），且 config.toml 未设置 model"
+                            .to_string(),
+                    );
+                }
+                vec![serde_json::json!({ "id": current, "reasoning": true })]
+            }
+        };
+        Ok(serde_json::json!({
+            "providers": {
+                "codex": { "name": "Codex", "models": models },
+            }
+        }))
+    }
+
+    /// 模型清单只读（来源为账号侧）；选择经 set_active_model 落 config.toml。
+    fn save_model_store(&self, _config: &serde_json::Value) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn get_active_model(&self) -> Result<Option<serde_json::Value>, String> {
+        let model = self
+            .load_config()?
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        Ok(model
+            .map(|m| serde_json::json!({ "provider": "codex", "model": m })))
+    }
+
+    fn set_active_model(&self, active: Option<&serde_json::Value>) -> Result<(), String> {
+        let model = active
+            .and_then(|a| a.get("model"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "codex set_active requires {model}".to_string())?;
+        let mut config = self.load_config()?;
+        config["model"] = serde_json::Value::String(model.to_string());
+        self.save_config(&config)
+    }
+}
+
+#[cfg(test)]
+mod model_tests {
+    use super::*;
+    use crate::agent::config_roles::ModelStore as _;
+
+    /// 形状契约：load_model_store 产物经 picker_options_from_config 得到
+    /// "codex/<id>" 选项（选择器 UI 全链路依赖此形状）。
+    #[test]
+    fn model_store_shape_feeds_picker() {
+        let store = CodexAdapter::new();
+        // 直接构造缓存，避免测试依赖本机 codex。
+        *MODEL_CACHE.lock().unwrap() = Some((
+            std::time::Instant::now(),
+            vec![
+                CodexModelInfo {
+                    id: "gpt-5.6-terra".into(),
+                    display_name: "GPT-5.6-Terra".into(),
+                },
+                CodexModelInfo {
+                    id: "gpt-5.6-sol".into(),
+                    display_name: "GPT-5.6-Sol".into(),
+                },
+            ],
+        ));
+        let config = store.load_model_store().expect("store");
+        let options = crate::agent::jishu_self::model_picker::picker_options_from_config(&config);
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].value, "codex/gpt-5.6-terra");
+        assert!(options[0].label.contains("Codex"));
     }
 }
 

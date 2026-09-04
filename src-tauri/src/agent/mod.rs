@@ -806,7 +806,8 @@ mod tests {
             codex.config_surface,
             ConfigSurface::Structured {
                 schema_id: "codex-config".to_string(),
-                supports_model_picker: false,
+                // v0.9.0 需求14：model/list 实时拉取接入 ModelStore。
+                supports_model_picker: true,
                 supports_small_model: false,
                 supports_large_model: false,
                 supports_api_provider: false,
