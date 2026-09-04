@@ -292,7 +292,8 @@
     "permissionApproveOnce": "Allow once",
     "permissionApproveAlways": "Always allow",
     "pluginsSection": "Plugins",
-    "insertTool": "Insert"
+    "insertTool": "Insert",
+    "turnFailedBubble": "This turn failed ({{reason}}). Check model and account settings, then retry."
   },
   "plugins": {
     "createTitle": "New Plugin",

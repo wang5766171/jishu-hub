@@ -1945,10 +1945,18 @@ export function ChatPage({
           // only text/thinking gate this.
           const hasNoReplyText = Boolean(state)
             && !(state!.text.length || state!.thinking.length);
+          // 需求15：显式失败（Error/MaxTokens 结束或已记录错误文本）不是伪完成
+          // ——快速失败（如 codex 模型 400 秒拒）曾被 2s 防伪守卫吞掉：不提交
+          // 任何消息，流式态结束后用户消息与错误一起"消失"。失败必提交。
+          const explicitFailure =
+            chunk.data.reason === "Error"
+            || chunk.data.reason === "MaxTokens"
+            || Boolean(state?.error);
           if (
             pendingReplyStartedAt !== undefined
             && Date.now() - pendingReplyStartedAt < 2000
             && hasNoReplyText
+            && !explicitFailure
           ) {
             continue;
           }
@@ -2111,6 +2119,18 @@ export function ChatPage({
             // this reply and the next — [reply, steer, steerResponse].
             if (state?.error) {
               assistantContent.push({ type: "text", text: state.error });
+            } else if (
+              explicitFailure
+              && assistantContent.length === 0
+              && (chunk.data.reason === "Error" || chunk.data.reason === "MaxTokens")
+            ) {
+              // 需求15：无任何回复内容的失败（协议层未单独下发 Error 事件，
+              // 仅 TurnComplete 携带失败原因）也要可见——通用错误气泡兜底。
+              assistantContent.push({
+                type: "text",
+                text: t("sessions.turnFailedBubble", "本轮对话失败（{{reason}}），请检查模型与账号配置后重试")
+                  .replace("{{reason}}", chunk.data.reason),
+              });
             }
             if (assistantContent.length > 0) {
               newMessages.push({ role: "assistant", content: assistantContent, timestamp: Date.now() });

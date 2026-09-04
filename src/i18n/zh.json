@@ -292,7 +292,8 @@
     "permissionApproveOnce": "仅本次允许",
     "permissionApproveAlways": "始终允许",
     "pluginsSection": "插件",
-    "insertTool": "插入"
+    "insertTool": "插入",
+    "turnFailedBubble": "本轮对话失败（{{reason}}），请检查模型与账号配置后重试"
   },
   "plugins": {
     "createTitle": "新建插件",
