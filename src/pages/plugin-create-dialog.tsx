@@ -1228,13 +1228,15 @@ export function PluginCreateDialog({
     <>
       {dialogNode}
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="sm:max-w-4xl max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
+        <DialogContent className="sm:max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
             <DialogTitle>{isEdit ? tr("plugins.editTitle", "编辑插件") : tr("plugins.createTitle", "新建插件")}</DialogTitle>
             <DialogDescription>{tr("plugins.createDesc", "")}</DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-5">
+          {/* 固定区（GUI 裁决 2026-09-05：类型/模版/创建按钮常驻可视，不随
+           * 表单滚动——按钮永不溢出屏幕）；仅下方表单区滚动。 */}
+          <div className="shrink-0 space-y-5 px-1">
             {/* 需求19：类型优先三卡（MCP/CLI/AGENT，实现形式入卡）——
              * 选中类型决定下方分组（分治渲染，消除"上面和下面什么关系"）。 */}
             <div>
@@ -1310,16 +1312,31 @@ export function PluginCreateDialog({
                   </button>
                 )}
               </div>
-              <details className="mt-2 group">
-                <summary className="text-[11px] text-muted-foreground cursor-pointer select-none">
-                  {tr("plugins.viewToml", "查看模版 TOML（manifest 格式参考）")}
-                </summary>
-                <pre className="mt-2 rounded-md bg-muted/60 p-3 text-[10px] leading-relaxed overflow-x-auto">
-                  {template.toml}
-                </pre>
-              </details>
+              {/* 模版 TOML 参考行 + 创建按钮（编辑区右上角，GUI 裁决同轮）。 */}
+              <div className="mt-2 flex items-start justify-between gap-2">
+                <details className="group min-w-0 flex-1">
+                  <summary className="text-[11px] text-muted-foreground cursor-pointer select-none">
+                    {tr("plugins.viewToml", "查看模版 TOML（manifest 格式参考）")}
+                  </summary>
+                  <pre className="mt-2 max-h-40 overflow-auto rounded-md bg-muted/60 p-3 text-[10px] leading-relaxed">
+                    {template.toml}
+                  </pre>
+                </details>
+                <Button
+                  size="sm"
+                  className="shrink-0"
+                  disabled={!canSubmit || submitting}
+                  onClick={handleSubmit}
+                >
+                  {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  {isEdit ? tr("plugins.saveAction", "保存修改") : tr("plugins.createAction", "创建")}
+                </Button>
+              </div>
             </div>
+          </div>
 
+          {/* 表单滚动区：基本信息 + 类型专属分组 + 探测（上方固定区不动）。 */}
+          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-1 pb-2">
             {/* 基本信息——MCP 只取名称（插件 ID 由名称 slug 自动生成；图标/
              * 安装提示是 CLI/AGENT 元数据，MCP 不展示，v0.9.0 需求19 GUI 裁决）。 */}
             {pluginType === "mcp" ? (
@@ -1773,7 +1790,8 @@ export function PluginCreateDialog({
             )}
           </div>
 
-          <DialogFooter>
+          {/* 底部固定：schema 徽标 + 取消（创建按钮已上移至编辑区右上角）。 */}
+          <DialogFooter className="shrink-0">
             <div className="flex items-center gap-2 mr-auto">
               <Badge variant="secondary" className="text-[10px] gap-1">
                 <Bot className="h-3 w-3" />
@@ -1782,10 +1800,6 @@ export function PluginCreateDialog({
             </div>
             <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
               {tr("common.cancel", "取消")}
-            </Button>
-            <Button size="sm" disabled={!canSubmit || submitting} onClick={handleSubmit}>
-              {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              {isEdit ? tr("plugins.saveAction", "保存修改") : tr("plugins.createAction", "创建")}
             </Button>
           </DialogFooter>
         </DialogContent>
