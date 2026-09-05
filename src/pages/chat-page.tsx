@@ -6,6 +6,7 @@ import {
   useStreamingSessionIds,
 } from "@/hooks/use-stream-store";
 import { MessageView } from "@/components/sessions/message-view";
+import { TurnRail, buildTurnSummaries } from "@/components/sessions/turn-rail";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
 import { RenameTaskSessionDialog } from "@/components/sessions/rename-task-session-dialog";
 import { ChatInput, type ChatInputHandle, type StagedGuideApi } from "@/components/sessions/chat-input";
@@ -266,7 +267,9 @@ export function ChatPage({
   }, []);
 
   const messageAreaRef = useRef<HTMLDivElement>(null);
-  const [isUserMessageAbove, setIsUserMessageAbove] = useState(false);
+  // v0.9.1 需求5：当前阅读位置所在轮次（scroll-spy），驱动左缘横杠导航轨
+  // 高亮，替代原 isUserMessageAbove 上箭头显隐。
+  const [activeTurnIndex, setActiveTurnIndex] = useState(0);
   const isAwayFromBottomRef = useRef(false);
   const activeIdRef = useRef<string | null>(activeId);
   const taskLaunchOpenRef = useRef(taskLaunchOpen);
@@ -888,6 +891,10 @@ export function ChatPage({
     }
   }, [sessionMessages]);
 
+  // v0.9.1 需求5：轮次摘要（每轮用户问题 + agent 前几句回答）——横杠导航轨
+  // 的数据源；划分语义与 MessageView user 行对齐（详见 turn-rail.tsx）。
+  const turnSummaries = useMemo(() => buildTurnSummaries(sessionMessages), [sessionMessages]);
+
   // Track whether user has scrolled away from the bottom
   useEffect(() => {
     const el = messageAreaRef.current;
@@ -896,26 +903,34 @@ export function ChatPage({
       const awayFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight > 100;
       isAwayFromBottomRef.current = awayFromBottom;
       setIsAwayFromBottom(awayFromBottom);
+      // 活动轮次 = 视口上方最后一条用户消息的轮次（视口在第一轮内则为 0）。
+      // 作用域限定主会话列表（data-turn-scope="main"）：任务执行投影消息、
+      // 流式气泡与追问占位都不参与计数，保证与横杠列表同序。
       const containerTop = el.getBoundingClientRect().top;
-      const hasUserMessageAbove = Array.from(
-        el.querySelectorAll<HTMLElement>('[data-user-message="true"]'),
-      ).some((message) => message.getBoundingClientRect().top < containerTop - 1);
-      setIsUserMessageAbove(hasUserMessageAbove);
+      let active = 0;
+      el.querySelectorAll<HTMLElement>('[data-turn-scope="main"] [data-turn-index]').forEach((message) => {
+        if (message.getBoundingClientRect().top < containerTop - 1) {
+          const idx = Number(message.dataset.turnIndex);
+          if (!Number.isNaN(idx)) active = Math.max(active, idx);
+        }
+      });
+      setActiveTurnIndex(active);
     };
     onScroll();
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
   }, [selectedSession, sessionMessages]);
 
-  const handleScrollToPreviousUserMessage = useCallback(() => {
+  // v0.9.1 需求5：横杠导航跳转——滚动到第 index 轮的用户消息行（顶对齐
+  // 视口顶，与原上箭头跳转同语义）。
+  const handleJumpToTurn = useCallback((index: number) => {
     const el = messageAreaRef.current;
     if (!el) return;
-    const containerTop = el.getBoundingClientRect().top;
-    const previousMessages = Array.from(
-      el.querySelectorAll<HTMLElement>('[data-user-message="true"]'),
-    ).filter((message) => message.getBoundingClientRect().top < containerTop - 1);
-    const target = previousMessages[previousMessages.length - 1];
+    const target = Array.from(
+      el.querySelectorAll<HTMLElement>('[data-turn-scope="main"] [data-turn-index]'),
+    ).find((message) => Number(message.dataset.turnIndex) === index);
     if (!target) return;
+    const containerTop = el.getBoundingClientRect().top;
     const top = el.scrollTop + target.getBoundingClientRect().top - containerTop;
     el.scrollTo({ top, behavior: "smooth" });
   }, []);
@@ -3152,15 +3167,21 @@ export function ChatPage({
                     {t("task.execution.nodeStarting")}
                   </div>
                 ) : selectedSession && selectedSession !== "new" ? (
-                  <MessageView
-                    messages={sessionMessages}
-                    sessionId={selectedSession}
-                    searchQuery={searchQuery}
-                    searchNavigation={messageSearchNavigation}
-                    onSearchStatusChange={handleMessageSearchStatusChange}
-                    flat
-                    scrollContainerRef={messageAreaRef}
-                  />
+                  // v0.9.1 需求5：data-turn-scope="main" 圈定主会话列表——横杠
+                  // 导航轨的轮次定位/滚动侦测只在此作用域内查询，任务执行投影
+                  // 的第二个 MessageView 不参与计数。无样式普通块级 div，
+                  // 不影响内层 mx-auto 居中布局。
+                  <div data-turn-scope="main">
+                    <MessageView
+                      messages={sessionMessages}
+                      sessionId={selectedSession}
+                      searchQuery={searchQuery}
+                      searchNavigation={messageSearchNavigation}
+                      onSearchStatusChange={handleMessageSearchStatusChange}
+                      flat
+                      scrollContainerRef={messageAreaRef}
+                    />
+                  </div>
                 ) : null}
                 {/* T8-P1 三段合流（需求六）：执行阶段不是独立页面，而是在上方 conductor 会话
                     （需求 + 规划）末尾接一条「流程执行」分隔线，再往下追加执行内容——
@@ -3256,14 +3277,10 @@ export function ChatPage({
                 );
               })()}
                 </div>
-                {isUserMessageAbove ? (
-                  <button
-                    onClick={handleScrollToPreviousUserMessage}
-                    className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-border/40 bg-background/80 text-muted-foreground shadow-sm backdrop-blur-sm transition-all hover:bg-accent hover:text-foreground hover:border-border/60 hover:shadow-md opacity-60 hover:opacity-100"
-                    title={t("sessions.scrollToPreviousUserMessage")}
-                  >
-                    <ChevronUp className="h-4 w-4" strokeWidth={2.5} />
-                  </button>
+                {/* v0.9.1 需求5：左缘横杠导航轨（替代原上箭头逐条上翻）——
+                    每轮用户对话一条横杠，悬停预览问题/回答，点击跳转该轮。 */}
+                {turnSummaries.length > 0 && !taskSelectedNodeNotStarted && !taskSelectedNodeStarting ? (
+                  <TurnRail turns={turnSummaries} activeIndex={activeTurnIndex} onJump={handleJumpToTurn} />
                 ) : null}
               </div>
           </>

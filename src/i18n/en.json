@@ -179,7 +179,13 @@
     "matches": "matches",
     "previousMatch": "Previous match",
     "nextMatch": "Next match",
-    "scrollToPreviousUserMessage": "Go to the previous user message",
+    "turnRail": {
+      "label": "Conversation turns",
+      "jump": "Jump to turn {{index}}",
+      "question": "Question",
+      "answer": "Answer",
+      "empty": "(no text)"
+    },
     "copy": "Copy",
     "copied": "Copied",
     "chatPlaceholder": "Type a message to send to the current session...",

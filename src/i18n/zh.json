@@ -179,7 +179,13 @@
     "matches": "处匹配",
     "previousMatch": "上一处匹配",
     "nextMatch": "下一处匹配",
-    "scrollToPreviousUserMessage": "定位到上一条用户消息",
+    "turnRail": {
+      "label": "对话轮次导航",
+      "jump": "跳转到第 {{index}} 轮对话",
+      "question": "问题",
+      "answer": "回答",
+      "empty": "（无文本）"
+    },
     "copy": "复制",
     "copied": "已复制",
     "chatPlaceholder": "输入消息发送到当前会话...",

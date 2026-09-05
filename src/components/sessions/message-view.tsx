@@ -735,12 +735,21 @@ export const MessageView = memo(function MessageView({
     );
   }, [currentOcc, messages, renderingQuery, resultMap, searchState.offsets, roleResolver, toolNames]);
 
+  // v0.9.1 需求5：user 行轮次序号（实例内从 0 递增），横杠导航轨按
+  // [data-turn-index] 定位跳转；序号语义与 buildRenderRows 的 user 行一一
+  // 对应（纯 tool_result 用户消息被吞并进 assistant 组，不占序号）。
+  const turnIndexOf = new Map<number, number>();
+  rows.forEach((row) => {
+    if (row.kind === "user") turnIndexOf.set(row.messageIndex, turnIndexOf.size);
+  });
+
   const fullMessageList = (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
       {rows.map((row) => (
         <div
           key={rowKey(row, messages)}
           data-user-message={row.kind === "user" ? "true" : undefined}
+          data-turn-index={row.kind === "user" ? turnIndexOf.get(row.messageIndex) : undefined}
           style={ROW_STYLE}
         >
           {renderRow(row)}
