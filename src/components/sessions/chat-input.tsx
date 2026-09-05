@@ -1149,7 +1149,10 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   };
 
   return (
-    <div className={cn("mx-auto w-full max-w-[var(--message-content-max-width)] px-4 pb-4 pt-2", containerClassName)}>
+    // v0.9.1 需求4 测试期修复：输入框不随消息流自适应——固定 820px 上限保持
+    // 原宽高比（textarea 76–220px 高度档不变，变宽后比例失调），消息流单独走
+    // --message-content-max-width 的 max(820px, 70%)。
+    <div className={cn("mx-auto w-full max-w-[var(--chat-input-max-width)] px-4 pb-4 pt-2", containerClassName)}>
       <div
         className={cn(
           "relative flex flex-col overflow-visible rounded-2xl border border-input bg-card shadow-sm focus-within:ring-1 focus-within:ring-ring focus-within:border-ring transition-shadow",

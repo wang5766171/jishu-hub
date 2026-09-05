@@ -199,8 +199,11 @@ select option {
   --message-thinking-bg: hsl(240 5% 96% / 0.75);
   /* v0.9.1 需求4：会话内容列自适应——宽窗口（最大化）占第二栏 70%（mx-auto
      居中即两侧各 15%），初始/窄窗口 820px 保底（观感零回退），更窄沿用
-     w-full 收缩。12 处消费点（消息流/输入框/空态/任务起点/开始页）同源生效。 */
+     w-full 收缩。消息流/空态/任务起点/开始页等消费点同源生效。 */
   --message-content-max-width: max(820px, 70%);
+  /* v0.9.1 需求4 测试期修复：输入框独立宽度——不随消息流自适应，固定 820px
+     上限保持原宽高比（用户裁决：变宽后与高度档比例失调不协调）。 */
+  --chat-input-max-width: 820px;
   --tool-card-bg: hsl(0 0% 100%);
   --tool-card-header-bg: hsl(240 5% 97%);
   --tool-card-border: hsl(240 6% 86%);
