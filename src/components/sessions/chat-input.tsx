@@ -453,26 +453,18 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     });
   }, [message, onDraftChange]);
 
-  /** v0.9.1 需求4 修复四：mirror 视觉层跟随 textarea。草稿文本渲染两层
-   * （v0.8.1 需求7 pill mirror 方案：z-0 mirror 渲染 pill+文本，z-10 textarea
-   * 在 pill 模式下文字透明）——输入框改「固定高度 + 内部滚动」后，textarea
-   * 视口随光标滚动而 mirror 静止、textarea 出滚动条后换行宽度收窄而 mirror
-   * 不变，两层文本视口错位 → 长段文字粘贴出现重影（用户 2026-09-05 实测）。
-   * 同步两点：scrollTop 跟随；paddingRight 补偿滚动条占宽（换行宽度一致）。 */
-  const mirrorTextRef = useRef<HTMLDivElement>(null);
-  const syncMirrorToTextarea = useCallback(() => {
-    const textarea = textareaRef.current;
-    const mirror = mirrorTextRef.current;
-    if (!textarea || !mirror) return;
-    const scrollbar = textarea.offsetWidth - textarea.clientWidth;
-    mirror.style.paddingRight = `${16 + scrollbar}px`;
-    mirror.scrollTop = textarea.scrollTop;
-  }, []);
+  /** v0.9.1 需求4 修复五（重构，取代修复四的运行时同步）：「外滚内长」——
+   * 固定高度的滚动容器（inputScrollRef）内，mirror（in-flow 撑起内容高度）
+   * 与 textarea（absolute 覆盖同几何、自身 overflow hidden 永不内部滚动）随
+   * 同一条滚动条整体滚动。两层对齐由 DOM 构造保证，无需 scrollTop/滚动条
+   * 占宽逐项同步（修复四的同步方案在 WebView2 下滚动后仍出现两层视口错位
+   * 重影，用户 2026-09-05 二次实测）。 */
+  const inputScrollRef = useRef<HTMLDivElement>(null);
 
   /** v0.9.1 需求4 测试期修复二/四：输入框高度随宽度等比伸缩——基准：初始
    * 内容宽 820px ↔ 空态高 76px；宽度自适应（70%）后高度同比变高（用户裁决：
    * 保持初始宽高比）；窄于基准不缩。修复四（用户裁决）：高度**不受内容量
-   * 影响**——恒定在比例地板，内容超出内部滚动（textarea overflow-y: auto）。
+   * 影响**——恒定在比例地板，内容超出由滚动容器整体滚动。
    *
    * 宽度守卫（修复三）：写高度会改变容器尺寸、再次触发 ResizeObserver——
    * 回声通知宽度未变，跳过即断开回环（否则浏览器报「ResizeObserver loop
@@ -480,18 +472,29 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   const lastProportionalWidthRef = useRef(0);
   const syncProportionalInputHeight = useCallback(() => {
     const root = inputRootRef.current;
-    const textarea = textareaRef.current;
-    if (!root || !textarea) return;
+    const scroller = inputScrollRef.current;
+    if (!root || !scroller) return;
     const width = root.clientWidth;
     if (width <= 0 || width === lastProportionalWidthRef.current) return;
     lastProportionalWidthRef.current = width;
     const scale = Math.max(1, width / 820);
     const h = Math.round(76 * scale);
-    textarea.style.height = `${h}px`;
-    textarea.style.minHeight = `${h}px`;
-    textarea.style.maxHeight = `${h}px`;
-    syncMirrorToTextarea();
-  }, [syncMirrorToTextarea]);
+    scroller.style.height = `${h}px`;
+    scroller.style.minHeight = `${h}px`;
+    scroller.style.maxHeight = `${h}px`;
+  }, []);
+
+  /** 键入/回填后跟随光标：光标在末尾（常见键入与停止回填场景）滚到底；
+   * 中间位置不打断用户滚轮（textarea 全内容高度、自身不滚，光标定位由
+   * 用户滚动控制）。 */
+  const scrollInputCaretIntoView = useCallback(() => {
+    const scroller = inputScrollRef.current;
+    const textarea = textareaRef.current;
+    if (!scroller || !textarea) return;
+    if ((textarea.selectionStart ?? 0) >= textarea.value.length - 1) {
+      scroller.scrollTop = scroller.scrollHeight;
+    }
+  }, []);
 
   // 容器宽度变化（窗口缩放/最大化/侧栏开合）即时重算；挂载时先同步一次。
   // RO 回调走宽度守卫（自身写高度引发的回声通知宽度未变，跳过断开回环）。
@@ -527,14 +530,12 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
           const pos = next.length;
           textarea.setSelectionRange(pos, pos);
           textarea.focus();
-          // 程序性填文（非 onInput 路径）后滚到末尾（高度恒定 + 内部滚动，
-          // 尾部可见），mirror 跟随。
-          textarea.scrollTop = textarea.scrollHeight;
-          syncMirrorToTextarea();
+          // 程序性回填（末尾）后滚动容器跟到底，尾部可见（修复五结构）。
+          scrollInputCaretIntoView();
         });
       },
     }),
-    [onDraftChange, syncMirrorToTextarea],
+    [onDraftChange, scrollInputCaretIntoView],
   );
 
   // Expose the staging-area lifecycle to the parent (Route 2: auto-send at
@@ -1304,50 +1305,56 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         )}
 
         {/* v0.8.1 需求7 内联工具 pill：mirror 层方案——textarea 文字透明
-            （caret 仍可见），下方同字体同 padding 视觉层把 `@[显示名]`
-            token 渲染成 pill，其余文本原样显示。 */}
-        <div className="relative min-h-[76px]">
-          <div
-            ref={mirrorTextRef}
-            aria-hidden
-            className="pointer-events-none absolute inset-0 z-0 w-full overflow-hidden whitespace-pre-wrap break-words px-4 py-3 text-sm"
-          >
-            {renderMirrorText(message, sessionTools)}
+            （caret 仍可见），同字体同 padding 视觉层把 `@[显示名]` token
+            渲染成 pill，其余文本原样显示。
+            v0.9.1 需求4 修复五「外滚内长」重构：固定高度滚动容器内，
+            mirror（in-flow 撑内容高度）与 textarea（absolute 覆盖同几何、
+            overflow hidden 自身不滚）随同一条滚动条整体滚动——两层对齐由
+            DOM 构造保证（滚动条占宽对两层同时生效），杜绝滚动后重影；高度
+            恒定不受内容量影响，内容过多整体上下滚动（用户裁决）。 */}
+        <div
+          ref={inputScrollRef}
+          className="min-h-[76px] overflow-x-hidden overflow-y-auto"
+        >
+          <div className="relative">
+            <div
+              aria-hidden
+              className="pointer-events-none whitespace-pre-wrap break-words px-4 py-3 text-sm"
+            >
+              {renderMirrorText(message, sessionTools)}
+            </div>
+            <textarea
+              ref={textareaRef}
+              value={message}
+              onChange={(e) => {
+                if (historyPos !== null) {
+                  // 用户在历史浏览中编辑：退出浏览模式，从当前显示文本继续
+                  setHistoryPos(null);
+                  draftBeforeHistoryRef.current = "";
+                }
+                const value = e.target.value;
+                const caret = e.target.selectionStart ?? value.length;
+                setMessage(value);
+                updateSuggestions(value, caret);
+                onDraftChange?.(value);
+              }}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              placeholder={placeholder}
+              disabled={disabled}
+              rows={1}
+              className={cn(
+                "absolute inset-0 z-10 h-full w-full resize-none bg-transparent px-4 py-3 text-sm focus:outline-none",
+                messageHasToolToken(message) && "text-transparent caret-foreground",
+              )}
+              style={{ overflow: "hidden" }}
+              onInput={() => {
+                // 需求4 修复五：光标在末尾时滚动容器跟到底（中间位置不打断
+                // 用户滚轮）。
+                scrollInputCaretIntoView();
+              }}
+            />
           </div>
-          <textarea
-            ref={textareaRef}
-            value={message}
-            onChange={(e) => {
-              if (historyPos !== null) {
-                // 用户在历史浏览中编辑：退出浏览模式，从当前显示文本继续
-                setHistoryPos(null);
-                draftBeforeHistoryRef.current = "";
-              }
-              const value = e.target.value;
-              const caret = e.target.selectionStart ?? value.length;
-              setMessage(value);
-              updateSuggestions(value, caret);
-              onDraftChange?.(value);
-            }}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            placeholder={placeholder}
-            disabled={disabled}
-            rows={1}
-            className={cn(
-              "relative z-10 w-full resize-none bg-transparent px-4 py-3 text-sm focus:outline-none min-h-[76px]",
-              messageHasToolToken(message) && "text-transparent caret-foreground",
-            )}
-            style={{ height: "auto", overflowX: "hidden", overflowY: "auto" }}
-            onInput={() => {
-              // 需求4 修复四：高度恒定（宽度同步负责），内容滚动后 mirror
-              // 跟随（scrollTop + 滚动条占宽补偿），杜绝两层文本重影。
-              syncMirrorToTextarea();
-            }}
-            onScroll={() => {
-              syncMirrorToTextarea();
-            }}
-          />
         </div>
 
         {/* v0.8.0 需求4 补充：底部两侧允许换行 + min-w-0——右侧预览顶开
