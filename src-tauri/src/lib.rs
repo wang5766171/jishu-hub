@@ -296,6 +296,8 @@ pub fn run() {
             commands::agents::plugin_remove,
             commands::agents::plugin_reload,
             commands::plugin_panel::plugin_panel_run,
+            commands::skill_import::skill_import_sources,
+            commands::skill_import::skill_import_file,
             commands::agents::plugin_create,
             commands::agents::plugin_get,
             commands::agents::plugin_update,

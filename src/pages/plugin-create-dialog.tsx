@@ -1177,6 +1177,63 @@ export function PluginCreateDialog({
 
   /** MCP JSON 批量导入（需求19 第二轮）：多 server → 多插件，逐条落盘。 */
   const [batchOpen, setBatchOpen] = useState(false);
+
+  /** 需求20 第三轮：Skill 导入——其他智能体 skill 清单弹层 + 文件导入。 */
+  const [skillSourcesOpen, setSkillSourcesOpen] = useState(false);
+  const [skillSources, setSkillSources] = useState<
+    Array<{ agent: string; name: string; description: string; body: string; path: string }>
+  >([]);
+  const [skillSourcesLoading, setSkillSourcesLoading] = useState(false);
+
+  const applySkillImport = (imp: { name: string; description: string; body: string }) => {
+    const slug =
+      imp.name
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9_-]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "skill";
+    // 预填仅新建且为空时（编辑模式 id 锁定不可覆盖）。
+    patch({
+      skillDescription: imp.description,
+      skillBody: imp.body,
+      ...(isEdit || form.id.trim() ? {} : { id: slug }),
+      ...(form.displayName.trim() ? {} : { displayName: imp.name }),
+    });
+  };
+
+  const openSkillSources = async () => {
+    // 再点按钮 = 收起弹层。
+    if (skillSourcesOpen) {
+      setSkillSourcesOpen(false);
+      return;
+    }
+    setSkillSourcesOpen(true);
+    setSkillSourcesLoading(true);
+    try {
+      setSkillSources(
+        (await invokeCommand<
+          Array<{ agent: string; name: string; description: string; body: string; path: string }>
+        >("skill_import_sources")) ?? [],
+      );
+    } catch (err) {
+      setError(String(err));
+      setSkillSourcesOpen(false);
+    } finally {
+      setSkillSourcesLoading(false);
+    }
+  };
+
+  const importSkillFromFile = async () => {
+    try {
+      const imp = await invokeCommand<{ name: string; description: string; body: string }>(
+        "skill_import_file",
+      );
+      applySkillImport(imp);
+    } catch (err) {
+      if (!String(err).includes("USER_CANCELLED")) setError(String(err));
+    }
+  };
+
   const [batchJson, setBatchJson] = useState("");
   const [importing, setImporting] = useState(false);
   const batchParsed = useMemo(
@@ -1713,7 +1770,74 @@ export function PluginCreateDialog({
                 </div>
               ) : (
                 <div className="rounded-md border border-border/50 p-3 space-y-3">
-                  <p className="text-xs font-medium">{tr("plugins.skillSection", "Skill 声明")}</p>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-medium">{tr("plugins.skillSection", "Skill 声明")}</p>
+                    <div className="relative flex items-center gap-1.5">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => void openSkillSources()}
+                      >
+                        <Sparkles className="h-3 w-3" />
+                        {tr("plugins.skillImportSources", "从其他智能体导入")}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => void importSkillFromFile()}
+                      >
+                        <FileJson className="h-3 w-3" />
+                        {tr("plugins.skillImportFile", "从文件导入")}
+                      </Button>
+                      {skillSourcesOpen && (
+                        <>
+                          <div
+                            className="fixed inset-0 z-[80]"
+                            onClick={() => setSkillSourcesOpen(false)}
+                          />
+                          <div className="absolute right-0 top-[calc(100%+0.4rem)] z-[90] w-80 rounded-xl border border-border bg-popover p-1.5 shadow-xl">
+                          <div className="max-h-64 overflow-y-auto">
+                            {skillSourcesLoading ? (
+                              <p className="px-2.5 py-2 text-xs text-muted-foreground">
+                                <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
+                                {tr("common.loading", "加载中…")}
+                              </p>
+                            ) : skillSources.length === 0 ? (
+                              <p className="px-2.5 py-2 text-xs text-muted-foreground">
+                                {tr("plugins.skillImportEmpty", "未发现可导入的 skill")}
+                              </p>
+                            ) : (
+                              skillSources.map((src) => (
+                                <button
+                                  key={src.path}
+                                  type="button"
+                                  title={src.path}
+                                  onClick={() => {
+                                    applySkillImport(src);
+                                    setSkillSourcesOpen(false);
+                                  }}
+                                  className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left transition-fast hover:bg-accent/60"
+                                >
+                                  <span className="flex items-center gap-1.5 text-xs text-foreground">
+                                    <span className="truncate font-medium">{src.name}</span>
+                                    <Badge variant="outline" className="px-1 text-[9px] text-muted-foreground">
+                                      {src.agent}
+                                    </Badge>
+                                  </span>
+                                  <span className="line-clamp-2 text-[10px] leading-snug text-muted-foreground">
+                                    {src.description || src.path}
+                                  </span>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
                   <Labeled labelKey="plugins.fSkillDesc" fallback="描述 *">
                     <Input
                       value={form.skillDescription}
