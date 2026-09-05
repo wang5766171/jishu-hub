@@ -1316,7 +1316,10 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
           ref={inputScrollRef}
           className="min-h-[76px] overflow-x-hidden overflow-y-auto"
         >
-          <div className="relative">
+          {/* 修复五补充：min-h-full——空草稿时 mirror（in-flow）只剩 padding
+              高度，absolute 的 textarea 会塌到 ~24px、placeholder 只露半行；
+              内层以滚动容器高度为最小值，空态铺满、长文超出照常滚动。 */}
+          <div className="relative min-h-full">
             <div
               aria-hidden
               className="pointer-events-none whitespace-pre-wrap break-words px-4 py-3 text-sm"
