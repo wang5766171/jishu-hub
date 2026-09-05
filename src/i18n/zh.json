@@ -496,7 +496,8 @@
       "write": "写入",
       "grep": "搜索内容",
       "find": "查找文件",
-      "ls": "列目录"
+      "ls": "列目录",
+      "powershell": "PowerShell"
     },
     "toolMode": {
       "full": {

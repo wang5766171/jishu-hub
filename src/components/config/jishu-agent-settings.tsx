@@ -6,7 +6,8 @@
 //    阈值按窗口百分比，默认 90%；项目级 .pi/settings.json 深合并覆盖）
 //    （项目级 .pi/settings.json 深合并覆盖）
 //  - defaultTools：新会话初始激活的内置工具（全集 read/bash/edit/write/
-//    grep/find/ls；未设置时 Pi 默认 read/bash/edit/write）。类型选择是
+//    grep/find/ls + powershell（Windows 专属可选，v0.9.1 需求6 配置页开关；
+//    未设置时 Pi 默认 read/bash/edit/write）。类型选择是
 //    defaultTools 的前端预设（默认=自定义勾选；只读/全部=固定工具集），
 //    落盘始终是这一个 Pi 原生字段——Pi 无 permission/bypassPermissions 配置
 //  - retry：{enabled, maxRetries, baseDelayMs} 模型请求重试
@@ -30,7 +31,19 @@ const PI_BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 const PI_DEFAULT_TOOLS = ["read", "bash", "edit", "write"] as readonly string[];
 /** 只读预设（同 PiRpc readonly 模式白名单：全集去掉 bash/edit/write）。 */
 const PI_READONLY_TOOLS = ["read", "grep", "find", "ls"] as readonly string[];
-const PI_ALL_TOOLS = PI_BUILTIN_TOOLS as readonly string[];
+
+/** v0.9.1 需求6：工具勾选目录（决定"全部"预设与自定义勾选范围）。
+ *  powershell 是 pi 的 Windows 专属可选工具——pi utils/shell.ts 在非 win32
+ *  平台直接抛错，故仅 Windows 加入目录（与三配置模板的 cfg!(windows)
+ *  编译期追加同源分流）。抽纯函数便于测试。 */
+export function toolCatalogFor(isWindows: boolean): readonly string[] {
+  return isWindows ? [...PI_BUILTIN_TOOLS, "powershell"] : [...PI_BUILTIN_TOOLS];
+}
+
+/** WebView2 的 UA 含 "Windows NT"，macOS WKWebView 不含。 */
+const IS_WINDOWS = typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent);
+const PI_TOOL_CATALOG = toolCatalogFor(IS_WINDOWS);
+const PI_ALL_TOOLS = PI_TOOL_CATALOG;
 
 /** defaultTools 预设类型（v0.7.5 需求1 迭代二）：类型只是前端预设，
  *  落盘始终是 Pi 原生的 defaultTools 单字段——default=自定义勾选，
@@ -167,7 +180,7 @@ export function JishuAgentSettingsBlock({
   const toolsEditable = toolPreset === "default";
   const toggleTool = (name: string, on: boolean) => {
     const next = on
-      ? PI_BUILTIN_TOOLS.filter((t) => displayTools.includes(t) || t === name)
+      ? PI_TOOL_CATALOG.filter((t) => displayTools.includes(t) || t === name)
       : displayTools.filter((t) => t !== name);
     setTools(next);
   };
@@ -321,7 +334,7 @@ export function JishuAgentSettingsBlock({
           </select>
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
-          {PI_BUILTIN_TOOLS.map((name) => (
+          {PI_TOOL_CATALOG.map((name) => (
             <label
               key={name}
               className={`inline-flex items-center gap-1.5 ${toolsEditable ? "" : "opacity-70"}`}

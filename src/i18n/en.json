@@ -496,7 +496,8 @@
       "write": "Write",
       "grep": "Grep",
       "find": "Find",
-      "ls": "List"
+      "ls": "List",
+      "powershell": "PowerShell"
     },
     "toolMode": {
       "full": {
