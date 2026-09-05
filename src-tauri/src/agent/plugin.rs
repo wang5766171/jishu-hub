@@ -52,6 +52,9 @@ pub struct PluginDescriptor {
     pub has_panel: bool,
     /// 声明了 [skill] 段（v0.9.0 需求20：skill 分发服务的来源）。
     pub has_skill: bool,
+    /// 声明了 [pi_extension] 段（v0.8.1 需求10：自适应/深度形态——前端
+    /// 「自定义插件」分类依据之一，v0.9.0 需求19 第三轮）。
+    pub has_pi_extension: bool,
     /// [panel] 声明详情（has_panel 时非 None；前端面板 Dialog 数据源）。
     pub panel: Option<PanelDecl>,
     /// 系统插件（v0.9.0 需求1 二期）：hub 随包分发、启动幂等重部署——
@@ -397,6 +400,7 @@ pub fn assemble(
             has_mcp: false,
             has_panel: false,
             has_skill: false,
+            has_pi_extension: false,
             panel: None,
             system: false,
         });
@@ -424,6 +428,7 @@ pub fn assemble(
             has_mcp: false,
             has_panel: false,
             has_skill: false,
+            has_pi_extension: false,
             panel: None,
             system: false,
         });
@@ -445,6 +450,7 @@ pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescrip
         has_mcp: plugin.file.mcp.is_some(),
         has_panel: plugin.file.panel.is_some(),
         has_skill: plugin.file.skill.is_some(),
+        has_pi_extension: plugin.file.pi_extension.is_some(),
         panel: plugin.file.panel.as_ref().map(|p| PanelDecl {
             title: p.title.clone(),
             items: p

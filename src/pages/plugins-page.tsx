@@ -35,6 +35,8 @@ interface PluginDescriptor {
   has_mcp?: boolean;
   /** v0.9.0 需求20：声明了 [skill] 段（skill 分发服务来源）。 */
   has_skill?: boolean;
+  /** v0.9.0 需求19 第三轮：声明了 [pi_extension] 段（自适应/深度形态插件）。 */
+  has_pi_extension?: boolean;
   /** v0.9.0 需求8：声明式面板（list 只读模板 MVP）。 */
   has_panel?: boolean;
   panel?: {
@@ -65,6 +67,9 @@ function categoryOf(p: PluginDescriptor): PluginCategory {
   if (p.kind === "tool") {
     if (p.has_mcp) return "mcp";
     if (p.has_skill) return "skill";
+    // 自适应/深度形态插件（[pi_extension]，如需求讨论/流程规划）不属于
+    // 三类工具形态——归「自定义插件」（GUI 反馈第三轮：原有插件要可见）。
+    if (p.has_pi_extension) return "custom";
     return "cli";
   }
   // 自建 manifest 智能体单列「自定义插件」（独立插拔），与内置智能体分列。
