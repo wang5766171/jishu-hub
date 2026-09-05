@@ -52,6 +52,13 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
   const shortPath = path.length > 60 ? "..." + path.slice(path.length - 55) : path;
   const duration = call.startedAt && call.endedAt ? ((call.endedAt - call.startedAt) / 1000).toFixed(1) + "s" : null;
   const isFile = call.kind.startsWith("file_") && path;
+  // v0.9.1 需求3 #3 测试期补充：powershell 与 bash 共用 shell_exec 卡片
+  // （同款渲染/审批），但徽标按真实工具名显示——否则 PowerShell 原生调用
+  // 顶着 "Bash" 徽标，用户实测误判成"还是 bash 套壳"。
+  const headerLabel =
+    call.kind === "shell_exec" && call.toolName.toLowerCase() === "powershell"
+      ? "PowerShell"
+      : kindLabel(call.kind);
 
   return (
     <div
@@ -67,7 +74,7 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
       >
         <KindIcon kind={call.kind} />
         <span className="text-[0.73em] font-semibold text-muted-foreground uppercase tracking-wide">
-          {kindLabel(call.kind)}
+          {headerLabel}
         </span>
         <span className="flex-1 font-mono text-[0.95em] truncate text-[var(--color-foreground)]" title={path}>
           {shortPath}
