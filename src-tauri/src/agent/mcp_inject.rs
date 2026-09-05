@@ -1,9 +1,12 @@
-//! 四家智能体 MCP 配置注入/回收（v0.9.0 需求1 P2，方案 b 聚合代理）。
+//! 四家智能体 MCP 配置注入/回收（v0.9.0 需求1 P2，方案 b 聚合代理；
+//! 二期门控反转）。
 //!
-//! 有启用的 [mcp] 插件时，向四家（claude-code / codex / opencode / jishu-self）
-//! 配置各写入一条 `jishu-hub` 条目（command = jishu-cli 绝对路径，
-//! args = ["mcp","serve"]）；全部 MCP 插件禁用时回收该条目。工具增删不在
-//! 配置层发生——由聚合 server 每次 tools/list 动态生效（条目常驻）。
+//! MCP 解析器（mcp-resolver 系统插件，默认安装+启用）开 → 向四家
+//!（claude-code / codex / opencode / jishu-self）配置各写入一条
+//! `jishu-hub` 条目（command = jishu-cli 绝对路径，args = ["mcp","serve"]）；
+//! 解析器关 → 回收该条目。有无 [mcp] 插件不再影响条目（一期「有插件才
+//! 注入」使内置 hub 工具在无插件时不可达，属倒挂；工具增删由聚合 server
+//! 每次 tools/list 动态生效，条目常驻）。
 //!
 //! 同名保护：用户自建的 `jishu-hub` 条目（args 形态不符）不覆盖、不回收，
 //! 记 Protected 状态。四家写入通道均带备份与原子写（既有实现）。
@@ -12,7 +15,7 @@
 
 use serde_json::{json, Value};
 
-use crate::agent::mcp_server::{load_mcp_plugin_decls, HUB_MCP_ENTRY_NAME};
+use crate::agent::mcp_server::HUB_MCP_ENTRY_NAME;
 use crate::agent::traits::ConfigAdapter;
 
 /// hub 条目的识别签名：args 前两项恰为 mcp / serve（command 路径随安装
@@ -99,11 +102,10 @@ pub fn resolve_cli_path() -> Result<String, String> {
         .map(|p| p.to_string_lossy().to_string())
 }
 
-/// 同步入口：有启用的 [mcp] 插件 → 四家 upsert；无 → 四家 remove。
-/// 单家失败不阻断其余（各通道独立文件），失败记入报告（Error: …）。
+/// 同步入口（二期门控反转）：MCP 解析器（mcp-resolver，默认启用）开 →
+/// 四家 upsert；关 → 四家 remove。有无 [mcp] 插件不影响条目。
 pub fn sync_hub_mcp_entries() -> SyncReport {
-    let has_mcp_plugins = !load_mcp_plugin_decls().is_empty();
-    sync_all(has_mcp_plugins)
+    sync_all(crate::agent::plugin::is_mcp_resolver_enabled())
 }
 
 /// 强制回收（`jishu-cli mcp remove`）：不论插件状态，四家移除自家条目。
@@ -117,7 +119,7 @@ pub fn force_inject_all() -> SyncReport {
     sync_all(true)
 }
 
-fn sync_all(has_mcp_plugins: bool) -> SyncReport {
+fn sync_all(resolver_on: bool) -> SyncReport {
     let mut report = SyncReport::default();
 
     // claude-code：结构化 struct 面（load_config/save_config of ClaudeConfig）。
@@ -128,7 +130,7 @@ fn sync_all(has_mcp_plugins: bool) -> SyncReport {
                 .get(HUB_MCP_ENTRY_NAME)
                 .and_then(|e| e.args.clone())
                 .unwrap_or_default();
-            let status = if has_mcp_plugins {
+            let status = if resolver_on {
                 match servers.get(HUB_MCP_ENTRY_NAME) {
                     None => "Injected",
                     Some(_) if looks_like_hub_entry(&args_now) => "Updated",
@@ -168,12 +170,12 @@ fn sync_all(has_mcp_plugins: bool) -> SyncReport {
     // 表，增删均生效）。
     report.codex = sync_via_adapter(
         &crate::agent::adapters::codex::CodexAdapter::new(),
-        has_mcp_plugins,
+        resolver_on,
     );
 
     // opencode：注入走 adapter（merge 语义可增改）；回收必须走原始层删除
     // （merge 只增不删，见 remove_mcp_entry_raw 注释）。
-    report.opencode = if has_mcp_plugins {
+    report.opencode = if resolver_on {
         sync_via_adapter(
             &crate::agent::adapters::opencode::OpencodeAdapter::new(),
             true,
@@ -190,7 +192,7 @@ fn sync_all(has_mcp_plugins: bool) -> SyncReport {
     // save_jishu_config 内部同步 mcp.json（pi-mcp-adapter 读取面）。
     report.jishu_self = match crate::agent::jishu_self::config::load_jishu_config() {
         Ok(mut v) => {
-            let status = sync_json_value(&mut v, "mcp_servers", has_mcp_plugins);
+            let status = sync_json_value(&mut v, "mcp_servers", resolver_on);
             match crate::agent::jishu_self::config::save_jishu_config(&v) {
                 Ok(()) => status.to_string(),
                 Err(e) => format!("Error: {e}"),
@@ -210,8 +212,8 @@ fn sync_all(has_mcp_plugins: bool) -> SyncReport {
     report
 }
 
-fn sync_json_value(v: &mut Value, servers_key: &str, has_mcp_plugins: bool) -> &'static str {
-    if has_mcp_plugins {
+fn sync_json_value(v: &mut Value, servers_key: &str, resolver_on: bool) -> &'static str {
+    if resolver_on {
         match resolve_cli_path() {
             Ok(cli) => upsert_entry_json(v, servers_key, &cli),
             Err(e) => {
@@ -226,11 +228,11 @@ fn sync_json_value(v: &mut Value, servers_key: &str, has_mcp_plugins: bool) -> &
 
 fn sync_via_adapter(
     adapter: &dyn ConfigAdapter,
-    has_mcp_plugins: bool,
+    resolver_on: bool,
 ) -> String {
     match adapter.load_config() {
         Ok(mut v) => {
-            let status = sync_json_value(&mut v, "mcpServers", has_mcp_plugins);
+            let status = sync_json_value(&mut v, "mcpServers", resolver_on);
             if status == "Error" {
                 return "Error".to_string();
             }

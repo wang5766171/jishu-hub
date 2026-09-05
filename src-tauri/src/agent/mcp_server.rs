@@ -1,26 +1,34 @@
-//! Hub MCP 聚合 server（v0.9.0 需求1 P2，方案 b——用户裁决主案）。
+//! Hub MCP 聚合 server（v0.9.0 需求1 P2，方案 b——用户裁决主案；二期三传输）。
 //!
 //! `jishu-cli mcp serve` 启动本模块：一个 stdio MCP server（换行分隔
 //! JSON-RPC 2.0），聚合两层工具——
 //! ①hub 内置工具（projects/models/usage/memory 数据面直读，无 Tauri 依赖）；
-//! ②启用的 [mcp] 声明插件（外部 MCP stdio server，lazy spawn + 转发，
-//!   工具名以 `<plugin_id>__<tool>` 命名空间隔离）。
-//! 四家智能体只需配置一条 `jishu-hub` 条目（见 mcp_inject.rs），插件启停
-//! 经每次 tools/list 重读清单动态生效（条目常驻）。
+//! ②启用的 [mcp] 声明插件（外部 MCP server，lazy 连接 + 转发，工具名以
+//!   `<plugin_id>__<tool>` 命名空间隔离）。二期起分传输（02 §七 M8）：
+//!   stdio → spawn 子进程；http → Streamable HTTP（POST JSON-RPC +
+//!   Mcp-Session-Id）；sse → 旧式 SSE（GET 流 + endpoint 事件 + POST）。
+//! 四家智能体只需配置一条 `jishu-hub` 条目（见 mcp_inject.rs；注入门控 =
+//! mcp-resolver 系统插件启用态），插件启停经每次 tools/list 重读清单动态
+//! 生效（条目常驻）。
 //!
 //! 协议面（MVP 最小实现）：initialize / notifications/initialized /
 //! tools/list / tools/call / ping；未知方法回 -32601。
-//! 已知限制（02 §五）：子进程读写为阻塞式（单插件挂起会阻塞当次调用）；
-//! resources/prompts 面与 tools/list_changed 通知留后续。
+//! 已知限制（02 §十）：插件读写为阻塞式（单插件挂起会阻塞当次调用；
+//! http/sse 请求超时 30s）；resources/prompts 面与 tools/list_changed 通知
+//! 留后续。reqwest blocking 客户端只能在无 tokio runtime 的上下文构造
+//! （CLI serve 进程 / 普通 #[test]）。
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::time::Duration;
 
 use crate::agent::tool_plugin;
 
 pub const HUB_MCP_ENTRY_NAME: &str = "jishu-hub";
 const PROTOCOL_VERSION: &str = "2024-11-05";
+/// 远程插件（http/sse）单请求超时（参考图「超时 MS」字段不入本期，固定值）。
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
 // 工具定义与命名空间
@@ -165,12 +173,65 @@ pub fn call_builtin_tool(name: &str, arguments: &Value) -> Result<String, String
 // 插件声明（可注入数据源，测试用）
 // ---------------------------------------------------------------------------
 
+/// 启用的 MCP 插件声明（分传输，02 §七 M8）。stdio = 本地子进程；
+/// http / sse = 远程服务（headers 随连接发送）。
 #[derive(Debug, Clone)]
-pub struct McpPluginDecl {
-    pub plugin_id: String,
-    pub command: String,
-    pub args: Vec<String>,
-    pub env: Vec<(String, String)>,
+pub enum McpPluginDecl {
+    Stdio {
+        plugin_id: String,
+        command: String,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    },
+    Http {
+        plugin_id: String,
+        url: String,
+        headers: Vec<(String, String)>,
+    },
+    Sse {
+        plugin_id: String,
+        url: String,
+        headers: Vec<(String, String)>,
+    },
+}
+
+impl McpPluginDecl {
+    pub fn plugin_id(&self) -> &str {
+        match self {
+            McpPluginDecl::Stdio { plugin_id, .. }
+            | McpPluginDecl::Http { plugin_id, .. }
+            | McpPluginDecl::Sse { plugin_id, .. } => plugin_id,
+        }
+    }
+}
+
+/// schema [mcp] 段 → 传输声明（纯映射，可单测）。
+pub fn decl_from_section(
+    plugin_id: &str,
+    mcp: &crate::agent::manifest::schema::McpSection,
+) -> McpPluginDecl {
+    use crate::agent::manifest::schema::McpTransportKind;
+    fn pairs<V>(m: Option<std::collections::HashMap<String, V>>) -> Vec<(String, V)> {
+        m.map(|m| m.into_iter().collect()).unwrap_or_default()
+    }
+    match mcp.transport {
+        McpTransportKind::Stdio => McpPluginDecl::Stdio {
+            plugin_id: plugin_id.to_string(),
+            command: mcp.command.clone().unwrap_or_default(),
+            args: mcp.args.clone().unwrap_or_default(),
+            env: pairs(mcp.env.clone()),
+        },
+        McpTransportKind::Http => McpPluginDecl::Http {
+            plugin_id: plugin_id.to_string(),
+            url: mcp.url.clone().unwrap_or_default(),
+            headers: pairs(mcp.headers.clone()),
+        },
+        McpTransportKind::Sse => McpPluginDecl::Sse {
+            plugin_id: plugin_id.to_string(),
+            url: mcp.url.clone().unwrap_or_default(),
+            headers: pairs(mcp.headers.clone()),
+        },
+    }
 }
 
 /// 生产数据源：启用的 [mcp] 声明工具插件（读取 plugins.json disabled 集）。
@@ -179,81 +240,117 @@ pub fn load_mcp_plugin_decls() -> Vec<McpPluginDecl> {
     tool_plugin::load_tool_plugins(&disabled)
         .into_iter()
         .filter(|p| p.enabled)
-        .filter_map(|p| {
-            let mcp = p.file.mcp.as_ref()?;
-            Some(McpPluginDecl {
-                plugin_id: p.id().to_string(),
-                command: mcp.command.clone(),
-                args: mcp.args.clone().unwrap_or_default(),
-                env: mcp
-                    .env
-                    .clone()
-                    .map(|m| m.into_iter().collect::<Vec<_>>())
-                    .unwrap_or_default(),
-            })
-        })
+        .filter_map(|p| p.file.mcp.as_ref().map(|m| decl_from_section(p.id(), m)))
         .collect()
 }
 
 // ---------------------------------------------------------------------------
-// 子进程 MCP 客户端
+// 分传输插件客户端（stdio 子进程 / Streamable HTTP / 旧式 SSE）
 // ---------------------------------------------------------------------------
 
-struct ChildClient {
+/// 下游插件连接的统一抽象：request = 有 id 请求-响应；notify = 单向通知
+/// （stdio 写行；http/sse POST 无 id 报文，不等响应）。握手
+/// （initialize → notifications/initialized → tools/list）为默认实现共用。
+trait PluginTransport {
+    fn request(&mut self, method: &str, params: Value) -> Result<Value, String>;
+    fn notify(&mut self, method: &str) -> Result<(), String> {
+        let _ = method;
+        Ok(())
+    }
+    /// 回收连接（stdio kill 子进程；http/sse 连接对象随 drop 关闭）。
+    fn kill(&mut self) {}
+    fn handshake(&mut self) -> Result<Vec<McpToolDef>, String> {
+        self.request(
+            "initialize",
+            json!({
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": { "name": "jishu-hub-mcp", "version": env!("CARGO_PKG_VERSION") },
+            }),
+        )?;
+        let _ = self.notify("notifications/initialized");
+        let result = self.request("tools/list", json!({}))?;
+        Ok(parse_tool_list(&result))
+    }
+}
+
+/// JSON-RPC 响应消息 → result（error 字段转 Err）。
+fn message_result(v: &Value, plugin_id: &str) -> Result<Value, String> {
+    if let Some(err) = v.get("error") {
+        return Err(format!(
+            "plugin `{plugin_id}` error: {}",
+            err.get("message").and_then(Value::as_str).unwrap_or("?")
+        ));
+    }
+    Ok(v.get("result").cloned().unwrap_or(Value::Null))
+}
+
+struct StdioChild {
     plugin_id: String,
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     next_id: i64,
-    /// 子 server 的原始工具清单（未命名空间化）。
-    tools: Vec<McpToolDef>,
 }
 
-impl ChildClient {
-    fn spawn(decl: &McpPluginDecl) -> Result<ChildClient, String> {
+impl StdioChild {
+    fn spawn(decl: &McpPluginDecl) -> Result<StdioChild, String> {
+        let McpPluginDecl::Stdio {
+            plugin_id,
+            command,
+            args,
+            env,
+        } = decl
+        else {
+            return Err(format!(
+                "stdio transport expected for plugin `{}`",
+                decl.plugin_id()
+            ));
+        };
         // Windows：npm/npx 等需 cmd /C 包装（与 install_mcp_standalone 的
         // shell_command 同纪律；本模块为同步 std 进程，就地等价实现）。
         #[cfg(target_os = "windows")]
         let mut cmd = {
             let mut c = Command::new("cmd");
-            let mut full_args = vec!["/C".to_string(), decl.command.clone()];
-            full_args.extend(decl.args.iter().cloned());
+            let mut full_args = vec!["/C".to_string(), command.clone()];
+            full_args.extend(args.iter().cloned());
             c.args(&full_args);
             c
         };
         #[cfg(not(target_os = "windows"))]
         let mut cmd = {
-            let mut c = Command::new(&decl.command);
-            c.args(&decl.args);
+            let mut c = Command::new(command);
+            c.args(args);
             c
         };
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        for (k, v) in &decl.env {
+        for (k, v) in env {
             cmd.env(k, v);
         }
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("spawn mcp plugin `{}` failed: {e}", decl.plugin_id))?;
+            .map_err(|e| format!("spawn mcp plugin `{plugin_id}` failed: {e}"))?;
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| format!("plugin `{}` stdin unavailable", decl.plugin_id))?;
+            .ok_or_else(|| format!("plugin `{plugin_id}` stdin unavailable"))?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| format!("plugin `{}` stdout unavailable", decl.plugin_id))?;
-        Ok(ChildClient {
-            plugin_id: decl.plugin_id.clone(),
+            .ok_or_else(|| format!("plugin `{plugin_id}` stdout unavailable"))?;
+        Ok(StdioChild {
+            plugin_id: plugin_id.clone(),
             child,
             stdin,
             stdout: BufReader::new(stdout),
             next_id: 1,
-            tools: Vec::new(),
         })
     }
+}
 
+impl PluginTransport for StdioChild {
     fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id;
         self.next_id += 1;
@@ -285,14 +382,7 @@ impl ChildClient {
             if v.get("id") != Some(&json!(id)) {
                 continue; // 通知或别人的响应——跳过（MVP 串行，不应出现）
             }
-            if let Some(err) = v.get("error") {
-                return Err(format!(
-                    "plugin `{}` error: {}",
-                    self.plugin_id,
-                    err.get("message").and_then(Value::as_str).unwrap_or("?")
-                ));
-            }
-            return Ok(v.get("result").cloned().unwrap_or(Value::Null));
+            return message_result(&v, &self.plugin_id);
         }
     }
 
@@ -304,20 +394,394 @@ impl ChildClient {
             .map_err(|e| format!("write to plugin `{}` failed: {e}", self.plugin_id))
     }
 
-    /// initialize 握手 + 工具清单。
-    fn handshake(&mut self) -> Result<(), String> {
-        self.request(
-            "initialize",
-            json!({
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": { "name": "jishu-hub-mcp", "version": env!("CARGO_PKG_VERSION") },
-            }),
-        )?;
-        let _ = self.notify("notifications/initialized");
-        let result = self.request("tools/list", json!({}))?;
-        self.tools = parse_tool_list(&result);
-        Ok(())
+    fn kill(&mut self) {
+        let _ = self.child.kill();
+    }
+}
+
+/// 共享 blocking 客户端构造（连接超时 10s；GET SSE 长流不受整体超时约束，
+/// 整体超时在 POST 请求级设置）。仅可在无 tokio runtime 的上下文调用。
+fn blocking_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("build http client failed: {e}"))
+}
+
+/// Streamable HTTP 客户端（type = "http"）：每请求 POST JSON-RPC；
+/// initialize 响应的 `Mcp-Session-Id` 头在后续请求回传；响应体
+/// application/json 直取，text/event-stream 时解析 SSE 帧取首条匹配 id
+/// 的消息。
+struct HttpStreamableClient {
+    plugin_id: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    client: reqwest::blocking::Client,
+    session_id: Option<String>,
+    next_id: i64,
+}
+
+impl HttpStreamableClient {
+    fn spawn(decl: &McpPluginDecl) -> Result<HttpStreamableClient, String> {
+        let McpPluginDecl::Http {
+            plugin_id,
+            url,
+            headers,
+        } = decl
+        else {
+            return Err(format!(
+                "http transport expected for plugin `{}`",
+                decl.plugin_id()
+            ));
+        };
+        Ok(HttpStreamableClient {
+            plugin_id: plugin_id.clone(),
+            url: url.clone(),
+            headers: headers.clone(),
+            client: blocking_client()?,
+            session_id: None,
+            next_id: 1,
+        })
+    }
+
+    fn post(&mut self, body: &Value) -> Result<reqwest::blocking::Response, String> {
+        let mut req = self
+            .client
+            .post(&self.url)
+            .timeout(REQUEST_TIMEOUT)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
+        for (k, v) in &self.headers {
+            req = req.header(k, v);
+        }
+        if let Some(sid) = &self.session_id {
+            req = req.header("Mcp-Session-Id", sid);
+        }
+        let method = body
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_string();
+        let resp = req
+            .json(body)
+            .send()
+            .map_err(|e| format!("plugin `{}` http request `{}` failed: {e}", self.plugin_id, method))?;
+        if !resp.status().is_success() {
+            return Err(format!(
+                "plugin `{}` http request `{}` returned {}",
+                self.plugin_id,
+                method,
+                resp.status()
+            ));
+        }
+        Ok(resp)
+    }
+}
+
+impl PluginTransport for HttpStreamableClient {
+    fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        let resp = self.post(&body)?;
+        if method == "initialize" {
+            if let Some(sid) = resp
+                .headers()
+                .get("mcp-session-id")
+                .and_then(|v| v.to_str().ok())
+            {
+                self.session_id = Some(sid.to_string());
+            }
+        }
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if content_type.contains("text/event-stream") {
+            let msg = read_sse_message(resp, id, &self.plugin_id)?;
+            return message_result(&msg, &self.plugin_id);
+        }
+        let v: Value = resp
+            .json()
+            .map_err(|e| format!("plugin `{}` http response decode failed: {e}", self.plugin_id))?;
+        message_result(&v, &self.plugin_id)
+    }
+
+    fn notify(&mut self, method: &str) -> Result<(), String> {
+        let body = json!({ "jsonrpc": "2.0", "method": method });
+        self.post(&body).map(|_| ())
+    }
+}
+
+/// SSE 帧累积器：逐行喂入，帧结束（空行）时产出 (event, data)。纯函数可单测。
+struct SseFrameAcc {
+    event: String,
+    data: String,
+}
+
+impl SseFrameAcc {
+    fn new() -> SseFrameAcc {
+        SseFrameAcc {
+            event: String::new(),
+            data: String::new(),
+        }
+    }
+
+    fn feed(&mut self, line: &str) -> Option<(String, String)> {
+        if line.is_empty() {
+            let out = (!self.data.is_empty())
+                .then(|| (self.event.clone(), self.data.clone()));
+            self.event.clear();
+            self.data.clear();
+            return out;
+        }
+        if let Some(e) = line.strip_prefix("event:") {
+            self.event = e.trim().to_string();
+        } else if let Some(d) = line.strip_prefix("data:") {
+            if !self.data.is_empty() {
+                self.data.push('\n');
+            }
+            self.data.push_str(d.strip_prefix(' ').unwrap_or(d));
+        }
+        // 其余字段（id:/retry:/注释行）忽略。
+        None
+    }
+}
+
+/// Streamable HTTP 的 SSE 响应体：读帧取首条 id 匹配的消息。
+fn read_sse_message(
+    resp: reqwest::blocking::Response,
+    want_id: i64,
+    plugin_id: &str,
+) -> Result<Value, String> {
+    let reader = BufReader::new(resp);
+    let mut acc = SseFrameAcc::new();
+    for line in reader.lines() {
+        let line =
+            line.map_err(|e| format!("plugin `{plugin_id}` sse response read failed: {e}"))?;
+        if let Some((event, data)) = acc.feed(&line) {
+            if event != "ping" {
+                if let Ok(v) = serde_json::from_str::<Value>(&data) {
+                    if v.get("id") == Some(&json!(want_id)) {
+                        return Ok(v);
+                    }
+                }
+            }
+        }
+    }
+    Err(format!(
+        "plugin `{plugin_id}` sse response ended without message id {want_id}"
+    ))
+}
+
+/// 旧式 HTTP+SSE 客户端（type = "sse"）：GET 长流接收消息（独立线程解析
+/// SSE 帧回投通道），`endpoint` 事件给出消息 POST 地址（相对路径按 base
+/// origin 拼接）；请求 POST 到 endpoint，响应按 id 从流通道匹配读取。
+enum SseEvent {
+    Endpoint(String),
+    Message(Value),
+    Closed(String),
+}
+
+struct SseClient {
+    plugin_id: String,
+    post_url: String,
+    headers: Vec<(String, String)>,
+    client: reqwest::blocking::Client,
+    rx: std::sync::mpsc::Receiver<SseEvent>,
+    next_id: i64,
+}
+
+impl SseClient {
+    fn spawn(decl: &McpPluginDecl) -> Result<SseClient, String> {
+        let McpPluginDecl::Sse {
+            plugin_id,
+            url,
+            headers,
+        } = decl
+        else {
+            return Err(format!(
+                "sse transport expected for plugin `{}`",
+                decl.plugin_id()
+            ));
+        };
+        let client = blocking_client()?;
+        let mut req = client
+            .get(url)
+            .header("Accept", "text/event-stream")
+            .header("Cache-Control", "no-cache");
+        for (k, v) in headers {
+            req = req.header(k, v);
+        }
+        let resp = req
+            .send()
+            .map_err(|e| format!("plugin `{plugin_id}` sse connect failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!(
+                "plugin `{plugin_id}` sse connect returned {}",
+                resp.status()
+            ));
+        }
+        let base = url.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<SseEvent>();
+        // 读流线程：帧 → 通道。发送失败（接收端已 drop，插件被回收）即退出，
+        // Response 随线程结束 drop 关闭连接（无 keepalive 的 server 下线程
+        // 可能阻塞至 TCP 关闭，见 02 §六 风险注记）。
+        std::thread::spawn(move || {
+            let mut acc = SseFrameAcc::new();
+            for line in BufReader::new(resp).lines() {
+                let Ok(line) = line else {
+                    let _ = tx.send(SseEvent::Closed("read error".into()));
+                    return;
+                };
+                let Some((event, data)) = acc.feed(&line) else {
+                    continue;
+                };
+                let ev = if event == "endpoint" {
+                    SseEvent::Endpoint(data)
+                } else if event == "ping" {
+                    continue;
+                } else if let Ok(v) = serde_json::from_str::<Value>(&data) {
+                    SseEvent::Message(v)
+                } else {
+                    continue; // 非 JSON data（自定义事件）忽略
+                };
+                if tx.send(ev).is_err() {
+                    return;
+                }
+            }
+            let _ = tx.send(SseEvent::Closed("stream ended".into()));
+        });
+        // 等待 endpoint 事件（10s）。
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let post_url = loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Err(format!(
+                    "plugin `{plugin_id}` sse endpoint event timed out"
+                ));
+            }
+            match rx.recv_timeout(deadline - now) {
+                Ok(SseEvent::Endpoint(u)) => break join_url(&base, &u),
+                Ok(SseEvent::Closed(e)) => {
+                    return Err(format!(
+                        "plugin `{plugin_id}` sse stream closed before endpoint: {e}"
+                    ))
+                }
+                Ok(SseEvent::Message(_)) => continue, // endpoint 前不应有响应，容忍跳过
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    return Err(format!(
+                        "plugin `{plugin_id}` sse endpoint event timed out"
+                    ))
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(format!(
+                        "plugin `{plugin_id}` sse reader exited before endpoint"
+                    ))
+                }
+            }
+        };
+        Ok(SseClient {
+            plugin_id: plugin_id.clone(),
+            post_url,
+            headers: headers.clone(),
+            client,
+            rx,
+            next_id: 1,
+        })
+    }
+
+    fn post_message(&mut self, body: &Value) -> Result<(), String> {
+        let mut req = self
+            .client
+            .post(&self.post_url)
+            .timeout(REQUEST_TIMEOUT)
+            .header("Content-Type", "application/json");
+        for (k, v) in &self.headers {
+            req = req.header(k, v);
+        }
+        let resp = req
+            .json(body)
+            .send()
+            .map_err(|e| format!("plugin `{}` sse post failed: {e}", self.plugin_id))?;
+        if !resp.status().is_success() {
+            return Err(format!(
+                "plugin `{}` sse post returned {}",
+                self.plugin_id,
+                resp.status()
+            ));
+        }
+        Ok(()) // 响应经 SSE 流回传（POST 通常返回 202）
+    }
+}
+
+impl PluginTransport for SseClient {
+    fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        self.post_message(&body)?;
+        loop {
+            match self.rx.recv_timeout(REQUEST_TIMEOUT) {
+                Ok(SseEvent::Message(v)) if v.get("id") == Some(&json!(id)) => {
+                    return message_result(&v, &self.plugin_id)
+                }
+                Ok(SseEvent::Message(_)) | Ok(SseEvent::Endpoint(_)) => continue,
+                Ok(SseEvent::Closed(e)) => {
+                    return Err(format!(
+                        "plugin `{}` sse stream closed: {e}",
+                        self.plugin_id
+                    ))
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    return Err(format!(
+                        "plugin `{}` sse response timed out ({method})",
+                        self.plugin_id
+                    ))
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(format!(
+                        "plugin `{}` sse reader exited ({method})",
+                        self.plugin_id
+                    ))
+                }
+            }
+        }
+    }
+
+    fn notify(&mut self, method: &str) -> Result<(), String> {
+        let body = json!({ "jsonrpc": "2.0", "method": method });
+        self.post_message(&body)
+    }
+}
+
+/// SSE endpoint 相对地址 → 绝对 URL（origin 拼接；绝对地址原样）。纯函数可单测。
+fn join_url(base: &str, target: &str) -> String {
+    if target.starts_with("http://") || target.starts_with("https://") {
+        return target.to_string();
+    }
+    let Some(scheme_idx) = base.find("://") else {
+        return target.to_string();
+    };
+    let after = scheme_idx + 3;
+    let origin_end = base[after..].find('/').map(|i| after + i).unwrap_or(base.len());
+    let origin = &base[..origin_end];
+    if target.starts_with('/') {
+        format!("{origin}{target}")
+    } else {
+        format!("{origin}/{target}")
     }
 }
 
@@ -350,10 +814,18 @@ fn parse_tool_list(result: &Value) -> Vec<McpToolDef> {
 // 聚合 server
 // ---------------------------------------------------------------------------
 
-/// 已装载的插件子连接：Live = 已握手；Failed = spawn/握手失败（错误以
+/// 已连接的下游插件（握手完成）。
+struct LivePlugin {
+    plugin_id: String,
+    transport: Box<dyn PluginTransport>,
+    /// 子 server 的原始工具清单（未命名空间化）。
+    tools: Vec<McpToolDef>,
+}
+
+/// 已装载的插件连接：Live = 已握手；Failed = 连接/握手失败（错误以
 /// `<plugin>__error` 占位工具暴露，不拖垮整个 server）。
 enum PluginChild {
-    Live(ChildClient),
+    Live(LivePlugin),
     Failed {
         plugin_id: String,
         error: String,
@@ -367,6 +839,30 @@ impl PluginChild {
             PluginChild::Failed { plugin_id, .. } => plugin_id,
         }
     }
+}
+
+/// 按声明建立分传输连接并握手。
+fn spawn_transport(decl: &McpPluginDecl) -> Result<LivePlugin, String> {
+    let (plugin_id, mut transport): (String, Box<dyn PluginTransport>) = match decl {
+        McpPluginDecl::Stdio { .. } => (
+            decl.plugin_id().to_string(),
+            Box::new(StdioChild::spawn(decl)?),
+        ),
+        McpPluginDecl::Http { .. } => (
+            decl.plugin_id().to_string(),
+            Box::new(HttpStreamableClient::spawn(decl)?),
+        ),
+        McpPluginDecl::Sse { .. } => (
+            decl.plugin_id().to_string(),
+            Box::new(SseClient::spawn(decl)?),
+        ),
+    };
+    let tools = transport.handshake()?;
+    Ok(LivePlugin {
+        plugin_id,
+        transport,
+        tools,
+    })
 }
 
 pub struct McpServer {
@@ -390,17 +886,17 @@ impl McpServer {
         }
     }
 
-    /// 按当前插件声明同步子进程集（lazy spawn 新插件、回收禁用/失联插件），
+    /// 按当前插件声明同步下游连接集（lazy 建立新插件、回收禁用/失联插件），
     /// 返回聚合工具清单（内置 + 命名空间化插件工具）。单插件失败不拖垮
     /// 整个 server：失败原因以 `<plugin>__error` 占位工具暴露给客户端。
     fn refresh_and_list(&mut self) -> Vec<McpToolDef> {
         let decls = (self.decl_source)();
-        // 回收声明已消失的子进程。
+        // 回收声明已消失的连接（stdio kill 子进程；http/sse 随 drop 关闭）。
         self.children.retain_mut(|c| {
-            let alive = decls.iter().any(|d| d.plugin_id == c.plugin_id());
+            let alive = decls.iter().any(|d| d.plugin_id() == c.plugin_id());
             if !alive {
                 if let PluginChild::Live(live) = c {
-                    let _ = live.child.kill();
+                    live.transport.kill();
                 }
             }
             alive
@@ -409,19 +905,16 @@ impl McpServer {
             if self
                 .children
                 .iter()
-                .any(|c| c.plugin_id() == decl.plugin_id)
+                .any(|c| c.plugin_id() == decl.plugin_id())
             {
                 continue;
             }
-            match ChildClient::spawn(decl).and_then(|mut c| {
-                c.handshake()?;
-                Ok(c)
-            }) {
-                Ok(c) => self.children.push(PluginChild::Live(c)),
+            match spawn_transport(decl) {
+                Ok(live) => self.children.push(PluginChild::Live(live)),
                 Err(e) => {
                     log::warn!("[hub-mcp] {e}");
                     self.children.push(PluginChild::Failed {
-                        plugin_id: decl.plugin_id.clone(),
+                        plugin_id: decl.plugin_id().to_string(),
                         error: e,
                     });
                 }
@@ -451,7 +944,7 @@ impl McpServer {
         tools
     }
 
-    /// tools/call 分发：内置直调；命名空间工具路由到子进程并转发结果。
+    /// tools/call 分发：内置直调；命名空间工具路由到下游连接并转发结果。
     fn call_tool(&mut self, name: &str, arguments: &Value) -> Result<Value, String> {
         if let Some((plugin_id, tool)) = split_namespaced(name) {
             let child = self
@@ -462,7 +955,7 @@ impl McpServer {
             match child {
                 PluginChild::Failed { error, .. } => return Err(error.clone()),
                 PluginChild::Live(live) => {
-                    let result = live.request(
+                    let result = live.transport.request(
                         "tools/call",
                         json!({ "name": tool, "arguments": arguments }),
                     )?;
@@ -669,7 +1162,7 @@ mod tests {
         // 声明一个不存在的命令：spawn 失败 → Failed 占位（__error 工具），
         // 内置工具不受影响。
         let mut s = McpServer::with_decl_source(Box::new(|| {
-            vec![McpPluginDecl {
+            vec![McpPluginDecl::Stdio {
                 plugin_id: "broken".into(),
                 command: "definitely-not-a-command-xyz".into(),
                 args: vec![],
@@ -684,5 +1177,90 @@ mod tests {
             .collect();
         assert!(names.contains(&"broken__error"));
         assert!(names.contains(&"hub_projects_list"));
+    }
+
+    #[test]
+    fn decl_from_section_maps_three_transports() {
+        use crate::agent::manifest::schema::{McpSection, McpTransportKind};
+        // 缺省 stdio（command 必填由 schema 校验兜底，映射层只搬运）。
+        let mut sec = McpSection {
+            transport: McpTransportKind::Stdio,
+            command: Some("npx".into()),
+            args: Some(vec!["-y".into(), "pkg".into()]),
+            env: Some([("K".to_string(), "v".to_string())].into_iter().collect()),
+            url: None,
+            headers: None,
+        };
+        match decl_from_section("p1", &sec) {
+            McpPluginDecl::Stdio { plugin_id, command, args, env } => {
+                assert_eq!(plugin_id, "p1");
+                assert_eq!(command, "npx");
+                assert_eq!(args, vec!["-y".to_string(), "pkg".to_string()]);
+                assert_eq!(env, vec![("K".to_string(), "v".to_string())]);
+            }
+            other => panic!("expected Stdio, got {other:?}"),
+        }
+        sec.transport = McpTransportKind::Http;
+        sec.url = Some("https://x/mcp".into());
+        sec.headers = Some([("Authorization".to_string(), "Bearer t".to_string())].into_iter().collect());
+        match decl_from_section("p2", &sec) {
+            McpPluginDecl::Http { plugin_id, url, headers } => {
+                assert_eq!(plugin_id, "p2");
+                assert_eq!(url, "https://x/mcp");
+                assert_eq!(headers, vec![("Authorization".to_string(), "Bearer t".to_string())]);
+            }
+            other => panic!("expected Http, got {other:?}"),
+        }
+        sec.transport = McpTransportKind::Sse;
+        match decl_from_section("p3", &sec) {
+            McpPluginDecl::Sse { .. } => {}
+            other => panic!("expected Sse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn join_url_resolves_relative_endpoints() {
+        assert_eq!(join_url("https://h.io/base/sse", "/messages?sid=1"), "https://h.io/messages?sid=1");
+        assert_eq!(join_url("https://h.io/base/sse", "messages?sid=1"), "https://h.io/messages?sid=1");
+        assert_eq!(join_url("https://h.io:8080/sse", "/m"), "https://h.io:8080/m");
+        // origin 无路径（base 以 host 结尾）。
+        assert_eq!(join_url("https://h.io", "/m"), "https://h.io/m");
+        // 绝对地址原样。
+        assert_eq!(join_url("https://h.io/sse", "http://other:9/x"), "http://other:9/x");
+        // base 异常（无 scheme）→ 原样返回，交由后续请求报错。
+        assert_eq!(join_url("not-a-url", "/m"), "/m");
+    }
+
+    #[test]
+    fn sse_frame_acc_parses_events() {
+        let mut acc = SseFrameAcc::new();
+        assert!(acc.feed("event: endpoint").is_none());
+        assert!(acc.feed("data: /messages?sessionId=42").is_none());
+        let (event, data) = acc.feed("").expect("frame ends on blank line");
+        assert_eq!(event, "endpoint");
+        assert_eq!(data, "/messages?sessionId=42");
+        // data 多行拼接；event 缺省为空（ping/普通消息）。
+        assert!(acc.feed("data: {\"id\":1}").is_none());
+        assert!(acc.feed("data: tail").is_none());
+        let (event, data) = acc.feed("").expect("frame");
+        assert_eq!(event, "");
+        assert_eq!(data, "{\"id\":1}\ntail");
+        // 注释行与 id:/retry: 忽略。
+        assert!(acc.feed(": keepalive").is_none());
+        assert!(acc.feed("id: 7").is_none());
+        assert!(acc.feed("data: x").is_none());
+        let (_, data) = acc.feed("").expect("frame");
+        assert_eq!(data, "x");
+        // 连续空行不产出空帧。
+        assert!(acc.feed("").is_none());
+    }
+
+    #[test]
+    fn message_result_maps_error_field() {
+        assert_eq!(message_result(&json!({"result": {"ok": 1}}), "p"), Ok(json!({"ok": 1})));
+        assert!(message_result(&json!({"error": {"message": "boom"}}), "p")
+            .unwrap_err()
+            .contains("boom"));
+        assert_eq!(message_result(&json!({}), "p"), Ok(Value::Null));
     }
 }

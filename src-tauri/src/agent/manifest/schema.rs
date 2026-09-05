@@ -103,18 +103,37 @@ fn default_pi_target() -> String {
     "jishu-self".to_string()
 }
 
-/// MCP server 声明（v0.9.0 需求1 P2，kind = "tool" 专属段）：
-/// command/args/env 描述一个 MCP stdio server 进程，由 hub 聚合 server
-/// spawn 并代理（工具名以插件 id 命名空间隔离）。仅 [mcp] 无 [tool] 合法
-/// （纯结构化工具插件，不参与 prompt 注入）。
+/// MCP server 传输类型（v0.9.0 需求1 二期）：缺省 stdio——既有 toml 无
+/// type 字段无损兼容。http = Streamable HTTP（POST JSON-RPC）；sse = 旧式
+/// HTTP+SSE（GET 流 + endpoint 事件 + POST）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTransportKind {
+    #[default]
+    Stdio,
+    Http,
+    Sse,
+}
+
+/// MCP server 声明（v0.9.0 需求1 P2/二期，kind = "tool" 专属段）：
+/// stdio 传输带 command/args/env（聚合 server spawn 子进程代理）；http/sse
+/// 传输带 url/headers（聚合 server 建远程连接代理）。工具名以插件 id 命名
+/// 空间隔离。仅 [mcp] 无 [tool] 合法（纯结构化工具插件，不参与 prompt 注入）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpSection {
-    pub command: String,
+    #[serde(default, rename = "type")]
+    pub transport: McpTransportKind,
+    #[serde(default)]
+    pub command: Option<String>,
     #[serde(default)]
     pub args: Option<Vec<String>>,
     #[serde(default)]
     pub env: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -270,10 +289,27 @@ impl AgentManifestFile {
                 return Err("pi_extension.entry must not be empty".to_string());
             }
         }
-        // v0.9.0 需求1：[mcp] 段校验（command 非空）。
+        // v0.9.0 需求1 P2/二期：[mcp] 段校验——按传输类型必填项检查
+        //（stdio → command；http/sse → url 且 http(s) 前缀）。
         if let Some(mcp) = &self.mcp {
-            if mcp.command.trim().is_empty() {
-                return Err("mcp.command must not be empty".to_string());
+            match mcp.transport {
+                McpTransportKind::Stdio => {
+                    if mcp.command.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                        return Err("mcp.command must not be empty for stdio transport".to_string());
+                    }
+                }
+                McpTransportKind::Http | McpTransportKind::Sse => {
+                    let url = mcp.url.as_deref().map(str::trim).unwrap_or("");
+                    if url.is_empty() {
+                        return Err(format!(
+                            "mcp.url must not be empty for {:?} transport",
+                            mcp.transport
+                        ));
+                    }
+                    if !url.starts_with("http://") && !url.starts_with("https://") {
+                        return Err("mcp.url must start with http:// or https://".to_string());
+                    }
+                }
             }
         }
         // v0.9.0 需求8：[panel] 段校验。
@@ -691,5 +727,51 @@ chat_command = ["x", "{prompt}"]
             items: vec![],
         });
         assert!(agent_m.validate().is_err()); // agent 插件禁止 [panel]
+    }
+
+    fn mcp_tool_manifest(mcp_toml: &str) -> Result<AgentManifestFile, String> {
+        let src = format!(
+            r#"
+schema = 1
+kind = "tool"
+[info]
+id = "x"
+display_name = "X"
+{mcp_toml}
+"#
+        );
+        let m: AgentManifestFile = toml::from_str(&src).map_err(|e| e.to_string())?;
+        m.validate().map_err(|e| e.to_string()).map(|_| m)
+    }
+
+    #[test]
+    fn mcp_transport_types_parse_and_validate() {
+        // v0.9.0 需求1 二期：三传输解析/校验。
+        // 缺省 type = stdio（既有 toml 无损）。
+        let m = mcp_tool_manifest(r#"[mcp]
+command = "npx"
+args = ["-y", "pkg"]
+"#)
+        .expect("stdio default ok");
+        assert_eq!(m.mcp.as_ref().unwrap().transport, McpTransportKind::Stdio);
+        // 显式 stdio。
+        assert!(mcp_tool_manifest("[mcp]\ntype = \"stdio\"\ncommand = \"npx\"\n").is_ok());
+        // http：url 必填 + http(s) 前缀 + headers。
+        let m = mcp_tool_manifest(
+            "[mcp]\ntype = \"http\"\nurl = \"https://mcp.example.com/mcp\"\nheaders = { Authorization = \"Bearer x\" }\n",
+        )
+        .expect("http ok");
+        assert_eq!(m.mcp.as_ref().unwrap().transport, McpTransportKind::Http);
+        assert!(mcp_tool_manifest("[mcp]\ntype = \"sse\"\nurl = \"http://x/sse\"\n").is_ok());
+        // stdio 缺 command → 拒绝。
+        assert!(mcp_tool_manifest("[mcp]\n").unwrap_err().contains("mcp.command"));
+        // http 缺 url → 拒绝。
+        assert!(mcp_tool_manifest("[mcp]\ntype = \"http\"\n")
+            .unwrap_err()
+            .contains("mcp.url"));
+        // 非 http(s) 前缀 → 拒绝。
+        assert!(mcp_tool_manifest("[mcp]\ntype = \"sse\"\nurl = \"ftp://x\"\n")
+            .unwrap_err()
+            .contains("http://"));
     }
 }

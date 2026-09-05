@@ -138,6 +138,13 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
             return Err(CliError::InvalidArg(format!("unknown plugin: {id}")));
         }
     };
+    // 系统插件拒绝（v0.9.0 需求1 二期，与 GUI plugin_remove 同规则）：
+    // 随包分发、启动幂等重部署——卸载是无操作。
+    if agent::plugin::is_system_plugin(id) {
+        return Err(CliError::InvalidArg(format!(
+            "plugin {id} is a system plugin and cannot be removed"
+        )));
+    }
     let source = source.ok_or_else(|| {
         CliError::InvalidArg(format!("plugin {id} is builtin and cannot be removed"))
     })?;

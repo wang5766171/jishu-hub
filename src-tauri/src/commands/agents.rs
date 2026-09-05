@@ -114,7 +114,8 @@ pub(crate) fn plugin_set_enabled(
 }
 
 /// 卸载 manifest 插件（删除其 toml 文件 + 清理启停配置 + 热重建）。
-/// 内建插件拒绝；有活跃会话的插件拒绝（避免进程孤儿化——先结束会话）。
+/// 内建插件拒绝；系统插件拒绝（v0.9.0 需求1 二期——随包分发、启动幂等
+/// 重部署，卸载是无操作）；有活跃会话的插件拒绝（避免进程孤儿化——先结束会话）。
 #[tauri::command]
 pub(crate) fn plugin_remove(
     app: tauri::AppHandle,
@@ -141,6 +142,11 @@ pub(crate) fn plugin_remove(
         if descriptor.core {
             return Err(format!(
                 "Plugin {plugin_id} is the core engine and cannot be removed"
+            ));
+        }
+        if agent::plugin::is_system_plugin(&plugin_id) {
+            return Err(format!(
+                "Plugin {plugin_id} is a system plugin and cannot be removed"
             ));
         }
         descriptor

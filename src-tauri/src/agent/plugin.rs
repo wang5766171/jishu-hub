@@ -52,6 +52,9 @@ pub struct PluginDescriptor {
     pub has_panel: bool,
     /// [panel] 声明详情（has_panel 时非 None；前端面板 Dialog 数据源）。
     pub panel: Option<PanelDecl>,
+    /// 系统插件（v0.9.0 需求1 二期）：hub 随包分发、启动幂等重部署——
+    /// 不可卸载/编辑（删了也会回来，编辑会被重部署覆盖），可禁用。
+    pub system: bool,
 }
 
 /// [panel] 声明的 UI 投影（v0.9.0 需求8）。
@@ -79,6 +82,23 @@ pub struct PluginConfig {
 
 /// 核心引擎 id 清单（恒装载，禁用请求双层拒绝的依据）。
 pub const CORE_PLUGIN_IDS: [&str; 1] = [super::JISHU_SELF_AGENT_ID];
+
+/// 系统插件 id 清单（v0.9.0 需求1 二期）：hub 随包分发、启动幂等重部署——
+/// 卸载/编辑无意义（下次启动即恢复），plugin_remove 拒绝、前端隐藏入口；
+/// 可禁用（mcp-resolver 禁用 = MCP 服务总开关，见 mcp_inject）。
+pub const SYSTEM_PLUGIN_IDS: [&str; 3] = ["mcp-resolver", "task-requirements", "task-plan"];
+
+/// 系统插件判定。
+pub fn is_system_plugin(id: &str) -> bool {
+    SYSTEM_PLUGIN_IDS.contains(&id)
+}
+
+/// MCP 解析器启用态（注入门控，mcp_inject::sync_hub_mcp_entries）：
+/// plugins.json disabled 集不含 mcp-resolver 即启用（默认启用——disabled
+/// 为 opt-in 存储，全新环境零配置即在位）。
+pub fn is_mcp_resolver_enabled() -> bool {
+    !load_plugin_config().disabled.iter().any(|x| x == "mcp-resolver")
+}
 
 pub fn plugin_config_path() -> PathBuf {
     super::manifest::hub_home().join("plugins.json")
@@ -212,14 +232,51 @@ pub fn builtin_adaptive_plugins() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-/// 部署内建自适应插件（幂等——文件已存在且内容一致则跳过）。
+/// MCP 解析器系统插件（v0.9.0 需求1 二期）：聚合 server（jishu-cli mcp
+/// serve）的管理面实体——默认安装+启用、可禁用（= MCP 服务总开关）、
+/// 不可卸载。panel-only（无 [tool]/[mcp]——[mcp] 会自指）：面板命令在部署
+/// 时烘焙 jishu-cli 绝对路径（TOML 转义由 toml::Value 承担；路径变化时
+/// 内容比较不齐即重写）。与 task-* 静态内嵌不同，本 manifest 为生成式。
+pub fn resolver_plugin_toml() -> String {
+    let cli = crate::agent::jishu_self::resolve_jishu_cli_binary()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "jishu-cli".to_string());
+    let command = format!("\"{cli}\" mcp status");
+    format!(
+        "schema = 1\n\
+         kind = \"tool\"\n\
+         \n\
+         [info]\n\
+         id = \"mcp-resolver\"\n\
+         display_name = \"MCP 解析器\"\n\
+         icon = \"blocks\"\n\
+         \n\
+         [panel]\n\
+         title = \"MCP 服务状态\"\n\
+         \n\
+         [[panel.items]]\n\
+         label = \"聚合服务与插件清单\"\n\
+         command = {}\n",
+        toml::Value::String(command)
+    )
+}
+
+/// 部署内建自适应插件与 MCP 解析器（幂等——文件已存在且内容一致则跳过）。
 /// 仅写 manifest TOML 到 agents 目录（与用户自建走同一装载管线）；
 /// pi 扩展入口文件由 task_plan.rs 的 conductor 部署管线管理（v1 过渡：
 /// conductor 仍为单一 TS 文件，插件 TOML 引用其函数名的入口约定在 v2 拆分）。
 pub fn ensure_builtin_adaptive_plugins() {
     let dir = super::manifest::manifest_dir();
     let _ = std::fs::create_dir_all(&dir);
-    for (id, toml) in builtin_adaptive_plugins() {
+    let statics = builtin_adaptive_plugins();
+    for (id, toml) in statics
+        .into_iter()
+        .map(|(id, t)| (id.to_string(), t.to_string()))
+        .chain(std::iter::once((
+            "mcp-resolver".to_string(),
+            resolver_plugin_toml(),
+        )))
+    {
         let target = dir.join(format!("{id}.toml"));
         let needs_write = match std::fs::read_to_string(&target) {
             Ok(existing) => existing != toml,
@@ -227,7 +284,7 @@ pub fn ensure_builtin_adaptive_plugins() {
         };
         if needs_write {
             if let Err(e) = std::fs::write(&target, toml) {
-                log::warn!("[plugin] cannot deploy builtin adaptive plugin {id}: {e}");
+                log::warn!("[plugin] cannot deploy builtin system plugin {id}: {e}");
             }
         }
     }
@@ -296,6 +353,7 @@ pub fn assemble(
             has_mcp: false,
             has_panel: false,
             panel: None,
+            system: false,
         });
     }
 
@@ -321,6 +379,7 @@ pub fn assemble(
             has_mcp: false,
             has_panel: false,
             panel: None,
+            system: false,
         });
     }
 
@@ -350,6 +409,7 @@ pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescrip
                 })
                 .collect(),
         }),
+        system: is_system_plugin(&plugin.file.info.id),
     }
 }
 
@@ -568,6 +628,58 @@ mod tests {
     }
 
     use crate::agent::manifest::env_test_lock;
+
+    #[test]
+    fn resolver_plugin_toml_parses_and_system_guards() {
+        // v0.9.0 需求1 二期：解析器 manifest 生成合法（panel-only 工具插件）
+        // + 系统插件判定。测试进程旁通常无 jishu-cli → 命令回退裸名，解析不受影响。
+        let toml = resolver_plugin_toml();
+        let file: super::super::manifest::schema::AgentManifestFile =
+            toml::from_str(&toml).unwrap();
+        assert!(file.validate().is_ok(), "resolver manifest must be valid");
+        assert_eq!(file.info.id, "mcp-resolver");
+        assert!(file.panel.is_some());
+        assert!(file.mcp.is_none()); // 解析器是 server 本体，[mcp] 会自指
+        assert!(file.tool.is_none());
+        assert!(is_system_plugin("mcp-resolver"));
+        assert!(is_system_plugin("task-requirements"));
+        assert!(!is_system_plugin("user-tool"));
+    }
+
+    #[test]
+    fn resolver_default_enabled_and_disable_gates_off() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        // 无 plugins.json → 默认启用。
+        assert!(is_mcp_resolver_enabled());
+        let mut cfg = load_plugin_config();
+        cfg.disabled.push("mcp-resolver".to_string());
+        save_plugin_config(&cfg).unwrap();
+        assert!(!is_mcp_resolver_enabled());
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    #[test]
+    fn ensure_deploys_system_plugins_idempotent() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        ensure_builtin_adaptive_plugins();
+        let dir = super::super::manifest::manifest_dir();
+        for id in SYSTEM_PLUGIN_IDS {
+            assert!(
+                dir.join(format!("{id}.toml")).exists(),
+                "{id} should be deployed"
+            );
+        }
+        // 幂等：二次部署不报错、内容不变。
+        let before = std::fs::read_to_string(dir.join("mcp-resolver.toml")).unwrap();
+        ensure_builtin_adaptive_plugins();
+        let after = std::fs::read_to_string(dir.join("mcp-resolver.toml")).unwrap();
+        assert_eq!(before, after);
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
 
     #[test]
     fn plugin_config_roundtrip_and_set_enabled_guards() {
