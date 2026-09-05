@@ -15,7 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { useTranslation } from "react-i18next";
-import { Bot, Code2, FileJson, Loader2, Plus, Sparkles, Terminal, Blocks } from "lucide-react";
+import { Bot, Code2, FileJson, Loader2, Plus, Sparkles, Terminal, X, Blocks } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /** v0.8.1 需求6：插件创建可视化界面——模版快速创建（claude/codex/opencode
@@ -101,6 +101,9 @@ export interface FormState {
   /** v0.9.0 需求20：[skill] 段（description + SKILL.md 正文）。 */
   skillDescription: string;
   skillBody: string;
+  /** v0.9.0 需求19 第八轮：[panel] 段（声明式自定义插件的核心声明面）。 */
+  panelTitle: string;
+  panelItems: Array<{ label: string; command: string }>;
 }
 
 interface Template {
@@ -152,6 +155,8 @@ const emptyForm: FormState = {
   mcpJson: "",
   skillDescription: "",
   skillBody: "",
+  panelTitle: "",
+  panelItems: [],
 };
 
 /** 模版 = 表单预填常量（用户显式选择的起点，非运行时 agent 分支）。
@@ -368,27 +373,38 @@ args = ["-y", "<mcp-server-package>"]
   },
   {
     key: "custom-blank",
-    nameKey: "plugins.tplCustomBlank",
-    nameFallback: "空白自定义",
+    nameKey: "plugins.tplCustomPanel",
+    nameFallback: "面板示例",
     icon: <Plus className="h-4 w-4" />,
     tplKind: "custom",
     toml: `schema = 1
 kind = "tool"
 
 [info]
-id = "my-plugin"
-display_name = "My Plugin"
+id = "service-check"
+display_name = "服务巡检"
 
-# 自由组合以下任意段（至少一段）：
-# [tool] description/usage —— CLI 用法注入
-# [mcp]  type/command 或 url —— MCP 服务
-# [skill] description/body —— SKILL.md 能力
+[panel]
+title = "服务状态一览"
+
+[[panel.items]]
+label = "前端站点"
+command = "curl -s -o /dev/null -w \"%{http_code}\" https://app.example.com"
+
+[[panel.items]]
+label = "磁盘水位"
+command = "wmic logicaldisk get caption,freespace,size"
 `,
     form: {
       ...emptyForm,
       pluginType: "custom",
-      id: "my-plugin",
-      displayName: "My Plugin",
+      id: "service-check",
+      displayName: "服务巡检",
+      panelTitle: "服务状态一览",
+      panelItems: [
+        { label: "前端站点", command: 'curl -s -o /dev/null -w "%{http_code}" https://app.example.com' },
+        { label: "磁盘水位", command: "wmic logicaldisk get caption,freespace,size" },
+      ],
     },
   },
   {
@@ -710,6 +726,16 @@ export function buildManifest(form: FormState): Record<string, unknown> {
         body: form.skillBody.trim(),
       };
     }
+    // v0.9.0 需求19 第八轮：[panel] 段——声明式自定义插件的核心（面板标题 +
+    // 只读命令项；未填完整的行过滤，空项集不产出）。
+    {
+      const items = form.panelItems
+        .map((it) => ({ label: it.label.trim(), command: it.command.trim() }))
+        .filter((it) => it.label && it.command);
+      if (form.panelTitle.trim() && items.length > 0) {
+        tool.panel = { title: form.panelTitle.trim(), items };
+      }
+    }
     if (form.probeEnabled && form.probeCommand.trim()) {
       tool.probe = {
         command: form.probeCommand.trim(),
@@ -832,7 +858,7 @@ const PLUGIN_TYPES: Array<{
     formKey: "plugins.typeCustomForm",
     formFallback: "独立插拔",
     descKey: "plugins.typeCustomDesc",
-    descFallback: "自由组合 MCP / Skill / CLI 能力声明的工具插件",
+    descFallback: "声明管理面板（只读命令集），可选附带用法注入",
     defaultTemplate: "custom-blank",
   },
   {
@@ -886,6 +912,7 @@ export function parseManifest(json: Record<string, unknown>): {
   const tool = (json.tool ?? {}) as Record<string, unknown>;
   const mcp = json.mcp as Record<string, unknown> | undefined;
   const skillSec = json.skill as Record<string, unknown> | undefined;
+  const panelSec = json.panel as Record<string, unknown> | undefined;
   const preserved: Record<string, unknown> = {};
   if (json.pi_extension && typeof json.pi_extension === "object") {
     preserved.pi_extension = json.pi_extension;
@@ -920,12 +947,12 @@ export function parseManifest(json: Record<string, unknown>): {
     streamText: caps.stream_text === true,
     pluginType:
       json.kind === "tool"
-        ? [json.mcp, json.skill, json.tool].filter(Boolean).length >= 2
-          ? "custom" // 多段组合 → 自定义插件（单段归各类型）
-          : mcp
-            ? "mcp"
-            : skillSec
-              ? "skill"
+        ? mcp
+          ? "mcp"
+          : skillSec
+            ? "skill"
+            : panelSec
+              ? "custom" // 声明式面板插件（需求19 第八轮形态）
               : "cli"
         : "agent",
     toolDescription: String(tool.description ?? ""),
@@ -952,6 +979,13 @@ export function parseManifest(json: Record<string, unknown>): {
     mcpJson: "",
     skillDescription: String(skillSec?.description ?? ""),
     skillBody: String(skillSec?.body ?? ""),
+    panelTitle: String(panelSec?.title ?? ""),
+    panelItems: Array.isArray(panelSec?.items)
+      ? (panelSec!.items as Array<Record<string, unknown>>).map((it) => ({
+          label: String(it.label ?? ""),
+          command: String(it.command ?? ""),
+        }))
+      : [],
   };
   return { form, preserved };
 }
@@ -1123,8 +1157,8 @@ export function PluginCreateDialog({
       : pluginType === "skill"
         ? form.skillDescription.trim().length > 0 && form.skillBody.trim().length > 0
         : pluginType === "custom"
-          ? mcpReady ||
-            (form.skillDescription.trim().length > 0 && form.skillBody.trim().length > 0) ||
+          ? (form.panelTitle.trim().length > 0 &&
+              form.panelItems.some((it) => it.label.trim() && it.command.trim())) ||
             (form.toolDescription.trim().length > 0 && form.toolUsage.trim().length > 0)
           : pluginType === "cli"
         ? form.toolDescription.trim().length > 0 && form.toolUsage.trim().length > 0
@@ -1445,21 +1479,97 @@ export function PluginCreateDialog({
               </div>
             )}
 
-            {/* CLI 类型核心分组（custom 类型下为可选组合段）：工具能力声明。 */}
-            {(pluginType === "cli" || pluginType === "custom") && (
+            {/* 自定义插件（需求19 第八轮·声明式能力插件）：核心 = 管理面板声明
+             *（面板标题 + 只读命令项，hub 渲染执行——零代码零脚本）。 */}
+            {pluginType === "custom" && (
               <div className="rounded-md border border-border/50 p-3 space-y-3">
-                <p className="text-xs font-medium">
-                  {pluginType === "custom"
-                    ? tr("plugins.toolSectionOptional", "CLI 用法声明（可选）")
-                    : tr("plugins.toolSection", "工具能力声明")}
-                </p>
+                <p className="text-xs font-medium">{tr("plugins.panelSectionTitle", "管理面板声明")}</p>
+                <Labeled labelKey="plugins.fPanelTitle" fallback="面板标题 *">
+                  <Input
+                    value={form.panelTitle}
+                    onChange={(e) => patch({ panelTitle: e.target.value })}
+                    placeholder="服务状态一览"
+                    className="h-8 text-xs"
+                  />
+                  <FieldHelp>{tr("plugins.hPanelTitle", "创建后插件页出现「面板」入口，逐项执行命令展示输出。")}</FieldHelp>
+                </Labeled>
+                <div className="space-y-2">
+                  {form.panelItems.map((item, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <Input
+                        value={item.label}
+                        onChange={(e) =>
+                          patch({
+                            panelItems: form.panelItems.map((it, i) =>
+                              i === idx ? { ...it, label: e.target.value } : it,
+                            ),
+                          })
+                        }
+                        placeholder={tr("plugins.fPanelItemLabel", "标签 *")}
+                        className="h-8 w-36 shrink-0 text-xs"
+                      />
+                      <Input
+                        value={item.command}
+                        onChange={(e) =>
+                          patch({
+                            panelItems: form.panelItems.map((it, i) =>
+                              i === idx ? { ...it, command: e.target.value } : it,
+                            ),
+                          })
+                        }
+                        placeholder='curl -s -o /dev/null -w "%{http_code}" https://…'
+                        className="h-8 min-w-0 flex-1 text-xs font-mono"
+                      />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+                        aria-label={tr("plugins.removePanelItem", "删除该项")}
+                        onClick={() =>
+                          patch({ panelItems: form.panelItems.filter((_, i) => i !== idx) })
+                        }
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      patch({ panelItems: [...form.panelItems, { label: "", command: "" }] })
+                    }
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    {tr("plugins.addPanelItem", "添加面板项")}
+                  </Button>
+                  <FieldHelp>{tr("plugins.hPanelItem", "面板中点击执行并展示输出（10s 超时 / 4KB 截断护栏）；未填完整的行不产出。")}</FieldHelp>
+                </div>
+              </div>
+            )}
+
+            {/* 自定义插件附加声明（折叠，可选）：用法注入 [tool]——教会 agent
+             * 面板命令的用法。 */}
+            {pluginType === "custom" && (
+              <details className="rounded-md border border-border/50 p-3">
+                <summary className="cursor-pointer select-none text-xs font-medium">
+                  {tr("plugins.customExtraSection", "附加声明（可选）：用法注入")}
+                </summary>
+                <div className="mt-3 space-y-3">{toolDeclareFields}</div>
+              </details>
+            )}
+
+            {/* CLI 类型核心分组：工具能力声明（会话注入的用法说明）。 */}
+            {pluginType === "cli" && (
+              <div className="rounded-md border border-border/50 p-3 space-y-3">
+                <p className="text-xs font-medium">{tr("plugins.toolSection", "工具能力声明")}</p>
                 {toolDeclareFields}
               </div>
             )}
 
             {/* MCP server 声明（v0.9.0 需求1 二期：表单/JSON 双模式 + 三传输；
              * 解析器未启用且非编辑 → 提示锁定）。 */}
-            {(pluginType === "mcp" || pluginType === "custom") &&
+            {pluginType === "mcp" &&
               (mcpLocked ? (
                 <div className="rounded-md border border-dashed border-border/70 bg-muted/20 p-3 text-xs text-muted-foreground">
                   {tr("plugins.mcpResolverDisabled", "需先启用「MCP 解析器」插件后才能添加 MCP 工具")}
@@ -1596,7 +1706,7 @@ export function PluginCreateDialog({
 
             {/* Skill 声明（v0.9.0 需求20，对标 MCP 区）：description = SKILL.md
              * frontmatter，body = 正文；skill 名 = 插件 id（自动派生）。 */}
-            {(pluginType === "skill" || pluginType === "custom") &&
+            {pluginType === "skill" &&
               (skillLocked ? (
                 <div className="rounded-md border border-dashed border-border/70 bg-muted/20 p-3 text-xs text-muted-foreground">
                   {tr("plugins.skillResolverDisabled", "需先启用「Skill 解析器」插件后才能添加 Skill 工具")}

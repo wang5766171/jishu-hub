@@ -67,9 +67,9 @@ function categoryOf(p: PluginDescriptor): PluginCategory {
   if (p.kind === "tool") {
     if (p.has_mcp) return "mcp";
     if (p.has_skill) return "skill";
-    // 自适应/深度形态插件（[pi_extension]，如需求讨论/流程规划）不属于
-    // 三类工具形态——归「自定义插件」（GUI 反馈第三轮：原有插件要可见）。
-    if (p.has_pi_extension) return "custom";
+    // 声明式能力插件（需求19 第八轮）：[panel] 管理面板声明（解析器面板
+    // 已被核心引擎判定截获）与 [pi_extension] 自适应插件归「自定义插件」。
+    if (p.has_panel || p.has_pi_extension) return "custom";
     return "cli";
   }
   // 自建 manifest 智能体单列「自定义插件」（独立插拔），与内置智能体分列。
