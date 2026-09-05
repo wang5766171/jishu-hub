@@ -37,11 +37,14 @@ interface CreateProps {
   /** MCP 解析器（mcp-resolver 系统插件）启用态（v0.9.0 需求1 二期）：
    * 关闭时 MCP 区不可添加（提示先启用）；编辑既有 MCP 插件不受限。 */
   mcpResolverEnabled?: boolean;
+  /** Skill 解析器（skill-resolver 系统插件）启用态（v0.9.0 需求20）：
+   * 关闭时 SKILL 区不可添加（提示先启用）；编辑既有 skill 插件不受限。 */
+  skillResolverEnabled?: boolean;
 }
 
-/** 插件类型（v0.9.0 需求19，用户心智三分；SKILL 后续扩展）：
- * mcp/cli → wire kind="tool"（差异在 [mcp]/[tool] 段）；agent → kind="agent"。 */
-export type PluginType = "mcp" | "cli" | "agent";
+/** 插件类型（v0.9.0 需求19/20，用户心智分类）：
+ * mcp/skill/cli → wire kind="tool"（差异在 [mcp]/[skill]/[tool] 段）；agent → kind="agent"。 */
+export type PluginType = "mcp" | "skill" | "cli" | "agent";
 
 /** MCP 传输类型（与后端 McpSection.type 对齐）。 */
 type McpTransport = "stdio" | "http" | "sse";
@@ -94,6 +97,9 @@ export interface FormState {
   mcpUrl: string;
   mcpHeaders: string; // JSON 对象文本
   mcpJson: string; // JSON 模式原文
+  /** v0.9.0 需求20：[skill] 段（description + SKILL.md 正文）。 */
+  skillDescription: string;
+  skillBody: string;
 }
 
 interface Template {
@@ -143,6 +149,8 @@ const emptyForm: FormState = {
   mcpUrl: "",
   mcpHeaders: "",
   mcpJson: "",
+  skillDescription: "",
+  skillBody: "",
 };
 
 /** 模版 = 表单预填常量（用户显式选择的起点，非运行时 agent 分支）。
@@ -355,6 +363,36 @@ args = ["-y", "<mcp-server-package>"]
       mcpTransport: "stdio",
       mcpCommand: "npx",
       mcpArgs: "-y <mcp-server-package>",
+    },
+  },
+  {
+    key: "skill-demo",
+    nameKey: "plugins.tplSkill",
+    nameFallback: "Skill 示例",
+    icon: <Sparkles className="h-4 w-4" />,
+    tplKind: "skill",
+    toml: `schema = 1
+kind = "tool"
+
+[info]
+id = "code-review"
+display_name = "Code Review"
+
+[skill]
+description = "提交前代码自查清单——逐文件检查错误处理与测试覆盖"
+body = """逐文件检查：
+1. 错误处理是否完整
+2. 新逻辑是否有测试覆盖
+3. 命名与既有风格一致"""
+`,
+    form: {
+      ...emptyForm,
+      pluginType: "skill",
+      id: "code-review",
+      displayName: "Code Review",
+      icon: "",
+      skillDescription: "提交前代码自查清单——逐文件检查错误处理与测试覆盖",
+      skillBody: "逐文件检查：\n1. 错误处理是否完整\n2. 新逻辑是否有测试覆盖\n3. 命名与既有风格一致",
     },
   },
   {
@@ -628,6 +666,14 @@ export function buildManifest(form: FormState): Record<string, unknown> {
         };
       }
     }
+    // v0.9.0 需求20：[skill] 段——SKILL.md 声明（description+body；skill 名=
+    // 插件 id，hub 分发器部署到 agent skill 目录）。
+    if (form.skillDescription.trim() && form.skillBody.trim()) {
+      tool.skill = {
+        description: form.skillDescription.trim(),
+        body: form.skillBody.trim(),
+      };
+    }
     if (form.probeEnabled && form.probeCommand.trim()) {
       tool.probe = {
         command: form.probeCommand.trim(),
@@ -721,6 +767,17 @@ const PLUGIN_TYPES: Array<{
     defaultTemplate: "tool-mcp",
   },
   {
+    key: "skill",
+    icon: <Sparkles className="h-4 w-4" />,
+    nameKey: "plugins.typeSkill",
+    nameFallback: "Skill 工具",
+    formKey: "plugins.typeSkillForm",
+    formFallback: "形式1 · 总控分发",
+    descKey: "plugins.typeSkillDesc",
+    descFallback: "声明 SKILL.md 能力，经解析器分发到 agent skill 目录",
+    defaultTemplate: "skill-demo",
+  },
+  {
     key: "cli",
     icon: <Terminal className="h-4 w-4" />,
     nameKey: "plugins.typeCli",
@@ -781,6 +838,7 @@ export function parseManifest(json: Record<string, unknown>): {
   const caps = (json.capabilities ?? {}) as Record<string, unknown>;
   const tool = (json.tool ?? {}) as Record<string, unknown>;
   const mcp = json.mcp as Record<string, unknown> | undefined;
+  const skillSec = json.skill as Record<string, unknown> | undefined;
   const preserved: Record<string, unknown> = {};
   if (json.pi_extension && typeof json.pi_extension === "object") {
     preserved.pi_extension = json.pi_extension;
@@ -814,7 +872,13 @@ export function parseManifest(json: Record<string, unknown>): {
     imageInput: caps.image_input === true,
     streamText: caps.stream_text === true,
     pluginType:
-      json.kind === "tool" ? (mcp ? "mcp" : "cli") : "agent",
+      json.kind === "tool"
+        ? mcp
+          ? "mcp"
+          : skillSec
+            ? "skill"
+            : "cli"
+        : "agent",
     toolDescription: String(tool.description ?? ""),
     toolUsage: String(tool.usage ?? ""),
     toolExample: String(tool.example ?? ""),
@@ -837,6 +901,8 @@ export function parseManifest(json: Record<string, unknown>): {
         ? JSON.stringify(mcp.headers, null, 2)
         : "",
     mcpJson: "",
+    skillDescription: String(skillSec?.description ?? ""),
+    skillBody: String(skillSec?.body ?? ""),
   };
   return { form, preserved };
 }
@@ -847,6 +913,7 @@ export function PluginCreateDialog({
   onCreated,
   editPluginId,
   mcpResolverEnabled = true,
+  skillResolverEnabled = true,
 }: CreateProps) {
   const { t } = useTranslation();
   const { alert: alertDialog, dialogNode } = useConfirmDialog();
@@ -900,6 +967,8 @@ export function PluginCreateDialog({
   const isTool = pluginType !== "agent";
   /** 解析器关闭且非编辑（既有 MCP 插件仍可编辑）→ MCP 区不可添加。 */
   const mcpLocked = pluginType === "mcp" && !mcpResolverEnabled && !isEdit;
+  /** skill 解析器关闭且非编辑 → SKILL 区不可添加（需求20，同 MCP 语义）。 */
+  const skillLocked = pluginType === "skill" && !skillResolverEnabled && !isEdit;
 
   // MCP 区行内校验（阻止提交 + 即时反馈）。
   const mcpJsonParsed = useMemo(
@@ -1002,7 +1071,9 @@ export function PluginCreateDialog({
     (pluginType === "mcp"
       ? mcpReady ||
         (form.toolDescription.trim().length > 0 && form.toolUsage.trim().length > 0)
-      : pluginType === "cli"
+      : pluginType === "skill"
+        ? form.skillDescription.trim().length > 0 && form.skillBody.trim().length > 0
+        : pluginType === "cli"
         ? form.toolDescription.trim().length > 0 && form.toolUsage.trim().length > 0
         : form.transportKind === "cli"
           ? form.chatCommand.trim().length > 0
@@ -1148,7 +1219,7 @@ export function PluginCreateDialog({
              * 选中类型决定下方分组（分治渲染，消除"上面和下面什么关系"）。 */}
             <div>
               <p className="text-xs font-medium mb-2">{tr("plugins.typeSection", "插件类型")}</p>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {PLUGIN_TYPES.map((tp) => (
                   <button
                     key={tp.key}
@@ -1432,6 +1503,39 @@ export function PluginCreateDialog({
                       )}
                     </>
                   )}
+                </div>
+              ))}
+
+            {/* Skill 声明（v0.9.0 需求20，对标 MCP 区）：description = SKILL.md
+             * frontmatter，body = 正文；skill 名 = 插件 id（自动派生）。 */}
+            {pluginType === "skill" &&
+              (skillLocked ? (
+                <div className="rounded-md border border-dashed border-border/70 bg-muted/20 p-3 text-xs text-muted-foreground">
+                  {tr("plugins.skillResolverDisabled", "需先启用「Skill 解析器」插件后才能添加 Skill 工具")}
+                </div>
+              ) : (
+                <div className="rounded-md border border-border/50 p-3 space-y-3">
+                  <p className="text-xs font-medium">{tr("plugins.skillSection", "Skill 声明")}</p>
+                  <Labeled labelKey="plugins.fSkillDesc" fallback="描述 *">
+                    <Input
+                      value={form.skillDescription}
+                      onChange={(e) => patch({ skillDescription: e.target.value })}
+                      placeholder="提交前代码自查：何时用/做什么（≤1024 字符）"
+                      className="h-8 text-xs"
+                    />
+                    <FieldHelp>{tr("plugins.hSkillDesc", "SKILL.md 的 frontmatter 描述——agent 按此判断何时使用该 skill。")}</FieldHelp>
+                  </Labeled>
+                  <Labeled labelKey="plugins.fSkillBody" fallback="内容 *">
+                    <textarea
+                      value={form.skillBody}
+                      onChange={(e) => patch({ skillBody: e.target.value })}
+                      rows={8}
+                      spellCheck={false}
+                      placeholder={"第一步：通读 diff…\n第二步：检查错误处理…"}
+                      className="flex w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-xs font-mono"
+                    />
+                    <FieldHelp>{tr("plugins.hSkillBody", "SKILL.md 正文指令；启用后自动分发到各 agent 的 skill 目录（启停即分发/回收）。")}</FieldHelp>
+                  </Labeled>
                 </div>
               ))}
 

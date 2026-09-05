@@ -6,7 +6,8 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useTranslation } from "react-i18next";
-import { AlertCircle, Download, Loader2, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { AlertCircle, ChevronDown, Download, Loader2, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import type { AgentStatus } from "@/agents/types";
 import { PluginCreateDialog } from "./plugin-create-dialog";
 import {
@@ -32,6 +33,8 @@ interface PluginDescriptor {
   enabled: boolean;
   /** v0.9.0 需求1：声明了 [mcp] 段（hub 聚合 MCP server 工具来源）。 */
   has_mcp?: boolean;
+  /** v0.9.0 需求20：声明了 [skill] 段（skill 分发服务来源）。 */
+  has_skill?: boolean;
   /** v0.9.0 需求8：声明式面板（list 只读模板 MVP）。 */
   has_panel?: boolean;
   panel?: {
@@ -52,17 +55,25 @@ interface PluginListResult {
  * 核心引擎 = core（jishu-self）+ 解析器系统插件（mcp-resolver；后续
  * skill/CLI 解析器并入此判定）；MCP/CLI 按 kind=tool 的 has_mcp 分流；
  * 智能体 = 内置适配器与 manifest 智能体。 */
-type PluginCategory = "core" | "mcp" | "cli" | "agent";
+type PluginCategory = "core" | "mcp" | "skill" | "cli" | "agent";
+
+/** 核心引擎 = core + 解析器系统插件（mcp/skill，后续新解析器并入此集合）。 */
+const RESOLVER_PLUGIN_IDS = new Set(["mcp-resolver", "skill-resolver"]);
 
 function categoryOf(p: PluginDescriptor): PluginCategory {
-  if (p.core || p.id === "mcp-resolver") return "core";
-  if (p.kind === "tool") return p.has_mcp ? "mcp" : "cli";
+  if (p.core || RESOLVER_PLUGIN_IDS.has(p.id)) return "core";
+  if (p.kind === "tool") {
+    if (p.has_mcp) return "mcp";
+    if (p.has_skill) return "skill";
+    return "cli";
+  }
   return "agent";
 }
 
 const PLUGIN_CATEGORIES: Array<{ key: PluginCategory; labelKey: string; fallback: string }> = [
   { key: "core", labelKey: "plugins.catCore", fallback: "核心引擎" },
   { key: "mcp", labelKey: "plugins.typeMcp", fallback: "MCP 工具" },
+  { key: "skill", labelKey: "plugins.typeSkill", fallback: "Skill 工具" },
   { key: "cli", labelKey: "plugins.typeCli", fallback: "CLI 工具" },
   { key: "agent", labelKey: "plugins.typeAgent", fallback: "智能体" },
 ];
@@ -233,10 +244,38 @@ export function PluginsPage() {
 
   const tr = (key: string, fallback: string) => (t(key) === key ? fallback : t(key));
 
+  // 需求20：分类折叠（偏好记忆于 localStorage）。
+  const COLLAPSE_KEY = "plugins-cat-collapsed";
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem(COLLAPSE_KEY);
+      return new Set(saved ? (JSON.parse(saved) as string[]) : []);
+    } catch {
+      return new Set();
+    }
+  });
+  const toggleCategory = (key: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      try {
+        localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...next]));
+      } catch {
+        // 存储不可用时仅本次会话生效
+      }
+      return next;
+    });
+  };
+
   // v0.9.0 需求1 二期：MCP 解析器（mcp-resolver 系统插件）启用态——新建
   // 插件对话框的 MCP 区门控（列表未加载完成前按启用放行，避免首开误锁）。
   const mcpResolverEnabled = result
     ? (result.plugins.find((p) => p.id === "mcp-resolver")?.enabled ?? false)
+    : true;
+  // 需求20：skill 解析器启用态（新建插件 SKILL 区门控）。
+  const skillResolverEnabled = result
+    ? (result.plugins.find((p) => p.id === "skill-resolver")?.enabled ?? false)
     : true;
 
 
@@ -383,6 +422,7 @@ export function PluginsPage() {
         onCreated={refresh}
         editPluginId={editPluginId}
         mcpResolverEnabled={mcpResolverEnabled}
+        skillResolverEnabled={skillResolverEnabled}
       />
       <div className="flex items-start justify-between gap-4">
         <div>
@@ -432,13 +472,25 @@ export function PluginsPage() {
         {PLUGIN_CATEGORIES.map((cat) => {
           const items = (result?.plugins ?? []).filter((x) => categoryOf(x) === cat.key);
           if (items.length === 0) return null;
+          const isCollapsed = collapsed.has(cat.key);
           return (
             <div key={cat.key} className="space-y-2">
-              <p className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
+              <button
+                type="button"
+                onClick={() => toggleCategory(cat.key)}
+                aria-expanded={!isCollapsed}
+                className="flex w-full items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70 hover:text-foreground/80 transition-colors"
+              >
+                <ChevronDown
+                  className={cn(
+                    "h-3 w-3 transition-transform",
+                    isCollapsed && "-rotate-90",
+                  )}
+                />
                 {tr(cat.labelKey, cat.fallback)}
                 <span className="text-muted-foreground/50">{items.length}</span>
-              </p>
-              {items.map((plugin) => renderRow(plugin))}
+              </button>
+              {!isCollapsed && items.map((plugin) => renderRow(plugin))}
             </div>
           );
         })}

@@ -50,6 +50,8 @@ function toolForm(partial: Partial<FormState>): FormState {
     mcpUrl: "",
     mcpHeaders: "",
     mcpJson: "",
+    skillDescription: "",
+    skillBody: "",
     ...partial,
   };
 }
@@ -352,5 +354,59 @@ describe("parseMcpServersBatch（批量导入，需求19 第二轮）", () => {
     const r = parseMcpServersBatch(`{"solo": {"type": "sse", "url": "http://h/sse"}}`);
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.servers[0].server.url).toBe("http://h/sse");
+  });
+});
+
+describe("skill 类型（需求20）", () => {
+  it("skill 表单 → kind=tool + [skill]（description/body）", () => {
+    const m = buildManifest(
+      toolForm({
+        pluginType: "skill",
+        id: "code-review",
+        displayName: "Code Review",
+        skillDescription: "提交前自查",
+        skillBody: "逐文件检查。",
+      }),
+    ) as Record<string, unknown>;
+    expect(m.kind).toBe("tool");
+    expect(m.skill).toEqual({ description: "提交前自查", body: "逐文件检查。" });
+    expect(m.mcp).toBeUndefined();
+    expect(m.tool).toBeUndefined();
+  });
+
+  it("parseManifest 派生 skill（tool + [skill] 无 [mcp]）并回填", () => {
+    const parsed = parseManifest({
+      schema: 1,
+      kind: "tool",
+      info: { id: "s", display_name: "S" },
+      skill: { description: "d", body: "b" },
+    });
+    expect(parsed.form.pluginType).toBe("skill");
+    expect(parsed.form.skillDescription).toBe("d");
+    expect(parsed.form.skillBody).toBe("b");
+    // [mcp] 优先于 [skill]（并存的旧插件派生 mcp）
+    const both = parseManifest({
+      schema: 1,
+      kind: "tool",
+      info: { id: "b", display_name: "B" },
+      mcp: { type: "stdio", command: "npx" },
+      skill: { description: "d", body: "b" },
+    });
+    expect(both.form.pluginType).toBe("mcp");
+    expect(both.form.skillBody).toBe("b"); // 字段仍保留（提交不丢段）
+  });
+
+  it("skill 与 [tool] 值并存时两段齐备（编辑往返）", () => {
+    const m = buildManifest(
+      toolForm({
+        pluginType: "skill",
+        skillDescription: "d",
+        skillBody: "b",
+        toolDescription: "x",
+        toolUsage: "y",
+      }),
+    ) as Record<string, unknown>;
+    expect(m.skill).toEqual({ description: "d", body: "b" });
+    expect(m.tool).toEqual({ description: "x", usage: "y" });
   });
 });
