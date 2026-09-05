@@ -457,15 +457,25 @@ function unwrapServersObj(
 }
 
 /** 单个 server 条目解析（name 用于错误信息；单/批量共用）：
- * type 兼容 streamable-http → http；stdio 需 command，http/sse 需 http(s) url。 */
+ * type 兼容 streamable-http → http；**缺省 type 按字段推断**（有 command →
+ * stdio；有 url → http——外部配置常省略 type，如智谱 open.bigmodel.cn 的
+ * url 型条目；sse 必须显式声明）；stdio 需 command，http/sse 需 http(s) url。 */
 function parseServerEntry(
   name: string,
   cfg: Record<string, unknown>,
 ): { ok: true; server: McpServerEntry } | { ok: false; error: string } {
-  let type = typeof cfg.type === "string" ? cfg.type.trim().toLowerCase() : "stdio";
+  let type = typeof cfg.type === "string" ? cfg.type.trim().toLowerCase() : "";
   if (type === "streamable-http" || type === "streamablehttp") type = "http";
+  if (!type) {
+    if (typeof cfg.command === "string" && cfg.command.trim()) type = "stdio";
+    else if (typeof cfg.url === "string" && cfg.url.trim()) type = "http";
+  }
   if (type !== "stdio" && type !== "http" && type !== "sse") {
-    return { ok: false, error: `server "${name}"：不支持的传输类型 "${cfg.type}"（支持 stdio / http / sse）` };
+    const reason =
+      typeof cfg.type === "string" && cfg.type.trim()
+        ? `不支持的传输类型 "${cfg.type}"（支持 stdio / http / sse）`
+        : "缺 type 且无 command/url，无法推断传输类型";
+    return { ok: false, error: `server "${name}"：${reason}` };
   }
   const stringMap = (src: unknown): Record<string, string> | undefined => {
     if (typeof src !== "object" || src === null || Array.isArray(src)) return undefined;
@@ -1112,8 +1122,18 @@ export function PluginCreateDialog({
         try {
           await invokeCommand("plugin_create", { manifest });
           created.push(name);
-        } catch (err) {
-          failed.push(`${name}: ${String(err)}`);
+        } catch (createErr) {
+          // 同名已存在 → 覆盖更新（GUI 反馈裁决：批量导入直接覆盖，整段
+          // manifest 以导入内容为准）；更新也失败才计为失败。
+          try {
+            await invokeCommand("plugin_update", {
+              pluginId: manifest.info.id,
+              manifest,
+            });
+            created.push(`${name}（覆盖）`);
+          } catch {
+            failed.push(`${name}: ${String(createErr)}`);
+          }
         }
       }
       setBatchOpen(false);

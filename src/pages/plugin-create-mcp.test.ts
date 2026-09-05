@@ -410,3 +410,34 @@ describe("skill 类型（需求20）", () => {
     expect(m.tool).toEqual({ description: "x", usage: "y" });
   });
 });
+
+describe("type 推断与批量覆盖（需求19 测试期迭代）", () => {
+  it("缺省 type：有 url → http（智谱 url 型条目）；有 command → stdio", () => {
+    const urlOnly = parseMcpServerJson(
+      `{"web-reader": {"url": "https://open.bigmodel.cn/api/mcp/web_reader/mcp", "headers": {"Authorization": "Bearer t"}}}`,
+    );
+    expect(urlOnly.ok).toBe(true);
+    if (urlOnly.ok) {
+      expect(urlOnly.server.type).toBe("http");
+      expect(urlOnly.server.headers).toEqual({ Authorization: "Bearer t" });
+    }
+    const cmdOnly = parseMcpServerJson(`{"zai": {"command": "npx", "args": ["-y", "@z_ai/mcp-server"], "env": {"K": "v"}}}`);
+    expect(cmdOnly.ok).toBe(true);
+    if (cmdOnly.ok) expect(cmdOnly.server.type).toBe("stdio");
+  });
+
+  it("缺 type 且无 command/url → 明确报错；显式非法 type 仍报不支持", () => {
+    const r = parseMcpServerJson(`{"x": {"headers": {"A": "b"}}}`);
+    expect(!r.ok && r.error.includes("推断")).toBe(true);
+    const r2 = parseMcpServerJson(`{"x": {"type": "ws", "url": "https://x"}}`);
+    expect(!r2.ok && r2.error.includes("不支持的传输类型")).toBe(true);
+  });
+
+  it("批量解析同样受益于推断（多个 url 型条目）", () => {
+    const r = parseMcpServersBatch(
+      `{"a": {"url": "https://x/a/mcp"}, "b": {"url": "https://x/b/mcp"}, "c": {"command": "npx"}}`,
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.servers.map((x) => x.server.type)).toEqual(["http", "http", "stdio"]);
+  });
+});
