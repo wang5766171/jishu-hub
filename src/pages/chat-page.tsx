@@ -903,13 +903,16 @@ export function ChatPage({
       const awayFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight > 100;
       isAwayFromBottomRef.current = awayFromBottom;
       setIsAwayFromBottom(awayFromBottom);
-      // 活动轮次 = 视口上方最后一条用户消息的轮次（视口在第一轮内则为 0）。
-      // 作用域限定主会话列表（data-turn-scope="main"）：任务执行投影消息、
-      // 流式气泡与追问占位都不参与计数，保证与横杠列表同序。
+      // 活动轮次 = 视口顶及以上最后一条用户消息的轮次（视口在第一轮内则
+      // 为 0）。边界含容差 +1px：跳转顶对齐后目标行 top == 容器顶（平滑
+      // 滚动还可能落在亚像素偏移上），严格“高于视口顶”会把边界行漏成
+      // 上一轮（用户实测：定位到 A 高亮停在 A-1）。作用域限定主会话列表
+      // （data-turn-scope="main"）：任务执行投影消息、流式气泡与追问占位
+      // 都不参与计数，保证与横杠列表同序。
       const containerTop = el.getBoundingClientRect().top;
       let active = 0;
       el.querySelectorAll<HTMLElement>('[data-turn-scope="main"] [data-turn-index]').forEach((message) => {
-        if (message.getBoundingClientRect().top < containerTop - 1) {
+        if (message.getBoundingClientRect().top < containerTop + 1) {
           const idx = Number(message.dataset.turnIndex);
           if (!Number.isNaN(idx)) active = Math.max(active, idx);
         }
@@ -922,10 +925,11 @@ export function ChatPage({
   }, [selectedSession, sessionMessages]);
 
   // v0.9.1 需求5：横杠导航跳转——滚动到第 index 轮的用户消息行（顶对齐
-  // 视口顶，与原上箭头跳转同语义）。
+  // 视口顶，与原上箭头跳转同语义）；先即时点亮该轮，滚动侦测随后接管。
   const handleJumpToTurn = useCallback((index: number) => {
     const el = messageAreaRef.current;
     if (!el) return;
+    setActiveTurnIndex(index);
     const target = Array.from(
       el.querySelectorAll<HTMLElement>('[data-turn-scope="main"] [data-turn-index]'),
     ).find((message) => Number(message.dataset.turnIndex) === index);
