@@ -168,7 +168,7 @@
 - `upgrade-version.mjs`：pkgsToUpdate/internalDeps 同步纳入四新包。
 - `PI_AGENT_VERSION` → `0.85.0-11`；`.gitmodules` branch → `release_v0.85.0-11`；submodule 指针指向 `6f9a5b28d`。
 - `PACKAGING.md` §1/§3 更新 bundle 布局描述。
-- **注意**：fork 分支为本地提交，主仓发版 push 前必须先 `git push origin release_v0.85.0-11`（fork）使 `6f9a5b28d` 远端可达，否则 CI 的 submodule checkout 会失败。
+- **fork 分支已于 2026-09-05 推送远端**：`git push -u origin release_v0.85.0-11` 完成，`refs/heads/release_v0.85.0-11` = `6f9a5b28d`（经 `git ls-remote` 核实），主仓 submodule 指针远端可达，CI checkout 无阻。
 
 ---
 
