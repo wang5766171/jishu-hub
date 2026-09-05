@@ -1476,6 +1476,76 @@ export function PluginCreateDialog({
 
           {/* 表单滚动区：基本信息 + 类型专属分组 + 探测（上方固定区不动）。 */}
           <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-1 pb-2">
+            {/* Skill 导入行（需求20 第三轮 GUI 裁决：位于插件 ID/显示名称之上，
+             * 选中即回填含名称预填）。 */}
+            {pluginType === "skill" && !skillLocked && (
+              <div className="relative flex items-center justify-end gap-1.5">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-[11px]"
+                  onClick={() => void openSkillSources()}
+                >
+                  <Sparkles className="h-3 w-3" />
+                  {tr("plugins.skillImportSources", "从其他智能体导入")}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-[11px]"
+                  onClick={() => void importSkillFromFile()}
+                >
+                  <FileJson className="h-3 w-3" />
+                  {tr("plugins.skillImportFile", "从文件导入")}
+                </Button>
+                {skillSourcesOpen && (
+                        <>
+                          <div
+                            className="fixed inset-0 z-[80]"
+                            onClick={() => setSkillSourcesOpen(false)}
+                          />
+                          <div className="absolute right-0 top-[calc(100%+0.4rem)] z-[90] w-80 rounded-xl border border-border bg-popover p-1.5 shadow-xl">
+                          <div className="max-h-64 overflow-y-auto">
+                            {skillSourcesLoading ? (
+                              <p className="px-2.5 py-2 text-xs text-muted-foreground">
+                                <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
+                                {tr("common.loading", "加载中…")}
+                              </p>
+                            ) : skillSources.length === 0 ? (
+                              <p className="px-2.5 py-2 text-xs text-muted-foreground">
+                                {tr("plugins.skillImportEmpty", "未发现可导入的 skill")}
+                              </p>
+                            ) : (
+                              skillSources.map((src) => (
+                                <button
+                                  key={src.path}
+                                  type="button"
+                                  title={src.path}
+                                  onClick={() => {
+                                    applySkillImport(src);
+                                    setSkillSourcesOpen(false);
+                                  }}
+                                  className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left transition-fast hover:bg-accent/60"
+                                >
+                                  <span className="flex items-center gap-1.5 text-xs text-foreground">
+                                    <span className="truncate font-medium">{src.name}</span>
+                                    <Badge variant="outline" className="px-1 text-[9px] text-muted-foreground">
+                                      {src.agent}
+                                    </Badge>
+                                  </span>
+                                  <span className="line-clamp-2 text-[10px] leading-snug text-muted-foreground">
+                                    {src.description || src.path}
+                                  </span>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                          </div>
+                        </>
+                      )}
+              </div>
+            )}
+
             {/* 基本信息——MCP 只取名称（插件 ID 由名称 slug 自动生成；图标/
              * 安装提示是 CLI/AGENT 元数据，MCP 不展示，v0.9.0 需求19 GUI 裁决）。 */}
             {pluginType === "mcp" ? (
@@ -1770,74 +1840,7 @@ export function PluginCreateDialog({
                 </div>
               ) : (
                 <div className="rounded-md border border-border/50 p-3 space-y-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-xs font-medium">{tr("plugins.skillSection", "Skill 声明")}</p>
-                    <div className="relative flex items-center gap-1.5">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 px-2 text-[11px]"
-                        onClick={() => void openSkillSources()}
-                      >
-                        <Sparkles className="h-3 w-3" />
-                        {tr("plugins.skillImportSources", "从其他智能体导入")}
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 px-2 text-[11px]"
-                        onClick={() => void importSkillFromFile()}
-                      >
-                        <FileJson className="h-3 w-3" />
-                        {tr("plugins.skillImportFile", "从文件导入")}
-                      </Button>
-                      {skillSourcesOpen && (
-                        <>
-                          <div
-                            className="fixed inset-0 z-[80]"
-                            onClick={() => setSkillSourcesOpen(false)}
-                          />
-                          <div className="absolute right-0 top-[calc(100%+0.4rem)] z-[90] w-80 rounded-xl border border-border bg-popover p-1.5 shadow-xl">
-                          <div className="max-h-64 overflow-y-auto">
-                            {skillSourcesLoading ? (
-                              <p className="px-2.5 py-2 text-xs text-muted-foreground">
-                                <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
-                                {tr("common.loading", "加载中…")}
-                              </p>
-                            ) : skillSources.length === 0 ? (
-                              <p className="px-2.5 py-2 text-xs text-muted-foreground">
-                                {tr("plugins.skillImportEmpty", "未发现可导入的 skill")}
-                              </p>
-                            ) : (
-                              skillSources.map((src) => (
-                                <button
-                                  key={src.path}
-                                  type="button"
-                                  title={src.path}
-                                  onClick={() => {
-                                    applySkillImport(src);
-                                    setSkillSourcesOpen(false);
-                                  }}
-                                  className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left transition-fast hover:bg-accent/60"
-                                >
-                                  <span className="flex items-center gap-1.5 text-xs text-foreground">
-                                    <span className="truncate font-medium">{src.name}</span>
-                                    <Badge variant="outline" className="px-1 text-[9px] text-muted-foreground">
-                                      {src.agent}
-                                    </Badge>
-                                  </span>
-                                  <span className="line-clamp-2 text-[10px] leading-snug text-muted-foreground">
-                                    {src.description || src.path}
-                                  </span>
-                                </button>
-                              ))
-                            )}
-                          </div>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </div>
+                  <p className="text-xs font-medium">{tr("plugins.skillSection", "Skill 声明")}</p>
                   <Labeled labelKey="plugins.fSkillDesc" fallback="描述 *">
                     <Input
                       value={form.skillDescription}
