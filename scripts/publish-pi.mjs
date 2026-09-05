@@ -47,6 +47,13 @@ const nameMapping = {
   // v0.81.0 上游把 orchestrator 包重命名为 server（npm 名 @earendil-works/pi-server），
   // 但我们对外发布的 npm 包名仍保持 jishu-agent-orchestrator 以维持已发布版本名的连续性。
   "server": `${SCOPE_NEW}/jishu-agent-orchestrator`,
+  // v0.85.0 起 coding-agent 运行时闭包新增/纳管的内部包：chord（应用组合运行时）、
+  // client/protocol（远程会话 CBOR 协议栈）、telemetry（agent/ai 的运行时依赖）。
+  // Lite 的 npm 别名解析要求所有 @earendil-works 依赖都有对应已发布别名包。
+  "chord": `${SCOPE_NEW}/jishu-chord`,
+  "client": `${SCOPE_NEW}/jishu-agent-client`,
+  "protocol": `${SCOPE_NEW}/jishu-agent-protocol`,
+  "telemetry": `${SCOPE_NEW}/jishu-agent-telemetry`,
 };
 
 // Retrieve the current version to use in the alias strings
@@ -60,10 +67,16 @@ const replaceDepWithAlias = (dep) => {
   if (dep === "@earendil-works/pi-agent-core") return `npm:${nameMapping["agent"]}@${version}`;
   if (dep === "@earendil-works/pi-tui") return `npm:${nameMapping["tui"]}@${version}`;
   if (dep === "@earendil-works/pi-server") return `npm:${nameMapping["server"]}@${version}`;
+  if (dep === "@earendil-works/chord") return `npm:${nameMapping["chord"]}@${version}`;
+  if (dep === "@earendil-works/pi-client") return `npm:${nameMapping["client"]}@${version}`;
+  if (dep === "@earendil-works/pi-protocol") return `npm:${nameMapping["protocol"]}@${version}`;
+  if (dep === "@earendil-works/pi-telemetry") return `npm:${nameMapping["telemetry"]}@${version}`;
   return null;
 };
 
-const publishOrder = ["tui", "ai", "agent", "coding-agent", "server"];
+// 按依赖拓扑排序：chord（无内部依赖）→ telemetry → tui → protocol → client
+// → ai → agent → server → coding-agent。
+const publishOrder = ["chord", "telemetry", "tui", "protocol", "client", "ai", "agent", "server", "coding-agent"];
 let packagesToPublish = packages.sort((a, b) => {
   const idxA = publishOrder.indexOf(a) === -1 ? 99 : publishOrder.indexOf(a);
   const idxB = publishOrder.indexOf(b) === -1 ? 99 : publishOrder.indexOf(b);
@@ -176,6 +189,10 @@ for (const pkg of packagesToPublish) {
       "@earendil-works/pi-agent-core": `${SCOPE_NEW}/jishu-agent-core`,
       "@earendil-works/pi-tui": `${SCOPE_NEW}/jishu-agent-tui`,
       "@earendil-works/pi-server": `${SCOPE_NEW}/jishu-agent-orchestrator`,
+      "@earendil-works/chord": `${SCOPE_NEW}/jishu-chord`,
+      "@earendil-works/pi-client": `${SCOPE_NEW}/jishu-agent-client`,
+      "@earendil-works/pi-protocol": `${SCOPE_NEW}/jishu-agent-protocol`,
+      "@earendil-works/pi-telemetry": `${SCOPE_NEW}/jishu-agent-telemetry`,
     };
     const tarballUrl = (jishuName, ver) => {
       const slug = jishuName.split("/")[1];

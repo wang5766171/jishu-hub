@@ -6,7 +6,7 @@
 
 Jishu Hub 只发布一个发行版：内嵌 `pi` 引擎（jishu agent）的**全量版**。
 
-- 打包时 esbuild 将 `coding-agent` 各模块及依赖打包为单一混淆的 `cli.js`，并清理 TS 源码（`src`）、无用配置（`.git`）等，满足闭源与混淆诉求。
+- 打包时上游 `build-coding-agent-bundle.mjs`（pi v0.85.0 起）以 esbuild 将 `coding-agent` 各模块及依赖打包为混淆的 `dist/bundle/cli.js`（多入口 + 代码分割：cli / rpc-entry / coordinator / index / client + chunks），fork 的 `build-bundle.mjs` 输出 `dist/runtime-deps.json` 依赖清单；打包后清理 TS 源码（`src`）、无用配置（`.git`）等，满足闭源与混淆诉求。
 - 安装器在安装/覆盖更新时会自动把 `pi-bundle` 装入用户目录（`~/.jishu-agent`），实现**开箱即用**与**离线运行**，用户无需手动 `npm install`。
 - 卸载时会清理 agent 本体（`packages`/`node_modules`），避免残留冲突；用户数据按「删除用户数据」勾选决定。
 
@@ -32,10 +32,9 @@ Jishu Hub 只发布一个发行版：内嵌 `pi` 引擎（jishu agent）的**全
 
 ## 3. 打包流水线：单一依赖真相
 
-`third_party/pi/packages/coding-agent/build-bundle.mjs` 在 esbuild 打包后输出 `dist/runtime-deps.json`，记录所有被 externalize（未打进 bundle、需运行时提供）的非 `@earendil-works` 依赖。
+`third_party/pi/packages/coding-agent/build-bundle.mjs` 输出 `dist/runtime-deps.json`，记录所有需运行时提供（未打进 bundle）的非 `@earendil-works` 依赖（v0.85.0 起 esbuild 打包本体由上游 `scripts/build-coding-agent-bundle.mjs` 承担，本文件只保留清单生成这一 fork 独有步骤）。
 
 - 键为依赖名、值为版本；同一依赖在多个子包出现时取最高 semver。
-- esbuild 的 `external` 列表也由这份清单的键派生，保证「打包留在外部的」与「清单声明的」一致。
 
 `scripts/pack-pi.mjs` 把依赖**烘焙**进 `pi-bundle/node_modules`（`npm install` 后 `npm prune --omit=dev`），并在打包末尾**断言**每个依赖都物理存在——缺失即构建失败、大声报错（这正是过去被 workspace 全量安装掩盖的失败点，现在本地就能提前暴露）。
 

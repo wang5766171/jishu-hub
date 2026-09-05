@@ -4,24 +4,26 @@ import path from "node:path";
 const SHEBANG = "#!/usr/bin/env node\n";
 
 /**
- * Normalize shebangs on the esbuild entry points inside `distDir`.
+ * Normalize shebangs on the bundled entry points inside `distDir`.
  *
- * build-bundle.mjs configures esbuild with a `banner` that injects a shebang
- * into every entry point. src/cli.ts ALSO carries its own source-level shebang,
- * so dist/cli.js ends up with two stacked shebang lines — and Node throws a
- * SyntaxError on the second line when the file is executed.
+ * v0.85.0 起 pi 的 CLI 产物切换到上游 build-coding-agent-bundle.mjs 的
+ * dist/bundle/ 布局（cli/rpc-entry/coordinator 在 dist/bundle/，库入口
+ * dist/index.js 与 bundle/index.js 并存）；旧布局（dist/cli.js）在存量
+ * 安装中仍存在，两处都处理，找不到的文件静默跳过。
  *
- * This collapses any number of stacked leading shebangs deterministically:
- * the executable entries (cli.js and rpc-entry.js) keep exactly one, while
- * the library entry (index.js) keeps none.
+ * Executable entries (cli.js and rpc-entry.js) keep exactly one shebang,
+ * while the library entries (index.js) keep none.
  *
  * @param {string} distDir - the dist/ directory containing bundled entry points
  */
 export function fixShebang(distDir) {
   for (const [entry, keepShebang] of [
+    ["bundle/cli.js", true],
+    ["bundle/rpc-entry.js", true],
     ["cli.js", true],
     ["rpc-entry.js", true],
     ["index.js", false],
+    ["bundle/index.js", false],
   ]) {
     const entryPath = path.join(distDir, entry);
     if (!fs.existsSync(entryPath)) continue;

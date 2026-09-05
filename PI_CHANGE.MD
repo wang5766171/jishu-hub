@@ -55,9 +55,9 @@
 |------|-----|
 | 上游仓库 | `https://github.com/earendil-works/pi` |
 | 自有 fork | `https://github.com/wang5766171/pi` |
-| 当前维护分支 | `release_v0.84.2-11` |
+| 当前维护分支 | `release_v0.85.0-11` |
 | `.gitmodules` URL | `https://github.com/wang5766171/pi` |
-| `.gitmodules` branch | `release_v0.84.2-11` |
+| `.gitmodules` branch | `release_v0.85.0-11` |
 
 ## 1.5 日常源码变动流程
 
@@ -118,6 +118,59 @@
 ---
 
 # 第二部分：改动记录
+
+## 2026-09-05 | 合并上游 v0.85.0（release_v0.85.0-11）——含 bundle 架构去自研
+
+**版本**：上游从 `v0.84.2` 跨越 `v0.84.3`/`v0.84.4` 到 `v0.85.0`（593 commits、839 files、+10.5 万行）。按版本规则（§1.3），Pi 版本升至 `0.85.0`、自研尾号顺延保持 `-11`，完整版本号 `0.85.0-11`，分支 `release_v0.85.0-11`。合并提交 `01489243c`（冲突解决 + 版本统一）+ `6f9a5b28d`（bundle 架构切换）。
+
+### 去自研判定（开源为主，上游已实现则清除自有代码）
+
+| 原自研改动 | 上游 v0.85.0 等价实现 | 处理 |
+|---|---|---|
+| cloudflare-ai-gateway 类型修复（`7b1b291`/`4ad7eec`：显式 `createProvider<三键联合>` 类型参数） | 上游以命名类型 `CloudflareAIGatewayApi` + 同款显式类型参数 + 解释注释实现（治 models.dev 目录缺 openai-completions 形态时 TS2353） | **删除自研，整取上游** |
+| fork `build-bundle.mjs` 的 esbuild 单文件打包（第 6/8 版：src 直打 dist/cli.js+rpc-entry.js+index.js） | 上游新增 `scripts/build-coding-agent-bundle.mjs` 两段式 bundle：tsgo 产 dist → 5 入口（cli/rpc-entry/coordinator/index/client）+ splitting 重打包到 `dist/bundle/`。三类 v0.85.0 新机制是 fork 单文件 src 打包**无法正确承载**的：① ai 包 `sideEffects` 按 dist 路径声明（src 打包会把 `images.ts` 的 register-builtins 裸导入摇掉，图片 provider 注册丢失）；② oauth/bedrock/image-resize 懒加载器经 `import.meta.url` 相对解析（单文件包所有模块共享同一 URL，懒加载文件无法落位）；③ coordinator 轻量入口靠 `PI_BUNDLED_NODE` define 关闭 main-module 守卫 + `dist/bundle/coordinator.js` 布局解析 | **删除 esbuild 打包逻辑，复用上游脚本**；`build-bundle.mjs` 收敛为纯清单生成器（runtime-deps.json 为 Full/Lite 唯一依赖真相，上游无此机制，第 6 版自研保留） |
+
+### 保留自研（上游 v0.85.0 均未实现，逐一核实）
+
+| 自研改动 | 上游 v0.85.0 状态 | 处理 |
+|---|---|---|
+| `piConfig.name="jishu"` / `configDir=".jishu-agent"` / `bin.jishu` | 仍默认 `pi`/`.pi`/`bin.pi`（且 bin 已指向 `dist/bundle/cli.js`，fork 同步迁移） | 保留（package.json） |
+| onboarding "Pi can explain..."（:951）/ trust "restart pi"（:3907）/ first-time-setup / theme-schema | 仍硬编码 Pi | 保留 jishu 替换 |
+| earendil-announcement 停用 | 仍存在且被引用 | 保留停用 |
+| multiSelect 扩展 UI（五文件） | 上游 extension UI 仍无 multiSelect | 适配保留（自动合并成功） |
+| jishu-tool-approval 内置扩展 + `ExtensionAPI.context`/`getSetting` | 上游无逐次审批扩展与 getSetting API | 保留 |
+| compaction `thresholdPercent`（settings-manager/compaction/agent-session/rpc 热推） | 上游仍 `reserveTokens` 绝对值 | 保留；上游新增测试的 reserveTokens 残留按等效语义换算（见下） |
+| `runtime-deps.json` 清单生成 | 上游 bundle 无依赖清单机制 | 保留（build-bundle.mjs 纯化为清单生成器） |
+| husky prepare 安全化 / `.publish-stage/` gitignore | 上游未变 | 保留 |
+
+### 上游结构变化与硬适配点
+
+1. **新增运行时包 `chord`**（应用组合运行时，coding-agent 直接依赖）；`agent`/`ai` 运行时依赖 `telemetry`；`coding-agent` 不再依赖 `pi-server`。闭包变化反映到：build-bundle 清单扫描列表（`server` 出局，`chord`/`telemetry` 入局）与主仓 publish/upgrade 脚本映射（见主仓配套）。
+2. **coding-agent package.json**：上游新增 `exports./experimental/plugin`、移除 `glob` 依赖、devDeps 更新；fork 保留产物契约迁移后的 `bin.jishu → dist/bundle/cli.js`、`exports./rpc-entry → ./dist/bundle/rpc-entry.js`、`build = build:unbundled && 上游 bundle 脚本 && build-bundle.mjs`。
+3. **内部依赖 caret 风险**：上游 v0.85.0 内部依赖改用 `^0.85.0`——semver 预发布规则下 `0.85.0-11` 不满足 `^0.85.0`，npm 会去外部 registry 装真上游包。全仓内部依赖统一钉精确 `0.85.0-11`（沿袭 -9 教训 `23517a9ba`）。
+4. **版本策略**：除 `session-backends/sqlite-node` 沿袭保留上游 `0.85.0` 外，其余包（含新增 chord、examples 之外的 evals/telemetry/client/protocol）统一 `0.85.0-11`；examples/docs 下的包保持上游原样。
+5. **7253 测试**：上游 maxTokens 100→1000 与新检查点时序下，fork 残留 `thresholdPercent: 1` 会提前触发 threshold 压缩；按等效语义改 80（窗口 1000 − reserve 200 = 800 触发线）。同类换算：compaction-summary-reasoning ×3 → 99（200k 窗口 ×1% = 2000 预算）、agent-session-compaction ×3 → 85（2600−400）、8328（上游新增）→ 90（100−10）。
+6. 根 `check` 新增 `check:entry-graphs`；`generate:models` 拆出 `generate-image-models`。
+
+### 验证
+
+- 全仓 `tsgo --noEmit` **0 error**（本机历史 5 个预存错误——grok-mermaid 缺包 ×4、openai-responses 类型 ×1——随 v0.85.0 依赖树消失）。
+- 定向测试：compaction 5 文件（compaction / summary-reasoning / session-compaction / 7253 / pre-prompt）+ 8328 + 5943 + extensions-discovery 全过（含 harness 的 auto-compaction-queue 在本环境 skip，与基线一致）。
+- bundle 产物：`dist/bundle/cli.js --version` → `0.85.0-11`、`--help` 正常、coordinator 直跑守卫按上游语义报错、multiSelect 已入包、shebang 单一。
+- `npm-shrinkwrap.json`（166 包）与 `install-lock`（167 包）重生成后 `--check` 通过。
+- 主仓 `pack-pi.mjs` 全量通过（26 项运行时依赖断言全过），pi-bundle 产物冒烟 `0.85.0-11`。
+
+### 主仓配套（jishu-hub 同步落地）
+
+- `pi_runtime.rs` 新增 `coding_agent_entry()`：`dist/bundle/cli.js` 优先、`dist/cli.js` 回退（存量 ≤0.84.2-11 安装兼容）；`agent_install.rs` 的 `jishu` CLI shim 同策略。
+- `pi-common.mjs` `fixShebang` 适配 bundle 布局（bundle/cli.js、bundle/rpc-entry.js 保 shebang；两代 index.js 均）。
+- `publish-pi.mjs`：nameMapping/replaceDepWithAlias/earendilToJishu 增 chord（`@jishu-hub/jishu-chord`）、client/protocol/telemetry（`@jishu-hub/jishu-agent-*`）；publishOrder 按新依赖拓扑 chord→telemetry→tui→protocol→client→ai→agent→server→coding-agent。
+- `upgrade-version.mjs`：pkgsToUpdate/internalDeps 同步纳入四新包。
+- `PI_AGENT_VERSION` → `0.85.0-11`；`.gitmodules` branch → `release_v0.85.0-11`；submodule 指针指向 `6f9a5b28d`。
+- `PACKAGING.md` §1/§3 更新 bundle 布局描述。
+- **注意**：fork 分支为本地提交，主仓发版 push 前必须先 `git push origin release_v0.85.0-11`（fork）使 `6f9a5b28d` 远端可达，否则 CI 的 submodule checkout 会失败。
+
+---
 
 ## 2026-08-30 | cloudflare-ai-gateway 类型修复补强（release_v0.84.2-11）
 

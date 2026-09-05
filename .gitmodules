@@ -1,4 +1,4 @@
 [submodule "third_party/pi"]
 	path = third_party/pi
 	url = https://github.com/wang5766171/pi
-	branch = release_v0.84.2-11
+	branch = release_v0.85.0-11

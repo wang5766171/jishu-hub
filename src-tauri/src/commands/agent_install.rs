@@ -176,14 +176,14 @@ fn install_pi_bundle_from(source: &std::path::Path) -> Result<String, String> {
 /// hub 安装目录由 NSIS 加入 PATH（installer.nsh -AddToPath），故 `jishu` 命令行可用，
 /// 替代 lite 版的 npm bin 全局注册。Windows 用 jishu.cmd，macOS/Linux 用无扩展脚本 +x。
 fn register_jishu_cli_shim(agent_dir: &std::path::Path) {
-    let cli_js = agent_dir
-        .join("packages")
-        .join("coding-agent")
-        .join("dist")
-        .join("cli.js");
-    if !cli_js.exists() {
+    // v0.85.0 起产物为 dist/bundle/cli.js（上游 bundle 布局），旧安装为 dist/cli.js。
+    let dist = agent_dir.join("packages").join("coding-agent").join("dist");
+    let cli_js = [dist.join("bundle").join("cli.js"), dist.join("cli.js")]
+        .into_iter()
+        .find(|p| p.exists());
+    let Some(cli_js) = cli_js else {
         return;
-    }
+    };
     let exe_dir = match std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|p| p.to_path_buf()))

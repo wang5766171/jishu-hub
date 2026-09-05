@@ -34,6 +34,12 @@ const pkgsToUpdate = [
   "packages/coding-agent/package.json",
   "packages/tui/package.json",
   "packages/server/package.json",
+  // v0.85.0 起进入 coding-agent 运行时闭包的包（chord/client/protocol/telemetry）。
+  "packages/chord/package.json",
+  "packages/client/package.json",
+  "packages/protocol/package.json",
+  "packages/telemetry/package.json",
+  "packages/evals/package.json",
 ];
 
 for (const pkgPath of pkgsToUpdate) {
@@ -50,6 +56,10 @@ for (const pkgPath of pkgsToUpdate) {
       "@earendil-works/pi-tui",
       "@earendil-works/pi-coding-agent",
       "@earendil-works/pi-server",
+      "@earendil-works/chord",
+      "@earendil-works/pi-client",
+      "@earendil-works/pi-protocol",
+      "@earendil-works/pi-telemetry",
     ];
     for (const depType of ["dependencies", "devDependencies", "peerDependencies"]) {
       if (json[depType]) {
