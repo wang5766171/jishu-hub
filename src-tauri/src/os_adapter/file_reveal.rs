@@ -18,7 +18,9 @@ fn validated_existing_path(path: &str) -> Result<PathBuf, String> {
 
 /// spawn 后不阻塞调用方；Unix 下以守护线程回收子进程，避免僵尸。
 fn spawn_detached(command: &mut std::process::Command, what: &str) -> Result<(), String> {
-    let child = command
+    // unix 分支的 wait() 需可变借用；Windows 分支仅 drop，cfg_attr 消 unused_mut。
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut child = command
         .spawn()
         .map_err(|e| format!("Failed to launch {what}: {e}"))?;
     #[cfg(unix)]

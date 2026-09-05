@@ -37,5 +37,17 @@ jobs:
       - name: Run frontend tests
         run: npm run test:run
 
+      # tauri-build 在编译期校验 externalBin（target/release/jishu-cli-<triple>.exe）
+      # 存在性；本地由 scripts/build.mjs 打包时生成，CI 全新环境无此文件会直接失败。
+      # 与 build.mjs 的自举手段一致：先落 0 字节桩过校验（单测不 spawn sidecar）。
+      - name: Prepare jishu-cli sidecar stub (tauri-build externalBin check)
+        shell: pwsh
+        run: |
+          $triple = ((rustc -vV | Select-String 'host: (.+)').Matches[0].Groups[1].Value).Trim()
+          New-Item -ItemType Directory -Force -Path src-tauri/target/release | Out-Null
+          $stub = "src-tauri/target/release/jishu-cli-$triple.exe"
+          if (-not (Test-Path $stub)) { New-Item -ItemType File -Path $stub | Out-Null }
+          Write-Host "sidecar stub: $stub"
+
       - name: Run Rust library tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
