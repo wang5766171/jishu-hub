@@ -38,6 +38,9 @@ interface PluginDescriptor {
     title: string;
     items: Array<{ label: string; command: string }>;
   } | null;
+  /** v0.9.0 需求1 二期：系统插件（hub 随包分发、幂等重部署）——不可卸载/
+   * 编辑（mcp-resolver / task-requirements / task-plan），可禁用。 */
+  system?: boolean;
 }
 
 interface PluginListResult {
@@ -211,6 +214,12 @@ export function PluginsPage() {
 
   const tr = (key: string, fallback: string) => (t(key) === key ? fallback : t(key));
 
+  // v0.9.0 需求1 二期：MCP 解析器（mcp-resolver 系统插件）启用态——新建
+  // 插件对话框的 MCP 区门控（列表未加载完成前按启用放行，避免首开误锁）。
+  const mcpResolverEnabled = result
+    ? (result.plugins.find((p) => p.id === "mcp-resolver")?.enabled ?? false)
+    : true;
+
 
   return (
     <div className="p-6 max-w-3xl mx-auto space-y-4">
@@ -223,6 +232,7 @@ export function PluginsPage() {
         }}
         onCreated={refresh}
         editPluginId={editPluginId}
+        mcpResolverEnabled={mcpResolverEnabled}
       />
       <div className="flex items-start justify-between gap-4">
         <div>
@@ -295,6 +305,11 @@ export function PluginsPage() {
                   {plugin.core && (
                     <Badge className="text-[10px] px-1.5">{tr("plugins.coreBadge", "核心引擎")}</Badge>
                   )}
+                  {plugin.system && (
+                    <Badge variant="outline" className="text-[10px] px-1.5">
+                      {tr("plugins.systemBadge", "系统")}
+                    </Badge>
+                  )}
                   {plugin.has_mcp && (
                     <Badge variant="outline" className="text-[10px] px-1.5">
                       {tr("plugins.mcpBadge", "MCP")}
@@ -351,7 +366,9 @@ export function PluginsPage() {
                     <span className="ml-1">{tr("env.install", "安装")}</span>
                   </Button>
                 )}
-                {(plugin.kind === "manifest" || plugin.kind === "tool") && (
+                {/* v0.9.0 需求1 二期：系统插件隐藏编辑/卸载（随包分发、启动
+                 * 幂等重部署——编辑会被覆盖，卸载是无操作）。 */}
+                {!plugin.system && (plugin.kind === "manifest" || plugin.kind === "tool") && (
                   <Button
                     variant="ghost"
                     size="icon"
@@ -365,7 +382,7 @@ export function PluginsPage() {
                     <Pencil className="h-4 w-4" />
                   </Button>
                 )}
-                {(plugin.kind === "manifest" || plugin.kind === "tool") && (
+                {!plugin.system && (plugin.kind === "manifest" || plugin.kind === "tool") && (
                   <Button
                     variant="ghost"
                     size="icon"

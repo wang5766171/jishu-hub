@@ -353,7 +353,20 @@
     "hMcpArgs": "空格分隔。",
     "hMcpEnv": "每行 KEY=VALUE。",
     "hToolOptionalWithMcp": "填写 MCP server 后，描述/用法可留空（纯 MCP 工具插件）。",
-    "unifiedNote": "MCP、skills、面板等能力统一通过插件机制管理"
+    "unifiedNote": "MCP、skills、面板等能力统一通过插件机制管理",
+    "mcpResolverDisabled": "需先启用「MCP 解析器」插件后才能添加 MCP 工具",
+    "hMcpJson": "格式：{\"server-name\": {\"type\": \"stdio\"|\"http\"|\"sse\", ...}}；也接受 mcpServers 包裹；单个插件仅一个 server。",
+    "hMcpHeaders": "JSON 对象，随连接发送（如 Authorization）。",
+    "hMcpUrl": "MCP server 的 HTTP 端点。",
+    "fMcpHeaders": "请求头（JSON，可选）",
+    "fMcpUrl": "URL",
+    "mcpModeJson": "JSON",
+    "mcpModeForm": "表单",
+    "mcpTransportSse": "SSE（Server-Sent Events）",
+    "mcpTransportHttp": "HTTP",
+    "mcpTransportStdio": "stdio（本地命令）",
+    "mcpTransportType": "传输类型",
+    "systemBadge": "系统"
   },
   "config": {
     "title": "配置管理",

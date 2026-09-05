@@ -353,7 +353,20 @@
     "hMcpArgs": "Space separated.",
     "hMcpEnv": "One KEY=VALUE per line.",
     "hToolOptionalWithMcp": "With an MCP server declared, description/usage can be empty (pure MCP tool plugin).",
-    "unifiedNote": "MCP, skills, panels and other capabilities are managed uniformly through the plugin mechanism"
+    "unifiedNote": "MCP, skills, panels and other capabilities are managed uniformly through the plugin mechanism",
+    "mcpResolverDisabled": "Enable the \"MCP resolver\" plugin before adding MCP tools",
+    "hMcpJson": "Format: {\"server-name\": {\"type\": \"stdio\"|\"http\"|\"sse\", ...}}; mcpServers wrapper also accepted; one server per plugin.",
+    "hMcpHeaders": "JSON object sent with each request (e.g. Authorization).",
+    "hMcpUrl": "HTTP endpoint of the MCP server.",
+    "fMcpHeaders": "Headers (JSON, optional)",
+    "fMcpUrl": "URL",
+    "mcpModeJson": "JSON",
+    "mcpModeForm": "Form",
+    "mcpTransportSse": "SSE (Server-Sent Events)",
+    "mcpTransportHttp": "HTTP",
+    "mcpTransportStdio": "stdio (local command)",
+    "mcpTransportType": "Transport",
+    "systemBadge": "System"
   },
   "config": {
     "title": "Configuration",

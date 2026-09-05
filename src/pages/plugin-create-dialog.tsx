@@ -20,7 +20,9 @@ import { cn } from "@/lib/utils";
 
 /** v0.8.1 需求6：插件创建可视化界面——模版快速创建（claude/codex/opencode
  * 形态预填）+ 分组表单 + 字段级能力说明。提交走 plugin_create（后端全量
- * schema 校验 + serde 生成 TOML，前端零拼 TOML）。 */
+ * schema 校验 + serde 生成 TOML，前端零拼 TOML）。
+ * v0.9.0 需求1 二期：MCP 区表单/JSON 双模式 + stdio/HTTP/SSE 三传输 +
+ * 解析器（mcp-resolver）开关联动（参考 Claude Desktop 界面）。 */
 
 interface CreateProps {
   open: boolean;
@@ -29,10 +31,26 @@ interface CreateProps {
   /** 编辑模式（v0.8.1 GUI 反馈：新增插件无法编辑）：传入插件 id 时对话框
    * 预填其 manifest，id 锁定，提交走 plugin_update 覆盖写回。 */
   editPluginId?: string | null;
+  /** MCP 解析器（mcp-resolver 系统插件）启用态（v0.9.0 需求1 二期）：
+   * 关闭时 MCP 区不可添加（提示先启用）；编辑既有 MCP 插件不受限。 */
+  mcpResolverEnabled?: boolean;
 }
 
-/** 表单模型（提交时转换为 manifest JSON wire 结构）。 */
-interface FormState {
+/** MCP 传输类型（与后端 McpSection.type 对齐）。 */
+type McpTransport = "stdio" | "http" | "sse";
+
+/** 参考图 JSON 模式的归一化 server 条目（parseMcpServerJson 产物）。 */
+export interface McpServerEntry {
+  type: McpTransport;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+}
+
+/** 表单模型（提交时转换为 manifest JSON wire 结构；导出供测试构造）。 */
+export interface FormState {
   id: string;
   displayName: string;
   icon: string;
@@ -60,10 +78,15 @@ interface FormState {
   toolUsage: string;
   toolExample: string;
   toolNotes: string;
-  /** v0.9.0 需求12：[mcp] 段字段（页面创建 MCP 插件）。 */
+  /** v0.9.0 需求1 二期：[mcp] 段——表单/JSON 双模式 + 三传输。 */
+  mcpMode: "form" | "json";
+  mcpTransport: McpTransport;
   mcpCommand: string;
   mcpArgs: string; // 空格分隔
   mcpEnv: string; // 每行 KEY=VALUE
+  mcpUrl: string;
+  mcpHeaders: string; // JSON 对象文本
+  mcpJson: string; // JSON 模式原文
 }
 
 interface Template {
@@ -105,9 +128,14 @@ const emptyForm: FormState = {
   toolUsage: "",
   toolExample: "",
   toolNotes: "",
+  mcpMode: "form" as const,
+  mcpTransport: "stdio" as const,
   mcpCommand: "",
   mcpArgs: "",
   mcpEnv: "",
+  mcpUrl: "",
+  mcpHeaders: "",
+  mcpJson: "",
 };
 
 /** 模版 = 表单预填常量（用户显式选择的起点，非运行时 agent 分支）。
@@ -307,6 +335,7 @@ id = "my-mcp-tool"
 display_name = "My MCP Tool"
 
 [mcp]
+type = "stdio"
 command = "npx"
 args = ["-y", "<mcp-server-package>"]
 `,
@@ -315,6 +344,7 @@ args = ["-y", "<mcp-server-package>"]
       kind: "tool",
       id: "my-mcp-tool",
       displayName: "My MCP Tool",
+      mcpTransport: "stdio",
       mcpCommand: "npx",
       mcpArgs: "-y <mcp-server-package>",
     },
@@ -357,8 +387,142 @@ notes = "需要 DINGTALK_WEBHOOK 环境变量"
   },
 ];
 
-/** 表单 → manifest JSON（wire 结构与后端 AgentManifestFile 对齐；空值省略）。 */
-function buildManifest(form: FormState): Record<string, unknown> {
+/** 参考图 JSON 模式解析：接受 `{"<name>": {...}}` 或 `{"mcpServers": {...}}`
+ * 包裹；恰一个 server（单插件单 server）；type 兼容 streamable-http → http；
+ * stdio 需 command，http/sse 需 http(s) url。失败返回用户可读错误。 */
+export function parseMcpServerJson(
+  text: string,
+): { ok: true; name: string; server: McpServerEntry } | { ok: false; error: string } {
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    return { ok: false, error: "不是合法的 JSON" };
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) {
+    return { ok: false, error: "顶层必须是 JSON 对象" };
+  }
+  let obj = v as Record<string, unknown>;
+  if (obj.mcpServers !== undefined) {
+    if (typeof obj.mcpServers !== "object" || obj.mcpServers === null || Array.isArray(obj.mcpServers)) {
+      return { ok: false, error: "mcpServers 必须是对象" };
+    }
+    obj = obj.mcpServers as Record<string, unknown>;
+  }
+  const entries = Object.entries(obj);
+  if (entries.length === 0) {
+    return { ok: false, error: "未包含任何 MCP server" };
+  }
+  if (entries.length > 1) {
+    return { ok: false, error: `包含 ${entries.length} 个 server——单个插件仅支持声明一个，请拆分为多个插件` };
+  }
+  const [name, rawCfg] = entries[0];
+  if (typeof rawCfg !== "object" || rawCfg === null || Array.isArray(rawCfg)) {
+    return { ok: false, error: `server "${name}" 的配置必须是对象` };
+  }
+  const cfg = rawCfg as Record<string, unknown>;
+  let type = typeof cfg.type === "string" ? cfg.type.trim().toLowerCase() : "stdio";
+  if (type === "streamable-http" || type === "streamablehttp") type = "http";
+  if (type !== "stdio" && type !== "http" && type !== "sse") {
+    return { ok: false, error: `不支持的传输类型 "${cfg.type}"（支持 stdio / http / sse）` };
+  }
+  const stringMap = (src: unknown): Record<string, string> | undefined => {
+    if (typeof src !== "object" || src === null || Array.isArray(src)) return undefined;
+    const out: Record<string, string> = {};
+    for (const [k, val] of Object.entries(src)) {
+      if (typeof val === "string") out[k] = val;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  };
+  if (type === "stdio") {
+    const command = typeof cfg.command === "string" ? cfg.command : "";
+    if (!command.trim()) return { ok: false, error: "stdio 类型需要填写 command" };
+    return {
+      ok: true,
+      name,
+      server: {
+        type: "stdio",
+        command: command.trim(),
+        args: Array.isArray(cfg.args)
+          ? cfg.args.filter((a): a is string => typeof a === "string")
+          : undefined,
+        env: stringMap(cfg.env),
+      },
+    };
+  }
+  const url = typeof cfg.url === "string" ? cfg.url.trim() : "";
+  if (!url) return { ok: false, error: `${type} 类型需要填写 url` };
+  if (!/^https?:\/\//.test(url)) {
+    return { ok: false, error: "url 必须以 http:// 或 https:// 开头" };
+  }
+  return { ok: true, name, server: { type, url, headers: stringMap(cfg.headers) } };
+}
+
+/** 请求头文本（JSON 对象）→ Record；空文本返回 undefined；非法抛错（行内提示/提交拦截共用）。 */
+function parseMcpHeaders(text: string): Record<string, string> | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  let v: unknown;
+  try {
+    v = JSON.parse(trimmed);
+  } catch {
+    throw new Error("请求头必须是合法的 JSON 对象");
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) {
+    throw new Error("请求头必须是合法的 JSON 对象");
+  }
+  const out: Record<string, string> = {};
+  for (const [k, val] of Object.entries(v)) {
+    if (typeof val !== "string") {
+      throw new Error("请求头的值必须都是字符串");
+    }
+    out[k] = val;
+  }
+  return out;
+}
+
+/** 归一化 server 条目 → [mcp] wire 段（空集合省略）。 */
+export function serverToMcpSection(s: McpServerEntry): Record<string, unknown> {
+  if (s.type === "stdio") {
+    return {
+      type: "stdio",
+      command: (s.command ?? "").trim(),
+      ...(s.args && s.args.length > 0 ? { args: s.args } : {}),
+      ...(s.env && Object.keys(s.env).length > 0 ? { env: s.env } : {}),
+    };
+  }
+  return {
+    type: s.type,
+    url: (s.url ?? "").trim(),
+    ...(s.headers && Object.keys(s.headers).length > 0 ? { headers: s.headers } : {}),
+  };
+}
+
+/** 环境变量文本（每行 KEY=VALUE）→ Record（空行/非法行忽略）。 */
+function parseEnvLines(text: string): Record<string, string> | undefined {
+  const entries: [string, string][] = [];
+  for (const line of text.split("\n")) {
+    const l = line.trim();
+    if (!l) continue;
+    const i = l.indexOf("=");
+    if (i > 0) entries.push([l.slice(0, i), l.slice(i + 1)]);
+  }
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+/** server 名 → 插件 id slug（JSON 模式 name 键预填 id 用）。 */
+export function mcpNameToId(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "mcp-tool";
+}
+
+/** 表单 → manifest JSON（wire 结构与后端 AgentManifestFile 对齐；空值省略）。
+ * MCP 区输入非法（JSON/请求头解析失败）时抛 Error（handleSubmit 捕获展示）。 */
+export function buildManifest(form: FormState): Record<string, unknown> {
   if (form.kind === "tool") {
     const tool: Record<string, unknown> = {
       schema: 1,
@@ -380,22 +544,36 @@ function buildManifest(form: FormState): Record<string, unknown> {
         ...(form.toolNotes.trim() ? { notes: form.toolNotes.trim() } : {}),
       };
     }
-    // v0.9.0 需求12：[mcp] 段——hub 聚合 server spawn 的外部 MCP stdio server。
-    if (form.mcpCommand.trim()) {
-      const envEntries = form.mcpEnv
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean)
-        .map((l) => {
-          const i = l.indexOf("=");
-          return i > 0 ? [l.slice(0, i), l.slice(i + 1)] : null;
-        })
-        .filter((x): x is [string, string] => !!x);
-      tool.mcp = {
-        command: form.mcpCommand.trim(),
-        ...(form.mcpArgs.trim() ? { args: form.mcpArgs.split(/\s+/).filter(Boolean) } : {}),
-        ...(envEntries.length > 0 ? { env: Object.fromEntries(envEntries) } : {}),
-      };
+    // v0.9.0 需求1 二期：[mcp] 段表单/JSON 双模式 + 三传输（stdio → spawn
+    // 子进程；http/sse → 远程连接），hub 聚合 server 代理其工具。
+    if (form.mcpMode === "json") {
+      const text = form.mcpJson.trim();
+      if (text) {
+        const parsed = parseMcpServerJson(text);
+        if (!parsed.ok) throw new Error(parsed.error);
+        tool.mcp = serverToMcpSection(parsed.server);
+      }
+    } else if (form.mcpTransport === "stdio") {
+      if (form.mcpCommand.trim()) {
+        const env = parseEnvLines(form.mcpEnv);
+        tool.mcp = {
+          type: "stdio",
+          command: form.mcpCommand.trim(),
+          ...(form.mcpArgs.trim()
+            ? { args: form.mcpArgs.split(/\s+/).filter(Boolean) }
+            : {}),
+          ...(env ? { env } : {}),
+        };
+      }
+    } else {
+      if (form.mcpUrl.trim()) {
+        const headers = parseMcpHeaders(form.mcpHeaders);
+        tool.mcp = {
+          type: form.mcpTransport,
+          url: form.mcpUrl.trim(),
+          ...(headers ? { headers } : {}),
+        };
+      }
     }
     if (form.probeEnabled && form.probeCommand.trim()) {
       tool.probe = {
@@ -539,18 +717,35 @@ function parseManifest(json: Record<string, unknown>): {
     toolUsage: String(tool.usage ?? ""),
     toolExample: String(tool.example ?? ""),
     toolNotes: String(tool.notes ?? ""),
+    // v0.9.0 需求1 二期：[mcp] 三传输往返（表单模式回填；JSON 草稿为空）。
+    mcpMode: "form",
+    mcpTransport:
+      mcp?.type === "http" ? "http" : mcp?.type === "sse" ? "sse" : "stdio",
     mcpCommand: String(mcp?.command ?? ""),
     mcpArgs: Array.isArray(mcp?.args) ? (mcp!.args as string[]).join(" ") : "",
-    mcpEnv: mcp && mcp.env && typeof mcp.env === "object"
-      ? Object.entries(mcp.env as Record<string, unknown>)
-          .map(([k, v]) => `${k}=${String(v)}`)
-          .join("\n")
-      : "",
+    mcpEnv:
+      mcp && mcp.env && typeof mcp.env === "object"
+        ? Object.entries(mcp.env as Record<string, unknown>)
+            .map(([k, v]) => `${k}=${String(v)}`)
+            .join("\n")
+        : "",
+    mcpUrl: String(mcp?.url ?? ""),
+    mcpHeaders:
+      mcp && mcp.headers && typeof mcp.headers === "object"
+        ? JSON.stringify(mcp.headers, null, 2)
+        : "",
+    mcpJson: "",
   };
   return { form, preserved };
 }
 
-export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId }: CreateProps) {
+export function PluginCreateDialog({
+  open,
+  onOpenChange,
+  onCreated,
+  editPluginId,
+  mcpResolverEnabled = true,
+}: CreateProps) {
   const { t } = useTranslation();
   const { alert: alertDialog, dialogNode } = useConfirmDialog();
   const [templateKey, setTemplateKey] = useState("blank");
@@ -600,15 +795,106 @@ export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId
     setForm((prev) => ({ ...prev, ...partial }));
 
   const isTool = form.kind === "tool";
+  /** 解析器关闭且非编辑（既有 MCP 插件仍可编辑）→ MCP 区不可添加。 */
+  const mcpLocked = isTool && !mcpResolverEnabled && !isEdit;
+
+  // MCP 区行内校验（阻止提交 + 即时反馈）。
+  const mcpJsonParsed = useMemo(
+    () =>
+      isTool && form.mcpMode === "json" && form.mcpJson.trim()
+        ? parseMcpServerJson(form.mcpJson)
+        : null,
+    [isTool, form.mcpMode, form.mcpJson],
+  );
+  const mcpJsonError = mcpJsonParsed && !mcpJsonParsed.ok ? mcpJsonParsed.error : null;
+  const mcpHeadersError = useMemo(() => {
+    if (!isTool || form.mcpMode !== "form" || form.mcpTransport === "stdio") return null;
+    if (!form.mcpHeaders.trim()) return null;
+    try {
+      parseMcpHeaders(form.mcpHeaders);
+      return null;
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  }, [isTool, form.mcpMode, form.mcpTransport, form.mcpHeaders]);
+
+  // JSON 模式 name 键预填 id/显示名（仅新建且未填写时；插件 id 即 server 名
+  // 的 slug 化——参考图「名称」字段的等价物）。
+  useEffect(() => {
+    if (!mcpJsonParsed?.ok || isEdit) return;
+    if (form.id.trim() || form.displayName.trim()) return;
+    patch({
+      id: mcpNameToId(mcpJsonParsed.name),
+      displayName: mcpJsonParsed.name,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mcpJsonParsed, isEdit]);
+
+  /** 表单 | JSON 双向切换：表单 → JSON 按当前表单态生成草稿；JSON → 表单
+   * 解析成功则回填分传输字段（失败保持表单原值，草稿保留在 JSON 文本）。 */
+  const switchMcpMode = (mode: "form" | "json") => {
+    if (mode === form.mcpMode) return;
+    if (mode === "json") {
+      const entry: McpServerEntry =
+        form.mcpTransport === "stdio"
+          ? {
+              type: "stdio",
+              command: form.mcpCommand.trim(),
+              ...(form.mcpArgs.trim()
+                ? { args: form.mcpArgs.split(/\s+/).filter(Boolean) }
+                : {}),
+              ...(parseEnvLines(form.mcpEnv) ? { env: parseEnvLines(form.mcpEnv) } : {}),
+            }
+          : {
+              type: form.mcpTransport,
+              url: form.mcpUrl.trim(),
+            };
+      const name = form.id.trim() || "my-mcp-server";
+      patch({
+        mcpMode: "json",
+        mcpJson: JSON.stringify({ [name]: entry }, null, 2),
+      });
+      return;
+    }
+    const parsed = form.mcpJson.trim() ? parseMcpServerJson(form.mcpJson) : null;
+    if (parsed?.ok) {
+      const s = parsed.server;
+      patch({
+        mcpMode: "form",
+        mcpTransport: s.type,
+        mcpCommand: s.command ?? form.mcpCommand,
+        mcpArgs: s.args?.length ? s.args.join(" ") : form.mcpArgs,
+        mcpEnv: s.env
+          ? Object.entries(s.env)
+              .map(([k, v]) => `${k}=${v}`)
+              .join("\n")
+          : form.mcpEnv,
+        mcpUrl: s.url ?? form.mcpUrl,
+        mcpHeaders: s.headers ? JSON.stringify(s.headers, null, 2) : form.mcpHeaders,
+      });
+    } else {
+      patch({ mcpMode: "form" });
+    }
+  };
+
+  /** MCP 区产出是否就绪（解析器锁定时恒 false）。 */
+  const mcpReady = mcpLocked
+    ? false
+    : form.mcpMode === "json"
+      ? !!mcpJsonParsed?.ok
+      : form.mcpTransport === "stdio"
+        ? form.mcpCommand.trim().length > 0
+        : form.mcpUrl.trim().length > 0 && !mcpHeadersError;
+
   const canSubmit =
     form.id.trim().length > 0 &&
     form.displayName.trim().length > 0 &&
     (isTool
-      ? form.mcpCommand.trim().length > 0 ||
-        (form.toolDescription.trim().length > 0 && form.toolUsage.trim().length > 0)
+      ? mcpReady || (form.toolDescription.trim().length > 0 && form.toolUsage.trim().length > 0)
       : form.transportKind === "cli"
         ? form.chatCommand.trim().length > 0
-        : form.acpCommand.trim().length > 0);
+        : form.acpCommand.trim().length > 0) &&
+    !mcpJsonError;
 
   const handleSubmit = async () => {
     setSubmitting(true);
@@ -820,41 +1106,142 @@ export function PluginCreateDialog({ open, onOpenChange, onCreated, editPluginId
               </div>
             )}
 
-            {/* MCP server 声明（v0.9.0 需求12：页面创建 MCP 插件）。 */}
-            {isTool && (
-              <div className="rounded-md border border-border/50 p-3 space-y-3">
-                <p className="text-xs font-medium">{tr("plugins.mcpSection", "MCP server 声明")}</p>
-                <Labeled labelKey="plugins.fMcpCommand" fallback="命令">
-                  <Input
-                    value={form.mcpCommand}
-                    onChange={(e) => patch({ mcpCommand: e.target.value })}
-                    placeholder="npx"
-                    className="h-8 text-xs font-mono"
-                  />
-                  <FieldHelp>{tr("plugins.hMcpCommand", "hub 聚合 server 将 spawn 此 MCP stdio server 并转发其工具（四家智能体共享）；填写后上方工具描述/用法可留空（纯 MCP 插件）。")}</FieldHelp>
-                </Labeled>
-                <div className="grid grid-cols-2 gap-3">
-                  <Labeled labelKey="plugins.fMcpArgs" fallback="参数">
-                    <Input
-                      value={form.mcpArgs}
-                      onChange={(e) => patch({ mcpArgs: e.target.value })}
-                      placeholder="-y @modelcontextprotocol/server-filesystem"
-                      className="h-8 text-xs font-mono"
-                    />
-                    <FieldHelp>{tr("plugins.hMcpArgs", "空格分隔。")}</FieldHelp>
-                  </Labeled>
-                  <Labeled labelKey="plugins.fMcpEnv" fallback="环境变量">
-                    <textarea
-                      value={form.mcpEnv}
-                      onChange={(e) => patch({ mcpEnv: e.target.value })}
-                      placeholder={"API_TOKEN=xxx\nDEBUG=1"}
-                      className="min-h-[2.4rem] w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs font-mono"
-                    />
-                    <FieldHelp>{tr("plugins.hMcpEnv", "每行 KEY=VALUE。")}</FieldHelp>
-                  </Labeled>
+            {/* MCP server 声明（v0.9.0 需求1 二期：表单/JSON 双模式 + 三传输；
+             * 解析器未启用且非编辑 → 提示锁定）。 */}
+            {isTool &&
+              (mcpLocked ? (
+                <div className="rounded-md border border-dashed border-border/70 bg-muted/20 p-3 text-xs text-muted-foreground">
+                  {tr("plugins.mcpResolverDisabled", "需先启用「MCP 解析器」插件后才能添加 MCP 工具")}
                 </div>
-              </div>
-            )}
+              ) : (
+                <div className="rounded-md border border-border/50 p-3 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-medium">{tr("plugins.mcpSection", "MCP server 声明")}</p>
+                    <div className="flex gap-1">
+                      {(["form", "json"] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => switchMcpMode(mode)}
+                          className={cn(
+                            "rounded-full border px-2.5 py-0.5 text-[10px] transition-colors",
+                            form.mcpMode === mode
+                              ? "border-primary bg-primary/5 text-primary"
+                              : "border-border/60 text-muted-foreground",
+                          )}
+                        >
+                          {mode === "form"
+                            ? tr("plugins.mcpModeForm", "表单")
+                            : tr("plugins.mcpModeJson", "JSON")}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {form.mcpMode === "form" ? (
+                    <>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs text-muted-foreground">{tr("plugins.mcpTransportType", "传输类型")}</span>
+                        {(["stdio", "http", "sse"] as const).map((tp) => (
+                          <button
+                            key={tp}
+                            type="button"
+                            onClick={() => patch({ mcpTransport: tp })}
+                            className={cn(
+                              "rounded-full border px-2.5 py-0.5 text-[10px] transition-colors",
+                              form.mcpTransport === tp
+                                ? "border-primary bg-primary/5 text-primary"
+                                : "border-border/60 text-muted-foreground",
+                            )}
+                          >
+                            {tp === "stdio"
+                              ? tr("plugins.mcpTransportStdio", "stdio（本地命令）")
+                              : tp === "http"
+                                ? tr("plugins.mcpTransportHttp", "HTTP")
+                                : tr("plugins.mcpTransportSse", "SSE（Server-Sent Events）")}
+                          </button>
+                        ))}
+                      </div>
+                      {form.mcpTransport === "stdio" ? (
+                        <>
+                          <Labeled labelKey="plugins.fMcpCommand" fallback="命令">
+                            <Input
+                              value={form.mcpCommand}
+                              onChange={(e) => patch({ mcpCommand: e.target.value })}
+                              placeholder="npx"
+                              className="h-8 text-xs font-mono"
+                            />
+                            <FieldHelp>{tr("plugins.hMcpCommand", "")}</FieldHelp>
+                          </Labeled>
+                          <div className="grid grid-cols-2 gap-3">
+                            <Labeled labelKey="plugins.fMcpArgs" fallback="参数">
+                              <Input
+                                value={form.mcpArgs}
+                                onChange={(e) => patch({ mcpArgs: e.target.value })}
+                                placeholder="-y @modelcontextprotocol/server-filesystem"
+                                className="h-8 text-xs font-mono"
+                              />
+                              <FieldHelp>{tr("plugins.hMcpArgs", "空格分隔。")}</FieldHelp>
+                            </Labeled>
+                            <Labeled labelKey="plugins.fMcpEnv" fallback="环境变量">
+                              <textarea
+                                value={form.mcpEnv}
+                                onChange={(e) => patch({ mcpEnv: e.target.value })}
+                                placeholder={"API_TOKEN=xxx\nDEBUG=1"}
+                                className="min-h-[2.4rem] w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs font-mono"
+                              />
+                              <FieldHelp>{tr("plugins.hMcpEnv", "每行 KEY=VALUE。")}</FieldHelp>
+                            </Labeled>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-3">
+                          <Labeled labelKey="plugins.fMcpUrl" fallback="URL">
+                            <Input
+                              value={form.mcpUrl}
+                              onChange={(e) => patch({ mcpUrl: e.target.value })}
+                              placeholder="https://mcp.example.com/mcp"
+                              className="h-8 text-xs font-mono"
+                            />
+                            <FieldHelp>{tr("plugins.hMcpUrl", "")}</FieldHelp>
+                          </Labeled>
+                          <Labeled labelKey="plugins.fMcpHeaders" fallback="请求头（JSON，可选）">
+                            <textarea
+                              value={form.mcpHeaders}
+                              onChange={(e) => patch({ mcpHeaders: e.target.value })}
+                              placeholder={'{"Authorization": "Bearer your-token"}'}
+                              className="min-h-[2.4rem] w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs font-mono"
+                            />
+                            <FieldHelp>
+                              {mcpHeadersError ? (
+                                <span className="text-destructive">{mcpHeadersError}</span>
+                              ) : (
+                                tr("plugins.hMcpHeaders", "")
+                              )}
+                            </FieldHelp>
+                          </Labeled>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <textarea
+                        value={form.mcpJson}
+                        onChange={(e) => patch({ mcpJson: e.target.value })}
+                        placeholder={'{\n  "my-mcp-server": {\n    "type": "stdio",\n    "command": "",\n    "args": []\n  }\n}'}
+                        rows={8}
+                        spellCheck={false}
+                        className="flex w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-xs font-mono"
+                      />
+                      {mcpJsonError ? (
+                        <p className="text-[11px] leading-snug text-destructive">{mcpJsonError}</p>
+                      ) : (
+                        <FieldHelp>{tr("plugins.hMcpJson", "")}</FieldHelp>
+                      )}
+                    </>
+                  )}
+                </div>
+              ))}
 
             {/* 探测（M4：工具插件也显示——需求7 §6 的 tool 表单 = info+probe+[tool]，
              * 修前 probe 区在 tool 下被隐藏但 buildManifest 仍提交模板默认值，
