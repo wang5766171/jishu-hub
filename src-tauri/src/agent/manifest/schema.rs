@@ -49,6 +49,19 @@ pub struct AgentManifestFile {
     /// 部署到各 agent 的 skill 目录（启停即分发/回收，对标 [mcp] 总控模式）。
     #[serde(default)]
     pub skill: Option<SkillSection>,
+    /// 智能体的 skill 根目录声明（v0.9.0 需求20 第四轮，kind = "agent" 专属）：
+    /// 声明后 hub 的 skill 分发器把启用插件的 SKILL.md 铺到该目录
+    /// （`<dir>/<skill名>/SKILL.md`），实现自建智能体的 skill 接入。
+    #[serde(default)]
+    pub skills: Option<SkillsDirSection>,
+}
+
+/// [skills] 段（v0.9.0 需求20 第四轮）：dir = skill 根目录（支持 ~ 展开），
+/// 即 `<skill 名>/SKILL.md` 所在目录。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillsDirSection {
+    pub dir: String,
 }
 
 /// 声明式面板（v0.9.0 需求8：kind = "tool" 专属段）——插件贡献自己的管理
@@ -327,6 +340,9 @@ impl AgentManifestFile {
                 }
             }
         }
+        if self.skills.is_some() {
+            return Err("[skills] is only allowed for agent plugins".to_string());
+        }
         // v0.9.0 需求20：[skill] 段校验（description/body 非空）。
         if let Some(skill) = &self.skill {
             if skill.description.trim().is_empty() {
@@ -443,6 +459,11 @@ impl AgentManifestFile {
                 }
             }
         }
+        if let Some(sk) = &self.skills {
+            if sk.dir.trim().is_empty() {
+                return Err("skills.dir must not be empty".to_string());
+            }
+        }
         if let Some(cwd) = &transport.cwd {
             check_template_vars(cwd)?;
         }
@@ -551,6 +572,7 @@ mod tests {
             mcp: None,
             panel: None,
             skill: None,
+            skills: None,
             tool: None,
         }
     }
@@ -773,6 +795,34 @@ display_name = "X"
         );
         let m: AgentManifestFile = toml::from_str(&src).map_err(|e| e.to_string())?;
         m.validate().map_err(|e| e.to_string()).map(|_| m)
+    }
+
+    #[test]
+    fn skills_dir_section_agent_only() {
+        // v0.9.0 需求20 第四轮：[skills] 段（agent 专属 skill 根目录声明）。
+        let mut m = base_manifest();
+        m.skills = Some(SkillsDirSection {
+            dir: "~/.gemini/skills".into(),
+        });
+        assert!(m.validate().is_ok());
+        // 空目录拒绝。
+        m.skills = Some(SkillsDirSection { dir: "  ".into() });
+        assert!(m.validate().unwrap_err().contains("skills.dir"));
+        // tool 插件禁止。
+        let mut t = base_manifest();
+        t.kind = crate::agent::manifest::schema::ManifestKind::Tool;
+        t.transport = None;
+        t.tool = None;
+        t.mcp = Some(McpSection {
+            transport: McpTransportKind::Stdio,
+            command: Some("npx".into()),
+            args: None,
+            env: None,
+            url: None,
+            headers: None,
+        });
+        t.skills = Some(SkillsDirSection { dir: "~/x".into() });
+        assert!(t.validate().unwrap_err().contains("[skills]"));
     }
 
     #[test]

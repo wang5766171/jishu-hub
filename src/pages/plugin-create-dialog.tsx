@@ -105,6 +105,8 @@ export interface FormState {
   /** v0.9.0 需求19 第八轮：[panel] 段（声明式自定义插件的核心声明面）。 */
   panelTitle: string;
   panelItems: Array<{ label: string; command: string }>;
+  /** v0.9.0 需求20 第四轮：agent 的 [skills].dir（skill 根目录声明）。 */
+  skillsDir: string;
 }
 
 interface Template {
@@ -158,6 +160,7 @@ const emptyForm: FormState = {
   skillBody: "",
   panelTitle: "",
   panelItems: [],
+  skillsDir: "",
 };
 
 /** 模版 = 表单预填常量（用户显式选择的起点，非运行时 agent 分支）。
@@ -798,6 +801,11 @@ export function buildManifest(form: FormState): Record<string, unknown> {
       format: form.configFormat,
     };
   }
+  // v0.9.0 需求20 第四轮：[skills].dir——声明后 hub 把启用插件的 SKILL.md
+  // 分发到该目录（<dir>/<skill名>/SKILL.md），实现自建智能体的 skill 接入。
+  if (form.skillsDir.trim()) {
+    manifest.skills = { dir: form.skillsDir.trim() };
+  }
   return manifest;
 }
 
@@ -913,6 +921,7 @@ export function parseManifest(json: Record<string, unknown>): {
   const tool = (json.tool ?? {}) as Record<string, unknown>;
   const mcp = json.mcp as Record<string, unknown> | undefined;
   const skillSec = json.skill as Record<string, unknown> | undefined;
+  const skillsSec = json.skills as Record<string, unknown> | undefined;
   const panelSec = json.panel as Record<string, unknown> | undefined;
   const preserved: Record<string, unknown> = {};
   if (json.pi_extension && typeof json.pi_extension === "object") {
@@ -980,6 +989,7 @@ export function parseManifest(json: Record<string, unknown>): {
     mcpJson: "",
     skillDescription: String(skillSec?.description ?? ""),
     skillBody: String(skillSec?.body ?? ""),
+    skillsDir: String(skillsSec?.dir ?? ""),
     panelTitle: String(panelSec?.title ?? ""),
     panelItems: Array.isArray(panelSec?.items)
       ? (panelSec!.items as Array<Record<string, unknown>>).map((it) => ({
@@ -2009,6 +2019,15 @@ export function PluginCreateDialog({
                         className="h-8 text-xs font-mono"
                       />
                       <FieldHelp>{tr("plugins.hConfigPath", "")}</FieldHelp>
+                    </Labeled>
+                    <Labeled labelKey="plugins.fSkillsDir" fallback="Skill 目录（可选）">
+                      <Input
+                        value={form.skillsDir}
+                        onChange={(e) => patch({ skillsDir: e.target.value })}
+                        placeholder="~/.xxx/skills"
+                        className="h-8 text-xs font-mono"
+                      />
+                      <FieldHelp>{tr("plugins.hSkillsDir", "填写后，启用的 Skill 插件将自动分发 SKILL.md 到该目录（<skill 名>/SKILL.md 所在处），本智能体即可使用全部已注册技能。")}</FieldHelp>
                     </Labeled>
                     <div className="flex items-center gap-2">
                       {(["json", "toml"] as const).map((fmt) => (

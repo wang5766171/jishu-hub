@@ -99,6 +99,7 @@ mod tests {
         mcp: None,
         panel: None,
         skill: None,
+        skills: None,
         }
     }
 

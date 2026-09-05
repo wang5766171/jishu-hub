@@ -348,6 +348,8 @@
     "hMcpEnv": "每行 KEY=VALUE。",
     "hToolOptionalWithMcp": "填写 MCP server 后，描述/用法可留空（纯 MCP 工具插件）。",
     "unifiedNote": "MCP、skills、面板等能力统一通过插件机制管理",
+    "fSkillsDir": "Skill 目录（可选）",
+    "hSkillsDir": "填写后，启用的 Skill 插件将自动分发 SKILL.md 到该目录（<skill 名>/SKILL.md 所在处），本智能体即可使用全部已注册技能。",
     "skillImportSources": "从其他智能体导入",
     "skillImportFile": "从文件导入",
     "skillImportEmpty": "未发现可导入的 skill",

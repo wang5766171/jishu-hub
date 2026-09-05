@@ -13,16 +13,52 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-/// 分发目标（agent_id, skill 根目录）。表驱动——后续 agent 接入只扩表。
-pub fn skill_targets() -> Vec<(&'static str, PathBuf)> {
+/// 分发目标（agent_id, skill 根目录）。四家全量（v0.9.0 需求20 第四轮：
+/// codex `~/.codex/skills` / opencode `~/.config/opencode/skills` 均为
+/// SKILL.md 标准目录——openai/codex#5291 与 opencode 官方文档确认），
+/// 外加 manifest 智能体声明的 [skills].dir（`<dir>/<skill名>/SKILL.md`）。
+pub fn skill_targets() -> Vec<(String, PathBuf)> {
     let mut targets = Vec::new();
     if let Ok(claude) = crate::config::claude_dir() {
-        targets.push(("claude-code", claude.join("skills")));
+        targets.push(("claude-code".to_string(), claude.join("skills")));
+    }
+    if let Some(home) = dirs::home_dir() {
+        targets.push(("codex".to_string(), home.join(".codex").join("skills")));
+        targets.push((
+            "opencode".to_string(),
+            home.join(".config").join("opencode").join("skills"),
+        ));
     }
     if let Ok(agent_dir) = crate::agent::jishu_self::paths::agent_dir() {
-        targets.push(("jishu-self", agent_dir.join("skills")));
+        targets.push(("jishu-self".to_string(), agent_dir.join("skills")));
     }
+    targets.extend(manifest_skill_targets());
     targets
+}
+
+/// manifest 智能体声明的 skill 根目录（纯投影，测试可注入）。
+pub fn manifest_skill_targets_from(
+    manifests: &[super::manifest::schema::AgentManifestFile],
+) -> Vec<(String, PathBuf)> {
+    manifests
+        .iter()
+        .filter(|m| m.skills.is_some())
+        .filter_map(|m| {
+            let dir = m.skills.as_ref()?;
+            (!dir.dir.trim().is_empty()).then(|| {
+                (
+                    m.info.id.clone(),
+                    super::manifest::schema::expand_tilde(&dir.dir),
+                )
+            })
+        })
+        .collect()
+}
+
+fn manifest_skill_targets() -> Vec<(String, PathBuf)> {
+    let (agents, _tools, _errors) = super::manifest::load_manifests(&[]);
+    let files: Vec<_> = agents.into_iter().map(|(f, _)| f).collect();
+    manifest_skill_targets_from(&files)
 }
 
 /// SKILL.md 渲染（Agent Skills 规范：frontmatter name+description + 正文）。
@@ -111,7 +147,7 @@ pub fn sync_skill_deployments(force: bool) -> SkillSyncReport {
 /// 经 JISHU_HUB_HOME + 真实 home 的 tempdir 不隔离——tests 仅用临时 targets）。
 fn sync_with(
     decls: Vec<(String, String, String)>,
-    targets: &[(&'static str, PathBuf)],
+    targets: &[(String, PathBuf)],
     _resolver_on: bool,
 ) -> SkillSyncReport {
     let mut report = SkillSyncReport::default();
@@ -156,7 +192,7 @@ fn sync_with(
                 // 保留目标 agent 仍在表中且插件仍启用的项。
                 !targets
                     .iter()
-                    .any(|(a, _)| *a == agent_id && decl_ids.contains(plugin_id))
+                    .any(|(a, _)| a.as_str() == agent_id && decl_ids.contains(plugin_id))
             }
             None => true, // 非法记录：清除
         })
@@ -166,7 +202,7 @@ fn sync_with(
         let Some((agent_id, plugin_id)) = key.split_once(':') else {
             continue;
         };
-        let Some((_, root)) = targets.iter().find(|(a, _)| *a == agent_id) else {
+        let Some((_, root)) = targets.iter().find(|(a, _)| a.as_str() == agent_id) else {
             owned.remove(key); // 目标 agent 已不在表中：仅清记录
             continue;
         };
@@ -222,7 +258,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
         let root = tempfile::tempdir().unwrap();
-        let targets = vec![("test-agent", root.path().join("skills"))];
+        let targets = vec![("test-agent".to_string(), root.path().join("skills"))];
 
         // 1) 首次分发 → Deployed + 归属记录。
         let report = sync_with(
@@ -266,6 +302,48 @@ mod tests {
         assert!(load_deploy_registry().is_empty());
 
         std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    #[test]
+    fn manifest_skill_targets_projection() {
+        // v0.9.0 需求20 第四轮：manifest 智能体 [skills].dir → 分发目标投影。
+        use crate::agent::manifest::schema as ms;
+        let mk = |id: &str, dir: Option<&str>| ms::AgentManifestFile {
+            schema: 1,
+            kind: Default::default(),
+            info: ms::InfoSection {
+                id: id.to_string(),
+                display_name: id.to_string(),
+                icon: String::new(),
+                install_hint: None,
+            },
+            probe: None,
+            transport: Some(ms::TransportSection {
+                kind: ms::TransportKind::Cli,
+                chat_command: Some(vec!["x".into(), "{prompt}".into()]),
+                acp_command: None,
+                cwd: None,
+                pipe_stdin: false,
+                abort_bytes: None,
+            }),
+            config: None,
+            session: None,
+            capabilities: None,
+            pi_extension: None,
+            mcp: None,
+            panel: None,
+            skill: None,
+            skills: dir.map(|d| ms::SkillsDirSection { dir: d.to_string() }),
+            tool: None,
+        };
+        let targets = manifest_skill_targets_from(&[
+            mk("gemini", Some("~/.gemini/skills")),
+            mk("no-decl", None),
+            mk("empty-dir", Some("  ")),
+        ]);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0, "gemini");
+        assert!(targets[0].1.to_string_lossy().contains(".gemini"));
     }
 
     #[test]

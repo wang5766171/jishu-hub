@@ -54,6 +54,7 @@ function toolForm(partial: Partial<FormState>): FormState {
     skillBody: "",
     panelTitle: "",
     panelItems: [],
+    skillsDir: "",
     ...partial,
   };
 }
@@ -495,5 +496,34 @@ describe("custom 类型（五类型裁决，需求19 第七轮）", () => {
       tool: { description: "d", usage: "u" },
     });
     expect(mix.form.pluginType).toBe("mcp");
+  });
+});
+
+describe("agent 的 [skills].dir 声明（需求20 第四轮）", () => {
+  it("agent 表单填 skill 目录 → manifest skills 段；留空省略", () => {
+    const m = buildManifest(
+      toolForm({
+        pluginType: "agent",
+        transportKind: "cli",
+        chatCommand: "x\n{prompt}",
+        skillsDir: "~/.gemini/skills",
+      }),
+    ) as Record<string, unknown>;
+    expect(m.skills).toEqual({ dir: "~/.gemini/skills" });
+    const empty = buildManifest(
+      toolForm({ pluginType: "agent", transportKind: "cli", chatCommand: "x\n{prompt}" }),
+    ) as Record<string, unknown>;
+    expect(empty.skills).toBeUndefined();
+  });
+
+  it("parseManifest 回读 skillsDir", () => {
+    const parsed = parseManifest({
+      schema: 1,
+      info: { id: "g", display_name: "G" },
+      transport: { kind: "cli", chat_command: ["g", "{prompt}"] },
+      skills: { dir: "~/.gemini/skills" },
+    });
+    expect(parsed.form.pluginType).toBe("agent");
+    expect(parsed.form.skillsDir).toBe("~/.gemini/skills");
   });
 });

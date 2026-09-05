@@ -348,6 +348,8 @@
     "hMcpEnv": "One KEY=VALUE per line.",
     "hToolOptionalWithMcp": "With an MCP server declared, description/usage can be empty (pure MCP tool plugin).",
     "unifiedNote": "MCP, skills, panels and other capabilities are managed uniformly through the plugin mechanism",
+    "fSkillsDir": "Skill directory (optional)",
+    "hSkillsDir": "When filled, enabled skill plugins are distributed into this directory (<skill>/SKILL.md), making all registered skills available to this agent.",
     "skillImportSources": "Import from other agents",
     "skillImportFile": "Import from file",
     "skillImportEmpty": "No importable skills found",

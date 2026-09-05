@@ -31,6 +31,7 @@ mod tests {
                 mcp: None,
                 panel: None,
             skill: None,
+            skills: None,
                 tool: None,
             }),
             Default::default(),
@@ -59,6 +60,7 @@ mod tests {
                 mcp: None,
                 panel: None,
             skill: None,
+            skills: None,
                 tool: Some(ToolSection {
                     description: "GitHub 查询".into(),
                     usage: "gh repo view".into(),
