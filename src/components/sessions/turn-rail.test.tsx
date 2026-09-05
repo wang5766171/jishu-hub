@@ -101,8 +101,36 @@ describe("TurnRail", () => {
     expect(question.className).toContain("line-clamp-2");
     const answer = screen.getByText("回答一");
     expect(answer.className).toContain("line-clamp-3");
-    fireEvent.mouseLeave(screen.getAllByRole("button")[0]);
+    // 预览收起挂在横杠列容器（mouseleave 整列），单条横杠离开不收起——
+    // 鼠标滑过横杠间隙时波浪与卡片不闪烁。
+    const barsColumn = screen.getAllByRole("button")[0].parentElement as HTMLElement;
+    fireEvent.mouseLeave(barsColumn);
     expect(screen.queryByText("问题一")).toBeNull();
+  });
+
+  it("waves bar widths by distance from the hovered bar and recolors it", () => {
+    render(<TurnRail turns={turns} activeIndex={0} onJump={vi.fn()} />);
+    const bars = screen.getAllByRole("button");
+    const barSpan = (i: number) => bars[i].querySelector("span") as HTMLElement;
+    // 未悬停：活动轮 w-4 高亮色，其余基础档 w-2
+    expect(barSpan(0).className).toContain("w-4");
+    expect(barSpan(1).className).toContain("w-2");
+    fireEvent.mouseEnter(bars[1]);
+    // 悬停轮最长 w-5 且换悬停色；d=1 → w-4
+    expect(barSpan(1).className).toContain("w-5");
+    expect(barSpan(1).className).toContain("bg-muted-foreground");
+    expect(barSpan(0).className).toContain("w-4");
+    expect(barSpan(2).className).toContain("w-4");
+    expect(barSpan(0).className).toContain("bg-foreground/80");
+    // 活动轮保持高亮色，长度跟随波浪；d=2 → w-3.5
+    fireEvent.mouseEnter(bars[2]);
+    expect(barSpan(2).className).toContain("w-5");
+    expect(barSpan(1).className).toContain("w-4");
+    expect(barSpan(0).className).toContain("w-3.5");
+    // 鼠标离开整列：波浪收起，活动轮回 w-4
+    fireEvent.mouseLeave(bars[0].parentElement as HTMLElement);
+    expect(barSpan(2).className).toContain("w-2");
+    expect(barSpan(0).className).toContain("w-4");
   });
 
   it("falls back to a placeholder for empty question/answer text", () => {
@@ -117,8 +145,9 @@ describe("TurnRail", () => {
     const activeBar = bars[1].querySelector("span");
     const idleBar = bars[0].querySelector("span");
     expect(activeBar?.className).toContain("bg-foreground/80");
-    expect(activeBar?.className).toContain("w-5");
+    expect(activeBar?.className).toContain("w-4");
     expect(idleBar?.className).toContain("bg-border");
+    expect(idleBar?.className).toContain("w-2");
   });
 
   it("renders nothing without turns", () => {
