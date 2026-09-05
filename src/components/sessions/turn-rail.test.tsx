@@ -112,25 +112,25 @@ describe("TurnRail", () => {
     render(<TurnRail turns={turns} activeIndex={0} onJump={vi.fn()} />);
     const bars = screen.getAllByRole("button");
     const barSpan = (i: number) => bars[i].querySelector("span") as HTMLElement;
-    // 未悬停：活动轮 w-4 高亮色，其余基础档 w-2
-    expect(barSpan(0).className).toContain("w-4");
-    expect(barSpan(1).className).toContain("w-2");
+    // 未悬停：所有横杠同长（活动轮也无数值特判，仅颜色区分）
+    expect(barSpan(0).className).toContain("w-3.5");
+    expect(barSpan(1).className).toContain("w-3.5");
     fireEvent.mouseEnter(bars[1]);
-    // 悬停轮最长 w-5 且换悬停色；d=1 → w-4
+    // 悬停轮最长 w-5 且换悬停色；d=1 → w-4.5
     expect(barSpan(1).className).toContain("w-5");
     expect(barSpan(1).className).toContain("bg-muted-foreground");
-    expect(barSpan(0).className).toContain("w-4");
-    expect(barSpan(2).className).toContain("w-4");
+    expect(barSpan(0).className).toContain("w-4.5");
+    expect(barSpan(2).className).toContain("w-4.5");
     expect(barSpan(0).className).toContain("bg-foreground/80");
-    // 活动轮保持高亮色，长度跟随波浪；d=2 → w-3.5
+    // 活动轮保持高亮色，长度跟随波浪；d=2 → w-4
     fireEvent.mouseEnter(bars[2]);
     expect(barSpan(2).className).toContain("w-5");
-    expect(barSpan(1).className).toContain("w-4");
-    expect(barSpan(0).className).toContain("w-3.5");
-    // 鼠标离开整列：波浪收起，活动轮回 w-4
-    fireEvent.mouseLeave(bars[0].parentElement as HTMLElement);
-    expect(barSpan(2).className).toContain("w-2");
+    expect(barSpan(1).className).toContain("w-4.5");
     expect(barSpan(0).className).toContain("w-4");
+    // 鼠标离开整列：波浪收起，全部回基础档
+    fireEvent.mouseLeave(bars[0].parentElement as HTMLElement);
+    expect(barSpan(2).className).toContain("w-3.5");
+    expect(barSpan(0).className).toContain("w-3.5");
   });
 
   it("falls back to a placeholder for empty question/answer text", () => {
@@ -139,15 +139,15 @@ describe("TurnRail", () => {
     expect(screen.getAllByText("(no text)").length).toBeGreaterThan(0);
   });
 
-  it("highlights the active turn bar", () => {
+  it("highlights the active turn bar by color without idle length difference", () => {
     render(<TurnRail turns={turns} activeIndex={1} onJump={vi.fn()} />);
     const bars = screen.getAllByRole("button");
     const activeBar = bars[1].querySelector("span");
     const idleBar = bars[0].querySelector("span");
     expect(activeBar?.className).toContain("bg-foreground/80");
-    expect(activeBar?.className).toContain("w-4");
     expect(idleBar?.className).toContain("bg-border");
-    expect(idleBar?.className).toContain("w-2");
+    expect(activeBar?.className).toContain("w-3.5");
+    expect(idleBar?.className).toContain("w-3.5");
   });
 
   it("renders nothing without turns", () => {

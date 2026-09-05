@@ -67,16 +67,19 @@ interface TurnRailProps {
  * 掉），hover 时测量横杠相对轨道的偏移定位，垂直居中于横杠。
  *
  * 测试期修复一~三（用户 GUI 反馈，参考图）：轨道内容垂直居中（m-auto：
- * 居中展示、超出时自动贴顶滚动不裁头）；横杠间距收窄（gap-1）；悬停
- * “波浪”动效——鼠标所在横杠最长、按距离依次变短，滑过整列如波浪——
- * 长度随 |i - hovered| 分档，宽度 transition-all 自然成动画。hover 事件
- * 挂在横杠列容器上（mouseleave 整列才收起），鼠标滑过横杠间隙时波浪
- * 不塌陷闪烁。活动轮恒以颜色区分（bg-foreground/80），长度跟随波浪。 */
+ * 居中展示、超出时自动贴顶滚动不裁头）；横杠间距收窄；悬停“波浪”动效
+ * ——鼠标所在横杠最长、按距离依次变短，滑过整列如波浪——长度随
+ * |i - hovered| 分档，宽度 transition-all 自然成动画。hover 事件挂在横杠
+ * 列容器上（mouseleave 整列才收起），鼠标滑过横杠间隙时波浪不塌陷闪烁。
+ *
+ * 测试期修复四~六（用户 GUI 二轮反馈）：间距再收 gap-0.5；默认长度加长
+ * 至 w-3.5；活动轮**不再有长度特判**——静息态所有横杠同长，仅以颜色
+ * 区分（bg-foreground/80），长度变化只来自悬停波浪。 */
 
-/** 波浪宽度分档：d = |横杠下标 - 悬停下标|，d=0 最长，d≥4 回到基础档。 */
-const WAVE_WIDTH_BY_DISTANCE = ["w-5", "w-4", "w-3.5", "w-3"] as const;
-const BASE_WIDTH = "w-2";
-const ACTIVE_IDLE_WIDTH = "w-4";
+/** 波浪宽度分档：d = |横杠下标 - 悬停下标|，d=0 最长，d≥3 回基础档。
+ * Tailwind v4 动态间距刻度，w-4.5 = 18px。 */
+const WAVE_WIDTH_BY_DISTANCE = ["w-5", "w-4.5", "w-4"] as const;
+const BASE_WIDTH = "w-3.5";
 
 function waveWidth(distance: number): string {
   return distance < WAVE_WIDTH_BY_DISTANCE.length
@@ -106,14 +109,10 @@ export function TurnRail({ turns, activeIndex, onJump }: TurnRailProps) {
       className="pointer-events-none absolute inset-y-0 left-0 z-10 flex w-6 flex-col items-center"
     >
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <div className="m-auto flex flex-col items-center gap-1" onMouseLeave={() => setHovered(null)}>
+        <div className="m-auto flex flex-col items-center gap-0.5" onMouseLeave={() => setHovered(null)}>
           {turns.map((_turn, index) => {
             const distance = hovered === null ? Infinity : Math.abs(index - hovered.index);
-            const width = hovered === null
-              ? index === activeIndex
-                ? ACTIVE_IDLE_WIDTH
-                : BASE_WIDTH
-              : waveWidth(distance);
+            const width = hovered === null ? BASE_WIDTH : waveWidth(distance);
             return (
               <button
                 key={index}
