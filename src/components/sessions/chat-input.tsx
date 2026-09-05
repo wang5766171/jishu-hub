@@ -243,6 +243,8 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   const [sessionTools, setSessionTools] = useState<SessionTool[]>([]);
   const [guideLoading, setGuideLoading] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // v0.9.1 需求4 测试期修复二：输入框根容器——高度等比伸缩的宽度基准测量点。
+  const inputRootRef = useRef<HTMLDivElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const stagingSessionKey = sessionId ?? "__new_session__";
   const stagedMessages = stagedMessagesBySession[stagingSessionKey] ?? [];
@@ -451,6 +453,36 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     });
   }, [message, onDraftChange]);
 
+  /** v0.9.1 需求4 测试期修复二：输入框高度随宽度等比伸缩。基准：初始内容
+   * 宽 820px ↔ 空态高 76px（内容增长上限 220px 同比）——宽度自适应（70%）
+   * 后只宽不高观感太扁（用户裁决：保持初始宽高比，高度随最大化变高）。
+   * 窄于基准不缩（76/220 恒为下限）；min-height 先行设置再量 scrollHeight，
+   * 空态自然落在比例地板上，内容增长仍受同比上限钳制。 */
+  const syncProportionalInputHeight = useCallback(() => {
+    const root = inputRootRef.current;
+    const textarea = textareaRef.current;
+    if (!root || !textarea) return;
+    const width = root.clientWidth;
+    if (width <= 0) return;
+    const scale = Math.max(1, width / 820);
+    const minH = Math.round(76 * scale);
+    const maxH = Math.round(220 * scale);
+    textarea.style.minHeight = `${minH}px`;
+    textarea.style.maxHeight = `${maxH}px`;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, maxH)}px`;
+  }, []);
+
+  // 容器宽度变化（窗口缩放/最大化/侧栏开合）即时重算；挂载时先同步一次。
+  useEffect(() => {
+    const root = inputRootRef.current;
+    if (!root) return;
+    syncProportionalInputHeight();
+    const observer = new ResizeObserver(syncProportionalInputHeight);
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [syncProportionalInputHeight]);
+
   /** M2：+ 菜单勾选切换会话启用集（会话级真源；乐观更新 + 失败回滚提示，
    * 不再静默吞错）。key 与发送同源（stagingSessionKey——新会话勾选落暂存
    * 键，首条消息由后端 compose 前迁移到会话键）。 */
@@ -474,10 +506,12 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
           const pos = next.length;
           textarea.setSelectionRange(pos, pos);
           textarea.focus();
+          // 程序性填文（非 onInput 路径）后即时等比重算高度。
+          syncProportionalInputHeight();
         });
       },
     }),
-    [onDraftChange],
+    [onDraftChange, syncProportionalInputHeight],
   );
 
   // Expose the staging-area lifecycle to the parent (Route 2: auto-send at
@@ -1149,10 +1183,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   };
 
   return (
-    // v0.9.1 需求4 测试期修复：输入框不随消息流自适应——固定 820px 上限保持
-    // 原宽高比（textarea 76–220px 高度档不变，变宽后比例失调），消息流单独走
-    // --message-content-max-width 的 max(820px, 70%)。
-    <div className={cn("mx-auto w-full max-w-[var(--chat-input-max-width)] px-4 pb-4 pt-2", containerClassName)}>
+    <div ref={inputRootRef} className={cn("mx-auto w-full max-w-[var(--message-content-max-width)] px-4 pb-4 pt-2", containerClassName)}>
       <div
         className={cn(
           "relative flex flex-col overflow-visible rounded-2xl border border-input bg-card shadow-sm focus-within:ring-1 focus-within:ring-ring focus-within:border-ring transition-shadow",
@@ -1284,10 +1315,10 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
               messageHasToolToken(message) && "text-transparent caret-foreground",
             )}
             style={{ height: "auto", overflow: "hidden" }}
-            onInput={(e) => {
-              const target = e.target as HTMLTextAreaElement;
-              target.style.height = "auto";
-              target.style.height = Math.min(target.scrollHeight, 220) + "px";
+            onInput={() => {
+              // 需求4 修复二：键入增长走等比同步（min/max 随宽度缩放后的
+              // scrollHeight 钳制，替代原固定 220px 上限）。
+              syncProportionalInputHeight();
             }}
           />
         </div>

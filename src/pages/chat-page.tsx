@@ -3321,9 +3321,7 @@ export function ChatPage({
               slashCommands={slashCommands}
               trailingControls={modelTrailingControls}
               onSlashCommand={handleSlashCommand}
-              // 需求4 测试期修复：开始页输入框同样固定 820px（与常规输入框同宽，
-              // 不随消息流自适应），保持原宽高比。
-              containerClassName={showStartComposer ? "mx-auto w-full max-w-[var(--chat-input-max-width)] px-0 pb-0 pt-0" : undefined}
+              containerClassName={showStartComposer ? "mx-auto w-full max-w-[var(--message-content-max-width)] px-0 pb-0 pt-0" : undefined}
               panelClassName={showStartComposer ? "rounded-[22px] border-border/70 bg-card/98 shadow-[0_18px_48px_rgba(0,0,0,0.10)]" : undefined}
               contextFooter={startComposerFooter}
               workModeLabel={t("sessions.workMode.label")}
