@@ -1379,6 +1379,10 @@ fn probe_codex_models() -> Result<Vec<CodexModelInfo>, String> {
         c.arg("app-server");
         c
     };
+    // v0.9.1 需求7：后台探测须静默——GUI 进程派生 cmd/codex 不加
+    // CREATE_NO_WINDOW 会弹黑色命令行窗口（用户实测打开模型设置页 codex
+    // 即弹窗）。与 app-server 会话 spawn（tokio_no_window）同纪律。
+    crate::process_command::std_no_window(&mut cmd);
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());

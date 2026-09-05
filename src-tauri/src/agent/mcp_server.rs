@@ -323,6 +323,10 @@ impl StdioChild {
             c.args(args);
             c
         };
+        // v0.9.1 需求7：stdio MCP 插件为后台常驻子进程——Windows 下不加
+        // CREATE_NO_WINDOW 每次启动都会弹黑色命令行窗口（与 codex 模型
+        // 探测同根源），静默化。
+        crate::process_command::std_no_window(&mut cmd);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
