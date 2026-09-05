@@ -43,8 +43,9 @@ interface CreateProps {
 }
 
 /** 插件类型（v0.9.0 需求19/20，用户心智分类）：
- * mcp/skill/cli → wire kind="tool"（差异在 [mcp]/[skill]/[tool] 段）；agent → kind="agent"。 */
-export type PluginType = "mcp" | "skill" | "cli" | "agent";
+ * mcp/skill/cli/custom → wire kind="tool"（差异在 [mcp]/[skill]/[tool] 段及
+ * 组合自由度——custom = 任意段自由组合）；agent → kind="agent"。 */
+export type PluginType = "mcp" | "skill" | "cli" | "custom" | "agent";
 
 /** MCP 传输类型（与后端 McpSection.type 对齐）。 */
 type McpTransport = "stdio" | "http" | "sse";
@@ -363,6 +364,31 @@ args = ["-y", "<mcp-server-package>"]
       mcpTransport: "stdio",
       mcpCommand: "npx",
       mcpArgs: "-y <mcp-server-package>",
+    },
+  },
+  {
+    key: "custom-blank",
+    nameKey: "plugins.tplCustomBlank",
+    nameFallback: "空白自定义",
+    icon: <Plus className="h-4 w-4" />,
+    tplKind: "custom",
+    toml: `schema = 1
+kind = "tool"
+
+[info]
+id = "my-plugin"
+display_name = "My Plugin"
+
+# 自由组合以下任意段（至少一段）：
+# [tool] description/usage —— CLI 用法注入
+# [mcp]  type/command 或 url —— MCP 服务
+# [skill] description/body —— SKILL.md 能力
+`,
+    form: {
+      ...emptyForm,
+      pluginType: "custom",
+      id: "my-plugin",
+      displayName: "My Plugin",
     },
   },
   {
@@ -799,13 +825,21 @@ const PLUGIN_TYPES: Array<{
     defaultTemplate: "tool-gh",
   },
   {
-    key: "agent",
-    icon: <Bot className="h-4 w-4" />,
-    // 卡名与插件列表分类对齐（GUI 裁决第六轮）：本卡创建 kind=agent 的
-    // manifest 插件，落列表「自定义插件」分类；「智能体」分类=内置适配器
-    //（不可创建）。内部 key 仍为 agent（wire/模板/派生逻辑零改动）。
+    key: "custom",
+    icon: <Plus className="h-4 w-4" />,
     nameKey: "plugins.typeCustom",
     nameFallback: "自定义插件",
+    formKey: "plugins.typeCustomForm",
+    formFallback: "独立插拔",
+    descKey: "plugins.typeCustomDesc",
+    descFallback: "自由组合 MCP / Skill / CLI 能力声明的工具插件",
+    defaultTemplate: "custom-blank",
+  },
+  {
+    key: "agent",
+    icon: <Bot className="h-4 w-4" />,
+    nameKey: "plugins.typeAgent",
+    nameFallback: "智能体",
     formKey: "plugins.typeAgentForm",
     formFallback: "独立插拔",
     descKey: "plugins.typeAgentDesc",
@@ -886,11 +920,13 @@ export function parseManifest(json: Record<string, unknown>): {
     streamText: caps.stream_text === true,
     pluginType:
       json.kind === "tool"
-        ? mcp
-          ? "mcp"
-          : skillSec
-            ? "skill"
-            : "cli"
+        ? [json.mcp, json.skill, json.tool].filter(Boolean).length >= 2
+          ? "custom" // 多段组合 → 自定义插件（单段归各类型）
+          : mcp
+            ? "mcp"
+            : skillSec
+              ? "skill"
+              : "cli"
         : "agent",
     toolDescription: String(tool.description ?? ""),
     toolUsage: String(tool.usage ?? ""),
@@ -1086,7 +1122,11 @@ export function PluginCreateDialog({
         (form.toolDescription.trim().length > 0 && form.toolUsage.trim().length > 0)
       : pluginType === "skill"
         ? form.skillDescription.trim().length > 0 && form.skillBody.trim().length > 0
-        : pluginType === "cli"
+        : pluginType === "custom"
+          ? mcpReady ||
+            (form.skillDescription.trim().length > 0 && form.skillBody.trim().length > 0) ||
+            (form.toolDescription.trim().length > 0 && form.toolUsage.trim().length > 0)
+          : pluginType === "cli"
         ? form.toolDescription.trim().length > 0 && form.toolUsage.trim().length > 0
         : form.transportKind === "cli"
           ? form.chatCommand.trim().length > 0
@@ -1244,7 +1284,7 @@ export function PluginCreateDialog({
              * 选中类型决定下方分组（分治渲染，消除"上面和下面什么关系"）。 */}
             <div>
               <p className="text-xs font-medium mb-2">{tr("plugins.typeSection", "插件类型")}</p>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                 {PLUGIN_TYPES.map((tp) => (
                   <button
                     key={tp.key}
@@ -1282,7 +1322,7 @@ export function PluginCreateDialog({
             {/* 模版（仅当前类型；类型已选定，分组标签冗余——需求19 去噪） */}
             <div>
               <p className="text-xs font-medium mb-2">{tr("plugins.tplSection", "从模版开始")}</p>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                 {templates
                   .filter((tp) => tp.tplKind === pluginType)
                   .map((tp) => (
@@ -1405,17 +1445,21 @@ export function PluginCreateDialog({
               </div>
             )}
 
-            {/* CLI 类型核心分组：工具能力声明（会话注入的用法说明）。 */}
-            {pluginType === "cli" && (
+            {/* CLI 类型核心分组（custom 类型下为可选组合段）：工具能力声明。 */}
+            {(pluginType === "cli" || pluginType === "custom") && (
               <div className="rounded-md border border-border/50 p-3 space-y-3">
-                <p className="text-xs font-medium">{tr("plugins.toolSection", "工具能力声明")}</p>
+                <p className="text-xs font-medium">
+                  {pluginType === "custom"
+                    ? tr("plugins.toolSectionOptional", "CLI 用法声明（可选）")
+                    : tr("plugins.toolSection", "工具能力声明")}
+                </p>
                 {toolDeclareFields}
               </div>
             )}
 
             {/* MCP server 声明（v0.9.0 需求1 二期：表单/JSON 双模式 + 三传输；
              * 解析器未启用且非编辑 → 提示锁定）。 */}
-            {pluginType === "mcp" &&
+            {(pluginType === "mcp" || pluginType === "custom") &&
               (mcpLocked ? (
                 <div className="rounded-md border border-dashed border-border/70 bg-muted/20 p-3 text-xs text-muted-foreground">
                   {tr("plugins.mcpResolverDisabled", "需先启用「MCP 解析器」插件后才能添加 MCP 工具")}
@@ -1552,7 +1596,7 @@ export function PluginCreateDialog({
 
             {/* Skill 声明（v0.9.0 需求20，对标 MCP 区）：description = SKILL.md
              * frontmatter，body = 正文；skill 名 = 插件 id（自动派生）。 */}
-            {pluginType === "skill" &&
+            {(pluginType === "skill" || pluginType === "custom") &&
               (skillLocked ? (
                 <div className="rounded-md border border-dashed border-border/70 bg-muted/20 p-3 text-xs text-muted-foreground">
                   {tr("plugins.skillResolverDisabled", "需先启用「Skill 解析器」插件后才能添加 Skill 工具")}

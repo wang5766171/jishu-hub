@@ -268,7 +268,7 @@ describe("pluginType 三型 wire 映射与编辑派生（需求19）", () => {
     expect(cli.form.pluginType).toBe("cli");
     expect(cli.form.toolUsage).toBe("u");
 
-    // tool + [tool] + [mcp] 并存的旧插件 → 派生 mcp（[tool] 值保留）
+    // tool + [tool] + [mcp] 并存 → 多段组合派生 custom（[tool] 值保留）
     const both = parseManifest({
       schema: 1,
       kind: "tool",
@@ -276,7 +276,7 @@ describe("pluginType 三型 wire 映射与编辑派生（需求19）", () => {
       tool: { description: "d", usage: "u" },
       mcp: { type: "stdio", command: "npx" },
     });
-    expect(both.form.pluginType).toBe("mcp");
+    expect(both.form.pluginType).toBe("custom");
     expect(both.form.toolDescription).toBe("d");
   });
 });
@@ -384,7 +384,7 @@ describe("skill 类型（需求20）", () => {
     expect(parsed.form.pluginType).toBe("skill");
     expect(parsed.form.skillDescription).toBe("d");
     expect(parsed.form.skillBody).toBe("b");
-    // [mcp] 优先于 [skill]（并存的旧插件派生 mcp）
+    // [mcp]+[skill] 并存 → 多段组合派生 custom
     const both = parseManifest({
       schema: 1,
       kind: "tool",
@@ -392,7 +392,7 @@ describe("skill 类型（需求20）", () => {
       mcp: { type: "stdio", command: "npx" },
       skill: { description: "d", body: "b" },
     });
-    expect(both.form.pluginType).toBe("mcp");
+    expect(both.form.pluginType).toBe("custom");
     expect(both.form.skillBody).toBe("b"); // 字段仍保留（提交不丢段）
   });
 
@@ -439,5 +439,41 @@ describe("type 推断与批量覆盖（需求19 测试期迭代）", () => {
     );
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.servers.map((x) => x.server.type)).toEqual(["http", "http", "stdio"]);
+  });
+});
+
+describe("custom 类型（五类型裁决，需求19 第七轮）", () => {
+  it("custom 自由组合：[mcp]+[skill] 并存产出（wire kind=tool）", () => {
+    const m = buildManifest(
+      toolForm({
+        pluginType: "custom",
+        mcpCommand: "npx",
+        skillDescription: "d",
+        skillBody: "b",
+      }),
+    ) as Record<string, unknown>;
+    expect(m.kind).toBe("tool");
+    expect((m.mcp as Record<string, unknown>).command).toBe("npx");
+    expect(m.skill).toEqual({ description: "d", body: "b" });
+    expect(m.tool).toBeUndefined();
+  });
+
+  it("parseManifest 多段组合派生 custom，单段归各类型", () => {
+    const mix = parseManifest({
+      schema: 1, kind: "tool", info: { id: "x", display_name: "X" },
+      mcp: { type: "stdio", command: "npx" },
+      tool: { description: "d", usage: "u" },
+    });
+    expect(mix.form.pluginType).toBe("custom");
+    const single = parseManifest({
+      schema: 1, kind: "tool", info: { id: "m", display_name: "M" },
+      mcp: { type: "stdio", command: "npx" },
+    });
+    expect(single.form.pluginType).toBe("mcp");
+    const none = parseManifest({
+      schema: 1, kind: "tool", info: { id: "c", display_name: "C" },
+      tool: { description: "d", usage: "u" },
+    });
+    expect(none.form.pluginType).toBe("cli");
   });
 });
