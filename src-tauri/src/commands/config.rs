@@ -21,35 +21,53 @@ pub(crate) fn load_config(
 /// 解析唯一化在后端，前端（会话页 picker/模型表单/行为页）消费聚合结果。
 /// 仅 model-store surface 支持（能力路由，不出现 agentId 分支）。
 #[tauri::command]
-pub(crate) fn get_model_picker_options(
+pub(crate) async fn get_model_picker_options(
     state: tauri::State<'_, Mutex<AppState>>,
     agent_id: String,
 ) -> Result<Vec<agent::jishu_self::model_picker::ModelPickerOption>, String> {
-    let s = state
-        .lock()
-        .map_err(|_| "App state lock poisoned".to_string())?;
-    let agent = s.registry.require_agent(&agent_id)?;
-    let store = agent
-        .as_model_store()
-        .ok_or("Agent does not support model store")?;
-    let config = store.load_model_store()?;
-    Ok(agent::jishu_self::model_picker::picker_options_from_config(&config))
+    // v0.9.0 需求16 测试期修复：codex 官方直连的 load_model_store 首调要
+    // spawn app-server（10-20s）——同步命令占主线程且持 AppState 锁，整个
+    // UI（含渠道切换）冻结。锁内只克隆 registry Arc，装载移入 spawn_blocking。
+    let registry = {
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        s.registry.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let agent = registry.require_agent(&agent_id)?;
+        let store = agent
+            .as_model_store()
+            .ok_or("Agent does not support model store")?;
+        let config = store.load_model_store()?;
+        Ok(agent::jishu_self::model_picker::picker_options_from_config(&config))
+    })
+    .await
+    .map_err(|e| format!("model picker load task failed: {e}"))?
 }
 
 /// Read the agent's model store config (routes through adapter).
 #[tauri::command]
-pub(crate) fn get_models_config(
+pub(crate) async fn get_models_config(
     state: tauri::State<'_, Mutex<AppState>>,
     agent_id: String,
 ) -> Result<serde_json::Value, String> {
-    let s = state
-        .lock()
-        .map_err(|_| "App state lock poisoned".to_string())?;
-    let agent = s.registry.require_agent(&agent_id)?;
-    let store = agent
-        .as_model_store()
-        .ok_or("Agent does not support model store")?;
-    store.load_model_store()
+    // 同 get_model_picker_options：codex 探测慢路径不得占主线程/AppState 锁。
+    let registry = {
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        s.registry.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let agent = registry.require_agent(&agent_id)?;
+        let store = agent
+            .as_model_store()
+            .ok_or("Agent does not support model store")?;
+        store.load_model_store()
+    })
+    .await
+    .map_err(|e| format!("model store load task failed: {e}"))?
 }
 
 /// Write the agent's model store config (routes through adapter).
