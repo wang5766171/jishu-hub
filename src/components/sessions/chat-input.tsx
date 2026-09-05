@@ -457,13 +457,21 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
    * 宽 820px ↔ 空态高 76px（内容增长上限 220px 同比）——宽度自适应（70%）
    * 后只宽不高观感太扁（用户裁决：保持初始宽高比，高度随最大化变高）。
    * 窄于基准不缩（76/220 恒为下限）；min-height 先行设置再量 scrollHeight，
-   * 空态自然落在比例地板上，内容增长仍受同比上限钳制。 */
-  const syncProportionalInputHeight = useCallback(() => {
+   * 空态自然落在比例地板上，内容增长仍受同比上限钳制。
+   *
+   * 宽度守卫（修复三）：写高度会改变容器尺寸、再次触发 ResizeObserver——
+   * 回声通知宽度未变，跳过即断开回环（否则浏览器报「ResizeObserver loop
+   * completed with undelivered notifications」）。内容驱动路径（键入/回填）
+   * 传 force 绕过守卫。 */
+  const lastProportionalWidthRef = useRef(0);
+  const syncProportionalInputHeight = useCallback((options?: { force?: boolean }) => {
     const root = inputRootRef.current;
     const textarea = textareaRef.current;
     if (!root || !textarea) return;
     const width = root.clientWidth;
     if (width <= 0) return;
+    if (!options?.force && width === lastProportionalWidthRef.current) return;
+    lastProportionalWidthRef.current = width;
     const scale = Math.max(1, width / 820);
     const minH = Math.round(76 * scale);
     const maxH = Math.round(220 * scale);
@@ -474,11 +482,12 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   }, []);
 
   // 容器宽度变化（窗口缩放/最大化/侧栏开合）即时重算；挂载时先同步一次。
+  // RO 回调走宽度守卫（自身写高度引发的回声通知宽度未变，跳过断开回环）。
   useEffect(() => {
     const root = inputRootRef.current;
     if (!root) return;
     syncProportionalInputHeight();
-    const observer = new ResizeObserver(syncProportionalInputHeight);
+    const observer = new ResizeObserver(() => syncProportionalInputHeight());
     observer.observe(root);
     return () => observer.disconnect();
   }, [syncProportionalInputHeight]);
@@ -506,8 +515,9 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
           const pos = next.length;
           textarea.setSelectionRange(pos, pos);
           textarea.focus();
-          // 程序性填文（非 onInput 路径）后即时等比重算高度。
-          syncProportionalInputHeight();
+          // 程序性填文（非 onInput 路径）后即时等比重算高度（force：内容
+          // 变化，宽度守卫须绕过）。
+          syncProportionalInputHeight({ force: true });
         });
       },
     }),
@@ -1316,9 +1326,9 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
             )}
             style={{ height: "auto", overflow: "hidden" }}
             onInput={() => {
-              // 需求4 修复二：键入增长走等比同步（min/max 随宽度缩放后的
-              // scrollHeight 钳制，替代原固定 220px 上限）。
-              syncProportionalInputHeight();
+              // 需求4 修复二：键入增长走等比同步（force——内容变化须重算，
+              // 即使宽度未变）。
+              syncProportionalInputHeight({ force: true });
             }}
           />
         </div>
