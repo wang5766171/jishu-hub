@@ -48,6 +48,25 @@ interface PluginListResult {
   manifest_errors: [string, string][];
 }
 
+/** 需求19 第二轮：管理页分类（与创建页类型三分同构 + 核心引擎类）。
+ * 核心引擎 = core（jishu-self）+ 解析器系统插件（mcp-resolver；后续
+ * skill/CLI 解析器并入此判定）；MCP/CLI 按 kind=tool 的 has_mcp 分流；
+ * 智能体 = 内置适配器与 manifest 智能体。 */
+type PluginCategory = "core" | "mcp" | "cli" | "agent";
+
+function categoryOf(p: PluginDescriptor): PluginCategory {
+  if (p.core || p.id === "mcp-resolver") return "core";
+  if (p.kind === "tool") return p.has_mcp ? "mcp" : "cli";
+  return "agent";
+}
+
+const PLUGIN_CATEGORIES: Array<{ key: PluginCategory; labelKey: string; fallback: string }> = [
+  { key: "core", labelKey: "plugins.catCore", fallback: "核心引擎" },
+  { key: "mcp", labelKey: "plugins.typeMcp", fallback: "MCP 工具" },
+  { key: "cli", labelKey: "plugins.typeCli", fallback: "CLI 工具" },
+  { key: "agent", labelKey: "plugins.typeAgent", fallback: "智能体" },
+];
+
 export function PluginsPage() {
   const { t } = useTranslation();
   const { alert: alertDialog, confirm: confirmDialog, dialogNode } = useConfirmDialog();
@@ -221,6 +240,137 @@ export function PluginsPage() {
     : true;
 
 
+  /** 插件卡片行（需求19 第二轮：分类分组内逐项渲染）。 */
+  const renderRow = (plugin: PluginDescriptor) => {
+        const busy = busyIds.has(plugin.id);
+        const installing = installingIds.has(plugin.id);
+        // 需求5：健康状态 join（内置与 manifest 插件的安装检测承接）。
+        const status = agents.find((a) => a.id === plugin.id);
+        const installed = status?.health?.installed ?? null;
+        const cliVersion = status?.health?.version ?? null;
+        return (
+          <div
+            key={plugin.id}
+            className="flex items-center gap-3 rounded-md border border-border/60 p-3"
+          >
+            <AgentLogo agentId={plugin.id} size={28} />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm font-medium truncate">{plugin.display_name}</span>
+                <Badge variant="secondary" className="text-[10px] px-1.5">
+                  {plugin.kind === "builtin"
+                    ? tr("plugins.kindBuiltin", "内置")
+                    : plugin.kind === "tool"
+                      ? tr("plugins.kindTool", "工具")
+                      : tr("plugins.kindManifest", "声明式")}
+                </Badge>
+                {plugin.core && (
+                  <Badge className="text-[10px] px-1.5">{tr("plugins.coreBadge", "核心引擎")}</Badge>
+                )}
+                {plugin.system && (
+                  <Badge variant="outline" className="text-[10px] px-1.5">
+                    {tr("plugins.systemBadge", "系统")}
+                  </Badge>
+                )}
+                {plugin.has_mcp && (
+                  <Badge variant="outline" className="text-[10px] px-1.5">
+                    {tr("plugins.mcpBadge", "MCP")}
+                  </Badge>
+                )}
+                {plugin.has_panel && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPanelTarget(plugin);
+                      setPanelOutputs({});
+                    }}
+                    className="inline-flex items-center gap-1 rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] text-foreground/80 hover:bg-accent/60"
+                  >
+                    <LayoutDashboard className="h-3 w-3" />
+                    {tr("plugins.panelButton", "面板")}
+                  </button>
+                )}
+                {!plugin.enabled && (
+                  <Badge variant="outline" className="text-[10px] px-1.5">
+                    {tr("plugins.disabledBadge", "已禁用")}
+                  </Badge>
+                )}
+              </div>
+              <div className="text-xs text-muted-foreground truncate mt-0.5">
+                {plugin.id}
+                {plugin.version ? ` · ${tr("plugins.pluginVersion", "插件")} v${plugin.version}` : ""}
+                {installed != null && (
+                  <span className={installed ? "" : " text-destructive"}>
+                    {" · "}
+                    {installed
+                      ? `${tr("plugins.installed", "已安装")}${cliVersion ? ` v${cliVersion}` : ""}`
+                      : tr("plugins.notInstalled", "未安装")}
+                  </span>
+                )}
+                {plugin.source_path ? ` · ${plugin.source_path}` : ""}
+              </div>
+              {!installed && status?.install_hint && (
+                <div className="text-[10px] text-muted-foreground/80 truncate mt-0.5 font-mono">
+                  {status.install_hint}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {(busy || installing) && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+              {status && !installed && (status.native_install_command || status.install_hint) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy || installing}
+                  onClick={() => handleInstall(plugin, status)}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span className="ml-1">{tr("env.install", "安装")}</span>
+                </Button>
+              )}
+              {/* v0.9.0 需求1 二期：系统插件隐藏编辑/卸载（随包分发、启动
+               * 幂等重部署——编辑会被覆盖，卸载是无操作）。 */}
+              {!plugin.system && (plugin.kind === "manifest" || plugin.kind === "tool") && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  disabled={busy}
+                  aria-label={tr("plugins.edit", "编辑")}
+                  onClick={() => {
+                    setCreateOpen(false);
+                    setEditPluginId(plugin.id);
+                  }}
+                >
+                  <Pencil className="h-4 w-4" />
+                </Button>
+              )}
+              {!plugin.system && (plugin.kind === "manifest" || plugin.kind === "tool") && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-destructive hover:text-destructive"
+                  disabled={busy}
+                  aria-label={tr("plugins.remove", "卸载")}
+                  onClick={() => handleRemove(plugin)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              )}
+              {plugin.core ? (
+                <span className="text-xs text-muted-foreground w-9 text-center">—</span>
+              ) : (
+                <Switch
+                  checked={plugin.enabled}
+                  disabled={busy}
+                  onCheckedChange={(checked) => handleToggle(plugin, checked)}
+                  aria-label={tr("plugins.toggle", "启用/禁用")}
+                />
+              )}
+            </div>
+          </div>
+        );
+  };
+
   return (
     <div className="p-6 max-w-3xl mx-auto space-y-4">
       {dialogNode}
@@ -278,133 +428,17 @@ export function PluginsPage() {
         </div>
       )}
 
-      <div className="space-y-2">
-        {(result?.plugins ?? []).map((plugin) => {
-          const busy = busyIds.has(plugin.id);
-          const installing = installingIds.has(plugin.id);
-          // 需求5：健康状态 join（内置与 manifest 插件的安装检测承接）。
-          const status = agents.find((a) => a.id === plugin.id);
-          const installed = status?.health?.installed ?? null;
-          const cliVersion = status?.health?.version ?? null;
+      <div className="space-y-4">
+        {PLUGIN_CATEGORIES.map((cat) => {
+          const items = (result?.plugins ?? []).filter((x) => categoryOf(x) === cat.key);
+          if (items.length === 0) return null;
           return (
-            <div
-              key={plugin.id}
-              className="flex items-center gap-3 rounded-md border border-border/60 p-3"
-            >
-              <AgentLogo agentId={plugin.id} size={28} />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-sm font-medium truncate">{plugin.display_name}</span>
-                  <Badge variant="secondary" className="text-[10px] px-1.5">
-                    {plugin.kind === "builtin"
-                      ? tr("plugins.kindBuiltin", "内置")
-                      : plugin.kind === "tool"
-                        ? tr("plugins.kindTool", "工具")
-                        : tr("plugins.kindManifest", "声明式")}
-                  </Badge>
-                  {plugin.core && (
-                    <Badge className="text-[10px] px-1.5">{tr("plugins.coreBadge", "核心引擎")}</Badge>
-                  )}
-                  {plugin.system && (
-                    <Badge variant="outline" className="text-[10px] px-1.5">
-                      {tr("plugins.systemBadge", "系统")}
-                    </Badge>
-                  )}
-                  {plugin.has_mcp && (
-                    <Badge variant="outline" className="text-[10px] px-1.5">
-                      {tr("plugins.mcpBadge", "MCP")}
-                    </Badge>
-                  )}
-                  {plugin.has_panel && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPanelTarget(plugin);
-                        setPanelOutputs({});
-                      }}
-                      className="inline-flex items-center gap-1 rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] text-foreground/80 hover:bg-accent/60"
-                    >
-                      <LayoutDashboard className="h-3 w-3" />
-                      {tr("plugins.panelButton", "面板")}
-                    </button>
-                  )}
-                  {!plugin.enabled && (
-                    <Badge variant="outline" className="text-[10px] px-1.5">
-                      {tr("plugins.disabledBadge", "已禁用")}
-                    </Badge>
-                  )}
-                </div>
-                <div className="text-xs text-muted-foreground truncate mt-0.5">
-                  {plugin.id}
-                  {plugin.version ? ` · ${tr("plugins.pluginVersion", "插件")} v${plugin.version}` : ""}
-                  {installed != null && (
-                    <span className={installed ? "" : " text-destructive"}>
-                      {" · "}
-                      {installed
-                        ? `${tr("plugins.installed", "已安装")}${cliVersion ? ` v${cliVersion}` : ""}`
-                        : tr("plugins.notInstalled", "未安装")}
-                    </span>
-                  )}
-                  {plugin.source_path ? ` · ${plugin.source_path}` : ""}
-                </div>
-                {!installed && status?.install_hint && (
-                  <div className="text-[10px] text-muted-foreground/80 truncate mt-0.5 font-mono">
-                    {status.install_hint}
-                  </div>
-                )}
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                {(busy || installing) && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-                {status && !installed && (status.native_install_command || status.install_hint) && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={busy || installing}
-                    onClick={() => handleInstall(plugin, status)}
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                    <span className="ml-1">{tr("env.install", "安装")}</span>
-                  </Button>
-                )}
-                {/* v0.9.0 需求1 二期：系统插件隐藏编辑/卸载（随包分发、启动
-                 * 幂等重部署——编辑会被覆盖，卸载是无操作）。 */}
-                {!plugin.system && (plugin.kind === "manifest" || plugin.kind === "tool") && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    disabled={busy}
-                    aria-label={tr("plugins.edit", "编辑")}
-                    onClick={() => {
-                      setCreateOpen(false);
-                      setEditPluginId(plugin.id);
-                    }}
-                  >
-                    <Pencil className="h-4 w-4" />
-                  </Button>
-                )}
-                {!plugin.system && (plugin.kind === "manifest" || plugin.kind === "tool") && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="text-destructive hover:text-destructive"
-                    disabled={busy}
-                    aria-label={tr("plugins.remove", "卸载")}
-                    onClick={() => handleRemove(plugin)}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                )}
-                {plugin.core ? (
-                  <span className="text-xs text-muted-foreground w-9 text-center">—</span>
-                ) : (
-                  <Switch
-                    checked={plugin.enabled}
-                    disabled={busy}
-                    onCheckedChange={(checked) => handleToggle(plugin, checked)}
-                    aria-label={tr("plugins.toggle", "启用/禁用")}
-                  />
-                )}
-              </div>
+            <div key={cat.key} className="space-y-2">
+              <p className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
+                {tr(cat.labelKey, cat.fallback)}
+                <span className="text-muted-foreground/50">{items.length}</span>
+              </p>
+              {items.map((plugin) => renderRow(plugin))}
             </div>
           );
         })}

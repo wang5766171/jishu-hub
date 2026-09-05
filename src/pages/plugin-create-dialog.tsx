@@ -15,7 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { useTranslation } from "react-i18next";
-import { Bot, Code2, Loader2, Plus, Sparkles, Terminal, Blocks } from "lucide-react";
+import { Bot, Code2, FileJson, Loader2, Plus, Sparkles, Terminal, Blocks } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /** v0.8.1 需求6：插件创建可视化界面——模版快速创建（claude/codex/opencode
@@ -395,12 +395,10 @@ notes = "需要 DINGTALK_WEBHOOK 环境变量"
   },
 ];
 
-/** 参考图 JSON 模式解析：接受 `{"<name>": {...}}` 或 `{"mcpServers": {...}}`
- * 包裹；恰一个 server（单插件单 server）；type 兼容 streamable-http → http；
- * stdio 需 command，http/sse 需 http(s) url。失败返回用户可读错误。 */
-export function parseMcpServerJson(
+/** 外层解包：直接 server 对象或 {"mcpServers": {...}} 包裹 → servers 对象。 */
+function unwrapServersObj(
   text: string,
-): { ok: true; name: string; server: McpServerEntry } | { ok: false; error: string } {
+): { ok: true; obj: Record<string, unknown> } | { ok: false; error: string } {
   let v: unknown;
   try {
     v = JSON.parse(text);
@@ -417,22 +415,19 @@ export function parseMcpServerJson(
     }
     obj = obj.mcpServers as Record<string, unknown>;
   }
-  const entries = Object.entries(obj);
-  if (entries.length === 0) {
-    return { ok: false, error: "未包含任何 MCP server" };
-  }
-  if (entries.length > 1) {
-    return { ok: false, error: `包含 ${entries.length} 个 server——单个插件仅支持声明一个，请拆分为多个插件` };
-  }
-  const [name, rawCfg] = entries[0];
-  if (typeof rawCfg !== "object" || rawCfg === null || Array.isArray(rawCfg)) {
-    return { ok: false, error: `server "${name}" 的配置必须是对象` };
-  }
-  const cfg = rawCfg as Record<string, unknown>;
+  return { ok: true, obj };
+}
+
+/** 单个 server 条目解析（name 用于错误信息；单/批量共用）：
+ * type 兼容 streamable-http → http；stdio 需 command，http/sse 需 http(s) url。 */
+function parseServerEntry(
+  name: string,
+  cfg: Record<string, unknown>,
+): { ok: true; server: McpServerEntry } | { ok: false; error: string } {
   let type = typeof cfg.type === "string" ? cfg.type.trim().toLowerCase() : "stdio";
   if (type === "streamable-http" || type === "streamablehttp") type = "http";
   if (type !== "stdio" && type !== "http" && type !== "sse") {
-    return { ok: false, error: `不支持的传输类型 "${cfg.type}"（支持 stdio / http / sse）` };
+    return { ok: false, error: `server "${name}"：不支持的传输类型 "${cfg.type}"（支持 stdio / http / sse）` };
   }
   const stringMap = (src: unknown): Record<string, string> | undefined => {
     if (typeof src !== "object" || src === null || Array.isArray(src)) return undefined;
@@ -444,10 +439,9 @@ export function parseMcpServerJson(
   };
   if (type === "stdio") {
     const command = typeof cfg.command === "string" ? cfg.command : "";
-    if (!command.trim()) return { ok: false, error: "stdio 类型需要填写 command" };
+    if (!command.trim()) return { ok: false, error: `server "${name}"：stdio 类型需要填写 command` };
     return {
       ok: true,
-      name,
       server: {
         type: "stdio",
         command: command.trim(),
@@ -459,11 +453,57 @@ export function parseMcpServerJson(
     };
   }
   const url = typeof cfg.url === "string" ? cfg.url.trim() : "";
-  if (!url) return { ok: false, error: `${type} 类型需要填写 url` };
+  if (!url) return { ok: false, error: `server "${name}"：${type} 类型需要填写 url` };
   if (!/^https?:\/\//.test(url)) {
-    return { ok: false, error: "url 必须以 http:// 或 https:// 开头" };
+    return { ok: false, error: `server "${name}"：url 必须以 http:// 或 https:// 开头` };
   }
-  return { ok: true, name, server: { type, url, headers: stringMap(cfg.headers) } };
+  return { ok: true, server: { type, url, headers: stringMap(cfg.headers) } };
+}
+
+/** 参考图 JSON 模式解析（单 server）：恰一个条目。 */
+export function parseMcpServerJson(
+  text: string,
+): { ok: true; name: string; server: McpServerEntry } | { ok: false; error: string } {
+  const unwrapped = unwrapServersObj(text);
+  if (!unwrapped.ok) return unwrapped;
+  const entries = Object.entries(unwrapped.obj);
+  if (entries.length === 0) {
+    return { ok: false, error: "未包含任何 MCP server" };
+  }
+  if (entries.length > 1) {
+    return { ok: false, error: `包含 ${entries.length} 个 server——单个插件仅支持声明一个，批量请用「JSON 批量导入」` };
+  }
+  const [name, rawCfg] = entries[0];
+  if (typeof rawCfg !== "object" || rawCfg === null || Array.isArray(rawCfg)) {
+    return { ok: false, error: `server "${name}" 的配置必须是对象` };
+  }
+  const parsed = parseServerEntry(name, rawCfg as Record<string, unknown>);
+  return parsed.ok ? { ok: true, name, server: parsed.server } : parsed;
+}
+
+/** 批量导入解析（需求19 第二轮）：1+ 条目全量校验——任一条目非法即整体
+ * 报错（不部分导入），错误信息带条目名。 */
+export function parseMcpServersBatch(
+  text: string,
+):
+  | { ok: true; servers: Array<{ name: string; server: McpServerEntry }> }
+  | { ok: false; error: string } {
+  const unwrapped = unwrapServersObj(text);
+  if (!unwrapped.ok) return unwrapped;
+  const entries = Object.entries(unwrapped.obj);
+  if (entries.length === 0) {
+    return { ok: false, error: "未包含任何 MCP server" };
+  }
+  const servers: Array<{ name: string; server: McpServerEntry }> = [];
+  for (const [name, rawCfg] of entries) {
+    if (typeof rawCfg !== "object" || rawCfg === null || Array.isArray(rawCfg)) {
+      return { ok: false, error: `server "${name}" 的配置必须是对象` };
+    }
+    const parsed = parseServerEntry(name, rawCfg as Record<string, unknown>);
+    if (!parsed.ok) return parsed;
+    servers.push({ name, server: parsed.server });
+  }
+  return { ok: true, servers };
 }
 
 /** 请求头文本（JSON 对象）→ Record；空文本返回 undefined；非法抛错（行内提示/提交拦截共用）。 */
@@ -976,6 +1016,50 @@ export function PluginCreateDialog({
     if (tpl) setTemplateKey(tpl.key);
   };
 
+  /** MCP JSON 批量导入（需求19 第二轮）：多 server → 多插件，逐条落盘。 */
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [batchJson, setBatchJson] = useState("");
+  const [importing, setImporting] = useState(false);
+  const batchParsed = useMemo(
+    () => (batchOpen && batchJson.trim() ? parseMcpServersBatch(batchJson) : null),
+    [batchOpen, batchJson],
+  );
+
+  const handleBatchImport = async () => {
+    if (!batchParsed?.ok) return;
+    setImporting(true);
+    try {
+      const created: string[] = [];
+      const failed: string[] = [];
+      for (const { name, server } of batchParsed.servers) {
+        const manifest = {
+          schema: 1,
+          kind: "tool",
+          info: { id: mcpNameToId(name), display_name: name },
+          mcp: serverToMcpSection(server),
+        };
+        try {
+          await invokeCommand("plugin_create", { manifest });
+          created.push(name);
+        } catch (err) {
+          failed.push(`${name}: ${String(err)}`);
+        }
+      }
+      setBatchOpen(false);
+      if (created.length > 0) onCreated();
+      void alertDialog({
+        title: tr("plugins.mcpBatchTitle", "批量导入 MCP 服务"),
+        description:
+          `${tr("plugins.mcpBatchDone", "导入完成")}：成功 ${created.length} 个` +
+          (failed.length
+            ? `；失败 ${failed.length} 个：\n${failed.join("\n")}`
+            : ""),
+      });
+    } finally {
+      setImporting(false);
+    }
+  };
+
   /** [tool] 声明字段集（CLI = 核心分组；MCP = 高级折叠，共用字段）。 */
   const toolDeclareFields = (
     <>
@@ -1121,6 +1205,19 @@ export function PluginCreateDialog({
                       <span className="text-center leading-tight">{tr(tp.nameKey, tp.nameFallback)}</span>
                     </button>
                   ))}
+                {pluginType === "mcp" && !mcpLocked && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBatchJson("");
+                      setBatchOpen(true);
+                    }}
+                    className="flex flex-col items-center justify-center gap-1.5 rounded-md border border-dashed border-border/70 p-3 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                  >
+                    <FileJson className="h-4 w-4" />
+                    <span className="text-center leading-tight">{tr("plugins.mcpBatchImport", "JSON 批量导入")}</span>
+                  </button>
+                )}
               </div>
               <details className="mt-2 group">
                 <summary className="text-[11px] text-muted-foreground cursor-pointer select-none">
@@ -1565,6 +1662,48 @@ export function PluginCreateDialog({
             <Button size="sm" disabled={!canSubmit || submitting} onClick={handleSubmit}>
               {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
               {isEdit ? tr("plugins.saveAction", "保存修改") : tr("plugins.createAction", "创建")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* MCP JSON 批量导入（需求19 第二轮）：多 server → 多插件。 */}
+      <Dialog open={batchOpen} onOpenChange={setBatchOpen}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>{tr("plugins.mcpBatchTitle", "批量导入 MCP 服务")}</DialogTitle>
+            <DialogDescription>
+              {tr("plugins.mcpBatchDesc", "粘贴包含多个 server 的 JSON（支持 mcpServers 包裹）；每个服务将创建一个独立 MCP 插件（插件 ID 由名称生成）。")}
+            </DialogDescription>
+          </DialogHeader>
+          <textarea
+            value={batchJson}
+            onChange={(e) => setBatchJson(e.target.value)}
+            rows={10}
+            spellCheck={false}
+            placeholder={'{\n  "mcpServers": {\n    "server-a": { "type": "stdio", "command": "npx", "args": [] },\n    "server-b": { "type": "http", "url": "https://mcp.example.com/mcp" }\n  }\n}'}
+            className="flex w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-xs font-mono"
+          />
+          {batchParsed ? (
+            batchParsed.ok ? (
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                {tr("plugins.mcpBatchDetected", "识别到")} {batchParsed.servers.length} 个：{batchParsed.servers.map((x) => x.name).join("、")}
+              </p>
+            ) : (
+              <p className="text-[11px] leading-snug text-destructive">{batchParsed.error}</p>
+            )
+          ) : (
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              {tr("plugins.mcpBatchHint", "任一条目非法将整体报错，不会部分导入。")}
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setBatchOpen(false)}>
+              {tr("common.cancel", "取消")}
+            </Button>
+            <Button size="sm" disabled={!batchParsed?.ok || importing} onClick={() => void handleBatchImport()}>
+              {importing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {tr("plugins.mcpBatchAction", "导入")}
             </Button>
           </DialogFooter>
         </DialogContent>

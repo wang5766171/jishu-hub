@@ -8,6 +8,7 @@ import {
   mcpNameToId,
   parseManifest,
   parseMcpServerJson,
+  parseMcpServersBatch,
   serverToMcpSection,
   type FormState,
 } from "./plugin-create-dialog";
@@ -319,5 +320,37 @@ describe("MCP 表单极简化（需求19 GUI 裁决：ID 自动派生、无图�
       }),
     ) as { info: Record<string, unknown> };
     expect(m.info.id).toBe("");
+  });
+});
+
+describe("parseMcpServersBatch（批量导入，需求19 第二轮）", () => {
+  it("多 server + mcpServers 包裹，全量校验通过", () => {
+    const r = parseMcpServersBatch(
+      `{"mcpServers": {"a": {"type": "stdio", "command": "npx", "args": []}, "b": {"type": "http", "url": "https://x/m"}}}`,
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.servers.map((x) => x.name)).toEqual(["a", "b"]);
+      expect(r.servers[1].server.type).toBe("http");
+    }
+  });
+
+  it("任一条目非法 → 整体报错（带条目名），不部分产出", () => {
+    const r = parseMcpServersBatch(
+      `{"a": {"command": "npx"}, "b": {"type": "http", "url": "ftp://x"}}`,
+    );
+    expect(!r.ok && r.error.includes('"b"')).toBe(true);
+  });
+
+  it("空对象 / 非法 JSON → 报错", () => {
+    expect(!parseMcpServersBatch("{}").ok).toBe(true);
+    expect(!parseMcpServersBatch("[1]").ok).toBe(true);
+    expect(!parseMcpServersBatch("{oops").ok).toBe(true);
+  });
+
+  it("单条目批量等价于单 server 解析", () => {
+    const r = parseMcpServersBatch(`{"solo": {"type": "sse", "url": "http://h/sse"}}`);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.servers[0].server.url).toBe("http://h/sse");
   });
 });
