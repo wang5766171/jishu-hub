@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { useTranslation } from "react-i18next";
 import { Bot, Code2, FileJson, Loader2, Plus, Sparkles, Terminal, X, Blocks } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { IconPicker } from "@/components/ui/icon-picker";
 
 /** v0.8.1 需求6：插件创建可视化界面——模版快速创建（claude/codex/opencode
  * 形态预填）+ 分组表单 + 字段级能力说明。提交走 plugin_create（后端全量
@@ -1460,11 +1461,10 @@ export function PluginCreateDialog({
                   />
                 </Labeled>
                 <Labeled labelKey="plugins.fIcon" fallback="图标标识">
-                  <Input
-                    value={form.icon}
-                    onChange={(e) => patch({ icon: e.target.value })}
-                    placeholder="bot"
-                    className="h-8 text-xs"
+                  <IconPicker
+                    value={form.icon || "bot"}
+                    onChange={(key) => patch({ icon: key })}
+                    disabled={isEdit && false}
                   />
                 </Labeled>
                 <Labeled labelKey="plugins.fInstallHint" fallback="安装提示命令">

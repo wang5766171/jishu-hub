@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { AgentLogo, useAgent } from "@/agents";
+import { PluginIcon } from "@/components/ui/icon-picker";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +38,8 @@ interface PluginDescriptor {
   has_skill?: boolean;
   /** v0.9.0 需求19 第三轮：声明了 [pi_extension] 段（自适应/深度形态插件）。 */
   has_pi_extension?: boolean;
+  /** info.icon 声明值（v0.9.0 需求19：图标注册表渲染，未知键回退 Bot）。 */
+  icon?: string;
   /** v0.9.0 需求8：声明式面板（list 只读模板 MVP）。 */
   has_panel?: boolean;
   panel?: {
@@ -300,7 +303,11 @@ export function PluginsPage() {
             key={plugin.id}
             className="flex items-center gap-3 rounded-md border border-border/60 p-3"
           >
-            <AgentLogo agentId={plugin.id} size={28} />
+            {plugin.kind === 'builtin' ? (
+              <AgentLogo agentId={plugin.id} size={28} />
+            ) : (
+              <PluginIcon icon={plugin.icon} size={28} />
+            )}
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-sm font-medium truncate">{plugin.display_name}</span>
