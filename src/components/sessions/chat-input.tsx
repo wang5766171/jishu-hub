@@ -460,29 +460,50 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
    * 占宽逐项同步（修复四的同步方案在 WebView2 下滚动后仍出现两层视口错位
    * 重影，用户 2026-09-05 二次实测）。 */
   const inputScrollRef = useRef<HTMLDivElement>(null);
+  /** mirror（in-flow 文本层）引用——撑高量测基准（见 syncProportionalInputHeight）。 */
+  const inputMirrorRef = useRef<HTMLDivElement>(null);
 
-  /** v0.9.1 需求4 测试期修复二/四：输入框高度随宽度等比伸缩——基准：初始
+  /** v0.9.1 需求4 测试期修复二/六：输入框高度随宽度等比伸缩——基准：初始
    * 内容宽 820px ↔ 空态高 76px；宽度自适应（70%）后高度同比变高（用户裁决：
-   * 保持初始宽高比）；窄于基准不缩。修复四（用户裁决）：高度**不受内容量
-   * 影响**——恒定在比例地板，内容超出由滚动容器整体滚动。
+   * 保持初始宽高比）；窄于基准不缩。
+   *
+   * 修复六（用户 2026-09-06 新裁决，取代修复四"恒定高度"）：内容可撑高
+   * 输入框，但有**约 11 行文字**的高度上限——超出上限才内部滚动；发送后
+   * 消息清空即回到初始高度。高度 = clamp(mirror 内容高, 76×scale 地板,
+   * (11×20+24)×scale 上限)：20px = text-sm 行高（1.25rem），24 = mirror
+   * 自身 py-3 上下 padding。量高用 mirror.offsetHeight（真实文本层）——
+   * 不能用 scroller.scrollHeight（≥ clientHeight，收缩时读不出更小值，
+   * 撑高后删行就缩不回去了）。
    *
    * 宽度守卫（修复三）：写高度会改变容器尺寸、再次触发 ResizeObserver——
    * 回声通知宽度未变，跳过即断开回环（否则浏览器报「ResizeObserver loop
-   * completed with undelivered notifications」）。 */
+   * completed with undelivered notifications」）；内容驱动路径（键入/粘贴/
+   * 回填/发送清空，经 [message] effect）传 force 绕过守卫。 */
   const lastProportionalWidthRef = useRef(0);
-  const syncProportionalInputHeight = useCallback(() => {
+  const syncProportionalInputHeight = useCallback((options?: { force?: boolean }) => {
     const root = inputRootRef.current;
     const scroller = inputScrollRef.current;
+    const mirror = inputMirrorRef.current;
     if (!root || !scroller) return;
     const width = root.clientWidth;
-    if (width <= 0 || width === lastProportionalWidthRef.current) return;
+    if (width <= 0) return;
+    if (!options?.force && width === lastProportionalWidthRef.current) return;
     lastProportionalWidthRef.current = width;
     const scale = Math.max(1, width / 820);
-    const h = Math.round(76 * scale);
+    const minH = Math.round(76 * scale);
+    const maxH = Math.round((11 * 20 + 24) * scale);
+    const contentH = mirror?.offsetHeight ?? 0;
+    const h = Math.max(minH, Math.min(contentH, maxH));
     scroller.style.height = `${h}px`;
-    scroller.style.minHeight = `${h}px`;
-    scroller.style.maxHeight = `${h}px`;
+    scroller.style.minHeight = `${minH}px`;
+    scroller.style.maxHeight = `${maxH}px`;
   }, []);
+
+  /** 内容变化即时重算高度：键入/粘贴/回填/发送清空统一入口——发送后
+   * message 归空，mirror 塌回 padding 高度，高度落回地板即"恢复初始高度"。 */
+  useEffect(() => {
+    syncProportionalInputHeight({ force: true });
+  }, [message, syncProportionalInputHeight]);
 
   /** 键入/回填后跟随光标：光标在末尾（常见键入与停止回填场景）滚到底；
    * 中间位置不打断用户滚轮（textarea 全内容高度、自身不滚，光标定位由
@@ -1305,13 +1326,14 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         )}
 
         {/* v0.8.1 需求7 内联工具 pill：mirror 层方案——textarea 文字透明
-            （caret 仍可见），同字体同 padding 视觉层把 `@[显示名]` token
+            （caret 仍可见），同字体同 padding 视觉层把 `@[工具名]` token
             渲染成 pill，其余文本原样显示。
             v0.9.1 需求4 修复五「外滚内长」重构：固定高度滚动容器内，
             mirror（in-flow 撑内容高度）与 textarea（absolute 覆盖同几何、
             overflow hidden 自身不滚）随同一条滚动条整体滚动——两层对齐由
-            DOM 构造保证（滚动条占宽对两层同时生效），杜绝滚动后重影；高度
-            恒定不受内容量影响，内容过多整体上下滚动（用户裁决）。 */}
+            DOM 构造保证（滚动条占宽对两层同时生效），杜绝滚动后重影。
+            修复六（用户 2026-09-06 裁决，取代修复四恒定高度）：内容可撑高
+            （上限约 11 行文字），超出才整体滚动；发送清空回初始高度。 */}
         <div
           ref={inputScrollRef}
           className="min-h-[76px] overflow-x-hidden overflow-y-auto"
@@ -1321,6 +1343,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
               内层以滚动容器高度为最小值，空态铺满、长文超出照常滚动。 */}
           <div className="relative min-h-full">
             <div
+              ref={inputMirrorRef}
               aria-hidden
               className="pointer-events-none whitespace-pre-wrap break-words px-4 py-3 text-sm"
             >
