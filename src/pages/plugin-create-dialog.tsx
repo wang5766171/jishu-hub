@@ -1447,76 +1447,8 @@ export function PluginCreateDialog({
                   </button>
                 )}
               </div>
-              {/* 模版 TOML 参考行 + Skill 导入（左）+ 取消/创建（右）。
-               * GUI 裁决：导入双按钮与取消/创建同行居左。 */}
-              <div className="mt-2 flex items-center justify-between gap-2">
-                {pluginType === "skill" && !skillLocked && (
-                  <div className="relative flex shrink-0 items-center gap-1.5">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 px-2 text-[11px]"
-                      onClick={() => void openSkillSources()}
-                    >
-                      <Sparkles className="h-3 w-3" />
-                      {tr("plugins.skillImportSources", "从其他智能体导入")}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 px-2 text-[11px]"
-                      onClick={() => void importSkillFromFile()}
-                    >
-                      <FileJson className="h-3 w-3" />
-                      {tr("plugins.skillImportFile", "从文件导入")}
-                    </Button>
-                    {skillSourcesOpen && (
-                        <>
-                          <div
-                            className="fixed inset-0 z-[80]"
-                            onClick={() => setSkillSourcesOpen(false)}
-                          />
-                          <div className="absolute left-0 top-[calc(100%+0.4rem)] z-[90] w-80 rounded-xl border border-border bg-popover p-1.5 shadow-xl">
-                          <div className="max-h-64 overflow-y-auto">
-                            {skillSourcesLoading ? (
-                              <p className="px-2.5 py-2 text-xs text-muted-foreground">
-                                <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
-                                {tr("common.loading", "加载中…")}
-                              </p>
-                            ) : skillSources.length === 0 ? (
-                              <p className="px-2.5 py-2 text-xs text-muted-foreground">
-                                {tr("plugins.skillImportEmpty", "未发现可导入的 skill")}
-                              </p>
-                            ) : (
-                              skillSources.map((src) => (
-                                <button
-                                  key={src.path}
-                                  type="button"
-                                  title={src.path}
-                                  onClick={() => {
-                                    applySkillImport(src);
-                                    setSkillSourcesOpen(false);
-                                  }}
-                                  className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left transition-fast hover:bg-accent/60"
-                                >
-                                  <span className="flex items-center gap-1.5 text-xs text-foreground">
-                                    <span className="truncate font-medium">{src.name}</span>
-                                    <Badge variant="outline" className="px-1 text-[9px] text-muted-foreground">
-                                      {src.agent}
-                                    </Badge>
-                                  </span>
-                                  <span className="line-clamp-2 text-[10px] leading-snug text-muted-foreground">
-                                    {src.description || src.path}
-                                  </span>
-                                </button>
-                              ))
-                            )}
-                          </div>
-                          </div>
-                        </>
-                      )}
-                  </div>
-                )}
+              {/* 模版 TOML 参考行 + 取消/创建（编辑区右上角）。 */}
+              <div className="mt-2 flex items-start justify-between gap-2">
                 <details className="group min-w-0 flex-1">
                   <summary className="text-[11px] text-muted-foreground cursor-pointer select-none">
                     {tr("plugins.viewToml", "查看模版 TOML（manifest 格式参考）")}
@@ -1540,6 +1472,76 @@ export function PluginCreateDialog({
                 </div>
               </div>
             </div>
+
+            {/* Skill 导入（需求20 第三轮，GUI 裁决三：查看模版行下方）。 */}
+                    {pluginType === "skill" && !skillLocked && (
+                      <div className="relative flex shrink-0 items-center gap-1.5">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-[11px]"
+                          onClick={() => void openSkillSources()}
+                        >
+                          <Sparkles className="h-3 w-3" />
+                          {tr("plugins.skillImportSources", "从其他智能体导入")}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-[11px]"
+                          onClick={() => void importSkillFromFile()}
+                        >
+                          <FileJson className="h-3 w-3" />
+                          {tr("plugins.skillImportFile", "从文件导入")}
+                        </Button>
+                        {skillSourcesOpen && (
+                            <>
+                              <div
+                                className="fixed inset-0 z-[80]"
+                                onClick={() => setSkillSourcesOpen(false)}
+                              />
+                              <div className="absolute left-0 top-[calc(100%+0.4rem)] z-[90] w-80 rounded-xl border border-border bg-popover p-1.5 shadow-xl">
+                              <div className="max-h-64 overflow-y-auto">
+                                {skillSourcesLoading ? (
+                                  <p className="px-2.5 py-2 text-xs text-muted-foreground">
+                                    <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
+                                    {tr("common.loading", "加载中…")}
+                                  </p>
+                                ) : skillSources.length === 0 ? (
+                                  <p className="px-2.5 py-2 text-xs text-muted-foreground">
+                                    {tr("plugins.skillImportEmpty", "未发现可导入的 skill")}
+                                  </p>
+                                ) : (
+                                  skillSources.map((src) => (
+                                    <button
+                                      key={src.path}
+                                      type="button"
+                                      title={src.path}
+                                      onClick={() => {
+                                        applySkillImport(src);
+                                        setSkillSourcesOpen(false);
+                                      }}
+                                      className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left transition-fast hover:bg-accent/60"
+                                    >
+                                      <span className="flex items-center gap-1.5 text-xs text-foreground">
+                                        <span className="truncate font-medium">{src.name}</span>
+                                        <Badge variant="outline" className="px-1 text-[9px] text-muted-foreground">
+                                          {src.agent}
+                                        </Badge>
+                                      </span>
+                                      <span className="line-clamp-2 text-[10px] leading-snug text-muted-foreground">
+                                        {src.description || src.path}
+                                      </span>
+                                    </button>
+                                  ))
+                                )}
+                              </div>
+                              </div>
+                            </>
+                          )}
+                      </div>
+                    )}
+
           </div>
 
           {/* 表单滚动区：基本信息 + 类型专属分组 + 探测（上方固定区不动）。 */}
