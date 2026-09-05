@@ -197,7 +197,10 @@ select option {
   --message-assistant-bg: transparent;
   --message-assistant-fg: var(--color-foreground);
   --message-thinking-bg: hsl(240 5% 96% / 0.75);
-  --message-content-max-width: 820px;
+  /* v0.9.1 需求4：会话内容列自适应——宽窗口（最大化）占第二栏 70%（mx-auto
+     居中即两侧各 15%），初始/窄窗口 820px 保底（观感零回退），更窄沿用
+     w-full 收缩。12 处消费点（消息流/输入框/空态/任务起点/开始页）同源生效。 */
+  --message-content-max-width: max(820px, 70%);
   --tool-card-bg: hsl(0 0% 100%);
   --tool-card-header-bg: hsl(240 5% 97%);
   --tool-card-border: hsl(240 6% 86%);
