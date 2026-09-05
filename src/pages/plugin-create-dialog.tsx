@@ -1322,15 +1322,19 @@ export function PluginCreateDialog({
                     {template.toml}
                   </pre>
                 </details>
-                <Button
-                  size="sm"
-                  className="shrink-0"
-                  disabled={!canSubmit || submitting}
-                  onClick={handleSubmit}
-                >
-                  {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                  {isEdit ? tr("plugins.saveAction", "保存修改") : tr("plugins.createAction", "创建")}
-                </Button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
+                    {tr("common.cancel", "取消")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={!canSubmit || submitting}
+                    onClick={handleSubmit}
+                  >
+                    {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                    {isEdit ? tr("plugins.saveAction", "保存修改") : tr("plugins.createAction", "创建")}
+                  </Button>
+                </div>
               </div>
             </div>
           </div>
@@ -1790,7 +1794,7 @@ export function PluginCreateDialog({
             )}
           </div>
 
-          {/* 底部固定：schema 徽标 + 取消（创建按钮已上移至编辑区右上角）。 */}
+          {/* 底部固定：仅 schema 徽标（取消/创建均已上移编辑区右上角）。 */}
           <DialogFooter className="shrink-0">
             <div className="flex items-center gap-2 mr-auto">
               <Badge variant="secondary" className="text-[10px] gap-1">
@@ -1798,9 +1802,6 @@ export function PluginCreateDialog({
                 {tr("plugins.schemaVersion", "schema v1")}
               </Badge>
             </div>
-            <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
-              {tr("common.cancel", "取消")}
-            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
