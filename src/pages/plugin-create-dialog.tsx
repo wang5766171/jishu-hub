@@ -904,9 +904,11 @@ export function PluginCreateDialog({
           ? {
               type: "stdio",
               command: form.mcpCommand.trim(),
-              ...(form.mcpArgs.trim()
-                ? { args: form.mcpArgs.split(/\s+/).filter(Boolean) }
-                : {}),
+              // args 恒展示（空为 []）——stdio 的参数位在 JSON 里可见可改
+              //（GUI 反馈：表单切 JSON 时空参数不应整段消失）。
+              args: form.mcpArgs.trim()
+                ? form.mcpArgs.split(/\s+/).filter(Boolean)
+                : [],
               ...(parseEnvLines(form.mcpEnv) ? { env: parseEnvLines(form.mcpEnv) } : {}),
             }
           : {
