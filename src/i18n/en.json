@@ -347,6 +347,7 @@
     "hMcpEnv": "One KEY=VALUE per line.",
     "hToolOptionalWithMcp": "With an MCP server declared, description/usage can be empty (pure MCP tool plugin).",
     "unifiedNote": "MCP, skills, panels and other capabilities are managed uniformly through the plugin mechanism",
+    "typeCustom": "Custom plugin",
     "catCustom": "Custom plugins",
     "typeSkill": "Skill tool",
     "typeSkillForm": "Hub-forwarded",

@@ -801,8 +801,11 @@ const PLUGIN_TYPES: Array<{
   {
     key: "agent",
     icon: <Bot className="h-4 w-4" />,
-    nameKey: "plugins.typeAgent",
-    nameFallback: "智能体",
+    // 卡名与插件列表分类对齐（GUI 裁决第六轮）：本卡创建 kind=agent 的
+    // manifest 插件，落列表「自定义插件」分类；「智能体」分类=内置适配器
+    //（不可创建）。内部 key 仍为 agent（wire/模板/派生逻辑零改动）。
+    nameKey: "plugins.typeCustom",
+    nameFallback: "自定义插件",
     formKey: "plugins.typeAgentForm",
     formFallback: "独立插拔",
     descKey: "plugins.typeAgentDesc",

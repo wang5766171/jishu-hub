@@ -347,6 +347,7 @@
     "hMcpEnv": "每行 KEY=VALUE。",
     "hToolOptionalWithMcp": "填写 MCP server 后，描述/用法可留空（纯 MCP 工具插件）。",
     "unifiedNote": "MCP、skills、面板等能力统一通过插件机制管理",
+    "typeCustom": "自定义插件",
     "catCustom": "自定义插件",
     "typeSkill": "Skill 工具",
     "typeSkillForm": "总控转发",
