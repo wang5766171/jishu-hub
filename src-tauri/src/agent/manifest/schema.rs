@@ -45,6 +45,10 @@ pub struct AgentManifestFile {
     /// 声明式面板（v0.9.0 需求8）。
     #[serde(default)]
     pub panel: Option<PanelSection>,
+    /// Skill 声明（v0.9.0 需求20）：插件声明一个 SKILL.md 能力，hub 分发器
+    /// 部署到各 agent 的 skill 目录（启停即分发/回收，对标 [mcp] 总控模式）。
+    #[serde(default)]
+    pub skill: Option<SkillSection>,
 }
 
 /// 声明式面板（v0.9.0 需求8：kind = "tool" 专属段）——插件贡献自己的管理
@@ -134,6 +138,17 @@ pub struct McpSection {
     pub url: Option<String>,
     #[serde(default)]
     pub headers: Option<std::collections::HashMap<String, String>>,
+}
+
+/// Skill 声明（v0.9.0 需求20，kind = "tool" 专属段）：
+/// description = SKILL.md frontmatter 描述（Agent Skills 规范必填，≤1024）；
+/// body = SKILL.md 正文指令。skill 名 = 插件 id（分发目录名即命名空间）。
+/// 仅 [skill] 无 [tool] 合法（纯 skill 插件，不参与 prompt 注入）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillSection {
+    pub description: String,
+    pub body: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -312,6 +327,15 @@ impl AgentManifestFile {
                 }
             }
         }
+        // v0.9.0 需求20：[skill] 段校验（description/body 非空）。
+        if let Some(skill) = &self.skill {
+            if skill.description.trim().is_empty() {
+                return Err("skill.description must not be empty".to_string());
+            }
+            if skill.body.trim().is_empty() {
+                return Err("skill.body must not be empty".to_string());
+            }
+        }
         // v0.9.0 需求8：[panel] 段校验。
         if let Some(panel) = &self.panel {
             if panel.title.trim().is_empty() {
@@ -328,10 +352,13 @@ impl AgentManifestFile {
         }
         let tool = match self.tool.as_ref() {
             Some(tool) => tool,
-            // 仅 [pi_extension]/[mcp]/[panel] 无 [tool]：合法（深度形态 /
-            // 纯结构化工具 / 纯面板插件）。
+            // 仅 [pi_extension]/[mcp]/[panel]/[skill] 无 [tool]：合法（深度
+            // 形态 / 纯结构化工具 / 纯面板 / 纯 skill 插件）。
             None
-            if self.pi_extension.is_some() || self.mcp.is_some() || self.panel.is_some() =>
+            if self.pi_extension.is_some()
+                || self.mcp.is_some()
+                || self.panel.is_some()
+                || self.skill.is_some() =>
             {
                 return Ok(());
             }
@@ -356,6 +383,9 @@ impl AgentManifestFile {
         }
         if self.panel.is_some() {
             return Err("[panel] is only allowed for tool plugins (kind = \"tool\")".to_string());
+        }
+        if self.skill.is_some() {
+            return Err("[skill] is only allowed for tool plugins (kind = \"tool\")".to_string());
         }
         let transport = self
             .transport
@@ -520,6 +550,7 @@ mod tests {
             pi_extension: None,
             mcp: None,
             panel: None,
+            skill: None,
             tool: None,
         }
     }
@@ -742,6 +773,40 @@ display_name = "X"
         );
         let m: AgentManifestFile = toml::from_str(&src).map_err(|e| e.to_string())?;
         m.validate().map_err(|e| e.to_string()).map(|_| m)
+    }
+
+    #[test]
+    fn skill_section_parse_and_validate() {
+        // v0.9.0 需求20：[skill] 解析/校验（skill-only 合法；空 description/body 拒绝；agent 禁止）。
+        let src = r#"
+schema = 1
+kind = "tool"
+[info]
+id = "code-review"
+display_name = "Code Review"
+[skill]
+description = "提交前代码自查清单"
+body = "逐文件检查错误处理与测试覆盖。"
+"#;
+        let m: AgentManifestFile = toml::from_str(src).unwrap();
+        assert!(m.validate().is_ok());
+        assert_eq!(m.skill.as_ref().unwrap().description, "提交前代码自查清单");
+
+        // 空 description / 空 body → 拒绝。
+        let bad = src.replace("提交前代码自查清单", "  ");
+        let m: AgentManifestFile = toml::from_str(&bad).unwrap();
+        assert!(m.validate().unwrap_err().contains("skill.description"));
+        let bad2 = src.replace("逐文件检查错误处理与测试覆盖。", "");
+        let m: AgentManifestFile = toml::from_str(&bad2).unwrap();
+        assert!(m.validate().unwrap_err().contains("skill.body"));
+
+        // agent 插件带 [skill] → 拒绝。
+        let mut agent_m = base_manifest();
+        agent_m.skill = Some(SkillSection {
+            description: "d".into(),
+            body: "b".into(),
+        });
+        assert!(agent_m.validate().unwrap_err().contains("[skill]"));
     }
 
     #[test]

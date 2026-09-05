@@ -30,6 +30,7 @@ mod tests {
                 }),
                 mcp: None,
                 panel: None,
+            skill: None,
                 tool: None,
             }),
             Default::default(),
@@ -57,6 +58,7 @@ mod tests {
                 pi_extension: None,
                 mcp: None,
                 panel: None,
+            skill: None,
                 tool: Some(ToolSection {
                     description: "GitHub 查询".into(),
                     usage: "gh repo view".into(),

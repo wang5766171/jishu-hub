@@ -50,6 +50,8 @@ pub struct PluginDescriptor {
     pub has_mcp: bool,
     /// 声明了 [panel] 段（v0.9.0 需求8：声明式面板）。
     pub has_panel: bool,
+    /// 声明了 [skill] 段（v0.9.0 需求20：skill 分发服务的来源）。
+    pub has_skill: bool,
     /// [panel] 声明详情（has_panel 时非 None；前端面板 Dialog 数据源）。
     pub panel: Option<PanelDecl>,
     /// 系统插件（v0.9.0 需求1 二期）：hub 随包分发、启动幂等重部署——
@@ -86,7 +88,12 @@ pub const CORE_PLUGIN_IDS: [&str; 1] = [super::JISHU_SELF_AGENT_ID];
 /// 系统插件 id 清单（v0.9.0 需求1 二期）：hub 随包分发、启动幂等重部署——
 /// 卸载/编辑无意义（下次启动即恢复），plugin_remove 拒绝、前端隐藏入口；
 /// 可禁用（mcp-resolver 禁用 = MCP 服务总开关，见 mcp_inject）。
-pub const SYSTEM_PLUGIN_IDS: [&str; 3] = ["mcp-resolver", "task-requirements", "task-plan"];
+pub const SYSTEM_PLUGIN_IDS: [&str; 4] = [
+    "mcp-resolver",
+    "skill-resolver",
+    "task-requirements",
+    "task-plan",
+];
 
 /// 系统插件判定。
 pub fn is_system_plugin(id: &str) -> bool {
@@ -98,6 +105,11 @@ pub fn is_system_plugin(id: &str) -> bool {
 /// 为 opt-in 存储，全新环境零配置即在位）。
 pub fn is_mcp_resolver_enabled() -> bool {
     !load_plugin_config().disabled.iter().any(|x| x == "mcp-resolver")
+}
+
+/// Skill 解析器启用态（skill 分发总开关，skill_deploy::sync_skill_deployments）。
+pub fn is_skill_resolver_enabled() -> bool {
+    !load_plugin_config().disabled.iter().any(|x| x == "skill-resolver")
 }
 
 pub fn plugin_config_path() -> PathBuf {
@@ -261,6 +273,34 @@ pub fn resolver_plugin_toml() -> String {
     )
 }
 
+/// Skill 解析器系统插件（v0.9.0 需求20）：skill 分发服务的管理面实体——
+/// 默认安装+启用、可禁用（= 分发总开关）、不可卸载；面板命令烘焙 CLI 路径
+///（与 mcp-resolver 同构）。
+pub fn skill_resolver_plugin_toml() -> String {
+    let cli = crate::agent::jishu_self::resolve_jishu_cli_binary()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "jishu-cli".to_string());
+    let command = format!("\"{cli}\" skill status");
+    format!(
+        "schema = 1
+         kind = \"tool\"
+         
+         [info]
+         id = \"skill-resolver\"
+         display_name = \"Skill 解析器\"
+         icon = \"sparkles\"
+         
+         [panel]
+         title = \"Skill 服务状态\"
+         
+         [[panel.items]]
+         label = \"分发目标与 skill 清单\"
+         command = {}
+",
+        toml::Value::String(command)
+    )
+}
+
 /// 部署内建自适应插件与 MCP 解析器（幂等——文件已存在且内容一致则跳过）。
 /// 仅写 manifest TOML 到 agents 目录（与用户自建走同一装载管线）；
 /// pi 扩展入口文件由 task_plan.rs 的 conductor 部署管线管理（v1 过渡：
@@ -275,6 +315,10 @@ pub fn ensure_builtin_adaptive_plugins() {
         .chain(std::iter::once((
             "mcp-resolver".to_string(),
             resolver_plugin_toml(),
+        )))
+        .chain(std::iter::once((
+            "skill-resolver".to_string(),
+            skill_resolver_plugin_toml(),
         )))
     {
         let target = dir.join(format!("{id}.toml"));
@@ -352,6 +396,7 @@ pub fn assemble(
             enabled,
             has_mcp: false,
             has_panel: false,
+            has_skill: false,
             panel: None,
             system: false,
         });
@@ -378,6 +423,7 @@ pub fn assemble(
             enabled,
             has_mcp: false,
             has_panel: false,
+            has_skill: false,
             panel: None,
             system: false,
         });
@@ -398,6 +444,7 @@ pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescrip
         enabled: plugin.enabled,
         has_mcp: plugin.file.mcp.is_some(),
         has_panel: plugin.file.panel.is_some(),
+        has_skill: plugin.file.skill.is_some(),
         panel: plugin.file.panel.as_ref().map(|p| PanelDecl {
             title: p.title.clone(),
             items: p
@@ -560,6 +607,7 @@ mod tests {
             pi_extension: None,
             mcp: None,
             panel: None,
+            skill: None,
             tool: None,
         })
     }
@@ -673,6 +721,14 @@ mod tests {
                 "{id} should be deployed"
             );
         }
+        // skill-resolver manifest 合法（panel-only 工具插件，[skill] 不自指）。
+        let skill_toml =
+            std::fs::read_to_string(dir.join("skill-resolver.toml")).unwrap();
+        let skill_file: super::super::manifest::schema::AgentManifestFile =
+            toml::from_str(&skill_toml).unwrap();
+        assert!(skill_file.validate().is_ok());
+        assert_eq!(skill_file.info.id, "skill-resolver");
+        assert!(skill_file.skill.is_none());
         // 幂等：二次部署不报错、内容不变。
         let before = std::fs::read_to_string(dir.join("mcp-resolver.toml")).unwrap();
         ensure_builtin_adaptive_plugins();

@@ -138,6 +138,12 @@ pub enum Commands {
         #[command(subcommand)]
         action: McpAction,
     },
+
+    /// Skill 分发服务（v0.9.0 需求20：deploy/remove/status）.
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
+    },
 }
 
 // ── Agent ────────────────────────────────────────────────────────────────────
@@ -537,5 +543,20 @@ pub enum McpAction {
     Remove,
 
     /// Show current sync status (plugin declarations + four-agent entries).
+    Status,
+}
+
+// ── Skill（v0.9.0 需求20）────────────────────────────────────────────────────
+
+#[derive(Subcommand, Debug)]
+pub enum SkillAction {
+    /// Force-deploy enabled [skill] plugins to agent skill dirs
+    /// (explicit command bypasses the resolver gate).
+    Deploy,
+
+    /// Remove all hub-deployed skill dirs from agent skill roots.
+    Remove,
+
+    /// Show skill resolver state, targets, and deployed list.
     Status,
 }

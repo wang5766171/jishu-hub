@@ -96,6 +96,7 @@ mod tests {
             pi_extension: pi,
         mcp: None,
         panel: None,
+        skill: None,
         }
     }
 

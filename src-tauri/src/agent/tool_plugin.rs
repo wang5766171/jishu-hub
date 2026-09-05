@@ -359,6 +359,7 @@ mod tests {
                 }),
                 mcp: None,
                 panel: None,
+            skill: None,
                 tool: None,
             }),
             source_path: PathBuf::from(format!("/agents/{id}.toml")),
@@ -392,6 +393,7 @@ mod tests {
                 pi_extension: None,
                 mcp: None,
                 panel: None,
+            skill: None,
                 tool: Some(ToolSection {
                     description: description.to_string(),
                     usage: usage.to_string(),
