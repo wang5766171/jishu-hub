@@ -130,6 +130,10 @@ pub const PI_AGENT_VERSION: &str = "0.84.2-9";
 // JISHU_AGENT_VERSION_END
 
 impl AgentManifest for JishuSelfAgent {
+    fn config_dir(&self) -> Option<std::path::PathBuf> {
+        crate::agent::jishu_self::paths::agent_dir().ok()
+    }
+
     fn info(&self) -> AgentInfo {
         AgentInfo {
             id: "jishu-self".to_string(),

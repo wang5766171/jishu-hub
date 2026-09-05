@@ -63,6 +63,7 @@
     "jishuAgentImportance": "Jishu Agent is the core engine of this application. Installing it unlocks full file system operations, native command execution, and powerful MCP services. Highly recommended.",
     "jishuAgentRestartRequired": "Jishu Agent has been updated. Restart Jishu Hub to stop the old runtime process and use the latest version for new sessions.",
     "notInstalled": "Not installed",
+    "configurable": "configurable",
     "ready": "Ready",
     "normal": "Normal",
     "download": "Download",

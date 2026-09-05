@@ -101,7 +101,10 @@ export const AgentSwitcher = memo(function AgentSwitcher({
               <button
                 key={agent.id}
                 onClick={() => {
-                  if (!agent.health.installed) {
+                  // v0.9.0 需求21：CLI 未装但配置目录存在（桌面端形态）→ 直接
+                  // 切换进入设置页；两者皆无才弹安装引导。
+                  const switchable = agent.health.installed || agent.config_dir_exists;
+                  if (!switchable) {
                     setInstallAgent(agent);
                     setInstallAgentDialogOpen(true);
                     setOpen(false);
@@ -125,7 +128,14 @@ export const AgentSwitcher = memo(function AgentSwitcher({
                   )}
                 </div>
                 {!agent.health.installed && (
-                  <span className="text-xs text-amber-500">{t("env.notInstalled")}</span>
+                  <span className="text-xs text-amber-500">
+                    {t("env.notInstalled")}
+                    {agent.config_dir_exists && (
+                      <span className="text-muted-foreground">
+                        ·{t("env.configurable", "可配置")}
+                      </span>
+                    )}
+                  </span>
                 )}
               </button>
             ))}

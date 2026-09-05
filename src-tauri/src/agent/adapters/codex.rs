@@ -92,6 +92,10 @@ use crate::agent::traits::{
     TransportAdapter,
 };
 impl AgentManifest for CodexAdapter {
+    fn config_dir(&self) -> Option<std::path::PathBuf> {
+        dirs::home_dir().map(|h| h.join(".codex"))
+    }
+
     fn info(&self) -> AgentInfo {
         AgentInfo {
             id: "codex".to_string(),

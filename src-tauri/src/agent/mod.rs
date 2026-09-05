@@ -88,6 +88,9 @@ pub struct AgentStatus {
     pub logo_path: Option<String>,
     pub capabilities: String,
     pub health: AgentHealth,
+    /// 配置目录是否存在（v0.9.0 需求21：CLI 未装但目录在——桌面端形态——
+    /// 也可进入设置页配置；读取时现算不进探测缓存）。
+    pub config_dir_exists: bool,
     pub install_hint: Option<String>,
     pub native_install_command: Option<String>,
     pub available_version: Option<String>,
@@ -424,6 +427,10 @@ impl AgentRegistry {
                         binary_path: None,
                         last_checked_at: 0,
                     });
+                let config_dir_exists = a
+                    .config_dir()
+                    .map(|d| d.exists())
+                    .unwrap_or(false);
                 let (mcp_installed, mcp_version) = match a.as_mcp() {
                     Some(mcp) => {
                         // Auto-migrate on first status check.
@@ -476,6 +483,7 @@ impl AgentRegistry {
                     logo_path: info.logo_path.clone(),
                     capabilities: caps.bits().to_string(),
                     health,
+                    config_dir_exists,
                     install_hint: a.install_hint(),
                     native_install_command: a.native_install_command(),
                     available_version: a.available_version(),
@@ -699,6 +707,7 @@ mod tests {
                 binary_path: Some("codex".to_string()),
                 last_checked_at: 1,
             },
+            config_dir_exists: false,
             install_hint: None,
             native_install_command: None,
             available_version: None,

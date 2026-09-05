@@ -191,6 +191,10 @@ use crate::agent::traits::{
     TransportAdapter,
 };
 impl AgentManifest for ClaudeCodeAgent {
+    fn config_dir(&self) -> Option<std::path::PathBuf> {
+        crate::config::claude_dir().ok()
+    }
+
     fn info(&self) -> AgentInfo {
         AgentInfo {
             id: "claude-code".to_string(),

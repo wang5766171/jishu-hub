@@ -1142,6 +1142,10 @@ use crate::agent::traits::{
     TransportAdapter,
 };
 impl AgentManifest for OpencodeAdapter {
+    fn config_dir(&self) -> Option<std::path::PathBuf> {
+        opencode_config_dir().ok()
+    }
+
     fn info(&self) -> AgentInfo {
         AgentInfo {
             id: "opencode".to_string(),
