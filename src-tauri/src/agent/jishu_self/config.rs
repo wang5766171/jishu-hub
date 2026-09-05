@@ -45,7 +45,8 @@ pub struct JishuConfig {
     pub compaction: Option<crate::project_config::ProjectCompaction>,
 
     /// Pi defaultTools：初始激活的内置工具集（全集 read/bash/edit/write/
-    /// grep/find/ls；未设置时 Pi 默认 read/bash/edit/write）。
+    /// grep/find/ls + powershell[Windows，v0.9.1 需求3 #3]；未设置时 Pi 默认
+    /// read/bash/edit/write）。
     #[serde(
         rename = "defaultTools",
         skip_serializing_if = "Option::is_none",
@@ -128,13 +129,15 @@ fn upsert_standard_global_mcp(
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
     let path = home.join(".config").join("mcp").join("mcp.json");
     let mut root: serde_json::Value = if path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(&path)?).unwrap_or_else(|_| {
-            serde_json::json!({"mcpServers": {}})
-        })
+        serde_json::from_str(&std::fs::read_to_string(&path)?)
+            .unwrap_or_else(|_| serde_json::json!({"mcpServers": {}}))
     } else {
         serde_json::json!({"mcpServers": {}})
     };
-    upsert_hub_entry_in_root(&mut root, entry.map(|e| serde_json::to_value(e)).transpose()?.as_ref())?;
+    upsert_hub_entry_in_root(
+        &mut root,
+        entry.map(|e| serde_json::to_value(e)).transpose()?.as_ref(),
+    )?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -710,8 +713,11 @@ mod mcp_global_tests {
         assert!(root["mcpServers"]["jishu-hub"].is_object());
         assert!(root["mcpServers"]["user-tool"].is_object(), "其余键保留");
         // 覆盖更新自家旧条目（路径变化）。
-        upsert_hub_entry_in_root(&mut root, Some(&json!({"command": "new", "args": ["mcp", "serve"]})))
-            .unwrap();
+        upsert_hub_entry_in_root(
+            &mut root,
+            Some(&json!({"command": "new", "args": ["mcp", "serve"]})),
+        )
+        .unwrap();
         assert_eq!(root["mcpServers"]["jishu-hub"]["command"], json!("new"));
         // 回收自家，用户键不动。
         upsert_hub_entry_in_root(&mut root, None).unwrap();
@@ -722,7 +728,8 @@ mod mcp_global_tests {
     #[test]
     fn user_owned_same_name_entry_is_protected() {
         // 用户自建同名条目（args 形态不符）→ upsert 不覆盖，remove 不回收。
-        let mut root = json!({"mcpServers": {"jishu-hub": {"url": "http://x", "args": ["--stdio"]}}});
+        let mut root =
+            json!({"mcpServers": {"jishu-hub": {"url": "http://x", "args": ["--stdio"]}}});
         upsert_hub_entry_in_root(&mut root, Some(&hub_entry())).unwrap();
         assert_eq!(root["mcpServers"]["jishu-hub"]["url"], json!("http://x"));
         upsert_hub_entry_in_root(&mut root, None).unwrap();

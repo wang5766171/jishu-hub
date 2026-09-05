@@ -358,7 +358,9 @@ export type NormalizedEvent =
   | { kind: "sub_agent_event"; run_id: string; step_id: string; sub_event: NormalizedEvent }
   | { kind: "raw"; agent: string; raw: unknown }
   | { kind: "phase_divider"; phase: string; title: string }
-  | { kind: "compaction_status"; active: boolean; reason: string };
+  | { kind: "compaction_status"; active: boolean; reason: string }
+  /** v0.9.1 需求3 #1：停止时 pi 队列被清空的排队文本（回填输入框）。 */
+  | { kind: "steer_queue_cleared"; texts: string[] };
 
 /** v0.8.0 需求2 Phase 1：渲染意图（Rust tool_view 镜像）——UI 只做
  * 「意图→组件」映射；locations 为归一化层一次提取的位置信息。 */

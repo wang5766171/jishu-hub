@@ -176,7 +176,15 @@ function isInsideProject(filePath: string, projectPath: string): boolean {
   return normFile.startsWith(normProject.endsWith("/") ? normProject : normProject + "/");
 }
 
-const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function ChatInput({
+/** v0.9.1 需求3 #1：ChatInput 命令句柄——focus 沿用原 textarea 转发语义；
+ * restoreTexts 供 chat-page 在收到 steer_queue_cleared（停止清队）时把被清空
+ * 的排队文本追加回草稿，不打字丢失。 */
+export interface ChatInputHandle {
+  focus: () => void;
+  restoreTexts: (texts: string[]) => void;
+}
+
+const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput({
   sessionId,
   projectPath,
   agentId,
@@ -217,6 +225,10 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
 }: ChatInputProps, ref) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
+  // v0.9.1 需求3 #1：命令句柄的 fresh mirror——restoreTexts 经 useImperativeHandle
+  // 空依赖暴露，须读最新草稿而非挂载期闭包值。
+  const messageRef = useRef(message);
+  messageRef.current = message;
   const [files, setFiles] = useState<AttachedFile[]>([]);
   const [sending, setSending] = useState(false);
   const [interactionSubmitting, setInteractionSubmitting] = useState(false);
@@ -442,7 +454,31 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   /** M2：+ 菜单勾选切换会话启用集（会话级真源；乐观更新 + 失败回滚提示，
    * 不再静默吞错）。key 与发送同源（stagingSessionKey——新会话勾选落暂存
    * 键，首条消息由后端 compose 前迁移到会话键）。 */
-  useImperativeHandle(ref, () => textareaRef.current!, []);
+  useImperativeHandle(
+    ref,
+    () => ({
+      focus: () => textareaRef.current?.focus(),
+      // v0.9.1 需求3 #1：停止清队回填——被清空的排队文本追加到草稿尾部
+      // （多条换行拼接），同步草稿持久化（onDraftChange）并聚焦、光标置末。
+      restoreTexts: (texts: string[]) => {
+        const addition = texts.filter((text) => text.trim().length > 0).join("\n");
+        if (!addition) return;
+        const current = messageRef.current;
+        const next = current.trim().length > 0 ? `${current}\n${addition}` : addition;
+        messageRef.current = next;
+        setMessage(next);
+        onDraftChange?.(next);
+        requestAnimationFrame(() => {
+          const textarea = textareaRef.current;
+          if (!textarea) return;
+          const pos = next.length;
+          textarea.setSelectionRange(pos, pos);
+          textarea.focus();
+        });
+      },
+    }),
+    [onDraftChange],
+  );
 
   // Expose the staging-area lifecycle to the parent (Route 2: auto-send at
   // turn_complete). Set up ONCE on mount; methods take an explicit sessionKey

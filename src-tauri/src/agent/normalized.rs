@@ -219,6 +219,13 @@ pub enum NormalizedEvent {
         active: bool,
         reason: String,
     },
+    /// v0.9.1 需求3 #1：停止时 pi 队列被清空的排队文本（steering/follow-up
+    /// 合并，保持到达序）。pi 的 abort 会继续执行残留队列（rpc.md），hub 停止
+    /// 语义为「作废」——先 clear_queue 再 abort，被清空的文本经此事件回传
+    /// GUI 回填输入框，不打字丢失。
+    SteerQueueCleared {
+        texts: Vec<String>,
+    },
 }
 
 impl NormalizedEvent {
@@ -241,6 +248,7 @@ impl NormalizedEvent {
             NormalizedEvent::Raw { .. } => "raw",
             NormalizedEvent::PhaseDivider { .. } => "phase_divider",
             NormalizedEvent::CompactionStatus { .. } => "compaction_status",
+            NormalizedEvent::SteerQueueCleared { .. } => "steer_queue_cleared",
         }
     }
 }
@@ -529,10 +537,16 @@ mod tests_v6 {
     fn approval_kind_for_tool_classifies_shell_and_file_writes() {
         // Pi 内置工具名（bash/write/edit/read/grep/find/ls）+ 通用方言名。
         assert_eq!(ApprovalKind::for_tool("bash"), ApprovalKind::Command);
-        assert_eq!(ApprovalKind::for_tool("execute_command"), ApprovalKind::Command);
+        assert_eq!(
+            ApprovalKind::for_tool("execute_command"),
+            ApprovalKind::Command
+        );
         assert_eq!(ApprovalKind::for_tool("write"), ApprovalKind::FileWrite);
         assert_eq!(ApprovalKind::for_tool("edit"), ApprovalKind::FileWrite);
-        assert_eq!(ApprovalKind::for_tool("apply_patch"), ApprovalKind::FileWrite);
+        assert_eq!(
+            ApprovalKind::for_tool("apply_patch"),
+            ApprovalKind::FileWrite
+        );
         // 读/搜/思考与未知（MCP 等）→ Other。
         assert_eq!(ApprovalKind::for_tool("read"), ApprovalKind::Other);
         assert_eq!(ApprovalKind::for_tool("grep"), ApprovalKind::Other);

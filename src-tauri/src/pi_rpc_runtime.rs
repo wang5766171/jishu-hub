@@ -567,10 +567,17 @@ async fn pi_rpc_connection_loop(
                                     reason: TurnEndReason::Aborted,
                                     usage: None,
                                 });
+                                // v0.9.1 需求3 #1：pi 的 abort 会继续执行残留的排队
+                                // 消息（rpc.md），hub 停止语义为「作废」——先清空
+                                // 队列再 abort；被清空的文本经 clear_queue 响应回传
+                                // GUI 回填输入框（响应分支发 SteerQueueCleared）。
+                                let _ = send_pi_command(&stdin_arc, &json!({
+                                    "type": "clear_queue"
+                                })).await;
                                 let _ = send_pi_command(&stdin_arc, &json!({
                                     "type": "abort"
                                 })).await;
-                                log::info!("Pi RPC cancel sent");
+                                log::info!("Pi RPC cancel sent (clear_queue + abort)");
                                 state = LoopState::CancelPending {
                                     pending_prompt: None,
                                 };
@@ -689,6 +696,38 @@ async fn pi_rpc_connection_loop(
                                         // session.abort() responds after awaited agent_end
                                         // handlers and emits agent_settled, which owns final
                                         // completion and the local Idle transition.
+                                        continue;
+                                    }
+                                    "clear_queue" => {
+                                        // v0.9.1 需求3 #1：停止前清队的响应——
+                                        // steering/followUp 合并回传 GUI 回填输入框；
+                                        // 空队列不发事件（无排队消息的停止零噪声）。
+                                        if success {
+                                            let mut texts: Vec<String> = Vec::new();
+                                            for key in ["steering", "followUp"] {
+                                                if let Some(arr) = msg
+                                                    .get("data")
+                                                    .and_then(|d| d.get(key))
+                                                    .and_then(|v| v.as_array())
+                                                {
+                                                    for item in arr {
+                                                        if let Some(text) = item.as_str() {
+                                                            if !text.trim().is_empty() {
+                                                                texts.push(text.to_string());
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if !texts.is_empty() {
+                                                log::info!(
+                                                    "Pi RPC clear_queue: {} 条排队消息回传",
+                                                    texts.len()
+                                                );
+                                                buf.push(NormalizedEvent::SteerQueueCleared { texts });
+                                                flush_buf(&emit, &session_id, &mut buf);
+                                            }
+                                        }
                                         continue;
                                     }
                                     "compact" => {
@@ -1299,7 +1338,10 @@ fn pi_turn_usage(event: &serde_json::Value, context_window: Option<u64>) -> Opti
 /// v0.8.0 需求10：分段用量 + 内容归因。usage 部分复用 pi_turn_usage（精确）；
 /// 归因部分对 turn_end 的 message.content 逐块估算（thinking/text/toolCall），
 /// toolResults 估算为工具结果进入后续上下文的规模。
-fn pi_segment_usage(event: &serde_json::Value, context_window: Option<u64>) -> Option<crate::usage_store::SegmentUsage> {
+fn pi_segment_usage(
+    event: &serde_json::Value,
+    context_window: Option<u64>,
+) -> Option<crate::usage_store::SegmentUsage> {
     let base = pi_turn_usage(event, context_window)?;
     let mut seg = crate::usage_store::SegmentUsage {
         stop_reason: event
@@ -1357,8 +1399,8 @@ fn pi_segment_usage(event: &serde_json::Value, context_window: Option<u64>) -> O
                     // （实测仅 type/id/name/arguments 四字段），按用户裁决统一
                     // 归入工具桶；est_mcp_tool/mcp_calls 列留作前向预留。
                     let _name = block.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    let est = est_block_tokens(Some(&serde_json::Value::Null)) +
-                        est_block_tokens(block.get("arguments"));
+                    let est = est_block_tokens(Some(&serde_json::Value::Null))
+                        + est_block_tokens(block.get("arguments"));
                     seg.est_builtin_tool += est;
                     seg.tool_calls += 1;
                 }
@@ -1376,9 +1418,8 @@ fn pi_segment_usage(event: &serde_json::Value, context_window: Option<u64>) -> O
 
 /// 从 pi compaction_end 事件提取压缩记录（CompactionResult 字段）。
 fn pi_compaction_record(event: &serde_json::Value) -> crate::usage_store::CompactionRecord {
-    let num = |v: Option<&serde_json::Value>| {
-        v.and_then(|x| x.as_f64()).map(|x| x as u64).unwrap_or(0)
-    };
+    let num =
+        |v: Option<&serde_json::Value>| v.and_then(|x| x.as_f64()).map(|x| x as u64).unwrap_or(0);
     let result = event.get("result");
     let usage = result.and_then(|r| r.get("usage"));
     let cost = usage
@@ -1397,7 +1438,10 @@ fn pi_compaction_record(event: &serde_json::Value) -> crate::usage_store::Compac
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string(),
-        aborted: event.get("aborted").and_then(|v| v.as_bool()).unwrap_or(false),
+        aborted: event
+            .get("aborted")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         tokens_before: num(result.and_then(|r| r.get("tokensBefore"))),
         tokens_after: num(result.and_then(|r| r.get("estimatedTokensAfter"))),
         first_kept_entry_id: result
@@ -1442,25 +1486,56 @@ pub(crate) fn normalize_pi_agent_event(
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            // 分隔线两态：开始即入列「上下文压缩中…」，结束时 store 原地替换
-            // 为「上下文已压缩」（见 use-stream-store phase_divider 分支）——
-            // 用户可从分隔线本身看出压缩进度。
             if active {
                 vec![
                     NormalizedEvent::PhaseDivider {
                         phase: "compaction".to_string(),
                         title: "上下文压缩中…".to_string(),
                     },
-                    NormalizedEvent::CompactionStatus { active: true, reason },
-                ]
-            } else {
-                vec![
-                    NormalizedEvent::CompactionStatus { active: false, reason },
-                    NormalizedEvent::PhaseDivider {
-                        phase: "compaction".to_string(),
-                        title: "上下文已压缩".to_string(),
+                    NormalizedEvent::CompactionStatus {
+                        active: true,
+                        reason,
                     },
                 ]
+            } else {
+                // v0.9.1 需求3 #2：compaction_end 自带 aborted/errorMessage 字段
+                // （失败路径 agent-session.ts catch 分支），三态呈现——此前一律
+                // 「已压缩」把失败静默吞掉。
+                let aborted = event
+                    .get("aborted")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let error_message = event
+                    .get("errorMessage")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                let title = if error_message.is_some() {
+                    "上下文压缩失败".to_string()
+                } else if aborted {
+                    "上下文压缩已取消".to_string()
+                } else {
+                    "上下文已压缩".to_string()
+                };
+                let mut events = vec![
+                    NormalizedEvent::CompactionStatus {
+                        active: false,
+                        reason,
+                    },
+                    NormalizedEvent::PhaseDivider {
+                        phase: "compaction".to_string(),
+                        title,
+                    },
+                ];
+                if let Some(error) = error_message {
+                    // recoverable：压缩失败不中断会话，用户可重试（手动压缩/下一
+                    // 轮阈值触发自动重试）。
+                    events.push(NormalizedEvent::Error {
+                        message: error,
+                        recoverable: true,
+                    });
+                }
+                events
             }
         }
 
@@ -1523,7 +1598,11 @@ pub(crate) fn normalize_pi_agent_event(
             } else {
                 let interactions = interaction_requests_from_tool_call(&call_id, &tool, &input);
                 if interactions.is_empty() {
-                    let view = crate::agent::tool_view::classify_tool_view_for("jishu-self", &tool, &input);
+                    let view = crate::agent::tool_view::classify_tool_view_for(
+                        "jishu-self",
+                        &tool,
+                        &input,
+                    );
                     vec![NormalizedEvent::ToolUseStart {
                         call_id,
                         tool,
@@ -1931,7 +2010,7 @@ mod tests {
             "aborted": false,
             "result": {
                 "summary": "## Goal
-- 用户要求写 20 万字小说",
+        - 用户要求写 20 万字小说",
                 "firstKeptEntryId": "entry-42",
                 "tokensBefore": 118_910,
                 "estimatedTokensAfter": 62_389,
@@ -2018,6 +2097,63 @@ mod tests {
         }
     }
 
+    /// v0.9.1 需求3 #2：compaction_end 三态呈现——成功「已压缩」、aborted
+    /// 「已取消」、errorMessage「失败 + Error(recoverable)」。字段形态对齐
+    /// pi agent-session catch 分支（errorMessage 仅非 abort 失败时下发）。
+    #[test]
+    fn compaction_end_renders_success_aborted_and_failure_states() {
+        let success = normalize_pi_agent_event(
+            &serde_json::json!({
+                "type": "compaction_end", "reason": "threshold",
+                "result": {"tokensBefore": 100, "estimatedTokensAfter": 50},
+                "aborted": false
+            }),
+            None,
+            &mut Vec::new(),
+        );
+        assert!(matches!(
+            success.as_slice(),
+            [
+                NormalizedEvent::CompactionStatus { active: false, .. },
+                NormalizedEvent::PhaseDivider { title, .. }
+            ] if title == "上下文已压缩"
+        ));
+
+        let aborted = normalize_pi_agent_event(
+            &serde_json::json!({
+                "type": "compaction_end", "reason": "manual",
+                "result": null, "aborted": true
+            }),
+            None,
+            &mut Vec::new(),
+        );
+        assert!(matches!(
+            aborted.as_slice(),
+            [
+                NormalizedEvent::CompactionStatus { active: false, .. },
+                NormalizedEvent::PhaseDivider { title, .. }
+            ] if title == "上下文压缩已取消"
+        ));
+
+        let failed = normalize_pi_agent_event(
+            &serde_json::json!({
+                "type": "compaction_end", "reason": "manual",
+                "result": null, "aborted": false,
+                "errorMessage": "Compaction failed: provider 500"
+            }),
+            None,
+            &mut Vec::new(),
+        );
+        assert!(matches!(
+            failed.as_slice(),
+            [
+                NormalizedEvent::CompactionStatus { active: false, .. },
+                NormalizedEvent::PhaseDivider { title, .. },
+                NormalizedEvent::Error { message, recoverable: true }
+            ] if title == "上下文压缩失败" && message.contains("provider 500")
+        ));
+    }
+
     use super::*;
 
     #[test]
@@ -2043,7 +2179,7 @@ mod tests {
             }),
             None,
             &mut Vec::new(),
- );;
+        );
         assert!(
             events.is_empty(),
             "toolUse turn_end must stay suppressed, got {events:?}"
@@ -2061,7 +2197,7 @@ mod tests {
             }),
             None,
             &mut Vec::new(),
- );;
+        );
         assert!(
             events
                 .iter()
@@ -2084,7 +2220,7 @@ mod tests {
             }),
             None,
             &mut Vec::new(),
- );;
+        );
 
         assert!(events.is_empty());
     }
@@ -2104,7 +2240,7 @@ mod tests {
             }),
             None,
             &mut Vec::new(),
- );;
+        );
 
         match events.as_slice() {
             [NormalizedEvent::PhaseDivider { phase, title }] => {
@@ -2153,7 +2289,10 @@ mod tests {
             None,
             &mut Vec::new(),
         );
-        assert!(events.is_empty(), "prompt 回显不应产生 steer 事件: {events:?}");
+        assert!(
+            events.is_empty(),
+            "prompt 回显不应产生 steer 事件: {events:?}"
+        );
     }
 
     #[test]
@@ -2171,7 +2310,7 @@ mod tests {
             }),
             None,
             &mut Vec::new(),
- );;
+        );
         assert!(events.is_empty());
     }
 
@@ -2189,7 +2328,7 @@ mod tests {
             }),
             None,
             &mut Vec::new(),
- );;
+        );
         assert!(events.is_empty());
     }
 

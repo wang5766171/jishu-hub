@@ -8,7 +8,7 @@ import {
 import { MessageView } from "@/components/sessions/message-view";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
 import { RenameTaskSessionDialog } from "@/components/sessions/rename-task-session-dialog";
-import { ChatInput, type StagedGuideApi } from "@/components/sessions/chat-input";
+import { ChatInput, type ChatInputHandle, type StagedGuideApi } from "@/components/sessions/chat-input";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { clearImageCache } from "@/components/sessions/inline-image";
 // 会话二级树（T3）：侧边栏任务会话区
@@ -287,7 +287,7 @@ export function ChatPage({
   const selectedTaskSkillIdRef = useRef(selectedTaskSkillId);
   // 减法重构：节点选择不再需要跨页面桥接 ref —— TaskSidebar 与任务树同处 chat-page，
   // 统一由 taskSelectedNodeId 这一个受控状态驱动（树高亮 / 侧边栏高亮 / 主区会话）。
-  const chatInputRef = useRef<HTMLTextAreaElement>(null);
+  const chatInputRef = useRef<ChatInputHandle>(null);
   // Fresh project path for the agent-event listener (whose useEffect deps are
   // [], so it closes over a stale `currentProject`). Updated every render.
   const projectPathRef = useRef<string | null>(currentProject?.path ?? null);
@@ -1801,6 +1801,16 @@ export function ChatPage({
             );
             return exists ? current : [...current, next];
           });
+        }
+
+        // v0.9.1 需求3 #1：停止清队回填——PiRpc 停止时后端先 clear_queue 再
+        // abort，被清空的排队 steer 文本经此事件回传；仅当用户正查看该会话
+        // 时回填当前输入框（切走的会话不越权改草稿）。
+        if (chunk.data.kind === "steer_queue_cleared") {
+          if (cid === selectedSessionRef.current || cid === streamStore.getState(cid)?.resolvedId) {
+            chatInputRef.current?.restoreTexts(chunk.data.texts);
+          }
+          continue;
         }
 
         // 需求1 A7：会话内 thinking 生效值（Pi clamp 后）回传。

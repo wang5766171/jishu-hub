@@ -94,7 +94,8 @@ pub fn classify_name_for(agent: &str, name: &str) -> ToolViewKind {
 /// - `file_edit`：edit/multiedit/str_replace/patch/replace/edit_file/
 ///   modify_file/file_edit + apply_patch/apply_changes；
 /// - `file_write`：write/create_file/write_file/file_write；
-/// - `shell_exec`：bash/shell/exec/execute_command/run_shell_command；
+/// - `shell_exec`：bash/shell/exec/execute_command/run_shell_command +
+///   powershell（v0.9.1 需求3 #3：pi 可选原生 PowerShell 工具，Windows）；
 /// - `search`：grep/search_files/ripgrep/grep_search/glob/find_files/
 ///   list_files/list_directory；
 /// - `web`：webfetch/fetch/web_fetch/websearch/web_search/google_web_search；
@@ -126,7 +127,13 @@ pub fn classify_name(name: &str) -> ToolViewKind {
     if n == "apply_patch" || n == "apply_changes" {
         return ToolViewKind::FileEdit;
     }
-    if n == "bash" || n == "shell" || n == "exec" || n == "execute_command" || n == "run_shell_command" {
+    if n == "bash"
+        || n == "shell"
+        || n == "exec"
+        || n == "execute_command"
+        || n == "run_shell_command"
+        || n == "powershell"
+    {
         return ToolViewKind::ShellExec;
     }
     if n == "grep" || n == "search_files" || n == "ripgrep" || n == "grep_search" {
@@ -207,7 +214,14 @@ mod tests {
     #[test]
     fn classify_name_matches_v2_rules() {
         // file_read：精确表（v2 收紧：contains("read") 已删，read_file/view_image 收编精确）
-        for name in ["read", "view_file", "view", "read_file", "view_image", "Read"] {
+        for name in [
+            "read",
+            "view_file",
+            "view",
+            "read_file",
+            "view_image",
+            "Read",
+        ] {
             assert_eq!(classify_name(name), ToolViewKind::FileRead, "{name}");
         }
         // v2 收紧回归锁：含 read 的未知名不再模糊命中
@@ -220,8 +234,16 @@ mod tests {
         }
         // file_edit：第一批 + apply_patch 家族
         for name in [
-            "edit", "multiedit", "str_replace", "patch", "replace", "edit_file", "modify_file",
-            "file_edit", "apply_patch", "apply_changes",
+            "edit",
+            "multiedit",
+            "str_replace",
+            "patch",
+            "replace",
+            "edit_file",
+            "modify_file",
+            "file_edit",
+            "apply_patch",
+            "apply_changes",
         ] {
             assert_eq!(classify_name(name), ToolViewKind::FileEdit, "{name}");
         }
@@ -229,20 +251,38 @@ mod tests {
         for name in ["write", "create_file", "write_file", "file_write"] {
             assert_eq!(classify_name(name), ToolViewKind::FileWrite, "{name}");
         }
-        // shell_exec
-        for name in ["bash", "shell", "exec", "execute_command", "run_shell_command"] {
+        // shell_exec（powershell：v0.9.1 需求3 #3 pi 可选原生 PowerShell 工具）
+        for name in [
+            "bash",
+            "shell",
+            "exec",
+            "execute_command",
+            "run_shell_command",
+            "powershell",
+        ] {
             assert_eq!(classify_name(name), ToolViewKind::ShellExec, "{name}");
         }
         // search（两批）
         for name in [
-            "grep", "search_files", "ripgrep", "grep_search", "glob", "find_files", "list_files",
+            "grep",
+            "search_files",
+            "ripgrep",
+            "grep_search",
+            "glob",
+            "find_files",
+            "list_files",
             "list_directory",
         ] {
             assert_eq!(classify_name(name), ToolViewKind::Search, "{name}");
         }
         // web（两批）
         for name in [
-            "webfetch", "fetch", "web_fetch", "websearch", "web_search", "google_web_search",
+            "webfetch",
+            "fetch",
+            "web_fetch",
+            "websearch",
+            "web_search",
+            "google_web_search",
         ] {
             assert_eq!(classify_name(name), ToolViewKind::Web, "{name}");
         }
@@ -256,7 +296,10 @@ mod tests {
         }
         // other：未知与大小写规范化
         assert_eq!(classify_name("unknown_tool"), ToolViewKind::Other);
-        assert_eq!(classify_name("Bash".to_lowercase().as_str()), ToolViewKind::ShellExec);
+        assert_eq!(
+            classify_name("Bash".to_lowercase().as_str()),
+            ToolViewKind::ShellExec
+        );
         // v2 收紧边界：含 "read" 子串的未知名不再误判（v1 模糊项活证据：
         // "thread" 含子串 "read" 曾被分类为 file_read）
         assert_eq!(classify_name("reading_notes"), ToolViewKind::Other);
@@ -268,15 +311,24 @@ mod tests {
         // 四键依序命中，取第一个
         assert_eq!(
             extract_locations(&json!({"path": "b.rs"})),
-            vec![ViewLocation { path: "b.rs".into(), line: None }]
+            vec![ViewLocation {
+                path: "b.rs".into(),
+                line: None
+            }]
         );
         assert_eq!(
             extract_locations(&json!({"file_path": "a.ts", "line": 12})),
-            vec![ViewLocation { path: "a.ts".into(), line: Some(12) }]
+            vec![ViewLocation {
+                path: "a.ts".into(),
+                line: Some(12)
+            }]
         );
         assert_eq!(
             extract_locations(&json!({"filename": "c.md", "line_number": "x"})),
-            vec![ViewLocation { path: "c.md".into(), line: None }]
+            vec![ViewLocation {
+                path: "c.md".into(),
+                line: None
+            }]
         );
         assert!(extract_locations(&json!({"notebook_path": ""})).is_empty());
         // 非对象 / 缺全部键 / 值非字符串
@@ -289,8 +341,14 @@ mod tests {
     fn interaction_tool_union_list() {
         // 前端 8 名单全集
         for name in [
-            "request_user_input", "ask_user", "ask_user_input", "askuserquestion",
-            "ask_user_question", "ask_question", "ask_choice", "choice_question",
+            "request_user_input",
+            "ask_user",
+            "ask_user_input",
+            "askuserquestion",
+            "ask_user_question",
+            "ask_question",
+            "ask_choice",
+            "choice_question",
         ] {
             assert!(is_interaction_tool(name), "{name}");
         }
@@ -316,8 +374,14 @@ mod tests {
     #[test]
     fn classify_name_for_falls_back_to_global() {
         assert_eq!(classify_name_for("codex", "bash"), ToolViewKind::ShellExec);
-        assert_eq!(classify_name_for("unknown-agent", "read"), ToolViewKind::FileRead);
-        assert_eq!(classify_name_for("codex", "custom_thing"), ToolViewKind::Other);
+        assert_eq!(
+            classify_name_for("unknown-agent", "read"),
+            ToolViewKind::FileRead
+        );
+        assert_eq!(
+            classify_name_for("codex", "custom_thing"),
+            ToolViewKind::Other
+        );
         let view = classify_tool_view_for("codex", "file_delete", &json!({"path": "a.txt"}));
         assert_eq!(view.kind, ToolViewKind::FileDelete);
         assert_eq!(view.locations[0].path, "a.txt");

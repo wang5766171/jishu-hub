@@ -1,11 +1,11 @@
 pub(crate) mod config;
 pub(crate) mod jishu_settings;
+pub mod model_picker;
 pub(crate) mod paths;
 pub(crate) mod pi_model;
 pub(crate) mod pi_models_config;
 pub(crate) mod pi_runtime;
 pub(crate) mod pi_session;
-pub mod model_picker;
 mod probe;
 mod store;
 
@@ -431,7 +431,7 @@ impl ConfigAdapter for JishuSelfAgent {
                 config: serde_json::json!({
                     "defaultThinkingLevel": "high",
                     "compaction": { "enabled": true, "thresholdPercent": 90, "keepRecentTokens": 20000 },
-                    "defaultTools": ["read", "bash", "edit", "write"],
+                    "defaultTools": template_default_tools(&[]),
                     "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }
                 }),
                 model_store_patch: Some(serde_json::json!({ "providers": {} })),
@@ -447,7 +447,7 @@ impl ConfigAdapter for JishuSelfAgent {
                 config: serde_json::json!({
                     "defaultThinkingLevel": "max",
                     "compaction": { "enabled": true, "thresholdPercent": 85, "keepRecentTokens": 40000 },
-                    "defaultTools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
+                    "defaultTools": template_default_tools(&["grep", "find", "ls"]),
                     "retry": { "enabled": true, "maxRetries": 5, "baseDelayMs": 2000 }
                 }),
                 model_store_patch: Some(serde_json::json!({ "providers": {} })),
@@ -462,7 +462,7 @@ impl ConfigAdapter for JishuSelfAgent {
                 config: serde_json::json!({
                     "defaultThinkingLevel": "low",
                     "compaction": { "enabled": true, "thresholdPercent": 90, "keepRecentTokens": 20000 },
-                    "defaultTools": ["read", "bash", "edit", "write"],
+                    "defaultTools": template_default_tools(&[]),
                     "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }
                 }),
                 model_store_patch: Some(serde_json::json!({ "providers": {} })),
@@ -484,7 +484,6 @@ impl ConfigAdapter for JishuSelfAgent {
     fn as_mcp(&self) -> Option<&dyn crate::agent::config_roles::McpIntegration> {
         Some(self)
     }
-
 }
 
 impl crate::agent::config_roles::RawConfigStore for JishuSelfAgent {
@@ -499,7 +498,6 @@ impl crate::agent::config_roles::RawConfigStore for JishuSelfAgent {
     fn save_raw_config(&self, content: &str) -> Result<(), String> {
         config::save_raw_jishu_config(content).map_err(|e| e.to_string())
     }
-
 }
 
 impl crate::agent::config_roles::ConfigBackupStore for JishuSelfAgent {
@@ -518,7 +516,6 @@ impl crate::agent::config_roles::ConfigBackupStore for JishuSelfAgent {
     fn import_config(&self, path: &str) -> Result<serde_json::Value, String> {
         config::import_jishu_config(path).map_err(|e| e.to_string())
     }
-
 }
 
 impl crate::agent::config_roles::ModelStore for JishuSelfAgent {
@@ -548,7 +545,6 @@ impl crate::agent::config_roles::ModelStore for JishuSelfAgent {
     }
 
     // ── MCP adapter methods ──
-
 }
 
 impl crate::agent::config_roles::McpIntegration for JishuSelfAgent {
@@ -610,6 +606,19 @@ impl crate::agent::config_roles::McpIntegration for JishuSelfAgent {
         };
         let _ = config::sync_mcp_json(&typed);
     }
+}
+
+/// v0.9.1 需求3 #3：配置模板的 defaultTools 集合——基础集 + 场景附加项，
+/// Windows 下追加 pi 可选原生 powershell 工具（与 bash 并存，pi
+/// docs/windows.md 的对比用法；`!`/`!!` 编辑器命令仍走 bash）。编译期平台
+/// 隔离，非 Windows 产物不含该工具名。
+fn template_default_tools(extra: &[&'static str]) -> Vec<&'static str> {
+    let mut tools: Vec<&'static str> = vec!["read", "bash", "edit", "write"];
+    tools.extend_from_slice(extra);
+    if cfg!(windows) {
+        tools.push("powershell");
+    }
+    tools
 }
 
 fn mcp_package_args(base_args: &[String], action: &str) -> Vec<String> {
@@ -691,6 +700,11 @@ impl TransportAdapter for JishuSelfAgent {
 
         let mut envs = Vec::new();
         envs.push(("PI_SKIP_VERSION_CHECK".to_string(), "1".to_string()));
+        // v0.9.1 需求3 #6：关闭 pi 启动期网络操作（版本检查/包管理器/模型目录
+        // 网络刷新——model-runtime 的 modelNetworkEnabled）。hub 自管模型库与
+        // 版本分发，这些网络操作纯浪费且离线时拖慢 spawn；该 flag 不门控对话
+        // 期的 provider HTTP 请求。
+        envs.push(("PI_OFFLINE".to_string(), "1".to_string()));
 
         // Always resolve the CLI explicitly for spawned Pi processes. Debug
         // resolves to target/debug/jishu-cli(.exe); installed builds resolve
