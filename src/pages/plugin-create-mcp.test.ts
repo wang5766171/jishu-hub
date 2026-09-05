@@ -277,3 +277,47 @@ describe("pluginType 三型 wire 映射与编辑派生（需求19）", () => {
     expect(both.form.toolDescription).toBe("d");
   });
 });
+
+describe("MCP 表单极简化（需求19 GUI 裁决：ID 自动派生、无图标/安装提示）", () => {
+  it("id 留空 → 由名称 slug 派生；icon/install_hint 空则不产出", () => {
+    const m = buildManifest(
+      toolForm({
+        pluginType: "mcp",
+        id: "",
+        displayName: "My MCP Server",
+        icon: "",
+        installHint: "",
+        mcpCommand: "npx",
+      }),
+    ) as { info: Record<string, unknown> };
+    expect(m.info.id).toBe("my-mcp-server");
+    expect(m.info.icon).toBeUndefined();
+    expect(m.info.install_hint).toBeUndefined();
+  });
+
+  it("编辑回读（id 已有值）→ 用原 id，不覆盖", () => {
+    const m = buildManifest(
+      toolForm({
+        pluginType: "mcp",
+        id: "custom-id",
+        displayName: "New Name",
+        mcpUrl: "https://x/m",
+        mcpTransport: "http",
+      }),
+    ) as { info: Record<string, unknown> };
+    expect(m.info.id).toBe("custom-id");
+  });
+
+  it("cli 类型 id 留空不自动派生（id 是必填显示字段）", () => {
+    const m = buildManifest(
+      toolForm({
+        pluginType: "cli",
+        id: "",
+        displayName: "X",
+        toolDescription: "d",
+        toolUsage: "u",
+      }),
+    ) as { info: Record<string, unknown> };
+    expect(m.info.id).toBe("");
+  });
+});

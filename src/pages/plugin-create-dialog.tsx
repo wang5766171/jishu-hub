@@ -15,7 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { useTranslation } from "react-i18next";
-import { Bot, ChevronDown, Code2, Loader2, Plus, Sparkles, Terminal, Blocks } from "lucide-react";
+import { Bot, Code2, Loader2, Plus, Sparkles, Terminal, Blocks } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /** v0.8.1 需求6：插件创建可视化界面——模版快速创建（claude/codex/opencode
@@ -351,6 +351,7 @@ args = ["-y", "<mcp-server-package>"]
       pluginType: "mcp",
       id: "my-mcp-tool",
       displayName: "My MCP Tool",
+      icon: "",
       mcpTransport: "stdio",
       mcpCommand: "npx",
       mcpArgs: "-y <mcp-server-package>",
@@ -531,11 +532,16 @@ export function mcpNameToId(name: string): string {
  * MCP 区输入非法（JSON/请求头解析失败）时抛 Error（handleSubmit 捕获展示）。 */
 export function buildManifest(form: FormState): Record<string, unknown> {
   if (form.pluginType !== "agent") {
+    // 需求19 GUI 裁决：MCP 表单不填插件 ID——由名称 slug 自动生成（编辑时
+    // form.id 已预填，走原值）。
+    const toolId =
+      form.id.trim() ||
+      (form.pluginType === "mcp" ? mcpNameToId(form.displayName.trim() || "") : "");
     const tool: Record<string, unknown> = {
       schema: 1,
       kind: "tool",
       info: {
-        id: form.id.trim(),
+        id: toolId,
         display_name: form.displayName.trim(),
         ...(form.icon.trim() ? { icon: form.icon.trim() } : {}),
         ...(form.installHint.trim() ? { install_hint: form.installHint.trim() } : {}),
@@ -944,8 +950,11 @@ export function PluginCreateDialog({
         ? form.mcpCommand.trim().length > 0
         : form.mcpUrl.trim().length > 0 && !mcpHeadersError;
 
+  const effectiveId =
+    form.id.trim() ||
+    (pluginType === "mcp" ? mcpNameToId(form.displayName.trim() || "") : "");
   const canSubmit =
-    form.id.trim().length > 0 &&
+    effectiveId.length > 0 &&
     form.displayName.trim().length > 0 &&
     !mcpJsonError &&
     (pluginType === "mcp"
@@ -964,13 +973,6 @@ export function PluginCreateDialog({
     const tpl = templates.find((x) => x.tplKind === type);
     if (tpl) setTemplateKey(tpl.key);
   };
-
-  /** MCP 类型的高级 [tool] 折叠（默认收起；字段有值时强制可见——
-   * 编辑往返不丢段且透明）。 */
-  const [mcpToolAdvanced, setMcpToolAdvanced] = useState(false);
-  const showToolAdvanced =
-    mcpToolAdvanced ||
-    !!(form.toolDescription.trim() || form.toolUsage.trim() || form.toolExample.trim() || form.toolNotes.trim());
 
   /** [tool] 声明字段集（CLI = 核心分组；MCP = 高级折叠，共用字段）。 */
   const toolDeclareFields = (
@@ -1128,78 +1130,72 @@ export function PluginCreateDialog({
               </details>
             </div>
 
-            {/* 基本信息 */}
-            <div className="grid grid-cols-2 gap-3">
-              <Labeled labelKey="plugins.fId" fallback="插件 ID *">
-                <Input
-                  value={form.id}
-                  onChange={(e) => patch({ id: e.target.value })}
-                  placeholder="my-agent"
-                  className="h-8 text-xs"
-                  disabled={isEdit}
-                />
-                <FieldHelp>
-                  {isEdit ? tr("plugins.hIdLocked", "") : tr("plugins.hId", "")}
-                </FieldHelp>
-              </Labeled>
-              <Labeled labelKey="plugins.fName" fallback="显示名称 *">
-                <Input
-                  value={form.displayName}
-                  onChange={(e) => patch({ displayName: e.target.value })}
-                  placeholder="My Agent"
-                  className="h-8 text-xs"
-                />
-              </Labeled>
-              <Labeled labelKey="plugins.fIcon" fallback="图标标识">
-                <Input
-                  value={form.icon}
-                  onChange={(e) => patch({ icon: e.target.value })}
-                  placeholder="bot"
-                  className="h-8 text-xs"
-                />
-              </Labeled>
-              <Labeled labelKey="plugins.fInstallHint" fallback="安装提示命令">
-                <Input
-                  value={form.installHint}
-                  onChange={(e) => patch({ installHint: e.target.value })}
-                  placeholder="npm install -g xxx"
-                  className="h-8 text-xs font-mono"
-                />
-                <FieldHelp>{tr("plugins.hInstallHint", "")}</FieldHelp>
-              </Labeled>
-            </div>
+            {/* 基本信息——MCP 只取名称（插件 ID 由名称 slug 自动生成；图标/
+             * 安装提示是 CLI/AGENT 元数据，MCP 不展示，v0.9.0 需求19 GUI 裁决）。 */}
+            {pluginType === "mcp" ? (
+              <div className="grid grid-cols-2 gap-3">
+                <Labeled labelKey="plugins.fName" fallback="名称 *">
+                  <Input
+                    value={form.displayName}
+                    onChange={(e) => patch({ displayName: e.target.value })}
+                    placeholder="my-mcp-server"
+                    className="h-8 text-xs"
+                  />
+                  <FieldHelp>
+                    {tr("plugins.hMcpNameAuto", "插件 ID 由名称自动生成")}
+                    <code className="ml-1 font-mono">
+                      {form.id.trim() || mcpNameToId(form.displayName.trim() || "my-mcp-server")}
+                    </code>
+                  </FieldHelp>
+                </Labeled>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                <Labeled labelKey="plugins.fId" fallback="插件 ID *">
+                  <Input
+                    value={form.id}
+                    onChange={(e) => patch({ id: e.target.value })}
+                    placeholder="my-agent"
+                    className="h-8 text-xs"
+                    disabled={isEdit}
+                  />
+                  <FieldHelp>
+                    {isEdit ? tr("plugins.hIdLocked", "") : tr("plugins.hId", "")}
+                  </FieldHelp>
+                </Labeled>
+                <Labeled labelKey="plugins.fName" fallback="显示名称 *">
+                  <Input
+                    value={form.displayName}
+                    onChange={(e) => patch({ displayName: e.target.value })}
+                    placeholder="My Agent"
+                    className="h-8 text-xs"
+                  />
+                </Labeled>
+                <Labeled labelKey="plugins.fIcon" fallback="图标标识">
+                  <Input
+                    value={form.icon}
+                    onChange={(e) => patch({ icon: e.target.value })}
+                    placeholder="bot"
+                    className="h-8 text-xs"
+                  />
+                </Labeled>
+                <Labeled labelKey="plugins.fInstallHint" fallback="安装提示命令">
+                  <Input
+                    value={form.installHint}
+                    onChange={(e) => patch({ installHint: e.target.value })}
+                    placeholder="npm install -g xxx"
+                    className="h-8 text-xs font-mono"
+                  />
+                  <FieldHelp>{tr("plugins.hInstallHint", "")}</FieldHelp>
+                </Labeled>
+              </div>
+            )}
 
             {/* CLI 类型核心分组：工具能力声明（会话注入的用法说明）。 */}
             {pluginType === "cli" && (
               <div className="rounded-md border border-border/50 p-3 space-y-3">
                 <p className="text-xs font-medium">{tr("plugins.toolSection", "工具能力声明")}</p>
                 {toolDeclareFields}
-              </div>
-            )}
-
-            {/* MCP 类型高级折叠：附加说明注入 [tool]（可选——默认收起，字段
-             * 有值时强制可见；值始终随提交保留，编辑往返不丢段）。 */}
-            {pluginType === "mcp" && (
-              <div className="rounded-md border border-border/50 p-3">
-                <button
-                  type="button"
-                  onClick={() => setMcpToolAdvanced((v) => !v)}
-                  className="flex w-full items-center justify-between text-xs font-medium"
-                >
-                  {tr("plugins.mcpAdvancedTool", "高级：附加说明注入（可选）")}
-                  <ChevronDown
-                    className={cn(
-                      "h-3.5 w-3.5 text-muted-foreground transition-transform",
-                      showToolAdvanced && "rotate-180",
-                    )}
-                  />
-                </button>
-                {showToolAdvanced && (
-                  <div className="mt-3 space-y-3">
-                    {toolDeclareFields}
-                    <FieldHelp>{tr("plugins.hMcpAdvancedTool", "")}</FieldHelp>
-                  </div>
-                )}
               </div>
             )}
 
@@ -1340,16 +1336,15 @@ export function PluginCreateDialog({
                 </div>
               ))}
 
-            {/* 探测（M4：工具插件也显示——需求7 §6 的 tool 表单 = info+probe+[tool]，
-             * 修前 probe 区在 tool 下被隐藏但 buildManifest 仍提交模板默认值，
-             * 用户不可见不可改不可关） */}
-            <div className="rounded-md border border-border/50 p-3 space-y-3">
+            {/* 探测（仅 CLI/AGENT——MCP 表单只保留 MCP 本质字段，stdio 命令
+             * 检测并入总控监控是后续路线；MCP 编辑时 probe 段值经表单状态
+             * 原样保留提交）。 */}
+            {pluginType !== "mcp" && (
+<div className="rounded-md border border-border/50 p-3 space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-xs font-medium">{tr("plugins.probeSection", "安装探测")}{
                 pluginType === "cli" ? (
                   <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">{tr("plugins.probeToolHint", "（检测工具命令是否已安装，影响注入块的「状态」行）")}</span>
-                ) : pluginType === "mcp" ? (
-                  <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">{tr("plugins.probeMcpHint", "（检测 stdio 启动命令是否已安装）")}</span>
                 ) : null
               }</p>
                 <Switch
@@ -1388,6 +1383,7 @@ export function PluginCreateDialog({
                 </div>
               )}
             </div>
+)}
 
             {/* 传输（仅智能体插件——工具插件无 transport 段，schema 互斥） */}
             {!isTool && (
