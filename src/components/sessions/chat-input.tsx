@@ -453,33 +453,45 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     });
   }, [message, onDraftChange]);
 
-  /** v0.9.1 需求4 测试期修复二：输入框高度随宽度等比伸缩。基准：初始内容
-   * 宽 820px ↔ 空态高 76px（内容增长上限 220px 同比）——宽度自适应（70%）
-   * 后只宽不高观感太扁（用户裁决：保持初始宽高比，高度随最大化变高）。
-   * 窄于基准不缩（76/220 恒为下限）；min-height 先行设置再量 scrollHeight，
-   * 空态自然落在比例地板上，内容增长仍受同比上限钳制。
+  /** v0.9.1 需求4 修复四：mirror 视觉层跟随 textarea。草稿文本渲染两层
+   * （v0.8.1 需求7 pill mirror 方案：z-0 mirror 渲染 pill+文本，z-10 textarea
+   * 在 pill 模式下文字透明）——输入框改「固定高度 + 内部滚动」后，textarea
+   * 视口随光标滚动而 mirror 静止、textarea 出滚动条后换行宽度收窄而 mirror
+   * 不变，两层文本视口错位 → 长段文字粘贴出现重影（用户 2026-09-05 实测）。
+   * 同步两点：scrollTop 跟随；paddingRight 补偿滚动条占宽（换行宽度一致）。 */
+  const mirrorTextRef = useRef<HTMLDivElement>(null);
+  const syncMirrorToTextarea = useCallback(() => {
+    const textarea = textareaRef.current;
+    const mirror = mirrorTextRef.current;
+    if (!textarea || !mirror) return;
+    const scrollbar = textarea.offsetWidth - textarea.clientWidth;
+    mirror.style.paddingRight = `${16 + scrollbar}px`;
+    mirror.scrollTop = textarea.scrollTop;
+  }, []);
+
+  /** v0.9.1 需求4 测试期修复二/四：输入框高度随宽度等比伸缩——基准：初始
+   * 内容宽 820px ↔ 空态高 76px；宽度自适应（70%）后高度同比变高（用户裁决：
+   * 保持初始宽高比）；窄于基准不缩。修复四（用户裁决）：高度**不受内容量
+   * 影响**——恒定在比例地板，内容超出内部滚动（textarea overflow-y: auto）。
    *
    * 宽度守卫（修复三）：写高度会改变容器尺寸、再次触发 ResizeObserver——
    * 回声通知宽度未变，跳过即断开回环（否则浏览器报「ResizeObserver loop
-   * completed with undelivered notifications」）。内容驱动路径（键入/回填）
-   * 传 force 绕过守卫。 */
+   * completed with undelivered notifications」）。 */
   const lastProportionalWidthRef = useRef(0);
-  const syncProportionalInputHeight = useCallback((options?: { force?: boolean }) => {
+  const syncProportionalInputHeight = useCallback(() => {
     const root = inputRootRef.current;
     const textarea = textareaRef.current;
     if (!root || !textarea) return;
     const width = root.clientWidth;
-    if (width <= 0) return;
-    if (!options?.force && width === lastProportionalWidthRef.current) return;
+    if (width <= 0 || width === lastProportionalWidthRef.current) return;
     lastProportionalWidthRef.current = width;
     const scale = Math.max(1, width / 820);
-    const minH = Math.round(76 * scale);
-    const maxH = Math.round(220 * scale);
-    textarea.style.minHeight = `${minH}px`;
-    textarea.style.maxHeight = `${maxH}px`;
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, maxH)}px`;
-  }, []);
+    const h = Math.round(76 * scale);
+    textarea.style.height = `${h}px`;
+    textarea.style.minHeight = `${h}px`;
+    textarea.style.maxHeight = `${h}px`;
+    syncMirrorToTextarea();
+  }, [syncMirrorToTextarea]);
 
   // 容器宽度变化（窗口缩放/最大化/侧栏开合）即时重算；挂载时先同步一次。
   // RO 回调走宽度守卫（自身写高度引发的回声通知宽度未变，跳过断开回环）。
@@ -515,13 +527,14 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
           const pos = next.length;
           textarea.setSelectionRange(pos, pos);
           textarea.focus();
-          // 程序性填文（非 onInput 路径）后即时等比重算高度（force：内容
-          // 变化，宽度守卫须绕过）。
-          syncProportionalInputHeight({ force: true });
+          // 程序性填文（非 onInput 路径）后滚到末尾（高度恒定 + 内部滚动，
+          // 尾部可见），mirror 跟随。
+          textarea.scrollTop = textarea.scrollHeight;
+          syncMirrorToTextarea();
         });
       },
     }),
-    [onDraftChange, syncProportionalInputHeight],
+    [onDraftChange, syncMirrorToTextarea],
   );
 
   // Expose the staging-area lifecycle to the parent (Route 2: auto-send at
@@ -1295,6 +1308,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
             token 渲染成 pill，其余文本原样显示。 */}
         <div className="relative min-h-[76px]">
           <div
+            ref={mirrorTextRef}
             aria-hidden
             className="pointer-events-none absolute inset-0 z-0 w-full overflow-hidden whitespace-pre-wrap break-words px-4 py-3 text-sm"
           >
@@ -1321,14 +1335,17 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
             disabled={disabled}
             rows={1}
             className={cn(
-              "relative z-10 w-full resize-none bg-transparent px-4 py-3 text-sm focus:outline-none min-h-[76px] max-h-[220px]",
+              "relative z-10 w-full resize-none bg-transparent px-4 py-3 text-sm focus:outline-none min-h-[76px]",
               messageHasToolToken(message) && "text-transparent caret-foreground",
             )}
-            style={{ height: "auto", overflow: "hidden" }}
+            style={{ height: "auto", overflowX: "hidden", overflowY: "auto" }}
             onInput={() => {
-              // 需求4 修复二：键入增长走等比同步（force——内容变化须重算，
-              // 即使宽度未变）。
-              syncProportionalInputHeight({ force: true });
+              // 需求4 修复四：高度恒定（宽度同步负责），内容滚动后 mirror
+              // 跟随（scrollTop + 滚动条占宽补偿），杜绝两层文本重影。
+              syncMirrorToTextarea();
+            }}
+            onScroll={() => {
+              syncMirrorToTextarea();
             }}
           />
         </div>
