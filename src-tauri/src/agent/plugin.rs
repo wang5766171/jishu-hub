@@ -60,6 +60,8 @@ pub struct PluginDescriptor {
     /// 系统插件（v0.9.0 需求1 二期）：hub 随包分发、启动幂等重部署——
     /// 不可卸载/编辑（删了也会回来，编辑会被重部署覆盖），可禁用。
     pub system: bool,
+    /// info.icon 声明值（v0.9.0 需求19：前端图标注册表渲染，未知键回退 Bot）。
+    pub icon: String,
 }
 
 /// [panel] 声明的 UI 投影（v0.9.0 需求8）。
@@ -403,6 +405,7 @@ pub fn assemble(
             has_pi_extension: false,
             panel: None,
             system: false,
+            icon: info.icon.clone(),
         });
     }
 
@@ -431,6 +434,7 @@ pub fn assemble(
             has_pi_extension: false,
             panel: None,
             system: false,
+            icon: file.info.icon.clone(),
         });
     }
 
@@ -463,6 +467,7 @@ pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescrip
                 .collect(),
         }),
         system: is_system_plugin(&plugin.file.info.id),
+        icon: plugin.file.info.icon.clone(),
     }
 }
 
