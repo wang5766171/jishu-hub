@@ -1,11 +1,12 @@
-// v0.9.0 需求1 二期：新建插件 MCP 区纯函数契约——JSON 模式解析（包裹/
-// 多条目/传输映射/校验）、表单三传输产出（buildManifest）、name → id slug。
-// 参考图：mcp-stdio-json.png 的 `{"server-name": {...}}` 形态。
+// v0.9.0 需求1 二期 + 需求19：新建插件纯函数契约——MCP JSON 模式解析（包
+// 裹/多条目/传输映射/校验）、表单三传输产出（buildManifest）、pluginType
+// 三型（mcp/cli/agent）wire 映射与编辑派生（parseManifest）、name → id slug。
 
 import { describe, expect, it } from "vitest";
 import {
   buildManifest,
   mcpNameToId,
+  parseManifest,
   parseMcpServerJson,
   serverToMcpSection,
   type FormState,
@@ -35,7 +36,7 @@ function toolForm(partial: Partial<FormState>): FormState {
     abort: true,
     imageInput: false,
     streamText: false,
-    kind: "tool",
+    pluginType: "mcp" as const,
     toolDescription: "",
     toolUsage: "",
     toolExample: "",
@@ -188,5 +189,91 @@ describe("serverToMcpSection / mcpNameToId", () => {
     expect(mcpNameToId("My MCP Server")).toBe("my-mcp-server");
     expect(mcpNameToId("GitHub 仓库!工具")).toBe("github");
     expect(mcpNameToId("中文")).toBe("mcp-tool"); // 全非法字符回退
+  });
+});
+
+describe("pluginType 三型 wire 映射与编辑派生（需求19）", () => {
+  it("cli → kind=tool + [tool]，无 [mcp]", () => {
+    const m = buildManifest(
+      toolForm({
+        pluginType: "cli",
+        toolDescription: "GitHub 操作",
+        toolUsage: "gh pr list",
+        probeEnabled: true,
+        probeCommand: "gh",
+      }),
+    ) as Record<string, unknown>;
+    expect(m.kind).toBe("tool");
+    expect(m.tool).toEqual({ description: "GitHub 操作", usage: "gh pr list" });
+    expect(m.mcp).toBeUndefined();
+    expect(m.probe).toEqual({ command: "gh" });
+  });
+
+  it("agent → 无 kind 字段 + transport/session/capabilities", () => {
+    const m = buildManifest(
+      toolForm({
+        pluginType: "agent",
+        transportKind: "cli",
+        chatCommand: "gemini\n--prompt\n{prompt}",
+      }),
+    ) as Record<string, unknown>;
+    expect(m.kind).toBeUndefined();
+    expect((m.transport as Record<string, unknown>).kind).toBe("cli");
+    expect(m.session).toEqual({ store: "hub" });
+    expect(m.mcp).toBeUndefined();
+    expect(m.tool).toBeUndefined();
+  });
+
+  it("mcp + 高级 [tool] 并存 → 两段齐备（编辑往返不丢段）", () => {
+    const m = buildManifest(
+      toolForm({
+        pluginType: "mcp",
+        mcpCommand: "npx",
+        toolDescription: "文件系统",
+        toolUsage: "MCP 工具",
+      }),
+    ) as Record<string, unknown>;
+    expect(m.kind).toBe("tool");
+    expect((m.mcp as Record<string, unknown>).command).toBe("npx");
+    expect(m.tool).toEqual({ description: "文件系统", usage: "MCP 工具" });
+  });
+
+  it("parseManifest 派生 pluginType（agent / tool+mcp→mcp / tool→cli）", () => {
+    const agent = parseManifest({
+      schema: 1,
+      info: { id: "a", display_name: "A" },
+      transport: { kind: "cli", chat_command: ["a", "{prompt}"] },
+    });
+    expect(agent.form.pluginType).toBe("agent");
+
+    const mcp = parseManifest({
+      schema: 1,
+      kind: "tool",
+      info: { id: "m", display_name: "M" },
+      mcp: { type: "http", url: "https://x/m" },
+    });
+    expect(mcp.form.pluginType).toBe("mcp");
+    expect(mcp.form.mcpUrl).toBe("https://x/m");
+    expect(mcp.form.mcpTransport).toBe("http");
+
+    const cli = parseManifest({
+      schema: 1,
+      kind: "tool",
+      info: { id: "c", display_name: "C" },
+      tool: { description: "d", usage: "u" },
+    });
+    expect(cli.form.pluginType).toBe("cli");
+    expect(cli.form.toolUsage).toBe("u");
+
+    // tool + [tool] + [mcp] 并存的旧插件 → 派生 mcp（[tool] 值保留）
+    const both = parseManifest({
+      schema: 1,
+      kind: "tool",
+      info: { id: "b", display_name: "B" },
+      tool: { description: "d", usage: "u" },
+      mcp: { type: "stdio", command: "npx" },
+    });
+    expect(both.form.pluginType).toBe("mcp");
+    expect(both.form.toolDescription).toBe("d");
   });
 });

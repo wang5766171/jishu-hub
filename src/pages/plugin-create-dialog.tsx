@@ -15,14 +15,17 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { useTranslation } from "react-i18next";
-import { Bot, Code2, Loader2, Plus, Sparkles, Terminal , Blocks } from "lucide-react";
+import { Bot, ChevronDown, Code2, Loader2, Plus, Sparkles, Terminal, Blocks } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /** v0.8.1 需求6：插件创建可视化界面——模版快速创建（claude/codex/opencode
  * 形态预填）+ 分组表单 + 字段级能力说明。提交走 plugin_create（后端全量
  * schema 校验 + serde 生成 TOML，前端零拼 TOML）。
  * v0.9.0 需求1 二期：MCP 区表单/JSON 双模式 + stdio/HTTP/SSE 三传输 +
- * 解析器（mcp-resolver）开关联动（参考 Claude Desktop 界面）。 */
+ * 解析器（mcp-resolver）开关联动（参考 Claude Desktop 界面）。
+ * v0.9.0 需求19：类型优先重构——pluginType（MCP/CLI/AGENT，用户心智三分
+ * + 两种实现形式）为纯前端概念，映射 wire kind（mcp/cli→tool，agent→agent）；
+ * 选中类型后下方只渲染该类型分组（渐进式披露）。 */
 
 interface CreateProps {
   open: boolean;
@@ -35,6 +38,10 @@ interface CreateProps {
    * 关闭时 MCP 区不可添加（提示先启用）；编辑既有 MCP 插件不受限。 */
   mcpResolverEnabled?: boolean;
 }
+
+/** 插件类型（v0.9.0 需求19，用户心智三分；SKILL 后续扩展）：
+ * mcp/cli → wire kind="tool"（差异在 [mcp]/[tool] 段）；agent → kind="agent"。 */
+export type PluginType = "mcp" | "cli" | "agent";
 
 /** MCP 传输类型（与后端 McpSection.type 对齐）。 */
 type McpTransport = "stdio" | "http" | "sse";
@@ -72,8 +79,8 @@ export interface FormState {
   abort: boolean;
   imageInput: boolean;
   streamText: boolean;
-  /** v0.8.1 需求7：工具插件（kind = "tool"）的 [tool] 段字段。 */
-  kind: "agent" | "tool";
+  /** v0.9.0 需求19：插件类型（mcp/cli/agent；提交时映射 wire kind）。 */
+  pluginType: PluginType;
   toolDescription: string;
   toolUsage: string;
   toolExample: string;
@@ -97,8 +104,8 @@ interface Template {
   /** TOML 原文（「如何配置」的活示例，创建后即此形态）。 */
   toml: string;
   form: FormState;
-  /** 该模版创建的插件类型（agent / tool）。 */
-  tplKind: "agent" | "tool";
+  /** 该模版创建的插件类型（v0.9.0 需求19 三分）。 */
+  tplKind: PluginType;
 }
 
 const emptyForm: FormState = {
@@ -123,7 +130,7 @@ const emptyForm: FormState = {
   abort: true,
   imageInput: false,
   streamText: false,
-  kind: "agent" as const,
+  pluginType: "agent" as const,
   toolDescription: "",
   toolUsage: "",
   toolExample: "",
@@ -289,7 +296,7 @@ store = "hub"
     nameKey: "plugins.tplToolGh",
     nameFallback: "GitHub CLI 工具",
     icon: <Terminal className="h-4 w-4" />,
-    tplKind: "tool",
+    tplKind: "cli",
     toml: `schema = 1
 kind = "tool"
 
@@ -310,7 +317,7 @@ notes = "需要 gh auth login 完成登录"
 `,
     form: {
       ...emptyForm,
-      kind: "tool",
+      pluginType: "cli",
       id: "gh",
       displayName: "GitHub CLI",
       installHint: "winget install GitHub.cli",
@@ -326,7 +333,7 @@ notes = "需要 gh auth login 完成登录"
     nameKey: "plugins.tplToolMcp",
     nameFallback: "MCP 工具",
     icon: <Blocks className="h-4 w-4" />,
-    tplKind: "tool",
+    tplKind: "mcp",
     toml: `schema = 1
 kind = "tool"
 
@@ -341,7 +348,7 @@ args = ["-y", "<mcp-server-package>"]
 `,
     form: {
       ...emptyForm,
-      kind: "tool",
+      pluginType: "mcp",
       id: "my-mcp-tool",
       displayName: "My MCP Tool",
       mcpTransport: "stdio",
@@ -354,7 +361,7 @@ args = ["-y", "<mcp-server-package>"]
     nameKey: "plugins.tplToolDingtalk",
     nameFallback: "钉钉 CLI 工具",
     icon: <Bot className="h-4 w-4" />,
-    tplKind: "tool",
+    tplKind: "cli",
     toml: `schema = 1
 kind = "tool"
 
@@ -374,7 +381,7 @@ notes = "需要 DINGTALK_WEBHOOK 环境变量"
 `,
     form: {
       ...emptyForm,
-      kind: "tool",
+      pluginType: "cli",
       id: "dingtalk",
       displayName: "钉钉 CLI",
       installHint: "npm install -g dingtalk-cli",
@@ -523,7 +530,7 @@ export function mcpNameToId(name: string): string {
 /** 表单 → manifest JSON（wire 结构与后端 AgentManifestFile 对齐；空值省略）。
  * MCP 区输入非法（JSON/请求头解析失败）时抛 Error（handleSubmit 捕获展示）。 */
 export function buildManifest(form: FormState): Record<string, unknown> {
-  if (form.kind === "tool") {
+  if (form.pluginType !== "agent") {
     const tool: Record<string, unknown> = {
       schema: 1,
       kind: "tool",
@@ -643,6 +650,54 @@ function FieldHelp({ children }: { children: React.ReactNode }) {
   return <p className="text-[11px] leading-snug text-muted-foreground mt-1">{children}</p>;
 }
 
+/** 类型卡元数据（v0.9.0 需求19，数据驱动——SKILL 类型后续零改布局扩展）。
+ * formLabel = 实现形式（总控转发 / 独立插拔），是用户选型的关键依据。 */
+const PLUGIN_TYPES: Array<{
+  key: PluginType;
+  icon: React.ReactNode;
+  nameKey: string;
+  nameFallback: string;
+  formKey: string;
+  formFallback: string;
+  descKey: string;
+  descFallback: string;
+  defaultTemplate: string;
+}> = [
+  {
+    key: "mcp",
+    icon: <Blocks className="h-4 w-4" />,
+    nameKey: "plugins.typeMcp",
+    nameFallback: "MCP 工具",
+    formKey: "plugins.typeMcpForm",
+    formFallback: "形式1 · 总控转发",
+    descKey: "plugins.typeMcpDesc",
+    descFallback: "声明 MCP server，经解析器统一转发，增删实时生效",
+    defaultTemplate: "tool-mcp",
+  },
+  {
+    key: "cli",
+    icon: <Terminal className="h-4 w-4" />,
+    nameKey: "plugins.typeCli",
+    nameFallback: "CLI 工具",
+    formKey: "plugins.typeCliForm",
+    formFallback: "形式1 · 规划并入总控",
+    descKey: "plugins.typeCliDesc",
+    descFallback: "声明命令用法，会话注入后由智能体 shell 执行",
+    defaultTemplate: "tool-gh",
+  },
+  {
+    key: "agent",
+    icon: <Bot className="h-4 w-4" />,
+    nameKey: "plugins.typeAgent",
+    nameFallback: "智能体",
+    formKey: "plugins.typeAgentForm",
+    formFallback: "形式2 · 独立插拔",
+    descKey: "plugins.typeAgentDesc",
+    descFallback: "接入一个独立 CLI/ACP 智能体，单独启停管理",
+    defaultTemplate: "blank",
+  },
+];
+
 function Labeled({
   labelKey,
   fallback,
@@ -665,8 +720,8 @@ function Labeled({
   );
 }
 
-/** manifest JSON（plugin_get 返回）→ 表单状态（buildManifest 的逆映射）。 */
-function parseManifest(json: Record<string, unknown>): {
+/** manifest JSON（plugin_get 返回）→ 表单状态（buildManifest 的逆映射；导出供测试）。 */
+export function parseManifest(json: Record<string, unknown>): {
   form: FormState;
   /** M4：表单不可表达的段（[pi_extension]）——编辑往返原样保留，随提交
    * 原文透传（修前 parse 丢弃 + build 覆盖写回 = 静默数据丢失）。 */
@@ -712,7 +767,8 @@ function parseManifest(json: Record<string, unknown>): {
     abort: caps.abort !== false,
     imageInput: caps.image_input === true,
     streamText: caps.stream_text === true,
-    kind: json.kind === "tool" ? "tool" : "agent",
+    pluginType:
+      json.kind === "tool" ? (mcp ? "mcp" : "cli") : "agent",
     toolDescription: String(tool.description ?? ""),
     toolUsage: String(tool.usage ?? ""),
     toolExample: String(tool.example ?? ""),
@@ -794,21 +850,23 @@ export function PluginCreateDialog({
   const patch = (partial: Partial<FormState>) =>
     setForm((prev) => ({ ...prev, ...partial }));
 
-  const isTool = form.kind === "tool";
+  const pluginType = form.pluginType;
+  const isTool = pluginType !== "agent";
   /** 解析器关闭且非编辑（既有 MCP 插件仍可编辑）→ MCP 区不可添加。 */
-  const mcpLocked = isTool && !mcpResolverEnabled && !isEdit;
+  const mcpLocked = pluginType === "mcp" && !mcpResolverEnabled && !isEdit;
 
   // MCP 区行内校验（阻止提交 + 即时反馈）。
   const mcpJsonParsed = useMemo(
     () =>
-      isTool && form.mcpMode === "json" && form.mcpJson.trim()
+      pluginType === "mcp" && form.mcpMode === "json" && form.mcpJson.trim()
         ? parseMcpServerJson(form.mcpJson)
         : null,
-    [isTool, form.mcpMode, form.mcpJson],
+    [pluginType, form.mcpMode, form.mcpJson],
   );
   const mcpJsonError = mcpJsonParsed && !mcpJsonParsed.ok ? mcpJsonParsed.error : null;
   const mcpHeadersError = useMemo(() => {
-    if (!isTool || form.mcpMode !== "form" || form.mcpTransport === "stdio") return null;
+    if (pluginType !== "mcp" || form.mcpMode !== "form" || form.mcpTransport === "stdio")
+      return null;
     if (!form.mcpHeaders.trim()) return null;
     try {
       parseMcpHeaders(form.mcpHeaders);
@@ -816,7 +874,7 @@ export function PluginCreateDialog({
     } catch (e) {
       return e instanceof Error ? e.message : String(e);
     }
-  }, [isTool, form.mcpMode, form.mcpTransport, form.mcpHeaders]);
+  }, [pluginType, form.mcpMode, form.mcpTransport, form.mcpHeaders]);
 
   // JSON 模式 name 键预填 id/显示名（仅新建且未填写时；插件 id 即 server 名
   // 的 slug 化——参考图「名称」字段的等价物）。
@@ -889,12 +947,71 @@ export function PluginCreateDialog({
   const canSubmit =
     form.id.trim().length > 0 &&
     form.displayName.trim().length > 0 &&
-    (isTool
-      ? mcpReady || (form.toolDescription.trim().length > 0 && form.toolUsage.trim().length > 0)
-      : form.transportKind === "cli"
-        ? form.chatCommand.trim().length > 0
-        : form.acpCommand.trim().length > 0) &&
-    !mcpJsonError;
+    !mcpJsonError &&
+    (pluginType === "mcp"
+      ? mcpReady ||
+        (form.toolDescription.trim().length > 0 && form.toolUsage.trim().length > 0)
+      : pluginType === "cli"
+        ? form.toolDescription.trim().length > 0 && form.toolUsage.trim().length > 0
+        : form.transportKind === "cli"
+          ? form.chatCommand.trim().length > 0
+          : form.acpCommand.trim().length > 0);
+
+  /** 切换插件类型：保留表单字段（互不干扰），模版高亮切到该类型默认模版。 */
+  const pickType = (type: PluginType) => {
+    if (isEdit || type === pluginType) return;
+    patch({ pluginType: type });
+    const tpl = templates.find((x) => x.tplKind === type);
+    if (tpl) setTemplateKey(tpl.key);
+  };
+
+  /** MCP 类型的高级 [tool] 折叠（默认收起；字段有值时强制可见——
+   * 编辑往返不丢段且透明）。 */
+  const [mcpToolAdvanced, setMcpToolAdvanced] = useState(false);
+  const showToolAdvanced =
+    mcpToolAdvanced ||
+    !!(form.toolDescription.trim() || form.toolUsage.trim() || form.toolExample.trim() || form.toolNotes.trim());
+
+  /** [tool] 声明字段集（CLI = 核心分组；MCP = 高级折叠，共用字段）。 */
+  const toolDeclareFields = (
+    <>
+      <Labeled labelKey="plugins.fToolDesc" fallback="描述 *">
+        <Input
+          value={form.toolDescription}
+          onChange={(e) => patch({ toolDescription: e.target.value })}
+          placeholder="钉钉消息发送与群管理"
+          className="h-8 text-xs"
+        />
+        <FieldHelp>{tr("plugins.hToolDesc", "")}</FieldHelp>
+      </Labeled>
+      <Labeled labelKey="plugins.fToolUsage" fallback="用法 *">
+        <Input
+          value={form.toolUsage}
+          onChange={(e) => patch({ toolUsage: e.target.value })}
+          placeholder="dingtalk send --to <群名> --message <内容>"
+          className="h-8 text-xs font-mono"
+        />
+        <FieldHelp>{tr("plugins.hToolUsage", "")}</FieldHelp>
+      </Labeled>
+      <div className="grid grid-cols-2 gap-3">
+        <Labeled labelKey="plugins.fToolExample" fallback="示例">
+          <Input
+            value={form.toolExample}
+            onChange={(e) => patch({ toolExample: e.target.value })}
+            className="h-8 text-xs font-mono"
+          />
+        </Labeled>
+        <Labeled labelKey="plugins.fToolNotes" fallback="注意">
+          <Input
+            value={form.toolNotes}
+            onChange={(e) => patch({ toolNotes: e.target.value })}
+            placeholder="需要 XXX 环境变量"
+            className="h-8 text-xs font-mono"
+          />
+        </Labeled>
+      </div>
+    </>
+  );
 
   const handleSubmit = async () => {
     setSubmitting(true);
@@ -939,39 +1056,36 @@ export function PluginCreateDialog({
           </DialogHeader>
 
           <div className="space-y-5">
-            {/* M4：插件类型显式单选（需求7 §6——此前只能靠模板隐式决定类型，
-             * 选错类型只能换模板且会重置整个表单）。与模板选择双向联动。 */}
+            {/* 需求19：类型优先三卡（MCP/CLI/AGENT，实现形式入卡）——
+             * 选中类型决定下方分组（分治渲染，消除"上面和下面什么关系"）。 */}
             <div>
-              <p className="text-xs font-medium mb-2">{tr("plugins.kindSection", "插件类型")}</p>
-              <div className="grid grid-cols-2 gap-2">
-                {([
-                  { kind: "agent" as const, icon: <Bot className="h-4 w-4" />, label: tr("plugins.kindAgent", "智能体插件"), desc: tr("plugins.kindAgentDesc", "接入一个新的 CLI/ACP 智能体") },
-                  { kind: "tool" as const, icon: <Terminal className="h-4 w-4" />, label: tr("plugins.kindTool", "工具插件"), desc: tr("plugins.kindToolDesc", "会话中注入用法的 CLI 能力单元") },
-                ]).map((opt) => (
+              <p className="text-xs font-medium mb-2">{tr("plugins.typeSection", "插件类型")}</p>
+              <div className="grid grid-cols-3 gap-2">
+                {PLUGIN_TYPES.map((tp) => (
                   <button
-                    key={opt.kind}
+                    key={tp.key}
                     type="button"
                     role="radio"
-                    aria-checked={form.kind === opt.kind}
+                    aria-checked={pluginType === tp.key}
                     disabled={isEdit}
-                    onClick={() => {
-                      // 切类型：保留 info 基本信息，重置另一类型的专属段
-                      patch({ kind: opt.kind });
-                      const tp = templates.find((x) => x.tplKind === opt.kind);
-                      if (tp && !isEdit) setTemplateKey(tp.key);
-                    }}
+                    onClick={() => pickType(tp.key)}
                     className={cn(
-                      "flex items-start gap-2 rounded-md border p-3 text-left text-xs transition-colors",
-                      form.kind === opt.kind
+                      "flex flex-col items-start gap-1.5 rounded-md border p-3 text-left transition-colors",
+                      pluginType === tp.key
                         ? "border-primary bg-primary/5 text-primary"
                         : "border-border/60 hover:border-primary/40 text-foreground",
                       isEdit && "opacity-60 cursor-not-allowed",
                     )}
                   >
-                    <span className="mt-0.5 shrink-0">{opt.icon}</span>
-                    <span className="min-w-0">
-                      <span className="block font-medium">{opt.label}</span>
-                      <span className="mt-0.5 block text-[10px] leading-snug text-muted-foreground">{opt.desc}</span>
+                    <span className="flex items-center gap-1.5">
+                      {tp.icon}
+                      <span className="text-xs font-medium">{tr(tp.nameKey, tp.nameFallback)}</span>
+                    </span>
+                    <Badge variant="outline" className="px-1.5 text-[9px] leading-4 text-muted-foreground">
+                      {tr(tp.formKey, tp.formFallback)}
+                    </Badge>
+                    <span className="text-[10px] leading-snug text-muted-foreground">
+                      {tr(tp.descKey, tp.descFallback)}
                     </span>
                   </button>
                 ))}
@@ -981,38 +1095,29 @@ export function PluginCreateDialog({
               )}
             </div>
 
-            {/* 模版选择（按插件类型分组；v0.8.1 需求7：智能体 / 工具两类） */}
+            {/* 模版（仅当前类型；类型已选定，分组标签冗余——需求19 去噪） */}
             <div>
               <p className="text-xs font-medium mb-2">{tr("plugins.tplSection", "从模版开始")}</p>
-              {(["agent", "tool"] as const).map((group) => (
-                <div key={group} className="mb-2">
-                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5">
-                    {group === "agent"
-                      ? tr("plugins.tplGroupAgent", "智能体插件")
-                      : tr("plugins.tplGroupTool", "工具插件")}
-                  </p>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {templates
-                      .filter((tp) => tp.tplKind === group)
-                      .map((tp) => (
-                        <button
-                          key={tp.key}
-                          type="button"
-                          onClick={() => pickTemplate(tp.key)}
-                          className={cn(
-                            "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors",
-                            templateKey === tp.key
-                              ? "border-primary bg-primary/5 text-primary"
-                              : "border-border/60 hover:border-primary/40",
-                          )}
-                        >
-                          {tp.icon}
-                          <span className="text-center leading-tight">{tr(tp.nameKey, tp.nameFallback)}</span>
-                        </button>
-                      ))}
-                  </div>
-                </div>
-              ))}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {templates
+                  .filter((tp) => tp.tplKind === pluginType)
+                  .map((tp) => (
+                    <button
+                      key={tp.key}
+                      type="button"
+                      onClick={() => pickTemplate(tp.key)}
+                      className={cn(
+                        "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors",
+                        templateKey === tp.key
+                          ? "border-primary bg-primary/5 text-primary"
+                          : "border-border/60 hover:border-primary/40",
+                      )}
+                    >
+                      {tp.icon}
+                      <span className="text-center leading-tight">{tr(tp.nameKey, tp.nameFallback)}</span>
+                    </button>
+                  ))}
+              </div>
               <details className="mt-2 group">
                 <summary className="text-[11px] text-muted-foreground cursor-pointer select-none">
                   {tr("plugins.viewToml", "查看模版 TOML（manifest 格式参考）")}
@@ -1064,51 +1169,43 @@ export function PluginCreateDialog({
               </Labeled>
             </div>
 
-            {/* 工具插件能力声明（v0.8.1 需求7：kind = "tool"） */}
-            {isTool && (
+            {/* CLI 类型核心分组：工具能力声明（会话注入的用法说明）。 */}
+            {pluginType === "cli" && (
               <div className="rounded-md border border-border/50 p-3 space-y-3">
                 <p className="text-xs font-medium">{tr("plugins.toolSection", "工具能力声明")}</p>
-                <Labeled labelKey="plugins.fToolDesc" fallback="描述 *">
-                  <Input
-                    value={form.toolDescription}
-                    onChange={(e) => patch({ toolDescription: e.target.value })}
-                    placeholder="钉钉消息发送与群管理"
-                    className="h-8 text-xs"
+                {toolDeclareFields}
+              </div>
+            )}
+
+            {/* MCP 类型高级折叠：附加说明注入 [tool]（可选——默认收起，字段
+             * 有值时强制可见；值始终随提交保留，编辑往返不丢段）。 */}
+            {pluginType === "mcp" && (
+              <div className="rounded-md border border-border/50 p-3">
+                <button
+                  type="button"
+                  onClick={() => setMcpToolAdvanced((v) => !v)}
+                  className="flex w-full items-center justify-between text-xs font-medium"
+                >
+                  {tr("plugins.mcpAdvancedTool", "高级：附加说明注入（可选）")}
+                  <ChevronDown
+                    className={cn(
+                      "h-3.5 w-3.5 text-muted-foreground transition-transform",
+                      showToolAdvanced && "rotate-180",
+                    )}
                   />
-                  <FieldHelp>{tr("plugins.hToolDesc", "")}</FieldHelp>
-                </Labeled>
-                <Labeled labelKey="plugins.fToolUsage" fallback="用法 *">
-                  <Input
-                    value={form.toolUsage}
-                    onChange={(e) => patch({ toolUsage: e.target.value })}
-                    placeholder="dingtalk send --to <群名> --message <内容>"
-                    className="h-8 text-xs font-mono"
-                  />
-                  <FieldHelp>{tr("plugins.hToolUsage", "")}</FieldHelp>
-                </Labeled>
-                <div className="grid grid-cols-2 gap-3">
-                  <Labeled labelKey="plugins.fToolExample" fallback="示例">
-                    <Input
-                      value={form.toolExample}
-                      onChange={(e) => patch({ toolExample: e.target.value })}
-                      className="h-8 text-xs font-mono"
-                    />
-                  </Labeled>
-                  <Labeled labelKey="plugins.fToolNotes" fallback="注意">
-                    <Input
-                      value={form.toolNotes}
-                      onChange={(e) => patch({ toolNotes: e.target.value })}
-                      placeholder="需要 XXX 环境变量"
-                      className="h-8 text-xs"
-                    />
-                  </Labeled>
-                </div>
+                </button>
+                {showToolAdvanced && (
+                  <div className="mt-3 space-y-3">
+                    {toolDeclareFields}
+                    <FieldHelp>{tr("plugins.hMcpAdvancedTool", "")}</FieldHelp>
+                  </div>
+                )}
               </div>
             )}
 
             {/* MCP server 声明（v0.9.0 需求1 二期：表单/JSON 双模式 + 三传输；
              * 解析器未启用且非编辑 → 提示锁定）。 */}
-            {isTool &&
+            {pluginType === "mcp" &&
               (mcpLocked ? (
                 <div className="rounded-md border border-dashed border-border/70 bg-muted/20 p-3 text-xs text-muted-foreground">
                   {tr("plugins.mcpResolverDisabled", "需先启用「MCP 解析器」插件后才能添加 MCP 工具")}
@@ -1248,7 +1345,13 @@ export function PluginCreateDialog({
              * 用户不可见不可改不可关） */}
             <div className="rounded-md border border-border/50 p-3 space-y-3">
               <div className="flex items-center justify-between">
-                <p className="text-xs font-medium">{tr("plugins.probeSection", "安装探测")}{isTool && <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">{tr("plugins.probeToolHint", "（检测工具命令是否已安装，影响注入块的「状态」行）")}</span>}</p>
+                <p className="text-xs font-medium">{tr("plugins.probeSection", "安装探测")}{
+                pluginType === "cli" ? (
+                  <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">{tr("plugins.probeToolHint", "（检测工具命令是否已安装，影响注入块的「状态」行）")}</span>
+                ) : pluginType === "mcp" ? (
+                  <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">{tr("plugins.probeMcpHint", "（检测 stdio 启动命令是否已安装）")}</span>
+                ) : null
+              }</p>
                 <Switch
                   checked={form.probeEnabled}
                   onCheckedChange={(v) => patch({ probeEnabled: v })}
