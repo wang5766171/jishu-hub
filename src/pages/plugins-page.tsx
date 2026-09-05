@@ -62,11 +62,17 @@ interface PluginListResult {
  * 智能体 = 内置适配器与 manifest 智能体。 */
 type PluginCategory = "core" | "mcp" | "skill" | "cli" | "custom" | "agent";
 
-/** 核心引擎 = core + 解析器系统插件（mcp/skill，后续新解析器并入此集合）。 */
-const RESOLVER_PLUGIN_IDS = new Set(["mcp-resolver", "skill-resolver"]);
+/** 核心引擎 = core + 解析器 + 预置指南插件（v0.9.0 需求22 并入）。 */
+const CORE_ENGINE_PLUGIN_IDS = new Set([
+  "mcp-resolver",
+  "skill-resolver",
+  "jishu-cli-guide",
+  "mcp-create-tool",
+  "skill-create-tool",
+]);
 
 function categoryOf(p: PluginDescriptor): PluginCategory {
-  if (p.core || RESOLVER_PLUGIN_IDS.has(p.id)) return "core";
+  if (p.core || CORE_ENGINE_PLUGIN_IDS.has(p.id)) return "core";
   if (p.kind === "tool") {
     if (p.has_mcp) return "mcp";
     if (p.has_skill) return "skill";

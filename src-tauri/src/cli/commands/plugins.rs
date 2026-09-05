@@ -15,6 +15,8 @@ pub fn run(action: PluginAction, ctx: &ExecutionContext) -> Result<(), CliError>
     match action {
         PluginAction::Add { path } => add(&path, ctx),
         PluginAction::List => list(ctx),
+        PluginAction::Get { id } => get(&id, ctx),
+        PluginAction::Update { id, path } => update(&id, &path, ctx),
         PluginAction::Remove { id } => remove(&id, ctx),
         PluginAction::Enable { id } => set_enabled(&id, true, ctx),
         PluginAction::Disable { id } => set_enabled(&id, false, ctx),
@@ -45,6 +47,64 @@ fn add(path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
     } else {
         println!("Installed plugin {} ({})", id, target.display());
         println!("Restart the GUI (or use its plugin page's Reload) to load it.");
+    }
+    Ok(())
+}
+
+/// 打印已装插件的完整 manifest TOML（页面/CLI 能力一致：GUI plugin_get 面）。
+fn get(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
+    let path = agent::manifest::manifest_dir().join(format!("{id}.toml"));
+    if !path.exists() {
+        return Err(CliError::InvalidArg(format!(
+            "plugin not found: {id} (expected {})",
+            path.display()
+        )));
+    }
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| CliError::InvalidArg(format!("cannot read {}: {e}", path.display())))?;
+    if ctx.json {
+        println!(
+            "{}",
+            serde_json::json!({"id": id, "path": path.to_string_lossy(), "manifest": content})
+        );
+    } else {
+        print!("{content}");
+    }
+    Ok(())
+}
+
+/// 覆盖更新既有插件（页面/CLI 能力一致：GUI plugin_update 面——manifest 的
+/// info.id 必须与目标一致；校验后原子写。运行中的 hub GUI 需重新加载生效）。
+fn update(id: &str, path_str: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
+    let content = std::fs::read_to_string(path_str)
+        .map_err(|e| CliError::InvalidArg(format!("cannot read {path_str}: {e}")))?;
+    let parsed: agent::manifest::schema::AgentManifestFile = toml::from_str(&content)
+        .map_err(|e| CliError::InvalidArg(format!("invalid manifest TOML: {e}")))?;
+    if parsed.info.id != id {
+        return Err(CliError::InvalidArg(format!(
+            "plugin id cannot change on update (target {id:?}, manifest declares {:?}) — remove and re-add instead",
+            parsed.info.id
+        )));
+    }
+    parsed
+        .validate()
+        .map_err(|e| CliError::InvalidArg(format!("invalid manifest: {e}")))?;
+    let target = agent::manifest::manifest_dir().join(format!("{id}.toml"));
+    if !target.exists() {
+        return Err(CliError::InvalidArg(format!(
+            "plugin file not found: {}",
+            target.display()
+        )));
+    }
+    crate::util::atomic_write(&target, content.as_bytes())
+        .map_err(|e| CliError::InvalidArg(format!("cannot write {}: {e}", target.display())))?;
+    if ctx.json {
+        println!(
+            "{}",
+            serde_json::json!({"updated": true, "id": id, "path": target.to_string_lossy()})
+        );
+    } else {
+        println!("Updated plugin {id} ({}); reload the hub app to apply.", target.display());
     }
     Ok(())
 }

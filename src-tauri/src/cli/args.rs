@@ -408,6 +408,23 @@ pub enum PluginAction {
         path: String,
     },
 
+    /// Print the full manifest (TOML) of an installed plugin.
+    /// 页面/CLI 能力一致（v0.9.0 需求22）：GUI plugin_get 的 CLI 面。
+    Get {
+        /// Plugin identifier.
+        id: String,
+    },
+
+    /// Overwrite-update an installed plugin from a TOML file (id must match).
+    /// 页面/CLI 能力一致（v0.9.0 需求22）：GUI plugin_update 的 CLI 面。
+    Update {
+        /// Plugin identifier (must equal the manifest's info.id).
+        id: String,
+
+        /// Path to the new plugin manifest TOML.
+        path: String,
+    },
+
     /// List all plugins (builtin + manifest agents + tool plugins).
     List,
 

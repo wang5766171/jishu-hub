@@ -93,11 +93,15 @@ pub const CORE_PLUGIN_IDS: [&str; 1] = [super::JISHU_SELF_AGENT_ID];
 /// 系统插件 id 清单（v0.9.0 需求1 二期）：hub 随包分发、启动幂等重部署——
 /// 卸载/编辑无意义（下次启动即恢复），plugin_remove 拒绝、前端隐藏入口；
 /// 可禁用（mcp-resolver 禁用 = MCP 服务总开关，见 mcp_inject）。
-pub const SYSTEM_PLUGIN_IDS: [&str; 4] = [
+pub const SYSTEM_PLUGIN_IDS: [&str; 7] = [
     "mcp-resolver",
     "skill-resolver",
     "task-requirements",
     "task-plan",
+    // v0.9.0 需求22：预置核心引擎指南（jishu CLI / MCP 创建 / Skill 创建）。
+    "jishu-cli-guide",
+    "mcp-create-tool",
+    "skill-create-tool",
 ];
 
 /// 系统插件判定。
@@ -245,6 +249,20 @@ pub fn builtin_adaptive_plugins() -> Vec<(&'static str, &'static str)> {
         (
             "task-plan",
             include_str!("../../resources/plugins/task-plan/plugin.toml"),
+        ),
+        // v0.9.0 需求22：预置核心引擎指南插件（[skill] 声明——经 Skill 解析器
+        // 分发到 agent skill 目录，agent 原生发现；内容 = 给 agent 的操作指南）。
+        (
+            "jishu-cli-guide",
+            include_str!("../../resources/plugins/jishu-cli-guide/plugin.toml"),
+        ),
+        (
+            "mcp-create-tool",
+            include_str!("../../resources/plugins/mcp-create-tool/plugin.toml"),
+        ),
+        (
+            "skill-create-tool",
+            include_str!("../../resources/plugins/skill-create-tool/plugin.toml"),
         ),
     ]
 }
@@ -732,14 +750,23 @@ mod tests {
                 "{id} should be deployed"
             );
         }
-        // skill-resolver manifest 合法（panel-only 工具插件，[skill] 不自指）。
+        // 全部系统 manifest 解析且校验合法；指南插件为 [skill] 声明形态。
+        for id in SYSTEM_PLUGIN_IDS {
+            let toml_src = std::fs::read_to_string(dir.join(format!("{id}.toml"))).unwrap();
+            let file: super::super::manifest::schema::AgentManifestFile =
+                toml::from_str(&toml_src).unwrap();
+            assert!(file.validate().is_ok(), "{id} manifest invalid");
+        }
         let skill_toml =
             std::fs::read_to_string(dir.join("skill-resolver.toml")).unwrap();
         let skill_file: super::super::manifest::schema::AgentManifestFile =
             toml::from_str(&skill_toml).unwrap();
-        assert!(skill_file.validate().is_ok());
         assert_eq!(skill_file.info.id, "skill-resolver");
         assert!(skill_file.skill.is_none());
+        let guide: super::super::manifest::schema::AgentManifestFile =
+            toml::from_str(&std::fs::read_to_string(dir.join("mcp-create-tool.toml")).unwrap())
+                .unwrap();
+        assert!(guide.skill.is_some() && guide.mcp.is_none());
         // 幂等：二次部署不报错、内容不变。
         let before = std::fs::read_to_string(dir.join("mcp-resolver.toml")).unwrap();
         ensure_builtin_adaptive_plugins();
