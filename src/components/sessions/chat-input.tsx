@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { streamStore, useIsSessionStreaming } from "@/hooks/use-stream-store";
 import { Button } from "@/components/ui/button";
-import { Blocks, Check, ChevronDown, KeyRound, MessagesSquare, Paperclip, Plus, Send, Square, Sparkles } from "lucide-react";
+import { Blocks, Check, ChevronDown, KeyRound, MessagesSquare, Paperclip, Plus, Send, Server, Square, Sparkles } from "lucide-react";
 import { FilePreview } from "./file-preview";
 import { InteractionComposer } from "./interaction-composer";
 import { MessageStaging, type StagedMessage } from "./message-staging";
@@ -33,6 +33,8 @@ interface SessionTool {
   enabled: boolean;
   /** M3：有 [tool] 段（可 CLI 注入）；false = 仅 pi 扩展形态。 */
   injectable?: boolean;
+  /** v0.9.0 需求20 第二轮：能力类别（cli | mcp | skill）——+ 菜单两级分组。 */
+  category?: string;
 }
 
 /** 内联工具 token：`@[显示名]`（v0.8.1 需求7）。全局正则——用前 reset /
@@ -220,6 +222,8 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   const [interactionSubmitting, setInteractionSubmitting] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
+  // 需求20 第二轮：+ 菜单两级——MCP 服务 / Skill 子菜单展开态（null = 收起）。
+  const [toolSubmenu, setToolSubmenu] = useState<"mcp" | "skill" | null>(null);
   const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
   const [accessMenuOpen, setAccessMenuOpen] = useState(false);
   const [stagedMessagesBySession, setStagedMessagesBySession] = useState<Record<string, StagedMessage[]>>({});
@@ -1276,6 +1280,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                     type="button"
                     onClick={() => {
                       setToolMenuOpen(false);
+                      setToolSubmenu(null);
                       handleFileSelect();
                     }}
                     disabled={disabled || sending || isStreaming || !allowFiles}
@@ -1284,51 +1289,84 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                     <Paperclip className="h-4 w-4 text-[var(--icon-action)]" />
                     <span>{t("sessions.attachFile")}</span>
                   </button>
-                  <button
-                    type="button"
-                    disabled
-                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-muted-foreground opacity-55"
-                  >
-                    <Sparkles className="h-4 w-4 text-[var(--icon-theme)]" />
-                    <span className="flex-1">{t("sessions.skillsComingSoon")}</span>
-                    <span className="text-[0.72em]">{t("sessions.comingSoon")}</span>
-                  </button>
-                  {sessionTools.length > 0 && (
+                  {sessionTools.length > 0 && (() => {
+                    // 需求20 第二轮：两级分组——CLI 插件平铺；MCP 服务 / Skill
+                    // 折叠子菜单（点组名展开，点具体服务插入 pill）。选中即注入
+                    // 提示小节；未选中经解析器通道仍在线可用（动态性）。
+                    const cliTools = sessionTools.filter((t) => !t.category || t.category === "cli");
+                    const mcpTools = sessionTools.filter((t) => t.category === "mcp");
+                    const skillTools = sessionTools.filter((t) => t.category === "skill");
+                    const renderToolButton = (tool: SessionTool, indent = false) => {
+                      const injectable = tool.injectable !== false;
+                      return (
+                        <button
+                          key={tool.id}
+                          type="button"
+                          onClick={() => {
+                            setToolMenuOpen(false);
+                            setToolSubmenu(null);
+                            insertToolToken(tool.display_name);
+                          }}
+                          disabled={disabled || sending || isStreaming || !injectable}
+                          title={
+                            injectable
+                              ? tool.description
+                              : `${tool.description}（仅 pi 扩展形态，不参与 CLI 注入）`
+                          }
+                          className={cn(
+                            "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-fast hover:bg-accent/60 disabled:cursor-not-allowed",
+                            indent && "pl-4",
+                            injectable ? "text-foreground disabled:opacity-45" : "text-muted-foreground opacity-55",
+                          )}
+                        >
+                          <Blocks className={cn("h-4 w-4 shrink-0", injectable ? "text-[var(--icon-config)]" : "opacity-40")} />
+                          <span className="flex-1 truncate">{tool.display_name}</span>
+                        </button>
+                      );
+                    };
+                    return (
                     <div className="my-1 border-t border-border/60 pt-1">
-                      <div className="px-2.5 pb-1 pt-0.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/70">
-                        {t("sessions.pluginsSection", "插件")}
-                      </div>
-                      {sessionTools.map((tool) => {
-                        // 用户裁决（2026-08-31 晨）：保持 workbuddy 形态——菜单项
-                        // 点击 = 插入 @[显示名] pill 到输入框，消息即所见、发送即
-                        // 本条工具集。M3 的 injectable 保留用于禁用仅 pi 扩展项。
-                        const injectable = tool.injectable !== false;
-                        return (
+                      {cliTools.length > 0 && (
+                        <>
+                          <div className="px-2.5 pb-1 pt-0.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/70">
+                            {t("sessions.pluginsSection", "插件")}
+                          </div>
+                          {cliTools.map((tool) => renderToolButton(tool))}
+                        </>
+                      )}
+                      {mcpTools.length > 0 && (
+                        <>
                           <button
-                            key={tool.id}
                             type="button"
-                            onClick={() => {
-                              setToolMenuOpen(false);
-                              insertToolToken(tool.display_name);
-                            }}
-                            disabled={disabled || sending || isStreaming || !injectable}
-                            title={
-                              injectable
-                                ? tool.description
-                                : `${tool.description}（仅 pi 扩展形态，不参与 CLI 注入）`
-                            }
-                            className={cn(
-                              "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-fast hover:bg-accent/60 disabled:cursor-not-allowed",
-                              injectable ? "text-foreground disabled:opacity-45" : "text-muted-foreground opacity-55",
-                            )}
+                            aria-expanded={toolSubmenu === "mcp"}
+                            onClick={() => setToolSubmenu((cur) => (cur === "mcp" ? null : "mcp"))}
+                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-fast hover:bg-accent/60"
                           >
-                            <Blocks className={cn("h-4 w-4 shrink-0", injectable ? "text-[var(--icon-config)]" : "opacity-40")} />
-                            <span className="flex-1 truncate">{tool.display_name}</span>
+                            <Server className="h-4 w-4 shrink-0 text-[var(--icon-action)]" />
+                            <span className="flex-1">{t("sessions.mcpSection", "MCP 服务")}</span>
+                            <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform", toolSubmenu === "mcp" && "rotate-180")} />
                           </button>
-                        );
-                      })}
+                          {toolSubmenu === "mcp" && mcpTools.map((tool) => renderToolButton(tool, true))}
+                        </>
+                      )}
+                      {skillTools.length > 0 && (
+                        <>
+                          <button
+                            type="button"
+                            aria-expanded={toolSubmenu === "skill"}
+                            onClick={() => setToolSubmenu((cur) => (cur === "skill" ? null : "skill"))}
+                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-fast hover:bg-accent/60"
+                          >
+                            <Sparkles className="h-4 w-4 shrink-0 text-[var(--icon-theme)]" />
+                            <span className="flex-1">{t("sessions.skillSection", "Skill")}</span>
+                            <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform", toolSubmenu === "skill" && "rotate-180")} />
+                          </button>
+                          {toolSubmenu === "skill" && skillTools.map((tool) => renderToolButton(tool, true))}
+                        </>
+                      )}
                     </div>
-                  )}
+                    );
+                  })()}
                 </div>
               )}
               {workModeOptions.length > 0 && workModeValue && (
