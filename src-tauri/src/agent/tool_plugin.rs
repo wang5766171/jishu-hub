@@ -250,14 +250,31 @@ pub fn render_tool_block(plugins: &[&ToolPlugin]) -> String {
     );
     for plugin in plugins {
         // M3 → v0.9.0 需求2 接线：注入参与判定收敛到 adaptive 引擎
-        //（participates_in_injection = 有 [tool] 段；PiOnly 形态走 pi 扩展
-        // 部署管线，不进 prompt 注入——跳过而非 panic）。
+        //（participates_in_injection = 有 [tool]/[mcp]/[skill] 段；PiOnly
+        // 形态走 pi 扩展部署管线，不进 prompt 注入——跳过而非 panic）。
         if !super::adaptive::participates_in_injection(&plugin.file) {
             log::debug!(
-                "[tool-plugin] skip {} in prompt injection (no [tool] section; pi-extension-only)",
+                "[tool-plugin] skip {} in prompt injection (no [tool]/[mcp]/[skill] section)",
                 plugin.id()
             );
             continue;
+        }
+        // v0.9.0 需求20 第二轮：MCP/Skill 声明的小节（选中即注入提示；结构
+        // 性可用与选择无关——MCP 经 jishu-hub 常驻通道，skill 已分发到 agent
+        // skill 目录）。header 形态沿用 `## id — desc`（tool_ids 快照兼容）。
+        if plugin.file.mcp.is_some() {
+            out.push_str(&format!("\n## {} — MCP 服务\n", plugin.file.info.id));
+            out.push_str(&format!(
+                "本会话启用了 MCP 服务「{}」。其工具经 jishu-hub MCP server 结构化提供，工具名以 `{}__` 开头，可直接调用（无需 shell）；未在本条选中的 MCP 服务同样在线可用。\n",
+                plugin.file.info.display_name, plugin.file.info.id
+            ));
+        }
+        if let Some(skill) = plugin.file.skill.as_ref() {
+            out.push_str(&format!("\n## {} — Skill\n", plugin.file.info.id));
+            out.push_str(&format!(
+                "本会话启用了 skill「{}」：{}\n（skill 文件已在你可访问的 skill 目录中，按 skill 名即可使用。）\n",
+                plugin.file.info.id, skill.description
+            ));
         }
         let Some(tool) = plugin.file.tool.as_ref() else {
             continue;
@@ -508,6 +525,80 @@ usage = "u"
         assert!(file.validate().unwrap_err().contains("[tool]"));
     }
     // ── M0/M3 回归测试：staging 迁移 / pending 清扫 / 无 [tool] 段 skip ──
+
+    #[test]
+    fn render_includes_mcp_and_skill_sections() {
+        // v0.9.0 需求20 第二轮：MCP/Skill 小节渲染 + tool_ids 快照提取兼容。
+        // Arc 构造：经 for_test/独立字面量建 manifest（file 是 Arc 不可变）。
+        let mcp_plugin = ToolPlugin::for_test(
+            std::sync::Arc::new(AgentManifestFile {
+                schema: 1,
+                kind: ManifestKind::Tool,
+                info: InfoSection {
+                    id: "mcp-x".to_string(),
+                    display_name: "MCP X".to_string(),
+                    icon: String::new(),
+                    install_hint: None,
+                },
+                probe: None,
+                transport: None,
+                config: None,
+                session: None,
+                capabilities: None,
+                pi_extension: None,
+                mcp: Some(crate::agent::manifest::schema::McpSection {
+                    transport: Default::default(),
+                    command: Some("npx".into()),
+                    args: None,
+                    env: None,
+                    url: None,
+                    headers: None,
+                }),
+                panel: None,
+                skill: None,
+                tool: None,
+            }),
+            PathBuf::from("/agents/mcp-x.toml"),
+            true,
+        );
+        let skill_plugin = ToolPlugin::for_test(
+            std::sync::Arc::new(AgentManifestFile {
+                schema: 1,
+                kind: ManifestKind::Tool,
+                info: InfoSection {
+                    id: "skill-y".to_string(),
+                    display_name: "Skill Y".to_string(),
+                    icon: String::new(),
+                    install_hint: None,
+                },
+                probe: None,
+                transport: None,
+                config: None,
+                session: None,
+                capabilities: None,
+                pi_extension: None,
+                mcp: None,
+                panel: None,
+                skill: Some(crate::agent::manifest::schema::SkillSection {
+                    description: "自查清单".into(),
+                    body: "逐文件检查。".into(),
+                }),
+                tool: None,
+            }),
+            PathBuf::from("/agents/skill-y.toml"),
+            true,
+        );
+        let block = render_tool_block(&[&mcp_plugin, &skill_plugin]);
+        assert!(block.contains("## mcp-x — MCP 服务"));
+        assert!(block.contains("mcp-x__"));
+        assert!(block.contains("## skill-y — Skill"));
+        assert!(block.contains("自查清单"));
+        assert!(!block.contains("## skill-y — d")); // skill-only 无 [tool] 小节
+        // 快照提取：两 id 均入列。
+        let (_, ids) = extract_tool_snapshot(&block);
+        assert!(ids.contains(&"mcp-x".to_string()));
+        assert!(ids.contains(&"skill-y".to_string()));
+    }
 
     #[test]
     fn render_skips_plugin_without_tool_section() {

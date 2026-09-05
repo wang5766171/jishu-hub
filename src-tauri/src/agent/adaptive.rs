@@ -67,7 +67,9 @@ pub fn needs_pi_deploy(manifest: &AgentManifestFile) -> bool {
 
 /// 该插件是否参与 prompt 注入（tool_plugin 管线用）。
 pub fn participates_in_injection(manifest: &AgentManifestFile) -> bool {
-    manifest.tool.is_some()
+    // v0.9.0 需求20 第二轮：[mcp]/[skill] 声明也参与 prompt 注入（选中后
+    // 渲染提示小节）；PiOnly（仅 [pi_extension]）仍走 pi 扩展部署管线跳过。
+    manifest.tool.is_some() || manifest.mcp.is_some() || manifest.skill.is_some()
 }
 
 #[cfg(test)]

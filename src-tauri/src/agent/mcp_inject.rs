@@ -122,45 +122,23 @@ pub fn force_inject_all() -> SyncReport {
 fn sync_all(resolver_on: bool) -> SyncReport {
     let mut report = SyncReport::default();
 
-    // claude-code：结构化 struct 面（load_config/save_config of ClaudeConfig）。
-    report.claude_code = match crate::config::load_config() {
-        Ok(mut cfg) => {
-            let servers = cfg.mcp_servers.get_or_insert_with(Default::default);
-            let args_now = servers
-                .get(HUB_MCP_ENTRY_NAME)
-                .and_then(|e| e.args.clone())
-                .unwrap_or_default();
-            let status = if resolver_on {
-                match servers.get(HUB_MCP_ENTRY_NAME) {
-                    None => "Injected",
-                    Some(_) if looks_like_hub_entry(&args_now) => "Updated",
-                    Some(_) => "Protected",
-                }
-            } else if looks_like_hub_entry(&args_now) {
-                servers.remove(HUB_MCP_ENTRY_NAME);
-                "Removed"
-            } else if servers.contains_key(HUB_MCP_ENTRY_NAME) {
-                "Protected"
+    // claude-code：user-scope 权威文件 ~/.claude.json 顶层 mcpServers（Value 面，
+    // 备份+原子写）。v0.9.0 需求20 第二轮根因修复：一期写 settings.json 的
+    // mcpServers——Claude Code 不加载该文件的服务器定义，agent 无法发现
+    // jishu-hub；同时清理 settings.json 中一期的死条目（仅自家形态）。
+    report.claude_code = match crate::config::load_claude_user_config_value() {
+        Ok(mut v) => {
+            let status = sync_json_value(&mut v, "mcpServers", resolver_on);
+            if status == "Error" {
+                "Error".to_string()
             } else {
-                "Noop"
-            };
-            if status == "Injected" || status == "Updated" {
-                servers.insert(
-                    HUB_MCP_ENTRY_NAME.to_string(),
-                    crate::config::McpServerConfig {
-                        command: resolve_cli_path().ok(),
-                        args: Some(vec!["mcp".into(), "serve".into()]),
-                        env: None,
-                        cwd: None,
-                        server_type: None,
-                        url: None,
-                        headers: None,
-                    },
-                );
-            }
-            match crate::config::save_config(&cfg) {
-                Ok(()) => status.to_string(),
-                Err(e) => format!("Error: {e}"),
+                match crate::config::save_claude_user_config_value(&v) {
+                    Ok(()) => {
+                        cleanup_stale_claude_settings_entry(resolver_on);
+                        status.to_string()
+                    }
+                    Err(e) => format!("Error: {e}"),
+                }
             }
         }
         Err(e) => format!("Error: {e}"),
@@ -188,11 +166,20 @@ fn sync_all(resolver_on: bool) -> SyncReport {
         }
     };
 
-    // jishu-self：settings.json Value 面（键 mcp_servers，snake_case），
-    // save_jishu_config 内部同步 mcp.json（pi-mcp-adapter 读取面）。
+    // jishu-self：settings.json Value 面，键 mcpServers（camelCase——
+    // JishuConfig 带 rename_all = "camelCase"，蛇形键解析为 None 导致 mcp.json
+    // 恒空，v0.9.0 需求20 第二轮根因修复）；save_jishu_config 内部同步
+    // mcp.json（pi-mcp-adapter 的 Pi 全局覆盖位）。顺手清理一期写入的
+    // 蛇形死键。
     report.jishu_self = match crate::agent::jishu_self::config::load_jishu_config() {
         Ok(mut v) => {
-            let status = sync_json_value(&mut v, "mcp_servers", resolver_on);
+            // 一期死键清理：merge 语义「未提及即保留」，须显式 null 才删除。
+            v["mcp_servers"] = Value::Null;
+            if let Some(obj) = v.as_object_mut() {
+                obj.remove("mcp_servers");
+                obj.insert("mcp_servers".to_string(), Value::Null);
+            }
+            let status = sync_json_value(&mut v, "mcpServers", resolver_on);
             match crate::agent::jishu_self::config::save_jishu_config(&v) {
                 Ok(()) => status.to_string(),
                 Err(e) => format!("Error: {e}"),
@@ -210,6 +197,29 @@ fn sync_all(resolver_on: bool) -> SyncReport {
         log::info!("[hub-mcp-inject] {agent}: {status}");
     }
     report
+}
+
+/// settings.json 的 mcpServers 里一期写入的 jishu-hub 死条目清理（仅自家
+/// 形态；Claude Code 不读此文件的服务器定义，留着只会误导手写通道视图）。
+fn cleanup_stale_claude_settings_entry(_resolver_on: bool) {
+    let Ok(mut cfg) = crate::config::load_config() else {
+        return;
+    };
+    let Some(servers) = cfg.mcp_servers.as_mut() else {
+        return;
+    };
+    let is_ours = servers
+        .get(HUB_MCP_ENTRY_NAME)
+        .and_then(|e| e.args.clone())
+        .map(|args| looks_like_hub_entry(&args))
+        .unwrap_or(false);
+    if is_ours {
+        servers.remove(HUB_MCP_ENTRY_NAME);
+        if cfg.mcp_servers.as_ref().map(|m| m.is_empty()).unwrap_or(false) {
+            cfg.mcp_servers = None;
+        }
+        let _ = crate::config::save_config(&cfg);
+    }
 }
 
 fn sync_json_value(v: &mut Value, servers_key: &str, resolver_on: bool) -> &'static str {
@@ -286,11 +296,29 @@ mod tests {
     }
 
     #[test]
-    fn jishu_self_key_is_snake_case() {
-        // jishu settings.json 的键为 mcp_servers（snake_case，JishuConfig 序列化）。
+    fn jishu_self_key_is_camel_case() {
+        // v0.9.0 需求20 第二轮根因修复：JishuConfig 带 rename_all="camelCase"，
+        // 键必须是 mcpServers（一期误用蛇形 mcp_servers，typed 解析恒 None →
+        // mcp.json 恒空 → pi-mcp-adapter 拿不到任何 server）。
         let mut cfg = json!({});
-        assert_eq!(upsert_entry_json(&mut cfg, "mcp_servers", "/bin/jishu-cli"), "Injected");
-        assert!(cfg["mcp_servers"][HUB_MCP_ENTRY_NAME].is_object());
-        assert!(cfg.get("mcpServers").is_none());
+        assert_eq!(upsert_entry_json(&mut cfg, "mcpServers", "/bin/jishu-cli"), "Injected");
+        assert!(cfg["mcpServers"][HUB_MCP_ENTRY_NAME].is_object());
+        assert!(cfg.get("mcp_servers").is_none());
+    }
+
+    #[test]
+    fn claude_user_config_plane_roundtrip() {
+        // claude-code user-scope 平面 = ~/.claude.json 顶层 mcpServers（与
+        // codex/opencode 相同的 upsert/remove 纯函数，键名不同）。
+        let mut cfg = json!({ "numStartups": 42, "mcpServers": { "user-tool": { "command": "npx" } } });
+        assert_eq!(upsert_entry_json(&mut cfg, "mcpServers", "/bin/jishu-cli"), "Injected");
+        assert_eq!(
+            cfg["mcpServers"][HUB_MCP_ENTRY_NAME]["args"],
+            json!(["mcp", "serve"])
+        );
+        assert_eq!(cfg["numStartups"], json!(42)); // 其余键原样保留
+        assert_eq!(remove_entry_json(&mut cfg, "mcpServers"), "Removed");
+        assert!(cfg["mcpServers"].get(HUB_MCP_ENTRY_NAME).is_none());
+        assert!(cfg["mcpServers"].get("user-tool").is_some());
     }
 }

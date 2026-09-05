@@ -195,6 +195,10 @@ pub(crate) struct SessionToolInfo {
     /// M3：是否可参与 CLI 注入（有 [tool] 段）。false = 仅 pi 扩展形态
     /// （PiOnly 自适应插件）——前端 + 菜单区分展示，勾选后不会注入说明块。
     pub injectable: bool,
+    /// v0.9.0 需求20 第二轮：能力类别（+ 菜单两级分组）——mcp = [mcp] 声明
+    ///（经 jishu-hub 结构化通道，注入提示块）；skill = [skill] 声明（已分发
+    /// 到 agent skill 目录，注入提示块）；cli = 传统 [tool] 用法注入。
+    pub category: String,
 }
 
 #[tauri::command]
@@ -227,7 +231,14 @@ pub(crate) fn session_tool_list(
                 .map(|t| t.usage.clone())
                 .unwrap_or_default(),
             enabled: selected.contains(p.id()),
-            injectable: p.file.tool.is_some(),
+            injectable: p.file.tool.is_some() || p.file.mcp.is_some() || p.file.skill.is_some(),
+            category: if p.file.mcp.is_some() {
+                "mcp".to_string()
+            } else if p.file.skill.is_some() {
+                "skill".to_string()
+            } else {
+                "cli".to_string()
+            },
         })
         .collect()
 }

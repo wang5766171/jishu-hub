@@ -237,6 +237,43 @@ pub fn save_config(config: &ClaudeConfig) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+/// Claude Code 的 user-scope MCP 权威文件：`~/.claude.json`（非 settings.json——
+/// settings.json 的 mcpServers 不被 Claude Code 加载，v0.9.0 需求20 第二轮
+/// 根因修复：一期注入写错文件导致 agent 无法发现 jishu-hub）。
+pub fn claude_user_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+    Ok(home.join(".claude.json"))
+}
+
+/// ~/.claude.json 整文件 Value 读写（备份 + 原子写；文件是 Claude Code 的
+/// 状态存储，仅经 mcp_inject 的 mcpServers 键级修改，其余键原样保留）。
+pub fn load_claude_user_config_value() -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let path = claude_user_config_path()?;
+    if !path.exists() {
+        return Ok(serde_json::Value::Object(Default::default()));
+    }
+    let content = std::fs::read_to_string(&path)?;
+    Ok(serde_json::from_str(&content)?)
+}
+
+pub fn save_claude_user_config_value(
+    value: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = claude_user_config_path()?;
+    // 备份到 ~/.claude/backups/（复用既有目录与清理策略）。
+    if let Ok(backup_dir) = claude_dir().map(|d| d.join("backups")) {
+        let _ = std::fs::create_dir_all(&backup_dir);
+        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+        if path.exists() {
+            let _ = std::fs::copy(&path, backup_dir.join(format!("userconfig_{timestamp}.json")));
+        }
+        let _ = cleanup_old_backups(&backup_dir, 10);
+    }
+    let content = serde_json::to_string_pretty(value)?;
+    crate::util::atomic_write(&path, content.as_bytes())?;
+    Ok(())
+}
+
 pub fn backup_config() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let dir = claude_dir()?;
     let backup_dir = dir.join("backups");
