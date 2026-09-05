@@ -55,7 +55,7 @@ interface PluginListResult {
  * 核心引擎 = core（jishu-self）+ 解析器系统插件（mcp-resolver；后续
  * skill/CLI 解析器并入此判定）；MCP/CLI 按 kind=tool 的 has_mcp 分流；
  * 智能体 = 内置适配器与 manifest 智能体。 */
-type PluginCategory = "core" | "mcp" | "skill" | "cli" | "agent";
+type PluginCategory = "core" | "mcp" | "skill" | "cli" | "custom" | "agent";
 
 /** 核心引擎 = core + 解析器系统插件（mcp/skill，后续新解析器并入此集合）。 */
 const RESOLVER_PLUGIN_IDS = new Set(["mcp-resolver", "skill-resolver"]);
@@ -67,6 +67,8 @@ function categoryOf(p: PluginDescriptor): PluginCategory {
     if (p.has_skill) return "skill";
     return "cli";
   }
+  // 自建 manifest 智能体单列「自定义插件」（独立插拔），与内置智能体分列。
+  if (p.kind === "manifest") return "custom";
   return "agent";
 }
 
@@ -75,6 +77,7 @@ const PLUGIN_CATEGORIES: Array<{ key: PluginCategory; labelKey: string; fallback
   { key: "mcp", labelKey: "plugins.typeMcp", fallback: "MCP 工具" },
   { key: "skill", labelKey: "plugins.typeSkill", fallback: "Skill 工具" },
   { key: "cli", labelKey: "plugins.typeCli", fallback: "CLI 工具" },
+  { key: "custom", labelKey: "plugins.catCustom", fallback: "自定义插件" },
   { key: "agent", labelKey: "plugins.typeAgent", fallback: "智能体" },
 ];
 
