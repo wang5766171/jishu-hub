@@ -341,7 +341,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                           return null;
                         })}
                         {isLast && autoRetry && (
-                          <div className="flex items-center gap-2 rounded-[6px] border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-sm text-amber-600 dark:text-amber-500">
+                          <div className="flex items-center gap-2 rounded-[6px] border border-border bg-muted px-2.5 py-2 text-sm text-muted-foreground dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-500">
                             <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
                             <span>
                               {t("sessions.autoRetryInProgress", {
