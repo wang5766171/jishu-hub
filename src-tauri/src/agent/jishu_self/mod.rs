@@ -456,9 +456,9 @@ impl ConfigAdapter for JishuSelfAgent {
                     .into(),
                 config: serde_json::json!({
                     "defaultThinkingLevel": "high",
-                    "compaction": { "enabled": true, "thresholdPercent": 90, "keepRecentTokens": 20000 },
+                    "compaction": { "enabled": true, "thresholdPercent": 95, "keepRecentTokens": 20000 },
                     "defaultTools": template_default_tools(&[]),
-                    "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }
+                    "retry": { "enabled": true, "maxRetries": 10, "baseDelayMs": 2000 }
                 }),
                 model_store_patch: Some(serde_json::json!({ "providers": {} })),
             },
@@ -472,9 +472,9 @@ impl ConfigAdapter for JishuSelfAgent {
                         .into(),
                 config: serde_json::json!({
                     "defaultThinkingLevel": "max",
-                    "compaction": { "enabled": true, "thresholdPercent": 85, "keepRecentTokens": 40000 },
+                    "compaction": { "enabled": true, "thresholdPercent": 95, "keepRecentTokens": 40000 },
                     "defaultTools": template_default_tools(&["grep", "find", "ls"]),
-                    "retry": { "enabled": true, "maxRetries": 5, "baseDelayMs": 2000 }
+                    "retry": { "enabled": true, "maxRetries": 10, "baseDelayMs": 2000 }
                 }),
                 model_store_patch: Some(serde_json::json!({ "providers": {} })),
             },
@@ -487,9 +487,9 @@ impl ConfigAdapter for JishuSelfAgent {
                     .into(),
                 config: serde_json::json!({
                     "defaultThinkingLevel": "low",
-                    "compaction": { "enabled": true, "thresholdPercent": 90, "keepRecentTokens": 20000 },
+                    "compaction": { "enabled": true, "thresholdPercent": 95, "keepRecentTokens": 20000 },
                     "defaultTools": template_default_tools(&[]),
-                    "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }
+                    "retry": { "enabled": true, "maxRetries": 10, "baseDelayMs": 2000 }
                 }),
                 model_store_patch: Some(serde_json::json!({ "providers": {} })),
             },
@@ -643,6 +643,23 @@ fn template_default_tools(extra: &[&'static str]) -> Vec<&'static str> {
     tools
 }
 
+/// v0.9.1 需求13：settings 未配置 defaultTools 时向 spawn 参数追加
+/// `--tools <全集>`（Windows 含 powershell）。纯函数可单测。
+fn ensure_default_tools_arg(
+    args: &mut Vec<String>,
+    cfg: &Result<serde_json::Value, Box<dyn std::error::Error>>,
+) {
+    let unset = cfg
+        .as_ref()
+        .ok()
+        .map(|c| c.get("defaultTools").is_none())
+        .unwrap_or(true);
+    if unset {
+        args.push("--tools".to_string());
+        args.push(template_default_tools(&[]).join(","));
+    }
+}
+
 fn mcp_package_args(base_args: &[String], action: &str) -> Vec<String> {
     let mut args = base_args.to_vec();
     args.push(action.to_string());
@@ -670,6 +687,27 @@ fn spawn_env_overrides(cfg: &Result<serde_json::Value, Box<dyn std::error::Error
 #[cfg(test)]
 mod mcp_tests {
     use super::mcp_package_args;
+
+    /// v0.9.1 需求13：未配置 defaultTools → 追加 --tools 全集；已配置 → 不动。
+    #[test]
+    fn default_tools_spawn_arg_only_when_unset() {
+        use serde_json::json;
+        let mut args = vec!["--mode".to_string(), "rpc".to_string()];
+        super::ensure_default_tools_arg(&mut args, &Ok(json!({})));
+        assert_eq!(args[2], "--tools");
+        assert!(args[3].starts_with("read,bash,edit,write"));
+
+        let mut args2 = vec!["--mode".to_string(), "rpc".to_string()];
+        super::ensure_default_tools_arg(
+            &mut args2,
+            &Ok(json!({"defaultTools": ["read"]})),
+        );
+        assert_eq!(args2.len(), 2, "已配置不再追加");
+
+        let mut args3 = vec![];
+        super::ensure_default_tools_arg(&mut args3, &Err("io".into()));
+        assert_eq!(args3.len(), 2, "读失败按未配置处理");
+    }
 
     /// v0.9.1 需求12 补充：hubSpawnEnv 提取——字符串键值对；非字符串值跳过；
     /// 空值合法（置空覆盖）；缺键/读失败 → 空。
@@ -750,6 +788,11 @@ impl TransportAdapter for JishuSelfAgent {
             // 开关（set_agent_tool_mode 已联动写入 Pi settings）。
             _ => {}
         }
+        // v0.9.1 需求13：初始工具集默认=全部工具集——settings 未配置
+        // defaultTools 时 spawn 显式传全集（Windows 含 powershell），消除
+        // pi 回退仅四件的歧义（存量未配置用户无需改配置即生效）；已配置
+        // 任何清单按配置生效。
+        ensure_default_tools_arg(&mut args, &config::load_jishu_config());
         // Resume an existing Pi session when a real (non-transient) session id
         // is provided. Without this, Pi creates a fresh session on every process
         // spawn, losing all conversation history (the root cause of "agent

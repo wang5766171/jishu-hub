@@ -784,12 +784,10 @@
     "defaultToolsTitle": "初始工具集",
     "defaultToolsHelp": "新会话初始激活的内置工具（defaultTools）。这是智能体可用的工具白名单；会话页的工具模式（完整/只读）在此基础上进一步收窄。",
     "toolPresetType": "类型",
-    "toolPresetDefault": "默认（可自定义）",
-    "toolPresetReadonly": "只读",
-    "toolPresetAll": "全部工具",
+    "toolPresetReadonly": "只读工具集",
+    "toolPresetAll": "全部工具集",
     "toolPresetReadonlyHint": "只读类型：新会话仅激活 读取/搜索内容/查找文件/列目录，工具集固定。",
-    "toolPresetAllHint": "全部工具：新会话激活全部内置工具（含终端与文件写入），工具集固定。",
-    "defaultToolsUnsetHint": "当前未配置：新会话默认激活 读取/终端/编辑/写入 四件工具。",
+    "toolPresetAllHint": "默认：新会话激活全部内置工具（Windows 含 PowerShell）；工具集固定，不需要逐项勾选。",
     "defaultToolsCustomHint": "已自定义初始工具集：仅勾选的工具会在新会话激活；全部取消 = 新会话无内置工具。",
     "retryTitle": "请求重试",
     "retryHelp": "模型请求失败后的自动重试策略（retry）。",
@@ -801,7 +799,8 @@
     "envVarsTitle": "会话环境变量",
     "envVarsInvalidLine": "第 {{line}} 行格式应为 KEY=VALUE",
     "rawSectionTitle": "原始配置（settings.json）",
-    "envVarsHelp": "每行一条 KEY=VALUE，附加注入到每次 jishu 会话进程环境；在内置默认（PI_SKIP_VERSION_CHECK / PI_OFFLINE 等）之后应用，可覆盖——例如 PI_OFFLINE= 置空关闭离线刷新，HTTP_PROXY / HTTPS_PROXY 让模型请求走代理。保存后对新会话生效。"
+    "envVarsHelp": "每行一条 KEY=VALUE，附加注入到每次 jishu 会话进程环境；在内置默认（PI_SKIP_VERSION_CHECK / PI_OFFLINE 等）之后应用，可覆盖——例如 PI_OFFLINE= 置空关闭离线刷新，HTTP_PROXY / HTTPS_PROXY 让模型请求走代理。保存后对新会话生效。",
+    "toolPresetCustom": "自定义工具集"
   },
   "commands": {
     "title": "快捷命令",

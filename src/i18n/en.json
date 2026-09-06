@@ -784,12 +784,10 @@
     "defaultToolsTitle": "Initial tools",
     "defaultToolsHelp": "Built-in tools active at session start (defaultTools). This is the agent's tool whitelist; the in-session tool mode (full/readonly) narrows it further.",
     "toolPresetType": "Type",
-    "toolPresetDefault": "Default (customizable)",
-    "toolPresetReadonly": "Read-only",
+    "toolPresetReadonly": "Read-only tools",
     "toolPresetAll": "All tools",
     "toolPresetReadonlyHint": "Read-only: new sessions activate only Read/Grep/Find/List; the tool set is fixed.",
-    "toolPresetAllHint": "All tools: new sessions activate every built-in tool (including Bash and file writes); the tool set is fixed.",
-    "defaultToolsUnsetHint": "Not configured: new sessions activate Read/Bash/Edit/Write by default.",
+    "toolPresetAllHint": "Default: new sessions activate every built-in tool (PowerShell included on Windows); the tool set is fixed.",
     "defaultToolsCustomHint": "Custom initial tool set: only checked tools activate in new sessions; unchecking all means no built-in tools.",
     "retryTitle": "Request retry",
     "retryHelp": "Automatic retry policy after model request failures (retry).",
@@ -801,7 +799,8 @@
     "envVarsTitle": "Session environment variables",
     "envVarsInvalidLine": "Line {{line}} must be KEY=VALUE",
     "rawSectionTitle": "Raw config (settings.json)",
-    "envVarsHelp": "One KEY=VALUE per line, injected into every jishu session process; applied after built-in defaults (PI_SKIP_VERSION_CHECK / PI_OFFLINE etc.) so they can be overridden — e.g. PI_OFFLINE= disables offline mode, HTTP_PROXY / HTTPS_PROXY routes model traffic through a proxy. Takes effect for new sessions."
+    "envVarsHelp": "One KEY=VALUE per line, injected into every jishu session process; applied after built-in defaults (PI_SKIP_VERSION_CHECK / PI_OFFLINE etc.) so they can be overridden — e.g. PI_OFFLINE= disables offline mode, HTTP_PROXY / HTTPS_PROXY routes model traffic through a proxy. Takes effect for new sessions.",
+    "toolPresetCustom": "Custom tools"
   },
   "commands": {
     "title": "Commands",

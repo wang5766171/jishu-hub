@@ -28,7 +28,6 @@ import { RotateCcw } from "lucide-react";
 import { SectionHelp } from "./section-help";
 
 const PI_BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
-const PI_DEFAULT_TOOLS = ["read", "bash", "edit", "write"] as readonly string[];
 /** 只读预设（同 PiRpc readonly 模式白名单：全集去掉 bash/edit/write）。 */
 const PI_READONLY_TOOLS = ["read", "grep", "find", "ls"] as readonly string[];
 
@@ -45,10 +44,12 @@ const IS_WINDOWS = typeof navigator !== "undefined" && /windows/i.test(navigator
 const PI_TOOL_CATALOG = toolCatalogFor(IS_WINDOWS);
 const PI_ALL_TOOLS = PI_TOOL_CATALOG;
 
-/** defaultTools 预设类型（v0.7.5 需求1 迭代二）：类型只是前端预设，
- *  落盘始终是 Pi 原生的 defaultTools 单字段——default=自定义勾选，
- *  readonly/all=固定工具集（Pi 原生无 permission/bypassPermissions 配置）。 */
-type ToolPresetType = "default" | "readonly" | "all";
+/** defaultTools 预设类型（v0.7.5 需求1 迭代二；v0.9.1 需求13 重排：
+ *  默认=全部工具集）：类型只是前端预设，落盘始终是 Pi 原生 defaultTools
+ *  单字段——all/readonly=固定工具集，custom=自定义勾选（Pi 原生无
+ *  permission/bypassPermissions 配置）。未配置（null）视为全部：与 spawn
+ *  侧规格化（未配置 → --tools 全集）及保存规格化三处一致。 */
+type ToolPresetType = "all" | "readonly" | "custom";
 
 /** Pi CompactionSettings 的可编辑子集；null = 未配置（用 Pi 默认）。 */
 type Compaction = { enabled?: boolean; thresholdPercent?: number; keepRecentTokens?: number };
@@ -66,11 +67,11 @@ const numField = (raw: string): number | undefined => {
 const sameToolSet = (a: readonly string[], b: readonly string[]) =>
   a.length === b.length && b.every((x) => a.includes(x));
 
-/** 从落盘的 defaultTools 反推预设类型。 */
+/** 从落盘的 defaultTools 反推预设类型（v0.9.1 需求13：null → 全部）。 */
 const deriveToolPreset = (tools: string[] | null): ToolPresetType => {
-  if (tools && sameToolSet(tools, PI_READONLY_TOOLS)) return "readonly";
-  if (tools && sameToolSet(tools, PI_ALL_TOOLS)) return "all";
-  return "default";
+  if (!tools || sameToolSet(tools, PI_ALL_TOOLS)) return "all";
+  if (sameToolSet(tools, PI_READONLY_TOOLS)) return "readonly";
+  return "custom";
 };
 
 export function JishuAgentSettingsBlock({
@@ -122,18 +123,21 @@ export function JishuAgentSettingsBlock({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentConfig]);
 
-  // 预设类型联动落盘值：readonly/all 覆盖为固定工具集，default 才用自定义勾选。
+  // 预设类型联动落盘值：readonly/all 覆盖为固定工具集，custom 用自定义勾选。
+  // v0.9.1 需求13：未配置（null）与全集等价比较（dirty 不误报）；保存时
+  // 不写 null——默认语义=全部工具集，删键会让 pi 回落四件，与默认矛盾。
   const toolsPayload =
     toolPreset === "readonly"
       ? [...PI_READONLY_TOOLS]
       : toolPreset === "all"
         ? [...PI_ALL_TOOLS]
         : tools;
+  const savedToolsNormalized = savedTools ?? [...PI_ALL_TOOLS];
 
   const dirty =
     thinking !== savedThinking ||
     !jsonEq(compaction, savedCompaction) ||
-    !jsonEq(toolsPayload, savedTools) ||
+    !jsonEq(toolsPayload, savedToolsNormalized) ||
     !jsonEq(retry, savedRetry);
 
   const save = async () => {
@@ -148,7 +152,7 @@ export function JishuAgentSettingsBlock({
           config: {
             defaultThinkingLevel: thinking || null,
             compaction: compaction ?? null,
-            defaultTools: toolsPayload ?? null,
+            defaultTools: toolsPayload,
             retry: retry ?? null,
           },
         });
@@ -171,13 +175,15 @@ export function JishuAgentSettingsBlock({
   }, [registerSave]);
 
   // 联动展示：预设类型决定勾选显示与可编辑性（readonly/all 固定不可勾选）。
+  // v0.9.1 需求13：custom 的回退=全集——未配置（默认=全部）直接切自定义
+  // 时以全集起勾，勾选视图不从"全部"突变回四件。
   const displayTools =
     toolPreset === "readonly"
       ? PI_READONLY_TOOLS
       : toolPreset === "all"
         ? PI_ALL_TOOLS
-        : (tools ?? PI_DEFAULT_TOOLS);
-  const toolsEditable = toolPreset === "default";
+        : (tools ?? PI_ALL_TOOLS);
+  const toolsEditable = toolPreset === "custom";
   const toggleTool = (name: string, on: boolean) => {
     const next = on
       ? PI_TOOL_CATALOG.filter((t) => displayTools.includes(t) || t === name)
@@ -263,7 +269,7 @@ export function JishuAgentSettingsBlock({
                 type="number"
                 min={1}
                 max={99}
-                placeholder="90"
+                placeholder="95"
                 value={compaction?.thresholdPercent ?? ""}
                 onChange={(e) =>
                   setCompaction({
@@ -306,7 +312,7 @@ export function JishuAgentSettingsBlock({
             {t("config.defaultToolsTitle")}
             <SectionHelp content={t("config.defaultToolsHelp")} />
           </Label>
-          {toolsEditable && tools !== null && (
+          {toolsEditable && savedTools !== null && (
             <Button
               variant="ghost"
               size="sm"
@@ -328,9 +334,9 @@ export function JishuAgentSettingsBlock({
             onChange={(e) => setToolPreset(e.target.value as ToolPresetType)}
             className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
-            <option value="default">{t("config.toolPresetDefault")}</option>
-            <option value="readonly">{t("config.toolPresetReadonly")}</option>
             <option value="all">{t("config.toolPresetAll")}</option>
+            <option value="readonly">{t("config.toolPresetReadonly")}</option>
+            <option value="custom">{t("config.toolPresetCustom")}</option>
           </select>
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
@@ -355,9 +361,7 @@ export function JishuAgentSettingsBlock({
             ? t("config.toolPresetReadonlyHint")
             : toolPreset === "all"
               ? t("config.toolPresetAllHint")
-              : tools === null
-                ? t("config.defaultToolsUnsetHint")
-                : t("config.defaultToolsCustomHint")}
+              : t("config.defaultToolsCustomHint")}
         </p>
       </div>
 
@@ -400,7 +404,7 @@ export function JishuAgentSettingsBlock({
               className="h-8 text-sm"
               type="number"
               min={0}
-              placeholder="3"
+              placeholder="10"
               value={retry?.maxRetries ?? ""}
               onChange={(e) =>
                 setRetry({

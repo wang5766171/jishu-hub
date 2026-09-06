@@ -76,7 +76,7 @@ describe("JishuAgentSettingsBlock powershell 开关", () => {
     expect(screen.getByLabelText("Bash")).toBeTruthy();
   });
 
-  it("saves defaultTools with powershell when checked from unset state", async () => {
+  it("unset defaults to the all-tools preset; custom preset saves the checked subset", async () => {
     setUserAgent(WINDOWS_UA);
     const registered: Array<() => void> = [];
     const { JishuAgentSettingsBlock } = await import("./jishu-agent-settings");
@@ -88,7 +88,17 @@ describe("JishuAgentSettingsBlock powershell 开关", () => {
         registerSave={(fn) => registered.push(fn)}
       />,
     );
-    fireEvent.click(screen.getByLabelText("PowerShell"));
+    // v0.9.1 需求13：未配置 → 预设=全部工具集，全部勾选（含 PowerShell）
+    // 且固定不可编辑。
+    const presetSelect = document.getElementById("jishu-tool-preset") as HTMLSelectElement;
+    expect(presetSelect.value).toBe("all");
+    const powershell = screen.getByLabelText("PowerShell") as HTMLInputElement;
+    expect(powershell.checked).toBe(true);
+    expect(powershell.disabled).toBe(true);
+
+    // 切自定义预设 → 取消 write → 保存载荷为目录序全集去 write（含 powershell）。
+    fireEvent.change(presetSelect, { target: { value: "custom" } });
+    fireEvent.click(screen.getByLabelText("Write"));
     expect(registered.length).toBeGreaterThan(0);
     await registered[registered.length - 1]!();
     expect(invokeCommandMock).toHaveBeenCalledWith(
@@ -96,7 +106,7 @@ describe("JishuAgentSettingsBlock powershell 开关", () => {
       expect.objectContaining({
         agentId: "jishu",
         config: expect.objectContaining({
-          defaultTools: ["read", "bash", "edit", "write", "powershell"],
+          defaultTools: ["read", "bash", "edit", "grep", "find", "ls", "powershell"],
         }),
       }),
     );
