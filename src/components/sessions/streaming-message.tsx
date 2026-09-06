@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useCallback, memo, useRef } from "react";
 import { Loader2 } from "lucide-react";
+import { classifyRetryError } from "@/lib/retry-reason";
 import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -343,12 +344,12 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                         {isLast && autoRetry && (
                           <div className="flex items-center gap-2 rounded-[6px] border border-border bg-muted px-2.5 py-2 text-sm text-muted-foreground dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-500">
                             <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-                            <span>
+                            <span title={autoRetry.errorMessage || undefined}>
+                              {autoRetry.errorMessage ? `${t(classifyRetryError(autoRetry.errorMessage))}，` : ""}
                               {t("sessions.autoRetryInProgress", {
                                 attempt: autoRetry.attempt,
                                 max: autoRetry.maxAttempts,
                               })}
-                              {autoRetry.errorMessage ? `（${autoRetry.errorMessage}）` : ""}
                             </span>
                           </div>
                         )}

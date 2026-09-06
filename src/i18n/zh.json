@@ -302,7 +302,15 @@
     "insertTool": "插入",
     "turnFailedBubble": "本轮对话失败（{{reason}}），请检查模型与账号配置后重试",
     "autoRetryInProgress": "第 {{attempt}}/{{max}} 次自动重试中",
-    "autoRetryExhausted": "自动重试 {{attempt}} 次后仍失败：{{error}}"
+    "autoRetryExhausted": "自动重试 {{attempt}} 次后仍失败：{{error}}",
+    "retryReasonNetwork": "网络无法连接",
+    "retryReasonDns": "域名解析失败",
+    "retryReasonTimeout": "请求超时",
+    "retryReasonReset": "连接中断",
+    "retryReasonRateLimit": "请求过于频繁",
+    "retryReasonServer": "服务暂时不可用",
+    "retryReasonAuth": "认证失败",
+    "retryReasonGeneric": "请求失败"
   },
   "plugins": {
     "createTitle": "新建插件",

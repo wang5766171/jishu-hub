@@ -302,7 +302,15 @@
     "insertTool": "Insert",
     "turnFailedBubble": "This turn failed ({{reason}}). Check model and account settings, then retry.",
     "autoRetryInProgress": "Auto-retrying (attempt {{attempt}}/{{max}})",
-    "autoRetryExhausted": "Failed after {{attempt}} auto-retries: {{error}}"
+    "autoRetryExhausted": "Failed after {{attempt}} auto-retries: {{error}}",
+    "retryReasonNetwork": "Network unreachable",
+    "retryReasonDns": "DNS resolution failed",
+    "retryReasonTimeout": "Request timed out",
+    "retryReasonReset": "Connection reset",
+    "retryReasonRateLimit": "Rate limited",
+    "retryReasonServer": "Service temporarily unavailable",
+    "retryReasonAuth": "Authentication failed",
+    "retryReasonGeneric": "Request failed"
   },
   "plugins": {
     "createTitle": "New Plugin",
