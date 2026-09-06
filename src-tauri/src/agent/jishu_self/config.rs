@@ -257,6 +257,47 @@ pub fn save_pi_project_settings_fields(
     Ok(())
 }
 
+/// v0.9.1 需求13 测试期补充：重试默认值固化——pi 对未配置的 retry 段
+/// 原生回退 maxRetries=3（settings-manager getRetrySettings `?? 3`），
+/// hub 产品默认（10 次）必须落盘才触达（模板只影响应用模板/新配置，
+/// 存量未配置用户实测仍 3 次）。启动时幂等调用：retry 段缺失 → 写入完整
+/// 默认 {enabled: true, maxRetries: 10, baseDelayMs: 2000}；retry 段存在
+/// 但缺 maxRetries → 仅补 maxRetries=10（enabled/baseDelayMs 的显式选择
+/// 不覆盖）；已显式配置任何 maxRetries → 不动。
+pub fn ensure_default_retry_settings() {
+    let Ok(mut v) = load_jishu_config() else {
+        return;
+    };
+    if ensure_default_retry_in_value(&mut v) {
+        let _ = save_jishu_config(&v);
+    }
+}
+
+/// 纯函数（测试注入）：返回是否发生写入。
+fn ensure_default_retry_in_value(v: &mut serde_json::Value) -> bool {
+    let Some(obj) = v.as_object_mut() else {
+        return false;
+    };
+    match obj.get("retry").and_then(|r| r.as_object()).cloned() {
+        None => {
+            obj.insert(
+                "retry".to_string(),
+                serde_json::json!({ "enabled": true, "maxRetries": 10, "baseDelayMs": 2000 }),
+            );
+            true
+        }
+        Some(retry) => {
+            if retry.contains_key("maxRetries") {
+                return false;
+            }
+            let mut merged = retry;
+            merged.insert("maxRetries".to_string(), serde_json::json!(10));
+            obj.insert("retry".to_string(), serde_json::Value::Object(merged));
+            true
+        }
+    }
+}
+
 pub fn load_jishu_config() -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let path = jishu_config_path()?;
     if !path.exists() {
@@ -509,6 +550,28 @@ pub fn save_raw_jishu_config(content: &str) -> Result<(), Box<dyn std::error::Er
 
 #[cfg(test)]
 mod tests {
+    /// v0.9.1 需求13 测试期：重试默认固化三态。
+    #[test]
+    fn retry_default_materialization() {
+        use serde_json::json;
+        // 无 retry 段 → 写入完整默认。
+        let mut v = json!({"defaultThinkingLevel": "high"});
+        assert!(super::ensure_default_retry_in_value(&mut v));
+        assert_eq!(v["retry"]["maxRetries"], json!(10));
+        assert_eq!(v["retry"]["enabled"], json!(true));
+        // retry 段存在但缺 maxRetries → 仅补 10，显式字段保留。
+        let mut v2 = json!({"retry": {"enabled": false}});
+        assert!(super::ensure_default_retry_in_value(&mut v2));
+        assert_eq!(v2["retry"]["maxRetries"], json!(10));
+        assert_eq!(v2["retry"]["enabled"], json!(false));
+        // 已显式配置 → 不动。
+        let mut v3 = json!({"retry": {"maxRetries": 5, "enabled": true}});
+        assert!(!super::ensure_default_retry_in_value(&mut v3));
+        assert_eq!(v3["retry"]["maxRetries"], json!(5));
+        // 幂等：再次运行无写入。
+        assert!(!super::ensure_default_retry_in_value(&mut v2));
+    }
+
 
     #[test]
     fn pi_project_settings_round_trip_preserves_unknown_keys() {

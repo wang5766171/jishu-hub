@@ -85,6 +85,9 @@ pub fn run() {
             // v0.8.1 需求9/10：内置自适应插件（任务需求/流程规划）随包分发，
             // 首启落 ~/.jishu-hub/agents/（幂等）。
             agent::plugin::ensure_builtin_adaptive_plugins();
+            // v0.9.1 需求13 测试期：重试默认固化（pi 未配置原生回退 3 次，
+            // hub 默认 10 需落盘触达；幂等——已有任何显式值不覆盖）。
+            agent::jishu_self::config::ensure_default_retry_settings();
             // v0.9.0 需求2：[pi_extension] 声明插件的 entry 部署/回收（幂等）。
             agent::pi_deploy::ensure_pi_extension_deployments();
             // 自动部署 request_user_input 扩展（conductor 的 discuss/plan 阶段依赖此工具）
