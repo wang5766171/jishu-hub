@@ -797,7 +797,8 @@
     "retryMaxRetries": "最大重试次数",
     "retryBaseDelay": "基础间隔 (ms)",
     "retryDefaultHint": "未配置时默认启用：最多重试 3 次、基础间隔 2000ms（指数退避）。留空的数值沿用默认。",
-    "officialAuthRefresh": "刷新认证状态"
+    "officialAuthRefresh": "刷新认证状态",
+    "mcpUnifiedNotice": "MCP 服务已统一收纳到「插件管理」：经 MCP 插件声明与启停管理，jishu-hub 解析服务自动聚合分发到所有智能体，本页不再提供逐家手改。"
   },
   "commands": {
     "title": "快捷命令",

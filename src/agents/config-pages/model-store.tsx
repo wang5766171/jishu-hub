@@ -4,7 +4,6 @@ import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { ModelManager } from "@/components/config/model-manager";
 import { TemplateManager } from "@/components/config/template-manager";
 import { BackupManager } from "@/components/config/backup-manager";
-import { McpEditor } from "@/components/config/mcp-editor";
 import { JishuAgentSettingsBlock } from "@/components/config/jishu-agent-settings";
 import {
   ConfigPageShell,
@@ -42,10 +41,6 @@ export function ModelStoreConfigPage({
   );
 
   const supportsMcp = configSurface.kind === "model_store" && configSurface.supports_mcp;
-
-  const [mcpSaving, setMcpSaving] = useState(false);
-  const [mcpError, setMcpError] = useState<string | null>(null);
-  const [mcpSuccess, setMcpSuccess] = useState<string | null>(null);
   // v0.8.0 需求9 收尾：保存按钮上移至页头（与大标题同行）。行为块经
   // onSaveStateChange/registerSave 上报；MCP 编辑器经 onStateChange 上报。
   const [behaviorSaveState, setBehaviorSaveState] = useState({ dirty: false, saving: false });
@@ -60,31 +55,6 @@ export function ModelStoreConfigPage({
   const registerModelsSave = useCallback((save: (() => void) | null) => {
     modelsSaveRef.current = save ?? (() => {});
   }, []);
-  const [mcpEditorState, setMcpEditorState] = useState<{
-    value: Record<string, unknown> | null;
-    hasError: boolean;
-  } | null>(null);
-
-  const handleSaveMcp = async () => {
-    if (mcpSaving || mcpEditorState?.hasError) return;
-    setMcpSaving(true);
-    setMcpError(null);
-    setMcpSuccess(null);
-    try {
-      await invokeCommand("save_config", {
-        agentId,
-        config: { mcpServers: mcpEditorState?.value ?? null },
-      });
-      refetchAgentConfig();
-      setMcpSuccess(t("config.saveSuccess"));
-      setTimeout(() => setMcpSuccess(null), 3000);
-    } catch (err) {
-      setMcpError(String(err));
-    } finally {
-      setMcpSaving(false);
-    }
-  };
-
   const handleExport = async () => {
     try {
       await invokeCommand("export_config_dialog", { agentId });
@@ -132,20 +102,6 @@ export function ModelStoreConfigPage({
             <Save className="h-3.5 w-3.5" />
             {behaviorSaveState.saving ? t("common.saving") : t("common.save")}
           </Button>
-        ) : configTab === "advanced" && supportsMcp ? (
-          <div className="flex items-center gap-3">
-            {mcpSuccess && (
-              <span className="text-xs text-green-500">{mcpSuccess}</span>
-            )}
-            <Button
-              size="sm"
-              disabled={mcpSaving || (mcpEditorState?.hasError ?? true)}
-              onClick={() => void handleSaveMcp()}
-            >
-              <Save className="h-3.5 w-3.5" />
-              {t("common.save")}
-            </Button>
-          </div>
         ) : undefined
       }
     >
@@ -190,21 +146,14 @@ export function ModelStoreConfigPage({
         </div>
       )}
 
-      {/* 高级设置：MCP（v0.8.0 需求9 收尾：去掉「MCP 服务」小标题行，
-          保存按钮在页头；错误提示保留在编辑器上方）。 */}
+      {/* 高级设置：v0.9.1 需求12——MCP 服务统一收纳到「插件管理」经 MCP
+          插件管理（jishu-hub 解析服务自动聚合分发到各智能体），本页不再
+          提供逐家手改入口。 */}
       {configTab === "advanced" && (
         <div className="space-y-4">
           {supportsMcp && (
-            <div className="space-y-2">
-              {mcpError && (
-                <div className="mb-2 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-                  {mcpError}
-                </div>
-              )}
-              <McpEditor
-                value={(agentConfig?.mcpServers as never) || null}
-                onStateChange={setMcpEditorState}
-              />
+            <div className="rounded-md border border-border/40 bg-muted/20 p-4 text-sm text-muted-foreground">
+              {t("config.mcpUnifiedNotice")}
             </div>
           )}
         </div>

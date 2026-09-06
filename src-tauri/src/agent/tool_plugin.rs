@@ -265,7 +265,7 @@ pub fn render_tool_block(plugins: &[&ToolPlugin]) -> String {
         if plugin.file.mcp.is_some() {
             out.push_str(&format!("\n## {} — MCP 服务\n", plugin.file.info.id));
             out.push_str(&format!(
-                "本会话启用了 MCP 服务「{}」。其工具经 jishu-hub MCP server 结构化提供，工具名以 `{}__` 开头，可直接调用（无需 shell）；未在本条选中的 MCP 服务同样在线可用。\n",
+                "本会话启用了 MCP 服务「{}」。调用它的工具时**优先**使用 jishu-hub 解析服务提供的、以 `{}__` 开头的 MCP 工具（结构化通道，直接调用，无需 shell、不要自行拼接命令行）；未选中的 MCP 服务同样经 jishu-hub 在线可用，按同样的 `插件id__` 前缀规则发现即可。\n",
                 plugin.file.info.display_name, plugin.file.info.id
             ));
         }
@@ -314,6 +314,18 @@ pub fn render_tool_block(plugins: &[&ToolPlugin]) -> String {
     }
     out.push_str(TOOL_BLOCK_CLOSE);
     out
+}
+
+/// v0.9.1 需求12：jishu-hub MCP 解析服务全局提示块——会话未勾选任何工具
+/// 插件时注入（勾选路径走 render_tool_block，各服务小节已含同款指引），
+/// 保证每个智能体每轮消息都能识别解析服务并优先经它调用 MCP 工具。
+/// 存在**启用的** [mcp] 插件才产出（与聚合 server 的暴露范围一致）。
+pub fn render_hub_mcp_resolver_hint(plugins: &[&ToolPlugin]) -> String {
+    let has_mcp = plugins.iter().any(|p| p.enabled && p.file.mcp.is_some());
+    if !has_mcp {
+        return String::new();
+    }
+    "\n## jishu-hub — MCP 解析服务\n本会话可经 MCP 服务「jishu-hub」使用 hub 管理的全部 MCP 插件工具（工具名以 `插件id__` 开头，经该服务动态发现，插件启停实时生效）。需要 MCP 能力时优先调用 jishu-hub 提供的这些工具，不要尝试直连各 MCP 服务，也不要用 shell 命令替代。\n".to_string()
 }
 
 /// 回放派生（v0.9.0 需求3 方案 C）：剥注入块 + 从块内 `## <id> — <desc>`
@@ -608,6 +620,53 @@ usage = "u"
             PathBuf::from("/agents/skill-y.toml"),
             true,
         );
+        // v0.9.1 需求12：全局解析服务提示块——启用 [mcp] 插件才有，
+        // 文案含优先级指引与前缀规则。
+        {
+            let block = render_hub_mcp_resolver_hint(&[&mcp_plugin]);
+            assert!(block.contains("jishu-hub — MCP 解析服务"));
+            assert!(block.contains("插件id__"));
+            assert!(block.contains("优先"));
+            // 无 [mcp] 插件 → 空块。
+            let none = render_hub_mcp_resolver_hint(&[&skill_plugin]);
+            assert!(none.is_empty());
+            // 禁用的 [mcp] 插件 → 空块（与聚合 server 暴露范围一致）。
+            let mut disabled_mcp = ToolPlugin::for_test(
+                std::sync::Arc::new(AgentManifestFile {
+                    schema: 1,
+                    kind: ManifestKind::Tool,
+                    info: InfoSection {
+                        id: "mcp-off".to_string(),
+                        display_name: "MCP Off".to_string(),
+                        icon: String::new(),
+                        install_hint: None,
+                    },
+                    probe: None,
+                    transport: None,
+                    config: None,
+                    session: None,
+                    capabilities: None,
+                    pi_extension: None,
+                    mcp: Some(crate::agent::manifest::schema::McpSection {
+                        transport: Default::default(),
+                        command: Some("npx".into()),
+                        args: None,
+                        env: None,
+                        url: None,
+                        headers: None,
+                    }),
+                    panel: None,
+                    skill: None,
+                    skills: None,
+                    tool: None,
+                }),
+                PathBuf::from("/agents/mcp-off.toml"),
+                false,
+            );
+            disabled_mcp.enabled = false;
+            assert!(render_hub_mcp_resolver_hint(&[&disabled_mcp]).is_empty());
+        }
+
         let block = render_tool_block(&[&mcp_plugin, &skill_plugin]);
         assert!(block.contains("## mcp-x — MCP 服务"));
         assert!(block.contains("mcp-x__"));

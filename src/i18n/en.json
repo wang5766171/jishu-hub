@@ -797,7 +797,8 @@
     "retryMaxRetries": "Max retries",
     "retryBaseDelay": "Base delay (ms)",
     "retryDefaultHint": "When unset it is enabled by default: up to 3 retries with a 2000ms base delay (exponential backoff). Empty fields fall back to defaults.",
-    "officialAuthRefresh": "Refresh auth status"
+    "officialAuthRefresh": "Refresh auth status",
+    "mcpUnifiedNotice": "MCP services are now managed centrally in Plugins: declare and toggle MCP plugins there — the jishu-hub resolver aggregates and distributes them to all agents automatically."
   },
   "commands": {
     "title": "Commands",

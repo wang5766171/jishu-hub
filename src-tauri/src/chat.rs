@@ -58,10 +58,18 @@ fn compose_tool_message(
     let Ok(s) = state.lock() else {
         return message;
     };
-    if tool_ids.is_empty() {
-        return message;
-    }
     let tools = s.tool_plugins.lock().unwrap_or_else(|e| e.into_inner());
+    if tool_ids.is_empty() {
+        // v0.9.1 需求12：未勾选工具插件的会话也注入 MCP 解析服务提示——
+        // 每个智能体每轮消息都能识别 jishu-hub 聚合服务并优先经它调用
+        // MCP 工具（存在启用的 [mcp] 插件才有块；无则消息原样返回）。
+        let refs: Vec<&agent::tool_plugin::ToolPlugin> = tools.iter().collect();
+        let hint = agent::tool_plugin::render_hub_mcp_resolver_hint(&refs);
+        if hint.is_empty() {
+            return message;
+        }
+        return format!("{hint}\n\n{message}");
+    }
     let matched: Vec<&agent::tool_plugin::ToolPlugin> = tools
         .iter()
         .filter(|t| tool_ids.iter().any(|id| id == t.id()))

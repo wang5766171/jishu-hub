@@ -15,7 +15,6 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { ArrowRight, Check, Eye, EyeOff, ExternalLink, Plus, Power, Trash2 } from "lucide-react";
 import type { AgentConfigSection, ClaudeConfig } from "@/types";
-import { McpEditor } from "./mcp-editor";
 import { ModelCombobox } from "./model-combobox";
 import { PermissionModeCards } from "./permission-cards";
 import { RuleQuickAdd } from "./rule-quick-add";
@@ -870,12 +869,6 @@ export function ConfigAdvancedZone({
           {(!config.enabledPlugins || Object.keys(config.enabledPlugins).length === 0) && (
             <p className="text-sm text-muted-foreground">{t("config.noPlugins")}</p>
           )}
-        </div>
-      </AdvancedBlock>
-
-      <AdvancedBlock title={t("config.mcpServers")} help={t("config.fieldMapMcp")}>
-        <div className="pt-1">
-          <McpEditor value={config.mcpServers} onChange={(v) => onChange({ mcpServers: v })} />
         </div>
       </AdvancedBlock>
 
