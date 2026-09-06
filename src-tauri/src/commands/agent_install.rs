@@ -144,7 +144,14 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
     if !source.exists() {
         source = res_dir.join("_up_").join("third_party").join("pi-bundle");
     }
-    install_pi_bundle_from(&source)
+    let output = install_pi_bundle_from(&source)?;
+    // v0.9.1 需求11：agent 装好顺手确保 MCP 适配器（幂等；失败不阻断——
+    // 启动自愈与环境检测页手动安装兜底）。
+    Ok(match crate::agent::jishu_self::JishuSelfAgent::ensure_mcp_adapter_installed().await {
+        Ok(true) => format!("{output}\nMCP adapter auto-installed."),
+        Ok(false) => output,
+        Err(e) => format!("{output}\nMCP adapter auto-install skipped: {e}"),
+    })
 }
 
 /// 核心：把 pi-bundle 源目录安装到 ~/.jishu-agent（备份+覆盖+回滚）。
@@ -234,7 +241,19 @@ pub fn run_install_agent_cli() -> i32 {
         source = exe_dir.join("_up_").join("third_party").join("pi-bundle");
     }
     match install_pi_bundle_from(&source) {
-        Ok(_) => 0,
+        Ok(_) => {
+            // v0.9.1 需求11：POSTINSTALL 阶段顺手确保 MCP 适配器（幂等；
+            // npm 网络安装失败仅告警、不影响安装器退出码——首启后台自愈
+            // 与环境检测页手动安装兜底）。
+            match tauri::async_runtime::block_on(
+                crate::agent::jishu_self::JishuSelfAgent::ensure_mcp_adapter_installed(),
+            ) {
+                Ok(true) => eprintln!("[install-agent] MCP adapter auto-installed"),
+                Ok(false) => {}
+                Err(e) => eprintln!("[install-agent] MCP adapter auto-install skipped: {e}"),
+            }
+            0
+        }
         Err(e) => {
             eprintln!("[install-agent] FAILED: {e}");
             1

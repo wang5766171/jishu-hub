@@ -99,6 +99,16 @@ pub fn run() {
             // v0.9.0 需求20：skill 分发同步（skill-resolver 门控；单目标失败
             // 不影响启动）。
             let _ = agent::skill_deploy::sync_skill_deployments(false);
+            // v0.9.1 需求11：MCP 适配器自动安装自愈——安装器阶段已尝试装，
+            // 此处幂等兜底（离线安装失败后每次启动重试）。后台执行不阻塞
+            // 启动，失败仅告警；环境检测页手动安装保留为最终兜底。
+            tauri::async_runtime::spawn(async {
+                match agent::jishu_self::JishuSelfAgent::ensure_mcp_adapter_installed().await {
+                    Ok(true) => log::info!("[startup] MCP adapter auto-installed"),
+                    Ok(false) => {}
+                    Err(e) => log::warn!("[startup] MCP adapter auto-install deferred: {e}"),
+                }
+            });
             // v0.7.0：全局 active agent 已移除（需求一：智能体切换去全局化）。
             // 各模块按自身作用域选择 agent，通过 agent_id 入参显式指定；
             // 会话与智能体在 Session 层绑定。启动时不再加载/设置全局 active。

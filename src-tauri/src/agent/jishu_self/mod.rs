@@ -27,6 +27,32 @@ impl JishuSelfAgent {
         Self::run_mcp_package_command("install").await
     }
 
+    /// pi-mcp-adapter 安装位置（pi install npm:pkg 落
+    /// `<config_dir>/npm/node_modules/<pkg>`，与 check_mcp 同口径）。
+    pub(crate) fn mcp_adapter_dir() -> Option<std::path::PathBuf> {
+        pi_config_dir().map(|dir| {
+            std::path::Path::new(&dir)
+                .join("npm")
+                .join("node_modules")
+                .join("pi-mcp-adapter")
+        })
+    }
+
+    /// v0.9.1 需求11：MCP 适配器自动安装（幂等）——hub 安装期（NSIS
+    /// POSTINSTALL `--install-agent` / GUI 环境检测内装）与每次启动后台
+    /// 自愈共用：已安装 → Ok(false)；缺失 → `pi install npm:pi-mcp-adapter`
+    /// → Ok(true)。失败返回 Err（调用方仅告警不阻断——环境检测页的手动
+    /// 安装按钮保留为离线兜底）。
+    pub async fn ensure_mcp_adapter_installed() -> Result<bool, String> {
+        let Some(dir) = Self::mcp_adapter_dir() else {
+            return Err("cannot resolve ~/.jishu-agent/agent directory".to_string());
+        };
+        if dir.exists() {
+            return Ok(false);
+        }
+        Self::install_mcp_standalone().await.map(|_| true)
+    }
+
     pub async fn update_mcp_standalone() -> Result<String, String> {
         Self::run_mcp_package_command("update").await
     }
@@ -552,14 +578,10 @@ impl crate::agent::config_roles::McpIntegration for JishuSelfAgent {
         // Auto-migrate on check (idempotent).
         self.migrate_mcp_if_needed();
 
-        let agent_dir = pi_config_dir()
-            .ok_or_else(|| "Cannot resolve ~/.jishu-agent/agent directory".to_string())?;
         // pi install <npm:pkg> stores the package in
         // <PI_CODING_AGENT_DIR>/npm/node_modules/<pkg>, not under packages/.
-        let adapter_dir = std::path::Path::new(&agent_dir)
-            .join("npm")
-            .join("node_modules")
-            .join("pi-mcp-adapter");
+        let adapter_dir = Self::mcp_adapter_dir()
+            .ok_or_else(|| "Cannot resolve ~/.jishu-agent/agent directory".to_string())?;
 
         if !adapter_dir.exists() {
             return Ok(serde_json::json!({"installed": false, "version": null}));
