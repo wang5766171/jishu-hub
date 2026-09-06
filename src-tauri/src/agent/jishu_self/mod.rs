@@ -650,9 +650,53 @@ fn mcp_package_args(base_args: &[String], action: &str) -> Vec<String> {
     args
 }
 
+/// v0.9.1 需求12 补充：从 settings.json Value 提取 hubSpawnEnv 环境变量
+/// 覆盖（键值均须字符串；空值合法——如 PI_OFFLINE="" 置空关闭）。纯函数
+/// 可单测。
+fn spawn_env_overrides(cfg: &Result<serde_json::Value, Box<dyn std::error::Error>>) -> Vec<(String, String)> {
+    let Ok(v) = cfg else {
+        return Vec::new();
+    };
+    v.get("hubSpawnEnv")
+        .and_then(|m| m.as_object())
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod mcp_tests {
     use super::mcp_package_args;
+
+    /// v0.9.1 需求12 补充：hubSpawnEnv 提取——字符串键值对；非字符串值跳过；
+    /// 空值合法（置空覆盖）；缺键/读失败 → 空。
+    #[test]
+    fn spawn_env_overrides_extracts_string_pairs() {
+        use serde_json::json;
+        let cfg = Ok(json!({
+            "defaultThinkingLevel": "high",
+            "hubSpawnEnv": {
+                "HTTP_PROXY": "http://127.0.0.1:7890",
+                "PI_OFFLINE": "",
+                "BAD": 123,
+            }
+        }));
+        let mut envs = super::spawn_env_overrides(&cfg);
+        envs.sort();
+        assert_eq!(
+            envs,
+            vec![
+                ("HTTP_PROXY".to_string(), "http://127.0.0.1:7890".to_string()),
+                ("PI_OFFLINE".to_string(), String::new()),
+            ]
+        );
+        // 无键 / Err → 空。
+        assert!(super::spawn_env_overrides(&Ok(json!({}))).is_empty());
+        assert!(super::spawn_env_overrides(&Err("io".into())).is_empty());
+    }
 
     #[test]
     fn mcp_update_uses_pi_single_package_update_command() {
@@ -743,6 +787,11 @@ impl TransportAdapter for JishuSelfAgent {
                 log::warn!("[task-plan-runtime] failed to resolve jishu-cli: {err}");
             }
         }
+        // v0.9.1 需求12 补充：会话环境变量（配置页高级设置）——settings.json
+        // 的 hubSpawnEnv（hub 专属键；pi 读写走全量 spread，未知键无损保留）
+        // 逐项附加注入 pi 会话进程。置于内置默认之后，用户可覆盖（如
+        // PI_OFFLINE="" 关闭离线刷新、HTTP(S)_PROXY 走代理）。
+        envs.extend(spawn_env_overrides(&config::load_jishu_config()));
 
         Ok(crate::agent::AcpCommandSpec {
             program: runtime.program.to_string_lossy().to_string(),

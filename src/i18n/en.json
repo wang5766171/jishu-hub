@@ -798,7 +798,10 @@
     "retryBaseDelay": "Base delay (ms)",
     "retryDefaultHint": "When unset it is enabled by default: up to 3 retries with a 2000ms base delay (exponential backoff). Empty fields fall back to defaults.",
     "officialAuthRefresh": "Refresh auth status",
-    "mcpUnifiedNotice": "MCP services are now managed centrally in Plugins: declare and toggle MCP plugins there — the jishu-hub resolver aggregates and distributes them to all agents automatically."
+    "envVarsTitle": "Session environment variables",
+    "envVarsInvalidLine": "Line {{line}} must be KEY=VALUE",
+    "rawSectionTitle": "Raw config (settings.json)",
+    "envVarsHelp": "One KEY=VALUE per line, injected into every jishu session process; applied after built-in defaults (PI_SKIP_VERSION_CHECK / PI_OFFLINE etc.) so they can be overridden — e.g. PI_OFFLINE= disables offline mode, HTTP_PROXY / HTTPS_PROXY routes model traffic through a proxy. Takes effect for new sessions."
   },
   "commands": {
     "title": "Commands",

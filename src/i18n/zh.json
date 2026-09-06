@@ -798,7 +798,10 @@
     "retryBaseDelay": "基础间隔 (ms)",
     "retryDefaultHint": "未配置时默认启用：最多重试 3 次、基础间隔 2000ms（指数退避）。留空的数值沿用默认。",
     "officialAuthRefresh": "刷新认证状态",
-    "mcpUnifiedNotice": "MCP 服务已统一收纳到「插件管理」：经 MCP 插件声明与启停管理，jishu-hub 解析服务自动聚合分发到所有智能体，本页不再提供逐家手改。"
+    "envVarsTitle": "会话环境变量",
+    "envVarsInvalidLine": "第 {{line}} 行格式应为 KEY=VALUE",
+    "rawSectionTitle": "原始配置（settings.json）",
+    "envVarsHelp": "每行一条 KEY=VALUE，附加注入到每次 jishu 会话进程环境；在内置默认（PI_SKIP_VERSION_CHECK / PI_OFFLINE 等）之后应用，可覆盖——例如 PI_OFFLINE= 置空关闭离线刷新，HTTP_PROXY / HTTPS_PROXY 让模型请求走代理。保存后对新会话生效。"
   },
   "commands": {
     "title": "快捷命令",
