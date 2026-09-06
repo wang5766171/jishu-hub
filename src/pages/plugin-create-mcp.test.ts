@@ -50,8 +50,7 @@ function toolForm(partial: Partial<FormState>): FormState {
     mcpUrl: "",
     mcpHeaders: "",
     mcpJson: "",
-    skillDescription: "",
-    skillBody: "",
+    skillEntries: [],
     panelTitle: "",
     panelItems: [],
     skillsDir: "",
@@ -367,14 +366,45 @@ describe("skill 类型（需求20）", () => {
         pluginType: "skill",
         id: "code-review",
         displayName: "Code Review",
-        skillDescription: "提交前自查",
-        skillBody: "逐文件检查。",
+        skillEntries: [{ name: "", description: "提交前自查", body: "逐文件检查。" }],
       }),
     ) as Record<string, unknown>;
     expect(m.kind).toBe("tool");
     expect(m.skill).toEqual({ description: "提交前自查", body: "逐文件检查。" });
     expect(m.mcp).toBeUndefined();
     expect(m.tool).toBeUndefined();
+  });
+
+  // v0.9.1 需求10：多 skill 条目 → [[skill]] 数组（GUI/CLI 能力一致）。
+  it("多 skill 表单 → [[skill]] 数组；单条带名也走数组", () => {
+    const m = buildManifest(
+      toolForm({
+        pluginType: "skill",
+        id: "team-kit",
+        displayName: "Team Kit",
+        skillEntries: [
+          { name: "review", description: "自查", body: "检查。" },
+          { name: "release", description: "发版", body: "打包。" },
+        ],
+      }),
+    ) as Record<string, unknown>;
+    expect(m.skill).toEqual([
+      { name: "review", description: "自查", body: "检查。" },
+      { name: "release", description: "发版", body: "打包。" },
+    ]);
+    // 未填完整的条目被过滤。
+    const partial = buildManifest(
+      toolForm({
+        pluginType: "skill",
+        id: "t2",
+        displayName: "T2",
+        skillEntries: [
+          { name: "a", description: "完整", body: "内容" },
+          { name: "b", description: "缺正文", body: "" },
+        ],
+      }),
+    ) as Record<string, unknown>;
+    expect(partial.skill).toEqual([{ name: "a", description: "完整", body: "内容" }]);
   });
 
   it("parseManifest 派生 skill（tool + [skill] 无 [mcp]）并回填", () => {
@@ -385,8 +415,7 @@ describe("skill 类型（需求20）", () => {
       skill: { description: "d", body: "b" },
     });
     expect(parsed.form.pluginType).toBe("skill");
-    expect(parsed.form.skillDescription).toBe("d");
-    expect(parsed.form.skillBody).toBe("b");
+    expect(parsed.form.skillEntries).toEqual([{ name: "", description: "d", body: "b" }]);
     // [mcp]+[skill] 并存 → mcp 优先（自由组合规则已回退）
     const both = parseManifest({
       schema: 1,
@@ -396,15 +425,14 @@ describe("skill 类型（需求20）", () => {
       skill: { description: "d", body: "b" },
     });
     expect(both.form.pluginType).toBe("mcp");
-    expect(both.form.skillBody).toBe("b"); // 字段仍保留（提交不丢段）
+    expect(both.form.skillEntries[0]?.body).toBe("b"); // 字段仍保留（提交不丢段）
   });
 
   it("skill 与 [tool] 值并存时两段齐备（编辑往返）", () => {
     const m = buildManifest(
       toolForm({
         pluginType: "skill",
-        skillDescription: "d",
-        skillBody: "b",
+        skillEntries: [{ name: "", description: "d", body: "b" }],
         toolDescription: "x",
         toolUsage: "y",
       }),

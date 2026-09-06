@@ -418,7 +418,14 @@
     "mcpTransportStdio": "stdio（本地命令）",
     "mcpTransportType": "传输类型",
     "systemBadge": "系统",
-    "categoryEmpty": "暂无插件"
+    "categoryEmpty": "暂无插件",
+    "addSkillEntry": "添加 skill",
+    "skillEntriesEmpty": "尚未声明 skill——点「添加 skill」或从已有 SKILL.md 导入。",
+    "skillEntryLabel": "Skill",
+    "skillNameRequired": "多条时必填（部署名：插件id__名称）",
+    "skillNameOptional": "留空 = 以插件 id 命名（单 skill 形态）",
+    "removeSkillEntry": "移除",
+    "fSkillName": "Skill 名（可选）"
   },
   "config": {
     "title": "配置管理",

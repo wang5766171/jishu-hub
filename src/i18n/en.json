@@ -418,7 +418,14 @@
     "mcpTransportStdio": "stdio (local command)",
     "mcpTransportType": "Transport",
     "systemBadge": "System",
-    "categoryEmpty": "No plugins yet"
+    "categoryEmpty": "No plugins yet",
+    "addSkillEntry": "Add skill",
+    "skillEntriesEmpty": "No skill declared yet — click \"Add skill\" or import an existing SKILL.md.",
+    "skillEntryLabel": "Skill",
+    "skillNameRequired": "Required when multiple (deployed as pluginId__name)",
+    "skillNameOptional": "Leave empty to name by plugin id (single-skill form)",
+    "removeSkillEntry": "Remove",
+    "fSkillName": "Skill name (optional)"
   },
   "config": {
     "title": "Configuration",

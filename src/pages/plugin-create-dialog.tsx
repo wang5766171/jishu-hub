@@ -15,7 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { useTranslation } from "react-i18next";
-import { Bot, Code2, FileJson, Loader2, Plus, Sparkles, Terminal, X, Blocks } from "lucide-react";
+import { Bot, Code2, FileJson, Loader2, Plus, Sparkles, Terminal, Trash2, X, Blocks } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { IconPicker } from "@/components/ui/icon-picker";
 
@@ -99,9 +99,9 @@ export interface FormState {
   mcpUrl: string;
   mcpHeaders: string; // JSON 对象文本
   mcpJson: string; // JSON 模式原文
-  /** v0.9.0 需求20：[skill] 段（description + SKILL.md 正文）。 */
-  skillDescription: string;
-  skillBody: string;
+  /** v0.9.0 需求20 + v0.9.1 需求10：[skill]/[[skill]] 段——多 skill 条目
+   *（name 留空 = 单数形态，仅一条且无名时以插件 id 命名；多条必须命名）。 */
+  skillEntries: Array<{ name: string; description: string; body: string }>;
   /** v0.9.0 需求19 第八轮：[panel] 段（声明式自定义插件的核心声明面）。 */
   panelTitle: string;
   panelItems: Array<{ label: string; command: string }>;
@@ -156,8 +156,7 @@ const emptyForm: FormState = {
   mcpUrl: "",
   mcpHeaders: "",
   mcpJson: "",
-  skillDescription: "",
-  skillBody: "",
+  skillEntries: [],
   panelTitle: "",
   panelItems: [],
   skillsDir: "",
@@ -437,8 +436,13 @@ body = """逐文件检查：
       id: "code-review",
       displayName: "Code Review",
       icon: "",
-      skillDescription: "提交前代码自查清单——逐文件检查错误处理与测试覆盖",
-      skillBody: "逐文件检查：\n1. 错误处理是否完整\n2. 新逻辑是否有测试覆盖\n3. 命名与既有风格一致",
+      skillEntries: [
+        {
+          name: "",
+          description: "提交前代码自查清单——逐文件检查错误处理与测试覆盖",
+          body: "逐文件检查：\n1. 错误处理是否完整\n2. 新逻辑是否有测试覆盖\n3. 命名与既有风格一致",
+        },
+      ],
     },
   },
   {
@@ -722,13 +726,25 @@ export function buildManifest(form: FormState): Record<string, unknown> {
         };
       }
     }
-    // v0.9.0 需求20：[skill] 段——SKILL.md 声明（description+body；skill 名=
-    // 插件 id，hub 分发器部署到 agent skill 目录）。
-    if (form.skillDescription.trim() && form.skillBody.trim()) {
-      tool.skill = {
-        description: form.skillDescription.trim(),
-        body: form.skillBody.trim(),
-      };
+    // v0.9.0 需求20 + v0.9.1 需求10：skill 段——完整条目才产出（description/
+    // body 非空）；单条且 name 留空 → [skill] 表（单数形态，skill 名 = 插件
+    // id）；否则 → [[skill]] 数组（多 skill，部署名 <pid>__<name>）。
+    {
+      const entries = form.skillEntries
+        .map((e) => ({
+          name: e.name.trim(),
+          description: e.description.trim(),
+          body: e.body.trim(),
+        }))
+        .filter((e) => e.description && e.body);
+      if (entries.length === 1 && !entries[0].name) {
+        tool.skill = {
+          description: entries[0].description,
+          body: entries[0].body,
+        };
+      } else if (entries.length > 0) {
+        tool.skill = entries;
+      }
     }
     // v0.9.0 需求19 第八轮：[panel] 段——声明式自定义插件的核心（面板标题 +
     // 只读命令项；未填完整的行过滤，空项集不产出）。
@@ -920,17 +936,30 @@ export function parseManifest(json: Record<string, unknown>): {
   const caps = (json.capabilities ?? {}) as Record<string, unknown>;
   const tool = (json.tool ?? {}) as Record<string, unknown>;
   const mcp = json.mcp as Record<string, unknown> | undefined;
-  const skillSec = json.skill as Record<string, unknown> | undefined;
   const skillsSec = json.skills as Record<string, unknown> | undefined;
   const panelSec = json.panel as Record<string, unknown> | undefined;
+  // v0.9.1 需求10（GUI/CLI 能力一致）：[skill] 单/双形态归一为条目——
+  // 表（单 skill，无名）与 [[skill]] 数组（多 skill，带名）均可编辑。
+  const skillEntries: Array<{ name: string; description: string; body: string }> =
+    Array.isArray(json.skill)
+      ? (json.skill as Array<Record<string, unknown>>).map((e) => ({
+          name: String(e.name ?? ""),
+          description: String(e.description ?? ""),
+          body: String(e.body ?? ""),
+        }))
+      : json.skill && typeof json.skill === "object"
+        ? [
+            {
+              name: "",
+              description: String((json.skill as Record<string, unknown>).description ?? ""),
+              body: String((json.skill as Record<string, unknown>).body ?? ""),
+            },
+          ]
+        : [];
+  const hasSkill = skillEntries.length > 0;
   const preserved: Record<string, unknown> = {};
   if (json.pi_extension && typeof json.pi_extension === "object") {
     preserved.pi_extension = json.pi_extension;
-  }
-  // v0.9.1 需求9：[[skill]] 数组形态（一插件多 skill）表单暂不支持编辑——
-  // 原样透传防静默丢段（表单 skill 字段留空，保存时 preserved 覆盖优先）。
-  if (Array.isArray(json.skill)) {
-    preserved.skill = json.skill;
   }
   const form: FormState = {
     id: String(info.id ?? ""),
@@ -964,7 +993,7 @@ export function parseManifest(json: Record<string, unknown>): {
       json.kind === "tool"
         ? mcp
           ? "mcp"
-          : skillSec
+          : hasSkill
             ? "skill"
             : panelSec
               ? "custom" // 声明式面板插件（需求19 第八轮形态）
@@ -992,8 +1021,7 @@ export function parseManifest(json: Record<string, unknown>): {
         ? JSON.stringify(mcp.headers, null, 2)
         : "",
     mcpJson: "",
-    skillDescription: String(skillSec?.description ?? ""),
-    skillBody: String(skillSec?.body ?? ""),
+    skillEntries,
     skillsDir: String(skillsSec?.dir ?? ""),
     panelTitle: String(panelSec?.title ?? ""),
     panelItems: Array.isArray(panelSec?.items)
@@ -1171,7 +1199,7 @@ export function PluginCreateDialog({
       ? mcpReady ||
         (form.toolDescription.trim().length > 0 && form.toolUsage.trim().length > 0)
       : pluginType === "skill"
-        ? form.skillDescription.trim().length > 0 && form.skillBody.trim().length > 0
+        ? form.skillEntries.some((s) => s.description.trim().length > 0 && s.body.trim().length > 0)
         : pluginType === "custom"
           ? (form.panelTitle.trim().length > 0 &&
               form.panelItems.some((it) => it.label.trim() && it.command.trim())) ||
@@ -1207,10 +1235,11 @@ export function PluginCreateDialog({
         .trim()
         .replace(/[^a-z0-9_-]+/g, "-")
         .replace(/^-+|-+$/g, "") || "skill";
-    // 预填仅新建且为空时（编辑模式 id 锁定不可覆盖）。
+    // 预填仅新建且为空时（编辑模式 id 锁定不可覆盖）；已有多条时追加为新条目。
+    const entry = { name: form.skillEntries.length > 0 ? slug : "", description: imp.description, body: imp.body };
     patch({
-      skillDescription: imp.description,
-      skillBody: imp.body,
+      skillEntries:
+        form.skillEntries.length === 0 ? [entry] : [...form.skillEntries, entry],
       ...(isEdit || form.id.trim() ? {} : { id: slug }),
       ...(form.displayName.trim() ? {} : { displayName: imp.name }),
     });
@@ -1846,8 +1875,9 @@ export function PluginCreateDialog({
                 </div>
               ))}
 
-            {/* Skill 声明（v0.9.0 需求20，对标 MCP 区）：description = SKILL.md
-             * frontmatter，body = 正文；skill 名 = 插件 id（自动派生）。 */}
+            {/* Skill 声明（v0.9.0 需求20 + v0.9.1 需求10 GUI/CLI 能力一致）：
+             * 多条目编辑——单条且 name 留空 → [skill]（skill 名 = 插件 id）；
+             * 多条/带名 → [[skill]] 数组（部署名 <插件id>__<name>）。 */}
             {pluginType === "skill" &&
               (skillLocked ? (
                 <div className="rounded-md border border-dashed border-border/70 bg-muted/20 p-3 text-xs text-muted-foreground">
@@ -1855,27 +1885,98 @@ export function PluginCreateDialog({
                 </div>
               ) : (
                 <div className="rounded-md border border-border/50 p-3 space-y-3">
-                  <p className="text-xs font-medium">{tr("plugins.skillSection", "Skill 声明")}</p>
-                  <Labeled labelKey="plugins.fSkillDesc" fallback="描述 *">
-                    <Input
-                      value={form.skillDescription}
-                      onChange={(e) => patch({ skillDescription: e.target.value })}
-                      placeholder="提交前代码自查：何时用/做什么（≤1024 字符）"
-                      className="h-8 text-xs"
-                    />
-                    <FieldHelp>{tr("plugins.hSkillDesc", "SKILL.md 的 frontmatter 描述——agent 按此判断何时使用该 skill。")}</FieldHelp>
-                  </Labeled>
-                  <Labeled labelKey="plugins.fSkillBody" fallback="内容 *">
-                    <textarea
-                      value={form.skillBody}
-                      onChange={(e) => patch({ skillBody: e.target.value })}
-                      rows={8}
-                      spellCheck={false}
-                      placeholder={"第一步：通读 diff…\n第二步：检查错误处理…"}
-                      className="flex w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-xs font-mono"
-                    />
-                    <FieldHelp>{tr("plugins.hSkillBody", "SKILL.md 正文指令；启用后自动分发到各 agent 的 skill 目录（启停即分发/回收）。")}</FieldHelp>
-                  </Labeled>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-medium">{tr("plugins.skillSection", "Skill 声明")}</p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() =>
+                        patch({ skillEntries: [...form.skillEntries, { name: "", description: "", body: "" }] })
+                      }
+                    >
+                      <Plus className="mr-1 h-3 w-3" />
+                      {tr("plugins.addSkillEntry", "添加 skill")}
+                    </Button>
+                  </div>
+                  {form.skillEntries.length === 0 && (
+                    <p className="text-[11px] text-muted-foreground/70">
+                      {tr("plugins.skillEntriesEmpty", "尚未声明 skill——点「添加 skill」或从已有 SKILL.md 导入。")}
+                    </p>
+                  )}
+                  {form.skillEntries.map((entry, idx) => (
+                    <div key={idx} className="space-y-2 rounded-md border border-border/40 p-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-medium text-muted-foreground">
+                          {tr("plugins.skillEntryLabel", "Skill")} #{idx + 1}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-xs"
+                          className="h-6 w-6 text-destructive hover:text-destructive"
+                          aria-label={tr("plugins.removeSkillEntry", "移除")}
+                          onClick={() =>
+                            patch({
+                              skillEntries: form.skillEntries.filter((_, i) => i !== idx),
+                            })
+                          }
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                      <Labeled labelKey="plugins.fSkillName" fallback="Skill 名（可选）">
+                        <Input
+                          value={entry.name}
+                          onChange={(e) =>
+                            patch({
+                              skillEntries: form.skillEntries.map((s, i) =>
+                                i === idx ? { ...s, name: e.target.value } : s,
+                              ),
+                            })
+                          }
+                          placeholder={
+                            form.skillEntries.length > 1
+                              ? tr("plugins.skillNameRequired", "多条时必填（部署名：插件id__名称）")
+                              : tr("plugins.skillNameOptional", "留空 = 以插件 id 命名（单 skill 形态）")
+                          }
+                          className="h-8 text-xs"
+                        />
+                      </Labeled>
+                      <Labeled labelKey="plugins.fSkillDesc" fallback="描述 *">
+                        <Input
+                          value={entry.description}
+                          onChange={(e) =>
+                            patch({
+                              skillEntries: form.skillEntries.map((s, i) =>
+                                i === idx ? { ...s, description: e.target.value } : s,
+                              ),
+                            })
+                          }
+                          placeholder="提交前代码自查：何时用/做什么（≤1024 字符）"
+                          className="h-8 text-xs"
+                        />
+                      </Labeled>
+                      <Labeled labelKey="plugins.fSkillBody" fallback="内容 *">
+                        <textarea
+                          value={entry.body}
+                          onChange={(e) =>
+                            patch({
+                              skillEntries: form.skillEntries.map((s, i) =>
+                                i === idx ? { ...s, body: e.target.value } : s,
+                              ),
+                            })
+                          }
+                          rows={8}
+                          spellCheck={false}
+                          placeholder={"第一步：通读 diff…\n第二步：检查错误处理…"}
+                          className="flex w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-xs font-mono"
+                        />
+                        <FieldHelp>{tr("plugins.hSkillBody", "SKILL.md 正文指令；启用后自动分发到各 agent 的 skill 目录（启停即分发/回收）。")}</FieldHelp>
+                      </Labeled>
+                    </div>
+                  ))}
                 </div>
               ))}
 
