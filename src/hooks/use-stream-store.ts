@@ -87,6 +87,12 @@ export interface SessionStreamState {
    * responds via `extension_ui_response`.
    */
   interactionSplits: InteractionSplit[];
+  /** v0.9.1 需求14：自动重试进行态（pi auto_retry_start）——「第 N/M 次
+   * 重试中（原因）」；重试成功（end success）清除。 */
+  autoRetry: { attempt: number; maxAttempts: number; errorMessage: string } | null;
+  /** v0.9.1 需求14：重试耗尽的最终失败（end success=false + finalError）——
+   * 保留至下一轮开始（emptyState 重置），页面显性展示最终失败原因。 */
+  retryFailed: { attempt: number; finalError: string } | null;
 }
 
 function emptyState(
@@ -110,6 +116,8 @@ function emptyState(
     steerSplits: [],
     steerTexts: [],
     interactionSplits: [],
+    autoRetry: null,
+    retryFailed: null,
   };
 }
 
@@ -177,7 +185,7 @@ class StreamStore {
     const key = this.canonical(sid);
     const prev = this.sessions.get(key) ?? emptyState(key, null);
 
-    let { content, text, thinking, error, tools, resolvedId, steps, steerSplits, steerTexts, interactionSplits } = prev;
+    let { content, text, thinking, error, tools, resolvedId, steps, steerSplits, steerTexts, interactionSplits, autoRetry, retryFailed } = prev;
     const pendingToolIds = prev.pendingToolIds;
     const { pendingUserMessage, abortKey, isStreaming } = prev;
     const chunks = [...prev.chunks, chunk];
@@ -206,6 +214,18 @@ class StreamStore {
       }
     } else if (data.kind === "error") {
       error = data.message;
+    } else if (data.kind === "auto_retry_status") {
+      // v0.9.1 需求14：start → 进行态横幅（多次 start 后者覆盖）；end 成功
+      // 清除；end 失败保留最终失败原因至下轮。
+      if (data.active) {
+        autoRetry = { attempt: data.attempt, maxAttempts: data.maxAttempts, errorMessage: data.errorMessage };
+        retryFailed = null;
+      } else {
+        autoRetry = null;
+        if (!data.success && data.finalError) {
+          retryFailed = { attempt: data.attempt, finalError: data.finalError };
+        }
+      }
     } else if (data.kind === "tool_use_start") {
       if (!tools.some((tool) => tool.id === data.call_id)) {
         // v0.8.0 需求2 Phase 1：view 随事件透传（tools 与 content 同源），
@@ -349,6 +369,8 @@ class StreamStore {
       steerSplits,
       steerTexts,
       interactionSplits,
+      autoRetry,
+      retryFailed,
     });
     this.scheduleFlush();
   }

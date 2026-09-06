@@ -226,6 +226,22 @@ pub enum NormalizedEvent {
     SteerQueueCleared {
         texts: Vec<String>,
     },
+    /// v0.9.1 需求14：自动重试状态（pi auto_retry_start / auto_retry_end，
+    /// agent-session _prepareRetry 经 RPC 原样透传）。active=true：第
+    /// attempt/max_attempts 次重试中（error_message 为本次失败原因，
+    /// delay_ms 退避等待）；active=false：重试结束——success=true 后续调用
+    /// 成功（GUI 清除指示），success=false 重试耗尽（final_error 最终失败
+    /// 原因，GUI 显性展示）。轮内多次 start 后者覆盖。
+    AutoRetryStatus {
+        active: bool,
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        error_message: String,
+        success: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        final_error: Option<String>,
+    },
 }
 
 impl NormalizedEvent {
@@ -249,6 +265,7 @@ impl NormalizedEvent {
             NormalizedEvent::PhaseDivider { .. } => "phase_divider",
             NormalizedEvent::CompactionStatus { .. } => "compaction_status",
             NormalizedEvent::SteerQueueCleared { .. } => "steer_queue_cleared",
+            NormalizedEvent::AutoRetryStatus { .. } => "auto_retry_status",
         }
     }
 }

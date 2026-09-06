@@ -300,7 +300,9 @@
     "permissionApproveAlways": "始终允许",
     "pluginsSection": "插件",
     "insertTool": "插入",
-    "turnFailedBubble": "本轮对话失败（{{reason}}），请检查模型与账号配置后重试"
+    "turnFailedBubble": "本轮对话失败（{{reason}}），请检查模型与账号配置后重试",
+    "autoRetryInProgress": "第 {{attempt}}/{{max}} 次自动重试中",
+    "autoRetryExhausted": "自动重试 {{attempt}} 次后仍失败：{{error}}"
   },
   "plugins": {
     "createTitle": "新建插件",

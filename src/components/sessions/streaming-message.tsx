@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useCallback, memo, useRef } from "react";
+import { Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -42,6 +43,10 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   const displayText = state?.text ?? "";
   const thinkingText = state?.thinking ?? "";
   const errorText = state?.error ?? "";
+  // v0.9.1 需求14：自动重试显性展示——进行态（第 N/M 次）与耗尽后的
+  // 最终失败原因（保留至下轮）。
+  const autoRetry = state?.autoRetry ?? null;
+  const retryFailed = state?.retryFailed ?? null;
   const toolUses = state?.tools ?? [];
   const content = state?.content ?? [];
   const steerSplits = state?.steerSplits ?? [];
@@ -276,7 +281,9 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
         const isLast = i === lastAssistantPartIndex;
         const segRenderItems = buildStreamRenderItems(seg, streamToolCalls);
         const segHasItems = segRenderItems.length > 0;
-        const showBubble = segHasItems || (isLast && (errorText.length > 0 || steps.length > 0));
+        const showBubble =
+          segHasItems ||
+          (isLast && (errorText.length > 0 || steps.length > 0 || !!autoRetry || !!retryFailed));
         const showThinking = isLast && !showBubble && !isComplete;
         if (!showBubble && !showThinking) return null;
         return (
@@ -333,6 +340,26 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                           }
                           return null;
                         })}
+                        {isLast && autoRetry && (
+                          <div className="flex items-center gap-2 rounded-[6px] border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-sm text-amber-600 dark:text-amber-500">
+                            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                            <span>
+                              {t("sessions.autoRetryInProgress", {
+                                attempt: autoRetry.attempt,
+                                max: autoRetry.maxAttempts,
+                              })}
+                              {autoRetry.errorMessage ? `（${autoRetry.errorMessage}）` : ""}
+                            </span>
+                          </div>
+                        )}
+                        {isLast && retryFailed && (
+                          <div className="rounded-[6px] border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-sm text-destructive">
+                            {t("sessions.autoRetryExhausted", {
+                              attempt: retryFailed.attempt,
+                              error: retryFailed.finalError,
+                            })}
+                          </div>
+                        )}
                         {isLast && errorText && (
                           <div className="rounded-[6px] border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-sm text-destructive">
                             {errorText}

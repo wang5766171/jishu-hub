@@ -1479,6 +1479,36 @@ pub(crate) fn normalize_pi_agent_event(
         // v0.8.0 需求10：上下文压缩生命周期——开始→状态指示；结束→状态清除
         // + phase_divider(compaction) 分隔线（进内容流，turn_complete 时随
         // content 一并提交，重载时由 pi_session 的 compaction 条目重建）。
+        // v0.9.1 需求14：pi 主轮自动重试（agent-session _prepareRetry，RPC
+        // 原样透传）——start（attempt/maxAttempts/delayMs/errorMessage）与
+        // end（success/attempt/finalError）归一为状态事件；GUI 会话区显性
+        // 展示「第 N/M 次重试中（原因）」直至最终失败原因。
+        "auto_retry_start" | "auto_retry_end" => {
+            let active = event_type == "auto_retry_start";
+            vec![NormalizedEvent::AutoRetryStatus {
+                active,
+                attempt: event.get("attempt").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                max_attempts: event
+                    .get("maxAttempts")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32,
+                delay_ms: event.get("delayMs").and_then(|v| v.as_u64()).unwrap_or(0),
+                error_message: event
+                    .get("errorMessage")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                success: event
+                    .get("success")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                final_error: event
+                    .get("finalError")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+            }]
+        }
         "compaction_start" | "compaction_end" => {
             let active = event_type == "compaction_start";
             let reason = event
@@ -2094,6 +2124,56 @@ mod tests {
                 assert_eq!(u.context_remaining, Some(988));
             }
             other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    /// v0.9.1 需求14：auto_retry_start/end 归一化——字段透传 + end 失败
+    /// 携最终原因。
+    #[test]
+    fn auto_retry_events_normalize_to_status() {
+        let mut steers = Vec::new();
+        let start = normalize_pi_agent_event(
+            &serde_json::json!({
+                "type": "auto_retry_start",
+                "attempt": 2,
+                "maxAttempts": 10,
+                "delayMs": 4000,
+                "errorMessage": "provider 503"
+            }),
+            None,
+            &mut steers,
+        );
+        assert_eq!(start.len(), 1);
+        match &start[0] {
+            NormalizedEvent::AutoRetryStatus {
+                active, attempt, max_attempts, delay_ms, error_message, success, final_error,
+            } => {
+                assert!(active);
+                assert_eq!((*attempt, *max_attempts, *delay_ms), (2, 10, 4000));
+                assert_eq!(error_message, "provider 503");
+                assert!(!success);
+                assert!(final_error.is_none());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let end = normalize_pi_agent_event(
+            &serde_json::json!({
+                "type": "auto_retry_end",
+                "success": false,
+                "attempt": 10,
+                "finalError": "all retries exhausted"
+            }),
+            None,
+            &mut steers,
+        );
+        match &end[0] {
+            NormalizedEvent::AutoRetryStatus { active, success, final_error, .. } => {
+                assert!(!active);
+                assert!(!success);
+                assert_eq!(final_error.as_deref(), Some("all retries exhausted"));
+            }
+            other => panic!("unexpected {other:?}"),
         }
     }
 

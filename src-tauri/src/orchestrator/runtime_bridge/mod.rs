@@ -779,7 +779,9 @@ pub fn map_normalized_event(context: &RuntimeEventContext, event: &NormalizedEve
         | NormalizedEvent::PhaseDivider { .. }
         | NormalizedEvent::CompactionStatus { .. }
         // v0.9.1 需求3 #1：停止清队回传（GUI 回填语义，编排事实面透传为诊断）。
-        | NormalizedEvent::SteerQueueCleared { .. } => RuntimeFact::Diagnostic {
+        | NormalizedEvent::SteerQueueCleared { .. }
+        // v0.9.1 需求14：自动重试状态（GUI 呈现语义，编排透传为诊断）。
+        | NormalizedEvent::AutoRetryStatus { .. } => RuntimeFact::Diagnostic {
             context: context.clone(),
             payload: serde_json::to_value(event).unwrap_or_default(),
         },

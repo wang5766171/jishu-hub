@@ -300,7 +300,9 @@
     "permissionApproveAlways": "Always allow",
     "pluginsSection": "Plugins",
     "insertTool": "Insert",
-    "turnFailedBubble": "This turn failed ({{reason}}). Check model and account settings, then retry."
+    "turnFailedBubble": "This turn failed ({{reason}}). Check model and account settings, then retry.",
+    "autoRetryInProgress": "Auto-retrying (attempt {{attempt}}/{{max}})",
+    "autoRetryExhausted": "Failed after {{attempt}} auto-retries: {{error}}"
   },
   "plugins": {
     "createTitle": "New Plugin",
