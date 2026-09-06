@@ -109,6 +109,15 @@ export function PhaseDivider({ phase, title }: { phase: string; title: string })
           dot: "bg-emerald-500",
           shadow: "colorful:shadow-sm colorful:shadow-emerald-100/50 dark:shadow-none"
         };
+      // v0.9.1 需求14 测试期：失败分隔线（红，JSONL errorMessage 持久投影）。
+      case "error":
+        return {
+          bg: "bg-muted/80 colorful:bg-red-50/80 dark:bg-red-950/40",
+          text: "text-muted-foreground colorful:text-red-600 dark:text-red-400",
+          border: "border-border colorful:border-red-200/60 dark:border-red-900/60",
+          dot: "bg-red-500",
+          shadow: "colorful:shadow-sm colorful:shadow-red-100/50 dark:shadow-none"
+        };
       // v0.8.0 需求10：上下文压缩分隔线（石板灰，与任务阶段区分）。
       case "compaction":
         return {

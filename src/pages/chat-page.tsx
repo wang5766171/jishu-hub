@@ -2117,7 +2117,11 @@ export function ChatPage({
             }
             // Tail segment (after the final mid-turn steer); errors attach here.
             const tail = assistantContent.slice(prevIdx);
-            if (state?.error) tail.push({ type: "text", text: state.error });
+            // v0.9.1 需求14 测试期：失败持久化——重试耗尽提交 error 分隔线
+            // （与 pi_session 的 JSONL 投影同形，重载后视图一致）。
+            if (state?.retryFailed) {
+              tail.push({ type: "phase_divider", phase: "error", title: `请求失败：${state.retryFailed.finalError}` });
+            } else if (state?.error) tail.push({ type: "text", text: state.error });
             if (tail.length > 0) {
               newMessages.push({ role: "assistant", content: tail, timestamp: Date.now() });
             }
@@ -2146,7 +2150,14 @@ export function ChatPage({
             // default one-at-a-time steering the steer is answered in a
             // separate follow-up turn, so appending it here lands it between
             // this reply and the next — [reply, steer, steerResponse].
-            if (state?.error) {
+            if (state?.retryFailed) {
+              // v0.9.1 需求14 测试期：重试耗尽——error 分隔线（同 JSONL 投影）。
+              assistantContent.push({
+                type: "phase_divider",
+                phase: "error",
+                title: `请求失败：${state.retryFailed.finalError}`,
+              });
+            } else if (state?.error) {
               assistantContent.push({ type: "text", text: state.error });
             } else if (
               explicitFailure

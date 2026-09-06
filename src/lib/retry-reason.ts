@@ -5,25 +5,25 @@
 export function classifyRetryError(raw: string): string {
   const s = raw.toLowerCase();
   if (/econnrefused|connect refused|connection refused|无法连接/.test(s)) {
-    return "sessions.retryReason.network";
+    return "sessions.retryReasonNetwork";
   }
   if (/enotfound|getaddrinfo|dns|域名解析/.test(s)) {
-    return "sessions.retryReason.dns";
+    return "sessions.retryReasonDns";
   }
   if (/etimedout|timeout|timed out|超时/.test(s)) {
-    return "sessions.retryReason.timeout";
+    return "sessions.retryReasonTimeout";
   }
   if (/econnreset|socket hang up|connection reset|连接中断|aborted/.test(s)) {
-    return "sessions.retryReason.reset";
+    return "sessions.retryReasonReset";
   }
   if (/\b429\b|rate limit|too many requests|请求过于频繁/.test(s)) {
-    return "sessions.retryReason.rateLimit";
+    return "sessions.retryReasonRateLimit";
   }
   if (/\b5\d\d\b|service unavailable|bad gateway|overloaded|internal server|服务不可用/.test(s)) {
-    return "sessions.retryReason.server";
+    return "sessions.retryReasonServer";
   }
   if (/\b401\b|\b403\b|unauthorized|forbidden|api key|认证/.test(s)) {
-    return "sessions.retryReason.auth";
+    return "sessions.retryReasonAuth";
   }
-  return "sessions.retryReason.generic";
+  return "sessions.retryReasonGeneric";
 }

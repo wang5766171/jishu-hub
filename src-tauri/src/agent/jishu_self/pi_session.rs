@@ -509,6 +509,7 @@ fn merge_pi_interaction_sidecar(session_path: &Path, messages: &mut Vec<crate::s
 
 fn pi_message_positions(content: &str) -> std::collections::HashMap<String, usize> {
     let mut positions = std::collections::HashMap::new();
+    let mut last_message_was_error = false;
     let mut message_index = 0;
 
     for line in content.lines().filter(|line| !line.trim().is_empty()) {
@@ -527,6 +528,13 @@ fn pi_message_positions(content: &str) -> std::collections::HashMap<String, usiz
                 else {
                     continue;
                 };
+                // v0.9.1 需求14 测试期：与 parse_pi_session_jsonl 同步折叠连续
+                // error 分隔线——被折叠的条目不占数组位置，索引不错位。
+                let is_err = is_error_divider_message(&message);
+                if is_err && last_message_was_error {
+                    continue;
+                }
+                last_message_was_error = is_err;
                 if let Some(id) = value.get("id").and_then(serde_json::Value::as_str) {
                     positions.insert(id.to_string(), message_index);
                 }
@@ -610,6 +618,8 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
     let mut started_at = None;
     let mut display_name = None;
     let mut messages = Vec::new();
+    // v0.9.1 需求14 测试期：连续 error 分隔线折叠状态（与 pi_message_positions 同步）。
+    let mut last_message_was_error = false;
 
     for line in content.lines().filter(|line| !line.trim().is_empty()) {
         let value: serde_json::Value = serde_json::from_str(line).ok()?;
@@ -651,7 +661,15 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
                                 .map(smart_summary);
                         }
                     let is_launch = is_task_launch_message(&message);
-                    messages.push(message);
+                    // v0.9.1 需求14 测试期：连续 error 分隔线折叠（重试每试一条），
+                    // 与 pi_message_positions 的计数折叠保持同步。
+                    let is_err = is_error_divider_message(&message);
+                    if is_err && last_message_was_error {
+                        // 折叠丢弃：不计入消息数组。
+                    } else {
+                        last_message_was_error = is_err;
+                        messages.push(message);
+                    }
                     // 任务启动消息之后插入独立「需求讨论」分隔线——位于用户消息之下，
                     // 与 plan 分隔线（custom_message 重建）形态一致；不塞进用户消息内部。
                     if is_launch {
@@ -754,6 +772,17 @@ fn phase_divider_title(phase: &str) -> &'static str {
     }
 }
 
+/// v0.9.1 需求14 测试期：errorMessage-only 助手消息投影出的 error 分隔线。
+/// pi 把每次失败尝试记为一条 errorMessage-only 消息（一次轮多次重试 =
+/// 多条连续记录），收集与索引两处同步折叠为一条（见 parse_pi_session_jsonl
+/// 与 pi_message_positions）。
+fn is_error_divider_message(message: &crate::session::Message) -> bool {
+    matches!(
+        message.content.first(),
+        Some(crate::session::ContentBlock::PhaseDivider { phase, .. }) if phase == "error"
+    )
+}
+
 /// 判断是否为 `/jishu-task …` 任务启动用户消息。
 /// conductor 没有为 discuss 发 phase-enter 标记（discuss 由启动命令开启），故从启动文本推导，
 /// 在调用处于此消息之后插入独立「需求讨论」分隔线。
@@ -784,12 +813,32 @@ fn parse_pi_message(
             timestamp,
         })
         .filter(|message| !message.content.is_empty()),
-        "assistant" => Some(crate::session::Message {
-            role: "assistant".to_string(),
-            content: parse_assistant_content(value.get("content")?),
-            timestamp,
-        })
-        .filter(|message| !message.content.is_empty()),
+        "assistant" => {
+            let content = parse_assistant_content(value.get("content")?);
+            if content.is_empty() {
+                // v0.9.1 需求14 测试期：失败持久化——pi 把失败尝试记为
+                // errorMessage-only 的 assistant 消息，此前被空内容过滤整条
+                // 丢弃，会话重载后失败原因无处可见（用户实测反馈）。投影为
+                // error 分隔线；连续多条（重试各一次）在收集/索引两处折叠。
+                let error = value
+                    .get("errorMessage")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|s| !s.trim().is_empty())?;
+                return Some(crate::session::Message {
+                    role: "assistant".to_string(),
+                    content: vec![crate::session::ContentBlock::PhaseDivider {
+                        phase: "error".to_string(),
+                        title: format!("请求失败：{error}"),
+                    }],
+                    timestamp,
+                });
+            }
+            Some(crate::session::Message {
+                role: "assistant".to_string(),
+                content,
+                timestamp,
+            })
+        }
         "toolResult" => Some(crate::session::Message {
             role: "user".to_string(),
             content: vec![crate::session::ContentBlock::ToolResult {
@@ -1580,6 +1629,38 @@ Task Orchestrator execution contract:\n\
     /// `tests/fixtures/pi_session_real.jsonl`; the test loads and
     /// parses it the same way the GUI would.
     #[test]
+    /// v0.9.1 需求14 测试期：errorMessage-only 失败消息投影为 error 分隔线，
+    /// 连续多条（重试各一次）折叠为一条——会话重载后失败原因可见。
+    #[test]
+    fn error_only_assistant_messages_collapse_to_one_divider() {
+        let jsonl = r#"{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}
+{"type":"message","id":"e1","message":{"role":"assistant","content":[],"errorMessage":"Connection error."}}
+{"type":"message","id":"e2","message":{"role":"assistant","content":[],"errorMessage":"Connection error."}}
+{"type":"message","id":"e3","message":{"role":"assistant","content":[],"errorMessage":"Connection error."}}
+{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"recovered"}]}}
+"#;
+        let session = parse_pi_session_jsonl(Path::new("test.jsonl"), jsonl).expect("parse");
+        let error_dividers: Vec<&crate::session::Message> = session
+            .messages
+            .iter()
+            .filter(|m| is_error_divider_message(m))
+            .collect();
+        assert_eq!(error_dividers.len(), 1, "连续失败折叠为一条");
+        match &error_dividers[0].content[0] {
+            crate::session::ContentBlock::PhaseDivider { phase, title } => {
+                assert_eq!(phase, "error");
+                assert_eq!(title, "请求失败：Connection error.");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // 后续正常回复保留且顺序正确（user → error → recovered）。
+        assert_eq!(session.messages.len(), 3);
+        assert!(matches!(
+            &session.messages[2].content[0],
+            crate::session::ContentBlock::Text { text, .. } if text == "recovered"
+        ));
+    }
+
     fn parses_real_pi_session_jsonl_fixture() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
