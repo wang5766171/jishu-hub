@@ -1423,45 +1423,46 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                     // 需求20 第二轮：两级分组——CLI 插件平铺；MCP 服务 / Skill
                     // 折叠子菜单（点组名展开，点具体服务插入 pill）。选中即注入
                     // 提示小节；未选中经解析器通道仍在线可用（动态性）。
-                    const cliTools = sessionTools.filter((t) => !t.category || t.category === "cli");
-                    const mcpTools = sessionTools.filter((t) => t.category === "mcp");
-                    const skillTools = sessionTools.filter((t) => t.category === "skill");
-                    const renderToolButton = (tool: SessionTool, indent = false) => {
-                      const injectable = tool.injectable !== false;
-                      return (
-                        <button
-                          key={tool.id}
-                          type="button"
-                          onClick={() => {
-                            setToolMenuOpen(false);
-                            setToolSubmenu(null);
-                            insertToolToken(tool.display_name);
-                          }}
-                          disabled={disabled || sending || isStreaming || !injectable}
-                          title={
-                            injectable
-                              ? tool.description
-                              : `${tool.description}（仅 pi 扩展形态，不参与 CLI 注入）`
-                          }
-                          className={cn(
-                            "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-fast hover:bg-accent/60 disabled:cursor-not-allowed",
-                            indent && "pl-4",
-                            injectable ? "text-foreground disabled:opacity-45" : "text-muted-foreground opacity-55",
-                          )}
-                        >
-                          <Blocks className={cn("h-4 w-4 shrink-0", injectable ? "text-[var(--icon-config)]" : "opacity-40")} />
-                          <span className="flex-1 truncate">{tool.display_name}</span>
-                        </button>
-                      );
-                    };
+                    // v0.9.1 需求8：不可注入项（MCP/SKILL 解析器等 pi 扩展形态）
+                    // 此前渲染成置灰，用户裁决直接不显示——分组时即过滤。
+                    const injectable = (t: SessionTool) => t.injectable !== false;
+                    const cliTools = sessionTools.filter((t) => (!t.category || t.category === "cli") && injectable(t));
+                    const mcpTools = sessionTools.filter((t) => t.category === "mcp" && injectable(t));
+                    const skillTools = sessionTools.filter((t) => t.category === "skill" && injectable(t));
+                    const hasSelectableTools =
+                      cliTools.length + mcpTools.length + skillTools.length > 0;
+                    // v0.9.1 需求8：子项图标与所属类型组一致（MCP→Server、
+                    // Skill→Sparkles），CLI 插件保持 Blocks——内置服务与类型
+                    // 标识视觉统一（用户裁决，原全部为 Blocks 四小方形）。
+                    const renderToolButton = (tool: SessionTool, Icon: typeof Blocks, iconColor: string, indent = false) => (
+                      <button
+                        key={tool.id}
+                        type="button"
+                        onClick={() => {
+                          setToolMenuOpen(false);
+                          setToolSubmenu(null);
+                          insertToolToken(tool.display_name);
+                        }}
+                        disabled={disabled || sending || isStreaming}
+                        title={tool.description}
+                        className={cn(
+                          "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-fast hover:bg-accent/60 disabled:cursor-not-allowed disabled:opacity-45",
+                          indent && "pl-4",
+                        )}
+                      >
+                        <Icon className={cn("h-4 w-4 shrink-0", iconColor)} />
+                        <span className="flex-1 truncate">{tool.display_name}</span>
+                      </button>
+                    );
                     return (
+                    hasSelectableTools && (
                     <div className="my-1 border-t border-border/60 pt-1">
                       {cliTools.length > 0 && (
                         <>
                           <div className="px-2.5 pb-1 pt-0.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/70">
                             {t("sessions.pluginsSection", "插件")}
                           </div>
-                          {cliTools.map((tool) => renderToolButton(tool))}
+                          {cliTools.map((tool) => renderToolButton(tool, Blocks, "text-[var(--icon-config)]"))}
                         </>
                       )}
                       {mcpTools.length > 0 && (
@@ -1476,7 +1477,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                             <span className="flex-1">{t("sessions.mcpSection", "MCP 服务")}</span>
                             <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform", toolSubmenu === "mcp" && "rotate-180")} />
                           </button>
-                          {toolSubmenu === "mcp" && mcpTools.map((tool) => renderToolButton(tool, true))}
+                          {toolSubmenu === "mcp" && mcpTools.map((tool) => renderToolButton(tool, Server, "text-[var(--icon-action)]", true))}
                         </>
                       )}
                       {skillTools.length > 0 && (
@@ -1491,10 +1492,11 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                             <span className="flex-1">{t("sessions.skillSection", "Skill")}</span>
                             <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform", toolSubmenu === "skill" && "rotate-180")} />
                           </button>
-                          {toolSubmenu === "skill" && skillTools.map((tool) => renderToolButton(tool, true))}
+                          {toolSubmenu === "skill" && skillTools.map((tool) => renderToolButton(tool, Sparkles, "text-[var(--icon-theme)]", true))}
                         </>
                       )}
                     </div>
+                    )
                     );
                   })()}
                 </div>
