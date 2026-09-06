@@ -362,7 +362,7 @@ export type NormalizedEvent =
   /** v0.9.1 需求14：pi 主轮自动重试状态——active=true 第 attempt/maxAttempts
    * 次重试中（errorMessage 本次失败原因）；active=false 重试结束（success
    * =true 后续成功，false 重试耗尽且 finalError 为最终失败原因）。 */
-  | { kind: "auto_retry_status"; active: boolean; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string; success: boolean; finalError?: string | null }
+  | { kind: "auto_retry_status"; active: boolean; attempt: number; max_attempts: number; delay_ms: number; error_message: string; success: boolean; final_error?: string | null }
   /** v0.9.1 需求3 #1：停止时 pi 队列被清空的排队文本（回填输入框）。 */
   | { kind: "steer_queue_cleared"; texts: string[] };
 

@@ -217,13 +217,15 @@ class StreamStore {
     } else if (data.kind === "auto_retry_status") {
       // v0.9.1 需求14：start → 进行态横幅（多次 start 后者覆盖）；end 成功
       // 清除；end 失败保留最终失败原因至下轮。
+      // wire 字段为 snake_case（NormalizedEvent 仅 variant 名 snake 化，
+      // 字段原样序列化——对齐 approval_request 等既有约定）。
       if (data.active) {
-        autoRetry = { attempt: data.attempt, maxAttempts: data.maxAttempts, errorMessage: data.errorMessage };
+        autoRetry = { attempt: data.attempt, maxAttempts: data.max_attempts, errorMessage: data.error_message };
         retryFailed = null;
       } else {
         autoRetry = null;
-        if (!data.success && data.finalError) {
-          retryFailed = { attempt: data.attempt, finalError: data.finalError };
+        if (!data.success && data.final_error) {
+          retryFailed = { attempt: data.attempt, finalError: data.final_error };
         }
       }
     } else if (data.kind === "tool_use_start") {
