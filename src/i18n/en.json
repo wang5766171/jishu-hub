@@ -417,7 +417,8 @@
     "mcpTransportHttp": "HTTP",
     "mcpTransportStdio": "stdio (local command)",
     "mcpTransportType": "Transport",
-    "systemBadge": "System"
+    "systemBadge": "System",
+    "categoryEmpty": "No plugins yet"
   },
   "config": {
     "title": "Configuration",

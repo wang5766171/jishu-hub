@@ -51,8 +51,8 @@ fn status(_ctx: &ExecutionContext) {
         println!("skills: (none enabled)");
     } else {
         println!("skills ({}):", decls.len());
-        for (id, description, _) in &decls {
-            println!("  {id}: {description}");
+        for d in &decls {
+            println!("  {}: {}", d.dir_name, d.description);
         }
     }
     if resolver_on {

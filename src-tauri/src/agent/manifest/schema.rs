@@ -45,10 +45,14 @@ pub struct AgentManifestFile {
     /// 声明式面板（v0.9.0 需求8）。
     #[serde(default)]
     pub panel: Option<PanelSection>,
-    /// Skill 声明（v0.9.0 需求20）：插件声明一个 SKILL.md 能力，hub 分发器
-    /// 部署到各 agent 的 skill 目录（启停即分发/回收，对标 [mcp] 总控模式）。
+    /// Skill 声明（v0.9.0 需求20，v0.9.1 需求9 单/双形态）：插件声明的
+    /// SKILL.md 能力，hub 分发器部署到各 agent 的 skill 目录（启停即分发/
+    /// 回收，对标 [mcp] 总控模式）。`[skill]` 表 = 单 skill（存量形态），
+    /// `[[skill]]` 数组 = 一插件多 skill（对标 MCP 一 server 多工具）。
+    /// 另有目录形式源：`plugins/<id>/skills/<name>/SKILL.md` 文件即权威
+    /// （新增/更新 skill = 增改文件，rebuild 时同步）。
     #[serde(default)]
-    pub skill: Option<SkillSection>,
+    pub skill: Option<SkillDecl>,
     /// 智能体的 skill 根目录声明（v0.9.0 需求20 第四轮，kind = "agent" 专属）：
     /// 声明后 hub 的 skill 分发器把启用插件的 SKILL.md 铺到该目录
     /// （`<dir>/<skill名>/SKILL.md`），实现自建智能体的 skill 接入。
@@ -162,6 +166,44 @@ pub struct McpSection {
 pub struct SkillSection {
     pub description: String,
     pub body: String,
+}
+
+/// v0.9.1 需求9：`[[skill]]` 数组项——一插件多 skill。name = skill 名
+/// （部署目录名 `<plugin_id>__<name>`，对标 MCP 工具命名 `<pid>__<tool>`；
+/// frontmatter name 保持声明原值）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
+    pub body: String,
+}
+
+/// v0.9.1 需求9：[skill] 段单/双形态——TOML 同 key 表/数组互斥，untagged
+/// 依形态分流；存量单 skill 插件零迁移。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SkillDecl {
+    One(SkillSection),
+    Many(Vec<SkillEntry>),
+}
+
+impl SkillDecl {
+    /// 展开为 `(skill 名, description, body)` 清单：单数形态名 = None
+    /// （调用方以插件 id 命名，保持 v0.9.0 部署目录名不变）。
+    pub fn entries(&self) -> Vec<(Option<&str>, &str, &str)> {
+        match self {
+            SkillDecl::One(s) => vec![(None, s.description.as_str(), s.body.as_str())],
+            SkillDecl::Many(list) => list
+                .iter()
+                .map(|e| (Some(e.name.as_str()), e.description.as_str(), e.body.as_str()))
+                .collect(),
+        }
+    }
+
+    pub fn is_many(&self) -> bool {
+        matches!(self, SkillDecl::Many(_))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -343,13 +385,33 @@ impl AgentManifestFile {
         if self.skills.is_some() {
             return Err("[skills] is only allowed for agent plugins".to_string());
         }
-        // v0.9.0 需求20：[skill] 段校验（description/body 非空）。
-        if let Some(skill) = &self.skill {
-            if skill.description.trim().is_empty() {
-                return Err("skill.description must not be empty".to_string());
-            }
-            if skill.body.trim().is_empty() {
-                return Err("skill.body must not be empty".to_string());
+        // v0.9.0 需求20：[skill] 段校验；v0.9.1 需求9 扩展单/双形态。
+        if let Some(decl) = &self.skill {
+            match decl {
+                SkillDecl::One(skill) => {
+                    if skill.description.trim().is_empty() {
+                        return Err("skill.description must not be empty".to_string());
+                    }
+                    if skill.body.trim().is_empty() {
+                        return Err("skill.body must not be empty".to_string());
+                    }
+                }
+                SkillDecl::Many(entries) => {
+                    for e in entries {
+                        if e.name.trim().is_empty() {
+                            return Err("skill[].name must not be empty".to_string());
+                        }
+                        if e.name.contains('/') || e.name.contains('\\') || e.name.contains("..") {
+                            return Err("skill[].name must be a plain directory name".to_string());
+                        }
+                        if e.description.trim().is_empty() {
+                            return Err("skill[].description must not be empty".to_string());
+                        }
+                        if e.body.trim().is_empty() {
+                            return Err("skill[].body must not be empty".to_string());
+                        }
+                    }
+                }
             }
         }
         // v0.9.0 需求8：[panel] 段校验。
@@ -840,7 +902,7 @@ body = "逐文件检查错误处理与测试覆盖。"
 "#;
         let m: AgentManifestFile = toml::from_str(src).unwrap();
         assert!(m.validate().is_ok());
-        assert_eq!(m.skill.as_ref().unwrap().description, "提交前代码自查清单");
+        assert!(matches!(m.skill.as_ref().unwrap(), super::SkillDecl::One(s) if s.description == "提交前代码自查清单"));
 
         // 空 description / 空 body → 拒绝。
         let bad = src.replace("提交前代码自查清单", "  ");
@@ -852,11 +914,54 @@ body = "逐文件检查错误处理与测试覆盖。"
 
         // agent 插件带 [skill] → 拒绝。
         let mut agent_m = base_manifest();
-        agent_m.skill = Some(SkillSection {
+        agent_m.skill = Some(SkillDecl::One(SkillSection {
             description: "d".into(),
             body: "b".into(),
-        });
+        }));
         assert!(agent_m.validate().unwrap_err().contains("[skill]"));
+    }
+
+    /// v0.9.1 需求9：[[skill]] 数组（一插件多 skill）解析/校验/entries 展开。
+    #[test]
+    fn skill_array_form_parse_and_expand() {
+        let src = r#"
+schema = 1
+kind = "tool"
+[info]
+id = "team-kit"
+display_name = "Team Kit"
+[[skill]]
+name = "review"
+description = "自查清单"
+body = "逐文件检查。"
+[[skill]]
+name = "release"
+description = "发版步骤"
+body = "跑测试后打包。"
+"#;
+        let m: AgentManifestFile = toml::from_str(src).unwrap();
+        assert!(m.validate().is_ok());
+        let SkillDecl::Many(entries) = m.skill.as_ref().unwrap() else {
+            panic!("array form must parse to Many");
+        };
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "review");
+        let expanded = m.skill.as_ref().unwrap().entries();
+        assert_eq!(
+            expanded,
+            vec![
+                (Some("review"), "自查清单", "逐文件检查。"),
+                (Some("release"), "发版步骤", "跑测试后打包。"),
+            ]
+        );
+
+        // 非法 name（路径分隔符）/空字段 → 拒绝。
+        let bad = src.replace("name = \"review\"", "name = \"a/b\"");
+        let m: AgentManifestFile = toml::from_str(&bad).unwrap();
+        assert!(m.validate().unwrap_err().contains("skill[].name"));
+        let bad2 = src.replace("发版步骤", " ");
+        let m: AgentManifestFile = toml::from_str(&bad2).unwrap();
+        assert!(m.validate().unwrap_err().contains("skill[].description"));
     }
 
     #[test]

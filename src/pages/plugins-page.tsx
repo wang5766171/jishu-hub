@@ -492,7 +492,8 @@ export function PluginsPage() {
       <div className="space-y-4">
         {PLUGIN_CATEGORIES.map((cat) => {
           const items = (result?.plugins ?? []).filter((x) => categoryOf(x) === cat.key);
-          if (items.length === 0) return null;
+          // v0.9.1 需求9：分类常显——空分类（如 Skill 工具暂无成员）也展示
+          // 类型标题与计数 0（用户裁决：skill 即使 0 也要显示），空态一行占位。
           const isCollapsed = collapsed.has(cat.key);
           return (
             <div key={cat.key} className="space-y-2">
@@ -511,7 +512,14 @@ export function PluginsPage() {
                 {tr(cat.labelKey, cat.fallback)}
                 <span className="text-muted-foreground/50">{items.length}</span>
               </button>
-              {!isCollapsed && items.map((plugin) => renderRow(plugin))}
+              {!isCollapsed &&
+                (items.length > 0 ? (
+                  items.map((plugin) => renderRow(plugin))
+                ) : (
+                  <p className="px-1 py-2 text-xs text-muted-foreground/60">
+                    {tr("plugins.categoryEmpty", "暂无插件")}
+                  </p>
+                ))}
             </div>
           );
         })}

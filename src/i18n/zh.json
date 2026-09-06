@@ -417,7 +417,8 @@
     "mcpTransportHttp": "HTTP",
     "mcpTransportStdio": "stdio（本地命令）",
     "mcpTransportType": "传输类型",
-    "systemBadge": "系统"
+    "systemBadge": "系统",
+    "categoryEmpty": "暂无插件"
   },
   "config": {
     "title": "配置管理",

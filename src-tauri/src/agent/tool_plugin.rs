@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::manifest::schema::AgentManifestFile;
+use super::manifest::schema::{self, AgentManifestFile};
 
 /// 注入块的标记对：agent 原生历史会记录注入后的消息，回放时剥离。
 pub const TOOL_BLOCK_OPEN: &str = "<jishu-tool-plugins>";
@@ -269,12 +269,26 @@ pub fn render_tool_block(plugins: &[&ToolPlugin]) -> String {
                 plugin.file.info.display_name, plugin.file.info.id
             ));
         }
-        if let Some(skill) = plugin.file.skill.as_ref() {
+        // v0.9.1 需求9：[skill] 单/双形态共用小节——单数沿用插件 id 名，
+        // 多 skill 逐项列出（部署名 `<pid>__<name>`）。
+        if let Some(decl) = plugin.file.skill.as_ref() {
             out.push_str(&format!("\n## {} — Skill\n", plugin.file.info.id));
-            out.push_str(&format!(
-                "本会话启用了 skill「{}」：{}\n（skill 文件已在你可访问的 skill 目录中，按 skill 名即可使用。）\n",
-                plugin.file.info.id, skill.description
-            ));
+            match decl {
+                schema::SkillDecl::One(skill) => {
+                    out.push_str(&format!(
+                        "本会话启用了 skill「{}」：{}\n（skill 文件已在你可访问的 skill 目录中，按 skill 名即可使用。）\n",
+                        plugin.file.info.id, skill.description
+                    ));
+                }
+                schema::SkillDecl::Many(entries) => {
+                    for e in entries {
+                        out.push_str(&format!(
+                            "本会话启用了 skill「{}__{}」：{}\n（skill 文件已在你可访问的 skill 目录中，按 skill 名即可使用。）\n",
+                            plugin.file.info.id, e.name, e.description
+                        ));
+                    }
+                }
+            }
         }
         let Some(tool) = plugin.file.tool.as_ref() else {
             continue;
@@ -582,10 +596,12 @@ usage = "u"
                 pi_extension: None,
                 mcp: None,
                 panel: None,
-                skill: Some(crate::agent::manifest::schema::SkillSection {
-                    description: "自查清单".into(),
-                    body: "逐文件检查。".into(),
-                }),
+                skill: Some(crate::agent::manifest::schema::SkillDecl::One(
+                    crate::agent::manifest::schema::SkillSection {
+                        description: "自查清单".into(),
+                        body: "逐文件检查。".into(),
+                    },
+                )),
                 skills: None,
                 tool: None,
             }),

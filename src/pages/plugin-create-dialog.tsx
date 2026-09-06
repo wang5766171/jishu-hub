@@ -927,6 +927,11 @@ export function parseManifest(json: Record<string, unknown>): {
   if (json.pi_extension && typeof json.pi_extension === "object") {
     preserved.pi_extension = json.pi_extension;
   }
+  // v0.9.1 需求9：[[skill]] 数组形态（一插件多 skill）表单暂不支持编辑——
+  // 原样透传防静默丢段（表单 skill 字段留空，保存时 preserved 覆盖优先）。
+  if (Array.isArray(json.skill)) {
+    preserved.skill = json.skill;
+  }
   const form: FormState = {
     id: String(info.id ?? ""),
     displayName: String(info.display_name ?? ""),
