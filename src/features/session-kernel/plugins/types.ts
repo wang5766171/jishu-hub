@@ -16,27 +16,130 @@ export type { DockSlot };
 
 export const SESSION_PLUGIN_CONTRACT_VERSION = 1;
 
+// ── 数据面类型（可序列化契约，供 subscribe 消费）──
+
+/** 完整消息（含全部块类型；插件按需取用，只读约定）。 */
+export interface PluginMessage {
+  role: string;
+  blocks: PluginBlock[];
+}
+
+/** 内容块（序列化友好投影；工具调用/思考/交互/图片/分隔线均可见）。 */
+export interface PluginBlock {
+  type:
+    | "text"
+    | "thinking"
+    | "tool_use"
+    | "tool_result"
+    | "interaction"
+    | "phase_divider"
+    | "image";
+  /** text 块正文；tool_use 为工具名；interaction 为 prompt；分隔线为 phase。 */
+  text?: string;
+  /** tool_use 调用 id。 */
+  id?: string;
+  /** tool_use 输入（JSON 对象）。 */
+  input?: Record<string, unknown>;
+  /** tool_result 输出。 */
+  output?: string;
+  /** tool_result 是否错误。 */
+  isError?: boolean;
+  /** interaction 选项。 */
+  options?: Array<{ id: string; label: string }>;
+  /** interaction 已选答案。 */
+  answer?: string;
+  /** thinking 内容。 */
+  thinking?: string;
+}
+
+/** 流式状态（阅读模式/实时监控/自动滚动类插件消费）。 */
+export interface PluginStreamState {
+  isStreaming: boolean;
+  /** 流式文本（累积）。 */
+  text: string;
+  /** 当前重试状态（null = 无重试）。 */
+  retry: { attempt: number; max: number; reason: string } | null;
+  /** 错误信息（null = 无）。 */
+  error: string | null;
+  /** steer 注入文本列表。 */
+  steerTexts: string[];
+}
+
+/** 会话元信息。 */
+export interface PluginSessionMeta {
+  agentId: string | null;
+  agentName: string | null;
+  model: string | null;
+  thinkingLevel: string | null;
+  /** 上下文占用（token；null = 未知）。 */
+  contextUsed: number | null;
+  contextTotal: number | null;
+}
+
+/** 消息搜索结果。 */
+export interface PluginSearchMatch {
+  messageIndex: number;
+  blockIndex: number;
+  /** 命中文本片段（上下文截断）。 */
+  excerpt: string;
+}
+
 /** 会话内核提供给插件的受控上下文（插件可触达的全部世界）。 */
 export interface SessionKernelContext {
+  // ── 数据（快照式；插件可经 subscribe 声明持续订阅）──
   /** 轮次摘要（统一视图模型同源）。 */
   turns: TurnSummary[];
   /** 当前阅读位置所在轮（scroll-spy），-1 = 未知。 */
   activeTurnIndex: number;
-  /** 内核定位 API：滚动到指定轮次。 */
-  scrollToTurn(index: number): void;
-  /** 任务上下文（会话关联任务实例时非空；任务流程全景插件消费）。 */
-  task: TaskPanelContext | null;
   /** 当前会话 id（null = 未选中/新会话）。 */
   sessionId: string | null;
-  /** 当前会话显示名（导出文件名等用途）。 */
+  /** 当前会话显示名。 */
   sessionTitle: string | null;
-  /** 当前会话完整消息（导出等消费；只读约定，插件不得变更）。 */
-  messages: { role: string; text: string }[];
-  /** 会话信息解析（用量面板等消费）：id → 标题 + 类型（会话/任务/子节点）。 */
+  /** 完整消息（含全部块类型的只读投影）。 */
+  messages: PluginMessage[];
+  /** 流式状态快照（null = 无流式会话）。 */
+  streamState: PluginStreamState | null;
+  /** 会话元信息。 */
+  sessionMeta: PluginSessionMeta;
+  /** 任务上下文（会话关联任务实例时非空）。 */
+  task: TaskPanelContext | null;
+
+  // ── 命令 ──
+  scrollToTurn(index: number): void;
+  /** 搜索消息文本，返回全部命中。 */
+  searchMessages(query: string): PluginSearchMatch[];
+  /** 滚动定位到指定消息。 */
+  scrollToMessage(messageIndex: number): void;
+  /** 插入文本到输入框光标处（不发送）。 */
+  insertToComposer(text: string): void;
+  /** 切换到指定会话。 */
+  switchSession(sessionId: string): void;
+  /** 打开文件预览面板。 */
+  openFileViewer(path: string): void;
+  /** 弹确认对话框（Promise<boolean>）。 */
+  confirmDialog(opts: { title: string; description?: string; variant?: "default" | "destructive" }): Promise<boolean>;
+  /** 会话信息解析：id → 标题 + 类型。 */
   resolveSessionInfo(
     sessionId: string,
   ): { title: string; kind: "session" | "task" | "node" | "unknown" } | null;
+
+  // ── 订阅（声明制；未订阅不推送）──
+  subscribe: {
+    /** 完整消息流（含全部块类型）。 */
+    messages(cb: (msgs: PluginMessage[]) => void): Unsubscribe;
+    /** 流式状态（进行中/内容/重试/错误/steer）。 */
+    streamState(cb: (state: PluginStreamState | null) => void): Unsubscribe;
+    /** 会话元信息（agent/模型/思考档/上下文占用）。 */
+    sessionMeta(cb: (meta: PluginSessionMeta) => void): Unsubscribe;
+    /** 轮次摘要（已有 turns 快照的持续版）。 */
+    turns(cb: (turns: TurnSummary[]) => void): Unsubscribe;
+    /** 内核信号（通知/音效等）。 */
+    events(cb: (signal: SessionSignal) => void): Unsubscribe;
+  };
 }
+
+/** 订阅取消句柄。 */
+export type Unsubscribe = () => void;
 
 /** 全景面板节点的呈现态摘要（内核侧组装，插件不直接触达 store）。 */
 export interface TaskPanelNode {
@@ -65,6 +168,8 @@ export interface TaskPanelContext {
   onCancelRun(): void;
 }
 
+// ── 挂载点 ──
+
 /** 贴边挂件挂载点：贴消息流左/右缘的细条（无标题栏）。 */
 export interface RailWidgetMount {
   kind: "rail-widget";
@@ -82,15 +187,9 @@ export interface DockPanelMount {
   defaultSlot: DockSlot;
 }
 
-export type PluginMount =
-  | RailWidgetMount
-  | DockPanelMount
-  | BlockRendererMount
-  | EventHookMount
-  | HeaderActionMount;
-
-/** 块渲染器挂载点：对某类代码块/内容块注册增强渲染，未命中或插件禁用时
- * 回退核心渲染（markdown 代码块原样显示）。 */
+/** 块渲染器挂载点（v0.9.2 底座增强）：匹配内容块（非仅代码块）。
+ * 0 = 仅匹配代码块（语言+detect）；extended 匹配消息块（interaction/
+ * phase_divider/tool_use 等核心块类型的插件接管渲染）。 */
 export interface BlockRendererMount {
   kind: "block-renderer";
   /** 语言匹配（小写，如 ["html"]）；空数组 = 全部语言由 detect 判定。 */
@@ -98,7 +197,18 @@ export interface BlockRendererMount {
   /** 内容判定（如 HTML 是否完整文档）。 */
   detect: (language: string, code: string) => boolean;
   Component: ComponentType<{ code: string; language: string }>;
+  /** 扩展匹配：接管非代码块类型（interaction / phase_divider 等）。 */
+  blockTypes?: string[];
+  /** 扩展块渲染组件（接收完整 PluginBlock）。 */
+  BlockComponent?: ComponentType<{ block: PluginBlock }>;
 }
+
+export type PluginMount =
+  | RailWidgetMount
+  | DockPanelMount
+  | BlockRendererMount
+  | EventHookMount
+  | HeaderActionMount;
 
 /** 内核信号（事件钩子挂载点的数据面）。 */
 export type SessionSignal =

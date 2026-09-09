@@ -1188,6 +1188,24 @@
       "kindNode": "Node",
       "kindSession": "Session",
       "kindUnknown": "Other"
+    },
+    "contextRing": {
+      "name": "Context Ring",
+      "description": "Context usage indicator",
+      "action": "Context"
+    },
+    "search": {
+      "name": "Message Search",
+      "description": "Search messages and jump to matches",
+      "panelTitle": "Search",
+      "placeholder": "Search messages…",
+      "noResults": "No matches",
+      "messageIndex": "Msg"
+    },
+    "interaction": {
+      "name": "Interaction Cards",
+      "description": "Card rendering for interaction blocks",
+      "answer": "Answered"
     }
   },
   "sessionPanels": {

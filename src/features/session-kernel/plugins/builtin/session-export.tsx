@@ -20,15 +20,19 @@ function composeMarkdown(ctx: SessionKernelContext): string {
   lines.push(`> ${t("sessionPlugins.export.exportedAt", "导出时间")}：${new Date().toLocaleString()}`);
   lines.push("");
   for (const message of ctx.messages) {
+    const text = message.blocks
+      .filter((b) => b.type === "text")
+      .map((b) => b.text ?? "")
+      .join("\n");
     if (message.role === "user") {
       lines.push(`## ${t("sessionPlugins.export.user", "用户")}`);
       lines.push("");
-      lines.push(message.text);
+      lines.push(text);
       lines.push("");
     } else if (message.role === "assistant") {
       lines.push(`## ${t("sessionPlugins.export.assistant", "助手")}`);
       lines.push("");
-      lines.push(message.text);
+      lines.push(text);
       lines.push("");
     }
   }

@@ -23,6 +23,9 @@ import type {
   SessionKernelContext,
   TaskPanelContext,
   TaskPanelNode,
+  PluginBlock,
+  PluginMessage,
+  PluginSearchMatch,
 } from "@/features/session-kernel/plugins/types";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
 import { RenameTaskSessionDialog } from "@/components/sessions/rename-task-session-dialog";
@@ -79,7 +82,7 @@ import { AgentLogo, AgentSwitcher, useAgent } from "@/agents";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
 import { resolvePhaseSessionId, shouldRenderGlobalChatInput } from "./chat-page-layout";
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
-import { setSessionUsage } from "@/lib/session-usage";
+import { getSessionUsage, setSessionUsage } from "@/lib/session-usage";
 import { ContextRing } from "@/components/sessions/context-ring";
 import { UserTextWithPills, useSessionToolNames } from "@/components/sessions/embedded-tools";
 import { useModelPicker } from "@/features/chat-core/use-model-picker";
@@ -379,7 +382,7 @@ export function ChatPage({
   // 快照仅在集合成员变化时更新，流式内容增量不会引起列表重渲染。
   const streamingSessionIds = useStreamingSessionIds();
   // v0.8.0 需求4 补充：切换会话时自动收起右侧文件预览面板。
-  const { closeViewer } = useFileViewer();
+  const { openViewer, closeViewer } = useFileViewer();
   // 任务图数据：无条件持有（无 graph 时无副作用）。任务模式主区（run 流）与右侧 TaskSidebar 共享。
   const taskGraph = useTaskGraph();
   // v0.7.0：ref 镜像，供轮询回调（非 React 闭包）读 taskGraph 而不进入依赖数组。
@@ -1825,18 +1828,140 @@ export function ChatPage({
   // v0.9.2 需求1：已启用会话插件集合（plugins-changed 热刷新）。
   const enabledSessionPlugins = useEnabledSessionPlugins();
 
-  // 导出等插件消费：当前会话消息的轻量只读投影（role + text 块拼接）。
-  const ctxMessages = useMemo(
+  // v0.9.2 底座增强：当前会话消息的完整块投影（工具调用/思考/交互/图片/
+  // 分隔线均可见——统计/阅读/导出类插件的数据面）。
+  const ctxMessages = useMemo<PluginMessage[]>(
     () =>
       sessionMessages.map((msg) => ({
         role: msg.role,
-        text: msg.content
-          .filter((block) => block.type === "text")
-          .map((block) => (block.type === "text" ? block.text : ""))
-          .join("\n"),
+        blocks: msg.content.map((block): PluginBlock => {
+          switch (block.type) {
+            case "text":
+              return { type: "text", text: block.text };
+            case "thinking":
+              return { type: "thinking", thinking: block.thinking };
+            case "tool_use":
+              return {
+                type: "tool_use",
+                id: block.id,
+                text: block.name,
+                input:
+                  typeof block.input === "object" && block.input !== null
+                    ? (block.input as Record<string, unknown>)
+                    : {},
+              };
+            case "tool_result":
+              return {
+                type: "tool_result",
+                id: block.tool_use_id,
+                output:
+                  typeof block.content === "string"
+                    ? block.content
+                    : JSON.stringify(block.content),
+                isError: (block as { is_error?: boolean }).is_error ?? false,
+              };
+            case "interaction":
+              return {
+                type: "interaction",
+                text: block.prompt,
+                options: (block.options ?? []).map((o) => ({
+                  id: o.option_id,
+                  label: o.label,
+                })),
+                answer: block.answer ?? undefined,
+              };
+            case "phase_divider":
+              return { type: "phase_divider", text: block.phase };
+            default:
+              return { type: "text", text: "" };
+          }
+        }),
       })),
     [sessionMessages],
   );
+
+  // v0.9.2 底座增强：流式状态投影（阅读模式/实时监控类插件消费）。
+  const ctxStreamState = useMemo(() => {
+    if (!currentStream) return null;
+    return {
+      isStreaming: currentStream.isStreaming,
+      text: currentStream.text ?? "",
+      retry: currentStream.autoRetry
+        ? {
+            attempt: currentStream.autoRetry.attempt,
+            max: currentStream.autoRetry.maxAttempts,
+            reason: currentStream.autoRetry.errorMessage,
+          }
+        : null,
+      error: currentStream.error || null,
+      steerTexts: currentStream.steerTexts ?? [],
+    };
+  }, [currentStream]);
+
+  // v0.9.2 底座增强：会话元信息（agent/模型/思考档/上下文占用）。
+  const ctxSessionMeta = useMemo(
+    () => ({
+      agentId: chatAgentId,
+      agentName: chatAgent?.display_name ?? null,
+      model: activeModelValue ?? null,
+      thinkingLevel: thinkingLevelValue,
+      contextUsed: (() => {
+        const u = getSessionUsage(selectedSession ?? "");
+        return u?.inputTokens != null && u?.outputTokens != null
+          ? u.inputTokens + u.outputTokens
+          : null;
+      })(),
+      contextTotal: getSessionUsage(selectedSession ?? "")?.contextWindowTotal ?? null,
+    }),
+    [chatAgentId, chatAgent, activeModelValue, thinkingLevelValue, selectedSession],
+  );
+
+  // v0.9.2 底座增强：消息搜索（搜索插件消费）。
+  const searchMessages = useCallback(
+    (query: string): PluginSearchMatch[] => {
+      if (!query.trim()) return [];
+      const matches: PluginSearchMatch[] = [];
+      const q = query.toLowerCase();
+      ctxMessages.forEach((msg, mi) => {
+        msg.blocks.forEach((block, bi) => {
+          const text =
+            block.type === "text"
+              ? block.text ?? ""
+              : block.type === "tool_use"
+                ? block.text ?? ""
+                : "";
+          const idx = text.toLowerCase().indexOf(q);
+          if (idx >= 0) {
+            matches.push({
+              messageIndex: mi,
+              blockIndex: bi,
+              excerpt: text.slice(Math.max(0, idx - 20), idx + q.length + 40),
+            });
+          }
+        });
+      });
+      return matches;
+    },
+    [ctxMessages],
+  );
+
+  // v0.9.2 底座增强：滚动到指定消息（搜索跳转）。
+  const scrollToMessage = useCallback((messageIndex: number) => {
+    const el = messageAreaRef.current;
+    if (!el) return;
+    const target = el.querySelector(
+      `[data-turn-scope="main"] [data-message-index="${messageIndex}"]`,
+    );
+    if (target instanceof HTMLElement) {
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, []);
+
+  // v0.9.2 底座增强：插入文本到输入框（Prompt 模板/引导指令类插件消费）。
+  const insertToComposer = useCallback((text: string) => {
+    chatInputRef.current?.restoreTexts([text]);
+    chatInputRef.current?.focus();
+  }, []);
 
   // 活跃任务的真节点标题（与右侧步骤栏同源，来自 taskGraph.snapshot），
   // 透传给左侧任务树覆盖 use-task-node-sessions 用 revision 取的占位标题（"A"/"B"）。
@@ -1856,6 +1981,12 @@ export function ChatPage({
       turns: turnSummaries,
       activeTurnIndex,
       scrollToTurn: handleJumpToTurn,
+      searchMessages,
+      scrollToMessage,
+      insertToComposer,
+      switchSession: (id: string) => void handleSelectSession(id),
+      openFileViewer: (path: string) => openViewer({ kind: "file", path }),
+      confirmDialog: (opts) => confirmDialog(opts),
       task: taskPanelCtx,
       sessionId: selectedSession && selectedSession !== "new" ? selectedSession : null,
       sessionTitle:
@@ -1863,8 +1994,19 @@ export function ChatPage({
           ? sessions?.find((item) => item.id === selectedSession)?.display_name ?? null
           : null,
       messages: ctxMessages,
+      streamState: ctxStreamState,
+      sessionMeta: ctxSessionMeta,
       // v0.9.2 测试期：会话信息解析（用量面板标题/类型）——任务=需求/规划会话，
       // 子节点=编排节点会话，其余=普通会话；当前项目外的会话回退 unknown。
+      // v0.9.2 底座增强：订阅 API（声明制——组件经 ctx prop 天然订阅；
+      // 非组件场景经此注册回调，内核每次 ctx 重建时调用）。
+      subscribe: {
+        messages: (cb) => { cb(ctxMessages); return () => {}; },
+        streamState: (cb) => { cb(ctxStreamState); return () => {}; },
+        sessionMeta: (cb) => { cb(ctxSessionMeta); return () => {}; },
+        turns: (cb) => { cb(turnSummaries); return () => {}; },
+        events: () => { return () => {}; },
+      },
       resolveSessionInfo: (sessionId: string) => {
         const taskSession = taskLaunchSessions.find(
           (item) =>
@@ -1885,7 +2027,7 @@ export function ChatPage({
         return null;
       },
     }),
-    [turnSummaries, activeTurnIndex, handleJumpToTurn, taskPanelCtx, selectedSession, sessions, ctxMessages, taskLaunchSessions, nodeSessionIds, activeTaskNodeTitles, sessionNames],
+    [turnSummaries, activeTurnIndex, handleJumpToTurn, taskPanelCtx, selectedSession, sessions, ctxMessages, ctxStreamState, ctxSessionMeta, searchMessages, scrollToMessage, insertToComposer, taskLaunchSessions, nodeSessionIds, activeTaskNodeTitles, sessionNames, confirmDialog, openViewer],
   );
 
   // v0.9.2 需求1 M4：信号桥（内核事件 → 已启用插件 event-hook）。

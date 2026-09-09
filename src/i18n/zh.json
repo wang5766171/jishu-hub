@@ -1188,6 +1188,24 @@
       "kindNode": "子节点",
       "kindSession": "会话",
       "kindUnknown": "其他项目"
+    },
+    "contextRing": {
+      "name": "上下文占用环",
+      "description": "会话上下文占用指示",
+      "action": "上下文"
+    },
+    "search": {
+      "name": "消息搜索",
+      "description": "搜索当前会话消息并跳转",
+      "panelTitle": "搜索",
+      "placeholder": "搜索消息…",
+      "noResults": "无匹配结果",
+      "messageIndex": "消息"
+    },
+    "interaction": {
+      "name": "交互问答卡",
+      "description": "消息中交互问答块的卡片化渲染",
+      "answer": "已答"
     }
   },
   "sessionPanels": {

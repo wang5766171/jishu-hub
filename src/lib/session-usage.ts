@@ -87,6 +87,11 @@ export function resetAllSessionUsageForTest(): void {
 }
 
 /** 测试辅助：读取某会话当前缓存快照。 */
+/** 非组件场景的快照读取（v0.9.2 底座增强：插件 ctx sessionMeta 消费）。 */
+export function getSessionUsage(sessionId: string): SessionUsage | null {
+  return getSessionUsageSnapshotForTest(sessionId);
+}
+
 export function getSessionUsageSnapshotForTest(sessionId: string): SessionUsage | null {
   return snapshotFor(sessionId);
 }

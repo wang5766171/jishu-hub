@@ -195,6 +195,10 @@ pub fn builtin_session_plugin_specs() -> &'static [(&'static str, &'static str)]
         ("session.desktop-notify", "桌面通知"),
         ("session.export", "会话导出"),
         ("session.usage", "用量成本面板"),
+        // v0.9.2 底座增强后拆出
+        ("session.context-ring", "上下文占用环"),
+        ("session.search", "消息搜索"),
+        ("session.interaction-render", "交互问答卡"),
     ]
 }
 
