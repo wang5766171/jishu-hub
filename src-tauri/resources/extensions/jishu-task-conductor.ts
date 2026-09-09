@@ -112,25 +112,47 @@ const PHASE_ALLOWED_TOOLS: Partial<Record<Phase, string[]>> = {
     "request_user_input",
   ],
   plan: ["read", "grep", "find", "ls", "commit_plan", "request_user_input"],
-  execute: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+  // v0.9.2 测试期（执行期方案调整打通）：commit_plan 在 execute 亦可用——
+  // 执行期提交 = 方案修订（既有图新 revision，运行中应用，见 conductor_revise_plan）。
+  execute: [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "find",
+    "ls",
+    "commit_plan",
+    "dispatch_to_node",
+  ],
 };
 
 /** 根据 phase + executorMode 返回当前允许的工具列表。 */
 function allowedToolsFor(phase: Phase, executorMode?: string): string[] | undefined {
   // #5 纵深防御：external 模式 execute 阶段 Conductor 不执行，收窄为只读（硬保障靠 commit_plan 的 terminate）
   if (phase === "execute" && executorMode === "external") {
-    return ["read", "grep", "find", "ls"];
+    // 监督态保留方案修订、持续下发与问答（规划性操作，非节点执行）。
+    return ["read", "grep", "find", "ls", "commit_plan", "dispatch_to_node", "request_user_input"];
   }
   return PHASE_ALLOWED_TOOLS[phase];
 }
 
+// v0.9.2 测试期修复：技能包唯一正确位置 = Pi 原生 agent 目录（getAgentDir()/skills，
+// 即 PI_CODING_AGENT_DIR=<根> 时的 <根>/agent/skills，Hub 部署侧同源——见
+// src-tauri/src/agent/jishu_self/paths.rs）。此前默认拼到 <根>/skills（不存在），
+// loadSkill 恒走 Missing skill 兜底，需求讨论阶段的问答卡片指令从未到达模型。
+// 不 import pi 的 getAgentDir（值导入在 pi Node-mode loader 下解析失败，见
+// request-user-input.ts 头注），按同一规则本地解析。
+const piAgentDir = (() => {
+  const envDir = process.env.PI_CODING_AGENT_DIR;
+  const homeDir = process.env.HOME || process.env.USERPROFILE || "~";
+  const expanded = envDir && envDir.startsWith("~")
+    ? join(homeDir, envDir.slice(1))
+    : envDir;
+  return expanded ? join(expanded, "agent") : join(homeDir, ".pi", "agent");
+})();
 const SKILLS_DIR =
-  process.env.JISHU_CONDUCTOR_SKILLS_DIR ||
-  join(
-    process.env.HOME || process.env.USERPROFILE || "~",
-    ".jishu-agent",
-    "skills",
-  );
+  process.env.JISHU_CONDUCTOR_SKILLS_DIR || join(piAgentDir, "skills");
 
 function loadSkill(domain: Domain, phase: SkillPhase): string {
   try {
@@ -616,7 +638,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
   async function acceptPlan(
     candidate: PlanCandidate,
     ctx: ExtensionContext,
-  ): Promise<void> {
+  ): Promise<"execute" | "failed" | { revised: true; runUpdated: boolean }> {
     validatePlan(candidate.nodes);
     const plan = {
       schema: "jishu-flow-plan-proposal/v1",
@@ -668,6 +690,27 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       status: "pending",
     }));
 
+    // v0.9.2 测试期（执行期方案调整打通）：执行阶段的 commit_plan = 方案修订——
+    // 不走 validate（会另建新图）与阶段转场（expected plan 必冲突），改走
+    // conductor_revise_plan（既有图子 revision；run 进行中则应用至该 run）。
+    if (state.phase === "execute") {
+      const reviseResult = await hubInvoke(ctx, "conductor_revise_plan", {
+        task_id: state.artifacts.taskId ?? "draft",
+        project_root: process.cwd(),
+        proposal_path: jsonPath,
+      }, 20000);
+      if (reviseResult === null) {
+        ctx.ui.notify("方案修订已写入产物，但 Hub 未响应修订请求（桥接超时）。", "warning");
+        return "failed";
+      }
+      if (reviseResult.success === false) {
+        ctx.ui.notify(reviseResult.error ?? "Hub 拒绝了方案修订", "error");
+        return "failed";
+      }
+      const data = reviseResult.data as { run_updated?: boolean } | undefined;
+      return { revised: true, runUpdated: Boolean(data?.run_updated) };
+    }
+
     // Phase 3：尝试创建 GraphRevision（orchestrator 模式）
     state.executorMode = "fallback";
     const validateResult = await hubInvoke(ctx, "orchestrator_validate_proposal", {
@@ -690,7 +733,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       artifact_hash: `sha256:${contentHash}`,
       session_id: ctx.sessionManager.getSessionId(),
     });
-    if (!synced) return;
+    if (!synced) return "failed";
 
     state.candidate = undefined;
     state.pendingConfirmation = undefined;
@@ -698,6 +741,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     state.enteringPhase = "execute"; // 铁律7：推迟到 turn_end 落 phase
     persist();
     // R3：进入执行的驱动/分隔符移到空闲 agent_end（消费 pendingDrive），节点列表用 renderStepList() 重建。
+    return "execute";
   }
 
   pi.registerTool({
@@ -874,8 +918,24 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         `请查阅上方候选计划（第 ${revision} 版）是否合适、是否需要修改。`,
         ["进入流程执行", "修改计划"],
       );
+      let reviseOutcome: { revised: true; runUpdated: boolean } | undefined;
       if (choice === "进入流程执行") {
-        await acceptPlan(candidate, ctx);
+        const outcome = await acceptPlan(candidate, ctx);
+        if (typeof outcome === "object" && outcome.revised) {
+          // 执行期方案修订成功——结果话术独立于阶段转场（enteringPhase 不适用）。
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: outcome.runUpdated
+                  ? "方案修订已应用：新节点已并入当前执行（已完成节点保持原结果）。无需其他操作。"
+                  : "方案修订已保存为最新方案版本；当前执行已结束，可按新方案再次发起执行。",
+              },
+            ],
+            details: { candidateId: candidate.id, revision, revised: true },
+            terminate: true,
+          };
+        }
       } else if (choice !== undefined) {
         // R5：choice 可能是按钮「修改计划」，也可能是用户自由输入的修改要求。后者原样带给 agent。
         queueRevision(
@@ -905,6 +965,54 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         ],
         details: { candidateId: candidate.id, revision },
         terminate: stopNow,
+      };
+    },
+  });
+
+  // v0.9.2 测试期（持续编排）：向既有节点的子 agent 会话续发内容——节点会话
+  // 保活，任务执行中/完成后均可下发；空闲=新回合，进行中=steer 注入。
+  pi.registerTool({
+    name: "dispatch_to_node",
+    label: "向子节点续发内容",
+    description:
+      "向任务中某个既有节点的子代理会话续发工作内容（追加需求/补充说明/返工指引）。适用于：任务已有执行过该方向的节点，其上下文仍然在线。content 写清本次要它做的具体事项（自包含，含产物路径与验收口径）。若没有合适的既有节点，应改为起草含新节点的完整修订计划并调用 commit_plan。",
+    parameters: Type.Object({
+      node_id: Type.String({
+        description: "目标节点 id（必须是当前计划中存在且已执行过的节点）",
+      }),
+      content: Type.String({
+        description: "下发给该节点子代理的工作内容（自包含指令）",
+      }),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx: ExtensionContext) {
+      const result = await hubInvoke(ctx, "conductor_dispatch_to_node", {
+        task_id: state.artifacts.taskId ?? "draft",
+        project_root: process.cwd(),
+        node_id: params.node_id,
+        content: params.content,
+      }, 10000);
+      if (result === null) {
+        return {
+          content: [{ type: "text" as const, text: "下发请求已发出，但 Hub 未响应（桥接超时）。请在界面确认该节点会话是否收到内容。" }],
+          details: {},
+        };
+      }
+      if (result.success === false) {
+        return {
+          content: [{ type: "text" as const, text: result.error ?? "Hub 拒绝了下发" }],
+          details: {},
+        };
+      }
+      const data = result.data as { delivered_as?: string; session_id?: string } | undefined;
+      const how = data?.delivered_as === "steer" ? "已注入该节点进行中的回合" : "已在该节点会话开启新回合";
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `内容已下发给节点 ${params.node_id}（${how}）。它将带着原有上下文继续处理；完成后可在其会话查看结果。`,
+          },
+        ],
+        details: { node_id: params.node_id, delivered_as: data?.delivered_as },
       };
     },
   });
@@ -1112,7 +1220,8 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         message: {
           customType: phaseTag(),
           display: false,
-          content: `[JISHU-TASK:${state.domain}:execute] === 流程执行（监督态）===\n执行由界面工作台驱动（用户为节点选智能体并点击“执行”，由 Orchestrator 引擎执行）。你不执行任何节点、不调用写工具（write/bash/edit）。本阶段无需你的动作；如用户提问可只读查阅后简答。`,
+          content: `[JISHU-TASK:${state.domain}:execute] === 流程执行（监督态）===\n执行由界面工作台驱动（用户为节点选智能体并点击“执行”，由 Orchestrator 引擎执行）。你不执行任何节点、不调用写工具（write/bash/edit）。本阶段无需你的动作；如用户提问可只读查阅后简答。
+【方案调整与持续下发（支持）】用户要求追加/补充/修改工作时，先判断是否有合适的既有节点：①有（该方向已有节点执行过、上下文在线）→ 调用 dispatch_to_node(node_id, 自包含工作内容) 直接向该子代理续发；②没有 → 起草含新节点的完整修订计划（保留既有节点原 id，新节点起新 id 并接好依赖）调用 commit_plan——执行中：新节点并入当前执行（已完成节点冻结）；任务已完成：引擎自动增量续跑（只执行新节点，已完成工作不重跑）。禁止反复读取任务文件/产物空转；不确定用户意图时用 request_user_input 确认一次即可。`,
         },
       };
     }

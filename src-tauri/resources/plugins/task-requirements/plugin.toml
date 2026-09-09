@@ -8,7 +8,7 @@ display_name = "需求讨论"
 [pi_extension]
 entry = "discuss.ts"
 target_agent = "jishu-self"
-
+tools = ["lock_requirement"]
 [tool]
 description = "结构化需求收敛工具——仅当需求足够复杂、模糊或多方约束需要头脑风暴式确认时使用。产出 REQUIREMENTS.md 结构化需求文档。简单明确的需求（一句话能说清做什么）绝对不要使用此工具，直接实现即可。"
 usage = "jishu-cli task-artifact lock-requirement --title <标题> --goal <目标> --scope <范围;分隔> --acceptance <验收标准;分隔> --project $JISHU_PROJECT_PATH"

@@ -19,7 +19,6 @@ mod memory_store;
 mod orchestrator;
 pub mod os_adapter;
 mod pi_rpc_runtime;
-mod usage_store;
 mod process_command;
 mod process_control;
 mod project;
@@ -27,6 +26,7 @@ mod project_config;
 mod session;
 mod task_launch;
 mod task_plan;
+mod usage_store;
 mod util;
 
 #[cfg(feature = "cli")]
@@ -68,6 +68,8 @@ pub use commands::agent_install::run_install_agent_cli;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // v0.9.2 需求1 M4：桌面通知插件（会话能力插件 session.desktop-notify 消费）
+        .plugin(tauri_plugin_notification::init())
         // 注册日志后端：pi_rpc_runtime 等模块的 log::info!/warn! 才会真正输出。
         // dev 模式（npm run tauri dev）打印到终端，release 模式写入日志文件，
         // 便于排查 Pi RPC 会话卡死等运行时问题（此前 tauri_plugin_log 虽在依赖里
@@ -98,6 +100,8 @@ pub fn run() {
             // v0.9.0 需求1 P2/二期：四家 MCP 配置同步（MCP 解析器 mcp-resolver
             // 系统插件默认启用 → 注入 jishu-hub 聚合条目，禁用 → 回收；
             // 单家失败不影响启动）。
+            // v0.9.2 测试期：pi 桥接（hub_invoke）事件广播句柄注册。
+            let _ = crate::pi_rpc_runtime::HUB_APP_HANDLE.set(app.handle().clone());
             let _ = agent::mcp_inject::sync_hub_mcp_entries();
             // v0.9.0 需求20：skill 分发同步（skill-resolver 门控；单目标失败
             // 不影响启动）。
@@ -190,7 +194,11 @@ pub fn run() {
             // 惰性探测会同步 spawn 子进程并阻塞全部命令，预热后命中缓存。
             let tool_plugins = {
                 let disabled: std::collections::HashSet<String> =
-                    agent::plugin::load_plugin_config().disabled.iter().cloned().collect();
+                    agent::plugin::load_plugin_config()
+                        .disabled
+                        .iter()
+                        .cloned()
+                        .collect();
                 let plugins = agent::tool_plugin::load_tool_plugins(&disabled);
                 for p in &plugins {
                     let _ = p.installed();
@@ -221,6 +229,8 @@ pub fn run() {
             commands::projects::add_project,
             commands::projects::remove_project,
             commands::sessions::list_sessions,
+            commands::sessions::usage_overview,
+            commands::sessions::export_text_file,
             commands::sessions::get_session_messages,
             commands::sessions::delete_agent_session,
             commands::sessions::persist_interaction_blocks,

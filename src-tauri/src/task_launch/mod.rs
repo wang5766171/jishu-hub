@@ -129,9 +129,14 @@ pub use instance_store::{
     get_task_instance, list_task_instances, mark_task_stage_session,
     planning_instruction_for_instance, rename_task, sync_run_status,
 };
+mod revise;
+
 pub use proposal::{
     orchestrator_validate_proposal, ValidateProposalRequest, ValidateProposalResult,
 };
+pub use revise::{conductor_revise_plan, RevisePlanRequest, RevisePlanResult};
+mod dispatch;
+pub use dispatch::{conductor_dispatch_to_node, DispatchToNodeRequest, DispatchToNodeResult};
 pub use run::{
     orchestrator_start_run_from_revision, sync_run_status_to_task_instance, task_launch_start_run,
     StartRunFromRevisionRequest, StartRunFromRevisionResult, TaskLaunchStartRunRequest,

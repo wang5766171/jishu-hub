@@ -12,7 +12,7 @@
  * - useTaskGraph 由 chat-page 顶层无条件持有并传入（避免重复 hook）。
  * - useTaskInstance / useNodeSession 在本组件内持有（仅任务激活时挂载，故安全）。
  */
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   taskErrorMessage,
@@ -31,6 +31,8 @@ const FlowBoardOverlay = lazy(() =>
 );
 
 export interface TaskSidebarProps {
+  /** v0.9.2 需求2 M3：外部唤起画布信号（全景面板入口）——每次递增打开一次。 */
+  boardOpenSignal?: number;
   taskId: string;
   projectPath: string;
   /** chat-page 的活跃任务实例（含 title / graph_id / active_run_id / 各阶段 session）。 */
@@ -52,6 +54,7 @@ export interface TaskSidebarProps {
 }
 
 export function TaskSidebar({
+  boardOpenSignal = 0,
   taskId,
   projectPath,
   instance,
@@ -86,6 +89,14 @@ export function TaskSidebar({
 
   // ── 执行阶段专用状态 ──
   const [boardOpen, setBoardOpen] = useState(false);
+  // v0.9.2 需求2 M3：全景面板「画布」入口经信号唤起（跳过初值 0）。
+  const boardSignalRef = useRef(boardOpenSignal);
+  useEffect(() => {
+    if (boardOpenSignal !== boardSignalRef.current) {
+      boardSignalRef.current = boardOpenSignal;
+      setBoardOpen(true);
+    }
+  }, [boardOpenSignal]);
   const [actionError, setActionError] = useState<string | null>(null);
 
   // 节点会话查询（按需挂载当前选中节点）

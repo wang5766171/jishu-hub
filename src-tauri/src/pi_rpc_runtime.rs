@@ -1918,6 +1918,12 @@ fn convert_extension_ui_request(msg: &serde_json::Value) -> Option<NormalizedEve
 /// 扩展通过带保留标题前缀的 `extension_ui_request(method="select")` 发起同步调用，
 /// Hub 直接执行后端函数并通过 extension_ui_response 返回结果，不经过前端。
 /// 设计依据：`jishu-task-conductor_实施计划.md` Phase 2 任务 2.2。
+/// v0.9.2 测试期：桥接路径（hub_invoke）可用的全局 AppHandle——conductor_revise_plan
+/// 成功后向 webview 广播 task-instance-changed（前端据此重载任务图显示新节点）。
+/// lib.rs setup 时注册；未注册（测试/无头）时静默跳过。
+pub(crate) static HUB_APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> =
+    std::sync::OnceLock::new();
+
 fn handle_hub_invoke(
     command: &str,
     params: &serde_json::Value,
@@ -1928,6 +1934,35 @@ fn handle_hub_invoke(
                 serde_json::from_value(params.clone())
                     .map_err(|e| format!("conductor_sync_phase 参数解析失败: {e}"))?;
             let result = crate::task_launch::conductor_sync_phase(request)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "conductor_revise_plan" => {
+            let request: crate::task_launch::RevisePlanRequest =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| format!("conductor_revise_plan 参数解析失败: {e}"))?;
+            let project_root = request.project_root.clone();
+            let task_id = request.task_id.clone();
+            let result = crate::task_launch::conductor_revise_plan(request)?;
+            // 前端刷新信号：桥接路径无 AppHandle 入参，经全局句柄广播
+            //（与 commands/task.rs 的 conductor_sync_phase 同一事件契约）。
+            if let Some(app) = HUB_APP_HANDLE.get() {
+                use tauri::Emitter;
+                let _ = app.emit(
+                    "task-instance-changed",
+                    serde_json::json!({
+                        "project_root": project_root,
+                        "task_id": task_id,
+                        "current_phase": "execution",
+                    }),
+                );
+            }
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "conductor_dispatch_to_node" => {
+            let request: crate::task_launch::DispatchToNodeRequest =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| format!("conductor_dispatch_to_node 参数解析失败: {e}"))?;
+            let result = crate::task_launch::conductor_dispatch_to_node(request)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "conductor_load_task_state" => {
@@ -2146,7 +2181,13 @@ mod tests {
         assert_eq!(start.len(), 1);
         match &start[0] {
             NormalizedEvent::AutoRetryStatus {
-                active, attempt, max_attempts, delay_ms, error_message, success, final_error,
+                active,
+                attempt,
+                max_attempts,
+                delay_ms,
+                error_message,
+                success,
+                final_error,
             } => {
                 assert!(active);
                 assert_eq!((*attempt, *max_attempts, *delay_ms), (2, 10, 4000));
@@ -2168,7 +2209,12 @@ mod tests {
             &mut steers,
         );
         match &end[0] {
-            NormalizedEvent::AutoRetryStatus { active, success, final_error, .. } => {
+            NormalizedEvent::AutoRetryStatus {
+                active,
+                success,
+                final_error,
+                ..
+            } => {
                 assert!(!active);
                 assert!(!success);
                 assert_eq!(final_error.as_deref(), Some("all retries exhausted"));

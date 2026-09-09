@@ -52,6 +52,7 @@ export interface TaskSessionTreeTask {
 }
 
 export interface TaskSessionTreeProps {
+  onCancelTask?: (task: TaskSessionTreeTask) => void;
   tasks: TaskSessionTreeTask[];
   /** 当前激活的任务 ID（高亮） */
   activeTaskId: string | null;
@@ -72,6 +73,8 @@ export interface TaskSessionTreeProps {
 // ── 单个任务行（含节点子列表） ──
 
 interface TaskRowProps {
+  /** v0.9.2 需求2 M3-4：运行中任务的悬停取消（由页面承担确认）。 */
+  onCancelTask?: (task: TaskSessionTreeTask) => void;
   task: TaskSessionTreeTask;
   isActive: boolean;
   activeNodeId: string | null;
@@ -106,6 +109,7 @@ const TaskRow = memo(function TaskRow({
   onSelectNode,
   onRenameTask,
   onDeleteTask,
+  onCancelTask,
 }: TaskRowProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(isActive);
@@ -137,9 +141,46 @@ const TaskRow = memo(function TaskRow({
             <span className="min-w-0 flex-1 truncate text-left leading-none pt-[1px]">
               {task.title}
             </span>
+            {/* v0.9.2 需求2 M3-4：任务状态灯——执行中呼吸蓝点/完成绿/失败红/取消灰。 */}
+            {(() => {
+              const running = task.run_status === "running";
+              const dotCls =
+                running
+                  ? "bg-blue-500 animate-pulse"
+                  : task.run_status === "completed"
+                    ? "bg-emerald-500"
+                    : task.run_status === "failed"
+                      ? "bg-red-500"
+                      : task.run_status === "cancelled"
+                        ? "bg-muted-foreground/40"
+                        : "";
+              if (!dotCls) return null;
+              return (
+                <span
+                  className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dotCls)}
+                  title={task.run_status ?? undefined}
+                />
+              );
+            })()}
             <span className="shrink-0 rounded-full bg-primary/10 px-1 py-0.5 text-[9px] font-medium leading-none text-primary">
               {phase}
             </span>
+            {task.run_status === "running" && onCancelTask ? (
+              <span
+                role="button"
+                tabIndex={0}
+                title="取消执行"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCancelTask(task);
+                }}
+                className="hidden shrink-0 items-center group-hover:flex"
+              >
+                <span className="flex h-4 w-4 items-center justify-center rounded text-red-400 hover:bg-red-500/10">
+                  <span className="h-2 w-2 rounded-[2px] bg-current" />
+                </span>
+              </span>
+            ) : null}
             {/* 展开/折叠箭头（移到标题右侧，仅有节点时显示） */}
             {hasNodes ? (
               <span
@@ -236,6 +277,7 @@ const TaskRow = memo(function TaskRow({
 // ── 主组件 ──
 
 export function TaskSessionTree({
+  onCancelTask,
   tasks,
   activeTaskId,
   activeNodeId,
@@ -298,6 +340,7 @@ export function TaskSessionTree({
               onSelectNode={handleSelectNode}
               onRenameTask={onRenameTask}
               onDeleteTask={onDeleteTask}
+          onCancelTask={onCancelTask}
             />
           ))}
         </>

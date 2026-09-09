@@ -173,6 +173,17 @@ impl TaskService {
         Self::open_default_inner(registry, None, None)
     }
 
+    /// v0.9.2 需求2 测试期：store-only 构造（无引擎/规划器）——供任务层
+    /// conductor_revise_plan 使用（propose/apply_run_revision 仅触 store）。
+    /// 引擎由 GUI 侧 TaskService 实例持有并消费事件，本实例不启动。
+    pub fn open_store_only(store: TaskStore) -> Self {
+        Self {
+            store: Arc::new(store),
+            planner: None,
+            _engine: None,
+        }
+    }
+
     /// Same as [`Self::open_default`], but mirrors node-agent events to the GUI
     /// via `event_sink` so task node sessions stream through the regular chat
     /// `agent-event` pipeline, and registers resolved node-session ACP controls

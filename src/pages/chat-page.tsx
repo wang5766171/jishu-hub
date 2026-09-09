@@ -6,7 +6,24 @@ import {
   useStreamingSessionIds,
 } from "@/hooks/use-stream-store";
 import { MessageView } from "@/components/sessions/message-view";
-import { TurnRail, buildTurnSummaries } from "@/components/sessions/turn-rail";
+import { buildTurnSummaries } from "@/components/sessions/turn-rail";
+import { SessionPanelLayer } from "@/features/session-kernel/plugins/mounts/session-panel-layer";
+import { BlockRenderersProvider } from "@/features/session-kernel/plugins/mounts/use-block-renderers";
+import { PluginSignalBridge } from "@/features/session-kernel/plugins/mounts/plugin-signal-bridge";
+import { SessionPluginActions } from "@/features/session-kernel/plugins/mounts/session-plugin-actions";
+import { FlowBoardOverlay } from "@/features/task-workspace/board/flow-board-overlay";
+import { computeStepOrder } from "@/features/task-workspace/steps/compute-step-order";
+import { useTaskInstance } from "@/features/task-instance/use-task-instance";
+import { useNodeSession } from "@/features/task-instance/use-node-session";
+import { normalizeAgentId } from "@/features/task-instance/types";
+import { useEnabledSessionPlugins } from "@/features/session-kernel/plugins/registry";
+import { emitSessionSignal } from "@/features/session-kernel/signals";
+import { SessionRailSlot } from "@/features/session-kernel/plugins/mounts/session-rail-slot";
+import type {
+  SessionKernelContext,
+  TaskPanelContext,
+  TaskPanelNode,
+} from "@/features/session-kernel/plugins/types";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
 import { RenameTaskSessionDialog } from "@/components/sessions/rename-task-session-dialog";
 import { ChatInput, type ChatInputHandle, type StagedGuideApi } from "@/components/sessions/chat-input";
@@ -15,13 +32,17 @@ import { clearImageCache } from "@/components/sessions/inline-image";
 // 会话二级树（T3）：侧边栏任务会话区
 import { TaskSessionTree } from "@/features/task-workspace/sidebar/task-session-tree";
 // 任务模式右侧栏（减法重构：仅渲染任务步骤面板 + 治理面 + 画布，主会话区复用 chat-page）。
-import { TaskSidebar } from "@/features/task-workspace/task-sidebar";
 // 任务图数据：chat-page 顶层无条件持有（无 graph 时无副作用），主区 run 流与侧边栏共享。
 import { useTaskGraph, taskErrorMessage } from "@/features/task-instance/graph/use-task-graph";
 // T8-P1 三段合流：执行段的「流程执行」分隔线 + 会话区「是否开始执行」确认卡。
 import { PhaseDivider } from "@/components/sessions/conversation-content";
-import { ExecutionStartPrompt } from "@/features/task-workspace/execution-start-prompt";
-import { countExecutableSteps } from "@/features/task-workspace/steps/compute-step-order";
+import {
+  TaskPlanCard,
+  TaskNodeCards,
+  TaskSummaryCard,
+  type FlowNodeStatus,
+  type PlanNodeInfo,
+} from "@/features/task-workspace/task-flow-cards";
 import { startTaskRun } from "@/features/task-instance/start-run";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,10 +55,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
-import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, PanelRightOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2, Trash2, GitBranch, Cpu,
+import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2, Trash2, GitBranch, Cpu,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
+import { Suspense } from "react";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { useFileViewer } from "@/components/file-viewer";
@@ -232,7 +254,6 @@ export function ChatPage({
   // 加载节点会话消息需用此 agent_id 而非主会话的 activeId）。
   const [taskNodeSessionAgentId, setTaskNodeSessionAgentId] = useState<string | null>(null);
   // 任务侧边栏显隐（执行阶段的「显示/隐藏步骤栏」切换，P4c）。需求/规划阶段不显示侧边栏（P4a）。
-  const [taskSidebarHidden, setTaskSidebarHidden] = useState(false);
   const [taskLaunchOpen, setTaskLaunchOpen] = useState(false);
   const [taskLaunchReadOnly, setTaskLaunchReadOnly] = useState(false);
   const [taskLaunchPhase, setTaskLaunchPhase] = useState<TaskLaunchPhase>("requirements");
@@ -301,6 +322,9 @@ export function ChatPage({
   // auto-send staged guides at turn_complete.
   const stagedApiRef = useRef<StagedGuideApi | null>(null);
   const selectedSessionRef = useRef<string | null>(null);
+  // v0.9.2 需求6：最近一次流式解析出的真实 session id（新会话从 "new" 起步时，
+  // selectedSession 要等 session_resolved 才回填；任务实例事件到达时用它匹配关联）。
+  const lastRealSessionIdRef = useRef<string | null>(null);
   const visitedSessions = useRef(new Set<string>());
   const scrollMemory = useRef(new Map<string, number>());
   const scrollAction = useRef<{ type: "bottom" } | { type: "restore", top: number } | null>(null);
@@ -338,12 +362,14 @@ export function ChatPage({
   // surfaced when the steer continuation's turn completes, slotted between
   // the first reply and the steer response (matching Pi's JSONL order).
   const pendingSteerMessagesRef = useRef<Map<string, string[]>>(new Map());
-  // Live display of steered user messages for the current session. Rendered
-  // AFTER the streaming bubble (a steer is inserted mid-output, so it must
-  // appear below the in-progress assistant reply). Each entry is removed when
-  // its turn completes and the steer is committed into sessionMessages at its
+  // Live display of steered user messages, scoped per session (v0.9.2 需求4：
+  // 此前为单一全局数组，任何会话视图都会渲染其他会话的引导占位——对某个
+  // 任务节点发引导会串到所有子节点会话）。Rendered AFTER the streaming
+  // bubble (a steer is inserted mid-output, so it must appear below the
+  // in-progress assistant reply). Each entry is removed when its turn
+  // completes and the steer is committed into sessionMessages at its
   // correct position (between the prior reply and the steer's response).
-  const [pendingSteerDisplay, setPendingSteerDisplay] = useState<Message[]>([]);
+  const [pendingSteerDisplay, setPendingSteerDisplay] = useState<Record<string, Message[]>>({});
   // M5：引导占位气泡的 pill 中文名映射（按当前会话加载）。
   const steerToolNames = useSessionToolNames(selectedSession ?? null);
   // Subscribe to streaming state for the currently-selected session. Drives
@@ -843,7 +869,7 @@ export function ChatPage({
     setSelectedSession("new");
     selectedSessionRef.current = "new";
     setSessionMessages([]);
-    setPendingSteerDisplay([]);
+    setPendingSteerDisplay({});
     // v0.7.0：确认切换后主动切到引擎 agent（会话作用域；enteringTaskModeRef 已置，清理 effect 会跳过任务模式重置）
     if (nextIsTask && needEngineSwitch) {
       setChatAgent(engineId);
@@ -965,7 +991,7 @@ export function ChatPage({
     // Live steer placeholders belong to the previous session; drop them so
     // they don't render under a different conversation. Any still-pending
     // steer is committed into its own session's cache at turn_complete.
-    setPendingSteerDisplay([]);
+    setPendingSteerDisplay({});
 
     // While a session is streaming we keep its message snapshot in
     // `sessionMessagesCacheRef` and *do not* reload from JSONL — otherwise the
@@ -1128,7 +1154,23 @@ export function ChatPage({
   // 不走 handleSelectSession，因此需要此自动加载兜底，否则主区只显示执行段而看不到需求/规划内容。
   useEffect(() => {
     if (!taskModeActive || !selectedSession || selectedSession === "new" || !projectId) return;
-    if (streamStore.hasState(selectedSession)) return;
+    // v0.9.2 测试期修复（节点会话流式期间无历史）：此前 stream 有状态即整体跳过
+    // 加载——节点会话运行中打开时只剩流式气泡，派发指令（早已落盘 JSONL）与
+    // 历史全部不可见，回合结束才整段出现。改为照常加载；仅当该会话走"普通
+    // 发送路径"（流式态含 pendingUserMessage，用户消息会由流式气泡渲染）时，
+    // 截断本轮回合消息防重复——节点会话派发 prompt 走 spawn 参数、气泡无
+    // 用户消息，无需截断，历史与气泡恰好互补。
+    const truncateStreamingTurn = (messages: Message[]): Message[] => {
+      const pending = streamStore.getState(selectedSession)?.pendingUserMessage ?? null;
+      if (!streamStore.isStreaming(selectedSession) || pending == null) return messages;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role !== "user") continue;
+        const text = m.content.find((c) => c.type === "text")?.text ?? null;
+        if (text === pending) return messages.slice(0, i);
+      }
+      return messages;
+    };
 
     const cached = sessionMessagesCacheRef.current.get(selectedSession);
     // 节点会话可能在离开期间继续跑（后台节点的事件不进本视图），缓存往往是上次进入时的
@@ -1151,7 +1193,9 @@ export function ChatPage({
     })
       .then((messages) => {
         if (cancelled) return;
-        const visibleMessages = stripTaskLaunchInstructionFromMessages(messages);
+        const visibleMessages = truncateStreamingTurn(
+          stripTaskLaunchInstructionFromMessages(messages),
+        );
         sessionMessagesCacheRef.current.set(selectedSession, visibleMessages);
         setSessionMessages(visibleMessages);
       })
@@ -1182,7 +1226,7 @@ export function ChatPage({
     setSelectedSession("new");
     selectedSessionRef.current = "new";
     setSessionMessages([]);
-    setPendingSteerDisplay([]);
+    setPendingSteerDisplay({});
 
     requestAnimationFrame(() => {
       chatInputRef.current?.focus();
@@ -1204,7 +1248,7 @@ export function ChatPage({
     setSelectedSession("new");
     selectedSessionRef.current = "new";
     setSessionMessages([]);
-    setPendingSteerDisplay([]);
+    setPendingSteerDisplay({});
     requestAnimationFrame(() => {
       chatInputRef.current?.focus();
     });
@@ -1437,6 +1481,52 @@ export function ChatPage({
     logTaskPhaseDebug("conductor-task:not-found", { sessionId });
   }, []);
 
+  // v0.9.2 需求6：任务实例变更事件（后端 conductor_sync_phase / mark_session 落库后
+  // 广播）。两件事：① 即时刷新任务列表（不等 3s 轮询，阶段推进实时可见）；
+  // ② 会话模式下关联当前会话对应的任务实例——原发现通道只有 session_resolved
+  // 时 4.8s 轮询窗口，conductor 在完整回合后才建实例，窗口内必然 not-found，
+  // 页面永远关联不上 → follow effect 无可观察对象、执行视图永不自动出现。
+  useEffect(() => {
+    const unlisten = listen<{ project_root: string; task_id: string; current_phase: string }>(
+      "task-instance-changed",
+      (event) => {
+        const projectRoot = projectPathRef.current;
+        if (!projectRoot || event.payload.project_root !== projectRoot) return;
+        invokeCommand<TaskLaunchInstanceSummary[]>("task_launch_list_sessions", { projectRoot })
+          .then((items) => {
+            setTaskLaunchSessions(items);
+            // v0.9.2 测试期（执行期方案调整）：活跃任务实例变更（含 conductor_revise_plan
+            // 落新 revision）时重载任务图——方案卡/子任务卡/全景即时反映修订。
+            const changedInst = items.find((item) => item.task_id === event.payload.task_id);
+            if (
+              changedInst?.current_phase === "execution" &&
+              changedInst.graph_id &&
+              changedInst.task_id === activeTaskInstanceIdRef.current
+            ) {
+              taskGraphRef.current.loadGraph(changedInst.graph_id).catch((e) =>
+                console.warn("reload graph after instance change failed:", e),
+              );
+            }
+            if (!activeTaskInstanceIdRef.current && lastRealSessionIdRef.current) {
+              const sid = lastRealSessionIdRef.current;
+              logTaskPhaseDebug("task-instance-changed:associate", {
+                taskId: event.payload.task_id,
+                sessionId: sid,
+                currentPhase: event.payload.current_phase,
+              });
+              discoverConductorTask(sid).catch((e) =>
+                console.warn("discoverConductorTask failed:", e),
+              );
+            }
+          })
+          .catch((e) => console.warn("task-instance-changed refresh failed:", e));
+      },
+    );
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, [discoverConductorTask]);
+
   const handleSessionResolved = useCallback((_pendingSessionId: string, realSessionId: string) => {
     if (!taskLaunchOpenRef.current) {
       logTaskPhaseDebug("session-resolved:ignored", {
@@ -1503,7 +1593,7 @@ export function ChatPage({
     setSelectedSession(phaseSession ?? null);
     selectedSessionRef.current = phaseSession ?? null;
     setTaskSelectedNodeId(null);
-    setPendingSteerDisplay([]);
+    setPendingSteerDisplay({});
   }, []);
   // 任务侧边栏节点选择 → 同步主区会话 + 步骤栏高亮
   const handleTaskSelectNode = useCallback((nodeId: string | null) => {
@@ -1551,12 +1641,271 @@ export function ChatPage({
     [],
   );
 
+  // v0.9.2 需求2 M3-5：节点会话机制自 TaskSidebar 移植（侧栏退役）——
+  // 选中节点变化时查其 attempt 会话并回填主区；run 状态回写任务实例。
+  const taskInstanceState = useTaskInstance({
+    projectRoot: currentProject?.path ?? "",
+    initialTaskId: activeTaskLaunchInstance?.task_id ?? null,
+  });
+  useEffect(() => {
+    if (activeTaskLaunchInstance?.task_id) {
+      taskInstanceState.openTask(activeTaskLaunchInstance.task_id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTaskLaunchInstance?.task_id]);
+
+  // v0.9.2 测试期修复（M3-5 侧栏退役时漏移植）：进入执行阶段时加载任务图——
+  // 原 TaskSidebar 的职责；缺失时 snapshot 恒空，方案卡/全景/子任务卡全部
+  // 落到空态（"流程尚未生成步骤"）。经 ref 读 taskGraph 防死循环（同上注释）。
+  useEffect(() => {
+    if (
+      activeTaskLaunchInstance?.current_phase === "execution" &&
+      activeTaskLaunchInstance.graph_id &&
+      activeTaskLaunchInstance.graph_id !== taskGraphRef.current.graph?.graph_id
+    ) {
+      taskGraphRef.current
+        .loadGraph(activeTaskLaunchInstance.graph_id)
+        .catch(console.error);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTaskLaunchInstance?.current_phase, activeTaskLaunchInstance?.graph_id]);
+  const boardProjection = useMemo(() => {
+    const runId = taskGraph.displayedRunId ?? activeTaskLaunchInstance?.active_run_id ?? null;
+    if (!runId || !activeTaskLaunchInstance?.graph_id) return null;
+    return {
+      run_id: runId,
+      graph_id: activeTaskLaunchInstance.graph_id,
+      revision_id: taskGraph.activeRunRevisionId ?? taskGraph.revision?.revision_id ?? "",
+      status: taskGraph.runStatus ?? "draft",
+      run_seq: 0,
+      node_runs: taskGraph.nodeRuns as unknown as Record<string, never>,
+    };
+  }, [activeTaskLaunchInstance?.graph_id, activeTaskLaunchInstance?.active_run_id, taskGraph.displayedRunId, taskGraph.activeRunRevisionId, taskGraph.revision?.revision_id, taskGraph.runStatus, taskGraph.nodeRuns]);
+  const boardNodeSession = useNodeSession({
+    projection: boardProjection,
+    onNodeSession: taskInstanceState.updateNodeSession,
+  });
+  const boardRunId = taskGraph.displayedRunId ?? activeTaskLaunchInstance?.active_run_id ?? null;
+  useEffect(() => {
+    taskInstanceState.selectNode(taskSelectedNodeId);
+    if (taskSelectedNodeId && boardRunId) {
+      boardNodeSession.fetchNodeSession(taskSelectedNodeId).catch(console.error);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskSelectedNodeId, boardRunId,
+    taskSelectedNodeId ? taskGraph.nodeRuns[taskSelectedNodeId]?.attempt_count ?? 0 : 0,
+    taskSelectedNodeId ? taskGraph.nodeRuns[taskSelectedNodeId]?.status ?? null : null]);
+  useEffect(() => {
+    if (!taskSelectedNodeId) {
+      handleTaskNodeSessionChange(null);
+      return;
+    }
+    const info = taskInstanceState.nodeSessionMap[taskSelectedNodeId];
+    handleTaskNodeSessionChange(info ? { session_id: info.session_id, agent_id: info.agent_id } : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskSelectedNodeId, taskInstanceState.nodeSessionMap]);
+  useEffect(() => {
+    if (taskGraph.runStatus && boardRunId) {
+      taskInstanceState.syncRunStatus(boardRunId, taskGraph.runStatus);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskGraph.runStatus, boardRunId]);
+
+  // v0.9.2 需求2 M3：全景画布入口——信号递增唤起页面级画布 overlay（M3-5 起
+  // overlay 由页面持有；侧栏已退役）。
+  const [taskBoardSignal, setTaskBoardSignal] = useState(0);
+  const [taskBoardOpen, setTaskBoardOpen] = useState(false);
+  useEffect(() => {
+    if (taskBoardSignal > 0) setTaskBoardOpen(true);
+  }, [taskBoardSignal]);
+
+  // v0.9.2 需求2 M3-5：画布内指定节点执行者（自侧栏迁移；run 进行中禁止）。
+  const handleBoardAssignAgent = useCallback(
+    async (nodeId: string, agentId: string, roleId: string) => {
+      if (taskGraph.activeRunId) return;
+      try {
+        await taskGraph.applyCommands([
+          {
+            op: "update_node",
+            command_id: `assign-${nodeId}-${Date.now().toString(36)}`,
+            node_id: nodeId,
+            patch: {
+              agent_assignment_constraint: {
+                role_id: roleId,
+                locked_agent_id: agentId,
+                allowed_agent_ids: [],
+                denied_agent_ids: [],
+                required_capabilities: [],
+              },
+            },
+          },
+        ]);
+      } catch (err) {
+        console.error("Failed to assign agent:", err);
+      }
+    },
+    [taskGraph],
+  );
+
+  // v0.9.2 需求2 M3：取消整个流程（二次确认在内核侧承担——插件面板只发命令）。
+  const handleTaskCancelRun = useCallback(() => {
+    void (async () => {
+      const confirmed = await confirmDialog({
+        title: t("task.execution.cancelRunTitle", "取消任务执行"),
+        description: t("task.execution.cancelRunConfirm", "进行中的子任务将全部停止，已完成的节点结果保留。确定取消？"),
+        variant: "destructive",
+      });
+      if (!confirmed) return;
+      taskGraphRef.current.cancelRun().catch((e) => console.warn("cancel run failed:", e));
+    })();
+  }, [confirmDialog, t]);
+
+  // v0.9.2 测试期修复（节点顺序）：会话内卡片/方案卡/全景统一按**拓扑执行序**
+  //（依赖波次，同层按 node_id 稳定）呈现——此前直接用 snapshot.nodes 数组序
+  //（= LLM 提交计划的数组顺序），动态修订后顺序错乱（已完成的首节点被排后）。
+  const orderedExecutableNodes = (snapshot: typeof taskGraph.snapshot) => {
+    if (!snapshot) return [];
+    const order = computeStepOrder(snapshot);
+    const rank = new Map(order.map((id, index) => [id, index]));
+    return snapshot.nodes
+      .filter((node) => node.node_kind.toLowerCase() !== "goal" && !node.loop_config)
+      .slice()
+      .sort((a, b) => (rank.get(a.node_id) ?? order.length) - (rank.get(b.node_id) ?? order.length));
+  };
+
+  // v0.9.2 需求2 M3：任务上下文（流程全景插件的数据面——内核组装，插件
+  // 不直接触达 taskGraph store；流程执行能力与核心会话松耦合的落点）。
+  const taskPanelCtx = useMemo<TaskPanelContext | null>(() => {
+    if (!activeTaskLaunchInstance) return null;
+    const snapshot = taskGraph.snapshot;
+    const nodeRuns = taskGraph.nodeRuns;
+    if (!snapshot) {
+      return {
+        taskId: activeTaskLaunchInstance.task_id,
+        title: activeTaskLaunchInstance.title,
+        phase: activeTaskLaunchInstance.current_phase,
+        runStatus: taskGraph.runStatus ?? null,
+        completed: 0,
+        total: 0,
+        nodes: [],
+        onSelectNode: handleTaskSelectNode,
+        onOpenCanvas: () => setTaskBoardSignal((n) => n + 1),
+        onCancelRun: handleTaskCancelRun,
+      };
+    }
+    const nodes: TaskPanelNode[] = orderedExecutableNodes(snapshot)
+      .map((node) => {
+        const run = nodeRuns[node.node_id];
+        const status = run?.status ?? "blocked";
+        return {
+          nodeId: node.node_id,
+          title: node.title,
+          status,
+          waitingFor:
+            status === "blocked" ? t("sessionPlugins.flow.waiting", "等待中") : undefined,
+        };
+      });
+    const completed = nodes.filter((node) =>
+      ["succeeded", "skipped", "cancelled", "superseded", "failed"].includes(node.status),
+    ).length;
+    return {
+      taskId: activeTaskLaunchInstance.task_id,
+      title: activeTaskLaunchInstance.title,
+      phase: activeTaskLaunchInstance.current_phase,
+      runStatus: taskGraph.runStatus ?? null,
+      completed,
+      total: nodes.length,
+      nodes,
+      onSelectNode: handleTaskSelectNode,
+      onOpenCanvas: () => setTaskBoardSignal((n) => n + 1),
+      onCancelRun: handleTaskCancelRun,
+    };
+  }, [activeTaskLaunchInstance, taskGraph.snapshot, taskGraph.nodeRuns, taskGraph.runStatus, handleTaskSelectNode, handleTaskCancelRun, t]);
+
+  // v0.9.2 需求1：已启用会话插件集合（plugins-changed 热刷新）。
+  const enabledSessionPlugins = useEnabledSessionPlugins();
+
+  // 导出等插件消费：当前会话消息的轻量只读投影（role + text 块拼接）。
+  const ctxMessages = useMemo(
+    () =>
+      sessionMessages.map((msg) => ({
+        role: msg.role,
+        text: msg.content
+          .filter((block) => block.type === "text")
+          .map((block) => (block.type === "text" ? block.text : ""))
+          .join("\n"),
+      })),
+    [sessionMessages],
+  );
+
+  // 活跃任务的真节点标题（与右侧步骤栏同源，来自 taskGraph.snapshot），
+  // 透传给左侧任务树覆盖 use-task-node-sessions 用 revision 取的占位标题（"A"/"B"）。
+  const activeTaskNodeTitles = useMemo(() => {
+    const map: Record<string, string> = {};
+    if (taskModeActive) {
+      for (const n of taskGraph.snapshot?.nodes ?? []) {
+        map[n.node_id] = n.title;
+      }
+    }
+    return map;
+  }, [taskModeActive, taskGraph.snapshot]);
+
+  // v0.9.2 需求1：会话内核上下文——插件的唯一取数/命令入口（05 §3.2）。
+  const sessionKernelCtx = useMemo<SessionKernelContext>(
+    () => ({
+      turns: turnSummaries,
+      activeTurnIndex,
+      scrollToTurn: handleJumpToTurn,
+      task: taskPanelCtx,
+      sessionId: selectedSession && selectedSession !== "new" ? selectedSession : null,
+      sessionTitle:
+        selectedSession && selectedSession !== "new"
+          ? sessions?.find((item) => item.id === selectedSession)?.display_name ?? null
+          : null,
+      messages: ctxMessages,
+      // v0.9.2 测试期：会话信息解析（用量面板标题/类型）——任务=需求/规划会话，
+      // 子节点=编排节点会话，其余=普通会话；当前项目外的会话回退 unknown。
+      resolveSessionInfo: (sessionId: string) => {
+        const taskSession = taskLaunchSessions.find(
+          (item) =>
+            item.requirement_session_id === sessionId ||
+            item.planning_session_id === sessionId,
+        );
+        if (taskSession) return { title: taskSession.title, kind: "task" };
+        if (nodeSessionIds.includes(sessionId)) {
+          return { title: activeTaskNodeTitles[sessionId] ?? sessionId.slice(0, 12), kind: "node" };
+        }
+        const session = sessions?.find((item) => item.id === sessionId);
+        if (session) {
+          return {
+            title: sessionNames?.[sessionId] || session.display_name || sessionId.slice(0, 12),
+            kind: "session",
+          };
+        }
+        return null;
+      },
+    }),
+    [turnSummaries, activeTurnIndex, handleJumpToTurn, taskPanelCtx, selectedSession, sessions, ctxMessages, taskLaunchSessions, nodeSessionIds, activeTaskNodeTitles, sessionNames],
+  );
+
+  // v0.9.2 需求1 M4：信号桥（内核事件 → 已启用插件 event-hook）。
+  // 任务失败信号：run 状态转 failed 时发射。
+  const prevRunStatusRef = useRef<string | null>(null);
+  useEffect(() => {
+    const status = taskPanelCtx?.runStatus ?? null;
+    const prev = prevRunStatusRef.current;
+    prevRunStatusRef.current = status;
+    if (status === "failed" && prev !== "failed" && taskPanelCtx) {
+      emitSessionSignal({ type: "task-run-failed", taskId: taskPanelCtx.taskId, title: taskPanelCtx.title });
+    }
+  }, [taskPanelCtx]);
+
   // 退出任务模式时清理图数据，避免残留 run 状态。
   // 注意：不依赖 taskGraph（每次渲染是新对象，会导致死循环），通过 ref 调用。
   useEffect(() => {
     if (!taskModeActive) {
       taskGraphRef.current.clearGraph();
-      setTaskSidebarHidden(false);
+      setTaskBoardOpen(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskModeActive]);
@@ -1571,19 +1920,6 @@ export function ChatPage({
   // - 重进已完成任务 → 回退成「是否开始执行」卡，且分隔线下的执行内容被挡住不显示；
   // - live 跑完那一刻 pollRunProjection 清 activeRunId，也会闪回开始卡。
   const taskRunStarted = Boolean(taskGraph.displayedRunId ?? activeTaskLaunchInstance?.active_run_id);
-  const taskStepCount = countExecutableSteps(taskGraph.snapshot);
-
-  // 活跃任务的真节点标题（与右侧步骤栏同源，来自 taskGraph.snapshot），
-  // 透传给左侧任务树覆盖 use-task-node-sessions 用 revision 取的占位标题（"A"/"B"）。
-  const activeTaskNodeTitles = useMemo(() => {
-    const map: Record<string, string> = {};
-    if (taskModeActive) {
-      for (const n of taskGraph.snapshot?.nodes ?? []) {
-        map[n.node_id] = n.title;
-      }
-    }
-    return map;
-  }, [taskModeActive, taskGraph.snapshot]);
 
   // 选中一个还没跑过的步骤时，主区给出明确占位——否则会继续显示上一个会话，
   // 用户以为点击没生效（需求：「点击右侧每一行都能看到每一条的执行情况」）。
@@ -1661,6 +1997,116 @@ export function ChatPage({
     return () => cancelAnimationFrame(raf);
   }, [taskExecutionMode, taskRunStarted, taskGraph.projectedMessages.length]);
 
+  // v0.9.2 需求2 M3-2：方案卡数据（graph snapshot 的可执行节点；acceptance
+  // 来自转图时写入的 metadata，见需求5 修复）。
+  const taskPlanNodes = useMemo<PlanNodeInfo[]>(() => {
+    const snapshot = taskGraph.snapshot;
+    if (!snapshot) return [];
+    return orderedExecutableNodes(snapshot)
+      .map((node) => ({
+        nodeId: node.node_id,
+        title: node.title,
+        responsibility: typeof node.description === "string" ? node.description : "",
+        acceptance:
+          node.metadata && typeof node.metadata.acceptance === "string"
+            ? node.metadata.acceptance
+            : null,
+      }));
+  }, [taskGraph.snapshot]);
+
+  // v0.9.2 需求2 M3-3：子任务卡/汇总卡数据——节点状态 + 执行者（attempt_started
+  // 事件快照）+ 当前动作一行摘要（attempt_progressed 公开消息最新一条）。
+  const taskFlowNodes = useMemo<FlowNodeStatus[]>(() => {
+    const snapshot = taskGraph.snapshot;
+    const nodeRuns = taskGraph.nodeRuns;
+    if (!snapshot) return [];
+    const runIdToNodeId = new Map<string, string>();
+    for (const [nodeId, run] of Object.entries(nodeRuns)) {
+      runIdToNodeId.set(run.node_run_id, nodeId);
+    }
+    const agentByNode = new Map<string, string>();
+    const lastActionByNode = new Map<string, string>();
+    for (const event of taskGraph.events) {
+      const payload = (event.payload ?? {}) as Record<string, unknown>;
+      const nodeId =
+        typeof payload.node_id === "string" && payload.node_id
+          ? payload.node_id
+          : typeof payload.node_run_id === "string"
+            ? runIdToNodeId.get(payload.node_run_id)
+            : undefined;
+      if (!nodeId) continue;
+      if (event.event_type === "attempt_started") {
+        const assignment = payload.agent_assignment as { agent_id?: string } | undefined;
+        if (assignment?.agent_id) agentByNode.set(nodeId, assignment.agent_id);
+      } else if (event.event_type === "attempt_progressed") {
+        if (payload.public === false) continue;
+        const message = typeof payload.message === "string" ? payload.message : "";
+        if (message && message.trim()) lastActionByNode.set(nodeId, message.trim());
+      }
+    }
+    return orderedExecutableNodes(snapshot)
+      .map((node) => {
+        const status = nodeRuns[node.node_id]?.status ?? "blocked";
+        const agentId = agentByNode.get(node.node_id) ?? null;
+        const agent = agentId ? agents.find((a) => a.id === agentId) : null;
+        return {
+          nodeId: node.node_id,
+          title: node.title,
+          status,
+          agentName: agent?.display_name ?? agentId,
+          lastAction: lastActionByNode.get(node.node_id) ?? null,
+          clickable: !["blocked", "ready"].includes(status),
+        };
+      });
+  }, [taskGraph.snapshot, taskGraph.nodeRuns, taskGraph.events, agents]);
+
+  // v0.9.2 需求2 M3-2：方案卡确认——未勾选节点经 remove_node 命令移除（后端
+  // 级联清理边并重挂子节点），以新 revision 启动 run；全选直启。
+  const handleConfirmPlan = useCallback(
+    async (selectedIds: string[]) => {
+      const instance = activeTaskLaunchInstance;
+      const graphId = instance?.graph_id;
+      const revisionId = taskGraph.revision?.revision_id;
+      const projectRoot = currentProject?.path;
+      if (!instance || !graphId || !revisionId || !projectRoot) return;
+      const removed = taskPlanNodes
+        .filter((node) => !selectedIds.includes(node.nodeId))
+        .map((node) => node.nodeId);
+      setExecStarting(true);
+      setExecStartError(null);
+      try {
+        let effectiveRevisionId = revisionId;
+        if (removed.length > 0) {
+          const diff = await taskGraph.applyCommands(
+            removed.map((nodeId) => ({
+              op: "remove_node",
+              command_id: `plan-exclude-${nodeId}-${Date.now().toString(36)}`,
+              node_id: nodeId,
+            })),
+          );
+          if (diff?.to_revision_id) effectiveRevisionId = diff.to_revision_id;
+        }
+        const result = await startTaskRun({
+          taskId: instance.task_id,
+          projectRoot,
+          revisionId: effectiveRevisionId,
+        });
+        if (result?.run_id) {
+          await taskGraph.loadGraph(graphId);
+        }
+      } catch (err) {
+        console.error("Failed to confirm plan:", err);
+        setExecStartError(
+          `${t("task.execution.error.launchFailed", "启动执行失败")}：${taskErrorMessage(err)}`,
+        );
+      } finally {
+        setExecStarting(false);
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [activeTaskLaunchInstance, taskPlanNodes, taskGraph.applyCommands, taskGraph.revision?.revision_id, taskGraph.loadGraph, currentProject?.path, t],
+  );
+
   const handleStartExecutionFromChat = useCallback(async () => {
     const instance = activeTaskLaunchInstance;
     const revisionId = taskGraph.revision?.revision_id;
@@ -1721,6 +2167,33 @@ export function ChatPage({
           targetPhase,
         });
         openTaskPhaseWorkspace(activeTaskLaunchInstance, targetPhase);
+      } else if (!launchOpen && activeTaskLaunchInstance) {
+        // v0.9.2 需求6：会话模式（发起器未打开）下的自动跟随。原守卫要求
+        // launchOpen=true 且用户停在上一阶段标签——会话模式下二者永不满足，
+        // 阶段推进到 execution 时无人切换视图（需手动到列表底部找任务树）。
+        // 条件改为「正查看该任务的会话」：正在 conductor 会话里对话的用户
+        // 随阶段推进自动进入对应工作台；浏览其他会话的用户不被强行拽走。
+        const taskSessionIds = [
+          activeTaskLaunchInstance.requirement_session_id,
+          activeTaskLaunchInstance.planning_session_id,
+        ].filter((value): value is string => Boolean(value));
+        const currentConversationId =
+          selectedSessionRef.current === "new"
+            ? lastRealSessionIdRef.current
+            : selectedSessionRef.current;
+        const viewingTaskConversation =
+          !!currentConversationId && taskSessionIds.includes(currentConversationId);
+        logTaskPhaseDebug("launch-follow:session-mode", {
+          taskId: activeTaskLaunchInstance.task_id,
+          prev,
+          next,
+          viewingTaskConversation,
+        });
+        if (viewingTaskConversation) {
+          const targetPhase: TaskPhase = (
+            next === "execution" || next === "graph" ? "execution" : next) as TaskPhase;
+          openTaskPhaseWorkspace(activeTaskLaunchInstance, targetPhase);
+        }
       }
     }
     prevCurrentPhaseRef.current = next;
@@ -1788,6 +2261,12 @@ export function ChatPage({
         const cid = chunk.session_id;
 
         if (chunk.data.kind === "approval_request") {
+          // v0.9.2 需求1 M4：审批信号（桌面通知等 event-hook 插件消费）。
+          emitSessionSignal({
+            type: "approval-request",
+            sessionId: cid,
+            agentId: chunk.agent_id,
+          });
           const approval: PendingChatApproval = {
             sessionId: cid,
             requestId: chunk.data.request_id,
@@ -1852,12 +2331,18 @@ export function ChatPage({
         // Detect resolved session id and register it as an alias before pushing
         // (so subsequent chunks under the real id route to the same entry).
         const realId = extractRealSessionId(chunk.data);
+        if (realId) {
+          lastRealSessionIdRef.current = realId;
+        }
         if (realId && realId !== cid) {
           streamStore.alias(cid, realId);
           // 新任务讨论关联：用 Pi 真实 session id（= conductor 写入任务的 requirement_session_id）
           // 触发 discover。ChatInput 的 onSessionResolved 拿的是 send_message 同步返回值（新 session
           // 仍为 pending），匹配不到 conductor 写的真 id；只有此处 session_resolved 事件携带真 id。
-          if (taskLaunchOpenRef.current && !activeTaskInstanceIdRef.current) {
+          // v0.9.2 需求6：去掉 taskLaunchOpenRef 门控——会话模式（未开发起器）下
+          // conductor 同样会创建任务实例，需要同样的发现通道（匹配按
+          // requirement_session_id 精确比对，非 conductor 会话不会误关联）。
+          if (!activeTaskInstanceIdRef.current) {
             logTaskPhaseDebug("launch-link:resolve", {
               pendingId: cid,
               realId,
@@ -1948,6 +2433,15 @@ export function ChatPage({
         }
 
         if (chunk.data.kind === "turn_complete") {
+          // v0.9.2 需求1 M4：后台会话回合完成信号（正在查看的会话不打扰）。
+          if (cid !== selectedSessionRef.current) {
+            emitSessionSignal({
+              type: "turn-complete",
+              sessionId: cid,
+              agentId: chunk.agent_id,
+              error: chunk.data.reason === "Error",
+            });
+          }
           // Build final assistant/user messages from the accumulated state.
           const state = streamStore.getState(cid);
           const finalKey = state?.resolvedId ?? cid;
@@ -2059,16 +2553,23 @@ export function ChatPage({
             }
           };
           // Drop the oldest `count` live placeholders (FIFO matches the queue
-          // shift) — but ONLY when this session is the one currently viewed.
-          // Live placeholders are session-specific (cleared on switch), so a
-          // background session committing its queued steer must not touch the
-          // viewed session's display array.
+          // shift) for THIS session's key — v0.9.2 需求4：按 key 删除不再要求
+          // 正在查看该会话，后台会话提交排队引导时同样正确消费自己的占位，
+          // 不会残留到用户切回时与新提交的消息重复。
           const dropLivePlaceholders = (count: number) => {
             if (count <= 0) return;
-            const viewing = selectedSessionRef.current;
-            if (viewing === cid || viewing === finalKey) {
-              setPendingSteerDisplay((prev) => prev.slice(count));
-            }
+            setPendingSteerDisplay((prev) => {
+              const list = prev[steerQueueKey];
+              if (!list || list.length === 0) return prev;
+              const remaining = list.slice(count);
+              const next = { ...prev };
+              if (remaining.length === 0) {
+                delete next[steerQueueKey];
+              } else {
+                next[steerQueueKey] = remaining;
+              }
+              return next;
+            });
           };
           if (interactionInsertions.length > 0) {
             const midSteerCount = Math.min(steerSplits.length, queuedSteers.length);
@@ -2737,6 +3238,8 @@ export function ChatPage({
   ) : null;
 
   return (
+    <BlockRenderersProvider enabled={enabledSessionPlugins}>
+    <PluginSignalBridge enabled={enabledSessionPlugins} />
     <div className="flex h-full">
       {/* Left sidebar */}
       <div
@@ -2890,6 +3393,70 @@ export function ChatPage({
 
         {/* Session list: expanded */}
         <div className={cn("flex-1 overflow-y-auto", sidebarCollapsed && "hidden")}>
+          {/* v0.9.2 需求6：任务区置于常规会话区之上——conductor 主会话被归入任务
+              树后不再"沉底"（任务是有"当前进行时"语义的，会话是历史沉淀）。 */}
+          <TaskSessionTree
+            tasks={displayTaskLaunchSessions}
+            activeTaskId={activeTaskInstanceId}
+            activeNodeId={activeTaskInstanceId ? taskSelectedNodeId : null}
+            titleByNodeId={activeTaskNodeTitles}
+            onSelectTask={(task) => {
+              // 树的 TaskSessionTreeTask 是 TaskLaunchInstanceSummary 的结构子集，
+              // 回传时按 task_id 反查完整实例（openTaskPhaseWorkspace 需要 project_root 等字段）。
+              const instance = findTaskInstance(task.task_id);
+              if (!instance) return;
+              const phase: TaskPhase =
+                instance.current_phase === "planning"
+                  ? "planning"
+                  : instance.current_phase === "execution" || instance.current_phase === "graph"
+                    ? "execution"
+                    : "requirements";
+              openTaskPhaseWorkspace(instance, phase);
+            }}
+            onSelectNode={(task, node) => {
+              const instance = findTaskInstance(task.task_id);
+              if (!instance) return;
+              // 若目标任务尚未激活，先进任务执行 workspace（会重置 selectedNodeId），
+              // 随后指定目标节点，TaskSidebar 收到受控 prop 后自行拉取节点会话并高亮。
+              // 若任务已激活（含再次点击当前节点），直接切节点，不再调 openTaskPhaseWorkspace，
+              // 避免重复清空 selectedNodeId 引起节点会话→任务主会话的闪烁/竞态
+              //（v0.7.0 需求二-问题2：节点选中后再次点击变任务选中效果）。
+              if (activeTaskInstanceIdRef.current !== task.task_id || !taskModeActive) {
+                openTaskPhaseWorkspace(instance, "execution");
+              }
+              // v0.7.0 需求二-问题3：统一走 handleTaskSelectNode，立即切 pending-node
+              // 占位，避免新节点 session_id 回填前主区显示上一个节点的会话。
+              handleTaskSelectNode(node.node_id);
+            }}
+            onRenameTask={(task) => setRenameTaskTarget(findTaskInstance(task.task_id))}
+            onCancelTask={(task) => {
+              // v0.9.2 需求2 M3-4：任务行悬停取消——活跃任务走全景取消（含确认），
+              // 非活跃任务按 run_id 直发取消命令。
+              if (task.task_id === activeTaskInstanceIdRef.current) {
+                handleTaskCancelRun();
+              } else if (task.active_run_id) {
+                void invokeCommand("orchestrator_cancel_run", { runId: task.active_run_id })
+                  .catch((e) => console.warn("cancel run failed:", e));
+              }
+            }}
+            onDeleteTask={async (task) => {
+              if (!projectPathForSettings) return;
+              const confirmed = await confirmDialog({
+                title: t("tasks.deleteTask"),
+                description: t("tasks.deleteTaskConfirm", { title: task.title }),
+                variant: "destructive",
+              });
+              if (!confirmed) return;
+              if (task.graph_id) {
+                await invokeCommand("orchestrator_delete_graph", { graphId: task.graph_id });
+              }
+              await invokeCommand("task_launch_delete_task", {
+                projectRoot: projectPathForSettings,
+                taskId: task.task_id,
+              });
+              setTaskLaunchSessions((current) => current.filter((item) => item.task_id !== task.task_id));
+            }}
+          />
           <button
             type="button"
             onClick={() => setRegularSessionsOpen((open) => !open)}
@@ -2998,58 +3565,6 @@ export function ChatPage({
               </ContextMenu>
             );
           })}
-          <TaskSessionTree
-            tasks={displayTaskLaunchSessions}
-            activeTaskId={activeTaskInstanceId}
-            activeNodeId={activeTaskInstanceId ? taskSelectedNodeId : null}
-            titleByNodeId={activeTaskNodeTitles}
-            onSelectTask={(task) => {
-              // 树的 TaskSessionTreeTask 是 TaskLaunchInstanceSummary 的结构子集，
-              // 回传时按 task_id 反查完整实例（openTaskPhaseWorkspace 需要 project_root 等字段）。
-              const instance = findTaskInstance(task.task_id);
-              if (!instance) return;
-              const phase: TaskPhase =
-                instance.current_phase === "planning"
-                  ? "planning"
-                  : instance.current_phase === "execution" || instance.current_phase === "graph"
-                    ? "execution"
-                    : "requirements";
-              openTaskPhaseWorkspace(instance, phase);
-            }}
-            onSelectNode={(task, node) => {
-              const instance = findTaskInstance(task.task_id);
-              if (!instance) return;
-              // 若目标任务尚未激活，先进任务执行 workspace（会重置 selectedNodeId），
-              // 随后指定目标节点，TaskSidebar 收到受控 prop 后自行拉取节点会话并高亮。
-              // 若任务已激活（含再次点击当前节点），直接切节点，不再调 openTaskPhaseWorkspace，
-              // 避免重复清空 selectedNodeId 引起节点会话→任务主会话的闪烁/竞态
-              //（v0.7.0 需求二-问题2：节点选中后再次点击变任务选中效果）。
-              if (activeTaskInstanceIdRef.current !== task.task_id || !taskModeActive) {
-                openTaskPhaseWorkspace(instance, "execution");
-              }
-              // v0.7.0 需求二-问题3：统一走 handleTaskSelectNode，立即切 pending-node
-              // 占位，避免新节点 session_id 回填前主区显示上一个节点的会话。
-              handleTaskSelectNode(node.node_id);
-            }}
-            onRenameTask={(task) => setRenameTaskTarget(findTaskInstance(task.task_id))}
-            onDeleteTask={async (task) => {
-              if (!projectPathForSettings) return;
-              const confirmed = await confirmDialog({
-                title: t("tasks.deleteTask"),
-                description: t("tasks.deleteTaskConfirm", { title: task.title }),
-                variant: "destructive",
-              });
-              if (!confirmed) return;
-              if (task.graph_id) {
-                await invokeCommand("orchestrator_delete_graph", { graphId: task.graph_id });
-              }
-              await invokeCommand("task_launch_delete_task", {
-                projectRoot: projectPathForSettings,
-                taskId: task.task_id,
-              });
-              setTaskLaunchSessions((current) => current.filter((item) => item.task_id !== task.task_id));
-            }}
-          />
         </div>
 
         {/* Collapsed: empty body */}
@@ -3158,6 +3673,8 @@ export function ChatPage({
                   <Button variant="ghost" size="icon-xs" onClick={() => setRenameOpen(true)} title={t("sessions.rename")}>
                     <Pencil className="h-3 w-3" />
                   </Button>
+                  {/* v0.9.2 需求1 M4：插件头部动作宿主（会话导出等轻动作）。 */}
+                  <SessionPluginActions ctx={sessionKernelCtx} enabled={enabledSessionPlugins} />
                 </div>
               </div>
             ) : (
@@ -3169,6 +3686,9 @@ export function ChatPage({
             ) : null}
               {/* Messages */}
               <div className="relative flex-1 min-h-0">
+                {/* v0.9.2 需求1：停靠面板宿主（五槽位/浮动/快捷图标）——通用容器，
+                    无已显示面板时零渲染；M3 任务流程全景为首个真实面板。 */}
+                <SessionPanelLayer ctx={sessionKernelCtx} />
                 <div ref={messageAreaRef} className="h-full overflow-y-auto">
                 {taskSelectedNodeNotStarted ? (
                   // 选中的步骤还没执行过——直接说明，而不是把上一段会话继续摆在这里。
@@ -3207,24 +3727,54 @@ export function ChatPage({
                       <PhaseDivider phase="execute" title={t("task.phase.execution", "流程执行")} />
                     </div>
                     {taskRunStarted ? (
-                      <MessageView messages={taskGraph.projectedMessages} sessionId={selectedSession} flat />
+                      /* v0.9.2 需求2 M3-3：子任务卡替代 run 事件第一人称投影——
+                         卡片呈现实时状态/执行者/当前动作，点击进入子会话干预。 */
+                      <>
+                        <TaskNodeCards
+                          nodes={taskFlowNodes}
+                          onSelectNode={handleTaskSelectNode}
+                        />
+                        {taskGraph.runStatus && ["completed", "failed", "cancelled"].includes(taskGraph.runStatus) ? (
+                          <TaskSummaryCard
+                            runStatus={taskGraph.runStatus}
+                            nodes={taskFlowNodes}
+                            onSelectNode={handleTaskSelectNode}
+                          />
+                        ) : null}
+                      </>
                     ) : showExecutionStartPrompt ? (
-                      <ExecutionStartPrompt
-                        stepCount={taskStepCount}
+                      /* v0.9.2 需求2 M3-2：方案卡——勾选执行哪些子任务后确认。 */
+                      <TaskPlanCard
+                        nodes={taskPlanNodes}
                         canStart={Boolean(taskGraph.revision?.revision_id)}
                         starting={execStarting}
                         error={execStartError}
-                        onStart={handleStartExecutionFromChat}
+                        onConfirm={(selectedIds) => void handleConfirmPlan(selectedIds)}
                         onDismiss={() =>
                           setExecPromptDismissedTaskId(activeTaskLaunchInstance?.task_id ?? null)
                         }
+                        onOpenCanvas={() => setTaskBoardSignal((n) => n + 1)}
                       />
                     ) : (
-                      <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4 pb-2 text-[12px] text-muted-foreground">
-                        {t(
-                          "task.execution.awaitingStart",
-                          "流程尚未开始。可继续在下方对话中调整流程，或在右侧步骤栏点击「开始执行」。",
-                        )}
+                      /* v0.9.2 测试期修复：收起方案卡后不再死路——提供恢复入口
+                         （原侧栏「开始执行」替代路径已随 M3-5 退役）。
+                         布局与其他执行段卡片同构（独立块 + 按钮在文字下方）。 */
+                      <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4 py-2">
+                        <div className="rounded-xl border border-border/60 bg-muted/30 px-3 py-2.5">
+                          <div className="text-[12px] text-muted-foreground">
+                            {t(
+                              "task.execution.awaitingStart",
+                              "流程尚未开始。可继续在下方对话中调整流程。",
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setExecPromptDismissedTaskId(null)}
+                            className="mt-2 flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-background px-2.5 text-[12px] text-foreground/80 transition-fast hover:bg-accent hover:text-foreground"
+                          >
+                            {t("task.execution.showPlanCard", "返回执行流程")}
+                          </button>
+                        </div>
                       </div>
                     )}
                   </>
@@ -3256,7 +3806,9 @@ export function ChatPage({
                 {(() => {
                 if (!selectedSession || selectedSession === "new") return null;
                 const steerInjectedCount = currentStream?.steerTexts?.length ?? 0;
-                const visible = pendingSteerDisplay.slice(steerInjectedCount);
+                // v0.9.2 需求4：只渲染当前会话自己的引导占位（此前全局数组
+                // 会把其他会话/其他任务节点的占位串进本视图）。
+                const visible = (pendingSteerDisplay[selectedSession] ?? []).slice(steerInjectedCount);
                 if (visible.length === 0) return null;
                 return (
                   <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-1">
@@ -3292,11 +3844,9 @@ export function ChatPage({
                 );
               })()}
                 </div>
-                {/* v0.9.1 需求5：左缘横杠导航轨（替代原上箭头逐条上翻）——
-                    每轮用户对话一条横杠，悬停预览问题/回答，点击跳转该轮。 */}
-                {turnSummaries.length > 0 && !taskSelectedNodeNotStarted && !taskSelectedNodeStarting ? (
-                  <TurnRail turns={turnSummaries} activeIndex={activeTurnIndex} onJump={handleJumpToTurn} />
-                ) : null}
+                {/* v0.9.2 需求1 P4：贴边挂件宿主——导航列等 rail-widget 插件
+                    经统一注册表挂载（原硬编码 TurnRail 装配退役；插件页可启停）。 */}
+                <SessionRailSlot ctx={sessionKernelCtx} />
               </div>
           </>
         )}
@@ -3514,14 +4064,17 @@ export function ChatPage({
                 const key = selectedSession;
                 const existing = pendingSteerMessagesRef.current.get(key) ?? [];
                 pendingSteerMessagesRef.current.set(key, [...existing, content]);
-                setPendingSteerDisplay((prev) => [
+                setPendingSteerDisplay((prev) => ({
                   ...prev,
-                  {
-                    role: "user",
-                    content: [{ type: "text", text: content, tool_ids: toolIds ?? [] }],
-                    timestamp: Date.now(),
-                  },
-                ]);
+                  [key]: [
+                    ...(prev[key] ?? []),
+                    {
+                      role: "user" as const,
+                      content: [{ type: "text" as const, text: content, tool_ids: toolIds ?? [] }],
+                      timestamp: Date.now(),
+                    },
+                  ],
+                }));
               }}
             />
           </div>
@@ -3531,57 +4084,36 @@ export function ChatPage({
       {/* 任务模式：右侧任务侧边栏。减法重构——唯一区别于普通会话页的组件；
           主会话区（上方 MessageView/ChatInput）原样复用 chat-page，不做任何复制。
           P4a：仅执行阶段显示；P4c：可被「隐藏步骤栏」收起。 */}
-      {taskModeActive && activeTaskLaunchInstance?.current_phase === "execution" && !taskSidebarHidden ? (
-        <TaskSidebar
-          taskId={activeTaskLaunchInstance.task_id}
-          projectPath={currentProject?.path ?? ""}
-          instance={activeTaskLaunchInstance}
-          taskGraph={taskGraph}
-          agents={agents.map((agent) => ({ id: agent.id, display_name: agent.display_name }))}
-          agentsLoading={healthLoading && agents.length === 0}
-          selectedNodeId={taskSelectedNodeId}
-          onSelectNode={handleTaskSelectNode}
-          onNodeSessionChange={handleTaskNodeSessionChange}
-          onHide={() => setTaskSidebarHidden(true)}
-        />
-      ) : null}
-
-      {/* P4c + T8-P8：侧边栏被隐藏后，渲染停靠在布局里的 40px 折叠栏
-          （展开按钮 + 进度点阵），而非浮层按钮——浮层易被输入区遮挡、易误认为缺失。 */}
-      {taskModeActive && activeTaskLaunchInstance?.current_phase === "execution" && taskSidebarHidden ? (
-        <div className="flex h-full w-10 shrink-0 flex-col items-center gap-2 border-l border-border/30 bg-background py-2">
-          <button
-            type="button"
-            onClick={() => setTaskSidebarHidden(false)}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-            title={t("task.steps.show", "显示步骤栏")}
-          >
-            <PanelRightOpen className="h-4 w-4" />
-          </button>
-          {/* 进度点阵：折叠态仍可见各节点状态（goal 节点排除）。 */}
-          <div className="mt-1 flex flex-1 flex-col items-center gap-1 overflow-hidden">
-            {(taskGraph.snapshot?.nodes ?? [])
-              .filter((n) => n.node_kind !== "goal")
-              .map((n) => {
-                const status = taskGraph.nodeRuns[n.node_id]?.status;
-                const dot =
-                  status === "succeeded" || status === "skipped"
-                    ? "bg-emerald-500"
-                    : status === "failed"
-                      ? "bg-red-500"
-                      : status === "running"
-                        ? "bg-primary animate-pulse"
-                        : "bg-muted-foreground/30";
-                return (
-                  <span
-                    key={n.node_id}
-                    className={`h-1.5 w-1.5 rounded-full ${dot}`}
-                    title={n.title}
-                  />
-                );
-              })}
-          </div>
-        </div>
+      {/* v0.9.2 需求2 M3-5：TaskSidebar 退役——步骤呈现归全景面板（session.flow
+          插件）与会话内子任务卡，画布 overlay 上移到页面级（全景面板「画布」
+          入口经 taskBoardSignal 唤起）。 */}
+      {taskBoardOpen && taskModeActive && activeTaskLaunchInstance?.graph_id ? (
+        <Suspense fallback={null}>
+          <FlowBoardOverlay
+            taskTitle={activeTaskLaunchInstance.title}
+            graphId={activeTaskLaunchInstance.graph_id}
+            runStarted={Boolean(taskGraph.activeRunId ?? activeTaskLaunchInstance.active_run_id)}
+            runStatus={taskGraph.runStatus}
+            selectedNodeId={taskSelectedNodeId}
+            onSelectNode={handleTaskSelectNode}
+            onNodeDoubleClick={(nodeId) => {
+              setTaskBoardOpen(false);
+              handleTaskSelectNode(nodeId);
+            }}
+            onClose={() => setTaskBoardOpen(false)}
+            taskGraph={taskGraph}
+            onStartRun={handleStartExecutionFromChat}
+            agents={agents.map((agent) => ({ id: agent.id, display_name: agent.display_name }))}
+            agentsLoading={healthLoading && agents.length === 0}
+            defaultAgentId={normalizeAgentId(activeTaskLaunchInstance.planner_agent_id)}
+            selectedNodeSession={
+              taskSelectedNodeId
+                ? taskInstanceState.nodeSessionMap[taskSelectedNodeId] ?? null
+                : null
+            }
+            onAssignAgent={handleBoardAssignAgent}
+          />
+        </Suspense>
       ) : null}
 
       <RenameSessionDialog
@@ -3657,6 +4189,7 @@ export function ChatPage({
         </DialogContent>
       </Dialog>
     </div>
+    </BlockRenderersProvider>
   );
 }
 

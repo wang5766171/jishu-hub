@@ -204,6 +204,19 @@ fn ensure_conductor_extension_in(agent_dir: &Path) {
     let _ = std::fs::write(skill_dir.join("plan.SKILL.md"), CONDUCTOR_PLAN_SKILL);
     let _ = std::fs::write(skill_dir.join("execute.SKILL.md"), CONDUCTOR_EXECUTE_SKILL);
 
+    // 2b. v0.9.2 测试期修复（用户裁决：不做双写兼容，收敛唯一正确目录）：
+    // 技能包唯一位置 = Pi 原生 agent 目录（上文第 2 步）；扩展侧 SKILLS_DIR
+    // 已改为按 Pi getAgentDir() 同规则解析（<根>/agent/skills）。此处清理
+    // 历史错误位置（<根>/skills 下的 conductor 技能包）的残留。
+    if let Some(root) = agent_dir.parent() {
+        for stale in ["jishu-conductor-dev", "jishu-task-planner"] {
+            let stale_dir = root.join("skills").join(stale);
+            if stale_dir.exists() {
+                let _ = std::fs::remove_dir_all(&stale_dir);
+            }
+        }
+    }
+
     // 3. 注册 settings.json extensions（幂等）
     register_extension_in_settings(agent_dir, CONDUCTOR_EXT_REL);
 
@@ -645,5 +658,31 @@ description: demo
         assert!(arr.contains(&"extensions/jishu-task-conductor.ts".into()));
         assert!(arr.contains(&"extensions/request-user-input.ts".into()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.9.2 测试期修复回归（用户裁决：唯一正确目录，无双写）：skill pack
+    /// 只写 Pi 原生 agent 目录；历史错误位置（<根>/skills）的残留被清理。
+    #[test]
+    fn conductor_skill_pack_single_location_and_stale_root_cleaned() {
+        let root = ext_test_dir("root-skills");
+        let agent_dir = root.join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        // 预置历史错误位置的残留
+        let stale = root.join("skills").join("jishu-conductor-dev");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("discuss.SKILL.md"), "stale").unwrap();
+
+        ensure_conductor_extension_in(&agent_dir);
+
+        for phase in ["discuss", "plan", "execute"] {
+            assert!(agent_dir
+                .join("skills")
+                .join("jishu-conductor-dev")
+                .join(format!("{phase}.SKILL.md"))
+                .is_file());
+        }
+        // 错误位置残留被清理（skills 目录本身若空也不强删——只清 conductor 相关）
+        assert!(!stale.exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
