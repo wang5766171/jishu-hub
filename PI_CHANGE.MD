@@ -119,6 +119,29 @@
 
 # 第二部分：改动记录
 
+## 2026-09-09 | 工具批次守卫：防并行工具调用爆炸（release_v0.85.0-12）
+
+**背景（线上实录）**：2026-09-09 fundet-task-pilot 项目会话，退化模型在**单条 assistant 消息**里发射 636 个 toolCall（其中 626 个与 `sed -n '96,106p' …` 完全相同），运行时无任何防御照单全收，数百次真实执行后用户手动停止（会话 JSONL 1.8MB）。
+
+**设计裁决（用户确认，基于主流调研）**：**只做批内总量上限（50），不做"同名同参去重"**。调研结论：opencode 完全不去重（仅 agent.steps 步数预算，其 "parallel tool coalescing" 是修协议顺序非拦截）；Claude Code 批内封顶约 20（收紧后因掰断 60-80 调用的合法工作流被用户投诉，GitHub issue #33969）。去重无业界先例；上限取 50 = 高于主流最低值两倍、远低于爆炸量级（数百），防爆炸阈值而非效率配额。溢出调用立即返回错误结果并指引"拆分为多轮，下一轮继续"——任务不中断不丢操作；跨轮不受限。
+
+**改动**（`packages/agent`，纯增量，上游无对应机制）：
+
+| 文件 | 内容 |
+|---|---|
+| `src/harness/execution/batch-guard.ts`（新增） | `decideToolCall(executedCount)`：批内已放行计数达 `MAX_TOOL_CALLS_PER_BATCH=50` 即拒绝，拒绝原因附下一轮继续指引 |
+| `src/harness/runtime/drive/tools.ts` | `startToolInvocation` 分发前接线：按 `ToolBatch` 对象（WeakMap）记忆已放行计数；拒绝的调用经 `immediateError`→`outcomeFromFinalizedCall` 立即产出错误 result（协议完整：每个 toolCall 都有对应 result），不执行。sequential/parallel 两路径共用此入口 |
+| `src/harness/execution/tools.ts` | `immediateError` 改为导出（供上处构造即时错误结果） |
+| `test/batch-guard.test.ts`（新增） | 3 用例：上限内全放行（含相同调用）、达限拒绝且指引下一轮、**实录回放 636 个调用 → 50 执行 + 586 拦截** |
+
+**效果**：实录场景从 626 次重复执行降为最多 50 次执行（内含去重价值有限但总量受控），止损一个数量级以上；复杂任务不受影响（合法并行极少超 20，溢出部分下一轮续发）。
+
+**测试**：`packages/agent` 下 `npx vitest --run test/batch-guard.test.ts` 3/3 通过；`execution-tools`/`execution-primitives` 通过；全量套件中 52 失败（jsonl-session-repo/v3-migration/tools 等）为**存量 Windows 环境问题**（干净树同样失败，经 stash 对照验证），与本改动无关。
+
+**版本**：自研尾号顺延 `-11`→`-12`，分支 `release_v0.85.0-12`。
+
+---
+
 ## 2026-09-05 | 合并上游 v0.85.0（release_v0.85.0-11）——含 bundle 架构去自研
 
 **版本**：上游从 `v0.84.2` 跨越 `v0.84.3`/`v0.84.4` 到 `v0.85.0`（593 commits、839 files、+10.5 万行）。按版本规则（§1.3），Pi 版本升至 `0.85.0`、自研尾号顺延保持 `-11`，完整版本号 `0.85.0-11`，分支 `release_v0.85.0-11`。合并提交 `01489243c`（冲突解决 + 版本统一）+ `6f9a5b28d`（bundle 架构切换）。

@@ -262,7 +262,7 @@ npx vitest run test/<相关文件>.test.ts
 
 `resolve_form(manifest, plugin_dir, target_agent)` → `AdaptiveForm::{PiOnly, CliOnly, Both, None}`——按 `[pi_extension].target_agent` 匹配 + `[tool]` 段存在性判定。这是声明驱动的适配层逻辑核心：插件声明"能做什么"，适配引擎决定"在这个 agent 上走哪条通道"。
 
-**v1 现状**：`resolve_form` 已定义但未接入注入/部署管线（实际适配由 `load_manifests` 的 kind 分流隐式完成）。v2 接线点：注入管线消费 `participates_in_injection`、pi 部署管线消费 `needs_pi_deploy`。
+**v1 现状**（v0.9.2 需求7 更新）：`[pi_extension].tools` 已接线为 **pi 扩展工具的热插拔闸门**——manifest 声明本插件治理的扩展工具名（如 task-requirements→lock_requirement、interactive-qa→request_user_input），adapter spawn 时按"插件已启用"聚合进 `--tools` 白名单（`plugin::enabled_pi_extension_tools`；空集兜底 DEFAULT_PI_TOOLS）。`entry` 变为可选（纯闸门形态不部署扩展文件）。pi 的 `--tools` 是硬白名单：名单外扩展工具连会话内 setActiveTools 也无法激活，故扩展工具必须显式声明注入。`resolve_form` 的形态判定（PiOnly/Both/CliOnly）仍供后续注入/部署管线消费。工具组（组=工具集代理、多对多归属、enable_tool_group 自发现升级）为 v0.9.3 规划，设计全文见 `docs/v0.9.2/需求7-扩展工具插件化与治理/02`。
 
 ### 16.5 CLI 形态底层
 
