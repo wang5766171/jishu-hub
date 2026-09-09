@@ -305,6 +305,12 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                 let reg_invocation = invocation_id.clone();
                 let reg_agent_id = request.agent_id.clone();
                 let usage_agent_id = reg_agent_id.clone();
+                // v0.9.2 需求3：GUI 侧同一 control 需以 pending id 双注册——
+                // 前端流式 store 的 abortKey 固化为最先见到的 pending id
+                // （orchestrator-<invocation_id>），而 ChatState 仅按 resolved id
+                // 注册时 abort_chat(pending) 必然 miss（静默无操作）。steer 走
+                // resolved 键不受影响。
+                let reg_pending = pending_session_id.clone();
                 let on_session_resolved = move || {
                     if let Some(reg) = &acp_register {
                         let control = {
@@ -321,7 +327,10 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                             // RPC loop just before this hook fires, so it is
                             // available here (see pi_rpc_runtime).
                             if let Some(resolved_id) = control.resolved_session_id() {
-                                reg(&resolved_id, &reg_agent_id, control);
+                                reg(&resolved_id, &reg_agent_id, control.clone());
+                                if reg_pending != resolved_id {
+                                    reg(&reg_pending, &reg_agent_id, control);
+                                }
                             }
                         }
                     }
