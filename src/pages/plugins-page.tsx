@@ -27,7 +27,7 @@ import { LayoutDashboard } from "lucide-react";
 interface PluginDescriptor {
   id: string;
   display_name: string;
-  kind: "builtin" | "manifest" | "tool";
+  kind: "builtin" | "manifest" | "tool" | "session";
   version: string | null;
   source_path: string | null;
   core: boolean;
@@ -60,7 +60,7 @@ interface PluginListResult {
  * 核心引擎 = core（jishu-self）+ 解析器系统插件（mcp-resolver；后续
  * skill/CLI 解析器并入此判定）；MCP/CLI 按 kind=tool 的 has_mcp 分流；
  * 智能体 = 内置适配器与 manifest 智能体。 */
-type PluginCategory = "core" | "mcp" | "skill" | "cli" | "custom" | "agent";
+type PluginCategory = "core" | "session" | "mcp" | "skill" | "cli" | "custom" | "agent";
 
 /** 核心引擎 = core + 解析器 + 预置指南插件（v0.9.0 需求22 并入）。 */
 const CORE_ENGINE_PLUGIN_IDS = new Set([
@@ -72,6 +72,8 @@ const CORE_ENGINE_PLUGIN_IDS = new Set([
 ]);
 
 function categoryOf(p: PluginDescriptor): PluginCategory {
+  // v0.9.2 需求1：会话能力插件（前端注册表实现，此处统一管理面启停）。
+  if (p.kind === "session") return "session";
   if (p.core || CORE_ENGINE_PLUGIN_IDS.has(p.id)) return "core";
   if (p.kind === "tool") {
     if (p.has_mcp) return "mcp";
@@ -88,6 +90,7 @@ function categoryOf(p: PluginDescriptor): PluginCategory {
 
 const PLUGIN_CATEGORIES: Array<{ key: PluginCategory; labelKey: string; fallback: string }> = [
   { key: "core", labelKey: "plugins.catCore", fallback: "核心引擎" },
+  { key: "session", labelKey: "plugins.catSession", fallback: "会话能力" },
   { key: "mcp", labelKey: "plugins.typeMcp", fallback: "MCP 工具" },
   { key: "skill", labelKey: "plugins.typeSkill", fallback: "Skill 工具" },
   { key: "cli", labelKey: "plugins.typeCli", fallback: "CLI 工具" },
@@ -316,9 +319,13 @@ export function PluginsPage() {
             )}
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-sm font-medium truncate">{plugin.display_name}</span>
+                <span className="text-sm font-medium truncate">
+                  {plugin.kind === "session"
+                    ? tr(`sessionPlugins.${plugin.id.replace("session.", "")}.name`, plugin.display_name)
+                    : plugin.display_name}
+                </span>
                 <Badge variant="secondary" className="text-[10px] px-1.5">
-                  {plugin.kind === "builtin"
+                  {plugin.kind === "builtin" || plugin.kind === "session"
                     ? tr("plugins.kindBuiltin", "内置")
                     : plugin.kind === "tool"
                       ? tr("plugins.kindTool", "工具")

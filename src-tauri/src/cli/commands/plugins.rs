@@ -104,7 +104,10 @@ fn update(id: &str, path_str: &str, ctx: &ExecutionContext) -> Result<(), CliErr
             serde_json::json!({"updated": true, "id": id, "path": target.to_string_lossy()})
         );
     } else {
-        println!("Updated plugin {id} ({}); reload the hub app to apply.", target.display());
+        println!(
+            "Updated plugin {id} ({}); reload the hub app to apply.",
+            target.display()
+        );
     }
     Ok(())
 }
@@ -156,6 +159,7 @@ fn list(ctx: &ExecutionContext) -> Result<(), CliError> {
                 agent::plugin::PluginKind::Builtin => "builtin",
                 agent::plugin::PluginKind::Manifest => "manifest",
                 agent::plugin::PluginKind::Tool => "tool",
+                agent::plugin::PluginKind::Session => "session",
             },
             if p.core { "yes" } else { "-" },
             if p.enabled { "yes" } else { "no" },

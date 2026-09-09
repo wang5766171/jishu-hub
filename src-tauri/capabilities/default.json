@@ -22,6 +22,8 @@
     "core:webview:allow-create-webview-window",
     "core:event:default",
     "dialog:allow-open",
+    "dialog:allow-save",
+    "notification:default",
     "dialog:allow-ask",
     "dialog:allow-confirm",
     "dialog:allow-message"

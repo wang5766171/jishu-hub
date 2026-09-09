@@ -648,15 +648,45 @@ fn template_default_tools(extra: &[&'static str]) -> Vec<&'static str> {
 fn ensure_default_tools_arg(
     args: &mut Vec<String>,
     cfg: &Result<serde_json::Value, Box<dyn std::error::Error>>,
+    pi_extension_tools: &[String],
 ) {
+    // v0.9.2 需求7：扩展工具按"插件已启用"聚合注入（热插拔闸门，见
+    // plugin::enabled_pi_extension_tools）。pi 的 --tools 是硬白名单——不在
+    // 名单的扩展工具连 conductor 阶段 setActiveTools 也救不回（测试期实证），
+    // 故必须显式进名单。
     let unset = cfg
         .as_ref()
         .ok()
         .map(|c| c.get("defaultTools").is_none())
         .unwrap_or(true);
     if unset {
+        let mut tools: Vec<String> = template_default_tools(&[])
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        tools.extend_from_slice(pi_extension_tools);
         args.push("--tools".to_string());
-        args.push(template_default_tools(&[]).join(","));
+        args.push(tools.join(","));
+        return;
+    }
+    // 已配置 defaultTools 的用户：配置清单原样生效，仅追加已启用扩展工具。
+    if let Some(list) = cfg
+        .as_ref()
+        .ok()
+        .and_then(|c| c.get("defaultTools"))
+        .and_then(|v| v.as_array())
+    {
+        let mut names: Vec<String> = list
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        for tool in pi_extension_tools {
+            if !names.iter().any(|n| n == tool) {
+                names.push(tool.to_string());
+            }
+        }
+        args.push("--tools".to_string());
+        args.push(names.join(","));
     }
 }
 
@@ -670,7 +700,9 @@ fn mcp_package_args(base_args: &[String], action: &str) -> Vec<String> {
 /// v0.9.1 需求12 补充：从 settings.json Value 提取 hubSpawnEnv 环境变量
 /// 覆盖（键值均须字符串；空值合法——如 PI_OFFLINE="" 置空关闭）。纯函数
 /// 可单测。
-fn spawn_env_overrides(cfg: &Result<serde_json::Value, Box<dyn std::error::Error>>) -> Vec<(String, String)> {
+fn spawn_env_overrides(
+    cfg: &Result<serde_json::Value, Box<dyn std::error::Error>>,
+) -> Vec<(String, String)> {
     let Ok(v) = cfg else {
         return Vec::new();
     };
@@ -693,19 +725,26 @@ mod mcp_tests {
     fn default_tools_spawn_arg_only_when_unset() {
         use serde_json::json;
         let mut args = vec!["--mode".to_string(), "rpc".to_string()];
-        super::ensure_default_tools_arg(&mut args, &Ok(json!({})));
+        let ext = vec![
+            "request_user_input".to_string(),
+            "lock_requirement".to_string(),
+        ];
+        super::ensure_default_tools_arg(&mut args, &Ok(json!({})), &ext);
         assert_eq!(args[2], "--tools");
         assert!(args[3].starts_with("read,bash,edit,write"));
+        // v0.9.2 需求7：聚合的扩展工具随默认集注入（热插拔闸门的下游）
+        for tool in &ext {
+            assert!(args[3].split(',').any(|t| t == tool), "missing {tool}");
+        }
 
         let mut args2 = vec!["--mode".to_string(), "rpc".to_string()];
-        super::ensure_default_tools_arg(
-            &mut args2,
-            &Ok(json!({"defaultTools": ["read"]})),
-        );
-        assert_eq!(args2.len(), 2, "已配置不再追加");
+        super::ensure_default_tools_arg(&mut args2, &Ok(json!({"defaultTools": ["read"]})), &ext);
+        // 已配置清单照常生效，追加已启用扩展工具
+        assert_eq!(args2[2], "--tools");
+        assert_eq!(args2[3], "read,request_user_input,lock_requirement");
 
         let mut args3 = vec![];
-        super::ensure_default_tools_arg(&mut args3, &Err("io".into()));
+        super::ensure_default_tools_arg(&mut args3, &Err("io".into()), &ext);
         assert_eq!(args3.len(), 2, "读失败按未配置处理");
     }
 
@@ -727,7 +766,10 @@ mod mcp_tests {
         assert_eq!(
             envs,
             vec![
-                ("HTTP_PROXY".to_string(), "http://127.0.0.1:7890".to_string()),
+                (
+                    "HTTP_PROXY".to_string(),
+                    "http://127.0.0.1:7890".to_string()
+                ),
                 ("PI_OFFLINE".to_string(), String::new()),
             ]
         );
@@ -779,10 +821,19 @@ impl TransportAdapter for JishuSelfAgent {
         // --tools 白名单（内置全集 read/bash/edit/write/grep/find/ls 去掉
         // bash/edit/write）。工具名与语义是 Pi 私有知识，属于 adapter 职责；
         // 对此后新 spawn 的进程生效（Pi 每条消息一个进程）。
+        // v0.9.2 需求7：扩展工具按启用插件聚合（热插拔）。
+        let pi_extension_tools = crate::agent::plugin::enabled_pi_extension_tools();
         match crate::hub::load_agent_tool_mode("jishu-self").as_deref() {
             Some("readonly") => {
+                // 只读模式保留交互与任务提交类扩展工具（问答纯交互；
+                // lock/commit 为工作流操作，任务流须可用）。
+                let mut tools: Vec<String> = ["read", "grep", "find", "ls"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                tools.extend_from_slice(&pi_extension_tools);
                 args.push("--tools".to_string());
-                args.push("read,grep,find,ls".to_string());
+                args.push(tools.join(","));
             }
             // full-approve 与 full 工具集相同，差异只在 toolApproval 审批
             // 开关（set_agent_tool_mode 已联动写入 Pi settings）。
@@ -792,7 +843,7 @@ impl TransportAdapter for JishuSelfAgent {
         // defaultTools 时 spawn 显式传全集（Windows 含 powershell），消除
         // pi 回退仅四件的歧义（存量未配置用户无需改配置即生效）；已配置
         // 任何清单按配置生效。
-        ensure_default_tools_arg(&mut args, &config::load_jishu_config());
+        ensure_default_tools_arg(&mut args, &config::load_jishu_config(), &pi_extension_tools);
         // Resume an existing Pi session when a real (non-transient) session id
         // is provided. Without this, Pi creates a fresh session on every process
         // spawn, losing all conversation history (the root cause of "agent

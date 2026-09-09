@@ -16,6 +16,14 @@ import { InteractionCard } from "./interaction-card";
 import type { InteractionCardItem } from "./interaction-card";
 import { isInteractionToolName, looksLikeInteractionToolInput } from "@/lib/interaction-tools";
 import { PhaseDivider } from "./conversation-content";
+// v0.9.2 需求1 P1：行/轮次语义迁移至会话内核统一视图模型（单一权威，
+// 导航轨等轮次消费方读同一份，消除双实现契约对齐负担）。
+import { buildSessionRows, type SessionRowModel } from "@/features/session-kernel/view-model";
+// v0.9.2 需求1 M4：块渲染器咨询点（HTML/Mermaid 等插件经 Context 接管代码块）。
+import {
+  matchBlockRenderer,
+  useBlockRenderers,
+} from "@/features/session-kernel/plugins/mounts/use-block-renderers";
 
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS = [rehypeHighlight];
@@ -77,9 +85,7 @@ type RenderItem =
   | { kind: "interaction"; items: InteractionCardItem[]; origin?: string; messageIndex: number; blockIndex: number }
   | { kind: "tool-group"; calls: ToolCall[] };
 
-type RenderRow =
-  | { kind: "user"; messageIndex: number }
-  | { kind: "assistant"; startIndex: number; endIndex: number; messageIndices: number[] };
+type RenderRow = SessionRowModel;
 
 function highlightText(text: string, query: string, matchOffset: number, currentMatch: number): React.ReactNode {
   if (!query.trim()) return text;
@@ -163,12 +169,42 @@ const TextBlock = memo(function TextBlock({
 
   return (
     <div className="markdown-prose overflow-hidden">
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
+      {/* v0.9.2 需求1 M4：块渲染器咨询点——已启用插件（HTML/Mermaid 渲染等）
+          声明的代码块增强渲染在此接管；未命中回退默认 markdown 代码块。 */}
+      <ReactMarkdown
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
+        components={{ pre: MarkdownPreWithRenderers }}
+      >
         {text}
       </ReactMarkdown>
     </div>
   );
 });
+
+/** pre 覆写：提取子 code 的语言与文本，咨询块渲染器（Context 注入）。 */
+function MarkdownPreWithRenderers({ children }: { children?: React.ReactNode }) {
+  const renderers = useBlockRenderers();
+  const child = Array.isArray(children) ? children[0] : children;
+  if (renderers.length > 0 && child && typeof child === "object" && "props" in child) {
+    const codeProps = (child as { props?: { className?: string; children?: unknown } }).props;
+    const language = /language-([\w-]+)/.exec(codeProps?.className ?? "")?.[1] ?? "";
+    const code =
+      typeof codeProps?.children === "string"
+        ? codeProps.children
+        : Array.isArray(codeProps?.children)
+          ? codeProps.children.filter((c): c is string => typeof c === "string").join("")
+          : "";
+    if (language && code) {
+      const renderer = matchBlockRenderer(renderers, language, code);
+      if (renderer) {
+        const Renderer = renderer.Component;
+        return <Renderer code={code} language={language} />;
+      }
+    }
+  }
+  return <pre>{children}</pre>;
+}
 
 function extractMessageText(msg: Message): string {
   return msg.content
@@ -254,45 +290,8 @@ function renderBlock(
   }
 }
 
-function isUserToolResultOnlyMessage(msg: Message): boolean {
-  if (msg.role !== "user" || msg.content.length === 0) return false;
-  return msg.content.every((block) => block.type === "tool_result");
-}
-
-function buildRenderRows(messages: Message[]): RenderRow[] {
-  const rows: RenderRow[] = [];
-  let assistantGroup: RenderRow & { kind: "assistant" } | null = null;
-
-  const flushAssistant = () => {
-    if (!assistantGroup) return;
-    rows.push(assistantGroup);
-    assistantGroup = null;
-  };
-
-  messages.forEach((msg, i) => {
-    if (msg.role === "assistant") {
-      if (!assistantGroup) {
-        assistantGroup = { kind: "assistant", startIndex: i, endIndex: i, messageIndices: [i] };
-      } else {
-        assistantGroup.endIndex = i;
-        assistantGroup.messageIndices.push(i);
-      }
-      return;
-    }
-
-    if (isUserToolResultOnlyMessage(msg) && assistantGroup) {
-      assistantGroup.endIndex = i;
-      assistantGroup.messageIndices.push(i);
-      return;
-    }
-
-    flushAssistant();
-    rows.push({ kind: "user", messageIndex: i });
-  });
-
-  flushAssistant();
-  return rows;
-}
+// buildRenderRows/isUserToolResultOnlyMessage 已迁移至
+// @/features/session-kernel/view-model（buildSessionRows）。
 
 const isInteractionTool = (name: string, input: any) => {
   return isInteractionToolName(name) || looksLikeInteractionToolInput(input);
@@ -649,7 +648,7 @@ export const MessageView = memo(function MessageView({
     return map;
   }, [messages]);
 
-  const rows = useMemo<RenderRow[]>(() => buildRenderRows(messages), [messages]);
+  const rows = useMemo<RenderRow[]>(() => buildSessionRows(messages), [messages]);
   const [currentOcc, setCurrentOcc] = useState(0);
   const [scrollTrigger, setScrollTrigger] = useState(0);
 
@@ -736,20 +735,15 @@ export const MessageView = memo(function MessageView({
   }, [currentOcc, messages, renderingQuery, resultMap, searchState.offsets, roleResolver, toolNames]);
 
   // v0.9.1 需求5：user 行轮次序号（实例内从 0 递增），横杠导航轨按
-  // [data-turn-index] 定位跳转；序号语义与 buildRenderRows 的 user 行一一
-  // 对应（纯 tool_result 用户消息被吞并进 assistant 组，不占序号）。
-  const turnIndexOf = new Map<number, number>();
-  rows.forEach((row) => {
-    if (row.kind === "user") turnIndexOf.set(row.messageIndex, turnIndexOf.size);
-  });
-
+  // [data-turn-index] 定位跳转。v0.9.2 需求1 P1：序号由统一视图模型携带
+  // （buildSessionRows 计算，与轮次摘要消费方同源）。
   const fullMessageList = (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
       {rows.map((row) => (
         <div
           key={rowKey(row, messages)}
           data-user-message={row.kind === "user" ? "true" : undefined}
-          data-turn-index={row.kind === "user" ? turnIndexOf.get(row.messageIndex) : undefined}
+          data-turn-index={row.kind === "user" ? row.turnIndex : undefined}
           style={ROW_STYLE}
         >
           {renderRow(row)}

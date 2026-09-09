@@ -395,6 +395,7 @@
     "skillBadge": "Skill",
     "tplSkill": "Skill example",
     "catCore": "Core engines",
+    "catSession": "Session capabilities",
     "mcpBatchImport": "JSON batch import",
     "mcpBatchTitle": "Batch import MCP servers",
     "mcpBatchDesc": "Paste JSON containing multiple servers (mcpServers wrapper supported); each server becomes a standalone MCP plugin (plugin id derived from its name).",
@@ -1040,7 +1041,7 @@
       "confirmDescEmpty": "The flow has no steps yet — ask the task assistant below to complete it first.",
       "confirmHint": "Not ready? Ask the task assistant below to adjust the flow, or open the flow canvas via \"Orchestrate\" on the right.",
       "adjustFirst": "Adjust first",
-      "awaitingStart": "Execution has not started. Keep adjusting the flow below, or click \"Start execution\" in the step panel on the right.",
+      "awaitingStart": "Flow not started yet. Keep adjusting it in the conversation below.",
       "error": {
         "launchFailed": "Failed to start execution",
         "assignAgentFailed": "Failed to assign agent"
@@ -1052,7 +1053,8 @@
       "nodeStatus": "Status",
       "attempt": "Attempt",
       "nodeNotStarted": "This step has not started yet — its session will appear here once it runs.",
-      "nodeStarting": "Step is running: setting up the session, content will appear here once ready."
+      "nodeStarting": "Step is running: setting up the session, content will appear here once ready.",
+      "showPlanCard": "Back to execution flow"
     },
     "event": {
       "runStarted": "I have started executing this flow ({{count}} steps in total). I will drive and monitor each node's execution.",
@@ -1116,5 +1118,113 @@
     "openFailedTitle": "Failed to open file",
     "resizeHandle": "Resize preview (double-click to fit content)",
     "collapse": "Collapse preview"
+  },
+  "sessionPlugins": {
+    "navigation": {
+      "name": "Session Navigation",
+      "description": "Jump to each question from the left rail"
+    },
+    "flow": {
+      "name": "Task Flow Panorama",
+      "description": "Plan confirmation, subtask tracking and intervention",
+      "panelTitle": "Task Panorama",
+      "noTask": "No task linked to this session",
+      "progress": "{{completed}}/{{total}}",
+      "openCanvas": "Canvas",
+      "cancelAll": "Cancel all",
+      "waiting": "waiting"
+    },
+    "htmlRender": {
+      "name": "HTML Live Render",
+      "description": "Render complete HTML documents inline",
+      "cardTitle": "HTML",
+      "previewTitle": "HTML preview",
+      "preview": "Preview",
+      "source": "Source",
+      "expand": "Expand"
+    },
+    "mermaidRender": {
+      "name": "Mermaid Diagrams",
+      "description": "Render mermaid code blocks as diagrams",
+      "rendering": "Rendering diagram…"
+    },
+    "desktopNotify": {
+      "name": "Desktop Notifications",
+      "description": "Notify on turn complete, approvals and task failure",
+      "turnDone": "Turn complete",
+      "turnFailed": "Turn failed",
+      "turnBody": "Session {{id}}… {{state}}",
+      "stateDone": "reply finished",
+      "stateError": "errored",
+      "approvalTitle": "Approval needed",
+      "approvalBody": "A session requests approval",
+      "taskFailedTitle": "Task failed",
+      "taskFailedBody": "\"{{title}}\" failed"
+    },
+    "export": {
+      "name": "Session Export",
+      "description": "Export the current session to Markdown",
+      "action": "Export session",
+      "untitled": "Session transcript",
+      "exportedAt": "Exported at",
+      "user": "User",
+      "assistant": "Assistant"
+    },
+    "usage": {
+      "name": "Usage Panel",
+      "description": "Token/cost totals, top sessions and trends",
+      "panelTitle": "Usage",
+      "title": "Usage overview",
+      "refresh": "Refresh",
+      "loading": "Loading…",
+      "empty": "No usage data",
+      "totalTokens": "Total tokens",
+      "totalCost": "Total cost",
+      "sessions": "Sessions",
+      "toolCalls": "Tool calls",
+      "last7days": "Last 7 days",
+      "topSessions": "Top sessions (by cost)",
+      "kindTask": "Task",
+      "kindNode": "Node",
+      "kindSession": "Session",
+      "kindUnknown": "Other"
+    }
+  },
+  "sessionPanels": {
+    "hide": "Hide panel",
+    "dock": "Dock to right"
+  },
+  "taskPlan": {
+    "cardTitle": "Task Plan",
+    "nodeCount": "{{count}} subtasks",
+    "openCanvas": "Canvas (advanced)",
+    "selectAll": "Select all",
+    "unselectAll": "Select none",
+    "acceptance": "Acceptance",
+    "confirmRun": "Run selected ({{count}})",
+    "uncheckedHint": "Unchecked subtasks are excluded from this run"
+  },
+  "taskFlow": {
+    "openSession": "Open session",
+    "status": {
+      "blocked": "waiting",
+      "ready": "ready",
+      "leased": "starting",
+      "running": "running",
+      "awaiting_approval": "approval",
+      "retry_wait": "retry wait",
+      "repairing": "repairing",
+      "succeeded": "done",
+      "failed": "failed",
+      "skipped": "skipped",
+      "cancelled": "cancelled",
+      "superseded": "superseded"
+    }
+  },
+  "taskSummary": {
+    "completed": "Task completed",
+    "failed": "Task failed",
+    "cancelled": "Task cancelled",
+    "counts": "{{succeeded}} ok / {{failed}} failed / {{skipped}} skipped · {{total}} total"
   }
 }

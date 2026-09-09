@@ -207,6 +207,18 @@ pub(crate) fn delete_session_name(session_id: String) -> Result<(), String> {
     hub::delete_session_name(session_id).map_err(|e| e.to_string())
 }
 
+/// v0.9.2 需求1 M4：用量面板数据源（usage.db 权威记账的只读聚合）。
+#[tauri::command]
+pub(crate) fn usage_overview() -> Result<crate::usage_store::UsageOverview, String> {
+    crate::usage_store::overview()
+}
+
+/// v0.9.2 需求1 M4：会话导出落盘（路径来自前端保存对话框；内容为 Markdown）。
+#[tauri::command]
+pub(crate) fn export_text_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, content).map_err(|e| format!("write export file failed: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

@@ -30,6 +30,10 @@ pub enum PluginKind {
     /// 工具插件（v0.8.1 需求7）：CLI 能力单元，kind = "tool" 的 manifest，
     /// 不进 AgentRegistry，经会话 + 菜单注入智能体上下文。
     Tool,
+    /// 会话能力插件（v0.9.2 需求1）：前端会话区的可插拔能力（导航列、
+    /// 流程全景、HTML 渲染等）。实现编译在前端注册表，此处只登记描述符
+    /// （统一管理面 + plugins.json 启停持久化），不进 AgentRegistry。
+    Session,
 }
 
 /// 一个已装载插件的描述（UI / CLI 插件管理面的数据源）。
@@ -113,12 +117,18 @@ pub fn is_system_plugin(id: &str) -> bool {
 /// plugins.json disabled 集不含 mcp-resolver 即启用（默认启用——disabled
 /// 为 opt-in 存储，全新环境零配置即在位）。
 pub fn is_mcp_resolver_enabled() -> bool {
-    !load_plugin_config().disabled.iter().any(|x| x == "mcp-resolver")
+    !load_plugin_config()
+        .disabled
+        .iter()
+        .any(|x| x == "mcp-resolver")
 }
 
 /// Skill 解析器启用态（skill 分发总开关，skill_deploy::sync_skill_deployments）。
 pub fn is_skill_resolver_enabled() -> bool {
-    !load_plugin_config().disabled.iter().any(|x| x == "skill-resolver")
+    !load_plugin_config()
+        .disabled
+        .iter()
+        .any(|x| x == "skill-resolver")
 }
 
 pub fn plugin_config_path() -> PathBuf {
@@ -158,11 +168,113 @@ fn known_plugin_ids() -> HashSet<String> {
         .iter()
         .map(|(factory, _)| factory().info().id)
         .collect();
+    for (id, _name) in builtin_session_plugin_specs() {
+        ids.insert(id.to_string());
+    }
     let (agents, tools, _errors) = super::manifest::load_manifests(&[]);
     for (file, _path) in agents.into_iter().chain(tools) {
         ids.insert(file.info.id);
     }
     ids
+}
+
+/// 内置会话能力插件清单（v0.9.2 需求1）。
+///
+/// 前端实现（`src/features/session-kernel/plugins`）按 id 对齐；此处登记
+/// 描述符供统一插件管理面展示与启停持久化。**注册纪律**：前端实现未落地
+/// 的 id 不登记（插件页不出现无实现的开关）——`session.flow`（任务流程
+/// 全景）随需求 2/M3、`session.html-render` 随 M4 增补。
+pub fn builtin_session_plugin_specs() -> &'static [(&'static str, &'static str)] {
+    &[
+        // (id, display_name)——display_name 为兜底文案，插件页按 id 走 i18n。
+        ("session.navigation", "会话导航列"),
+        ("session.flow", "任务流程全景"),
+        // v0.9.2 M4 首期批次（用户圈定 2026-09-06）
+        ("session.html-render", "HTML 实时渲染"),
+        ("session.mermaid-render", "Mermaid 图表渲染"),
+        ("session.desktop-notify", "桌面通知"),
+        ("session.export", "会话导出"),
+        ("session.usage", "用量成本面板"),
+    ]
+}
+
+/// pi 扩展工具兜底集（v0.9.2 需求7 fail-safe）：清单聚合结果为空时回落，
+/// 宁可"关不掉"不可"流程死"（历史教训：lock_requirement 缺失致需求讨论停摆）。
+pub const DEFAULT_PI_TOOLS: [&str; 4] = [
+    "request_user_input",
+    "lock_requirement",
+    "commit_plan",
+    "dispatch_to_node",
+];
+
+/// 聚合已启用插件声明的 pi 扩展工具（v0.9.2 需求7 热插拔闸门，纯函数）：
+/// 输入 (插件 id, 声明工具) 列表与禁用集，输出保序去重的工具名并集。
+pub fn merge_pi_extension_tools(
+    declared: &[(String, Vec<String>)],
+    disabled: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let mut merged: Vec<String> = Vec::new();
+    for (id, tools) in declared {
+        if disabled.contains(id) {
+            continue;
+        }
+        for tool in tools {
+            if !merged.iter().any(|existing| existing == tool) {
+                merged.push(tool.clone());
+            }
+        }
+    }
+    merged
+}
+
+/// 当前应注入 spawn --tools 白名单的 pi 扩展工具（fs 包装）：读插件禁用集
+/// 与已装载 manifest 的 [pi_extension].tools 声明聚合；结果为空时兜底
+/// DEFAULT_PI_TOOLS。每次 spawn 调用（文件 IO 轻，PiRpc 每会话一次）。
+pub fn enabled_pi_extension_tools() -> Vec<String> {
+    let disabled: std::collections::HashSet<String> =
+        load_plugin_config().disabled.iter().cloned().collect();
+    let (_agents, tools, _errors) = super::manifest::load_manifests(&[]);
+    let declared: Vec<(String, Vec<String>)> = tools
+        .iter()
+        .map(|(file, _path)| {
+            (
+                file.info.id.clone(),
+                file.pi_extension
+                    .as_ref()
+                    .map(|section| section.tools.clone())
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+    let merged = merge_pi_extension_tools(&declared, &disabled);
+    if merged.is_empty() {
+        return DEFAULT_PI_TOOLS.iter().map(|s| s.to_string()).collect();
+    }
+    merged
+}
+
+/// 会话能力插件描述符（纯函数，可测）：不进 AgentRegistry（无 agent 实现），
+/// 启停与 agent/tool 插件共用 plugins.json 禁用集合。
+pub fn session_plugin_descriptors(disabled: &HashSet<String>) -> Vec<PluginDescriptor> {
+    builtin_session_plugin_specs()
+        .iter()
+        .map(|(id, display_name)| PluginDescriptor {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            kind: PluginKind::Session,
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            source_path: None,
+            core: false,
+            enabled: !disabled.contains(*id),
+            has_mcp: false,
+            has_panel: false,
+            has_skill: false,
+            has_pi_extension: false,
+            panel: None,
+            system: false,
+            icon: String::new(),
+        })
+        .collect()
 }
 
 /// 设置插件启停并落盘。core 插件拒绝；未知 id 拒绝（配置漂移防写入）。
@@ -249,6 +361,11 @@ pub fn builtin_adaptive_plugins() -> Vec<(&'static str, &'static str)> {
         (
             "task-plan",
             include_str!("../../resources/plugins/task-plan/plugin.toml"),
+        ),
+        // v0.9.2 需求7：交互问答纯闸门插件（治理 request_user_input，热插拔）。
+        (
+            "interactive-qa",
+            include_str!("../../resources/plugins/interactive-qa/plugin.toml"),
         ),
         // v0.9.0 需求22：预置核心引擎指南插件（[skill] 声明——经 Skill 解析器
         // 分发到 agent skill 目录，agent 原生发现；内容 = 给 agent 的操作指南）。
@@ -758,8 +875,7 @@ mod tests {
                 toml::from_str(&toml_src).unwrap();
             assert!(file.validate().is_ok(), "{id} manifest invalid");
         }
-        let skill_toml =
-            std::fs::read_to_string(dir.join("skill-resolver.toml")).unwrap();
+        let skill_toml = std::fs::read_to_string(dir.join("skill-resolver.toml")).unwrap();
         let skill_file: super::super::manifest::schema::AgentManifestFile =
             toml::from_str(&skill_toml).unwrap();
         assert_eq!(skill_file.info.id, "skill-resolver");
@@ -807,5 +923,61 @@ mod tests {
         std::fs::write(plugin_config_path(), "{not json").unwrap();
         assert!(load_plugin_config().disabled.is_empty());
         std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// v0.9.2 需求7：pi 扩展工具聚合——禁用插件剔除、多插件并集保序去重。
+    #[test]
+    fn merge_pi_extension_tools_filters_disabled_and_dedups() {
+        use std::collections::HashSet;
+        let declared = vec![
+            (
+                "interactive-qa".to_string(),
+                vec!["request_user_input".to_string()],
+            ),
+            (
+                "task-requirements".to_string(),
+                vec!["lock_requirement".to_string()],
+            ),
+            ("task-plan".to_string(), vec!["commit_plan".to_string()]),
+            (
+                "dup-plugin".to_string(),
+                vec!["request_user_input".to_string()],
+            ),
+        ];
+        let disabled: HashSet<String> = ["task-plan".to_string()].into_iter().collect();
+        let merged = merge_pi_extension_tools(&declared, &disabled);
+        assert_eq!(
+            merged,
+            vec![
+                "request_user_input".to_string(),
+                "lock_requirement".to_string()
+            ]
+        );
+        // 全禁用 → 空（调用方兜底 DEFAULT_PI_TOOLS）
+        let all_disabled: HashSet<String> = declared.iter().map(|(id, _)| id.clone()).collect();
+        assert!(merge_pi_extension_tools(&declared, &all_disabled).is_empty());
+    }
+
+    /// v0.9.2 需求1：会话能力插件描述符——kind=Session、非 core、随禁用
+    /// 集合启停；且进入 known ids（set_plugin_enabled 可用）。
+    #[test]
+    fn session_plugin_descriptors_follow_disabled_set() {
+        let disabled: std::collections::HashSet<String> =
+            ["session.navigation".to_string()].into_iter().collect();
+        let descriptors = session_plugin_descriptors(&disabled);
+        assert!(descriptors.iter().all(|d| d.kind == PluginKind::Session));
+        assert!(descriptors.iter().all(|d| !d.core));
+        let nav = descriptors
+            .iter()
+            .find(|d| d.id == "session.navigation")
+            .unwrap();
+        assert!(!nav.enabled);
+        assert!(
+            session_plugin_descriptors(&Default::default())
+                .iter()
+                .find(|d| d.id == "session.navigation")
+                .unwrap()
+                .enabled
+        );
     }
 }

@@ -17,7 +17,7 @@
 //! 在 toolCall 块上**无标志**（实测仅 type/id/name/arguments 四字段），按
 //! 用户裁决暂统一归入工具桶；est_mcp_tool/mcp_calls 列保留为前向预留。
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
@@ -185,7 +185,9 @@ fn store() -> Result<&'static UsageStore, String> {
     let _ = STORE.set(UsageStore {
         conn: Mutex::new(conn),
     });
-    STORE.get().ok_or_else(|| "usage store init failed".to_string())
+    STORE
+        .get()
+        .ok_or_else(|| "usage store init failed".to_string())
 }
 
 /// 记一个生成分段：明细入 usage_segment，聚合 upsert 进 session_usage
@@ -388,6 +390,158 @@ fn read_on(conn: &Connection, session_id: &str) -> Result<SessionUsageRow, Strin
 }
 
 /// 读取会话累计用量（无记录返回全零行）。
+/// 用量总览（v0.9.2 需求1 M4 用量面板数据源）：累计 / 会话排行 / 近 7 日趋势。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UsageOverview {
+    pub totals: UsageTotals,
+    pub top_sessions: Vec<UsageSessionSummary>,
+    pub daily: Vec<UsageDailySummary>,
+    /// 是否按套餐价格计价（false 且记账成本为 0 时前端隐藏金额）。
+    pub pricing_applied: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UsageTotals {
+    pub sessions: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_cost: f64,
+    pub tool_calls: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UsageSessionSummary {
+    pub session_id: String,
+    pub agent_id: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_cost: f64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UsageDailySummary {
+    /// YYYY-MM-DD（本地日期由前端无所谓——按 UTC 天聚合即可，展示用）。
+    pub day: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+/// 套餐价格配置（v0.9.2 测试期，用户裁决：金额支持配置，不配置则隐藏）。
+/// 文件 `~/.jishu-hub/usage-pricing.json`：
+/// { "input_per_mtok": 4.0, "output_per_mtok": 16.0 }
+/// 配置存在时金额 = token 按档计价（覆盖 store 记账成本）；缺失则沿用记账值，
+/// 记账也为 0 时前端隐藏金额列（不显示无意义的 0）。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct UsagePricingConfig {
+    pub input_per_mtok: f64,
+    pub output_per_mtok: f64,
+}
+
+fn load_pricing_config() -> Option<UsagePricingConfig> {
+    let path = db_path()
+        .ok()?
+        .parent()?
+        .join("usage-pricing.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// 按档计价（纯函数）：元/百万 token。
+pub fn compute_pricing_cost(
+    pricing: &UsagePricingConfig,
+    input_tokens: u64,
+    output_tokens: u64,
+) -> f64 {
+    input_tokens as f64 / 1_000_000.0 * pricing.input_per_mtok
+        + output_tokens as f64 / 1_000_000.0 * pricing.output_per_mtok
+}
+
+pub fn overview() -> Result<UsageOverview, String> {
+    let pricing = load_pricing_config();
+    let store = store()?;
+    let conn = store.conn.lock().map_err(|e| e.to_string())?;
+    let mut totals = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),              COALESCE(SUM(total_cost),0), COALESCE(SUM(tool_calls),0) FROM session_usage",
+            [],
+            |row| {
+                Ok(UsageTotals {
+                    sessions: row.get(0)?,
+                    input_tokens: row.get(1)?,
+                    output_tokens: row.get(2)?,
+                    total_cost: row.get(3)?,
+                    tool_calls: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or(UsageTotals {
+            sessions: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_cost: 0.0,
+            tool_calls: 0,
+        });
+    let mut stmt = conn
+        .prepare(
+            "SELECT session_id, agent_id, input_tokens, output_tokens, total_cost, updated_at              FROM session_usage ORDER BY total_cost DESC LIMIT 10",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut top_sessions = stmt
+        .query_map([], |row| {
+            Ok(UsageSessionSummary {
+                session_id: row.get(0)?,
+                agent_id: row.get(1)?,
+                input_tokens: row.get(2)?,
+                output_tokens: row.get(3)?,
+                total_cost: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT date(ts/1000, 'unixepoch'), SUM(input_tokens), SUM(output_tokens)              FROM usage_segment WHERE ts >= ? GROUP BY 1 ORDER BY 1",
+        )
+        .map_err(|e| e.to_string())?;
+    let week_ago = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0))
+        - 7 * 24 * 3600 * 1000;
+    let daily = stmt
+        .query_map([week_ago], |row| {
+            Ok(UsageDailySummary {
+                day: row.get::<_, String>(0)?,
+                input_tokens: row.get::<_, Option<u64>>(1)?.unwrap_or(0),
+                output_tokens: row.get::<_, Option<u64>>(2)?.unwrap_or(0),
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    // 套餐价格优先：配置存在则按 token 计价覆盖金额字段
+    let pricing_applied = pricing.is_some();
+    if let Some(pricing) = &pricing {
+        totals.total_cost =
+            compute_pricing_cost(pricing, totals.input_tokens, totals.output_tokens);
+        for row in top_sessions.iter_mut() {
+            row.total_cost = compute_pricing_cost(pricing, row.input_tokens, row.output_tokens);
+        }
+    }
+
+    Ok(UsageOverview {
+        totals,
+        top_sessions,
+        daily,
+        pricing_applied,
+    })
+}
+
 pub fn get(session_id: &str) -> Result<SessionUsageRow, String> {
     let s = store()?;
     let conn = s.conn.lock().map_err(|e| e.to_string())?;
@@ -479,7 +633,10 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
-        assert_eq!((before, after, reason.as_str()), (190_000, 60_000, "threshold"));
+        assert_eq!(
+            (before, after, reason.as_str()),
+            (190_000, 60_000, "threshold")
+        );
         assert_eq!(kept, "entry-42");
 
         // 摘要开销并入总量 + 分段数 + 压缩计数

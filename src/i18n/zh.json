@@ -395,6 +395,7 @@
     "skillBadge": "Skill",
     "tplSkill": "Skill 示例",
     "catCore": "核心引擎",
+    "catSession": "会话能力",
     "mcpBatchImport": "JSON 批量导入",
     "mcpBatchTitle": "批量导入 MCP 服务",
     "mcpBatchDesc": "粘贴包含多个 server 的 JSON（支持 mcpServers 包裹）；每个服务将创建一个独立 MCP 插件（插件 ID 由名称生成）。",
@@ -1040,7 +1041,7 @@
       "confirmDescEmpty": "流程尚未生成步骤，请先在下方对话中让任务助手补全流程。",
       "confirmHint": "暂不执行也可以：在下方对话中让任务助手调整流程，或点击右侧「编排」进入流程画布手动调整。",
       "adjustFirst": "先调整流程",
-      "awaitingStart": "流程尚未开始。可继续在下方对话中调整流程，或在右侧步骤栏点击「开始执行」。",
+      "awaitingStart": "流程尚未开始。可继续在下方对话中调整流程。",
       "error": {
         "launchFailed": "启动执行失败",
         "assignAgentFailed": "指定智能体失败"
@@ -1052,7 +1053,8 @@
       "nodeStatus": "状态",
       "attempt": "尝试",
       "nodeNotStarted": "该步骤尚未开始执行，执行后会在此显示它的会话。",
-      "nodeStarting": "该步骤正在执行，正在建立会话，建立后在此显示会话内容。"
+      "nodeStarting": "该步骤正在执行，正在建立会话，建立后在此显示会话内容。",
+      "showPlanCard": "返回执行流程"
     },
     "event": {
       "runStarted": "我已经开始执行这个流程（共 {{count}} 个步骤），会逐个驱动并监控每个节点的执行。",
@@ -1116,5 +1118,113 @@
     "openFailedTitle": "打开文件失败",
     "resizeHandle": "调整预览宽度（双击自适应内容宽度）",
     "collapse": "收起预览"
+  },
+  "sessionPlugins": {
+    "navigation": {
+      "name": "会话导航列",
+      "description": "会话左缘快速跳转到每轮提问位置"
+    },
+    "flow": {
+      "name": "任务流程全景",
+      "description": "任务方案确认、子任务执行跟踪与干预",
+      "panelTitle": "任务全景",
+      "noTask": "当前会话未关联任务",
+      "progress": "{{completed}}/{{total}}",
+      "openCanvas": "画布",
+      "cancelAll": "取消全部",
+      "waiting": "等待中"
+    },
+    "htmlRender": {
+      "name": "HTML 实时渲染",
+      "description": "消息中的完整 HTML 文档直接渲染预览",
+      "cardTitle": "HTML 渲染",
+      "previewTitle": "HTML 预览",
+      "preview": "预览",
+      "source": "源码",
+      "expand": "放大"
+    },
+    "mermaidRender": {
+      "name": "Mermaid 图表渲染",
+      "description": "流程图/时序图等 mermaid 代码块渲染为图形",
+      "rendering": "图表渲染中…"
+    },
+    "desktopNotify": {
+      "name": "桌面通知",
+      "description": "回合完成、需审批、任务失败时发送系统通知",
+      "turnDone": "回合完成",
+      "turnFailed": "回合失败",
+      "turnBody": "会话 {{id}}… {{state}}",
+      "stateDone": "已回复完毕",
+      "stateError": "执行出错",
+      "approvalTitle": "等待审批",
+      "approvalBody": "会话请求人工审批",
+      "taskFailedTitle": "任务失败",
+      "taskFailedBody": "「{{title}}」执行失败"
+    },
+    "export": {
+      "name": "会话导出",
+      "description": "当前会话一键导出为 Markdown 文件",
+      "action": "导出会话",
+      "untitled": "会话记录",
+      "exportedAt": "导出时间",
+      "user": "用户",
+      "assistant": "助手"
+    },
+    "usage": {
+      "name": "用量成本面板",
+      "description": "token/成本/会话排行与趋势",
+      "panelTitle": "用量",
+      "title": "用量总览",
+      "refresh": "刷新",
+      "loading": "加载中…",
+      "empty": "暂无用量数据",
+      "totalTokens": "累计 Token",
+      "totalCost": "累计成本",
+      "sessions": "会话数",
+      "toolCalls": "工具调用",
+      "last7days": "近 7 日 Token",
+      "topSessions": "会话排行（按成本）",
+      "kindTask": "任务",
+      "kindNode": "子节点",
+      "kindSession": "会话",
+      "kindUnknown": "其他项目"
+    }
+  },
+  "sessionPanels": {
+    "hide": "收起面板",
+    "dock": "停靠到右侧"
+  },
+  "taskPlan": {
+    "cardTitle": "任务方案",
+    "nodeCount": "共 {{count}} 个子任务",
+    "openCanvas": "画布高级编辑",
+    "selectAll": "全选",
+    "unselectAll": "全不选",
+    "acceptance": "验收",
+    "confirmRun": "确认执行（{{count}} 项）",
+    "uncheckedHint": "未勾选的子任务将从本次执行中移除"
+  },
+  "taskFlow": {
+    "openSession": "进入会话",
+    "status": {
+      "blocked": "等待中",
+      "ready": "就绪",
+      "leased": "启动中",
+      "running": "执行中",
+      "awaiting_approval": "待审批",
+      "retry_wait": "等待重试",
+      "repairing": "修复中",
+      "succeeded": "已完成",
+      "failed": "失败",
+      "skipped": "已跳过",
+      "cancelled": "已取消",
+      "superseded": "已废弃"
+    }
+  },
+  "taskSummary": {
+    "completed": "任务完成",
+    "failed": "任务失败",
+    "cancelled": "任务已取消",
+    "counts": "成功 {{succeeded}} / 失败 {{failed}} / 跳过 {{skipped}} · 共 {{total}}"
   }
 }

@@ -43,13 +43,20 @@ pub fn resolve_form(
     plugin_dir: &PathBuf,
     target_agent: &str,
 ) -> AdaptiveForm {
-    let pi_entry = manifest.pi_extension.as_ref().and_then(|section| {
-        if section.target_agent == target_agent {
-            Some(plugin_dir.join(&section.entry))
-        } else {
-            None
-        }
-    });
+    // v0.9.2 需求7：entry 可选（纯闸门形态只声明 tools，无部署物）——
+    // 形态判定按 entry 存在性；tools 治理走 adapter 白名单聚合（不经此函数）。
+    let pi_entry = manifest
+        .pi_extension
+        .as_ref()
+        .and_then(|section| section.entry.as_deref())
+        .filter(|entry| !entry.trim().is_empty())
+        .filter(|_| {
+            manifest
+                .pi_extension
+                .as_ref()
+                .is_some_and(|s| s.target_agent == target_agent)
+        })
+        .map(|entry| plugin_dir.join(entry));
     let tool = manifest.tool.clone();
 
     match (pi_entry, tool) {
@@ -96,10 +103,10 @@ mod tests {
             capabilities: None,
             tool,
             pi_extension: pi,
-        mcp: None,
-        panel: None,
-        skill: None,
-        skills: None,
+            mcp: None,
+            panel: None,
+            skill: None,
+            skills: None,
         }
     }
 
@@ -114,8 +121,9 @@ mod tests {
 
     fn pi_section(target: &str) -> PiExtensionSection {
         PiExtensionSection {
-            entry: "index.ts".to_string(),
+            entry: Some("index.ts".to_string()),
             target_agent: target.to_string(),
+            tools: vec![],
         }
     }
 

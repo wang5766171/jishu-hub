@@ -29,7 +29,14 @@ fn active_deployments() -> Vec<(String, PathBuf, String)> {
             // resolve_form 判定 pi 形态（PiOnly/Both 皆含 entry；CliOnly 不会
             // 出现在 needs_pi_deploy 过滤后）。
             let plugin_dir = p.source_path.parent()?.to_path_buf();
-            let entry_name = p.file.pi_extension.as_ref()?.entry.clone();
+            // v0.9.2 需求7：纯闸门形态（entry 为空、仅 tools 声明）无部署物，跳过。
+            let entry_name = p
+                .file
+                .pi_extension
+                .as_ref()?
+                .entry
+                .clone()
+                .filter(|e| !e.trim().is_empty())?;
             let source = plugin_dir.join(&entry_name);
             if !source.is_file() {
                 log::debug!(
@@ -76,7 +83,10 @@ fn undeploy_stale(agent_dir: &std::path::Path, active: &[(String, PathBuf, Strin
     let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) else {
         return;
     };
-    let Some(arr) = settings.get_mut("extensions").and_then(|mut v| v.as_array_mut()) else {
+    let Some(arr) = settings
+        .get_mut("extensions")
+        .and_then(|mut v| v.as_array_mut())
+    else {
         return;
     };
     let is_managed = |rel: &str| -> Option<String> {

@@ -1,6 +1,6 @@
 [package]
 name = "jishu-hub"
-version = "0.9.1"
+version = "0.9.2"
 description = "A desktop hub for managing AI agent projects, sessions, and configuration"
 authors = ["wang5766171"]
 license = "MIT"
@@ -51,6 +51,7 @@ uuid = { version = "1", features = ["v4"] }
 reqwest = { version = "0.12", features = ["stream", "rustls-tls", "blocking", "json"], default-features = false }
 futures-util = "0.3"
 sha2 = "0.10"
+tauri-plugin-notification = "2.4.0"
 
 [dev-dependencies]
 tempfile = "3.27.0"

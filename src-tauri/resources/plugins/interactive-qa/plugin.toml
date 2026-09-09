@@ -1,0 +1,13 @@
+schema = 1
+kind = "tool"
+
+[info]
+id = "interactive-qa"
+display_name = "交互问答"
+
+# v0.9.2 需求7：纯闸门形态（无 entry、无 [tool]）——不部署扩展文件、不进
+# + 菜单 CLI 注入；仅声明治理 request_user_input（由全局部署的
+# request-user-input.ts 扩展注册）。启停经插件管理热联动 spawn --tools 白名单。
+[pi_extension]
+target_agent = "jishu-self"
+tools = ["request_user_input"]

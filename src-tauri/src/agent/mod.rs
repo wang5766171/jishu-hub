@@ -354,6 +354,10 @@ impl AgentRegistry {
             .map(|(file, path)| (std::sync::Arc::new(file), path))
             .collect();
         let (agents, plugins) = plugin::assemble(builtins, manifests, &disabled);
+        // v0.9.2 需求1：会话能力插件描述符并入统一插件清单（不进 agents
+        // map——无 agent 实现；启停与 agent/tool 插件共用 plugins.json）。
+        let mut plugins = plugins;
+        plugins.extend(plugin::session_plugin_descriptors(&disabled));
 
         Self {
             agents,
@@ -427,10 +431,7 @@ impl AgentRegistry {
                         binary_path: None,
                         last_checked_at: 0,
                     });
-                let config_dir_exists = a
-                    .config_dir()
-                    .map(|d| d.exists())
-                    .unwrap_or(false);
+                let config_dir_exists = a.config_dir().map(|d| d.exists()).unwrap_or(false);
                 let (mcp_installed, mcp_version) = match a.as_mcp() {
                     Some(mcp) => {
                         // Auto-migrate on first status check.

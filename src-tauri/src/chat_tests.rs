@@ -25,13 +25,14 @@ mod tests {
                 session: None,
                 capabilities: None,
                 pi_extension: Some(PiExtensionSection {
-                    entry: "x.ts".into(),
+                    entry: Some("x.ts".into()),
                     target_agent: "jishu-self".into(),
+                    tools: vec![],
                 }),
                 mcp: None,
                 panel: None,
-            skill: None,
-            skills: None,
+                skill: None,
+                skills: None,
                 tool: None,
             }),
             Default::default(),
@@ -59,8 +60,8 @@ mod tests {
                 pi_extension: None,
                 mcp: None,
                 panel: None,
-            skill: None,
-            skills: None,
+                skill: None,
+                skills: None,
                 tool: Some(ToolSection {
                     description: "GitHub 查询".into(),
                     usage: "gh repo view".into(),
@@ -139,10 +140,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
         let mut map = std::collections::HashMap::new();
-        map.insert(
-            "pending-2000".to_string(),
-            vec!["gh-cli".to_string()],
-        );
+        map.insert("pending-2000".to_string(), vec!["gh-cli".to_string()]);
         tp::set_session_tools_map_for_test(&map);
 
         // 会话解析回调同款迁移

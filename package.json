@@ -1,7 +1,7 @@
 {
   "name": "jishu-hub",
   "private": false,
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "A desktop hub for managing AI agent projects, sessions, and configuration",
   "license": "MIT",
   "repository": {
@@ -31,6 +31,7 @@
     "@tailwindcss/vite": "^4.3.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-notification": "^2.4.0",
     "@xyflow/react": "^12.11.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -38,6 +39,7 @@
     "i18next": "^26.2.0",
     "i18next-browser-languagedetector": "^8.2.1",
     "lucide-react": "^1.16.0",
+    "mermaid": "^11.17.2",
     "radix-ui": "^1.4.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

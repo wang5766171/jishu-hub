@@ -114,10 +114,18 @@ pub struct ToolSection {
 #[serde(deny_unknown_fields)]
 pub struct PiExtensionSection {
     /// pi 扩展入口文件名（相对于插件目录，如 "discuss.ts"）。
-    pub entry: String,
+    /// v0.9.2 需求7 改为可选：纯闸门形态（如 interactive-qa）不部署扩展
+    /// 文件，仅声明 tools 治理全局扩展注册的工具。
+    pub entry: Option<String>,
     /// 部署目标 agent id（v1 仅 "jishu-self"）。
     #[serde(default = "default_pi_target")]
     pub target_agent: String,
+    /// 本插件治理的 pi 进程内扩展工具名（v0.9.2 需求7 热插拔闸门）：
+    /// spawn 时 adapter 按"插件已启用"聚合进 --tools 白名单。工具本体由
+    /// 全局部署的扩展注册（request-user-input.ts / jishu-task-conductor.ts），
+    /// 此处只声明治理归属，不负责注册。
+    #[serde(default)]
+    pub tools: Vec<String>,
 }
 
 fn default_pi_target() -> String {
@@ -196,7 +204,13 @@ impl SkillDecl {
             SkillDecl::One(s) => vec![(None, s.description.as_str(), s.body.as_str())],
             SkillDecl::Many(list) => list
                 .iter()
-                .map(|e| (Some(e.name.as_str()), e.description.as_str(), e.body.as_str()))
+                .map(|e| {
+                    (
+                        Some(e.name.as_str()),
+                        e.description.as_str(),
+                        e.body.as_str(),
+                    )
+                })
                 .collect(),
         }
     }
@@ -354,9 +368,19 @@ impl AgentManifestFile {
             return Err("[config] is only allowed for agent plugins".to_string());
         }
         // v0.8.1 需求10：[pi_extension] 与 [tool] 并存 = 自适应插件（合法）。
+        // v0.9.2 需求7：entry 可选——纯闸门形态仅声明 tools；二者至少其一
+        // 非空（都空 = 无意义声明，拒绝）。
         if let Some(pi_ext) = &self.pi_extension {
-            if pi_ext.entry.trim().is_empty() {
-                return Err("pi_extension.entry must not be empty".to_string());
+            let has_entry = pi_ext
+                .entry
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|e| !e.is_empty());
+            let has_tools = !pi_ext.tools.is_empty();
+            if !has_entry && !has_tools {
+                return Err(
+                    "pi_extension must declare a non-empty entry or at least one tool".to_string(),
+                );
             }
         }
         // v0.9.0 需求1 P2/二期：[mcp] 段校验——按传输类型必填项检查
@@ -364,7 +388,13 @@ impl AgentManifestFile {
         if let Some(mcp) = &self.mcp {
             match mcp.transport {
                 McpTransportKind::Stdio => {
-                    if mcp.command.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                    if mcp
+                        .command
+                        .as_deref()
+                        .map(str::trim)
+                        .unwrap_or("")
+                        .is_empty()
+                    {
                         return Err("mcp.command must not be empty for stdio transport".to_string());
                     }
                 }
@@ -432,8 +462,7 @@ impl AgentManifestFile {
             Some(tool) => tool,
             // 仅 [pi_extension]/[mcp]/[panel]/[skill] 无 [tool]：合法（深度
             // 形态 / 纯结构化工具 / 纯面板 / 纯 skill 插件）。
-            None
-            if self.pi_extension.is_some()
+            None if self.pi_extension.is_some()
                 || self.mcp.is_some()
                 || self.panel.is_some()
                 || self.skill.is_some() =>
@@ -902,7 +931,9 @@ body = "逐文件检查错误处理与测试覆盖。"
 "#;
         let m: AgentManifestFile = toml::from_str(src).unwrap();
         assert!(m.validate().is_ok());
-        assert!(matches!(m.skill.as_ref().unwrap(), super::SkillDecl::One(s) if s.description == "提交前代码自查清单"));
+        assert!(
+            matches!(m.skill.as_ref().unwrap(), super::SkillDecl::One(s) if s.description == "提交前代码自查清单")
+        );
 
         // 空 description / 空 body → 拒绝。
         let bad = src.replace("提交前代码自查清单", "  ");
@@ -968,10 +999,12 @@ body = "跑测试后打包。"
     fn mcp_transport_types_parse_and_validate() {
         // v0.9.0 需求1 二期：三传输解析/校验。
         // 缺省 type = stdio（既有 toml 无损）。
-        let m = mcp_tool_manifest(r#"[mcp]
+        let m = mcp_tool_manifest(
+            r#"[mcp]
 command = "npx"
 args = ["-y", "pkg"]
-"#)
+"#,
+        )
         .expect("stdio default ok");
         assert_eq!(m.mcp.as_ref().unwrap().transport, McpTransportKind::Stdio);
         // 显式 stdio。
@@ -984,14 +1017,18 @@ args = ["-y", "pkg"]
         assert_eq!(m.mcp.as_ref().unwrap().transport, McpTransportKind::Http);
         assert!(mcp_tool_manifest("[mcp]\ntype = \"sse\"\nurl = \"http://x/sse\"\n").is_ok());
         // stdio 缺 command → 拒绝。
-        assert!(mcp_tool_manifest("[mcp]\n").unwrap_err().contains("mcp.command"));
+        assert!(mcp_tool_manifest("[mcp]\n")
+            .unwrap_err()
+            .contains("mcp.command"));
         // http 缺 url → 拒绝。
         assert!(mcp_tool_manifest("[mcp]\ntype = \"http\"\n")
             .unwrap_err()
             .contains("mcp.url"));
         // 非 http(s) 前缀 → 拒绝。
-        assert!(mcp_tool_manifest("[mcp]\ntype = \"sse\"\nurl = \"ftp://x\"\n")
-            .unwrap_err()
-            .contains("http://"));
+        assert!(
+            mcp_tool_manifest("[mcp]\ntype = \"sse\"\nurl = \"ftp://x\"\n")
+                .unwrap_err()
+                .contains("http://")
+        );
     }
 }

@@ -32,11 +32,7 @@ pub struct ToolPlugin {
 impl ToolPlugin {
     /// 测试构造（绕过私有 installed_cache 字段）。
     #[cfg(test)]
-    pub fn for_test(
-        file: Arc<AgentManifestFile>,
-        source_path: PathBuf,
-        enabled: bool,
-    ) -> Self {
+    pub fn for_test(file: Arc<AgentManifestFile>, source_path: PathBuf, enabled: bool) -> Self {
         Self {
             file,
             source_path,
@@ -397,13 +393,14 @@ mod tests {
                 session: None,
                 capabilities: None,
                 pi_extension: Some(super::super::manifest::schema::PiExtensionSection {
-                    entry: "discuss.ts".to_string(),
+                    entry: Some("discuss.ts".to_string()),
                     target_agent: "jishu-self".to_string(),
+                    tools: vec![],
                 }),
                 mcp: None,
                 panel: None,
-            skill: None,
-            skills: None,
+                skill: None,
+                skills: None,
                 tool: None,
             }),
             source_path: PathBuf::from(format!("/agents/{id}.toml")),
@@ -437,8 +434,8 @@ mod tests {
                 pi_extension: None,
                 mcp: None,
                 panel: None,
-            skill: None,
-            skills: None,
+                skill: None,
+                skills: None,
                 tool: Some(ToolSection {
                     description: description.to_string(),
                     usage: usage.to_string(),
@@ -673,7 +670,7 @@ usage = "u"
         assert!(block.contains("## skill-y — Skill"));
         assert!(block.contains("自查清单"));
         assert!(!block.contains("## skill-y — d")); // skill-only 无 [tool] 小节
-        // 快照提取：两 id 均入列。
+                                                    // 快照提取：两 id 均入列。
         let (_, ids) = extract_tool_snapshot(&block);
         assert!(ids.contains(&"mcp-x".to_string()));
         assert!(ids.contains(&"skill-y".to_string()));
@@ -707,14 +704,8 @@ usage = "u"
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
         // 直接写 map 文件绕过 unknown-id 校验（迁移逻辑只操作 map）
         let mut map = std::collections::HashMap::new();
-        map.insert(
-            "__new_session__".to_string(),
-            vec!["tool-a".to_string()],
-        );
-        map.insert(
-            "target-session".to_string(),
-            vec!["tool-b".to_string()],
-        );
+        map.insert("__new_session__".to_string(), vec!["tool-a".to_string()]);
+        map.insert("target-session".to_string(), vec!["tool-b".to_string()]);
         save_session_tools_map(&map);
 
         migrate_session_tools(STAGING_SESSION_KEY, "target-session");

@@ -1,54 +1,11 @@
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import type { ContentBlock, Message } from "@/types";
+// v0.9.2 需求1 P1：轮次语义迁移至会话内核统一视图模型（与消息渲染同源）。
+import { buildTurnSummaries, type TurnSummary } from "@/features/session-kernel/view-model";
 
-/** v0.9.1 需求5：一轮对话的悬停预览摘要。question 取该轮用户消息全部
- * text 块拼接；answer 取该轮首个非空 assistant text 块（“前几句回答”），
- * 纯工具调用轮为空串，预览显示（无文本）兜底。 */
-export interface TurnSummary {
-  question: string;
-  answer: string;
-}
-
-/** 轮次划分与 message-view.tsx buildRenderRows 的行语义逐条对齐：
- * assistant 消息归入当前轮；非 assistant 消息开启新轮（user 行），
- * 唯一例外是“纯 tool_result 的用户消息且其前存在 assistant 组”——被吞并
- * 进 assistant 组不占行，也不占轮次。保证第 N 条横杠 ↔ 第 N 个
- * [data-turn-index] DOM 行严格一一对应。 */
-export function buildTurnSummaries(messages: Message[]): TurnSummary[] {
-  const turns: TurnSummary[] = [];
-  let current: TurnSummary | null = null;
-  let inAssistantGroup = false;
-
-  const textOf = (msg: Message): string =>
-    msg.content
-      .filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text")
-      .map((block) => block.text)
-      .join("\n")
-      .trim();
-
-  messages.forEach((msg) => {
-    if (msg.role === "assistant") {
-      inAssistantGroup = true;
-      if (current && !current.answer) {
-        const text = textOf(msg);
-        if (text) current.answer = text;
-      }
-      return;
-    }
-    const toolResultOnly =
-      msg.role === "user" &&
-      msg.content.length > 0 &&
-      msg.content.every((block) => block.type === "tool_result");
-    if (toolResultOnly && inAssistantGroup) return;
-    if (current) turns.push(current);
-    current = { question: textOf(msg), answer: "" };
-    inAssistantGroup = false;
-  });
-  if (current) turns.push(current);
-  return turns;
-}
+export type { TurnSummary };
+export { buildTurnSummaries };
 
 interface TurnRailProps {
   turns: TurnSummary[];
