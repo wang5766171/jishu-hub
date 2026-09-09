@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, rmSync, existsSync, readdirSync, statSync } from "node:fs";
+import { cpSync, rmSync, existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { fixShebang, readRuntimeDeps } from "./lib/pi-common.mjs";
 
@@ -7,9 +7,7 @@ const root = resolve(process.cwd());
 const piRoot = resolve(root, "third_party", "pi");
 const piBundle = resolve(root, "third_party", "pi-bundle");
 
-// 子步骤失败必须大声失败（2026-08-30 事故复盘：pi 构建 TS 报错曾因三个
-// spawnSync 不查退出码而静默放行，产出无 dist 的 pi-bundle 进了安装包，
-// 安装后"jishu agent 未安装"）。任何一步非零退出立即终止打包。
+// 子步骤失败必须大声失败（2026-08-30 事故复盘）。任何一步非零退出立即终止打包。
 function runStep(label, args, cwd) {
   const result = spawnSync("npm", args, { cwd, stdio: "inherit", shell: true });
   if (result.status !== 0) {
@@ -19,40 +17,88 @@ function runStep(label, args, cwd) {
   }
 }
 
-console.log("Preparing pi-bundle...");
+// ── 增量构建守卫（2026-09-09 用户裁决）─────────────────────────────
+// pi 源码 commit 未变 且 pi-bundle 关键产物完整时跳过重构建。
+// 全量重建需 PI_SKIP_CACHE=1（涉及 pi 内部 dist 重建时使用）。
+const piStampFile = join(piBundle, ".pi-build-stamp");
 
-// 1. Remove old pi-bundle
-if (existsSync(piBundle)) {
-  rmSync(piBundle, { recursive: true, force: true });
+function getPiCommit() {
+  const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: piRoot, encoding: "utf-8" });
+  return result.status === 0 && result.stdout ? result.stdout.trim() : null;
 }
 
-// 2. Copy pi to pi-bundle, excluding node_modules, .git, and dist to start fresh
-cpSync(piRoot, piBundle, {
-  recursive: true,
-  filter: (src) => {
-    const name = src.split(/[\\/]/).pop();
-    if (['node_modules', '.git', 'dist', '.github', '.husky'].includes(name)) return false;
-    return true;
+function piBundleIsValid() {
+  const checks = [
+    join(piBundle, "packages", "coding-agent", "dist", "bundle", "cli.js"),
+    join(piBundle, "packages", "coding-agent", "dist", "runtime-deps.json"),
+    join(piBundle, "packages", "ai", "dist", "providers", "data", "anthropic.json"),
+    join(piBundle, "bin"),
+  ];
+  return checks.every((p) => existsSync(p));
+}
+
+function shouldSkipRebuild() {
+  if (process.env.PI_SKIP_CACHE === "1") return false;
+  const commit = getPiCommit();
+  if (!commit) return false;
+  if (!existsSync(piStampFile)) return false;
+  const stamp = readFileSync(piStampFile, "utf-8").trim();
+  if (stamp !== commit) return false;
+  return piBundleIsValid();
+}
+
+console.log("Preparing pi-bundle...");
+
+if (shouldSkipRebuild()) {
+  console.log(`[pack-pi] pi commit unchanged (${getPiCommit()?.slice(0, 8)}…) and bundle valid — skipping rebuild.`);
+  console.log("[pack-pi] (set PI_SKIP_CACHE=1 to force full rebuild)");
+} else {
+  // ── 全量重建路径 ──
+  // 1. Remove old pi-bundle
+  if (existsSync(piBundle)) {
+    rmSync(piBundle, { recursive: true, force: true });
   }
-});
 
-// 3. Install dependencies in pi-bundle.
-// --ignore-scripts: 跳过 native 模块的 postinstall（如 canvas 的 node-gyp，
-// Windows 缺 cairo 会失败并中断整个 install，导致排在后面的 @typescript/native-preview
-// 没装上、tsgo 缺失、build 失败）。pi/ai 不实际 import canvas，跳过其 gyp 无害；
-// tsgo(@typescript/native-preview) 的二进制经 optionalDependencies 预编译提供，不受影响。
-console.log("Installing dependencies in pi-bundle...");
-runStep("npm install (pi-bundle)", ["install", "--ignore-scripts"], piBundle);
+  // 2. Copy pi to pi-bundle（含 dist——跳过 generate-models 等网络依赖步骤，
+  //    使用源码树已构建的 dist；pi 内部代码变更时需先在 pi 源码树构建 dist）
+  console.log("Copying pi source (including pre-built dist)...");
+  cpSync(piRoot, piBundle, {
+    recursive: true,
+    filter: (src) => {
+      const name = src.split(/[\\/]/).pop();
+      if (['node_modules', '.git', '.github', '.husky'].includes(name)) return false;
+      return true;
+    }
+  });
 
-// 4. Build the project
-console.log("Building pi-bundle...");
-runStep("npm run build (pi-bundle)", ["run", "build"], piBundle);
+  // 2b. 校验源码树 dist 是否存在（不存在则要求先构建 pi）
+  const sourceCli = join(piRoot, "packages", "coding-agent", "dist", "bundle", "cli.js");
+  if (!existsSync(sourceCli)) {
+    console.error("[pack-pi] pi source tree has no pre-built dist (cli.js missing).");
+    console.error("[pack-pi] Run the following first, then retry:");
+    console.error("[pack-pi]   cd third_party/pi && npm install && npm run build");
+    process.exit(1);
+  }
 
-// 5. Prune dev dependencies
-console.log("Pruning dev dependencies...");
-runStep("npm prune (pi-bundle)", ["prune", "--omit=dev"], piBundle);
+  // 3. Install dependencies in pi-bundle
+  console.log("Installing dependencies in pi-bundle...");
+  runStep("npm install (pi-bundle)", ["install", "--ignore-scripts"], piBundle);
 
-// 6. Clean up source files to obfuscate and reduce size
+  // 4. Prune dev dependencies（跳过 npm run build——dist 已随源码复制）
+  console.log("Pruning dev dependencies...");
+  runStep("npm prune (pi-bundle)", ["prune", "--omit=dev"], piBundle);
+
+  // 写入构建标记（下次同 commit 跳过重构建）
+  const commit = getPiCommit();
+  if (commit) {
+    writeFileSync(piStampFile, commit);
+    console.log(`[pack-pi] stamped commit ${commit.slice(0, 8)}…`);
+  }
+}
+
+// ── 以下步骤每次都执行（幂等）──
+
+// 5. Clean up source files to obfuscate and reduce size
 console.log("Cleaning up source files...");
 const dirsToClean = [
   "src", "tests", "examples"
@@ -84,17 +130,14 @@ function cleanDirectory(dir) {
 
 cleanDirectory(piBundle);
 
-// 6.5 Fix double shebang in entry points (shared implementation in scripts/lib/pi-common.mjs)
+// 5.5 Fix double shebang in entry points
 console.log("Fixing double shebangs...");
 fixShebang(join(piBundle, "packages", "coding-agent", "dist"));
 
-// 6.6 Embed portable Node.js runtime (v0.8.1 需求10 修复：新机器无 Node 时
-// jishu-self 报未安装/无法对话——pi-bundle 此前只含 JS 代码，node.exe 依赖
-// 用户 PATH。把当前构建机的 node 复制到 pi-bundle/bin/，安装时随 pi-bundle
-// 落到 ~/.jishu-agent/bin/，resolve_pi_runtime 优先使用）。
+// 5.6 Embed portable Node.js runtime
 const nodeBinDir = join(piBundle, "bin");
 const nodeBinaryName = process.platform === "win32" ? "node.exe" : "node";
-const nodeSource = process.execPath; // 当前运行的 node 可执行文件路径
+const nodeSource = process.execPath;
 if (existsSync(nodeSource)) {
   if (!existsSync(nodeBinDir)) {
     cpSync(nodeSource, join(nodeBinDir, nodeBinaryName));
@@ -104,7 +147,7 @@ if (existsSync(nodeSource)) {
   console.warn(`WARNING: cannot find node binary at ${nodeSource} to embed.`);
 }
 
-// 7. Clean broken symlinks in node_modules
+// 6. Clean broken symlinks in node_modules
 console.log("Cleaning broken symlinks in node_modules...");
 const nodeModulesPath = join(piBundle, "node_modules");
 if (existsSync(nodeModulesPath)) {
@@ -113,7 +156,6 @@ if (existsSync(nodeModulesPath)) {
     const fullPath = join(nodeModulesPath, item);
     try {
       if (!existsSync(fullPath)) {
-        // existsSync returns false for broken symlinks
         rmSync(fullPath, { force: true });
         console.log(`Removed broken symlink: ${item}`);
       }
@@ -123,12 +165,7 @@ if (existsSync(nodeModulesPath)) {
   }
 }
 
-// 8. Assert every runtime dependency in build-bundle's manifest is physically
-// present in pi-bundle's node_modules. The manifest is the single source of
-// truth for which runtime deps the bundled cli.js needs. Full satisfies it by
-// baking the deps in locally. This guard fails the build loudly if a runtime
-// dep is missing — the exact failure (ERR_MODULE_NOT_FOUND) that was previously
-// silently masked by the workspace over-install.
+// 7. Assert every runtime dependency is present
 console.log("Verifying runtime dependency manifest against node_modules...");
 const runtimeDeps = readRuntimeDeps(join(piBundle, "packages", "coding-agent", "dist"));
 const missing = Object.keys(runtimeDeps).filter(
