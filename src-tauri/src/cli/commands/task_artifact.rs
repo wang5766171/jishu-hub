@@ -82,11 +82,21 @@ fn validate_plan_nodes(nodes: &serde_json::Value) -> Result<(), String> {
         }
         let title = node
             .get("title")
-            .and_then(serde_json::Value::as_str)
+            .and_then(|v| v.as_str())
             .map(str::trim)
             .unwrap_or_default();
         if title.is_empty() {
             return Err(format!("nodes[{i}].title 不能为空（id={id}）"));
+        }
+        // v0.9.2 需求5：responsibility 是派发 prompt 的核心载荷（转图后即为
+        // 子节点执行指令的职责段），为空等于派发了一个"没有内容"的子任务。
+        let responsibility = node
+            .get("responsibility")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or_default();
+        if responsibility.is_empty() {
+            return Err(format!("nodes[{i}].responsibility 不能为空（id={id}）"));
         }
     }
     // depends_on 引用存在性。
@@ -290,7 +300,7 @@ mod tests {
         json!({
             "id": id,
             "title": title,
-            "responsibility": "",
+            "responsibility": format!("{title}的职责描述"),
             "acceptance": "",
             "depends_on": deps,
             "role": "",
@@ -306,6 +316,14 @@ mod tests {
             node("c", "验证", &["a", "b"]),
         ]);
         assert!(validate_plan_nodes(&nodes).is_ok());
+    }
+
+    #[test]
+    fn empty_responsibility_rejected() {
+        let mut n = node("a", "调研", &[]);
+        n["responsibility"] = json!("  ");
+        let err = validate_plan_nodes(&json!([n])).unwrap_err();
+        assert!(err.contains("responsibility"), "{err}");
     }
 
     #[test]
