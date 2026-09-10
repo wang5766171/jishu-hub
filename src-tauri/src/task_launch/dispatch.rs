@@ -1,8 +1,11 @@
-//! 持续编排：向既有节点的子 agent 会话续发内容（v0.9.2 需求2 测试期，
-//! 用户裁决的"主 agent 持续下发"机制）。
+//! 持续编排：向既有节点的子 agent 会话续发内容（v0.9.2 需求2 测试期）。
 //!
-//! 节点子会话由 PiRpc 持久保活并镜像进 ChatState（runtime_bridge 双键注册），
-//! 因此任务执行中/完成后均可续发：空闲 → 新回合 prompt；回合进行中 → steer。
+//! 三条路径（按优先级）：
+//! 1. 会话在线 + 回合进行中 → steer 注入
+//! 2. 会话在线 + 空闲 → 新回合 prompt
+//! 3. 会话离线（应用重启后进程消亡）→ **按需重建**：经 send_message 标准
+//!    通道以原 session_id resume + 本次内容作为首条 prompt，事件镜像与
+//!    ChatState 注册由标准路径处理，无需手工拼装。
 
 use super::*;
 
@@ -18,7 +21,7 @@ pub struct DispatchToNodeRequest {
 pub struct DispatchToNodeResult {
     pub success: bool,
     pub session_id: Option<String>,
-    /// prompt（新回合）或 steer（注入进行中的回合）。
+    /// prompt（新回合）/ steer（注入进行中的回合）/ rebuild（重建会话后下发）。
     pub delivered_as: Option<&'static str>,
     pub error: Option<String>,
 }
@@ -38,7 +41,7 @@ pub fn conductor_dispatch_to_node(
     let runs = store
         .list_runs(&graph_id)
         .map_err(|e| format!("list runs failed: {e}"))?;
-    let mut found: Option<(String, String)> = None; // (session_id, run_id)
+    let mut found: Option<(String, String, Option<String>)> = None; // (session_id, run_id, agent_id)
     for run in &runs {
         let sessions = store
             .list_node_sessions(&run.run_id)
@@ -47,17 +50,22 @@ pub fn conductor_dispatch_to_node(
             .iter()
             .find(|s| s.node_id == req.node_id && s.session_id.is_some())
         {
-            found = Some((summary.session_id.clone().unwrap(), run.run_id.clone()));
+            found = Some((
+                summary.session_id.clone().unwrap(),
+                run.run_id.clone(),
+                summary.agent_id.clone(),
+            ));
             break;
         }
     }
-    let (session_id, _run_id) =
-        found.ok_or("该节点尚无已执行的子会话（新节点请经方案修订加入后执行）")?;
+    let (session_id, _run_id, agent_id) = found
+        .ok_or("该节点尚无已执行的子会话（新节点请经方案修订加入后执行）")?;
 
-    // 经全局句柄取 ChatState 中的活连接（桥接路径无 AppHandle 入参）
+    // 经全局句柄取 ChatState 中的活连接
     let app = crate::pi_rpc_runtime::HUB_APP_HANDLE
         .get()
-        .ok_or("Hub 句柄未就绪")?;
+        .ok_or("Hub 句柄未就绪")?
+        .clone();
     use tauri::Manager;
     let control = {
         let chat_state = app.state::<std::sync::Mutex<crate::chat::ChatState>>();
@@ -68,24 +76,65 @@ pub fn conductor_dispatch_to_node(
             .processes
             .get(&session_id)
             .and_then(|p| p.acp.clone())
-            .ok_or_else(|| format!("节点会话不在线（{session_id}，可能已重启应用）"))?
+        // None 不再是错误——走重建路径
     };
 
-    let content = req.content;
-    let steering = control.turn_active();
-    // 投递异步化：桥接处理在 pi 连接循环内，不能阻塞等待异步发送。
-    tauri::async_runtime::spawn(async move {
-        if steering {
-            let _ = control.steer(content).await;
-        } else {
-            let _ = control.send_prompt(content).await;
+    match control {
+        Some(control) => {
+            // 路径 1/2：会话在线
+            let content = req.content;
+            let steering = control.turn_active();
+            tauri::async_runtime::spawn(async move {
+                if steering {
+                    let _ = control.steer(content).await;
+                } else {
+                    let _ = control.send_prompt(content).await;
+                }
+            });
+            Ok(DispatchToNodeResult {
+                success: true,
+                session_id: Some(session_id),
+                delivered_as: Some(if steering { "steer" } else { "prompt" }),
+                error: None,
+            })
         }
-    });
+        None => {
+            // 路径 3：按需重建——经 send_message 标准通道以原 session_id resume。
+            // send_message 内部处理：spawn 进程 + --session-id resume + 首条
+            // prompt + 事件镜像 + ChatState 注册 + 工具注入，与 GUI 手动发
+            // 消息完全同一管道。project_path 取任务图的项目根（节点原始
+            // 派发时的工作目录）。
+            let graph = store
+                .get_graph(&graph_id)
+                .map_err(|e| format!("get graph failed: {e}"))?;
+            let project_path = graph.project_root.to_string_lossy().into_owned();
+            let agent = agent_id.unwrap_or_else(|| crate::agent::JISHU_SELF_AGENT_ID.to_string());
+            let content = req.content;
+            let sid = session_id.clone();
 
-    Ok(DispatchToNodeResult {
-        success: true,
-        session_id: Some(session_id),
-        delivered_as: Some(if steering { "steer" } else { "prompt" }),
-        error: None,
-    })
+            tauri::async_runtime::spawn(async move {
+                let state = app.state::<std::sync::Mutex<crate::AppState>>();
+                match crate::chat::send_message(
+                    app.clone(),
+                    state,
+                    agent,
+                    project_path,
+                    Some(sid),
+                    content,
+                )
+                .await
+                {
+                    Ok(_) => log::info!("[dispatch] node session rebuilt and content dispatched"),
+                    Err(e) => log::warn!("[dispatch] node session rebuild failed: {e}"),
+                }
+            });
+
+            Ok(DispatchToNodeResult {
+                success: true,
+                session_id: Some(session_id),
+                delivered_as: Some("rebuild"),
+                error: None,
+            })
+        }
+    }
 }
