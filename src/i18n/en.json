@@ -1127,7 +1127,7 @@
     "flow": {
       "name": "Task Flow Panorama",
       "description": "Plan confirmation, subtask tracking and intervention",
-      "panelTitle": "Task Panorama",
+      "panelTitle": "Task Board",
       "noTask": "No task linked to this session",
       "progress": "{{completed}}/{{total}}",
       "openCanvas": "Canvas",
@@ -1173,7 +1173,7 @@
     "usage": {
       "name": "Usage Panel",
       "description": "Token/cost totals, top sessions and trends",
-      "panelTitle": "Usage",
+      "panelTitle": "Usage Board",
       "title": "Usage overview",
       "refresh": "Refresh",
       "loading": "Loading…",
@@ -1192,7 +1192,7 @@
     "search": {
       "name": "Message Search",
       "description": "Search messages and jump to matches",
-      "panelTitle": "Search",
+      "panelTitle": "Search Board",
       "placeholder": "Search messages…",
       "noResults": "No matches",
       "messageIndex": "Msg"

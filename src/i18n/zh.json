@@ -1127,7 +1127,7 @@
     "flow": {
       "name": "任务流程全景",
       "description": "任务方案确认、子任务执行跟踪与干预",
-      "panelTitle": "任务全景",
+      "panelTitle": "任务看板",
       "noTask": "当前会话未关联任务",
       "progress": "{{completed}}/{{total}}",
       "openCanvas": "画布",
@@ -1173,7 +1173,7 @@
     "usage": {
       "name": "用量成本面板",
       "description": "token/成本/会话排行与趋势",
-      "panelTitle": "用量",
+      "panelTitle": "用量看板",
       "title": "用量总览",
       "refresh": "刷新",
       "loading": "加载中…",
@@ -1192,7 +1192,7 @@
     "search": {
       "name": "消息搜索",
       "description": "搜索当前会话消息并跳转",
-      "panelTitle": "搜索",
+      "panelTitle": "搜索看板",
       "placeholder": "搜索消息…",
       "noResults": "无匹配结果",
       "messageIndex": "消息"
