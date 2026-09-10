@@ -157,9 +157,27 @@ pub fn conductor_sync_phase(
         "idle"
     };
 
-    // 乐观并发校验：expected_phase 不匹配则拒绝
+    // 乐观并发校验：expected_phase 不匹配则拒绝——**除非 hub 已在目标阶段**
+    // （v0.9.2 测试期修复：首次 sync 超时→null→误判成功→模型重试→hub 已
+    // 在目标阶段→expected 冲突→死循环。幂等处理：目标已达成视同成功）。
     if let Some(ref expected) = expected_phase {
-        if expected != current_conductor_phase {
+        let target_conductor_phase = match phase.as_str() {
+            "discuss" => "discuss",
+            "plan" => "plan",
+            "execute" => {
+                if existing
+                    .as_ref()
+                    .and_then(|inst| inst.run_status.as_deref())
+                    == Some(crate::task_launch::RUN_STATUS_COMPLETED)
+                {
+                    "done"
+                } else {
+                    "execute"
+                }
+            }
+            _ => "idle",
+        };
+        if expected != current_conductor_phase && current_conductor_phase != target_conductor_phase {
             return Ok(ConductorSyncPhaseResult {
                 success: false,
                 instance: existing.unwrap_or_else(|| TaskLaunchInstance {

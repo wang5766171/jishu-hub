@@ -466,7 +466,10 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     ctx: ExtensionContext,
     params: Record<string, unknown>,
   ): Promise<boolean> {
-    const result = await hubInvoke(ctx, "conductor_sync_phase", params);
+    // v0.9.2 测试期修复：validate_proposal 建图耗时较长，紧随的 sync 用
+    // 默认 5s 可能超时（null→误判成功→enteringPhase 未设→模型重新生成规划
+    // →第二次 commit_plan 时 hub 已在目标阶段→expected_phase 冲突→死循环）。
+    const result = await hubInvoke(ctx, "conductor_sync_phase", params, 15000);
     // No bridge means standalone Pi fallback. Hub command results are nested in
     // the transport response, and a command-level rejection is authoritative.
     if (!result) return true;
