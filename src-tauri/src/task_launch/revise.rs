@@ -264,8 +264,11 @@ pub fn conductor_revise_plan(req: RevisePlanRequest) -> Result<RevisePlanResult,
     // run 进行中 → 应用修订（冻结已完成节点；新节点并入调度）；
     // run 已终态 → 增量续跑：新 revision 启动新 run，并结转此前已成功且未变更
     // 的节点（Succeeded 直接入库，引擎只调度新增/未完成节点，不重跑）。
+    // v0.9.2 测试期修复：active_run_id 完成后被清空 → 回退 last_run_id 查旧 run
+    // 状态（否则整个分支被跳过，新 revision 创建了但无人启动新 run，节点卡等待中）。
+    let reference_run_id = instance.active_run_id.clone().or_else(|| instance.last_run_id.clone());
     let mut run_updated = false;
-    if let Some(run_id) = instance.active_run_id.clone() {
+    if let Some(run_id) = reference_run_id {
         let service = TaskService::open_store_only(
             TaskStore::open(&default_db_path())
                 .map_err(|e| format!("reopen store for service failed: {e}"))?,
