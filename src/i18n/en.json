@@ -1189,11 +1189,6 @@
       "kindSession": "Session",
       "kindUnknown": "Other"
     },
-    "contextRing": {
-      "name": "Context Ring",
-      "description": "Context usage indicator",
-      "action": "Context"
-    },
     "search": {
       "name": "Message Search",
       "description": "Search messages and jump to matches",
@@ -1210,7 +1205,10 @@
   },
   "sessionPanels": {
     "hide": "Hide panel",
-    "dock": "Dock to right"
+    "dock": "Dock to right",
+    "hub": {
+      "title": "Capability Hub"
+    }
   },
   "taskPlan": {
     "cardTitle": "Task Plan",

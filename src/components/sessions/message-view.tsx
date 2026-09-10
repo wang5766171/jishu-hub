@@ -744,6 +744,7 @@ export const MessageView = memo(function MessageView({
           key={rowKey(row, messages)}
           data-user-message={row.kind === "user" ? "true" : undefined}
           data-turn-index={row.kind === "user" ? row.turnIndex : undefined}
+          data-message-index={row.messageIndices[0]}
           style={ROW_STYLE}
         >
           {renderRow(row)}

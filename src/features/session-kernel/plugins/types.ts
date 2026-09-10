@@ -246,6 +246,8 @@ export interface SessionPluginDescriptor {
   /** 声明制授权（本期仅数据订阅面，占位对齐 05 §3.3）。 */
   permissions: string[];
   mounts: PluginMount[];
+  /** 快捷键（如 "ctrl+f"）：按下组合键切换对应面板显隐。null = 无绑定。 */
+  shortcut?: string;
 }
 
 export function dockPanelsOf(plugin: SessionPluginDescriptor): DockPanelMount[] {

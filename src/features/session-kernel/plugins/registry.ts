@@ -8,7 +8,6 @@ import { mermaidRenderPlugin } from "./builtin/mermaid-render";
 import { desktopNotifyPlugin } from "./builtin/desktop-notify";
 import { sessionExportPlugin } from "./builtin/session-export";
 import { usagePanelPlugin } from "./builtin/usage-panel";
-import { contextRingPlugin } from "./builtin/context-ring";
 import { messageSearchPlugin } from "./builtin/message-search";
 import { interactionRenderPlugin } from "./builtin/interaction-render";
 import type { SessionPluginDescriptor } from "./types";
@@ -29,7 +28,6 @@ const BUILTIN_SESSION_PLUGINS: SessionPluginDescriptor[] = [
   desktopNotifyPlugin,
   sessionExportPlugin,
   usagePanelPlugin,
-  contextRingPlugin,
   messageSearchPlugin,
   interactionRenderPlugin,
 ];

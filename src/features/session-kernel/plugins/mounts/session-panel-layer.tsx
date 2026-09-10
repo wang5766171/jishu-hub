@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { PanelRightClose, Pin, X } from "lucide-react";
+import { LayoutGrid, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   EDGE_PANEL_WIDTH,
@@ -19,12 +19,15 @@ import { dockPanelsOf } from "../types";
 import type { SessionKernelContext } from "../types";
 
 /**
- * 停靠面板宿主（v0.9.2 需求1 P2/P3）：五槽位（左/右/顶/底/浮动）+ 拖拽
- * 落位 + 浮动窗口移动/调大小 + 快捷图标显隐。宿主为通用容器，无任何插件
- * 专属逻辑——M3「任务流程全景」是首个真实面板。
+ * 停靠面板宿主（v0.9.2 需求1）：五槽位 + 拖拽落位 + 浮动窗口移动/调大小。
  *
- * 挂载位置：会话主区根容器内（父需 position:relative）；无已显示面板时
- * 零渲染（pointer-events 不阻挡消息区）。
+ * 交互规范（2026-09-10 用户裁决）：
+ * - 面板默认**收起**，经「能力中心」按钮展开
+ * - 非最大化窗口：点击面板外任意区域自动折叠（防遮挡）
+ * - 最大化窗口：不自动折叠（不遮挡主内容）
+ * - 面板背景比会话区深 1-2 色度（视觉界限清晰）
+ * - 能力中心按钮替代竖排图标列（4 列网格弹出）
+ * - 快捷键框架就位（描述符 shortcut 字段 + 全局监听，暂无默认绑定）
  */
 
 const PANEL_DRAG_MIME = "application/x-jishu-panel";
@@ -38,15 +41,87 @@ interface PanelEntry {
   Component: React.ComponentType<{ ctx: SessionKernelContext }>;
 }
 
+/** 检测窗口是否最大化（面积接近全屏）。 */
+function isWindowMaximized(): boolean {
+  return window.innerWidth * window.innerHeight >= screen.width * screen.height * 0.92;
+}
+
 export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
   const { t } = useTranslation();
   const enabled = useEnabledSessionPlugins();
   const [layout, setLayout] = useState<SessionLayoutState>(() => loadLayout());
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [hubOpen, setHubOpen] = useState(false);
+  const layerRef = useRef<HTMLDivElement>(null);
+  const hubRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     saveLayout(layout);
   }, [layout]);
+
+  // ── 非最大化窗口：点击面板外部自动折叠 ──
+  useEffect(() => {
+    const onPointerDown = (e: PointerEvent) => {
+      if (isWindowMaximized()) return; // 最大化不折叠
+      // 检查点击是否在面板或能力中心内部
+      const target = e.target as HTMLElement;
+      if (layerRef.current?.contains(target)) return;
+      if (hubRef.current?.contains(target)) return;
+      // 在面板外部 → 折叠所有可见面板
+      setLayout((prev) => {
+        const hasVisible = Object.values(prev.panels).some((p) => !p.hidden);
+        if (!hasVisible) return prev;
+        const next = { ...prev, panels: { ...prev.panels } };
+        for (const [id, panel] of Object.entries(next.panels)) {
+          if (!panel.hidden) {
+            next.panels[id] = { ...panel, hidden: true };
+          }
+        }
+        return next;
+      });
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, []);
+
+  // ── 快捷键框架（声明制：描述符 shortcut 字段匹配 → 切换面板显隐）──
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      // 收集所有启用插件的快捷键
+      const shortcuts: Array<{ id: string; combo: string }> = [];
+      for (const plugin of listSessionPlugins()) {
+        if (!enabled.has(plugin.id)) continue;
+        const desc = plugin as { shortcut?: string };
+        if (desc.shortcut) {
+          shortcuts.push({ id: plugin.id, combo: desc.shortcut });
+        }
+      }
+      if (shortcuts.length === 0) return;
+      // 构建当前按键组合
+      const parts: string[] = [];
+      if (e.ctrlKey || e.metaKey) parts.push("ctrl");
+      if (e.shiftKey) parts.push("shift");
+      if (e.altKey) parts.push("alt");
+      parts.push(e.key.toLowerCase());
+      const combo = parts.join("+");
+      const match = shortcuts.find((s) => s.combo.toLowerCase() === combo);
+      if (match) {
+        e.preventDefault();
+        setLayout((prev) => {
+          const current = prev.panels[match.id] ?? { slot: "right", hidden: true };
+          return {
+            ...prev,
+            panels: {
+              ...prev.panels,
+              [match.id]: { ...current, hidden: !current.hidden },
+            },
+          };
+        });
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [enabled]);
 
   const panels = useMemo<PanelEntry[]>(() => {
     const entries: PanelEntry[] = [];
@@ -67,12 +142,9 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
     return entries;
   }, [enabled, layout, t]);
 
-  const visiblePanels = panels.filter((panel) => !panel.hidden);
-  const hiddenToggleable = panels.length > 0;
-
   const setPanelLayout = useCallback((id: string, next: Partial<PanelEntry>) => {
     setLayout((prev) => {
-      const current = prev.panels[id] ?? { slot: "right" as DockSlot, hidden: false };
+      const current = prev.panels[id] ?? { slot: "right" as DockSlot, hidden: true };
       const merged = { ...current, ...next } as PanelEntry & { slot: DockSlot; hidden: boolean };
       return {
         ...prev,
@@ -86,8 +158,10 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
 
   if (panels.length === 0) return null;
 
+  const visiblePanels = panels.filter((panel) => !panel.hidden);
+
   return (
-    <div className="pointer-events-none absolute inset-0 z-20">
+    <div ref={layerRef} className="pointer-events-none absolute inset-0 z-20">
       {visiblePanels.map((panel) => (
         <PanelFrame
           key={panel.id}
@@ -100,26 +174,57 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
         />
       ))}
 
-      {hiddenToggleable && (
-        <div className="pointer-events-auto absolute right-2 top-2 flex flex-col gap-1">
-          {panels.map((panel) => (
-            <button
-              key={panel.id}
-              type="button"
-              title={panel.title}
-              aria-label={panel.title}
-              onClick={() => setPanelLayout(panel.id, { hidden: !panel.hidden })}
-              className={cn(
-                "flex h-7 w-7 items-center justify-center rounded-md border border-border/60 bg-background/80 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground",
-                !panel.hidden && "bg-primary/10 text-foreground",
-              )}
-            >
-              <span className="text-[11px] font-semibold">{panel.title.slice(0, 1)}</span>
-            </button>
-          ))}
-        </div>
-      )}
+      {/* ── 能力中心（替代竖排图标列）── */}
+      <div ref={hubRef} className="pointer-events-auto absolute right-2 top-2">
+        <button
+          type="button"
+          title={t("sessionPanels.hub.title", "能力中心")}
+          aria-label={t("sessionPanels.hub.title", "能力中心")}
+          onClick={() => setHubOpen((v) => !v)}
+          className={cn(
+            "flex h-8 w-8 items-center justify-center rounded-lg border border-border/60 bg-background/90 shadow-sm backdrop-blur transition-colors",
+            hubOpen || visiblePanels.length > 0
+              ? "bg-primary/10 text-foreground"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          <LayoutGrid className="h-4 w-4" />
+        </button>
+        {hubOpen && (
+          <div className="absolute right-0 top-10 w-72 rounded-xl border border-border/70 bg-popover/95 p-3 shadow-lg backdrop-blur">
+            <div className="mb-2 text-[10px] font-medium text-muted-foreground">
+              {t("sessionPanels.hub.title", "能力中心")}
+            </div>
+            <div className="grid grid-cols-4 gap-2">
+              {panels.map((panel) => {
+                const isHidden = panel.hidden;
+                return (
+                  <button
+                    key={panel.id}
+                    type="button"
+                    title={panel.title}
+                    onClick={() => {
+                      setPanelLayout(panel.id, { hidden: !isHidden });
+                      setHubOpen(false);
+                    }}
+                    className={cn(
+                      "flex h-14 flex-col items-center justify-center gap-1 rounded-lg border px-1 py-1.5 text-center transition-colors",
+                      isHidden
+                        ? "border-border/40 text-muted-foreground hover:bg-accent/50"
+                        : "border-primary/40 bg-primary/10 text-foreground",
+                    )}
+                  >
+                    <span className="text-[10px] font-medium leading-tight">{panel.title}</span>
+                    <span className={cn("h-1 w-1 rounded-full", isHidden ? "bg-muted-foreground/30" : "bg-primary")} />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
 
+      {/* ── 拖拽落区 ── */}
       {draggingId && (
         <DropZoneOverlay
           onDrop={(slot, clientX, clientY) => {
@@ -230,16 +335,18 @@ function PanelFrame({
   }, [onMoveFloat, panel.floatRect?.x, panel.floatRect?.y]);
 
   const Body = panel.Component;
+  // v0.9.2 用户裁决：面板背景比会话区深 1-2 色度（bg-[var(--color-layer-2)]
+  // 比 conversation 的 --color-layer-0/--background 深一档）
   const frameClass =
     panel.slot === "float"
-      ? "pointer-events-auto absolute flex flex-col rounded-xl border border-border/70 bg-background/95 shadow-xl backdrop-blur"
+      ? "pointer-events-auto absolute flex flex-col rounded-xl border border-border/70 bg-[var(--color-layer-2)]/95 shadow-xl backdrop-blur"
       : panel.slot === "left"
-        ? "pointer-events-auto absolute bottom-0 left-0 top-0 flex flex-col border-r border-border/60 bg-background/95 backdrop-blur"
+        ? "pointer-events-auto absolute bottom-0 left-0 top-0 flex flex-col border-r border-border/60 bg-[var(--color-layer-2)]/95 backdrop-blur"
         : panel.slot === "right"
-          ? "pointer-events-auto absolute bottom-0 right-0 top-0 flex flex-col border-l border-border/60 bg-background/95 backdrop-blur"
+          ? "pointer-events-auto absolute bottom-0 right-0 top-0 flex flex-col border-l border-border/60 bg-[var(--color-layer-2)]/95 backdrop-blur"
           : panel.slot === "top"
-            ? "pointer-events-auto absolute left-0 right-0 top-0 flex max-h-56 flex-col border-b border-border/60 bg-background/95 backdrop-blur"
-            : "pointer-events-auto absolute bottom-0 left-0 right-0 flex max-h-56 flex-col border-t border-border/60 bg-background/95 backdrop-blur";
+            ? "pointer-events-auto absolute left-0 right-0 top-0 flex max-h-56 flex-col border-b border-border/60 bg-[var(--color-layer-2)]/95 backdrop-blur"
+            : "pointer-events-auto absolute bottom-0 left-0 right-0 flex max-h-56 flex-col border-t border-border/60 bg-[var(--color-layer-2)]/95 backdrop-blur";
   const frameStyle: React.CSSProperties =
     panel.slot === "float"
       ? {
@@ -276,28 +383,13 @@ function PanelFrame({
       >
         <span className="truncate text-xs font-medium text-foreground">{panel.title}</span>
         <div className="ml-auto flex items-center gap-0.5">
-          {panel.slot === "float" && (
-            <button
-              type="button"
-              title={t("sessionPanels.dock", "停靠到右侧")}
-              className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-              onClick={() => onHide /* 由父层把 float 收回隐藏，快捷图标恢复 */}
-              // float 的重新停靠经快捷图标 + 拖拽完成；此按钮语义为关闭浮窗
-            >
-              <Pin className="h-3.5 w-3.5" />
-            </button>
-          )}
           <button
             type="button"
             title={t("sessionPanels.hide", "收起面板")}
             className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
             onClick={onHide}
           >
-            {panel.slot === "top" || panel.slot === "bottom" ? (
-              <PanelRightClose className="h-3.5 w-3.5" />
-            ) : (
-              <X className="h-3.5 w-3.5" />
-            )}
+            <X className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>

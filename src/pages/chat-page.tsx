@@ -1945,15 +1945,27 @@ export function ChatPage({
     [ctxMessages],
   );
 
-  // v0.9.2 底座增强：滚动到指定消息（搜索跳转）。
+  // v0.9.2 底座增强：滚动到指定消息（搜索跳转）。消息按行分组渲染
+  //（assistant 组多消息一行），data-message-index 记录行首消息下标，
+  // 查找时取「行首 ≤ 目标 index 的最后一行」。
   const scrollToMessage = useCallback((messageIndex: number) => {
     const el = messageAreaRef.current;
     if (!el) return;
-    const target = el.querySelector(
-      `[data-turn-scope="main"] [data-message-index="${messageIndex}"]`,
+    const rows = Array.from(
+      el.querySelectorAll<HTMLElement>('[data-turn-scope="main"] [data-message-index]'),
     );
-    if (target instanceof HTMLElement) {
-      target.scrollIntoView({ behavior: "smooth", block: "center" });
+    let best: HTMLElement | null = null;
+    for (const row of rows) {
+      const idx = Number(row.dataset.messageIndex);
+      if (Number.isNaN(idx)) continue;
+      if (idx <= messageIndex) {
+        best = row;
+      } else {
+        break;
+      }
+    }
+    if (best) {
+      best.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, []);
 

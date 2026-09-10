@@ -1189,11 +1189,6 @@
       "kindSession": "会话",
       "kindUnknown": "其他项目"
     },
-    "contextRing": {
-      "name": "上下文占用环",
-      "description": "会话上下文占用指示",
-      "action": "上下文"
-    },
     "search": {
       "name": "消息搜索",
       "description": "搜索当前会话消息并跳转",
@@ -1210,7 +1205,10 @@
   },
   "sessionPanels": {
     "hide": "收起面板",
-    "dock": "停靠到右侧"
+    "dock": "停靠到右侧",
+    "hub": {
+      "title": "能力中心"
+    }
   },
   "taskPlan": {
     "cardTitle": "任务方案",
