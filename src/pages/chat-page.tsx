@@ -911,6 +911,10 @@ export function ChatPage({
 
   useLayoutEffect(() => {
     if (!scrollAction.current || !messageAreaRef.current) return;
+    // v0.9.2 测试期修复：消息未加载时消费滚动指令 → scrollHeight=0 → 定位到
+    // 顶部而非底部。等待 sessionMessages 非空后再执行（restore 同理，空消息
+    // 时恢复无意义）。消息流式追加（非切换）不受影响（追加时 action 已消费）。
+    if (sessionMessages.length === 0) return;
     const action = scrollAction.current;
     scrollAction.current = null;
     if (action.type === "bottom") {
