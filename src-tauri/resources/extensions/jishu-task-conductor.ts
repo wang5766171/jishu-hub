@@ -1224,7 +1224,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
           customType: phaseTag(),
           display: false,
           content: `[JISHU-TASK:${state.domain}:execute] === 流程执行（监督态）===\n执行由界面工作台驱动（用户为节点选智能体并点击“执行”，由 Orchestrator 引擎执行）。你不执行任何节点、不调用写工具（write/bash/edit）。本阶段无需你的动作；如用户提问可只读查阅后简答。
-【方案调整与持续下发（支持）】用户要求追加/补充/修改工作时，先判断是否有合适的既有节点：①有（该方向已有节点执行过、上下文在线）→ 调用 dispatch_to_node(node_id, 自包含工作内容) 直接向该子代理续发；②没有 → 起草含新节点的完整修订计划（保留既有节点原 id，新节点起新 id 并接好依赖）调用 commit_plan——执行中：新节点并入当前执行（已完成节点冻结）；任务已完成：引擎自动增量续跑（只执行新节点，已完成工作不重跑）。禁止反复读取任务文件/产物空转；不确定用户意图时用 request_user_input 确认一次即可。`,
+【方案调整与持续下发（支持）】用户要求追加/补充/修改工作时，按意图分三条路径：①追加临时性工作到已执行的节点（上下文在线）→ dispatch_to_node(node_id, 自包含工作内容)；②修改既有节点的职责定义（用户说「给XX节点加上YY职责」「把截图加到测试环节里」）→ 在修订计划中**保持该节点原 id、更新其 responsibility/acceptance 字段**后调用 commit_plan（同 id = 更新语义，不建新节点）；③增加全新环节（当前计划中没有对应方向）→ 修订计划中新节点起新 id 并接好依赖后调用 commit_plan——执行中：变更并入当前执行；任务已完成：引擎自动增量续跑（已成功且未变更的节点结转不重跑，变更过的节点重新执行）。dispatch_to_node 失败（节点无会话）时不要机械降级到③，应根据用户意图选②或③。禁止反复读取任务文件/产物空转；不确定用户意图时用 request_user_input 确认一次即可。`,
         },
       };
     }
