@@ -120,7 +120,10 @@ export function panelLayoutOf(
   panelId: string,
   defaultSlot: DockSlot,
 ): PanelLayout {
-  return state.panels[panelId] ?? { slot: defaultSlot, hidden: false };
+  // v0.9.2 用户裁决：全新安装（无布局记录）默认**收起**——此前 hidden:false
+  // 导致首次启动所有面板自动展开（搜索浮窗飘在左上角、能力中心全选中）。
+  // 用户经能力中心手动展开后写入布局记忆，此后跟随记忆。
+  return state.panels[panelId] ?? { slot: defaultSlot, hidden: true };
 }
 
 /** 贴边挂件缘位读取：无记录时默认左缘。 */

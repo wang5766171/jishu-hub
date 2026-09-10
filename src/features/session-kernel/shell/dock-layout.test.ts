@@ -33,9 +33,9 @@ describe("dock-layout（v0.9.2 需求1 P2 布局状态机）", () => {
     expect(layout.railWidgets["session.navigation"].side).toBe("right");
   });
 
-  it("无记录时按默认槽位落位、挂件默认左缘", () => {
+  it("无记录时按默认槽位落位且默认收起（v0.9.2 用户裁决：全新安装不自动展开）、挂件默认左缘", () => {
     const layout = defaultLayout();
-    expect(panelLayoutOf(layout, "session.flow", "right")).toEqual({ slot: "right", hidden: false });
+    expect(panelLayoutOf(layout, "session.flow", "right")).toEqual({ slot: "right", hidden: true });
     expect(railWidgetSideOf(layout, "session.navigation")).toBe("left");
   });
 
