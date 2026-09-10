@@ -202,11 +202,11 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
         </button>
 
         {hubOpen && (
-          <div className="absolute right-0 top-10 w-64 rounded-xl border border-border/70 bg-popover/95 p-3 shadow-lg backdrop-blur">
-            <div className="mb-2 text-[10px] font-medium text-muted-foreground">
+          <div className="absolute right-0 top-10 w-56 rounded-xl border border-border/70 bg-popover/95 p-3 shadow-lg backdrop-blur">
+            <div className="mb-1.5 text-[9px] font-medium text-muted-foreground">
               {t("sessionPanels.hub.title", "能力中心")}
             </div>
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-4 gap-1.5">
               {panels.map((panel) => {
                 const Icon = PLUGIN_ICONS[panel.id] ?? LayoutGrid;
                 const isActive = !panel.hidden;
@@ -220,14 +220,14 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
                       setHubOpen(false);
                     }}
                     className={cn(
-                      "flex h-16 flex-col items-center justify-center gap-1.5 rounded-lg border px-1 transition-colors",
+                      "flex h-14 flex-col items-center justify-center gap-1 rounded-lg border px-0.5 transition-colors",
                       isActive
                         ? "border-primary/40 bg-primary/10 text-primary"
                         : "border-border/40 text-muted-foreground hover:bg-accent/50 hover:text-foreground",
                     )}
                   >
-                    <Icon className="h-5 w-5" />
-                    <span className="text-[10px] font-medium leading-tight">{panel.title}</span>
+                    <Icon className="h-3.5 w-3.5" />
+                    <span className="text-[9px] font-medium leading-tight whitespace-nowrap">{panel.title}</span>
                   </button>
                 );
               })}
