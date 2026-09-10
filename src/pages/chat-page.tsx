@@ -1664,8 +1664,12 @@ export function ChatPage({
   // v0.9.2 测试期修复（M3-5 侧栏退役时漏移植）：进入执行阶段时加载任务图——
   // 原 TaskSidebar 的职责；缺失时 snapshot 恒空，方案卡/全景/子任务卡全部
   // 落到空态（"流程尚未生成步骤"）。经 ref 读 taskGraph 防死循环（同上注释）。
+  // v0.9.2 二次修复：依赖加 taskModeActive——切走再切回时 graph 被清理但
+  // current_phase/graph_id 未变致 effect 不重触发，nodeRuns 恒空 → 节点恒显示
+  // "尚未开始执行"。
   useEffect(() => {
     if (
+      taskModeActive &&
       activeTaskLaunchInstance?.current_phase === "execution" &&
       activeTaskLaunchInstance.graph_id &&
       activeTaskLaunchInstance.graph_id !== taskGraphRef.current.graph?.graph_id
@@ -1675,7 +1679,7 @@ export function ChatPage({
         .catch(console.error);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTaskLaunchInstance?.current_phase, activeTaskLaunchInstance?.graph_id]);
+  }, [taskModeActive, activeTaskLaunchInstance?.current_phase, activeTaskLaunchInstance?.graph_id]);
   const boardProjection = useMemo(() => {
     const runId = taskGraph.displayedRunId ?? activeTaskLaunchInstance?.active_run_id ?? null;
     if (!runId || !activeTaskLaunchInstance?.graph_id) return null;
