@@ -3609,8 +3609,16 @@ export function ChatPage({
                 variant: "destructive",
               });
               if (!confirmed) return;
+              // v0.9.2 测试期修复：孤儿任务容错——全量重装后 orchestrator.db 被清但项目
+              // 侧 TaskInstance 残留（graph_id 引用已不存在的图），orchestrator_delete_graph
+              // 会报 NotFound 阻断后续 task_launch_delete_task → 孤儿永远删不掉。
+              // 图删除失败不阻断任务实例删除（幂等：图不存在 = 无需清理）。
               if (task.graph_id) {
-                await invokeCommand("orchestrator_delete_graph", { graphId: task.graph_id });
+                try {
+                  await invokeCommand("orchestrator_delete_graph", { graphId: task.graph_id });
+                } catch {
+                  // orphan graph——orchestrator 数据已清，跳过即可
+                }
               }
               await invokeCommand("task_launch_delete_task", {
                 projectRoot: projectPathForSettings,
