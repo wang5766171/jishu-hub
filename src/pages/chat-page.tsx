@@ -1213,7 +1213,25 @@ export function ChatPage({
     return () => {
       cancelled = true;
     };
-  }, [taskModeActive, selectedSession, projectId, taskSelectedNodeId, taskNodeSessionAgentId, activeId]);
+    // v0.9.2 测试期修复：①任务会话进入时设置滚动定位（首访到底部，返回恢复
+    // 记忆位置——此前只走 handleSelectSession 设 scrollAction，任务模式直接
+    // setSelectedSession 绕过了它，导致恒在顶部）。②依赖加 streamHasContent：
+    // 节点刚派发时 pi JSONL 可能还没写入派发 prompt（用户在节点响应前进入
+    // 会话→加载到空消息→流式开始后派发 prompt 仍不显示直到重新切换会话）；
+    // 流式首条内容到达时重载一次，此时 JSONL 已含派发 prompt。
+    const isNode = !!taskSelectedNodeId;
+    if (!isNode) return;
+    const isFirst = !visitedSessions.current.has(selectedSession);
+    if (isFirst) {
+      visitedSessions.current.add(selectedSession);
+      scrollAction.current = { type: "bottom" };
+    } else {
+      const saved = scrollMemory.current.get(selectedSession);
+      scrollAction.current = saved !== undefined
+        ? { type: "restore", top: saved }
+        : { type: "bottom" };
+    }
+  }, [taskModeActive, selectedSession, projectId, taskSelectedNodeId, taskNodeSessionAgentId, activeId, currentStream?.text]);
 
   const handleNewSession = async () => {
     if (!projectId) return;
