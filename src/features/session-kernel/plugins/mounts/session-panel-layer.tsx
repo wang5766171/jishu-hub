@@ -21,11 +21,14 @@ import type { SessionKernelContext } from "../types";
 /**
  * 停靠面板宿主（v0.9.2 需求1）：五槽位 + 拖拽 + 浮动窗口。
  *
- * 交互规范（2026-09-10 用户裁决，二轮调整）：
+ * 交互规范（2026-09-10 用户裁决，二轮调整；2026-09-11 三轮调整）：
  * - **单选模式**：同一时间只展开一个面板，点另一个 = 切换（先收旧再展新）
  * - 能力中心按钮图标 = **当前展开的插件图标**（无展开时显示 LayoutGrid）
+ * - 能力中心按钮点击顺序：**有面板展开 → 收起该面板（图标复位 LayoutGrid）**；
+ *   无面板展开 → 弹出能力列表（再点关闭列表）。此前无论何种状态都弹列表，
+ *   导致"选了任务看板后再点图标"无法收起看板（用户 2026-09-11 反馈）
  * - 面板卡片：图标在上、名称在下（任务看板/用量看板/搜索看板）
- * - 非最大化窗口：点击面板外自动折叠
+ * - 点击面板外自动折叠当前面板 + 关闭能力列表（非最大化窗口限定面板折叠）
  * - 快捷键框架（描述符 shortcut 字段，暂无默认绑定）
  */
 
@@ -86,13 +89,14 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
     });
   }, []);
 
-  // ── 非最大化窗口：点击面板外部自动折叠（单选模式 → 折叠当前唯一面板）──
+  // ── 点击面板外部：关闭能力列表（任意窗口形态）；非最大化窗口同时折叠当前面板 ──
   useEffect(() => {
     const onPointerDown = (e: PointerEvent) => {
-      if (isWindowMaximized()) return;
       const target = e.target as HTMLElement;
-      if (layerRef.current?.contains(target)) return;
       if (hubRef.current?.contains(target)) return;
+      setHubOpen(false);
+      if (isWindowMaximized()) return;
+      if (layerRef.current?.contains(target)) return;
       setLayout((prev) => {
         const hasVisible = Object.values(prev.panels).some((p) => !p.hidden);
         if (!hasVisible) return prev;
@@ -190,7 +194,16 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
           type="button"
           title={activePanel ? activePanel.title : t("sessionPanels.hub.title", "能力中心")}
           aria-label={t("sessionPanels.hub.title", "能力中心")}
-          onClick={() => setHubOpen((v) => !v)}
+          onClick={() => {
+            // 2026-09-11 三轮调整：有面板展开时点击 = 收起面板（图标复位能力
+            // 中心）；无面板展开时才弹出/关闭能力列表。
+            if (activePanel) {
+              showPanel(activePanel.id);
+              setHubOpen(false);
+            } else {
+              setHubOpen((v) => !v);
+            }
+          }}
           className={cn(
             "flex h-8 w-8 items-center justify-center rounded-lg border border-border/60 bg-background/90 shadow-sm backdrop-blur transition-colors",
             activePanel
