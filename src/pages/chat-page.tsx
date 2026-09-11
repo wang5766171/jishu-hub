@@ -331,6 +331,14 @@ export function ChatPage({
   const visitedSessions = useRef(new Set<string>());
   const scrollMemory = useRef(new Map<string, number>());
   const scrollAction = useRef<{ type: "bottom" } | { type: "restore", top: number } | null>(null);
+  // v0.9.2 测试期二次返工（任务会话滚动定位）：scrollAction 经 useLayoutEffect
+  // 消费的链路在消息异步到达 / markdown 后置撑高场景下时序脆弱（消费过早 →
+  // scrollHeight 偏小 → 停在顶部）。任务模式会话改由加载 effect 直接双 rAF
+  // 定位（等布局稳定）；taskEntryKeyRef 记录已定位的入口（sid#nodeId），同一
+  // 入口的流式重载不重复定位；taskScrollPendingRef 在消息尚未非空时保持待定，
+  // 由下一次到达的非空消息补定位。
+  const taskEntryKeyRef = useRef<string | null>(null);
+  const taskScrollPendingRef = useRef<string | null>(null);
   const sessionMessagesRef = useRef(sessionMessages);
   sessionMessagesRef.current = sessionMessages;
   const newSessionStreamIdsRef = useRef<Set<string>>(new Set());
@@ -1159,8 +1167,26 @@ export function ChatPage({
   // T8-P1 修正：任务模式下所有 selectedSession 变更（进入任务、切换阶段、切换节点会话）
   // 都要加载对应会话消息。openTaskPhaseWorkspace / handleTaskSelectNode 直接 setSelectedSession，
   // 不走 handleSelectSession，因此需要此自动加载兜底，否则主区只显示执行段而看不到需求/规划内容。
+  // v0.9.2 测试期二次返工：
+  // ① 滚动定位——主任务会话此前完全没有定位（scrollAction 块限定 taskSelectedNodeId，
+  //   且 cached 命中时提前 return 根本走不到）；节点会话走 scrollAction/useLayoutEffect
+  //   消费链，消息异步到达 + markdown 后置撑高时序下不可靠。改为本 effect 在消息
+  //   到达后双 rAF 直接定位（等布局稳定），首访到底部、重访恢复上次离开位置
+  //   （cleanup 落盘 scrollMemory——任务会话不经 handleSelectSession，此前从未保存）。
+  // ② 节点会话空载重试——进入早于派发 prompt 落盘时 JSONL 读空，有限重试拉齐，
+  //   避免「空白很久才整段出现」；流式首条文本到达（streamStarted）再触发一次
+  //   重载（布尔依赖，避免逐 delta 重载刷 IPC）。
+  const streamStarted = (currentStream?.text?.length ?? 0) > 0;
   useEffect(() => {
-    if (!taskModeActive || !selectedSession || selectedSession === "new" || !projectId) return;
+    if (!taskModeActive || !selectedSession || selectedSession === "new" || !projectId) {
+      // 离开任务模式后复位入口标记：下次进入同一任务会话仍算新入口（需定位）。
+      if (!taskModeActive) {
+        taskEntryKeyRef.current = null;
+        taskScrollPendingRef.current = null;
+      }
+      return;
+    }
+    if (selectedSession === "pending-node") return;
     // v0.9.2 测试期修复（节点会话流式期间无历史）：此前 stream 有状态即整体跳过
     // 加载——节点会话运行中打开时只剩流式气泡，派发指令（早已落盘 JSONL）与
     // 历史全部不可见，回合结束才整段出现。改为照常加载；仅当该会话走"普通
@@ -1179,6 +1205,30 @@ export function ChatPage({
       return messages;
     };
 
+    // 入口定位：entry key 变化 = 新入口（进入任务/切节点/切回主会话）。
+    const entryKey = `${selectedSession}#${taskSelectedNodeId ?? "main"}`;
+    const isNewEntry = taskEntryKeyRef.current !== entryKey;
+    if (isNewEntry) {
+      taskEntryKeyRef.current = entryKey;
+      taskScrollPendingRef.current = entryKey;
+    }
+    const positionIfPending = () => {
+      if (taskScrollPendingRef.current !== entryKey) return;
+      taskScrollPendingRef.current = null;
+      const saved = scrollMemory.current.get(selectedSession);
+      // 双 rAF：等消息列表完成布局（markdown 撑高等）再定位，否则 scrollHeight
+      // 偏小、定位停在半截（与 T8-P9 执行段自动滚底同一手法）。
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const el = messageAreaRef.current;
+          if (!el) return;
+          el.scrollTop = saved !== undefined
+            ? Math.max(0, Math.min(saved, el.scrollHeight - el.clientHeight))
+            : el.scrollHeight;
+        });
+      });
+    };
+
     const cached = sessionMessagesCacheRef.current.get(selectedSession);
     // 节点会话可能在离开期间继续跑（后台节点的事件不进本视图），缓存往往是上次进入时的
     // 半截快照。因此进入节点会话时先渲染缓存避免闪空，再重读一次取最新基线；此后的增量
@@ -1186,47 +1236,62 @@ export function ChatPage({
     const isNodeSession = !!taskSelectedNodeId;
     if (cached) {
       setSessionMessages(cached);
+      if (cached.length > 0) positionIfPending();
       if (!isNodeSession) return;
     }
 
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     // v0.7.0 需求二-问题3：节点会话用节点 attempt 绑定的 agent_id 加载消息
     // （节点子代理可能是 claude-code/codex 等非 jishu-self，消息存在各自 session 存储）。
     const nodeAgentId = isNodeSession ? (taskNodeSessionAgentId ?? activeId ?? "") : (activeId ?? "");
-    invokeCommand<Message[]>("get_session_messages", {
-      agentId: nodeAgentId,
-      sessionId: selectedSession,
-      encodedName: projectId,
-    })
-      .then((messages) => {
-        if (cancelled) return;
-        const visibleMessages = truncateStreamingTurn(
-          stripTaskLaunchInstructionFromMessages(messages),
-        );
-        sessionMessagesCacheRef.current.set(selectedSession, visibleMessages);
-        setSessionMessages(visibleMessages);
+    const load = (attempt: number) => {
+      invokeCommand<Message[]>("get_session_messages", {
+        agentId: nodeAgentId,
+        sessionId: selectedSession,
+        encodedName: projectId,
       })
-      .catch(() => {
-        if (!cancelled && !cached) setSessionMessages([]);
-      });
-
-    // v0.9.2 测试期修复：任务会话进入时设置滚动定位 + 流式首条内容到达时重载。
-    if (selectedSession && taskSelectedNodeId) {
-      const sid: string = selectedSession;
-      const isFirst = !visitedSessions.current.has(sid);
-      if (isFirst) {
-        visitedSessions.current.add(sid);
-        scrollAction.current = { type: 'bottom' };
-      } else {
-        const saved = scrollMemory.current.get(sid);
-        scrollAction.current = saved != null ? { type: 'restore', top: saved } : { type: 'bottom' };
-      }
-    }
+        .then((messages) => {
+          if (cancelled) return;
+          const visibleMessages = truncateStreamingTurn(
+            stripTaskLaunchInstructionFromMessages(messages),
+          );
+          sessionMessagesCacheRef.current.set(selectedSession, visibleMessages);
+          setSessionMessages(visibleMessages);
+          if (visibleMessages.length > 0) {
+            positionIfPending();
+            return;
+          }
+          // 节点会话进入早于派发 prompt 落盘：JSONL 读空时有限重试（1.5s × 3），
+          // 之后由 streamStarted（首条流式文本）触发重载兜底。
+          if (isNodeSession && attempt < 3) {
+            retryTimer = setTimeout(() => load(attempt + 1), 1500);
+          }
+        })
+        .catch(() => {
+          if (!cancelled && !cached) setSessionMessages([]);
+        });
+    };
+    load(0);
 
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      // 离开该任务会话时记录滚动位置——任务会话不经 handleSelectSession，
+      // 此前从未保存 scrollMemory，「按上次离开位置进入」无从谈起。
+      // 占位/空消息不落盘（避免把 0 写进记忆，下次进入被拉回顶部）。
+      // 读 sessionMessagesRef（每渲染同步）：cleanup 闭包里的 state 是入口
+      // 时的快照，异步加载完成后并不更新。
+      if (
+        selectedSession !== "pending-node" &&
+        selectedSession !== "new" &&
+        messageAreaRef.current &&
+        sessionMessagesRef.current.length > 0
+      ) {
+        scrollMemory.current.set(selectedSession, messageAreaRef.current.scrollTop);
+      }
     };
-  }, [taskModeActive, selectedSession, projectId, taskSelectedNodeId, taskNodeSessionAgentId, activeId, currentStream?.text]);
+  }, [taskModeActive, selectedSession, projectId, taskSelectedNodeId, taskNodeSessionAgentId, activeId, streamStarted]);
 
   const handleNewSession = async () => {
     if (!projectId) return;
@@ -1712,9 +1777,32 @@ export function ChatPage({
   const boardRunId = taskGraph.displayedRunId ?? activeTaskLaunchInstance?.active_run_id ?? null;
   useEffect(() => {
     taskInstanceState.selectNode(taskSelectedNodeId);
-    if (taskSelectedNodeId && boardRunId) {
-      boardNodeSession.fetchNodeSession(taskSelectedNodeId).catch(console.error);
-    }
+    if (!taskSelectedNodeId || !boardRunId) return;
+    // v0.9.2 测试期二次返工（节点会话派发信息缺失）：本 effect 只在
+    // nodeId/runId/attempt_count/status 变化时触发；节点刚启动时 session_id
+    // 常常尚未由 Pi RPC SessionResolved 落库——此刻查询拿到 null 后再无
+    // 重试触发（status 长期停在 running），主区卡 "pending-node" 占位直到
+    // 节点终态才恢复。节点仍在执行且会话未回填时按 2s 轮询，直到拿到
+    // session_id 或节点终态为止。
+    const nodeStatus = taskGraph.nodeRuns[taskSelectedNodeId]?.status ?? null;
+    const nodeActive = nodeStatus === "leased" || nodeStatus === "running";
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      const info = await boardNodeSession.fetchNodeSession(taskSelectedNodeId).catch((e) => {
+        console.error(e);
+        return null;
+      });
+      if (cancelled) return;
+      if (nodeActive && (!info || info.session_id == null)) {
+        timer = setTimeout(() => void poll(), 2000);
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskSelectedNodeId, boardRunId,
     taskSelectedNodeId ? taskGraph.nodeRuns[taskSelectedNodeId]?.attempt_count ?? 0 : 0,
@@ -1812,6 +1900,7 @@ export function ChatPage({
         completed: 0,
         total: 0,
         nodes: [],
+        selectedNodeId: taskSelectedNodeId,
         onSelectNode: handleTaskSelectNode,
         onOpenCanvas: () => setTaskBoardSignal((n) => n + 1),
         onCancelRun: handleTaskCancelRun,
@@ -1840,11 +1929,12 @@ export function ChatPage({
       completed,
       total: nodes.length,
       nodes,
+      selectedNodeId: taskSelectedNodeId,
       onSelectNode: handleTaskSelectNode,
       onOpenCanvas: () => setTaskBoardSignal((n) => n + 1),
       onCancelRun: handleTaskCancelRun,
     };
-  }, [activeTaskLaunchInstance, taskGraph.snapshot, taskGraph.nodeRuns, taskGraph.runStatus, handleTaskSelectNode, handleTaskCancelRun, t]);
+  }, [activeTaskLaunchInstance, taskGraph.snapshot, taskGraph.nodeRuns, taskGraph.runStatus, taskSelectedNodeId, handleTaskSelectNode, handleTaskCancelRun, t]);
 
   // v0.9.2 需求1：已启用会话插件集合（plugins-changed 热刷新）。
   const enabledSessionPlugins = useEnabledSessionPlugins();
@@ -1996,17 +2086,24 @@ export function ChatPage({
     chatInputRef.current?.focus();
   }, []);
 
-  // 活跃任务的真节点标题（与右侧步骤栏同源，来自 taskGraph.snapshot），
-  // 透传给左侧任务树覆盖 use-task-node-sessions 用 revision 取的占位标题（"A"/"B"）。
-  const activeTaskNodeTitles = useMemo(() => {
-    const map: Record<string, string> = {};
-    if (taskModeActive) {
-      for (const n of taskGraph.snapshot?.nodes ?? []) {
-        map[n.node_id] = n.title;
+  // 子节点会话标题（resolveSessionInfo 消费——用量面板等按会话 id 取标题）：
+  // 以 node_id→title 为源，再经 nodeSessionMap 折算出 session_id→title 索引。
+  // 左侧任务树不再展示子会话（2026-09-11 用户裁决），此映射改为看板/面板侧
+  // 唯一的标题来源；此前树侧曾按 session_id 查 node_id 键控表，恒落空回退
+  // 截断 id，本次一并修正。
+  const nodeTitleBySessionId = useMemo(() => {
+    const byNodeId: Record<string, string> = {};
+    for (const n of taskGraph.snapshot?.nodes ?? []) {
+      byNodeId[n.node_id] = n.title;
+    }
+    const bySessionId: Record<string, string> = {};
+    for (const [nodeId, info] of Object.entries(taskInstanceState.nodeSessionMap)) {
+      if (info.session_id && byNodeId[nodeId]) {
+        bySessionId[info.session_id] = byNodeId[nodeId];
       }
     }
-    return map;
-  }, [taskModeActive, taskGraph.snapshot]);
+    return bySessionId;
+  }, [taskGraph.snapshot, taskInstanceState.nodeSessionMap]);
 
   // v0.9.2 需求1：会话内核上下文——插件的唯一取数/命令入口（05 §3.2）。
   const sessionKernelCtx = useMemo<SessionKernelContext>(
@@ -2048,7 +2145,7 @@ export function ChatPage({
         );
         if (taskSession) return { title: taskSession.title, kind: "task" };
         if (nodeSessionIds.includes(sessionId)) {
-          return { title: activeTaskNodeTitles[sessionId] ?? sessionId.slice(0, 12), kind: "node" };
+          return { title: nodeTitleBySessionId[sessionId] ?? sessionId.slice(0, 12), kind: "node" };
         }
         const session = sessions?.find((item) => item.id === sessionId);
         if (session) {
@@ -2060,7 +2157,7 @@ export function ChatPage({
         return null;
       },
     }),
-    [turnSummaries, activeTurnIndex, handleJumpToTurn, taskPanelCtx, selectedSession, sessions, ctxMessages, ctxStreamState, ctxSessionMeta, searchMessages, scrollToMessage, insertToComposer, taskLaunchSessions, nodeSessionIds, activeTaskNodeTitles, sessionNames, confirmDialog, openViewer],
+    [turnSummaries, activeTurnIndex, handleJumpToTurn, taskPanelCtx, selectedSession, sessions, ctxMessages, ctxStreamState, ctxSessionMeta, searchMessages, scrollToMessage, insertToComposer, taskLaunchSessions, nodeSessionIds, nodeTitleBySessionId, sessionNames, confirmDialog, openViewer],
   );
 
   // v0.9.2 需求1 M4：信号桥（内核事件 → 已启用插件 event-hook）。
@@ -3581,8 +3678,6 @@ export function ChatPage({
           <TaskSessionTree
             tasks={displayTaskLaunchSessions}
             activeTaskId={activeTaskInstanceId}
-            activeNodeId={activeTaskInstanceId ? taskSelectedNodeId : null}
-            titleByNodeId={activeTaskNodeTitles}
             onSelectTask={(task) => {
               // 树的 TaskSessionTreeTask 是 TaskLaunchInstanceSummary 的结构子集，
               // 回传时按 task_id 反查完整实例（openTaskPhaseWorkspace 需要 project_root 等字段）。
@@ -3595,21 +3690,6 @@ export function ChatPage({
                     ? "execution"
                     : "requirements";
               openTaskPhaseWorkspace(instance, phase);
-            }}
-            onSelectNode={(task, node) => {
-              const instance = findTaskInstance(task.task_id);
-              if (!instance) return;
-              // 若目标任务尚未激活，先进任务执行 workspace（会重置 selectedNodeId），
-              // 随后指定目标节点，TaskSidebar 收到受控 prop 后自行拉取节点会话并高亮。
-              // 若任务已激活（含再次点击当前节点），直接切节点，不再调 openTaskPhaseWorkspace，
-              // 避免重复清空 selectedNodeId 引起节点会话→任务主会话的闪烁/竞态
-              //（v0.7.0 需求二-问题2：节点选中后再次点击变任务选中效果）。
-              if (activeTaskInstanceIdRef.current !== task.task_id || !taskModeActive) {
-                openTaskPhaseWorkspace(instance, "execution");
-              }
-              // v0.7.0 需求二-问题3：统一走 handleTaskSelectNode，立即切 pending-node
-              // 占位，避免新节点 session_id 回填前主区显示上一个节点的会话。
-              handleTaskSelectNode(node.node_id);
             }}
             onRenameTask={(task) => setRenameTaskTarget(findTaskInstance(task.task_id))}
             onCancelTask={(task) => {

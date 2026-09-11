@@ -1,28 +1,25 @@
 /**
- * TaskSessionTree —— 侧边栏会话二级树。
+ * TaskSessionTree —— 侧边栏任务列表。
  *
  * 设计依据：`docs/task-exec-dev/02-总体设计.md` §6（需求四 · 会话复用与二级结构）。
  *
- * 结构：
+ * 结构（2026-09-11 用户裁决：三级收敛为二级）：
  *   常规会话（由 chat-page 渲染，不在本组件）
  *   ─────────────
  *   任务会话
- *     ├─ 任务 A（标题 + 阶段徽标）
- *     │   ├─ 节点 1（状态图标 + 标题 + agent）
- *     │   └─ 节点 2
+ *     ├─ 任务 A（标题 + 阶段徽标 + 运行状态灯）
  *     └─ 任务 B
  *
  * 交互：
- * - 点任务 → 进入任务主会话（target=main）
- * - 点节点 → 进入节点会话（target=node）
+ * - 点任务 → 进入任务工作台（阶段会话）；子任务会话**不再在本列表展示**，
+ *   统一经会话区能力中心「任务看板」（session.flow 插件）钻入查看——看板
+ *   有实时状态与当前选中高亮，信息密度与反馈都优于静态树节点行。
  * - 任务行右键 → 重命名 / 删除（沿用现有 ContextMenu）
- * - 任务行左侧箭头展开/折叠节点列表
+ * - 任务行悬停（运行中）→ 取消执行
  *
- * 数据来源：
- * - 任务列表：由 chat-page 传入（task_launch_list_sessions）
- * - 节点会话：内部调 orchestrator_list_node_sessions（T0 后端已就绪）
+ * 数据来源：任务列表由 chat-page 传入（task_launch_list_sessions）。
  */
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, MessageSquare, Pencil, X, Network } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -32,9 +29,6 @@ import {
   ContextMenuContent,
   ContextMenuItem,
 } from "@/components/ui/context-menu";
-import type { NodeSessionSummary } from "../types";
-import { StepStatusIcon } from "../steps/step-status-icon";
-import { useTaskNodeSessions } from "./use-task-node-sessions";
 
 export interface TaskSessionTreeTask {
   task_id: string;
@@ -56,36 +50,22 @@ export interface TaskSessionTreeProps {
   tasks: TaskSessionTreeTask[];
   /** 当前激活的任务 ID（高亮） */
   activeTaskId: string | null;
-  /** 当前激活的节点 ID（高亮） */
-  activeNodeId: string | null;
-  /** 活跃任务的真节点标题（来自 taskGraph.snapshot，覆盖 titleMap 回退）。 */
-  titleByNodeId?: Record<string, string>;
   /** 点击任务行 */
   onSelectTask: (task: TaskSessionTreeTask) => void;
-  /** 点击节点行 */
-  onSelectNode: (task: TaskSessionTreeTask, node: NodeSessionSummary) => void;
   /** 重命名（右键菜单） */
   onRenameTask: (task: TaskSessionTreeTask) => void;
   /** 删除（右键菜单） */
   onDeleteTask: (task: TaskSessionTreeTask) => void;
 }
 
-// ── 单个任务行（含节点子列表） ──
+// ── 单个任务行 ──
 
 interface TaskRowProps {
   /** v0.9.2 需求2 M3-4：运行中任务的悬停取消（由页面承担确认）。 */
   onCancelTask?: (task: TaskSessionTreeTask) => void;
   task: TaskSessionTreeTask;
   isActive: boolean;
-  activeNodeId: string | null;
-  nodes: NodeSessionSummary[];
-  /** 活跃任务的真标题（来自 taskGraph.snapshot，与右侧步骤栏同源，最可信）。 */
-  titleByNodeId: Record<string, string>;
-  /** 其他任务的回退标题（按 revision 取的占位标题，可能不准）。 */
-  titleMap: Record<string, string>;
-  agentNames: Record<string, string>;
   onSelectTask: (task: TaskSessionTreeTask) => void;
-  onSelectNode: (task: TaskSessionTreeTask, node: NodeSessionSummary) => void;
   onRenameTask: (task: TaskSessionTreeTask) => void;
   onDeleteTask: (task: TaskSessionTreeTask) => void;
 }
@@ -100,26 +80,12 @@ const phaseLabel: Record<string, string> = {
 const TaskRow = memo(function TaskRow({
   task,
   isActive,
-  activeNodeId,
-  nodes,
-  titleByNodeId,
-  titleMap,
-  agentNames,
   onSelectTask,
-  onSelectNode,
   onRenameTask,
   onDeleteTask,
   onCancelTask,
 }: TaskRowProps) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(isActive);
-
-  // 激活时自动展开
-  useEffect(() => {
-    if (isActive) setExpanded(true);
-  }, [isActive]);
-
-  const hasNodes = nodes.length > 0;
   const phase = phaseLabel[task.current_phase] ?? task.current_phase;
 
   return (
@@ -181,80 +147,7 @@ const TaskRow = memo(function TaskRow({
                 </span>
               </span>
             ) : null}
-            {/* 展开/折叠箭头（移到标题右侧，仅有节点时显示） */}
-            {hasNodes ? (
-              <span
-                role="button"
-                tabIndex={0}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setExpanded((v) => !v);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.stopPropagation();
-                    setExpanded((v) => !v);
-                  }
-                }}
-                className="flex h-3.5 w-3.5 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-              >
-                {expanded ? (
-                  <ChevronDown className="size-3" />
-                ) : (
-                  <ChevronRight className="size-3" />
-                )}
-              </span>
-            ) : (
-              <span className="h-3.5 w-3.5 shrink-0" />
-            )}
           </button>
-
-          {/* 节点子列表 */}
-          {expanded && hasNodes && (
-            <div className="border-b border-border/10 bg-[var(--color-layer-1)]/30">
-              {nodes.map((node) => {
-                const title =
-                  titleByNodeId[node.node_id] ??
-                  node.title ??
-                  titleMap[node.node_id] ??
-                  node.node_id;
-                const isNodeActive = activeNodeId === node.node_id;
-                const agentName = node.agent_id ? agentNames[node.agent_id] : null;
-                return (
-                  <button
-                    key={node.node_run_id}
-                    type="button"
-                    onClick={(e) => {
-                      // 阻止冒泡到任务行按钮 / ContextMenuTrigger 包裹层，
-                      // 确保只触发节点选中，不触发任务选中
-                      //（v0.7.0 需求二-问题2）。
-                      e.stopPropagation();
-                      onSelectNode(task, node);
-                    }}
-                    className={cn(
-                      // 字体与常规/任务会话项统一为 text-xs；图标走缩放容器，
-                      // 与上方 MessageSquare(h-3 w-3) 视觉大小一致。
-                      "flex w-full items-center gap-2 py-1.5 pl-7 pr-2 text-xs transition-fast",
-                      isNodeActive
-                        ? "bg-primary/5 font-medium text-foreground"
-                        : "text-muted-foreground/80 hover:bg-accent/30 hover:text-foreground",
-                    )}
-                  >
-                    <span className="inline-flex shrink-0 scale-[0.8]">
-                      <StepStatusIcon status={node.status as never} />
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-left leading-none pt-[1px]">{title}</span>
-                    {agentName && (
-                      <span className="shrink-0 truncate text-[9px] text-muted-foreground/60">
-                        {agentName}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
@@ -280,29 +173,18 @@ export function TaskSessionTree({
   onCancelTask,
   tasks,
   activeTaskId,
-  activeNodeId,
-  titleByNodeId,
   onSelectTask,
-  onSelectNode,
   onRenameTask,
   onDeleteTask,
 }: TaskSessionTreeProps) {
   const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(false);
 
-  const { sessionsByTask, titleMapsByTask } = useTaskNodeSessions({
-    tasks,
-    pollInterval: 5000,
-  });
-
-  // agent 名称映射（从父传入更合适，但树组件自己处理也可）
-  // 这里暂用空 map——agent 显示名由步骤栏覆盖，树内显示 agent_id 短名即可
-
-  const handleSelectNode = useCallback(
-    (task: TaskSessionTreeTask, node: NodeSessionSummary) => {
-      onSelectNode(task, node);
+  const handleSelectTask = useCallback(
+    (task: TaskSessionTreeTask) => {
+      onSelectTask(task);
     },
-    [onSelectNode],
+    [onSelectTask],
   );
 
   return (
@@ -331,16 +213,10 @@ export function TaskSessionTree({
               key={task.task_id}
               task={task}
               isActive={activeTaskId === task.task_id}
-              activeNodeId={activeTaskId === task.task_id ? activeNodeId : null}
-              nodes={sessionsByTask.get(task.task_id) ?? []}
-              titleByNodeId={titleByNodeId ?? {}}
-              titleMap={titleMapsByTask.get(task.task_id) ?? {}}
-              agentNames={{}}
-              onSelectTask={onSelectTask}
-              onSelectNode={handleSelectNode}
+              onSelectTask={handleSelectTask}
               onRenameTask={onRenameTask}
               onDeleteTask={onDeleteTask}
-          onCancelTask={onCancelTask}
+              onCancelTask={onCancelTask}
             />
           ))}
         </>
