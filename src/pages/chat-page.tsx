@@ -1220,14 +1220,15 @@ export function ChatPage({
     // 会话→加载到空消息→流式开始后派发 prompt 仍不显示直到重新切换会话）；
     // 流式首条内容到达时重载一次，此时 JSONL 已含派发 prompt。
     const isNode = !!taskSelectedNodeId;
-    if (!isNode) return;
-    const isFirst = !visitedSessions.current.has(selectedSession);
+    const sid = selectedSession;
+    if (!isNode || !sid) return;
+    const isFirst = !visitedSessions.current.has(sid);
     if (isFirst) {
-      visitedSessions.current.add(selectedSession);
+      visitedSessions.current.add(sid);
       scrollAction.current = { type: "bottom" };
     } else {
-      const saved = scrollMemory.current.get(selectedSession);
-      scrollAction.current = saved !== undefined
+      const saved = scrollMemory.current.get(sid);
+      scrollAction.current = saved != null
         ? { type: "restore", top: saved }
         : { type: "bottom" };
     }
