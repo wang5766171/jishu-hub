@@ -34,6 +34,7 @@ import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { clearImageCache } from "@/components/sessions/inline-image";
 // 会话二级树（T3）：侧边栏任务会话区
 import { TaskSessionTree } from "@/features/task-workspace/sidebar/task-session-tree";
+import type { NodeSessionSummary } from "@/features/task-workspace/types";
 // 任务模式右侧栏（减法重构：仅渲染任务步骤面板 + 治理面 + 画布，主会话区复用 chat-page）。
 // 任务图数据：chat-page 顶层无条件持有（无 graph 时无副作用），主区 run 流与侧边栏共享。
 import { useTaskGraph, taskErrorMessage } from "@/features/task-instance/graph/use-task-graph";
@@ -2286,8 +2287,46 @@ export function ChatPage({
       }));
   }, [taskGraph.snapshot]);
 
+  // v0.9.2 测试期修复（终态渲染三问题）：各节点执行 agent 的权威来源——
+  // orchestrator_list_node_sessions 一次返回全 run 各节点的 agent_id（读
+  // taskstore attempt 的 agent_assignment，落库即有）。此前子任务卡/汇总卡
+  // 只从轮询事件流的 attempt_started 取 agent，事件缺失（轮询游标、时序）
+  // 时 badge 静默丢失——用户实测仅第一个节点有「Jishu Agent」标识。
+  // 状态签名（nodeId:status 拼接）作为刷新触发：只在节点状态真正变化时
+  // 重查，避免每次轮询对象身份变化都刷 IPC。
+  const [nodeAgentIds, setNodeAgentIds] = useState<Map<string, string>>(() => new Map());
+  const nodeRunStatusSignature = useMemo(
+    () =>
+      Object.entries(taskGraph.nodeRuns)
+        .map(([id, run]) => `${id}:${run.status}:${run.attempt_count}`)
+        .sort()
+        .join("|"),
+    [taskGraph.nodeRuns],
+  );
+  useEffect(() => {
+    if (!boardRunId) {
+      setNodeAgentIds(new Map());
+      return;
+    }
+    let cancelled = false;
+    invokeCommand<NodeSessionSummary[]>("orchestrator_list_node_sessions", { runId: boardRunId })
+      .then((sessions) => {
+        if (cancelled) return;
+        const map = new Map<string, string>();
+        for (const s of sessions) {
+          if (s.agent_id) map.set(s.node_id, s.agent_id);
+        }
+        setNodeAgentIds(map);
+      })
+      .catch((e) => console.warn("list_node_sessions failed:", e));
+    return () => {
+      cancelled = true;
+    };
+  }, [boardRunId, nodeRunStatusSignature]);
+
   // v0.9.2 需求2 M3-3：子任务卡/汇总卡数据——节点状态 + 执行者（attempt_started
-  // 事件快照）+ 当前动作一行摘要（attempt_progressed 公开消息最新一条）。
+  // 事件快照 + node sessions 权威回退）+ 当前动作一行摘要（attempt_progressed
+  // 公开消息最新一条）。
   const taskFlowNodes = useMemo<FlowNodeStatus[]>(() => {
     const snapshot = taskGraph.snapshot;
     const nodeRuns = taskGraph.nodeRuns;
@@ -2313,13 +2352,17 @@ export function ChatPage({
       } else if (event.event_type === "attempt_progressed") {
         if (payload.public === false) continue;
         const message = typeof payload.message === "string" ? payload.message : "";
-        if (message && message.trim()) lastActionByNode.set(nodeId, message.trim());
+        // 纯标点/空白消息不作为动作摘要——节点 agent 收尾时常发「。」之类的
+        // 空消息，渲染成标题下游离的句号（用户实测反馈）。
+        if (message.trim() && !/^[\s。．.，,、;；!！?？·\-—~～*#]*$/.test(message)) {
+          lastActionByNode.set(nodeId, message.trim());
+        }
       }
     }
     return orderedExecutableNodes(snapshot)
       .map((node) => {
         const status = nodeRuns[node.node_id]?.status ?? "blocked";
-        const agentId = agentByNode.get(node.node_id) ?? null;
+        const agentId = nodeAgentIds.get(node.node_id) ?? agentByNode.get(node.node_id) ?? null;
         const agent = agentId ? agents.find((a) => a.id === agentId) : null;
         return {
           nodeId: node.node_id,
@@ -2330,7 +2373,7 @@ export function ChatPage({
           clickable: !["blocked", "ready"].includes(status),
         };
       });
-  }, [taskGraph.snapshot, taskGraph.nodeRuns, taskGraph.events, agents]);
+  }, [taskGraph.snapshot, taskGraph.nodeRuns, taskGraph.events, agents, nodeAgentIds]);
 
   // v0.9.2 需求2 M3-2：方案卡确认——未勾选节点经 remove_node 命令移除（后端
   // 级联清理边并重挂子节点），以新 revision 启动 run；全选直启。
@@ -3998,21 +4041,22 @@ export function ChatPage({
                       <PhaseDivider phase="execute" title={t("task.phase.execution", "流程执行")} />
                     </div>
                     {taskRunStarted ? (
-                      /* v0.9.2 需求2 M3-3：子任务卡替代 run 事件第一人称投影——
-                         卡片呈现实时状态/执行者/当前动作，点击进入子会话干预。 */
-                      <>
+                      /* v0.9.2 测试期修复（终态渲染两遍流程）：run 终态时节点卡列表
+                         与汇总卡的节点行重复展示同一套流程（用户实测「显示两遍」）。
+                         终态只渲染汇总卡——其节点行自带状态图标/标题/执行 agent，
+                         且整行可点击进入会话；节点卡列表仅承担执行中的实时呈现。 */
+                      taskGraph.runStatus && ["completed", "failed", "cancelled"].includes(taskGraph.runStatus) ? (
+                        <TaskSummaryCard
+                          runStatus={taskGraph.runStatus}
+                          nodes={taskFlowNodes}
+                          onSelectNode={handleTaskSelectNode}
+                        />
+                      ) : (
                         <TaskNodeCards
                           nodes={taskFlowNodes}
                           onSelectNode={handleTaskSelectNode}
                         />
-                        {taskGraph.runStatus && ["completed", "failed", "cancelled"].includes(taskGraph.runStatus) ? (
-                          <TaskSummaryCard
-                            runStatus={taskGraph.runStatus}
-                            nodes={taskFlowNodes}
-                            onSelectNode={handleTaskSelectNode}
-                          />
-                        ) : null}
-                      </>
+                      )
                     ) : showExecutionStartPrompt ? (
                       /* v0.9.2 需求2 M3-2：方案卡——勾选执行哪些子任务后确认。 */
                       <TaskPlanCard

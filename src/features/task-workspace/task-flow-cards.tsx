@@ -339,9 +339,11 @@ export function TaskSummaryCard({
               >
                 <Icon className={cn("h-3.5 w-3.5 shrink-0", visual.cls)} />
                 <span className="min-w-0 flex-1 truncate text-foreground/90">{node.title}</span>
-                <span className="shrink-0 text-[9px] text-muted-foreground/60">
-                  {node.agentName}
-                </span>
+                {node.agentName && (
+                  <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium text-primary">
+                    {node.agentName}
+                  </span>
+                )}
               </button>
             );
           })}
