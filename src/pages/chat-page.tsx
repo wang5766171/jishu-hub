@@ -2284,12 +2284,20 @@ export function ChatPage({
 
   const handleStartExecutionFromChat = useCallback(async () => {
     const instance = activeTaskLaunchInstance;
-    const revisionId = taskGraph.revision?.revision_id;
     const projectRoot = currentProject?.path;
-    if (!instance || !revisionId || !projectRoot) return;
+    if (!instance || !projectRoot) return;
     setExecStarting(true);
     setExecStartError(null);
     try {
+      // v0.9.2 测试期修复（用户裁决：执行前修订方案后 dispatch prompt 仍旧版）：
+      // 启动前强制刷新 graph 拿最新 draft revision——修订（conductor_revise_plan）
+      // 创建新 revision 后 task-instance-changed 异步触发 loadGraph，但用户点
+      // 「确认执行」可能先于刷新完成，此时 taskGraph.revision 仍是旧 revision。
+      if (instance.graph_id) {
+        await taskGraphRef.current.loadGraph(instance.graph_id).catch(console.error);
+      }
+      const revisionId = taskGraphRef.current.revision?.revision_id;
+      if (!revisionId) return;
       const result = await startTaskRun({
         taskId: instance.task_id,
         projectRoot,

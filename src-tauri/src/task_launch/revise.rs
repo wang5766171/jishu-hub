@@ -266,6 +266,9 @@ pub fn conductor_revise_plan(req: RevisePlanRequest) -> Result<RevisePlanResult,
     // 的节点（Succeeded 直接入库，引擎只调度新增/未完成节点，不重跑）。
     // v0.9.2 测试期修复：active_run_id 完成后被清空 → 回退 last_run_id 查旧 run
     // 状态（否则整个分支被跳过，新 revision 创建了但无人启动新 run，节点卡等待中）。
+    // v0.9.2 二次修复：用既有 store 连接查 run 状态（此前 open_store_only 开新连接，
+    // get_run 静默失败时整个 carry-over 分支被跳过且无任何日志——draft 更新了但
+    // 无新 run，子节点收到旧 revision 的 dispatch prompt）。
     let reference_run_id = instance.active_run_id.clone().or_else(|| instance.last_run_id.clone());
     let mut run_updated = false;
     if let Some(run_id) = reference_run_id {
@@ -273,7 +276,11 @@ pub fn conductor_revise_plan(req: RevisePlanRequest) -> Result<RevisePlanResult,
             TaskStore::open(&default_db_path())
                 .map_err(|e| format!("reopen store for service failed: {e}"))?,
         );
-        if let Ok(run) = service.get_run(&run_id) {
+        let run_result = service.get_run(&run_id);
+        if let Err(ref e) = run_result {
+            tracing::warn!("[revise] get_run({}) failed: {:?} — carry-over skipped", run_id, e);
+        }
+        if let Ok(run) = run_result {
             if !run.status.is_terminal() && run.active_revision_id != revision_id {
                 let run_proposal = service
                     .propose_run_revision(&run_id, &revision_id)
