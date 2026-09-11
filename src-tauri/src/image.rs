@@ -51,7 +51,7 @@ fn sanitize_label(label: &str) -> String {
 
 fn session_files_dir(project_path: &str) -> PathBuf {
     PathBuf::from(project_path)
-        .join(".jishu_hub")
+        .join(".jishu-hub")
         .join("session_files")
 }
 
