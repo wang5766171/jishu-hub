@@ -74,6 +74,10 @@ function FlowPanoramaPanel({ ctx }: { ctx: SessionKernelContext }) {
           const style = STATUS_STYLE[node.status] ?? STATUS_STYLE.ready;
           const Icon = style.icon;
           const clickable = node.status !== "blocked" && node.status !== "ready";
+          // 2026-09-11 用户反馈：点击子会话后无选中反馈——当前钻入节点用
+          // 主色背景 + 左缘竖条高亮，效果明显（左侧任务列表不再展示子会话，
+          // 看板是唯一的子会话入口，选中态必须一眼可辨）。
+          const isSelected = task.selectedNodeId === node.nodeId;
           return (
             <button
               key={node.nodeId}
@@ -81,11 +85,19 @@ function FlowPanoramaPanel({ ctx }: { ctx: SessionKernelContext }) {
               disabled={!clickable}
               onClick={() => task.onSelectNode(node.nodeId)}
               className={cn(
-                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors",
-                clickable ? "hover:bg-accent" : "cursor-default opacity-70",
+                "flex w-full items-center gap-2 rounded-md border-l-2 px-2 py-1.5 text-left text-xs transition-colors",
+                isSelected
+                  ? "border-l-primary bg-primary/20 font-medium text-foreground"
+                  : cn(
+                      "border-l-transparent",
+                      clickable ? "hover:bg-accent" : "cursor-default opacity-70",
+                    ),
               )}
             >
-              <span className="w-4 shrink-0 text-center text-[10px] text-muted-foreground/60">
+              <span className={cn(
+                "w-4 shrink-0 text-center text-[10px]",
+                isSelected ? "text-primary" : "text-muted-foreground/60",
+              )}>
                 {index + 1}
               </span>
               <Icon className={cn("h-3.5 w-3.5 shrink-0", style.cls)} />

@@ -160,6 +160,9 @@ export interface TaskPanelContext {
   completed: number;
   total: number;
   nodes: TaskPanelNode[];
+  /** 当前钻入的子任务会话节点（无选中为 null）——看板高亮用。
+   * 可选字段：插件与内核独立演进（版本错位容错），缺失时看板不高亮。 */
+  selectedNodeId?: string | null;
   /** 钻入子任务会话。 */
   onSelectNode(nodeId: string): void;
   /** 打开全屏流程画布（高级视图）。 */
