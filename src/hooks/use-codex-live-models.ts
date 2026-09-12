@@ -10,7 +10,7 @@
  * 脱节，正是「选中即 400」源头）；拉取失败为空，用户仍可自由输入手填。
  */
 import { useCallback, useState } from "react";
-import { useInvoke } from "./use-invoke";
+import { invokeCommand, useInvoke } from "./use-invoke";
 
 /** 会话级缓存：应用生命周期内只自动查一次（null = 未查过）。 */
 let sessionCache: string[] | null = null;
@@ -27,7 +27,7 @@ export function useCodexLiveModels(
   const [loading, setLoading] = useState(false);
 
   // 首查：仅当会话缓存为空时启用 IPC（后续进页面吃缓存，不重复查）。
-  const { data, loading: invokeLoading, refetch } = useInvoke<Array<{ value: string }>>(
+  const { data, loading: invokeLoading } = useInvoke<Array<{ value: string }>>(
     enabled && agentId && sessionCache === null ? "get_model_picker_options" : "",
     enabled && agentId ? { agentId } : undefined,
   );
@@ -41,17 +41,27 @@ export function useCodexLiveModels(
     if (!agentId) return;
     setLoading(true);
     try {
-      // refetch 强制同参数重拉（绕过会话缓存短路——cmd 固定，直接调命令）。
-      const result = await refetch();
-      const list = ((result as Array<{ value: string }> | undefined) ?? [])
+      // 补丁七：直接调命令刷新——此前走 useInvoke.refetch，但首查完成后
+      // command 已因会话缓存置空（""），refetch 空命令直接 resolve(null)
+      // → manual 被置空 → 列表消失（用户实测）。
+      const result = await invokeCommand<Array<{ value: string }>>(
+        "get_model_picker_options",
+        { agentId },
+      );
+      const list = (result ?? [])
         .map((o) => o.value.replace(/^codex\//, ""))
         .filter(Boolean);
-      if (list.length > 0) sessionCache = list;
-      setManual(list);
+      // 刷新失败/空结果保留旧列表（不清空展示）。
+      if (list.length > 0) {
+        sessionCache = list;
+        setManual(list);
+      }
+    } catch {
+      // 网络失败静默：保留旧列表。
     } finally {
       setLoading(false);
     }
-  }, [agentId, refetch]);
+  }, [agentId]);
 
   // 展示优先级：手动刷新结果 > 会话缓存 > 首查结果
   const models = manual ?? sessionCache ?? fresh;
