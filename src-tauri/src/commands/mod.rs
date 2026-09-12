@@ -1,4 +1,5 @@
 pub(crate) mod agent_install;
+pub(crate) mod channel_probe;
 pub(crate) mod agents;
 pub(crate) mod config;
 pub(crate) mod custom_commands;

@@ -26,6 +26,7 @@ mod project_config;
 mod session;
 mod task_launch;
 mod task_plan;
+mod channel_models_store;
 mod usage_store;
 mod util;
 
@@ -234,6 +235,9 @@ pub fn run() {
             commands::sessions::usage_overview,
             commands::sessions::export_text_file,
             commands::sessions::export_binary_file,
+            commands::channel_probe::probe_channel_models,
+            channel_models_store::channel_models_probe_and_store,
+            channel_models_store::channel_models_stored,
             commands::sessions::get_session_messages,
             commands::sessions::delete_agent_session,
             commands::sessions::persist_interaction_blocks,
