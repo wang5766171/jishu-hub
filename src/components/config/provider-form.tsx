@@ -280,7 +280,37 @@ export function ProviderForm({
   const removeHeader = (i: number) =>
     setHeaders(headers.filter((_, idx) => idx !== i));
 
+  /* 补丁十六（用户裁决）：接入 key 不再手填——自动生成：baseUrl 域名主体
+   * slug（api.deepseek.com → deepseek），重名加 -2/-3；全无来源回退
+   * custom-<base36>。编辑态沿用 existingName（键不可变）。 */
+  const autoProviderKey = (): string => {
+    if (existingName) return existingName;
+    const src =
+      baseUrl.trim() ||
+      (preset && preset.id !== "custom" ? preset.baseUrl : "") ||
+      displayName.trim();
+    let base = "custom";
+    try {
+      if (src.startsWith("http")) {
+        base = new URL(src).hostname.split(".").slice(-2, -1)[0] || "custom";
+      } else if (/^[a-z0-9][a-z0-9-]*$/i.test(src)) {
+        base = src.toLowerCase().replace(/[^a-z0-9-]/g, "");
+      }
+    } catch {
+      /* 非法 URL 回退 custom */
+    }
+    if (!base || !/^[a-z0-9]/.test(base)) base = `custom-${Date.now().toString(36).slice(-5)}`;
+    let key = base;
+    let n = 2;
+    while (existingProviderKeys.includes(key)) {
+      key = `${base}-${n++}`;
+    }
+    return key;
+  };
+
   const submit = () => {
+    // 接入 key 自动生成（同步取值——不依赖 setState 回填）。
+    const providerKey = name.trim() || autoProviderKey();
     const provider: PiProviderConfig = {};
     if (displayName.trim()) provider.name = displayName.trim();
     else if (preset && preset.id !== "custom") provider.name = t(preset.id_label);
@@ -354,7 +384,7 @@ export function ProviderForm({
       provider.models = existingProvider.models;
     }
 
-    onSubmit({ name: name.trim(), provider });
+    onSubmit({ name: providerKey, provider });
   };
   // 需求16 续三：提交函数上抛页头（表单打开期间有效）。
   // 需求9 补丁四：内嵌 ModelForm 打开期间本表单不注册（ModelForm 独占）。
@@ -410,6 +440,51 @@ export function ProviderForm({
           </div>
         </div>
       )}
+
+      {/* v0.9.2 需求9 补丁八（用户裁决）：接入 key/显示名/API 地址/协议
+          从高级选项折叠摘出，平铺在密钥区上方——与激活后面板字段一致。 */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label htmlFor="provider-display">{t("config.displayName")}</Label>
+          <Input
+            id="provider-display"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder={t("config.presetDisplayNamePlaceholder")}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="provider-baseurl">{t("config.baseUrl")}</Label>
+          <Input
+            id="provider-baseurl"
+            value={baseUrl}
+            onChange={(e) => {
+              setBaseUrl(e.target.value);
+              setTestResult(null);
+            }}
+            placeholder="https://…"
+            className="font-mono"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="provider-api">{t("config.apiProtocol")}</Label>
+          <select
+            id="provider-api"
+            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+            value={api}
+            onChange={(e) => setApi(e.target.value)}
+          >
+            {PROTOCOL_OPTIONS.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+          <p className="text-[10px] text-muted-foreground/70">
+            {t("config.presetApiHint")}
+          </p>
+        </div>
+      </div>
 
       {/* ② API Key（预设已定时唯一必填项） */}
       {preset && preset.id !== "custom" && (
@@ -607,63 +682,10 @@ export function ProviderForm({
       >
         <AccordionItem value="fields">
           <AccordionTrigger className="text-xs">
-            {isCustom ? t("config.presetCustomFields") : t("config.presetAdvanced")}
+            {t("config.presetMoreOptions", "更多选项")}
           </AccordionTrigger>
           <AccordionContent>
             <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="provider-name">{t("config.providerKey")}</Label>
-                <Input
-                  id="provider-name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="zhipu"
-                  disabled={!!existingName}
-                />
-                <p className="text-[10px] text-muted-foreground/70">
-                  {t("config.providerKeyHint")}
-                </p>
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="provider-display">{t("config.displayName")}</Label>
-                <Input
-                  id="provider-display"
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  placeholder={t("config.presetDisplayNamePlaceholder")}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="provider-baseurl">{t("config.baseUrl")}</Label>
-                <Input
-                  id="provider-baseurl"
-                  value={baseUrl}
-                  onChange={(e) => {
-                    setBaseUrl(e.target.value);
-                    setTestResult(null);
-                  }}
-                  placeholder="https://…"
-                  className="font-mono"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="provider-api">{t("config.apiProtocol")}</Label>
-                <select
-                  id="provider-api"
-                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
-                  value={api}
-                  onChange={(e) => setApi(e.target.value)}
-                >
-                  {PROTOCOL_OPTIONS.map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[10px] text-muted-foreground/70">
-                  {t("config.presetApiHint")}
-                </p>
-              </div>
               {preset?.id === "custom" && (
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">

@@ -743,7 +743,6 @@
     "modelEnvEmpty": "No model-related environment variables configured yet (ANTHROPIC_MODEL / ANTHROPIC_BASE_URL, etc.).",
     "modelEnvHint": "These are the environment variables actually in effect for the model path (secrets masked); edit them under Environment Variables in advanced settings.",
     "channelAddCustom": "Add custom channel",
-    "channelAdded": "Added",
     "channelEnable": "Enable channel",
     "customChannelApply": "Save & activate",
     "proxyChatHint": "This endpoint is OpenAI Chat Completions compatible (wire_api = chat).",
@@ -820,7 +819,10 @@
     "keyRequired": "API key is required",
     "modelTemplateLabel": "Parameter template (quick fill)",
     "modelTemplatePlaceholder": "Choose a template…",
-    "modelTemplateHint": "Templates fill context/output/reasoning/input/thinking levels only; enter the model ID yourself"
+    "modelTemplateHint": "Templates fill context/output/reasoning/input/thinking levels only; enter the model ID yourself",
+    "presetMoreOptions": "More options",
+    "providerKeyAuto": "",
+    "refresh": "Refresh"
   },
   "commands": {
     "title": "Commands",

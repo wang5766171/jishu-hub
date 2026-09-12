@@ -13,13 +13,14 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Check, ExternalLink, Eye, EyeOff, Plus, Power, Save, Trash2 } from "lucide-react";
+import { Check, Eye, EyeOff, Plus, Power, Save, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   OPENCODE_CHANNEL_PRESETS,
   OPENCODE_DEFAULT_PROVIDER_NPM,
 } from "@/agents/config/presets/opencode-models";
 import { ChannelSidebar, type ChannelSidebarItem } from "./channel-sidebar";
+import { ThirdPartyChannelPanel } from "./third-party-channel-panel";
 
 type ProviderObj = Record<string, unknown>;
 type ModelObj = Record<string, unknown>;
@@ -37,6 +38,7 @@ export function OpencodeProvidersBlock({
   providers,
   model,
   modelCard,
+  agentId,
   onChange,
 }: {
   providers: Record<string, ProviderObj> | null;
@@ -44,6 +46,8 @@ export function OpencodeProvidersBlock({
   model: string | null;
   /** 模型卡（由 ConfigModelsZone 组装传入——右栏顶部「模型设置」） */
   modelCard: ReactNode;
+  /** v0.9.2 需求9：探测落库作用域（管理作用域 agent）。 */
+  agentId?: string;
   onChange: (patch: { customProviders?: Record<string, ProviderObj>; model?: string | null }) => void;
 }) {
   const { t } = useTranslation();
@@ -63,12 +67,12 @@ export function OpencodeProvidersBlock({
   const channels: ChannelSidebarItem[] = [
     ...OPENCODE_CHANNEL_PRESETS.map((p): ChannelSidebarItem => {
       const override = providersMap[p.id];
+      void override;
       return {
         id: p.id,
         label: t(p.labelKey),
         sub: str(asObj(override?.options).baseURL) || `opencode:${p.id}`,
         active: activeProvider === p.id,
-        added: Boolean(override),
       };
     }),
     ...customChannelIds.map((id): ChannelSidebarItem => ({
@@ -76,6 +80,16 @@ export function OpencodeProvidersBlock({
       label: str(providersMap[id]?.name) || id,
       sub: str(asObj(providersMap[id]?.options).baseURL) || `opencode:${id}`,
       active: activeProvider === id,
+      /* 补丁十八：自定义渠道行可删（hover ×）——预设行不删。 */
+      onRemove: () => {
+        const next = { ...providersMap };
+        delete next[id];
+        onChange({
+          customProviders: next,
+          ...(activeProvider === id ? { model: null } : {}),
+        });
+        if (selectedId === id) setSelectedId(null);
+      },
     })),
   ];
 
@@ -102,6 +116,15 @@ export function OpencodeProvidersBlock({
         selectedId={selectedId === NEW_CHANNEL_ID ? null : selectedId}
         onSelect={setSelectedId}
         onAddCustom={() => setSelectedId(NEW_CHANNEL_ID)}
+        onRemoveChannel={(id) => {
+          const next = { ...providersMap };
+          delete next[id];
+          onChange({
+            customProviders: next,
+            ...(activeProvider === id ? { model: null } : {}),
+          });
+          if (selectedId === id) setSelectedId(null);
+        }}
       />
 
       {/* 右：模型设置 + 渠道配置 */}
@@ -135,7 +158,29 @@ export function OpencodeProvidersBlock({
             providers={providersMap}
             active={activeProvider === selectedId}
             model={model}
+            agentIdForProbe={agentId ?? ""}
             onSetApiKey={(key) => setProviderApiKey(selectedId, key)}
+            onPatchName={(name) => {
+              const existing = providersMap[selectedId] ?? {};
+              onChange({
+                customProviders: {
+                  ...providersMap,
+                  [selectedId]: { ...existing, name },
+                },
+              });
+            }}
+            onPatchBaseURL={(baseURL) => {
+              const existing = providersMap[selectedId] ?? {};
+              onChange({
+                customProviders: {
+                  ...providersMap,
+                  [selectedId]: {
+                    ...existing,
+                    options: { ...asObj(existing.options), baseURL },
+                  },
+                },
+              });
+            }}
             onEnable={enableChannel}
           />
         ) : selectedId && providersMap[selectedId] ? (
@@ -170,128 +215,81 @@ export function OpencodeProvidersBlock({
   );
 }
 
-/** 预置（内置）渠道卡：密钥 + 获取密钥外链 + 预置模型 chips + 启用。 */
+/** v0.9.2 需求9 补丁七返工：opencode 预置（内置）渠道 = 共享面板
+ *  （前端与 jishu 完全一致；字段写草稿经 onSetApiKey/onPatchBaseURL，
+ *  模型经共用库立即持久化；测试经 test_llm_connection，OpenAI 兼容端点
+ *  映射见 OPENCODE_PROBE_BASES）。 */
 function PresetChannelCard({
   presetId,
   providers,
   active,
   model,
+  agentIdForProbe,
   onSetApiKey,
   onEnable,
+  onPatchBaseURL,
+  onPatchName,
 }: {
   presetId: string;
   providers: Record<string, ProviderObj>;
   active: boolean;
   model: string | null;
+  agentIdForProbe: string;
   onSetApiKey: (key: string) => void;
   onEnable: (id: string, modelId: string) => void;
+  onPatchBaseURL: (baseURL: string) => void;
+  onPatchName: (name: string) => void;
 }) {
   const { t } = useTranslation();
-  const [keyDraft, setKeyDraft] = useState("");
-  const [showKey, setShowKey] = useState(false);
   const preset = OPENCODE_CHANNEL_PRESETS.find((p) => p.id === presetId);
   if (!preset) return null;
   const savedKey = str(asObj(providers[presetId]?.options).apiKey);
+  const savedBase = str(asObj(providers[presetId]?.options).baseURL);
   const currentModel = active ? (model?.split("/")[1] ?? "") : "";
+  const OPENCODE_PROBE_BASES: Record<string, string> = {
+    "zhipuai-coding-plan": "https://open.bigmodel.cn/api/paas/v4",
+    deepseek: "https://api.deepseek.com",
+    moonshot: "https://api.moonshot.cn/v1",
+  };
+  const probeBaseUrl = savedBase || OPENCODE_PROBE_BASES[preset.id] || "";
 
   return (
-    <div className="space-y-3 rounded-md border border-border/40 bg-muted/20 p-4">
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-sm font-medium">{t(preset.labelKey)}</div>
-        {active ? (
-          <span className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
-            <Check className="h-3 w-3" />
-            {t("config.channelActive")}
-          </span>
-        ) : (
-          <Button size="sm" className="h-7 text-xs" onClick={() => onEnable(preset.id, preset.models[0])}>
-            <Power className="mr-1 h-3 w-3" />
-            {t("config.channelEnable")}
-          </Button>
-        )}
-      </div>
-
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between">
-          <Label htmlFor={`opencode-key-${preset.id}`}>{t("config.apiKey")}</Label>
-          {preset.apiKeyUrl && (
-            <button
-              type="button"
-              onClick={() => void invokeCommand("open_url", { url: preset.apiKeyUrl })}
-              className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
-            >
-              {t("config.presetGetKey")}
-              <ExternalLink className="h-3 w-3" />
-            </button>
-          )}
-        </div>
-        <div className="flex gap-2">
-          <Input
-            id={`opencode-key-${preset.id}`}
-            type={showKey ? "text" : "password"}
-            value={keyDraft}
-            onChange={(e) => setKeyDraft(e.target.value)}
-            placeholder={t("config.quickSetupKeyPlaceholder")}
-            autoComplete="off"
-          />
-          <Button
-            variant="outline"
-            size="icon"
-            className="shrink-0"
-            onClick={() => setShowKey((v) => !v)}
-            title={showKey ? t("config.hideKey") : t("config.showKey")}
-          >
-            {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-          </Button>
-          <Button
-            size="sm"
-            className="h-9 shrink-0"
-            disabled={!keyDraft.trim()}
-            onClick={() => {
-              onSetApiKey(keyDraft.trim());
-              setKeyDraft("");
-            }}
-          >
-            {t("config.quickSetupApplyKey")}
-          </Button>
-        </div>
-        {savedKey && (
-          <p className="text-[10px] text-muted-foreground/70">
-            {t("config.channelKeySaved")}
-            {savedKey.length > 8 ? `：••••${savedKey.slice(-4)}` : ""}
-          </p>
-        )}
-      </div>
-
-      {/* 预置模型 chips：点击即启用该模型 */}
-      <div className="space-y-1.5">
-        <Label className="text-xs text-muted-foreground">{t("config.presetStepModels")}</Label>
-        <div className="flex flex-wrap gap-1.5">
-          {preset.models.map((mid) => {
-            const isCurrent = active && currentModel === mid;
-            return (
-              <button
-                key={mid}
-                type="button"
-                onClick={() => onEnable(preset.id, mid)}
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 font-mono text-[11px] transition-colors",
-                  isCurrent
-                    ? "border-primary/60 bg-primary/10 text-primary"
-                    : "border-border/40 text-muted-foreground hover:border-border",
-                )}
-              >
-                {isCurrent && <Check className="h-3 w-3" />}
-                {mid}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-      <p className="text-[10px] leading-relaxed text-muted-foreground/70">
-        {t("config.channelSaveHint")}
-      </p>
-    </div>
+    <ThirdPartyChannelPanel
+      agentId={agentIdForProbe}
+      channelKey={`opencode:${preset.id}`}
+      title={t(preset.labelKey)}
+      isActive={active}
+      fields={{
+        displayName: str(providers[presetId]?.name) || t(preset.labelKey),
+        baseUrl: probeBaseUrl,
+        protocol: "openai-completions",
+        apiKey: "",
+        savedApiKey: savedKey,
+        protocolOptions: [{ value: "openai-completions", label: "openai-completions" }],
+      }}
+      presetModels={preset.models}
+      activeModelId={currentModel || null}
+      onPatchFields={(patch) => {
+        if (patch.apiKey) onSetApiKey(patch.apiKey);
+        if (patch.baseUrl !== undefined && savedBase) onPatchBaseURL(patch.baseUrl);
+        if (patch.displayName !== undefined) onPatchName(patch.displayName);
+      }}
+      onEnable={() => onEnable(preset.id, preset.models[0])}
+      onSelectModel={(mid) => onEnable(preset.id, mid)}
+      onTest={async (modelId) =>
+        invokeCommand<{ response?: string | null }>("test_llm_connection", {
+          api: "openai-completions",
+          baseUrl: probeBaseUrl,
+          apiKey: savedKey,
+          model: modelId,
+        })
+          .then((result) => {
+            const reply = (result?.response ?? "").toString().trim();
+            return { ok: true, text: reply ? reply.slice(0, 120) : "OK" };
+          })
+          .catch((e) => ({ ok: false, text: String(e).slice(0, 200) }))
+      }
+    />
   );
 }
 

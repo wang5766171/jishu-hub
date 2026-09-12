@@ -38,7 +38,14 @@ fn init_conn(conn: &Connection) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS channel_models (
+        "CREATE TABLE IF NOT EXISTS channel_custom_models (
+            agent_id    TEXT NOT NULL,
+            channel_key TEXT NOT NULL,
+            models      TEXT NOT NULL,
+            updated_at  INTEGER NOT NULL,
+            PRIMARY KEY (agent_id, channel_key)
+        );
+        CREATE TABLE IF NOT EXISTS channel_models (
             agent_id    TEXT NOT NULL,
             channel_key TEXT NOT NULL,
             models      TEXT NOT NULL,            -- JSON array of model ids
@@ -118,6 +125,68 @@ fn lookup(agent_id: &str, channel_key: &str) -> Result<Option<StoredChannelModel
     }
 }
 
+// ── 手动配置模型（渠道自定义模型，三 agent 第三方渠道共用存储）──
+
+pub(crate) fn custom_upsert(
+    agent_id: &str,
+    channel_key: &str,
+    models_json: &str,
+) -> Result<(), String> {
+    let store = store()?;
+    let conn = store.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO channel_custom_models (agent_id, channel_key, models, updated_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(agent_id, channel_key) DO UPDATE SET
+           models = excluded.models, updated_at = excluded.updated_at",
+        rusqlite::params![agent_id, channel_key, models_json, crate::util::now_ms()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn custom_lookup(
+    agent_id: &str,
+    channel_key: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    let store = store()?;
+    let conn = store.conn.lock().map_err(|e| e.to_string())?;
+    let result = conn.query_row(
+        "SELECT models FROM channel_custom_models WHERE agent_id = ?1 AND channel_key = ?2",
+        rusqlite::params![agent_id, channel_key],
+        |row| row.get::<_, String>(0),
+    );
+    match result {
+        Ok(json) => Ok(Some(serde_json::from_str(&json).unwrap_or(serde_json::Value::Null))),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// 读取渠道手动配置模型（JSON 数组；无记录 = null）。
+#[tauri::command]
+pub(crate) async fn channel_custom_models_get(
+    agent_id: String,
+    channel_key: String,
+) -> Result<Option<serde_json::Value>, String> {
+    tauri::async_runtime::spawn_blocking(move || custom_lookup(&agent_id, &channel_key))
+        .await
+        .map_err(|e| format!("custom lookup task failed: {e}"))?
+}
+
+/// 保存渠道手动配置模型（整组覆盖；models 为模型条目 JSON 数组）。
+#[tauri::command]
+pub(crate) async fn channel_custom_models_set(
+    agent_id: String,
+    channel_key: String,
+    models: serde_json::Value,
+) -> Result<(), String> {
+    let json = serde_json::to_string(&models).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || custom_upsert(&agent_id, &channel_key, &json))
+        .await
+        .map_err(|e| format!("custom upsert task failed: {e}"))?
+}
+
 // ── Tauri 命令 ──
 
 /// 探测 + 落库（探测成功才写；失败返回 unsupported，旧记录保留——手动刷新
@@ -167,6 +236,20 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_conn(&conn).unwrap();
         conn.execute(
+            "INSERT OR REPLACE INTO channel_custom_models (agent_id, channel_key, models, updated_at)
+             VALUES ('a1', 'ch1', '[{\"id\":\"m9\"}]', 1)",
+            [],
+        )
+        .unwrap();
+        let cj: String = conn
+            .query_row(
+                "SELECT models FROM channel_custom_models WHERE agent_id='a1' AND channel_key='ch1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(cj.contains("m9"));
+        conn.execute(
             "INSERT INTO channel_models (agent_id, channel_key, models, endpoint, fetched_at)
              VALUES ('a1', 'ch1', '[\"m1\",\"m2\"]', 'https://x/models', 123)",
             [],
@@ -185,6 +268,20 @@ mod tests {
         assert_eq!(fetched_at, 123);
 
         // upsert 语义：同键覆盖
+        conn.execute(
+            "INSERT OR REPLACE INTO channel_custom_models (agent_id, channel_key, models, updated_at)
+             VALUES ('a1', 'ch1', '[{\"id\":\"m9\"}]', 1)",
+            [],
+        )
+        .unwrap();
+        let cj: String = conn
+            .query_row(
+                "SELECT models FROM channel_custom_models WHERE agent_id='a1' AND channel_key='ch1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(cj.contains("m9"));
         conn.execute(
             "INSERT INTO channel_models (agent_id, channel_key, models, endpoint, fetched_at)
              VALUES ('a1', 'ch1', '[\"m3\"]', 'https://y/models', 456)

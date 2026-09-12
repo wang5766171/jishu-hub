@@ -6,7 +6,7 @@
 // 组件无业务状态：数据组装与点击行为全部由调用方注入。
 
 import { useTranslation } from "react-i18next";
-import { Loader2, Plus, Zap } from "lucide-react";
+import { Loader2, Plus, Trash2, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface ChannelSidebarItem {
@@ -17,8 +17,8 @@ export interface ChannelSidebarItem {
   sub?: string;
   /** 当前生效（绿点） */
   active?: boolean;
-  /** 已添加但未激活（预置渠道在 jishu 中的形态：弱化边框提示可进入） */
-  added?: boolean;
+  /** v0.9.2 需求9 补丁十五：自定义渠道行删除入口（hover 出 ×；预设行不传）。 */
+  onRemove?: () => void;
 }
 
 export function ChannelSidebar({
@@ -31,6 +31,7 @@ export function ChannelSidebar({
   channels,
   selectedId,
   onSelect,
+  onRemoveChannel,
   onAddCustom,
 }: {
   loading?: boolean;
@@ -45,6 +46,8 @@ export function ChannelSidebar({
   /** 当前选中项 id；官方直连的保留 id 为 "direct" */
   selectedId: string | null;
   onSelect: (id: string) => void;
+  /** v09.2 补丁十五：删除自定义渠道（行 onRemove 存在时 hover × 触发）。 */
+  onRemoveChannel?: (id: string) => void;
   /** 底部「添加自定义渠道」按钮（不传 = 不渲染） */
   onAddCustom?: () => void;
 }) {
@@ -67,7 +70,7 @@ export function ChannelSidebar({
                 type="button"
                 onClick={onSelectDirect}
                 className={cn(
-                  "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition-fast",
+                  "group/channel flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition-fast",
                   directSelected
                     ? "border border-primary/60 bg-primary/10 font-medium text-primary ring-1 ring-primary/30"
                     : "border border-transparent text-muted-foreground hover:bg-accent/30 hover:text-foreground",
@@ -98,7 +101,7 @@ export function ChannelSidebar({
                     type="button"
                     onClick={() => onSelect(channel.id)}
                     className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition-fast",
+                      "group/channel flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition-fast",
                       isSelected
                         ? "border border-primary/60 bg-primary/10 font-medium text-primary ring-1 ring-primary/30"
                         : "border border-transparent text-muted-foreground hover:bg-accent/30 hover:text-foreground",
@@ -118,10 +121,20 @@ export function ChannelSidebar({
                         </span>
                       )}
                     </span>
-                    {channel.added && !channel.active && (
-                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                        {t("config.channelAdded")}
-                      </span>
+                    {channel.onRemove && (
+                      /* 补丁二十一（用户裁决）：删除按钮常驻（垃圾桶图标，
+                          非 hover 才现的 ×）。 */
+                      <button
+                        type="button"
+                        title={t("common.delete")}
+                        className="shrink-0 rounded p-0.5 text-muted-foreground/40 transition-colors hover:bg-red-500/10 hover:text-red-400"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRemoveChannel?.(channel.id);
+                        }}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
                     )}
                   </button>
                 );

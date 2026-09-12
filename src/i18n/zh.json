@@ -743,7 +743,6 @@
     "modelEnvEmpty": "尚未配置模型相关环境变量（ANTHROPIC_MODEL / ANTHROPIC_BASE_URL 等）。",
     "modelEnvHint": "以上为模型链路实际生效的环境变量（密钥已脱敏），在高级设置的「环境变量」中修改。",
     "channelAddCustom": "添加自定义渠道",
-    "channelAdded": "已添加",
     "channelEnable": "启用此渠道",
     "customChannelApply": "保存并启用",
     "proxyChatHint": "该端点为 OpenAI Chat Completions 兼容（wire_api = chat）。",
@@ -820,7 +819,10 @@
     "keyRequired": "API 密钥不能为空",
     "modelTemplateLabel": "参数模板（快速带出）",
     "modelTemplatePlaceholder": "选择参数模板…",
-    "modelTemplateHint": "模板仅带出上下文/输出/推理/输入/思考档位参数，模型 ID 需自行填写"
+    "modelTemplateHint": "模板仅带出上下文/输出/推理/输入/思考档位参数，模型 ID 需自行填写",
+    "presetMoreOptions": "更多选项",
+    "providerKeyAuto": "",
+    "refresh": "刷新"
   },
   "commands": {
     "title": "快捷命令",

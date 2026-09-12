@@ -55,9 +55,10 @@ interface StoredChannelModels {
   fetched_at: number;
 }
 
-import { ProviderForm, probedModelToEntry } from "./provider-form";
+import { probedModelToEntry } from "./provider-form";
+import { byVersionDesc } from "./model-sort";
 import { ModelForm } from "./model-form";
-import { ActiveModelCard, type ActiveModelOption } from "./active-model-card";
+import { ActiveModelCard } from "./active-model-card";
 import { ChannelSidebar, type ChannelSidebarItem } from "./channel-sidebar";
 import {
   PROVIDER_PRESETS,
@@ -92,43 +93,29 @@ export function ModelManager({
   // form, or an edit / add model form scoped to a single provider.
   // v0.7.6 需求3：add 模式携带 presetId（左栏点击未添加预置渠道 /
   // 底部「添加自定义渠道」= "custom" 时预选）。
-  const [providerForm, setProviderForm] = useState<
-    { mode: "add"; presetId?: string } | { mode: "edit"; name: string } | null
-  >(null);
   // R6 两栏结构：左渠道列表，右选中渠道详情。
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
+  // 骨架 provider 键集合（点击未添加预设建立的本地草稿，未写盘）。
+  const [skeletonKeys, setSkeletonKeys] = useState<Set<string>>(new Set());
 
   // 需求16 续三：保存统一页头——当前活动保存入口（ProviderForm/ModelForm
   // 经各自 registerSave 上抛；渠道详情经 detailSaveRef）。聚合后转抛页头。
-  const formSaveRef = useRef<(() => void) | null>(null);
   const detailSaveRef = useRef<(() => void) | null>(null);
   const [detailDirty, setDetailDirty] = useState(false);
-  const formActive = providerForm !== null;
-  const registerFormSave = useCallback(
-    (fn: (() => void) | null) => {
-      formSaveRef.current = fn;
-      registerSave?.(fn ?? (detailDirty ? () => detailSaveRef.current?.() : null));
-    },
-    [registerSave, detailDirty],
-  );
   const registerDetailSave = useCallback(
     (fn: (() => void) | null) => {
       detailSaveRef.current = fn;
-      registerSave?.(fn ?? (formActive ? () => formSaveRef.current?.() : null));
+      registerSave?.(fn);
     },
-    [registerSave, formActive],
+    [registerSave],
   );
   useEffect(() => {
     onSaveStateChange?.({
-      dirty: formActive || detailDirty,
+      dirty: detailDirty,
       saving,
     });
-  }, [formActive, detailDirty, saving, onSaveStateChange]);
-  useEffect(() => {
-    if (!formActive) return;
-    registerSave?.(() => formSaveRef.current?.());
-    return () => registerSave?.(detailDirty ? () => detailSaveRef.current?.() : null);
-  }, [formActive, detailDirty, registerSave]);
+  }, [detailDirty, saving, onSaveStateChange]);
+
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -160,6 +147,15 @@ export function ModelManager({
   ) => {
     await invokeCommand("set_models_config", { agentId, config: next });
     setConfig(next);
+    // 补丁十：落盘即转正——骨架键已在 next.providers 里即已写盘。
+    setSkeletonKeys((prev) => {
+      if (prev.size === 0) return prev;
+      const nextSet = new Set(prev);
+      for (const k of prev) {
+        if (next.providers[k]) nextSet.delete(k);
+      }
+      return nextSet;
+    });
     if (
       clearActiveIfMissing &&
       !(
@@ -174,51 +170,12 @@ export function ModelManager({
   };
 
   // -------------------- Provider ops --------------------
-  const submitProvider = async (payload: {
-    name: string;
-    provider: PiProviderConfig;
-  }) => {
-    setError(null);
-    const { name, provider } = payload;
-    if (!name) {
-      setError(`${t("config.providerKey")} ${t("config.required")}`);
-      return;
-    }
-    if (
-      providerForm?.mode === "add" &&
-      providerNames.includes(name)
-    ) {
-      setError(`${name} ${t("config.exists")}`);
-      return;
-    }
-    if (
-      providerForm?.mode === "edit" &&
-      providerForm.name !== name &&
-      providerNames.includes(name)
-    ) {
-      setError(`${name} ${t("config.exists")}`);
-      return;
-    }
-    setSaving(true);
-    try {
-      const next: PiModelsConfig = { providers: { ...config.providers } };
-      if (providerForm?.mode === "edit" && providerForm.name !== name) {
-        delete next.providers[providerForm.name];
-      }
-      next.providers[name] = provider;
-      await persistConfig(next);
-      setSelectedProvider(name);
-      setProviderForm(null);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
   const deleteProvider = async (name: string) => {
     const confirmed = await confirmDialog({
       title: t("config.title"),
-      description: t("config.deleteProviderConfirm", { name }),
+      description: t("config.deleteProviderConfirm", {
+        name: (config.providers[name]?.name as string | undefined) || name,
+      }),
       variant: "destructive",
     });
     if (!confirmed) {
@@ -305,23 +262,32 @@ export function ModelManager({
     }
   };
 
-  // R3/R9：扁平 provider/model 单选（与聊天页模型选择器同一心智）；
-  // hint 显示渠道显示名（providers.<key>.name），无则回退 key。
-  const activeModelOptions: ActiveModelOption[] = providerNames.flatMap((name) => {
-    const displayName = (config.providers[name]?.name as string | undefined) || name;
-    return (config.providers[name]?.models ?? []).map((m) => ({
-      value: `${name}/${m.id}`,
-      // v0.9.2 需求9 补丁六：label 用模型 id（与下方模型列表同源同形）——
-      // 此前用 m.name（预设条目是大写 displayName 如 GLM-5.3），与列表的
-      // 小写 id（接口探测真实形态）显示不一致。
-      label: m.id,
-      hint: displayName,
-    }));
-  });
-  const currentActiveOption = active
-    ? (activeModelOptions.find(
-        (o) => o.value === `${active.provider}/${active.model}`,
-      ) ?? null)
+  // 补丁二十五修复：取消激活写 null——原实现借道
+  // setActiveFromPicker(provider, "")，把 {provider, model: ""} 脏状态
+  // 写进 settings.json 的 active（会话页读到空 model 语义不明）。
+  const unsetActive = async () => {
+    try {
+      await invokeCommand("set_active", { agentId, active: null });
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    setActive(null);
+    onActiveModelChange?.(null);
+    onChanged?.();
+  };
+
+  // 补丁二十六（用户裁决）：当前模型改为**只读静态卡**——v0.9.2 需求9 的
+  // 渠道内行级激活取代跨渠道下拉切换，但全局「当前激活的是哪个模型」仍需
+  // 一眼可见（切到别的渠道时详情面板看不到激活行）。无下拉箭头、不可点。
+  const activeDisplay = active
+    ? {
+        value: `${active.provider}/${active.model}`,
+        label: active.model,
+        hint:
+          (config.providers[active.provider]?.name as string | undefined) ||
+          active.provider,
+      }
     : null;
 
   // 选中项失效（删除/改名/首次加载）时回退到当前激活渠道或首个渠道。
@@ -343,7 +309,6 @@ export function ModelManager({
 
   const selectProvider = (name: string) => {
     setSelectedProvider(name);
-    setProviderForm(null);
     setError(null);
   };
 
@@ -364,13 +329,14 @@ export function ModelManager({
 
   const sidebarChannels: ChannelSidebarItem[] = [
     ...presetChannels.map((p): ChannelSidebarItem => {
-      const matchedKey = providerNames.find((n) => providerMatchedPresetId(n) === p.id);
+      const matchedKey = providerNames.find(
+        (n) => providerMatchedPresetId(n) === p.id && !skeletonKeys.has(n),
+      );
       return {
         id: `preset:${p.id}`,
         label: t(p.id_label),
         sub: p.baseUrl,
         active: matchedKey ? active?.provider === matchedKey : false,
-        added: Boolean(matchedKey),
       };
     }),
     ...providerNames
@@ -382,15 +348,13 @@ export function ModelManager({
           label: (p?.name as string | undefined) || name,
           sub: p?.baseUrl || t("config.noBaseUrl"),
           active: active?.provider === name,
+          /* 补丁十五：自定义渠道行可删（hover ×）——预设=内置能力不删。 */
+          onRemove: () => void deleteProvider(name),
         };
       }),
   ];
 
-  const sidebarSelectedId = providerForm
-    ? providerForm.mode === "add" && providerForm.presetId && providerForm.presetId !== "custom"
-      ? `preset:${providerForm.presetId}`
-      : null
-    : selectedProvider
+  const sidebarSelectedId = selectedProvider
       ? providerMatchedPresetId(selectedProvider)
         ? `preset:${providerMatchedPresetId(selectedProvider)}`
         : `provider:${selectedProvider}`
@@ -403,9 +367,32 @@ export function ModelManager({
       if (matchedKey) {
         selectProvider(matchedKey);
       } else {
-        setSelectedProvider(null);
-        setProviderForm({ mode: "add", presetId });
-        setError(null);
+        // v0.9.2 需求9 补丁八（用户裁决：激活前后页面一致，参考 codex）：
+        // 未添加预设不再展开 ProviderForm（旧激活前表单），直接建**本地骨架**
+        // provider 进 ProviderDetailPanel——与激活后同面板；首字段保存/模型
+        // 落库时随 persistConfig 一并写盘，离开不保存则骨架不落盘。
+        const preset = PROVIDER_PRESETS.find((p) => p.id === presetId);
+        if (preset) {
+          if (skeletonKeys.has(presetId)) {
+            // 骨架已在（上次点击建的本地草稿）——仅选中，不重建防丢编辑。
+            setSelectedProvider(presetId);
+            setError(null);
+            return;
+          }
+          setConfig((prev) => ({
+            providers: {
+              ...prev.providers,
+              [presetId]: {
+                name: t(preset.id_label),
+                baseUrl: preset.baseUrl,
+                api: preset.api,
+              },
+            },
+          }));
+          setSkeletonKeys((prev) => new Set(prev).add(presetId));
+          setSelectedProvider(presetId);
+          setError(null);
+        }
       }
       return;
     }
@@ -427,9 +414,24 @@ export function ModelManager({
           channels={sidebarChannels}
           selectedId={sidebarSelectedId}
           onSelect={handleSidebarSelect}
+          onRemoveChannel={(id) => {
+            if (!id.startsWith("provider:")) return;
+            void deleteProvider(id.slice("provider:".length));
+          }}
           onAddCustom={() => {
-            setSelectedProvider(null);
-            setProviderForm({ mode: "add", presetId: "custom" });
+            /* 补丁十七（用户裁决：新增自定义渠道与已有渠道展示一致）：
+               不再展开 ProviderForm，直接建本地骨架 provider（唯一键）进
+               ProviderDetailPanel——与已有渠道完全同款；首次字段保存随
+               persistConfig 落盘，不保存切走不落盘。 */
+            let key = `custom-${Date.now().toString(36).slice(-5)}`;
+            while (config.providers[key]) {
+              key = `custom-${Date.now().toString(36).slice(-5)}-${Math.floor(Math.random() * 90 + 10)}`;
+            }
+            setConfig((prev) => ({
+              providers: { ...prev.providers, [key]: { api: "openai-completions" } },
+            }));
+            setSkeletonKeys((prev) => new Set(prev).add(key));
+            setSelectedProvider(key);
             setError(null);
           }}
         />
@@ -444,39 +446,9 @@ export function ModelManager({
           <div className="text-xs font-medium text-muted-foreground">
             {t("config.colModels")}
           </div>
-          <ActiveModelCard
-            current={currentActiveOption}
-            options={activeModelOptions}
-            onSelect={(value) => {
-              const sep = value.indexOf("/");
-              if (sep <= 0) return;
-              void setActiveFromPicker(value.slice(0, sep), value.slice(sep + 1));
-            }}
-            emptyHint={t("config.noModelConfigured")}
-            // 需求16：不再传 emptyActionLabel/onEmptyAction——右侧无「添加接入」，渠道统一在左栏。
-          />
+          <ActiveModelCard current={activeDisplay} readOnly />
 
-          {providerForm ? (
-            <ProviderForm
-              agentId={agentId}
-              // key 强制在「表单打开状态下切换到另一预置渠道」时重建表单
-              //（否则组件实例保留首次挂载的预设 state，第二次切换不生效——
-              // v0.7.6 需求3 测试期迭代二）。
-              key={
-                providerForm.mode === "add"
-                  ? providerForm.presetId ?? "custom"
-                  : `edit:${providerForm.name}`
-              }
-              existingName={null}
-              existingProvider={undefined}
-              existingProviderKeys={providerNames}
-              initialPresetId={providerForm.mode === "add" ? providerForm.presetId : undefined}
-              saving={saving}
-              onCancel={() => setProviderForm(null)}
-              onSubmit={submitProvider}
-              registerSave={registerFormSave}
-            />
-          ) : selectedProvider && config.providers[selectedProvider] ? (
+          {selectedProvider && config.providers[selectedProvider] ? (
             <ProviderDetailPanel
               agentId={agentId}
               name={selectedProvider}
@@ -492,7 +464,6 @@ export function ModelManager({
                 const first = config.providers[selectedProvider]?.models?.[0]?.id;
                 if (first) void setActiveFromPicker(selectedProvider, first);
               }}
-              onDeleteProvider={() => deleteProvider(selectedProvider)}
               onSaveProvider={(next) => saveProviderFields(selectedProvider, next)}
               registerSave={registerDetailSave}
               onDirtyChange={setDetailDirty}
@@ -500,6 +471,7 @@ export function ModelManager({
               onSetActive={(modelId) =>
                 void setActiveFromPicker(selectedProvider, modelId)
               }
+              onUnsetActive={() => void unsetActive()}
               onAddProbedModel={(modelId) => {
                 // 探测-only 模型点击 = 完整合法条目落配置并设为当前（详情
                 // 面板随后可编辑 ctx/maxTokens 等参数）。
@@ -546,13 +518,13 @@ function ProviderDetailPanel({
   isActive,
   activeModelId,
   onEnableProvider,
-  onDeleteProvider,
   onSaveProvider,
   /** 需求16 续三：保存上抛页头（dirty 时注册提交函数）。 */
   registerSave,
   onDirtyChange,
   onDeleteModel,
   onSetActive,
+  onUnsetActive,
   onAddProbedModel,
 }: {
   /** v0.9.2 需求9：探测落库作用域（管理作用域 agent）。 */
@@ -564,12 +536,13 @@ function ProviderDetailPanel({
   activeModelId: string | null;
   /** 启用此渠道（激活该渠道第一个模型；v0.7.6 需求3 迭代三）。 */
   onEnableProvider: () => void;
-  onDeleteProvider: () => void;
   onSaveProvider: (next: PiProviderConfig) => Promise<void>;
   registerSave?: (fn: (() => void) | null) => void;
   onDirtyChange?: (dirty: boolean) => void;
   onDeleteModel: (modelId: string) => void;
   onSetActive: (modelId: string) => void;
+  /** 取消激活（当前模型再点激活钮）。 */
+  onUnsetActive: () => void;
   /** v0.9.2 需求9：点击探测-only 模型 = 直接添加为渠道模型并设为当前。 */
   onAddProbedModel: (modelId: string) => void;
 }) {
@@ -592,7 +565,6 @@ function ProviderDetailPanel({
   // 可继续添加），再次页头保存 = 渠道字段 + 暂存模型一并落库。编辑同位内嵌。
   const [inlineAddOpen, setInlineAddOpen] = useState(false);
   const [inlineEditId, setInlineEditId] = useState<string | null>(null);
-  const [stagedModels, setStagedModels] = useState<PiModelEntry[]>([]);
 
   // v0.9.2 需求9（用户裁决）：第三方渠道按渠道**探测**模型列表——首次自动
   // 查（配置密钥后），结果**落库**（~/.jishu-hub/channel-models.db，跨重启）；
@@ -600,6 +572,10 @@ function ProviderDetailPanel({
   // 未填密钥 → 列表空 + 引导文案。
   const savedKeyInitial = ((provider.apiKey as string) ?? "").trim();
   const [probedModels, setProbedModels] = useState<string[] | null>(null);
+  // v0.9.2 需求9 补丁二十五：自建模型 origin 追踪——共用库记录表单保存的
+  // id（探测行点击/addProbedModel 落库不记）。此前按预设静态表判定，
+  // 跨渠道模型（deepseek 上的 glm-4.5）恒误判自建 → 误显删除钮。
+  const [userAddedIds, setUserAddedIds] = useState<Set<string>>(new Set());
   const [probing, setProbing] = useState(false);
   const [probeState, setProbeState] = useState<"none" | "unsupported" | "failed" | "ok">("none");
   const channelKey = `${agentId}::${name}`;
@@ -682,8 +658,7 @@ function ProviderDetailPanel({
     baseUrl !== (provider.baseUrl ?? "") ||
     api !== (provider.api ?? "anthropic-messages") ||
     authHeader !== (provider.authHeader ?? false) ||
-    apiKey.trim() !== "" ||
-    stagedModels.length > 0;
+    apiKey.trim() !== "";
 
   // 需求16 续三：dirty 上抛 + 提交函数注册到页头（保存统一右上角）。
   useEffect(() => {
@@ -705,22 +680,17 @@ function ProviderDetailPanel({
     setKeyMissing(false);
     setSaving(true);
     try {
-      const existingIds = new Set(models.map((m) => m.id));
       const next: PiProviderConfig = {
         ...provider,
         name: displayName || undefined,
         baseUrl: baseUrl || undefined,
         api,
         authHeader,
-        models: [
-          ...models,
-          ...stagedModels.filter((m) => !existingIds.has(m.id)),
-        ],
+        models,
       };
       if (apiKey.trim()) next.apiKey = apiKey.trim();
       await onSaveProvider(next);
       setApiKey("");
-      setStagedModels([]);
     } finally {
       setSaving(false);
     }
@@ -752,22 +722,73 @@ function ProviderDetailPanel({
   };
 
   // v0.9.2 需求9：已配置模型 ∪ 探测落库模型（同 id 去重；探测-only 弱化）。
-  const mergedModels: Array<{ model: PiModelEntry; probeOnly: boolean }> = (() => {
+  const mergedModels: Array<{
+    model: PiModelEntry;
+    probeOnly: boolean;
+    /** 已落库且非预设种子 = 用户自建模型：可删除。 */
+    userAdded?: boolean;
+  }> = (() => {
     const configuredIds = new Set(models.map((m) => m.id));
-    const merged = models.map((model) => ({ model, probeOnly: false }));
+    const merged = models.map((model) => ({
+      model,
+      probeOnly: false,
+      /* 补丁二十五：自建 = origin 库有记录（表单保存过），与预设表无关。 */
+      userAdded: userAddedIds.has(model.id),
+    }));
     for (const id of probedModels ?? []) {
       if (!configuredIds.has(id)) {
         merged.push({
           model: { id } as PiModelEntry,
           probeOnly: true,
+          userAdded: false,
         });
       }
     }
+    // v0.9.2 需求9 补丁九：版本号倒序（最新在前）。
+    merged.sort((a, b) => byVersionDesc(a.model.id, b.model.id));
     return merged;
   })();
 
   const addProbedModel = (id: string) => {
     onAddProbedModel(id);
+  };
+
+  const originKey = `jishu-models:${name}`;
+  useEffect(() => {
+    let cancelled = false;
+    invokeCommand<string[] | null>("channel_custom_models_get", { agentId, channelKey: originKey })
+      .then((ids) => {
+        if (!cancelled) setUserAddedIds(new Set(ids ?? []));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, originKey]);
+
+  const trackUserAdded = (modelId: string) => {
+    setUserAddedIds((prev) => {
+      const next = new Set(prev);
+      next.add(modelId);
+      void invokeCommand("channel_custom_models_set", {
+        agentId,
+        channelKey: originKey,
+        models: Array.from(next),
+      }).catch(console.warn);
+      return next;
+    });
+  };
+  const untrackUserAdded = (modelId: string) => {
+    setUserAddedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(modelId);
+      void invokeCommand("channel_custom_models_set", {
+        agentId,
+        channelKey: originKey,
+        models: Array.from(next),
+      }).catch(console.warn);
+      return next;
+    });
   };
 
   // v0.9.2 需求9 补丁五（用户裁决）：编辑在哪条下面展开、新增在列表顶做
@@ -782,7 +803,7 @@ function ProviderDetailPanel({
         existingModel={
           context === "add"
             ? undefined
-            : models.find((m) => m.id === context)
+            : mergedModels.find((r) => r.model.id === context)?.model
         }
         saving={saving}
         localSave
@@ -792,13 +813,16 @@ function ProviderDetailPanel({
         }}
         onSubmit={({ model }) => {
           if (context !== "add") {
+            const inModels = models.some((m) => m.id === context);
             const next: PiProviderConfig = {
               ...provider,
               name: displayName || undefined,
               baseUrl: baseUrl || undefined,
               api,
               authHeader,
-              models: models.map((m) => (m.id === context ? model : m)),
+              models: inModels
+                ? models.map((m) => (m.id === context ? model : m))
+                : [...models, model],
             };
             if (apiKey.trim()) next.apiKey = apiKey.trim();
             void onSaveProvider(next).then(() => {
@@ -821,11 +845,21 @@ function ProviderDetailPanel({
               if (apiKey.trim()) next.apiKey = apiKey.trim();
               void onSaveProvider(next).then(() => setApiKey(""));
             } else {
-              setStagedModels((prev) =>
-                prev.some((x) => x.id === model.id)
-                  ? prev.map((x) => (x.id === model.id ? model : x))
-                  : [...prev, model],
-              );
+              /* 补丁二十四：内嵌表单保存 = 即时落库（含渠道字段草稿）。
+                 补丁二十五：新 id 记入 origin 库（自建标记）。 */
+              const next: PiProviderConfig = {
+                ...provider,
+                name: displayName || undefined,
+                baseUrl: baseUrl || undefined,
+                api,
+                authHeader,
+                models: models.some((x) => x.id === model.id)
+                  ? models.map((x) => (x.id === model.id ? model : x))
+                  : [...models, model],
+              };
+              if (apiKey.trim()) next.apiKey = apiKey.trim();
+              trackUserAdded(model.id);
+              void onSaveProvider(next).then(() => setApiKey(""));
             }
             setInlineAddOpen(false);
           }
@@ -848,33 +882,39 @@ function ProviderDetailPanel({
               {t("config.authHeaderBadge")}
             </span>
           )}
-          {isActive ? (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
-              <Check className="h-3 w-3" />
-              {t("config.channelActive")}
-            </span>
-          ) : (
-            models.length > 0 && (
-              <Button
-                size="sm"
-                className="h-7 shrink-0 text-xs"
-                onClick={onEnableProvider}
-              >
-                <Power className="mr-1 h-3 w-3" />
-                {t("config.channelEnable")}
-              </Button>
-            )
-          )}
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-red-400 hover:text-red-300"
-          onClick={onDeleteProvider}
-          title={t("common.delete")}
-        >
-          <Trash2 className="h-3 w-3" />
-        </Button>
+        {/* 补丁十四（用户裁决）：启用按钮/当前使用徽章移到右侧（原删除按钮位）；
+            渠道级删除按钮移除——激活=当前使用，切换即换，删除无意义。 */}
+        {isActive ? (
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
+            <Check className="h-3 w-3" />
+            {t("config.channelActive")}
+          </span>
+        ) : (
+          <Button
+            size="sm"
+            className="h-7 shrink-0 text-xs"
+            disabled={models.length === 0 && (probedModels?.length ?? 0) === 0}
+            title={
+              models.length === 0 && (probedModels?.length ?? 0) === 0
+                ? t("config.noModelsHint")
+                : undefined
+            }
+            onClick={() => {
+              if (models.length > 0) {
+                onEnableProvider();
+                return;
+              }
+              const first = probedModels?.[0];
+              if (first) {
+                void addProbedModel(first);
+              }
+            }}
+          >
+            <Power className="mr-1 h-3 w-3" />
+            {t("config.channelEnable")}
+          </Button>
+        )}
       </div>
 
       {/* 行内字段（claude 渠道卡同构） */}
@@ -999,16 +1039,16 @@ function ProviderDetailPanel({
               <Button
                 size="sm"
                 variant="outline"
-                className="h-6 w-6 p-0"
+                className="h-6 text-xs"
                 disabled={probing}
-                title={t("config.refreshModels")}
                 onClick={() => void probeNow((apiKey.trim() || undefined) as unknown as string)}
               >
                 {probing ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
                 ) : (
-                  <RefreshCw className="h-3 w-3" />
+                  <RefreshCw className="mr-1 h-3 w-3" />
                 )}
+                {t("config.refresh")}
               </Button>
             )}
             <Button
@@ -1038,6 +1078,7 @@ function ProviderDetailPanel({
             {mergedModels.map((entry) => {
               const m = entry.model;
               const probeOnly = entry.probeOnly;
+              const userAdded = entry.userAdded ?? false;
               const isCurrent = activeModelId === m.id;
               return (
                 <li
@@ -1081,23 +1122,24 @@ function ProviderDetailPanel({
                         </div>
                       )}
                     </div>
-                    {inlineEditId === m.id || inlineAddOpen ? null : probeOnly ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-6 text-xs"
-                        onClick={() => addProbedModel(m.id)}
-                        title={t("config.addModel")}
-                      >
-                        <Plus className="h-3 w-3" />
-                      </Button>
-                    ) : (
+                    {inlineEditId === m.id || inlineAddOpen ? null : (
                       <>
                         <Button
                           size="sm"
                           variant={isCurrent ? "default" : "outline"}
                           className="h-6 text-xs"
-                          onClick={() => onSetActive(m.id)}
+                          /* 补丁十一：probe-only 激活 = 落配置+设当前（addProbedModel）；
+                              已配置行走原 setActive。 */
+                          /* 补丁二十五（用户裁决）：激活按钮 toggle——当前模型再点取消激活。 */
+                          onClick={() => {
+                            if (probeOnly) {
+                              addProbedModel(m.id);
+                            } else if (isCurrent) {
+                              onUnsetActive();
+                            } else {
+                              onSetActive(m.id);
+                            }
+                          }}
                           title={t("config.setActive")}
                         >
                           {isCurrent ? <Check className="h-3 w-3" /> : <Power className="h-3 w-3" />}
@@ -1128,15 +1170,21 @@ function ProviderDetailPanel({
                         >
                           <Pencil className="h-3 w-3" />
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-1.5 text-red-400 hover:text-red-300"
-                          onClick={() => onDeleteModel(m.id)}
-                          title={t("common.delete")}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
+                        {userAdded && (
+                          /* 补丁二十五：删除仅自建（origin 库标记）——同时移除标记。 */
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-1.5 text-red-400 hover:text-red-300"
+                            onClick={() => {
+                              untrackUserAdded(m.id);
+                              onDeleteModel(m.id);
+                            }}
+                            title={t("common.delete")}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        )}
                       </>
                     )}
                   </div>
@@ -1160,31 +1208,6 @@ function ProviderDetailPanel({
               );
             })}
           </ul>
-        )}
-
-        {/* v0.9.2 需求9 补丁四：暂存模型 chips（页头保存提交、可删）——与激活前
-            ProviderForm 的 chips 同形态。 */}
-        {stagedModels.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 pt-1">
-            {stagedModels.map((m) => (
-              <span
-                key={m.id}
-                className="inline-flex items-center gap-1 rounded-full border border-primary/60 bg-primary/10 px-2.5 py-1 font-mono text-[11px] text-primary"
-              >
-                {m.id}
-                <button
-                  type="button"
-                  onClick={() =>
-                    setStagedModels((prev) => prev.filter((x) => x.id !== m.id))
-                  }
-                  className="hover:text-foreground"
-                  title={t("common.delete")}
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
-          </div>
         )}
 
       </div>

@@ -13,7 +13,7 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Check, ExternalLink, Eye, EyeOff, Loader2, Plus, Power, RefreshCw, Trash2 } from "lucide-react";
+import { Check, Loader2, Plus, Power, RefreshCw, Trash2 } from "lucide-react";
 import {
   CODEX_PROXY_PRESETS,
   codexCustomModelsFor,
@@ -21,6 +21,7 @@ import {
   removeCodexCustomModel,
 } from "@/agents/config/presets/codex-presets";
 import { ChannelSidebar, type ChannelSidebarItem } from "./channel-sidebar";
+import { ThirdPartyChannelPanel } from "./third-party-channel-panel";
 import { OfficialAuthCard } from "./official-auth-card";
 
 type ProviderEntry = {
@@ -70,8 +71,6 @@ export function CodexProvidersBlock({
   } = useCodexLiveModels(agentId, selectedId === null);
   // v0.7.6 需求3：custom 从清单一项改为「添加自定义渠道」按钮触发的表单态。
   const [customFormOpen, setCustomFormOpen] = useState(false);
-  const [showKey, setShowKey] = useState(false);
-  const [keyDraft, setKeyDraft] = useState("");
 
   const providers = (modelProviders ?? {}) as Record<string, ProviderEntry>;
   const envMap = env ?? {};
@@ -92,6 +91,20 @@ export function CodexProvidersBlock({
         label: entry.name || id,
         sub: entry.base_url || "",
         active: modelProvider === id,
+        /* 补丁十八：自定义渠道行可删（hover ×）——预设行不删。 */
+        onRemove: () => {
+          const nextProviders = { ...providers };
+          const removed = nextProviders[id];
+          delete nextProviders[id];
+          const nextEnv = { ...envMap };
+          if (removed?.env_key) delete nextEnv[removed.env_key];
+          onChange({
+            modelProviders: nextProviders,
+            env: nextEnv,
+            ...(modelProvider === id ? { modelProvider: null, model: null } : {}),
+          });
+          if (selectedId === id) setSelectedId(null);
+        },
       })),
   ];
   const selectedPreset = CODEX_PROXY_PRESETS.find((p) => p.id === selectedId);
@@ -151,6 +164,20 @@ export function CodexProvidersBlock({
         selectedId={customFormOpen ? null : selectedId}
         onSelect={handleChannelSelect}
         onAddCustom={() => setCustomFormOpen(true)}
+        onRemoveChannel={(id) => {
+          const entry = providers[id];
+          if (!entry) return;
+          const nextProviders = { ...providers };
+          delete nextProviders[id];
+          const nextEnv = { ...envMap };
+          if (entry.env_key) delete nextEnv[entry.env_key];
+          onChange({
+            modelProviders: nextProviders,
+            env: nextEnv,
+            ...(modelProvider === id ? { modelProvider: null, model: null } : {}),
+          });
+          if (selectedId === id) setSelectedId(null);
+        }}
       />
 
       {/* 右：模型设置 + 渠道接入配置（按查看态渲染，非生效态） */}
@@ -219,114 +246,78 @@ export function CodexProvidersBlock({
             />
           </div>
         ) : selectedProvider || selectedPreset ? (
-          <div className="space-y-3 rounded-md border border-border/40 bg-muted/20 p-4">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-sm font-medium">{selectedLabel}</div>
-              {modelProvider === selectedId ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
-                  <Check className="h-3 w-3" />
-                  {t("config.channelActive")}
-                </span>
-              ) : selectedPreset ? (
-                <Button
-                  size="sm"
-                  className="h-7 shrink-0 text-xs"
-                  onClick={() => applyPreset(selectedPreset.id)}
-                >
-                  <Power className="mr-1 h-3 w-3" />
-                  {t("config.channelEnable")}
-                </Button>
-              ) : selectedProvider ? (
-                /* 自定义渠道：直接切换激活（渠道条目已存在） */
-                <Button
-                  size="sm"
-                  className="h-7 shrink-0 text-xs"
-                  onClick={() => onChange({ modelProvider: selectedId })}
-                >
-                  <Power className="mr-1 h-3 w-3" />
-                  {t("config.channelEnable")}
-                </Button>
-              ) : null}
-            </div>
-
-            <div className="space-y-1.5">
-              <Label>{t("config.baseUrl")}</Label>
-              <code className="block truncate rounded bg-muted px-2 py-1.5 font-mono text-xs text-muted-foreground">
-                {selectedProvider?.base_url ?? selectedPreset?.baseUrl ?? ""}
-              </code>
-            </div>
-
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="codex-channel-apikey">{t("config.apiKey")}</Label>
-                {selectedPreset?.apiKeyUrl && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void invokeCommand("open_url", { url: selectedPreset.apiKeyUrl })
-                    }
-                    className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
-                  >
-                    {t("config.presetGetKey")}
-                    <ExternalLink className="h-3 w-3" />
-                  </button>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <Input
-                  id="codex-channel-apikey"
-                  type={showKey ? "text" : "password"}
-                  value={keyDraft}
-                  onChange={(e) => setKeyDraft(e.target.value)}
-                  placeholder={t("config.quickSetupKeyPlaceholder")}
-                  autoComplete="off"
-                />
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="shrink-0"
-                  onClick={() => setShowKey((v) => !v)}
-                  title={showKey ? t("config.hideKey") : t("config.showKey")}
-                >
-                  {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </Button>
-                <Button
-                  size="sm"
-                  className="h-9 shrink-0"
-                  disabled={!keyDraft.trim()}
-                  onClick={() => {
-                    onChange({ env: { ...envMap, [activeEnvKey]: keyDraft.trim() } });
-                    setKeyDraft("");
-                  }}
-                >
-                  {t("config.quickSetupApplyKey")}
-                </Button>
-              </div>
-              {savedKey && (
-                <p className="text-[10px] text-muted-foreground/70">
-                  {t("config.channelKeySaved")}
-                  {savedKey.length > 8 ? `：••••${savedKey.slice(-4)}` : ""}
-                </p>
-              )}
-            </div>
-            <p className="text-[10px] leading-relaxed text-muted-foreground/70">
-              {selectedProvider?.wire_api === "chat"
-                ? t("config.proxyChatHint")
-                : t("config.proxyResponsesHint")}
-            </p>
-          </div>
+          /* v0.9.2 需求9 补丁七返工（用户裁决：第三方渠道与 jishu 前端完全
+             一致，仅保存适配）：共享 ThirdPartyChannelPanel——字段草稿（页头
+             统一保存，无单独密钥按钮）+ 探测列表（首查+刷新+落库）+ 手动模型
+             （共用库立即持久化）+ 行内增/改/测/删 + [取消][保存] 内嵌表单。 */
+          <ThirdPartyChannelPanel
+            agentId={agentId ?? ""}
+            channelKey={`codex:${selectedId}`}
+            title={selectedLabel}
+            isActive={modelProvider === selectedId}
+            fields={{
+              displayName:
+                selectedProvider?.name ??
+                t(selectedPreset?.labelKey ?? "") ??
+                selectedId,
+              baseUrl: selectedProvider?.base_url ?? selectedPreset?.baseUrl ?? "",
+              protocol: selectedProvider?.wire_api ?? "responses",
+              apiKey: "",
+              savedApiKey: savedKey,
+              protocolOptions: [
+                { value: "responses", label: "openai-responses" },
+                { value: "chat", label: "openai-completions" },
+              ],
+            }}
+            presetModels={selectedPreset?.models ?? []}
+            activeModelId={model ?? null}
+            onPatchFields={(patch) => {
+              const id = selectedId;
+              const entry: ProviderEntry = {
+                ...(selectedProvider ?? {
+                  name: t(selectedPreset?.labelKey ?? ""),
+                  base_url: selectedPreset?.baseUrl ?? "",
+                  wire_api: selectedPreset?.wireApi ?? "responses",
+                  env_key: selectedPreset?.envKey ?? `${id.toUpperCase()}_API_KEY`,
+                }),
+              };
+              if (patch.displayName !== undefined) entry.name = patch.displayName;
+              if (patch.baseUrl !== undefined) entry.base_url = patch.baseUrl;
+              if (patch.protocol !== undefined) entry.wire_api = patch.protocol;
+              onChange({
+                modelProviders: { ...providers, [id]: entry },
+                ...(patch.apiKey
+                  ? { env: { ...envMap, [entry.env_key ?? `${id.toUpperCase()}_API_KEY`]: patch.apiKey } }
+                  : {}),
+              });
+            }}
+            onEnable={() => applyPreset(selectedId)}
+            onSelectModel={(m) => {
+              if (modelProvider !== selectedId) applyPreset(selectedId);
+              onChange({ model: m });
+            }}
+            onTest={async (modelId) => {
+              try {
+                const result = await invokeCommand<{ response?: string | null; latency_ms?: number }>(
+                  "test_llm_connection",
+                  {
+                    api: (selectedProvider?.wire_api ?? selectedPreset?.wireApi ?? "responses") === "chat"
+                      ? "openai-completions"
+                      : "openai-responses",
+                    baseUrl: selectedProvider?.base_url ?? selectedPreset?.baseUrl ?? "",
+                    apiKey: savedKey,
+                    model: modelId,
+                  },
+                );
+                const reply = (result?.response ?? "").toString().trim();
+                return { ok: true, text: reply ? reply.slice(0, 120) : t("config.testModelOk") };
+              } catch (e) {
+                return { ok: false, text: String(e).slice(0, 200) };
+              }
+            }}
+          />
         ) : null}
 
-        {/* 渠道模型列表（v0.7.6 需求3 迭代六：代理渠道也支持显式添加
-            模型，对齐 jishu 交互；自定义渠道 presetModels 为空纯手加）。 */}
-        {selectedId !== null && !customFormOpen && (
-          <CodexChannelModels
-            providerId={selectedId}
-            presetModels={selectedPreset?.models ?? []}
-            currentModel={model}
-            onSelectModel={(m) => onChange({ model: m })}
-          />
-        )}
       </div>
     </div>
   );
