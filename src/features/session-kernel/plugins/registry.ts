@@ -10,7 +10,7 @@ import { sessionExportPlugin } from "./builtin/session-export";
 import { usagePanelPlugin } from "./builtin/usage-panel";
 import { messageSearchPlugin } from "./builtin/message-search";
 import { interactionRenderPlugin } from "./builtin/interaction-render";
-import { htmlPreviewPlugin } from "./builtin/html-preview";
+import { artifactsPlugin } from "./builtin/artifacts";
 import type { SessionPluginDescriptor } from "./types";
 
 /**
@@ -31,7 +31,7 @@ const BUILTIN_SESSION_PLUGINS: SessionPluginDescriptor[] = [
   usagePanelPlugin,
   messageSearchPlugin,
   interactionRenderPlugin,
-  htmlPreviewPlugin,
+  artifactsPlugin,
 ];
 
 export function listSessionPlugins(): SessionPluginDescriptor[] {

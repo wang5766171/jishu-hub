@@ -77,6 +77,9 @@ export interface PluginSessionMeta {
   /** 当前项目根绝对路径（v0.9.2 测试期：插件解析 tool_use 相对路径用，
    * 如 html-preview 把会话产出的相对路径解析为可读的绝对路径）。 */
   projectPath: string | null;
+  /** 项目编码名（get_session_messages 的 encodedName 键；插件跨会话读取
+   * 子节点会话产物用）。 */
+  projectEncodedName: string | null;
 }
 
 /** 消息搜索结果。 */
@@ -159,6 +162,16 @@ export interface TaskPanelNode {
   waitingFor?: string;
 }
 
+/** 已执行节点的子会话索引（TaskPanelContext.nodeSessions 条目）。 */
+export interface TaskNodeSession {
+  nodeId: string;
+  title: string;
+  /** 子代理会话 id（已回填时非空）。 */
+  sessionId: string | null;
+  /** 子代理 agent id（读会话存储用；空 = 未知）。 */
+  agentId: string | null;
+}
+
 /** 任务上下文（v0.9.2 需求2：流程执行能力与核心会话松耦合的数据面）。 */
 export interface TaskPanelContext {
   taskId: string;
@@ -169,6 +182,9 @@ export interface TaskPanelContext {
   completed: number;
   total: number;
   nodes: TaskPanelNode[];
+  /** 已执行节点的子会话索引（v0.9.2 测试期：插件跨会话识别子节点产出物，
+   * 如 html-preview 拉取各节点会话消息提取产物文件）。 */
+  nodeSessions: TaskNodeSession[];
   /** 当前钻入的子任务会话节点（无选中为 null）——看板高亮用。
    * 可选字段：插件与内核独立演进（版本错位容错），缺失时看板不高亮。 */
   selectedNodeId?: string | null;

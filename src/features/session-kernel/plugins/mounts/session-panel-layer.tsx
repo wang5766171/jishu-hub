@@ -54,7 +54,7 @@ const PLUGIN_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   "session.flow": Map,
   "session.usage": ChartPie,
   "session.search": Search,
-  "session.html-preview": AppWindow,
+  "session.artifacts": AppWindow,
 };
 
 function isWindowMaximized(): boolean {
