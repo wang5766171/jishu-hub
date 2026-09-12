@@ -10,6 +10,7 @@ import { buildTurnSummaries } from "@/components/sessions/turn-rail";
 import { SessionPanelLayer } from "@/features/session-kernel/plugins/mounts/session-panel-layer";
 import { SessionSidebarLayer } from "@/features/session-kernel/plugins/mounts/session-sidebar-layer";
 import { requestPanelActivation, requestPanelClose } from "@/features/session-kernel/shell/panel-activation";
+import { closeSessionSidebar } from "@/features/session-kernel/shell/session-sidebar";
 import { BlockRenderersProvider } from "@/features/session-kernel/plugins/mounts/use-block-renderers";
 import { PluginSignalBridge } from "@/features/session-kernel/plugins/mounts/plugin-signal-bridge";
 import { SessionPluginActions } from "@/features/session-kernel/plugins/mounts/session-plugin-actions";
@@ -25,6 +26,7 @@ import type {
   SessionKernelContext,
   TaskPanelContext,
   TaskPanelNode,
+  TaskNodeSession,
   PluginBlock,
   PluginMessage,
   PluginSearchMatch,
@@ -994,6 +996,16 @@ export function ChatPage({
     setTaskLaunchOpen(false);
     setTaskLaunchReadOnly(false);
     taskLaunchOpenRef.current = false;
+    // v0.9.2 测试期修复：切常规会话时清除任务选中态——此前 activeTaskInstanceId
+    // 残留，任务树行持续高亮（用户实测：任务会话选过后点常规会话，列表里任务
+    // 行仍是选中态）。节点选择态一并复位，避免回任务时残留节点会话上下文。
+    activeTaskInstanceIdRef.current = null;
+    activeTaskRequirementFileRef.current = null;
+    lastKnownStatusRef.current = null;
+    setActiveTaskInstanceId(null);
+    setActiveTaskRequirementFile(null);
+    setTaskSelectedNodeId(null);
+    setTaskNodeSessionAgentId(null);
     if (sessionId === selectedSession || !projectId) return;
 
     // v0.8.0 需求4 补充：切换会话自动收起右侧预览——预览的文件属于上一会话
@@ -1569,6 +1581,13 @@ export function ChatPage({
     logTaskPhaseDebug("conductor-task:not-found", { sessionId });
   }, []);
 
+  // v0.9.2 测试期修复：离开会话页（切管理页等，chat-page 卸载）时收起会话
+  // 侧栏。面板本体由 chat-page 承载随卸载消失，但顶开 margin 在 app 层
+  //（ViewerPushRow 读 session-sidebar 壳层状态）——不收起则管理页布局被
+  // 压去一半、原侧栏位置空白（用户实测）。会话侧栏是会话区语义，随宿主
+  // 页面生命周期收起，不做跨页面残留。
+  useEffect(() => () => closeSessionSidebar(), []);
+
   // v0.9.2 测试期（插件机制）：agent 工具事件 → 内核信号管线。preview_html
   // 等工具经 hub_invoke 校验后广播 session-plugin-preview；内核转发为
   // file-preview-request 信号（严格走信号总线），插件（html-preview）经
@@ -1923,6 +1942,7 @@ export function ChatPage({
         completed: 0,
         total: 0,
         nodes: [],
+        nodeSessions: [],
         selectedNodeId: taskSelectedNodeId,
         onSelectNode: handleTaskSelectNode,
         onOpenCanvas: () => setTaskBoardSignal((n) => n + 1),
@@ -1944,6 +1964,18 @@ export function ChatPage({
     const completed = nodes.filter((node) =>
       ["succeeded", "skipped", "cancelled", "superseded", "failed"].includes(node.status),
     ).length;
+    // v0.9.2 测试期：已执行节点的子会话索引（插件跨会话识别子节点产出物）。
+    const nodeSessions: TaskNodeSession[] = nodes
+      .map((node) => {
+        const info = taskInstanceState.nodeSessionMap[node.nodeId];
+        return {
+          nodeId: node.nodeId,
+          title: node.title,
+          sessionId: info?.session_id ?? null,
+          agentId: info?.agent_id ?? null,
+        };
+      })
+      .filter((entry) => entry.sessionId != null);
     return {
       taskId: activeTaskLaunchInstance.task_id,
       title: activeTaskLaunchInstance.title,
@@ -1952,12 +1984,13 @@ export function ChatPage({
       completed,
       total: nodes.length,
       nodes,
+      nodeSessions,
       selectedNodeId: taskSelectedNodeId,
       onSelectNode: handleTaskSelectNode,
       onOpenCanvas: () => setTaskBoardSignal((n) => n + 1),
       onCancelRun: handleTaskCancelRun,
     };
-  }, [activeTaskLaunchInstance, taskGraph.snapshot, taskGraph.nodeRuns, taskGraph.runStatus, taskSelectedNodeId, handleTaskSelectNode, handleTaskCancelRun, t]);
+  }, [activeTaskLaunchInstance, taskGraph.snapshot, taskGraph.nodeRuns, taskGraph.runStatus, taskSelectedNodeId, taskInstanceState.nodeSessionMap, handleTaskSelectNode, handleTaskCancelRun, t]);
 
   // v0.9.2 需求1：已启用会话插件集合（plugins-changed 热刷新）。
   const enabledSessionPlugins = useEnabledSessionPlugins();
@@ -2048,6 +2081,8 @@ export function ChatPage({
       contextTotal: getSessionUsage(selectedSession ?? "")?.contextWindowTotal ?? null,
       // v0.9.2 测试期：插件解析 tool_use 相对路径用（html-preview 会话产物）。
       projectPath: currentProject?.path ?? null,
+      // 插件跨会话读取子节点会话产物（get_session_messages 的 encodedName 键）。
+      projectEncodedName: currentProject?.encoded_name ?? null,
     }),
     [chatAgentId, chatAgent, activeModelValue, thinkingLevelValue, selectedSession, currentProject],
   );
@@ -2331,6 +2366,20 @@ export function ChatPage({
         .join("|"),
     [taskGraph.nodeRuns],
   );
+
+  // v0.9.2 测试期（产物中心）：全量回填节点会话索引。nodeSessionMap 此前
+  // 只在「点选节点」时逐个填充——历史任务或未点选过的节点没有 session 记录，
+  // 产物中心识别不到其产出（用户实测）。任务图加载后与节点状态签名变化时
+  // 批量拉取全部已执行节点（refreshAll 只遍历 attempt_count>0 的节点，
+  // 一次状态变化一轮 IPC，量级可控）。
+  useEffect(() => {
+    if (!taskModeActive || !boardRunId) return;
+    boardNodeSession
+      .refreshAllNodeSessions()
+      .catch((e) => console.warn("refresh node sessions failed:", e));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskModeActive, boardRunId, nodeRunStatusSignature]);
+
   useEffect(() => {
     if (!boardRunId) {
       setNodeAgentIds(new Map());
