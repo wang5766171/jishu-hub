@@ -14,7 +14,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
-  ArrowRight,
   Check,
   Loader2,
   Plus,
@@ -22,7 +21,7 @@ import {
   RefreshCw,
   Trash2,
 } from "lucide-react";
-import type { AgentConfigSection, ClaudeConfig } from "@/types";
+import type { ClaudeConfig } from "@/types";
 import { ModelCombobox } from "./model-combobox";
 import { PermissionModeCards } from "./permission-cards";
 import { RuleQuickAdd } from "./rule-quick-add";
@@ -94,20 +93,13 @@ function codexPresetModelsFor(providerId: string): string[] {
   return [...presetModels, ...custom.filter((m) => !presetModels.includes(m))];
 }
 
-/** claude 模型链路环境变量的展示序（v0.7.6 需求2：模型子页透出实际生效值）。 */
-const MODEL_ENV_KEYS = [
+/** v0.9.2 需求12-6（用户裁决）：claude 模型链路 env 三键——高级设置
+ * env 编辑器置灰只读（不可改/删/重复添加），统一经「模型设置」页管理。 */
+const MODEL_CHAIN_ENV_LOCKED = new Set([
   "ANTHROPIC_BASE_URL",
   "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_API_KEY",
   "ANTHROPIC_MODEL",
-  "MAX_THINKING_TOKENS",
-] as const;
-
-/** 密钥类 env 值脱敏（键名含 TOKEN/KEY）。 */
-function maskEnvValue(key: string, value: string): string {
-  if (!/TOKEN|KEY/.test(key)) return value;
-  return value.length > 8 ? `••••${value.slice(-4)}` : "••••";
-}
+]);
 
 /** v0.9.2 需求9 补丁七：联调测试封装（test_llm_connection——各 agent 仅
  *  api/baseUrl 映射不同）。 */
@@ -128,56 +120,6 @@ function testLlmConnection(
       return { ok: true, text: reply ? reply.slice(0, 120) : "OK" };
     })
     .catch((e) => ({ ok: false, text: String(e).slice(0, 200) }));
-}
-
-/** 「当前生效环境变量」只读块：展示模型链路 env 实际值，跳转高级设置修改。 */
-function ModelEnvOverview({
-  env,
-  onNavigate,
-}: {
-  env: Record<string, string>;
-  onNavigate?: () => void;
-}) {
-  const { t } = useTranslation();
-  const entries = MODEL_ENV_KEYS.map((key) => [key, env[key]] as const).filter(
-    ([, v]) => v !== undefined && v.trim() !== "",
-  );
-
-  return (
-    <div className="space-y-2 rounded-md border border-border/40 bg-muted/20 p-3">
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-xs font-medium text-muted-foreground">{t("config.modelEnvTitle")}</div>
-        {onNavigate && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 shrink-0 text-xs"
-            onClick={onNavigate}
-          >
-            {t("config.modelEnvEdit")}
-            <ArrowRight className="ml-1 h-3 w-3" />
-          </Button>
-        )}
-      </div>
-      {entries.length === 0 ? (
-        <p className="text-[11px] leading-relaxed text-muted-foreground/70">
-          {t("config.modelEnvEmpty")}
-        </p>
-      ) : (
-        <div className="space-y-1">
-          {entries.map(([key, value]) => (
-            <div key={key} className="flex items-center gap-2 text-[11px]">
-              <code className="shrink-0 font-mono text-muted-foreground">{key}</code>
-              <span className="min-w-0 flex-1 truncate font-mono" title={value}>
-                {maskEnvValue(key, value)}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-      {onNavigate && <p className="text-[10px] text-muted-foreground/70">{t("config.modelEnvHint")}</p>}
-    </div>
-  );
 }
 
 const API_PROVIDERS = [
@@ -217,12 +159,9 @@ export function ConfigModelsZone({
   config,
   onChange,
   surface,
-  onNavigateSection,
   agentId,
 }: ConfigZoneProps & {
   surface?: ConfigSurfaceFlags;
-  /** v0.7.6 需求2：跳转到指定配置子页（env 块「前往高级设置修改」）。 */
-  onNavigateSection?: (section: AgentConfigSection) => void;
   /** v0.7.6 需求3：管理作用域 agent id（官方直连认证卡查询用）。 */
   agentId?: string;
 }) {
@@ -311,6 +250,34 @@ export function ConfigModelsZone({
     />
   );
 
+  // v0.9.2 需求11（用户裁决）：渠道视图当前模型卡**只读**（对齐 jishu——
+  // 无下拉不可切换，模型经渠道面板行级激活）；官方直连保留交互下拉不动。
+  // hint = 当前生效渠道名（codex provider 名 / claude 预设名 / opencode
+  // provider 前缀）。
+  let channelHint: string | undefined;
+  if (isCodexProviders) {
+    const entry = codexProviderId
+      ? (config as unknown as { modelProviders?: Record<string, { name?: string }> }).modelProviders?.[codexProviderId]
+      : undefined;
+    channelHint = codexProviderId ? entry?.name || codexProviderId : undefined;
+  } else if (supportsProxySetup && !isDirect) {
+    channelHint = activePreset
+      ? t(activePreset.labelKey)
+      : proxyBaseUrl
+        ? t("config.preset.custom.name")
+        : undefined;
+  } else {
+    channelHint = config.model?.includes("/") ? config.model.split("/")[0] : undefined;
+  }
+  const modelCardReadOnly = (
+    <ActiveModelCard
+      current={
+        currentModelOption ? { ...currentModelOption, hint: channelHint } : null
+      }
+      readOnly
+    />
+  );
+
   const savedToken = env["ANTHROPIC_AUTH_TOKEN"]?.trim() || env["ANTHROPIC_API_KEY"]?.trim() || "";
 
   // 无代理能力的 structured agent：opencode = 模型卡 + 自定义供应商管理块；
@@ -327,19 +294,20 @@ export function ConfigModelsZone({
           }
           env={(config.env ?? {}) as Record<string, string>}
           modelCard={modelCard}
+          channelModelCard={modelCardReadOnly}
           agentId={agentId}
           onChange={(patch) => onChange(patch as Partial<ClaudeConfig>)}
         />
       );
     }
     // opencode：统一渠道布局（内置渠道预置 + 自定义渠道 + 启用按钮），
-    // modelCard 由组件内右栏承载。
+    // modelCard 由组件内右栏承载（渠道视图 → 只读卡）。
     if (surface?.supports_custom_providers) {
       return (
         <OpencodeProvidersBlock
           providers={config.customProviders ?? {}}
           model={config.model ?? null}
-          modelCard={modelCard}
+          modelCard={modelCardReadOnly}
           onChange={(patch) => onChange(patch as Partial<ClaudeConfig>)}
         />
       );
@@ -404,7 +372,8 @@ export function ConfigModelsZone({
       {/* 右：模型设置 + 渠道接入配置 */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground">{t("config.colModels")}</div>
-        {modelCard}
+        {/* 需求11：渠道视图只读卡（当前激活模型 + 渠道名）；直连保留交互下拉。 */}
+        {effectiveChannelId === "direct" ? modelCard : modelCardReadOnly}
 
         {effectiveChannelId === "direct" ? (
           /* v0.9.2 需求9：官方直连 = 提示 + 认证卡 + 官方模型列表（首查 +
@@ -485,6 +454,8 @@ export function ConfigModelsZone({
             channelKey="claude-custom"
             title={t("config.preset.custom.name")}
             isActive={customActive}
+            /* 需求11：同预设渠道——env 有值（已保存/已生效）才显示「启用此渠道」。 */
+            channelSaved={customActive}
             fields={{
               displayName: t("config.preset.custom.name"),
               baseUrl: customActive ? proxyBaseUrl : "",
@@ -503,7 +474,10 @@ export function ConfigModelsZone({
               onChange({ env: next });
             }}
             onEnable={() => onChange({ env: removeProxyEnv(env) })}
-            onSelectModel={(m) => onChange({ model: m })}
+            /* 需求12-3：模型选择写 env ANTHROPIC_MODEL（同预设渠道）。 */
+            onSelectModel={(m) =>
+              onChange({ env: { ...env, ANTHROPIC_MODEL: m }, model: m })
+            }
             onTest={async (modelId) =>
               testLlmConnection("anthropic-messages", customActive ? proxyBaseUrl : "", savedToken, modelId)
             }
@@ -528,18 +502,37 @@ export function ConfigModelsZone({
                   protocolOptions: [{ value: "anthropic-messages", label: "anthropic-messages" }],
                 }}
                 displayNameEditable={false}
-                presetModels={selected.models}
-                activeModelId={activePreset?.id === selected.id ? (config.model ?? null) : null}
-                onPatchFields={(patch) => {
-                  const next = { ...env };
-                  if (patch.apiKey) next["ANTHROPIC_AUTH_TOKEN"] = patch.apiKey;
-                  if (patch.baseUrl !== undefined) next["ANTHROPIC_BASE_URL"] = patch.baseUrl;
-                  onChange({ env: next });
-                }}
-                onEnable={() => onChange({ env: applyProxyPresetToEnv(selected, "", env) })}
-                onSelectModel={(m) =>
-                  onChange({ env: applyProxyPresetToEnv(selected, "", env), model: m })
-                }
+            presetModels={selected.models}
+            activeModelId={activePreset?.id === selected.id ? (config.model ?? null) : null}
+            /* 需求11：claude 预设无独立存储（单 env 槽）——仅生效渠道有
+                「已保存」态；未生效预设经填字段+保存启用（无启用按钮）。 */
+            channelSaved={activePreset?.id === selected.id}
+            onPatchFields={(patch) => {
+              /* 需求11：编辑预设字段 = 应用该渠道（写入即切换，页头保存
+                  落盘）——baseUrl 未动也带入预设地址，避免把新 token 写进
+                  旧渠道 env 形成混合态。 */
+              const key =
+                patch.apiKey || (activePreset?.id === selected.id ? savedToken : "");
+              const next = applyProxyPresetToEnv(selected, key, env);
+              if (
+                patch.baseUrl !== undefined &&
+                patch.baseUrl.trim() &&
+                patch.baseUrl.trim() !== selected.baseUrl
+              ) {
+                next["ANTHROPIC_BASE_URL"] = patch.baseUrl.trim();
+              }
+              onChange({ env: next });
+            }}
+            onEnable={() => onChange({ env: applyProxyPresetToEnv(selected, "", env) })}
+            onSelectModel={(m) =>
+              /* 需求12-3（用户裁决）：模型选择持久化到 env ANTHROPIC_MODEL——
+                  第三方模型经环境变量生效，apply 只带入预设默认模型，选中值
+                  需单独覆盖写入。 */
+              onChange({
+                env: { ...applyProxyPresetToEnv(selected, "", env), ANTHROPIC_MODEL: m },
+                model: m,
+              })
+            }
                 onTest={async (modelId) =>
                   testLlmConnection(
                     "anthropic-messages",
@@ -552,15 +545,9 @@ export function ConfigModelsZone({
             );
           })()
         ) : null}
-
-                {/* v0.7.6 需求2：透出当前生效的模型链路环境变量。v0.9.2 需求9：
-            直连态不渲染（官方视图去掉"前往高级设置"入口）。 */}
-        {effectiveChannelId !== "direct" && (
-          <ModelEnvOverview
-            env={env}
-            onNavigate={onNavigateSection ? () => onNavigateSection("advanced") : undefined}
-          />
-        )}
+        {/* v0.9.2 需求12-5（用户裁决）：模型链路 env 总览块（含「前往高级
+            设置修改」入口）整体移除——env 由模型设置页管理，高级设置侧
+            三个模型链路变量已置灰只读（需求12-6）。 */}
       </div>
     </div>
   );
@@ -749,6 +736,7 @@ export function ConfigAdvancedZone({
 
   const handleAddEnv = () => {
     if (!newEnvKey.trim()) return;
+    if (MODEL_CHAIN_ENV_LOCKED.has(newEnvKey.trim())) return; // 模型链路键只读
     const env = { ...(config.env || {}) };
     env[newEnvKey.trim()] = "";
     onChange({ env });
@@ -781,20 +769,43 @@ export function ConfigAdvancedZone({
           </div>
         )}
         <div className="space-y-2 pt-1">
-          {Object.entries(config.env || {}).map(([key, value]) => (
+          {Object.entries(config.env || {}).map(([key, value]) => {
+            /* v0.9.2 需求12-6（用户裁决）：claude 模型链路三 env 置灰只读
+                （不允许改/删）——由「模型设置」页统一管理，避免两处编辑冲突。 */
+            const locked = MODEL_CHAIN_ENV_LOCKED.has(key);
+            return (
             <div key={key} className="flex items-center gap-2">
-              <code className="min-w-[140px] rounded bg-muted px-2 py-1 text-xs font-mono">{key}</code>
+              <code
+                className={cn(
+                  "min-w-[140px] rounded bg-muted px-2 py-1 text-xs font-mono",
+                  locked && "opacity-60",
+                )}
+              >
+                {key}
+              </code>
               <Input
                 value={value}
                 onChange={(e) => handleEnvChange(key, e.target.value)}
-                className="flex-1"
+                className={cn("flex-1", locked && "cursor-not-allowed opacity-60")}
+                disabled={locked}
+                title={locked ? t("config.envLockedModelHint") : undefined}
                 placeholder={t("config.value")}
               />
-              <Button variant="ghost" size="icon-xs" onClick={() => handleEnvDelete(key)}>
-                <Trash2 className="h-3 w-3" />
-              </Button>
+              {locked ? (
+                <span
+                  className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground/70"
+                  title={t("config.envLockedModelHint")}
+                >
+                  {t("config.envLockedModelHint")}
+                </span>
+              ) : (
+                <Button variant="ghost" size="icon-xs" onClick={() => handleEnvDelete(key)}>
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              )}
             </div>
-          ))}
+            );
+          })}
           <div className="flex items-center gap-2">
             <Input
               value={newEnvKey}

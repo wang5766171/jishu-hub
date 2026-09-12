@@ -68,6 +68,7 @@ export function ThirdPartyChannelPanel({
   onEnable,
   onSelectModel,
   onTest,
+  channelSaved = true,
 }: {
   agentId: string;
   channelKey: string;
@@ -83,6 +84,10 @@ export function ThirdPartyChannelPanel({
   onEnable: () => void;
   onSelectModel: (modelId: string) => void;
   onTest: (modelId: string) => Promise<{ ok: boolean; text: string }>;
+  /** v0.9.2 需求11（用户裁决）：渠道已保存（配置落库/草稿已建条目）才显示
+   * 「启用此渠道」——未保存渠道经「保存」启用（onPatchFields 适配器同时
+   * 切激活，页头保存落盘）；未保存且未激活时头部无操作件。 */
+  channelSaved?: boolean;
 }) {
   const { t } = useTranslation();
   const [displayName, setDisplayName] = useState(fields.displayName ?? "");
@@ -328,12 +333,12 @@ export function ThirdPartyChannelPanel({
             <Check className="h-3 w-3" />
             {t("config.channelActive")}
           </span>
-        ) : (
+        ) : channelSaved ? (
           <Button size="sm" className="h-7 shrink-0 text-xs" onClick={enable}>
             <Power className="mr-1 h-3 w-3" />
             {t("config.channelEnable")}
           </Button>
-        )}
+        ) : null}
       </div>
 
       {/* 字段行内编辑（草稿，页头统一保存） */}
@@ -431,22 +436,23 @@ export function ThirdPartyChannelPanel({
             {t("config.models")} ({rows.length})
           </Label>
           <div className="flex items-center gap-1.5">
-            {(probed?.length || !unsupported) && (
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-6 text-xs"
-                disabled={probing}
-                onClick={() => void probe(savedKey)}
-              >
-                {probing ? (
-                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                ) : (
-                  <RefreshCw className="mr-1 h-3 w-3" />
-                )}
-                {t("config.refresh")}
-              </Button>
-            )}
+            {/* 需求12-1（用户反馈）：刷新钮常驻——原仅在探测成功/未标记
+                unsupported 时显示，codex 渠道探测不支持时按钮消失，与 jishu
+                不一致；保留手动重试入口。 */}
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 text-xs"
+              disabled={probing}
+              onClick={() => void probe(savedKey)}
+            >
+              {probing ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-1 h-3 w-3" />
+              )}
+              {t("config.refresh")}
+            </Button>
             <Button
               size="sm"
               variant="outline"
@@ -503,14 +509,11 @@ export function ThirdPartyChannelPanel({
                             size="sm"
                             variant={isCurrent ? "default" : "outline"}
                             className="h-6 text-xs"
-                            /* 补丁十一：probe-only 激活 = 落配置（custom 库）+ 设当前；
-                                已配置行走 selectModel。 */
-                            onClick={() => {
-                              if (probeOnly) {
-                                commitAdd({ id: m.id, ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}) });
-                              }
-                              selectModel(m.id);
-                            }}
+                            /* 需求12-2（用户裁决）：probe-only 行激活 = 仅设当前
+                                模型（字符串选择，三 agent 均无需落条目）——原
+                                commitAdd 会写 channel_custom_models，令探测行
+                                误显删除按钮（非表单手动添加）。 */
+                            onClick={() => selectModel(m.id)}
                             title={t("config.setActive")}
                           >
                             {isCurrent ? <Check className="h-3 w-3" /> : <Power className="h-3 w-3" />}

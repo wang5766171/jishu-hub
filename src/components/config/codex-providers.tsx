@@ -37,6 +37,7 @@ export function CodexProvidersBlock({
   modelProviders,
   env,
   modelCard,
+  channelModelCard,
   agentId,
   onChange,
 }: {
@@ -47,6 +48,8 @@ export function CodexProvidersBlock({
   env: Record<string, string> | null | undefined;
   /** 模型卡（由 ConfigModelsZone 组装传入——右栏「模型设置」，对齐 claude） */
   modelCard: ReactNode;
+  /** v0.9.2 需求11：渠道/自定义视图的只读当前模型卡（直连仍用 modelCard）。 */
+  channelModelCard?: ReactNode;
   /** v0.7.6 需求3：agent id（官方直连认证卡查询用）。 */
   agentId?: string;
   onChange: (patch: {
@@ -112,32 +115,8 @@ export function CodexProvidersBlock({
   const selectedLabel =
     channels.find((c) => c.id === selectedId)?.label ?? selectedId ?? "";
 
-  /** 应用预设渠道：生成/覆盖渠道并激活；当前模型不在渠道候选内时
-   *  带入预设默认模型（v0.7.6 需求2：切渠道模型对齐）；wire_api 按预设
-   *  声明（v0.7.6 需求3：百炼/KIMI 为 chat）。 */
-  const applyPreset = (presetId: string) => {
-    setSelectedId(presetId);
-    setCustomFormOpen(false);
-    const preset = CODEX_PROXY_PRESETS.find((p) => p.id === presetId);
-    if (!preset || preset.id === "custom") return;
-    const keepModel = model && preset.models.includes(model);
-    onChange({
-      modelProvider: preset.id,
-      modelProviders: {
-        ...providers,
-        [preset.id]: {
-          name: t(preset.labelKey),
-          base_url: preset.baseUrl,
-          wire_api: preset.wireApi ?? "responses",
-          env_key: preset.envKey,
-        },
-      },
-      ...(keepModel ? {} : { model: preset.model || null }),
-    });
-  };
-
-  // 左栏点击渠道 = 仅选中查看（v0.7.6 需求3 迭代三：切换生效统一走右栏
-  // 「启用此渠道」按钮 applyPreset）。
+  // 左栏点击渠道 = 仅选中查看（v0.9.2 需求11：切换生效走右栏「启用此
+  // 渠道」/字段保存/行级设为当前）。
   const handleChannelSelect = (id: string) => {
     setSelectedId(id);
     setCustomFormOpen(false);
@@ -183,7 +162,8 @@ export function CodexProvidersBlock({
       {/* 右：模型设置 + 渠道接入配置（按查看态渲染，非生效态） */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground">{t("config.colModels")}</div>
-        {modelCard}
+        {/* 需求11：直连视图交互下拉（选模型/自由输入）；渠道/自定义视图只读卡。 */}
+        {selectedId === null && !customFormOpen ? modelCard : (channelModelCard ?? modelCard)}
 
         {customFormOpen ? (
           /* 添加自定义渠道表单（v0.7.6 需求3：与预置渠道右栏同构 + 地址输入）。 */
@@ -271,6 +251,9 @@ export function CodexProvidersBlock({
             }}
             presetModels={selectedPreset?.models ?? []}
             activeModelId={model ?? null}
+            /* 需求11：渠道条目存在（字段保存过）才显示「启用此渠道」；
+                未保存渠道经字段保存启用（patch 同步切激活，页头保存落盘）。 */
+            channelSaved={Boolean(selectedId && providers[selectedId])}
             onPatchFields={(patch) => {
               const id = selectedId;
               const entry: ProviderEntry = {
@@ -284,17 +267,48 @@ export function CodexProvidersBlock({
               if (patch.displayName !== undefined) entry.name = patch.displayName;
               if (patch.baseUrl !== undefined) entry.base_url = patch.baseUrl;
               if (patch.protocol !== undefined) entry.wire_api = patch.protocol;
+              /* 需求11：字段写入 = 该渠道进入待启用态（草稿层切激活，
+                  页头保存落盘）；当前模型不在渠道候选内时带入预设默认。 */
+              const keepModel = model && (selectedPreset?.models ?? []).includes(model);
               onChange({
                 modelProviders: { ...providers, [id]: entry },
+                modelProvider: id,
                 ...(patch.apiKey
                   ? { env: { ...envMap, [entry.env_key ?? `${id.toUpperCase()}_API_KEY`]: patch.apiKey } }
                   : {}),
+                ...(!keepModel && selectedPreset?.model ? { model: selectedPreset.model } : {}),
               });
             }}
-            onEnable={() => applyPreset(selectedId)}
+            onEnable={() => {
+              /* 需求11：启用 = 仅切激活（条目已保存）；模型不在渠道候选
+                  内时带入预设默认，避免沿用旧渠道模型打新渠道。 */
+              const keepModel = model && (selectedPreset?.models ?? []).includes(model);
+              onChange({
+                modelProvider: selectedId,
+                ...(!keepModel && selectedPreset?.model ? { model: selectedPreset.model } : {}),
+              });
+            }}
             onSelectModel={(m) => {
-              if (modelProvider !== selectedId) applyPreset(selectedId);
-              onChange({ model: m });
+              /* 行级设为当前：切渠道激活；条目不存在时补建预设默认条目
+                  （不覆盖用户已编辑字段——仅无条目场景）。 */
+              const id = selectedId;
+              if (!providers[id] && selectedPreset) {
+                onChange({
+                  modelProvider: id,
+                  model: m,
+                  modelProviders: {
+                    ...providers,
+                    [id]: {
+                      name: t(selectedPreset.labelKey),
+                      base_url: selectedPreset.baseUrl,
+                      wire_api: selectedPreset.wireApi ?? "responses",
+                      env_key: selectedPreset.envKey,
+                    },
+                  },
+                });
+                return;
+              }
+              onChange({ modelProvider: id, model: m });
             }}
             onTest={async (modelId) => {
               try {

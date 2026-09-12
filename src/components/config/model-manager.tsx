@@ -458,13 +458,23 @@ export function ModelManager({
               activeModelId={
                 active?.provider === selectedProvider ? active.model : null
               }
+              /* 需求11：骨架渠道（未保存）不显示「启用此渠道」——保存后启用。 */
+              fieldsSaved={!skeletonKeys.has(selectedProvider)}
               onEnableProvider={() => {
                 // v0.7.6 需求3 迭代三：启用渠道 = 激活该渠道第一个模型
                 //（切换渠道的明确操作方式；后续可在模型列表改选其他模型）。
                 const first = config.providers[selectedProvider]?.models?.[0]?.id;
                 if (first) void setActiveFromPicker(selectedProvider, first);
               }}
-              onSaveProvider={(next) => saveProviderFields(selectedProvider, next)}
+              onSaveProvider={async (next) => {
+                await saveProviderFields(selectedProvider, next);
+                // 需求11（用户裁决）：字段保存即启用该渠道——未激活时激活
+                // 首个模型（保存前启用按钮不可见，启用统一经保存/行级激活）。
+                if (active?.provider !== selectedProvider) {
+                  const first = (next.models ?? [])[0]?.id;
+                  if (first) void setActiveFromPicker(selectedProvider, first);
+                }
+              }}
               registerSave={registerDetailSave}
               onDirtyChange={setDetailDirty}
               onDeleteModel={(modelId) => deleteModel(selectedProvider, modelId)}
@@ -517,6 +527,8 @@ function ProviderDetailPanel({
   models,
   isActive,
   activeModelId,
+  /** v0.9.2 需求11：渠道已保存（非骨架）——未保存渠道不显示「启用此渠道」。 */
+  fieldsSaved,
   onEnableProvider,
   onSaveProvider,
   /** 需求16 续三：保存上抛页头（dirty 时注册提交函数）。 */
@@ -534,6 +546,8 @@ function ProviderDetailPanel({
   models: PiModelEntry[];
   isActive: boolean;
   activeModelId: string | null;
+  /** v0.9.2 需求11：渠道已保存（非骨架）——未保存渠道不显示「启用此渠道」。 */
+  fieldsSaved: boolean;
   /** 启用此渠道（激活该渠道第一个模型；v0.7.6 需求3 迭代三）。 */
   onEnableProvider: () => void;
   onSaveProvider: (next: PiProviderConfig) => Promise<void>;
@@ -890,7 +904,7 @@ function ProviderDetailPanel({
             <Check className="h-3 w-3" />
             {t("config.channelActive")}
           </span>
-        ) : (
+        ) : fieldsSaved ? (
           <Button
             size="sm"
             className="h-7 shrink-0 text-xs"
@@ -914,7 +928,7 @@ function ProviderDetailPanel({
             <Power className="mr-1 h-3 w-3" />
             {t("config.channelEnable")}
           </Button>
-        )}
+        ) : null}
       </div>
 
       {/* 行内字段（claude 渠道卡同构） */}

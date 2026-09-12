@@ -13,9 +13,8 @@ import {
   AgentStatusBadge,
   CONFIG_SECTION_META,
 } from "@/components/config/config-page-shell";
-import { ConnectionTestBadge, type ConnectionTestResult } from "@/components/config/connection-test-badge";
 import { Button } from "@/components/ui/button";
-import { Download, Save, Upload, Zap, Loader2 } from "lucide-react";
+import { Download, Save, Upload } from "lucide-react";
 import type { ClaudeConfig } from "@/types";
 import type { AdapterConfigPageProps } from "./index";
 
@@ -33,7 +32,6 @@ export function StructuredConfigPage({
   agentRefreshKey,
   configTab = "models",
   switcherSlot,
-  onNavigateSection,
 }: AdapterConfigPageProps) {
   const { t } = useTranslation();
   const surface = configSurface.kind === "structured" ? configSurface : undefined;
@@ -74,49 +72,8 @@ export function StructuredConfigPage({
     }
   };
 
-  // v0.7.4 需求2 R2c：配置草稿连通性测试（supports_config_test 门控，模型子页页头）。
-  const supportsConfigTest = surface?.supports_config_test ?? false;
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
-
-  const runConfigTest = async () => {
-    if (testing || !draft) return;
-    const env = draft.env ?? {};
-    const key =
-      env["ANTHROPIC_AUTH_TOKEN"]?.trim() || env["ANTHROPIC_API_KEY"]?.trim() || "";
-    const model = draft.model || env["ANTHROPIC_MODEL"] || "";
-    if (!key) {
-      setTestResult({ ok: false, text: t("config.testNoKeyHint") });
-      return;
-    }
-    if (!model) {
-      setTestResult({ ok: false, text: t("config.testNoModelHint") });
-      return;
-    }
-    setTesting(true);
-    setTestResult(null);
-    try {
-      const result = await invokeCommand<{ response?: string | null; latency_ms?: number }>(
-        "test_llm_connection",
-        {
-          api: "anthropic-messages",
-          baseUrl: env["ANTHROPIC_BASE_URL"]?.trim() || "https://api.anthropic.com",
-          apiKey: key,
-          model,
-        },
-      );
-      const reply = (result?.response ?? "").toString().trim();
-      setTestResult({
-        ok: true,
-        latencyMs: result?.latency_ms,
-        text: reply ? reply.slice(0, 120) : "",
-      });
-    } catch (e) {
-      setTestResult({ ok: false, text: String(e).slice(0, 200) });
-    } finally {
-      setTesting(false);
-    }
-  };
+  // v0.9.2 需求12-4：页头「测试连接」连同草稿级测试逻辑整体移除（用户
+  // 裁决，与其他 agent 统一）——联调测试走渠道面板模型行 Zap 按钮。
 
   const handleExport = async () => {
     try {
@@ -172,22 +129,8 @@ export function StructuredConfigPage({
       }
       actionsSlot={
         <div className="flex items-center gap-2">
-          {supportsConfigTest && configTab === "models" && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={runConfigTest}
-              disabled={testing}
-              title={t("config.testConnectionHeaderHint")}
-            >
-              {testing ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Zap className="h-4 w-4" />
-              )}
-              {t("config.testConnection")}
-            </Button>
-          )}
+          {/* v0.9.2 需求12-4（用户裁决）：claude 页头「测试连接」去除——
+              联调测试统一走渠道面板模型行的 Zap 按钮，与其他 agent 一致。 */}
           <Button onClick={handleSave} disabled={!hasChanges || saving} size="sm">
             <Save className="h-4 w-4" />
             {saving ? t("common.saving") : t("common.save")}
@@ -199,17 +142,11 @@ export function StructuredConfigPage({
     >
       {configTab === "models" && (
         <>
-          {testResult && (
-            <div>
-              <ConnectionTestBadge result={testResult} />
-            </div>
-          )}
           {draft && (
             <ConfigModelsZone
               config={draft}
               onChange={update}
               surface={surface}
-              onNavigateSection={onNavigateSection}
               agentId={agentId || undefined}
             />
           )}

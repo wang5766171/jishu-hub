@@ -196,14 +196,20 @@ export function OpencodeProvidersBlock({
               onChange({ customProviders: next });
               setSelectedId(null);
             }}
-            onPatch={(patch) =>
+            onPatch={(patch) => {
+              /* 需求11：字段编辑即待启用（草稿层切激活，页头保存落盘）——
+                  首个模型作为默认当前模型。 */
+              const firstModel = Object.keys(asObj(providersMap[selectedId]?.models))[0];
               onChange({
                 customProviders: {
                   ...providersMap,
                   [selectedId]: { ...providersMap[selectedId], ...patch },
                 },
-              })
-            }
+                ...(activeProvider !== selectedId && firstModel
+                  ? { model: `${selectedId}/${firstModel}` }
+                  : {}),
+              });
+            }}
           />
         ) : (
           <p className="py-8 text-center text-sm text-muted-foreground">
@@ -269,10 +275,15 @@ function PresetChannelCard({
       }}
       presetModels={preset.models}
       activeModelId={currentModel || null}
+      /* 需求11：渠道条目存在（密钥保存过）才显示「启用此渠道」；
+          未保存渠道经字段保存启用（patch 同步切激活，页头保存落盘）。 */
+      channelSaved={Boolean(providers[presetId])}
       onPatchFields={(patch) => {
         if (patch.apiKey) onSetApiKey(patch.apiKey);
         if (patch.baseUrl !== undefined && savedBase) onPatchBaseURL(patch.baseUrl);
         if (patch.displayName !== undefined) onPatchName(patch.displayName);
+        /* 需求11：字段编辑即进入待启用态（草稿层切激活，页头保存落盘）。 */
+        if (!active) onEnable(preset.id, currentModel || preset.models[0]);
       }}
       onEnable={() => onEnable(preset.id, preset.models[0])}
       onSelectModel={(mid) => onEnable(preset.id, mid)}
