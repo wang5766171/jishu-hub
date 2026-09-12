@@ -410,7 +410,7 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
 
 function AppContent() {
   // v0.7.0 需求一：会话作用域状态。项目/会话/元数据随会话作用域 agent 切换重新拉取。
-  const { chatAgentId, setChatAgent } = useAgent();
+  const { chatAgentId, setChatAgent, setManageAgent } = useAgent();
   const [currentPage, setCurrentPage] = useState<Page>("chat");
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [projectSessionsLoading, setProjectSessionsLoading] = useState(false);
@@ -473,6 +473,15 @@ function AppContent() {
     setManageNavKey(k => k + 1);
     setCurrentPage("manage");
   }, []);
+
+  // v0.9.2 需求10：会话页「前往配置」——跳管理页模型设置子页，并把管理
+  // 作用域智能体切到当前会话智能体（ConfigPage 读 manageAgentId 渲染）。
+  const [agentModelsNavKey, setAgentModelsNavKey] = useState(0);
+  const handleNavigateAgentModels = useCallback(() => {
+    if (chatAgentId) setManageAgent(chatAgentId);
+    setAgentModelsNavKey(k => k + 1);
+    setCurrentPage("manage");
+  }, [chatAgentId, setManageAgent]);
 
   const handleProjectSessionsLoadingChange = useCallback((nextLoading: boolean) => {
     setProjectSessionsLoading((prev) => prev === nextLoading ? prev : nextLoading);
@@ -579,11 +588,12 @@ function AppContent() {
       <ViewerPushRow>
         <Suspense fallback={<LoadingOverlay />}>
           {currentPage === "chat"
-            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} />
+            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} onNavigateAgentModels={handleNavigateAgentModels} />
             : <ManagePage
                 onBack={() => setCurrentPage("chat")}
                 onEnterProject={handleEnterProject}
                 navigateToProjects={manageNavKey}
+                navigateToAgentModels={agentModelsNavKey}
                 projects={projects}
                 projectMetas={projectMetas}
                 refetchProjects={refetchProjects}

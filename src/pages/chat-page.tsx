@@ -146,6 +146,7 @@ export function ChatPage({
   onSwitchProject,
   onProjectSessionsLoadingChange,
   navigateToSession,
+  onNavigateAgentModels,
 }: {
   currentProject: Project | null;
   currentProjectMeta?: ProjectMeta;
@@ -155,6 +156,9 @@ export function ChatPage({
   onSwitchProject: () => void;
   onProjectSessionsLoadingChange?: (loading: boolean) => void;
   navigateToSession?: string | null;
+  /** v0.9.2 需求10：未配置模型时「前往配置」——跳管理页模型设置并
+   * 定位到当前会话智能体（agent 切换由 App 层注入）。 */
+  onNavigateAgentModels?: () => void;
 }) {
   const { t } = useTranslation();
   // v0.7.0 需求一：会话作用域状态（chatAgentId 替代全局 activeId）。
@@ -3531,9 +3535,17 @@ export function ChatPage({
             } : undefined}
           />
           {modelOptions.length === 0 ? (
-            <span className="truncate text-amber-400">
-              {t("sessions.modelNotConfigured") || "No models — open 管理-配置"}
-            </span>
+            /* v0.9.2 需求10：黄色提示文案改为「前往配置」按钮——点击直达
+               管理页模型设置并定位当前会话智能体（App 层切 manageAgent）。 */
+            <button
+              type="button"
+              onClick={() => onNavigateAgentModels?.()}
+              title={t("sessions.modelNotConfigured")}
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 text-xs text-amber-500 transition-fast hover:bg-amber-500/20"
+            >
+              <Cpu className="h-3 w-3" />
+              {t("sessions.goModelConfig")}
+            </button>
           ) : (
             <>
               <button
