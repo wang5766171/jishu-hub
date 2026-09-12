@@ -14,9 +14,14 @@ import {
   type FloatRect,
   type SessionLayoutState,
 } from "../../shell/dock-layout";
+import {
+  closeSessionSidebar,
+  openSessionSidebar,
+  useSessionSidebar,
+} from "../../shell/session-sidebar";
+import { usePanelActivation } from "../../shell/panel-activation";
 import { listSessionPlugins, useEnabledSessionPlugins } from "../registry";
-import { SHOW_SESSION_PANEL_EVENT } from "../builtin/html-preview-store";
-import { dockPanelsOf } from "../types";
+import { dockPanelsOf, sidebarPanelsOf } from "../types";
 import type { SessionKernelContext } from "../types";
 
 /**
@@ -143,18 +148,6 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [enabled, showPanel]);
 
-  // ── 展开请求（v0.9.2 测试期）：插件侧（如 html-preview 收到 agent 预览事件）
-  // 经 window CustomEvent 请求展开自己的停靠面板——布局归宿主，插件不越权。──
-  useEffect(() => {
-    const onShowPanel = (e: Event) => {
-      const pluginId = (e as CustomEvent<{ pluginId?: string }>).detail?.pluginId;
-      if (!pluginId || !enabled.has(pluginId)) return;
-      showPanel(pluginId);
-    };
-    window.addEventListener(SHOW_SESSION_PANEL_EVENT, onShowPanel);
-    return () => window.removeEventListener(SHOW_SESSION_PANEL_EVENT, onShowPanel);
-  }, [enabled, showPanel]);
-
   const panels = useMemo<PanelEntry[]>(() => {
     const entries: PanelEntry[] = [];
     for (const plugin of listSessionPlugins()) {
@@ -174,11 +167,80 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
     return entries;
   }, [enabled, layout, t]);
 
-  if (panels.length === 0) return null;
+  // ── 侧边栏形态插件（v0.9.2 测试期：能力中心统一调度悬浮/侧栏两形态）──
+  const sidebarEntries = useMemo(() => {
+    const entries: Array<{ id: string; title: string }> = [];
+    for (const plugin of listSessionPlugins()) {
+      if (!enabled.has(plugin.id)) continue;
+      for (const mount of sidebarPanelsOf(plugin)) {
+        entries.push({ id: plugin.id, title: t(mount.titleKey, mount.titleFallback) });
+      }
+    }
+    return entries;
+  }, [enabled, t]);
+  const sidebarOpenId = useSessionSidebar().openId;
+  const isSidebarPlugin = useCallback(
+    (id: string) => sidebarEntries.some((entry) => entry.id === id),
+    [sidebarEntries],
+  );
+
+  const hideAllDockPanels = useCallback(() => {
+    setLayout((prev) => {
+      const hasVisible = Object.values(prev.panels).some((p) => !p.hidden);
+      if (!hasVisible) return prev;
+      const next = { ...prev, panels: { ...prev.panels } };
+      for (const [pid, panel] of Object.entries(next.panels)) {
+        if (!panel.hidden) next.panels[pid] = { ...panel, hidden: true };
+      }
+      return next;
+    });
+  }, []);
+
+  // 统一激活（单选互斥）：侧栏插件 → 收起悬浮 + 展开侧栏；悬浮插件 →
+  // 收侧栏 + showPanel（其内部含单选与再点关闭语义）。
+  const activatePanel = useCallback(
+    (id: string) => {
+      if (isSidebarPlugin(id)) {
+        hideAllDockPanels();
+        if (sidebarOpenId !== id) openSessionSidebar(id);
+      } else {
+        closeSessionSidebar();
+        showPanel(id);
+      }
+    },
+    [isSidebarPlugin, sidebarOpenId, hideAllDockPanels, showPanel],
+  );
+
+  // ctx.openPanel/closePanel 落点：插件请求展开/收起面板 → 按形态生效。
+  const activation = usePanelActivation();
+  useEffect(() => {
+    if (!activation) return;
+    if (activation.pluginId === "__close__") {
+      closeSessionSidebar();
+      hideAllDockPanels();
+      return;
+    }
+    if (isSidebarPlugin(activation.pluginId)) {
+      hideAllDockPanels();
+      openSessionSidebar(activation.pluginId);
+    } else {
+      closeSessionSidebar();
+      showPanel(activation.pluginId);
+    }
+    // seq 驱动：同一插件重复请求（连续预览刷新）也重新激活。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activation?.seq]);
+
+  const hasAnyMount = panels.length > 0 || sidebarEntries.length > 0;
+  if (!hasAnyMount) return null;
 
   const visiblePanels = panels.filter((panel) => !panel.hidden);
   const activePanel = visiblePanels[0] ?? null;
-  const ActiveIcon = activePanel ? PLUGIN_ICONS[activePanel.id] ?? LayoutGrid : LayoutGrid;
+  // 活动插件 = 悬浮面板或侧栏面板（图标/点击收起规则统一覆盖两形态）。
+  const activePluginId = activePanel?.id ?? sidebarOpenId;
+  const activeTitle =
+    activePanel?.title ?? sidebarEntries.find((e) => e.id === sidebarOpenId)?.title ?? null;
+  const ActiveIcon = activePluginId ? PLUGIN_ICONS[activePluginId] ?? LayoutGrid : LayoutGrid;
 
   return (
     <div ref={layerRef} className="pointer-events-none absolute inset-0 z-20">
@@ -206,13 +268,15 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
       <div ref={hubRef} className="pointer-events-auto absolute right-2 top-2">
         <button
           type="button"
-          title={activePanel ? activePanel.title : t("sessionPanels.hub.title", "能力中心")}
+          title={activeTitle ?? t("sessionPanels.hub.title", "能力中心")}
           aria-label={t("sessionPanels.hub.title", "能力中心")}
           onClick={() => {
             // 2026-09-11 三轮调整：有面板展开时点击 = 收起面板（图标复位能力
-            // 中心）；无面板展开时才弹出/关闭能力列表。
-            if (activePanel) {
-              showPanel(activePanel.id);
+            // 中心）；无面板展开时才弹出/关闭能力列表。2026-09-12：统一覆盖
+            // 悬浮/侧栏两形态。
+            if (activePluginId) {
+              if (sidebarOpenId && !activePanel) closeSessionSidebar();
+              else if (activePanel) showPanel(activePanel.id);
               setHubOpen(false);
             } else {
               setHubOpen((v) => !v);
@@ -220,7 +284,7 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
           }}
           className={cn(
             "flex h-8 w-8 items-center justify-center rounded-lg border border-border/60 bg-background/90 shadow-sm backdrop-blur transition-colors",
-            activePanel
+            activePluginId
               ? "border-primary/40 bg-primary/10 text-primary"
               : "text-muted-foreground hover:text-foreground",
           )}
@@ -234,16 +298,16 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
               {t("sessionPanels.hub.title", "能力中心")}
             </div>
             <div className="grid grid-cols-4 gap-1.5">
-              {panels.map((panel) => {
-                const Icon = PLUGIN_ICONS[panel.id] ?? LayoutGrid;
-                const isActive = !panel.hidden;
+              {[...panels, ...sidebarEntries].map((entry) => {
+                const Icon = PLUGIN_ICONS[entry.id] ?? LayoutGrid;
+                const isActive = !("hidden" in entry) ? sidebarOpenId === entry.id : !(entry as { hidden: boolean }).hidden;
                 return (
                   <button
-                    key={panel.id}
+                    key={entry.id}
                     type="button"
-                    title={panel.title}
+                    title={entry.title}
                     onClick={() => {
-                      showPanel(panel.id);
+                      activatePanel(entry.id);
                       setHubOpen(false);
                     }}
                     className={cn(
@@ -254,7 +318,7 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
                     )}
                   >
                     <Icon className="h-3.5 w-3.5" />
-                    <span className="text-[9px] font-medium leading-tight whitespace-nowrap">{panel.title}</span>
+                    <span className="text-[9px] font-medium leading-tight whitespace-nowrap">{entry.title}</span>
                   </button>
                 );
               })}

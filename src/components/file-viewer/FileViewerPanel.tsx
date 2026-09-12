@@ -51,7 +51,11 @@ export function FileViewerProvider({ children, projectPath }: { children: ReactN
   const [width, setWidth] = useState<number | null>(() => loadPanelWidth());
   // v0.8.0 需求4 补充：跟踪视口宽，默认宽度（窗口 25%）与三栏 margin 随窗口变化。
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
-  const effectiveWidth = width ?? defaultPanelWidth(viewportWidth);
+  // v0.9.2 测试期：HTML 页面预览（agent preview_html 落点）需要可视宽度，
+  // 未自定义宽度时默认占视口一半（用户裁决：至少一半）；其余目标走既有默认。
+  const isHtmlPage = /\.(html|htm)$/i.test(target?.path ?? "");
+  const effectiveWidth =
+    width ?? (isHtmlPage ? Math.round(viewportWidth / 2) : defaultPanelWidth(viewportWidth));
   const widthRef = useRef<number | null>(width);
   widthRef.current = width;
   const contentScrollRef = useRef<HTMLDivElement | null>(null);
@@ -262,7 +266,9 @@ export function FileViewerProvider({ children, projectPath }: { children: ReactN
             ) : error ? (
               <EmptyState text={error} />
             ) : content ? (
-              isMarkdown ? (
+              isHtmlPage ? (
+                <HtmlPagePreview content={content.content} truncated={content.truncated} />
+              ) : isMarkdown ? (
                 <MarkdownPreview content={content.content} truncated={content.truncated} />
               ) : (
                 <TextPreview content={content.content} truncated={content.truncated} />
@@ -331,6 +337,28 @@ function TextPreview({ content, truncated }: { content: string; truncated: boole
 
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS = [rehypeHighlight];
+
+/** v0.9.2 测试期：HTML 页面渲染（agent preview_html 工具落点）——iframe
+ * srcDoc 沙箱渲染（允许脚本/表单/弹窗，不给同源：页面可交互，又不触达
+ * Hub 自身上下文）。截断的 HTML 无法完整渲染，提示后仍尽力显示。 */
+function HtmlPagePreview({ content, truncated }: { content: string; truncated: boolean }) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <iframe
+        title={t("fileViewer.htmlPreview", "HTML 页面预览")}
+        sandbox="allow-scripts allow-forms allow-popups"
+        srcDoc={content}
+        className="min-h-0 w-full flex-1 border-0 bg-white"
+      />
+      {truncated && (
+        <div className="border-t border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
+          {t("fileViewer.htmlTruncated", "内容超过 512KB 已截断，页面可能渲染不完整。")}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** v0.8.0 需求4 补充：md 渲染预览。复用消息区的 markdown-prose 样式
  * （pre 已带 overflow-x:auto，代码块单独横向滚动），正文随面板宽度换行。 */

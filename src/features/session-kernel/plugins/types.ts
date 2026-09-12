@@ -74,6 +74,9 @@ export interface PluginSessionMeta {
   /** 上下文占用（token；null = 未知）。 */
   contextUsed: number | null;
   contextTotal: number | null;
+  /** 当前项目根绝对路径（v0.9.2 测试期：插件解析 tool_use 相对路径用，
+   * 如 html-preview 把会话产出的相对路径解析为可读的绝对路径）。 */
+  projectPath: string | null;
 }
 
 /** 消息搜索结果。 */
@@ -116,6 +119,12 @@ export interface SessionKernelContext {
   switchSession(sessionId: string): void;
   /** 打开文件预览面板。 */
   openFileViewer(path: string): void;
+  /** 展开插件自己的面板（v0.9.2 测试期）：按插件声明的形态生效——dock-panel
+   * 悬浮展开 / sidebar-panel 侧栏顶开；单选互斥（展开一个收起其他）。
+   * event-hook 收到信号需要拉起面板时使用。 */
+  openPanel(pluginId: string): void;
+  /** 收起当前展开的面板（openPanel 的对称命令）。 */
+  closePanel(): void;
   /** 弹确认对话框（Promise<boolean>）。 */
   confirmDialog(opts: { title: string; description?: string; variant?: "default" | "destructive" }): Promise<boolean>;
   /** 会话信息解析：id → 标题 + 类型。 */
@@ -190,6 +199,17 @@ export interface DockPanelMount {
   defaultSlot: DockSlot;
 }
 
+/** 侧边栏面板挂载点（v0.9.2 测试期，用户裁决：能力中心支持两种形态）：
+ * 挤压式布局——面板展开时主区被顶开让位（同文件预览形态），区别于
+ * dock-panel 的悬浮覆盖。宽度固定 50vw（会话侧栏 shell 统一管理）。 */
+export interface SidebarPanelMount {
+  kind: "sidebar-panel";
+  /** 标题 i18n key 与兜底文案。 */
+  titleKey: string;
+  titleFallback: string;
+  Component: ComponentType<{ ctx: SessionKernelContext }>;
+}
+
 /** 块渲染器挂载点（v0.9.2 底座增强）：匹配内容块（非仅代码块）。
  * 0 = 仅匹配代码块（语言+detect）；extended 匹配消息块（interaction/
  * phase_divider/tool_use 等核心块类型的插件接管渲染）。 */
@@ -209,6 +229,7 @@ export interface BlockRendererMount {
 export type PluginMount =
   | RailWidgetMount
   | DockPanelMount
+  | SidebarPanelMount
   | BlockRendererMount
   | EventHookMount
   | HeaderActionMount;
@@ -217,12 +238,17 @@ export type PluginMount =
 export type SessionSignal =
   | { type: "turn-complete"; sessionId: string; agentId: string; error?: boolean }
   | { type: "approval-request"; sessionId: string; agentId: string }
-  | { type: "task-run-failed"; taskId: string; title: string };
+  | { type: "task-run-failed"; taskId: string; title: string }
+  /** 文件预览请求（v0.9.2 测试期）：agent 工具（如 preview_html）经内核
+   * 事件管线转发——插件自行决定是否响应（html-preview 打开侧栏渲染）。 */
+  | { type: "file-preview-request"; file: string; sessionId?: string };
 
 /** 事件钩子挂载点：无 UI 的事件消费（通知/音效等）。 */
 export interface EventHookMount {
   kind: "event-hook";
-  onSignal: (signal: SessionSignal) => void;
+  /** v0.9.2 测试期：补 ctx 入参——常驻事件消费可能需要内核命令（如
+   * file-preview-request → ctx.openPanel 展开面板）。 */
+  onSignal: (signal: SessionSignal, ctx: SessionKernelContext) => void;
 }
 
 /** 会话头部动作挂载点：头部工具条按钮（导出等轻动作）。 */
@@ -255,6 +281,10 @@ export interface SessionPluginDescriptor {
 
 export function dockPanelsOf(plugin: SessionPluginDescriptor): DockPanelMount[] {
   return plugin.mounts.filter((m): m is DockPanelMount => m.kind === "dock-panel");
+}
+
+export function sidebarPanelsOf(plugin: SessionPluginDescriptor): SidebarPanelMount[] {
+  return plugin.mounts.filter((m): m is SidebarPanelMount => m.kind === "sidebar-panel");
 }
 
 export function railWidgetsOf(plugin: SessionPluginDescriptor): RailWidgetMount[] {

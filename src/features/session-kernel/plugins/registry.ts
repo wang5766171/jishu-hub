@@ -10,9 +10,7 @@ import { sessionExportPlugin } from "./builtin/session-export";
 import { usagePanelPlugin } from "./builtin/usage-panel";
 import { messageSearchPlugin } from "./builtin/message-search";
 import { interactionRenderPlugin } from "./builtin/interaction-render";
-// v0.9.2 测试期：import 即注册模块级 Tauri 事件监听（面板未挂载也不丢预览事件）。
 import { htmlPreviewPlugin } from "./builtin/html-preview";
-import "./builtin/html-preview-store";
 import type { SessionPluginDescriptor } from "./types";
 
 /**

@@ -1117,7 +1117,9 @@
     "revealFailedTitle": "Failed to open file manager",
     "openFailedTitle": "Failed to open file",
     "resizeHandle": "Resize preview (double-click to fit content)",
-    "collapse": "Collapse preview"
+    "collapse": "Collapse preview",
+    "htmlPreview": "HTML page preview",
+    "htmlTruncated": "Content over 512KB was truncated; the page may render incompletely."
   },
   "sessionPlugins": {
     "navigation": {
@@ -1214,12 +1216,17 @@
     },
     "htmlPreview": {
       "name": "HTML Page Preview",
-      "description": "Agent-built HTML pages rendered in the side panel (preview_html tool)",
+      "description": "Render HTML pages in the side panel: auto preview via the preview_html tool, or pick from files produced in this session",
       "panelTitle": "HTML Preview",
+      "sessionFiles": "Session output",
+      "noFiles": "No HTML files detected from this session yet",
       "empty": "No preview yet",
-      "emptyHint": "The agent can call the preview_html tool to render an HTML page here",
       "refresh": "Refresh (re-read after the agent overwrites the file)",
-      "truncated": "File exceeds 512KB; preview truncated"
+      "truncated": "File exceeds 512KB; preview truncated",
+      "closeTab": "Close tab",
+      "more": "More",
+      "revealFolder": "Reveal in folder",
+      "openInBrowser": "Open in system browser"
     }
   },
   "sessionPanels": {

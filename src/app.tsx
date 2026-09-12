@@ -17,6 +17,12 @@ import { useTheme, type Theme, ThemeProvider } from "@/hooks/use-theme";
 import { useFontSize, type FontLevel } from "@/hooks/use-font-size";
 import { AgentProvider, useAgent } from "@/agents";
 import { FileViewerProvider, useFileViewer } from "@/components/file-viewer";
+import {
+  SESSION_SIDEBAR_WIDTH_RATIO,
+  clampSidebarWidth,
+  setSessionSidebarEffectiveWidth,
+  useSessionSidebar,
+} from "@/features/session-kernel/shell/session-sidebar";
 import { ErrorBoundary } from "@/components/error-boundary";
 import type { Page, Project, ProjectMeta } from "@/types";
 
@@ -597,13 +603,61 @@ function AppContent() {
 /** v0.8.0 需求4 补充（第三批）：三栏顶开——右侧预览展开时把会话/管理区
  * 往左顶（margin = 面板实际占宽），不再遮挡内容。面板与 margin 共用
  * effectiveWidth（含默认值回退与 420px 下限），拖动调宽时两边即时同步；
- * 子树元素引用稳定，宽度变化只重渲染本行容器。 */
+ * 子树元素引用稳定，宽度变化只重渲染本行容器。
+ * v0.9.2 测试期：插件侧边栏（sidebar-panel 形态）同享顶开——默认宽 =
+ * 内容区（不含左侧导航）× 50%（用户裁决），用户拖拽值优先；生效宽度经
+ * session-sidebar store 回填，侧栏面板与 margin 共用同一数值保证齐边；
+ * 两者同时打开取较宽者。 */
 function ViewerPushRow({ children }: { children: ReactNode }) {
   const viewer = useFileViewer();
+  const sidebar = useSessionSidebar();
+  const rowRef = useRef<HTMLDivElement>(null);
+  // 基准宽（内容区不含 margin 的完整宽）：实测 rect + 当前 margin 补偿——
+  // margin 会压缩本行自身宽度，直接用 rect 会形成自指反馈环（拖宽时
+  // m = k(T−m) 收敛到约一半，用户实测「最大拖到一半」的根因）。
+  const marginRef = useRef(0);
+  const [baseWidth, setBaseWidth] = useState(() => window.innerWidth);
+
+  useEffect(() => {
+    const el = rowRef.current;
+    if (!el) return;
+    const measure = (w: number) => {
+      const base = w + marginRef.current;
+      if (base > 0) setBaseWidth(base);
+    };
+    measure(el.getBoundingClientRect().width);
+    const observer = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (w && w > 0) measure(w);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const sidebarEffective = sidebar.openId
+    ? clampSidebarWidth(
+        sidebar.userWidth ?? baseWidth * SESSION_SIDEBAR_WIDTH_RATIO,
+        window.innerWidth,
+      )
+    : null;
+
+  // 回填生效宽度（面板渲染用）；引用稳定，值不变不触发订阅者。
+  useEffect(() => {
+    setSessionSidebarEffectiveWidth(sidebarEffective);
+  }, [sidebarEffective]);
+
+  const margin = viewer.open
+    ? sidebarEffective
+      ? Math.max(viewer.effectiveWidth, sidebarEffective)
+      : viewer.effectiveWidth
+    : sidebarEffective ?? 0;
+  marginRef.current = margin;
+
   return (
     <div
+      ref={rowRef}
       className="flex-1 overflow-hidden"
-      style={{ marginRight: viewer.open ? viewer.effectiveWidth : 0 }}
+      style={{ marginRight: margin ? `${margin}px` : 0 }}
     >
       {children}
     </div>

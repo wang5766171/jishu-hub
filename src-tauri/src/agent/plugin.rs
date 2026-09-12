@@ -198,8 +198,8 @@ pub fn builtin_session_plugin_specs() -> &'static [(&'static str, &'static str)]
         // v0.9.2 底座增强后拆出
         ("session.search", "消息搜索"),
         ("session.interaction-render", "交互问答卡"),
-        // v0.9.2 测试期：agent 经 preview_html 工具主动渲染 HTML 页面的右侧
-        // 停靠面板（工具本体由 html-preview 工具插件治理）。
+        // v0.9.2 测试期（sidebar-panel 首个插件）：HTML 页面侧栏预览——
+        // agent 经 preview_html 工具自动预览 / 手动点选本会话产物。
         ("session.html-preview", "HTML 页面预览"),
     ]
 }

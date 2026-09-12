@@ -8,6 +8,8 @@ import {
 import { MessageView } from "@/components/sessions/message-view";
 import { buildTurnSummaries } from "@/components/sessions/turn-rail";
 import { SessionPanelLayer } from "@/features/session-kernel/plugins/mounts/session-panel-layer";
+import { SessionSidebarLayer } from "@/features/session-kernel/plugins/mounts/session-sidebar-layer";
+import { requestPanelActivation, requestPanelClose } from "@/features/session-kernel/shell/panel-activation";
 import { BlockRenderersProvider } from "@/features/session-kernel/plugins/mounts/use-block-renderers";
 import { PluginSignalBridge } from "@/features/session-kernel/plugins/mounts/plugin-signal-bridge";
 import { SessionPluginActions } from "@/features/session-kernel/plugins/mounts/session-plugin-actions";
@@ -1567,6 +1569,26 @@ export function ChatPage({
     logTaskPhaseDebug("conductor-task:not-found", { sessionId });
   }, []);
 
+  // v0.9.2 测试期（插件机制）：agent 工具事件 → 内核信号管线。preview_html
+  // 等工具经 hub_invoke 校验后广播 session-plugin-preview；内核转发为
+  // file-preview-request 信号（严格走信号总线），插件（html-preview）经
+  // event-hook 消费并自行决定拉起面板——内核不感知具体插件。
+  useEffect(() => {
+    const unlisten = listen<{ file: string; session_id?: string }>("session-plugin-preview", (event) => {
+      const file = event.payload?.file;
+      if (typeof file === "string" && file) {
+        emitSessionSignal({
+          type: "file-preview-request",
+          file,
+          sessionId: event.payload?.session_id ?? undefined,
+        });
+      }
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
   // v0.9.2 需求6：任务实例变更事件（后端 conductor_sync_phase / mark_session 落库后
   // 广播）。两件事：① 即时刷新任务列表（不等 3s 轮询，阶段推进实时可见）；
   // ② 会话模式下关联当前会话对应的任务实例——原发现通道只有 session_resolved
@@ -2024,8 +2046,10 @@ export function ChatPage({
           : null;
       })(),
       contextTotal: getSessionUsage(selectedSession ?? "")?.contextWindowTotal ?? null,
+      // v0.9.2 测试期：插件解析 tool_use 相对路径用（html-preview 会话产物）。
+      projectPath: currentProject?.path ?? null,
     }),
-    [chatAgentId, chatAgent, activeModelValue, thinkingLevelValue, selectedSession],
+    [chatAgentId, chatAgent, activeModelValue, thinkingLevelValue, selectedSession, currentProject],
   );
 
   // v0.9.2 底座增强：消息搜索（搜索插件消费）。
@@ -2117,6 +2141,10 @@ export function ChatPage({
       insertToComposer,
       switchSession: (id: string) => void handleSelectSession(id),
       openFileViewer: (path: string) => openViewer({ kind: "file", path }),
+      // v0.9.2 测试期：插件展开自己面板的命令（event-hook 收到信号拉起面板，
+      // 如 file-preview-request）；经 shell 的激活性落点，由宿主按形态生效。
+      openPanel: (pluginId: string) => requestPanelActivation(pluginId),
+      closePanel: () => requestPanelClose(),
       confirmDialog: (opts) => confirmDialog(opts),
       task: taskPanelCtx,
       sessionId: selectedSession && selectedSession !== "new" ? selectedSession : null,
@@ -3562,7 +3590,7 @@ export function ChatPage({
 
   return (
     <BlockRenderersProvider enabled={enabledSessionPlugins}>
-    <PluginSignalBridge enabled={enabledSessionPlugins} />
+    <PluginSignalBridge enabled={enabledSessionPlugins} ctx={sessionKernelCtx} />
     <div className="flex h-full">
       {/* Left sidebar */}
       <div
@@ -4003,6 +4031,9 @@ export function ChatPage({
                 {/* v0.9.2 需求1：停靠面板宿主（五槽位/浮动/快捷图标）——通用容器，
                     无已显示面板时零渲染；M3 任务流程全景为首个真实面板。 */}
                 <SessionPanelLayer ctx={sessionKernelCtx} />
+                {/* v0.9.2 测试期：侧边栏面板宿主（sidebar-panel 挂载形态，挤压式
+                    布局；与悬浮宿主平行，由能力中心统一调度）。 */}
+                <SessionSidebarLayer ctx={sessionKernelCtx} />
                 <div ref={messageAreaRef} className="h-full overflow-y-auto">
                 {taskSelectedNodeNotStarted ? (
                   // 选中的步骤还没执行过——直接说明，而不是把上一段会话继续摆在这里。

@@ -1117,7 +1117,9 @@
     "revealFailedTitle": "打开资源管理器失败",
     "openFailedTitle": "打开文件失败",
     "resizeHandle": "调整预览宽度（双击自适应内容宽度）",
-    "collapse": "收起预览"
+    "collapse": "收起预览",
+    "htmlPreview": "HTML 页面预览",
+    "htmlTruncated": "内容超过 512KB 已截断，页面可能渲染不完整。"
   },
   "sessionPlugins": {
     "navigation": {
@@ -1214,12 +1216,17 @@
     },
     "htmlPreview": {
       "name": "HTML 页面预览",
-      "description": "agent 开发的 HTML 页面在右侧面板渲染预览（preview_html 工具）",
+      "description": "侧边栏渲染 HTML 页面：agent 调 preview_html 自动预览，或手动点选本会话产出的 HTML 文件",
       "panelTitle": "HTML 预览",
+      "sessionFiles": "本会话产出",
+      "noFiles": "尚未检测到本会话产出的 HTML 文件",
       "empty": "暂无预览",
-      "emptyHint": "agent 开发 HTML 页面时可调用 preview_html 工具，在此渲染展示",
       "refresh": "刷新（agent 覆写文件后重读）",
-      "truncated": "文件超过 512KB，预览已截断"
+      "truncated": "文件超过 512KB，预览已截断",
+      "closeTab": "关闭标签",
+      "more": "更多",
+      "revealFolder": "打开文件夹",
+      "openInBrowser": "使用系统浏览器打开"
     }
   },
   "sessionPanels": {
