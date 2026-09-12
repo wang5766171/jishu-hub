@@ -29,6 +29,7 @@ import {
   Loader2,
   Pencil,
   Power,
+  RefreshCw,
   Zap,
   Eye,
   EyeOff,
@@ -41,7 +42,20 @@ import type {
   PiProviderConfig,
   PiModelsConfig,
 } from "./model-types";
-import { ProviderForm } from "./provider-form";
+// v0.9.2 需求9：探测落库返回形状（与 Rust channel_models_store/channel_probe 对齐）。
+interface ChannelModelsProbe {
+  supported: boolean;
+  models: string[];
+  endpoint: string;
+  error: string | null;
+}
+interface StoredChannelModels {
+  models: string[];
+  endpoint: string;
+  fetched_at: number;
+}
+
+import { ProviderForm, probedModelToEntry } from "./provider-form";
 import { ModelForm } from "./model-form";
 import { ActiveModelCard, type ActiveModelOption } from "./active-model-card";
 import { ChannelSidebar, type ChannelSidebarItem } from "./channel-sidebar";
@@ -81,10 +95,6 @@ export function ModelManager({
   const [providerForm, setProviderForm] = useState<
     { mode: "add"; presetId?: string } | { mode: "edit"; name: string } | null
   >(null);
-  const [modelForm, setModelForm] = useState<
-    { providerName: string; mode: "add" } | { providerName: string; mode: "edit"; modelId: string } | null
-  >(null);
-
   // R6 两栏结构：左渠道列表，右选中渠道详情。
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
 
@@ -93,7 +103,7 @@ export function ModelManager({
   const formSaveRef = useRef<(() => void) | null>(null);
   const detailSaveRef = useRef<(() => void) | null>(null);
   const [detailDirty, setDetailDirty] = useState(false);
-  const formActive = providerForm !== null || modelForm !== null;
+  const formActive = providerForm !== null;
   const registerFormSave = useCallback(
     (fn: (() => void) | null) => {
       formSaveRef.current = fn;
@@ -246,78 +256,6 @@ export function ModelManager({
     }
   };
 
-  const startAddModel = (providerName: string) => {
-    setSelectedProvider(providerName);
-    setModelForm({ providerName, mode: "add" });
-    setProviderForm(null);
-    setError(null);
-  };
-  const startEditModel = (providerName: string, modelId: string) => {
-    setModelForm({ providerName, mode: "edit", modelId });
-    setProviderForm(null);
-    setError(null);
-  };
-  const submitModel = async (payload: {
-    providerName: string;
-    model: PiModelEntry;
-  }) => {
-    setError(null);
-    const { providerName, model } = payload;
-    if (!providerName) {
-      setError(`${t("config.providerKey")} ${t("config.required")}`);
-      return;
-    }
-    if (!model.id.trim()) {
-      setError(`${t("config.modelId")} ${t("config.required")}`);
-      return;
-    }
-    const provider = config.providers[providerName];
-    if (!provider) {
-      setError(`${providerName} ${t("config.notFound")}`);
-      return;
-    }
-    const models = provider.models ?? [];
-    if (
-      modelForm?.mode === "add" &&
-      models.some((m) => m.id === model.id)
-    ) {
-      setError(`${model.id} ${t("config.exists")}`);
-      return;
-    }
-    if (
-      modelForm?.mode === "edit" &&
-      modelForm.modelId !== model.id &&
-      models.some((m) => m.id === model.id)
-    ) {
-      setError(`${model.id} ${t("config.exists")}`);
-      return;
-    }
-    setSaving(true);
-    try {
-      const previousModelId = modelForm?.mode === "edit" ? modelForm.modelId : null;
-      const nextModels =
-        modelForm?.mode === "edit"
-          ? models.map((m) => (m.id === modelForm.modelId ? model : m))
-          : [...models, model];
-      const nextProvider: PiProviderConfig = {
-        ...provider,
-        models: nextModels,
-      };
-      const next: PiModelsConfig = { providers: { ...config.providers } };
-      next.providers[providerName] = nextProvider;
-      await persistConfig(
-        next,
-        active?.provider === providerName && active.model === previousModelId
-          ? { provider: providerName, model: model.id }
-          : undefined,
-      );
-      setModelForm(null);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
   const deleteModel = async (providerName: string, modelId: string) => {
     const confirmed = await confirmDialog({
       title: t("config.title"),
@@ -373,7 +311,10 @@ export function ModelManager({
     const displayName = (config.providers[name]?.name as string | undefined) || name;
     return (config.providers[name]?.models ?? []).map((m) => ({
       value: `${name}/${m.id}`,
-      label: (m.name as string | undefined) || m.id,
+      // v0.9.2 需求9 补丁六：label 用模型 id（与下方模型列表同源同形）——
+      // 此前用 m.name（预设条目是大写 displayName 如 GLM-5.3），与列表的
+      // 小写 id（接口探测真实形态）显示不一致。
+      label: m.id,
       hint: displayName,
     }));
   });
@@ -403,7 +344,6 @@ export function ModelManager({
   const selectProvider = (name: string) => {
     setSelectedProvider(name);
     setProviderForm(null);
-    setModelForm(null);
     setError(null);
   };
 
@@ -464,7 +404,6 @@ export function ModelManager({
         selectProvider(matchedKey);
       } else {
         setSelectedProvider(null);
-        setModelForm(null);
         setProviderForm({ mode: "add", presetId });
         setError(null);
       }
@@ -490,7 +429,6 @@ export function ModelManager({
           onSelect={handleSidebarSelect}
           onAddCustom={() => {
             setSelectedProvider(null);
-            setModelForm(null);
             setProviderForm({ mode: "add", presetId: "custom" });
             setError(null);
           }}
@@ -520,6 +458,7 @@ export function ModelManager({
 
           {providerForm ? (
             <ProviderForm
+              agentId={agentId}
               // key 强制在「表单打开状态下切换到另一预置渠道」时重建表单
               //（否则组件实例保留首次挂载的预设 state，第二次切换不生效——
               // v0.7.6 需求3 测试期迭代二）。
@@ -537,24 +476,9 @@ export function ModelManager({
               onSubmit={submitProvider}
               registerSave={registerFormSave}
             />
-          ) : modelForm ? (
-            <ModelForm
-              providerName={modelForm.providerName}
-              provider={config.providers[modelForm.providerName]}
-              existingModel={
-                modelForm.mode === "edit"
-                  ? config.providers[modelForm.providerName]?.models?.find(
-                      (m) => m.id === modelForm.modelId,
-                    )
-                  : undefined
-              }
-              saving={saving}
-              onCancel={() => setModelForm(null)}
-              onSubmit={submitModel}
-              registerSave={registerFormSave}
-            />
           ) : selectedProvider && config.providers[selectedProvider] ? (
             <ProviderDetailPanel
+              agentId={agentId}
               name={selectedProvider}
               provider={config.providers[selectedProvider]}
               models={config.providers[selectedProvider].models ?? []}
@@ -572,12 +496,22 @@ export function ModelManager({
               onSaveProvider={(next) => saveProviderFields(selectedProvider, next)}
               registerSave={registerDetailSave}
               onDirtyChange={setDetailDirty}
-              onAddModel={() => startAddModel(selectedProvider)}
-              onEditModel={(modelId) => startEditModel(selectedProvider, modelId)}
               onDeleteModel={(modelId) => deleteModel(selectedProvider, modelId)}
               onSetActive={(modelId) =>
                 void setActiveFromPicker(selectedProvider, modelId)
               }
+              onAddProbedModel={(modelId) => {
+                // 探测-only 模型点击 = 完整合法条目落配置并设为当前（详情
+                // 面板随后可编辑 ctx/maxTokens 等参数）。
+                const entry = probedModelToEntry(modelId);
+                const p = config.providers[selectedProvider];
+                const next: PiProviderConfig = {
+                  ...p,
+                  models: [...(p?.models ?? []).filter((m) => m.id !== modelId), entry],
+                };
+                void saveProviderFields(selectedProvider, next);
+                void setActiveFromPicker(selectedProvider, modelId);
+              }}
             />
           ) : (
             <p className="py-8 text-center text-sm text-muted-foreground">
@@ -605,6 +539,7 @@ const API_OPTIONS = [
  * 「当前使用」徽标），保存即时写入 models.json；不再经 ProviderForm 弹层。
  */
 function ProviderDetailPanel({
+  agentId,
   name,
   provider,
   models,
@@ -616,11 +551,12 @@ function ProviderDetailPanel({
   /** 需求16 续三：保存上抛页头（dirty 时注册提交函数）。 */
   registerSave,
   onDirtyChange,
-  onAddModel,
-  onEditModel,
   onDeleteModel,
   onSetActive,
+  onAddProbedModel,
 }: {
+  /** v0.9.2 需求9：探测落库作用域（管理作用域 agent）。 */
+  agentId: string;
   name: string;
   provider: PiProviderConfig;
   models: PiModelEntry[];
@@ -632,10 +568,10 @@ function ProviderDetailPanel({
   onSaveProvider: (next: PiProviderConfig) => Promise<void>;
   registerSave?: (fn: (() => void) | null) => void;
   onDirtyChange?: (dirty: boolean) => void;
-  onAddModel: () => void;
-  onEditModel: (modelId: string) => void;
   onDeleteModel: (modelId: string) => void;
   onSetActive: (modelId: string) => void;
+  /** v0.9.2 需求9：点击探测-only 模型 = 直接添加为渠道模型并设为当前。 */
+  onAddProbedModel: (modelId: string) => void;
 }) {
   const { t } = useTranslation();
   // 行内编辑草稿：渠道切换（name 变化）时重置为已保存值。
@@ -648,6 +584,87 @@ function ProviderDetailPanel({
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; text: string }>>({});
+  const [keyMissing, setKeyMissing] = useState(false);
+
+  // v0.9.2 需求9 补丁四（用户裁决：激活后添加模型 = 激活前同交互）——
+  // 「添加模型」不再替换右列整页，而是在模型列表下方**内嵌展开** ModelForm
+  //（与激活前 ProviderForm 同组件同形态）；页头保存 = 提交暂存 chip（可删、
+  // 可继续添加），再次页头保存 = 渠道字段 + 暂存模型一并落库。编辑同位内嵌。
+  const [inlineAddOpen, setInlineAddOpen] = useState(false);
+  const [inlineEditId, setInlineEditId] = useState<string | null>(null);
+  const [stagedModels, setStagedModels] = useState<PiModelEntry[]>([]);
+
+  // v0.9.2 需求9（用户裁决）：第三方渠道按渠道**探测**模型列表——首次自动
+  // 查（配置密钥后），结果**落库**（~/.jishu-hub/channel-models.db，跨重启）；
+  // 手动刷新更新；无接口（探测 unsupported）→ 静态预设列表现状、无刷新钮；
+  // 未填密钥 → 列表空 + 引导文案。
+  const savedKeyInitial = ((provider.apiKey as string) ?? "").trim();
+  const [probedModels, setProbedModels] = useState<string[] | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [probeState, setProbeState] = useState<"none" | "unsupported" | "failed" | "ok">("none");
+  const channelKey = `${agentId}::${name}`;
+
+  // 读已落库列表（进详情页即展示；探测写入后重读）。
+  useEffect(() => {
+    let cancelled = false;
+    invokeCommand<StoredChannelModels | null>("channel_models_stored", {
+      agentId,
+      channelKey,
+    })
+      .then((stored) => {
+        if (!cancelled && stored?.models?.length) setProbedModels(stored.models);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, channelKey]);
+
+  const probeNow = useCallback(
+    async (keyOverride?: string) => {
+      const key = (keyOverride ?? (provider.apiKey as string) ?? "").trim();
+      if (!baseUrl.trim() || !key) return;
+      setProbing(true);
+      try {
+        const probe = await invokeCommand<ChannelModelsProbe>("channel_models_probe_and_store", {
+          agentId,
+          channelKey,
+          baseUrl: baseUrl.trim(),
+          apiKey: key,
+        });
+        if (probe.supported) {
+          setProbedModels(probe.models);
+          setProbeState("ok");
+        } else {
+          setProbeState("unsupported");
+        }
+      } catch {
+        setProbeState("failed");
+      } finally {
+        setProbing(false);
+      }
+    },
+    [agentId, baseUrl, channelKey, provider.apiKey],
+  );
+
+  // 首查：渠道已配置密钥（落库配置）且无已存列表 → 首次进详情自动探测。
+  const autoProbeKey = `${agentId}::${name}::${savedKeyInitial ? "y" : "n"}`;
+  useEffect(() => {
+    if (!savedKeyInitial) return;
+    let cancelled = false;
+    invokeCommand<StoredChannelModels | null>("channel_models_stored", {
+      agentId,
+      channelKey,
+    })
+      .then((stored) => {
+        if (!cancelled && !stored) void probeNow();
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoProbeKey]);
 
   useEffect(() => {
     setDisplayName((provider.name as string) ?? "");
@@ -665,7 +682,8 @@ function ProviderDetailPanel({
     baseUrl !== (provider.baseUrl ?? "") ||
     api !== (provider.api ?? "anthropic-messages") ||
     authHeader !== (provider.authHeader ?? false) ||
-    apiKey.trim() !== "";
+    apiKey.trim() !== "" ||
+    stagedModels.length > 0;
 
   // 需求16 续三：dirty 上抛 + 提交函数注册到页头（保存统一右上角）。
   useEffect(() => {
@@ -679,18 +697,30 @@ function ProviderDetailPanel({
 
   const save = async () => {
     if (!dirty || saving) return;
+    // v0.9.2 需求9（用户裁决）：不填密钥点击保存 → 密钥位红警示（阻断保存）。
+    if (!savedKey && !apiKey.trim()) {
+      setKeyMissing(true);
+      return;
+    }
+    setKeyMissing(false);
     setSaving(true);
     try {
+      const existingIds = new Set(models.map((m) => m.id));
       const next: PiProviderConfig = {
         ...provider,
         name: displayName || undefined,
         baseUrl: baseUrl || undefined,
         api,
         authHeader,
+        models: [
+          ...models,
+          ...stagedModels.filter((m) => !existingIds.has(m.id)),
+        ],
       };
       if (apiKey.trim()) next.apiKey = apiKey.trim();
       await onSaveProvider(next);
       setApiKey("");
+      setStagedModels([]);
     } finally {
       setSaving(false);
     }
@@ -719,6 +749,89 @@ function ProviderDetailPanel({
     } finally {
       setTestingId(null);
     }
+  };
+
+  // v0.9.2 需求9：已配置模型 ∪ 探测落库模型（同 id 去重；探测-only 弱化）。
+  const mergedModels: Array<{ model: PiModelEntry; probeOnly: boolean }> = (() => {
+    const configuredIds = new Set(models.map((m) => m.id));
+    const merged = models.map((model) => ({ model, probeOnly: false }));
+    for (const id of probedModels ?? []) {
+      if (!configuredIds.has(id)) {
+        merged.push({
+          model: { id } as PiModelEntry,
+          probeOnly: true,
+        });
+      }
+    }
+    return merged;
+  })();
+
+  const addProbedModel = (id: string) => {
+    onAddProbedModel(id);
+  };
+
+  // v0.9.2 需求9 补丁五（用户裁决）：编辑在哪条下面展开、新增在列表顶做
+  // 「待新增」行——行尾只显示一个保存按钮，其余行自然下移。激活前后一致。
+  const renderInlineForm = (context: "add" | string) => {
+    if (context === "add" && !inlineAddOpen) return null;
+    if (context !== "add" && inlineEditId !== context) return null;
+    return (
+      <ModelForm
+        key={context === "add" ? "add" : `edit:${context}`}
+        providerName={name}
+        existingModel={
+          context === "add"
+            ? undefined
+            : models.find((m) => m.id === context)
+        }
+        saving={saving}
+        localSave
+        onCancel={() => {
+          setInlineAddOpen(false);
+          setInlineEditId(null);
+        }}
+        onSubmit={({ model }) => {
+          if (context !== "add") {
+            const next: PiProviderConfig = {
+              ...provider,
+              name: displayName || undefined,
+              baseUrl: baseUrl || undefined,
+              api,
+              authHeader,
+              models: models.map((m) => (m.id === context ? model : m)),
+            };
+            if (apiKey.trim()) next.apiKey = apiKey.trim();
+            void onSaveProvider(next).then(() => {
+              setApiKey("");
+              setInlineEditId(null);
+            });
+          } else {
+            // v0.9.2 需求9 补丁六（用户裁决）：添加时同 id 已存在 = **更新**
+            // 该模型参数，不再产生重复条目（同 id 双条目会同时命中激活态）。
+            const existingIdx = models.findIndex((m) => m.id === model.id);
+            if (existingIdx >= 0) {
+              const next: PiProviderConfig = {
+                ...provider,
+                name: displayName || undefined,
+                baseUrl: baseUrl || undefined,
+                api,
+                authHeader,
+                models: models.map((m) => (m.id === model.id ? model : m)),
+              };
+              if (apiKey.trim()) next.apiKey = apiKey.trim();
+              void onSaveProvider(next).then(() => setApiKey(""));
+            } else {
+              setStagedModels((prev) =>
+                prev.some((x) => x.id === model.id)
+                  ? prev.map((x) => (x.id === model.id ? model : x))
+                  : [...prev, model],
+              );
+            }
+            setInlineAddOpen(false);
+          }
+        }}
+      />
+    );
   };
 
   return (
@@ -807,13 +920,19 @@ function ProviderDetailPanel({
               id={`ch-key-${name}`}
               type={showKey ? "text" : "password"}
               value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
+              onChange={(e) => {
+                setApiKey(e.target.value);
+                if (e.target.value.trim()) setKeyMissing(false);
+              }}
               placeholder={
                 savedKey
                   ? `${t("config.channelKeySaved")} ••••${savedKey.slice(-4)}`
                   : t("config.apiKeyPlaceholder")
               }
               autoComplete="off"
+              className={cn(
+                keyMissing && "border-red-500/60 focus-visible:ring-red-500/40",
+              )}
             />
             <Button
               variant="outline"
@@ -825,11 +944,30 @@ function ProviderDetailPanel({
               {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </Button>
           </div>
-          {savedKey && !apiKey.trim() && (
+          <Input
+            id={`ch-key-red-${name}`}
+            type="password"
+            value={keyMissing ? " " : ""}
+            readOnly
+            hidden
+            aria-hidden
+          />
+          {keyMissing ? (
+            <p className="text-[10px] text-red-500">{t("config.keyRequired")}</p>
+          ) : savedKey && !apiKey.trim() ? (
             <p className="text-[10px] text-muted-foreground/70">
               {t("config.channelKeySaved")}
               {savedKey.length > 8 ? `：••••${savedKey.slice(-4)}` : ""}
             </p>
+          ) : null}
+          {probeState === "unsupported" && (
+            <p className="text-[10px] text-muted-foreground/60">{t("config.probeUnsupported")}</p>
+          )}
+          {probeState === "failed" && (
+            <p className="text-[10px] text-amber-500">{t("config.probeFailed")}</p>
+          )}
+          {!savedKey && !apiKey.trim() && probeState !== "unsupported" && (
+            <p className="text-[10px] text-muted-foreground/60">{t("config.probeNoKey")}</p>
           )}
         </div>
       </div>
@@ -849,37 +987,68 @@ function ProviderDetailPanel({
         </p>
       )}
 
-      {/* 模型列表 */}
+      {/* 模型列表。v0.9.2 需求9：探测列表（落库持久）与已配置列表合并——
+          探测出的未配置模型以弱化样式呈现（点击直接添加为该渠道模型并激活）。 */}
       <div className="space-y-1.5 border-t border-border/40 pt-3">
         <div className="flex items-center justify-between">
           <Label className="text-[10px] text-muted-foreground/80">
-            {t("config.models")} ({models.length})
+            {t("config.models")} ({mergedModels.length})
           </Label>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-6 text-xs bg-primary/10 hover:bg-primary/20 text-primary border-transparent"
-            onClick={onAddModel}
-          >
-            <Plus className="h-3 w-3 mr-1" />
-            {t("config.addModel")}
-          </Button>
+          <div className="flex items-center gap-1.5">
+            {probedModels !== null && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 w-6 p-0"
+                disabled={probing}
+                title={t("config.refreshModels")}
+                onClick={() => void probeNow((apiKey.trim() || undefined) as unknown as string)}
+              >
+                {probing ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3 w-3" />
+                )}
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 text-xs bg-primary/10 hover:bg-primary/20 text-primary border-transparent"
+              onClick={() => {
+                setInlineAddOpen((v) => !v);
+                setInlineEditId(null);
+              }}
+            >
+              <Plus className="h-3 w-3 mr-1" />
+              {t("config.addModel")}
+            </Button>
+          </div>
         </div>
 
-        {models.length === 0 ? (
+        {renderInlineForm("add")}
+        {mergedModels.length === 0 && !inlineAddOpen ? (
           <p className="px-1 text-[10px] text-muted-foreground/70">
-            {t("config.noModelsHint")}
+            {savedKeyInitial
+              ? t("config.noModelsHint")
+              : t("config.probeNoKey")}
           </p>
         ) : (
           <ul className="space-y-1">
-            {models.map((m) => {
+            {mergedModels.map((entry) => {
+              const m = entry.model;
+              const probeOnly = entry.probeOnly;
               const isCurrent = activeModelId === m.id;
               return (
                 <li
                   key={m.id}
                   className={cn(
                     "rounded border px-2 py-1.5 space-y-1",
-                    isCurrent ? "border-primary/60 bg-primary/10" : "border-border/30",
+                    isCurrent
+                      ? "border-primary/60 bg-primary/10"
+                      : probeOnly
+                        ? "border-dashed border-border/50 opacity-80"
+                        : "border-border/30",
                   )}
                 >
                   <div className="flex items-center gap-2">
@@ -912,47 +1081,64 @@ function ProviderDetailPanel({
                         </div>
                       )}
                     </div>
-                    <Button
-                      size="sm"
-                      variant={isCurrent ? "default" : "outline"}
-                      className="h-6 text-xs"
-                      onClick={() => onSetActive(m.id)}
-                      title={t("config.setActive")}
-                    >
-                      {isCurrent ? <Check className="h-3 w-3" /> : <Power className="h-3 w-3" />}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 px-1.5"
-                      onClick={() => void runTest(m.id)}
-                      disabled={testingId !== null}
-                      title={t("config.testModel")}
-                    >
-                      {testingId === m.id ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <Zap className="h-3 w-3" />
-                      )}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 px-1.5"
-                      onClick={() => onEditModel(m.id)}
-                      title={t("config.editModel")}
-                    >
-                      <Pencil className="h-3 w-3" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 px-1.5 text-red-400 hover:text-red-300"
-                      onClick={() => onDeleteModel(m.id)}
-                      title={t("common.delete")}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
+                    {inlineEditId === m.id || inlineAddOpen ? null : probeOnly ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-6 text-xs"
+                        onClick={() => addProbedModel(m.id)}
+                        title={t("config.addModel")}
+                      >
+                        <Plus className="h-3 w-3" />
+                      </Button>
+                    ) : (
+                      <>
+                        <Button
+                          size="sm"
+                          variant={isCurrent ? "default" : "outline"}
+                          className="h-6 text-xs"
+                          onClick={() => onSetActive(m.id)}
+                          title={t("config.setActive")}
+                        >
+                          {isCurrent ? <Check className="h-3 w-3" /> : <Power className="h-3 w-3" />}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-1.5"
+                          onClick={() => void runTest(m.id)}
+                          disabled={testingId !== null}
+                          title={t("config.testModel")}
+                        >
+                          {testingId === m.id ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <Zap className="h-3 w-3" />
+                          )}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-1.5"
+                          onClick={() => {
+                            setInlineEditId(m.id);
+                            setInlineAddOpen(false);
+                          }}
+                          title={t("config.editModel")}
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-1.5 text-red-400 hover:text-red-300"
+                          onClick={() => onDeleteModel(m.id)}
+                          title={t("common.delete")}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </>
+                    )}
                   </div>
                   {testResults[m.id] && (
                     <div
@@ -968,11 +1154,39 @@ function ProviderDetailPanel({
                       {testResults[m.id].text}
                     </div>
                   )}
+                  {/* 补丁五：编辑表单展开在目标行下方 */}
+                  {renderInlineForm(m.id)}
                 </li>
               );
             })}
           </ul>
         )}
+
+        {/* v0.9.2 需求9 补丁四：暂存模型 chips（页头保存提交、可删）——与激活前
+            ProviderForm 的 chips 同形态。 */}
+        {stagedModels.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {stagedModels.map((m) => (
+              <span
+                key={m.id}
+                className="inline-flex items-center gap-1 rounded-full border border-primary/60 bg-primary/10 px-2.5 py-1 font-mono text-[11px] text-primary"
+              >
+                {m.id}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setStagedModels((prev) => prev.filter((x) => x.id !== m.id))
+                  }
+                  className="hover:text-foreground"
+                  title={t("common.delete")}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
       </div>
     </div>
   );

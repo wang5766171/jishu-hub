@@ -13,7 +13,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { ArrowRight, Check, Eye, EyeOff, ExternalLink, Plus, Power, Trash2 } from "lucide-react";
+import {
+  ArrowRight,
+  Check,
+  Eye,
+  EyeOff,
+  ExternalLink,
+  Loader2,
+  Plus,
+  Power,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
 import type { AgentConfigSection, ClaudeConfig } from "@/types";
 import { ModelCombobox } from "./model-combobox";
 import { PermissionModeCards } from "./permission-cards";
@@ -32,6 +43,7 @@ import {
   rememberCodexCustomModel,
 } from "@/agents/config/presets/codex-presets";
 import { useCodexLiveModels } from "@/hooks/use-codex-live-models";
+import { cn } from "@/lib/utils";
 import {
   CLAUDE_PROXY_PRESETS,
   applyProxyPresetToEnv,
@@ -216,7 +228,11 @@ export function ConfigModelsZone({
     : null;
   // v0.9.0 需求14：codex 直连候选 = app-server model/list 实时拉取
   //（静态预置表已按用户裁决删除）+ 直连态自定义记忆。
-  const codexDirectModels = useCodexLiveModels(agentId, isCodexProviders && !codexProviderId);
+  const {
+    models: codexDirectModels,
+    refresh: refreshCodexDirectModels,
+    loading: codexDirectLoading,
+  } = useCodexLiveModels(agentId, isCodexProviders && !codexProviderId);
   const codexDirectCatalog = [
     ...codexDirectModels,
     ...codexCustomModelsFor("direct").filter((m) => !codexDirectModels.includes(m)),
@@ -383,7 +399,8 @@ export function ConfigModelsZone({
         {modelCard}
 
         {effectiveChannelId === "direct" ? (
-          /* 官方直连：提示 + 认证卡 + env 总览（模型候选 = 官方目录） */
+          /* v0.9.2 需求9：官方直连 = 提示 + 认证卡 + 官方模型列表（首查 +
+              刷新按钮）；「添加模型」入口与「前往高级设置」跳转去除。 */
           <div className="space-y-3">
             <div className="rounded-md border border-border/40 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
               {t("config.connectDirectHint")}
@@ -394,6 +411,62 @@ export function ConfigModelsZone({
                 hintKey="config.officialAuthHintClaude"
               />
             )}
+            <div className="space-y-1.5 rounded-md border border-border/40 bg-muted/20 p-4">
+              <div className="flex items-center justify-between">
+                <Label className="text-[10px] text-muted-foreground/80">
+                  {t("config.models")}
+                  {codexDirectLoading ? " …" : ""}
+                </Label>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-6 w-6"
+                  disabled={codexDirectLoading}
+                  title={t("config.refreshModels")}
+                  onClick={() => void refreshCodexDirectModels()}
+                >
+                  {codexDirectLoading ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3 w-3" />
+                  )}
+                </Button>
+              </div>
+              {codexDirectModels.length === 0 ? (
+                <p className="px-1 text-[10px] text-muted-foreground/70">
+                  {t("config.noModelsHint")}
+                </p>
+              ) : (
+                <ul className="space-y-1">
+                  {codexDirectModels.map((mid) => (
+                    <li
+                      key={mid}
+                      className={cn(
+                        "flex items-center gap-2 rounded border px-2 py-1.5",
+                        config.model === mid
+                          ? "border-primary/60 bg-primary/10"
+                          : "border-border/30",
+                      )}
+                    >
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs">{mid}</span>
+                      <Button
+                        size="sm"
+                        variant={config.model === mid ? "default" : "outline"}
+                        className="h-6 text-xs"
+                        onClick={() => onChange({ model: mid })}
+                        title={t("config.setActive")}
+                      >
+                        {config.model === mid ? (
+                          <Check className="h-3 w-3" />
+                        ) : (
+                          <Power className="h-3 w-3" />
+                        )}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         ) : effectiveChannelId === CUSTOM_CHANNEL_ID ? (
           /* 自定义渠道：地址 + 密钥 + 模型（v0.7.6 需求3：与预置渠道右栏同构，
@@ -502,11 +575,14 @@ export function ConfigModelsZone({
           })()
         )}
 
-        {/* v0.7.6 需求2：透出当前生效的模型链路环境变量，可跳转高级设置修改 */}
-        <ModelEnvOverview
-          env={env}
-          onNavigate={onNavigateSection ? () => onNavigateSection("advanced") : undefined}
-        />
+        {/* v0.7.6 需求2：透出当前生效的模型链路环境变量。v0.9.2 需求9：
+            直连态不渲染（官方视图去掉"前往高级设置"入口）。 */}
+        {effectiveChannelId !== "direct" && (
+          <ModelEnvOverview
+            env={env}
+            onNavigate={onNavigateSection ? () => onNavigateSection("advanced") : undefined}
+          />
+        )}
       </div>
     </div>
   );

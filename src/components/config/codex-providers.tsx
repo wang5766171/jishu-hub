@@ -13,7 +13,7 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Check, ExternalLink, Eye, EyeOff, Plus, Power, Trash2 } from "lucide-react";
+import { Check, ExternalLink, Eye, EyeOff, Loader2, Plus, Power, RefreshCw, Trash2 } from "lucide-react";
 import {
   CODEX_PROXY_PRESETS,
   codexCustomModelsFor,
@@ -62,7 +62,12 @@ export function CodexProvidersBlock({
   // 此前直连态左栏 selectedId 被强制置空、右栏只认 modelProvider）。
   const [selectedId, setSelectedId] = useState<string | null>(modelProvider ?? null);
   // v0.9.0 需求14：直连视图实时模型清单。
-  const directLiveModels = useCodexLiveModels(agentId, selectedId === null);
+  // v0.9.2 需求9：首查+会话缓存+手动刷新（返回形状改为对象）。
+  const {
+    models: directLiveModels,
+    refresh: refreshDirectModels,
+    loading: directModelsLoading,
+  } = useCodexLiveModels(agentId, selectedId === null);
   // v0.7.6 需求3：custom 从清单一项改为「添加自定义渠道」按钮触发的表单态。
   const [customFormOpen, setCustomFormOpen] = useState(false);
   const [showKey, setShowKey] = useState(false);
@@ -192,6 +197,25 @@ export function CodexProvidersBlock({
               presetModels={directLiveModels}
               currentModel={model}
               onSelectModel={(m) => onChange({ model: m })}
+              /* v0.9.2 需求9：官方列表首次自动查、手动刷新更新；官方渠道
+                  下添加模型入口去除（官方列表即全部）。 */
+              headerExtra={
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-6 w-6 shrink-0"
+                  disabled={directModelsLoading}
+                  title={t("config.refreshModels")}
+                  onClick={() => void refreshDirectModels()}
+                >
+                  {directModelsLoading ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3 w-3" />
+                  )}
+                </Button>
+              }
+              disableCustomAdd
             />
           </div>
         ) : selectedProvider || selectedPreset ? (
@@ -317,12 +341,18 @@ function CodexChannelModels({
   presetModels,
   currentModel,
   onSelectModel,
+  /** v0.9.2 需求9：标题行右侧额外控件（刷新按钮等）。 */
+  headerExtra,
+  /** 官方渠道：去掉自由添加模型入口（官方列表即全部）。 */
+  disableCustomAdd = false,
 }: {
   /** 渠道 id；直连态传 "direct" */
   providerId: string;
   presetModels: string[];
   currentModel: string | null | undefined;
   onSelectModel: (model: string) => void;
+  headerExtra?: ReactNode;
+  disableCustomAdd?: boolean;
 }) {
   const { t } = useTranslation();
   // localStorage 非响应式：tick 强制添加/删除后重读（也顺带同步模型卡
@@ -344,9 +374,12 @@ function CodexChannelModels({
 
   return (
     <div className="space-y-1.5 rounded-md border border-border/40 bg-muted/20 p-4">
-      <Label className="text-[10px] text-muted-foreground/80">
-        {t("config.models")} ({all.length})
-      </Label>
+      <div className="flex items-center justify-between">
+        <Label className="text-[10px] text-muted-foreground/80">
+          {t("config.models")} ({all.length})
+        </Label>
+        {headerExtra}
+      </div>
       {all.length === 0 ? (
         <p className="px-1 text-[10px] text-muted-foreground/70">{t("config.noModelsHint")}</p>
       ) : (
@@ -391,22 +424,26 @@ function CodexChannelModels({
           })}
         </ul>
       )}
-      <div className="flex items-center gap-2 pt-1">
-        <Input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={t("config.modelIdPlaceholder")}
-          className="h-8 flex-1 font-mono text-xs"
-          onKeyDown={(e) => e.key === "Enter" && add()}
-        />
-        <Button size="sm" variant="outline" className="h-8 text-xs" disabled={!input.trim()} onClick={add}>
-          <Plus className="mr-1 h-3 w-3" />
-          {t("config.addModel")}
-        </Button>
-      </div>
-      <p className="text-[10px] leading-relaxed text-muted-foreground/70">
-        {t("config.codexCustomModelHint")}
-      </p>
+      {!(disableCustomAdd && providerId === "direct") && (
+        <>
+          <div className="flex items-center gap-2 pt-1">
+            <Input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder={t("config.modelIdPlaceholder")}
+              className="h-8 flex-1 font-mono text-xs"
+              onKeyDown={(e) => e.key === "Enter" && add()}
+            />
+            <Button size="sm" variant="outline" className="h-8 text-xs" disabled={!input.trim()} onClick={add}>
+              <Plus className="mr-1 h-3 w-3" />
+              {t("config.addModel")}
+            </Button>
+          </div>
+          <p className="text-[10px] leading-relaxed text-muted-foreground/70">
+            {t("config.codexCustomModelHint")}
+          </p>
+        </>
+      )}
     </div>
   );
 }

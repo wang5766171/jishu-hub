@@ -811,7 +811,16 @@
     "envVarsInvalidLine": "第 {{line}} 行格式应为 KEY=VALUE",
     "rawSectionTitle": "原始配置（settings.json）",
     "envVarsHelp": "每行一条 KEY=VALUE，附加注入到每次 jishu 会话进程环境；在内置默认（PI_SKIP_VERSION_CHECK / PI_OFFLINE 等）之后应用，可覆盖——例如 PI_OFFLINE= 置空关闭离线刷新，HTTP_PROXY / HTTPS_PROXY 让模型请求走代理。保存后对新会话生效。",
-    "toolPresetCustom": "自定义工具集"
+    "toolPresetCustom": "自定义工具集",
+    "refreshModels": "刷新模型列表",
+    "probeNoKey": "填写 API 密钥并保存后，将自动获取该渠道的模型列表",
+    "probeUnsupported": "该渠道未提供模型列表查询接口，使用预设列表（可手动添加）",
+    "probeFailed": "模型列表获取失败，可修改密钥后重试",
+    "probeFetchedAt": "列表获取于",
+    "keyRequired": "API 密钥不能为空",
+    "modelTemplateLabel": "参数模板（快速带出）",
+    "modelTemplatePlaceholder": "选择参数模板…",
+    "modelTemplateHint": "模板仅带出上下文/输出/推理/输入/思考档位参数，模型 ID 需自行填写"
   },
   "commands": {
     "title": "快捷命令",
@@ -1214,19 +1223,21 @@
       "description": "消息中交互问答块的卡片化渲染",
       "answer": "已答"
     },
-    "htmlPreview": {
-      "name": "HTML 页面预览",
-      "description": "侧边栏渲染 HTML 页面：agent 调 preview_html 自动预览，或手动点选本会话产出的 HTML 文件",
-      "panelTitle": "HTML 预览",
-      "sessionFiles": "本会话产出",
-      "noFiles": "尚未检测到本会话产出的 HTML 文件",
+    "artifacts": {
+      "name": "产物中心",
+      "description": "侧边栏预览会话产物（HTML/图片/Markdown/文本）：agent 调 preview_html 自动预览，或手动点选主会话与子节点产出",
+      "panelTitle": "产物中心",
+      "sessionFiles": "会话产出",
+      "noFiles": "尚未检测到本会话的产物文件",
       "empty": "暂无预览",
+      "loading": "读取中…",
       "refresh": "刷新（agent 覆写文件后重读）",
       "truncated": "文件超过 512KB，预览已截断",
       "closeTab": "关闭标签",
       "more": "更多",
       "revealFolder": "打开文件夹",
-      "openInBrowser": "使用系统浏览器打开"
+      "openInSystem": "使用系统默认应用打开",
+      "unsupported": "该文件暂不支持预览（可经「...」用系统默认应用打开）"
     }
   },
   "sessionPanels": {

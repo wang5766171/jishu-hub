@@ -811,7 +811,16 @@
     "envVarsInvalidLine": "Line {{line}} must be KEY=VALUE",
     "rawSectionTitle": "Raw config (settings.json)",
     "envVarsHelp": "One KEY=VALUE per line, injected into every jishu session process; applied after built-in defaults (PI_SKIP_VERSION_CHECK / PI_OFFLINE etc.) so they can be overridden — e.g. PI_OFFLINE= disables offline mode, HTTP_PROXY / HTTPS_PROXY routes model traffic through a proxy. Takes effect for new sessions.",
-    "toolPresetCustom": "Custom tools"
+    "toolPresetCustom": "Custom tools",
+    "refreshModels": "Refresh model list",
+    "probeNoKey": "Enter the API key and save to fetch this channel's model list automatically",
+    "probeUnsupported": "This channel has no model list API; using preset list (manual add available)",
+    "probeFailed": "Failed to fetch model list; fix the key and retry",
+    "probeFetchedAt": "List fetched at",
+    "keyRequired": "API key is required",
+    "modelTemplateLabel": "Parameter template (quick fill)",
+    "modelTemplatePlaceholder": "Choose a template…",
+    "modelTemplateHint": "Templates fill context/output/reasoning/input/thinking levels only; enter the model ID yourself"
   },
   "commands": {
     "title": "Commands",
@@ -1214,19 +1223,21 @@
       "description": "Card rendering for interaction blocks",
       "answer": "Answered"
     },
-    "htmlPreview": {
-      "name": "HTML Page Preview",
-      "description": "Render HTML pages in the side panel: auto preview via the preview_html tool, or pick from files produced in this session",
-      "panelTitle": "HTML Preview",
+    "artifacts": {
+      "name": "Artifact Center",
+      "description": "Preview session artifacts in the side panel (HTML/images/Markdown/text): auto via preview_html, or pick from main & node outputs",
+      "panelTitle": "Artifacts",
       "sessionFiles": "Session output",
-      "noFiles": "No HTML files detected from this session yet",
+      "noFiles": "No artifacts detected from this session yet",
       "empty": "No preview yet",
+      "loading": "Loading…",
       "refresh": "Refresh (re-read after the agent overwrites the file)",
       "truncated": "File exceeds 512KB; preview truncated",
       "closeTab": "Close tab",
       "more": "More",
       "revealFolder": "Reveal in folder",
-      "openInBrowser": "Open in system browser"
+      "openInSystem": "Open with system default app",
+      "unsupported": "This file cannot be previewed (open via \"...\" with the system app)"
     }
   },
   "sessionPanels": {

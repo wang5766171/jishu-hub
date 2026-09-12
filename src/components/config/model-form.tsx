@@ -12,21 +12,18 @@ import {
   emptyModelValue,
   modelToValue,
   valueToModel,
-  supportedThinkingLevels,
   THINKING_LEVEL_ALL,
   type PiModelEntry,
-  type PiProviderConfig,
   type ModelFormValue,
 } from "./model-types";
 import { thinkingLevelLabel } from "@/components/sessions/thinking-level-select";
-import { matchPresetByBaseUrl } from "@/agents/config/presets/provider-presets";
+import { MODEL_PARAM_TEMPLATES } from "./model-templates";
 
 const selectClass =
   "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm";
 
 export function ModelForm({
   providerName,
-  provider,
   existingModel,
   saving,
   onCancel,
@@ -37,9 +34,10 @@ export function ModelForm({
    *  歧义——保存渠道还是添加模型？内嵌子表单自带确认更清晰）。 */
   showLocalSubmit,
   localSubmitLabel,
+  /** 补丁六：标题行右侧本地保存钮（激活前内嵌场景）。 */
+  localSave,
 }: {
   providerName: string;
-  provider: PiProviderConfig | undefined;
   existingModel: PiModelEntry | undefined;
   saving: boolean;
   onCancel: () => void;
@@ -47,33 +45,32 @@ export function ModelForm({
   registerSave?: (fn: (() => void) | null) => void;
   showLocalSubmit?: boolean;
   localSubmitLabel?: string;
+  localSave?: boolean;
 }) {
   const { t } = useTranslation();
   void saving; // 保存按钮已上抛页头；保留 prop 兼容既有调用。
-  void onCancel; // 需求16 续五：底部取消移除，保留 prop 兼容。
+  // 补丁六：取消钮随 localSave 使用（无 localSave 场景仍无底部操作）。
   const [value, setValue] = useState<ModelFormValue>(
     existingModel ? modelToValue(existingModel) : emptyModelValue(),
   );
+  // 补丁六修复：模板下拉受控——此前 value 恒为 ""（选择后仍显示占位符）。
+  const [templateId, setTemplateId] = useState("");
 
-  // 推荐模型：按供应商 baseUrl 命中预设时给出（排除已存在的模型 id）
-  const preset = matchPresetByBaseUrl(provider?.baseUrl);
-  const existingIds = new Set((provider?.models ?? []).map((m) => m.id));
-  const suggestions =
-    preset?.models.filter((m) => !existingIds.has(m.id)) ?? [];
-
-  const applySuggestion = (id: string) => {
-    const m = suggestions.find((s) => s.id === id);
-    if (!m) return;
+  // v0.9.2 需求9 补丁五（用户裁决）：参数模板库独立成块、全渠道/全 agent
+  // 通用（不再按 baseUrl 匹配渠道预设兜底模型）——选模板只带参数，id 由
+  // 用户填。激活前后添加/编辑共用（同一 ModelForm）。
+  const applyTemplate = (id: string) => {
+    setTemplateId(id);
+    const t = MODEL_PARAM_TEMPLATES.find((x) => x.id === id);
+    if (!t) return;
     setValue((prev) => ({
       ...prev,
-      id: m.id,
-      contextWindow: String(m.contextWindow ?? prev.contextWindow),
-      maxTokens: String(m.maxTokens ?? prev.maxTokens),
-      reasoning: m.reasoning ?? prev.reasoning,
-      // 预设模型的档位声明一并带入（如 glm-5.3 不支持关闭）。
-      thinkingLevels: m.reasoning
-        ? supportedThinkingLevels(m.thinkingLevelMap as Record<string, unknown> | undefined)
-        : prev.thinkingLevels,
+      contextWindow: String(t.contextWindow),
+      maxTokens: String(t.maxTokens),
+      reasoning: true,
+      inputText: true,
+      inputImage: t.inputImage,
+      thinkingLevels: [...t.thinkingLevels],
     }));
   };
 
@@ -100,29 +97,51 @@ export function ModelForm({
             {providerName}
           </span>
         </div>
+        {localSave && (
+          /* 补丁六（用户裁决）：标题行最右端 [取消][保存] 按钮组——保存左侧
+             取消（关表单不落库），不复用页头。 */
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 text-xs text-muted-foreground"
+              onClick={onCancel}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              size="sm"
+              className="h-7 text-xs"
+              onClick={submit}
+              disabled={saving || !value.id.trim()}
+            >
+              {saving && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+              {t("common.save")}
+            </Button>
+          </div>
+        )}
       </div>
 
-      {suggestions.length > 0 && !existingModel && (
-        <div className="space-y-1.5">
-          <Label htmlFor="model-suggest">{t("config.modelSuggestLabel")}</Label>
-          <select
-            id="model-suggest"
-            className={selectClass}
-            value=""
-            onChange={(e) => applySuggestion(e.target.value)}
-          >
-            <option value="">{t("config.modelSuggestPlaceholder")}</option>
-            {suggestions.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.displayName}
-              </option>
-            ))}
-          </select>
-          <p className="text-[10px] text-muted-foreground/70">
-            {t("config.modelSuggestHint")}
-          </p>
-        </div>
-      )}
+      {/* v0.9.2 需求9 补丁五：参数模板下拉（通用模板库，添加/编辑均可带参）。 */}
+      <div className="space-y-1.5">
+        <Label htmlFor="model-template">{t("config.modelTemplateLabel")}</Label>
+        <select
+          id="model-template"
+          className={selectClass}
+          value={templateId}
+          onChange={(e) => applyTemplate(e.target.value)}
+        >
+          <option value="">{t("config.modelTemplatePlaceholder")}</option>
+          {MODEL_PARAM_TEMPLATES.map((tpl) => (
+            <option key={tpl.id} value={tpl.id}>
+              {tpl.displayName}
+            </option>
+          ))}
+        </select>
+        <p className="text-[10px] text-muted-foreground/70">
+          {t("config.modelTemplateHint")}
+        </p>
+      </div>
 
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">

@@ -1,7 +1,8 @@
 // v0.7.6 需求3：模型设置页统一左栏（渠道侧栏）。
 // jishu / claude / codex 三页共用——官方直连项（可选）+ 预置渠道（默认
-// 全量显示）+ 自定义渠道 + 底部「添加自定义渠道」按钮；选中/激活绿点
-// 交互与原 jishu ModelManager 左栏一致（240px、圆角卡片列表）。
+// 全量显示）+ 自定义渠道 + 底部「添加自定义渠道」按钮。
+// v0.9.2 需求9（用户裁决，图1）：选中 = 蓝框描边（border+ring），运行中
+// = 绿点——官方直连与渠道项同款样式，三页统一。
 // 组件无业务状态：数据组装与点击行为全部由调用方注入。
 
 import { useTranslation } from "react-i18next";
@@ -68,8 +69,8 @@ export function ChannelSidebar({
                 className={cn(
                   "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition-fast",
                   directSelected
-                    ? "bg-primary/15 font-medium text-primary shadow-[inset_2px_0_0_0_currentColor]"
-                    : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
+                    ? "border border-primary/60 bg-primary/10 font-medium text-primary ring-1 ring-primary/30"
+                    : "border border-transparent text-muted-foreground hover:bg-accent/30 hover:text-foreground",
                 )}
               >
                 <Zap
@@ -99,8 +100,8 @@ export function ChannelSidebar({
                     className={cn(
                       "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition-fast",
                       isSelected
-                        ? "bg-primary/15 font-medium text-primary shadow-[inset_2px_0_0_0_currentColor]"
-                        : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
+                        ? "border border-primary/60 bg-primary/10 font-medium text-primary ring-1 ring-primary/30"
+                        : "border border-transparent text-muted-foreground hover:bg-accent/30 hover:text-foreground",
                     )}
                   >
                     <span
