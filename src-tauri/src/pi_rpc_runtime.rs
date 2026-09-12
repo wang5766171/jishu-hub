@@ -2022,11 +2022,22 @@ fn handle_hub_invoke(
             if size > 2 * 1024 * 1024 {
                 return Err(format!("文件 {size} 字节超过 2MB 预览上限"));
             }
-            let canonical = path
-                .canonicalize()
-                .unwrap_or(path)
-                .to_string_lossy()
-                .into_owned();
+            // Windows canonicalize() 产出 \\?\C:\... verbatim 前缀，会被
+            // read_text_file 的 validate_path 当 UNC 路径拒绝（用户实测
+            // 「UNC paths are not allowed」）——剥前缀还原普通盘符路径。
+            let canonical = {
+                let s = path
+                    .canonicalize()
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .into_owned();
+                let stripped = s
+                    .strip_prefix(r"\\?\UNC\")
+                    .map(|rest| format!(r"\\{rest}"))
+                    .or_else(|| s.strip_prefix(r"\\?\").map(|rest| rest.to_string()))
+                    .unwrap_or(s);
+                stripped
+            };
             if let Some(app) = HUB_APP_HANDLE.get() {
                 use tauri::Emitter;
                 let _ = app.emit(
