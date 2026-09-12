@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChartPie, LayoutGrid, Map, Search, X } from "lucide-react";
+import { AppWindow, ChartPie, LayoutGrid, Map, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   EDGE_PANEL_WIDTH,
@@ -15,6 +15,7 @@ import {
   type SessionLayoutState,
 } from "../../shell/dock-layout";
 import { listSessionPlugins, useEnabledSessionPlugins } from "../registry";
+import { SHOW_SESSION_PANEL_EVENT } from "../builtin/html-preview-store";
 import { dockPanelsOf } from "../types";
 import type { SessionKernelContext } from "../types";
 
@@ -48,6 +49,7 @@ const PLUGIN_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   "session.flow": Map,
   "session.usage": ChartPie,
   "session.search": Search,
+  "session.html-preview": AppWindow,
 };
 
 function isWindowMaximized(): boolean {
@@ -139,6 +141,18 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, [enabled, showPanel]);
+
+  // ── 展开请求（v0.9.2 测试期）：插件侧（如 html-preview 收到 agent 预览事件）
+  // 经 window CustomEvent 请求展开自己的停靠面板——布局归宿主，插件不越权。──
+  useEffect(() => {
+    const onShowPanel = (e: Event) => {
+      const pluginId = (e as CustomEvent<{ pluginId?: string }>).detail?.pluginId;
+      if (!pluginId || !enabled.has(pluginId)) return;
+      showPanel(pluginId);
+    };
+    window.addEventListener(SHOW_SESSION_PANEL_EVENT, onShowPanel);
+    return () => window.removeEventListener(SHOW_SESSION_PANEL_EVENT, onShowPanel);
   }, [enabled, showPanel]);
 
   const panels = useMemo<PanelEntry[]>(() => {

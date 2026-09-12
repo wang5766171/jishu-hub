@@ -219,8 +219,46 @@ pub(crate) fn export_text_file(path: String, content: String) -> Result<(), Stri
     std::fs::write(&path, content).map_err(|e| format!("write export file failed: {e}"))
 }
 
+/// v0.9.2 测试期（mermaid 插件导出 PNG）：二进制导出落盘。前端把 Blob 编为
+/// base64 传入，此处解码写盘——与 export_text_file 同一「保存对话框选路径 +
+/// 命令落盘」模式。
+#[tauri::command]
+pub(crate) fn export_binary_file(path: String, base64_data: String) -> Result<(), String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_data.as_bytes())
+        .map_err(|e| format!("base64 decode failed: {e}"))?;
+    std::fs::write(&path, bytes).map_err(|e| format!("write export file failed: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn exports_binary_file_roundtrip() {
+        // v0.9.2 测试期（mermaid PNG 导出）：base64 解码落盘往返。
+        let path = std::env::temp_dir().join(format!(
+            "jishu-hub-export-bin-{}.png",
+            std::process::id()
+        ));
+        let payload: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF];
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+        super::export_binary_file(path.to_string_lossy().into_owned(), b64).unwrap();
+        let written = std::fs::read(&path).unwrap();
+        assert_eq!(written, payload);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn rejects_invalid_base64_export() {
+        let err = super::export_binary_file(
+            std::env::temp_dir().join("jishu-hub-export-bin-bad.png").to_string_lossy().into_owned(),
+            "!!not-base64!!".to_string(),
+        )
+        .unwrap_err();
+        assert!(err.contains("base64"), "unexpected: {err}");
+    }
+
     #[test]
     fn reads_text_file_preview() {
         let path =

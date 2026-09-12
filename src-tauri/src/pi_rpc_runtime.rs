@@ -1994,6 +1994,54 @@ fn handle_hub_invoke(
             let result = crate::task_launch::orchestrator_start_run_from_revision(request)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+        // v0.9.2 测试期：preview_html 工具落点——校验文件后向前端广播预览事件
+        //（会话插件 session.html-preview 的停靠面板接收渲染并自动展开）。
+        "plugin_preview_html" => {
+            let file = params
+                .get("file")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("plugin_preview_html: file is required")?;
+            let session_id = params
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let path = std::path::PathBuf::from(file);
+            if !path.is_file() {
+                return Err(format!("文件不存在: {file}"));
+            }
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase());
+            if !matches!(ext.as_deref(), Some("html") | Some("htm")) {
+                return Err("仅支持 .html / .htm 文件".to_string());
+            }
+            let size = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+            if size > 2 * 1024 * 1024 {
+                return Err(format!("文件 {size} 字节超过 2MB 预览上限"));
+            }
+            let canonical = path
+                .canonicalize()
+                .unwrap_or(path)
+                .to_string_lossy()
+                .into_owned();
+            if let Some(app) = HUB_APP_HANDLE.get() {
+                use tauri::Emitter;
+                let _ = app.emit(
+                    "session-plugin-preview",
+                    serde_json::json!({
+                        "file": canonical,
+                        "session_id": session_id,
+                    }),
+                );
+            } else {
+                return Err("Hub 界面未就绪，无法打开预览".to_string());
+            }
+            serde_json::to_value(serde_json::json!({ "opened": true, "file": canonical }))
+                .map_err(|e| e.to_string())
+        }
         _ => Err(format!("未知 hub_invoke 命令: {command}")),
     }
 }
@@ -2021,6 +2069,55 @@ fn flush_buf(emit: &AcpEventEmit, session_id: &str, buf: &mut Vec<NormalizedEven
 
 #[cfg(test)]
 mod tests {
+    use super::handle_hub_invoke;
+
+    // v0.9.2 测试期：plugin_preview_html 校验阶梯——文件存在性/扩展名/大小
+    // 逐级拒绝；合法文件在无 Hub 句柄的测试环境落到「界面未就绪」分支
+    //（证明前两级校验已通过）。
+    #[test]
+    fn plugin_preview_html_rejects_missing_file() {
+        let err = handle_hub_invoke(
+            "plugin_preview_html",
+            &serde_json::json!({"file": "Z:/definitely/not/there.html"}),
+        )
+        .unwrap_err();
+        assert!(err.contains("不存在"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn plugin_preview_html_rejects_non_html_extension() {
+        let md = std::env::temp_dir().join(format!(
+            "jishu-hub-preview-{}.md",
+            std::process::id()
+        ));
+        std::fs::write(&md, "x").unwrap();
+        let err = handle_hub_invoke(
+            "plugin_preview_html",
+            &serde_json::json!({"file": md.to_string_lossy()}),
+        )
+        .unwrap_err();
+        assert!(err.contains(".html"), "unexpected: {err}");
+        let _ = std::fs::remove_file(&md);
+    }
+
+    #[test]
+    fn plugin_preview_html_valid_file_reaches_hub_gate() {
+        let html = std::env::temp_dir().join(format!(
+            "jishu-hub-preview-{}.html",
+            std::process::id()
+        ));
+        std::fs::write(&html, "<!DOCTYPE html><html></html>").unwrap();
+        // 测试环境未注册 HUB_APP_HANDLE：合法文件应越过存在性/扩展名校验，
+        // 落到「Hub 界面未就绪」而非文件错误。
+        let err = handle_hub_invoke(
+            "plugin_preview_html",
+            &serde_json::json!({"file": html.to_string_lossy()}),
+        )
+        .unwrap_err();
+        assert!(err.contains("未就绪"), "unexpected: {err}");
+        let _ = std::fs::remove_file(&html);
+    }
+
     #[test]
     /// 真实形态回归：写小说场景的分段（thinking + text + toolCall=write +
     /// toolResults），验证分段记账的精确字段与内容归因。

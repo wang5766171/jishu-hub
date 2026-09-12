@@ -96,6 +96,8 @@ pub fn run() {
             task_plan::ensure_request_user_input_extension();
             // 部署 session-context 扩展（session_id 注入 system prompt，取代 user message 注入）
             task_plan::ensure_session_context_extension();
+            // v0.9.2 测试期：部署 html-preview 扩展（preview_html 工具，agent 主动渲染 HTML 预览）
+            task_plan::ensure_html_preview_extension();
             let registry = Arc::new(agent::AgentRegistry::new());
             // v0.9.0 需求1 P2/二期：四家 MCP 配置同步（MCP 解析器 mcp-resolver
             // 系统插件默认启用 → 注入 jishu-hub 聚合条目，禁用 → 回收；
@@ -231,6 +233,7 @@ pub fn run() {
             commands::sessions::list_sessions,
             commands::sessions::usage_overview,
             commands::sessions::export_text_file,
+            commands::sessions::export_binary_file,
             commands::sessions::get_session_messages,
             commands::sessions::delete_agent_session,
             commands::sessions::persist_interaction_blocks,

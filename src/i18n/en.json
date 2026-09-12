@@ -1145,8 +1145,18 @@
     },
     "mermaidRender": {
       "name": "Mermaid Diagrams",
-      "description": "Render mermaid code blocks as diagrams",
-      "rendering": "Rendering diagram…"
+      "description": "Render mermaid code blocks as diagrams (zoom, export PNG/SVG)",
+      "rendering": "Rendering diagram…",
+      "exportPng": "Export PNG",
+      "exportSvg": "Export SVG",
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out",
+      "zoomTitle": "Diagram zoom",
+      "close": "Close",
+      "exportFailed": "Export failed",
+      "fitWidth": "Fit width",
+      "clickToZoom": "Click to zoom",
+      "escHint": "ESC to close"
     },
     "desktopNotify": {
       "name": "Desktop Notifications",
@@ -1201,6 +1211,15 @@
       "name": "Interaction Cards",
       "description": "Card rendering for interaction blocks",
       "answer": "Answered"
+    },
+    "htmlPreview": {
+      "name": "HTML Page Preview",
+      "description": "Agent-built HTML pages rendered in the side panel (preview_html tool)",
+      "panelTitle": "HTML Preview",
+      "empty": "No preview yet",
+      "emptyHint": "The agent can call the preview_html tool to render an HTML page here",
+      "refresh": "Refresh (re-read after the agent overwrites the file)",
+      "truncated": "File exceeds 512KB; preview truncated"
     }
   },
   "sessionPanels": {

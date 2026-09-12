@@ -139,6 +139,10 @@ const REQUEST_USER_INPUT_EXTENSION_TS: &str =
     include_str!("../resources/extensions/request-user-input.ts");
 const SESSION_CONTEXT_EXTENSION_TS: &str =
     include_str!("../resources/extensions/session-context.ts");
+/// v0.9.2 测试期：HTML 页面预览扩展（preview_html 工具——agent 可主动把
+/// 本地 HTML 文件渲染到 Hub 右侧面板）。
+const HTML_PREVIEW_EXTENSION_TS: &str =
+    include_str!("../resources/extensions/html-preview.ts");
 
 /// 部署内嵌扩展源到 `<agent_dir>/<rel_path>`，自动建父目录；内容相同则跳过写入。
 pub(crate) fn deploy_extension_file(agent_dir: &Path, rel_path: &str, source: &str) {
@@ -256,6 +260,17 @@ fn ensure_session_context_extension_in(agent_dir: &Path) {
     const SC_EXT_REL: &str = "extensions/session-context.ts";
     deploy_extension_file(agent_dir, SC_EXT_REL, SESSION_CONTEXT_EXTENSION_TS);
     register_extension_in_settings(agent_dir, SC_EXT_REL);
+}
+
+/// 自动部署 `html-preview` 扩展（v0.9.2 测试期）：注册 preview_html 工具，
+/// agent 开发 HTML 页面后可主动调用，把文件渲染到 Hub 右侧预览面板。
+pub fn ensure_html_preview_extension() {
+    let Ok(agent_dir) = jishu_agent_dir() else {
+        return;
+    };
+    const HP_EXT_REL: &str = "extensions/html-preview.ts";
+    deploy_extension_file(&agent_dir, HP_EXT_REL, HTML_PREVIEW_EXTENSION_TS);
+    register_extension_in_settings(&agent_dir, HP_EXT_REL);
 }
 
 pub fn read_installed_skill(dir: &Path, skill_id: &str) -> Result<Option<TaskPlanSkill>, String> {
