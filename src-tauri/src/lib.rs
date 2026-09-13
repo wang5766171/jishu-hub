@@ -240,6 +240,8 @@ pub fn run() {
             channel_models_store::channel_models_stored,
             channel_models_store::channel_custom_models_get,
             channel_models_store::channel_custom_models_set,
+            channel_models_store::model_visibility_list,
+            channel_models_store::model_visibility_set,
             commands::sessions::get_session_messages,
             commands::sessions::delete_agent_session,
             commands::sessions::persist_interaction_blocks,

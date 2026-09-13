@@ -3565,7 +3565,7 @@ export function ChatPage({
                 <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", modelMenuOpen && "rotate-180")} />
               </button>
               {modelMenuOpen && (
-                <div className="absolute bottom-full right-0 mb-1 z-50 max-h-64 w-48 overflow-y-auto rounded-lg border border-border bg-popover p-2 shadow-lg">
+                <div className="absolute bottom-full right-0 mb-1 z-50 max-h-64 w-[230px] overflow-y-auto rounded-lg border border-border bg-popover p-2 shadow-lg">
                   {modelOptions.map((o) => (
                     <button
                       key={o.value}

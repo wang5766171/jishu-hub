@@ -255,6 +255,14 @@ export function ModelManager({
     setActive(next);
     try {
       await invokeCommand("set_active", { agentId, active: next });
+      // 需求13：激活即写可见（显式 visible 记录）——「激活过的模型在
+      // 会话中保持可选」；写失败不阻断激活主流程。
+      void invokeCommand("model_visibility_set", {
+        agentId,
+        providerKey: provider,
+        modelId: model,
+        hidden: false,
+      }).catch(() => {});
       onActiveModelChange?.(`${provider}/${model}`);
       onChanged?.();
     } catch (e) {
@@ -494,6 +502,22 @@ export function ModelManager({
                 void saveProviderFields(selectedProvider, next);
                 void setActiveFromPicker(selectedProvider, modelId);
               }}
+              /* 需求13 返工：探测行闭眼点击 = 落配置 + 显式可见，不激活。 */
+              onMakeProbedVisible={(modelId) => {
+                const entry = probedModelToEntry(modelId);
+                const p = config.providers[selectedProvider];
+                const next: PiProviderConfig = {
+                  ...p,
+                  models: [...(p?.models ?? []).filter((m) => m.id !== modelId), entry],
+                };
+                void saveProviderFields(selectedProvider, next);
+                void invokeCommand("model_visibility_set", {
+                  agentId,
+                  providerKey: selectedProvider,
+                  modelId,
+                  hidden: false,
+                }).catch(console.warn);
+              }}
             />
           ) : (
             <p className="py-8 text-center text-sm text-muted-foreground">
@@ -538,6 +562,7 @@ function ProviderDetailPanel({
   onSetActive,
   onUnsetActive,
   onAddProbedModel,
+  onMakeProbedVisible,
 }: {
   /** v0.9.2 需求9：探测落库作用域（管理作用域 agent）。 */
   agentId: string;
@@ -559,6 +584,8 @@ function ProviderDetailPanel({
   onUnsetActive: () => void;
   /** v0.9.2 需求9：点击探测-only 模型 = 直接添加为渠道模型并设为当前。 */
   onAddProbedModel: (modelId: string) => void;
+  /** 需求13 返工：探测-only 行点闭眼 = 落配置 + 标记会话可见（不激活）。 */
+  onMakeProbedVisible: (modelId: string) => void;
 }) {
   const { t } = useTranslation();
   // 行内编辑草稿：渠道切换（name 变化）时重置为已保存值。
@@ -590,9 +617,31 @@ function ProviderDetailPanel({
   // id（探测行点击/addProbedModel 落库不记）。此前按预设静态表判定，
   // 跨渠道模型（deepseek 上的 glm-4.5）恒误判自建 → 误显删除钮。
   const [userAddedIds, setUserAddedIds] = useState<Set<string>>(new Set());
+  // v0.9.2 需求13：会话可选可见性——显式记录（model_id → hidden）；
+  // 无记录走默认规则（渠道配置模型版本倒序前 3 可见，与后端
+  // picker_options_with_visibility 同语义）。
+  const [sessionHiddenMap, setSessionHiddenMap] = useState<Record<string, boolean>>({});
   const [probing, setProbing] = useState(false);
   const [probeState, setProbeState] = useState<"none" | "unsupported" | "failed" | "ok">("none");
   const channelKey = `${agentId}::${name}`;
+
+  // 读显式可见性记录（进详情页即展示）。
+  useEffect(() => {
+    let cancelled = false;
+    invokeCommand<Record<string, boolean> | null>("model_visibility_list", {
+      agentId,
+      providerKey: name,
+    })
+      .then((m) => {
+        if (!cancelled) setSessionHiddenMap(m ?? {});
+      })
+      .catch(() => {
+        if (!cancelled) setSessionHiddenMap({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, name]);
 
   // 读已落库列表（进详情页即展示；探测写入后重读）。
   useEffect(() => {
@@ -762,6 +811,35 @@ function ProviderDetailPanel({
     merged.sort((a, b) => byVersionDesc(a.model.id, b.model.id));
     return merged;
   })();
+
+  // ── 需求13：会话可见性判定（与后端 picker 过滤同语义）──
+  // 默认可见集 = 渠道**配置**模型（不含 probe-only 行）版本倒序前 3；
+  // 显式记录优先；当前激活恒可见（眼睛钮对其禁用）。
+  const defaultVisibleIds = new Set(
+    [...models]
+      .sort((a, b) => byVersionDesc(a.id, b.id))
+      .slice(0, 3)
+      .map((m) => m.id),
+  );
+  const sessionVisible = (id: string): boolean => {
+    if (activeModelId === id) return true;
+    if (id in sessionHiddenMap) return !sessionHiddenMap[id];
+    return defaultVisibleIds.has(id);
+  };
+  const toggleSessionVisible = (id: string) => {
+    if (activeModelId === id) return; // 当前激活不可设为不可见（双保险）
+    // 需求13 返工修复：nextHidden = 新的 hidden 值 = 当前可见态取反后
+    // 再取反——直接「当前可见 → 点后隐藏」（原实现把新可见态当 hidden
+    // 存，两个方向都无效）。
+    const nextHidden = sessionVisible(id);
+    setSessionHiddenMap((prev) => ({ ...prev, [id]: nextHidden }));
+    void invokeCommand("model_visibility_set", {
+      agentId,
+      providerKey: name,
+      modelId: id,
+      hidden: nextHidden,
+    }).catch(console.warn);
+  };
 
   const addProbedModel = (id: string) => {
     onAddProbedModel(id);
@@ -1157,6 +1235,36 @@ function ProviderDetailPanel({
                           title={t("config.setActive")}
                         >
                           {isCurrent ? <Check className="h-3 w-3" /> : <Power className="h-3 w-3" />}
+                        </Button>
+                        {/* 需求13 返工（用户裁决）：会话可见性开关全行可用——
+                            睁眼=会话可见/闭眼=不可见；探测-only 行闭眼（未落
+                            配置不在会话候选），点击=落配置+标记可见（不激活）；
+                            当前激活模型禁用（不可可见→不可见）。 */}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-1.5"
+                          disabled={isCurrent}
+                          onClick={() => {
+                            if (probeOnly) {
+                              if (!sessionVisible(m.id)) onMakeProbedVisible(m.id);
+                              return;
+                            }
+                            toggleSessionVisible(m.id);
+                          }}
+                          title={
+                            isCurrent
+                              ? t("config.sessionVisibleLocked")
+                              : sessionVisible(m.id)
+                                ? t("config.sessionVisible")
+                                : t("config.sessionHidden")
+                          }
+                        >
+                          {sessionVisible(m.id) ? (
+                            <Eye className="h-3 w-3" />
+                          ) : (
+                            <EyeOff className="h-3 w-3" />
+                          )}
                         </Button>
                         <Button
                           variant="ghost"

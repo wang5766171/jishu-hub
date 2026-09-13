@@ -40,6 +40,23 @@ pub(crate) async fn get_model_picker_options(
             .as_model_store()
             .ok_or("Agent does not support model store")?;
         let config = store.load_model_store()?;
+        // v0.9.2 需求13：jishu 会话可选模型可见性——显式记录优先，默认
+        // 渠道内版本倒序前 3 可见，当前激活恒可见。仅 jishu 生效（codex
+        // 官方直连等全量展示不变）。
+        if agent_id == "jishu-self" {
+            let visibility =
+                crate::channel_models_store::visibility_map(&agent_id).unwrap_or_default();
+            let active = store.get_active_model().ok().flatten().and_then(|v| {
+                let provider = v.get("provider").and_then(|p| p.as_str())?.to_string();
+                let model = v.get("model").and_then(|m| m.as_str())?.to_string();
+                Some((provider, model))
+            });
+            return Ok(agent::jishu_self::model_picker::picker_options_with_visibility(
+                &config,
+                &visibility,
+                active,
+            ));
+        }
         Ok(agent::jishu_self::model_picker::picker_options_from_config(&config))
     })
     .await

@@ -53,6 +53,14 @@ fn init_conn(conn: &Connection) -> Result<(), String> {
             fetched_at  INTEGER NOT NULL,
             PRIMARY KEY (agent_id, channel_key)
         );
+        CREATE TABLE IF NOT EXISTS model_session_visibility (
+            agent_id     TEXT NOT NULL,
+            provider_key TEXT NOT NULL,
+            model_id     TEXT NOT NULL,
+            hidden       INTEGER NOT NULL,
+            updated_at   INTEGER NOT NULL,
+            PRIMARY KEY (agent_id, provider_key, model_id)
+        );
         PRAGMA user_version = 1;",
     )
     .map_err(|e| e.to_string())?;
@@ -185,6 +193,114 @@ pub(crate) async fn channel_custom_models_set(
     tauri::async_runtime::spawn_blocking(move || custom_upsert(&agent_id, &channel_key, &json))
         .await
         .map_err(|e| format!("custom upsert task failed: {e}"))?
+}
+
+// ── 会话可见性（v0.9.2 需求13：jishu 模型会话可选可见性）──
+// 显式记录（hidden 布尔）覆盖默认规则；无记录 = 默认规则（版本倒序前 3
+// 可见）。激活（set_active）时写入 visible 记录——「激活过的模型可见」。
+
+pub(crate) fn visibility_upsert(
+    agent_id: &str,
+    provider_key: &str,
+    model_id: &str,
+    hidden: bool,
+) -> Result<(), String> {
+    let store = store()?;
+    let conn = store.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO model_session_visibility (agent_id, provider_key, model_id, hidden, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(agent_id, provider_key, model_id) DO UPDATE SET
+           hidden = excluded.hidden, updated_at = excluded.updated_at",
+        rusqlite::params![agent_id, provider_key, model_id, hidden as i64, crate::util::now_ms()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 渠道内显式可见性记录（model_id → hidden）；无记录的模型走默认规则。
+pub(crate) fn visibility_lookup(
+    agent_id: &str,
+    provider_key: &str,
+) -> Result<std::collections::HashMap<String, bool>, String> {
+    let store = store()?;
+    let conn = store.conn.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT model_id, hidden FROM model_session_visibility
+             WHERE agent_id = ?1 AND provider_key = ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![agent_id, provider_key], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        let (id, hidden) = row.map_err(|e| e.to_string())?;
+        map.insert(id, hidden);
+    }
+    Ok(map)
+}
+
+/// agent 全量可见性（provider_key → model_id → hidden），picker 过滤用。
+pub(crate) fn visibility_map(
+    agent_id: &str,
+) -> Result<std::collections::HashMap<String, std::collections::HashMap<String, bool>>, String> {
+    let store = store()?;
+    let conn = store.conn.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT provider_key, model_id, hidden FROM model_session_visibility
+             WHERE agent_id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![agent_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)? != 0,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut map: std::collections::HashMap<String, std::collections::HashMap<String, bool>> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let (provider, id, hidden) = row.map_err(|e| e.to_string())?;
+        map.entry(provider).or_default().insert(id, hidden);
+    }
+    Ok(map)
+}
+
+/// 读取渠道内显式可见性记录（无记录 = 空对象 → 前端走默认规则）。
+#[tauri::command]
+pub(crate) async fn model_visibility_list(
+    agent_id: String,
+    provider_key: String,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let map = visibility_lookup(&agent_id, &provider_key)?;
+        serde_json::to_value(map).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("visibility lookup task failed: {e}"))?
+}
+
+/// 写单模型会话可见性（显式记录，覆盖默认规则）。
+#[tauri::command]
+pub(crate) async fn model_visibility_set(
+    agent_id: String,
+    provider_key: String,
+    model_id: String,
+    hidden: bool,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        visibility_upsert(&agent_id, &provider_key, &model_id, hidden)
+    })
+    .await
+    .map_err(|e| format!("visibility upsert task failed: {e}"))?
 }
 
 // ── Tauri 命令 ──
