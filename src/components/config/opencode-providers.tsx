@@ -40,6 +40,7 @@ export function OpencodeProvidersBlock({
   modelCard,
   agentId,
   onChange,
+  commit,
 }: {
   providers: Record<string, ProviderObj> | null;
   /** 当前模型（config.model，"provider/model" 格式；渠道激活判定） */
@@ -49,7 +50,11 @@ export function OpencodeProvidersBlock({
   /** v0.9.2 需求9：探测落库作用域（管理作用域 agent）。 */
   agentId?: string;
   onChange: (patch: { customProviders?: Record<string, ProviderObj>; model?: string | null }) => void;
+  /** 需求14：激活类操作立即落盘（选模型/启用渠道）；缺省回退 onChange。 */
+  commit?: (patch: { customProviders?: Record<string, ProviderObj>; model?: string | null }) => void;
 }) {
+  /* 需求14：激活走 commit（立即落盘），字段编辑仍走 onChange（草稿+页头保存）。 */
+  const act = commit ?? onChange;
   const { t } = useTranslation();
   const providersMap = providers ?? {};
   const activeProvider = model?.split("/")[0] || null;
@@ -105,7 +110,8 @@ export function OpencodeProvidersBlock({
   };
 
   const enableChannel = (id: string, modelId: string) => {
-    if (modelId) onChange({ model: `${id}/${modelId}` });
+    /* 需求14：渠道/模型激活立即落盘。 */
+    if (modelId) act({ model: `${id}/${modelId}` });
   };
 
   return (

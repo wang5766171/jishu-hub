@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import {
@@ -54,6 +54,27 @@ export function StructuredConfigPage({
   const update = useCallback((partial: Partial<ClaudeConfig>) => {
     setDraft((prev) => (prev ? { ...prev, ...partial } : prev));
   }, []);
+
+  // v0.9.2 需求14（用户裁决：激活即生效）：激活类操作（选模型/启用渠道/
+  // 切直连）**立即落盘**——原只写草稿，切页（配置页卸载）后草稿丢弃、
+  // 激活回退。字段编辑仍走草稿+页头保存（需求11「保存即启用」语义）。
+  // 落盘对象 = 当前草稿整体（顺带持久化未保存的字段改动，不丢数据）。
+  const draftRef = useRef<ClaudeConfig | null>(null);
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+  const commit = useCallback(
+    (partial: Partial<ClaudeConfig>) => {
+      const base = draftRef.current;
+      if (!base) return;
+      const next = { ...base, ...partial };
+      setDraft(next);
+      void invokeCommand("save_config", { agentId, config: next })
+        .then(() => refetch())
+        .catch((err) => console.error("Failed to save config:", err));
+    },
+    [agentId, refetch],
+  );
 
   const [saving, setSaving] = useState(false);
   const hasChanges =
@@ -146,6 +167,7 @@ export function StructuredConfigPage({
             <ConfigModelsZone
               config={draft}
               onChange={update}
+              onCommit={commit}
               surface={surface}
               agentId={agentId || undefined}
             />

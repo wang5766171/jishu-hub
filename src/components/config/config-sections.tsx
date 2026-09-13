@@ -44,6 +44,7 @@ import { cn } from "@/lib/utils";
 import {
   CLAUDE_PROXY_PRESETS,
   applyProxyPresetToEnv,
+  dedupeProxyEnvCase,
   removeProxyEnv,
   type ClaudeProxyPreset,
 } from "@/agents/config/presets/claude-presets";
@@ -158,13 +159,17 @@ export interface ConfigSurfaceFlags {
 export function ConfigModelsZone({
   config,
   onChange,
+  onCommit,
   surface,
   agentId,
 }: ConfigZoneProps & {
   surface?: ConfigSurfaceFlags;
   /** v0.7.6 需求3：管理作用域 agent id（官方直连认证卡查询用）。 */
   agentId?: string;
+  /** 需求14：激活类操作立即落盘（选模型/启用渠道/切直连）；缺省回退 onChange。 */
+  onCommit?: (partial: Partial<ClaudeConfig>) => void;
 }) {
+  const act = onCommit ?? onChange;
   const { t } = useTranslation();
   const supportsProxySetup = surface?.supports_proxy_setup ?? false;
 
@@ -297,6 +302,7 @@ export function ConfigModelsZone({
           channelModelCard={modelCardReadOnly}
           agentId={agentId}
           onChange={(patch) => onChange(patch as Partial<ClaudeConfig>)}
+          commit={(patch) => act(patch as Partial<ClaudeConfig>)}
         />
       );
     }
@@ -309,6 +315,7 @@ export function ConfigModelsZone({
           model={config.model ?? null}
           modelCard={modelCardReadOnly}
           onChange={(patch) => onChange(patch as Partial<ClaudeConfig>)}
+          commit={(patch) => act(patch as Partial<ClaudeConfig>)}
         />
       );
     }
@@ -360,7 +367,8 @@ export function ConfigModelsZone({
         directSelected={effectiveChannelId === "direct"}
         onSelectDirect={() => {
           setSelectedChannelId("direct");
-          if (!isDirect) onChange({ env: removeProxyEnv(env) });
+          /* 需求14：切直连 = 激活类操作，立即落盘。 */
+          if (!isDirect) act({ env: removeProxyEnv(env) });
         }}
         channels={sidebarChannels}
         selectedId={effectiveChannelId === "direct" ? null : effectiveChannelId}
@@ -430,7 +438,7 @@ export function ConfigModelsZone({
                         size="sm"
                         variant={config.model === mid ? "default" : "outline"}
                         className="h-6 text-xs"
-                        onClick={() => onChange({ model: mid })}
+                        onClick={() => act({ model: mid })}
                         title={t("config.setActive")}
                       >
                         {config.model === mid ? (
@@ -471,12 +479,15 @@ export function ConfigModelsZone({
               const next = { ...env };
               if (patch.baseUrl !== undefined) next["ANTHROPIC_BASE_URL"] = patch.baseUrl;
               if (patch.apiKey) next["ANTHROPIC_AUTH_TOKEN"] = patch.apiKey;
-              onChange({ env: next });
+              onChange({ env: dedupeProxyEnvCase(next) });
             }}
-            onEnable={() => onChange({ env: removeProxyEnv(env) })}
+            onEnable={() => act({ env: removeProxyEnv(env) })}
             /* 需求12-3：模型选择写 env ANTHROPIC_MODEL（同预设渠道）。 */
             onSelectModel={(m) =>
-              onChange({ env: { ...env, ANTHROPIC_MODEL: m }, model: m })
+              /* 需求12-3 返工：dedupe 清除小写变体（Windows env 不区分
+                  大小写，anthropic_model 会覆盖 ANTHROPIC_MODEL）。
+                  需求14：激活即落盘。 */
+              act({ env: dedupeProxyEnvCase({ ...env, ANTHROPIC_MODEL: m }), model: m })
             }
             onTest={async (modelId) =>
               testLlmConnection("anthropic-messages", customActive ? proxyBaseUrl : "", savedToken, modelId)
@@ -523,12 +534,12 @@ export function ConfigModelsZone({
               }
               onChange({ env: next });
             }}
-            onEnable={() => onChange({ env: applyProxyPresetToEnv(selected, "", env) })}
+            onEnable={() => act({ env: applyProxyPresetToEnv(selected, "", env) })}
             onSelectModel={(m) =>
               /* 需求12-3（用户裁决）：模型选择持久化到 env ANTHROPIC_MODEL——
                   第三方模型经环境变量生效，apply 只带入预设默认模型，选中值
                   需单独覆盖写入。 */
-              onChange({
+              act({
                 env: { ...applyProxyPresetToEnv(selected, "", env), ANTHROPIC_MODEL: m },
                 model: m,
               })

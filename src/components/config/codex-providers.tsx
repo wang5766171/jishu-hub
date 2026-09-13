@@ -40,6 +40,7 @@ export function CodexProvidersBlock({
   channelModelCard,
   agentId,
   onChange,
+  commit,
 }: {
   /** 当前模型（config.model；切渠道时做模型联动判断） */
   model: string | null | undefined;
@@ -58,7 +59,16 @@ export function CodexProvidersBlock({
     env?: Record<string, string>;
     model?: string | null;
   }) => void;
+  /** 需求14：激活类操作立即落盘（选模型/启用渠道/切直连）；缺省回退 onChange。 */
+  commit?: (patch: {
+    modelProvider?: string | null;
+    modelProviders?: Record<string, unknown> | null;
+    env?: Record<string, string>;
+    model?: string | null;
+  }) => void;
 }) {
+  /* 需求14：激活走 commit（立即落盘），字段编辑仍走 onChange（草稿+页头保存）。 */
+  const act = commit ?? onChange;
   const { t } = useTranslation();
   // 查看目标渠道（右侧展示其接入配置）；null = 官方直连视图。初始跟随
   // 生效渠道（直连时 = null）。查看态与生效态分离：切换生效统一走右栏
@@ -137,7 +147,8 @@ export function CodexProvidersBlock({
         onSelectDirect={() => {
           setCustomFormOpen(false);
           setSelectedId(null);
-          if (modelProvider) onChange({ modelProvider: null });
+          /* 需求14：切直连 = 激活类操作，立即落盘。 */
+          if (modelProvider) act({ modelProvider: null });
         }}
         channels={channels}
         selectedId={customFormOpen ? null : selectedId}
@@ -283,7 +294,7 @@ export function CodexProvidersBlock({
               /* 需求11：启用 = 仅切激活（条目已保存）；模型不在渠道候选
                   内时带入预设默认，避免沿用旧渠道模型打新渠道。 */
               const keepModel = model && (selectedPreset?.models ?? []).includes(model);
-              onChange({
+              act({
                 modelProvider: selectedId,
                 ...(!keepModel && selectedPreset?.model ? { model: selectedPreset.model } : {}),
               });
@@ -293,7 +304,7 @@ export function CodexProvidersBlock({
                   （不覆盖用户已编辑字段——仅无条目场景）。 */
               const id = selectedId;
               if (!providers[id] && selectedPreset) {
-                onChange({
+                act({
                   modelProvider: id,
                   model: m,
                   modelProviders: {
@@ -308,7 +319,7 @@ export function CodexProvidersBlock({
                 });
                 return;
               }
-              onChange({ modelProvider: id, model: m });
+              act({ modelProvider: id, model: m });
             }}
             onTest={async (modelId) => {
               try {
