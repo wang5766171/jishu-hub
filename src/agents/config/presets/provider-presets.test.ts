@@ -5,7 +5,7 @@ import {
   presetModelToEntry,
   suggestProviderKey,
 } from "./provider-presets";
-import { applyProxyPresetToEnv, removeProxyEnv, CLAUDE_PROXY_PRESETS } from "./claude-presets";
+import { applyProxyPresetToEnv, dedupeProxyEnvCase, removeProxyEnv, CLAUDE_PROXY_PRESETS } from "./claude-presets";
 
 describe("PROVIDER_PRESETS registry", () => {
   it("contains custom fallback and at least four real providers", () => {
@@ -154,5 +154,22 @@ describe("claude proxy presets", () => {
       OTHER: "z",
     });
     expect(next).toEqual({ OTHER: "z" });
+  });
+
+  // v0.9.2 需求12-3 返工：Windows env 不区分大小写——小写变体（旧手工
+  // 配置残留）会按序覆盖大写键，dedupe 在写入侧清除。
+  it("dedupeProxyEnvCase removes case variants of proxy keys", () => {
+    const next = dedupeProxyEnvCase({
+      ANTHROPIC_MODEL: "glm-5.3-flash",
+      anthropic_model: "glm-5.3",
+      "Anthropic_Auth_Token": "sk",
+      OTHER: "keep",
+      anthropic_default_haiku_model: "keep2",
+    });
+    expect(next).toEqual({
+      ANTHROPIC_MODEL: "glm-5.3-flash",
+      OTHER: "keep",
+      anthropic_default_haiku_model: "keep2",
+    });
   });
 });
