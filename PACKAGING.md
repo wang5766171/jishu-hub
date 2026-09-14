@@ -40,7 +40,8 @@ Jishu Hub 只发布一个发行版：内嵌 `pi` 引擎（jishu agent）的**全
 
 共享工具库 `scripts/lib/pi-common.mjs`：`fixShebang(distDir)` 规范化入口 shebang，`readRuntimeDeps(distDir)` 读取并校验清单。
 
----
+> v0.9.3：运行期 MCP 适配器安装/更新命令钉 `pi-mcp-adapter@2.32.1`（最新 2.33.0 依赖走 pkg.pr.new 预览 CDN，受限网络不可达；上游回归 registry 后解除，见 `agent/jishu_self/mod.rs`）。
+
 
 ## 4. macOS 平台打包（GitHub Actions 自动构建）
 

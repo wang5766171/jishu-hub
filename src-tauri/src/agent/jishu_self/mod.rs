@@ -693,7 +693,11 @@ fn ensure_default_tools_arg(
 fn mcp_package_args(base_args: &[String], action: &str) -> Vec<String> {
     let mut args = base_args.to_vec();
     args.push(action.to_string());
-    args.push("npm:pi-mcp-adapter".to_string());
+    // v0.9.3 测试期钉 2.32.1：最新 2.33.0 把 @modelcontextprotocol/{client,core}
+    // 钉到 pkg.pr.new（PR 预览 CDN），公司/受限网络拦截域名致 npm ETIMEDOUT；
+    // 2.32.1 为最后一个纯 registry 依赖版本（pack-pi 烘焙同钉）。上游修复
+    // （依赖回正式 registry）后可解除钉定。
+    args.push("npm:pi-mcp-adapter@2.32.1".to_string());
     args
 }
 
@@ -780,9 +784,10 @@ mod mcp_tests {
 
     #[test]
     fn mcp_update_uses_pi_single_package_update_command() {
+        // v0.9.3 测试期钉 2.32.1（最新 2.33.0 依赖走 pkg.pr.new，受限网络不可达）。
         assert_eq!(
             mcp_package_args(&["cli.js".to_string()], "update"),
-            vec!["cli.js", "update", "npm:pi-mcp-adapter"]
+            vec!["cli.js", "update", "npm:pi-mcp-adapter@2.32.1"]
         );
     }
 }
