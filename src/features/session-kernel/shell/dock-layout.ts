@@ -18,8 +18,10 @@ export interface FloatRect {
   h: number;
 }
 
+export type DockSlot = "left" | "right" | "top" | "bottom" | "float";
+
 export interface PanelLayout {
-  slot: Exclude<DockSlot, never>;
+  slot: DockSlot;
   /** 呈现层显隐（快捷图标/收起钮控制；≠ 插件启停）。 */
   hidden: boolean;
   /** 浮动面板位置与大小（仅 slot=float 时有意义）。 */
@@ -34,8 +36,6 @@ export interface SessionLayoutState {
   panels: Record<string, PanelLayout>;
   railWidgets: Record<string, RailWidgetLayout>;
 }
-
-export type DockSlot = "left" | "right" | "top" | "bottom" | "float";
 
 const STORAGE_KEY = "jishu-hub.session-layout.v1";
 
@@ -127,8 +127,12 @@ export function panelLayoutOf(
 }
 
 /** 贴边挂件缘位读取：无记录时默认左缘。 */
-export function railWidgetSideOf(state: SessionLayoutState, widgetId: string): RailSide {
-  return state.railWidgets[widgetId]?.side ?? "left";
+export function railWidgetSideOf(
+  state: SessionLayoutState,
+  widgetId: string,
+  fallback: RailSide = "left",
+): RailSide {
+  return state.railWidgets[widgetId]?.side ?? fallback;
 }
 
 /** 浮动矩形拖到屏幕外的回拉（clamp 到视口内至少留 40px 把手）。 */

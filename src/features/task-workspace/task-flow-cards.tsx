@@ -15,6 +15,8 @@ import { useTranslation } from "react-i18next";
 import {
   Ban,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   CircleAlert,
   Clock,
   Check,
@@ -23,6 +25,8 @@ import {
   MessageSquare,
   MinusCircle,
   Play,
+  RotateCw,
+  SkipForward,
   Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -32,6 +36,10 @@ export interface PlanNodeInfo {
   title: string;
   responsibility: string;
   acceptance: string | null;
+  /** v0.9.3 需求5：行内更换执行者——画布指定的锁定 agent（null = 角色解析）。 */
+  agentId: string | null;
+  /** 执行者约束的角色前提（update_node patch 需要；缺省用 node_id 兜底，同画布）。 */
+  roleId: string;
 }
 
 export interface FlowNodeStatus {
@@ -41,6 +49,27 @@ export interface FlowNodeStatus {
   agentName: string | null;
   lastAction: string | null;
   clickable: boolean;
+  /** v0.9.3 需求5 摘要增强：耗时（ms 时间戳）与验收标准。 */
+  startedAt?: number | null;
+  finishedAt?: number | null;
+  acceptance?: string | null;
+  /** 失败原因（node run error；重试/跳过提示与失败行展示）。 */
+  error?: string | null;
+}
+
+/** 耗时格式化（s/m/h；执行中显示为至今的经过时长）。 */
+export function formatNodeDuration(
+  startedAt?: number | null,
+  finishedAt?: number | null,
+): string | null {
+  if (!startedAt) return null;
+  const end = finishedAt ?? Date.now();
+  const seconds = Math.max(0, Math.round((end - startedAt) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes < 60) return `${minutes}m${rest ? ` ${rest}s` : ""}`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 const STATUS_ICON: Record<string, { icon: typeof Clock; cls: string }> = {
@@ -62,7 +91,8 @@ export function statusVisual(status: string) {
   return STATUS_ICON[status] ?? STATUS_ICON.ready;
 }
 
-/** 方案卡：确认执行哪些子任务。 */
+/** 方案卡：确认执行哪些子任务。v0.9.3 需求5：节点行内可直接更换执行者
+ *（与画布 Inspector 同源 update_node，run 启动前可用）。 */
 export function TaskPlanCard({
   nodes,
   canStart,
@@ -71,6 +101,9 @@ export function TaskPlanCard({
   onConfirm,
   onDismiss,
   onOpenCanvas,
+  assignableAgents,
+  agentsLoading,
+  onAssignAgent,
 }: {
   nodes: PlanNodeInfo[];
   canStart: boolean;
@@ -79,6 +112,9 @@ export function TaskPlanCard({
   onConfirm: (selectedIds: string[]) => void;
   onDismiss: () => void;
   onOpenCanvas: () => void;
+  assignableAgents?: Array<{ id: string; display_name: string }>;
+  agentsLoading?: boolean;
+  onAssignAgent?: (nodeId: string, agentId: string | null) => void;
 }) {
   const { t } = useTranslation();
   const [selected, setSelected] = useState<Set<string>>(
@@ -163,6 +199,34 @@ export function TaskPlanCard({
                       <div className="flex items-center gap-2 text-xs font-medium text-foreground">
                         <span className="text-muted-foreground/60">{index + 1}.</span>
                         <span className="truncate">{node.title}</span>
+                        {onAssignAgent && assignableAgents && assignableAgents.length > 0 && (
+                          <label
+                            className="ml-auto flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <span>{t("taskPlan.executor", "执行者")}</span>
+                            <select
+                              value={node.agentId ?? ""}
+                              disabled={starting}
+                              onChange={(event) => {
+                                const value = event.target.value;
+                                onAssignAgent(node.nodeId, value || null);
+                              }}
+                              className="h-5 max-w-32 rounded border border-border bg-background px-1 text-[10px] text-foreground"
+                            >
+                              <option value="">
+                                {agentsLoading
+                                  ? t("task.execution.agentsLoading", "加载智能体…")
+                                  : t("taskPlan.autoAssign", "自动分配")}
+                              </option>
+                              {assignableAgents.map((agent) => (
+                                <option key={agent.id} value={agent.id}>
+                                  {agent.display_name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
                       </div>
                       {node.responsibility && (
                         <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground">
@@ -214,7 +278,8 @@ export function TaskPlanCard({
   );
 }
 
-/** 子任务卡列表：执行中实时状态。 */
+/** 子任务卡列表：执行中实时状态。v0.9.3 需求5 摘要增强：耗时 / 验收标准
+ * 展开 / 失败原因。 */
 export function TaskNodeCards({
   nodes,
   onSelectNode,
@@ -223,12 +288,15 @@ export function TaskNodeCards({
   onSelectNode: (nodeId: string) => void;
 }) {
   const { t } = useTranslation();
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   if (nodes.length === 0) return null;
   return (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-2">
       {nodes.map((node, index) => {
         const visual = statusVisual(node.status);
         const Icon = visual.icon;
+        const duration = formatNodeDuration(node.startedAt, node.finishedAt);
+        const acceptanceOpen = expanded.has(node.nodeId);
         return (
           <div
             key={node.nodeId}
@@ -238,12 +306,36 @@ export function TaskNodeCards({
             <div className="flex items-center gap-2">
               <span className="text-[10px] text-muted-foreground/50">{index + 1}</span>
               <Icon className={cn("h-4 w-4 shrink-0", visual.cls)} />
-              <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
-                {node.title}
-              </span>
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 items-center gap-1 text-left"
+                onClick={() =>
+                  node.acceptance &&
+                  setExpanded((current) => {
+                    const next = new Set(current);
+                    if (next.has(node.nodeId)) next.delete(node.nodeId);
+                    else next.add(node.nodeId);
+                    return next;
+                  })
+                }
+                title={node.acceptance ? t("taskFlow.toggleAcceptance", "展开/收起验收标准") : undefined}
+              >
+                <span className="truncate text-xs font-medium text-foreground">{node.title}</span>
+                {node.acceptance &&
+                  (acceptanceOpen ? (
+                    <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/60" />
+                  ) : (
+                    <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/60" />
+                  ))}
+              </button>
               {node.agentName && (
                 <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium text-primary">
                   {node.agentName}
+                </span>
+              )}
+              {duration && (
+                <span className="shrink-0 text-[9px] tabular-nums text-muted-foreground/50">
+                  {duration}
                 </span>
               )}
               <span className="shrink-0 text-[9px] tabular-nums text-muted-foreground/60">
@@ -265,6 +357,19 @@ export function TaskNodeCards({
                 {node.lastAction}
               </div>
             )}
+            {node.status === "failed" && node.error && (
+              <div className="mt-1 truncate pl-6 text-[11px] leading-snug text-red-500/90" title={node.error}>
+                {node.error}
+              </div>
+            )}
+            {acceptanceOpen && node.acceptance && (
+              <div className="mt-1 whitespace-pre-wrap break-words rounded-md bg-muted/60 px-2 py-1 text-[10px] leading-snug text-muted-foreground">
+                <span className="font-medium text-muted-foreground/80">
+                  {t("taskPlan.acceptance", "验收")}：
+                </span>
+                {node.acceptance}
+              </div>
+            )}
           </div>
         );
       })}
@@ -272,15 +377,22 @@ export function TaskNodeCards({
   );
 }
 
-/** 汇总卡：run 终态后的结果一览。 */
+/** 汇总卡：run 终态后的结果一览。v0.9.3 需求5：失败节点行内「重试」「跳过
+ *（下游继续）」；完成行附耗时与一句结果摘要（attempt 公开消息最新一条）。 */
 export function TaskSummaryCard({
   runStatus,
   nodes,
   onSelectNode,
+  onRetryNode,
+  onSkipNode,
+  nodeActionBusy,
 }: {
   runStatus: string;
   nodes: FlowNodeStatus[];
   onSelectNode: (nodeId: string) => void;
+  onRetryNode?: (nodeId: string) => void;
+  onSkipNode?: (nodeId: string) => void;
+  nodeActionBusy?: string | null;
 }) {
   const { t } = useTranslation();
   const succeeded = nodes.filter((n) => n.status === "succeeded").length;
@@ -326,25 +438,82 @@ export function TaskSummaryCard({
           {nodes.map((node) => {
             const visual = statusVisual(node.status);
             const Icon = visual.icon;
+            const duration = formatNodeDuration(node.startedAt, node.finishedAt);
+            const busy = nodeActionBusy === node.nodeId;
+            const actionable = node.status === "failed" && !busy && Boolean(onRetryNode || onSkipNode);
             return (
-              <button
-                key={node.nodeId}
-                type="button"
-                onClick={() => node.clickable && onSelectNode(node.nodeId)}
-                disabled={!node.clickable}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs",
-                  node.clickable ? "hover:bg-accent/50" : "cursor-default",
+              <div key={node.nodeId} className="space-y-0.5">
+                <button
+                  type="button"
+                  onClick={() => node.clickable && onSelectNode(node.nodeId)}
+                  disabled={!node.clickable}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs",
+                    node.clickable ? "hover:bg-accent/50" : "cursor-default",
+                  )}
+                >
+                  <Icon className={cn("h-3.5 w-3.5 shrink-0", visual.cls)} />
+                  <span className="min-w-0 flex-1 truncate text-foreground/90">{node.title}</span>
+                  {node.agentName && (
+                    <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium text-primary">
+                      {node.agentName}
+                    </span>
+                  )}
+                  {duration && (
+                    <span className="shrink-0 text-[9px] tabular-nums text-muted-foreground/50">
+                      {duration}
+                    </span>
+                  )}
+                </button>
+                {node.status === "failed" && node.error && (
+                  <div className="truncate pl-7 text-[10px] leading-snug text-red-500/80" title={node.error}>
+                    {node.error}
+                  </div>
                 )}
-              >
-                <Icon className={cn("h-3.5 w-3.5 shrink-0", visual.cls)} />
-                <span className="min-w-0 flex-1 truncate text-foreground/90">{node.title}</span>
-                {node.agentName && (
-                  <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium text-primary">
-                    {node.agentName}
-                  </span>
+                {node.status !== "failed" && node.lastAction && (
+                  <div className="truncate pl-7 text-[10px] leading-snug text-muted-foreground/60" title={node.lastAction}>
+                    {node.lastAction}
+                  </div>
                 )}
-              </button>
+                {node.status === "failed" && (onRetryNode || onSkipNode) && (
+                  <div className="flex items-center gap-1.5 pl-7">
+                    {busy && (
+                      <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        {t("taskFlow.nodeActionWorking", "处理中…")}
+                      </span>
+                    )}
+                    {onRetryNode && (
+                      <button
+                        type="button"
+                        disabled={!actionable}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onRetryNode(node.nodeId);
+                        }}
+                        className="flex h-5 items-center gap-1 rounded-md border border-border/60 px-1.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <RotateCw className="h-3 w-3" />
+                        {t("taskFlow.retryNode", "重试")}
+                      </button>
+                    )}
+                    {onSkipNode && (
+                      <button
+                        type="button"
+                        disabled={!actionable}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onSkipNode(node.nodeId);
+                        }}
+                        className="flex h-5 items-center gap-1 rounded-md border border-border/60 px-1.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <SkipForward className="h-3 w-3" />
+                        {t("taskFlow.skipNode", "跳过（下游继续）")}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>

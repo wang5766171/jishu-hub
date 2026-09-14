@@ -9,7 +9,7 @@ import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { DiffPreview, DiffRow } from "@/lib/text-preview";
-import { clampPanelWidth, defaultPanelWidth, fitPanelWidth, loadPanelWidth, savePanelWidth } from "./panel-width";
+import { clampPanelWidth, defaultPanelWidth, fitPanelWidth, loadPanelWidth, savePanelWidth } from "@/lib/panel-width";
 import { resolveViewerPath } from "./path-resolve";
 
 export type ViewerTarget =

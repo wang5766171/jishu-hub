@@ -209,6 +209,20 @@ export interface RunProjection {
   node_runs: Record<string, NodeRunProjection>;
 }
 
+/** useNodeSession 等消费方所需的最小 node_runs 形状（结构子集）：线上
+ *  RunProjection.node_runs 与内部 NodeRun 状态均结构满足——组装方（如
+ *  chat-page 的 boardProjection）喂内部状态时无需 cast（v0.9.3 需求1 P2-2）。 */
+export interface NodeRunStatusRef {
+  node_run_id: string;
+  node_id: string;
+  status: NodeRunStatus;
+  attempt_count: number;
+}
+
+export interface NodeRunLookupSource {
+  node_runs: Record<string, NodeRunStatusRef>;
+}
+
 export interface TaskEvent {
   event_id: string;
   run_id: string;
