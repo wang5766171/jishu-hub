@@ -197,53 +197,25 @@ pub fn conductor_revise_plan(req: RevisePlanRequest) -> Result<RevisePlanResult,
                     .map_err(|e| format!("old snapshot failed: {e}"))?;
                 let carried = select_carryover_nodes(&old_runs, &old_snapshot, &snapshot);
 
-                let start =
-                    super::run::task_launch_start_run(super::run::TaskLaunchStartRunRequest {
-                        task_id: req.task_id.clone(),
-                        project_root: req.project_root.clone(),
-                        revision_id: revision_id.clone(),
-                        idempotency_key: format!("revise-{}", gen_id("launch")),
-                    })
-                    .map_err(|e| format!("start carry-over run failed: {e}"))?;
-
-                // 结转写入新 run（Succeeded + NodeResolved 事件，事件溯源投影同源；
-                // 紧随 run 创建执行，引擎 tick（250ms）间隙内完成，竞窗极小）。
-                let mut new_run_seq = store
-                    .get_run(&start.run_id)
-                    .map_err(|e| format!("reload new run failed: {e}"))?
-                    .run_seq;
-                for carried_run in &carried {
-                    let mut seed = crate::orchestrator::domain::run::NodeRun::new(
-                        gen_id("nr"),
-                        &start.run_id,
-                        &carried_run.node_id,
-                        &revision_id,
-                    );
-                    seed.status = crate::orchestrator::domain::run::NodeRunStatus::Succeeded;
-                    seed.started_at = carried_run.started_at;
-                    seed.finished_at = carried_run.finished_at;
-                    let events = vec![crate::orchestrator::build_event(
-                        gen_id("evt"),
-                        &start.run_id,
-                        new_run_seq + 1,
-                        crate::orchestrator::TaskEventType::NodeResolved,
-                        "conductor-carryover",
-                        now_ms(),
-                        serde_json::to_value(
-                            crate::orchestrator::events::payloads::NodeResolvedPayload {
-                                node_run_id: seed.node_run_id.clone(),
-                                node_id: carried_run.node_id.clone(),
-                                final_status:
-                                    crate::orchestrator::domain::run::NodeRunStatus::Succeeded,
-                            },
-                        )
-                        .map_err(|e| format!("serialize carryover payload failed: {e}"))?,
-                    )];
-                    store
-                        .save_execution_update(&seed, None, &[], &events, None, None)
-                        .map_err(|e| format!("seed carryover node failed: {e}"))?;
-                    new_run_seq += 1;
-                }
+                // v0.9.3 需求4（评审 P2-1）：结转种子改经 start_run 请求携带，
+                // 随 run 创建**单事务原子落库**——消除「run 已可见、种子未落，
+                // 引擎先 tick 调度结转节点重跑」的竞窗（原此处 start 后逐个
+                // 补写，竞窗 = 调用间隙；种子字段与事件 actor 与原行为逐项一致）。
+                super::run::task_launch_start_run(super::run::TaskLaunchStartRunRequest {
+                    task_id: req.task_id.clone(),
+                    project_root: req.project_root.clone(),
+                    revision_id: revision_id.clone(),
+                    idempotency_key: format!("revise-{}", gen_id("launch")),
+                    carryover: carried
+                        .iter()
+                        .map(|c| super::run::CarryoverSeed {
+                            node_id: c.node_id.clone(),
+                            started_at: c.started_at,
+                            finished_at: c.finished_at,
+                        })
+                        .collect(),
+                })
+                .map_err(|e| format!("start carry-over run failed: {e}"))?;
                 run_updated = true;
             }
         }
