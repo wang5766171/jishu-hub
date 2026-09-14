@@ -196,8 +196,34 @@ pub fn load_skill_decls() -> Vec<SkillDeclEntry> {
             out.extend(dir_source_skills(root, &pid));
         }
     }
+    out.extend(builtin_skill_decls());
     out
 }
+
+/// 内置常驻 skill：Jishu Hub 会话能力指南（v0.9.3 需求9）。
+///
+/// 背景：会话界面可原生渲染 ```mermaid / ```html 代码块、preview_html 可预览
+/// HTML 交付文件、MCP 工具走 `插件id__` 前缀——这些能力 agent 此前无从知晓
+/// （实测：用户点名要 mermaid 图，agent 仍写了内嵌 mermaid 的 HTML 文件走
+/// preview_html）。改为 skill 形态渐进披露：系统提示词只占 name+description
+/// 两行路由信息，agent 按需 read 全文，正文按「会话渲染 / 文件预览 / MCP /
+/// skill」分节（用户要求的分层语义）。不走插件勾选——hub 内置能力常驻，
+/// 但仍受 skill-resolver 总开关治理（关闭即随全量回收）。
+pub fn builtin_skill_decls() -> Vec<SkillDeclEntry> {
+    let content = include_str!("../../resources/skills/jishu-hub-capabilities/SKILL.md");
+    vec![SkillDeclEntry {
+        dir_name: BUILTIN_CAPABILITY_SKILL_DIR.to_string(),
+        description: BUILTIN_CAPABILITY_SKILL_DESC.to_string(),
+        content: content.to_string(),
+    }]
+}
+
+/// 内置能力 skill 的目录名（= frontmatter name，部署与回收的归属粒度）。
+pub const BUILTIN_CAPABILITY_SKILL_DIR: &str = "jishu-hub-capabilities";
+
+/// 路由描述（与 SKILL.md frontmatter 的 description 保持一致；此处单点
+/// 供测试校验两者同步）。
+pub const BUILTIN_CAPABILITY_SKILL_DESC: &str = "在 Jishu Hub 会话中向用户呈现内容前必读——图表/流程图/框架/关系图直接输出 mermaid 代码块、网页/原型输出 html 代码块（会话界面原生渲染，无需生成文件）；HTML 交付文件预览用 preview_html 工具；MCP 工具与 skill 的调用指引。";
 
 #[derive(Debug, Default, serde::Serialize)]
 pub struct SkillSyncReport {
@@ -334,6 +360,49 @@ mod tests {
         let k = own_key("jishu-self", "my-skill");
         assert_eq!(k, "jishu-self:my-skill");
         assert_eq!(k.split_once(':'), Some(("jishu-self", "my-skill")));
+    }
+
+    /// v0.9.3 需求9：内置能力 skill——内容自洽（frontmatter 与常量同步、
+    /// 含分层决策表与 preview_html 反向指引）、随清单分发且幂等。
+    #[test]
+    fn builtin_capability_skill_content_and_deploy() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let root = tempfile::tempdir().unwrap();
+        let targets = vec![("test-agent".to_string(), root.path().join("skills"))];
+
+        let decls = builtin_skill_decls();
+        assert_eq!(decls.len(), 1);
+        let content = &decls[0].content;
+
+        // frontmatter 与常量同步（description 是系统提示词里的路由层）。
+        assert!(content.starts_with("---\n"));
+        assert!(content.contains(&format!("name: {BUILTIN_CAPABILITY_SKILL_DIR}\n")));
+        assert!(content.contains(&format!("description: {BUILTIN_CAPABILITY_SKILL_DESC}")));
+        // 分层核心内容在位：mermaid 默认通道 + preview_html 反向指引 + MCP 前缀规则。
+        assert!(content.contains("```mermaid"));
+        assert!(content.contains("不适用：纯图表展示"));
+        assert!(content.contains("插件id__"));
+
+        // 部署 + 幂等（内容一致 → Skipped）。
+        let report = sync_with(decls.clone(), &targets, true);
+        assert!(report
+            .actions
+            .iter()
+            .any(|a| a.contains(&format!("test-agent/{BUILTIN_CAPABILITY_SKILL_DIR}: Deployed"))));
+        let deployed = std::fs::read_to_string(
+            root.path().join("skills").join(BUILTIN_CAPABILITY_SKILL_DIR).join("SKILL.md"),
+        )
+        .unwrap();
+        assert_eq!(deployed, *content);
+        let report = sync_with(decls, &targets, true);
+        assert!(report
+            .actions
+            .iter()
+            .any(|a| a.contains(&format!("test-agent/{BUILTIN_CAPABILITY_SKILL_DIR}: Skipped"))));
+
+        std::env::remove_var("JISHU_HUB_HOME");
     }
 
     #[test]

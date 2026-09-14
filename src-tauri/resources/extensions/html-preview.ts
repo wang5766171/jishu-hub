@@ -47,7 +47,7 @@ export default function htmlPreviewExtension(pi: ExtensionAPI) {
     name: "preview_html",
     label: "HTML 页面预览",
     description:
-      "把一个本地 HTML 文件在 Hub 界面右侧的预览面板中渲染展示。适用场景：你为用户开发或修改了 HTML 页面（登录页、单文件 demo、可视化原型等），在交付说明或自检视觉效果时调用，用户即可在界面右侧直接看到渲染结果（可交互脚本会执行）。参数 file 为该 HTML 文件路径（相对当前工作目录或绝对路径）。是否调用由你判断：纯后端/脚本/无视觉意义的产物不要调用；同一文件多次修改后可再次调用以刷新预览。",
+      "把一个本地 HTML 文件在 Hub 界面右侧的预览面板中渲染展示。适用场景：你为用户开发或修改了 HTML 交付文件（登录页、单文件应用、网页报告等），在交付说明或自检视觉效果时调用，用户即可在界面右侧直接看到渲染结果（可交互脚本会执行）。注意：用户只想看图表/流程图/关系图时不要用本工具，也不要生成 HTML 包装——直接在回复中输出 ```mermaid 代码块，会话界面原生渲染成图（详见 jishu-hub-capabilities skill）。参数 file 为该 HTML 文件路径（相对当前工作目录或绝对路径）。是否调用由你判断：纯后端/脚本/无视觉意义的产物不要调用；同一文件多次修改后可再次调用以刷新预览。",
     parameters: Type.Object({
       file: Type.String({
         description: "HTML 文件路径（相对当前工作目录或绝对路径，需为 .html/.htm）",
