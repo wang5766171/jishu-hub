@@ -108,6 +108,13 @@ pub enum NodeRunTransitionError {
 pub fn validate_run_transition(from: &RunStatus, to: &RunStatus) -> Result<(), RunTransitionError> {
     use RunStatus::*;
 
+    // v0.9.3 需求5：失败节点人工干预（重试/跳过）后 run 从 Failed 拉回
+    // Running——引擎下一 tick 重新调度（重试）或放行下游（跳过）。这是唯一
+    // 允许离开终态的转移：由用户显式决策触发，非引擎自动流转。
+    if matches!((from, to), (Failed, Running)) {
+        return Ok(());
+    }
+
     if from.is_terminal() {
         return Err(RunTransitionError::TerminalStatus {
             status: from.clone(),
@@ -152,6 +159,13 @@ pub fn validate_node_run_transition(
     to: &NodeRunStatus,
 ) -> Result<(), NodeRunTransitionError> {
     use NodeRunStatus::*;
+
+    // v0.9.3 需求5：人工干预——失败节点重试（Failed→Blocked，重新进入调度
+    // 管线：就绪判定以 Blocked 为可调度态）或跳过（Failed→Skipped，下游继续）。
+    // 唯一允许离开 Failed 终态的转移（须在终态早退之前判定）。
+    if matches!((from, to), (Failed, Blocked) | (Failed, Skipped)) {
+        return Ok(());
+    }
 
     if from.is_terminal() {
         return Err(NodeRunTransitionError::TerminalStatus {
@@ -198,12 +212,14 @@ mod tests {
         assert!(validate_run_transition(&RunStatus::Paused, &RunStatus::Running).is_ok());
         assert!(validate_run_transition(&RunStatus::Running, &RunStatus::Completed).is_ok());
         assert!(validate_run_transition(&RunStatus::Running, &RunStatus::Failed).is_ok());
+        // v0.9.3 需求5：失败后人工干预（节点重试/跳过）允许拉回 Running。
+        assert!(validate_run_transition(&RunStatus::Failed, &RunStatus::Running).is_ok());
     }
 
     #[test]
     fn run_status_invalid_transitions() {
         assert!(validate_run_transition(&RunStatus::Completed, &RunStatus::Running).is_err());
-        assert!(validate_run_transition(&RunStatus::Failed, &RunStatus::Running).is_err());
+        assert!(validate_run_transition(&RunStatus::Failed, &RunStatus::Completed).is_err());
         assert!(validate_run_transition(&RunStatus::Draft, &RunStatus::Running).is_err());
         assert!(validate_run_transition(&RunStatus::Completed, &RunStatus::Cancelled).is_err());
     }
@@ -232,6 +248,18 @@ mod tests {
         );
         assert!(
             validate_node_run_transition(&NodeRunStatus::RetryWait, &NodeRunStatus::Ready).is_ok()
+        );
+        // v0.9.3 需求5：失败节点人工重试/跳过。
+        assert!(
+            validate_node_run_transition(&NodeRunStatus::Failed, &NodeRunStatus::Blocked).is_ok()
+        );
+        assert!(
+            validate_node_run_transition(&NodeRunStatus::Failed, &NodeRunStatus::Skipped).is_ok()
+        );
+        // 其他终态去向仍禁止（Succeeded 不可重试）。
+        assert!(
+            validate_node_run_transition(&NodeRunStatus::Succeeded, &NodeRunStatus::Blocked)
+                .is_err()
         );
     }
 

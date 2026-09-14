@@ -565,6 +565,38 @@ pub(crate) fn orchestrator_cancel_run(
     task_service.cancel_run(&run_id).map_err(Into::into)
 }
 
+// v0.9.3 需求5：失败节点人工干预——重试（Failed→Blocked 重新调度）与
+// 跳过（Failed→Skipped 下游继续）；run 已终态时拉回 Running。
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+pub(crate) fn orchestrator_retry_node(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    run_id: String,
+    node_id: String,
+) -> Result<(), crate::orchestrator::domain::run::TaskError> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service.retry_node(&run_id, &node_id).map_err(Into::into)
+}
+
+#[cfg(feature = "orchestrator")]
+#[tauri::command]
+pub(crate) fn orchestrator_skip_node(
+    state: tauri::State<'_, std::sync::Mutex<AppState>>,
+    run_id: String,
+    node_id: String,
+) -> Result<(), crate::orchestrator::domain::run::TaskError> {
+    let app_state = state.lock().map_err(|e| task_ipc_internal(e.to_string()))?;
+    let task_service = app_state
+        .task_service
+        .lock()
+        .map_err(|e| task_ipc_internal(e.to_string()))?;
+    task_service.skip_node(&run_id, &node_id).map_err(Into::into)
+}
+
 // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 #[cfg(feature = "orchestrator")]

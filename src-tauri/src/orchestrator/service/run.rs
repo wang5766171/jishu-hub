@@ -583,4 +583,139 @@ impl TaskService {
 
         Ok(())
     }
+
+    /// v0.9.3 需求5：失败节点人工重试。
+    ///
+    /// 节点 Failed→Blocked（清 error/wake_at），run Failed→Running（若已终态）；
+    /// 引擎下一 tick 重新调度该节点（attempt 续号，attempt_count 保留）。
+    /// 与画布/会话卡的「重试」按钮对应。
+    pub fn retry_node(&self, run_id: &str, node_id: &str) -> Result<(), TaskServiceError> {
+        self.recover_failed_node(run_id, node_id, NodeRecoveryAction::Retry)
+    }
+
+    /// v0.9.3 需求5：失败节点人工跳过（下游继续）。
+    ///
+    /// 节点 Failed→Skipped，run Failed→Running（若已终态）；调度器把 Skipped
+    /// 前置视为依赖满足（scheduler v0.9.3 需求5），下游节点照常调度。
+    pub fn skip_node(&self, run_id: &str, node_id: &str) -> Result<(), TaskServiceError> {
+        self.recover_failed_node(run_id, node_id, NodeRecoveryAction::Skip)
+    }
+
+    /// retry_node/skip_node 共用骨架：定位节点最新 NodeRun → 校验 Failed →
+    /// 节点状态流转 + 事件 → run 终态拉回 Running（Failed→Running 为需求5
+    /// 新增的人工干预转移）——全部经 save_execution_update 单事务落库。
+    fn recover_failed_node(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        action: NodeRecoveryAction,
+    ) -> Result<(), TaskServiceError> {
+        use crate::orchestrator::domain::state_machine::{
+            validate_node_run_transition, validate_run_transition,
+        };
+
+        let store = &self.store;
+        let run = store.get_run(run_id)?;
+
+        let node_runs = store.get_node_runs(run_id)?;
+        let node_run = node_runs
+            .iter()
+            .filter(|node_run| node_run.node_id == node_id)
+            .max_by_key(|node_run| (node_run.attempt_count, node_run.started_at.unwrap_or(0)))
+            .ok_or_else(|| TaskServiceError::NotFound(format!("node run for {node_id}")))?;
+
+        if node_run.status != NodeRunStatus::Failed {
+            return Err(TaskServiceError::Conflict {
+                message: format!(
+                    "node {node_id} is {}, manual retry/skip only applies to failed nodes",
+                    serde_json::to_string(&node_run.status).unwrap_or_default()
+                ),
+                current_revision: None,
+                current_run_seq: None,
+            });
+        }
+
+        let new_status = match action {
+            NodeRecoveryAction::Retry => NodeRunStatus::Blocked,
+            NodeRecoveryAction::Skip => NodeRunStatus::Skipped,
+        };
+        validate_node_run_transition(&node_run.status, &new_status)
+            .map_err(|e| TaskServiceError::Conflict {
+                message: e.to_string(),
+                current_revision: None,
+                current_run_seq: None,
+            })?;
+
+        // run 拉回：Failed→Running（人工干预转移）。run 仍 Running（失败与
+        // tick 收尾之间的窗口）时无需 run 事件，只流转节点。
+        let run_status_target = match run.status {
+            RunStatus::Failed => Some(RunStatus::Running),
+            RunStatus::Running => None,
+            ref other => {
+                return Err(TaskServiceError::Conflict {
+                    message: format!("run is {other:?}, cannot recover node {node_id}"),
+                    current_revision: None,
+                    current_run_seq: None,
+                });
+            }
+        };
+
+        let now = now_ms();
+        let mut updated = node_run.clone();
+        updated.status = new_status.clone();
+        if matches!(action, NodeRecoveryAction::Retry) {
+            // 重试清空失败痕迹（跳过保留 error 供汇总回看）。
+            updated.error = None;
+            updated.wake_at = None;
+        }
+        updated.finished_at = None;
+
+        let node_event_type = match action {
+            NodeRecoveryAction::Retry => TaskEventType::RetryScheduled,
+            NodeRecoveryAction::Skip => TaskEventType::NodeSkipped,
+        };
+        let mut events = vec![build_event(
+            gen_id("evt"),
+            run_id,
+            run.run_seq + 1,
+            node_event_type,
+            "user",
+            now,
+            serde_json::to_value(payloads::NodeStatusChangedPayload {
+                node_run_id: updated.node_run_id.clone(),
+                node_id: node_id.to_string(),
+                old_status: node_run.status.clone(),
+                new_status: new_status.clone(),
+            })?,
+        )];
+        if run_status_target.is_some() {
+            validate_run_transition(&run.status, &RunStatus::Running).map_err(|e| {
+                TaskServiceError::Conflict {
+                    message: e.to_string(),
+                    current_revision: None,
+                    current_run_seq: None,
+                }
+            })?;
+            events.push(build_event(
+                gen_id("evt"),
+                run_id,
+                run.run_seq + 2,
+                TaskEventType::RunResumed,
+                "user",
+                now,
+                serde_json::Value::Null,
+            ));
+        }
+
+        let run_status_ref = run_status_target.as_ref().map(|status| (status, None));
+        store.save_execution_update(&updated, None, &[], &events, None, run_status_ref)?;
+
+        Ok(())
+    }
+}
+
+/// 失败节点的人工干预动作（v0.9.3 需求5）。
+enum NodeRecoveryAction {
+    Retry,
+    Skip,
 }
