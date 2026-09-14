@@ -65,12 +65,42 @@ pub(crate) fn with_app_state<T>(
 // generate_handler 注册；main.rs 仍通过 lib 根路径调用 run_install_agent_cli。
 pub use commands::agent_install::run_install_agent_cli;
 
+/// 深链统一处理（v0.9.3 测试期·通知点击跳回）：`jishu-hub://session/<id>` →
+/// 聚焦主窗 + 广播 desktop-notify-click（前端经 ctx.switchSession 定位）；
+/// `jishu-hub://open` → 仅聚焦。运行中实例（single-instance 转发）与冷启动
+///（deep-link 事件）共用。
+fn handle_deep_link(app: &tauri::AppHandle, url: &str) {
+    use tauri::{Emitter, Manager};
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    let session_id = url
+        .strip_prefix("jishu-hub://session/")
+        .filter(|sid| !sid.is_empty());
+    let _ = app.emit(
+        "desktop-notify-click",
+        serde_json::json!({ "sessionId": session_id }),
+    );
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // v0.9.3 测试期（通知点击跳回·通知中心补点）：single-instance 必须最先
+        // 注册——protocol toast 点击时 Windows 会启动新进程携带 jishu-hub://
+        // URL，本插件把参数转发给运行中实例（弹窗与通知中心补点统一路由）。
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(url) = argv.iter().find(|a| a.starts_with("jishu-hub://")) {
+                handle_deep_link(app, url);
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         // v0.9.2 需求1 M4：桌面通知插件（会话能力插件 session.desktop-notify 消费）
         .plugin(tauri_plugin_notification::init())
+        // v0.9.3 测试期：jishu-hub:// scheme（通知点击跳回的协议激活接收端）。
+        .plugin(tauri_plugin_deep_link::init())
         // 注册日志后端：pi_rpc_runtime 等模块的 log::info!/warn! 才会真正输出。
         // dev 模式（npm run tauri dev）打印到终端，release 模式写入日志文件，
         // 便于排查 Pi RPC 会话卡死等运行时问题（此前 tauri_plugin_log 虽在依赖里
@@ -105,6 +135,21 @@ pub fn run() {
             // 单家失败不影响启动）。
             // v0.9.2 测试期：pi 桥接（hub_invoke）事件广播句柄注册。
             let _ = crate::pi_rpc_runtime::HUB_APP_HANDLE.set(app.handle().clone());
+            // v0.9.3 测试期（通知点击跳回）：jishu-hub:// scheme 运行时注册
+            //（幂等——dev 二进制路径每次变化必须运行时注册，安装版亦由此兜底）
+            //+ 冷启动深链（应用未运行时点通知：进程带 URL 启动，延迟广播等
+            // 前端监听就绪）。运行中实例的路由由 single-instance 插件承担。
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let _ = app.deep_link().register_all();
+            }
+            if let Some(url) = std::env::args().find(|a| a.starts_with("jishu-hub://")) {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    crate::handle_deep_link(&handle, &url);
+                });
+            }
             let _ = agent::mcp_inject::sync_hub_mcp_entries();
             // v0.9.0 需求20：skill 分发同步（skill-resolver 门控；单目标失败
             // 不影响启动）。
@@ -275,6 +320,8 @@ pub fn run() {
             commands::settings::save_theme,
             commands::settings::load_last_project,
             commands::settings::open_url,
+            commands::sessions::open_html_external,
+            commands::sessions::desktop_notify_send,
             commands::settings::save_last_project,
             commands::settings::load_font_sizes,
             commands::settings::save_font_sizes,
@@ -418,6 +465,8 @@ pub fn run() {
             commands::orchestrator::orchestrator_resume_run,
             #[cfg(feature = "orchestrator")]
             commands::orchestrator::orchestrator_cancel_run,
+            commands::orchestrator::orchestrator_retry_node,
+            commands::orchestrator::orchestrator_skip_node,
             #[cfg(feature = "orchestrator")]
             commands::orchestrator::orchestrator_pending_approvals,
             #[cfg(feature = "orchestrator")]

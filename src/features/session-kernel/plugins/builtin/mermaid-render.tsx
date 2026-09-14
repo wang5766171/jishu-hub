@@ -14,6 +14,7 @@
  * htmlLabels=false 重渲染出纯 <text> 标签版本，并补齐 xmlns 与显式宽高。
  */
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { FileCode2, ImageDown, Minus, Plus, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
@@ -32,6 +33,23 @@ async function loadMermaid() {
     });
   }
   return mermaidReady;
+}
+
+/** v0.9.3 需求6：暗色主题跟随——documentElement.dark 类监听（应用主题切换
+ *  即时生效），mermaid 以当前主题渲染；主题变化由组件层触发重渲染。 */
+function useIsDarkTheme(): boolean {
+  const [dark, setDark] = useState(
+    () => typeof document !== "undefined" && document.documentElement.classList.contains("dark"),
+  );
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const observer = new MutationObserver(() => {
+      setDark(document.documentElement.classList.contains("dark"));
+    });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+  return dark;
 }
 
 // ── 导出/渲染规范化工具（纯正则字符串手术，有单测）──
@@ -278,19 +296,34 @@ function MermaidZoomOverlay({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const fitWidth = useCallback(() => {
+  /** v0.9.3 测试期修复：适屏（宽高 contain，封顶 1x）——超大图按宽适配仍会
+   *  高度溢出、居中布局把顶部顶出屏幕外；打开即适屏 + 「适配」/双击统一走
+   *  本语义，保证内容顶部始终可见。 */
+  const fitContain = useCallback(() => {
     const area = areaRef.current;
     const stage = stageRef.current;
     if (!area || !stage) return;
     const svgEl = stage.querySelector("svg");
     if (!svgEl) return;
-    // getBoundingClientRect 含当前 transform——除回缩放得自然宽。
-    const natural = svgEl.getBoundingClientRect().width / Math.max(scale, 0.0001);
-    const target = (area.clientWidth - 32) / (natural || area.clientWidth);
+    const rect = svgEl.getBoundingClientRect();
+    const cur = Math.max(scale, 0.0001);
+    const naturalW = rect.width / cur;
+    const naturalH = rect.height / cur;
+    const target = Math.min(
+      (area.clientWidth - 32) / (naturalW || area.clientWidth),
+      (area.clientHeight - 32) / (naturalH || area.clientHeight),
+      1,
+    );
     setScale(Math.min(Math.max(target, MIN_SCALE), MAX_SCALE));
     setPan({ x: 0, y: 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scale, svg]);
+
+  // 打开（挂载）即适屏：初始 scale=1 时超大图顶部顶出屏幕的缺陷修复。
+  useEffect(() => {
+    fitContain();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [svg]);
 
   // 滚轮缩放（原生监听，passive:false 才能 preventDefault）。
   useEffect(() => {
@@ -364,8 +397,8 @@ function MermaidZoomOverlay({
             </button>
             <button
               type="button"
-              title={t("sessionPlugins.mermaidRender.fitWidth", "适配宽度")}
-              onClick={fitWidth}
+              title={t("sessionPlugins.mermaidRender.fitWidth", "适配屏幕")}
+              onClick={fitContain}
               className="ml-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               {t("sessionPlugins.mermaidRender.fitWidth", "适配")}
@@ -395,7 +428,7 @@ function MermaidZoomOverlay({
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
           onLostPointerCapture={endDrag}
-          onDoubleClick={fitWidth}
+          onDoubleClick={fitContain}
         >
           <div
             ref={stageRef}
@@ -417,6 +450,7 @@ function MermaidDiagram({ code }: { code: string; language: string }) {
   const [expanded, setExpanded] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const dark = useIsDarkTheme();
   const idRef = useRef(`mmd-${useId().replace(/[^a-zA-Z0-9]/g, "")}`);
 
   useEffect(() => {
@@ -426,6 +460,12 @@ function MermaidDiagram({ code }: { code: string; language: string }) {
     void (async () => {
       try {
         const mermaid = await loadMermaid();
+        // v0.9.3 需求6：主题跟随——initialize 幂等，切主题重渲（deps 含 dark）。
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          theme: dark ? "dark" : "default",
+        });
         const { svg: raw } = await mermaid.render(idRef.current, code);
         if (cancelled) return;
         // 渲染期规范化（同导出管线）：mermaid 根节点 width="100%" 且无固有
@@ -440,7 +480,7 @@ function MermaidDiagram({ code }: { code: string; language: string }) {
     return () => {
       cancelled = true;
     };
-  }, [code]);
+  }, [code, dark]);
 
   const exportPng = useCallback(async () => {
     if (!svg || exporting) return;
@@ -522,13 +562,20 @@ function MermaidDiagram({ code }: { code: string; language: string }) {
           {t("sessionPlugins.mermaidRender.exportFailed", "导出失败")}：{exportError}
         </div>
       ) : null}
-      {expanded && svg ? (
-        <MermaidZoomOverlay
-          svg={svg}
-          onClose={() => setExpanded(false)}
-          exportHandlers={exportHandlers}
-        />
-      ) : null}
+      {/* v0.9.3 测试期修复：放大层经 Portal 挂 document.body——消息行的
+          containment 会劫持 fixed 的定位基准（等效相对整个滚动内容区定位），
+          图在会话底部时放大层顶部被顶出屏幕、看不到头上内容。脱离消息树后
+          fixed 恢复真视口定位，与滚动位置解耦。 */}
+      {expanded && svg
+        ? createPortal(
+            <MermaidZoomOverlay
+              svg={svg}
+              onClose={() => setExpanded(false)}
+              exportHandlers={exportHandlers}
+            />,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
