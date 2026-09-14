@@ -33,6 +33,8 @@ interface UsageDailyRow {
   day: string;
   input_tokens: number;
   output_tokens: number;
+  /** v0.9.3 需求7：当日成本（记账值或套餐计价覆盖）。 */
+  cost: number;
 }
 
 interface UsageOverview {
@@ -70,6 +72,7 @@ function UsagePanelBody({ ctx }: { ctx: SessionKernelContext }) {
   }, [refresh]);
 
   const maxDaily = Math.max(1, ...(data?.daily.map((d) => d.input_tokens + d.output_tokens) ?? [1]));
+  const maxDailyCost = Math.max(...(data?.daily.map((d) => d.cost) ?? [0]), 0.0001);
   // 金额显隐：配置了套餐价格、或记账成本非 0 才显示
   const showCost = Boolean(data?.pricing_applied) || (data?.totals.total_cost ?? 0) > 0;
 
@@ -114,6 +117,29 @@ function UsagePanelBody({ ctx }: { ctx: SessionKernelContext }) {
                   </div>
                 ))}
               </div>
+              {/* v0.9.3 需求7：按日成本曲线（记账值或套餐计价；悬停明细）。 */}
+              {showCost && (
+                <div className="mt-2">
+                  <div className="mb-1 text-[10px] font-medium text-muted-foreground">
+                    {t("sessionPlugins.usage.last7daysCost", "近 7 日成本")}
+                  </div>
+                  <div className="flex h-12 items-end gap-1">
+                    {data.daily.map((d) => (
+                      <div
+                        key={d.day}
+                        className="flex flex-1 flex-col items-center gap-0.5"
+                        title={`${d.day}: ¥${d.cost.toFixed(4)}`}
+                      >
+                        <div
+                          className="w-full rounded-sm bg-amber-500/60 dark:bg-amber-400/50"
+                          style={{ height: `${Math.max(d.cost > 0 ? 3 : 1, (d.cost / maxDailyCost) * 36)}px` }}
+                        />
+                        <span className="text-[8px] text-muted-foreground/60">{d.day.slice(5)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
           {data.top_sessions.length > 0 && (
