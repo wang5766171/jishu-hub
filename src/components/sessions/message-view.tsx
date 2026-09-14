@@ -8,6 +8,7 @@ import rehypeHighlight from "rehype-highlight";
 import { Check, Copy, Bot } from "lucide-react";
 import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
+import { extractCodeText } from "./code-block-text";
 import { EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
 import { ToolGroup } from "@/components/observability/tool-call-card";
 import { resolveToolKind } from "@/components/observability/tool-call-card/types";
@@ -22,6 +23,7 @@ import { buildSessionRows, type SessionRowModel } from "@/features/session-kerne
 // v0.9.2 需求1 M4：块渲染器咨询点（HTML/Mermaid 等插件经 Context 接管代码块）。
 import {
   matchBlockRenderer,
+  matchBlockTypeRenderer,
   useBlockRenderers,
 } from "@/features/session-kernel/plugins/mounts/use-block-renderers";
 
@@ -182,19 +184,17 @@ const TextBlock = memo(function TextBlock({
   );
 });
 
-/** pre 覆写：提取子 code 的语言与文本，咨询块渲染器（Context 注入）。 */
+/** pre 覆写：提取子 code 的语言与文本，咨询块渲染器（Context 注入）。
+ * v0.9.3 测试期修复：取数改经 extractCodeText 递归提取——rehype-highlight
+ * 会把 html 等已识别语言拆成 hljs span 节点，原先只收集纯字符串子节点，
+ * 取出残缺文本导致 HTML 块恒不渲染（mermaid 非 hljs 语言不受影响）。 */
 function MarkdownPreWithRenderers({ children }: { children?: React.ReactNode }) {
   const renderers = useBlockRenderers();
   const child = Array.isArray(children) ? children[0] : children;
   if (renderers.length > 0 && child && typeof child === "object" && "props" in child) {
     const codeProps = (child as { props?: { className?: string; children?: unknown } }).props;
     const language = /language-([\w-]+)/.exec(codeProps?.className ?? "")?.[1] ?? "";
-    const code =
-      typeof codeProps?.children === "string"
-        ? codeProps.children
-        : Array.isArray(codeProps?.children)
-          ? codeProps.children.filter((c): c is string => typeof c === "string").join("")
-          : "";
+    const code = extractCodeText(codeProps?.children as React.ReactNode);
     if (language && code) {
       const renderer = matchBlockRenderer(renderers, language, code);
       if (renderer) {
@@ -273,21 +273,41 @@ function renderBlock(
       return <ThinkingBlock block={block} />;
     case "interaction":
       return (
-        <InteractionCard
-          items={[{
-            prompt: block.prompt,
-            options: block.options,
-            answer: block.answer,
-            selectedOptions: block.selected_options,
-          }]}
-          origin={block.origin}
-        />
+        <InteractionBlockWithRenderers items={[interactionBlockToItem(block)]} origin={block.origin} />
       );
     case "phase_divider":
       return <PhaseDivider phase={block.phase} title={block.title} />;
     default:
       return null;
   }
+}
+
+/** v0.9.3 需求2（P1-2）：interaction 块行级咨询点——渲染前咨询已启用插件
+ *  的 blockTypes 扩展接管（matchBlockTypeRenderer），未命中回退内置
+ *  InteractionCard。三个渲染点（renderBlock / 助手气泡分组项 / 用户侧气泡
+ *  分组项）统一经本组件，插件页开关自此真实生效。 */
+function InteractionBlockWithRenderers({ items, origin }: { items: InteractionCardItem[]; origin?: string }) {
+  const renderers = useBlockRenderers();
+  const renderer = matchBlockTypeRenderer(renderers, "interaction");
+  if (renderer?.BlockComponent) {
+    const Block = renderer.BlockComponent;
+    return (
+      <>
+        {items.map((item, idx) => (
+          <Block
+            key={idx}
+            block={{
+              type: "interaction",
+              text: item.prompt,
+              options: (item.options ?? []).map((o) => ({ id: o.option_id, label: o.label })),
+              answer: item.answer || undefined,
+            }}
+          />
+        ))}
+      </>
+    );
+  }
+  return <InteractionCard items={items} origin={origin} />;
 }
 
 // buildRenderRows/isUserToolResultOnlyMessage 已迁移至
@@ -306,7 +326,12 @@ function interactionBlockToItem(block: Extract<ContentBlock, { type: "interactio
   };
 }
 
-function buildRenderItemsForMessages(messages: Message[], messageIndices: number[], resultMap: Map<string, string>): RenderItem[] {
+function buildRenderItemsForMessages(
+  messages: Message[],
+  messageIndices: number[],
+  resultMap: Map<string, string>,
+  errorToolIds: Set<string>,
+): RenderItem[] {
   const items: RenderItem[] = [];
   let pendingTools: ToolCall[] = [];
   const hasPersistedInteraction = messageIndices.some((messageIndex) =>
@@ -368,7 +393,9 @@ function buildRenderItemsForMessages(messages: Message[], messageIndices: number
           toolName: block.name,
           kind: resolveToolKind(block.name, block.view),
           view: block.view,
-          status: "success",
+          // 回放状态与直播对齐：tool_result 带 is_error 的失败调用显示
+          // Error 徽标（此前硬编码 success，把真实失败掩成 Done）。
+          status: errorToolIds.has(block.id) ? "error" : "success",
           input: typeof block.input === "object" && block.input !== null
             ? (block.input as Record<string, unknown>)
             : {},
@@ -460,7 +487,7 @@ function AssistantBubble({
             if (item.kind === "interaction") {
               return (
                 <div key={`interaction-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
-                  <InteractionCard items={item.items} origin={item.origin} />
+                  <InteractionBlockWithRenderers items={item.items} origin={item.origin} />
                 </div>
               );
             }
@@ -545,7 +572,7 @@ function UserBubble({
             if (item.kind === "interaction") {
               return (
                 <div key={`interaction-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
-                  <InteractionCard items={item.items} origin={item.origin} />
+                  <InteractionBlockWithRenderers items={item.items} origin={item.origin} />
                 </div>
               );
             }
@@ -648,6 +675,18 @@ export const MessageView = memo(function MessageView({
     return map;
   }, [messages]);
 
+  const errorToolIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const msg of messages) {
+      for (const block of msg.content) {
+        if (block.type === "tool_result" && block.tool_use_id && block.is_error) {
+          ids.add(block.tool_use_id);
+        }
+      }
+    }
+    return ids;
+  }, [messages]);
+
   const rows = useMemo<RenderRow[]>(() => buildSessionRows(messages), [messages]);
   const [currentOcc, setCurrentOcc] = useState(0);
   const [scrollTrigger, setScrollTrigger] = useState(0);
@@ -705,7 +744,7 @@ export const MessageView = memo(function MessageView({
 
   const renderRow = useCallback((row: RenderRow) => {
     if (row.kind === "assistant") {
-      const items = buildRenderItemsForMessages(messages, row.messageIndices, resultMap);
+      const items = buildRenderItemsForMessages(messages, row.messageIndices, resultMap, errorToolIds);
       return (
         <AssistantBubble
           items={items}
@@ -718,7 +757,7 @@ export const MessageView = memo(function MessageView({
     }
 
     const msg = messages[row.messageIndex];
-    const items = buildRenderItemsForMessages(messages, [row.messageIndex], resultMap);
+    const items = buildRenderItemsForMessages(messages, [row.messageIndex], resultMap, errorToolIds);
     const roleView = roleResolver ? roleResolver(msg) : null;
     return (
       <UserBubble
@@ -732,7 +771,7 @@ export const MessageView = memo(function MessageView({
         toolNames={toolNames}
       />
     );
-  }, [currentOcc, messages, renderingQuery, resultMap, searchState.offsets, roleResolver, toolNames]);
+  }, [currentOcc, messages, renderingQuery, resultMap, errorToolIds, searchState.offsets, roleResolver, toolNames]);
 
   // v0.9.1 需求5：user 行轮次序号（实例内从 0 递增），横杠导航轨按
   // [data-turn-index] 定位跳转。v0.9.2 需求1 P1：序号由统一视图模型携带

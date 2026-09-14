@@ -848,6 +848,10 @@ fn parse_pi_message(
                     .unwrap_or_default()
                     .to_string(),
                 content: pi_tool_result_content(value.get("content")),
+                is_error: value
+                    .get("isError")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
             }],
             timestamp,
         }),
@@ -1241,8 +1245,9 @@ Task Orchestrator execution contract:\n\
             [
                 r#"{"type":"session","version":3,"id":"sid-1","timestamp":"2026-06-01T00:00:00.000Z","cwd":"D:\\Work\\app"}"#,
                 r#"{"type":"message_start","id":"u1","parentId":null,"timestamp":"2026-06-01T00:00:01.000Z","message":{"role":"user","content":"hello","timestamp":1780272001000}}"#,
-                r#"{"type":"message_end","id":"a1","parentId":"u1","timestamp":"2026-06-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"plan"},{"type":"text","text":"done"},{"type":"toolCall","id":"call-1","name":"Read","arguments":{"file":"Cargo.toml"}}],"api":"anthropic-messages","provider":"anthropic","model":"claude-sonnet-4-5","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":1780272002000}}"#,
+                r#"{"type":"message_end","id":"a1","parentId":"u1","timestamp":"2026-06-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"plan"},{"type":"text","text":"done"},{"type":"toolCall","id":"call-1","name":"Read","arguments":{"file":"Cargo.toml"}},{"type":"toolCall","id":"call-2","name":"edit","arguments":{"file":"a.md"}}],"api":"anthropic-messages","provider":"anthropic","model":"claude-sonnet-4-5","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":1780272002000}}"#,
                 r#"{"type":"message_end","id":"t1","parentId":"a1","timestamp":"2026-06-01T00:00:03.000Z","message":{"role":"toolResult","toolCallId":"call-1","toolName":"Read","content":[{"type":"text","text":"file contents"}],"isError":false,"timestamp":1780272003000}}"#,
+                r#"{"type":"message_end","id":"t2","parentId":"t1","timestamp":"2026-06-01T00:00:04.000Z","message":{"role":"toolResult","toolCallId":"call-2","toolName":"edit","content":[{"type":"text","text":"Could not find edits[5]"}],"details":{},"isError":true,"timestamp":1780272004000}}"#,
             ]
             .join("\n"),
         )
@@ -1253,7 +1258,7 @@ Task Orchestrator execution contract:\n\
         assert_eq!(session.id, "sid-1");
         assert_eq!(session.project_path, Some(r"D:\Work\app".to_string()));
         assert_eq!(session.display_name, Some("hello".to_string()));
-        assert_eq!(session.messages.len(), 3);
+        assert_eq!(session.messages.len(), 4);
         assert_eq!(session.messages[0].role, "user");
         assert!(matches!(
             session.messages[0].content[0],
@@ -1272,6 +1277,18 @@ Task Orchestrator execution contract:\n\
         assert!(matches!(
             session.messages[2].content[0],
             ContentBlock::ToolResult { .. }
+        ));
+        // v0.9.3 测试期修复：回放必须保留 pi 的 isError，前端据此显示
+        // Error 徽标（此前丢失导致失败工具回放成 Done）。
+        assert!(matches!(
+            &session.messages[2].content[0],
+            ContentBlock::ToolResult { is_error: false, .. }
+        ));
+        assert_eq!(session.messages[3].role, "user");
+        assert!(matches!(
+            &session.messages[3].content[0],
+            ContentBlock::ToolResult { is_error: true, tool_use_id, .. }
+                if tool_use_id == "call-2"
         ));
 
         let _ = fs::remove_dir_all(&root);

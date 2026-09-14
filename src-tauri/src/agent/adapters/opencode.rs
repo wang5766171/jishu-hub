@@ -475,6 +475,11 @@ fn append_part_blocks(part: &serde_json::Value, content: &mut Vec<crate::session
                     content.push(crate::session::ContentBlock::ToolResult {
                         tool_use_id: call_id,
                         content: output,
+                        is_error: state
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .map(|status| status.eq_ignore_ascii_case("error"))
+                            .unwrap_or(false),
                     });
                 }
             }

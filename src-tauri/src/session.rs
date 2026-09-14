@@ -2,6 +2,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 fn serialize_pathbuf<S: serde::Serializer>(path: &PathBuf, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&path.to_string_lossy())
 }
@@ -47,6 +51,10 @@ pub enum ContentBlock {
         #[serde(rename = "tool_use_id")]
         tool_use_id: String,
         content: serde_json::Value,
+        /// 工具执行是否失败（v0.9.3 测试期修复：回放渲染需与直播一致地
+        /// 显示 Error 徽标；pi JSONL 的 isError / opencode 的 status=error）。
+        #[serde(default, skip_serializing_if = "is_false")]
+        is_error: bool,
     },
     #[serde(rename = "thinking")]
     Thinking { thinking: String },

@@ -1,9 +1,15 @@
 import i18n from "@/i18n";
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { Message } from "@/types";
 import { MessageView } from "./message-view";
+
+// MessageView 渲染 tool_use 块时经 ToolCallCard 依赖 FileViewer 上下文，
+// 单测无 Provider——mock 掉（同 turn-rail.test.tsx）。
+vi.mock("@/components/file-viewer", () => ({
+  useFileViewer: () => ({ openViewer: vi.fn() }),
+}));
 
 describe("MessageView interaction rendering", () => {
   beforeAll(async () => {
@@ -75,5 +81,33 @@ describe("MessageView interaction rendering", () => {
     const { container } = render(<MessageView messages={messages} flat />);
 
     expect(container.querySelectorAll('[data-user-message="true"]')).toHaveLength(1);
+  });
+
+  it("shows an Error badge for replayed tool failures and Done for successes", () => {
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        timestamp: null,
+        content: [
+          { type: "tool_use", id: "call-1", name: "edit", input: { file: "a.md" } },
+          { type: "tool_use", id: "call-2", name: "read", input: { file: "b.md" } },
+        ],
+      },
+      {
+        role: "user",
+        timestamp: null,
+        content: [
+          { type: "tool_result", tool_use_id: "call-1", content: "Could not find edits[5]", is_error: true },
+          { type: "tool_result", tool_use_id: "call-2", content: "ok" },
+        ],
+      },
+    ];
+
+    render(<MessageView messages={messages} flat />);
+
+    // v0.9.3 测试期修复：回放按 tool_result.is_error 显示状态徽标，
+    // 而非一律 success（失败 edit 被掩成 Done）。
+    expect(screen.getByText("Error")).toBeTruthy();
+    expect(screen.getByText("Done")).toBeTruthy();
   });
 });
