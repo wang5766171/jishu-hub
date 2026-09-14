@@ -336,7 +336,11 @@ pub fn render_hub_mcp_resolver_hint(plugins: &[&ToolPlugin]) -> String {
 /// 裁决整体废弃，无旧数据兼容层）。无块时原样返回、快照为空。
 pub fn extract_tool_snapshot(text: &str) -> (String, Vec<String>) {
     let Some(start) = text.find(TOOL_BLOCK_OPEN) else {
-        return (text.to_string(), Vec::new());
+        // v0.9.3 测试期修复：无工具注入块时也必须剥 MCP 提示块——hint 恰好
+        // 只在「会话未勾选工具」时注入（chat.rs compose_tool_message 的空
+        // 工具集分支），早退原样返回导致回放显示系统提示词（v0.9.2 修复的
+        // 漏网分支：只覆盖了带工具块的组合）。
+        return (strip_mcp_hint_block(text), Vec::new());
     };
     let mut ids: Vec<String> = Vec::new();
     if let Some(end_rel) = text[start..].find(TOOL_BLOCK_CLOSE) {
@@ -361,17 +365,22 @@ pub fn strip_tool_block(text: &str) -> String {
 }
 
 /// 剥离 <jishu-mcp-hint>…</jishu-mcp-hint>（MCP 解析服务提示，展示面不可见）。
+/// 注入形态恒为前缀 `"\n{OPEN}…{CLOSE}\n\n"`（chat.rs compose）——标记前的
+/// 纯空白前缀与标记后的换行分隔一并清理，避免剥后残留空行（v0.9.3 测试期）。
 fn strip_mcp_hint_block(text: &str) -> String {
     let Some(start) = text.find(MCP_HINT_OPEN) else {
         return text.to_string();
     };
     let mut result = String::new();
-    result.push_str(&text[..start]);
+    let prefix = &text[..start];
+    if !prefix.trim().is_empty() {
+        result.push_str(prefix);
+    }
     if let Some(end_rel) = text[start..].find(MCP_HINT_CLOSE) {
         let after = &text[start + end_rel + MCP_HINT_CLOSE.len()..];
         result.push_str(after.trim_start_matches(['\r', '\n']));
     }
-    result
+    result.trim_end().to_string()
 }
 
 /// 剥离 <jishu-tool-plugins>…</jishu-tool-plugins>（工具插件注入块）。
@@ -797,4 +806,27 @@ usage = "u"
         let (_, ids) = extract_tool_snapshot(&block);
         assert_eq!(ids, vec!["a", "b"]);
     }
+}
+
+/// v0.9.3 测试期修复回归：未勾选工具的会话（只有 MCP 提示块、无工具注入
+/// 块）——extract_tool_snapshot 早退分支此前原样返回，回放显示系统提示词。
+#[test]
+fn extract_tool_snapshot_strips_mcp_hint_without_tool_block() {
+    let hint = render_hub_mcp_resolver_hint(&[]); // 空则无块——手构同款文本
+    assert!(hint.is_empty());
+    let text = format!(
+        "\n{MCP_HINT_OPEN}\n## jishu-hub — MCP 解析服务\n指引内容\n{MCP_HINT_CLOSE}\n\n帮我看一下 PR 列表"
+    );
+    let (clean, ids) = extract_tool_snapshot(&text);
+    assert_eq!(clean, "帮我看一下 PR 列表");
+    assert!(ids.is_empty());
+
+    // 纯提示词消息（用户文本为空的前缀场景）：剥后为空。
+    let (clean_only, _) = extract_tool_snapshot(&format!(
+        "\n{MCP_HINT_OPEN}\n## jishu-hub — MCP 解析服务\n指引\n{MCP_HINT_CLOSE}\n\n"
+    ));
+    assert_eq!(clean_only.trim(), "");
+
+    // 普通消息不受影响。
+    assert_eq!(extract_tool_snapshot("普通消息").0, "普通消息");
 }

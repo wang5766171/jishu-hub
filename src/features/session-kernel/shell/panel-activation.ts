@@ -28,7 +28,7 @@ export function requestPanelActivation(pluginId: string): void {
   emit();
 }
 
-/** 收起当前面板（openPanel 的对称命令；插件如 html-preview 关闭最后
+/** 收起当前面板（openPanel 的对称命令；插件如产物中心关闭最后
  * 一个标签时收起整个侧栏）。 */
 export function requestPanelClose(): void {
   seq += 1;

@@ -16,9 +16,9 @@
  * ReactMarkdown；其余文本→等宽换行视图；读失败（二进制等）→友好占位
  * （保留打开文件夹/系统打开入口）。
  */
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { AppWindow, FileQuestion, List, MoreHorizontal, Package, RotateCw, X } from "lucide-react";
+import { File, FileQuestion, FolderOpen, List, MoreHorizontal, RotateCw, SquareArrowOutUpRight, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { invoke } from "@tauri-apps/api/core";
@@ -30,23 +30,32 @@ import type { SessionPluginDescriptor, SessionKernelContext, PluginMessage } fro
 // ── 插件私有状态（当前预览文件；event-hook 写入，面板读取）──
 
 interface PreviewState {
+  /** 归属会话（null = 无会话上下文/已清空）。v0.9.3 测试期修复：预览状态
+   *  按会话作用域——A 会话的 preview_html 不再泄漏到新建/切换的会话
+   *  （用户实测：新会话里侧栏自动带着 A 的 HTML 标签与预览）。 */
+  sessionKey: string | null;
   file: string | null;
   /** 自增：同一文件再次请求也驱动重载。 */
   version: number;
 }
 
-let previewState: PreviewState = { file: null, version: 0 };
+let previewState: PreviewState = { sessionKey: null, file: null, version: 0 };
 const previewListeners = new Set<() => void>();
 
-function setPreviewFile(file: string): void {
-  previewState = { file, version: previewState.version + 1 };
+function setPreviewFile(file: string, sessionKey: string | null): void {
+  previewState = { sessionKey, file, version: previewState.version + 1 };
   for (const fn of previewListeners) fn();
 }
 
 /** 清除当前预览（无选择态；关闭最后一个标签时使用）。 */
 function clearPreviewFile(): void {
-  previewState = { file: null, version: previewState.version + 1 };
+  previewState = { sessionKey: null, file: null, version: previewState.version + 1 };
   for (const fn of previewListeners) fn();
+}
+
+/** 状态对指定会话可见的预览文件（会话不匹配 = 该会话无预览）。 */
+function previewFileOf(state: PreviewState, sessionKey: string | null): string | null {
+  return state.sessionKey !== null && state.sessionKey === sessionKey ? state.file : null;
 }
 
 function getPreviewSnapshot(): PreviewState {
@@ -190,11 +199,16 @@ interface LoadedArtifact {
 function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
   const { t } = useTranslation();
   const preview = useSyncExternalStore(subscribePreview, getPreviewSnapshot);
+  const sessionId = ctx.sessionId;
   const projectPath = ctx.sessionMeta?.projectPath ?? null;
   const mainFiles = useMemo(
     () => extractSessionArtifacts(ctx.messages, projectPath),
     [ctx.messages, projectPath],
   );
+
+  // v0.9.3 测试期修复：预览/标签按会话作用域。current 只取「归属当前会话」
+  // 的预览（切回原会话时其预览自然恢复）。
+  const current = previewFileOf(preview, sessionId);
 
   // 子节点会话产物：经 ctx.task.nodeSessions 索引逐会话拉取；刷新时重扫。
   const nodeSessions = ctx.task?.nodeSessions ?? [];
@@ -250,7 +264,6 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
     return Array.from(byFile.values());
   }, [mainFiles, nodeArtifacts]);
 
-  const current = preview.file;
   // 「会话产出」竖向列表（标签栏最左按钮 hover/点击展开）。
   const [listHovered, setListHovered] = useState(false);
   // 「...」更多菜单。
@@ -259,32 +272,49 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
   // 关闭最后一个 = 收起整个侧栏（ctx.closePanel）。
   const [openTabs, setOpenTabs] = useState<string[]>(() => (current ? [current] : []));
 
+  // v0.9.3 测试期修复（跨会话泄漏 + 空会话可开面板）：会话切换 → 标签栏
+  // 归位本会话；本会话无任何产物与预览时收起侧栏（A 会话 preview_html 自动
+  // 展开的侧栏不跟进新会话）。**首挂载跳过**（ref 初值 = 当前会话）：空会话
+  // 里用户主动点开产物中心是正常操作，不能挂载即收起——否则面板表现为
+  // 「点了没反应」（开着瞬间被关）。
+  const prevSessionRef = useRef<string | null>(sessionId);
+  useEffect(() => {
+    const switched = prevSessionRef.current !== sessionId;
+    prevSessionRef.current = sessionId;
+    if (!switched) return;
+    setOpenTabs(current ? [current] : []);
+    if (!current && mainFiles.length === 0 && nodeArtifacts.length === 0) {
+      ctx.closePanel();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
+
   // 当前预览变化 → 确保标签存在。
   useEffect(() => {
-    if (preview.file) {
-      setOpenTabs((tabs) => (tabs.includes(preview.file!) ? tabs : [...tabs, preview.file!]));
+    if (current) {
+      setOpenTabs((tabs) => (tabs.includes(current) ? tabs : [...tabs, current]));
     }
-  }, [preview.file]);
+  }, [current]);
   // 无任何预览且无标签 → 默认打开最新产物。
   useEffect(() => {
-    if (!preview.file && openTabs.length === 0 && candidates.length > 0) {
-      setPreviewFile(candidates[candidates.length - 1].file);
+    if (!current && openTabs.length === 0 && candidates.length > 0) {
+      setPreviewFile(candidates[candidates.length - 1].file, sessionId);
     }
-  }, [preview.file, openTabs.length, candidates]);
+  }, [current, openTabs.length, candidates, sessionId]);
 
   const closeTab = useCallback(
     (file: string) => {
       const remaining = openTabs.filter((f) => f !== file);
       setOpenTabs(remaining);
       if (file === current) {
-        if (remaining.length > 0) setPreviewFile(remaining[remaining.length - 1]);
+        if (remaining.length > 0) setPreviewFile(remaining[remaining.length - 1], sessionId);
         else {
           clearPreviewFile();
           ctx.closePanel();
         }
       }
     },
-    [openTabs, current, ctx],
+    [openTabs, current, ctx, sessionId],
   );
 
   // 内容加载：按类型分流（图片 data URL / 文本 read_text_file）。
@@ -409,7 +439,7 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
                       type="button"
                       title={file}
                       onClick={() => {
-                        setPreviewFile(file);
+                        setPreviewFile(file, sessionId);
                         setListHovered(false);
                       }}
                       className={cn(
@@ -419,7 +449,7 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
                           : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
                       )}
                     >
-                      <AppWindow className="h-3 w-3 shrink-0 opacity-60" />
+                      <File className="h-3 w-3 shrink-0 opacity-60" />
                       <span className="min-w-0 flex-1 truncate">
                         {name}
                         {source ? (
@@ -458,10 +488,10 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
                   <button
                     type="button"
                     title={file}
-                    onClick={() => setPreviewFile(file)}
+                    onClick={() => setPreviewFile(file, sessionId)}
                     className="flex min-w-0 items-center gap-1.5 py-1 pl-2.5 pr-1 text-[11px]"
                   >
-                    <AppWindow className="h-3 w-3 shrink-0 opacity-60" />
+                    <File className="h-3 w-3 shrink-0 opacity-60" />
                     <span className="min-w-0 truncate">{name}</span>
                   </button>
                   <button
@@ -516,7 +546,7 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
                     onClick={openInFolder}
                     className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-muted-foreground hover:bg-accent/50 hover:text-foreground"
                   >
-                    <Package className="h-3.5 w-3.5" />
+                    <FolderOpen className="h-3.5 w-3.5" />
                     {t("sessionPlugins.artifacts.revealFolder", "打开文件夹")}
                   </button>
                   <button
@@ -524,7 +554,7 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
                     onClick={openInSystem}
                     className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-muted-foreground hover:bg-accent/50 hover:text-foreground"
                   >
-                    <MoreHorizontal className="h-3.5 w-3.5" />
+                    <SquareArrowOutUpRight className="h-3.5 w-3.5" />
                     {t("sessionPlugins.artifacts.openInSystem", "使用系统默认应用打开")}
                   </button>
                 </div>
@@ -602,11 +632,12 @@ export const artifactsPlugin: SessionPluginDescriptor = {
   permissions: ["read:messages", "panel:open"],
   mounts: [
     {
-      // 常驻事件消费：agent 工具的预览请求 → 记录文件 + 展开自己。
+      // 常驻事件消费：agent 工具的预览请求 → 记录文件（归属信号来源会话，
+      // v0.9.3 测试期修复跨会话泄漏）+ 展开自己。
       kind: "event-hook",
       onSignal: (signal, ctx) => {
         if (signal.type !== "file-preview-request") return;
-        setPreviewFile(signal.file);
+        setPreviewFile(signal.file, signal.sessionId ?? ctx.sessionId);
         ctx.openPanel("session.artifacts");
       },
     },
