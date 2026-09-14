@@ -20,7 +20,8 @@ import { useTaskInstance } from "@/features/task-instance/use-task-instance";
 import { useNodeSession } from "@/features/task-instance/use-node-session";
 import { normalizeAgentId } from "@/features/task-instance/types";
 import { useEnabledSessionPlugins } from "@/features/session-kernel/plugins/registry";
-import { emitSessionSignal } from "@/features/session-kernel/signals";
+import { emitSessionSignal, subscribeSessionSignals } from "@/features/session-kernel/signals";
+import { SessionDataHub } from "@/features/session-kernel/kernel/data-hub";
 import { SessionRailSlot } from "@/features/session-kernel/plugins/mounts/session-rail-slot";
 import type {
   SessionKernelContext,
@@ -41,7 +42,7 @@ import { TaskSessionTree } from "@/features/task-workspace/sidebar/task-session-
 import type { NodeSessionSummary } from "@/features/task-workspace/types";
 // 任务模式右侧栏（减法重构：仅渲染任务步骤面板 + 治理面 + 画布，主会话区复用 chat-page）。
 // 任务图数据：chat-page 顶层无条件持有（无 graph 时无副作用），主区 run 流与侧边栏共享。
-import { useTaskGraph, taskErrorMessage } from "@/features/task-instance/graph/use-task-graph";
+import { useTaskGraph, taskErrorMessage, type NodeRunLookupSource } from "@/features/task-instance/graph/use-task-graph";
 // T8-P1 三段合流：执行段的「流程执行」分隔线 + 会话区「是否开始执行」确认卡。
 import { PhaseDivider } from "@/components/sessions/conversation-content";
 import {
@@ -88,7 +89,7 @@ import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
 import { resolvePhaseSessionId, shouldRenderGlobalChatInput } from "./chat-page-layout";
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
 import { getSessionUsage, setSessionUsage } from "@/lib/session-usage";
-import { ContextRing } from "@/components/sessions/context-ring";
+import { SessionComposerTrailing } from "@/features/session-kernel/plugins/mounts/session-composer-trailing";
 import { UserTextWithPills, useSessionToolNames } from "@/components/sessions/embedded-tools";
 import { useModelPicker } from "@/features/chat-core/use-model-picker";
 import { useCompaction } from "@/features/chat-core/use-compaction";
@@ -1085,6 +1086,22 @@ export function ChatPage({
   };
   handleSelectSessionRef.current = handleSelectSession;
 
+  // v0.9.3 测试期（通知点击跳回收尾）：deep-link 转发的 desktop-notify-click
+  //（点击系统通知 → jishu-hub://session/<id> → single-instance/冷启动 → Rust
+  // 聚焦 + 广播）→ 经 ref 调最新 handleSelectSession 定位会话。监听挂在
+  // chat-page 而非插件的 lastCtx 间接层——冷启动（应用未运行时点通知中心）
+  // 与未发过通知的场景同样可靠。
+  useEffect(() => {
+    const unlistenPromise = listen<{ sessionId?: string | null }>("desktop-notify-click", (event) => {
+      const sid = event.payload?.sessionId;
+      if (sid) handleSelectSessionRef.current(sid);
+    });
+    return () => {
+      void unlistenPromise.then((fn) => fn());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // v0.8.0 需求10：从 Hub SQLite（get_session_usage）拉取会话累计用量写入
   // 前端缓存。回合结束与会话打开两个时机调用；失败静默（保留旧缓存）。
   const refreshSessionUsage = (sessionId: string) => {
@@ -1594,7 +1611,7 @@ export function ChatPage({
 
   // v0.9.2 测试期（插件机制）：agent 工具事件 → 内核信号管线。preview_html
   // 等工具经 hub_invoke 校验后广播 session-plugin-preview；内核转发为
-  // file-preview-request 信号（严格走信号总线），插件（html-preview）经
+  // file-preview-request 信号（严格走信号总线），插件（产物中心）经
   // event-hook 消费并自行决定拉起面板——内核不感知具体插件。
   useEffect(() => {
     const unlisten = listen<{ file: string; session_id?: string }>("session-plugin-preview", (event) => {
@@ -1804,18 +1821,15 @@ export function ChatPage({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskModeActive, activeTaskLaunchInstance?.current_phase, activeTaskLaunchInstance?.graph_id]);
-  const boardProjection = useMemo(() => {
+  // v0.9.3 需求1 P2-2：useNodeSession 只消费 node_run_id/node_id/status/
+  // attempt_count 四字段（NodeRunLookupSource 最小形状），内部 NodeRun 状态
+  // 结构满足，不再双重 cast 伪装完整 RunProjection（原先其余字段在 hook 内
+  // 零消费，属死重）。
+  const boardProjection = useMemo<NodeRunLookupSource | null>(() => {
     const runId = taskGraph.displayedRunId ?? activeTaskLaunchInstance?.active_run_id ?? null;
     if (!runId || !activeTaskLaunchInstance?.graph_id) return null;
-    return {
-      run_id: runId,
-      graph_id: activeTaskLaunchInstance.graph_id,
-      revision_id: taskGraph.activeRunRevisionId ?? taskGraph.revision?.revision_id ?? "",
-      status: taskGraph.runStatus ?? "draft",
-      run_seq: 0,
-      node_runs: taskGraph.nodeRuns as unknown as Record<string, never>,
-    };
-  }, [activeTaskLaunchInstance?.graph_id, activeTaskLaunchInstance?.active_run_id, taskGraph.displayedRunId, taskGraph.activeRunRevisionId, taskGraph.revision?.revision_id, taskGraph.runStatus, taskGraph.nodeRuns]);
+    return { node_runs: taskGraph.nodeRuns };
+  }, [activeTaskLaunchInstance?.graph_id, activeTaskLaunchInstance?.active_run_id, taskGraph.displayedRunId, taskGraph.nodeRuns]);
   const boardNodeSession = useNodeSession({
     projection: boardProjection,
     onNodeSession: taskInstanceState.updateNodeSession,
@@ -1917,6 +1931,37 @@ export function ChatPage({
       taskGraphRef.current.cancelRun().catch((e) => console.warn("cancel run failed:", e));
     })();
   }, [confirmDialog, t]);
+
+  // v0.9.3 需求5：失败节点人工干预（汇总卡失败行按钮）——重试（Failed→Blocked
+  // 重新调度）/ 跳过（Failed→Skipped 下游继续）；run 终态由后端拉回 Running，
+  // 完成后重载图恢复轮询。
+  const [nodeActionBusy, setNodeActionBusy] = useState<string | null>(null);
+  const handleFailedNodeAction = useCallback(
+    (command: "orchestrator_retry_node" | "orchestrator_skip_node") => async (nodeId: string) => {
+      const graphId = activeTaskLaunchInstance?.graph_id;
+      const runId =
+        taskGraph.displayedRunId ?? activeTaskLaunchInstance?.active_run_id ?? null;
+      if (!graphId || !runId) return;
+      setNodeActionBusy(nodeId);
+      try {
+        await invokeCommand(command, { runId, nodeId });
+        await taskGraphRef.current.loadGraph(graphId);
+      } catch (err) {
+        console.error(`${command} failed:`, err);
+      } finally {
+        setNodeActionBusy(null);
+      }
+    },
+    [activeTaskLaunchInstance, taskGraph.displayedRunId],
+  );
+  const handleRetryNode = useMemo(
+    () => handleFailedNodeAction("orchestrator_retry_node"),
+    [handleFailedNodeAction],
+  );
+  const handleSkipNode = useMemo(
+    () => handleFailedNodeAction("orchestrator_skip_node"),
+    [handleFailedNodeAction],
+  );
 
   // v0.9.2 测试期修复（节点顺序）：会话内卡片/方案卡/全景统一按**拓扑执行序**
   //（依赖波次，同层按 node_id 稳定）呈现——此前直接用 snapshot.nodes 数组序
@@ -2169,9 +2214,25 @@ export function ChatPage({
     return bySessionId;
   }, [taskGraph.snapshot, taskInstanceState.nodeSessionMap]);
 
+  // v0.9.3 需求3（P1-3）：会话内核数据枢纽——ctx.subscribe 各数据面的真订阅
+  // 宿主（监听器集合 + 最新快照）。hub 生命周期 = 页面实例（useRef 惰性建），
+  // ctx 重建只重放快照，订阅不丢；数据变更经下方 publish effects 逐个回调。
+  const dataHubRef = useRef<SessionDataHub | null>(null);
+  if (!dataHubRef.current) dataHubRef.current = new SessionDataHub();
+  const dataHub = dataHubRef.current;
+
   // v0.9.2 需求1：会话内核上下文——插件的唯一取数/命令入口（05 §3.2）。
   const sessionKernelCtx = useMemo<SessionKernelContext>(
-    () => ({
+    () => {
+      // ctx 构造即 seed：晚订阅者回放到的永远是当前值；seed 不通知既有
+      // 订阅者（通知职责归下方 publish effects，避免 ctx 重建引发重复回调）。
+      dataHub.seed({
+        messages: ctxMessages,
+        streamState: ctxStreamState,
+        sessionMeta: ctxSessionMeta,
+        turns: turnSummaries,
+      });
+      return {
       turns: turnSummaries,
       activeTurnIndex,
       scrollToTurn: handleJumpToTurn,
@@ -2184,6 +2245,12 @@ export function ChatPage({
       // 如 file-preview-request）；经 shell 的激活性落点，由宿主按形态生效。
       openPanel: (pluginId: string) => requestPanelActivation(pluginId),
       closePanel: () => requestPanelClose(),
+      // v0.9.3 需求8：压缩命令面（上下文水位环插件消费——自内置渲染迁出）。
+      compactSession: () => void handleCompactSession(),
+      isCompacting: compacting,
+      capabilities: { compact: supportsCompact },
+      autoCompaction: autoCompactionPref ?? null,
+      setAutoCompaction: (enabled) => void handleAutoCompactionChange(enabled),
       confirmDialog: (opts) => confirmDialog(opts),
       task: taskPanelCtx,
       sessionId: selectedSession && selectedSession !== "new" ? selectedSession : null,
@@ -2194,16 +2261,15 @@ export function ChatPage({
       messages: ctxMessages,
       streamState: ctxStreamState,
       sessionMeta: ctxSessionMeta,
-      // v0.9.2 测试期：会话信息解析（用量面板标题/类型）——任务=需求/规划会话，
-      // 子节点=编排节点会话，其余=普通会话；当前项目外的会话回退 unknown。
-      // v0.9.2 底座增强：订阅 API（声明制——组件经 ctx prop 天然订阅；
-      // 非组件场景经此注册回调，内核每次 ctx 重建时调用）。
+      // v0.9.3 需求3（P1-3）：真订阅——四个数据面经 SessionDataHub（注册即回放
+      // 快照，数据变更 publish 逐个回调，退订真实移除）；events 通道复用信号
+      // 总线（本就是真订阅）。v0.9.2 的「cb 调一次返回 no-op」假订阅删除。
       subscribe: {
-        messages: (cb) => { cb(ctxMessages); return () => {}; },
-        streamState: (cb) => { cb(ctxStreamState); return () => {}; },
-        sessionMeta: (cb) => { cb(ctxSessionMeta); return () => {}; },
-        turns: (cb) => { cb(turnSummaries); return () => {}; },
-        events: () => { return () => {}; },
+        messages: (cb) => dataHub.subscribeMessages(cb),
+        streamState: (cb) => dataHub.subscribeStreamState(cb),
+        sessionMeta: (cb) => dataHub.subscribeSessionMeta(cb),
+        turns: (cb) => dataHub.subscribeTurns(cb),
+        events: (cb) => subscribeSessionSignals(cb),
       },
       resolveSessionInfo: (sessionId: string) => {
         const taskSession = taskLaunchSessions.find(
@@ -2224,9 +2290,24 @@ export function ChatPage({
         }
         return null;
       },
-    }),
-    [turnSummaries, activeTurnIndex, handleJumpToTurn, taskPanelCtx, selectedSession, sessions, ctxMessages, ctxStreamState, ctxSessionMeta, searchMessages, scrollToMessage, insertToComposer, taskLaunchSessions, nodeSessionIds, nodeTitleBySessionId, sessionNames, confirmDialog, openViewer],
+      };
+    },
+    [turnSummaries, activeTurnIndex, handleJumpToTurn, taskPanelCtx, selectedSession, sessions, ctxMessages, ctxStreamState, ctxSessionMeta, searchMessages, scrollToMessage, insertToComposer, taskLaunchSessions, nodeSessionIds, nodeTitleBySessionId, sessionNames, confirmDialog, openViewer, dataHub],
   );
+
+  // v0.9.3 需求3：数据面变更 → 枢纽 publish（订阅者逐个回调）。
+  useEffect(() => {
+    dataHub.publishMessages(ctxMessages);
+  }, [dataHub, ctxMessages]);
+  useEffect(() => {
+    dataHub.publishStreamState(ctxStreamState);
+  }, [dataHub, ctxStreamState]);
+  useEffect(() => {
+    dataHub.publishSessionMeta(ctxSessionMeta);
+  }, [dataHub, ctxSessionMeta]);
+  useEffect(() => {
+    dataHub.publishTurns(turnSummaries);
+  }, [dataHub, turnSummaries]);
 
   // v0.9.2 需求1 M4：信号桥（内核事件 → 已启用插件 event-hook）。
   // 任务失败信号：run 状态转 failed 时发射。
@@ -2338,21 +2419,71 @@ export function ChatPage({
   }, [taskExecutionMode, taskRunStarted, taskGraph.projectedMessages.length]);
 
   // v0.9.2 需求2 M3-2：方案卡数据（graph snapshot 的可执行节点；acceptance
-  // 来自转图时写入的 metadata，见需求5 修复）。
+  // 来自转图时写入的 metadata，见需求5 修复）。v0.9.3 需求5：携带锁定执行者
+  // 与角色前提（行内更换执行者下拉用，与画布 Inspector 同源）。
   const taskPlanNodes = useMemo<PlanNodeInfo[]>(() => {
     const snapshot = taskGraph.snapshot;
     if (!snapshot) return [];
     return orderedExecutableNodes(snapshot)
-      .map((node) => ({
-        nodeId: node.node_id,
-        title: node.title,
-        responsibility: typeof node.description === "string" ? node.description : "",
-        acceptance:
-          node.metadata && typeof node.metadata.acceptance === "string"
-            ? node.metadata.acceptance
-            : null,
-      }));
+      .map((node) => {
+        const constraint = node.agent_assignment_constraint as
+          | { locked_agent_id?: unknown }
+          | null
+          | undefined;
+        const locked =
+          constraint && typeof constraint.locked_agent_id === "string" && constraint.locked_agent_id
+            ? constraint.locked_agent_id
+            : null;
+        const roleRequirement = node.role_requirement as { role_id?: unknown } | null | undefined;
+        const roleId =
+          roleRequirement && typeof roleRequirement.role_id === "string" && roleRequirement.role_id
+            ? roleRequirement.role_id
+            : node.node_id;
+        return {
+          nodeId: node.node_id,
+          title: node.title,
+          responsibility: typeof node.description === "string" ? node.description : "",
+          acceptance:
+            node.metadata && typeof node.metadata.acceptance === "string"
+              ? node.metadata.acceptance
+              : null,
+          agentId: locked,
+          roleId,
+        };
+      });
   }, [taskGraph.snapshot]);
+
+  // v0.9.3 需求5：方案卡行内更换执行者——与画布 Inspector 同源 update_node
+  //（agent_assignment_constraint；null = 清除锁定回退角色解析），run 启动前可用。
+  const handlePlanAssignAgent = useCallback(
+    async (nodeId: string, agentId: string | null) => {
+      if (taskGraph.activeRunId) return;
+      const roleId = taskPlanNodes.find((n) => n.nodeId === nodeId)?.roleId ?? nodeId;
+      try {
+        await taskGraph.applyCommands([
+          {
+            op: "update_node",
+            command_id: `plan-assign-${nodeId}-${Date.now().toString(36)}`,
+            node_id: nodeId,
+            patch: {
+              agent_assignment_constraint: agentId
+                ? {
+                    role_id: roleId,
+                    locked_agent_id: agentId,
+                    allowed_agent_ids: [],
+                    denied_agent_ids: [],
+                    required_capabilities: [],
+                  }
+                : null,
+            },
+          },
+        ]);
+      } catch (err) {
+        console.error("Failed to assign agent:", err);
+      }
+    },
+    [taskGraph, taskPlanNodes],
+  );
 
   // v0.9.2 测试期修复（终态渲染三问题）：各节点执行 agent 的权威来源——
   // orchestrator_list_node_sessions 一次返回全 run 各节点的 agent_id（读
@@ -2452,6 +2583,14 @@ export function ChatPage({
           agentName: agent?.display_name ?? agentId,
           lastAction: lastActionByNode.get(node.node_id) ?? null,
           clickable: !["blocked", "ready"].includes(status),
+          // v0.9.3 需求5 摘要增强：耗时/验收/失败原因。
+          startedAt: nodeRuns[node.node_id]?.started_at ?? null,
+          finishedAt: nodeRuns[node.node_id]?.finished_at ?? null,
+          acceptance:
+            node.metadata && typeof node.metadata.acceptance === "string"
+              ? node.metadata.acceptance
+              : null,
+          error: nodeRuns[node.node_id]?.error ?? null,
         };
       });
   }, [taskGraph.snapshot, taskGraph.nodeRuns, taskGraph.events, agents, nodeAgentIds]);
@@ -3523,17 +3662,10 @@ export function ChatPage({
           {/* v0.8.0 需求4 补充（用户定序）：水位圆环 | 模型 | 思考强度——
               模型居中，圆环在其左（未对话/无用量数据时不渲染），思考档在其右。
               行宽 <560px 时模型名与思考档标签切换为图标（@container 由
-              ChatInput 底部行声明，作用于整组）。 */}
-          <ContextRing
-            agentId={activeId}
-            sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null}
-            compact={supportsCompact ? {
-              onCompact: () => void handleCompactSession(),
-              compacting,
-              autoCompaction: autoCompactionPref ?? null,
-              onAutoCompactionChange: (enabled) => void handleAutoCompactionChange(enabled),
-            } : undefined}
-          />
+              ChatInput 底部行声明，作用于整组）。
+              v0.9.3 需求8：水位环迁移为 session.context-ring 插件（composer-
+              trailing 挂载点，插件页可停用）。 */}
+          <SessionComposerTrailing ctx={sessionKernelCtx} />
           {modelOptions.length === 0 ? (
             /* v0.9.2 需求10：黄色提示文案改为「前往配置」按钮——点击直达
                管理页模型设置并定位当前会话智能体（App 层切 manageAgent）。 */
@@ -3621,16 +3753,8 @@ export function ChatPage({
         </span>
       )}
       {!supportsModelPicker && (
-        <ContextRing
-            agentId={activeId}
-            sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null}
-            compact={supportsCompact ? {
-              onCompact: () => void handleCompactSession(),
-              compacting,
-              autoCompaction: autoCompactionPref ?? null,
-              onAutoCompactionChange: (enabled) => void handleAutoCompactionChange(enabled),
-            } : undefined}
-          />
+        /* v0.9.3 需求8：水位环迁移为 session.context-ring 插件（无模型行位点）。 */
+        <SessionComposerTrailing ctx={sessionKernelCtx} />
       )}
       {/* v0.7.0 需求一：原静态智能体展示位改为可切换（AgentSwitcher 受控）。
           新会话可切换（切换 = 新建会话）；任务态只有 jishu agent 可用，保持静态展示。 */}
@@ -4142,6 +4266,9 @@ export function ChatPage({
                           runStatus={taskGraph.runStatus}
                           nodes={taskFlowNodes}
                           onSelectNode={handleTaskSelectNode}
+                          onRetryNode={(nodeId) => void handleRetryNode(nodeId)}
+                          onSkipNode={(nodeId) => void handleSkipNode(nodeId)}
+                          nodeActionBusy={nodeActionBusy}
                         />
                       ) : (
                         <TaskNodeCards
@@ -4161,6 +4288,9 @@ export function ChatPage({
                           setExecPromptDismissedTaskId(activeTaskLaunchInstance?.task_id ?? null)
                         }
                         onOpenCanvas={() => setTaskBoardSignal((n) => n + 1)}
+                        assignableAgents={agents}
+                        agentsLoading={healthLoading}
+                        onAssignAgent={(nodeId, agentId) => void handlePlanAssignAgent(nodeId, agentId)}
                       />
                     ) : (
                       /* v0.9.2 测试期修复：收起方案卡后不再死路——提供恢复入口

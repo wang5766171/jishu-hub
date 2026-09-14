@@ -628,22 +628,6 @@ function ViewerPushRow({ children }: { children: ReactNode }) {
   const marginRef = useRef(0);
   const [baseWidth, setBaseWidth] = useState(() => window.innerWidth);
 
-  useEffect(() => {
-    const el = rowRef.current;
-    if (!el) return;
-    const measure = (w: number) => {
-      const base = w + marginRef.current;
-      if (base > 0) setBaseWidth(base);
-    };
-    measure(el.getBoundingClientRect().width);
-    const observer = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect.width;
-      if (w && w > 0) measure(w);
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
   const sidebarEffective = sidebar.openId
     ? clampSidebarWidth(
         sidebar.userWidth ?? baseWidth * SESSION_SIDEBAR_WIDTH_RATIO,
@@ -661,7 +645,28 @@ function ViewerPushRow({ children }: { children: ReactNode }) {
       ? Math.max(viewer.effectiveWidth, sidebarEffective)
       : viewer.effectiveWidth
     : sidebarEffective ?? 0;
-  marginRef.current = margin;
+  // margin 写入 ref 供 measure 补偿。渲染体直接写 ref 属副作用（React 并发
+  // 纪律，v0.9.3 需求1 P2-3）——迁入 effect，且声明在下方测量 effect 之前，
+  // 挂载首测即读到补偿值，时序与原先渲染期赋值等价。
+  useEffect(() => {
+    marginRef.current = margin;
+  }, [margin]);
+
+  useEffect(() => {
+    const el = rowRef.current;
+    if (!el) return;
+    const measure = (w: number) => {
+      const base = w + marginRef.current;
+      if (base > 0) setBaseWidth(base);
+    };
+    measure(el.getBoundingClientRect().width);
+    const observer = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (w && w > 0) measure(w);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <div

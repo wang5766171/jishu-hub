@@ -1152,7 +1152,11 @@
       "previewTitle": "HTML 预览",
       "preview": "预览",
       "source": "源码",
-      "expand": "放大"
+      "expand": "放大",
+      "zoomTitle": "HTML 放大",
+      "escHint": "ESC 关闭",
+      "close": "关闭",
+      "openExternal": "在新窗口打开（系统浏览器）"
     },
     "mermaidRender": {
       "name": "Mermaid 图表渲染",
@@ -1217,6 +1221,16 @@
       "placeholder": "搜索消息…",
       "noResults": "无匹配结果",
       "messageIndex": "消息"
+    },
+    "contextRing": {
+      "name": "上下文水位环",
+      "description": "模型选择器旁的上下文水位指示（点击查看详情与压缩控制）"
+    },
+    "streamStatus": {
+      "name": "流式状态挂件",
+      "description": "会话右缘的生成活动指示（流式/重试/错误，空闲时不可见）",
+      "streaming": "生成中",
+      "retrying": "重试"
     },
     "interaction": {
       "name": "交互问答卡",

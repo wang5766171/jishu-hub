@@ -1152,7 +1152,11 @@
       "previewTitle": "HTML preview",
       "preview": "Preview",
       "source": "Source",
-      "expand": "Expand"
+      "expand": "Expand",
+      "zoomTitle": "HTML Zoom",
+      "escHint": "ESC to close",
+      "close": "Close",
+      "openExternal": "Open in new window (system browser)"
     },
     "mermaidRender": {
       "name": "Mermaid Diagrams",
@@ -1217,6 +1221,16 @@
       "placeholder": "Search messages…",
       "noResults": "No matches",
       "messageIndex": "Msg"
+    },
+    "contextRing": {
+      "name": "Context Watermark Ring",
+      "description": "Context usage ring beside the model picker (details & compaction controls)"
+    },
+    "streamStatus": {
+      "name": "Stream Status Widget",
+      "description": "Generation activity indicator on session right rail (streaming/retry/error)",
+      "streaming": "Streaming",
+      "retrying": "Retrying"
     },
     "interaction": {
       "name": "Interaction Cards",
