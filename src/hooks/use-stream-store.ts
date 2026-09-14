@@ -475,13 +475,23 @@ class StreamStore {
     return this.getState(sid)?.isStreaming ?? false;
   }
 
-  /** v0.7.0 诊断：返回所有正在 streaming 的 session key（用于排查 turn_complete 丢失）。 */
+  /**
+   * 所有正在 streaming 的 session id（会话列表行加载图标消费）。
+   * v0.9.3 测试期修复：**键 + 别名一并展开**——流式状态以乐观 pending id
+   * 为键，session_resolved 后列表行换成真实 id（别名），原先只返回键导致
+   * 真实 id 行整轮匹配不上（加载图标只在 resolve 前的乐观行上短暂出现，
+   * 开始思考/输出即消失——用户实测）。
+   */
   getStreamingIds(): string[] {
-    const ids: string[] = [];
+    const streamingKeys = new Set<string>();
     for (const [key, value] of this.sessions) {
-      if (value.isStreaming) ids.push(key);
+      if (value.isStreaming) streamingKeys.add(key);
     }
-    return ids;
+    const ids = new Set(streamingKeys);
+    for (const [aliasId, key] of this.aliases) {
+      if (streamingKeys.has(key)) ids.add(aliasId);
+    }
+    return [...ids];
   }
 
   /** 当前会话的 conductor phase（从 phase_divider 事件跟踪），drop 后仍可读。 */
