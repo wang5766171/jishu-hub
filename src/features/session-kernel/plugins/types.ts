@@ -75,7 +75,7 @@ export interface PluginSessionMeta {
   contextUsed: number | null;
   contextTotal: number | null;
   /** 当前项目根绝对路径（v0.9.2 测试期：插件解析 tool_use 相对路径用，
-   * 如 html-preview 把会话产出的相对路径解析为可读的绝对路径）。 */
+   * 如产物中心把会话产出的相对路径解析为可读的绝对路径）。 */
   projectPath: string | null;
   /** 项目编码名（get_session_messages 的 encodedName 键；插件跨会话读取
    * 子节点会话产物用）。 */
@@ -128,6 +128,16 @@ export interface SessionKernelContext {
   openPanel(pluginId: string): void;
   /** 收起当前展开的面板（openPanel 的对称命令）。 */
   closePanel(): void;
+  /** v0.9.3 需求8：会话压缩命令（上下文占用环等插件消费）——异步触发，
+   *  进度经 isCompacting 观察。仅在 capabilities.compact 为真时插件应提供
+   *  压缩控制（与原内置门控同口径）。 */
+  compactSession(): void;
+  isCompacting: boolean;
+  /** 当前会话智能体的能力面（CONTEXT_COMPACT 等）。 */
+  capabilities: { compact: boolean };
+  /** 自动压缩偏好（null = 跟随 agent 默认/未配置）。 */
+  autoCompaction: boolean | null;
+  setAutoCompaction(enabled: boolean): void;
   /** 弹确认对话框（Promise<boolean>）。 */
   confirmDialog(opts: { title: string; description?: string; variant?: "default" | "destructive" }): Promise<boolean>;
   /** 会话信息解析：id → 标题 + 类型。 */
@@ -183,7 +193,7 @@ export interface TaskPanelContext {
   total: number;
   nodes: TaskPanelNode[];
   /** 已执行节点的子会话索引（v0.9.2 测试期：插件跨会话识别子节点产出物，
-   * 如 html-preview 拉取各节点会话消息提取产物文件）。 */
+   * 如产物中心拉取各节点会话消息提取产物文件）。 */
   nodeSessions: TaskNodeSession[];
   /** 当前钻入的子任务会话节点（无选中为 null）——看板高亮用。
    * 可选字段：插件与内核独立演进（版本错位容错），缺失时看板不高亮。 */
@@ -202,6 +212,9 @@ export interface TaskPanelContext {
 export interface RailWidgetMount {
   kind: "rail-widget";
   Component: ComponentType<{ ctx: SessionKernelContext }>;
+  /** 初始侧位（无布局记忆时）；默认 left。v0.9.3 需求3：流式状态挂件等
+   *  与导航列（左缘）同屏的挂件声明 right 避让。 */
+  defaultSide?: import("../shell/dock-layout").RailSide;
 }
 
 /** 停靠面板挂载点：标准面板（标题栏+内容+收起钮）。 */
@@ -242,11 +255,20 @@ export interface BlockRendererMount {
   BlockComponent?: ComponentType<{ block: PluginBlock }>;
 }
 
+/** composer 尾部控制行挂载点（v0.9.3 需求8：上下文占用环迁移）：渲染在
+ *  模型选择器/思考档同一行的内联槽位（模型行与无模型行两处互斥位点，
+ *  宿主按启用集渲染）。 */
+export interface ComposerTrailingMount {
+  kind: "composer-trailing";
+  Component: ComponentType<{ ctx: SessionKernelContext }>;
+}
+
 export type PluginMount =
   | RailWidgetMount
   | DockPanelMount
   | SidebarPanelMount
   | BlockRendererMount
+  | ComposerTrailingMount
   | EventHookMount
   | HeaderActionMount;
 
@@ -256,7 +278,7 @@ export type SessionSignal =
   | { type: "approval-request"; sessionId: string; agentId: string }
   | { type: "task-run-failed"; taskId: string; title: string }
   /** 文件预览请求（v0.9.2 测试期）：agent 工具（如 preview_html）经内核
-   * 事件管线转发——插件自行决定是否响应（html-preview 打开侧栏渲染）。 */
+   * 事件管线转发——插件自行决定是否响应（产物中心打开侧栏渲染）。 */
   | { type: "file-preview-request"; file: string; sessionId?: string };
 
 /** 事件钩子挂载点：无 UI 的事件消费（通知/音效等）。 */
@@ -305,4 +327,8 @@ export function sidebarPanelsOf(plugin: SessionPluginDescriptor): SidebarPanelMo
 
 export function railWidgetsOf(plugin: SessionPluginDescriptor): RailWidgetMount[] {
   return plugin.mounts.filter((m): m is RailWidgetMount => m.kind === "rail-widget");
+}
+
+export function composerTrailingsOf(plugin: SessionPluginDescriptor): ComposerTrailingMount[] {
+  return plugin.mounts.filter((m): m is ComposerTrailingMount => m.kind === "composer-trailing");
 }

@@ -32,7 +32,7 @@ export function SessionRailSlot({ ctx }: { ctx: SessionKernelContext }) {
       railWidgetsOf(plugin).map((mount) => ({
         id: plugin.id,
         mount,
-        side: railWidgetSideOf(layout, plugin.id),
+        side: railWidgetSideOf(layout, plugin.id, mount.defaultSide),
       })),
     );
 

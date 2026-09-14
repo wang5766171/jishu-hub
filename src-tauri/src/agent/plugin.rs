@@ -202,6 +202,12 @@ pub fn builtin_session_plugin_specs() -> &'static [(&'static str, &'static str)]
         // Markdown/文本全类型预览（agent preview_html 自动预览 + 手动点选
         // 主会话与子节点产物）。
         ("session.artifacts", "产物中心"),
+        // v0.9.3 需求3（P1-3）：流式状态挂件——PluginStreamState 首个真实
+        // 订阅消费者（SessionDataHub 真订阅链路的验收件）。
+        ("session.stream-status", "流式状态挂件"),
+        // v0.9.3 需求8：上下文水位环——自 chat-page 内置渲染迁移为插件
+        //（composer-trailing 挂载点首插件，ctx 压缩命令面）。
+        ("session.context-ring", "上下文水位环"),
     ]
 }
 

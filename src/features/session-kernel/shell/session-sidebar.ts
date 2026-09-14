@@ -73,7 +73,7 @@ export function setSessionSidebarEffectiveWidth(px: number | null): void {
 
 /** 宽度收敛：直接复用文件预览的钳制（窗口宽基准 + 主区保底——用户裁决
  * 「参考文件预览的逻辑」，不要内容区 80% 上限）。 */
-export { clampPanelWidth as clampSidebarWidth } from "@/components/file-viewer/panel-width";
+export { clampPanelWidth as clampSidebarWidth } from "@/lib/panel-width";
 
 export function getSessionSidebarState(): SessionSidebarState {
   return state;

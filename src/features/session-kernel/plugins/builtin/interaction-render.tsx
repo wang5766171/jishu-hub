@@ -5,10 +5,11 @@ import { SESSION_PLUGIN_CONTRACT_VERSION } from "../types";
 import type { SessionPluginDescriptor, PluginBlock } from "../types";
 
 /**
- * 交互问答卡渲染插件（v0.9.2 底座增强后首批拆出）：
- * 原为 message-view.tsx 内硬编码的 InteractionCard 分发（isInteractionTool 判定
- * + 专门渲染分支），现迁移为 block-renderer 插件——经 blockTypes 扩展匹配
- * 接管 interaction 块的渲染。流式路径（interactionSplits 切分）仍在核心。
+ * 交互问答卡渲染插件（v0.9.2 底座增强后首批拆出；v0.9.3 需求2 完成接线）：
+ * 经 blockTypes: ["interaction"] 声明接管 interaction 块渲染——message-view
+ * 三个渲染点（renderBlock / 助手气泡分组项 / 用户侧气泡分组项）统一经
+ * InteractionBlockWithRenderers 行级咨询，未启用/未命中时回退内置
+ * InteractionCard，插件页开关真实生效。detect/Component（代码块路径）不接管。
  */
 
 function InteractionBlockRenderer({ block }: { block: PluginBlock }) {

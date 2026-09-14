@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { AppWindow, ChartPie, LayoutGrid, Map, Search, X } from "lucide-react";
+import { ChartPie, LayoutGrid, Map, Package, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   EDGE_PANEL_WIDTH,
@@ -54,7 +54,7 @@ const PLUGIN_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   "session.flow": Map,
   "session.usage": ChartPie,
   "session.search": Search,
-  "session.artifacts": AppWindow,
+  "session.artifacts": Package,
 };
 
 function isWindowMaximized(): boolean {

@@ -44,6 +44,19 @@ export function matchBlockRenderer(
   return null;
 }
 
+/** 行级咨询点（v0.9.3 需求2 / P1-2）：按核心块类型（interaction/phase_divider
+ *  等非代码块）匹配已启用插件的扩展接管渲染。返回首个声明该 blockTypes 且带
+ *  BlockComponent 的挂载（注册序优先）；未命中由核心回退内置渲染。 */
+export function matchBlockTypeRenderer(
+  renderers: BlockRendererMount[],
+  blockType: string,
+): BlockRendererMount | null {
+  for (const renderer of renderers) {
+    if (renderer.blockTypes?.includes(blockType) && renderer.BlockComponent) return renderer;
+  }
+  return null;
+}
+
 export function useBlockRenderers(): BlockRendererMount[] {
   return useContext(BlockRenderersContext);
 }

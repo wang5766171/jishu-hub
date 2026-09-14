@@ -11,6 +11,8 @@ import { usagePanelPlugin } from "./builtin/usage-panel";
 import { messageSearchPlugin } from "./builtin/message-search";
 import { interactionRenderPlugin } from "./builtin/interaction-render";
 import { artifactsPlugin } from "./builtin/artifacts";
+import { streamStatusPlugin } from "./builtin/stream-status";
+import { contextRingPlugin } from "./builtin/context-ring";
 import type { SessionPluginDescriptor } from "./types";
 
 /**
@@ -24,6 +26,9 @@ import type { SessionPluginDescriptor } from "./types";
 const BUILTIN_SESSION_PLUGINS: SessionPluginDescriptor[] = [
   navigationPlugin,
   flowPanoramaPlugin,
+  // 注：HTML 实时渲染（html-render，聊天流内 ```html 代码块渲染卡）与产物
+  // 中心（artifacts，产出文件侧栏预览）是两个能力，均保留——前者处理代码
+  // 块、后者处理落盘文件（v0.9.3 测试期用户确认，非 html-preview 残留）。
   htmlRenderPlugin,
   mermaidRenderPlugin,
   desktopNotifyPlugin,
@@ -32,6 +37,8 @@ const BUILTIN_SESSION_PLUGINS: SessionPluginDescriptor[] = [
   messageSearchPlugin,
   interactionRenderPlugin,
   artifactsPlugin,
+  streamStatusPlugin,
+  contextRingPlugin,
 ];
 
 export function listSessionPlugins(): SessionPluginDescriptor[] {
