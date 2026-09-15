@@ -1614,12 +1614,14 @@ export function ChatPage({
   // file-preview-request 信号（严格走信号总线），插件（产物中心）经
   // event-hook 消费并自行决定拉起面板——内核不感知具体插件。
   useEffect(() => {
-    const unlisten = listen<{ file: string; session_id?: string }>("session-plugin-preview", (event) => {
-      const file = event.payload?.file;
-      if (typeof file === "string" && file) {
+    const unlisten = listen<{ file?: string; url?: string; session_id?: string }>("session-plugin-preview", (event) => {
+      // v0.9.3 测试期：url 模式（前端 dev server 预览，如 http://localhost:5173）
+      // 优先于 file——产物中心按 http 前缀分流为 iframe 直连。
+      const target = event.payload?.url ?? event.payload?.file;
+      if (typeof target === "string" && target) {
         emitSessionSignal({
           type: "file-preview-request",
-          file,
+          file: target,
           sessionId: event.payload?.session_id ?? undefined,
         });
       }

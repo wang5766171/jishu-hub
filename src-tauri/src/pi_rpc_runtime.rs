@@ -1996,17 +1996,42 @@ fn handle_hub_invoke(
         }
         // v0.9.2 测试期：preview_html 工具落点——校验文件后向前端广播预览事件
         //（会话插件 session.html-preview 的停靠面板接收渲染并自动展开）。
+        // v0.9.3 测试期（前端项目预览）：新增 url 模式——agent 开发前端项目时
+        // 先起 dev server（vite/webpack 等），预览应指向 http://localhost:端口
+        // （外链 CSS/JS、HMR 均由 dev server 提供；单文件 srcDoc 预览必然丢样
+        // 式——用户实测 agent 被迫内联资源）。仅放行本机回环地址。
         "plugin_preview_html" => {
-            let file = params
-                .get("file")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.trim().is_empty())
-                .ok_or("plugin_preview_html: file is required")?;
             let session_id = params
                 .get("session_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            if let Some(url) = params
+                .get("url")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+            {
+                validate_loopback_preview_url(url)?;
+                if let Some(app) = HUB_APP_HANDLE.get() {
+                    use tauri::Emitter;
+                    let _ = app.emit(
+                        "session-plugin-preview",
+                        serde_json::json!({
+                            "url": url,
+                            "session_id": session_id,
+                        }),
+                    );
+                } else {
+                    return Err("Hub 界面未就绪，无法打开预览".to_string());
+                }
+                return serde_json::to_value(serde_json::json!({ "opened": true, "url": url }))
+                    .map_err(|e| e.to_string());
+            }
+            let file = params
+                .get("file")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("plugin_preview_html: file is required")?;
             let path = std::path::PathBuf::from(file);
             if !path.is_file() {
                 return Err(format!("文件不存在: {file}"));
@@ -2057,6 +2082,35 @@ fn handle_hub_invoke(
     }
 }
 
+/// 预览 url 校验：仅放行 http/https 的本机回环地址（localhost / 127.0.0.1 /
+/// [::1]）。dev server 预览的安全边界——外网/内网地址一律拒绝（防把 Hub
+/// 面板当任意站点浏览器用）。
+fn validate_loopback_preview_url(url: &str) -> Result<(), String> {
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or("预览地址需为 http/https URL（dev server 地址，如 http://localhost:5173）")?;
+    if scheme != "http" && scheme != "https" {
+        return Err("预览地址仅支持 http/https（dev server 地址）".to_string());
+    }
+    // authority = 端口前的主机部分（截掉路径/查询/锚点；剥 userinfo）。
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .rsplit('@')
+        .next()
+        .unwrap_or("");
+    let host = if authority.starts_with('[') {
+        authority.split(']').next().unwrap_or("").trim_start_matches('[') // IPv6 字面量 [::1]
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    match host {
+        "localhost" | "127.0.0.1" | "::1" => Ok(()),
+        other => Err(format!("仅支持本机回环地址预览（localhost/127.0.0.1），收到: {other}")),
+    }
+}
+
 fn pi_prompt_is_settled(event_type: &str) -> bool {
     event_type == "agent_settled"
 }
@@ -2093,6 +2147,41 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("不存在"), "unexpected: {err}");
+    }
+
+    // v0.9.3 测试期（前端项目预览）：url 模式回环校验——仅本机
+    // localhost/127.0.0.1/[::1] 的 http/https 放行，其余（外网/内网/非
+    // http scheme）拒绝；合法 url 在无 Hub 句柄环境落到「界面未就绪」。
+    #[test]
+    fn plugin_preview_html_url_loopback_ladder() {
+        for bad in [
+            "http://example.com:5173",
+            "http://192.168.1.10:3000",
+            "file://localhost/x",
+            "ftp://localhost",
+            "http://localhost.evil.com",
+        ] {
+            let err = handle_hub_invoke(
+                "plugin_preview_html",
+                &serde_json::json!({"url": bad}),
+            )
+            .unwrap_err();
+            // 各级拒绝（scheme/回环）皆可，断言核心：到不了「界面未就绪」
+            //（即校验全部放行的路径）。
+            assert!(!err.contains("未就绪"), "url={bad} should be rejected: {err}");
+        }
+        for ok in [
+            "http://localhost:5173",
+            "http://127.0.0.1:3000/index.html",
+            "https://localhost",
+        ] {
+            let err = handle_hub_invoke(
+                "plugin_preview_html",
+                &serde_json::json!({"url": ok}),
+            )
+            .unwrap_err();
+            assert!(err.contains("未就绪"), "url={ok} should pass validation: {err}");
+        }
     }
 
     #[test]

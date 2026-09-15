@@ -335,7 +335,11 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
     window.setTimeout(() => setSpinning(false), 600);
   }, []);
 
-  const kind = current ? artifactKind(current) : null;
+  // v0.9.3 测试期（前端项目预览）：URL 模式——dev server 地址（经 preview_html
+  // 的 url 参数），iframe 直连（外链 CSS/JS、HMR 由 dev server 提供），
+  // 不走本地文件加载链路。
+  const isUrlPreview = current?.startsWith("http://") === true || current?.startsWith("https://") === true;
+  const kind = current && !isUrlPreview ? artifactKind(current) : null;
   useEffect(() => {
     if (!current || !kind) {
       setLoaded(null);
@@ -452,7 +456,7 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
                 </div>
               ) : (
                 candidates.map(({ file, source }) => {
-                  const name = file.split("/").pop() ?? file;
+                  const name = file.split("/").pop() || (file.startsWith("http") ? file.replace(/^https?:\/\//, "").split("/")[0] : file);
                   const active = file === current;
                   return (
                     <button
@@ -494,7 +498,7 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
             </span>
           ) : (
             openTabs.map((file) => {
-              const name = file.split("/").pop() ?? file;
+              const name = file.split("/").pop() || (file.startsWith("http") ? file.replace(/^https?:\/\//, "").split("/")[0] : file);
               const active = file === current;
               return (
                 <div
@@ -616,7 +620,18 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
               document.body,
             )
           : null}
-        {error && !loaded ? (
+        {/* URL 预览（dev server 直连）：allow-same-origin 使 SPA 获得自身
+            localhost 源的 localStorage/路由能力（与 app 源不同，沙箱内无法
+            触达 tauri IPC）；key 携 refreshNonce 使「刷新」真实重载页面。 */}
+        {isUrlPreview && current ? (
+          <iframe
+            key={`url-${current}-${preview.version}-${refreshNonce}`}
+            title={t("sessionPlugins.artifacts.panelTitle", "产物中心")}
+            sandbox="allow-scripts allow-forms allow-popups allow-same-origin allow-modals allow-downloads"
+            src={current}
+            className="min-h-0 w-full flex-1 border-0 bg-white"
+          />
+        ) : error && !loaded ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
             <FileQuestion className="h-6 w-6 text-muted-foreground/40" />
             <div className="text-xs text-muted-foreground">

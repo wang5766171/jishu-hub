@@ -47,16 +47,69 @@ export default function htmlPreviewExtension(pi: ExtensionAPI) {
     name: "preview_html",
     label: "HTML 页面预览",
     description:
-      "把一个本地 HTML 文件在 Hub 界面右侧的预览面板中渲染展示。适用场景：你为用户开发或修改了 HTML 交付文件（登录页、单文件应用、网页报告等），在交付说明或自检视觉效果时调用，用户即可在界面右侧直接看到渲染结果（可交互脚本会执行）。注意：用户只想看图表/流程图/关系图时不要用本工具，也不要生成 HTML 包装——直接在回复中输出 ```mermaid 代码块，会话界面原生渲染成图（详见 jishu-hub-capabilities skill）。参数 file 为该 HTML 文件路径（相对当前工作目录或绝对路径）。是否调用由你判断：纯后端/脚本/无视觉意义的产物不要调用；同一文件多次修改后可再次调用以刷新预览。",
+      "在 Hub 界面右侧的预览面板中渲染网页内容，两种模式按场景选择。【url 模式——前端项目开发首选】你正在开发的前端项目（vite/webpack/CRA 等）已用 shell 启动 dev server 时，传 url 参数（如 http://localhost:5173）——面板直连 dev server，外链 CSS/JS、热更新全部正常；不要为了预览把资源内联进单文件，也不要用文件模式预览多文件项目。【file 模式——单文件交付物】你为用户开发或修改了自包含的 HTML 文件（登录页、报告页、单文件应用等）时传 file 参数。注意：用户只想看图表/流程图时不要用本工具，直接在回复中输出 ```mermaid 代码块（会话界面原生渲染，详见 jishu-hub-capabilities skill）。",
     parameters: Type.Object({
-      file: Type.String({
-        description: "HTML 文件路径（相对当前工作目录或绝对路径，需为 .html/.htm）",
-      }),
+      url: Type.Optional(
+        Type.String({
+          description:
+            "dev server 地址（仅限本机 http://localhost:端口 或 http://127.0.0.1:端口）。前端项目开发场景先启动 dev server 再传此参数",
+        }),
+      ),
+      file: Type.Optional(
+        Type.String({
+          description: "自包含 HTML 文件路径（相对当前工作目录或绝对路径，需 .html/.htm）",
+        }),
+      ),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx: ExtensionContext) {
-      const resolved = isAbsolute(params.file)
-        ? params.file
-        : join(process.cwd(), params.file);
+      // url 模式：dev server 直连预览（Hub 后端校验回环地址后广播事件）。
+      if (params.url && params.url.trim()) {
+        const result = await hubInvoke(
+          ctx,
+          "plugin_preview_html",
+          { url: params.url.trim(), session_id: ctx.sessionManager.getSessionId() },
+          8000,
+        );
+        if (result === null) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "预览请求已发出，但 Hub 未响应（桥接超时）。用户可能未打开 Hub 界面；不影响你继续工作。",
+              },
+            ],
+            details: {},
+          };
+        }
+        if (result.success === false) {
+          return {
+            content: [{ type: "text" as const, text: `预览未打开：${result.error ?? "未知错误"}` }],
+            details: {},
+          };
+        }
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `已在 Hub 右侧预览面板打开该地址（${params.url}）。面板直连 dev server，样式与热更新正常；用户修改代码后面板可点刷新查看最新效果。`,
+            },
+          ],
+          details: {},
+        };
+      }
+      const filePath = params.file?.trim();
+      if (!filePath) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "参数缺失：前端项目传 url（dev server 地址），自包含单文件传 file。",
+            },
+          ],
+          details: {},
+        };
+      }
+      const resolved = isAbsolute(filePath) ? filePath : join(process.cwd(), filePath);
       const result = await hubInvoke(
         ctx,
         "plugin_preview_html",
