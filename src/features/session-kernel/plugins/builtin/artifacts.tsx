@@ -17,8 +17,9 @@
  * （保留打开文件夹/系统打开入口）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { File, FileQuestion, FolderOpen, List, MoreHorizontal, RotateCw, SquareArrowOutUpRight, X } from "lucide-react";
+import { AlertTriangle, File, FileQuestion, FolderOpen, List, MoreHorizontal, RotateCw, SquareArrowOutUpRight, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { invoke } from "@tauri-apps/api/core";
@@ -268,6 +269,7 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
   const [listHovered, setListHovered] = useState(false);
   // 「...」更多菜单。
   const [menuOpen, setMenuOpen] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   // 已打开的标签（浏览器页签模型）：点选/事件预览自动开签；可单独关闭，
   // 关闭最后一个 = 收起整个侧栏（ctx.closePanel）。
   const [openTabs, setOpenTabs] = useState<string[]>(() => (current ? [current] : []));
@@ -385,14 +387,33 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
   }, [current, kind, preview.version, refreshNonce, t]);
 
   const openInFolder = useCallback(() => {
-    if (current) void invokeCommand("reveal_in_file_manager", { path: current }).catch(console.warn);
     setMenuOpen(false);
+    if (!current) return;
+    // v0.9.3 测试期：打开失败必须可见——此前 catch(console.warn) 静默吞错，
+    // 公司环境点击「打开文件夹没反应」即此（真实失败原因被吞）。
+    invokeCommand("reveal_in_file_manager", { path: current }).catch((e) => {
+      const msg = String(e);
+      console.warn("reveal_in_file_manager failed:", msg);
+      setActionError(msg.length > 160 ? `${msg.slice(0, 160)}…` : msg);
+    });
   }, [current]);
 
   const openInSystem = useCallback(() => {
-    if (current) void invokeCommand("open_with_default_app", { path: current }).catch(console.warn);
     setMenuOpen(false);
+    if (!current) return;
+    invokeCommand("open_with_default_app", { path: current }).catch((e) => {
+      const msg = String(e);
+      console.warn("open_with_default_app failed:", msg);
+      setActionError(msg.length > 160 ? `${msg.slice(0, 160)}…` : msg);
+    });
   }, [current]);
+
+  // 动作错误 5s 自动消散（不打断工作流）。
+  useEffect(() => {
+    if (!actionError) return;
+    const timer = setTimeout(() => setActionError(null), 5000);
+    return () => clearTimeout(timer);
+  }, [actionError]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -562,6 +583,39 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
             )}
           </div>
         </div>
+        {/* 打开文件夹/系统打开失败 → 全局弹窗（v0.9.3 测试期：此前静默吞错，
+            公司环境「点击没反应」无从排查；弹窗直接呈现后端真实错误，Portal
+            挂 body 规避侧栏 containment 裁剪）。 */}
+        {actionError
+          ? createPortal(
+              <div
+                className="fixed inset-x-0 top-4 z-[70] flex justify-center px-4"
+                onClick={() => setActionError(null)}
+              >
+                <div
+                  role="alert"
+                  className="pointer-events-auto flex max-w-xl items-start gap-2 rounded-lg border border-red-500/50 bg-popover/95 px-3 py-2 shadow-xl backdrop-blur"
+                >
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+                  <div className="min-w-0 text-xs">
+                    <div className="font-medium text-red-600 dark:text-red-300">
+                      {t("sessionPlugins.artifacts.openFailed", "打开失败")}
+                    </div>
+                    <div className="break-all text-muted-foreground">{actionError}</div>
+                  </div>
+                  <button
+                    type="button"
+                    title={t("sessionPlugins.artifacts.closeTab", "关闭")}
+                    onClick={() => setActionError(null)}
+                    className="ml-1 shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>,
+              document.body,
+            )
+          : null}
         {error && !loaded ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
             <FileQuestion className="h-6 w-6 text-muted-foreground/40" />
