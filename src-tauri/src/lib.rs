@@ -87,15 +87,25 @@ fn handle_deep_link(app: &tauri::AppHandle, url: &str) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        // v0.9.3 测试期（通知点击跳回·通知中心补点）：single-instance 必须最先
-        // 注册——protocol toast 点击时 Windows 会启动新进程携带 jishu-hub://
-        // URL，本插件把参数转发给运行中实例（弹窗与通知中心补点统一路由）。
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+    // v0.9.3 测试期（通知点击跳回·通知中心补点）：single-instance 必须最先
+    // 注册——protocol toast 点击时 Windows 会启动新进程携带 jishu-hub://
+    // URL，本插件把参数转发给运行中实例（弹窗与通知中心补点统一路由）。
+    // 仅 release 注册：dev 实例与安装版共用 identifier com.jishu-hub.app，
+    // 安装版运行时起 dev 会被判为「第二实例」静默退出——表现为 tauri dev
+    // 起不来、vite 被 teardown 连杀（退出码 -1）。开发期允许与安装版并存
+    // （通知点击链路在安装版上验证）。
+    #[cfg(not(debug_assertions))]
+    let builder = tauri::Builder::default().plugin(tauri_plugin_single_instance::init(
+        |app, argv, _cwd| {
             if let Some(url) = argv.iter().find(|a| a.starts_with("jishu-hub://")) {
                 handle_deep_link(app, url);
             }
-        }))
+        },
+    ));
+    #[cfg(debug_assertions)]
+    let builder = tauri::Builder::default();
+
+    builder
         .plugin(tauri_plugin_dialog::init())
         // v0.9.2 需求1 M4：桌面通知插件（会话能力插件 session.desktop-notify 消费）
         .plugin(tauri_plugin_notification::init())
