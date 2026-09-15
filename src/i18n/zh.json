@@ -1171,7 +1171,10 @@
       "exportFailed": "导出失败",
       "fitWidth": "适配宽度",
       "clickToZoom": "点击放大",
-      "escHint": "ESC 关闭"
+      "escHint": "ESC 关闭",
+      "syntaxError": "Mermaid 语法错误",
+      "viewSource": "源码",
+      "viewDiagram": "图表"
     },
     "desktopNotify": {
       "name": "桌面通知",
@@ -1251,7 +1254,8 @@
       "more": "更多",
       "revealFolder": "打开文件夹",
       "openInSystem": "使用系统默认应用打开",
-      "unsupported": "该文件暂不支持预览（可经「...」用系统默认应用打开）"
+      "unsupported": "该文件暂不支持预览（可经「...」用系统默认应用打开）",
+      "openFailed": "打开失败"
     }
   },
   "sessionPanels": {

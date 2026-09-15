@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { FileCode2, ImageDown, Minus, Plus, X } from "lucide-react";
+import { FileCode2, ImageDown, Minus, Plus, X, AlertTriangle, Code2, Eye } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { cn } from "@/lib/utils";
@@ -28,8 +28,36 @@ let mermaidReady: Promise<typeof import("mermaid").default> | null = null;
 async function loadMermaid() {
   if (!mermaidReady) {
     mermaidReady = import("mermaid").then((mod) => {
-      mod.default.initialize({ startOnLoad: false, securityLevel: "strict" });
-      return mod.default;
+      const mermaid = mod.default;
+      mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
+      // v0.9.3 测试期（底部错误图回归·全局收口）：mermaid.render 未传容器时
+      // 把临时节点（含语法错误路径的错误 SVG）插 document.body 并可能残留。
+      // 模块层包装：未传容器 → 强制走 body 上的常驻离屏宿主并清空——错误
+      // 图不可能落 body。调用方传了容器（本插件组件）则完全交还控制权、
+      // 包装层零清理——无条件的 body 清扫会在 effect 双执行（StrictMode/主
+      // 题切换）下删掉并发 render 正在使用的同 id 临时节点，复活 firstChild
+      // 竞态（组件自身的 !cancelled 守卫清理才是正确的归属）。
+      const hidden = document.createElement("div");
+      hidden.setAttribute("aria-hidden", "true");
+      hidden.style.cssText =
+        "position:absolute;left:-9999px;top:0;visibility:hidden;pointer-events:none;";
+      document.body.appendChild(hidden);
+      const origRender = mermaid.render.bind(mermaid);
+      const patchedRender = async (
+        id: string,
+        text: string,
+        container?: Element,
+      ): Promise<{ svg: string; bindFunctions?: (el: Element) => void }> => {
+        const host = container ?? hidden;
+        try {
+          return await origRender(id, text, host);
+        } finally {
+          if (!container) hidden.innerHTML = "";
+        }
+      };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (mermaid as any).render = patchedRender;
+      return mermaid;
     });
   }
   return mermaidReady;
@@ -105,6 +133,14 @@ function escapeXml(text: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+/** 渲染失败提示提取（v0.9.3 测试期：语法错误就地显示在图卡位置）。
+ * mermaid 抛的 Parse error 常带多行上下文与堆栈串，取首行并截断。 */
+export function mermaidErrorBrief(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const firstLine = raw.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? raw;
+  return firstLine.length > 200 ? `${firstLine.slice(0, 200)}…` : firstLine;
 }
 
 /**
@@ -446,16 +482,21 @@ function MermaidZoomOverlay({
 function MermaidDiagram({ code }: { code: string; language: string }) {
   const { t } = useTranslation();
   const [svg, setSvg] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [mode, setMode] = useState<"diagram" | "source">("diagram");
   const [expanded, setExpanded] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const dark = useIsDarkTheme();
   const idRef = useRef(`mmd-${useId().replace(/[^a-zA-Z0-9]/g, "")}`);
+  // 离屏渲染宿主：mermaid.render 无容器时把临时节点插 document.body，出错
+  // 路径的错误 SVG 会残留在 body（「Syntax error in text」贴在软件最下方
+  // 的根因）。传入自有宿主后错误产物落进卡内由我们统一清理。
+  const renderHostRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
-    setFailed(false);
+    setErrorMsg(null);
     setSvg(null);
     void (async () => {
       try {
@@ -466,15 +507,34 @@ function MermaidDiagram({ code }: { code: string; language: string }) {
           securityLevel: "strict",
           theme: dark ? "dark" : "default",
         });
-        const { svg: raw } = await mermaid.render(idRef.current, code);
+        // 先 parse 后 render：parse 无 DOM 副作用，语法错误在此捕获并就地
+        // 显示（不会再走到 render 的 body 错误 SVG 分支）。
+        await mermaid.parse(code);
+        const { svg: raw } = await mermaid.render(
+          idRef.current,
+          code,
+          renderHostRef.current ?? undefined,
+        );
         if (cancelled) return;
         // 渲染期规范化（同导出管线）：mermaid 根节点 width="100%" 且无固有
         // 宽高——纯 CSS（w-auto）在块容器中退化为拉伸、在 flex 容器中塌陷
         // （放大白屏的根因）。按 viewBox 写死显式像素宽高并剥 style，CSS 仅
         // 负责上限收窄（max-w-full + h-auto）。
         setSvg(buildExportSvg(raw).svg);
-      } catch {
-        if (!cancelled) setFailed(true);
+      } catch (e) {
+        if (!cancelled) setErrorMsg(mermaidErrorBrief(e));
+      } finally {
+        // 兜底清理：错误路径 mermaid 可能残留错误 SVG（宿主内）与 body 上的
+        // 临时节点 #d<id>，一律移除——错误提示只走卡内 UI。
+        // 仅「未取消」的最新运行可清理：dev StrictMode（或主题切换）下 effect
+        // 重入时，前一次运行的 finally 会把后一次 render 正在使用的 #d<id>
+        // 清掉——mermaid render 内部「插临时节点 → await 解析 → 读
+        // firstChild」，读到 null 即抛 "Cannot read properties of null
+        // (reading 'firstChild')"（本轮回归根因）。
+        if (!cancelled) {
+          if (renderHostRef.current) renderHostRef.current.innerHTML = "";
+          document.getElementById(`d${idRef.current}`)?.remove();
+        }
       }
     })();
     return () => {
@@ -526,37 +586,82 @@ function MermaidDiagram({ code }: { code: string; language: string }) {
 
   const exportHandlers: ExportHandlers = { onExportPng: () => void exportPng(), onExportSvg: () => void exportSvgFile(), exporting };
 
-  if (failed) {
+  if (errorMsg !== null) {
+    // 语法错误就地显示（v0.9.3 测试期修复：此前 mermaid 的错误 SVG 残留在
+    // 应用最底部，会话区内只回退源码、无任何错误提示）。
     return (
-      <pre className="my-2 overflow-auto rounded-lg border border-border/60 p-2 text-xs leading-relaxed">
-        <code>{code}</code>
-      </pre>
+      <div className="my-2 overflow-hidden rounded-lg border border-red-500/40">
+        {/* 离屏渲染宿主常驻两个分支：代码切换瞬间 ref 不空窗。
+            invisible（非 h-0/overflow-hidden）：保留真实几何尺寸，mermaid
+            对临时节点量测不受影响。 */}
+        <div ref={renderHostRef} aria-hidden className="pointer-events-none absolute -left-[9999px] top-0 invisible" />
+        <div className="flex items-start gap-1.5 border-b border-red-500/30 bg-red-500/10 px-2 py-1.5 text-[11px] text-red-600 dark:text-red-300">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <div className="min-w-0">
+            <div className="font-medium">
+              {t("sessionPlugins.mermaidRender.syntaxError", "Mermaid 语法错误")}
+            </div>
+            <div className="break-all opacity-80">{errorMsg}</div>
+          </div>
+        </div>
+        <pre className="max-h-64 overflow-auto bg-muted/20 p-2 text-xs leading-relaxed">
+          <code>{code}</code>
+        </pre>
+      </div>
     );
   }
   return (
     <div className="my-2 overflow-hidden rounded-lg border border-border/60 bg-muted/20">
+      {/* 离屏渲染宿主：承接 mermaid.render 的临时节点与错误 SVG（见 effect 注释）。 */}
+      <div ref={renderHostRef} aria-hidden className="pointer-events-none absolute -left-[9999px] top-0 invisible" />
       <div className="flex shrink-0 items-center gap-0.5 border-b border-border/40 px-1.5 py-1">
-        <ExportButtons handlers={exportHandlers} />
-      </div>
-      <div className="flex justify-center p-2">
-        {/* 内联初始 50% 自然尺寸（用户裁决）：宽度 = 自然宽 × 0.5，上限栏宽
-            （超宽图进一步收窄），高度随图自适应——卡片自身不出滚动条。
-            放大入口：图区域 cursor-zoom-in，单击打开查看器（无需找图标）。 */}
-        {svg ? (
-          <div
-            className="max-w-full cursor-zoom-in"
-            style={{ width: Math.round(parseSvgSize(svg).width * INLINE_SCALE) }}
-            title={t("sessionPlugins.mermaidRender.clickToZoom", "点击放大")}
-            onClick={() => setExpanded(true)}
+        <div className="ml-auto flex items-center gap-0.5">
+          {/* v0.9.3 测试期：源码/图表切换（对齐 html-render 单按钮形态）——
+              图标 = 当前视图（眼=图表/码=源码），点击切换视图与图标。
+              导出按钮与切换钮同组靠右（用户裁决 2026-09-15）。 */}
+          <button
+            type="button"
+            title={
+              mode === "diagram"
+                ? t("sessionPlugins.mermaidRender.viewSource", "源码")
+                : t("sessionPlugins.mermaidRender.viewDiagram", "图表")
+            }
+            onClick={() => setMode((m) => (m === "diagram" ? "source" : "diagram"))}
+            className={cn(
+              "rounded p-1 outline-none hover:bg-accent",
+              mode === "diagram" ? "text-foreground" : "text-muted-foreground",
+            )}
           >
-            <SvgHost svg={svg} />
-          </div>
-        ) : (
-          <div className="py-6 text-center text-xs text-muted-foreground">
-            {t("sessionPlugins.mermaidRender.rendering", "图表渲染中…")}
-          </div>
-        )}
+            {mode === "diagram" ? <Eye className="h-3.5 w-3.5" /> : <Code2 className="h-3.5 w-3.5" />}
+          </button>
+          <ExportButtons handlers={exportHandlers} />
+        </div>
       </div>
+      {mode === "source" ? (
+        <pre className="max-h-96 overflow-auto p-2 text-xs leading-relaxed">
+          <code>{code}</code>
+        </pre>
+      ) : (
+        <div className="flex justify-center p-2">
+          {/* 内联初始 50% 自然尺寸（用户裁决）：宽度 = 自然宽 × 0.5，上限栏宽
+              （超宽图进一步收窄），高度随图自适应——卡片自身不出滚动条。
+              放大入口：图区域 cursor-zoom-in，单击打开查看器（无需找图标）。 */}
+          {svg ? (
+            <div
+              className="max-w-full cursor-zoom-in"
+              style={{ width: Math.round(parseSvgSize(svg).width * INLINE_SCALE) }}
+              title={t("sessionPlugins.mermaidRender.clickToZoom", "点击放大")}
+              onClick={() => setExpanded(true)}
+            >
+              <SvgHost svg={svg} />
+            </div>
+          ) : (
+            <div className="py-6 text-center text-xs text-muted-foreground">
+              {t("sessionPlugins.mermaidRender.rendering", "图表渲染中…")}
+            </div>
+          )}
+        </div>
+      )}
       {exportError ? (
         <div className="border-t border-red-500/30 bg-red-500/10 px-2 py-1 text-[10px] text-red-600 dark:text-red-300">
           {t("sessionPlugins.mermaidRender.exportFailed", "导出失败")}：{exportError}

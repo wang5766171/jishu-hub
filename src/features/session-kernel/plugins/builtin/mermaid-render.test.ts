@@ -4,10 +4,34 @@
  * （mermaid 根节点常为 width="100%" 且缺 xmlns → img 加载失败或尺寸为 0）。
  */
 import { describe, expect, it } from "vitest";
-import { buildExportSvg, foreignObjectsToText, parseSvgSize, wellFormSvgXml } from "./mermaid-render";
+import {
+  buildExportSvg,
+  foreignObjectsToText,
+  mermaidErrorBrief,
+  parseSvgSize,
+  wellFormSvgXml,
+} from "./mermaid-render";
 
 const MERMAID_LIKE_SVG =
   '<svg id="d1" width="100%" style="max-width: 512px;" viewBox="0 0 512 384"><g><text>登录</text></g></svg>';
+
+describe("mermaidErrorBrief", () => {
+  it("takes the first non-empty line of a multi-line parse error", () => {
+    const err = new Error("Parse error on line 3:\nflowchart TD\n    A ->> B\nExpecting 'SQE', got 'EOF'");
+    expect(mermaidErrorBrief(err)).toBe("Parse error on line 3:");
+  });
+
+  it("truncates over-long first lines", () => {
+    const long = "x".repeat(500);
+    const brief = mermaidErrorBrief(new Error(long));
+    expect(brief.length).toBe(201);
+    expect(brief.endsWith("…")).toBe(true);
+  });
+
+  it("stringifies non-error values", () => {
+    expect(mermaidErrorBrief(42)).toBe("42");
+  });
+});
 
 describe("parseSvgSize", () => {
   it("prefers viewBox over width=100%", () => {

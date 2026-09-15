@@ -1171,7 +1171,10 @@
       "exportFailed": "Export failed",
       "fitWidth": "Fit width",
       "clickToZoom": "Click to zoom",
-      "escHint": "ESC to close"
+      "escHint": "ESC to close",
+      "syntaxError": "Mermaid syntax error",
+      "viewSource": "Source",
+      "viewDiagram": "Diagram"
     },
     "desktopNotify": {
       "name": "Desktop Notifications",
@@ -1251,7 +1254,8 @@
       "more": "More",
       "revealFolder": "Reveal in folder",
       "openInSystem": "Open with system default app",
-      "unsupported": "This file cannot be previewed (open via \"...\" with the system app)"
+      "unsupported": "This file cannot be previewed (open via \"...\" with the system app)",
+      "openFailed": "Open failed"
     }
   },
   "sessionPanels": {
