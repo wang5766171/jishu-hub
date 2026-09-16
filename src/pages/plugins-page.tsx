@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { AgentLogo, useAgent } from "@/agents";
 import { PluginIcon } from "@/components/ui/icon-picker";
@@ -12,8 +12,10 @@ import { AlertCircle, Download, Loader2, Pencil, Plus, RefreshCw, Trash2 } from 
 import type { AgentStatus } from "@/agents/types";
 import { PluginCreateDialog } from "./plugin-create-dialog";
 import { PluginDetailModal, type DrawerPluginInfo } from "./plugin-detail-modal";
+import { PluginComposeDialog } from "./plugin-compose-dialog";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
-import { Info, Settings2 } from "lucide-react";
+import { composedVersion, subscribeComposed } from "@/features/session-kernel/capabilities/composition/loader";
+import { Info, Puzzle, Settings2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -55,6 +57,8 @@ interface PluginDescriptor {
   /** v0.9.0 需求1 二期：系统插件（hub 随包分发、幂等重部署）——不可卸载/
    * 编辑（mcp-resolver / task-requirements / task-plan），可禁用。 */
   system?: boolean;
+  /** v0.9.3 需求13：组合式插件（manifest 装配；用户创建的可删除）。 */
+  composed?: boolean;
 }
 
 interface PluginListResult {
@@ -108,6 +112,8 @@ const PLUGIN_CATEGORIES: Array<{ key: PluginCategory; labelKey: string; fallback
 export function PluginsPage() {
   const { t } = useTranslation();
   const { alert: alertDialog, confirm: confirmDialog, dialogNode } = useConfirmDialog();
+  // v0.9.3 需求13：组合清单异步装载完成后重算卡片（⚙ 设置钮/描述依赖前端描述符）。
+  useSyncExternalStore(subscribeComposed, composedVersion, () => 0);
   const { agents, refreshHealth } = useAgent();
   const [result, setResult] = useState<PluginListResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -121,6 +127,8 @@ export function PluginsPage() {
   // v0.9.3 需求12 P1（交互返工）：卡片显式按钮进入详情/编辑模态
   //（用户裁决：不点卡片弹出；编辑按钮直落设置 tab）。
   const [detailTarget, setDetailTarget] = useState<PluginDescriptor | null>(null);
+  // v0.9.3 需求13 C3：新建组合插件向导。
+  const [composeOpen, setComposeOpen] = useState(false);
   const [detailTab, setDetailTab] = useState<"info" | "settings">("info");
   const [panelOutputs, setPanelOutputs] = useState<Record<number, string>>({});
   const [panelRunning, setPanelRunning] = useState<number | null>(null);
@@ -487,18 +495,31 @@ export function PluginsPage() {
                   <Pencil className="h-3 w-3" />
                 </Button>
               )}
-              {!plugin.system && (plugin.kind === "manifest" || plugin.kind === "tool") && (
+              {(plugin.composed && !plugin.system) || (!plugin.system && (plugin.kind === "manifest" || plugin.kind === "tool")) ? (
                 <Button
                   variant="ghost"
                   size="icon"
                   className="h-6 w-6 text-destructive hover:text-destructive"
                   disabled={busy}
                   aria-label={tr("plugins.remove", "卸载")}
-                  onClick={() => handleRemove(plugin)}
+                  onClick={() => {
+                    if (plugin.composed) {
+                      void (async () => {
+                        try {
+                          await invokeCommand("composed_plugin_delete", { id: plugin.id });
+                          await refresh();
+                        } catch (e) {
+                          console.warn("composed_plugin_delete failed:", e);
+                        }
+                      })();
+                      return;
+                    }
+                    handleRemove(plugin);
+                  }}
                 >
                   <Trash2 className="h-3 w-3" />
                 </Button>
-              )}
+              ) : null}
             </div>
           </div>
         );
@@ -507,6 +528,7 @@ export function PluginsPage() {
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-6">
       {dialogNode}
+      <PluginComposeDialog open={composeOpen} onOpenChange={setComposeOpen} onCreated={refresh} />
       {detailTarget ? (
         <PluginDetailModal
           plugin={detailTarget satisfies DrawerPluginInfo as DrawerPluginInfo}
@@ -536,6 +558,15 @@ export function PluginsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setComposeOpen(true)}
+            title="零代码组合基座能力（源×渲染组件×动作×配置）生成插件"
+          >
+            <Puzzle className="h-4 w-4" />
+            <span className="ml-1.5">新建组合插件</span>
+          </Button>
           <Button
             size="sm"
             onClick={() => {
