@@ -50,7 +50,7 @@ const menuGroups: { titleKey: string; titleFallback: string; items: ManageMenuIt
     titleFallback: "工作区",
     items: [
       { id: "projects", icon: FolderOpen, labelKey: "manage.menuProjects", fallback: "项目管理" },
-      { id: "plugins", icon: Blocks, labelKey: "manage.menuPlugins", fallback: "插件管理" },
+      { id: "plugins", icon: Blocks, labelKey: "manage.menuPlugins", fallback: "插件中心" },
     ],
   },
   {

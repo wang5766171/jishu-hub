@@ -8,9 +8,12 @@ import { Badge } from "@/components/ui/badge";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { AlertCircle, ChevronDown, Download, Loader2, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { AlertCircle, Download, Loader2, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import type { AgentStatus } from "@/agents/types";
 import { PluginCreateDialog } from "./plugin-create-dialog";
+import { PluginDetailModal, type DrawerPluginInfo } from "./plugin-detail-modal";
+import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
+import { Info, Settings2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -20,13 +23,16 @@ import {
 } from "@/components/ui/dialog";
 import { LayoutDashboard } from "lucide-react";
 
-/** v0.8.1 需求3：插件管理页。数据源 plugin_list（需求2 的统一插件模型），
+/** v0.8.1 需求3：插件中心页（v0.9.3 需求11 更名）。数据源 plugin_list（需求2 的统一插件模型），
  * 启停/卸载/重载均热生效（后端重建 registry，无需重启应用）。
  * v0.8.1 需求5：承接原环境检测页的智能体安装检测（未安装展示安装命令与
  * 一键安装；核心引擎仍走环境检测页）。 */
 interface PluginDescriptor {
   id: string;
   display_name: string;
+  /** v0.9.3 需求11：中文说明（Rust 侧 [tool]/[skill] 首句或内置对照表；
+   * session 插件走前端 i18n；null = 无来源，用类型兜底文案）。 */
+  description?: string | null;
   kind: "builtin" | "manifest" | "tool" | "session";
   version: string | null;
   source_path: string | null;
@@ -88,14 +94,15 @@ function categoryOf(p: PluginDescriptor): PluginCategory {
   return "agent";
 }
 
+/** v0.9.3 需求11：分类改横向 tab（顺序按用户口径，智能体置首）。 */
 const PLUGIN_CATEGORIES: Array<{ key: PluginCategory; labelKey: string; fallback: string }> = [
+  { key: "agent", labelKey: "plugins.typeAgent", fallback: "智能体" },
   { key: "core", labelKey: "plugins.catCore", fallback: "核心引擎" },
   { key: "session", labelKey: "plugins.catSession", fallback: "会话能力" },
-  { key: "mcp", labelKey: "plugins.typeMcp", fallback: "MCP 工具" },
-  { key: "skill", labelKey: "plugins.typeSkill", fallback: "Skill 工具" },
-  { key: "cli", labelKey: "plugins.typeCli", fallback: "CLI 工具" },
-  { key: "custom", labelKey: "plugins.catCustom", fallback: "自定义插件" },
-  { key: "agent", labelKey: "plugins.typeAgent", fallback: "智能体" },
+  { key: "mcp", labelKey: "plugins.typeMcp", fallback: "MCP" },
+  { key: "skill", labelKey: "plugins.typeSkill", fallback: "Skill" },
+  { key: "cli", labelKey: "plugins.typeCli", fallback: "CLI" },
+  { key: "custom", labelKey: "plugins.catCustom", fallback: "自定义" },
 ];
 
 export function PluginsPage() {
@@ -111,6 +118,10 @@ export function PluginsPage() {
   const [editPluginId, setEditPluginId] = useState<string | null>(null);
   // v0.9.0 需求8：声明式面板 Dialog 状态。
   const [panelTarget, setPanelTarget] = useState<PluginDescriptor | null>(null);
+  // v0.9.3 需求12 P1（交互返工）：卡片显式按钮进入详情/编辑模态
+  //（用户裁决：不点卡片弹出；编辑按钮直落设置 tab）。
+  const [detailTarget, setDetailTarget] = useState<PluginDescriptor | null>(null);
+  const [detailTab, setDetailTab] = useState<"info" | "settings">("info");
   const [panelOutputs, setPanelOutputs] = useState<Record<number, string>>({});
   const [panelRunning, setPanelRunning] = useState<number | null>(null);
   const runPanelItem = useCallback(async (pluginId: string, index: number) => {
@@ -264,28 +275,19 @@ export function PluginsPage() {
 
   const tr = (key: string, fallback: string) => (t(key) === key ? fallback : t(key));
 
-  // 需求20：分类折叠（偏好记忆于 localStorage）。
-  const COLLAPSE_KEY = "plugins-cat-collapsed";
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
-    try {
-      const saved = localStorage.getItem(COLLAPSE_KEY);
-      return new Set(saved ? (JSON.parse(saved) as string[]) : []);
-    } catch {
-      return new Set();
-    }
+  // v0.9.3 需求11：分类改横向 tab（替换需求20 的折叠分区），记忆最后选择。
+  const TAB_KEY = "plugins-center-tab";
+  const [activeTab, setActiveTab] = useState<PluginCategory>(() => {
+    const saved = localStorage.getItem(TAB_KEY);
+    return PLUGIN_CATEGORIES.some((c) => c.key === saved) ? (saved as PluginCategory) : "agent";
   });
-  const toggleCategory = (key: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      try {
-        localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...next]));
-      } catch {
-        // 存储不可用时仅本次会话生效
-      }
-      return next;
-    });
+  const switchTab = (key: PluginCategory) => {
+    setActiveTab(key);
+    try {
+      localStorage.setItem(TAB_KEY, key);
+    } catch {
+      // 存储不可用时仅本次会话生效
+    }
   };
 
   // v0.9.0 需求1 二期：MCP 解析器（mcp-resolver 系统插件）启用态——新建
@@ -299,8 +301,9 @@ export function PluginsPage() {
     : true;
 
 
-  /** 插件卡片行（需求19 第二轮：分类分组内逐项渲染）。 */
-  const renderRow = (plugin: PluginDescriptor) => {
+  /** v0.9.3 需求11：插件卡片（workbuddy 风格紧凑卡）——图标+名称+开关一行，
+   * 徽章与元信息两行内收敛，动作按钮底部一行；网格自适应列数铺满区域。 */
+  const renderCard = (plugin: PluginDescriptor) => {
         const busy = busyIds.has(plugin.id);
         const installing = installingIds.has(plugin.id);
         // 需求5：健康状态 join（内置与 manifest 插件的安装检测承接）。
@@ -310,121 +313,27 @@ export function PluginsPage() {
         return (
           <div
             key={plugin.id}
-            className="flex items-center gap-3 rounded-md border border-border/60 p-3"
+            className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3 transition-colors hover:border-border"
           >
-            {plugin.kind === 'builtin' ? (
-              <AgentLogo agentId={plugin.id} size={28} />
-            ) : (
-              <PluginIcon icon={plugin.icon} size={28} />
-            )}
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-sm font-medium truncate">
-                  {plugin.kind === "session"
-                    ? tr(`sessionPlugins.${plugin.id.replace("session.", "")}.name`, plugin.display_name)
-                    : plugin.display_name}
-                </span>
-                <Badge variant="secondary" className="text-[10px] px-1.5">
-                  {plugin.kind === "builtin" || plugin.kind === "session"
-                    ? tr("plugins.kindBuiltin", "内置")
-                    : plugin.kind === "tool"
-                      ? tr("plugins.kindTool", "工具")
-                      : tr("plugins.kindManifest", "声明式")}
-                </Badge>
-                {plugin.core && (
-                  <Badge className="text-[10px] px-1.5">{tr("plugins.coreBadge", "核心引擎")}</Badge>
-                )}
-                {plugin.system && (
-                  <Badge variant="outline" className="text-[10px] px-1.5">
-                    {tr("plugins.systemBadge", "系统")}
-                  </Badge>
-                )}
-                {plugin.has_mcp && (
-                  <Badge variant="outline" className="text-[10px] px-1.5">
-                    {tr("plugins.mcpBadge", "MCP")}
-                  </Badge>
-                )}
-                {plugin.has_panel && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPanelTarget(plugin);
-                      setPanelOutputs({});
-                    }}
-                    className="inline-flex items-center gap-1 rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] text-foreground/80 hover:bg-accent/60"
-                  >
-                    <LayoutDashboard className="h-3 w-3" />
-                    {tr("plugins.panelButton", "面板")}
-                  </button>
-                )}
-                {!plugin.enabled && (
-                  <Badge variant="outline" className="text-[10px] px-1.5">
-                    {tr("plugins.disabledBadge", "已禁用")}
-                  </Badge>
-                )}
-              </div>
-              <div className="text-xs text-muted-foreground truncate mt-0.5">
-                {plugin.id}
-                {plugin.version ? ` · ${tr("plugins.pluginVersion", "插件")} v${plugin.version}` : ""}
-                {installed != null && (
-                  <span className={installed ? "" : " text-destructive"}>
-                    {" · "}
-                    {installed
-                      ? `${tr("plugins.installed", "已安装")}${cliVersion ? ` v${cliVersion}` : ""}`
-                      : tr("plugins.notInstalled", "未安装")}
-                  </span>
-                )}
-                {plugin.source_path ? ` · ${plugin.source_path}` : ""}
-              </div>
-              {!installed && status?.install_hint && (
-                <div className="text-[10px] text-muted-foreground/80 truncate mt-0.5 font-mono">
-                  {status.install_hint}
-                </div>
+            {/* 首行：图标 + 名称 + 开关（workbuddy 卡头形态）。 */}
+            <div className="flex items-center gap-2">
+              {plugin.kind === 'builtin' ? (
+                <AgentLogo agentId={plugin.id} size={26} />
+              ) : (
+                <PluginIcon icon={plugin.icon} size={26} />
               )}
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              {(busy || installing) && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-              {status && !installed && (status.native_install_command || status.install_hint) && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={busy || installing}
-                  onClick={() => handleInstall(plugin, status)}
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  <span className="ml-1">{tr("env.install", "安装")}</span>
-                </Button>
-              )}
-              {/* v0.9.0 需求1 二期：系统插件隐藏编辑/卸载（随包分发、启动
-               * 幂等重部署——编辑会被覆盖，卸载是无操作）。 */}
-              {!plugin.system && (plugin.kind === "manifest" || plugin.kind === "tool") && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  disabled={busy}
-                  aria-label={tr("plugins.edit", "编辑")}
-                  onClick={() => {
-                    setCreateOpen(false);
-                    setEditPluginId(plugin.id);
-                  }}
-                >
-                  <Pencil className="h-4 w-4" />
-                </Button>
-              )}
-              {!plugin.system && (plugin.kind === "manifest" || plugin.kind === "tool") && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="text-destructive hover:text-destructive"
-                  disabled={busy}
-                  aria-label={tr("plugins.remove", "卸载")}
-                  onClick={() => handleRemove(plugin)}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              )}
+              <span
+                className="min-w-0 flex-1 truncate text-[13px] font-medium"
+                title={plugin.kind === "session"
+                  ? tr(`sessionPlugins.${plugin.id.replace("session.", "")}.name`, plugin.display_name)
+                  : plugin.display_name}
+              >
+                {plugin.kind === "session"
+                  ? tr(`sessionPlugins.${plugin.id.replace("session.", "")}.name`, plugin.display_name)
+                  : plugin.display_name}
+              </span>
               {plugin.core ? (
-                <span className="text-xs text-muted-foreground w-9 text-center">—</span>
+                <span className="text-[10px] text-muted-foreground/60">—</span>
               ) : (
                 <Switch
                   checked={plugin.enabled}
@@ -434,13 +343,177 @@ export function PluginsPage() {
                 />
               )}
             </div>
+            {/* 徽章行：状态收敛（禁用显眼、其余轻量；核心引擎类目内不再重复徽章）。 */}
+            <div className="flex min-h-[16px] flex-wrap items-center gap-1">
+              {!plugin.enabled && !plugin.core && (
+                <Badge variant="outline" className="px-1 py-0 text-[9px] text-muted-foreground">
+                  {tr("plugins.disabledBadge", "已禁用")}
+                </Badge>
+              )}
+              {plugin.kind === "builtin" || plugin.kind === "session" ? (
+                <Badge variant="secondary" className="px-1 py-0 text-[9px]">
+                  {tr("plugins.kindBuiltin", "内置")}
+                </Badge>
+              ) : plugin.kind === "tool" ? (
+                <Badge variant="secondary" className="px-1 py-0 text-[9px]">
+                  {tr("plugins.kindTool", "工具")}
+                </Badge>
+              ) : (
+                <Badge variant="secondary" className="px-1 py-0 text-[9px]">
+                  {tr("plugins.kindManifest", "声明式")}
+                </Badge>
+              )}
+              {plugin.system && (
+                <Badge variant="outline" className="px-1 py-0 text-[9px]">
+                  {tr("plugins.systemBadge", "系统")}
+                </Badge>
+              )}
+              {plugin.has_mcp && (
+                <Badge variant="outline" className="px-1 py-0 text-[9px]">
+                  {tr("plugins.mcpBadge", "MCP")}
+                </Badge>
+              )}
+            </div>
+            {/* 说明（v0.9.3 需求11 用户裁决：中文说明取代 id/版本显示；编码与
+             * 版本等运维信息收进 title 悬停）。来源链：session → i18n →
+             * Rust description（[tool]/[skill] 首句或内置对照表）→ 类型兜底。 */}
+            <div
+              className="line-clamp-2 min-h-[26px] text-[10px] leading-[13px] text-muted-foreground/80"
+              title={[
+                plugin.id,
+                plugin.version ? `v${plugin.version}` : "",
+                installed != null
+                  ? installed
+                    ? `${tr("plugins.installed", "已安装")}${cliVersion ? ` v${cliVersion}` : ""}`
+                    : tr("plugins.notInstalled", "未安装")
+                  : "",
+                plugin.source_path ?? "",
+                !installed && status?.install_hint ? status.install_hint : "",
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            >
+              {plugin.kind === "session"
+                ? tr(`sessionPlugins.${plugin.id.replace("session.", "")}.description`, plugin.display_name)
+                : plugin.description
+                  || tr(
+                      plugin.kind === "builtin"
+                        ? "plugins.descFallbackBuiltin"
+                        : plugin.kind === "manifest"
+                          ? "plugins.descFallbackManifest"
+                          : "plugins.descFallbackTool",
+                      plugin.kind === "builtin"
+                        ? "内置智能体适配器"
+                        : plugin.kind === "manifest"
+                          ? "manifest 声明的自定义智能体"
+                          : "自定义能力插件",
+                    )}
+            </div>
+            {/* 动作行：安装 / 面板 / 详情 / 编辑 / 卸载 / 加载中。v0.9.3
+                需求12 返工：详情（全插件）与设置编辑（有配置面的会话插件）
+                图标钮直达模态。 */}
+            <div className="mt-auto flex items-center gap-1 pt-0.5">
+              {(busy || installing) && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+              {status && !installed && (status.native_install_command || status.install_hint) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-6 px-1.5 text-[10px]"
+                  disabled={busy || installing}
+                  onClick={() => handleInstall(plugin, status)}
+                >
+                  <Download className="h-3 w-3" />
+                  <span className="ml-0.5">{tr("env.install", "安装")}</span>
+                </Button>
+              )}
+              {plugin.has_panel && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-1.5 text-[10px]"
+                  onClick={() => {
+                    setPanelTarget(plugin);
+                    setPanelOutputs({});
+                  }}
+                >
+                  <LayoutDashboard className="h-3 w-3" />
+                  <span className="ml-0.5">{tr("plugins.panelButton", "面板")}</span>
+                </Button>
+              )}
+              <span className="flex-1" />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6"
+                aria-label={tr("plugins.viewDetails", "详情")}
+                title={tr("plugins.viewDetails", "详情")}
+                onClick={() => {
+                  setDetailTab("info");
+                  setDetailTarget(plugin);
+                }}
+              >
+                <Info className="h-3 w-3" />
+              </Button>
+              {plugin.kind === "session" &&
+                listSessionPlugins().find((p) => p.id === plugin.id)?.configSchema && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6"
+                    aria-label={tr("plugins.editSettings", "设置")}
+                    title={tr("plugins.editSettings", "设置")}
+                    onClick={() => {
+                      setDetailTab("settings");
+                      setDetailTarget(plugin);
+                    }}
+                  >
+                    <Settings2 className="h-3 w-3" />
+                  </Button>
+                )}
+              {/* v0.9.0 需求1 二期：系统插件隐藏编辑/卸载（随包分发、启动
+               * 幂等重部署——编辑会被覆盖，卸载是无操作）。 */}
+              {!plugin.system && (plugin.kind === "manifest" || plugin.kind === "tool") && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6"
+                  disabled={busy}
+                  aria-label={tr("plugins.edit", "编辑")}
+                  onClick={() => {
+                    setCreateOpen(false);
+                    setEditPluginId(plugin.id);
+                  }}
+                >
+                  <Pencil className="h-3 w-3" />
+                </Button>
+              )}
+              {!plugin.system && (plugin.kind === "manifest" || plugin.kind === "tool") && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 text-destructive hover:text-destructive"
+                  disabled={busy}
+                  aria-label={tr("plugins.remove", "卸载")}
+                  onClick={() => handleRemove(plugin)}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              )}
+            </div>
           </div>
         );
   };
 
   return (
-    <div className="p-6 max-w-3xl mx-auto space-y-4">
+    <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-6">
       {dialogNode}
+      {detailTarget ? (
+        <PluginDetailModal
+          plugin={detailTarget satisfies DrawerPluginInfo as DrawerPluginInfo}
+          initialTab={detailTab}
+          onClose={() => setDetailTarget(null)}
+        />
+      ) : null}
       <PluginCreateDialog
         open={createOpen || !!editPluginId}
         onOpenChange={(open) => {
@@ -454,7 +527,7 @@ export function PluginsPage() {
       />
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold">{tr("plugins.title", "插件管理")}</h2>
+          <h2 className="text-lg font-semibold">{tr("plugins.title", "插件中心")}</h2>
           <p className="text-xs text-muted-foreground mt-1">{tr("plugins.desc", "")}</p>
           {/* v0.9.0 需求11/12 终版裁决：页外零 MCP 入口——MCP/skills 等一切能力
               经插件机制统一管控（创建走「新建插件」；四家注入由启停/启动自动同步）。 */}
@@ -496,46 +569,46 @@ export function PluginsPage() {
         </div>
       )}
 
-      <div className="space-y-4">
+      {/* v0.9.3 需求11：分类横向 tab（胶囊形态，workbuddy 风格）——切换
+          不同类型卡片的展示；tab 计数常显（空分类也可见，承需求9 裁决）。 */}
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-border/40 pb-3">
         {PLUGIN_CATEGORIES.map((cat) => {
           const items = (result?.plugins ?? []).filter((x) => categoryOf(x) === cat.key);
-          // v0.9.1 需求9：分类常显——空分类（如 Skill 工具暂无成员）也展示
-          // 类型标题与计数 0（用户裁决：skill 即使 0 也要显示），空态一行占位。
-          const isCollapsed = collapsed.has(cat.key);
+          const active = activeTab === cat.key;
           return (
-            <div key={cat.key} className="space-y-2">
-              <button
-                type="button"
-                onClick={() => toggleCategory(cat.key)}
-                aria-expanded={!isCollapsed}
-                className="flex w-full items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70 hover:text-foreground/80 transition-colors"
-              >
-                <ChevronDown
-                  className={cn(
-                    "h-3 w-3 transition-transform",
-                    isCollapsed && "-rotate-90",
-                  )}
-                />
-                {tr(cat.labelKey, cat.fallback)}
-                <span className="text-muted-foreground/50">{items.length}</span>
-              </button>
-              {!isCollapsed &&
-                (items.length > 0 ? (
-                  items.map((plugin) => renderRow(plugin))
-                ) : (
-                  <p className="px-1 py-2 text-xs text-muted-foreground/60">
-                    {tr("plugins.categoryEmpty", "暂无插件")}
-                  </p>
-                ))}
-            </div>
+            <button
+              key={cat.key}
+              type="button"
+              onClick={() => switchTab(cat.key)}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors",
+                active
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+              )}
+            >
+              {tr(cat.labelKey, cat.fallback)}
+              <span className={cn("text-[10px] tabular-nums", active ? "opacity-80" : "opacity-50")}>
+                {items.length}
+              </span>
+            </button>
           );
         })}
-        {result && result.plugins.length === 0 && (
-          <p className="text-sm text-muted-foreground py-8 text-center">
-            {tr("plugins.empty", "无插件")}
-          </p>
-        )}
       </div>
+
+      {/* 卡片网格：自适应列数铺满区域（v0.9.3 需求11，minmax 卡宽 ~230px）。 */}
+      <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(230px,1fr))]">
+        {(result?.plugins ?? [])
+          .filter((x) => categoryOf(x) === activeTab)
+          .map((plugin) => renderCard(plugin))}
+      </div>
+      {(result?.plugins ?? []).filter((x) => categoryOf(x) === activeTab).length === 0 && (
+        <p className="py-10 text-center text-sm text-muted-foreground">
+          {result && result.plugins.length === 0
+            ? tr("plugins.empty", "无插件")
+            : tr("plugins.categoryEmpty", "暂无插件")}
+        </p>
+      )}
 
       <p className="text-xs text-muted-foreground">
         {tr("plugins.hint", "")}

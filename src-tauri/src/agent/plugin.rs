@@ -41,6 +41,10 @@ pub enum PluginKind {
 pub struct PluginDescriptor {
     pub id: String,
     pub display_name: String,
+    /// 中文说明（v0.9.3 需求11 补充：插件中心卡片展示）。manifest/tool 取
+    /// plugin.toml [info].description；builtin 智能体取内置对照表；session
+    /// 插件由前端 i18n 兜底（此处 None）。
+    pub description: Option<String>,
     pub kind: PluginKind,
     /// Builtin = 应用版本；Manifest = probe 探测版本（未探测为 None）。
     pub version: Option<String>,
@@ -280,6 +284,7 @@ pub fn session_plugin_descriptors(disabled: &HashSet<String>) -> Vec<PluginDescr
         .map(|(id, display_name)| PluginDescriptor {
             id: id.to_string(),
             display_name: display_name.to_string(),
+            description: None,
             kind: PluginKind::Session,
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
             source_path: None,
@@ -529,6 +534,19 @@ pub fn builtin_plugin_specs() -> Vec<(PluginFactory, bool)> {
     ]
 }
 
+/// 内置智能体的中文说明（AgentInfo 无 description 字段，此处单点对照；
+/// 未列出的 id（测试 fake 等）回退 None）。
+fn builtin_agent_description(id: &str) -> Option<String> {
+    Some(match id {
+        "jishu-self" => "内置智能体（内嵌 Pi 引擎，机枢 agent 本体，含任务流程编排能力）",
+        "claude-code" => "Claude Code 接入适配器（经 ACP 通道驱动官方 CLI）",
+        "codex" => "Codex 接入适配器（经 app-server 协议驱动官方 CLI）",
+        "opencode" => "OpenCode 接入适配器（第三方开源编码智能体）",
+        _ => return None,
+    }
+    .to_string())
+}
+
 /// 装配核心（纯函数，可测）：内建插件 + manifest 插件 + 禁用集合 →
 /// (agents 表, 插件描述符列表)。无禁用输入时产出与插件化之前的
 /// 硬编码装载逐项等价（行为不变的实现保证）。
@@ -554,6 +572,7 @@ pub fn assemble(
         plugins.push(PluginDescriptor {
             id: id.clone(),
             display_name: info.display_name,
+            description: builtin_agent_description(&id),
             kind: PluginKind::Builtin,
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
             source_path: None,
@@ -581,6 +600,7 @@ pub fn assemble(
         plugins.push(PluginDescriptor {
             id: id.clone(),
             display_name: file.info.display_name.clone(),
+            description: None,
             kind: PluginKind::Manifest,
             // 版本在 AgentRegistry::list_plugins 里经 health_cache 回填
             //（assemble 不做 IO）。
@@ -601,11 +621,31 @@ pub fn assemble(
     (agents, plugins)
 }
 
+/// 工具/能力插件的中文说明来源：[tool].description（注入用完整描述，取
+/// 首句前的主句——通常本身即一句说明）优先，[skill]/[[skill]] 声明描述次之。
+fn manifest_plugin_description(file: &super::manifest::schema::AgentManifestFile) -> String {
+    if let Some(tool) = file.tool.as_ref() {
+        let first_sentence = tool
+            .description
+            .split(['。', '\n'])
+            .find(|s| !s.trim().is_empty())
+            .unwrap_or(&tool.description);
+        return first_sentence.trim().to_string();
+    }
+    if let Some(skill) = file.skill.as_ref() {
+        for (_name, description, _body) in skill.entries() {
+            return description.to_string();
+        }
+    }
+    String::new()
+}
+
 /// 工具插件 → 描述符（plugin_list 合并渲染用）。
 pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescriptor {
     PluginDescriptor {
         id: plugin.file.info.id.clone(),
         display_name: plugin.file.info.display_name.clone(),
+        description: Some(manifest_plugin_description(&plugin.file)),
         kind: PluginKind::Tool,
         version: None,
         source_path: Some(plugin.source_path.to_string_lossy().to_string()),

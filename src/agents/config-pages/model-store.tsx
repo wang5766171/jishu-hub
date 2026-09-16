@@ -149,7 +149,7 @@ export function ModelStoreConfigPage({
       )}
 
       {/* 高级设置（v0.9.1 需求12 补充，用户裁决充实）：会话环境变量 +
-          原始配置编辑（MCP 服务统一在「插件管理」经 MCP 插件管理）。 */}
+          原始配置编辑（MCP 服务统一在「插件中心」经 MCP 插件管理）。 */}
       {configTab === "advanced" && supportsMcp && <AdvancedSettingsBlock agentConfig={agentConfig ?? null} onSaved={refetchAgentConfig} />}
     </ConfigPageShell>
   );
