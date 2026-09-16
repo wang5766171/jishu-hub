@@ -113,6 +113,25 @@ pub fn load_manifests(
                 continue;
             }
         };
+        // v0.9.3 需求13：同域共存（设计决策 1）——组合式会话插件清单
+        //（kind=session-composed，[plugin]/[source]/[render] 段）与本扫描器
+        // 的 AgentManifestFile schema 不同形。此处前置识别并跳过（由
+        // composed_session_manifests 扫描装载）；不做 kind 预判会因
+        // deny_unknown_fields 报「unknown field `plugin`」刷屏插件中心。
+        let composed = content
+            .parse::<toml::Value>()
+            .ok()
+            .and_then(|v| {
+                v.get("plugin")
+                    .and_then(|p| p.get("id"))
+                    .and_then(|v| v.as_str())
+                    .map(|id| id.starts_with("session."))
+            })
+            .unwrap_or(false)
+            && content.contains("session-composed");
+        if composed {
+            continue;
+        }
         let parsed: schema::AgentManifestFile = match toml::from_str(&content) {
             Ok(parsed) => parsed,
             Err(e) => {

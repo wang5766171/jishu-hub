@@ -1153,6 +1153,7 @@
       "untitled": "(untitled turn)"
     },
     "toolStats": {
+      "empty": "No tool calls in this session",
       "name": "Tool call stats",
       "description": "Left-edge chip: total/failed tool calls in this session; hover for breakdown",
       "hoverTitle": "Tool call stats (this session)",

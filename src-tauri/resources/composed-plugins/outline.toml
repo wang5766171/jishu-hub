@@ -1,0 +1,12 @@
+[plugin]
+id = "session.outline"
+name = "会话大纲"
+description = "面板列出每轮问答大纲，点击跳转到对应轮次"
+kind = "session-composed"
+
+[source]
+type = "turns"
+
+[render]
+component = "render.list"
+mount = "dock-panel"

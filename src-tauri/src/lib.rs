@@ -125,6 +125,8 @@ pub fn run() {
             let _ = hub::migrate_v0_5_0();
             // Phase 1: 自动注册 Conductor 扩展 + skill pack + 删除旧 skill
             task_plan::ensure_conductor_extension();
+            // v0.9.3 需求13 C1：内置组合式插件清单幂等部署。
+            agent::plugin::ensure_builtin_composed_manifests();
             // v0.8.1 需求9/10：内置自适应插件（任务需求/流程规划）随包分发，
             // 首启落 ~/.jishu-hub/agents/（幂等）。
             agent::plugin::ensure_builtin_adaptive_plugins();
@@ -394,6 +396,9 @@ pub fn run() {
             commands::agents::plugin_update,
             commands::agents::plugin_config_get_all,
             commands::agents::plugin_config_set,
+            commands::agents::composed_plugin_manifests,
+            commands::agents::composed_plugin_save,
+            commands::agents::composed_plugin_delete,
             commands::agents::session_tool_list,
             commands::agents::session_set_tools,
             commands::sessions::persist_agent_turn,

@@ -1,0 +1,13 @@
+[plugin]
+id = "session.phase-divider"
+name = "阶段分隔渲染"
+description = "任务阶段分隔条（规划/执行等阶段的视觉分界）"
+kind = "session-composed"
+
+[source]
+type = "block-type"
+blockTypes = ["phase_divider"]
+
+[render]
+component = "render.divider"
+mount = "block-renderer"

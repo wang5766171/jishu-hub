@@ -1,0 +1,13 @@
+[plugin]
+id = "session.navigation"
+name = "会话导航列"
+description = "会话左缘快速跳转到每轮提问位置"
+kind = "session-composed"
+
+[source]
+type = "turns"
+
+[render]
+component = "render.turn-rail"
+mount = "rail-widget"
+side = "left"

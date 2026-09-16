@@ -1,18 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invokeCommand } from "@/hooks/use-invoke";
-import { navigationPlugin } from "./builtin/navigation";
 import { flowPanoramaPlugin } from "./builtin/flow-panorama";
 import { htmlRenderPlugin } from "./builtin/html-render";
-import { mermaidRenderPlugin } from "./builtin/mermaid-render";
-import { desktopNotifyPlugin } from "./builtin/desktop-notify";
 import { sessionExportPlugin } from "./builtin/session-export";
 import { usagePanelPlugin } from "./builtin/usage-panel";
 import { messageSearchPlugin } from "./builtin/message-search";
 import { interactionRenderPlugin } from "./builtin/interaction-render";
-import { phaseDividerPlugin } from "./builtin/phase-divider";
-import { toolStatsPlugin } from "./builtin/tool-stats";
-import { outlinePlugin } from "./builtin/outline";
+import "@/features/session-kernel/capabilities/renderers/components/MermaidRenderer";
+import "@/features/session-kernel/capabilities/renderers/components/primitives";
+import "@/features/session-kernel/capabilities/sources/aggregate-source";
+import "@/features/session-kernel/capabilities/actions";
+import { composedPlugins, composedVersion, subscribeComposed } from "@/features/session-kernel/capabilities/composition/loader";
 import { artifactsPlugin } from "./builtin/artifacts";
 import { streamStatusPlugin } from "./builtin/stream-status";
 import { contextRingPlugin } from "./builtin/context-ring";
@@ -27,28 +26,23 @@ import type { SessionPluginDescriptor } from "./types";
  * 实现未落地不登记后端描述符（插件页不出现无实现的开关）。
  */
 const BUILTIN_SESSION_PLUGINS: SessionPluginDescriptor[] = [
-  navigationPlugin,
   flowPanoramaPlugin,
   // 注：HTML 实时渲染（html-render，聊天流内 ```html 代码块渲染卡）与产物
   // 中心（artifacts，产出文件侧栏预览）是两个能力，均保留——前者处理代码
   // 块、后者处理落盘文件（v0.9.3 测试期用户确认，非 html-preview 残留）。
   htmlRenderPlugin,
-  mermaidRenderPlugin,
-  desktopNotifyPlugin,
   sessionExportPlugin,
   usagePanelPlugin,
   messageSearchPlugin,
   interactionRenderPlugin,
-  phaseDividerPlugin,
-  toolStatsPlugin,
-  outlinePlugin,
   artifactsPlugin,
   streamStatusPlugin,
   contextRingPlugin,
 ];
 
 export function listSessionPlugins(): SessionPluginDescriptor[] {
-  return BUILTIN_SESSION_PLUGINS;
+  // v0.9.3 需求13：builtin 存量 + 组合式（manifest 装配）合并输出。
+  return [...BUILTIN_SESSION_PLUGINS, ...composedPlugins()];
 }
 
 export function findSessionPlugin(id: string): SessionPluginDescriptor | undefined {
@@ -67,18 +61,20 @@ interface PluginListEntry {
  * 广播（插件页开关 → 后端热重建）即时刷新，无需重启。
  */
 export function useEnabledSessionPlugins(): Set<string> {
-  const [enabled, setEnabled] = useState<Set<string>>(() => defaultEnabled());
+  const [backendEnabled, setBackendEnabled] = useState<Set<string> | null>(null);
+  // v0.9.3 需求13：组合清单异步装载完成 → 版本快照变化 → 交集重算（否则
+  // 组合插件在首查后被剔除出启用集，且 provider 不重算——渲染失效根因②）。
+  const composedRev = useSyncExternalStore(subscribeComposed, composedVersion, () => 0);
 
   const refresh = useCallback(async () => {
     try {
       const result = await invokeCommand<{ plugins: PluginListEntry[] }>("plugin_list");
-      const enabledFromBackend = new Set(
-        (result.plugins ?? [])
-          .filter((p) => p.kind === "session" && p.enabled)
-          .map((p) => p.id),
-      );
-      setEnabled(
-        new Set(BUILTIN_SESSION_PLUGINS.map((p) => p.id).filter((id) => enabledFromBackend.has(id))),
+      setBackendEnabled(
+        new Set(
+          (result.plugins ?? [])
+            .filter((p) => p.kind === "session" && p.enabled)
+            .map((p) => p.id),
+        ),
       );
     } catch {
       // 查询失败保持当前值（默认全启用兜底）
@@ -93,10 +89,15 @@ export function useEnabledSessionPlugins(): Set<string> {
     };
   }, [refresh]);
 
-  return enabled;
+  return useMemo(() => {
+    if (backendEnabled === null) return defaultEnabled();
+    return new Set(listSessionPlugins().map((p) => p.id).filter((id) => backendEnabled.has(id)));
+    // composedRev 进依赖：装载完成后重算交集。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backendEnabled, composedRev]);
 }
 
 function defaultEnabled(): Set<string> {
   // 初值全启用：首次渲染（后端清单未返回前）不闪烁；后端权威值到达后校正。
-  return new Set(BUILTIN_SESSION_PLUGINS.map((p) => p.id));
+  return new Set(listSessionPlugins().map((p) => p.id));
 }

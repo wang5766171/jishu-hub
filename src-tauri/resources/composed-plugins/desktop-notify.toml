@@ -1,0 +1,49 @@
+[plugin]
+id = "session.desktop-notify"
+name = "桌面通知"
+description = "回合完成、需审批、任务失败时发送系统通知"
+kind = "session-composed"
+
+[source]
+type = "signal"
+signals = ["turn-complete", "approval-request", "task-run-failed"]
+
+[render]
+component = "render.none"
+mount = "event-hook"
+
+[[action]]
+type = "desktop-notify"
+
+[[config]]
+key = "notifyTurnComplete"
+type = "switch"
+label = "回合完成通知"
+description = "后台会话回复完毕时通知（正在查看的会话不打扰）"
+default = true
+
+[[config]]
+key = "notifyApproval"
+type = "switch"
+label = "审批请求通知"
+default = true
+
+[[config]]
+key = "notifyTaskFailed"
+type = "switch"
+label = "任务失败通知"
+default = true
+
+[[config]]
+key = "sound"
+type = "switch"
+label = "提示音"
+default = true
+
+[[config]]
+key = "quietHours"
+type = "text"
+label = "静音时段"
+description = "格式 HH:mm-HH:mm（如 22:00-08:00），留空不静音"
+default = ""
+placeholder = "HH:mm-HH:mm"

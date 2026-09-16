@@ -359,6 +359,8 @@ impl AgentRegistry {
         // map——无 agent 实现；启停与 agent/tool 插件共用 plugins.json）。
         let mut plugins = plugins;
         plugins.extend(plugin::session_plugin_descriptors(&disabled));
+        // v0.9.3 需求13 C1：组合式插件（manifest 驱动，前端引擎装配）。
+        plugins.extend(plugin::composed_session_plugin_specs(&disabled));
 
         Self {
             agents,

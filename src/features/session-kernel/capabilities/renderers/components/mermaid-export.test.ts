@@ -10,7 +10,7 @@ import {
   mermaidErrorBrief,
   parseSvgSize,
   wellFormSvgXml,
-} from "./mermaid-render";
+} from "./mermaid-export";
 
 const MERMAID_LIKE_SVG =
   '<svg id="d1" width="100%" style="max-width: 512px;" viewBox="0 0 512 384"><g><text>登录</text></g></svg>';

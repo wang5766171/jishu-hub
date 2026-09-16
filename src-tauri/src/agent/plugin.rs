@@ -70,6 +70,8 @@ pub struct PluginDescriptor {
     pub system: bool,
     /// info.icon 声明值（v0.9.0 需求19：前端图标注册表渲染，未知键回退 Bot）。
     pub icon: String,
+    /// 组合式插件（v0.9.3 需求13：manifest 装配，可经向导创建/删除）。
+    pub composed: bool,
 }
 
 /// [panel] 声明的 UI 投影（v0.9.0 需求8）。
@@ -191,12 +193,10 @@ fn known_plugin_ids() -> HashSet<String> {
 pub fn builtin_session_plugin_specs() -> &'static [(&'static str, &'static str)] {
     &[
         // (id, display_name)——display_name 为兜底文案，插件页按 id 走 i18n。
-        ("session.navigation", "会话导航列"),
         ("session.flow", "任务流程全景"),
         // v0.9.2 M4 首期批次（用户圈定 2026-09-06）
         ("session.html-render", "HTML 实时渲染"),
         ("session.mermaid-render", "Mermaid 图表渲染"),
-        ("session.desktop-notify", "桌面通知"),
         ("session.export", "会话导出"),
         ("session.usage", "用量成本面板"),
         // v0.9.2 底座增强后拆出
@@ -212,12 +212,6 @@ pub fn builtin_session_plugin_specs() -> &'static [(&'static str, &'static str)]
         // v0.9.3 需求8：上下文水位环——自 chat-page 内置渲染迁移为插件
         //（composer-trailing 挂载点首插件，ctx 压缩命令面）。
         ("session.context-ring", "上下文水位环"),
-        // v0.9.3 需求10 B1：阶段分隔渲染插件化（blockTypes 咨询，停用回退内置）。
-        ("session.phase-divider", "阶段分隔渲染"),
-        // v0.9.3 需求10 B2：工具调用统计（rail 挂件，ctx.messages 数据面）。
-        ("session.tool-stats", "工具调用统计"),
-        // v0.9.3 需求10 B3：会话大纲（dock-panel，turns+scrollToTurn）。
-        ("session.outline", "会话大纲"),
     ]
 }
 
@@ -276,6 +270,141 @@ pub fn enabled_pi_extension_tools() -> Vec<String> {
     merged
 }
 
+/// 内置组合式插件清单（v0.9.3 需求13 C1）：随包分发的 session-composed
+/// manifest，启动幂等部署到 ~/.jishu-hub/plugins/<id>/plugin.toml（系统语义：
+/// 重部署覆盖，用户改造需经新建组合插件另存）。
+const BUILTIN_COMPOSED_MANIFESTS: &[(&str, &str)] = &[
+    ("session.mermaid-render", include_str!("../../resources/composed-plugins/mermaid-render.toml")),
+    ("session.phase-divider", include_str!("../../resources/composed-plugins/phase-divider.toml")),
+    ("session.tool-stats", include_str!("../../resources/composed-plugins/tool-stats.toml")),
+    ("session.outline", include_str!("../../resources/composed-plugins/outline.toml")),
+    ("session.navigation", include_str!("../../resources/composed-plugins/navigation.toml")),
+    ("session.desktop-notify", include_str!("../../resources/composed-plugins/desktop-notify.toml")),
+];
+
+fn composed_plugins_root() -> PathBuf {
+    super::manifest::hub_home().join("plugins")
+}
+
+/// 幂等部署内置组合清单（lib.rs 启动调用）。
+pub fn ensure_builtin_composed_manifests() {
+    for (id, toml) in BUILTIN_COMPOSED_MANIFESTS {
+        let dir = composed_plugins_root().join(id);
+        let _ = std::fs::create_dir_all(&dir);
+        let target = dir.join("plugin.toml");
+        if let Ok(existing) = std::fs::read_to_string(&target) {
+            if existing == *toml {
+                continue;
+            }
+        }
+        if let Err(e) = crate::util::atomic_write(&target, toml.as_bytes()) {
+            log::warn!("[composition] deploy {id} failed: {e}");
+        }
+    }
+}
+
+/// 扫描组合式清单（kind=session-composed），toml → JSON 透传（前端引擎装配）。
+pub fn composed_session_manifests() -> Vec<(String, serde_json::Value)> {
+    let root = composed_plugins_root();
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let toml_path = entry.path().join("plugin.toml");
+        let Ok(content) = std::fs::read_to_string(&toml_path) else {
+            continue;
+        };
+        let Ok(value) = content.parse::<toml::Value>() else {
+            log::warn!("[composition] invalid toml: {}", toml_path.display());
+            continue;
+        };
+        if value.get("plugin").and_then(|p| p.get("id")).is_none() {
+            continue;
+        }
+        let id = value
+            .get("plugin")
+            .and_then(|p| p.get("id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        out.push((id, serde_json::to_value(&value).unwrap_or(serde_json::Value::Null)));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// 用户组合清单保存（需求13 C3 向导落点）：校验可解析 + id 一致 + 非内置，
+/// 原子写 ~/.jishu-hub/plugins/<id>/plugin.toml。
+pub fn save_composed_manifest(id: &str, toml: &str) -> Result<(), String> {
+    if id.trim().is_empty() || !id.starts_with("session.") {
+        return Err("组合插件 id 须以 session. 开头".to_string());
+    }
+    if BUILTIN_COMPOSED_MANIFESTS.iter().any(|(bid, _)| *bid == id) {
+        return Err(format!("内置组合插件 {id} 不可覆盖（可另存新 id）"));
+    }
+    let value: toml::Value = toml.parse().map_err(|e| format!("TOML 解析失败: {e}"))?;
+    let decl_id = value
+        .get("plugin")
+        .and_then(|p| p.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if decl_id != id {
+        return Err(format!("清单 id ({decl_id:?}) 与目标 id ({id:?}) 不一致"));
+    }
+    let dir = composed_plugins_root().join(id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    crate::util::atomic_write(&dir.join("plugin.toml"), toml.as_bytes())
+        .map_err(|e| format!("写入清单失败: {e}"))
+}
+
+/// 删除用户组合插件（内置清单拒绝）；目录整体移除（启停记录随 plugins.json
+/// 清理由既有 rebuild 语义覆盖）。
+pub fn delete_composed_plugin(id: &str) -> Result<(), String> {
+    if BUILTIN_COMPOSED_MANIFESTS.iter().any(|(bid, _)| *bid == id) {
+        return Err(format!("内置组合插件 {id} 不可删除"));
+    }
+    let dir = composed_plugins_root().join(id);
+    if !dir.join("plugin.toml").is_file() {
+        return Err(format!("组合插件 {id} 不存在"));
+    }
+    std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())
+}
+
+/// 组合式插件的描述符（plugin_list 合并；启停沿 plugins.json 统一禁用集合）。
+pub fn composed_session_plugin_specs(disabled: &HashSet<String>) -> Vec<PluginDescriptor> {
+    composed_session_manifests()
+        .into_iter()
+        .map(|(id, manifest)| PluginDescriptor {
+            display_name: manifest
+                .get("plugin")
+                .and_then(|p| p.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(&id)
+                .to_string(),
+            description: manifest
+                .get("plugin")
+                .and_then(|p| p.get("description"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            id: id.clone(),
+            kind: PluginKind::Session,
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            source_path: None,
+            core: false,
+            enabled: !disabled.contains(&id),
+            has_mcp: false,
+            has_panel: false,
+            has_skill: false,
+            has_pi_extension: false,
+            panel: None,
+            system: BUILTIN_COMPOSED_MANIFESTS.iter().any(|(bid, _)| *bid == id),
+            icon: String::new(),
+            composed: false,
+        })
+        .collect()
+}
+
 /// 会话能力插件描述符（纯函数，可测）：不进 AgentRegistry（无 agent 实现），
 /// 启停与 agent/tool 插件共用 plugins.json 禁用集合。
 pub fn session_plugin_descriptors(disabled: &HashSet<String>) -> Vec<PluginDescriptor> {
@@ -297,6 +426,7 @@ pub fn session_plugin_descriptors(disabled: &HashSet<String>) -> Vec<PluginDescr
             panel: None,
             system: false,
             icon: String::new(),
+            composed: false,
         })
         .collect()
 }
@@ -585,6 +715,7 @@ pub fn assemble(
             panel: None,
             system: false,
             icon: info.icon.clone(),
+            composed: false,
         });
     }
 
@@ -615,6 +746,7 @@ pub fn assemble(
             panel: None,
             system: false,
             icon: file.info.icon.clone(),
+            composed: false,
         });
     }
 
@@ -668,6 +800,7 @@ pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescrip
         }),
         system: is_system_plugin(&plugin.file.info.id),
         icon: plugin.file.info.icon.clone(),
+        composed: false,
     }
 }
 
@@ -1028,19 +1161,19 @@ mod tests {
     #[test]
     fn session_plugin_descriptors_follow_disabled_set() {
         let disabled: std::collections::HashSet<String> =
-            ["session.navigation".to_string()].into_iter().collect();
+            ["session.stream-status".to_string()].into_iter().collect();
         let descriptors = session_plugin_descriptors(&disabled);
         assert!(descriptors.iter().all(|d| d.kind == PluginKind::Session));
         assert!(descriptors.iter().all(|d| !d.core));
         let nav = descriptors
             .iter()
-            .find(|d| d.id == "session.navigation")
+            .find(|d| d.id == "session.stream-status")
             .unwrap();
         assert!(!nav.enabled);
         assert!(
             session_plugin_descriptors(&Default::default())
                 .iter()
-                .find(|d| d.id == "session.navigation")
+                .find(|d| d.id == "session.stream-status")
                 .unwrap()
                 .enabled
         );

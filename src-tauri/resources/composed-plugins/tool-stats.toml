@@ -1,0 +1,28 @@
+[plugin]
+id = "session.tool-stats"
+name = "工具统计"
+description = "统计面板：本会话工具调用总数/失败数与分布（停靠面板按需查看）"
+kind = "session-composed"
+
+[source]
+type = "messages"
+aggregate = "tool-stats"
+
+[render]
+component = "render.stats-list"
+mount = "dock-panel"
+
+[[config]]
+key = "topN"
+type = "number"
+label = "Top 工具数"
+description = "悬停统计卡显示的调用最多的工具数量"
+default = 6
+min = 3
+max = 15
+
+[[config]]
+key = "showErrorRatio"
+type = "switch"
+label = "显示错误率"
+default = true

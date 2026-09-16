@@ -303,6 +303,40 @@ pub(crate) fn plugin_get(
 }
 
 /// 编辑模式：校验 → 覆盖写回原文件 → 热重建。id 不可变（后端防御：
+/// v0.9.3 需求13 C3：新建组合插件向导落点——保存清单并广播 plugins-changed
+///（前端 loader 热重建，新插件即时出现在插件中心与会话区）。
+#[tauri::command]
+pub(crate) fn composed_plugin_save(
+    app: tauri::AppHandle,
+    id: String,
+    toml: String,
+) -> Result<(), String> {
+    agent::plugin::save_composed_manifest(&id, &toml)?;
+    use tauri::Emitter;
+    let _ = app.emit("plugins-changed", ());
+    Ok(())
+}
+
+/// v0.9.3 需求13 C3：删除用户组合插件（内置拒绝）并广播。
+#[tauri::command]
+pub(crate) fn composed_plugin_delete(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    agent::plugin::delete_composed_plugin(&id)?;
+    use tauri::Emitter;
+    let _ = app.emit("plugins-changed", ());
+    Ok(())
+}
+
+/// v0.9.3 需求13 C1：组合式清单扫描（toml→JSON，前端组合引擎装配）。
+/// 形状契约：`[{ id, manifest }]` 对象数组（元组会序列化成 `[id, manifest]`
+/// 数组——前端 loader 形状不匹配致组合清单全军覆没，测试期用户实测踩坑）。
+#[tauri::command]
+pub(crate) fn composed_plugin_manifests() -> Result<Vec<serde_json::Value>, String> {
+    Ok(agent::plugin::composed_session_manifests()
+        .into_iter()
+        .map(|(id, manifest)| serde_json::json!({ "id": id, "manifest": manifest }))
+        .collect())
+}
+
 /// v0.9.3 需求12 P1：插件配置面——全量读取（前端与 defaults 合并）。
 #[tauri::command]
 pub(crate) fn plugin_config_get_all() -> Result<HashMap<String, HashMap<String, serde_json::Value>>, String> {
