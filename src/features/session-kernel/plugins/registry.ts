@@ -10,6 +10,9 @@ import { sessionExportPlugin } from "./builtin/session-export";
 import { usagePanelPlugin } from "./builtin/usage-panel";
 import { messageSearchPlugin } from "./builtin/message-search";
 import { interactionRenderPlugin } from "./builtin/interaction-render";
+import { phaseDividerPlugin } from "./builtin/phase-divider";
+import { toolStatsPlugin } from "./builtin/tool-stats";
+import { outlinePlugin } from "./builtin/outline";
 import { artifactsPlugin } from "./builtin/artifacts";
 import { streamStatusPlugin } from "./builtin/stream-status";
 import { contextRingPlugin } from "./builtin/context-ring";
@@ -36,6 +39,9 @@ const BUILTIN_SESSION_PLUGINS: SessionPluginDescriptor[] = [
   usagePanelPlugin,
   messageSearchPlugin,
   interactionRenderPlugin,
+  phaseDividerPlugin,
+  toolStatsPlugin,
+  outlinePlugin,
   artifactsPlugin,
   streamStatusPlugin,
   contextRingPlugin,

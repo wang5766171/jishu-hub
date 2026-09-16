@@ -38,49 +38,65 @@ export function SessionRailSlot({ ctx }: { ctx: SessionKernelContext }) {
 
   if (widgets.length === 0) return null;
 
+  // v0.9.3 需求10 测试期修复18：按侧分组为每侧一条贴边槽（flex-col 纵向
+  // 堆叠 + gap）——此前每个挂件各自一条 absolute 同位条，同侧多挂件必然
+  // 重叠（工具统计与导航列撞位的根因）。拖拽切缘语义不变（逐挂件生效）。
+  const bySide: Record<RailSide, typeof widgets> = { left: [], right: [] };
+  for (const widget of widgets) bySide[widget.side].push(widget);
+
   return (
     <>
-      {widgets.map(({ id, mount, side }) => {
-        const Host = mount.Component;
+      {(Object.keys(bySide) as RailSide[]).map((side) => {
+        const group = bySide[side];
+        if (group.length === 0) return null;
         return (
           <div
-            key={id}
+            key={side}
             className={cn(
-              "pointer-events-none absolute inset-y-0 z-10 flex w-6 flex-col items-center",
+              "pointer-events-none absolute inset-y-0 z-10 flex w-6 flex-col items-center justify-center gap-1",
               side === "left" ? "left-0" : "right-0",
             )}
-            data-rail-widget={id}
             data-rail-side={side}
-            onDragOver={(e) => {
-              // 挂件本体拖到对侧：拖拽体携带插件 id，落位切缘。
-              if (e.dataTransfer.types.includes("application/x-jishu-rail")) {
-                e.preventDefault();
-              }
-            }}
-            onDrop={(e) => {
-              const dragged = e.dataTransfer.getData("application/x-jishu-rail");
-              if (dragged === id) {
-                const next: RailSide = side === "left" ? "right" : "left";
-                setLayout((prev) => {
-                  const state = {
-                    ...prev,
-                    railWidgets: { ...prev.railWidgets, [id]: { side: next } },
-                  };
-                  return state;
-                });
-              }
-            }}
           >
-            <div
-              className="flex h-full w-full items-center justify-center"
-              draggable
-              onDragStart={(e) => {
-                e.dataTransfer.setData("application/x-jishu-rail", id);
-                e.dataTransfer.effectAllowed = "move";
-              }}
-            >
-              <Host ctx={ctx} />
-            </div>
+            {group.map(({ id, mount, side: widgetSide }) => {
+              const Host = mount.Component;
+              return (
+                <div
+                  key={id}
+                  data-rail-widget={id}
+                  onDragOver={(e) => {
+                    // 挂件本体拖到对侧：拖拽体携带插件 id，落位切缘。
+                    if (e.dataTransfer.types.includes("application/x-jishu-rail")) {
+                      e.preventDefault();
+                    }
+                  }}
+                  onDrop={(e) => {
+                    const dragged = e.dataTransfer.getData("application/x-jishu-rail");
+                    if (dragged === id) {
+                      const next: RailSide = widgetSide === "left" ? "right" : "left";
+                      setLayout((prev) => {
+                        const state = {
+                          ...prev,
+                          railWidgets: { ...prev.railWidgets, [id]: { side: next } },
+                        };
+                        return state;
+                      });
+                    }
+                  }}
+                >
+                  <div
+                    className="flex w-full items-center justify-center"
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData("application/x-jishu-rail", id);
+                      e.dataTransfer.effectAllowed = "move";
+                    }}
+                  >
+                    <Host ctx={ctx} />
+                  </div>
+                </div>
+              );
+            })}
           </div>
         );
       })}

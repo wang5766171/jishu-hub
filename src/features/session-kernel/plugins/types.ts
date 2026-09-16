@@ -46,6 +46,8 @@ export interface PluginBlock {
   isError?: boolean;
   /** interaction 选项。 */
   options?: Array<{ id: string; label: string }>;
+  /** phase_divider 标题（v0.9.3 需求10 B1：插件接管渲染所需的完整块数据）。 */
+  title?: string;
   /** interaction 已选答案。 */
   answer?: string;
   /** thinking 内容。 */

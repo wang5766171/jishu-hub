@@ -1131,6 +1131,24 @@
     "htmlTruncated": "Content over 512KB was truncated; the page may render incompletely."
   },
   "sessionPlugins": {
+    "outline": {
+      "name": "Session outline",
+      "description": "Panel listing per-turn Q&A outline; click to jump to the turn",
+      "panelTitle": "Session outline",
+      "empty": "No turns yet",
+      "untitled": "(untitled turn)"
+    },
+    "toolStats": {
+      "name": "Tool call stats",
+      "description": "Left-edge chip: total/failed tool calls in this session; hover for breakdown",
+      "hoverTitle": "Tool call stats (this session)",
+      "total": "Total calls",
+      "errors": "Failed (replay)"
+    },
+    "phaseDivider": {
+      "name": "Phase divider",
+      "description": "Task phase divider bars (visual boundary between plan/execute phases)"
+    },
     "navigation": {
       "name": "Session Navigation",
       "description": "Jump to each question from the left rail"

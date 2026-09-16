@@ -1131,6 +1131,24 @@
     "htmlTruncated": "内容超过 512KB 已截断，页面可能渲染不完整。"
   },
   "sessionPlugins": {
+    "outline": {
+      "name": "会话大纲",
+      "description": "面板列出每轮问答大纲，点击跳转到对应轮次",
+      "panelTitle": "会话大纲",
+      "empty": "暂无对话轮次",
+      "untitled": "（未命名轮次）"
+    },
+    "toolStats": {
+      "name": "工具调用统计",
+      "description": "会话左缘细条：本会话工具调用总数/失败数，悬停看工具分布",
+      "hoverTitle": "本会话工具调用统计",
+      "total": "调用总数",
+      "errors": "失败（回放口径）"
+    },
+    "phaseDivider": {
+      "name": "阶段分隔渲染",
+      "description": "任务阶段分隔条（规划/执行等阶段的视觉分界）"
+    },
     "navigation": {
       "name": "会话导航列",
       "description": "会话左缘快速跳转到每轮提问位置"

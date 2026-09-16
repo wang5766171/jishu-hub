@@ -208,6 +208,12 @@ pub fn builtin_session_plugin_specs() -> &'static [(&'static str, &'static str)]
         // v0.9.3 需求8：上下文水位环——自 chat-page 内置渲染迁移为插件
         //（composer-trailing 挂载点首插件，ctx 压缩命令面）。
         ("session.context-ring", "上下文水位环"),
+        // v0.9.3 需求10 B1：阶段分隔渲染插件化（blockTypes 咨询，停用回退内置）。
+        ("session.phase-divider", "阶段分隔渲染"),
+        // v0.9.3 需求10 B2：工具调用统计（rail 挂件，ctx.messages 数据面）。
+        ("session.tool-stats", "工具调用统计"),
+        // v0.9.3 需求10 B3：会话大纲（dock-panel，turns+scrollToTurn）。
+        ("session.outline", "会话大纲"),
     ]
 }
 

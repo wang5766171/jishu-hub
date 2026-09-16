@@ -276,7 +276,7 @@ function renderBlock(
         <InteractionBlockWithRenderers items={[interactionBlockToItem(block)]} origin={block.origin} />
       );
     case "phase_divider":
-      return <PhaseDivider phase={block.phase} title={block.title} />;
+      return <PhaseDividerBlockWithRenderers phase={block.phase} title={block.title} />;
     default:
       return null;
   }
@@ -286,6 +286,19 @@ function renderBlock(
  *  的 blockTypes 扩展接管（matchBlockTypeRenderer），未命中回退内置
  *  InteractionCard。三个渲染点（renderBlock / 助手气泡分组项 / 用户侧气泡
  *  分组项）统一经本组件，插件页开关自此真实生效。 */
+/** v0.9.3 需求10 B1：phase_divider 行级咨询点——渲染前咨询已启用插件的
+ * blockTypes 扩展接管（matchBlockTypeRenderer），未命中回退内置
+ * PhaseDivider（插件页开关真实生效；interaction 同款机制）。 */
+function PhaseDividerBlockWithRenderers({ phase, title }: { phase: string; title: string }) {
+  const renderers = useBlockRenderers();
+  const renderer = matchBlockTypeRenderer(renderers, "phase_divider");
+  if (renderer?.BlockComponent) {
+    const Block = renderer.BlockComponent;
+    return <Block block={{ type: "phase_divider", text: phase, title }} />;
+  }
+  return <PhaseDivider phase={phase} title={title} />;
+}
+
 function InteractionBlockWithRenderers({ items, origin }: { items: InteractionCardItem[]; origin?: string }) {
   const renderers = useBlockRenderers();
   const renderer = matchBlockTypeRenderer(renderers, "interaction");

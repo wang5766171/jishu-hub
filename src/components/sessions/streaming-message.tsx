@@ -333,10 +333,13 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                             );
                           }
                           if (item.block.type === "phase_divider") {
+                            // v0.9.3 需求10 B1：行级咨询插件接管（未命中回退内置）。
                             return (
-                              <div key={`divider-${i}-${idx}`}>
-                                <PhaseDivider phase={item.block.phase} title={item.block.title} />
-                              </div>
+                              <PhaseDividerWithRenderers
+                                key={`divider-${i}-${idx}`}
+                                phase={item.block.phase}
+                                title={item.block.title}
+                              />
                             );
                           }
                           return null;
@@ -500,4 +503,20 @@ function UserBubble({ text, guided }: { text: string; guided?: boolean }) {
       </div>
     </div>
   );
+}
+import { useBlockRenderers, matchBlockTypeRenderer } from "@/features/session-kernel/plugins/mounts/use-block-renderers";
+
+/** v0.9.3 需求10 B1：phase_divider 流式渲染点行级咨询（message-view 同款）。 */
+function PhaseDividerWithRenderers({ phase, title }: { phase: string; title: string }) {
+  const renderers = useBlockRenderers();
+  const renderer = matchBlockTypeRenderer(renderers, "phase_divider");
+  if (renderer?.BlockComponent) {
+    const Block = renderer.BlockComponent;
+    return (
+      <div>
+        <Block block={{ type: "phase_divider", text: phase, title }} />
+      </div>
+    );
+  }
+  return <PhaseDivider phase={phase} title={title} />;
 }
