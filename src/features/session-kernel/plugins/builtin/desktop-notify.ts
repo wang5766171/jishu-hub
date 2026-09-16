@@ -1,6 +1,7 @@
 import i18next from "i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { SESSION_PLUGIN_CONTRACT_VERSION } from "../types";
+import { cfgBool, getPluginConfig, type PluginConfigField } from "../config-plane";
 import type { SessionPluginDescriptor } from "../types";
 
 /**
@@ -20,9 +21,44 @@ import type { SessionPluginDescriptor } from "../types";
  * 触发口径：turn-complete 仅后台会话发（正在查看的会话不打扰）。
  */
 
+/** v0.9.3 需求12 P1：触发口径（原三类全开）/提示音（原固定响）/静音时段
+ * （原无）配置化——event-hook 消费经 getPluginConfig 同步快照。 */
+const NOTIFY_CONFIG_SCHEMA: PluginConfigField[] = [
+  { key: "notifyTurnComplete", type: "switch", label: "回合完成通知", description: "后台会话回复完毕时通知（正在查看的会话不打扰）", default: true },
+  { key: "notifyApproval", type: "switch", label: "审批请求通知", default: true },
+  { key: "notifyTaskFailed", type: "switch", label: "任务失败通知", default: true },
+  { key: "sound", type: "switch", label: "提示音", default: true },
+  {
+    key: "quietHours",
+    type: "text",
+    label: "静音时段",
+    description: "格式 HH:mm-HH:mm（如 22:00-08:00），期间只弹不响仍受提示音开关控制之外的整段静默；留空不静音",
+    default: "",
+    placeholder: "HH:mm-HH:mm",
+  },
+];
+
+/** 静音时段判断（HH:mm-HH:mm，跨零点区间支持；空/格式错 = 不静音）。 */
+function inQuietHours(range: string, now = new Date()): boolean {
+  const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(range.trim());
+  if (!m) return false;
+  const toMin = (h: string, min: string) => Number(h) * 60 + Number(min);
+  const start = toMin(m[1], m[2]);
+  const end = toMin(m[3], m[4]);
+  const cur = now.getHours() * 60 + now.getMinutes();
+  return start <= end ? cur >= start && cur < end : cur >= start || cur < end;
+}
+
 async function notify(title: string, body: string, sessionId?: string): Promise<void> {
+  const cfg = getPluginConfig("session.desktop-notify", NOTIFY_CONFIG_SCHEMA);
+  const quiet = inQuietHours(String(cfg.quietHours ?? ""));
   try {
-    await invokeCommand<string>("desktop_notify_send", { title, body, sessionId: sessionId ?? null });
+    await invokeCommand<string>("desktop_notify_send", {
+      title,
+      body,
+      sessionId: sessionId ?? null,
+      sound: !quiet && cfgBool(cfg, "sound", true) ? null : false,
+    });
   } catch (error) {
     console.warn("desktop notify failed:", error);
   }
@@ -40,12 +76,16 @@ export const desktopNotifyPlugin: SessionPluginDescriptor = {
   contractVersion: SESSION_PLUGIN_CONTRACT_VERSION,
   source: "builtin",
   permissions: ["subscribe:signals"],
+  configSchema: NOTIFY_CONFIG_SCHEMA,
   mounts: [
     {
       kind: "event-hook",
       onSignal(signal) {
+        // 触发口径门控（需求12 P1：三类触发各一开关）。
+        const cfg = getPluginConfig("session.desktop-notify", NOTIFY_CONFIG_SCHEMA);
         switch (signal.type) {
           case "turn-complete":
+            if (!cfgBool(cfg, "notifyTurnComplete", true)) return;
             void notify(
               signal.error
                 ? t("sessionPlugins.desktopNotify.turnFailed", "回合失败")
@@ -60,6 +100,7 @@ export const desktopNotifyPlugin: SessionPluginDescriptor = {
             );
             break;
           case "approval-request":
+            if (!cfgBool(cfg, "notifyApproval", true)) return;
             void notify(
               t("sessionPlugins.desktopNotify.approvalTitle", "等待审批"),
               t("sessionPlugins.desktopNotify.approvalBody", "会话请求人工审批"),
@@ -67,6 +108,7 @@ export const desktopNotifyPlugin: SessionPluginDescriptor = {
             );
             break;
           case "task-run-failed":
+            if (!cfgBool(cfg, "notifyTaskFailed", true)) return;
             void notify(
               t("sessionPlugins.desktopNotify.taskFailedTitle", "任务失败"),
               t("sessionPlugins.desktopNotify.taskFailedBody", "「{{title}}」执行失败", {

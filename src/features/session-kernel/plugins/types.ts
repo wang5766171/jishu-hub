@@ -306,6 +306,9 @@ export interface SessionPluginDescriptor {
   /** 显示名 i18n key 与兜底（插件页/快捷图标消费）。 */
   displayNameKey: string;
   displayNameFallback: string;
+  /** v0.9.3 需求12 P1：配置面声明——详情抽屉自动生成设置表单，组件经
+   * usePluginConfig 取值（代码常量抽离为可编辑参数的挂点）。 */
+  configSchema?: import("./config-plane").PluginConfigField[];
   descriptionKey?: string;
   descriptionFallback?: string;
   /** 描述符契约版本（演进接缝：Stage 2 版本协商基础）。 */

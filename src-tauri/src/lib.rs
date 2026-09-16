@@ -392,6 +392,8 @@ pub fn run() {
             commands::agents::plugin_create,
             commands::agents::plugin_get,
             commands::agents::plugin_update,
+            commands::agents::plugin_config_get_all,
+            commands::agents::plugin_config_set,
             commands::agents::session_tool_list,
             commands::agents::session_set_tools,
             commands::sessions::persist_agent_turn,

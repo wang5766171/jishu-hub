@@ -230,6 +230,8 @@ pub(crate) fn desktop_notify_send(
     title: String,
     body: String,
     session_id: Option<String>,
+    // v0.9.3 需求12 P1：提示音可配（None=响，兼容旧调用；Some(false)=静音）。
+    sound: Option<bool>,
 ) -> Result<String, String> {
     use tauri::{Emitter, Manager};
 
@@ -257,7 +259,7 @@ pub(crate) fn desktop_notify_send(
     };
 
     // 首选 protocol toast：弹窗与通知中心点击统一走系统激活。
-    if show_protocol_toast(aumid, &title, &body, &launch).is_ok() {
+    if show_protocol_toast(aumid, &title, &body, &launch, sound.unwrap_or(true)).is_ok() {
         return Ok(format!("toast(protocol) 已提交（AUMID={aumid}, launch={launch}）"));
     }
 
@@ -265,10 +267,10 @@ pub(crate) fn desktop_notify_send(
     // wait_for_response 区分 Default 点击与关闭）。声音同款（Sound::from_str
     // 裸名 "Default" → Notification.Default）。
     let mut notification = notify_rust::Notification::new();
-    notification
-        .summary(&title)
-        .body(&body)
-        .sound_name("Default");
+    notification.summary(&title).body(&body);
+    if sound.unwrap_or(true) {
+        notification.sound_name("Default");
+    }
     notification.app_id(aumid);
     let handle = notification
         .show()
@@ -307,21 +309,27 @@ fn xml_escape(text: &str) -> String {
 /// 经 WinRT 直发 protocol 激活的 toast（`activationType="protocol"`）。
 /// tauri-winrt-notification 封装不暴露 launch 属性，故此处手搓 XML——
 /// 这是「通知中心补点也能激活应用」的唯一路径（进程内事件不覆盖补点）。
-fn show_protocol_toast(aumid: &str, title: &str, body: &str, launch: &str) -> Result<(), String> {
+fn show_protocol_toast(aumid: &str, title: &str, body: &str, launch: &str, sound: bool) -> Result<(), String> {
     use windows::core::HSTRING;
     use windows::Data::Xml::Dom::XmlDocument;
     use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
 
+    let audio_tag = if sound {
+        "<audio src=\"ms-winsoundevent:Notification.Default\"/>"
+    } else {
+        "<audio silent=\"true\"/>"
+    };
     let xml = format!(
         "<toast activationType=\"protocol\" launch=\"{}\" scenario=\"default\" duration=\"short\">\
          <visual><binding template=\"ToastGeneric\">\
          <text>{}</text><text>{}</text>\
          </binding></visual>\
-         <audio src=\"ms-winsoundevent:Notification.Default\"/>\
+         {}\
          </toast>",
         xml_escape(launch),
         xml_escape(title),
         xml_escape(body),
+        audio_tag,
     );
     let doc = XmlDocument::new().map_err(|e| format!("XmlDocument failed: {e}"))?;
     doc.LoadXml(&HSTRING::from(xml.as_str()))

@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::collections::HashMap;
 
 use tauri::Manager;
 
@@ -302,6 +303,29 @@ pub(crate) fn plugin_get(
 }
 
 /// 编辑模式：校验 → 覆盖写回原文件 → 热重建。id 不可变（后端防御：
+/// v0.9.3 需求12 P1：插件配置面——全量读取（前端与 defaults 合并）。
+#[tauri::command]
+pub(crate) fn plugin_config_get_all() -> Result<HashMap<String, HashMap<String, serde_json::Value>>, String> {
+    Ok(agent::plugin_options::load_all())
+}
+
+/// v0.9.3 需求12 P1：覆写某插件配置组（原子落盘 + 广播 plugins-config-changed，
+/// 前端订阅即时生效）。值合法性由前端按 configSchema 校验。
+#[tauri::command]
+pub(crate) fn plugin_config_set(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    values: HashMap<String, serde_json::Value>,
+) -> Result<(), String> {
+    agent::plugin_options::set_values(&plugin_id, values)?;
+    use tauri::Emitter;
+    let _ = app.emit(
+        "plugins-config-changed",
+        serde_json::json!({ "pluginId": plugin_id }),
+    );
+    Ok(())
+}
+
 /// manifest.info.id 必须等于 plugin_id——文件名/会话归属/启停配置都以 id
 /// 为 key，改名等于换插件，请卸载后新建）。
 #[tauri::command]

@@ -21,6 +21,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { cn } from "@/lib/utils";
 import { SESSION_PLUGIN_CONTRACT_VERSION } from "../types";
+import { cfgBool, cfgNum, usePluginConfig, type PluginConfigField } from "../config-plane";
 import type { SessionPluginDescriptor } from "../types";
 
 let mermaidReady: Promise<typeof import("mermaid").default> | null = null;
@@ -298,10 +299,32 @@ function SvgHost({ svg }: { svg: string }) {
   );
 }
 
-const MIN_SCALE = 0.15;
-const MAX_SCALE = 6;
-/** 内联（会话中）初始缩放：自然尺寸的 50%（用户裁决 2026-09-12）。 */
-const INLINE_SCALE = 0.5;
+/** v0.9.3 需求12 P1：显示/导出参数配置化——原 0.15/6/0.5/2× 四个缩放与
+ * 倍率常量抽离为插件配置（详情抽屉可编辑、热生效）。 */
+const MERMAID_CONFIG_SCHEMA: PluginConfigField[] = [
+  {
+    key: "display",
+    type: "section",
+    label: "显示",
+    fields: [
+      {
+        key: "inlineScalePct",
+        type: "number",
+        label: "会话内初始缩放",
+        description: "内联卡片按自然尺寸的百分比显示（放大查看器不受影响）",
+        default: 50,
+        min: 10,
+        max: 100,
+        step: 5,
+        unit: "%",
+      },
+      { key: "themeFollow", type: "switch", label: "主题跟随应用", description: "关闭后固定浅色主题渲染", default: true },
+      { key: "minScalePct", type: "number", label: "最小缩放", default: 15, min: 5, max: 100, unit: "%" },
+      { key: "maxScaleX", type: "number", label: "最大放大倍数", default: 6, min: 1, max: 10, unit: "×" },
+    ],
+  },
+  { key: "pngScale", type: "number", label: "PNG 导出倍率", default: 2, min: 1, max: 4, unit: "×" },
+];
 
 /** 全屏缩放查看器：滚轮缩放、拖拽平移（指针捕获在稳定容器上，捕获丢失/
  * 取消即结束拖拽——此前捕获挂在会被重渲替换的 svg 子元素上，偶发
@@ -316,6 +339,8 @@ function MermaidZoomOverlay({
   exportHandlers: ExportHandlers;
 }) {
   const { t } = useTranslation();
+  // 缩放上下限同源配置（需求12 P1：与内联卡共用同一份插件配置）。
+  const { values: cfg } = usePluginConfig("session.mermaid-render", MERMAID_CONFIG_SCHEMA);
   const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
@@ -350,7 +375,7 @@ function MermaidZoomOverlay({
       (area.clientHeight - 32) / (naturalH || area.clientHeight),
       1,
     );
-    setScale(Math.min(Math.max(target, MIN_SCALE), MAX_SCALE));
+    setScale(Math.min(Math.max(target, cfgNum(cfg, "minScalePct", 15) / 100), cfgNum(cfg, "maxScaleX", 6)));
     setPan({ x: 0, y: 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scale, svg]);
@@ -369,7 +394,7 @@ function MermaidZoomOverlay({
       e.preventDefault();
       setScale((prev) => {
         const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-        return Math.min(Math.max(prev * factor, MIN_SCALE), MAX_SCALE);
+        return Math.min(Math.max(prev * factor, cfgNum(cfg, "minScalePct", 15) / 100), cfgNum(cfg, "maxScaleX", 6));
       });
     };
     area.addEventListener("wheel", onWheel, { passive: false });
@@ -415,7 +440,7 @@ function MermaidZoomOverlay({
             <button
               type="button"
               title={t("sessionPlugins.mermaidRender.zoomOut", "缩小")}
-              onClick={() => setScale((s) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s / 1.25)))}
+              onClick={() => setScale((s) => Math.min(cfgNum(cfg, "maxScaleX", 6), Math.max(cfgNum(cfg, "minScalePct", 15) / 100, s / 1.25)))}
               className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <Minus className="h-3.5 w-3.5" />
@@ -426,7 +451,7 @@ function MermaidZoomOverlay({
             <button
               type="button"
               title={t("sessionPlugins.mermaidRender.zoomIn", "放大")}
-              onClick={() => setScale((s) => Math.min(MAX_SCALE, s * 1.25))}
+              onClick={() => setScale((s) => Math.min(cfgNum(cfg, "maxScaleX", 6), Math.max(cfgNum(cfg, "minScalePct", 15) / 100, s * 1.25)))}
               className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <Plus className="h-3.5 w-3.5" />
@@ -481,6 +506,7 @@ function MermaidZoomOverlay({
 
 function MermaidDiagram({ code }: { code: string; language: string }) {
   const { t } = useTranslation();
+  const { values: cfg } = usePluginConfig("session.mermaid-render", MERMAID_CONFIG_SCHEMA);
   const [svg, setSvg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [mode, setMode] = useState<"diagram" | "source">("diagram");
@@ -505,7 +531,7 @@ function MermaidDiagram({ code }: { code: string; language: string }) {
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: "strict",
-          theme: dark ? "dark" : "default",
+          theme: dark && cfgBool(cfg, "themeFollow", true) ? "dark" : "default",
         });
         // 先 parse 后 render：parse 无 DOM 副作用，语法错误在此捕获并就地
         // 显示（不会再走到 render 的 body 错误 SVG 分支）。
@@ -546,7 +572,7 @@ function MermaidDiagram({ code }: { code: string; language: string }) {
     if (!svg || exporting) return;
     setExporting(true);
     try {
-      const blob = await svgToPngBlob(svg, 2);
+      const blob = await svgToPngBlob(svg, cfgNum(cfg, "pngScale", 2));
       const path = await save({
         defaultPath: "mermaid.png",
         filters: [{ name: "PNG", extensions: ["png"] }],
@@ -649,7 +675,7 @@ function MermaidDiagram({ code }: { code: string; language: string }) {
           {svg ? (
             <div
               className="max-w-full cursor-zoom-in"
-              style={{ width: Math.round(parseSvgSize(svg).width * INLINE_SCALE) }}
+              style={{ width: Math.round(parseSvgSize(svg).width * (cfgNum(cfg, "inlineScalePct", 50) / 100)) }}
               title={t("sessionPlugins.mermaidRender.clickToZoom", "点击放大")}
               onClick={() => setExpanded(true)}
             >
@@ -694,6 +720,7 @@ export const mermaidRenderPlugin: SessionPluginDescriptor = {
   contractVersion: SESSION_PLUGIN_CONTRACT_VERSION,
   source: "builtin",
   permissions: ["read:blocks"],
+  configSchema: MERMAID_CONFIG_SCHEMA,
   mounts: [
     {
       kind: "block-renderer",
