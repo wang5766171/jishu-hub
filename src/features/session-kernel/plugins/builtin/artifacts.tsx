@@ -24,6 +24,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { invoke } from "@tauri-apps/api/core";
 import { invokeCommand } from "@/hooks/use-invoke";
+import { buildPathLedger, resolveLedgerPath, type PathLedger } from "./artifacts-ledger";
 import { cn } from "@/lib/utils";
 import { SESSION_PLUGIN_CONTRACT_VERSION } from "../types";
 import type { SessionPluginDescriptor, SessionKernelContext, PluginMessage } from "../types";
@@ -218,6 +219,8 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
     [nodeSessions],
   );
   const [nodeArtifacts, setNodeArtifacts] = useState<Array<{ file: string; source: string }>>([]);
+  // 修复20：路径台账（agent 操作推导的迁移/落位记录）——主会话 + 子节点双源。
+  const [nodeLedger, setNodeLedger] = useState<PathLedger>({ moves: [], lastWrites: new Map() });
   const [rescanNonce, setRescanNonce] = useState(0);
   useEffect(() => {
     let cancelled = false;
@@ -230,8 +233,11 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
     }
     void (async () => {
       const results = await Promise.all(
-        nodeSessions.map(async (ns) => {
-          if (!ns.sessionId) return [] as Array<{ file: string; source: string }>;
+        nodeSessions.map(async (ns): Promise<{
+          artifacts: Array<{ file: string; source: string }>;
+          ledger: PathLedger;
+        }> => {
+          if (!ns.sessionId) return { artifacts: [], ledger: { moves: [], lastWrites: new Map() } };
           try {
             const msgs = await invoke<
               Array<{ content?: Array<{ type?: string; name?: string; input?: unknown }> }>
@@ -240,22 +246,49 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
               sessionId: ns.sessionId,
               encodedName: encoded,
             });
-            return extractArtifactPathsFromRawMessages(msgs, projectPath).map((file) => ({
-              file,
-              source: ns.title,
-            }));
+            const ledger = buildPathLedger(msgs as Array<{ content?: Array<{ type?: string; name?: string; input?: unknown }> }>);
+            return {
+              artifacts: extractArtifactPathsFromRawMessages(msgs, projectPath).map((file) => ({
+                file,
+                source: ns.title,
+              })),
+              ledger,
+            };
           } catch {
-            return [] as Array<{ file: string; source: string }>;
+            return {
+              artifacts: [] as Array<{ file: string; source: string }>,
+              ledger: { moves: [], lastWrites: new Map() } as PathLedger,
+            };
           }
         }),
       );
-      if (!cancelled) setNodeArtifacts(results.flat());
+      if (!cancelled) {
+        setNodeArtifacts(results.flatMap((r) => r.artifacts));
+        setNodeLedger({
+          moves: results.flatMap((r) => r.ledger.moves),
+          lastWrites: new Map(results.flatMap((r) => [...r.ledger.lastWrites.entries()])),
+        });
+      }
     })();
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeSessionsKey, rescanNonce, ctx.sessionMeta?.projectEncodedName, projectPath]);
+
+  // 修复20：台账合并（主会话 ctx.messages + 子节点 rescan 结果）。
+  const pathLedger = useMemo(() => {
+    const main = buildPathLedger(ctx.messages.map((m) => ({ blocks: m.blocks })));
+    return {
+      moves: [...main.moves, ...nodeLedger.moves],
+      lastWrites: new Map([...main.lastWrites, ...nodeLedger.lastWrites]),
+    };
+  }, [ctx.messages, nodeLedger]);
+  /** 旧产物记录 → 最终落位（无换算命中时回原路径，由动作层报错）。 */
+  const resolvePath = useCallback(
+    (file: string) => resolveLedgerPath(file, pathLedger) ?? file,
+    [pathLedger],
+  );
 
   // 合并候选（主会话 + 各节点）：同文件以节点为准（实际写方），保序去重。
   const candidates = useMemo(() => {
@@ -346,11 +379,13 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
       setError(null);
       return;
     }
+    // 修复20：读取路径先经台账换算（agent 迁移后的最终落位）。
+    const target = resolvePath(current);
     let cancelled = false;
     setLoading(true);
     setError(null);
     if (kind === "image") {
-      invokeCommand<string>("read_image_as_data_url", { path: current })
+      invokeCommand<string>("read_image_as_data_url", { path: target })
         .then((dataUrl) => {
           if (!cancelled) setLoaded({ kind, content: null, dataUrl, truncated: false });
         })
@@ -364,7 +399,7 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
           if (!cancelled) setLoading(false);
         });
     } else {
-      invoke<TextFilePreview>("read_text_file", { path: current })
+      invoke<TextFilePreview>("read_text_file", { path: target })
         .then((result) => {
           if (!cancelled) {
             setLoaded({ kind, content: result.content, dataUrl: null, truncated: result.truncated });
@@ -395,7 +430,8 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
     if (!current) return;
     // v0.9.3 测试期：打开失败必须可见——此前 catch(console.warn) 静默吞错，
     // 公司环境点击「打开文件夹没反应」即此（真实失败原因被吞）。
-    invokeCommand("reveal_in_file_manager", { path: current }).catch((e) => {
+    // 修复20：先经路径台账换算（agent 迁移后的最终落位）再打开。
+    invokeCommand("reveal_in_file_manager", { path: resolvePath(current) }).catch((e) => {
       const msg = String(e);
       console.warn("reveal_in_file_manager failed:", msg);
       setActionError(msg.length > 160 ? `${msg.slice(0, 160)}…` : msg);
@@ -405,7 +441,7 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
   const openInSystem = useCallback(() => {
     setMenuOpen(false);
     if (!current) return;
-    invokeCommand("open_with_default_app", { path: current }).catch((e) => {
+    invokeCommand("open_with_default_app", { path: resolvePath(current) }).catch((e) => {
       const msg = String(e);
       console.warn("open_with_default_app failed:", msg);
       setActionError(msg.length > 160 ? `${msg.slice(0, 160)}…` : msg);
