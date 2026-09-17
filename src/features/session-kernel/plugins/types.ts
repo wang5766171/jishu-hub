@@ -309,6 +309,9 @@ export interface SessionPluginDescriptor {
   /** v0.9.3 需求12 P1：配置面声明——详情抽屉自动生成设置表单，组件经
    * usePluginConfig 取值（代码常量抽离为可编辑参数的挂点）。 */
   configSchema?: import("./config-plane").PluginConfigField[];
+  /** v0.9.3 需求13 C4：阶段流水线声明（pipeline 型组合插件——编排定义，
+   * 运行时驱动随 C4-slice-2 接 conductor）。 */
+  pipeline?: import("../capabilities/pipeline/contracts").PipelineDeclaration;
   descriptionKey?: string;
   descriptionFallback?: string;
   /** 描述符契约版本（演进接缝：Stage 2 版本协商基础）。 */

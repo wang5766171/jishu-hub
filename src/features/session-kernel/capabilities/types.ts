@@ -92,6 +92,8 @@ export interface ComposedConfigFieldDecl {
 }
 
 export interface SessionComposedManifest {
+  /** C4：阶段流水线声明（pipeline 型插件——编排定义，无渲染挂载）。 */
+  pipeline?: import("./pipeline/contracts").PipelineDeclaration;
   plugin: { id: string; name: string; description?: string };
   kind: "session-composed";
   source: SourceDeclaration;

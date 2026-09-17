@@ -280,6 +280,8 @@ const BUILTIN_COMPOSED_MANIFESTS: &[(&str, &str)] = &[
     ("session.outline", include_str!("../../resources/composed-plugins/outline.toml")),
     ("session.navigation", include_str!("../../resources/composed-plugins/navigation.toml")),
     ("session.desktop-notify", include_str!("../../resources/composed-plugins/desktop-notify.toml")),
+    // v0.9.3 需求13 C4：pipeline 型样例（编排定义可视化；运行时驱动 C4-slice-2）。
+    ("session.video-maker", include_str!("../../resources/composed-plugins/video-maker.toml")),
 ];
 
 fn composed_plugins_root() -> PathBuf {

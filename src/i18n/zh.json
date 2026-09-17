@@ -314,6 +314,7 @@
     "retryReasonGeneric": "请求失败"
   },
   "plugins": {
+    "modalPipelineStages": "阶段流水线",
     "viewDetails": "详情",
     "editSettings": "设置",
     "modalTabInfo": "概览",

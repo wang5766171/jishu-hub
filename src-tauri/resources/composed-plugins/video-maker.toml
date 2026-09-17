@@ -1,0 +1,21 @@
+[plugin]
+id = "session.video-maker"
+name = "视频生成助手"
+description = "视频创作流水线（C4 编排定义样例——阶段运行时驱动随 C4-slice-2 接入 conductor）：需求讨论（核心能力复用）→ 分镜设计 → 素材整理 → 视频生成"
+kind = "session-composed"
+
+[[pipeline.stages]]
+template = "phase.discuss"
+
+[[pipeline.stages]]
+name = "分镜设计"
+prompt = "依据需求文档产出分镜表：场景/镜头/时长/画面描述/音效备注。"
+
+[[pipeline.stages]]
+name = "素材整理"
+prompt = "按分镜清单收集/生成素材并归档到素材目录，缺项列出替代方案。"
+
+[[pipeline.stages]]
+name = "视频生成"
+prompt = "按分镜与素材执行渲染合成，产出成片与工程文件。"
+gate = "confirm"

@@ -15,6 +15,7 @@ import { actionRegistry, resolveActionParams } from "../actions";
 import { getAggregator } from "../sources/aggregate-source";
 import type { ComposedConfigFieldDecl, RendererComponentProps, SessionComposedManifest, SourcePayload } from "../types";
 import { validateManifest } from "../types";
+import { validatePipeline } from "../pipeline/contracts";
 
 /** manifest config 声明 → configSchema（group 相邻聚合为 section）。 */
 export function configDeclsToSchema(decls: ComposedConfigFieldDecl[] | undefined): PluginConfigField[] {
@@ -113,10 +114,29 @@ function SourceShell({ manifest, schema, ctx }: { manifest: SessionComposedManif
 
 /** manifest → 描述符（校验失败抛错，loader 负责隔离）。 */
 export function buildComposedDescriptor(manifest: SessionComposedManifest): SessionPluginDescriptor {
+  const id = manifest.plugin.id;
+  // v0.9.3 需求13 C4：pipeline 型清单——编排定义类插件，无渲染挂载；
+  // 校验走流水线契约，描述符透出声明（详情模态/任务启动消费）。
+  if (manifest.pipeline) {
+    const pipelineErrors = validatePipeline(manifest.pipeline);
+    if (pipelineErrors.length) throw new Error(`组合清单校验失败: ${pipelineErrors.join("; ")}`);
+    return {
+      id,
+      displayNameKey: "",
+      displayNameFallback: manifest.plugin.name,
+      descriptionKey: "",
+      descriptionFallback: manifest.plugin.description ?? "",
+      contractVersion: SESSION_PLUGIN_CONTRACT_VERSION,
+      source: "config",
+      permissions: ["read:blocks"],
+      configSchema: manifest.config?.length ? configDeclsToSchema(manifest.config) : undefined,
+      pipeline: manifest.pipeline,
+      mounts: [],
+    };
+  }
   const errors = validateManifest(manifest, rendererRegistry);
   if (errors.length) throw new Error(`组合清单校验失败: ${errors.join("; ")}`);
   const schema = configDeclsToSchema(manifest.config);
-  const id = manifest.plugin.id;
   const mounts: SessionPluginDescriptor["mounts"] = [];
 
   if (manifest.render.mount === "block-renderer") {

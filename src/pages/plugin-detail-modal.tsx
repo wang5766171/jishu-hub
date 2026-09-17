@@ -26,6 +26,7 @@ import {
   type PluginConfigValues,
 } from "@/features/session-kernel/plugins/config-plane";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
+import { resolveStages } from "@/features/session-kernel/capabilities/pipeline/contracts";
 import { cn } from "@/lib/utils";
 
 /** plugins-page 的描述符投影（避免循环依赖：仅取模态所需字段）。 */
@@ -207,6 +208,11 @@ export function PluginDetailModal({
     ? listSessionPlugins().find((p) => p.id === plugin.id)
     : null;
   const configSchema = sessionDescriptor?.configSchema;
+  // v0.9.3 需求13 C4：pipeline 型插件——阶段流水线可视化（模板段带标记）。
+  const pipelineStages = useMemo(
+    () => (sessionDescriptor?.pipeline ? resolveStages(sessionDescriptor.pipeline) : null),
+    [sessionDescriptor],
+  );
 
   useEffect(() => {
     if (configSchema) setStored(getPluginConfig(plugin.id, configSchema));
@@ -358,6 +364,34 @@ export function PluginDetailModal({
           ) : (
             <div className="space-y-5">
               <p className="text-sm leading-relaxed text-foreground/85">{description}</p>
+              {pipelineStages ? (
+                <div>
+                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    {t("plugins.modalPipelineStages", "阶段流水线")}
+                  </h4>
+                  <ol className="space-y-1.5">
+                    {pipelineStages.map((stage, index) => (
+                      <li key={stage.key} className="flex items-start gap-2 rounded-lg border border-border/50 px-3 py-2">
+                        <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary tabular-nums">{index + 1}</span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-sm font-medium">{stage.name}</span>
+                            {stage.template ? (
+                              <Badge variant="outline" className="px-1.5 py-0 text-[9px]">核心能力复用</Badge>
+                            ) : null}
+                            {stage.gate === "confirm" ? (
+                              <Badge variant="secondary" className="px-1.5 py-0 text-[9px]">门禁确认</Badge>
+                            ) : null}
+                          </div>
+                          {stage.prompt ? <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground/80">{stage.prompt}</p> : null}
+                          {stage.skills.length ? <p className="mt-0.5 font-mono text-[10px] text-muted-foreground/60">skills: {stage.skills.join(", ")}</p> : null}
+                          {stage.tools.length ? <p className="font-mono text-[10px] text-muted-foreground/60">tools: {stage.tools.join(", ")}</p> : null}
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              ) : null}
               {sessionDescriptor ? (
                 <>
                   <div>
