@@ -160,9 +160,10 @@ select option {
   --icon-send-fg: var(--color-primary-foreground);
   --floating-indicator: hsl(240 5.9% 10%);
 
-  /* Font size presets (default: small) */
+  /* Font size presets (default: small)。
+  v0.9.3 测试期（用户对比 workbuddy 反馈正文太紧凑）：prose 12→14px。 */
   --font-size-base: 15px;
-  --font-size-prose: 12px;
+  --font-size-prose: 14px;
 
   /* Tool state colors */
   --tool-pending: hsl(240 5% 65%);
@@ -425,11 +426,12 @@ select option {
 
 /* Markdown prose styles */
 .markdown-prose {
-  line-height: 1.6;
+  /* 1.6→1.7：行距同步放宽（测试期正文紧凑反馈） */
+  line-height: 1.7;
   font-size: var(--font-size-prose);
 }
 .markdown-prose p {
-  margin: 0.5em 0;
+  margin: 0.625em 0;
 }
 .markdown-prose p:first-child {
   margin-top: 0;

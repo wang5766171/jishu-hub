@@ -1348,6 +1348,11 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
               className="pointer-events-none whitespace-pre-wrap break-words px-4 py-3 text-sm"
             >
               {renderMirrorText(message, sessionTools)}
+              {/* 尾部换行对齐（撑满后回车重影根因，测试期修复19）：div 的
+                  pre-wrap 不渲染末尾换行的空行而 textarea 计入——两层高度
+                  分叉，textarea 被浏览器自动内滚一行与 mirror 错位成重影；
+                  补零宽字符让 mirror 同样产出该空行，两层始终同高。 */}
+              {message.endsWith("\n") ? "\u200b" : null}
             </div>
             <textarea
               ref={textareaRef}
@@ -1370,7 +1375,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
               disabled={disabled}
               rows={1}
               className={cn(
-                "absolute inset-0 z-10 h-full w-full resize-none bg-transparent px-4 py-3 text-sm focus:outline-none",
+                "absolute inset-0 z-10 h-full w-full resize-none overflow-hidden bg-transparent px-4 py-3 text-sm focus:outline-none",
                 messageHasToolToken(message) && "text-transparent caret-foreground",
               )}
               style={{ overflow: "hidden" }}
