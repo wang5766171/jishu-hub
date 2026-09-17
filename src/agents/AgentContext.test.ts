@@ -4,7 +4,7 @@
  * 展示序随之命中；其余保持后端返回序，稳定排序）。
  */
 import { describe, expect, it } from "vitest";
-import { sortAgentsJishuFirst } from "./AgentContext";
+import { defaultAgentId, sortAgentsJishuFirst } from "./AgentContext";
 
 const agent = (id: string) => ({ id });
 
@@ -32,5 +32,31 @@ describe("sortAgentsJishuFirst", () => {
     const sorted = sortAgentsJishuFirst(input);
     expect(input.map((a) => a.id)).toEqual(["codex", "jishu-self"]);
     expect(sorted).not.toBe(input);
+  });
+});
+
+describe("defaultAgentId（需求21：无记录时默认恒 jishu-self）", () => {
+  it("picks jishu-self even when another installed agent sorts first in backend order", () => {
+    const list = [
+      { id: "claude-code", health: { installed: false } },
+      { id: "opencode", health: { installed: true } },
+      { id: "jishu-self", health: { installed: true } },
+    ];
+    // 旧实现的缺陷形态：后端序首个已安装 = opencode——现必须 jishu-self。
+    expect(defaultAgentId(list)).toBe("jishu-self");
+  });
+
+  it("falls back to first installed only when jishu-self is absent", () => {
+    expect(
+      defaultAgentId([
+        { id: "claude-code", health: { installed: false } },
+        { id: "codex", health: { installed: true } },
+      ]),
+    ).toBe("codex");
+  });
+
+  it("falls back to first entry when none installed", () => {
+    expect(defaultAgentId([{ id: "a", health: { installed: false } }])).toBe("a");
+    expect(defaultAgentId([])).toBe("");
   });
 });

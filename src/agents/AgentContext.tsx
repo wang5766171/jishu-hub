@@ -39,6 +39,17 @@ export function sortAgentsJishuFirst<T extends { id: string }>(list: T[]): T[] {
   });
 }
 
+/** 默认智能体（v0.9.3 需求21 修复）：无用户记录时的兜底恒为 jishu-self——
+ * 此前取「后端原始序第一个已安装」：全新安装（无 localStorage）且用户机器
+ * 装过 opencode CLI（health.installed=true、后端序在前）时默认命中
+ * opencode（用户卸载重装实测）。jishu-self 缺席（不可能——core 恒在）才
+ * 回退首个已安装/首项。 */
+export function defaultAgentId(list: Array<{ id: string; health?: { installed?: boolean | null } }>): string {
+  const JISHU_SELF = "jishu-self";
+  if (list.some((a) => a.id === JISHU_SELF)) return JISHU_SELF;
+  return list.find((a) => a.health?.installed)?.id ?? list[0]?.id ?? "";
+}
+
 interface AgentContextValue {
   /** 全部智能体列表（全局共享，无作用域） */
   agents: AgentStatus[];
@@ -83,14 +94,12 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       const list = await safeInvoke<AgentStatus[]>("agent_list_statuses");
       if (list && list.length > 0) {
         setAgents(sortAgentsJishuFirst(list));
-        // 恢复会话作用域记忆，兜底第一个 agent
+        // 恢复会话/管理作用域记忆；无记录（全新安装）兜底恒 jishu-self
+        //（需求21 修复：不再取后端序首个已安装——opencode 误默认根因）。
         const savedChat = localStorage.getItem(CHAT_AGENT_KEY);
-        const fallbackChat = list.find((a) => a.health.installed)?.id ?? list[0].id;
-        setChatAgentIdState(savedChat && list.some((a) => a.id === savedChat) ? savedChat : fallbackChat);
-        // 恢复管理作用域记忆
+        setChatAgentIdState(savedChat && list.some((a) => a.id === savedChat) ? savedChat : defaultAgentId(list));
         const savedManage = localStorage.getItem(MANAGE_AGENT_KEY);
-        const fallbackManage = list.find((a) => a.health.installed)?.id ?? list[0].id;
-        setManageAgentIdState(savedManage && list.some((a) => a.id === savedManage) ? savedManage : fallbackManage);
+        setManageAgentIdState(savedManage && list.some((a) => a.id === savedManage) ? savedManage : defaultAgentId(list));
       }
       setHealthLoading(true);
       await safeInvoke("agent_refresh_health");
