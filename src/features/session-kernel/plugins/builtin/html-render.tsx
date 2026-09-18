@@ -256,6 +256,7 @@ export const htmlRenderPlugin: SessionPluginDescriptor = {
   mounts: [
     {
       kind: "block-renderer",
+      matching: "code",
       languages: ["html"],
       detect: (_lang, code) => isRenderableHtmlBlock(code),
       Component: HtmlPreviewCard,

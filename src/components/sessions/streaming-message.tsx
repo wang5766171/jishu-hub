@@ -510,7 +510,7 @@ import { useBlockRenderers, matchBlockTypeRenderer } from "@/features/session-ke
 function PhaseDividerWithRenderers({ phase, title }: { phase: string; title: string }) {
   const renderers = useBlockRenderers();
   const renderer = matchBlockTypeRenderer(renderers, "phase_divider");
-  if (renderer?.BlockComponent) {
+  if (renderer) {
     const Block = renderer.BlockComponent;
     return (
       <div>

@@ -50,7 +50,7 @@ export interface RendererRegistration {
   /** 组件能力声明（动作层据此路由；export-file 的格式转换经 toFile）。 */
   capabilities?: {
     exportFormats?: string[];
-    toFile?: (payload: SourcePayload, format: string, options: PluginConfigValues) => Promise<Blob | string>;
+    toFile?: (payload: SourcePayload, format: string, options?: PluginConfigValues) => Promise<Blob | string>;
   };
   /** 组合向导的说明文案。 */
   description?: string;
@@ -110,7 +110,24 @@ export interface ComposedBuildInput {
   actions: { get(type: string): ActionHandler | undefined };
 }
 
-/** manifest 校验：结构合法 + 组件键存在；返回错误列表（空=通过）。 */
+/** source × mount 配对矩阵（测试期修复23 契约收口）：块渲染挂载只吃
+ *  代码块/块类型源，数据面挂载（rail/dock/sidebar/composer）只吃数据面源，
+ *  事件挂载只吃信号源——非法组合在清单载入期拒绝，而非渲染期静默错乱
+ *  （此前 turns 源配 block-renderer 会命中一切代码块、block-type 源配
+ *  rail 挂载会把整个消息数组当聚合载荷喂给渲染件，均无报错）。 */
+const MOUNT_SOURCE_MATRIX: Record<string, string[]> = {
+  "block-renderer": ["code-block", "block-type"],
+  "rail-widget": ["messages", "turns", "stream-state"],
+  "dock-panel": ["messages", "turns", "stream-state"],
+  "sidebar-panel": ["messages", "turns", "stream-state"],
+  "composer-trailing": ["messages", "turns", "stream-state"],
+  "event-hook": ["signal"],
+};
+
+/** manifest 校验：结构合法 + 组件键存在 + 源域字段显式且互斥 + 挂载配对
+ * 合法（矩阵）；返回错误列表（空=通过）。内部格式原则：可匹配格式只有
+ * 「核心块类型」与「显式声明的语言封闭集」两类，无通配——常规对话内容
+ * 结构上不可被插件接管。 */
 export function validateManifest(
   manifest: SessionComposedManifest,
   renderers: { get(key: string): RendererRegistration | undefined },
@@ -124,6 +141,22 @@ export function validateManifest(
   if (!manifest.source?.type) errors.push("[source] type 缺失");
   if (manifest.source?.type === "code-block" && !(manifest.source.languages?.length)) {
     errors.push("[source] code-block 需声明 languages");
+  }
+  // 源域字段互斥：code-block 只认语言集、block-type 只认块类型集——
+  // 双声明（跨域混合）与空声明（无显式格式）都拒绝。
+  if (manifest.source?.type === "block-type") {
+    if (!(manifest.source.blockTypes?.length)) errors.push("[source] block-type 需声明 blockTypes");
+    if (manifest.source.languages?.length) errors.push("[source] block-type 不得声明 languages（跨匹配域混合）");
+  }
+  if (manifest.source?.type === "code-block" && manifest.source.blockTypes?.length) {
+    errors.push("[source] code-block 不得声明 blockTypes（跨匹配域混合）");
+  }
+  // 挂载配对矩阵。
+  const mount = manifest.render?.mount;
+  if (!mount || !MOUNT_SOURCE_MATRIX[mount]) {
+    errors.push(`[render] mount 非法: ${String(mount)}`);
+  } else if (manifest.source?.type && !MOUNT_SOURCE_MATRIX[mount].includes(manifest.source.type)) {
+    errors.push(`[render] mount ${mount} 不接受源类型 ${manifest.source.type}（合法：${MOUNT_SOURCE_MATRIX[mount].join("/")}）`);
   }
   return errors;
 }

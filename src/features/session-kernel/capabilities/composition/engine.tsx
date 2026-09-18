@@ -47,6 +47,7 @@ function buildActions(
   manifest: SessionComposedManifest,
   options: PluginConfigValues,
   sessionId: string | null,
+  payload: SourcePayload,
 ): Array<{ key: string; label: string; run: () => void }> {
   return (manifest.action ?? []).map((action, i) => {
     const handler = actionRegistry.get(action.type);
@@ -61,11 +62,13 @@ function buildActions(
         if (action.type === "export-file") {
           const renderer = rendererRegistry.get(manifest.render.component);
           params.__toFile = renderer?.capabilities?.toFile;
+          // 组件转换管线的配置直通（pngScale 等读取整个 options——修复21
+          // 返工：此前仅传 payload/format，PNG 倍率读 undefined 崩）。
+          params.__options = options;
         }
         if (action.type === "desktop-notify") {
           params.__options = options;
         }
-        const payload: SourcePayload = { kind: "signal", signal: { type: "action", sessionId } };
         void handler.run(params, payload, { sessionId, pluginId: manifest.plugin.id });
       },
     };
@@ -90,7 +93,7 @@ function RendererShell({
     return <div className="p-2 text-xs text-muted-foreground">渲染组件未注册：{manifest.render.component}</div>;
   }
   const Comp = reg.component as ComponentType<RendererComponentProps>;
-  return <Comp payload={payload} options={values} actions={buildActions(manifest, values, sessionId)} />;
+  return <Comp payload={payload} options={values} actions={buildActions(manifest, values, sessionId, payload)} />;
 }
 
 /** 数据面源包装：rail/dock 等挂件组件经 ctx 计算 payload。 */
@@ -140,20 +143,29 @@ export function buildComposedDescriptor(manifest: SessionComposedManifest): Sess
   const mounts: SessionPluginDescriptor["mounts"] = [];
 
   if (manifest.render.mount === "block-renderer") {
-    mounts.push({
-      kind: "block-renderer",
-      languages: manifest.source.languages ?? [],
-      detect: () => true,
-      blockTypes: manifest.source.blockTypes,
-      Component: ({ code, language }: { code: string; language: string }) => (
-        <RendererShell manifest={manifest} schema={schema} payload={{ kind: "code-block", language, code }} sessionId={null} />
-      ),
-      BlockComponent: manifest.source.blockTypes
-        ? ({ block }: { block: PluginBlock }) => (
-            <RendererShell manifest={manifest} schema={schema} payload={{ kind: "block", blockType: block.type, block }} sessionId={null} />
-          )
-        : undefined,
-    } as SessionPluginDescriptor["mounts"][number]);
+    // 匹配域按源类型定臂（测试期修复23 结构收口）：code-block 源 → 代码块域
+    // （语言过滤在 languages 表达，detect 恒真=声明语言内全收）；block-type
+    // 源 → 块类型域（无语言/detect 字段，类型层不可误入语言咨询路径）。
+    mounts.push(
+      manifest.source.blockTypes?.length
+        ? {
+            kind: "block-renderer",
+            matching: "block-type",
+            blockTypes: manifest.source.blockTypes,
+            BlockComponent: ({ block }: { block: PluginBlock }) => (
+              <RendererShell manifest={manifest} schema={schema} payload={{ kind: "block", blockType: block.type, block }} sessionId={null} />
+            ),
+          }
+        : {
+            kind: "block-renderer",
+            matching: "code",
+            languages: manifest.source.languages ?? [],
+            detect: () => true,
+            Component: ({ code, language }: { code: string; language: string }) => (
+              <RendererShell manifest={manifest} schema={schema} payload={{ kind: "code-block", language, code }} sessionId={null} />
+            ),
+          },
+    );
   } else if (manifest.render.mount === "event-hook") {
     mounts.push({
       kind: "event-hook",

@@ -75,9 +75,7 @@ export const interactionRenderPlugin: SessionPluginDescriptor = {
   mounts: [
     {
       kind: "block-renderer",
-      languages: [],
-      detect: () => false, // 不匹配代码块
-      Component: () => null, // 代码块路径不接管
+      matching: "block-type",
       blockTypes: ["interaction"],
       BlockComponent: InteractionBlockRenderer,
     },

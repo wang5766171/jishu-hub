@@ -105,6 +105,8 @@ export interface SessionKernelContext {
   sessionTitle: string | null;
   /** 完整消息（含全部块类型的只读投影）。 */
   messages: PluginMessage[];
+  /** v0.9.3 需求10 A4：审批面（插件可消费的待审批投影，订阅经 ctx.subscribe）。 */
+  approvals: import("../kernel/data-hub").PluginApprovalInfo[];
   /** 流式状态快照（null = 无流式会话）。 */
   streamState: PluginStreamState | null;
   /** 会话元信息。 */
@@ -157,6 +159,8 @@ export interface SessionKernelContext {
     sessionMeta(cb: (meta: PluginSessionMeta) => void): Unsubscribe;
     /** 轮次摘要（已有 turns 快照的持续版）。 */
     turns(cb: (turns: TurnSummary[]) => void): Unsubscribe;
+    /** v0.9.3 需求10 A4：审批面订阅（注册即回放）。 */
+    approvals(cb: (list: import("../kernel/data-hub").PluginApprovalInfo[]) => void): Unsubscribe;
     /** 内核信号（通知/音效等）。 */
     events(cb: (signal: SessionSignal) => void): Unsubscribe;
   };
@@ -241,21 +245,34 @@ export interface SidebarPanelMount {
   Component: ComponentType<{ ctx: SessionKernelContext }>;
 }
 
-/** 块渲染器挂载点（v0.9.2 底座增强）：匹配内容块（非仅代码块）。
- * 0 = 仅匹配代码块（语言+detect）；extended 匹配消息块（interaction/
- * phase_divider/tool_use 等核心块类型的插件接管渲染）。 */
-export interface BlockRendererMount {
+/** 块渲染器挂载点（v0.9.2 底座增强）：按匹配域判别联合（测试期修复23
+ * 结构收口）——两种匹配语义（代码块语言匹配 / 核心块类型接管）此前共用
+ * 一个形状且字段全可选，组合引擎把 block-type 源适配成 languages=[] +
+ * detect 恒真即命中一切代码块；联合后跨域匹配在类型层不可表达。
+ * 匹配域只有一条进入路径：code → matchBlockRenderer（语言咨询），
+ * block-type → matchBlockTypeRenderer（块类型咨询）。 */
+export interface CodeBlockRendererMount {
   kind: "block-renderer";
-  /** 语言匹配（小写，如 ["html"]）；空数组 = 全部语言由 detect 判定。 */
+  matching: "code";
+  /** 语言匹配（小写，如 ["html"]）——**显式封闭集，无通配**：插件只接管
+   *  自己声明的语言；bash 等未声明的常规对话代码块结构上不可命中（空集
+   *  同样不匹配任何语言）。 */
   languages: string[];
   /** 内容判定（如 HTML 是否完整文档）。 */
   detect: (language: string, code: string) => boolean;
   Component: ComponentType<{ code: string; language: string }>;
-  /** 扩展匹配：接管非代码块类型（interaction / phase_divider 等）。 */
-  blockTypes?: string[];
-  /** 扩展块渲染组件（接收完整 PluginBlock）。 */
-  BlockComponent?: ComponentType<{ block: PluginBlock }>;
 }
+
+export interface BlockTypeRendererMount {
+  kind: "block-renderer";
+  matching: "block-type";
+  /** 接管的核心块类型（interaction / phase_divider 等）。 */
+  blockTypes: string[];
+  /** 块渲染组件（接收完整 PluginBlock；联合臂必带，不再有"空挂载"态）。 */
+  BlockComponent: ComponentType<{ block: PluginBlock }>;
+}
+
+export type BlockRendererMount = CodeBlockRendererMount | BlockTypeRendererMount;
 
 /** composer 尾部控制行挂载点（v0.9.3 需求8：上下文占用环迁移）：渲染在
  *  模型选择器/思考档同一行的内联槽位（模型行与无模型行两处互斥位点，

@@ -292,7 +292,7 @@ function renderBlock(
 function PhaseDividerBlockWithRenderers({ phase, title }: { phase: string; title: string }) {
   const renderers = useBlockRenderers();
   const renderer = matchBlockTypeRenderer(renderers, "phase_divider");
-  if (renderer?.BlockComponent) {
+  if (renderer) {
     const Block = renderer.BlockComponent;
     return <Block block={{ type: "phase_divider", text: phase, title }} />;
   }
@@ -302,7 +302,7 @@ function PhaseDividerBlockWithRenderers({ phase, title }: { phase: string; title
 function InteractionBlockWithRenderers({ items, origin }: { items: InteractionCardItem[]; origin?: string }) {
   const renderers = useBlockRenderers();
   const renderer = matchBlockTypeRenderer(renderers, "interaction");
-  if (renderer?.BlockComponent) {
+  if (renderer) {
     const Block = renderer.BlockComponent;
     return (
       <>
