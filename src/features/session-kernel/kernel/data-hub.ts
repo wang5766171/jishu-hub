@@ -20,22 +20,32 @@ import type { TurnSummary } from "../view-model";
  * 无 React 依赖（可在内核/worker 复用）；events 信号通道不经此（signals.ts
  * 独立总线，本就是真订阅）。
  */
+/** 审批面投影（需求10 A4：插件可消费的待审批请求——最小字段）。 */
+export interface PluginApprovalInfo {
+  sessionId: string;
+  requestId: string;
+  kind: string;
+}
+
 export class SessionDataHub {
   private readonly messagesListeners = new Set<(msgs: PluginMessage[]) => void>();
   private readonly streamStateListeners = new Set<(state: PluginStreamState | null) => void>();
   private readonly sessionMetaListeners = new Set<(meta: PluginSessionMeta) => void>();
   private readonly turnsListeners = new Set<(turns: TurnSummary[]) => void>();
+  private readonly approvalsListeners = new Set<(list: PluginApprovalInfo[]) => void>();
 
   private snapshots: {
     messages: PluginMessage[];
     streamState: PluginStreamState | null;
     sessionMeta: PluginSessionMeta | null;
     turns: TurnSummary[];
+    approvals: PluginApprovalInfo[];
   } = {
     messages: [],
     streamState: null,
     sessionMeta: null,
     turns: [],
+    approvals: [],
   };
 
   /** 订阅注册期的快照回放（与 publish 同款容错：单个订阅者抛错不阻断）。 */
@@ -54,6 +64,7 @@ export class SessionDataHub {
     streamState?: PluginStreamState | null;
     sessionMeta?: PluginSessionMeta | null;
     turns?: TurnSummary[];
+    approvals?: PluginApprovalInfo[];
   }): void {
     this.snapshots = { ...this.snapshots, ...snapshots };
   }
@@ -100,6 +111,27 @@ export class SessionDataHub {
         console.warn("session data hub: turns listener failed:", error);
       }
     }
+  }
+
+  /** v0.9.3 需求10 A4 × 需求13 C4 融合：审批面——插件（审批中心类组合插件）
+   *  可消费的待审批请求投影。 */
+  publishApprovals(list: PluginApprovalInfo[]): void {
+    this.snapshots.approvals = list;
+    for (const cb of this.approvalsListeners) {
+      try {
+        cb(list);
+      } catch (error) {
+        console.warn("session data hub: approvals listener failed:", error);
+      }
+    }
+  }
+
+  subscribeApprovals(cb: (list: PluginApprovalInfo[]) => void): Unsubscribe {
+    this.replaySafely(() => cb(this.snapshots.approvals));
+    this.approvalsListeners.add(cb);
+    return () => {
+      this.approvalsListeners.delete(cb);
+    };
   }
 
   /** 订阅：注册即回放当前快照；返回真实退订（再次移除后不再收 publish）。 */

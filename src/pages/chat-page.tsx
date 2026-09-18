@@ -75,10 +75,6 @@ import { useFileViewer } from "@/components/file-viewer";
 import { cn } from "@/lib/utils";
 import { openFloatingSession } from "@/lib/floating-window";
 import {
-  formatInteractionReply,
-  formatInteractionResponseValue,
-} from "@/lib/conversation-interaction";
-import {
   buildInteractionInsertions,
   commitAssistantWithInteractions,
   type InteractionInsertion,
@@ -101,14 +97,10 @@ import {
   stripTaskLaunchInstructionFromMessages,
   TerminalIcon,
   uniqueSessionsById,
-  type PendingChatApproval,
-  type PendingChatInteraction,
   type TaskLaunchPhase,
 } from "./chat-page-utils";
 import { type TaskPhase, type TaskLaunchInstanceSummary } from "@/features/task-instance/types";
 import type {
-  ConversationInteractionSubmission,
-  InteractionResponseDto,
   Message,
   Project,
   ProjectMeta,
@@ -257,9 +249,6 @@ export function ChatPage({
   // 记录上次已知 status，用于检测变化。
   const lastKnownStatusRef = useRef<string | null>(null);
   const [regularSessionsOpen, setRegularSessionsOpen] = useState(true);
-  const [pendingApprovals, setPendingApprovals] = useState<PendingChatApproval[]>([]);
-  const [pendingInteractions, setPendingInteractions] = useState<PendingChatInteraction[]>([]);
-  const [approvalResolving, setApprovalResolving] = useState(false);
 
   // v0.8.0 需求3：模型选择域拆分至 use-model-picker——候选/档位来自聚合
   // IPC（get_model_picker_options，Pi 语义解析唯一化在后端），前端解析块
@@ -866,6 +855,7 @@ export function ChatPage({
     activeTaskInstanceIdRef.current = null;
     activeTaskRequirementFileRef.current = null;
     lastKnownStatusRef.current = null;
+    closeSessionSidebar();
     setSelectedSession("new");
     selectedSessionRef.current = "new";
     setSessionMessages([]);
@@ -1312,6 +1302,11 @@ export function ChatPage({
 
     // v0.8.0 需求4 补充：新建会话同样视为切换，收起右侧预览。
     closeViewer();
+    // v0.9.3 测试期修复22：同时显式收起会话侧栏（产物中心等 sidebar-panel
+    // 形态）——用户实测 A 会话 HTML 预览后点「新对话」，右半空白占位
+    //（openId 未清；插件自治收起链在组件测试中为绿，实机仍复现，改为
+    // 壳层确定性收起，与 closeViewer 同语义）。
+    closeSessionSidebar();
 
     setTaskModeActive(false);
     setTaskLaunchOpen(false);
@@ -1322,6 +1317,7 @@ export function ChatPage({
     lastKnownStatusRef.current = null;
     setActiveTaskInstanceId(null);
     setActiveTaskRequirementFile(null);
+    closeSessionSidebar();
     setSelectedSession("new");
     selectedSessionRef.current = "new";
     setSessionMessages([]);
@@ -1343,6 +1339,7 @@ export function ChatPage({
     activeTaskInstanceIdRef.current = null;
     activeTaskRequirementFileRef.current = null;
     lastKnownStatusRef.current = null;
+    closeSessionSidebar();
     setSelectedSession("new");
     selectedSessionRef.current = "new";
     setSessionMessages([]);
@@ -2194,11 +2191,39 @@ export function ChatPage({
   // v0.9.3 需求3（P1-3）：会话内核数据枢纽——ctx.subscribe 各数据面的真订阅
   // 宿主（监听器集合 + 最新快照）。hub 生命周期 = 页面实例（useRef 惰性建），
   // ctx 重建只重放快照，订阅不丢；数据变更经下方 publish effects 逐个回调。
+  // v0.9.3 需求10 A4：审批/交互队列剥离为 hook（纯搬迁；审批面经数据枢纽
+  // 发布为插件可消费能力）。置于 ctx 构造前——projection 进 seed。
+  const {
+    pendingApprovals,
+    setPendingApprovals,
+    setPendingInteractions,
+    approvalResolving,
+    activeApproval,
+    approvalDescKey,
+    activeInteraction,
+    handleInteractionSubmit,
+    resolveActiveApproval,
+  } = useChatApprovals({ selectedSession, handleMessageSent, activeIdRef, projectPathRef });
+  // 审批面投影 + 发布（插件消费：审批中心类组合插件）。
+  const approvalProjection = useMemo(
+    () =>
+      pendingApprovals.map((a) => ({
+        sessionId: a.sessionId,
+        requestId: a.requestId,
+        kind: a.approvalKind ?? "",
+      })),
+    [pendingApprovals],
+  );
+
   const dataHubRef = useRef<SessionDataHub | null>(null);
   if (!dataHubRef.current) dataHubRef.current = new SessionDataHub();
   const dataHub = dataHubRef.current;
 
   // v0.9.2 需求1：会话内核上下文——插件的唯一取数/命令入口（05 §3.2）。
+  useEffect(() => {
+    dataHub.publishApprovals(approvalProjection);
+  }, [approvalProjection, dataHub]);
+
   const sessionKernelCtx = useMemo<SessionKernelContext>(
     () => {
       // ctx 构造即 seed：晚订阅者回放到的永远是当前值；seed 不通知既有
@@ -2208,8 +2233,10 @@ export function ChatPage({
         streamState: ctxStreamState,
         sessionMeta: ctxSessionMeta,
         turns: turnSummaries,
+        approvals: approvalProjection,
       });
       return {
+      approvals: approvalProjection,
       turns: turnSummaries,
       activeTurnIndex,
       scrollToTurn: handleJumpToTurn,
@@ -2246,6 +2273,7 @@ export function ChatPage({
         streamState: (cb) => dataHub.subscribeStreamState(cb),
         sessionMeta: (cb) => dataHub.subscribeSessionMeta(cb),
         turns: (cb) => dataHub.subscribeTurns(cb),
+        approvals: (cb) => dataHub.subscribeApprovals(cb),
         events: (cb) => subscribeSessionSignals(cb),
       },
       resolveSessionInfo: (sessionId: string) => {
@@ -2809,142 +2837,6 @@ export function ChatPage({
     taskModeActive && taskSelectedNodeId
       ? taskGraph.snapshot?.nodes.find((n) => n.node_id === taskSelectedNodeId)?.title ?? displayName
       : displayName;
-  const activeApproval = pendingApprovals[0] ?? null;
-  // 审批类型 → 弹窗描述文案（后端按工具分类：bash→命令、write/edit→文件写入；
-  // wire 值 PascalCase，兼容 snake_case 历史值）。
-  const approvalKindRaw = (activeApproval?.approvalKind ?? "").toLowerCase();
-  const approvalDescKey =
-    approvalKindRaw === "command"
-      ? "sessions.permissionDescCommand"
-      : approvalKindRaw === "filewrite" || approvalKindRaw === "file_write"
-        ? "sessions.permissionDescFileWrite"
-        : "sessions.permissionDescOther";
-  // v0.7.0 需求二：节点会话的 interaction 来自节点子代理（agent_id 可能是非 activeId
-  // 的 claude-code/codex 等）。匹配只按 sessionId（已唯一标识会话），不限制 agentId，
-  // 否则节点执行阶段的 agent 问答无法显示和提交。
-  const activeInteraction = pendingInteractions.find(
-    (item) => item.sessionId === selectedSession,
-  ) ?? null;
-  const handleInteractionSubmit = useCallback(async (
-    submission: ConversationInteractionSubmission,
-  ) => {
-    // v0.7.0 需求二：节点会话 interaction 匹配只按 sessionId + requestId（不限制 agentId）。
-    const interaction = pendingInteractions.find(
-      (item) =>
-        item.sessionId === selectedSession
-        && item.request.requestId === submission.requestId,
-    );
-    if (!interaction) return;
-
-    const matchesInteraction = (item: PendingChatInteraction) =>
-      item.agentId === interaction.agentId
-      && item.sessionId === interaction.sessionId
-      && item.request.requestId === submission.requestId;
-    const value = formatInteractionResponseValue(interaction.request, submission);
-    const checkpoint = streamStore.recordInteractionResponseWithCheckpoint(
-      interaction.sessionId,
-      submission.requestId,
-      value,
-      submission.selectedOptionIds,
-    );
-    const restorePending = () =>
-      setPendingInteractions((current) =>
-        current.some(matchesInteraction) ? current : [...current, interaction],
-      );
-
-    // Hide the panel immediately; restored below on failure.
-    setPendingInteractions((current) => current.filter((item) => !matchesInteraction(item)));
-
-    // Hand the answer to the backend along with the interaction's origin. The
-    // backend takes the AUTHORITATIVE delivery decision from the process's
-    // actual transport (design R6 — never assume mid-turn from the event hint).
-    let result: InteractionResponseDto | null = null;
-    try {
-      result = await invokeCommand<InteractionResponseDto>("respond_chat_interaction", {
-        sessionId: interaction.sessionId,
-        requestId: submission.requestId,
-        value,
-        interaction: {
-          request_id: submission.requestId,
-          prompt: interaction.request.prompt,
-          options: interaction.request.options.map((option) => ({
-            option_id: option.optionId,
-            label: option.label,
-            description: option.description ?? null,
-          })),
-          answer: value,
-          selected_options: submission.selectedOptionIds,
-          origin: interaction.request.origin ?? null,
-        },
-        origin: interaction.request.origin,
-      });
-    } catch (error) {
-      streamStore.rollbackInteractionResponse(checkpoint);
-      restorePending();
-      throw error;
-    }
-
-    const delivery = result?.delivery ?? "follow_up";
-
-    if (delivery === "mid_turn") {
-      // The answer was recorded before IPC so a TurnComplete released by the
-      // extension_ui_response cannot commit an unanswered interaction.
-      return;
-    }
-
-    // Follow-up: this transport cannot answer mid-turn as a business question.
-    // Remove the inline placeholder (no phantom gap) and deliver the answer as
-    // a new user message — the design's safety net for transports without
-    // mid-turn reachability (CLI, capability-absent downgrade, opencode).
-    streamStore.removeInteractionSplit(interaction.sessionId, submission.requestId);
-    const replyText = formatInteractionReply(interaction.request, submission).trim();
-    if (!replyText) return;
-
-    // Mirror the standard send path: register a new turn's stream, snapshot the
-    // session cache, then dispatch send_message. The prior turn is persisted to
-    // the session JSONL and re-rendered from history on completion.
-    streamStore.start(interaction.sessionId, replyText);
-    handleMessageSent(interaction.sessionId, replyText);
-    try {
-      await invokeCommand("send_message", {
-        agentId: activeIdRef.current ?? "",
-        projectPath: projectPathRef.current ?? "",
-        sessionId: interaction.sessionId,
-        message: replyText,
-      });
-    } catch (sendError) {
-      console.error("Failed to send interaction follow-up message:", sendError);
-      streamStore.end(interaction.sessionId);
-      restorePending();
-    }
-  }, [
-    handleMessageSent,
-    pendingInteractions,
-    selectedSession,
-  ]);
-  const resolveActiveApproval = useCallback(async (approved: boolean, remember = false) => {
-    if (!activeApproval || approvalResolving) return;
-    setApprovalResolving(true);
-    try {
-      await invokeCommand("resolve_chat_permission", {
-        sessionId: activeApproval.sessionId,
-        requestId: activeApproval.requestId,
-        approved,
-        remember,
-      });
-      setPendingApprovals((current) =>
-        current.filter(
-          (item) =>
-            item.sessionId !== activeApproval.sessionId
-            || item.requestId !== activeApproval.requestId,
-        ),
-      );
-    } catch (error) {
-      console.error("Failed to resolve ACP permission request:", error);
-    } finally {
-      setApprovalResolving(false);
-    }
-  }, [activeApproval, approvalResolving]);
   const projectDisplayName = currentProjectMeta?.custom_name || currentProject?.name || t("sessions.noProject");
   const projectPath = currentProject?.path ?? "";
   const activeModelLabel = activeModelValue
@@ -4036,3 +3928,4 @@ import {
   hasCachedSessionMessages,
 } from "@/features/session-kernel/kernel/session-cache";
 import { startAgentEventPipeline } from "@/features/session-kernel/kernel/event-pipeline";
+import { useChatApprovals } from "./chat-approvals";
