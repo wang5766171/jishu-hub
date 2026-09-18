@@ -198,7 +198,7 @@ interface LoadedArtifact {
   truncated: boolean;
 }
 
-function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
+export function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
   const { t } = useTranslation();
   const preview = useSyncExternalStore(subscribePreview, getPreviewSnapshot);
   const sessionId = ctx.sessionId;
@@ -291,10 +291,18 @@ function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
   );
 
   // 合并候选（主会话 + 各节点）：同文件以节点为准（实际写方），保序去重。
+  // 修复20：显示层同样走台账换算——列表/标签/路径栏直接呈现最终落位
+  //（打开已验证可用后用户要求显示一致）；去重键用换算后的小写路径。
   const candidates = useMemo(() => {
     const byFile = new Map<string, { file: string; source: string | null }>();
-    for (const file of mainFiles) byFile.set(file, { file, source: null });
-    for (const item of nodeArtifacts) byFile.set(item.file, { file: item.file, source: item.source });
+    for (const file of mainFiles) {
+      const resolved = resolveLedgerPath(file, pathLedger) ?? file;
+      byFile.set(resolved.toLowerCase(), { file: resolved, source: null });
+    }
+    for (const item of nodeArtifacts) {
+      const resolved = resolveLedgerPath(item.file, pathLedger) ?? item.file;
+      byFile.set(resolved.toLowerCase(), { file: resolved, source: item.source });
+    }
     return Array.from(byFile.values());
   }, [mainFiles, nodeArtifacts]);
 
