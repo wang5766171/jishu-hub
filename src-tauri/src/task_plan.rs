@@ -137,6 +137,10 @@ const CONDUCTOR_EXECUTE_SKILL: &str =
     include_str!("../resources/task-plan/jishu-conductor-dev/execute.SKILL.md");
 const REQUEST_USER_INPUT_EXTENSION_TS: &str =
     include_str!("../resources/extensions/request-user-input.ts");
+const JISHU_TOOL_APPROVAL_EXTENSION_TS: &str =
+    include_str!("../resources/extensions/jishu-tool-approval.ts");
+const JISHU_BATCH_GUARD_EXTENSION_TS: &str =
+    include_str!("../resources/extensions/jishu-batch-guard.ts");
 const SESSION_CONTEXT_EXTENSION_TS: &str =
     include_str!("../resources/extensions/session-context.ts");
 /// v0.9.2 测试期：HTML 页面预览扩展（preview_html 工具——agent 可主动把
@@ -233,6 +237,26 @@ fn ensure_conductor_extension_in(agent_dir: &Path) {
 
 /// 自动部署 `request_user_input` 扩展（conductor 的 discuss/plan 阶段依赖此工具）。
 /// 在 Hub setup hook 调用，每次启动自动确保。
+/// v0.9.3 需求22 P1：逐次工具审批扩展（自 pi 内置迁主仓部署，零 fork）。
+pub fn ensure_jishu_tool_approval_extension() {
+    let Ok(agent_dir) = jishu_agent_dir() else {
+        return;
+    };
+    const REL: &str = "extensions/jishu-tool-approval.ts";
+    deploy_extension_file(&agent_dir, REL, JISHU_TOOL_APPROVAL_EXTENSION_TS);
+    register_extension_in_settings(&agent_dir, REL);
+}
+
+/// v0.9.3 需求22 P2：工具批次守卫扩展（自 pi harness 内置迁主仓部署，零 fork）。
+pub fn ensure_jishu_batch_guard_extension() {
+    let Ok(agent_dir) = jishu_agent_dir() else {
+        return;
+    };
+    const REL: &str = "extensions/jishu-batch-guard.ts";
+    deploy_extension_file(&agent_dir, REL, JISHU_BATCH_GUARD_EXTENSION_TS);
+    register_extension_in_settings(&agent_dir, REL);
+}
+
 pub fn ensure_request_user_input_extension() {
     let Ok(agent_dir) = jishu_agent_dir() else {
         return;

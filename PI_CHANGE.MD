@@ -119,6 +119,37 @@
 
 # 第二部分：改动记录
 
+## 2026-09-18 | 需求22 P1/P2：审批与批次守卫迁主仓部署扩展——fork 净减（release_v0.85.0-13）
+
+**动机**（jishu-hub v0.9.3 需求22，用户裁决）：降低与原版开源 pi 差异——两项以"pi 源码内置"形态存在的自研能力，机制上完全可由主仓部署扩展承载（conductor/html-preview 先例），迁出后 pi 源码改动归零并获得热更新（改逻辑=重部署文件，无需重编 bundle）。
+
+### P1 审批扩展迁出（撤销 0.84.2-11 的三处源码改动）
+
+| 撤销 | 内容 |
+|---|---|
+| `src/extensions/jishu-approval/`（删除） | 内置审批扩展整体——迁主仓 `src-tauri/resources/extensions/jishu-tool-approval.ts`（hub 部署管线幂等部署），配置读取由 `pi.context.getSetting` 改扩展内 `node:fs` 直读 settings.json（每次评估无缓存，语义等价；agent 目录按 piConfig.configDir 同源解析） |
+| `core/extensions/types.ts` + `runner.ts`（+TUI `interactive-mode.ts`） | ExtensionContext.getSetting API 三处全部撤销（上游无此 API） |
+| `core/settings-manager.ts` | Settings.toolApproval 字段与 getSetting 方法撤销（键仍由 hub 写入 settings.json，仅 pi 类型层不再感知——pi 对未知设置键本就容忍） |
+| `core/agent-session.ts` | setSettingGetter 接线撤销 |
+
+**协议不变**：审批标题前缀 `[jishu-tool-approval]`、模式值 smart/ask_always/off、settings 键 toolApproval——两端同源约定原样保留，hub 侧零改动。
+
+### P2 批次守卫迁出（撤销 0.85.0-12 的 harness 改动）
+
+| 撤销 | 内容 |
+|---|---|
+| `packages/agent/src/harness/execution/batch-guard.ts`（删除，含 test） | 上限判定核心 |
+| `harness/runtime/drive/tools.ts` | startToolInvocation 前置接线与 batchGuardStates WeakMap 撤销 |
+| `harness/execution/tools.ts` | immediateError 导出还原为私有 |
+
+**扩展替代**（主仓 `jishu-batch-guard.ts`）：agent 级 `tool_call` 钩子在执行前逐调用触发（agent-session `_installAgentToolHooks` → agent.beforeToolCall，sequential/parallel 共用），before_agent_start 重置轮计数，超 50 block 并指引下一轮——拦截语义与原 fork 等价（block 结果即模型可见的错误 result，协议完整）。**残留差异**：拒绝结果由扩展 block 产生（含 reason 文案）而非 fork 的 immediateError——模型视角等价（都是错误 result + 指引）；已删除的 636 回放单测由主仓侧扩展行为回归承接。
+
+**验证**：coding-agent 与 agent 两包 `tsgo --noEmit` 均 0 错误；主仓 cargo 611 全绿。
+
+**版本**：自研尾号 `-12` → `-13`（两项合并一个尾号——同日同批去 fork 操作）。
+
+---
+
 ## 2026-09-09 | 工具批次守卫：防并行工具调用爆炸（release_v0.85.0-12）
 
 **背景（线上实录）**：2026-09-09 fundet-task-pilot 项目会话，退化模型在**单条 assistant 消息**里发射 636 个 toolCall（其中 626 个与 `sed -n '96,106p' …` 完全相同），运行时无任何防御照单全收，数百次真实执行后用户手动停止（会话 JSONL 1.8MB）。

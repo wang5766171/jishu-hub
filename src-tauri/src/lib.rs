@@ -137,6 +137,9 @@ pub fn run() {
             agent::pi_deploy::ensure_pi_extension_deployments();
             // 自动部署 request_user_input 扩展（conductor 的 discuss/plan 阶段依赖此工具）
             task_plan::ensure_request_user_input_extension();
+            // v0.9.3 需求22 P1/P2：审批与批次守卫扩展（自 pi 内置迁移，零 fork）。
+            task_plan::ensure_jishu_tool_approval_extension();
+            task_plan::ensure_jishu_batch_guard_extension();
             // 部署 session-context 扩展（session_id 注入 system prompt，取代 user message 注入）
             task_plan::ensure_session_context_extension();
             // v0.9.2 测试期：部署 html-preview 扩展（preview_html 工具，agent 主动渲染 HTML 预览）
