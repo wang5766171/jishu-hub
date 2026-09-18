@@ -174,7 +174,7 @@ async function svgToPngBlob(source: string, scale = 2): Promise<Blob> {
 export async function mermaidToFile(
   payload: SourcePayload,
   format: string,
-  options: PluginConfigValues,
+  options: PluginConfigValues = {},
 ): Promise<Blob | string> {
   if (payload.kind !== "code-block") throw new Error("mermaid toFile 仅接受 code-block payload");
   const mermaid = await loadMermaidForExport();

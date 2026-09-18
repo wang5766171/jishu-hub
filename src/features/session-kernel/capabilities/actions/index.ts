@@ -26,9 +26,10 @@ actionRegistry.register({
   type: "export-file",
   async run(params, payload) {
     const format = String(params.format ?? "txt");
-    const toFile = params.__toFile as ((p: SourcePayload, f: string) => Promise<Blob | string>) | undefined;
+    const toFile = params.__toFile as
+      ((p: SourcePayload, f: string, o?: Record<string, unknown>) => Promise<Blob | string>) | undefined;
     if (!toFile) throw new Error(`渲染组件不支持导出 ${format}`);
-    const out = await toFile(payload, format);
+    const out = await toFile(payload, format, (params.__options as Record<string, unknown>) ?? {});
     const path = await save({ defaultPath: `export.${format}`, filters: [{ name: format.toUpperCase(), extensions: [format] }] });
     if (!path) return;
     if (typeof out === "string") {
