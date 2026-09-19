@@ -233,6 +233,8 @@ pub fn run() {
                                             process_id: 0,
                                             stdin: None,
                                             acp: Some(control),
+                                            // 节点会话由编排器自管，签名未知 → 跳过漂移检测。
+                                            spawn_signature: String::new(),
                                         },
                                     );
                                 }
@@ -402,6 +404,7 @@ pub fn run() {
             commands::agents::composed_plugin_manifests,
             commands::agents::composed_plugin_save,
             commands::agents::composed_plugin_delete,
+            commands::agents::plugin_confirm_pending,
             commands::agents::session_tool_list,
             commands::agents::session_set_tools,
             commands::sessions::persist_agent_turn,

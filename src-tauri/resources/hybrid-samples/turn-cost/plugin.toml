@@ -1,0 +1,18 @@
+[plugin]
+id = "session.turn-cost"
+name = "回合花销"
+kind = "session-composed"
+
+[source]
+type = "turns"
+
+[render]
+component = "@file:component.js"
+mount = "composer-trailing"
+
+[[config]]
+key = "currency"
+type = "select"
+label = "币种"
+options = [{ value = "CNY", label = "¥" }, { value = "USD", label = "$" }]
+default = "CNY"

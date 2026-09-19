@@ -408,6 +408,15 @@ pub enum PluginAction {
         path: String,
     },
 
+    /// Install a hybrid plugin from a local directory (plugin.toml +
+    /// component.js; installed disabled, GUI confirmation card enables it).
+    /// 需求25 P2：混合插件目录包安装（组合式清单 + 自定义代码组件）。
+    #[command(name = "add-hybrid")]
+    AddHybrid {
+        /// Path to the plugin directory (holding plugin.toml + component.js).
+        path: String,
+    },
+
     /// Print the full manifest (TOML) of an installed plugin.
     /// 页面/CLI 能力一致（v0.9.0 需求22）：GUI plugin_get 的 CLI 面。
     Get {

@@ -99,6 +99,8 @@ fn rebuild_registry(app: &tauri::AppHandle, state: &tauri::State<'_, Mutex<AppSt
 
 /// 启停插件并热生效（core 插件拒绝；写 plugins.json 持久化；agent 与 tool
 /// 插件共用同一启停集合——known ids 含两类）。
+/// 需求25 P2：混合插件确认卡「启用/暂不」复用本命令——成功后顺带清除
+/// `<id>/.pending-confirm` 安装标记（幂等，非混合插件无该文件则无操作）。
 #[tauri::command]
 pub(crate) fn plugin_set_enabled(
     app: tauri::AppHandle,
@@ -108,6 +110,7 @@ pub(crate) fn plugin_set_enabled(
 ) -> Result<(), String> {
     agent::plugin::set_plugin_enabled(&plugin_id, enabled)?;
     rebuild_registry(&app, &state);
+    agent::plugin::clear_pending_confirm_marker(&plugin_id);
     log::info!(
         "[plugin] {} {}d (registry rebuilt)",
         plugin_id,
@@ -315,6 +318,15 @@ pub(crate) fn composed_plugin_save(
     use tauri::Emitter;
     let _ = app.emit("plugins-changed", ());
     Ok(())
+}
+
+/// 需求25 P2 安全阀：混合插件安装待确认清单——扫描 `plugins/*/.pending-confirm`
+/// 标记（CLI `plugins add-hybrid` 落盘；CLI 是独立进程发不了广播，标记文件即
+/// 跨进程信箱）。前端确认卡轮询读取；「启用/暂不」经 plugin_set_enabled
+/// 落地并顺带清除标记。无待确认项返回空数组（轮询轻量）。
+#[tauri::command]
+pub(crate) fn plugin_confirm_pending() -> Vec<agent::plugin::PendingHybridPlugin> {
+    agent::plugin::pending_confirm_list()
 }
 
 /// v0.9.3 需求13 C3：删除用户组合插件（内置拒绝）并广播。

@@ -69,6 +69,9 @@ export function useEnabledSessionPlugins(): Set<string> {
   const refresh = useCallback(async () => {
     try {
       const result = await invokeCommand<{ plugins: PluginListEntry[] }>("plugin_list");
+      // 临时诊断：后端插件清单原始返回
+      const hybrid = (result.plugins ?? []).filter((p) => p.id.includes("hello"));
+      console.log("[enabled-diag] plugin_list hybrid entries:", JSON.stringify(hybrid));
       setBackendEnabled(
         new Set(
           (result.plugins ?? [])

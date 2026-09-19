@@ -24,6 +24,7 @@ import {
   useSessionSidebar,
 } from "@/features/session-kernel/shell/session-sidebar";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { HybridInstallConfirmation } from "@/components/hybrid-install-confirmation";
 import type { Page, Project, ProjectMeta } from "@/types";
 
 const ChatPage = lazy(() => import("@/pages/chat-page").then(m => ({ default: m.ChatPage })));
@@ -615,6 +616,10 @@ function AppContent() {
           <span>{projects?.length ?? 0} projects</span>
         </div>
         {blockingLoading && <LoadingOverlay />}
+        {/* 需求25 P2：混合插件安装确认卡（安全阀）——全局挂载，页面切换/
+            项目切换不卸载；组件内部 createPortal 到 body，轮询
+            plugin_confirm_pending，无待确认项时渲染 null。 */}
+        <HybridInstallConfirmation />
       </div>
     </FileViewerProvider>
   );
