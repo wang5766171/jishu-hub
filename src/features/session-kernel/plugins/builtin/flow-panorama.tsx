@@ -8,6 +8,7 @@ import {
   Clock,
   Loader2,
   Map,
+  MessagesSquare,
   MinusCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -70,6 +71,29 @@ function FlowPanoramaPanel({ ctx }: { ctx: SessionKernelContext }) {
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-1">
+        {/* 主会话入口（常驻，置顶于节点列表）：与节点行同构——看板是子会话
+            唯一入口，回/进主会话也必须在此常驻可及（仅选中节点时才出现的话，
+            未选中状态下面板无任何主会话线索）。onSelectNode(null) = 取消节点
+            选择，主区回退任务的阶段会话（规划优先/回退需求）。 */}
+        <button
+          type="button"
+          onClick={() => task.onSelectNode(null)}
+          className={cn(
+            "mb-1 flex w-full items-center gap-2 rounded-md border-l-2 px-2 py-1.5 text-left text-xs transition-colors",
+            task.selectedNodeId
+              ? "border-l-transparent text-foreground/90 hover:bg-accent"
+              : "border-l-primary bg-primary/20 font-medium text-foreground",
+          )}
+          title={t("sessionPlugins.flow.mainSessionHint", "本任务的需求/规划/执行讨论会话")}
+        >
+          <MessagesSquare className="h-3.5 w-3.5 shrink-0 text-primary" />
+          <span className="min-w-0 flex-1 truncate">{t("sessionPlugins.flow.mainSession", "主会话")}</span>
+          {!task.selectedNodeId ? (
+            <span className="shrink-0 text-[10px] text-muted-foreground/60">
+              {t("sessionPlugins.flow.currentPosition", "当前")}
+            </span>
+          ) : null}
+        </button>
         {task.nodes.map((node, index) => {
           const style = STATUS_STYLE[node.status] ?? STATUS_STYLE.ready;
           const Icon = style.icon;

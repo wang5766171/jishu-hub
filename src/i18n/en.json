@@ -315,6 +315,7 @@
   },
   "plugins": {
     "modalPipelineStages": "Stage pipeline",
+    "launchPipelineTask": "Launch as task",
     "viewDetails": "Details",
     "editSettings": "Settings",
     "modalTabInfo": "Overview",
@@ -1119,7 +1120,9 @@
     "flow": {
       "modeEdit": "Orchestrate",
       "modeBoard": "Flow board",
-      "noGraph": "No flow graph yet"
+      "noGraph": "No flow graph yet",
+      "openMainSession": "Open main chat",
+      "openMainSessionHint": "Close the board and return to the task's main session"
     },
     "steps": {
       "hide": "Hide step panel",
@@ -1177,7 +1180,10 @@
       "progress": "{{completed}}/{{total}}",
       "openCanvas": "Canvas",
       "cancelAll": "Cancel all",
-      "waiting": "waiting"
+      "waiting": "waiting",
+      "mainSession": "Main chat",
+      "mainSessionHint": "The task's requirement/planning/execution session",
+      "currentPosition": "current"
     },
     "htmlRender": {
       "name": "HTML Live Render",

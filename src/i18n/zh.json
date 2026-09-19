@@ -315,6 +315,7 @@
   },
   "plugins": {
     "modalPipelineStages": "阶段流水线",
+    "launchPipelineTask": "作为任务启动",
     "viewDetails": "详情",
     "editSettings": "设置",
     "modalTabInfo": "概览",
@@ -1119,7 +1120,9 @@
     "flow": {
       "modeEdit": "流程编排",
       "modeBoard": "流程看板",
-      "noGraph": "尚未生成流程图"
+      "noGraph": "尚未生成流程图",
+      "openMainSession": "进入主会话",
+      "openMainSessionHint": "关闭画布并回到任务的主会话（需求/规划/执行讨论所在会话）"
     },
     "steps": {
       "hide": "隐藏步骤栏",
@@ -1177,7 +1180,10 @@
       "progress": "{{completed}}/{{total}}",
       "openCanvas": "画布",
       "cancelAll": "取消全部",
-      "waiting": "等待中"
+      "waiting": "等待中",
+      "mainSession": "主会话",
+      "mainSessionHint": "本任务的需求/规划/执行讨论会话",
+      "currentPosition": "当前"
     },
     "htmlRender": {
       "name": "HTML 实时渲染",
