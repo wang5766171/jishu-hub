@@ -45,6 +45,17 @@ describe("validateManifest（source×mount 配对矩阵，测试期修复23 契�
     expect(
       validateManifest(manifest({ source: { type: "signal" }, mount: "event-hook" }), renderers),
     ).toEqual([]);
+    // task-board（C5-slice1）：task + dock-panel
+    expect(
+      validateManifest(manifest({ source: { type: "task" }, mount: "dock-panel" }), renderers),
+    ).toEqual([]);
+  });
+
+  it("task 源只配停靠/边栏挂载（C5-slice1 矩阵扩展）", () => {
+    for (const mount of ["block-renderer", "rail-widget", "composer-trailing", "event-hook"]) {
+      const errors = validateManifest(manifest({ source: { type: "task" }, mount }), renderers);
+      expect(errors.some((e) => e.includes(`mount ${mount} 不接受源类型 task`))).toBe(true);
+    }
   });
 
   it("数据面源配 block-renderer 拒绝（turns 劫持一切代码块的同源洞）", () => {

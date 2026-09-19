@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invokeCommand } from "@/hooks/use-invoke";
-import { flowPanoramaPlugin } from "./builtin/flow-panorama";
 import { htmlRenderPlugin } from "./builtin/html-render";
 import { sessionExportPlugin } from "./builtin/session-export";
 import { usagePanelPlugin } from "./builtin/usage-panel";
@@ -10,6 +9,7 @@ import { interactionRenderPlugin } from "./builtin/interaction-render";
 import "@/features/session-kernel/capabilities/renderers/components/MermaidRenderer";
 import "@/features/session-kernel/capabilities/renderers/components/primitives";
 import "@/features/session-kernel/capabilities/sources/aggregate-source";
+import "@/features/session-kernel/capabilities/sources/artifact-index";
 import "@/features/session-kernel/capabilities/actions";
 import { composedPlugins, composedVersion, subscribeComposed } from "@/features/session-kernel/capabilities/composition/loader";
 import { artifactsPlugin } from "./builtin/artifacts";
@@ -26,10 +26,10 @@ import type { SessionPluginDescriptor } from "./types";
  * 实现未落地不登记后端描述符（插件页不出现无实现的开关）。
  */
 const BUILTIN_SESSION_PLUGINS: SessionPluginDescriptor[] = [
-  flowPanoramaPlugin,
   // 注：HTML 实时渲染（html-render，聊天流内 ```html 代码块渲染卡）与产物
   // 中心（artifacts，产出文件侧栏预览）是两个能力，均保留——前者处理代码
   // 块、后者处理落盘文件（v0.9.3 测试期用户确认，非 html-preview 残留）。
+  // 任务流程全景（session.flow）已 C5-slice1 组合化（session.task-board）。
   htmlRenderPlugin,
   sessionExportPlugin,
   usagePanelPlugin,

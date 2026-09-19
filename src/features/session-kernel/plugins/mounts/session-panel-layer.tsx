@@ -51,7 +51,7 @@ interface PanelEntry {
 
 /** 插件图标映射（按插件 id → lucide 图标组件）。 */
 const PLUGIN_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  "session.flow": Map,
+  "session.task-board": Map,
   "session.usage": ChartPie,
   "session.search": Search,
   "session.artifacts": Package,

@@ -14,11 +14,12 @@ export type SourcePayload =
   | { kind: "code-block"; language: string; code: string }
   | { kind: "block"; blockType: string; block: unknown }
   | { kind: "aggregate"; data: unknown }
-  | { kind: "turns"; turns: Array<{ question: string; answer: string }>; activeIndex: number; jump?: (index: number) => void }
+  | { kind: "turns"; turns: Array<{ question: string; answer: string }>; activeIndex: number; jump?: (i: number) => void }
+  | { kind: "task"; task: import("../plugins/types").TaskPanelContext | null }
   | { kind: "signal"; signal: unknown };
 
 export interface SourceDeclaration {
-  type: "code-block" | "block-type" | "messages" | "turns" | "stream-state" | "signal";
+  type: "code-block" | "block-type" | "messages" | "turns" | "stream-state" | "task" | "signal";
   languages?: string[];
   blockTypes?: string[];
   aggregate?: string;
@@ -118,8 +119,8 @@ export interface ComposedBuildInput {
 const MOUNT_SOURCE_MATRIX: Record<string, string[]> = {
   "block-renderer": ["code-block", "block-type"],
   "rail-widget": ["messages", "turns", "stream-state"],
-  "dock-panel": ["messages", "turns", "stream-state"],
-  "sidebar-panel": ["messages", "turns", "stream-state"],
+  "dock-panel": ["messages", "turns", "stream-state", "task"],
+  "sidebar-panel": ["messages", "turns", "stream-state", "task"],
   "composer-trailing": ["messages", "turns", "stream-state"],
   "event-hook": ["signal"],
 };

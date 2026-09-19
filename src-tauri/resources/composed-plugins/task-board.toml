@@ -1,0 +1,13 @@
+[plugin]
+id = "session.task-board"
+name = "任务看板"
+description = "任务节点清单实时状态、点击钻入子任务会话、主会话常驻入口、画布与取消流程（C5-slice1 自 session.flow 组合化）"
+kind = "session-composed"
+
+[source]
+type = "task"
+
+[render]
+component = "render.task-board"
+mount = "dock-panel"
+slot = "right"

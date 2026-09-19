@@ -27,7 +27,7 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import { buildPathLedger, resolveLedgerPath, type PathLedger } from "./artifacts-ledger";
 import { cn } from "@/lib/utils";
 import { SESSION_PLUGIN_CONTRACT_VERSION } from "../types";
-import type { SessionPluginDescriptor, SessionKernelContext, PluginMessage } from "../types";
+import type { SessionPluginDescriptor, SessionKernelContext } from "../types";
 
 // ── 插件私有状态（当前预览文件；event-hook 写入，面板读取）──
 
@@ -69,102 +69,15 @@ function subscribePreview(cb: () => void): () => void {
   return () => previewListeners.delete(cb);
 }
 
-// ── 产物提取（主会话 PluginMessage 投影 / 子节点原始消息两形共享归一化）──
+// ── 产物提取（C5-slice1 下沉 capabilities/sources/artifact-index：
+//    纯算子与聚合器 artifact-paths 注册在基座层，本插件按消费方引用）──
 
-/** Windows 盘符 / UNC / POSIX 绝对路径判定。 */
-function isAbsolutePath(p: string): boolean {
-  return /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith("\\\\") || p.startsWith("/");
-}
+import {
+  extractSessionArtifacts,
+  extractArtifactPathsFromRawMessages,
+} from "../../capabilities/sources/artifact-index";
 
-/** 相对路径以项目根解析（agent 写文件常用相对路径；projectPath 来自
- * ctx.sessionMeta 契约字段）。 */
-function resolveAgainstProject(path: string, projectPath: string | null): string {
-  if (isAbsolutePath(path) || !projectPath) return path;
-  const sep = projectPath.includes("\\") ? "\\" : "/";
-  const rel = path.replace(/^[\\/]*(?:\.{1,2}[\\/]+)+/, "");
-  return `${projectPath.replace(/[\\/]+$/, "")}${sep}${rel}`;
-}
-
-/** 非产出工具按名称排除——产物口径（用户裁决）：**生成或编辑过的本地
- * 文件**。浏览类（read/find/grep/glob/ls…）只读不产出；引用类
- * （preview/open/reveal…）指向既有文件而非产出；会话内渲染内容
- * （mermaid 流程图等）不经 tool_use 文件参数，天然不在产物源。 */
-function isNonProducingTool(name: string | undefined): boolean {
-  if (!name) return false;
-  const n = name.toLowerCase();
-  return /(^|_)(read|find|grep|glob|ls|dir|search|list|watch|head|tail|stat|preview|open|reveal)(_|$)/.test(n)
-    || /^(read|find|grep|glob|ls|dir|preview|open|reveal)/.test(n);
-}
-
-/** 工具入参里的文件路径参数（write/edit 类工具的 path 形态多样）。 */
-function pickPathArg(input: Record<string, unknown>): string | null {
-  const raw =
-    typeof input.path === "string"
-      ? input.path
-      : typeof input.file_path === "string"
-        ? input.file_path
-        : typeof input.filePath === "string"
-          ? input.filePath
-          : typeof input.file === "string"
-            ? input.file
-            : null;
-  return raw && raw.trim() ? raw : null;
-}
-
-/** 归一化（分隔符/相对路径解析）+ 去重（后写覆盖前写，保留最新位置）。 */
-function normalizePaths(rawPaths: string[], projectPath: string | null): string[] {
-  const seen = new Map<string, true>();
-  const ordered: string[] = [];
-  for (const raw of rawPaths) {
-    const normalized = resolveAgainstProject(raw.replace(/\\/g, "/"), projectPath).replace(/\\/g, "/");
-    if (!seen.has(normalized)) {
-      seen.set(normalized, true);
-      ordered.push(normalized);
-    } else {
-      // 同路径再次写入 → 移到末尾（最新）
-      const idx = ordered.indexOf(normalized);
-      if (idx >= 0) ordered.splice(idx, 1);
-      ordered.push(normalized);
-    }
-  }
-  return ordered;
-}
-
-/** 主会话消息（PluginMessage 投影：blocks + text=工具名）产物提取。 */
-function extractSessionArtifacts(messages: PluginMessage[], projectPath: string | null): string[] {
-  const inputs: string[] = [];
-  for (const message of messages) {
-    for (const block of message.blocks) {
-      if (block.type !== "tool_use") continue;
-      if (isNonProducingTool(block.text)) continue;
-      const raw = pickPathArg(block.input ?? {});
-      if (raw) inputs.push(raw);
-    }
-  }
-  return normalizePaths(inputs, projectPath);
-}
-
-/** 子节点会话消息（get_session_messages 原始形状）的产物提取——任务执行
- * 的实际写文件方是节点子代理，主会话视角也要能识别其产物。导出供单测。 */
-export function extractArtifactPathsFromRawMessages(
-  messages: Array<{ content?: Array<{ type?: string; name?: string; input?: unknown }> }>,
-  projectPath: string | null,
-): string[] {
-  const inputs: string[] = [];
-  for (const message of messages) {
-    for (const block of message.content ?? []) {
-      if (block?.type !== "tool_use") continue;
-      if (isNonProducingTool(block.name)) continue;
-      const raw = pickPathArg(
-        typeof block.input === "object" && block.input !== null
-          ? (block.input as Record<string, unknown>)
-          : {},
-      );
-      if (raw) inputs.push(raw);
-    }
-  }
-  return normalizePaths(inputs, projectPath);
-}
+export { extractSessionArtifacts, extractArtifactPathsFromRawMessages };
 
 // ── 类型分流 ──
 

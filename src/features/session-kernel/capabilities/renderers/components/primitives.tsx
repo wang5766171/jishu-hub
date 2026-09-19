@@ -4,7 +4,19 @@
  */
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { MessageSquareText, Wrench } from "lucide-react";
+import {
+  Ban,
+  CheckCircle2,
+  CircleAlert,
+  CircleDot,
+  Clock,
+  Loader2,
+  Map,
+  MessageSquareText,
+  MessagesSquare,
+  MinusCircle,
+  Wrench,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PhaseDivider } from "@/components/sessions/conversation-content";
 import { TurnRail } from "@/components/sessions/turn-rail";
@@ -19,6 +31,136 @@ function DividerPrimitive({ payload }: RendererComponentProps<SourcePayload>) {
   return <PhaseDivider phase={block?.phase ?? block?.text ?? ""} title={block?.title ?? ""} />;
 }
 rendererRegistry.register({ key: "render.divider", component: DividerPrimitive, description: "阶段分隔条（阶段块的视觉分界）" });
+
+// ── render.task-board：任务看板（task 源配 dock 挂载；C5-slice1 自
+//    builtin/flow-panorama 下沉——节点清单实时状态/钻入子会话/主会话常驻
+//    入口/画布/取消全部，数据与命令全部经 TaskPanelContext）。 ──
+const TASK_STATUS_STYLE: Record<string, { icon: typeof MessageSquareText; cls: string }> = {
+  succeeded: { icon: CheckCircle2, cls: "text-emerald-500" },
+  failed: { icon: CircleAlert, cls: "text-red-500" },
+  cancelled: { icon: MinusCircle, cls: "text-muted-foreground" },
+  skipped: { icon: MinusCircle, cls: "text-muted-foreground/60" },
+  superseded: { icon: MinusCircle, cls: "text-muted-foreground/60" },
+  running: { icon: Loader2, cls: "text-blue-500 animate-spin" },
+  leased: { icon: Loader2, cls: "text-blue-500/70 animate-spin" },
+  repairing: { icon: Loader2, cls: "text-blue-500 animate-spin" },
+  retry_wait: { icon: Clock, cls: "text-amber-500" },
+  awaiting_approval: { icon: Clock, cls: "text-amber-500" },
+  ready: { icon: CircleDot, cls: "text-muted-foreground/80" },
+  blocked: { icon: Clock, cls: "text-muted-foreground/50" },
+};
+
+function TaskBoardPrimitive({ payload }: RendererComponentProps<SourcePayload>) {
+  const { t } = useTranslation();
+  const task = payload.kind === "task" ? payload.task : null;
+  if (!task) {
+    return (
+      <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
+        {t("sessionPlugins.flow.noTask", "当前会话未关联任务")}
+      </div>
+    );
+  }
+  const runActive = task.runStatus === "running";
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex items-center gap-2 px-2 py-1.5 text-xs text-muted-foreground">
+        <span className="truncate font-medium text-foreground">{task.title}</span>
+        <span className="shrink-0 tabular-nums">
+          {t("sessionPlugins.flow.progress", {
+            completed: task.completed,
+            total: task.total,
+            defaultValue: "{{completed}}/{{total}}",
+          })}
+        </span>
+        <button
+          type="button"
+          onClick={task.onOpenCanvas}
+          className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-md border border-border/60 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
+          title={t("sessionPlugins.flow.openCanvas", "画布")}
+        >
+          <Map className="h-3 w-3" />
+          {t("sessionPlugins.flow.openCanvas", "画布")}
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-1">
+        {/* 主会话入口（常驻，置顶于节点列表）：看板是子会话唯一入口，回/进
+            主会话也必须在此常驻可及。onSelectNode(null) = 取消节点选择，
+            主区回退任务的阶段会话。 */}
+        <button
+          type="button"
+          onClick={() => task.onSelectNode(null)}
+          className={cn(
+            "mb-1 flex w-full items-center gap-2 rounded-md border-l-2 px-2 py-1.5 text-left text-xs transition-colors",
+            task.selectedNodeId
+              ? "border-l-transparent text-foreground/90 hover:bg-accent"
+              : "border-l-primary bg-primary/20 font-medium text-foreground",
+          )}
+          title={t("sessionPlugins.flow.mainSessionHint", "本任务的需求/规划/执行讨论会话")}
+        >
+          <MessagesSquare className="h-3.5 w-3.5 shrink-0 text-primary" />
+          <span className="min-w-0 flex-1 truncate">{t("sessionPlugins.flow.mainSession", "主会话")}</span>
+          {!task.selectedNodeId ? (
+            <span className="shrink-0 text-[10px] text-muted-foreground/60">
+              {t("sessionPlugins.flow.currentPosition", "当前")}
+            </span>
+          ) : null}
+        </button>
+        {task.nodes.map((node, index) => {
+          const style = TASK_STATUS_STYLE[node.status] ?? TASK_STATUS_STYLE.ready;
+          const Icon = style.icon;
+          const clickable = node.status !== "blocked" && node.status !== "ready";
+          // 当前钻入节点用主色背景 + 左缘竖条高亮（看板是子会话唯一入口，
+          // 选中态必须一眼可辨）。
+          const isSelected = task.selectedNodeId === node.nodeId;
+          return (
+            <button
+              key={node.nodeId}
+              type="button"
+              disabled={!clickable}
+              onClick={() => task.onSelectNode(node.nodeId)}
+              className={cn(
+                "flex w-full items-center gap-2 rounded-md border-l-2 px-2 py-1.5 text-left text-xs transition-colors",
+                isSelected
+                  ? "border-l-primary bg-primary/20 font-medium text-foreground"
+                  : cn(
+                      "border-l-transparent",
+                      clickable ? "hover:bg-accent" : "cursor-default opacity-70",
+                    ),
+              )}
+            >
+              <span className={cn(
+                "w-4 shrink-0 text-center text-[10px]",
+                isSelected ? "text-primary" : "text-muted-foreground/60",
+              )}>
+                {index + 1}
+              </span>
+              <Icon className={cn("h-3.5 w-3.5 shrink-0", style.cls)} />
+              <span className="min-w-0 flex-1 truncate text-foreground/90">{node.title}</span>
+              {node.waitingFor && (
+                <span className="shrink-0 text-[10px] text-muted-foreground/60">
+                  {node.waitingFor}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      {runActive && (
+        <div className="flex items-center gap-1.5 border-t border-border/40 px-2 py-1.5">
+          <button
+            type="button"
+            onClick={task.onCancelRun}
+            className="ml-auto inline-flex items-center gap-1 rounded-md border border-red-500/40 px-2 py-1 text-[11px] text-red-500 hover:bg-red-500/10"
+          >
+            <Ban className="h-3 w-3" />
+            {t("sessionPlugins.flow.cancelAll", "取消全部")}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+rendererRegistry.register({ key: "render.task-board", component: TaskBoardPrimitive, description: "任务看板（节点状态/钻入子会话/主会话入口/取消流程）" });
 
 // ── render.hover-card：挂件细条 + 悬停统计卡（aggregate 源配 rail 挂载） ──
 function HoverCardPrimitive({ payload, options }: RendererComponentProps<SourcePayload>) {

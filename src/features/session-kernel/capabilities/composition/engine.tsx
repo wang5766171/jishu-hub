@@ -102,6 +102,8 @@ function SourceShell({ manifest, schema, ctx }: { manifest: SessionComposedManif
     switch (manifest.source.type) {
       case "turns":
         return { kind: "turns", turns: ctx.turns, activeIndex: ctx.activeTurnIndex, jump: (i: number) => ctx.scrollToTurn(i) };
+      case "task":
+        return { kind: "task", task: ctx.task };
       case "messages":
       case "stream-state":
       default: {
@@ -203,11 +205,16 @@ export function buildComposedDescriptor(manifest: SessionComposedManifest): Sess
     // rail-widget / dock-panel / sidebar-panel / composer-trailing：数据面挂件。
     const mountBase = { Component: (props: { ctx: SessionKernelContext }) => <SourceShell manifest={manifest} schema={schema} ctx={props.ctx} /> };
     if (manifest.render.mount === "dock-panel") {
+      // C5-slice1：dock 槽位可声明（slot = "left" | "right" | "float"，缺省
+      // float）——任务看板等重面板默认停靠右侧（随迁 session.flow 形态）。
+      const declaredSlot = (manifest.render as { slot?: string }).slot;
+      const defaultSlot =
+        declaredSlot === "left" || declaredSlot === "right" ? declaredSlot : "float";
       mounts.push({
         kind: "dock-panel",
         titleKey: "",
         titleFallback: manifest.plugin.name,
-        defaultSlot: "float",
+        defaultSlot,
         ...mountBase,
       } as SessionPluginDescriptor["mounts"][number]);
     } else if (manifest.render.mount === "sidebar-panel") {

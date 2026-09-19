@@ -188,12 +188,12 @@ fn known_plugin_ids() -> HashSet<String> {
 ///
 /// 前端实现（`src/features/session-kernel/plugins`）按 id 对齐；此处登记
 /// 描述符供统一插件管理面展示与启停持久化。**注册纪律**：前端实现未落地
-/// 的 id 不登记（插件页不出现无实现的开关）——`session.flow`（任务流程
-/// 全景）随需求 2/M3、`session.html-render` 随 M4 增补。
+/// 的 id 不登记（插件页不出现无实现的开关）——`session.html-render` 随 M4
+/// 增补。`session.flow` 已 C5-slice1 组合化为 `session.task-board`（经
+/// BUILTIN_COMPOSED_MANIFESTS 装配），此处不再登记。
 pub fn builtin_session_plugin_specs() -> &'static [(&'static str, &'static str)] {
     &[
         // (id, display_name)——display_name 为兜底文案，插件页按 id 走 i18n。
-        ("session.flow", "任务流程全景"),
         // v0.9.2 M4 首期批次（用户圈定 2026-09-06）
         ("session.html-render", "HTML 实时渲染"),
         ("session.mermaid-render", "Mermaid 图表渲染"),
@@ -282,6 +282,9 @@ const BUILTIN_COMPOSED_MANIFESTS: &[(&str, &str)] = &[
     ("session.desktop-notify", include_str!("../../resources/composed-plugins/desktop-notify.toml")),
     // v0.9.3 需求13 C4：pipeline 型样例（编排定义可视化；运行时驱动 C4-slice-2）。
     ("session.video-maker", include_str!("../../resources/composed-plugins/video-maker.toml")),
+    // v0.9.3 需求13 C5-slice1：任务看板自 session.flow 组合化（task 源 ×
+    // render.task-board × dock；内置 TS 插件随之退役）。
+    ("session.task-board", include_str!("../../resources/composed-plugins/task-board.toml")),
 ];
 
 fn composed_plugins_root() -> PathBuf {
