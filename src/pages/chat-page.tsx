@@ -34,7 +34,6 @@ import { ChatInput, type ChatInputHandle, type StagedGuideApi } from "@/componen
 import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { clearImageCache } from "@/components/sessions/inline-image";
 // 会话二级树（T3）：侧边栏任务会话区
-import { TaskSessionTree } from "@/features/task-workspace/sidebar/task-session-tree";
 import type { NodeSessionSummary } from "@/features/task-workspace/types";
 // 任务模式右侧栏（减法重构：仅渲染任务步骤面板 + 治理面 + 画布，主会话区复用 chat-page）。
 // 任务图数据：chat-page 顶层无条件持有（无 graph 时无副作用），主区 run 流与侧边栏共享。
@@ -50,7 +49,6 @@ import {
 } from "@/features/task-workspace/task-flow-cards";
 import { startTaskRun } from "@/features/task-instance/start-run";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -59,14 +57,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
-import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2, Trash2, GitBranch, Cpu,
+import { MessageSquare, X, Pencil, RotateCw, FolderOpen, ArrowRight, ArrowLeftRight, ChevronDown, PictureInPicture2, Cpu,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { Suspense } from "react";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
-import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { useFileViewer } from "@/components/file-viewer";
 import { cn } from "@/lib/utils";
 import { openFloatingSession } from "@/lib/floating-window";
@@ -80,6 +76,8 @@ import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
 import { orderExecutableNodes, shouldRenderGlobalChatInput } from "./chat-page-layout";
 import { useTaskInstanceSync } from "./use-task-instance-sync";
 import { useAccessMode } from "./use-access-mode";
+import { ChatSidebar } from "./chat-sidebar";
+import { useSessionSelection } from "./use-session-selection";
 import { useTaskSessionRouting } from "./use-task-session-routing";
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
 import { getSessionUsage, setSessionUsage } from "@/lib/session-usage";
@@ -91,7 +89,6 @@ import { useMessageSearch } from "@/features/chat-core/use-message-search";
 import { ThinkingLevelSelect } from "@/components/sessions/thinking-level-select";
 import {
   buildAssistantContentFromStreamState,
-  formatRelativeTime,
   PHASE_LAUNCH_RANK,
   stripTaskLaunchInstructionFromMessages,
   TerminalIcon,
@@ -247,7 +244,6 @@ export function ChatPage({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
   const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
-  const [optimisticSessions, setOptimisticSessions] = useState<Session[]>([]);
   // 三阶段任务容器（TaskPhaseContainer）状态。唯一任务界面。
   const [taskModeActive, setTaskModeActive] = useState(false);
   // 任务模式下选中的节点（步骤栏高亮 + 主区切换为该节点会话）。null = 未选节点。
@@ -349,9 +345,6 @@ export function ChatPage({
   const pendingReplyStartedAtRef = useRef<Map<string, number>>(new Map());
   const refetchSessionsRef = useRef<((silent?: boolean) => Promise<Session[]>) | null>(null);
   // Holds the latest handleSelectSession so the navigateToSession effect always
-  // invokes the freshest closure (current projectId/selectedSession) instead of
-  // a stale one captured when navigateToSession last changed. (K-MED-7)
-  const handleSelectSessionRef = useRef<(sessionId: string) => void>(() => {});
   /**
    * Per-session messages cache. Keyed by canonical session id (the id we
    * started the stream with) AND by resolvedId once known. While a session is
@@ -495,6 +488,49 @@ export function ChatPage({
   );
 
   // Build display session list with optimistic sessions prepended
+  // ── 需求10 收官刀②：会话选择/加载与发送链迁 use-session-selection ──
+  //（缓存优先/流式截断/滚动记忆/乐观会话/发送缓存播种/任务首条包装/通知定位；
+  //  refreshSessionUsage 定义序在钩子后，经 ref 运行时取用）。
+  const refreshSessionUsageRef = useRef<(sessionId: string) => void>(() => {});
+  const {
+    injectedLaunchSessionsRef,
+    optimisticSessions,
+    setOptimisticSessions,
+    handleSelectSession,
+    handleSelectSessionRef,
+    prepareTaskLaunchMessage,
+    handleMessageSent,
+    handleSessionResolved,
+  } = useSessionSelection({
+    projectId,
+    activeId,
+    currentProject,
+    sessions,
+    setSessionMessages,
+    sessionMessagesRef,
+    setSelectedSession,
+    selectedSessionRef,
+    messageAreaRef,
+    scrollMemory,
+    visitedSessions,
+    scrollAction,
+    newSessionStreamIdsRef,
+    setTaskModeActive,
+    setTaskLaunchOpen,
+    setTaskLaunchReadOnly,
+    taskLaunchOpenRef,
+    taskLaunchPhaseRef,
+    activeTaskInstanceIdRef,
+    activeTaskRequirementFileRef,
+    lastKnownStatusRef,
+    setActiveTaskInstanceId,
+    setActiveTaskRequirementFile,
+    setTaskSelectedNodeId,
+    setTaskNodeSessionAgentId,
+    closeViewer,
+    refreshSessionUsageRef,
+  });
+
   let displaySessions = regularSessions;
   if (deferredSearchQuery.trim() && sessions) {
     displaySessions = uniqueSessionsById(
@@ -531,13 +567,6 @@ export function ChatPage({
   );
   // T7：taskLaunchPhaseStates（三阶段 tab 的 done/active/pending 派生）随 TaskPhaseNavBar 一并退役。
   // M3：访问/权限模式域已上移 use-access-mode（permissionModes 定义处）。
-  // Auto-clear optimistic sessions once real session appears in backend list
-  useEffect(() => {
-    if (sessions && optimisticSessions.length > 0) {
-      setOptimisticSessions(prev => prev.filter(opt => !sessions.some(s => s.id === opt.id)));
-    }
-  }, [sessions]);
-
   // Clear session state when project changes
   useEffect(() => {
     setSelectedSession(null);
@@ -730,33 +759,6 @@ export function ChatPage({
     }
   }, [activeId, agents.length, setChatAgent, taskLaunchOpen, taskModeAgentReady, taskEngineAgent]);
 
-  // 记录哪些 session 已经注入过 launch instruction（只在每个阶段的首条消息注入一次，
-  // 后续消息复用 agent 进程上下文，不重复下达阶段指令，避免 agent 误以为每轮都是新阶段开始）。
-  const injectedLaunchSessionsRef = useRef<Set<string>>(new Set());
-
-  const prepareTaskLaunchMessage = useCallback((message: string) => {
-    if (!taskLaunchOpen) return message;
-    // 判断当前 session 是否已经激活过 conductor。
-    // selectedSession 为 null 或 "new" 时是首条消息，需要激活 conductor；
-    // 已有 session id 时，检查是否在已激活集合里。
-    const currentSession = selectedSessionRef.current;
-    const isFirstMessage = !currentSession || currentSession === "new";
-    const alreadyInjected = currentSession
-      ? injectedLaunchSessionsRef.current.has(currentSession)
-      : false;
-    if (!isFirstMessage && alreadyInjected) {
-      // 后续消息：conductor 已接管，原样透传（agent 进程已有上下文）。
-      return message;
-    }
-    // 标记当前 session 已激活（pending id 和后续 real id 都标记）。
-    if (currentSession && currentSession !== "new") {
-      injectedLaunchSessionsRef.current.add(currentSession);
-    }
-    // 首条消息：以 /jishu-task 命令激活 conductor 扩展，由其驱动 discuss→plan→execute。
-    // domain 默认 dev（Batch 4 增加 research 后可由 UI 选择）。
-    return `/jishu-task dev ${message}`;
-  }, [taskLaunchOpen]);
-
   useLayoutEffect(() => {
     if (!scrollAction.current || !messageAreaRef.current) return;
     // v0.9.2 测试期修复：消息未加载时消费滚动指令 → scrollHeight=0 → 定位到
@@ -826,112 +828,6 @@ export function ChatPage({
     }
   }, []);
 
-  const handleSelectSession = async (sessionId: string) => {
-    setTaskModeActive(false);
-    setTaskLaunchOpen(false);
-    setTaskLaunchReadOnly(false);
-    taskLaunchOpenRef.current = false;
-    // v0.9.2 测试期修复：切常规会话时清除任务选中态——此前 activeTaskInstanceId
-    // 残留，任务树行持续高亮（用户实测：任务会话选过后点常规会话，列表里任务
-    // 行仍是选中态）。节点选择态一并复位，避免回任务时残留节点会话上下文。
-    activeTaskInstanceIdRef.current = null;
-    activeTaskRequirementFileRef.current = null;
-    lastKnownStatusRef.current = null;
-    setActiveTaskInstanceId(null);
-    setActiveTaskRequirementFile(null);
-    setTaskSelectedNodeId(null);
-    setTaskNodeSessionAgentId(null);
-    if (sessionId === selectedSession || !projectId) return;
-
-    // v0.8.0 需求4 补充：切换会话自动收起右侧预览——预览的文件属于上一会话
-    // 上下文，跨会话保留易误导。同会话重复点击已被上方守卫拦截。
-    closeViewer();
-
-    if (selectedSession && messageAreaRef.current) {
-      scrollMemory.current.set(selectedSession, messageAreaRef.current.scrollTop);
-    }
-    const isFirstVisit = !visitedSessions.current.has(sessionId);
-    setSelectedSession(sessionId);
-    selectedSessionRef.current = sessionId;
-    // Live steer placeholders keep their per-session keys（渲染按
-    // selectedSession 键取，切走不会串显）——不清空：清空会把后台会话
-    // 仍排队的引导占位一并抹掉，切回时占位消失、直到插入成功才复现
-    //（v0.9.3 需求10 测试期修复：用户实测「切走再回，引导不显示」）。
-
-    // While a session is streaming we keep its message snapshot in
-    // `kernel/session-cache` and *do not* reload from JSONL — otherwise the
-    // user message that the CLI has already flushed to disk would appear twice
-    // (once from the JSONL, once from the live `<StreamingMessage>` bubble).
-    // Also trust the cache after streaming ends (turn_complete populates it
-    // with committed messages including interaction blocks), to avoid losing
-    // interaction cards when the user navigates between sessions.
-    const cached = getCachedSessionMessages(sessionId);
-    if (cached) {
-      setSessionMessages(cached);
-    } else {
-      try {
-        const messages = await invokeCommand<Message[]>("get_session_messages", {
-          agentId: activeId ?? "",
-          sessionId,
-          encodedName: projectId,
-        });
-        let visibleMessages = stripTaskLaunchInstructionFromMessages(messages);
-        // v0.8.0 需求7：缓存缺失但该会话正在流式输出（本应用生命周期内首次
-        // 打开的后台流式会话）——CLI 已把当前回合的用户消息落盘，直接渲染会
-        // 与流式气泡的 pendingUserMessage 各出现一次。从最后一条与回合
-        // prompt 相同的 user 消息处截断：其后是本回合的 steer 与增量回复，
-        // 均由流式气泡负责渲染。文本精确匹配，不匹配（CLI 改写 prompt 等）
-        // 时退回原样渲染。
-        const pending = streamStore.getState(sessionId)?.pendingUserMessage ?? null;
-        if (streamStore.isStreaming(sessionId) && pending != null) {
-          for (let i = visibleMessages.length - 1; i >= 0; i--) {
-            const m = visibleMessages[i];
-            if (m.role !== "user") continue;
-            const text = m.content.find((c) => c.type === "text")?.text ?? null;
-            if (text === pending) {
-              visibleMessages = visibleMessages.slice(0, i);
-              break;
-            }
-          }
-        }
-        setCachedSessionMessages(sessionId, visibleMessages);
-        setSessionMessages(visibleMessages);
-      } catch {
-        setSessionMessages([]);
-      }
-    }
-
-    // 会话打开即拉取权威用量（含重启后的历史累计）。
-    refreshSessionUsage(sessionId);
-
-    if (isFirstVisit) {
-      scrollAction.current = { type: "bottom" };
-      visitedSessions.current.add(sessionId);
-    } else {
-      const saved = scrollMemory.current.get(sessionId);
-      scrollAction.current = saved !== undefined
-        ? { type: "restore", top: saved }
-        : { type: "bottom" };
-    }
-  };
-  handleSelectSessionRef.current = handleSelectSession;
-
-  // v0.9.3 测试期（通知点击跳回收尾）：deep-link 转发的 desktop-notify-click
-  //（点击系统通知 → jishu-hub://session/<id> → single-instance/冷启动 → Rust
-  // 聚焦 + 广播）→ 经 ref 调最新 handleSelectSession 定位会话。监听挂在
-  // chat-page 而非插件的 lastCtx 间接层——冷启动（应用未运行时点通知中心）
-  // 与未发过通知的场景同样可靠。
-  useEffect(() => {
-    const unlistenPromise = listen<{ sessionId?: string | null }>("desktop-notify-click", (event) => {
-      const sid = event.payload?.sessionId;
-      if (sid) handleSelectSessionRef.current(sid);
-    });
-    return () => {
-      void unlistenPromise.then((fn) => fn());
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // v0.8.0 需求10：从 Hub SQLite（get_session_usage）拉取会话累计用量写入
   // 前端缓存。回合结束与会话打开两个时机调用；失败静默（保留旧缓存）。
   const refreshSessionUsage = (sessionId: string) => {
@@ -975,6 +871,7 @@ export function ChatPage({
       })
       .catch(() => {});
   };
+  refreshSessionUsageRef.current = refreshSessionUsage;
 
   // v0.8.0 需求7：重挂载对账。agent-event 监听随组件卸载移除，卸载期间
   // 结束的回合收不到 turn_complete，streamStore 会永远停在 isStreaming
@@ -1308,52 +1205,6 @@ export function ChatPage({
 
   // A5 簇①：applyTaskLaunchInstanceSnapshot 已迁 use-task-instance-sync（上方解构）。
 
-  const handleMessageSent = useCallback((sid: string, msg: string, toolIds?: string[]) => {
-    // For new sessions, register a stream entry here. For existing sessions,
-    // chat-input.tsx already called streamStore.start() before invoking
-    // send_message, so we skip to avoid resetting accumulated chunks.
-    if (!streamStore.hasState(sid)) {
-      streamStore.start(sid, msg, toolIds ?? []);
-    }
-
-    const isNewSessionSend = !selectedSession || selectedSession === "new";
-    if (isNewSessionSend) {
-      newSessionStreamIdsRef.current.add(sid);
-      // Task-mode sessions are tracked by the task instance list, not the
-      // regular optimistic sessions list. Adding them here would make a
-      // duplicate "new session" entry appear in the regular sidebar until the
-      // real session id resolves and the task filter catches up. Skip the
-      // optimistic entry for task mode; the task sidebar already shows it.
-      if (!taskLaunchOpenRef.current) {
-        const newOptSession: Session = {
-          id: sid,
-          path: currentProject?.path || "",
-          messages: [],
-          display_name: t("sessions.newChat") || "新对话",
-          started_at: new Date().toISOString(),
-          last_active: new Date().toISOString(),
-        };
-        setOptimisticSessions(prev => [newOptSession, ...prev]);
-      }
-      setSelectedSession(sid);
-      selectedSessionRef.current = sid;
-      // Seed the cache for this brand-new session with whatever the user is
-      // currently looking at (an empty list for a fresh session).
-      setCachedSessionMessages(sid, []);
-      setSessionMessages([]);
-    } else {
-      // Existing session: snapshot the currently displayed messages so we can
-      // append the assistant turn on completion without re-reading JSONL.
-      setCachedSessionMessages(sid, sessionMessagesRef.current);
-    }
-
-    requestAnimationFrame(() => {
-      if (messageAreaRef.current) {
-        messageAreaRef.current.scrollTop = messageAreaRef.current.scrollHeight;
-      }
-    });
-  }, [selectedSession, currentProject?.path, t]);
-
   // conductor 驱动的任务发现：首条消息激活 conductor 后，conductor 异步创建 TaskInstance（写入 requirement_session_id）。
   // 轮询任务列表按 requirement_session_id 匹配到该任务后，打开三阶段工作台（此处不标记 launch 会话，避免重复建任务；标记由流式 chunk 处理按需触发，见 task_launch_mark_session 内联调用）。
   // 用 projectPathRef.current（非 state）+ deps=[]，使其引用稳定，可在 mount-only 的
@@ -1428,24 +1279,6 @@ export function ChatPage({
   }, []);
 
   // A5 簇①：task-instance-changed 监听已迁 use-task-instance-sync。
-
-  const handleSessionResolved = useCallback((_pendingSessionId: string, realSessionId: string) => {
-    if (!taskLaunchOpenRef.current) {
-      logTaskPhaseDebug("session-resolved:ignored", {
-        sessionId: realSessionId,
-        taskLaunchOpen: taskLaunchOpenRef.current,
-      });
-      return;
-    }
-    // realSessionId 来自 send_message 的同步返回值，新 session 时仍为 pending（Pi 真 id 由
-    // session_resolved 流式事件异步送达）。任务关联改在 stream listener 收到 session_resolved
-    // 时用真 id 触发 discoverConductorTask，不在此用 pending 触发（必 not-found）。
-    logTaskPhaseDebug("session-resolved", {
-      taskId: activeTaskInstanceIdRef.current,
-      sessionId: realSessionId,
-      phase: taskLaunchPhaseRef.current,
-    });
-  }, []);
 
   // T7：openTaskChatPhase（需求/规划走旧 chat 路径）已随三阶段形态退役——
   // 所有阶段统一由 openTaskPhaseWorkspace 进入「会话页 + 任务侧边栏」形态。
@@ -2625,326 +2458,51 @@ export function ChatPage({
     <BlockRenderersProvider enabled={enabledSessionPlugins}>
     <PluginSignalBridge enabled={enabledSessionPlugins} ctx={sessionKernelCtx} />
     <div className="flex h-full">
-      {/* Left sidebar */}
-      <div
-        className={cn(
-          "chat-sidebar flex flex-col shrink-0",
-          sidebarCollapsed ? "w-14" : "w-60"
-        )}
-      >
-        {/* Expanded sidebar */}
-        <div className={cn("flex flex-col", sidebarCollapsed && "hidden")} style={{ background: "var(--color-layer-1)" }}>
-          {/* Project card */}
-          {/* v0.7.3 需求2：项目切换移至输入区 footer（目录旁左右箭头），左上角仅展示项目名 */}
-          <div className="flex items-center gap-2 px-3 h-10 border-b border-border/20">
-            <FolderOpen className={cn("h-5 w-5 shrink-0 ml-1", currentProject ? "text-[var(--icon-folder)]" : "text-muted-foreground/40")} />
-            <span className={cn("truncate text-sm font-semibold flex-1 min-w-0 leading-none pt-[1px]", currentProject ? "text-foreground" : "text-muted-foreground")} title={currentProject ? projectDisplayName : undefined}>
-              {currentProject ? projectDisplayName : t("sessions.noProject")}
-            </span>
-          </div>
-          {/* Actions */}
-          <div className="flex items-center gap-1.5 px-3 h-11 pt-2 pb-1">
-            <button
-              onClick={projectId ? handleNewSession : undefined}
-              title={projectId ? t("sessions.newSession") : t("sessions.selectProject")}
-              className={cn(
-                "flex-1 flex items-center gap-2.5 h-8 pl-2 pr-2 rounded-lg transition-fast text-sm text-foreground",
-                projectId ? "hover:bg-accent" : "opacity-40 cursor-not-allowed"
-              )}
-            >
-              <SquarePen className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
-              <span className="truncate leading-none pt-[1px]">{t("sessions.startNewChat")}</span>
-            </button>
-            <button
-              onClick={handleRefresh}
-              title={t("sessions.refresh")}
-              className="shrink-0 h-7 w-7 flex items-center justify-center rounded-lg hover:bg-accent/50 transition-fast text-muted-foreground hover:text-foreground"
-            >
-              <RotateCw className="h-3.5 w-3.5" />
-            </button>
-            <button
-              onClick={() => setSidebarCollapsed(true)}
-              className="shrink-0 h-7 w-7 flex items-center justify-center rounded-lg hover:bg-accent/50 transition-fast text-muted-foreground hover:text-foreground"
-            >
-              <PanelLeftClose className="h-3.5 w-3.5" />
-            </button>
-          </div>
-          <div className="px-3 pb-2">
-            <button
-              onClick={projectId ? () => handleOpenTaskConversation() : undefined}
-              title={projectId ? t("tasks.startTask") : t("sessions.selectProject")}
-              className={cn(
-                "flex h-8 w-full items-center gap-2.5 rounded-lg pl-2 pr-2 text-sm text-foreground transition-fast",
-                projectId ? taskLaunchOpen ? "bg-primary/10 font-medium" : "hover:bg-accent" : "opacity-40 cursor-not-allowed"
-              )}
-            >
-              <ClipboardList className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
-              <span className="truncate leading-none pt-[1px]">{t("tasks.startTask")}</span>
-            </button>
-          </div>
-          {/* Search */}
-          <div className="px-3 h-10 pb-2">
-            <div className="relative h-8">
-              <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--icon-search)]" />
-              <Input
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={t("sessions.searchAll")}
-                className="h-full pl-8 pr-7 !text-sm !leading-none shadow-none rounded-lg border-border/40 truncate"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => { setSearchQuery(""); }}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-fast"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              )}
-              {showMessageSearchControls && (
-                <div className="absolute left-[calc(100%+0.42rem)] top-1/2 z-30 flex h-[2.55rem] -translate-y-1/2 overflow-hidden rounded-[12px] border border-border/50 bg-background/95 shadow-[0_0.45rem_1.25rem_rgba(0,0,0,0.16)] backdrop-blur">
-                  <span className="flex min-w-[2.85rem] items-center justify-center px-[0.65rem] text-[0.7rem] font-medium tabular-nums text-muted-foreground leading-none">
-                    {messageSearchLabel}
-                  </span>
-                  <div className="flex h-full w-[1.55rem] flex-col border-l border-border/40">
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      disabled={messageSearchTotal === 0}
-                      onClick={() => requestMessageSearchNavigation(-1)}
-                      title={t("sessions.previousMatch")}
-                      className="h-1/2 w-full rounded-none px-0 hover:bg-accent/70 disabled:opacity-30"
-                    >
-                      <ChevronUp className="size-[0.85rem]" strokeWidth={3} />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      disabled={messageSearchTotal === 0}
-                      onClick={() => requestMessageSearchNavigation(1)}
-                      title={t("sessions.nextMatch")}
-                      className="h-1/2 w-full rounded-none border-t border-border/30 px-0 hover:bg-accent/70 disabled:opacity-30"
-                    >
-                      <ChevronDown className="size-[0.85rem]" strokeWidth={3} />
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Collapsed sidebar header */}
-        <div className={cn("flex flex-col", !sidebarCollapsed && "hidden")} style={{ background: "var(--color-layer-1)" }}>
-          {/* Row 1: Project icon */}
-          <div className="flex items-center justify-center h-10 border-b border-border/20" title={currentProject?.name ?? t("sessions.noProject")}>
-            <FolderOpen className={cn("h-4 w-4", currentProject ? "text-[var(--icon-folder)]" : "text-muted-foreground/40")} />
-          </div>
-          {/* Row 2: Expand button */}
-          <div className="flex items-center justify-center h-11 pt-2 pb-1">
-            <button
-              onClick={() => setSidebarCollapsed(false)}
-              className="h-7 w-7 flex items-center justify-center rounded-lg hover:bg-accent/50 transition-fast text-muted-foreground hover:text-foreground"
-            >
-              <PanelLeftOpen className="h-4 w-4" />
-            </button>
-          </div>
-          {/* Row 3: New chat */}
-          <div className="flex items-center justify-center h-10 pb-2">
-            <button
-              onClick={projectId ? handleNewSession : undefined}
-              title={projectId ? t("sessions.newSession") : t("sessions.selectProject")}
-              className={cn(
-                "h-8 w-8 flex items-center justify-center rounded-lg transition-fast",
-                projectId ? "hover:bg-accent" : "opacity-40 cursor-not-allowed"
-              )}
-            >
-              <SquarePen className="h-4 w-4 text-[var(--icon-action)]" />
-            </button>
-          </div>
-          <div className="flex items-center justify-center h-10 pb-2">
-            <button
-              onClick={projectId ? () => handleOpenTaskConversation() : undefined}
-              title={projectId ? t("tasks.startTask") : t("sessions.selectProject")}
-              className={cn(
-                "flex h-8 w-8 items-center justify-center rounded-lg transition-fast",
-                projectId ? taskLaunchOpen ? "bg-primary/10" : "hover:bg-accent" : "opacity-40 cursor-not-allowed"
-              )}
-            >
-              <ClipboardList className="h-4 w-4 text-[var(--icon-action)]" />
-            </button>
-          </div>
-        </div>
-
-        {/* Session list: expanded */}
-        <div className={cn("flex-1 overflow-y-auto", sidebarCollapsed && "hidden")}>
-          {/* v0.9.2 需求6：任务区置于常规会话区之上——conductor 主会话被归入任务
-              树后不再"沉底"（任务是有"当前进行时"语义的，会话是历史沉淀）。 */}
-          <TaskSessionTree
-            tasks={displayTaskLaunchSessions}
-            activeTaskId={activeTaskInstanceId}
-            onSelectTask={(task) => {
-              // 树的 TaskSessionTreeTask 是 TaskLaunchInstanceSummary 的结构子集，
-              // 回传时按 task_id 反查完整实例（openTaskPhaseWorkspace 需要 project_root 等字段）。
-              const instance = findTaskInstance(task.task_id);
-              if (!instance) return;
-              const phase: TaskPhase =
-                instance.current_phase === "planning"
-                  ? "planning"
-                  : instance.current_phase === "execution" || instance.current_phase === "graph"
-                    ? "execution"
-                    : "requirements";
-              openTaskPhaseWorkspace(instance, phase);
-            }}
-            onRenameTask={(task) => setRenameTaskTarget(findTaskInstance(task.task_id))}
-            onCancelTask={(task) => {
-              // v0.9.2 需求2 M3-4：任务行悬停取消——活跃任务走全景取消（含确认），
-              // 非活跃任务按 run_id 直发取消命令。
-              if (task.task_id === activeTaskInstanceIdRef.current) {
-                handleTaskCancelRun();
-              } else if (task.active_run_id) {
-                void invokeCommand("orchestrator_cancel_run", { runId: task.active_run_id })
-                  .catch((e) => console.warn("cancel run failed:", e));
-              }
-            }}
-            onDeleteTask={async (task) => {
-              if (!projectPathForSettings) return;
-              const confirmed = await confirmDialog({
-                title: t("tasks.deleteTask"),
-                description: t("tasks.deleteTaskConfirm", { title: task.title }),
-                variant: "destructive",
-              });
-              if (!confirmed) return;
-              // v0.9.2 测试期修复：孤儿任务容错——全量重装后 orchestrator.db 被清但项目
-              // 侧 TaskInstance 残留（graph_id 引用已不存在的图），orchestrator_delete_graph
-              // 会报 NotFound 阻断后续 task_launch_delete_task → 孤儿永远删不掉。
-              // 图删除失败不阻断任务实例删除（幂等：图不存在 = 无需清理）。
-              if (task.graph_id) {
-                try {
-                  await invokeCommand("orchestrator_delete_graph", { graphId: task.graph_id });
-                } catch {
-                  // orphan graph——orchestrator 数据已清，跳过即可
-                }
-              }
-              await invokeCommand("task_launch_delete_task", {
-                projectRoot: projectPathForSettings,
-                taskId: task.task_id,
-              });
-              setTaskLaunchSessions((current) => current.filter((item) => item.task_id !== task.task_id));
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => setRegularSessionsOpen((open) => !open)}
-            className="flex h-8 w-full items-center gap-2 border-y border-border/20 bg-[var(--color-layer-1)] px-3 text-[11px] font-medium text-muted-foreground"
-          >
-            <span className="pl-2">{t("sessions.regularConversations")}</span>
-            <span className="tabular-nums">({displaySessions.length})</span>
-            <span className="ml-2 flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 hover:bg-accent hover:text-foreground">
-              {regularSessionsOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-            </span>
-          </button>
-          {regularSessionsOpen && displaySessions.map((session) => {
-            const isActive = session.id === selectedSession;
-            const name = sessionNames?.[session.id] || session.display_name || session.id.slice(0, 8);
-            const timeStr = session.last_active
-              ? formatRelativeTime(session.last_active, t)
-              : session.started_at
-                ? formatRelativeTime(session.started_at, t)
-                : null;
-            const searchHit = searchResults.find((r: SessionSearchResult) => r.sessionId === session.id);
-            // v0.8.0 需求5：该会话刷新中（右键/头部刷新）——行图标转圈 + 高亮，
-            // 让「点击过了」在非选中会话上同样可感知。
-            const rowRefreshing = refreshingSessionId === session.id;
-            // v0.8.0 需求6：该会话正在流式输出（含后台输出）——行图标换为
-            // 加载中动效，无需选中即可从列表分辨哪些会话仍在生成。
-            const rowStreaming = streamingSessionIds.includes(session.id);
-            return (
-              <ContextMenu key={session.id}>
-                <ContextMenuTrigger asChild>
-                  <button
-                    onClick={() => handleSelectSession(session.id)}
-                    className={cn(
-                      "flex flex-col w-full items-start pl-5 pr-2 py-2 text-xs transition-fast border-b border-border/10",
-                      isActive
-                        ? "bg-primary/10 text-foreground font-medium"
-                        : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
-                      rowRefreshing && "bg-primary/15",
-                    )}
-                  >
-                    <div className="flex items-center gap-3 w-full">
-                      {rowRefreshing ? (
-                        <RotateCw className="h-3 w-3 shrink-0 animate-spin text-[var(--icon-action)]" />
-                      ) : rowStreaming ? (
-                        <ActivitySpinner className="h-3.5 w-3.5 text-[var(--icon-action)]" />
-                      ) : (
-                        <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
-                      )}
-                      <span className="truncate flex-1 text-left min-w-0 leading-none pt-[1px]">{name}</span>
-                      {searchHit ? (
-                        <span className="shrink-0 rounded-full bg-primary/20 text-primary px-1.5 py-0.5 text-[9px] font-medium leading-none">
-                          {searchHit.matchCount}
-                        </span>
-                      ) : timeStr ? (
-                        <span className={cn(
-                          "text-[0.65em] shrink-0 tabular-nums",
-                          isActive ? "text-accent-foreground/40" : "text-muted-foreground/40"
-                        )}>{timeStr}</span>
-                      ) : null}
-                    </div>
-                    {searchHit && searchHit.previewText && (
-                      <div className="mt-1.5 pl-6 w-full text-left">
-                        <p className="text-[10px] text-muted-foreground/70 line-clamp-2 leading-tight break-all">
-                          {searchHit.previewText}
-                        </p>
-                      </div>
-                    )}
-                  </button>
-                </ContextMenuTrigger>
-                <ContextMenuContent>
-                  <ContextMenuItem onClick={() => handleFloatSession(session.id)}>
-                    <PictureInPicture2 className="h-3.5 w-3.5 mr-2" />
-                    {t("sessions.float", "悬浮窗口")}
-                  </ContextMenuItem>
-                  <ContextMenuItem onClick={() => handleResumeSession(session.id)}>
-                    <TerminalIcon className="h-3.5 w-3.5 mr-2" />
-                    {t("sessions.openTerminal")}
-                  </ContextMenuItem>
-                  <ContextMenuSeparator />
-                  <ContextMenuItem onClick={() => { handleSelectSession(session.id); setRenameOpen(true); }}>
-                    <Pencil className="h-3.5 w-3.5 mr-2" />
-                    {t("sessions.rename")}
-                  </ContextMenuItem>
-                  {capabilities?.has("SESSION_FORK") && (
-                    <ContextMenuItem
-                      disabled={forking || streamStore.isStreaming(session.id)}
-                      onClick={() => void handleForkSession(session.id)}
-                    >
-                      <GitBranch className="h-3.5 w-3.5 mr-2" />
-                      {t("sessions.fork", "创建分支")}
-                    </ContextMenuItem>
-                  )}
-                  {capabilities?.has("SESSION_DELETE") && (
-                    <ContextMenuItem onClick={() => void handleDeleteSession(session.id)}>
-                      <Trash2 className="h-3.5 w-3.5 mr-2 text-red-400" />
-                      {t("sessions.delete")}
-                    </ContextMenuItem>
-                  )}
-                  <ContextMenuItem
-                    disabled={streamStore.hasState(session.id) || refreshingSessionId === session.id}
-                    onClick={() => void handleRefreshSession(session.id)}
-                  >
-                    <RotateCw className={cn("h-3.5 w-3.5 mr-2", refreshingSessionId === session.id && "animate-spin")} />
-                    {t("sessions.refreshSession", "刷新会话")}
-                  </ContextMenuItem>
-                </ContextMenuContent>
-              </ContextMenu>
-            );
-          })}
-        </div>
-
-        {/* Collapsed: empty body */}
-        <div className={cn("flex-1", !sidebarCollapsed && "hidden")} />
-      </div>
+      <ChatSidebar
+        currentProject={currentProject}
+        projectDisplayName={projectDisplayName}
+        projectId={projectId}
+        projectPath={projectPathForSettings}
+        sidebarCollapsed={sidebarCollapsed}
+        setSidebarCollapsed={setSidebarCollapsed}
+        taskLaunchOpen={taskLaunchOpen}
+        searchQuery={searchQuery}
+        setSearchQuery={setSearchQuery}
+        showMessageSearchControls={showMessageSearchControls}
+        messageSearchLabel={messageSearchLabel}
+        messageSearchTotal={messageSearchTotal}
+        requestMessageSearchNavigation={requestMessageSearchNavigation}
+        searchResults={searchResults}
+        displaySessions={displaySessions}
+        sessionNames={sessionNames}
+        selectedSession={selectedSession}
+        streamingSessionIds={streamingSessionIds}
+        refreshingSessionId={refreshingSessionId}
+        regularSessionsOpen={regularSessionsOpen}
+        setRegularSessionsOpen={setRegularSessionsOpen}
+        canForkSession={Boolean(capabilities?.has("SESSION_FORK"))}
+        canDeleteSession={Boolean(capabilities?.has("SESSION_DELETE"))}
+        forking={forking}
+        displayTaskLaunchSessions={displayTaskLaunchSessions}
+        activeTaskInstanceId={activeTaskInstanceId}
+        activeTaskInstanceIdRef={activeTaskInstanceIdRef}
+        findTaskInstance={findTaskInstance}
+        openTaskPhaseWorkspace={openTaskPhaseWorkspace}
+        handleTaskCancelRun={handleTaskCancelRun}
+        setTaskLaunchSessions={setTaskLaunchSessions}
+        confirmDialog={confirmDialog}
+        handleNewSession={handleNewSession}
+        handleRefresh={handleRefresh}
+        handleOpenTaskConversation={handleOpenTaskConversation}
+        handleSelectSession={handleSelectSession}
+        handleFloatSession={handleFloatSession}
+        handleResumeSession={handleResumeSession}
+        handleForkSession={handleForkSession}
+        handleDeleteSession={handleDeleteSession}
+        handleRefreshSession={handleRefreshSession}
+        setRenameOpen={setRenameOpen}
+        setRenameTaskTarget={setRenameTaskTarget}
+      />
 
       {/* Right: Chat area */}
       <div className="flex-1 flex flex-col min-w-0 bg-background">
