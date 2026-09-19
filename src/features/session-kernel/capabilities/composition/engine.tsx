@@ -13,6 +13,7 @@ import { SESSION_PLUGIN_CONTRACT_VERSION } from "../../plugins/types";
 import { rendererRegistry } from "../renderers/registry";
 import { actionRegistry, resolveActionParams } from "../actions";
 import { getAggregator } from "../sources/aggregate-source";
+import { HybridErrorBoundary } from "./hybrid-runtime";
 import type { ComposedConfigFieldDecl, RendererComponentProps, SessionComposedManifest, SourcePayload } from "../types";
 import { validateManifest } from "../types";
 import { validatePipeline } from "../pipeline/contracts";
@@ -75,19 +76,31 @@ function buildActions(
   });
 }
 
-/** 渲染包装：注入 options（配置面）与 actions（动作条）。 */
+/** 渲染包装：注入 options（配置面）与 actions（动作条）。
+ *  v0.9.3 需求25：@file: 混合插件经 fileComponent 直供组件（绕过注册表），
+ *  渲染包裹 HybridErrorBoundary（崩溃回调宿主自动停用）。 */
 function RendererShell({
   manifest,
   schema,
   payload,
   sessionId,
+  fileComponent,
 }: {
   manifest: SessionComposedManifest;
   schema: PluginConfigField[];
   payload: SourcePayload;
   sessionId: string | null;
+  fileComponent?: ComponentType<RendererComponentProps>;
 }) {
   const { values } = usePluginConfig(manifest.plugin.id, schema);
+  if (fileComponent) {
+    const HybridComp = fileComponent;
+    return (
+      <HybridErrorBoundary pluginId={manifest.plugin.id}>
+        <HybridComp payload={payload} options={values} actions={buildActions(manifest, values, sessionId, payload)} />
+      </HybridErrorBoundary>
+    );
+  }
   const reg = rendererRegistry.get(manifest.render.component);
   if (!reg) {
     return <div className="p-2 text-xs text-muted-foreground">渲染组件未注册：{manifest.render.component}</div>;
@@ -97,7 +110,17 @@ function RendererShell({
 }
 
 /** 数据面源包装：rail/dock 等挂件组件经 ctx 计算 payload。 */
-function SourceShell({ manifest, schema, ctx }: { manifest: SessionComposedManifest; schema: PluginConfigField[]; ctx: SessionKernelContext }) {
+function SourceShell({
+  manifest,
+  schema,
+  ctx,
+  fileComponent,
+}: {
+  manifest: SessionComposedManifest;
+  schema: PluginConfigField[];
+  ctx: SessionKernelContext;
+  fileComponent?: ComponentType<RendererComponentProps>;
+}) {
   const payload = useMemo<SourcePayload>(() => {
     switch (manifest.source.type) {
       case "turns":
@@ -114,11 +137,16 @@ function SourceShell({ manifest, schema, ctx }: { manifest: SessionComposedManif
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx.messages, ctx.turns, ctx.activeTurnIndex, manifest.source.type]);
-  return <RendererShell manifest={manifest} schema={schema} payload={payload} sessionId={ctx.sessionId} />;
+  return <RendererShell manifest={manifest} schema={schema} payload={payload} sessionId={ctx.sessionId} fileComponent={fileComponent} />;
 }
 
-/** manifest → 描述符（校验失败抛错，loader 负责隔离）。 */
-export function buildComposedDescriptor(manifest: SessionComposedManifest): SessionPluginDescriptor {
+/** manifest → 描述符（校验失败抛错，loader 负责隔离）。
+ *  v0.9.3 需求25：render.component 为 "@file:<rel>" 时经 hybrid.component
+ *  直供组件（混合插件）；数据面挂载的 SourceShell→RendererShell 全链透传。 */
+export function buildComposedDescriptor(
+  manifest: SessionComposedManifest,
+  hybrid?: { component: ComponentType<RendererComponentProps> },
+): SessionPluginDescriptor {
   const id = manifest.plugin.id;
   // v0.9.3 需求13 C4：pipeline 型清单——编排定义类插件，无渲染挂载；
   // 校验走流水线契约，描述符透出声明（详情模态/任务启动消费）。
@@ -139,7 +167,9 @@ export function buildComposedDescriptor(manifest: SessionComposedManifest): Sess
       mounts: [],
     };
   }
-  const errors = validateManifest(manifest, rendererRegistry);
+  const errors = validateManifest(manifest, rendererRegistry, {
+    fileComponentReady: Boolean(hybrid),
+  });
   if (errors.length) throw new Error(`组合清单校验失败: ${errors.join("; ")}`);
   const schema = configDeclsToSchema(manifest.config);
   const mounts: SessionPluginDescriptor["mounts"] = [];
@@ -203,7 +233,11 @@ export function buildComposedDescriptor(manifest: SessionComposedManifest): Sess
     } as SessionPluginDescriptor["mounts"][number]);
   } else {
     // rail-widget / dock-panel / sidebar-panel / composer-trailing：数据面挂件。
-    const mountBase = { Component: (props: { ctx: SessionKernelContext }) => <SourceShell manifest={manifest} schema={schema} ctx={props.ctx} /> };
+    const mountBase = {
+      Component: (props: { ctx: SessionKernelContext }) => (
+        <SourceShell manifest={manifest} schema={schema} ctx={props.ctx} fileComponent={hybrid?.component} />
+      ),
+    };
     if (manifest.render.mount === "dock-panel") {
       // C5-slice1：dock 槽位可声明（slot = "left" | "right" | "float"，缺省
       // float）——任务看板等重面板默认停靠右侧（随迁 session.flow 形态）。

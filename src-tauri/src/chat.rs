@@ -22,6 +22,10 @@ pub struct ChatProcess {
     pub process_id: u32,
     pub stdin: Option<Arc<Mutex<Option<ChildStdin>>>>,
     pub acp: Option<crate::acp_runtime::AcpControl>,
+    /// 启动签名（agent_runtime::acp_turn_signature；空 = 未知，跳过漂移检测）。
+    /// 长驻进程的 --model/--provider/通道 env 在 spawn 时固定，GUI 切换配置
+    /// 只落盘不触达旧进程——发送时比对签名，漂移且回合空闲则回收重拉。
+    pub spawn_signature: String,
 }
 
 pub struct ChatState {
@@ -111,20 +115,45 @@ pub async fn send_message(
     }
 
     if let Some(ref sid) = session_id {
-        if let Some((acp, pid)) = existing_acp_session(&app, sid, &agent_id)? {
-            // 工具注入（35ee638a）：早退路径同样附加会话启用工具的说明块。
-            let outgoing = compose_tool_message(&state, sid, message.clone());
-            match acp.send_prompt(outgoing).await {
-                Ok(()) => {
-                    return Ok(ChatSession {
-                        agent_id,
-                        session_id: sid.clone(),
-                        process_id: pid,
-                    });
+        if let Some(process) = existing_chat_process(&app, sid, &agent_id) {
+            // ── 启动签名漂移检测（临时需求：模型切换不生效修复）──
+            // 长驻进程的 --provider/--model、通道 env 在 spawn 时固定；GUI 切换
+            // 激活模型/通道只落配置文件，旧进程沿旧值调用（用户实测：FlashX 切
+            // flash 后会话仍报 FlashX 无权限）。漂移且回合空闲 → 回收进程按当前
+            // 配置重拉（resume 同一会话）；回合进行中不回收（steer 语义优先），
+            // 下一空闲发送自愈。
+            let drifted = if let Some(acp) = process.acp.as_ref() {
+                !acp.turn_active()
+                    && !process.spawn_signature.is_empty()
+                    && current_spawn_signature(&state, &agent_id, &project_path, sid)
+                        .is_some_and(|sig| sig != process.spawn_signature)
+            } else {
+                false
+            };
+            if drifted {
+                let pid = process.process_id;
+                log::info!(
+                    "spawn signature drifted for session {sid} (model/channel config changed), recycling process {pid}"
+                );
+                if let Some(acp) = process.acp.as_ref() {
+                    acp.shutdown().await;
                 }
-                Err(_) => {
-                    log::info!("ACP connection closed for session {}, respawning", sid);
-                    remove_process_entries(&app, Some(pid), Some(sid))?;
+                remove_process_entries(&app, Some(pid), Some(sid))?;
+            } else if let Some(acp) = process.acp.as_ref() {
+                // 工具注入（35ee638a）：早退路径同样附加会话启用工具的说明块。
+                let outgoing = compose_tool_message(&state, sid, message.clone());
+                match acp.send_prompt(outgoing).await {
+                    Ok(()) => {
+                        return Ok(ChatSession {
+                            agent_id,
+                            session_id: sid.clone(),
+                            process_id: process.process_id,
+                        });
+                    }
+                    Err(_) => {
+                        log::info!("ACP connection closed for session {}, respawning", sid);
+                        remove_process_entries(&app, Some(process.process_id), Some(sid))?;
+                    }
                 }
             }
         }
@@ -162,6 +191,7 @@ pub async fn send_message(
     let app_for_resolve = app.clone();
     let sid_for_resolve = pending_session_id.clone();
 
+    let spawn_signature = agent_runtime::acp_turn_signature(&prepared).unwrap_or_default();
     let handle = agent_runtime::start_gui_turn(
         app.clone(),
         prepared,
@@ -201,6 +231,7 @@ pub async fn send_message(
             process_id: handle.process_id,
             stdin: handle.stdin.clone(),
             acp: handle.acp.clone(),
+            spawn_signature,
         };
         s.processes
             .insert(handle.session_id.clone(), process.clone());
@@ -222,28 +253,27 @@ pub async fn send_message(
     })
 }
 
-fn existing_acp_session(
-    app: &AppHandle,
-    session_id: &str,
+/// 按当前配置重建该会话的启动签名（纯构建，无副作用；与进程记录的
+/// spawn_signature 比对判定配置漂移）。
+fn current_spawn_signature(
+    state: &tauri::State<'_, Mutex<crate::AppState>>,
     agent_id: &str,
-) -> Result<Option<(crate::acp_runtime::AcpControl, u32)>, String> {
-    let chat_state = app.state::<Mutex<ChatState>>();
-    let existing = chat_state
-        .lock()
-        .map_err(|_| "Chat state lock poisoned".to_string())?
-        .processes
-        .get(session_id)
-        .and_then(|process| {
-            if process.agent_id == agent_id {
-                process
-                    .acp
-                    .as_ref()
-                    .map(|acp| (acp.clone(), process.process_id))
-            } else {
-                None
-            }
-        });
-    Ok(existing)
+    project_path: &str,
+    session_id: &str,
+) -> Option<String> {
+    let s = state.lock().ok()?;
+    let prepared = agent_runtime::prepare_gui_turn(
+        &s.registry,
+        AgentTurnRequest {
+            agent_id: agent_id.to_string(),
+            project_path: project_path.to_string(),
+            session_id: Some(session_id.to_string()),
+            message: String::new(),
+            timeout_secs: 0,
+        },
+    )
+    .ok()?;
+    agent_runtime::acp_turn_signature(&prepared)
 }
 
 fn remove_process_entries(
@@ -626,6 +656,7 @@ async fn spawn_resume_fork_process(
     let app_for_finish = app.clone();
     let app_for_resolve = app.clone();
     let sid_for_resolve = session_id.to_string();
+    let spawn_signature = agent_runtime::acp_turn_signature(&prepared).unwrap_or_default();
     let handle = agent_runtime::start_gui_piresume_session(
         app.clone(),
         prepared,
@@ -663,6 +694,7 @@ async fn spawn_resume_fork_process(
         process_id: handle.process_id,
         stdin: None,
         acp: Some(acp.clone()),
+        spawn_signature,
     };
     {
         let chat_state = app.state::<Mutex<ChatState>>();

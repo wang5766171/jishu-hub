@@ -128,16 +128,37 @@ const MOUNT_SOURCE_MATRIX: Record<string, string[]> = {
 /** manifest 校验：结构合法 + 组件键存在 + 源域字段显式且互斥 + 挂载配对
  * 合法（矩阵）；返回错误列表（空=通过）。内部格式原则：可匹配格式只有
  * 「核心块类型」与「显式声明的语言封闭集」两类，无通配——常规对话内容
- * 结构上不可被插件接管。 */
+ * 结构上不可被插件接管。
+ * v0.9.3 需求25：component 支持 "@file:<rel>" 前缀（混合插件——代码文件
+ * 提供组件）；opts.fileComponentReady 表示代码组件已装载可装配。 */
 export function validateManifest(
   manifest: SessionComposedManifest,
   renderers: { get(key: string): RendererRegistration | undefined },
+  opts?: { fileComponentReady?: boolean },
 ): string[] {
   const errors: string[] = [];
   if (!manifest.plugin?.id) errors.push("[plugin] id 缺失");
-  if (!manifest.render?.component) errors.push("[render] component 缺失");
-  if (manifest.render?.component && !renderers.get(manifest.render.component)) {
-    errors.push(`渲染组件未注册: ${manifest.render.component}`);
+  // Rust 扫描注入的代码文件存在性错误（@file: 引用缺失）优先透出。
+  const fileError = (manifest as SessionComposedManifest & { _file_error?: string })._file_error;
+  if (fileError) errors.push(`[render] ${fileError}`);
+  const component = manifest.render?.component;
+  if (!component) errors.push("[render] component 缺失");
+  const isFileComponent = typeof component === "string" && component.startsWith("@file:");
+  if (isFileComponent) {
+    // 混合插件（需求25）：组件来自插件目录代码文件。首期限定数据面挂载
+    //（block-renderer 的语言匹配域组件契约更严，后续单独评审）；
+    // export-file 依赖注册表 toFile，代码组件无此能力——一并拒绝。
+    if (manifest.render?.mount === "block-renderer") {
+      errors.push("[render] @file: 代码组件首期不支持 block-renderer 挂载");
+    }
+    if ((manifest.action ?? []).some((a) => a.type === "export-file")) {
+      errors.push("[action] @file: 代码组件不支持 export-file 动作");
+    }
+    if (!opts?.fileComponentReady) {
+      errors.push(`[render] 代码组件未就绪: ${component}`);
+    }
+  } else if (component && !renderers.get(component)) {
+    errors.push(`渲染组件未注册: ${component}`);
   }
   if (!manifest.source?.type) errors.push("[source] type 缺失");
   if (manifest.source?.type === "code-block" && !(manifest.source.languages?.length)) {

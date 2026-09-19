@@ -24,7 +24,13 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost http://asset.localhost; font-src 'self' asset: https://asset.localhost; connect-src ipc: http://ipc.localhost https://ipc.localhost; frame-src 'self' http://localhost:* http://127.0.0.1:* https://localhost:* https://127.0.0.1:*"
+      "csp": "default-src 'self'; script-src 'self' asset: https://asset.localhost http://asset.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost http://asset.localhost; font-src 'self' asset: https://asset.localhost; connect-src ipc: http://ipc.localhost https://ipc.localhost; frame-src 'self' http://localhost:* http://127.0.0.1:* https://localhost:* https://127.0.0.1:*",
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$HOME/.jishu-hub/plugins/**"
+        ]
+      }
     }
   },
   "bundle": {

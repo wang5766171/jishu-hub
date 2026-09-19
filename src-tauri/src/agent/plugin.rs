@@ -169,6 +169,11 @@ pub fn save_plugin_config(config: &PluginConfig) -> Result<(), String> {
 }
 
 /// 已知插件 id 集合（内置 + 已安装 manifest），启停校验用。
+/// 需求25 P2：组合/混合插件（plugins/<id>/plugin.toml，session-composed
+/// 形态）被 load_manifests 前置跳过（agent/manifest/mod.rs composed 分流），
+/// 但其描述符经 composed_session_plugin_specs 进插件页、启停同走本通道
+/// ——不补入则 set_plugin_enabled 对混合 id 恒拒 "Unknown plugin"（CLI
+/// add_hybrid 侧曾因此走直写 disabled 兜底），确认卡「启用」链路不通。
 fn known_plugin_ids() -> HashSet<String> {
     let mut ids: HashSet<String> = builtin_plugin_specs()
         .iter()
@@ -180,6 +185,9 @@ fn known_plugin_ids() -> HashSet<String> {
     let (agents, tools, _errors) = super::manifest::load_manifests(&[]);
     for (file, _path) in agents.into_iter().chain(tools) {
         ids.insert(file.info.id);
+    }
+    for (id, _manifest) in composed_session_manifests() {
+        ids.insert(id);
     }
     ids
 }
@@ -309,6 +317,8 @@ pub fn ensure_builtin_composed_manifests() {
 }
 
 /// 扫描组合式清单（kind=session-composed），toml → JSON 透传（前端引擎装配）。
+/// v0.9.3 需求25：附带 `_files`（目录内文件 → 内容指纹，@file: 代码组件的
+/// 存在性校验与热更指纹）与 `_dir`（绝对路径，前端构建 asset 加载 URL）。
 pub fn composed_session_manifests() -> Vec<(String, serde_json::Value)> {
     let root = composed_plugins_root();
     let mut out = Vec::new();
@@ -333,10 +343,111 @@ pub fn composed_session_manifests() -> Vec<(String, serde_json::Value)> {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        out.push((id, serde_json::to_value(&value).unwrap_or(serde_json::Value::Null)));
+        let mut json = serde_json::to_value(&value).unwrap_or(serde_json::Value::Null);
+        attach_plugin_files(&mut json, &entry.path());
+        out.push((id, json));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
+}
+
+/// 插件目录元信息注入（`_files`/`_dir`）：_files 取目录内常规文件（浅层）的
+/// sha256 前 8 位（热更指纹）；@file: 引用的文件缺失时注入 `_file_error`
+/// ——前端校验据此拒绝（错误信息带文件名）。
+fn attach_plugin_files(json: &mut serde_json::Value, dir: &std::path::Path) {
+    use sha2::{Digest, Sha256};
+    let mut files = serde_json::Map::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+            let name = match entry.file_name().into_string() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            let Ok(bytes) = std::fs::read(entry.path()) else {
+                continue;
+            };
+            let digest = Sha256::digest(&bytes);
+            files.insert(
+                name,
+                digest.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>().into(),
+            );
+        }
+    }
+    if let Some(obj) = json.as_object_mut() {
+        // @file: 组件存在性（render.component 形如 "@file:component.js"）。
+        let file_component = obj
+            .get("render")
+            .and_then(|r| r.get("component"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.strip_prefix("@file:"))
+            .map(str::to_string);
+        if let Some(rel) = file_component {
+            if !files.contains_key(&rel) {
+                obj.insert(
+                    "_file_error".into(),
+                    format!("代码文件不存在: {rel}").into(),
+                );
+            }
+        }
+        obj.insert(
+            "_dir".into(),
+            dir.to_string_lossy().to_string().into(),
+        );
+        obj.insert("_files".into(), serde_json::Value::Object(files));
+    }
+}
+
+/// 混合插件安装待确认项（需求25 P2 安全阀）：CLI `plugins add-hybrid` 落盘
+/// 的 `.pending-confirm` 标记内容。字段形状与 CLI 写入端（camelCase JSON，
+/// cli/commands/plugins.rs add_hybrid）逐字对齐——serde rename_all 保证
+/// 反序列化读标记 / 序列化回前端确认卡（TS PendingHybridPlugin 接口）同形。
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingHybridPlugin {
+    pub id: String,
+    pub name: String,
+    pub mount: String,
+    pub code_lines: u64,
+    pub dir: String,
+}
+
+/// 扫描 `~/.jishu-hub/plugins/*/.pending-confirm`（确认卡轮询数据源；CLI 是
+/// 独立进程发不了 plugins-changed 广播，标记文件即跨进程信箱）。单个标记
+/// 损坏/缺字段 → log warn 跳过（与 manifest 装载同纪律：局部失败不拖垮整表）。
+pub fn pending_confirm_list() -> Vec<PendingHybridPlugin> {
+    let root = composed_plugins_root();
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let marker = entry.path().join(".pending-confirm");
+        let Ok(content) = std::fs::read_to_string(&marker) else {
+            continue;
+        };
+        match serde_json::from_str::<PendingHybridPlugin>(&content) {
+            Ok(p) => out.push(p),
+            Err(e) => log::warn!(
+                "[plugin] invalid pending-confirm marker {}: {e}",
+                marker.display()
+            ),
+        }
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+/// 清除混合插件安装待确认标记（确认卡「启用/暂不」动作收尾；幂等，不存在
+/// 则无操作）。确认动作复用 plugin_set_enabled——本函数在其成功路径调用。
+pub fn clear_pending_confirm_marker(id: &str) {
+    let marker = composed_plugins_root().join(id).join(".pending-confirm");
+    if marker.is_file() {
+        let _ = std::fs::remove_file(&marker);
+    }
 }
 
 /// 用户组合清单保存（需求13 C3 向导落点）：校验可解析 + id 一致 + 非内置，

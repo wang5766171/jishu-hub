@@ -51,6 +51,29 @@ describe("validateManifest（source×mount 配对矩阵，测试期修复23 契�
     ).toEqual([]);
   });
 
+  it("@file: 混合插件规则（需求25 P1）：代码就绪 + 数据面挂载 + 无导出动作", () => {
+    const fileManifest = manifest({
+      source: { type: "messages" },
+      mount: "dock-panel",
+    });
+    const withFile = {
+      ...fileManifest,
+      render: { ...fileManifest.render, component: "@file:component.js" },
+    } as typeof fileManifest;
+    // 未就绪 → 拒绝；就绪 → 通过。
+    expect(validateManifest(withFile, renderers).some((e) => e.includes("代码组件未就绪"))).toBe(true);
+    expect(validateManifest(withFile, renderers, { fileComponentReady: true })).toEqual([]);
+    // block-renderer 首期不开放。
+    const boardMount = { ...withFile, render: { ...withFile.render, mount: "block-renderer" } } as typeof withFile;
+    expect(validateManifest(boardMount, renderers, { fileComponentReady: true }).some((e) => e.includes("block-renderer"))).toBe(true);
+    // export-file 依赖注册表 toFile，代码组件无此能力。
+    const withExport = { ...withFile, action: [{ type: "export-file", format: "png" }] } as typeof withFile;
+    expect(validateManifest(withExport, renderers, { fileComponentReady: true }).some((e) => e.includes("export-file"))).toBe(true);
+    // Rust 扫描注入的文件存在性错误透出。
+    const missing = { ...withFile, _file_error: "代码文件不存在: component.js" } as typeof withFile;
+    expect(validateManifest(missing, renderers, { fileComponentReady: true }).some((e) => e.includes("代码文件不存在"))).toBe(true);
+  });
+
   it("task 源只配停靠/边栏挂载（C5-slice1 矩阵扩展）", () => {
     for (const mount of ["block-renderer", "rail-widget", "composer-trailing", "event-hook"]) {
       const errors = validateManifest(manifest({ source: { type: "task" }, mount }), renderers);
