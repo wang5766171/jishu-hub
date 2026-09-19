@@ -15,7 +15,6 @@ import { BlockRenderersProvider } from "@/features/session-kernel/plugins/mounts
 import { PluginSignalBridge } from "@/features/session-kernel/plugins/mounts/plugin-signal-bridge";
 import { SessionPluginActions } from "@/features/session-kernel/plugins/mounts/session-plugin-actions";
 import { FlowBoardOverlay } from "@/features/task-workspace/board/flow-board-overlay";
-import { computeStepOrder } from "@/features/task-workspace/steps/compute-step-order";
 import { useTaskInstance } from "@/features/task-instance/use-task-instance";
 import { useNodeSession } from "@/features/task-instance/use-node-session";
 import { normalizeAgentId } from "@/features/task-instance/types";
@@ -25,9 +24,6 @@ import { SessionDataHub } from "@/features/session-kernel/kernel/data-hub";
 import { SessionRailSlot } from "@/features/session-kernel/plugins/mounts/session-rail-slot";
 import type {
   SessionKernelContext,
-  TaskPanelContext,
-  TaskPanelNode,
-  TaskNodeSession,
   PluginBlock,
   PluginMessage,
   PluginSearchMatch,
@@ -81,7 +77,9 @@ import {
 } from "@/lib/deferred-user-message";
 import { AgentLogo, AgentSwitcher, useAgent } from "@/agents";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
-import { resolvePhaseSessionId, shouldRenderGlobalChatInput } from "./chat-page-layout";
+import { orderExecutableNodes, shouldRenderGlobalChatInput } from "./chat-page-layout";
+import { useTaskInstanceSync } from "./use-task-instance-sync";
+import { useTaskSessionRouting } from "./use-task-session-routing";
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
 import { getSessionUsage, setSessionUsage } from "@/lib/session-usage";
 import { SessionComposerTrailing } from "@/features/session-kernel/plugins/mounts/session-composer-trailing";
@@ -120,6 +118,7 @@ export function ChatPage({
   onProjectSessionsLoadingChange,
   navigateToSession,
   onNavigateAgentModels,
+  pipelineLaunch,
 }: {
   currentProject: Project | null;
   currentProjectMeta?: ProjectMeta;
@@ -132,6 +131,9 @@ export function ChatPage({
   /** v0.9.2 需求10：未配置模型时「前往配置」——跳管理页模型设置并
    * 定位到当前会话智能体（agent 切换由 App 层注入）。 */
   onNavigateAgentModels?: () => void;
+  /** v0.9.3 需求13 C4-slice2c：pipeline 插件「作为任务启动」（App 层已切
+   * jishu agent 与会话页）；key 变化时预填 /jishu-pipeline 命令并聚焦。 */
+  pipelineLaunch?: { key: number; pluginId: string; name: string } | null;
 }) {
   const { t } = useTranslation();
   // v0.7.0 需求一：会话作用域状态（chatAgentId 替代全局 activeId）。
@@ -245,7 +247,6 @@ export function ChatPage({
   const [activeTaskInstanceId, setActiveTaskInstanceId] = useState<string | null>(null);
   const [activeTaskRequirementFile, setActiveTaskRequirementFile] = useState<string | null>(null);
   const [selectedTaskSkillId, setSelectedTaskSkillId] = useState("jishu-conductor-dev");
-  const [taskLaunchSessions, setTaskLaunchSessions] = useState<TaskLaunchInstanceSummary[]>([]);
   // 记录上次已知 status，用于检测变化。
   const lastKnownStatusRef = useRef<string | null>(null);
   const [regularSessionsOpen, setRegularSessionsOpen] = useState(true);
@@ -423,60 +424,26 @@ export function ChatPage({
     total: messageSearchTotal,
     label: messageSearchLabel,
   } = useMessageSearch({ sessions, selectedSession });
-  // 节点子代理会话 id 集合（常规会话列表过滤用，与 taskLaunchSessions 同节奏刷新）。
-  const [nodeSessionIds, setNodeSessionIds] = useState<string[]>([]);
-  const refreshTaskLaunchSessions = useCallback(async () => {
-    if (!projectPathForSettings) {
-      setTaskLaunchSessions([]);
-      setNodeSessionIds([]);
-      return;
-    }
-    try {
-      const [items, nodeIds] = await Promise.all([
-        invokeCommand<TaskLaunchInstanceSummary[]>(
-          "task_launch_list_sessions",
-          { projectRoot: projectPathForSettings },
-        ),
-        // 节点子代理会话 id（全局；orchestrator feature 关时命令不注册，降级为空）。
-        invokeCommand<string[]>("orchestrator_list_node_session_ids").catch(
-          () => [] as string[],
-        ),
-      ]);
-      setTaskLaunchSessions(items);
-      setNodeSessionIds(nodeIds);
-
-      // v0.7.0：检测当前任务的 active_run_id 变化（conductor 重试创建新 run）。
-      // 只在轮询回调里、且 run id 真正变化时 loadGraph，不会死循环。
-      // 注意：通过 ref 读 taskGraph，避免把它放进依赖数组（它是每次渲染的新对象，
-      // 会导致 useCallback 重建 → useEffect 重跑 → 死循环 → 界面一直加载中）。
-      const tg = taskGraphRef.current;
-      const activeInst = items.find((it) => it.task_id === activeTaskInstanceIdRef.current);
-      const newRunId = activeInst?.active_run_id ?? null;
-      if (
-        newRunId
-        && newRunId !== lastInstanceRunIdRef.current
-        && activeInst?.graph_id
-        && tg && tg.displayedRunId !== newRunId
-      ) {
-        lastInstanceRunIdRef.current = newRunId;
-        tg.loadGraph(activeInst.graph_id).catch(console.error);
-      }
-    } catch (error) {
-      console.warn("Failed to load task launch sessions:", error);
-    }
-  }, [projectPathForSettings]);
-
-  useEffect(() => {
-    refreshTaskLaunchSessions().catch(console.error);
-  }, [refreshTaskLaunchSessions]);
-
-  useEffect(() => {
-    if (!projectPathForSettings) return;
-    const timer = window.setInterval(() => {
-      refreshTaskLaunchSessions().catch(console.error);
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [projectPathForSettings, refreshTaskLaunchSessions]);
+  // ── A5 簇①：任务实例同步钩子（装载/3s 轮询/事件刷新/快照应用） ──
+  // 状态（taskLaunchSessions/nodeSessionIds）由钩子拥有；discover 经 ref 回填
+  //（其定义依赖本钩子的列表 setter，位于下方）。
+  const discoverConductorTaskRef = useRef<(sessionId: string) => Promise<unknown>>(async () => {});
+  const { taskLaunchSessions, setTaskLaunchSessions, nodeSessionIds, applyTaskLaunchInstanceSnapshot } = useTaskInstanceSync({
+    projectPath: projectPathForSettings,
+    projectPathRef,
+    taskGraphRef,
+    activeTaskInstanceIdRef,
+    lastInstanceRunIdRef,
+    lastRealSessionIdRef,
+    discoverConductorTaskRef,
+    activeTaskResolved: useCallback((record: TaskLaunchInstanceSummary) => {
+      activeTaskRequirementFileRef.current = record.requirement_file ?? null;
+      setActiveTaskInstanceId(record.task_id);
+      setActiveTaskRequirementFile(record.requirement_file ?? null);
+      lastKnownStatusRef.current = record.status;
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []),
+  });
 
   useEffect(() => {
     refetchSessionsRef.current = refetchSessions;
@@ -775,6 +742,17 @@ export function ChatPage({
   const taskModeCanSend =
     taskModeAgentReady && (capabilities?.has("TASK_MODE") ?? false);
 
+  // v0.9.3 需求13 C4-slice2c：pipeline 插件「作为任务启动」——App 层已切
+  // jishu agent 并翻回会话页；此处按 key 预填 /jishu-pipeline 启动命令
+  // （追加式回填，用户补目标后发送；重复 key 不重复回填）。
+  const pipelineLaunchRef = useRef(0);
+  useEffect(() => {
+    if (!pipelineLaunch || pipelineLaunch.key === pipelineLaunchRef.current) return;
+    pipelineLaunchRef.current = pipelineLaunch.key;
+    if (activeId !== "jishu-self") setChatAgent("jishu-self");
+    chatInputRef.current?.restoreTexts([`/jishu-pipeline ${pipelineLaunch.pluginId} `]);
+  }, [pipelineLaunch, activeId, setChatAgent]);
+
   const handleAccessModeChange = useCallback(async (value: string) => {
     if (!supportsAccessModeSwitch || !activeId) return;
     try {
@@ -818,55 +796,6 @@ export function ChatPage({
       setChatAgent(engineId);
     }
   }, [activeId, agents.length, setChatAgent, taskLaunchOpen, taskModeAgentReady, taskEngineAgent]);
-
-  const handleWorkModeChange = useCallback(async (value: string) => {
-    const nextIsTask = value === "task";
-    // 方式2：进入任务模式时若当前 agent 不支持任务模式（无 TASK_MODE 能力位），
-    // 弹窗确认后自动切到内建引擎 agent（v0.7.4 需求3 M2：去 agentId 写死）。
-    const engineId = taskEngineAgent?.id ?? "";
-    const needEngineSwitch = engineId !== "" && activeId !== engineId;
-    if (nextIsTask && needEngineSwitch) {
-      if (!taskModeAgentReady) {
-        await alertDialog({
-          title: "无法进入任务模式",
-          description: "任务模式需要先安装 Jishu Agent。请到环境检测页面完成安装后再发起任务。",
-        });
-        return;
-      }
-      const engineName = taskEngineAgent?.display_name ?? "Jishu Agent";
-      const confirmed = await confirmDialog({
-        title: `切换到 ${engineName}`,
-        description: `任务模式由 ${engineName} 提供。将切换到 ${engineName} 并进入任务模式，是否继续？`,
-        confirmText: "切换并继续",
-        cancelText: "取消",
-      });
-      if (!confirmed) return;
-      // 标记本次切换是为进入任务模式，阻止 activeId 变化时的清理 effect 重置任务模式
-      enteringTaskModeRef.current = true;
-    }
-    setTaskModeActive(false);
-    setTaskLaunchOpen(nextIsTask);
-    setTaskLaunchReadOnly(false);
-    setTaskLaunchPhase("requirements");
-    setActiveTaskInstanceId(null);
-    setActiveTaskRequirementFile(null);
-    taskLaunchOpenRef.current = nextIsTask;
-    taskLaunchPhaseRef.current = "requirements";
-    activeTaskInstanceIdRef.current = null;
-    activeTaskRequirementFileRef.current = null;
-    lastKnownStatusRef.current = null;
-    closeSessionSidebar();
-    setSelectedSession("new");
-    selectedSessionRef.current = "new";
-    setSessionMessages([]);
-    // v0.7.0：确认切换后主动切到引擎 agent（会话作用域；enteringTaskModeRef 已置，清理 effect 会跳过任务模式重置）
-    if (nextIsTask && needEngineSwitch) {
-      setChatAgent(engineId);
-    }
-    requestAnimationFrame(() => {
-      chatInputRef.current?.focus();
-    });
-  }, [activeId, taskModeAgentReady, setChatAgent, taskEngineAgent]);
 
   // 记录哪些 session 已经注入过 launch instruction（只在每个阶段的首条消息注入一次，
   // 后续消息复用 agent 进程上下文，不重复下达阶段指令，避免 agent 误以为每轮都是新阶段开始）。
@@ -1327,26 +1256,8 @@ export function ChatPage({
     });
   };
 
-  const handleOpenTaskConversation = useCallback(() => {
-    setTaskModeActive(false);
-    setTaskLaunchOpen(true);
-    setTaskLaunchReadOnly(false);
-    setTaskLaunchPhase("requirements");
-    setActiveTaskInstanceId(null);
-    setActiveTaskRequirementFile(null);
-    taskLaunchOpenRef.current = true;
-    taskLaunchPhaseRef.current = "requirements";
-    activeTaskInstanceIdRef.current = null;
-    activeTaskRequirementFileRef.current = null;
-    lastKnownStatusRef.current = null;
-    closeSessionSidebar();
-    setSelectedSession("new");
-    selectedSessionRef.current = "new";
-    setSessionMessages([]);
-    requestAnimationFrame(() => {
-      chatInputRef.current?.focus();
-    });
-  }, []);
+  // A5 簇②：handleOpenTaskConversation 已迁 use-task-session-routing（下方解构；
+  // 本处之前的闭包引用（handleSlashCommand）按运行时取值，无 TDZ）。
 
   const handleResumeSession = async (sessionId: string) => {
     setLoadingSessionId(sessionId);
@@ -1462,30 +1373,7 @@ export function ChatPage({
     openFloatingSession(sessionId, name, activeId || "", currentProject?.encoded_name || "", active?.display_name);
   }, [sessionNames, sessions, activeId, active, currentProject]);
 
-  const applyTaskLaunchInstanceSnapshot = useCallback((record: TaskLaunchInstanceSummary) => {
-    const isCurrentTask = !activeTaskInstanceIdRef.current
-      || activeTaskInstanceIdRef.current === record.task_id;
-
-    logTaskPhaseDebug("snapshot:received", {
-      taskId: record.task_id,
-      isCurrentTask,
-      status: record.status,
-      currentPhase: record.current_phase,
-    });
-
-    if (isCurrentTask) {
-      activeTaskInstanceIdRef.current = record.task_id;
-      activeTaskRequirementFileRef.current = record.requirement_file ?? null;
-      setActiveTaskInstanceId(record.task_id);
-      setActiveTaskRequirementFile(record.requirement_file ?? null);
-      lastKnownStatusRef.current = record.status;
-    }
-
-    setTaskLaunchSessions((current) => {
-      const rest = current.filter((item) => item.task_id !== record.task_id);
-      return [record, ...rest];
-    });
-  }, []);
+  // A5 簇①：applyTaskLaunchInstanceSnapshot 已迁 use-task-instance-sync（上方解构）。
 
   const handleMessageSent = useCallback((sid: string, msg: string, toolIds?: string[]) => {
     // For new sessions, register a stream entry here. For existing sessions,
@@ -1574,6 +1462,8 @@ export function ChatPage({
     }
     logTaskPhaseDebug("conductor-task:not-found", { sessionId });
   }, []);
+  // A5 簇①：同步钩子的事件关联经此 ref 取发现函数（定义序在钩子之后，运行时回填）。
+  discoverConductorTaskRef.current = discoverConductorTask;
 
   // v0.9.2 测试期修复：离开会话页（切管理页等，chat-page 卸载）时收起会话
   // 侧栏。面板本体由 chat-page 承载随卸载消失，但顶开 margin 在 app 层
@@ -1604,51 +1494,7 @@ export function ChatPage({
     };
   }, []);
 
-  // v0.9.2 需求6：任务实例变更事件（后端 conductor_sync_phase / mark_session 落库后
-  // 广播）。两件事：① 即时刷新任务列表（不等 3s 轮询，阶段推进实时可见）；
-  // ② 会话模式下关联当前会话对应的任务实例——原发现通道只有 session_resolved
-  // 时 4.8s 轮询窗口，conductor 在完整回合后才建实例，窗口内必然 not-found，
-  // 页面永远关联不上 → follow effect 无可观察对象、执行视图永不自动出现。
-  useEffect(() => {
-    const unlisten = listen<{ project_root: string; task_id: string; current_phase: string }>(
-      "task-instance-changed",
-      (event) => {
-        const projectRoot = projectPathRef.current;
-        if (!projectRoot || event.payload.project_root !== projectRoot) return;
-        invokeCommand<TaskLaunchInstanceSummary[]>("task_launch_list_sessions", { projectRoot })
-          .then((items) => {
-            setTaskLaunchSessions(items);
-            // v0.9.2 测试期（执行期方案调整）：活跃任务实例变更（含 conductor_revise_plan
-            // 落新 revision）时重载任务图——方案卡/子任务卡/全景即时反映修订。
-            const changedInst = items.find((item) => item.task_id === event.payload.task_id);
-            if (
-              changedInst?.current_phase === "execution" &&
-              changedInst.graph_id &&
-              changedInst.task_id === activeTaskInstanceIdRef.current
-            ) {
-              taskGraphRef.current.loadGraph(changedInst.graph_id).catch((e) =>
-                console.warn("reload graph after instance change failed:", e),
-              );
-            }
-            if (!activeTaskInstanceIdRef.current && lastRealSessionIdRef.current) {
-              const sid = lastRealSessionIdRef.current;
-              logTaskPhaseDebug("task-instance-changed:associate", {
-                taskId: event.payload.task_id,
-                sessionId: sid,
-                currentPhase: event.payload.current_phase,
-              });
-              discoverConductorTask(sid).catch((e) =>
-                console.warn("discoverConductorTask failed:", e),
-              );
-            }
-          })
-          .catch((e) => console.warn("task-instance-changed refresh failed:", e));
-      },
-    );
-    return () => {
-      void unlisten.then((fn) => fn());
-    };
-  }, [discoverConductorTask]);
+  // A5 簇①：task-instance-changed 监听已迁 use-task-instance-sync。
 
   const handleSessionResolved = useCallback((_pendingSessionId: string, realSessionId: string) => {
     if (!taskLaunchOpenRef.current) {
@@ -1670,98 +1516,8 @@ export function ChatPage({
 
   // T7：openTaskChatPhase（需求/规划走旧 chat 路径）已随三阶段形态退役——
   // 所有阶段统一由 openTaskPhaseWorkspace 进入「会话页 + 任务侧边栏」形态。
-
-  const openTaskPhaseWorkspace = useCallback((
-    taskSession: TaskLaunchInstanceSummary,
-    phase: TaskPhase,
-    readOnly = false,
-  ) => {
-    // 短路：已是同一任务同一阶段（且非只读切换），避免重复清空 selectedNodeId 引起
-    // 节点会话闪烁/竞态（v0.7.0 需求二-问题2：节点选中后再次点击变任务选中效果）。
-    if (
-      activeTaskInstanceIdRef.current === taskSession.task_id &&
-      activeTaskLaunchInstance?.current_phase === taskSession.current_phase &&
-      taskModeActive &&
-      !readOnly
-    ) {
-      return;
-    }
-    logTaskPhaseDebug("workspace:open", {
-      taskId: taskSession.task_id,
-      phase,
-      readOnly,
-      status: taskSession.status,
-      currentPhase: taskSession.current_phase,
-      requirementSessionId: taskSession.requirement_session_id,
-      planningSessionId: taskSession.planning_session_id,
-      graphId: taskSession.graph_id,
-    });
-    // T4 合流：所有阶段统一进入任务模式（会话页 + TaskSidebar），不再区分 chat-phase 与 execution-phase 两条路径。
-    setActiveTaskInstanceId(taskSession.task_id);
-    setActiveTaskRequirementFile(taskSession.requirement_file ?? null);
-    setSelectedTaskSkillId(taskSession.skill_id || "jishu-conductor-dev");
-    activeTaskInstanceIdRef.current = taskSession.task_id;
-    activeTaskRequirementFileRef.current = taskSession.requirement_file ?? null;
-    selectedTaskSkillIdRef.current = taskSession.skill_id || "jishu-conductor-dev";
-    lastKnownStatusRef.current = taskSession.status;
-    setTaskModeActive(true);
-    setTaskLaunchOpen(false);
-    setTaskLaunchReadOnly(false);
-    taskLaunchOpenRef.current = false;
-    // 减法重构：不再进独立 TaskWorkspace 页面。直接把主会话区指向任务的阶段会话，
-    // 复用 chat-page 既有 MessageView/ChatInput。
-    // T8-P1：执行阶段不再置 null（此前导致会话区纯白、需求/规划内容全丢），
-    // 而是沿用 conductor 会话，在其下方合流「流程执行」分隔线 + run 事件流（需求六）。
-    const phaseSession = resolvePhaseSessionId(taskSession, phase);
-    setSelectedSession(phaseSession ?? null);
-    selectedSessionRef.current = phaseSession ?? null;
-    setTaskSelectedNodeId(null);
-  }, []);
-  // 任务侧边栏节点选择 → 同步主区会话 + 步骤栏高亮
-  const handleTaskSelectNode = useCallback((nodeId: string | null) => {
-    // v0.7.0 需求二：重复点击同一节点不触发任何逻辑（与左侧列表行为一致，
-    // 只点一下选中，再点不清空内容）。nodeId 相同时直接 return。
-    if (nodeId !== null && nodeId === taskSelectedNodeIdRef.current) {
-      return;
-    }
-    setTaskSelectedNodeId(nodeId);
-    if (!nodeId) {
-      // 取消节点选择：清空节点会话 agent_id，主区恢复阶段会话
-      setTaskNodeSessionAgentId(null);
-      const sess = resolvePhaseSessionId(
-        activeTaskLaunchInstance,
-        activeTaskLaunchInstance?.current_phase,
-      );
-      setSelectedSession(sess);
-      selectedSessionRef.current = sess;
-    } else {
-      // v0.7.0 需求二-问题3：选中节点立即切到 pending-node 占位，清空上一个节点的
-      // 会话残留。session_id 回填后由 handleTaskNodeSessionChange 更新为真实节点会话。
-      // 此前不立即清空，导致新节点 session_id 回填前主区仍显示上一个节点的会话内容。
-      setTaskNodeSessionAgentId(null);
-      setSelectedSession("pending-node");
-      selectedSessionRef.current = "pending-node";
-      setSessionMessages([]);
-    }
-  }, [activeTaskLaunchInstance]);
-
-  // 选中节点的会话信息回填 → 主区渲染该节点会话（复用 chat-page 的 MessageView/ChatInput）
-  // v0.7.0 需求二-问题3：接收完整 info（含 agent_id），节点会话消息加载用节点绑定的 agent。
-  // 节点已运行但 session_id 尚未回填时，用 pending 标记占位，避免主区显示主流程会话。
-  const handleTaskNodeSessionChange = useCallback(
-    (info: { session_id: string | null; agent_id: string | null } | null) => {
-      if (info && info.session_id) {
-        setSelectedSession(info.session_id);
-        selectedSessionRef.current = info.session_id;
-      } else if (info) {
-        // 节点已运行但 session_id 未回填（attempt 存在但 Pi RPC SessionResolved 未到）
-        setSelectedSession("pending-node");
-        selectedSessionRef.current = "pending-node";
-      }
-      setTaskNodeSessionAgentId(info?.agent_id ?? null);
-    },
-    [],
-  );
+  // A5 簇②：openTaskPhaseWorkspace / handleTaskSelectNode / handleTaskNodeSessionChange
+  // 已迁 use-task-session-routing（下方解构）。
 
   // v0.9.2 需求2 M3-5：节点会话机制自 TaskSidebar 移植（侧栏退役）——
   // 选中节点变化时查其 attempt 会话并回填主区；run 状态回写任务实例。
@@ -1937,83 +1693,52 @@ export function ChatPage({
     [handleFailedNodeAction],
   );
 
-  // v0.9.2 测试期修复（节点顺序）：会话内卡片/方案卡/全景统一按**拓扑执行序**
-  //（依赖波次，同层按 node_id 稳定）呈现——此前直接用 snapshot.nodes 数组序
-  //（= LLM 提交计划的数组顺序），动态修订后顺序错乱（已完成的首节点被排后）。
-  const orderedExecutableNodes = (snapshot: typeof taskGraph.snapshot) => {
-    if (!snapshot) return [];
-    const order = computeStepOrder(snapshot);
-    const rank = new Map(order.map((id, index) => [id, index]));
-    return snapshot.nodes
-      .filter((node) => node.node_kind.toLowerCase() !== "goal" && !node.loop_config)
-      .slice()
-      .sort((a, b) => (rank.get(a.node_id) ?? order.length) - (rank.get(b.node_id) ?? order.length));
-  };
-
-  // v0.9.2 需求2 M3：任务上下文（流程全景插件的数据面——内核组装，插件
-  // 不直接触达 taskGraph store；流程执行能力与核心会话松耦合的落点）。
-  const taskPanelCtx = useMemo<TaskPanelContext | null>(() => {
-    if (!activeTaskLaunchInstance) return null;
-    const snapshot = taskGraph.snapshot;
-    const nodeRuns = taskGraph.nodeRuns;
-    if (!snapshot) {
-      return {
-        taskId: activeTaskLaunchInstance.task_id,
-        title: activeTaskLaunchInstance.title,
-        phase: activeTaskLaunchInstance.current_phase,
-        runStatus: taskGraph.runStatus ?? null,
-        completed: 0,
-        total: 0,
-        nodes: [],
-        nodeSessions: [],
-        selectedNodeId: taskSelectedNodeId,
-        onSelectNode: handleTaskSelectNode,
-        onOpenCanvas: () => setTaskBoardSignal((n) => n + 1),
-        onCancelRun: handleTaskCancelRun,
-      };
-    }
-    const nodes: TaskPanelNode[] = orderedExecutableNodes(snapshot)
-      .map((node) => {
-        const run = nodeRuns[node.node_id];
-        const status = run?.status ?? "blocked";
-        return {
-          nodeId: node.node_id,
-          title: node.title,
-          status,
-          waitingFor:
-            status === "blocked" ? t("sessionPlugins.flow.waiting", "等待中") : undefined,
-        };
-      });
-    const completed = nodes.filter((node) =>
-      ["succeeded", "skipped", "cancelled", "superseded", "failed"].includes(node.status),
-    ).length;
-    // v0.9.2 测试期：已执行节点的子会话索引（插件跨会话识别子节点产出物）。
-    const nodeSessions: TaskNodeSession[] = nodes
-      .map((node) => {
-        const info = taskInstanceState.nodeSessionMap[node.nodeId];
-        return {
-          nodeId: node.nodeId,
-          title: node.title,
-          sessionId: info?.session_id ?? null,
-          agentId: info?.agent_id ?? null,
-        };
-      })
-      .filter((entry) => entry.sessionId != null);
-    return {
-      taskId: activeTaskLaunchInstance.task_id,
-      title: activeTaskLaunchInstance.title,
-      phase: activeTaskLaunchInstance.current_phase,
-      runStatus: taskGraph.runStatus ?? null,
-      completed,
-      total: nodes.length,
-      nodes,
-      nodeSessions,
-      selectedNodeId: taskSelectedNodeId,
-      onSelectNode: handleTaskSelectNode,
-      onOpenCanvas: () => setTaskBoardSignal((n) => n + 1),
-      onCancelRun: handleTaskCancelRun,
-    };
-  }, [activeTaskLaunchInstance, taskGraph.snapshot, taskGraph.nodeRuns, taskGraph.runStatus, taskSelectedNodeId, taskInstanceState.nodeSessionMap, handleTaskSelectNode, handleTaskCancelRun, t]);
+  // ── A5 簇②③：任务会话导流钩子（新建任务对话/工作模式切换/任务工作台/
+  // 节点选择与回填 + 任务面板 ctx——流程全景插件的数据面）。任务态 state 仍在
+  // 页面（读写面横跨发送链/流式管线/JSX），此处收拢动作与派生。 ──
+  const {
+    handleOpenTaskConversation,
+    handleWorkModeChange,
+    openTaskPhaseWorkspace,
+    handleTaskSelectNode,
+    handleTaskNodeSessionChange,
+    taskPanelCtx,
+  } = useTaskSessionRouting({
+    setTaskModeActive,
+    setTaskLaunchOpen,
+    setTaskLaunchReadOnly,
+    setTaskLaunchPhase,
+    setActiveTaskInstanceId,
+    setActiveTaskRequirementFile,
+    setSelectedTaskSkillId,
+    setTaskSelectedNodeId,
+    setTaskNodeSessionAgentId,
+    taskLaunchOpenRef,
+    taskLaunchPhaseRef,
+    activeTaskInstanceIdRef,
+    activeTaskRequirementFileRef,
+    lastKnownStatusRef,
+    taskSelectedNodeIdRef,
+    enteringTaskModeRef,
+    activeId,
+    taskModeActive,
+    activeTaskLaunchInstance,
+    taskSelectedNodeId,
+    taskGraph,
+    nodeSessionMap: taskInstanceState.nodeSessionMap,
+    closeSessionSidebar,
+    setSelectedSession,
+    selectedSessionRef,
+    setSessionMessages,
+    chatInputRef,
+    handleTaskCancelRun,
+    setTaskBoardSignal,
+    taskEngineAgent,
+    taskModeAgentReady,
+    setChatAgent,
+    confirmDialog,
+    alertDialog,
+  });
 
   // v0.9.2 需求1：已启用会话插件集合（plugins-changed 热刷新）。
   const enabledSessionPlugins = useEnabledSessionPlugins();
@@ -2429,7 +2154,7 @@ export function ChatPage({
   const taskPlanNodes = useMemo<PlanNodeInfo[]>(() => {
     const snapshot = taskGraph.snapshot;
     if (!snapshot) return [];
-    return orderedExecutableNodes(snapshot)
+    return orderExecutableNodes(snapshot)
       .map((node) => {
         const constraint = node.agent_assignment_constraint as
           | { locked_agent_id?: unknown }
@@ -2576,7 +2301,7 @@ export function ChatPage({
         }
       }
     }
-    return orderedExecutableNodes(snapshot)
+    return orderExecutableNodes(snapshot)
       .map((node) => {
         const status = nodeRuns[node.node_id]?.status ?? "blocked";
         const agentId = nodeAgentIds.get(node.node_id) ?? agentByNode.get(node.node_id) ?? null;
@@ -3826,6 +3551,10 @@ export function ChatPage({
             onNodeDoubleClick={(nodeId) => {
               setTaskBoardOpen(false);
               handleTaskSelectNode(nodeId);
+            }}
+            onOpenMainSession={() => {
+              setTaskBoardOpen(false);
+              handleTaskSelectNode(null);
             }}
             onClose={() => setTaskBoardOpen(false)}
             taskGraph={taskGraph}
