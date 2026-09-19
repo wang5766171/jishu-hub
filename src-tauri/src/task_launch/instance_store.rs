@@ -37,12 +37,29 @@ impl TaskInstanceStore {
             // v0（全新库）：drop 重建。
             conn.execute_batch("DROP TABLE IF EXISTS task_instance;")
                 .map_err(|e| e.to_string())?;
-        } else if current_version == 1 {
-            // v1 → v2：增量迁移，新增 last_launch_key 列。
-            conn.execute_batch("ALTER TABLE task_instance ADD COLUMN last_launch_key TEXT;")
+        } else {
+            // 增量迁移（v1→v2→v3，**按列存在性幂等**）：目标列缺失才补。
+            // 背景（v0.9.3 测试期用户实测）：新旧版本先后打开同一库时，旧版
+            // 会把 user_version 写回自己的低版本常量，形成「谎报 v2 但 v3 列
+            // 已存在」的态——按版本号盲 ALTER 触发 duplicate column 使整个
+            // store 打开失败（任务列表空、会话全部落常规列表、新任务启动链
+            // 全被挡）。列检查使该态自愈：无缺失列 → 跳过 → 版本写回 3。
+            let existing: std::collections::HashSet<String> = conn
+                .prepare("PRAGMA table_info(task_instance)")
+                .map_err(|e| e.to_string())?
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<_, _>>()
                 .map_err(|e| e.to_string())?;
+            if !existing.contains("last_launch_key") {
+                conn.execute_batch("ALTER TABLE task_instance ADD COLUMN last_launch_key TEXT;")
+                    .map_err(|e| e.to_string())?;
+            }
+            if !existing.contains("stages_json") {
+                conn.execute_batch("ALTER TABLE task_instance ADD COLUMN stages_json TEXT;")
+                    .map_err(|e| e.to_string())?;
+            }
         }
-        // current_version == 2：无需迁移。
 
         conn.execute_batch(
             r#"
@@ -62,6 +79,7 @@ impl TaskInstanceStore {
                 last_run_id              TEXT,
                 run_status               TEXT,
                 last_launch_key          TEXT,
+                stages_json              TEXT,
                 created_at               INTEGER NOT NULL,
                 updated_at               INTEGER NOT NULL
             );
@@ -93,6 +111,7 @@ impl TaskInstanceStore {
             last_run_id: row.get("last_run_id")?,
             run_status: row.get("run_status")?,
             last_launch_key: row.get("last_launch_key")?,
+            stages_json: row.get("stages_json")?,
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
         })
@@ -101,7 +120,7 @@ impl TaskInstanceStore {
     const SELECT_COLUMNS: &'static str = "task_id, project_root, title, skill_id, planner_agent_id,
                 status, current_phase, requirement_file, requirement_session_id,
                 planning_session_id, graph_id, active_run_id, last_run_id, run_status,
-                last_launch_key, created_at, updated_at";
+                last_launch_key, stages_json, created_at, updated_at";
 
     pub(super) fn list_by_project(
         &self,
@@ -142,8 +161,8 @@ impl TaskInstanceStore {
                 task_id, project_root, title, skill_id, planner_agent_id, status,
                 current_phase, requirement_file, requirement_session_id, planning_session_id,
                 graph_id, active_run_id, last_run_id, run_status, last_launch_key,
-                created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                stages_json, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
              ON CONFLICT(task_id) DO UPDATE SET
                 title = excluded.title,
                 skill_id = excluded.skill_id,
@@ -158,6 +177,7 @@ impl TaskInstanceStore {
                 last_run_id = excluded.last_run_id,
                 run_status = excluded.run_status,
                 last_launch_key = excluded.last_launch_key,
+                stages_json = excluded.stages_json,
                 updated_at = excluded.updated_at",
             params![
                 instance.task_id,
@@ -175,6 +195,7 @@ impl TaskInstanceStore {
                 instance.last_run_id,
                 instance.run_status,
                 instance.last_launch_key,
+                instance.stages_json,
                 instance.created_at,
                 instance.updated_at,
             ],
@@ -275,6 +296,7 @@ pub fn mark_task_stage_session(
         last_run_id: None,
         run_status: None,
         last_launch_key: None,
+        stages_json: None,
         created_at: now,
         updated_at: now,
     });
@@ -398,6 +420,7 @@ pub fn finalize_requirement(
         last_run_id: None,
         run_status: None,
         last_launch_key: None,
+        stages_json: None,
         created_at: now,
         updated_at: now,
     });
@@ -542,6 +565,7 @@ pub fn create_from_existing_graph(
         last_run_id: None,
         run_status: None,
         last_launch_key: None,
+        stages_json: None,
         created_at: now,
         updated_at: now,
     };

@@ -109,7 +109,7 @@ const PLUGIN_CATEGORIES: Array<{ key: PluginCategory; labelKey: string; fallback
   { key: "custom", labelKey: "plugins.catCustom", fallback: "自定义" },
 ];
 
-export function PluginsPage() {
+export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId: string, name: string) => void } = {}) {
   const { t } = useTranslation();
   const { alert: alertDialog, confirm: confirmDialog, dialogNode } = useConfirmDialog();
   // v0.9.3 需求13：组合清单异步装载完成后重算卡片（⚙ 设置钮/描述依赖前端描述符）。
@@ -534,6 +534,7 @@ export function PluginsPage() {
           plugin={detailTarget satisfies DrawerPluginInfo as DrawerPluginInfo}
           initialTab={detailTab}
           onClose={() => setDetailTarget(null)}
+          onLaunchPipeline={onLaunchPipeline}
         />
       ) : null}
       <PluginCreateDialog

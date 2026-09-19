@@ -373,6 +373,148 @@ pub fn delete_composed_plugin(id: &str) -> Result<(), String> {
     std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())
 }
 
+// ── 声明驱动阶段流水线（v0.9.3 需求13 C4-slice2） ──────────────────────────
+// 模板展开与前端 capabilities/pipeline/contracts.ts 的 STAGE_TEMPLATES/
+// resolveStages 同义（两处小而稳定，改模板时同步）。
+
+/// 内置阶段模板（Rust 复刻；键与前端 StageTemplateKey 一致）。
+fn stage_template(key: &str) -> Option<serde_json::Value> {
+    let value = match key {
+        "phase.discuss" => serde_json::json!({
+            "name": "需求讨论",
+            "prompt": "与用户澄清目标/范围/约束，收敛为可执行的需求文档；未澄清前不进入下一阶段。",
+            "skills": ["jishu-conductor-dev:discuss"],
+            "tools": ["read", "grep", "find", "ls", "lock_requirement", "request_user_input"],
+            "gate": "confirm",
+            "outputs": [{ "kind": "document" }],
+        }),
+        "phase.plan" => serde_json::json!({
+            "name": "流程规划",
+            "prompt": "将需求拆分为有依赖关系的执行节点，产出 flow-plan；简单任务建议直接执行。",
+            "skills": ["jishu-conductor-dev:plan"],
+            "tools": ["read", "grep", "find", "ls", "commit_plan", "request_user_input"],
+            "gate": "confirm",
+            "outputs": [{ "kind": "plan" }],
+        }),
+        "phase.execute" => serde_json::json!({
+            "name": "执行",
+            "prompt": "按既定方案执行节点；阻塞/失败按重试与跳过策略处理，方案变更走修订。",
+            "skills": ["jishu-conductor-dev:execute"],
+            "tools": ["read", "bash", "edit", "write", "grep", "find", "ls", "commit_plan", "dispatch_to_node"],
+            "gate": "none",
+            "outputs": [{ "kind": "artifact" }],
+        }),
+        "phase.review" => serde_json::json!({
+            "name": "评审确认",
+            "prompt": "汇总产出请用户评审；通过则收尾，打回则回到指定阶段。",
+            "skills": [],
+            "tools": ["read", "grep", "find", "ls", "request_user_input"],
+            "gate": "confirm",
+            "outputs": [],
+        }),
+        _ => return None,
+    };
+    Some(value)
+}
+
+/// manifest 阶段声明展开（模板默认 ⨯ 声明覆盖）→ 阶段数组（运行时统一形状）。
+pub fn resolve_pipeline_stages(manifest: &serde_json::Value) -> Result<Vec<serde_json::Value>, String> {
+    let stages = manifest
+        .get("pipeline")
+        .and_then(|p| p.get("stages"))
+        .and_then(|s| s.as_array())
+        .ok_or("清单缺少 [pipeline].stages（非 pipeline 型插件）")?;
+    if stages.is_empty() {
+        return Err("[pipeline] 至少需要一个阶段".into());
+    }
+    let mut out = Vec::with_capacity(stages.len());
+    for (index, stage) in stages.iter().enumerate() {
+        let template_key = stage
+            .get("template")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let template = match template_key.as_deref() {
+            Some(key) => Some(
+                stage_template(key)
+                    .ok_or_else(|| format!("阶段 {} 引用了未知模板: {key}", index + 1))?,
+            ),
+            None => None,
+        };
+        let t = |field: &str| template.as_ref().and_then(|t| t.get(field).cloned());
+        // key 缺省取模板短键（phase.discuss→discuss 等——与 legacy 阶段名一致，
+        // 扩展侧深语义（lock_requirement/commit_plan 流）按 phase 名绑定）。
+        let key = stage
+            .get("key")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                template_key
+                    .as_deref()
+                    .and_then(|t| t.strip_prefix("phase."))
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| format!("stage-{}", index + 1));
+        let name = stage
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| t("name").and_then(|v| v.as_str().map(str::to_string)))
+            .unwrap_or_else(|| format!("阶段 {}", index + 1));
+        let declared_prompt = stage.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+        let template_prompt = t("prompt")
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let prompt = [template_prompt, declared_prompt.to_string()]
+            .iter()
+            .filter(|p| !p.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let pick_list = |field: &str| -> Option<Vec<serde_json::Value>> {
+            let declared = stage.get(field).and_then(|v| v.as_array());
+            match (declared, t(field).and_then(|v| v.as_array().cloned())) {
+                (Some(values), _) if !values.is_empty() => Some(values.clone()),
+                (None, Some(default)) => Some(default),
+                _ => None,
+            }
+        };
+        let stage_json = serde_json::json!({
+            "key": key,
+            "name": name,
+            "template": template_key,
+            "prompt": prompt,
+            "skills": pick_list("skills").unwrap_or_default(),
+            "tools": pick_list("tools").unwrap_or_default(),
+            "gate": stage
+                .get("gate")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .or_else(|| t("gate").and_then(|v| v.as_str().map(str::to_string)))
+                .unwrap_or_else(|| "none".into()),
+            "outputs": pick_list("outputs").unwrap_or_default(),
+        });
+        out.push(stage_json);
+    }
+    Ok(out)
+}
+
+/// 按插件 id 取展开后的流水线（`/jishu-pipeline` 扩展命令经 hub_invoke 消费）。
+pub fn composed_pipeline_by_id(id: &str) -> Result<serde_json::Value, String> {
+    let manifest = composed_session_manifests()
+        .into_iter()
+        .find(|(mid, _)| mid == id)
+        .map(|(_, value)| value)
+        .ok_or_else(|| format!("组合插件不存在: {id}"))?;
+    let name = manifest
+        .get("plugin")
+        .and_then(|p| p.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(id)
+        .to_string();
+    let stages = resolve_pipeline_stages(&manifest)?;
+    Ok(serde_json::json!({ "pluginId": id, "name": name, "stages": stages }))
+}
+
 /// 组合式插件的描述符（plugin_list 合并；启停沿 plugins.json 统一禁用集合）。
 pub fn composed_session_plugin_specs(disabled: &HashSet<String>) -> Vec<PluginDescriptor> {
     composed_session_manifests()
@@ -809,6 +951,63 @@ pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescrip
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_pipeline_stages_expands_video_maker_shape() {
+        // video-maker 清单形状：discuss 模板段（模板默认展开）+ 自定义段。
+        let manifest: serde_json::Value = toml::from_str(
+            r#"
+            [plugin]
+            id = "session.video-maker"
+            name = "视频生成助手"
+            kind = "session-composed"
+
+            [[pipeline.stages]]
+            template = "phase.discuss"
+
+            [[pipeline.stages]]
+            name = "分镜设计"
+            prompt = "依据需求文档产出分镜表。"
+
+            [[pipeline.stages]]
+            name = "视频生成"
+            prompt = "渲染合成。"
+            gate = "confirm"
+            "#,
+        )
+        .unwrap();
+        let stages = resolve_pipeline_stages(&manifest).unwrap();
+        assert_eq!(stages.len(), 3);
+        // 模板段：key 取模板短键，name/prompt 取模板默认，tools 含 lock_requirement。
+        let first = &stages[0];
+        assert_eq!(first["key"], "discuss");
+        assert_eq!(first["name"], "需求讨论");
+        assert!(first["prompt"].as_str().unwrap().contains("澄清目标"));
+        assert!(first["tools"].as_array().unwrap().iter().any(|t| t == "lock_requirement"));
+        assert_eq!(first["gate"], "confirm");
+        // 自定义段：key 缺省 stage-N，声明覆盖 gate。
+        let second = &stages[1];
+        assert_eq!(second["key"], "stage-2");
+        assert_eq!(second["name"], "分镜设计");
+        assert_eq!(second["prompt"], "依据需求文档产出分镜表。");
+        assert_eq!(second["gate"], "none");
+        assert_eq!(second["tools"].as_array().unwrap().len(), 0);
+        let third = &stages[2];
+        assert_eq!(third["gate"], "confirm");
+    }
+
+    #[test]
+    fn resolve_pipeline_stages_rejects_missing_or_unknown_template() {
+        let no_pipeline: serde_json::Value = serde_json::json!({ "plugin": { "id": "x" } });
+        assert!(resolve_pipeline_stages(&no_pipeline).is_err());
+        let bad_template: serde_json::Value = serde_json::json!({
+            "pipeline": { "stages": [ { "template": "phase.nope" } ] }
+        });
+        let err = resolve_pipeline_stages(&bad_template).unwrap_err();
+        assert!(err.contains("未知模板"));
+        let empty: serde_json::Value = serde_json::json!({ "pipeline": { "stages": [] } });
+        assert!(resolve_pipeline_stages(&empty).is_err());
+    }
 
     // assemble 用假插件测形状与过滤（真 adapter 的行为等价由既有 registry
     // 测试锁定）；plugins.json 读写经 JISHU_HUB_HOME + tempdir 隔离。

@@ -181,6 +181,27 @@ fn parse_content_blocks(value: &serde_json::Value) -> Vec<ContentBlock> {
     }
 }
 
+/// phase-enter 自定义消息内容首行 `=== 阶段名 ===` 标记解析（C4-slice2
+/// 声明驱动流水线的分隔线标题；取前 3 行内首个标记，无标记返回 None）。
+fn phase_enter_title_from_blocks(blocks: &[ContentBlock]) -> Option<String> {
+    let text = blocks.iter().find_map(|b| match b {
+        ContentBlock::Text { text, .. } => Some(text.as_str()),
+        _ => None,
+    })?;
+    for line in text.lines().take(3) {
+        let trimmed = line.trim();
+        if let Some(name) = trimmed
+            .strip_prefix("=== ")
+            .and_then(|rest| rest.strip_suffix(" ==="))
+        {
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
 pub fn parse_message(line: &str) -> Option<Message> {
     if line.trim().is_empty() {
         return None;
@@ -253,13 +274,18 @@ pub fn parse_message(line: &str) -> Option<Message> {
             "discuss"
         };
 
-        let title = match phase {
-            "discuss" => "需求讨论",
-            "plan" => "流程规划",
-            "execute" => "流程执行",
-            "done" => "已完成",
-            other => other,
-        };
+        // C4-slice2：声明驱动流水线的阶段名标题——phase-enter 消息内容首行
+        // `=== 阶段名 ===` 标记（PROMT 块内，不外显）；无标记回落内置映射。
+        let title = phase_enter_title_from_blocks(&filtered).unwrap_or_else(|| {
+            match phase {
+                "discuss" => "需求讨论",
+                "plan" => "流程规划",
+                "execute" => "流程执行",
+                "done" => "已完成",
+                other => other,
+            }
+            .to_string()
+        });
 
         let has_divider = filtered.iter().any(|b| match b {
             ContentBlock::PhaseDivider { phase: p, .. } => p == phase,

@@ -28,6 +28,8 @@ interface ManagePageProps {
   navigateToProjects?: number;
   /** v0.9.2 需求10：变化时切到「模型设置」子页（会话页「前往配置」入口）。 */
   navigateToAgentModels?: number;
+  /** v0.9.3 需求13 C4-slice2c：pipeline 插件「作为任务启动」（插件详情入口）。 */
+  onLaunchPipeline?: (pluginId: string, name: string) => void;
   projects: Project[] | null;
   projectMetas: Record<string, ProjectMeta> | null;
   refetchProjects: (silent?: boolean) => Promise<Project[]>;
@@ -93,7 +95,7 @@ const agentSectionTab: Partial<Record<AgentConfigSection, ManageTab>> = {
   advanced: "agent-advanced",
 };
 
-export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigateToAgentModels, projects, projectMetas, refetchProjects, refetchProjectMetas }: ManagePageProps) {
+export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigateToAgentModels, onLaunchPipeline, projects, projectMetas, refetchProjects, refetchProjectMetas }: ManagePageProps) {
   const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<ManageTab>("projects");
   const prevNavRef = useRef(0);
@@ -206,7 +208,7 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigat
             onNavigateSection={handleNavigateAgentSection}
           />
         )}
-        {activeTab === "plugins" && <PluginsPage />}
+        {activeTab === "plugins" && <PluginsPage onLaunchPipeline={onLaunchPipeline} />}
         {activeTab === "commands" && <CommandsPage />}
         {activeTab === "env" && <EnvCheckPage />}
       </div>

@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Loader2, RotateCcw, Save, X } from "lucide-react";
+import { Loader2, Rocket, RotateCcw, Save, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -192,10 +192,13 @@ export function PluginDetailModal({
   plugin,
   initialTab = "info",
   onClose,
+  onLaunchPipeline,
 }: {
   plugin: DrawerPluginInfo;
   initialTab?: "info" | "settings";
   onClose: () => void;
+  /** C4-slice2c：pipeline 型插件「作为任务启动」——跳会话页预填 /jishu-pipeline。 */
+  onLaunchPipeline?: (pluginId: string, name: string) => void;
 }) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<"info" | "settings">(initialTab);
@@ -366,9 +369,20 @@ export function PluginDetailModal({
               <p className="text-sm leading-relaxed text-foreground/85">{description}</p>
               {pipelineStages ? (
                 <div>
-                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    {t("plugins.modalPipelineStages", "阶段流水线")}
-                  </h4>
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      {t("plugins.modalPipelineStages", "阶段流水线")}
+                    </h4>
+                    {onLaunchPipeline ? (
+                      <Button
+                        size="sm"
+                        onClick={() => onLaunchPipeline(plugin.id, plugin.display_name)}
+                      >
+                        <Rocket className="mr-1 h-3.5 w-3.5" />
+                        {t("plugins.launchPipelineTask", "作为任务启动")}
+                      </Button>
+                    ) : null}
+                  </div>
                   <ol className="space-y-1.5">
                     {pipelineStages.map((stage, index) => (
                       <li key={stage.key} className="flex items-start gap-2 rounded-lg border border-border/50 px-3 py-2">

@@ -11,9 +11,27 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
-type Phase = "idle" | "discuss" | "plan" | "execute" | "done";
+type Phase = "idle" | "discuss" | "plan" | "execute" | "done" | (string & {});
 type Domain = "dev" | "research";
 type SkillPhase = "discuss" | "plan" | "execute";
+
+/** 展开后的声明阶段（Rust resolve_pipeline_stages 输出形状，三端一致）。 */
+interface PipelineStage {
+  key: string;
+  name: string;
+  template?: string;
+  prompt: string;
+  skills: string[];
+  tools: string[];
+  gate: "none" | "confirm";
+  outputs: Array<{ kind: string }>;
+}
+
+interface PipelineState {
+  pluginId: string;
+  name: string;
+  stages: PipelineStage[];
+}
 
 interface Step {
   id: string;
@@ -61,7 +79,7 @@ type Candidate = RequirementCandidate | PlanCandidate;
 
 interface PendingConfirmation {
   id: string;
-  kind: "requirements-to-plan" | "plan-to-execute";
+  kind: "requirements-to-plan" | "plan-to-execute" | "stage-confirm";
   candidateId: string;
 }
 
@@ -74,6 +92,9 @@ interface ConductorState {
    * 完整 discuss→plan→execute）；false/undefined = 普通会话中 agent 触发
    * （确认卡多一个「需求已明确，直接实施」选项，不强制进入流程模式）。 */
   taskMode?: boolean;
+  /** C4-slice2：声明驱动流水线（/jishu-pipeline 启动后置位）。phase 承载
+   * 当前阶段 key；模板段（template=phase.*）沿用三段式深语义。 */
+  pipeline?: PipelineState;
   artifacts: {
     taskId?: string;
     requirements?: string;
@@ -87,8 +108,9 @@ interface ConductorState {
   enteringPhase?: Phase;
   /** R3：turn_end 落地某阶段后标记待驱动，空闲 agent_end 消费并启下一阶段轮次+持久化分隔符。 */
   pendingDrive?: Phase;
-  /** R6：修订分支登记待驱动的修订轮（用户补充原话），由空闲 agent_end 单一驱动，避免流式 followUp 双驱动。 */
-  pendingRevise?: { kind: "requirements" | "plan"; answer: string };
+  /** R6：修订分支登记待驱动的修订轮（用户补充原话），由空闲 agent_end 单一驱动，避免流式 followUp 双驱动。
+   *  C4-slice2：pipeline 模式 kind 为阶段 key。 */
+  pendingRevise?: { kind: string; answer: string };
   steps: Step[];
   executorMode?: "external" | "fallback" | null;
 }
@@ -127,8 +149,43 @@ const PHASE_ALLOWED_TOOLS: Partial<Record<Phase, string[]>> = {
   ],
 };
 
-/** 根据 phase + executorMode 返回当前允许的工具列表。 */
-function allowedToolsFor(phase: Phase, executorMode?: string): string[] | undefined {
+/** 根据 phase + executorMode 返回当前允许的工具列表（pipeline 模式按声明段）。 */
+function allowedToolsFor(
+  phase: Phase,
+  executorMode: string | undefined,
+  pipeline: PipelineState | undefined,
+): string[] | undefined {
+  // pipeline 模式：声明段 tools（缺省回落模板默认；空=不收窄）；
+  // 深语义工具恒并入（模板段推进依赖），可提交段恒放行 commit_stage。
+  if (pipeline) {
+    const stage = pipeline.stages.find((item) => item.key === phase);
+    if (!stage) return undefined;
+    if (stage.template === "phase.execute" && executorMode === "external") {
+      return ["read", "grep", "find", "ls", "commit_plan", "dispatch_to_node", "request_user_input"];
+    }
+    const templateTools = stage.template
+      ? PHASE_ALLOWED_TOOLS[stage.template.slice("phase.".length) as SkillPhase]
+      : undefined;
+    const declared =
+      stage.tools.length > 0 ? stage.tools : (templateTools ?? []);
+    if (declared.length === 0) return undefined;
+    const extras: string[] = [];
+    if (stage.template === "phase.discuss") {
+      extras.push("lock_requirement", "request_user_input");
+    } else if (stage.template === "phase.plan") {
+      extras.push("commit_plan", "request_user_input");
+    } else if (stage.template === "phase.execute") {
+      extras.push("commit_plan", "dispatch_to_node");
+    } else {
+      // 自定义段 / review 模板段：以 commit_stage 声明完成。
+      extras.push("commit_stage", "request_user_input");
+    }
+    const merged = [...declared];
+    for (const tool of extras) {
+      if (!merged.includes(tool)) merged.push(tool);
+    }
+    return merged;
+  }
   // #5 纵深防御：external 模式 execute 阶段 Conductor 不执行，收窄为只读（硬保障靠 commit_plan 的 terminate）
   if (phase === "execute" && executorMode === "external") {
     // 监督态保留方案修订、持续下发与问答（规划性操作，非节点执行）。
@@ -165,8 +222,31 @@ function loadSkill(domain: Domain, phase: SkillPhase): string {
   }
 }
 
-function phaseDisplayName(phase: Phase): string {
-  const names: Record<Phase, string> = {
+/** 声明段技能装载："pack:phase" 形态 → <skills>/pack/phase.SKILL.md。
+ *  空列表返回空串（声明未挂技能=无技能块，不报 Missing）。 */
+function loadStageSkills(stage: PipelineStage): string {
+  const parts: string[] = [];
+  for (const ref of stage.skills ?? []) {
+    const at = ref.indexOf(":");
+    const pack = at > 0 ? ref.slice(0, at) : ref;
+    const phase = at > 0 ? ref.slice(at + 1) : stage.key;
+    try {
+      parts.push(readFileSync(join(SKILLS_DIR, pack, `${phase}.SKILL.md`), "utf-8"));
+    } catch {
+      parts.push(`[jishu-task-conductor] Missing skill: ${pack}/${phase}.SKILL.md.`);
+    }
+  }
+  return parts.join("\n\n");
+}
+
+function phaseDisplayName(phase: Phase, pipeline?: PipelineState): string {
+  if (pipeline) {
+    if (phase === "done") return "已完成";
+    if (phase === "idle") return "空闲";
+    const stage = pipeline.stages.find((item) => item.key === phase);
+    if (stage) return stage.name;
+  }
+  const names: Partial<Record<Phase, string>> = {
     idle: "空闲",
     discuss: "需求讨论",
     plan: "流程规划",
@@ -176,8 +256,23 @@ function phaseDisplayName(phase: Phase): string {
   return names[phase] ?? phase;
 }
 
+/** 声明段纪律：模板段沿用三段式红线；自定义/review 段用通用推进纪律。 */
+function stageDiscipline(stage: PipelineStage): string {
+  if (stage.template === "phase.discuss") return phaseDiscipline("discuss");
+  if (stage.template === "phase.plan") return phaseDiscipline("plan");
+  if (stage.template === "phase.execute") return phaseDiscipline("execute");
+  return [
+    `⚠️【阶段纪律 — ${stage.name}】⚠️`,
+    "1. 本阶段目标以阶段提示词为准；与目标无关的扩展实现不要展开。",
+    stage.gate === "confirm"
+      ? "2. 完成后调用 commit_stage 提交阶段小结；用户确认后才进入下一阶段。"
+      : "2. 完成后调用 commit_stage 提交阶段小结并推进。",
+    "3. 未到提交时机不要反复询问是否继续；需要用户输入时用 request_user_input。",
+  ].join("\n");
+}
+
 function phaseDiscipline(phase: Phase): string {
-  const rules: Record<Phase, string> = {
+  const rules: Partial<Record<Phase, string>> = {
     idle: "",
     discuss: [
       "⚠️⚠️⚠️【CRITICAL DISCIPLINE REDLINE - 需求讨论阶段】⚠️⚠️⚠️",
@@ -487,16 +582,54 @@ export default function conductorExtension(pi: ExtensionAPI): void {
   const phaseTag = (): string =>
     `jishu-conductor:phase:${state.domain}:${state.phase}`;
 
+  // ── C4-slice2：声明驱动流水线助手 ──
+  const pipelineStage = (key: Phase): PipelineStage | undefined =>
+    state.pipeline?.stages.find((stage) => stage.key === key);
+
+  const nextStageKey = (key: Phase): string | undefined => {
+    if (!state.pipeline) return undefined;
+    const index = state.pipeline.stages.findIndex((stage) => stage.key === key);
+    if (index === -1) return undefined;
+    return state.pipeline.stages[index + 1]?.key;
+  };
+
+  /** 启动期配对校验（哈希门控供料链 + execute 终点约束，Rust sync 的前端侧前置）：
+   *  plan 模板段必须紧跟 discuss 模板段（REQUIREMENTS 供料）；
+   *  execute 模板段必须紧跟 plan 模板段（flow-plan 供料）且必须是末段
+   *  （external 模式完成态由 Hub 工作台权威驱动，段后不可再排段）。 */
+  function validatePipelineShape(stages: PipelineStage[]): string | null {
+    for (let i = 0; i < stages.length; i += 1) {
+      const stage = stages[i];
+      const prev = stages[i - 1];
+      if (stage.template === "phase.plan" && prev?.template !== "phase.discuss") {
+        return "流程规划模板段必须紧跟需求讨论模板段（REQUIREMENTS 供料链）";
+      }
+      if (stage.template === "phase.execute") {
+        if (prev?.template !== "phase.plan") {
+          return "执行模板段必须紧跟流程规划模板段（flow-plan 供料链）";
+        }
+        if (i !== stages.length - 1) {
+          return "执行模板段必须是最后一个阶段（其完成态由执行工作台权威驱动）";
+        }
+      }
+    }
+    return null;
+  }
+
   function setPhase(phase: Phase, ctx: ExtensionContext): void {
     state.phase = phase;
-    const allowed = allowedToolsFor(phase, state.executorMode);
+    const allowed = allowedToolsFor(phase, state.executorMode, state.pipeline);
     if (allowed) pi.setActiveTools(allowed);
     else if (toolsBeforeWorkflow) pi.setActiveTools(toolsBeforeWorkflow);
-    ctx.ui.setStatus("jishu-conductor-phase", phase);
+    // legacy 路径状态文案保持原样（phase 原值）；pipeline 模式显示阶段名。
+    ctx.ui.setStatus(
+      "jishu-conductor-phase",
+      state.pipeline ? phaseDisplayName(phase, state.pipeline) : phase,
+    );
     persist();
   }
 
-  function queueRevision(kind: "requirements" | "plan", answer: string): void {
+  function queueRevision(kind: string, answer: string): void {
     // R6：只登记待修订，不在流式态发 followUp（避免与未终止轮双驱动）。
     // 工具修订分支返回 terminate:true 当前轮干净停，由空闲 agent_end 消费 pendingRevise 单一驱动修订轮。
     state.pendingConfirmation = undefined;
@@ -509,7 +642,28 @@ export default function conductorExtension(pi: ExtensionAPI): void {
    *  注意：followUp/continue 驱动的轮 **不触发 before_agent_start**（已核实 pi 源码：emitBeforeAgentStart 仅在
    *  AgentSession.prompt() 路径，agent.continue() 绕开）。故基线+补充**必须**放进 followUp 正文本身，
    *  不能依赖 before_agent_start 的 REVISION CONTEXT（那一轮它不注入）。 */
-  function driveRevision(kind: "requirements" | "plan", answer: string): void {
+  function driveRevision(kind: string, answer: string): void {
+    // pipeline 模式：修订对象是当前声明阶段（阶段内完善，工具=commit_stage）。
+    if (state.pipeline) {
+      const stage = pipelineStage(kind);
+      pi.sendMessage(
+        {
+          customType: `jishu-conductor:revise:${kind}`,
+          display: false,
+          content: [
+            "[JISHU-PROMT:开始]",
+            `继续「${stage ? stage.name : kind}」阶段。`,
+            taskAnchor(),
+            "用户对本阶段产出提出以下意见，请在本阶段目标范围内修订完善。",
+            `用户意见：${answer}`,
+            "修订完成后重新调用 commit_stage 提交阶段小结。",
+            "[JISHU-PROMT:结束]",
+          ].join("\n\n"),
+        },
+        { triggerTurn: true, deliverAs: "followUp" },
+      );
+      return;
+    }
     const baseline = state.candidate?.kind === kind ? state.candidate.markdown : "";
     const label = kind === "requirements" ? "需求" : "计划";
     const tool = kind === "requirements" ? "lock_requirement" : "commit_plan";
@@ -581,11 +735,13 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       ),
     );
     state.artifacts.requirements = path;
-    // Phase 2：同步阶段到 Hub TaskInstance（discuss→plan）
+    // Phase 2：同步阶段到 Hub TaskInstance（discuss→plan；pipeline 模式推进到
+    // 声明的相邻下一段——启动期校验保证 plan 模板段紧跟 discuss 模板段）。
+    const target = state.pipeline ? (nextStageKey("discuss") ?? "done") : "plan";
     const synced = await syncHubPhase(ctx, {
       task_id: state.artifacts.taskId ?? "draft",
       project_root: process.cwd(),
-      phase: "plan",
+      phase: target,
       domain: state.domain,
       artifacts: { requirements: path },
       expected_phase: "discuss",
@@ -598,7 +754,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     state.candidate = undefined;
     state.pendingConfirmation = undefined;
     state.revisionInstruction = undefined;
-    state.enteringPhase = "plan"; // 铁律7：推迟到 turn_end 落 phase，避免同轮 lock→commit 一跳到底
+    state.enteringPhase = target; // 铁律7：推迟到 turn_end 落 phase，避免同轮 lock→commit 一跳到底
     persist();
     // R3：驱动下一阶段轮次+持久化分隔符移到空闲 agent_end（消费 pendingDrive），此处不再发送。
   }
@@ -641,7 +797,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
   async function acceptPlan(
     candidate: PlanCandidate,
     ctx: ExtensionContext,
-  ): Promise<"execute" | "failed" | { revised: true; runUpdated: boolean }> {
+  ): Promise<"execute" | "advanced" | "failed" | { revised: true; runUpdated: boolean }> {
     validatePlan(candidate.nodes);
     const plan = {
       schema: "jishu-flow-plan-proposal/v1",
@@ -712,6 +868,30 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       }
       const data = reviseResult.data as { run_updated?: boolean } | undefined;
       return { revised: true, runUpdated: Boolean(data?.run_updated) };
+    }
+
+    // C4-slice2：pipeline 模式的推进目标——execute 模板段为相邻下一段时走完整
+    // 深语义（建图/执行编排），否则（自定义段/收尾）只落 planning 产物不建图。
+    const pipelineTarget = state.pipeline
+      ? (nextStageKey("plan") ?? "done")
+      : "execute";
+    if (pipelineTarget !== "execute") {
+      const syncedPlain = await syncHubPhase(ctx, {
+        task_id: state.artifacts.taskId ?? "draft",
+        project_root: process.cwd(),
+        phase: pipelineTarget,
+        domain: state.domain,
+        artifacts: { flow_plan_json: jsonPath, flow_plan_md: mdPath },
+        expected_phase: "plan",
+        session_id: ctx.sessionManager.getSessionId(),
+      });
+      if (!syncedPlain) return "failed";
+      state.candidate = undefined;
+      state.pendingConfirmation = undefined;
+      state.revisionInstruction = undefined;
+      state.enteringPhase = pipelineTarget;
+      persist();
+      return "advanced";
     }
 
     // Phase 3：尝试创建 GraphRevision（orchestrator 模式）
@@ -949,9 +1129,14 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         );
       }
       // I1：terminate/话术以 accept 是否真正成功为准（acceptPlan 内 Hub 同步失败会 early-return 且不置 enteringPhase）。
-      const advanced = choice === "进入流程执行" && state.enteringPhase === "execute";
+      const advanced = choice === "进入流程执行" && state.enteringPhase !== undefined;
       // R6：修订分支（已登记 pendingRevise）也当轮停，交空闲 agent_end 单一驱动修订轮。
       const stopNow = advanced || state.pendingRevise !== undefined;
+      const advanceText = state.pipeline
+        ? `候选计划已确认，进入「${phaseDisplayName(state.enteringPhase ?? "", state.pipeline)}」。`
+        : state.executorMode === "external"
+          ? "候选计划已确认。执行图已生成，请在执行工作台为节点选择智能体并点击“执行”。"
+          : "候选计划已确认，进入流程执行。";
       return {
         content: [
           {
@@ -959,9 +1144,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
             text:
               choice === "进入流程执行"
                 ? advanced
-                  ? state.executorMode === "external"
-                    ? "候选计划已确认。执行图已生成，请在执行工作台为节点选择智能体并点击“执行”。"
-                    : "候选计划已确认，进入流程执行。"
+                  ? advanceText
                   : "执行阶段同步未成功，请稍后重新确认。"
                 : "已收到修改意见，正在按你的意见修订计划。",
           },
@@ -1020,6 +1203,116 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     },
   });
 
+  // ── C4-slice2：声明阶段完成提交（自定义/review 段；模板段走深语义工具） ──
+  pi.registerTool({
+    name: "commit_stage",
+    label: "提交阶段小结",
+    description:
+      "声明当前流水线阶段完成并提交小结；用户确认后推进下一阶段（末阶段确认后任务完成）。仅适用于自定义阶段与评审阶段——需求讨论/流程规划/执行阶段分别用 lock_requirement / commit_plan 提交。",
+    parameters: Type.Object({
+      summary: Type.String({ description: "本阶段完成内容与产出物（如有，含路径）的简要说明" }),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx: ExtensionContext) {
+      if (!state.pipeline || state.phase === "idle" || state.phase === "done") {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "commit_stage 仅在声明驱动流水线任务进行中使用（/jishu-pipeline 启动）。",
+            },
+          ],
+          terminate: false,
+        };
+      }
+      const stage = pipelineStage(state.phase);
+      if (!stage) {
+        return {
+          content: [
+            { type: "text" as const, text: `当前阶段 ${state.phase} 不在流水线声明内。` },
+          ],
+          terminate: false,
+        };
+      }
+      if (
+        stage.template === "phase.discuss" ||
+        stage.template === "phase.plan" ||
+        stage.template === "phase.execute"
+      ) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "模板阶段请使用 lock_requirement / commit_plan 提交（深语义流程），不要调用 commit_stage。",
+            },
+          ],
+          terminate: false,
+        };
+      }
+      // v0.7.5 需求5：中断恢复后模型已重新提交，恢复指引使命完成。
+      interruptedResume = false;
+      const next = nextStageKey(stage.key);
+      const nextName = next ? pipelineStage(next)?.name : undefined;
+      const confirmLabel = next
+        ? `确认，进入下一阶段（${nextName}）`
+        : "确认完成，结束任务";
+      state.pendingConfirmation = {
+        id: `gate_${Date.now().toString(36)}`,
+        kind: "stage-confirm",
+        candidateId: stage.key,
+      };
+      persist();
+      const choice = await ctx.ui.select(
+        `阶段「${stage.name}」小结：${params.summary}\n是否确认完成并推进？`,
+        [confirmLabel, "继续完善本阶段"],
+      );
+      state.pendingConfirmation = undefined;
+      if (choice !== confirmLabel) {
+        // R5/R6：按钮「继续完善」或用户自由输入的修改意见 → 登记修订轮，空闲 agent_end 单一驱动。
+        queueRevision(
+          stage.key,
+          choice === undefined || choice === "继续完善本阶段"
+            ? "请继续完善本阶段产出；只处理尚未完成或需要修改的部分。"
+            : choice,
+        );
+        return {
+          content: [{ type: "text" as const, text: "已收到意见，继续完善本阶段。" }],
+          terminate: true,
+        };
+      }
+      const target = next ?? "done";
+      const synced = await syncHubPhase(ctx, {
+        task_id: state.artifacts.taskId ?? "draft",
+        project_root: process.cwd(),
+        phase: target,
+        domain: state.domain,
+        expected_phase: stage.key,
+        session_id: ctx.sessionManager.getSessionId(),
+      });
+      if (!synced) {
+        return {
+          content: [
+            { type: "text" as const, text: "阶段推进同步失败（Hub 拒绝），请稍后重新调用 commit_stage。" },
+          ],
+          terminate: false,
+        };
+      }
+      state.enteringPhase = target; // 铁律7：turn_end 落地阶段 + pendingDrive 驱动下一段
+      persist();
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              target === "done"
+                ? "阶段已确认，任务收尾。"
+                : `阶段已确认，进入「${nextName}」。`,
+          },
+        ],
+        terminate: true,
+      };
+    },
+  });
+
   pi.on("agent_start", async () => {
     terminalStopReason = undefined;
   });
@@ -1039,6 +1332,46 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     if (!target) return;
     state.pendingDrive = undefined;
     persist();
+    // C4-slice2：pipeline 模式按声明段驱动（external execute 仍由工作台执行）。
+    if (state.pipeline && target !== "done") {
+      const stage = pipelineStage(target);
+      if (!stage) return;
+      if (stage.template === "phase.execute" && state.executorMode === "external") {
+        return; // 监督态：不驱动模型轮（工作台执行）
+      }
+      const isTemplateToolStage =
+        stage.template === "phase.discuss" || stage.template === "phase.plan" ||
+        stage.template === "phase.execute";
+      // 首行 === 阶段名 === 供 Hub 投影解析为分隔线标题（PROMT 块内不外显）。
+      const stageContent = isTemplateToolStage
+        ? [
+            "[JISHU-PROMT:开始]",
+            `=== ${stage.name} ===`,
+            `进入「${stage.name}」阶段。`,
+            taskAnchor(),
+            stage.template === "phase.discuss"
+              ? "澄清目标/范围/约束并收敛需求；需求明确后调用 lock_requirement 提交候选需求。"
+              : stage.template === "phase.plan"
+                ? "读取上述需求终稿并设计任务节点方案；先在回复列出方案，再调用 commit_plan。"
+                : `按已确认节点依次执行：\n${renderStepList()}\n全部完成后简要报告产出。`,
+            stage.prompt ? `【本阶段补充要求】\n${stage.prompt}` : "",
+            "[JISHU-PROMT:结束]",
+          ].filter(Boolean).join("\n\n")
+        : [
+            "[JISHU-PROMT:开始]",
+            `=== ${stage.name} ===`,
+            `进入「${stage.name}」阶段。`,
+            taskAnchor(),
+            `【阶段目标】\n${stage.prompt || "（声明未提供阶段提示词）"}`,
+            "完成后调用 commit_stage 提交阶段小结。",
+            "[JISHU-PROMT:结束]",
+          ].join("\n\n");
+      pi.sendMessage(
+        { customType: `jishu-conductor:phase-enter:${target}`, display: true, content: stageContent },
+        { triggerTurn: true },
+      );
+      return;
+    }
     // external 模式的 execute 不驱动模型轮（工作台执行）；plan 与 fallback-execute 需要驱动
     const needDrive =
       target === "plan" ||
@@ -1103,6 +1436,9 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       setPhase(next, ctx); // setPhase 内部已 persist（此时 enteringPhase 已清空）
       state.pendingDrive = next; // R3：标记待驱动，空闲 agent_end 消费并启下一阶段轮次+持久化分隔符
       persist(); // setPhase 后又改了 pendingDrive，需再落盘
+      if (state.pipeline && next === "done") {
+        ctx.ui.notify(`流水线完成：${state.pipeline.name}`, "info");
+      }
       return; // 本轮仅落阶段，不再跑完成态判定
     }
 
@@ -1145,17 +1481,25 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         }
         return;
       }
+      // pipeline 模式：execute 模板段完成（启动期校验保证其为末段）→ done；
+      // legacy：fallback 执行完成 → done。
+      const doneTarget = state.pipeline ? (nextStageKey("execute") ?? "done") : "done";
       const synced = await syncHubPhase(ctx, {
         task_id: state.artifacts.taskId ?? "draft",
         project_root: process.cwd(),
-        phase: "done",
+        phase: doneTarget,
         domain: state.domain,
         expected_phase: "execute",
       });
       if (!synced) return;
       for (const step of state.steps) step.status = "done";
       setPhase("done", ctx);
-      ctx.ui.notify(`流程执行完成。共 ${state.steps.length} 个节点。`, "info");
+      ctx.ui.notify(
+        state.pipeline
+          ? `流水线完成：${state.pipeline.name}`
+          : `流程执行完成。共 ${state.steps.length} 个节点。`,
+        "info",
+      );
     }
   });
 
@@ -1215,6 +1559,79 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     },
   });
 
+  // ── C4-slice2：声明驱动流水线任务入口 ──
+  pi.registerCommand("jishu-pipeline", {
+    description: "启动流水线任务：/jishu-pipeline <pipeline插件id> <目标>",
+    handler: async (args, ctx) => {
+      const parts = args.trim().split(/\s+/);
+      const pluginId = parts[0];
+      const goal = parts.slice(1).join(" ").trim();
+      if (!pluginId || !goal) {
+        ctx.ui.notify(
+          "用法：/jishu-pipeline <pipeline插件id> <目标>，例如：/jishu-pipeline session.video-maker 做一个 30 秒的产品宣传视频",
+          "warning",
+        );
+        return;
+      }
+      if (state.phase !== "idle") {
+        ctx.ui.notify(
+          `已有任务流程正在运行（当前：${phaseDisplayName(state.phase, state.pipeline)}），请先完成或取消`,
+          "warning",
+        );
+        return;
+      }
+      // 取 Hub 展开后的声明（模板展开在 Rust 侧，扩展保持薄）。
+      const fetched = await hubInvoke(ctx, "composed_plugin_pipeline", { id: pluginId }, 15000);
+      const pipelineData =
+        fetched?.success === true
+          ? (fetched.data as { pluginId: string; name: string; stages: PipelineStage[] } | undefined)
+          : undefined;
+      if (!pipelineData || !Array.isArray(pipelineData.stages) || pipelineData.stages.length === 0) {
+        ctx.ui.notify(
+          fetched?.error ?? `流水线插件不可用：${pluginId}（不存在或非 pipeline 型清单）`,
+          "error",
+        );
+        return;
+      }
+      const shapeError = validatePipelineShape(pipelineData.stages);
+      if (shapeError) {
+        ctx.ui.notify(`流水线声明不满足配对约束：${shapeError}`, "error");
+        return;
+      }
+      state.pipeline = {
+        pluginId,
+        name: pipelineData.name,
+        stages: pipelineData.stages,
+      };
+      state.domain = pluginId as Domain; // Hub 侧 skill_id = pipeline:<pluginId>
+      state.taskMode = true;
+      state.goal = goal;
+      state.artifacts.taskId = `task_${Date.now().toString(36)}`;
+      if (!toolsBeforeWorkflow) toolsBeforeWorkflow = pi.getActiveTools();
+
+      const first = pipelineData.stages[0];
+      const synced = await syncHubPhase(ctx, {
+        task_id: state.artifacts.taskId,
+        project_root: process.cwd(),
+        phase: first.key,
+        domain: pluginId,
+        expected_phase: "idle",
+        stages: pipelineData.stages, // 首次 sync 携带声明（Hub 持久化为权威）
+        title: goal.slice(0, 40),
+        session_id: ctx.sessionManager.getSessionId(),
+      });
+      if (!synced) {
+        state.goal = "";
+        state.artifacts = {};
+        state.pipeline = undefined;
+        return;
+      }
+
+      setPhase(first.key, ctx);
+      pi.sendUserMessage(`[JISHU-PROMT:开始]\n/jishu-pipeline ${args}\n[JISHU-PROMT:结束]\n${goal}`);
+    },
+  });
+
   pi.on("before_agent_start", async () => {
     if (state.phase === "idle" || state.phase === "done") return;
     // #5：external 模式 execute 阶段不注入"执行者"技能，改注入监督/交棒指令
@@ -1228,7 +1645,6 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         },
       };
     }
-    const skill = loadSkill(state.domain, state.phase as SkillPhase);
     const revisionContext =
       state.revisionInstruction && state.candidate
         ? [
@@ -1243,16 +1659,51 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     // "等待确认"）是中断前的旧状态——修订轮与确认卡片均未完成。不注入此段
     // 时模型会把旧结果当作已完成，只输出文字总结等一张不存在的卡片 → 死锁
     //（2026-08-18 实测：恢复轮模型声称"已提交 lock_requirement"但未调用工具）。
+    // C4-slice2：pipeline 模式提交工具按段判定（模板段深语义 / 自定义段 commit_stage）。
+    const resumeTool = state.pipeline
+      ? pipelineStage(state.phase)?.template === "phase.discuss"
+        ? "lock_requirement"
+        : pipelineStage(state.phase)?.template === "phase.plan" ||
+            pipelineStage(state.phase)?.template === "phase.execute"
+          ? "commit_plan"
+          : "commit_stage"
+      : state.phase === "discuss"
+        ? "lock_requirement"
+        : "commit_plan";
     const resumeGuidance = interruptedResume
       ? [
           "[会话恢复提示 — 强制遵守]",
           "上次会话在本阶段中断：用户确认卡片已随中断丢失，修订轮从未执行；历史工具结果里的“正在修订/等待确认”均未完成。",
-          `用户要求继续时：基于 REVISION CONTEXT（如有）完成修订，并必须重新调用 ${
-            state.phase === "discuss" ? "lock_requirement" : "commit_plan"
-          } 提交完整候选——只有重新调用该工具才会重新弹出用户确认卡片。`,
+          `用户要求继续时：基于 REVISION CONTEXT（如有）完成修订，并必须重新调用 ${resumeTool} 提交完整候选——只有重新调用该工具才会重新弹出用户确认卡片。`,
           "禁止只输出文字总结声称“已提交/等待卡片确认”，那会永久卡住流程。",
         ].join("\n")
       : "";
+    // C4-slice2：pipeline 模式注入——技能/纪律/提示词按声明段（模板段沿用
+    // 三段式深语义技能，自定义段用声明技能与通用纪律）。
+    if (state.pipeline) {
+      const stage = pipelineStage(state.phase);
+      if (stage) {
+        const stageSkill = loadStageSkills(stage);
+        return {
+          message: {
+            customType: phaseTag(),
+            display: false,
+            content: [
+              `[JISHU-PIPELINE:${state.pipeline.pluginId}:${stage.key}] === ${stage.name} ===`,
+              stage.prompt ? `【阶段目标】\n${stage.prompt}` : "",
+              stageSkill,
+              stageDiscipline(stage),
+              taskAnchor(),
+              resumeGuidance,
+              revisionContext,
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
+          },
+        };
+      }
+    }
+    const skill = loadSkill(state.domain, state.phase as SkillPhase);
     return {
       message: {
         customType: phaseTag(),
@@ -1299,8 +1750,11 @@ export default function conductorExtension(pi: ExtensionAPI): void {
       toolsBeforeWorkflow = last.data.toolsBeforeWorkflow;
       // v0.7.5 需求5：中断态检测——停在候选待确认/修订待执行时进程退出，
       // 卡片与修订轮均未发生，需要恢复指引纠正模型的"已完成"错觉。
+      // C4-slice2：pipeline 模式任意进行中阶段都可能停在确认卡（commit_stage）。
       if (
-        (state.phase === "discuss" || state.phase === "plan") &&
+        (state.pipeline ||
+          state.phase === "discuss" ||
+          state.phase === "plan") &&
         (state.pendingConfirmation !== undefined ||
           state.revisionInstruction !== undefined)
       ) {
@@ -1326,20 +1780,32 @@ export default function conductorExtension(pi: ExtensionAPI): void {
         };
         if (data.found && data.instance) {
           const inst = data.instance;
-          // Hub current_phase → Conductor phase 映射
+          // Hub current_phase → Conductor phase 映射（pipeline 模式存的就是
+          // 声明阶段 key；不在声明内时按完成态/本地值兜底）。
           let hubPhase: Phase;
-          switch (inst.current_phase) {
-            case "requirements":
-              hubPhase = "discuss";
-              break;
-            case "planning":
-              hubPhase = "plan";
-              break;
-            case "execution":
-              hubPhase = inst.run_status === "completed" ? "done" : "execute";
-              break;
-            default:
+          if (state.pipeline) {
+            const stageKeys = state.pipeline.stages.map((stage) => stage.key);
+            if (stageKeys.includes(inst.current_phase)) {
+              hubPhase = inst.current_phase;
+            } else if (inst.run_status === "completed") {
+              hubPhase = "done";
+            } else {
               hubPhase = state.phase;
+            }
+          } else {
+            switch (inst.current_phase) {
+              case "requirements":
+                hubPhase = "discuss";
+                break;
+              case "planning":
+                hubPhase = "plan";
+                break;
+              case "execution":
+                hubPhase = inst.run_status === "completed" ? "done" : "execute";
+                break;
+              default:
+                hubPhase = state.phase;
+            }
           }
           // TaskInstance 为准：覆盖本地 phase
           if (hubPhase !== state.phase) {
@@ -1351,13 +1817,13 @@ export default function conductorExtension(pi: ExtensionAPI): void {
     }
 
     if (state.phase !== "idle") {
-      const allowed = allowedToolsFor(state.phase, state.executorMode);
+      const allowed = allowedToolsFor(state.phase, state.executorMode, state.pipeline);
       if (allowed) pi.setActiveTools(allowed);
     }
   });
 
   pi.on("tool_call", async (event) => {
-    const allowed = allowedToolsFor(state.phase, state.executorMode);
+    const allowed = allowedToolsFor(state.phase, state.executorMode, state.pipeline);
     if (allowed && !allowed.includes(event.toolName)) {
       return {
         block: true,

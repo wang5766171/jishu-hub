@@ -1734,16 +1734,34 @@ pub(crate) fn normalize_pi_agent_event(
                 let phase = custom_type
                     .strip_prefix("jishu-conductor:phase-enter:")
                     .unwrap_or("");
-                let title = match phase {
-                    "discuss" => "需求讨论",
-                    "plan" => "流程规划",
-                    "execute" => "流程执行",
-                    "done" => "已完成",
-                    other => other,
-                };
+                // C4-slice2：声明驱动流水线阶段名——消息内容首行 `=== 阶段名 ===`
+                // 标记优先（与 session.rs 回放投影同一解析），回落内置映射。
+                let content_text = event
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let marker_title = content_text.lines().take(3).find_map(|line| {
+                    let trimmed = line.trim();
+                    trimmed
+                        .strip_prefix("=== ")
+                        .and_then(|rest| rest.strip_suffix(" ==="))
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_string)
+                });
+                let title = marker_title.unwrap_or_else(|| {
+                    match phase {
+                        "discuss" => "需求讨论",
+                        "plan" => "流程规划",
+                        "execute" => "流程执行",
+                        "done" => "已完成",
+                        other => other,
+                    }
+                    .to_string()
+                });
                 return vec![NormalizedEvent::PhaseDivider {
                     phase: phase.to_string(),
-                    title: title.to_string(),
+                    title,
                 }];
             }
 
@@ -1935,6 +1953,15 @@ fn handle_hub_invoke(
                     .map_err(|e| format!("conductor_sync_phase 参数解析失败: {e}"))?;
             let result = crate::task_launch::conductor_sync_phase(request)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        // v0.9.3 需求13 C4-slice2：/jishu-pipeline 扩展命令按插件 id 取
+        // 展开后的阶段声明（模板展开在 Rust 侧，扩展保持薄）。
+        "composed_plugin_pipeline" => {
+            let id = params
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or("composed_plugin_pipeline 参数缺少 id")?;
+            crate::agent::plugin::composed_pipeline_by_id(id)
         }
         "conductor_revise_plan" => {
             let request: crate::task_launch::RevisePlanRequest =

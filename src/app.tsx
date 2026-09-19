@@ -483,6 +483,15 @@ function AppContent() {
     setCurrentPage("manage");
   }, [chatAgentId, setManageAgent]);
 
+  // v0.9.3 需求13 C4-slice2c：pipeline 插件「作为任务启动」——切会话页、
+  // 会话作用域切 jishu agent（任务引擎），ChatPage 按 key 预填启动命令。
+  const [pipelineLaunch, setPipelineLaunch] = useState<{ key: number; pluginId: string; name: string } | null>(null);
+  const handleLaunchPipeline = useCallback((pluginId: string, name: string) => {
+    setChatAgent("jishu-self");
+    setPipelineLaunch({ key: Date.now(), pluginId, name });
+    setCurrentPage("chat");
+  }, [setChatAgent]);
+
   const handleProjectSessionsLoadingChange = useCallback((nextLoading: boolean) => {
     setProjectSessionsLoading((prev) => prev === nextLoading ? prev : nextLoading);
   }, []);
@@ -588,12 +597,13 @@ function AppContent() {
       <ViewerPushRow>
         <Suspense fallback={<LoadingOverlay />}>
           {currentPage === "chat"
-            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} onNavigateAgentModels={handleNavigateAgentModels} />
+            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} onNavigateAgentModels={handleNavigateAgentModels} pipelineLaunch={pipelineLaunch} />
             : <ManagePage
                 onBack={() => setCurrentPage("chat")}
                 onEnterProject={handleEnterProject}
                 navigateToProjects={manageNavKey}
                 navigateToAgentModels={agentModelsNavKey}
+                onLaunchPipeline={handleLaunchPipeline}
                 projects={projects}
                 projectMetas={projectMetas}
                 refetchProjects={refetchProjects}
