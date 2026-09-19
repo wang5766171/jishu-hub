@@ -79,6 +79,7 @@ import { AgentLogo, AgentSwitcher, useAgent } from "@/agents";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
 import { orderExecutableNodes, shouldRenderGlobalChatInput } from "./chat-page-layout";
 import { useTaskInstanceSync } from "./use-task-instance-sync";
+import { useAccessMode } from "./use-access-mode";
 import { useTaskSessionRouting } from "./use-task-session-routing";
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
 import { getSessionUsage, setSessionUsage } from "@/lib/session-usage";
@@ -102,7 +103,6 @@ import type {
   Message,
   Project,
   ProjectMeta,
-  ProjectSettings,
   Session,
   SessionSearchResult,
 } from "@/types";
@@ -151,7 +151,22 @@ export function ChatPage({
   // agent_config=agent 自己的配置文件。禁止按 agentId 分支。
   const permissionModes = active?.permission_modes ?? [];
   const permissionModeProvider = active?.permission_mode_provider ?? null;
-  const supportsAccessModeSwitch = permissionModes.length > 0;
+  // ── M3：访问/权限模式域迁 use-access-mode（三提供方加载/派生/变更保存/
+  // 刷新键；置于 modelPicker 之前——其刷新回调引用 refreshAccessMode）。 ──
+  const {
+    canSwitch: supportsAccessModeSwitch,
+    options: accessModeOptions,
+    value: accessModeValue,
+    label: accessModeLabel,
+    approvalAlwaysHidden,
+    handleChange: handleAccessModeChange,
+    refresh: refreshAccessMode,
+  } = useAccessMode({
+    activeId,
+    permissionModes,
+    permissionModeProvider,
+    projectPath: projectPathForSettings,
+  });
   // 应用内确认/提示弹窗（替代系统原生 confirm/message，样式与应用统一）。
   // 注意：解构必须先于所有把 confirmDialog/alertDialog 写进 useCallback
   // 依赖数组的 handler——依赖数组在渲染期求值，靠后的 const 会触发 TDZ
@@ -255,7 +270,7 @@ export function ChatPage({
   // IPC（get_model_picker_options，Pi 语义解析唯一化在后端），前端解析块
   // 与三份双源（model-types 解析 / PI_THINKING_LEVELS 常量）一并消除。
   const modelPicker = useModelPicker(activeId, supportsModelPicker, () => {
-    setAccessRefreshKey(Date.now());
+    refreshAccessMode();
   });
   const { options: modelOptions, activeValue: activeModelValue } = modelPicker;
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -515,26 +530,7 @@ export function ChatPage({
     [taskLaunchSessions],
   );
   // T7：taskLaunchPhaseStates（三阶段 tab 的 done/active/pending 派生）随 TaskPhaseNavBar 一并退役。
-  const [accessRefreshKey, setAccessRefreshKey] = useState(0);
-  const { data: projectSettings } = useInvoke<ProjectSettings>(
-    permissionModeProvider === "project_settings" && projectPathForSettings && activeId ? "load_project_settings_local" : "",
-    permissionModeProvider === "project_settings" && projectPathForSettings && activeId ? { agentId: activeId, projectPath: projectPathForSettings } : undefined,
-    accessRefreshKey,
-  );
-  // hub_tool_mode / agent_config 提供方的当前模式（project_settings 走上面的 useInvoke）
-  const [externalPermissionMode, setExternalPermissionMode] = useState<string | null>(null);
-  useEffect(() => {
-    if (permissionModeProvider !== "hub_tool_mode" && permissionModeProvider !== "agent_config") {
-      setExternalPermissionMode(null);
-      return;
-    }
-    let cancelled = false;
-    const cmd = permissionModeProvider === "hub_tool_mode" ? "get_agent_tool_mode" : "get_agent_permission_mode";
-    invokeCommand<string | null>(cmd, { agentId: activeId ?? "" })
-      .then((v) => { if (!cancelled) setExternalPermissionMode(v ?? null); })
-      .catch(() => { if (!cancelled) setExternalPermissionMode(null); });
-    return () => { cancelled = true; };
-  }, [permissionModeProvider, activeId, accessRefreshKey]);
+  // M3：访问/权限模式域已上移 use-access-mode（permissionModes 定义处）。
   // Auto-clear optimistic sessions once real session appears in backend list
   useEffect(() => {
     if (sessions && optimisticSessions.length > 0) {
@@ -590,47 +586,8 @@ export function ChatPage({
   const handleRefresh = async () => {
     const newKey = await onRefresh();
     setListRefreshKey(newKey);
-    setAccessRefreshKey(Date.now());
+    refreshAccessMode();
   };
-
-  const accessModeOptions = useMemo(() => {
-    const labels: Record<string, string> = {
-      default: t("sessions.accessDefault"),
-      bypassPermissions: t("sessions.accessBypass"),
-      plan: t("sessions.accessPlan"),
-      full: t("sessions.toolModeFull"),
-      "full-approve": t("sessions.toolModeFullApprove"),
-      "smart-approve": t("sessions.toolModeSmartApprove"),
-      readonly: t("sessions.toolModeReadonly"),
-      untrusted: t("sessions.approvalUntrusted"),
-      "on-failure": t("sessions.approvalOnFailure"),
-      "on-request": t("sessions.approvalOnRequest"),
-      never: t("sessions.approvalNever"),
-    };
-    const descriptions: Record<string, string> = {
-      full: t("sessions.toolModeFullDesc"),
-      "full-approve": t("sessions.toolModeFullApproveDesc"),
-      "smart-approve": t("sessions.toolModeSmartApproveDesc"),
-      readonly: t("sessions.toolModeReadonlyDesc"),
-    };
-    return permissionModes.map((value) => ({
-      value,
-      label: labels[value] ?? value,
-      description: descriptions[value],
-    }));
-  }, [permissionModes, t]);
-
-  const accessModeValue = permissionModeProvider === "project_settings"
-    ? projectSettings?.permissions?.defaultMode || "default"
-    : permissionModeProvider === "hub_tool_mode"
-      ? externalPermissionMode ?? "full"
-      : externalPermissionMode;
-  // 变更前审批档的策略链不含 Once 记忆，审批弹窗不提供「始终允许」。
-  const approvalAlwaysHidden =
-    permissionModeProvider === "hub_tool_mode" && accessModeValue === "full-approve";
-  const accessModeLabel = accessModeValue
-    ? accessModeOptions.find((option) => option.value === accessModeValue)?.label ?? accessModeValue
-    : t("sessions.accessUnset");
   // v0.8.0 需求1 A5：从当前会话末尾创建分支（capability SESSION_FORK 门控；
   // 仅 jishu-self——Pi 原生 clone RPC 复制整棵会话树并重绑进程）。后端返回
   // 分支会话 id 并把进程重挂到分支；此处以乐观条目挂载分支并切换加载历史，
@@ -753,31 +710,7 @@ export function ChatPage({
     chatInputRef.current?.restoreTexts([`/jishu-pipeline ${pipelineLaunch.pluginId} `]);
   }, [pipelineLaunch, activeId, setChatAgent]);
 
-  const handleAccessModeChange = useCallback(async (value: string) => {
-    if (!supportsAccessModeSwitch || !activeId) return;
-    try {
-      if (permissionModeProvider === "project_settings") {
-        if (!projectPathForSettings) return;
-        const nextSettings: ProjectSettings = {
-          permissions: {
-            defaultMode: value === "default" ? null : value,
-            allow: projectSettings?.permissions?.allow ?? null,
-            deny: projectSettings?.permissions?.deny ?? null,
-          },
-          hooks: projectSettings?.hooks ?? null,
-          env: projectSettings?.env ?? null,
-          model: projectSettings?.model ?? null,
-        };
-        await invokeCommand("save_project_settings_local", { agentId: activeId, projectPath: projectPathForSettings, settings: nextSettings });
-      } else if (permissionModeProvider === "hub_tool_mode") {
-        await invokeCommand("set_agent_tool_mode", { agentId: activeId, mode: value });
-      } else if (permissionModeProvider === "agent_config") {
-        await invokeCommand("set_agent_permission_mode", { agentId: activeId, mode: value });
-      }
-    } finally {
-      setAccessRefreshKey(Date.now());
-    }
-  }, [activeId, permissionModeProvider, projectPathForSettings, projectSettings, supportsAccessModeSwitch]);
+  // M3：handleAccessModeChange 已迁 use-access-mode（上方解构）。
 
   useEffect(() => {
     if (!taskLaunchOpen || agents.length === 0) return;
