@@ -112,6 +112,11 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
   useEffect(() => {
     invokeCommand<boolean>("load_always_on_top").then(setPinned).catch(console.error);
     getVersion().then((v) => setVersion(v)).catch(() => setVersion(""));
+    // 需求2（v0.9.4）：dev 下窗口标题加后缀——Alt-Tab/任务栏悬停可辨。
+    // （复用 appWindow 的浏览器环境守卫，纯 vite 预览不炸。）
+    if (import.meta.env.DEV) {
+      appWindow?.setTitle("Jishu Hub · DEV").catch((e) => console.warn("setTitle failed:", e));
+    }
     appWindow?.isMaximized().then(setMaximized).catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
     // v0.7.2 需求 1 / M3.1：自动更新检查延后到启动高峰之后（配合后端 M3.2 的 24h
     // 冷却），避免启动瞬间 spawn 多个 PowerShell（google 探测 + gitee/github release
@@ -377,6 +382,17 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
         </button>
       </div>
       <div className="min-w-8 flex-1 self-stretch" onDoubleClick={toggleMaximizeWindow} />
+      {/* 需求2（v0.9.4）：dev 窗口显著标识——开发实例与安装版同图标同标题，
+          易误操作；dev 下右上角常驻徽标 + 窗口标题后缀，生产构建零变化。 */}
+      {import.meta.env.DEV && (
+        <span
+          className="mr-2 flex h-5 shrink-0 items-center self-center rounded bg-amber-500 px-1.5 text-[10px] font-bold tracking-widest text-black shadow-sm"
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          title="DEV 开发模式窗口"
+        >
+          DEV
+        </span>
+      )}
       <div className="ml-2 flex h-full items-stretch" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
         <button
           type="button"

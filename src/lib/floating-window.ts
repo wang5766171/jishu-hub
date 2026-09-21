@@ -59,7 +59,8 @@ export async function openFloatingSession(
 
   const win = new WebviewWindow(label, {
     url,
-    title: sessionName,
+    // 需求2（v0.9.4）：dev 下悬浮窗标题同样加后缀，任务栏/Alt-Tab 可辨。
+    title: import.meta.env.DEV ? `${sessionName} · DEV` : sessionName,
     width: FLOAT_WIDTH,
     height: FLOAT_HEIGHT,
     minWidth: 240,
