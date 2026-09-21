@@ -296,12 +296,51 @@ pub(crate) fn plugin_get(
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
     // agent 与 tool 两类 manifest 插件都在 ~/.jishu-hub/agents/ 下——直接按
-    // 文件名读（<id>.toml），与装载同源。
-    let path = agent::manifest::manifest_dir().join(format!("{plugin_id}.toml"));
+    // 文件名读（<id>.toml），与装载同源。v0.9.4 需求3：目录形式插件
+    //（plugins/<id>/plugin.toml，文件夹式 skill 等）回退读该处，并把
+    // skills/<name>/SKILL.md 注入为 [[skill]] 条目——表单可编辑（保存时
+    // plugin_update 目录形式路径写回，见下）。
+    let single = agent::manifest::manifest_dir().join(format!("{plugin_id}.toml"));
+    let dir_form = agent::manifest::hub_home()
+        .join("plugins")
+        .join(&plugin_id)
+        .join("plugin.toml");
+    let (path, is_dir_form) = if single.is_file() {
+        (single, false)
+    } else if dir_form.is_file() {
+        (dir_form, true)
+    } else {
+        return Err(format!("cannot read {}: file not found", single.display()));
+    };
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    let file: agent::manifest::schema::AgentManifestFile =
+    let mut file: agent::manifest::schema::AgentManifestFile =
         toml::from_str(&content).map_err(|e| format!("stored manifest is invalid: {e}"))?;
+    if is_dir_form && file.skill.is_none() {
+        let root = path.parent().expect("plugin.toml has parent");
+        let entries: Vec<agent::manifest::schema::SkillEntry> =
+            agent::skill_deploy::dir_source_skills(root, &plugin_id)
+                .into_iter()
+                .map(|e| {
+                    // dir_name = <pid>__<name> → 还原 skill 名；content 重析
+                    // frontmatter（name/description/body 三字段回填表单）。
+                    let name = e
+                        .dir_name
+                        .strip_prefix(&format!("{plugin_id}__"))
+                        .unwrap_or(&e.dir_name)
+                        .to_string();
+                    let parsed = crate::commands::skill_import::parse_skill_md(&e.content, &name);
+                    agent::manifest::schema::SkillEntry {
+                        name,
+                        description: parsed.description,
+                        body: parsed.body,
+                    }
+                })
+                .collect();
+        if !entries.is_empty() {
+            file.skill = Some(agent::manifest::schema::SkillDecl::Many(entries));
+        }
+    }
     serde_json::to_value(&file).map_err(|e| e.to_string())
 }
 
@@ -381,7 +420,7 @@ pub(crate) fn plugin_update(
     plugin_id: String,
     manifest: serde_json::Value,
 ) -> Result<PluginCreated, String> {
-    let file: agent::manifest::schema::AgentManifestFile =
+    let mut file: agent::manifest::schema::AgentManifestFile =
         serde_json::from_value(manifest).map_err(|e| format!("invalid manifest payload: {e}"))?;
     if file.info.id != plugin_id {
         return Err(format!(
@@ -391,18 +430,87 @@ pub(crate) fn plugin_update(
         ));
     }
     file.validate()?;
-    let path = agent::manifest::manifest_dir().join(format!("{plugin_id}.toml"));
-    if !path.exists() {
-        return Err(format!("plugin file not found: {}", path.display()));
-    }
+    // v0.9.4 需求3：目录形式插件（agents/ 无、plugins/<id>/plugin.toml 有）
+    // → 写回该处并剥离 [skill] 段（目录源文件即权威）；表单 skill 条目
+    // 逐个渲染覆写 skills/<name>/SKILL.md（附件不动）。
+    let single = agent::manifest::manifest_dir().join(format!("{plugin_id}.toml"));
+    let dir_toml = agent::manifest::hub_home()
+        .join("plugins")
+        .join(&plugin_id)
+        .join("plugin.toml");
+    let (path, dir_form) = if single.exists() {
+        (single, false)
+    } else if dir_toml.exists() {
+        (dir_toml, true)
+    } else {
+        return Err(format!("plugin file not found: {}", single.display()));
+    };
+    let skill_entries = if dir_form { file.skill.take() } else { None };
     let content_toml =
         toml::to_string_pretty(&file).map_err(|e| format!("cannot serialize manifest: {e}"))?;
     crate::util::atomic_write(&path, content_toml.as_bytes())
         .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    if let Some(decl) = skill_entries {
+        let root = path.parent().expect("plugin.toml has parent").join("skills");
+        for (name, description, body) in decl.entries() {
+            let dir_name = name.unwrap_or(&plugin_id);
+            let target = root.join(dir_name).join("SKILL.md");
+            if !target.exists() {
+                continue; // 表单条目对应目录不存在（新建 skill 走创建流程）
+            }
+            let md = agent::skill_deploy::render_skill_md(dir_name, description, body);
+            crate::util::atomic_write(&target, md.as_bytes()).map_err(|e| {
+                format!("cannot write {}: {e}", target.display())
+            })?;
+        }
+    }
     rebuild_registry(&app, &state);
     log::info!("[plugin] updated {} ({})", plugin_id, path.display());
     Ok(PluginCreated {
         id: plugin_id,
+        path: path.to_string_lossy().to_string(),
+    })
+}
+
+/// v0.9.4 需求3：文件夹形式创建 skill 插件——manifest（含表单 skill 条目，
+/// 校验后剥离 [skill] 段）落 `plugins/<id>/plugin.toml`；skill_dir 整目录
+/// 复制到 `plugins/<id>/skills/<skill_name>/`，SKILL.md 以首条 skill 条目
+/// 渲染覆写（表单可编辑语义）。分发走目录形式源镜像同步（含附属文件）。
+#[tauri::command]
+pub(crate) fn plugin_create_skill_folder(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<AppState>>,
+    manifest: serde_json::Value,
+    skill_dir: String,
+    skill_name: String,
+) -> Result<PluginCreated, String> {
+    let mut file: agent::manifest::schema::AgentManifestFile =
+        serde_json::from_value(manifest).map_err(|e| format!("invalid manifest payload: {e}"))?;
+    file.validate()?;
+    // 首条 skill 条目 → SKILL.md 渲染（name 空则用插件 id，对齐单数形态
+    // 部署目录名语义）；随后剥离 [skill] 段（目录源文件即权威，避免双源）。
+    let skill_md = file.skill.as_ref().and_then(|decl| {
+        decl.entries().into_iter().next().map(|(name, desc, body)| {
+            agent::skill_deploy::render_skill_md(name.unwrap_or(&file.info.id), desc, body)
+        })
+    });
+    file.skill = None;
+    let content_toml =
+        toml::to_string_pretty(&file).map_err(|e| format!("cannot serialize manifest: {e}"))?;
+    let skill_src = std::path::PathBuf::from(&skill_dir);
+    if !skill_src.is_dir() {
+        return Err(format!("skill folder not found: {skill_dir}"));
+    }
+    let (id, path) = agent::plugin::install_skill_folder_plugin(
+        &file,
+        &content_toml,
+        &skill_src,
+        &skill_name,
+        &skill_md.ok_or("folder skill manifest must declare the [skill] entry")?,
+    )?;
+    rebuild_registry(&app, &state);
+    Ok(PluginCreated {
+        id,
         path: path.to_string_lossy().to_string(),
     })
 }

@@ -711,6 +711,102 @@ pub fn set_plugin_enabled(id: &str, enabled: bool) -> Result<PluginConfig, Strin
     Ok(config)
 }
 
+/// id 冲突检查（内置 + agents/ + plugins/ 全量已装）。GUI/CLI 各安装通道
+/// 共用（v0.9.4 需求3 从 install_manifest_file 提出）。
+pub fn ensure_plugin_id_free(id: &str) -> Result<(), String> {
+    let builtin_ids: Vec<String> = builtin_plugin_specs()
+        .iter()
+        .map(|(factory, _)| factory().info().id)
+        .collect();
+    let (installed_agents, installed_tools, _errors) =
+        super::manifest::load_manifests(&builtin_ids);
+    if builtin_ids.iter().any(|b| b == id)
+        || installed_agents
+            .iter()
+            .chain(installed_tools.iter())
+            .any(|(f, _)| f.info.id == id)
+    {
+        return Err(format!(
+            "agent id {:?} conflicts with a builtin or already-installed plugin",
+            id
+        ));
+    }
+    Ok(())
+}
+
+/// v0.9.4 需求3：以「文件夹形式」安装 skill 插件——目录形式插件
+/// `plugins/<id>/plugin.toml` + `skills/<skill_name>/`（整目录复制自
+/// skill_src，SKILL.md 以表单渲染内容覆写）。skill 发现与分发走既有
+/// 目录形式源链路（文件即权威，附属文件镜像同步到各 agent）。
+/// 校验由调用方先行完成；skill_name 必须是纯目录名（防路径逃逸）。
+pub fn install_skill_folder_plugin(
+    file: &super::manifest::schema::AgentManifestFile,
+    content_toml: &str,
+    skill_src: &std::path::Path,
+    skill_name: &str,
+    skill_md_content: &str,
+) -> Result<(String, PathBuf), String> {
+    if skill_name.is_empty()
+        || skill_name.contains('/')
+        || skill_name.contains('\\')
+        || skill_name.contains("..")
+    {
+        return Err("skill name must be a plain directory name".to_string());
+    }
+    if !skill_src.join("SKILL.md").is_file() {
+        return Err(format!(
+            "source skill folder has no SKILL.md: {}",
+            skill_src.display()
+        ));
+    }
+    ensure_plugin_id_free(&file.info.id)?;
+    let plugin_root = super::manifest::hub_home()
+        .join("plugins")
+        .join(&file.info.id);
+    std::fs::create_dir_all(&plugin_root).map_err(|e| e.to_string())?;
+    let toml_path = plugin_root.join("plugin.toml");
+    if toml_path.exists() {
+        return Err(format!(
+            "target file already exists: {} (remove it first)",
+            toml_path.display()
+        ));
+    }
+    crate::util::atomic_write(&toml_path, content_toml.as_bytes()).map_err(|e| e.to_string())?;
+
+    // skills/<name>/ 整目录复制（跳过根 SKILL.md，随后以表单渲染覆写）。
+    let skill_dst = plugin_root.join("skills").join(skill_name);
+    copy_skill_tree(skill_src, &skill_dst)?;
+    crate::util::atomic_write(
+        &skill_dst.join("SKILL.md"),
+        skill_md_content.as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
+    log::info!(
+        "[plugin] installed skill folder plugin {} -> {} (skill: {})",
+        file.info.id,
+        plugin_root.display(),
+        skill_name
+    );
+    Ok((file.info.id.clone(), toml_path))
+}
+
+/// 递归复制目录（覆盖式；v0.9.4 需求3，junction 处理对齐
+/// agent_install::copy_dir_recursive）。
+fn copy_skill_tree(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())?.flatten() {
+        let s = entry.path();
+        let d = dst.join(entry.file_name());
+        if std::fs::metadata(&s).map(|m| m.is_dir()).unwrap_or(false) {
+            copy_skill_tree(&s, &d)?;
+        } else {
+            std::fs::copy(&s, &d)
+                .map_err(|e| format!("copy {} -> {}: {e}", s.display(), d.display()))?;
+        }
+    }
+    Ok(())
+}
+
 /// 安装一个 manifest 插件：id 冲突检查（内置 + 已安装）→ 写入 agents 目录。
 /// 校验（schema/validate）由调用方先行完成——CLI `plugins add`（原始 TOML
 /// 内容）与 GUI `plugin_create`（表单 JSON → 后端生成 TOML）共用此落盘通道。
@@ -719,23 +815,7 @@ pub fn install_manifest_file(
     file: &super::manifest::schema::AgentManifestFile,
     content_toml: &str,
 ) -> Result<(String, PathBuf), String> {
-    let builtin_ids: Vec<String> = builtin_plugin_specs()
-        .iter()
-        .map(|(factory, _)| factory().info().id)
-        .collect();
-    let (installed_agents, installed_tools, _errors) =
-        super::manifest::load_manifests(&builtin_ids);
-    if builtin_ids.contains(&file.info.id)
-        || installed_agents
-            .iter()
-            .chain(installed_tools.iter())
-            .any(|(f, _)| f.info.id == file.info.id)
-    {
-        return Err(format!(
-            "agent id {:?} conflicts with a builtin or already-installed plugin",
-            file.info.id
-        ));
-    }
+    ensure_plugin_id_free(&file.info.id)?;
     let target = super::manifest::manifest_dir().join(format!("{}.toml", file.info.id));
     if target.exists() {
         return Err(format!(
@@ -1032,10 +1112,25 @@ fn manifest_plugin_description(file: &super::manifest::schema::AgentManifestFile
 
 /// 工具插件 → 描述符（plugin_list 合并渲染用）。
 pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescriptor {
+    // v0.9.4 需求3：目录形式 skill 插件（plugins/<id>/skills/<name>/）无
+    // [skill] 段——描述回退取首个 SKILL.md frontmatter，has_skill 以目录
+    // 源存在为准（插件中心 skill 分类与状态展示不受影响）。
+    let dir_root = plugin
+        .source_path
+        .parent()
+        .filter(|p| p.file_name().is_some_and(|n| n == plugin.file.info.id.as_str()));
+    let dir_skills = dir_root
+        .map(|r| crate::agent::skill_deploy::dir_source_skills(r, &plugin.file.info.id));
+    let mut description = manifest_plugin_description(&plugin.file);
+    if description.is_empty() {
+        if let Some(first) = dir_skills.as_ref().and_then(|v| v.first()) {
+            description = first.description.clone();
+        }
+    }
     PluginDescriptor {
         id: plugin.file.info.id.clone(),
         display_name: plugin.file.info.display_name.clone(),
-        description: Some(manifest_plugin_description(&plugin.file)),
+        description: Some(description),
         kind: PluginKind::Tool,
         version: None,
         source_path: Some(plugin.source_path.to_string_lossy().to_string()),
@@ -1043,7 +1138,11 @@ pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescrip
         enabled: plugin.enabled,
         has_mcp: plugin.file.mcp.is_some(),
         has_panel: plugin.file.panel.is_some(),
-        has_skill: plugin.file.skill.is_some(),
+        has_skill: plugin
+            .file
+            .skill
+            .is_some()
+            || dir_skills.as_ref().is_some_and(|v| !v.is_empty()),
         has_pi_extension: plugin.file.pi_extension.is_some(),
         panel: plugin.file.panel.as_ref().map(|p| PanelDecl {
             title: p.title.clone(),

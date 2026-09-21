@@ -115,17 +115,21 @@ fn save_deploy_registry(set: &HashSet<String>) {
 /// 目录名（单数 [skill] = 插件 id；[[skill]] 数组与目录源 =
 /// `<plugin_id>__<name>`，对标 MCP 工具命名）；`content` = 完整 SKILL.md
 /// 内容（toml 源经 render_skill_md 渲染，目录源文件即权威原文）。
+/// v0.9.4 需求3：目录源附带 `source_dir`——分发侧镜像同步整个 skill 目录
+///（references/scripts 等附属文件一并落地），不再只写 SKILL.md 单文件。
 #[derive(Debug, Clone)]
 pub struct SkillDeclEntry {
     pub dir_name: String,
     pub description: String,
     pub content: String,
+    /// 目录形式源的 skill 目录（None = toml 内联/内置源，单文件分发）。
+    pub source_dir: Option<PathBuf>,
 }
 
 /// 目录形式源：`plugins/<id>/skills/<name>/SKILL.md`——文件即权威（自带
 /// frontmatter，部署原文照抄）。新增 skill = 加子目录，更新 skill = 改文件，
 /// rebuild（启动/启停/编辑保存）时自动同步——对标 MCP 的动态发现语义。
-fn dir_source_skills(plugin_root: &Path, plugin_id: &str) -> Vec<SkillDeclEntry> {
+pub(crate) fn dir_source_skills(plugin_root: &Path, plugin_id: &str) -> Vec<SkillDeclEntry> {
     let skills_dir = plugin_root.join("skills");
     let Ok(entries) = std::fs::read_dir(&skills_dir) else {
         return Vec::new();
@@ -155,6 +159,7 @@ fn dir_source_skills(plugin_root: &Path, plugin_id: &str) -> Vec<SkillDeclEntry>
             dir_name: format!("{plugin_id}__{name}"),
             description,
             content,
+            source_dir: Some(entry.path()),
         });
     }
     out.sort_by(|a, b| a.dir_name.cmp(&b.dir_name));
@@ -184,6 +189,7 @@ pub fn load_skill_decls() -> Vec<SkillDeclEntry> {
                         description,
                         body,
                     ),
+                    source_dir: None,
                 });
             }
         }
@@ -215,6 +221,7 @@ pub fn builtin_skill_decls() -> Vec<SkillDeclEntry> {
         dir_name: BUILTIN_CAPABILITY_SKILL_DIR.to_string(),
         description: BUILTIN_CAPABILITY_SKILL_DESC.to_string(),
         content: content.to_string(),
+        source_dir: None,
     }]
 }
 
@@ -235,6 +242,62 @@ impl SkillSyncReport {
     fn push(&mut self, agent_id: &str, skill_dir: &str, action: &str) {
         self.actions.push(format!("{agent_id}/{skill_dir}: {action}"));
     }
+}
+
+/// 整目录镜像同步（v0.9.4 需求3）：src → dst 逐文件比对（缺失/变更 →
+/// 复制），dst 中 src 没有的文件删除（文件即权威，插件禁用前的手工改动
+/// 会被镜像纠正）。全量一致返回 "Skipped"，有动作返回 "Deployed"。
+/// 复制用 fs::copy（skill 附件均为小文本/脚本，无需断点；目录先建后拷）。
+fn sync_skill_folder(src: &Path, dst: &Path) -> Result<&'static str, String> {
+    let mut changed = false;
+    // 收集源侧相对路径 → 内容比对/复制。
+    fn walk_src(src: &Path, dst: &Path, prefix: &str, changed: &mut bool) -> Result<(), String> {
+        for entry in std::fs::read_dir(src).map_err(|e| e.to_string())?.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+            let s = entry.path();
+            let d = dst.join(&name);
+            if std::fs::metadata(&s).map(|m| m.is_dir()).unwrap_or(false) {
+                std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+                walk_src(&s, &d, &rel, changed)?;
+            } else {
+                let need = match std::fs::read(&d) {
+                    Ok(existing) => existing != std::fs::read(&s).map_err(|e| e.to_string())?,
+                    Err(_) => true,
+                };
+                if need {
+                    if let Some(parent) = d.parent() {
+                        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                    }
+                    std::fs::copy(&s, &d).map_err(|e| format!("copy {rel}: {e}"))?;
+                    *changed = true;
+                }
+            }
+        }
+        Ok(())
+    }
+    // 目标侧多余文件/空目录清理。
+    fn walk_dst(src: &Path, dst: &Path, changed: &mut bool) -> Result<(), String> {
+        for entry in std::fs::read_dir(dst).map_err(|e| e.to_string())?.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let s = entry.path();
+            let d = src.join(&name);
+            if std::fs::metadata(&s).map(|m| m.is_dir()).unwrap_or(false) {
+                walk_dst(&d, &s, changed)?;
+                if std::fs::read_dir(&s).map_err(|e| e.to_string())?.next().is_none() {
+                    let _ = std::fs::remove_dir(&s);
+                }
+            } else if !d.exists() {
+                std::fs::remove_file(&s).map_err(|e| e.to_string())?;
+                *changed = true;
+            }
+        }
+        Ok(())
+    }
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    walk_src(src, dst, "", &mut changed)?;
+    walk_dst(src, dst, &mut changed)?;
+    Ok(if changed { "Deployed" } else { "Skipped" })
 }
 
 /// 同步入口（条件语义）：skill-resolver（系统插件，默认启用）开 → 分发启用
@@ -269,16 +332,29 @@ fn sync_with(
     for (agent_id, root) in targets {
         for decl in &decls {
             let dir = root.join(&decl.dir_name);
-            let target = dir.join("SKILL.md");
-            let action = match std::fs::read_to_string(&target) {
-                Ok(existing) if existing == decl.content => "Skipped",
-                _ => {
-                    let _ = std::fs::create_dir_all(&dir);
-                    match crate::util::atomic_write(&target, decl.content.as_bytes()) {
-                        Ok(()) => "Deployed",
-                        Err(e) => {
-                            report.push(agent_id, &decl.dir_name, &format!("Error: {e}"));
-                            continue;
+            // v0.9.4 需求3：目录形式源 → 整目录镜像同步（SKILL.md 一致且
+            // 附属文件一致才 Skipped；目标多余文件删除——文件即权威语义）。
+            let action = match &decl.source_dir {
+                Some(src) => match sync_skill_folder(src, &dir) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        report.push(agent_id, &decl.dir_name, &format!("Error: {e}"));
+                        continue;
+                    }
+                },
+                None => {
+                    let target = dir.join("SKILL.md");
+                    match std::fs::read_to_string(&target) {
+                        Ok(existing) if existing == decl.content => "Skipped",
+                        _ => {
+                            let _ = std::fs::create_dir_all(&dir);
+                            match crate::util::atomic_write(&target, decl.content.as_bytes()) {
+                                Ok(()) => "Deployed",
+                                Err(e) => {
+                                    report.push(agent_id, &decl.dir_name, &format!("Error: {e}"));
+                                    continue;
+                                }
+                            }
                         }
                     }
                 }
@@ -345,6 +421,104 @@ pub fn remove_all_deployed() -> SkillSyncReport {
 mod tests {
     use super::*;
     use crate::agent::manifest::env_test_lock;
+
+    /// v0.9.4 需求3：目录形式源整目录镜像同步——首部署/增量跳过/更新传播/
+    /// 删多余四态。附属文件（references/scripts）与 SKILL.md 一并落地。
+    #[test]
+    fn dir_source_folder_sync_full_lifecycle() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let src = tempfile::tempdir().unwrap();
+        let skill = src.path().join("my-skill");
+        std::fs::create_dir_all(skill.join("references")).unwrap();
+        std::fs::create_dir_all(skill.join("scripts")).unwrap();
+        std::fs::write(skill.join("SKILL.md"), "---
+name: my-skill
+description: d
+---
+body").unwrap();
+        std::fs::write(skill.join("references/guide.md"), "guide-v1").unwrap();
+        std::fs::write(skill.join("scripts/tool.mjs"), "tool-v1").unwrap();
+
+        let dst_root = tempfile::tempdir().unwrap();
+        let targets = vec![("test-agent".to_string(), dst_root.path().join("skills"))];
+        let dst = dst_root.path().join("skills/p1__my-skill");
+
+        let decl = SkillDeclEntry {
+            dir_name: "p1__my-skill".to_string(),
+            description: "d".to_string(),
+            content: std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+            source_dir: Some(skill.clone()),
+        };
+
+        // 1. 首部署：SKILL.md + 附属文件全落地。
+        let report = sync_with(vec![decl.clone()], &targets, true);
+        assert!(report.actions.iter().any(|a| a.contains("Deployed")));
+        assert_eq!(
+            std::fs::read_to_string(dst.join("references/guide.md")).unwrap(),
+            "guide-v1"
+        );
+        assert_eq!(std::fs::read_to_string(dst.join("scripts/tool.mjs")).unwrap(), "tool-v1");
+        assert!(dst.join("SKILL.md").is_file());
+
+        // 2. 增量：无变化 → Skipped。
+        let report = sync_with(vec![decl.clone()], &targets, true);
+        assert!(report.actions.iter().any(|a| a.contains("Skipped")));
+        assert!(!report.actions.iter().any(|a| a.contains("Deployed")));
+
+        // 3. 更新传播：源侧改 references/guide.md + 新增 scripts/sub/deep.txt。
+        std::fs::write(skill.join("references/guide.md"), "guide-v2").unwrap();
+        std::fs::create_dir_all(skill.join("scripts/sub")).unwrap();
+        std::fs::write(skill.join("scripts/sub/deep.txt"), "deep").unwrap();
+        let report = sync_with(vec![decl.clone()], &targets, true);
+        assert!(report.actions.iter().any(|a| a.contains("Deployed")));
+        assert_eq!(
+            std::fs::read_to_string(dst.join("references/guide.md")).unwrap(),
+            "guide-v2"
+        );
+        assert_eq!(std::fs::read_to_string(dst.join("scripts/sub/deep.txt")).unwrap(), "deep");
+
+        // 4. 镜像删除：源侧删 scripts/tool.mjs → 目标侧同步消失。
+        std::fs::remove_file(skill.join("scripts/tool.mjs")).unwrap();
+        let report = sync_with(vec![decl], &targets, true);
+        assert!(report.actions.iter().any(|a| a.contains("Deployed")));
+        assert!(!dst.join("scripts/tool.mjs").exists());
+        assert!(dst.join("SKILL.md").is_file());
+
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// v0.9.4 需求3：回收粒度 = 整 skill 目录（含附属文件）——decl 失联后
+    /// 目录级删除（既有行为回归确认，附件场景）。
+    #[test]
+    fn recycle_removes_folder_with_assets() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let src = tempfile::tempdir().unwrap();
+        let skill = src.path().join("gone-skill");
+        std::fs::create_dir_all(skill.join("references")).unwrap();
+        std::fs::write(skill.join("SKILL.md"), "x").unwrap();
+        std::fs::write(skill.join("references/a.md"), "a").unwrap();
+
+        let dst_root = tempfile::tempdir().unwrap();
+        let decl = SkillDeclEntry {
+            dir_name: "p2__gone-skill".to_string(),
+            description: String::new(),
+            content: "x".to_string(),
+            source_dir: Some(skill),
+        };
+        let targets = vec![("test-agent".to_string(), dst_root.path().join("skills"))];
+        sync_with(vec![decl], &targets, true);
+        assert!(dst_root.path().join("skills/p2__gone-skill/references/a.md").is_file());
+
+        // 空清单 → 回收整个目录。
+        sync_with(Vec::new(), &targets, true);
+        assert!(!dst_root.path().join("skills/p2__gone-skill").exists());
+
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
 
     #[test]
     fn render_skill_md_matches_spec() {
@@ -416,6 +590,7 @@ mod tests {
             dir_name: dir.to_string(),
             description: String::new(),
             content: content.to_string(),
+            source_dir: None,
         };
 
         // 1) 首次分发 → Deployed + 归属记录。
@@ -462,6 +637,7 @@ mod tests {
             dir_name: dir.to_string(),
             description: String::new(),
             content: content.to_string(),
+            source_dir: None,
         };
 
         let report = sync_with(
