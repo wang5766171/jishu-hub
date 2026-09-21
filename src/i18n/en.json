@@ -284,6 +284,7 @@
     "refreshBlockedTitle": "Refresh unavailable",
     "refreshFailedTitle": "Failed to refresh session",
     "usageCompactionBudget": "Compacts at {{tokens}} tokens ({{percent}}%)",
+    "usageThresholdDefault": " (default)",
     "usageEstGroup": "Output composition",
     "usageEstThinking": "Thinking",
     "usageEstTool": "Tools",

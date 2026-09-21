@@ -284,6 +284,7 @@
     "refreshBlockedTitle": "暂时无法刷新",
     "refreshFailedTitle": "刷新会话失败",
     "usageCompactionBudget": "达到 {{tokens}} tokens 时压缩（阈值 {{percent}}%）",
+    "usageThresholdDefault": "（默认）",
     "usageEstGroup": "输出构成",
     "usageEstThinking": "思考",
     "usageEstTool": "工具",

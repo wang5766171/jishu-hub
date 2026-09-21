@@ -29,6 +29,7 @@ export const contextRingPlugin: SessionPluginDescriptor = {
           <ContextRing
             agentId={ctx.sessionMeta.agentId}
             sessionId={ctx.sessionId}
+            projectPath={ctx.sessionMeta.projectPath}
             compact={
               ctx.capabilities.compact
                 ? {

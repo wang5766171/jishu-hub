@@ -269,7 +269,7 @@ export function JishuAgentSettingsBlock({
                 type="number"
                 min={1}
                 max={99}
-                placeholder="95"
+                placeholder="90"
                 value={compaction?.thresholdPercent ?? ""}
                 onChange={(e) =>
                   setCompaction({
