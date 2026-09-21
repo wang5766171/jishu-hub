@@ -4,6 +4,10 @@
 import { invokeCommand } from "@/hooks/use-invoke";
 import { buildComposedDescriptor } from "./engine";
 import { loadHybridComponent, setHybridErrorHandler } from "./hybrid-runtime";
+import {
+  clearHybridLoadErrorOnSuccess,
+  reportHybridLoadError,
+} from "./hybrid-errors";
 import type { SessionComposedManifest } from "../types";
 import type { SessionPluginDescriptor } from "../../plugins/types";
 import type { ComponentType } from "react";
@@ -43,27 +47,58 @@ function bump(): void {
   for (const fn of listeners) fn();
 }
 
-/** 混合组件装载：@file: 引用 → 组件（失败返回 null 并告警跳过）。 */
+/** 已自动回滚（disable）的混合插件 id——防止 plugins-changed 广播循环
+ *  （失败 → disable → 广播 → 重载 → 再失败 → 再 disable → …）。 */
+const autoDisabled = new Set<string>();
+
+/** 混合插件装载失败统一处理：弹错误通知 + 回滚开关（首次失败时）。
+ *  用户裁决：加载失败不能静默——要在启用时实时弹出错误，且因为失败
+ *  使插件无法打开（开关自动弹回关闭态）。 */
+async function onHybridLoadFailed(
+  id: string,
+  name: string,
+  message: string,
+): Promise<void> {
+  console.warn(`[composition] 混合插件 ${id} 装载失败:`, message);
+  reportHybridLoadError(id, name, message);
+  // 首次失败 → 自动回滚开关（后续 reload 因已 disable 不再重复触发）。
+  if (!autoDisabled.has(id)) {
+    autoDisabled.add(id);
+    try {
+      await invokeCommand("plugin_set_enabled", { pluginId: id, enabled: false });
+      console.info(`[composition] 混合插件 ${id} 装载失败，已自动回滚为停用`);
+    } catch {
+      // 回滚失败不阻塞（下次 reload 还会重试）
+    }
+  }
+}
+
+/** 混合组件装载：@file: 引用 → 组件。失败时写入 hybrid-errors 错误通知
+ *  + 自动回滚开关（用户裁决），并返回 null 跳过该插件。 */
 async function resolveFileComponent(
   id: string,
   manifest: SessionComposedManifest & ManifestDirMeta,
 ): Promise<ComponentType<Record<string, unknown>> | null> {
+  const name = manifest.plugin?.name ?? id;
   const rel = (manifest.render?.component ?? "").slice("@file:".length);
   if (manifest._file_error) {
-    console.warn(`[composition] 跳过混合插件 ${id}: ${manifest._file_error}`);
+    await onHybridLoadFailed(id, name, manifest._file_error);
     return null;
   }
   const dir = manifest._dir;
   const fingerprint = manifest._files?.[rel];
   if (!dir || !fingerprint) {
-    console.warn(`[composition] 跳过混合插件 ${id}: 目录元信息缺失（_dir/_files）`);
+    await onHybridLoadFailed(id, name, "插件目录元信息缺失（_dir/_files）——请检查目录结构");
     return null;
   }
   const component = await loadHybridComponent(id, dir, rel, fingerprint);
   if (component instanceof Error) {
-    console.warn(`[composition] 混合插件 ${id} 代码装载失败:`, component.message);
+    await onHybridLoadFailed(id, name, component.message);
     return null;
   }
+  // 装载成功：清除旧错误通知 + 清除自动回滚标记（下次失败可再触发）。
+  clearHybridLoadErrorOnSuccess(id);
+  autoDisabled.delete(id);
   return component;
 }
 
@@ -77,21 +112,35 @@ export async function reloadComposed(): Promise<void> {
       }
       return item as { id: string; manifest: SessionComposedManifest };
     });
+
+    // 混合插件启用集（用户实测修复：禁用态的混合插件启动时也弹错误卡——
+    // 禁用的不加载代码，只有启用态才尝试，失败时才弹卡+回滚）。
+    let enabledIds: Set<string> | null = null;
+    const hasHybrid = items.some(
+      (item) => (item.manifest.render?.component ?? "").startsWith("@file:"),
+    );
+    if (hasHybrid) {
+      try {
+        const list = await invokeCommand<{ plugins: Array<{ id: string; kind: string; enabled: boolean }> }>("plugin_list");
+        enabledIds = new Set(
+          (list.plugins ?? []).filter((p) => p.kind === "session" && p.enabled).map((p) => p.id),
+        );
+      } catch {
+        enabledIds = null; // 查不到就不做门控（宁可多试也不漏装）
+      }
+    }
+
     const descriptors: SessionPluginDescriptor[] = [];
     for (const item of items ?? []) {
       try {
         const manifest = item.manifest as SessionComposedManifest & ManifestDirMeta;
         const isFileComponent = (manifest.render?.component ?? "").startsWith("@file:");
-        // 临时诊断（需求25 P1 用户实测：插件中心可见但能力中心无面板）
         if (isFileComponent) {
-          console.log("[hybrid-diag]", item.id, {
-            component: manifest.render?.component,
-            _dir: manifest._dir,
-            _files: manifest._files,
-            _file_error: manifest._file_error,
-          });
-        }
-        if (isFileComponent) {
+          // 禁用态的混合插件跳过代码装载（不弹错误卡——用户没启用就不该被
+          // 打扰；启用态才尝试加载，失败时弹卡+自动回滚开关）。
+          if (enabledIds && !enabledIds.has(item.id)) {
+            continue;
+          }
           const component = await resolveFileComponent(item.id, manifest);
           if (!component) continue;
           descriptors.push(buildComposedDescriptor(manifest, {
@@ -107,8 +156,6 @@ export async function reloadComposed(): Promise<void> {
     cache = descriptors;
     loaded = true;
     version += 1;
-    // 临时诊断：装载完成后的缓存内容
-    console.log("[composition-diag] cache:", descriptors.map(d => `${d.id}(${d.mounts.map(m => m.kind).join(",")})`));
     bump();
   } catch (err) {
     console.warn("[composition] composed_plugin_manifests failed:", err);

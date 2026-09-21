@@ -13,8 +13,19 @@ const isFloating = params.has("floating");
 const isBenignResizeObserverLoop = (msg: unknown): boolean =>
   typeof msg === "string" && msg.includes("ResizeObserver loop");
 
+// ── 全局错误处理器的层级设计（用户裁决：全局处理器是兜底，优先级低于
+//    具体子系统处理器）──
+//
+// 具体子系统（混合插件运行时等）在注入外部脚本期间"认领"错误——打开抑制
+// 窗口 → 全局处理器看到窗口开着就跳过（具体处理器已优雅处理：插件跳过/
+// 控制台 warn/ErrorBoundary 拦截）→ 窗口关闭后全局处理器恢复兜底。
+// 这不是过滤特定模式（脆弱），而是尊重具体处理器的优先权。
+
+import { isSuppressed } from "@/lib/error-suppression";
+
 window.onerror = function(msg, url, line, col, error) {
   if (isBenignResizeObserverLoop(msg)) return;
+  if (isSuppressed()) return; // 具体子系统已认领，全局处理器让路（兜底不越权）
   document.body.innerHTML = `
     <div style="color: red; padding: 20px; font-family: monospace;">
       <h3>Frontend Error</h3>

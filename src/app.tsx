@@ -25,6 +25,7 @@ import {
 } from "@/features/session-kernel/shell/session-sidebar";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { HybridInstallConfirmation } from "@/components/hybrid-install-confirmation";
+import { HybridErrorNotification } from "@/features/session-kernel/capabilities/composition/hybrid-errors";
 import type { Page, Project, ProjectMeta } from "@/types";
 
 const ChatPage = lazy(() => import("@/pages/chat-page").then(m => ({ default: m.ChatPage })));
@@ -620,6 +621,7 @@ function AppContent() {
             项目切换不卸载；组件内部 createPortal 到 body，轮询
             plugin_confirm_pending，无待确认项时渲染 null。 */}
         <HybridInstallConfirmation />
+        <HybridErrorNotification />
       </div>
     </FileViewerProvider>
   );

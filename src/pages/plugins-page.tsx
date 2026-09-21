@@ -166,6 +166,18 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
     void refresh();
   }, [refresh]);
 
+  // 需求25：混合插件加载失败自动回滚 → plugins-changed 广播 → 插件中心
+  // 需要刷新才能反映回滚后的开关状态（否则用户手动开启后 loader 延迟
+  // 回滚，但开关显示停在开——竞态：手动 refresh 在 auto-disable 之前）。
+  useEffect(() => {
+    const unlistenPromise = import("@tauri-apps/api/event").then(({ listen }) =>
+      listen("plugins-changed", () => void refresh()),
+    );
+    return () => {
+      void unlistenPromise.then((fn) => fn());
+    };
+  }, [refresh]);
+
   const withBusy = useCallback(
     async (id: string, action: () => Promise<void>) => {
       setBusyIds((prev) => new Set(prev).add(id));

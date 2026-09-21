@@ -24,6 +24,7 @@ import {
 import i18next from "i18next";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
+import { setErrorSuppression } from "@/lib/error-suppression";
 
 /** 资产 URL 构建（可注入——vitest 无 Tauri 内部注入时走测试替身）。
  *  路径归一：Rust _dir 在 Windows 是反斜杠（C:\Users\...），asset 协议
@@ -166,6 +167,11 @@ export function validateFactory(pluginId: string, factory: HybridPluginFactory):
 /**
  * 加载（或按指纹热更）插件的代码组件。
  * 失败形态返回 Error（调用方决定跳过/标记），不抛出。
+ *
+ * 全局错误抑制窗口：注入脚本期间打开（脚本语法/执行错误由本函数的
+ * 超时/onerror 机制优雅处理），全局 window.onerror 处理器看到窗口
+ * 开着就跳过——不会炸掉整页（用户实测 1.5 改坏代码后整页白屏的教训）。
+ * 窗口在脚本加载完成/失败/超时后关闭。
  */
 export async function loadHybridComponent(
   pluginId: string,
@@ -174,6 +180,8 @@ export async function loadHybridComponent(
   fingerprint: string,
 ): Promise<ComponentType<Record<string, unknown>> | Error> {
   ensureGlobal();
+  // 打开全局错误抑制窗口（具体处理器优先于兜底——用户架构裁决）。
+  setErrorSuppression(true);
   // 热更：指纹变化 → 移除旧脚本重新注入；未变化直接复用注册结果。
   if (loadedFingerprints.get(pluginId) === fingerprint) {
     const cached = registrations.get(pluginId);
@@ -211,13 +219,19 @@ export async function loadHybridComponent(
   });
 
   if (!factory) {
+    setErrorSuppression(false);
     return new Error(
       `${pluginId}: 代码文件加载失败（不存在/语法错误/2 秒内未注册）——检查 ${relFile} 是否以 JishuPlugin.register(...) 结尾`,
     );
   }
   const invalid = validateFactory(pluginId, factory);
-  if (invalid) return new Error(invalid);
-  return factory.component(buildApi());
+  if (invalid) {
+    setErrorSuppression(false);
+    return new Error(invalid);
+  }
+  const component = factory.component(buildApi());
+  setErrorSuppression(false);
+  return component;
 }
 
 // ── 崩溃隔离（P1）：混合组件渲染包裹 ErrorBoundary，异常回调宿主自动停用 ──
