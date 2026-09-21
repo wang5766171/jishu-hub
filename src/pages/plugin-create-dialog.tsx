@@ -15,7 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { useTranslation } from "react-i18next";
-import { Bot, Code2, FileJson, Loader2, Plus, Sparkles, Terminal, Trash2, X, Blocks } from "lucide-react";
+import { Bot, Code2, FileJson, FolderOpen, Loader2, Plus, Sparkles, Terminal, Trash2, X, Blocks } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { IconPicker } from "@/components/ui/icon-picker";
 
@@ -1224,17 +1224,40 @@ export function PluginCreateDialog({
   /** 需求20 第三轮：Skill 导入——其他智能体 skill 清单弹层 + 文件导入。 */
   const [skillSourcesOpen, setSkillSourcesOpen] = useState(false);
   const [skillSources, setSkillSources] = useState<
-    Array<{ agent: string; name: string; description: string; body: string; path: string }>
+    Array<{ agent: string; name: string; description: string; body: string; path: string; dir: string; asset_count: number }>
   >([]);
   const [skillSourcesLoading, setSkillSourcesLoading] = useState(false);
 
-  const applySkillImport = (imp: { name: string; description: string; body: string }) => {
+  /** 需求3（v0.9.4）：文件夹模式——导入含附属文件（references/scripts 等）
+   * 的 skill 目录时启用；创建走 plugin_create_skill_folder（目录形式插件
+   * plugins/<id>/skills/<name>/ 整目录复制，分发镜像同步含附件）。 */
+  const [skillFolder, setSkillFolder] = useState<{ dir: string; skillName: string; assets: number } | null>(null);
+
+  const applySkillImport = (imp: {
+    name: string;
+    description: string;
+    body: string;
+    dir?: string | null;
+    assets?: string[];
+  }) => {
     const slug =
       imp.name
         .toLowerCase()
         .trim()
         .replace(/[^a-z0-9_-]+/g, "-")
         .replace(/^-+|-+$/g, "") || "skill";
+    // 需求3：有附属文件 → 文件夹模式（单条替换语义：一个文件夹 = 一个
+    // skill 插件；[[skill]] 内联与目录源双轨同存会打架，不支持）。
+    if (imp.dir && (imp.assets?.length ?? 0) > 0) {
+      setSkillFolder({ dir: imp.dir, skillName: slug, assets: imp.assets!.length });
+      patch({
+        skillEntries: [{ name: slug, description: imp.description, body: imp.body }],
+        ...(isEdit || form.id.trim() ? {} : { id: slug }),
+        ...(form.displayName.trim() ? {} : { displayName: imp.name }),
+      });
+      return;
+    }
+    setSkillFolder(null);
     // 预填仅新建且为空时（编辑模式 id 锁定不可覆盖）；已有多条时追加为新条目。
     const entry = { name: form.skillEntries.length > 0 ? slug : "", description: imp.description, body: imp.body };
     patch({
@@ -1256,7 +1279,7 @@ export function PluginCreateDialog({
     try {
       setSkillSources(
         (await invokeCommand<
-          Array<{ agent: string; name: string; description: string; body: string; path: string }>
+          Array<{ agent: string; name: string; description: string; body: string; path: string; dir: string; asset_count: number }>
         >("skill_import_sources")) ?? [],
       );
     } catch (err) {
@@ -1269,9 +1292,22 @@ export function PluginCreateDialog({
 
   const importSkillFromFile = async () => {
     try {
-      const imp = await invokeCommand<{ name: string; description: string; body: string }>(
-        "skill_import_file",
-      );
+      const imp = await invokeCommand<
+        { name: string; description: string; body: string; dir?: string | null; assets?: string[] }
+      >("skill_import_file");
+      applySkillImport(imp);
+    } catch (err) {
+      if (!String(err).includes("USER_CANCELLED")) setError(String(err));
+    }
+  };
+
+  /** 需求3（v0.9.4）：从文件夹导入——目录对话框选 skill 目录（须含
+   * SKILL.md），附件目录（references/scripts 等）整体携带。 */
+  const importSkillFromFolder = async () => {
+    try {
+      const imp = await invokeCommand<
+        { name: string; description: string; body: string; dir?: string | null; assets?: string[] }
+      >("skill_import_folder");
       applySkillImport(imp);
     } catch (err) {
       if (!String(err).includes("USER_CANCELLED")) setError(String(err));
@@ -1378,6 +1414,27 @@ export function PluginCreateDialog({
       // M4：编辑时把表单不可表达的段（[pi_extension]）原样并回 manifest——
       // 编辑往返不再丢段。
       const manifest = { ...buildManifest(form), ...preservedSections };
+      // 需求3（v0.9.4）：文件夹模式 → 目录形式插件（plugin.toml + skills/
+      // 整目录复制；后端取首条 skill 条目渲染 SKILL.md 并剥离 [skill] 段）。
+      if (skillFolder && !isEdit) {
+        if (form.skillEntries.filter((e) => e.description.trim() && e.body.trim()).length !== 1) {
+          setError(tr("plugins.skillFolderSingleEntry", "文件夹模式仅支持一条完整 skill 声明"));
+          return;
+        }
+        const created = await invokeCommand<{ id: string; path: string }>(
+          "plugin_create_skill_folder",
+          { manifest, skillDir: skillFolder.dir, skillName: skillFolder.skillName },
+        );
+        onOpenChange(false);
+        onCreated();
+        void alertDialog({
+          title: tr("plugins.createdTitle", "插件已创建"),
+          description:
+            tr("plugins.createdDesc", "") + ` ${created.path}` +
+            tr("plugins.skillFolderCreatedSuffix", "（文件夹形式，附属文件已复制）"),
+        });
+        return;
+      }
       const created = isEdit
         ? await invokeCommand<{ id: string; path: string }>("plugin_update", {
             pluginId: editPluginId,
@@ -1538,6 +1595,15 @@ export function PluginCreateDialog({
                           <FileJson className="h-3 w-3" />
                           {tr("plugins.skillImportFile", "从文件导入")}
                         </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-[11px]"
+                          onClick={() => void importSkillFromFolder()}
+                        >
+                          <FolderOpen className="h-3 w-3" />
+                          {tr("plugins.skillImportFolder", "从文件夹导入")}
+                        </Button>
                         {skillSourcesOpen && (
                             <>
                               <div
@@ -1572,6 +1638,11 @@ export function PluginCreateDialog({
                                         <Badge variant="outline" className="px-1 text-[9px] text-muted-foreground">
                                           {src.agent}
                                         </Badge>
+                                        {src.asset_count > 0 && (
+                                          <Badge variant="outline" className="px-1 text-[9px] text-amber-600 border-amber-500/50">
+                                            {tr("plugins.skillAssetBadge", "含")} {src.asset_count} {tr("plugins.skillAssetUnit", "附件")}
+                                          </Badge>
+                                        )}
                                       </span>
                                       <span className="line-clamp-2 text-[10px] leading-snug text-muted-foreground">
                                         {src.description || src.path}
@@ -1900,6 +1971,26 @@ export function PluginCreateDialog({
                       {tr("plugins.addSkillEntry", "添加 skill")}
                     </Button>
                   </div>
+                  {skillFolder && (
+                    <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] leading-relaxed">
+                      <FolderOpen className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+                      <div className="min-w-0 flex-1">
+                        {tr("plugins.skillFolderNotice", "文件夹模式：将以目录形式创建插件，整目录携带")}{" "}
+                        <span className="font-semibold">{skillFolder.assets}</span>{" "}
+                        {tr("plugins.skillFolderNotice2", "个附属文件（references/scripts 等）；SKILL.md 按下方表单渲染。分发到各 agent 时附件一并落地。")}
+                        <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground" title={skillFolder.dir}>
+                          {skillFolder.dir}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                        onClick={() => setSkillFolder(null)}
+                      >
+                        {tr("plugins.skillFolderExit", "改用纯文本")}
+                      </button>
+                    </div>
+                  )}
                   {form.skillEntries.length === 0 && (
                     <p className="text-[11px] text-muted-foreground/70">
                       {tr("plugins.skillEntriesEmpty", "尚未声明 skill——点「添加 skill」或从已有 SKILL.md 导入。")}
