@@ -113,28 +113,46 @@ fn parse_ai_title(line: &str) -> Option<String> {
 }
 
 /// Generate a smart summary from text: split by punctuation, take first sentence, max 50 chars
+/// v0.9.4 需求6：分句规则修正——中文全角标点（。？！，）直接截断（无空格
+/// 惯例、无歧义）；英文半角标点（. ? ! , ;）仅当后跟空白或行尾才算句界
+/// （英文书写句点后跟空格；v0.9.4 / 3.14 类点后紧跟非空白不截断——修复
+/// 「开启v0.9.4版本开发」被腰斩成「开启v0」）。换行恒为分隔（取首行）；
+/// 超 50 字符按字符（非字节）截断加省略号。
 fn smart_summary(text: &str) -> String {
-    let text = text.trim();
-    if text.is_empty() {
+    let first_line = text.trim().lines().next().unwrap_or("").trim();
+    if first_line.is_empty() {
         return String::new();
     }
-    // Split by sentence-ending punctuation or newlines
-    let first_sentence = text
-        .split(&['。', '？', '！', '，', '\n', '.', '?', '!', ','][..])
-        .next()
-        .unwrap_or(text)
-        .trim();
-    if first_sentence.len() <= 50 {
-        first_sentence.to_string()
+    let chars: Vec<(usize, char)> = first_line.char_indices().collect();
+    let mut cut: Option<usize> = None;
+    for (idx, &(byte_i, c)) in chars.iter().enumerate() {
+        if matches!(c, '。' | '？' | '！' | '，') {
+            cut = Some(byte_i);
+            break;
+        }
+        if matches!(c, '.' | '?' | '!' | ',' | ';') {
+            let is_boundary = chars
+                .get(idx + 1)
+                .map(|&(_, nc)| nc.is_whitespace())
+                .unwrap_or(true); // 行尾
+            if is_boundary {
+                cut = Some(byte_i);
+                break;
+            }
+        }
+    }
+    let seg = match cut {
+        Some(i) => first_line[..i].trim(),
+        None => first_line,
+    };
+    if seg.is_empty() {
+        return String::new();
+    }
+    if seg.chars().count() <= 50 {
+        seg.to_string()
     } else {
-        // Find a natural break point near 50 chars
-        let end = first_sentence
-            .char_indices()
-            .take_while(|(i, _)| *i < 50)
-            .last()
-            .map(|(i, c)| i + c.len_utf8())
-            .unwrap_or(50);
-        format!("{}…", &first_sentence[..end])
+        let head: String = seg.chars().take(50).collect();
+        format!("{head}…")
     }
 }
 
@@ -1190,6 +1208,29 @@ mod tests {
             "First sentence"
         );
         assert_eq!(smart_summary("第一句。第二句"), "第一句");
+    }
+
+    /// v0.9.4 需求6：半角句点后非空白（版本号/小数）不截断。
+    #[test]
+    fn test_smart_summary_keeps_version_numbers() {
+        assert_eq!(smart_summary("开启v0.9.4版本开发"), "开启v0.9.4版本开发");
+        assert_eq!(smart_summary("Fix v2.1 bug"), "Fix v2.1 bug");
+        assert_eq!(smart_summary("升级到 3.14.2 后闪退"), "升级到 3.14.2 后闪退");
+        // 半角逗号后跟空格 → 仍是句界。
+        assert_eq!(smart_summary("Fix A, then B"), "Fix A");
+        // 多行取首行。
+        assert_eq!(smart_summary("第一行内容\n第二行"), "第一行内容");
+        // 行尾句点 → 截断且不带尾点。
+        assert_eq!(smart_summary("First sentence."), "First sentence");
+    }
+
+    /// v0.9.4 需求6：超长按字符截断（中文多字节安全）。
+    #[test]
+    fn test_smart_summary_long_unicode() {
+        let long = "很".repeat(60);
+        let result = smart_summary(&long);
+        assert!(result.ends_with('…'));
+        assert_eq!(result.chars().count(), 51); // 50 + 省略号
     }
 
     #[test]
