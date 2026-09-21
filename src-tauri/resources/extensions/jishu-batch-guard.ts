@@ -7,24 +7,24 @@
  * grep/编辑交错的单轮 50-100+ 次）——事故形态是「重复」而非「总量」，本版
  * 对准真实形态改为三层重复检测（用户裁决 2026-09-21）：
  *
- * 1. 同签名（同工具+同参数）连续 ≥4 次 → block：同调用死循环（636 事故
- *    直接形态；阈值容 1-2 次合法重试如 flaky 测试重跑）。
+ * 1. 同签名（同工具+同参数）连续 ≥8 次 → block：同调用死循环（636 事故
+ *    直接形态；阈值容数次合法重试如 flaky 测试重跑）。
  * 2. 同工具（参数可不同）连续 ≥40 次 → block：参数微变的同工具刷屏循环
  *    （大批量逐文件编辑等合法场景留足余量）。
- * 3. 每轮绝对总数 ≥500 → block：非连续形态兜底（A/B 交替循环等；正常
- *    重活 10 倍余量、远低于事故量级）。
+ * 3. 每轮绝对总数 ≥1000 → block：非连续形态兜底（A/B 交替循环等；正常
+ *    重活 20 倍余量、远低于事故量级）。
  *
  * 出现不同签名/工具即重置对应连击计数；每轮（before_agent_start）清零。
  * 超限立即 block 并指引排查——任务不中断，跨轮不受限。
  */
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 
-/** 同签名（同工具+同参数）连续重复上限。 */
-const MAX_IDENTICAL_STREAK = 4;
+/** 同签名（同工具+同参数）连续重复上限（v0.9.4 用户调参：4→8，容更多合法重试）。 */
+const MAX_IDENTICAL_STREAK = 8;
 /** 同工具（参数可不同）连续调用上限。 */
 const MAX_SAME_TOOL_STREAK = 40;
-/** 每轮绝对总数兜底上限。 */
-const MAX_TOOL_CALLS_PER_TURN = 500;
+/** 每轮绝对总数兜底上限（v0.9.4 用户调参：500→1000）。 */
+const MAX_TOOL_CALLS_PER_TURN = 1000;
 
 const batchGuard: ExtensionFactory = (pi) => {
 	let executed = 0;
