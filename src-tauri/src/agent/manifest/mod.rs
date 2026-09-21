@@ -183,6 +183,9 @@ mod tests {
     fn missing_directory_yields_empty_silently() {
         // 用一个不存在的覆盖目录验证「目录不存在 → 空」路径的形状：
         // manifest_dir 本身不可注入，此处仅验证返回结构约定。
+        // 持 env 锁：JISHU_HUB_HOME 被并行测试临时改写时，本测试会读到他人
+        // 临时 home（v0.9.4 需求6 全量跑测实际踩中 tools 非空断言）。
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let (agents, tools, errors) = load_manifests(&["jishu-self".to_string()]);
         if !manifest_dir().exists() {
             assert!(agents.is_empty());

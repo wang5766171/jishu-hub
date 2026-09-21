@@ -492,14 +492,14 @@ mod tests {
     fn ask_always_chain_allows_reads_and_ignores_once_memory() {
         // 变更前审批档 = [LowRisk]：读类放行（只拦「变更」）；写/执行类每次
         // 委托弹窗——即使此前写入过「始终允许」记忆（该档链不挂 Once）。
-        let chain = for_ask_always_session("s1");
+        let chain = for_ask_always_session("s-ask-always");
         assert_eq!(
             chain.evaluate(&ctx(DecisionChannel::Interactive, Some("read"))),
             ChainOutcome::Allow("low-risk-auto-allow")
         );
         let write = ctx(DecisionChannel::Interactive, Some("bash"));
         assert_eq!(chain.evaluate(&write), ChainOutcome::Delegate);
-        remember_for_session("s1", &write);
+        remember_for_session("s-ask-always", &write);
         assert_eq!(chain.evaluate(&write), ChainOutcome::Delegate);
     }
 
@@ -509,13 +509,28 @@ mod tests {
         // 同动作再次到达经 Once 命中。形状（tool/kind/payload 键）任一侧漂移
         // 记忆即失效——曾因回写侧 tool=None 兜底导致「始终允许」无效。
         let mut arrival = ctx(DecisionChannel::Interactive, Some("bash"));
+        // session_id 与链/记忆桶一致（evaluate 有 ctx.session_id == policy.session 前置）。
+        arrival.session_id = "s-roundtrip".into();
         arrival.payload = serde_json::json!({ "tool": "bash", "summary": "rm -rf", "mode": "smart" });
-        let chain = for_interactive_session("s1");
+        // 注入内存 Once 记忆（对齐 ：452 测试的既有模式）：default_memory 是
+        // SQLite 持久库（approval.db 跨进程重启）——本测试自 remember 后若走
+        // 默认库，下一轮跑测首评直接命中 Allow 而失败（v0.9.4 需求6 全量跑测
+        // 实际踩中；历史上被 env 竞态把库落到临时目录意外掩盖）。
+        let memory = std::sync::Arc::new(crate::agent::policy_store::InMemoryOnceMemory::new());
+        let chain = PolicyChain::new(vec![
+            Box::new(OnceApprovalPolicy::new("s-roundtrip", memory.clone())),
+            Box::new(LowRiskAutoAllowPolicy),
+        ]);
         assert_eq!(chain.evaluate(&arrival), ChainOutcome::Delegate);
         register_arrival_context("req-1", &arrival);
-        // resolve「始终允许」：取回原始上下文回写（chat.rs 同逻辑）。
+        // resolve「始终允许」：取回原始上下文回写（chat.rs 同逻辑；回写目标
+        // 为注入记忆，形状语义与 remember_for_session 一致）。
         let replayed = take_arrival_context("req-1").expect("arrival registered");
-        remember_for_session(&replayed.session_id, &replayed);
+        crate::agent::policy_store::OnceMemory::remember_once(
+            memory.as_ref(),
+            "s-roundtrip",
+            &OnceApprovalPolicy::action_key(&replayed),
+        );
         assert_eq!(chain.evaluate(&arrival), ChainOutcome::Allow("once-approval"));
         // 登记已被取走清理；同动作不同工具仍委托（action_key 含工具名）。
         assert!(take_arrival_context("req-1").is_none());
