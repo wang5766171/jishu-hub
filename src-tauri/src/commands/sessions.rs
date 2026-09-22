@@ -553,3 +553,14 @@ mod tests {
         assert_eq!(interactions[0]["prompt"], "Why did the hair stay dry?");
     }
 }
+
+/// v0.9.4 需求6 v2：为会话生成 AI 标题（LLM 一次性补全，结果以 pi 原生
+/// session_info 条目落 JSONL）。幂等：已有命名（AI/用户重命名）返回 None；
+/// 全程 fail-soft——失败静默（标题回落 smart_summary 规则截断），前端
+/// 回合完成后触发一次。
+#[tauri::command]
+pub(crate) async fn session_generate_title(
+    session_id: String,
+) -> Result<Option<String>, String> {
+    Ok(crate::agent::jishu_self::session_title::generate_and_persist(&session_id).await)
+}

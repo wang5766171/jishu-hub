@@ -43,6 +43,9 @@ import {
 } from "./session-cache";
 import { emitSessionSignal } from "../signals";
 
+/** v0.9.4 需求6 v2：AI 标题生成前端触发一次守卫（会话 id 维度，进程内）。 */
+const titledOnce = new Set<string>();
+
 export interface AgentEventPipelineDeps {
   // —— refs（监听体只读 .current）——
   activeIdRef: MutableRefObject<string | null>;
@@ -286,6 +289,20 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
         }
 
         if (chunk.data.kind === "turn_complete") {
+          // v0.9.4 需求6 v2：回合完成后触发 AI 标题生成（一次/会话；后端幂等
+          // ——已有 session_info 即跳过，用户重命名不覆盖；失败静默回落规则
+          // 截断标题）。仅 jishu-self（pi 原生 JSONL 通道）。
+          if (chunk.agent_id === "jishu-self") {
+            const titledKey = streamStore.getState(cid)?.resolvedId ?? cid;
+            if (!titledOnce.has(titledKey)) {
+              titledOnce.add(titledKey);
+              void invokeCommand<string | null>("session_generate_title", { sessionId: titledKey })
+                .then((title) => {
+                  if (title) emitSessionSignal({ type: "session-titled", sessionId: titledKey, title });
+                })
+                .catch(() => {});
+            }
+          }
           // v0.9.2 需求1 M4：后台会话回合完成信号（正在查看的会话不打扰）。
           if (cid !== deps.selectedSessionRef.current) {
             emitSessionSignal({

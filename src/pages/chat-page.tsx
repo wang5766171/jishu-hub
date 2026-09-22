@@ -418,6 +418,20 @@ export function ChatPage({
   // Ref mirror for use inside the mount-only stream listener closure.
   const sessionsRef = useRef<Session[] | null>(null);
   sessionsRef.current = sessions ?? null;
+
+  // v0.9.4 需求6 v2：AI 会话标题生成完成信号 → 本地补丁 + 拉新列表
+  //（session_info 已落 JSONL，refetch 后 display_name 即 AI 标题）。
+  useEffect(() => {
+    return subscribeSessionSignals((signal) => {
+      if (signal.type !== "session-titled") return;
+      const cur = sessionsRef.current;
+      if (cur) {
+        setSessions(cur.map((s) => (s.id === signal.sessionId ? { ...s, display_name: signal.title } : s)));
+      }
+      setListRefreshKey((k) => k + 1);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // v0.9.0 需求7 D 域拆分：搜索状态组出界（useMessageSearch，纯移动）。
   // 解构别名保持既有 JSX 用名不变。
   const {

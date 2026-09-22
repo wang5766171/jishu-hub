@@ -6,6 +6,7 @@ pub(crate) mod pi_model;
 pub(crate) mod pi_models_config;
 pub(crate) mod pi_runtime;
 pub(crate) mod pi_session;
+pub(crate) mod session_title;
 mod probe;
 mod store;
 

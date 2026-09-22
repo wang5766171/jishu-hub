@@ -397,6 +397,7 @@ pub fn run() {
             commands::skill_import::skill_import_sources,
             commands::skill_import::skill_import_file,
             commands::skill_import::skill_import_folder,
+            commands::sessions::session_generate_title,
             commands::agents::plugin_create,
             commands::agents::plugin_create_skill_folder,
             commands::agents::plugin_get,

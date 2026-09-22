@@ -294,6 +294,8 @@ export type PluginMount =
 /** 内核信号（事件钩子挂载点的数据面）。 */
 export type SessionSignal =
   | { type: "turn-complete"; sessionId: string; agentId: string; error?: boolean }
+  /** v0.9.4 需求6 v2：AI 会话标题已生成落盘（session_info）——会话列表可刷新。 */
+  | { type: "session-titled"; sessionId: string; title: string }
   | { type: "approval-request"; sessionId: string; agentId: string }
   | { type: "task-run-failed"; taskId: string; title: string }
   /** 文件预览请求（v0.9.2 测试期）：agent 工具（如 preview_html）经内核
