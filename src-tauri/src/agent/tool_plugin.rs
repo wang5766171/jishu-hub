@@ -325,8 +325,12 @@ pub fn render_hub_mcp_resolver_hint(plugins: &[&ToolPlugin]) -> String {
         return String::new();
     }
     // v0.9.2 用户裁决：用标记包裹，展示面按格式剥离（agent 可见、用户不可见）。
+    // v0.9.4 需求9 P2：文案改为如实两步走——册子上的工具集是 spawn 时静态
+    // 抄录，运行中启停的插件不在册上；hub_mcp_list/hub_mcp_call 是永不过期
+    // 的解析器入口，「先查后调」实现热插拔（旧文案「动态发现/实时生效」与
+    // 实际不符，即问题 B 根源）。
     format!(
-        "\n{MCP_HINT_OPEN}\n## jishu-hub — MCP 解析服务\n本会话可经 MCP 服务「jishu-hub」使用 hub 管理的全部 MCP 插件工具（工具名以 `插件id__` 开头，经该服务动态发现，插件启停实时生效）。需要 MCP 能力时优先调用 jishu-hub 提供的这些工具，不要尝试直连各 MCP 服务，也不要用 shell 命令替代。\n{MCP_HINT_CLOSE}"
+        "\n{MCP_HINT_OPEN}\n## jishu-hub — MCP 解析服务\n本会话可经 MCP 服务「jishu-hub」使用 hub 管理的全部 MCP 插件工具。已注册的 `插件id__` 前缀工具可直接调用；未注册的（如新启用的插件）：先调 `hub_mcp_list` 实时查看可用插件、工具与参数说明，再调 `hub_mcp_call` 代理调用——插件启停经 list 即时反映。不要尝试直连各 MCP 服务，也不要用 shell 命令替代。\n{MCP_HINT_CLOSE}"
     )
 }
 
@@ -652,12 +656,13 @@ usage = "u"
             true,
         );
         // v0.9.1 需求12：全局解析服务提示块——启用 [mcp] 插件才有，
-        // 文案含优先级指引与前缀规则。
+        // 文案含两步走指引与前缀规则（v0.9.4 需求9 P2：动态发现文案）。
         {
             let block = render_hub_mcp_resolver_hint(&[&mcp_plugin]);
             assert!(block.contains("jishu-hub — MCP 解析服务"));
             assert!(block.contains("插件id__"));
-            assert!(block.contains("优先"));
+            assert!(block.contains("hub_mcp_list"));
+            assert!(block.contains("hub_mcp_call"));
             // 无 [mcp] 插件 → 空块。
             let none = render_hub_mcp_resolver_hint(&[&skill_plugin]);
             assert!(none.is_empty());

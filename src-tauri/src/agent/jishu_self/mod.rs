@@ -892,6 +892,20 @@ impl TransportAdapter for JishuSelfAgent {
         // 逐项附加注入 pi 会话进程。置于内置默认之后，用户可覆盖（如
         // PI_OFFLINE="" 关闭离线刷新、HTTP(S)_PROXY 走代理）。
         envs.extend(spawn_env_overrides(&config::load_jishu_config()));
+        // v0.9.4 需求9 P3：MCP 指纹进 spawn 签名（仅总开关）。pi 不重读
+        // mcp.json（pi-mcp-adapter 无 config watch），会话中途首次启用/关闭
+        // 解析器时，运行中进程的册子上连解析器入口工具都没有——唯一必须
+        // 换进程的场景。指纹进入 acp_turn_signature → 下一次空闲发送时
+        // 漂移回收重拉（resume 同一会话，历史不丢）。插件明细**不进**指纹：
+        // 热插拔由 hub_mcp_list/hub_mcp_call 动态发现承担，换进程反而打断
+        //（02 §二 P3）。
+        envs.push((
+            "JISHU_MCP_REV".to_string(),
+            format!(
+                "resolver:{}",
+                if crate::agent::plugin::is_mcp_resolver_enabled() { "on" } else { "off" }
+            ),
+        ));
 
         Ok(crate::agent::AcpCommandSpec {
             program: runtime.program.to_string_lossy().to_string(),
