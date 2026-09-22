@@ -300,7 +300,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
                 .then((title) => {
                   if (title) emitSessionSignal({ type: "session-titled", sessionId: titledKey, title });
                 })
-                .catch(() => {});
+                .catch((e) => console.warn('[session-title] generate failed:', e));
             }
           }
           // v0.9.2 需求1 M4：后台会话回合完成信号（正在查看的会话不打扰）。

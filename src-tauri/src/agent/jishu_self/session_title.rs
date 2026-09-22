@@ -24,36 +24,69 @@ use std::path::PathBuf;
 pub async fn generate_and_persist(session_id: &str) -> Option<String> {
     // 1. 定位会话文件（sessions/<encoded-project>/<id>.jsonl；session id
     //    全局唯一，扫全部项目目录）。
-    let path = find_session_file(session_id)?;
-    let content = std::fs::read_to_string(&path).ok()?;
+    let Some(path) = find_session_file(session_id) else {
+        eprintln!("[session-title] session file not found: {session_id}");
+        return None;
+    };
+    let Some(content) = std::fs::read_to_string(&path).ok() else {
+        eprintln!("[session-title] cannot read {}", path.display());
+        return None;
+    };
     let lines: Vec<&str> = content.lines().collect();
 
     // 2. 已有命名（AI 生成或用户重命名）→ 不覆盖。
     if has_session_info(&lines) {
+        eprintln!("[session-title] already named, skip: {session_id}");
         return None;
     }
     // 3. 首条用户消息（标题素材；剥插件注入块）。
-    let first_user = first_user_text_from_lines(&lines)?;
+    let Some(first_user) = first_user_text_from_lines(&lines) else {
+        eprintln!("[session-title] no first user text: {session_id}");
+        return None;
+    };
     let snippet: String = first_user.chars().take(400).collect();
 
     // 4. 会话最近使用的 provider/model（assistant 行自带；比 active 更准
     //    ——该模型刚在本会话验证可用）。
-    let (provider_id, model_id) = last_model_from_lines(&lines)?;
+    let Some((provider_id, model_id)) = last_model_from_lines(&lines) else {
+        eprintln!("[session-title] no provider/model in session: {session_id}");
+        return None;
+    };
 
     // 5. 解析为 ModelPreset 并发起一次性补全。
-    let config = crate::agent::jishu_self::pi_models_config::load().ok()?;
-    let provider_cfg = config.providers.get(&provider_id)?.clone();
-    let model = provider_cfg
+    let Some(config) = crate::agent::jishu_self::pi_models_config::load().ok() else {
+        eprintln!("[session-title] cannot load models.json");
+        return None;
+    };
+    let Some(provider_cfg) = config.providers.get(&provider_id) else {
+        eprintln!("[session-title] provider '{provider_id}' not in models.json");
+        return None;
+    };
+    let model = match provider_cfg
         .models
-        .as_ref()?
-        .iter()
-        .find(|m| m.id == model_id)?
-        .clone();
-    let preset =
-        crate::agent::jishu_self::pi_models_config::to_test_preset(&provider_id, &provider_cfg, &model)
-            .ok()?;
-    crate::llm::http::resolve_api_key(&preset).ok()?;
-    let provider = crate::llm::create_provider(&preset).ok()?;
+        .as_ref()
+        .and_then(|ms| ms.iter().find(|m| m.id == model_id))
+    {
+        Some(m) => m.clone(),
+        None => {
+            eprintln!("[session-title] model '{model_id}' not in provider '{provider_id}'");
+            return None;
+        }
+    };
+    let Ok(preset) =
+        crate::agent::jishu_self::pi_models_config::to_test_preset(&provider_id, provider_cfg, &model)
+    else {
+        eprintln!("[session-title] to_test_preset failed for {provider_id}/{model_id}");
+        return None;
+    };
+    if crate::llm::http::resolve_api_key(&preset).is_err() {
+        eprintln!("[session-title] no api key for {provider_id}");
+        return None;
+    }
+    let Ok(provider) = crate::llm::create_provider(&preset) else {
+        eprintln!("[session-title] create_provider failed");
+        return None;
+    };
 
     let req = crate::llm::message::LlmRequest {
         model: preset.model.clone(),
@@ -84,17 +117,31 @@ pub async fn generate_and_persist(session_id: &str) -> Option<String> {
     });
 
     let cancel = crate::llm::CancelToken::new();
-    let turn = tokio::time::timeout(
+    let turn = match tokio::time::timeout(
         std::time::Duration::from_secs(30),
         provider.stream_chat(req, emitter, &cancel),
     )
     .await
-    .ok()?
-    .ok()?;
+    {
+        Ok(Ok(t)) => t,
+        Ok(Err(e)) => {
+            eprintln!("[session-title] llm stream error: {e}");
+            return None;
+        }
+        Err(_) => {
+            eprintln!("[session-title] llm timeout (30s)");
+            return None;
+        }
+    };
 
     let _ = turn; // 文本经 emitter 收集
-    let raw = response.lock().ok()?.clone();
-    let title = sanitize_title(&raw)?;
+    let Some(raw) = response.lock().ok().map(|s| s.clone()) else {
+        return None;
+    };
+    let Some(title) = sanitize_title(&raw) else {
+        eprintln!("[session-title] sanitized title empty, raw={raw:?}");
+        return None;
+    };
 
     // 6. 追加 session_info 行（pi 原生形状：id/parentId/timestamp/name）。
     append_session_info(&path, &title).ok()?;
@@ -115,10 +162,24 @@ fn find_session_file(session_id: &str) -> Option<PathBuf> {
     }
     let root = crate::agent::jishu_self::pi_session::pi_sessions_root().ok()?;
     let entries = std::fs::read_dir(&root).ok()?;
+    // 兼容两种 id 形态：完整文件 stem（hub 会话列表口径，含时间戳前缀）
+    // 与裸 uuid（pi 运行时/流式键口径——文件名 <timestamp>_<uuid>.jsonl 的
+    // 后缀部分）。前者精确命中，后者后缀匹配。
+    let exact = format!("{session_id}.jsonl");
+    let suffix = format!("_{session_id}.jsonl");
     for entry in entries.flatten() {
-        let candidate = entry.path().join(format!("{session_id}.jsonl"));
-        if candidate.is_file() {
-            return Some(candidate);
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let Ok(files) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for f in files.flatten() {
+            let name = f.file_name().to_string_lossy().to_string();
+            if name == exact || name.ends_with(&suffix) {
+                return Some(f.path());
+            }
         }
     }
     None
@@ -317,6 +378,18 @@ mod tests {
             r#"{"type":"session_info","id":"n1","name":"已有命名"}"#,
         ];
         assert!(has_session_info(&named));
+    }
+
+    /// 真机链路验证（ignored：需真网 + 真会话）：
+    /// SESSION_TITLE_SESSION_ID=<id> cargo test --lib live_generate_title -- --ignored --nocapture
+    #[test]
+    #[ignore = "live test: requires SESSION_TITLE_SESSION_ID env and network"]
+    fn live_generate_title() {
+        let sid = std::env::var("SESSION_TITLE_SESSION_ID").expect("SESSION_TITLE_SESSION_ID");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let title = rt.block_on(generate_and_persist(&sid));
+        println!("[live] generated title = {title:?}");
+        assert!(title.is_some(), "generation chain failed (see warn logs above)");
     }
 
     #[test]
