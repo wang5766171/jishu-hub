@@ -2898,12 +2898,52 @@ export function ChatPage({
                       interactionSplits: state.interactionSplits,
                       includePending: true,
                     });
+                    // v0.9.4 需求7 缺陷一：已注入 steer 的交错提交必须在本地
+                    //（停止时）完成——晚到的 TurnComplete(Aborted) 依赖事件
+                    // 异步到达，用户新消息可能先 append，导致 steer 落位在
+                    // 新消息之后（顺序错乱）。与 turn_complete 的 interaction
+                    // 分支同构（steerInsertions 参数）。
+                    const steerSplits = Array.from(new Set(state.steerSplits))
+                      .filter((idx) => idx > 0 && idx < state.content.length)
+                      .sort((a, b) => a - b);
+                    const queuedSteers = pendingSteerMessagesRef.current.get(finalKey)
+                      ?? pendingSteerMessagesRef.current.get(selectedSession)
+                      ?? [];
+                    const midSteerCount = Math.min(steerSplits.length, queuedSteers.length);
                     const committed = commitAssistantWithInteractions({
                       assistantContent,
                       interactionInsertions,
+                      steerInsertions: steerSplits.slice(0, midSteerCount).map((index, i) => ({
+                        index,
+                        text: queuedSteers[i],
+                      })),
                       error: state.error,
                     });
                     newMessages.push(...committed.messages);
+                    // 消费已注入 steer 的队列与 live 占位（与交错提交等量；
+                    // 未注入的残留交给 steer_queue_cleared 对账/重发，及
+                    // TurnComplete(Aborted) 兕底，此处不动）。
+                    if (midSteerCount > 0) {
+                      const queueKey = pendingSteerMessagesRef.current.has(finalKey)
+                        ? finalKey
+                        : selectedSession;
+                      const current = pendingSteerMessagesRef.current.get(queueKey) ?? [];
+                      const remaining = current.slice(midSteerCount);
+                      if (remaining.length > 0) {
+                        pendingSteerMessagesRef.current.set(queueKey, remaining);
+                      } else {
+                        pendingSteerMessagesRef.current.delete(queueKey);
+                      }
+                      setPendingSteerDisplay((prev) => {
+                        const list = prev[queueKey];
+                        if (!list || list.length === 0) return prev;
+                        const rest = list.slice(midSteerCount);
+                        const next = { ...prev };
+                        if (rest.length === 0) delete next[queueKey];
+                        else next[queueKey] = rest;
+                        return next;
+                      });
+                    }
 
                     if (newMessages.length > 0) {
                       const baseMessages =
@@ -2962,6 +3002,14 @@ export function ChatPage({
                         console.warn("Failed to persist partial assistant after abort:", err);
                       });
                     }
+                    // v0.9.4 需求7 缺陷一附带：本地提交后 drop 流式态——防晚到
+                    // 的 TurnComplete(Aborted) 基于残留 state 二次提交同一回合
+                    // 内容（重复）。晚到事件到达时 state 为 null：伪完成守卫不
+                    // 吞（Boolean(null)=false），队列残留走 Abort 兕底重发；
+                    // steer_queue_cleared 的重发 thinking 态在具后 start，不受
+                    // 此处 drop 影响（事件序：clear_queue 响应先于 agent_settled）。
+                    streamStore.drop(finalKey);
+                    if (selectedSession !== finalKey) streamStore.drop(selectedSession);
                   }
 
                   setPendingInteractions((current) =>

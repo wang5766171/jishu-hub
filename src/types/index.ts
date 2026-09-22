@@ -320,6 +320,7 @@ export type NormalizedEvent =
   | { kind: "text_delta"; delta: string }
   | { kind: "message"; content: ContentBlock[] }
   | { kind: "tool_use_start"; call_id: string; tool: string; input: unknown; view?: ToolView }
+  | { kind: "tool_use_progress"; call_id: string; partial_output: unknown }
   | { kind: "tool_use_result"; call_id: string; output: unknown; is_error: boolean }
   | { kind: "thinking"; delta: string }
   | { kind: "approval_request"; request_id: string; approval_kind: string; payload: unknown }
@@ -364,7 +365,7 @@ export type NormalizedEvent =
    * =true 后续成功，false 重试耗尽且 finalError 为最终失败原因）。 */
   | { kind: "auto_retry_status"; active: boolean; attempt: number; max_attempts: number; delay_ms: number; error_message: string; success: boolean; final_error?: string | null }
   /** v0.9.1 需求3 #1：停止时 pi 队列被清空的排队文本（回填输入框）。 */
-  | { kind: "steer_queue_cleared"; texts: string[] };
+  | { kind: "steer_queue_cleared"; texts: string[]; follow_up_texts?: string[] };
 
 /** v0.8.0 需求2 Phase 1：渲染意图（Rust tool_view 镜像）——UI 只做
  * 「意图→组件」映射；locations 为归一化层一次提取的位置信息。 */

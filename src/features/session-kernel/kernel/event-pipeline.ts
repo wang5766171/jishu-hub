@@ -87,6 +87,8 @@ export interface AgentEventPipelineDeps {
 export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => void {
   let unlistenFn: (() => void) | null = null;
   let cancelled = false;
+  // v0.9.4 需求8：工具进度节流表（`${cid}\x1f${call_id}` → 上次放行时刻）。
+  const toolProgressThrottle = new Map<string, number>();
   listen<AgentEventPayload>("agent-event", (event) => {
       const payload = event.payload;
       const chunks = Array.isArray(payload) ? payload : [payload];
@@ -105,6 +107,20 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
         }
 
         const cid = chunk.session_id;
+
+        // v0.9.4 需求8：工具进度节流（per call_id 200ms）——bash 类长时工具
+        // 的行级输出事件高频，逐事件打 store 会冲击渲染；进度语义允许
+        // 200ms 粒度。表随管线生命周期（stop 时清）。
+
+        if (chunk.data.kind === "tool_use_progress") {
+          const key = `${cid}\x1f${chunk.data.call_id}`;
+          const now = Date.now();
+          const last = toolProgressThrottle.get(key);
+          if (last !== undefined && now - last < 200) {
+            continue;
+          }
+          toolProgressThrottle.set(key, now);
+        }
 
         if (chunk.data.kind === "approval_request") {
           // v0.9.2 需求1 M4：审批信号（桌面通知等 event-hook 插件消费）。
@@ -147,12 +163,94 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           });
         }
 
-        // v0.9.1 需求3 #1：停止清队回填——PiRpc 停止时后端先 clear_queue 再
-        // abort，被清空的排队 steer 文本经此事件回传；仅当用户正查看该会话
-        // 时回填当前输入框（切走的会话不越权改草稿）。
+        // v0.9.4 需求7 缺陷二主修：分组对账 + 自动重发。clear_queue 响应
+        // 天然区分 steering（用户引导）与 followUp（普通排队）——点停止的
+        // 意图是「让引导快速生效」而非作废引导：steering 自动重发为真实
+        // 消息（用户期望引导被回复），followUp 回填输入框由用户决定（维持
+        // v0.9.1 需求3 #1 语义）。同步移除前端 steer 队列/占位——否则晚到
+        // 的 TurnComplete(Aborted) 会误判「pi 将回复 follow-up」而预创建
+        // 无超时 thinking 态（卡「思考中」根源，01 缺陷二）。
         if (chunk.data.kind === "steer_queue_cleared") {
-          if (cid === deps.selectedSessionRef.current || cid === streamStore.getState(cid)?.resolvedId) {
-            deps.chatInputRef.current?.restoreTexts(chunk.data.texts);
+          const finalKey = streamStore.getState(cid)?.resolvedId ?? cid;
+          const queueKey = deps.pendingSteerMessagesRef.current.has(finalKey)
+            ? finalKey
+            : cid;
+          const followUps = chunk.data.follow_up_texts ?? [];
+          const steering = chunk.data.texts.filter((t) => !followUps.includes(t));
+          const queue = deps.pendingSteerMessagesRef.current.get(queueKey) ?? [];
+          // 对账移除用全集（steering + followUp 都已被 pi 作废：followUp 回填
+          // 输入框后若留在队列，将成为占位僵尸被后续 turn_complete 误提交）。
+          if (queue.length > 0 && chunk.data.texts.length > 0) {
+            const toRemove = [...chunk.data.texts];
+            const remaining = queue.filter((q) => {
+              const i = toRemove.indexOf(q);
+              if (i >= 0) {
+                toRemove.splice(i, 1);
+                return false;
+              }
+              return true;
+            });
+            const removedCount = queue.length - remaining.length;
+            if (remaining.length > 0) {
+              deps.pendingSteerMessagesRef.current.set(queueKey, remaining);
+            } else {
+              deps.pendingSteerMessagesRef.current.delete(queueKey);
+            }
+            if (removedCount > 0) {
+              deps.setPendingSteerDisplay((prev) => {
+                const list = prev[queueKey];
+                if (!list || list.length === 0) return prev;
+                const rest = list.slice(removedCount);
+                const next = { ...prev };
+                if (rest.length === 0) delete next[queueKey];
+                else next[queueKey] = rest;
+                return next;
+              });
+            }
+          }
+          if (steering.length > 0) {
+            // 自动重发：合并为一条（pi 队列本就 one-at-a-time，单 turn 语义）
+            // → 提交 user 消息 → thinking 态 + 防伪完成标记 → send_message
+            // 真实发送。后端 send_message 在 CancelPending 时进 buffer，
+            // agent_settled 后自动消化——与 abort 流程天然串接。
+            const merged = steering.join("\n\n");
+            const base =
+              getCachedSessionMessages(finalKey)
+              ?? getCachedSessionMessages(cid)
+              ?? [];
+            const updated = [...base, {
+              role: "user" as const,
+              content: [{ type: "text" as const, text: merged }],
+              timestamp: Date.now(),
+            }];
+            setCachedSessionMessages(finalKey, updated);
+            if (cid !== finalKey) setCachedSessionMessages(cid, updated);
+            if (deps.selectedSessionRef.current === cid || deps.selectedSessionRef.current === finalKey) {
+              deps.setSessionMessages(updated);
+            }
+            streamStore.start(finalKey, null);
+            if (cid !== finalKey) streamStore.alias(finalKey, cid);
+            deps.pendingReplyStartedAtRef.current.set(finalKey, Date.now());
+            void (async () => {
+              try {
+                await invokeCommand("send_message", {
+                  agentId: deps.activeIdRef.current ?? "",
+                  projectPath: deps.projectPathRef.current,
+                  sessionId: finalKey,
+                  message: merged,
+                });
+              } catch (err) {
+                console.error("Failed to resend cleared steering message:", err);
+                streamStore.drop(finalKey);
+              }
+            })();
+          }
+          // followUp 部分维持 v0.9.1 回填语义（仅正查看的会话，切走不越权改草稿）。
+          if (
+            followUps.length > 0
+            && (cid === deps.selectedSessionRef.current || cid === streamStore.getState(cid)?.resolvedId)
+          ) {
+            deps.chatInputRef.current?.restoreTexts(followUps);
           }
           continue;
         }
@@ -458,12 +556,20 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
 
             const leftover = deps.pendingSteerMessagesRef.current.get(steerQueueKey);
             if (leftover && leftover.length > 0) {
-              newMessages.push({
-                role: "user",
-                content: [{ type: "text", text: leftover[0] }],
-                timestamp: Date.now(),
-              });
-              followUpExpected = true;
+              if (isAbortedTurn) {
+                // v0.9.4 需求7 缺陷二兕底：abort 后 pi 队列已被 clear_queue
+                // 作废，follow-up 回复不会来临——不提交、不预创建无超时
+                // thinking 态，改走真实重发（guideToSendAfterDrop 下游自己
+                // 提交 guide 消息 + send_message）。
+                guideToSendAfterDrop = leftover[0];
+              } else {
+                newMessages.push({
+                  role: "user",
+                  content: [{ type: "text", text: leftover[0] }],
+                  timestamp: Date.now(),
+                });
+                followUpExpected = true;
+              }
               consumeSteerFromQueue(1);
               dropLivePlaceholders(1);
             }
@@ -506,12 +612,18 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             // turn_complete — mirroring the no-tool FIFO behavior below.
             const leftover = deps.pendingSteerMessagesRef.current.get(steerQueueKey);
             if (leftover && leftover.length > 0) {
-              newMessages.push({
-                role: "user",
-                content: [{ type: "text", text: leftover[0] }],
-                timestamp: Date.now(),
-              });
-              followUpExpected = true;
+              if (isAbortedTurn) {
+                // v0.9.4 需求7 缺陷二兕底：同 interaction 分支——abort 后
+                // follow-up 不会来临，改真实重发，不预创建 thinking。
+                guideToSendAfterDrop = leftover[0];
+              } else {
+                newMessages.push({
+                  role: "user",
+                  content: [{ type: "text", text: leftover[0] }],
+                  timestamp: Date.now(),
+                });
+                followUpExpected = true;
+              }
               consumeSteerFromQueue(1);
               dropLivePlaceholders(1);
             }
@@ -547,11 +659,13 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
               newMessages.push({ role: "assistant", content: assistantContent, timestamp: Date.now() });
             }
             if (queuedSteers.length > 0) {
-              if (deps.supportsSteerRef.current) {
-                // Pi-RPC: the queued steer is answered in a follow-up turn.
-                // Commit it as a user message now; the response arrives in the
-                // next turn_complete. followUpExpected pre-creates a "thinking"
+              if (deps.supportsSteerRef.current && !isAbortedTurn) {
+                // Pi-RPC 正常完成：the queued steer is answered in a follow-up
+                // turn. Commit it as a user message now; the response arrives in
+                // the next turn_complete. followUpExpected pre-creates a "thinking"
                 // state so the gap isn't blank.
+                // v0.9.4 需求7 缺陷二兕底：Abort 路径不适用此保证（pi 队列
+                // 已被 clear_queue 作废），走真实重发分支。
                 newMessages.push({
                   role: "user",
                   content: [{ type: "text", text: queuedSteers[0] }],

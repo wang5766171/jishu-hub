@@ -125,6 +125,14 @@ pub enum NormalizedEvent {
         output: serde_json::Value,
         is_error: bool,
     },
+    /// v0.9.4 需求8：工具执行中间进度（pi `tool_execution_update`，bash 类
+    /// 长时工具的流式输出快照）。partial_output 透传下游 partialResult
+    /// （bash 形状 `{output, exitCode?, cancelled, truncated}`；其他工具
+    /// 形状不解析）。仅流式渲染面消费；不参与任务编排语义。
+    ToolUseProgress {
+        call_id: String,
+        partial_output: serde_json::Value,
+    },
     Thinking {
         delta: String,
     },
@@ -222,9 +230,15 @@ pub enum NormalizedEvent {
     /// v0.9.1 需求3 #1：停止时 pi 队列被清空的排队文本（steering/follow-up
     /// 合并，保持到达序）。pi 的 abort 会继续执行残留队列（rpc.md），hub 停止
     /// 语义为「作废」——先 clear_queue 再 abort，被清空的文本经此事件回传
-    /// GUI 回填输入框，不打字丢失。
+    /// GUI，不打字丢失。
+    /// v0.9.4 需求7：分组回传——`texts`=steering（用户明示引导，前端自动
+    /// 重发为真实消息）；`follow_up_texts`=followUp（普通排队消息，前端
+    /// 回填输入框由用户决定）。`texts` 语义保持「全部被清文本」不变
+    /// （wire 兼容：旧消费者读 texts 仍得全集），仅新增分组字段。
     SteerQueueCleared {
         texts: Vec<String>,
+        #[serde(default)]
+        follow_up_texts: Vec<String>,
     },
     /// v0.9.1 需求14：自动重试状态（pi auto_retry_start / auto_retry_end，
     /// agent-session _prepareRetry 经 RPC 原样透传）。active=true：第
@@ -251,6 +265,7 @@ impl NormalizedEvent {
             NormalizedEvent::Message { .. } => "message",
             NormalizedEvent::ToolUseStart { .. } => "tool_use_start",
             NormalizedEvent::ToolUseResult { .. } => "tool_use_result",
+            NormalizedEvent::ToolUseProgress { .. } => "tool_use_progress",
             NormalizedEvent::Thinking { .. } => "thinking",
             NormalizedEvent::ApprovalRequest { .. } => "approval_request",
             NormalizedEvent::InteractionRequest { .. } => "interaction_request",
@@ -771,6 +786,43 @@ mod tests_v6 {
                 assert!(origin.is_none());
             }
             other => panic!("Expected Interaction, got {:?}", other),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_v0_9_4 {
+    use super::*;
+
+    /// v0.9.4 需求7：SteerQueueCleared 分组字段序列化往返 + 旧形状
+    /// （无 follow_up_texts）反序列化兼容（wire 兼容纪律：新增字段可缺省）。
+    #[test]
+    fn steer_queue_cleared_roundtrip_and_legacy_compat() {
+        let event = NormalizedEvent::SteerQueueCleared {
+            texts: vec!["引导A".into(), "排队B".into()],
+            follow_up_texts: vec!["排队B".into()],
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            json.get("follow_up_texts").and_then(|v| v.as_array()).map(|a| a.len()),
+            Some(1),
+            "follow_up_texts 应序列化"
+        );
+        let back: NormalizedEvent = serde_json::from_value(json).unwrap();
+        assert_eq!(back, event);
+
+        // 旧事件形状（v0.9.3 及以前）：无 follow_up_texts 字段。
+        let legacy = serde_json::json!({
+            "kind": "steer_queue_cleared",
+            "texts": ["旧文本"],
+        });
+        let decoded: NormalizedEvent = serde_json::from_value(legacy).unwrap();
+        match decoded {
+            NormalizedEvent::SteerQueueCleared { texts, follow_up_texts } => {
+                assert_eq!(texts, vec!["旧文本".to_string()]);
+                assert!(follow_up_texts.is_empty(), "缺省字段应为空集");
+            }
+            other => panic!("Expected SteerQueueCleared, got {:?}", other),
         }
     }
 }

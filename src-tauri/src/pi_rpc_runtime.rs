@@ -700,11 +700,14 @@ async fn pi_rpc_connection_loop(
                                     }
                                     "clear_queue" => {
                                         // v0.9.1 需求3 #1：停止前清队的响应——
-                                        // steering/followUp 合并回传 GUI 回填输入框；
-                                        // 空队列不发事件（无排队消息的停止零噪声）。
+                                        // 排队文本回传 GUI；空队列不发事件（无排队
+                                        // 消息的停止零噪声）。v0.9.4 需求7：分组回传
+                                        // ——steering（用户引导）与 followUp（普通
+                                        // 排队）分开，前端对 steering 自动重发、
+                                        // followUp 回填输入框。
                                         if success {
-                                            let mut texts: Vec<String> = Vec::new();
-                                            for key in ["steering", "followUp"] {
+                                            let mut collect = |key: &str| -> Vec<String> {
+                                                let mut out: Vec<String> = Vec::new();
                                                 if let Some(arr) = msg
                                                     .get("data")
                                                     .and_then(|d| d.get(key))
@@ -713,18 +716,30 @@ async fn pi_rpc_connection_loop(
                                                     for item in arr {
                                                         if let Some(text) = item.as_str() {
                                                             if !text.trim().is_empty() {
-                                                                texts.push(text.to_string());
+                                                                out.push(text.to_string());
                                                             }
                                                         }
                                                     }
                                                 }
-                                            }
+                                                out
+                                            };
+                                            let steering = collect("steering");
+                                            let follow_ups = collect("followUp");
+                                            // texts 保持「全部被清文本」语义（先
+                                            // steering 后 followUp，与旧合并序一致）。
+                                            let mut texts = steering.clone();
+                                            texts.extend(follow_ups.iter().cloned());
                                             if !texts.is_empty() {
                                                 log::info!(
-                                                    "Pi RPC clear_queue: {} 条排队消息回传",
-                                                    texts.len()
+                                                    "Pi RPC clear_queue: {} 条排队消息回传（steering {} / followUp {}）",
+                                                    texts.len(),
+                                                    steering.len(),
+                                                    follow_ups.len()
                                                 );
-                                                buf.push(NormalizedEvent::SteerQueueCleared { texts });
+                                                buf.push(NormalizedEvent::SteerQueueCleared {
+                                                    texts,
+                                                    follow_up_texts: follow_ups,
+                                                });
                                                 flush_buf(&emit, &session_id, &mut buf);
                                             }
                                         }
@@ -1647,6 +1662,26 @@ pub(crate) fn normalize_pi_agent_event(
                 }
             }
         }
+        "tool_execution_update" => {
+            // v0.9.4 需求8：工具执行中间进度（bash 类长时工具的流式输出
+            // 快照，partialResult 形状 {output,...}）。透传不解析——前端只
+            // 提取 output 字符串字段，无则跳过（不猜形状）。高频事件，
+            // 前端 event-pipeline 侧 per call_id 节流。
+            let call_id = event
+                .get("toolCallId")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let partial_output = event.get("partialResult").cloned().unwrap_or(serde_json::Value::Null);
+            if call_id.is_empty() {
+                vec![]
+            } else {
+                vec![NormalizedEvent::ToolUseProgress {
+                    call_id,
+                    partial_output,
+                }]
+            }
+        }
         "tool_execution_end" => {
             let call_id = event
                 .get("toolCallId")
@@ -1825,7 +1860,8 @@ pub(crate) fn normalize_pi_agent_event(
         }
 
         // All other event types (agent_start, agent_end, turn_start,
-        // message_end, tool_execution_update) are ignored.
+        // message_end) are ignored (tool_execution_update is mapped to
+        // ToolUseProgress — see the branch above).
         _ => vec![],
     }
 }
@@ -2521,7 +2557,47 @@ mod tests {
     /// `terminate: true` produces *no* TurnComplete anywhere, which is why the
     /// settle branch in `run_loop` has to synthesise one (B2.5 T3).
     #[test]
-    fn tool_use_turn_end_yields_no_events() {
+
+    /// v0.9.4 需求8：tool_execution_update → ToolUseProgress（partialResult
+    /// 透传不解析；无 callId 丢弃）。
+    #[test]
+    fn tool_execution_update_maps_to_progress() {
+        let events = normalize_pi_agent_event(
+            &json!({
+                "type": "tool_execution_update",
+                "toolCallId": "call-1",
+                "toolName": "bash",
+                "partialResult": { "output": "step 3/45 done", "cancelled": false }
+            }),
+            None,
+            &mut Vec::new(),
+        );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            NormalizedEvent::ToolUseProgress { call_id, partial_output } => {
+                assert_eq!(call_id, "call-1");
+                assert_eq!(
+                    partial_output.get("output").and_then(|v| v.as_str()),
+                    Some("step 3/45 done")
+                );
+            }
+            other => panic!("Expected ToolUseProgress, got {other:?}"),
+        }
+
+        // 无 callId：丢弃（防御）。
+        let events = normalize_pi_agent_event(
+            &json!({
+                "type": "tool_execution_update",
+                "toolName": "bash",
+                "partialResult": { "output": "x" }
+            }),
+            None,
+            &mut Vec::new(),
+        );
+        assert!(events.is_empty(), "no callId should be dropped: {events:?}");
+    }
+
+        fn tool_use_turn_end_yields_no_events() {
         let events = normalize_pi_agent_event(
             &json!({
                 "type": "turn_end",

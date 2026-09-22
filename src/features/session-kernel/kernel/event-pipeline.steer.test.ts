@@ -1,0 +1,210 @@
+/**
+ * v0.9.4 需求7：steer 停止链路管线行为（steer_queue_cleared 对账重发 /
+ * Abort 兜底不预创建 follow-up thinking）。集成式驱动 startAgentEventPipeline
+ * （mock listen 捕获事件回调），验证两个根因修复点：
+ *  - 缺陷二主修：clear_queue 分组回传 → 前端队列对账 + steering 自动重发
+ *    （send_message 真实调用），followUp 回填输入框。
+ *  - 缺陷二兜底：TurnComplete(Aborted) + 队列残留 → 不预创建无超时
+ *    thinking 态（streamStore 无 start），走真实重发。
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MutableRefObject, Dispatch, SetStateAction } from "react";
+import type { TFunction } from "i18next";
+import type { AgentEventPayload, Message, Session } from "@/types";
+import { streamStore } from "@/hooks/use-stream-store";
+import { invokeCommand } from "@/hooks/use-invoke";
+import { startAgentEventPipeline } from "./event-pipeline";
+
+let listenCallback: ((e: { payload: unknown }) => void) | null = null;
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (_event: string, cb: (e: { payload: unknown }) => void) => {
+    listenCallback = cb;
+    return () => {};
+  }),
+}));
+
+vi.mock("@/hooks/use-invoke", () => ({
+  invokeCommand: vi.fn(async () => null),
+}));
+
+vi.mock("@/features/task-instance/task-phase-debug", () => ({
+  logTaskPhaseDebug: () => {},
+}));
+
+vi.mock("./session-cache", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("./session-cache")>();
+  return {
+    ...orig,
+    getCachedSessionMessages: vi.fn(() => null),
+    setCachedSessionMessages: vi.fn(),
+  };
+});
+
+const emit = (payload: Record<string, unknown> | Record<string, unknown>[]) => {
+  if (!listenCallback) throw new Error("pipeline not started");
+  // 测试便捷：缺省 event_type 字段（管线读取 data 分发，不依赖它）。
+  const withDefaults = (Array.isArray(payload) ? payload : [payload]).map((p) => ({
+    event_type: "chunk",
+    ...p,
+  })) as unknown as AgentEventPayload[];
+  listenCallback({ payload: Array.isArray(payload) ? withDefaults : withDefaults[0] });
+};
+
+function makeDeps() {
+  return {
+    activeIdRef: { current: "jishu-self" } as MutableRefObject<string | null>,
+    activeTaskInstanceIdRef: { current: null },
+    chatInputRef: { current: { restoreTexts: vi.fn() } } as unknown as MutableRefObject<{ restoreTexts: (t: string[]) => void } | null>,
+    injectedLaunchSessionsRef: { current: new Set<string>() },
+    isAwayFromBottomRef: { current: false },
+    lastRealSessionIdRef: { current: null },
+    messageAreaRef: { current: null },
+    newSessionStreamIdsRef: { current: new Set<string>() },
+    pendingReplyStartedAtRef: { current: new Map<string, number>() } as MutableRefObject<Map<string, number>>,
+    pendingSteerMessagesRef: { current: new Map<string, string[]>() } as MutableRefObject<Map<string, string[]>>,
+    projectIdRef: { current: "proj" },
+    projectPathRef: { current: "D:/x" },
+    refetchSessionsRef: { current: null },
+    selectedSessionRef: { current: "s1" } as MutableRefObject<string | null>,
+    selectedTaskSkillIdRef: { current: "" },
+    sessionsRef: { current: null } as MutableRefObject<Session[] | null>,
+    stagedApiRef: { current: null },
+    supportsSteerRef: { current: true } as MutableRefObject<boolean>,
+    taskLaunchOpenRef: { current: false },
+    taskLaunchPhaseRef: { current: null },
+    visitedSessions: { current: new Set<string>() },
+    setLiveThinkingLevel: vi.fn() as unknown as Dispatch<SetStateAction<string | null>>,
+    setOptimisticSessions: vi.fn(),
+    setPendingApprovals: vi.fn(),
+    setPendingInteractions: vi.fn(),
+    setPendingSteerDisplay: vi.fn() as unknown as Dispatch<SetStateAction<Record<string, Message[]>>>,
+    setSelectedSession: vi.fn(),
+    setSessionMessages: vi.fn(),
+    applyTaskLaunchInstanceSnapshot: vi.fn(),
+    refreshSessionUsage: vi.fn(),
+    discoverConductorTask: vi.fn(async () => {}),
+    t: ((k: string, d?: Record<string, unknown>) =>
+      (d ? Object.entries(d).reduce<string>((acc, [kk, vv]) => acc.split(`{{${kk}}}`).join(String(vv)), k) : k)) as unknown as TFunction,
+  };
+}
+
+describe("v0.9.4 需求7：steer 停止链路", () => {
+  let deps: ReturnType<typeof makeDeps>;
+  let stop: (() => void) | null = null;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    deps = makeDeps();
+    stop = startAgentEventPipeline(deps as never);
+    // 会话流态就绪（simulating an in-flight turn）
+    streamStore.start("s1", "用户问题");
+  });
+
+  afterEach(() => {
+    stop?.();
+    streamStore.drop("s1");
+  });
+
+  it("steer_queue_cleared 分组：steering 移除队列并自动重发，followUp 回填输入框", async () => {
+    deps.pendingSteerMessagesRef.current.set("s1", ["引导A", "排队B"]);
+    emit({
+      agent_id: "jishu-self",
+      session_id: "s1",
+      data: { kind: "steer_queue_cleared", texts: ["引导A", "排队B"], follow_up_texts: ["排队B"] },
+    });
+    // steering（引导A）被重发：send_message 以合并文本调用
+    await vi.waitFor(() => {
+      expect(invokeCommand).toHaveBeenCalledWith("send_message", expect.objectContaining({
+        sessionId: "s1",
+        message: "引导A",
+      }));
+    });
+    // followUp（排队B）回填输入框（正查看的会话）
+    expect(deps.chatInputRef.current?.restoreTexts).toHaveBeenCalledWith(["排队B"]);
+    // 前端队列已对账清空
+    expect(deps.pendingSteerMessagesRef.current.has("s1")).toBe(false);
+  });
+
+  it("旧形状事件（无 follow_up_texts）：全部视为 steering 重发（对账语义不变）", async () => {
+    deps.pendingSteerMessagesRef.current.set("s1", ["旧引导"]);
+    emit({
+      agent_id: "jishu-self",
+      session_id: "s1",
+      data: { kind: "steer_queue_cleared", texts: ["旧引导"] },
+    });
+    await vi.waitFor(() => {
+      expect(invokeCommand).toHaveBeenCalledWith("send_message", expect.objectContaining({
+        sessionId: "s1",
+        message: "旧引导",
+      }));
+    });
+    expect(deps.pendingSteerMessagesRef.current.has("s1")).toBe(false);
+  });
+
+  it("TurnComplete(Aborted) + 队列残留：走真实重发（thinking 态有 send_message 支撑），非裸等待", async () => {
+    deps.pendingSteerMessagesRef.current.set("s1", ["引导C"]);
+    emit({
+      agent_id: "jishu-self",
+      session_id: "s1",
+      data: { kind: "turn_complete", reason: "Aborted", usage: null },
+    });
+    await vi.waitFor(() => {
+      expect(invokeCommand).toHaveBeenCalledWith("send_message", expect.objectContaining({
+        sessionId: "s1",
+        message: "引导C",
+      }));
+    });
+    // 关键区分（vs 旧缺陷）：旧路径预创建**无来源**的无超时 thinking 态等
+    // 一个永不会来的 follow-up；新路径的 thinking 态由真实 send_message 支撑，
+    // 且带防伪守卫标记（保护新流不被旧回合迟到完成事件误杀）。
+    expect(deps.pendingReplyStartedAtRef.current.has("s1")).toBe(true);
+    expect(deps.pendingSteerMessagesRef.current.has("s1")).toBe(false);
+  });
+
+
+  it("v0.9.4 需求8：tool_use_progress 200ms 节流（同 call_id 第二发被吞，异 call_id 放行）", async () => {
+    streamStore.push("s1", {
+      session_id: "s1",
+      event_type: "tool_use_start",
+      data: { kind: "tool_use_start", call_id: "c1", tool: "bash", input: {} },
+    } as never);
+    emit({
+      agent_id: "jishu-self",
+      session_id: "s1",
+      data: { kind: "tool_use_progress", call_id: "c1", partial_output: { output: "first" } },
+    });
+    emit({
+      agent_id: "jishu-self",
+      session_id: "s1",
+      data: { kind: "tool_use_progress", call_id: "c1", partial_output: { output: "second-throttled" } },
+    });
+    emit({
+      agent_id: "jishu-self",
+      session_id: "s1",
+      data: { kind: "tool_use_progress", call_id: "c2", partial_output: { output: "other-call" } },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    const tools = streamStore.getState("s1")!.tools;
+    const c1 = tools.find((t) => t.id === "c1");
+    const c2 = tools.find((t) => t.id === "c2");
+    expect(c1?.partialOutput).toBe("first");
+    expect(c2?.partialOutput).toBeUndefined(); // c2 无 start，不建条目
+  });
+
+  it("TurnComplete(Complete) + 队列残留：维持 follow-up 预创建（正常路径不回归）", async () => {
+    deps.pendingSteerMessagesRef.current.set("s1", ["引导D"]);
+    emit({
+      agent_id: "jishu-self",
+      session_id: "s1",
+      data: { kind: "turn_complete", reason: "Complete", usage: null },
+    });
+    await vi.waitFor(() => {
+      // followUpExpected 预创建空流式态（thinking 指示）
+      expect(streamStore.getState("s1")).not.toBeNull();
+    });
+    // 正常完成不触发 send_message（pi 自己消化 follow-up）
+    expect(invokeCommand).not.toHaveBeenCalledWith("send_message", expect.objectContaining({ message: "引导D" }));
+    expect(deps.pendingSteerMessagesRef.current.has("s1")).toBe(false);
+  });
+});
