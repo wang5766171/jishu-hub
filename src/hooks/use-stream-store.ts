@@ -11,6 +11,13 @@ export interface StreamToolUse {
   isError?: boolean;
   /** v0.8.0 需求2 Phase 1：渲染意图（tool_use_start 携带，提交时随块持久化）。 */
   view?: import("@/types").ToolView;
+  /** v0.9.4 需求8：tool_use_start 到达时刻（running 卡实时计时）。 */
+  startedAt?: number;
+  /** v0.9.4 需求8：tool_use_result 到达时刻（完成态定格总时长）。 */
+  endedAt?: number;
+  /** v0.9.4 需求8：最新中间输出快照（tool_execution_update，运行中展开
+   * 可见——与「卡死」明确区分；完成后由 output 接替）。 */
+  partialOutput?: string;
 }
 
 export interface StepInfo {
@@ -232,12 +239,29 @@ class StreamStore {
       if (!tools.some((tool) => tool.id === data.call_id)) {
         // v0.8.0 需求2 Phase 1：view 随事件透传（tools 与 content 同源），
         // turn 提交时 content 中的 tool_use 块即带 view 持久化。
-        tools = [...tools, { id: data.call_id, name: data.tool, input: data.input, view: data.view }];
+        // v0.9.4 需求8：登记起始时刻（running 卡实时计时）。
+        tools = [...tools, { id: data.call_id, name: data.tool, input: data.input, view: data.view, startedAt: Date.now() }];
         content = [...content, { type: "tool_use", id: data.call_id, name: data.tool, input: data.input, view: data.view }];
       }
+    } else if (data.kind === "tool_use_progress") {
+      // v0.9.4 需求8：中间输出快照（高频，上游 event-pipeline 已 per
+      // call_id 节流 200ms）。只更新已登记工具；不建新条目（无 start 的
+      // 迟到进度无渲染意义）。提取 partial_output.output 字符串字段，
+      // 无则跳过（不猜形状）。
+      const partial = data.partial_output;
+      const text = partial && typeof partial === "object" && typeof (partial as { output?: unknown }).output === "string"
+        ? (partial as { output: string }).output
+        : null;
+      if (text !== null) {
+        tools = tools.map((tool) => (
+          tool.id === data.call_id ? { ...tool, partialOutput: text } : tool
+        ));
+      }
     } else if (data.kind === "tool_use_result") {
+      // v0.9.4 需求8：结束时刻（完成态 duration 展示；startedAt 同源配对）。
+      const endedAt = Date.now();
       tools = tools.map((tool) => (
-        tool.id === data.call_id ? { ...tool, output: data.output, isError: data.is_error } : tool
+        tool.id === data.call_id ? { ...tool, output: data.output, isError: data.is_error, endedAt } : tool
       ));
       if (!content.some((block) => block.type === "tool_result" && block.tool_use_id === data.call_id)) {
         content = [...content, { type: "tool_result", tool_use_id: data.call_id, content: data.output }];

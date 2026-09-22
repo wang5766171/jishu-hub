@@ -312,7 +312,13 @@
     "retryReasonRateLimit": "请求过于频繁",
     "retryReasonServer": "服务暂时不可用",
     "retryReasonAuth": "认证失败",
-    "retryReasonGeneric": "请求失败"
+    "retryReasonGeneric": "请求失败",
+    "toolRunningBackground": "后台执行中，输出实时刷新",
+    "toolStatusWaiting": "等待中",
+    "toolStatusRunning": "执行中",
+    "toolStatusDone": "完成",
+    "toolStatusError": "出错",
+    "toolStatusAborted": "已中止"
   },
   "plugins": {
     "modalPipelineStages": "阶段流水线",

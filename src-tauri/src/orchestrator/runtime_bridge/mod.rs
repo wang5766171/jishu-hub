@@ -786,6 +786,9 @@ pub fn map_normalized_event(context: &RuntimeEventContext, event: &NormalizedEve
         | NormalizedEvent::SteerInjected { .. }
         | NormalizedEvent::Raw { .. }
         | NormalizedEvent::PhaseDivider { .. }
+        // v0.9.4 需求8：工具执行中间进度（GUI 流式呈现语义，高频事件，
+        // 不参与任务编排决策）——透传为诊断。
+        | NormalizedEvent::ToolUseProgress { .. }
         | NormalizedEvent::CompactionStatus { .. }
         // v0.9.1 需求3 #1：停止清队回传（GUI 回填语义，编排事实面透传为诊断）。
         | NormalizedEvent::SteerQueueCleared { .. }

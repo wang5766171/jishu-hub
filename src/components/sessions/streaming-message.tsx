@@ -105,6 +105,11 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
     output: tool.output === undefined ? undefined : (
       typeof tool.output === "string" ? tool.output : JSON.stringify(tool.output, null, 2)
     ),
+    // v0.9.4 需求8：运行中计时与实时输出快照（后台命令可视化）；
+    // endedAt 随 tool_use_result 登记（完成态定格总时长）。
+    startedAt: tool.startedAt,
+    endedAt: tool.endedAt,
+    partialOutput: tool.partialOutput,
   }));
   // Split the content array into assistant segments at the indices where Pi
   // injected a steer (user message) mid-turn. With no splits there is a single

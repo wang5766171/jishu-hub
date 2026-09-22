@@ -312,7 +312,13 @@
     "retryReasonRateLimit": "Rate limited",
     "retryReasonServer": "Service temporarily unavailable",
     "retryReasonAuth": "Authentication failed",
-    "retryReasonGeneric": "Request failed"
+    "retryReasonGeneric": "Request failed",
+    "toolRunningBackground": "Running in background — output refreshes live",
+    "toolStatusWaiting": "Waiting",
+    "toolStatusRunning": "Running",
+    "toolStatusDone": "Done",
+    "toolStatusError": "Error",
+    "toolStatusAborted": "Aborted"
   },
   "plugins": {
     "modalPipelineStages": "Stage pipeline",

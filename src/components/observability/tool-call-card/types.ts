@@ -23,6 +23,9 @@ export interface ToolCall {
   error?: string;
   startedAt?: number;
   endedAt?: number;
+  /** v0.9.4 需求8：运行中最新输出快照（长时 bash 类工具的流式中间输出，
+   * 展开「后台执行中」区可见；完成后由 output 接替）。 */
+  partialOutput?: string;
 }
 
 /** v0.9.0 需求4：分类唯一权威在 Rust tool_view.rs（v2）——事件/持久化块

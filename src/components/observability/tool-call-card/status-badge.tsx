@@ -1,17 +1,19 @@
 import { memo } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { ToolStatus } from "./types";
 import { Clock, Loader2, Check, AlertTriangle, Ban } from "lucide-react";
 
-const statusConfig: Record<ToolStatus, { icon: typeof Clock; color: string; label: string; animate?: boolean }> = {
-  pending: { icon: Clock, color: "var(--tool-pending)", label: "Waiting" },
-  running: { icon: Loader2, color: "var(--tool-running)", label: "Running", animate: true },
-  success: { icon: Check, color: "var(--tool-success)", label: "Done" },
-  error: { icon: AlertTriangle, color: "var(--tool-error)", label: "Error" },
-  aborted: { icon: Ban, color: "var(--tool-aborted)", label: "Aborted" },
+const statusConfig: Record<ToolStatus, { icon: typeof Clock; color: string; labelKey: string; animate?: boolean }> = {
+  pending: { icon: Clock, color: "var(--tool-pending)", labelKey: "sessions.toolStatusWaiting" },
+  running: { icon: Loader2, color: "var(--tool-running)", labelKey: "sessions.toolStatusRunning", animate: true },
+  success: { icon: Check, color: "var(--tool-success)", labelKey: "sessions.toolStatusDone" },
+  error: { icon: AlertTriangle, color: "var(--tool-error)", labelKey: "sessions.toolStatusError" },
+  aborted: { icon: Ban, color: "var(--tool-aborted)", labelKey: "sessions.toolStatusAborted" },
 };
 
 export const StatusBadge = memo(function StatusBadge({ status }: { status: ToolStatus }) {
+  const { t } = useTranslation();
   const config = statusConfig[status];
   const Icon = config.icon;
   return (
@@ -19,7 +21,7 @@ export const StatusBadge = memo(function StatusBadge({ status }: { status: ToolS
       <Icon
         className={cn("w-[1em] h-[1em]", config.animate ? "animate-spin" : "")}
       />
-      {config.label}
+      {t(config.labelKey, config.labelKey.split(".").pop() ?? "")}
     </span>
   );
 });
