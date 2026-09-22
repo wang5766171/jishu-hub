@@ -93,6 +93,7 @@ async fn stream_minimal_chat(
         stream: true,
         max_tokens: Some(64),
         temperature: Some(0.0),
+        disable_thinking: false,
     };
 
     let cancel = llm::CancelToken::new();

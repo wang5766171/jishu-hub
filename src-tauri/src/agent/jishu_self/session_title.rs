@@ -68,8 +68,9 @@ pub async fn generate_and_persist(session_id: &str) -> Option<String> {
         }],
         tools: vec![],
         stream: true,
-        max_tokens: Some(64),
+        max_tokens: Some(128),
         temperature: Some(0.0),
+        disable_thinking: true,
     };
 
     let response = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
