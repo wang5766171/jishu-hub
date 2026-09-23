@@ -1664,21 +1664,37 @@ pub(crate) fn normalize_pi_agent_event(
         }
         "tool_execution_update" => {
             // v0.9.4 需求8：工具执行中间进度（bash 类长时工具的流式输出
-            // 快照，partialResult 形状 {output,...}）。透传不解析——前端只
-            // 提取 output 字符串字段，无则跳过（不猜形状）。高频事件，
-            // 前端 event-pipeline 侧 per call_id 节流。
+            // 快照）。pi 的 partialResult 是 AgentToolResult 形状——文本在
+            // content[].text（tools/bash.ts emitOutputUpdate），兜底直出
+            // output 字符串字段；均无则不发（不猜形状）。高频事件，前端
+            // event-pipeline 侧 per call_id 节流。
             let call_id = event
                 .get("toolCallId")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            let partial_output = event.get("partialResult").cloned().unwrap_or(serde_json::Value::Null);
-            if call_id.is_empty() {
+            let partial = event.get("partialResult");
+            let text: Option<String> = partial.and_then(|p| {
+                if let Some(arr) = p.get("content").and_then(|v| v.as_array()) {
+                    let mut s = String::new();
+                    for item in arr {
+                        if let Some(t) = item.get("text").and_then(|v| v.as_str()) {
+                            s.push_str(t);
+                        }
+                    }
+                    if !s.is_empty() { Some(s) } else { None }
+                } else if let Some(t) = p.get("output").and_then(|v| v.as_str()) {
+                    Some(t.to_string())
+                } else {
+                    None
+                }
+            });
+            if call_id.is_empty() || text.is_none() {
                 vec![]
             } else {
                 vec![NormalizedEvent::ToolUseProgress {
                     call_id,
-                    partial_output,
+                    partial_output: text.unwrap(),
                 }]
             }
         }
@@ -2567,7 +2583,10 @@ mod tests {
                 "type": "tool_execution_update",
                 "toolCallId": "call-1",
                 "toolName": "bash",
-                "partialResult": { "output": "step 3/45 done", "cancelled": false }
+                "partialResult": {
+                    "content": [{ "type": "text", "text": "step 3/45 done" }],
+                    "details": { "fullOutputPath": null }
+                }
             }),
             None,
             &mut Vec::new(),
@@ -2576,10 +2595,26 @@ mod tests {
         match &events[0] {
             NormalizedEvent::ToolUseProgress { call_id, partial_output } => {
                 assert_eq!(call_id, "call-1");
-                assert_eq!(
-                    partial_output.get("output").and_then(|v| v.as_str()),
-                    Some("step 3/45 done")
-                );
+                assert_eq!(partial_output, "step 3/45 done");
+            }
+            other => panic!("Expected ToolUseProgress, got {other:?}"),
+        }
+
+        // 兜底形状（output 直出）：也能提取。
+        let events = normalize_pi_agent_event(
+            &json!({
+                "type": "tool_execution_update",
+                "toolCallId": "call-1b",
+                "toolName": "bash",
+                "partialResult": { "output": "legacy shape" }
+            }),
+            None,
+            &mut Vec::new(),
+        );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            NormalizedEvent::ToolUseProgress { partial_output, .. } => {
+                assert_eq!(partial_output, "legacy shape");
             }
             other => panic!("Expected ToolUseProgress, got {other:?}"),
         }

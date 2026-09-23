@@ -126,12 +126,12 @@ pub enum NormalizedEvent {
         is_error: bool,
     },
     /// v0.9.4 需求8：工具执行中间进度（pi `tool_execution_update`，bash 类
-    /// 长时工具的流式输出快照）。partial_output 透传下游 partialResult
-    /// （bash 形状 `{output, exitCode?, cancelled, truncated}`；其他工具
-    /// 形状不解析）。仅流式渲染面消费；不参与任务编排语义。
+    /// 长时工具的流式输出快照）。partial_output 为归一化层提取后的纯文本
+    ///（pi 形状 content[].text，兑底 output 字段）；仅流式渲染面消费，
+    /// 不参与任务编排语义。
     ToolUseProgress {
         call_id: String,
-        partial_output: serde_json::Value,
+        partial_output: String,
     },
     Thinking {
         delta: String,

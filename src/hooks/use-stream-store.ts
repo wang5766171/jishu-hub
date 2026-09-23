@@ -245,16 +245,12 @@ class StreamStore {
       }
     } else if (data.kind === "tool_use_progress") {
       // v0.9.4 需求8：中间输出快照（高频，上游 event-pipeline 已 per
-      // call_id 节流 200ms）。只更新已登记工具；不建新条目（无 start 的
-      // 迟到进度无渲染意义）。提取 partial_output.output 字符串字段，
-      // 无则跳过（不猜形状）。
-      const partial = data.partial_output;
-      const text = partial && typeof partial === "object" && typeof (partial as { output?: unknown }).output === "string"
-        ? (partial as { output: string }).output
-        : null;
-      if (text !== null) {
+      // call_id 节流 200ms；文本已在归一化层提取为纯字符串——pi 形状
+      // content[].text）。只更新已登记工具；不建新条目（无 start 的
+      // 迟到进度无渲染意义）。
+      if (data.partial_output) {
         tools = tools.map((tool) => (
-          tool.id === data.call_id ? { ...tool, partialOutput: text } : tool
+          tool.id === data.call_id ? { ...tool, partialOutput: data.partial_output } : tool
         ));
       }
     } else if (data.kind === "tool_use_result") {

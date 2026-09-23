@@ -36,7 +36,7 @@ describe("streamStore tool execution progress（v0.9.4 需求8）", () => {
     streamStore.push("session-progress", chunk({
       kind: "tool_use_progress",
       call_id: "call-1",
-      partial_output: { output: "step 3/45 done", cancelled: false },
+      partial_output: "step 3/45 done",
     }));
     tools = streamStore.getState("session-progress")!.tools;
     expect(tools[0].partialOutput).toBe("step 3/45 done");
@@ -54,7 +54,7 @@ describe("streamStore tool execution progress（v0.9.4 需求8）", () => {
     expect(tools[0].endedAt).toBeGreaterThanOrEqual(tools[0].startedAt!);
   });
 
-  it("progress 非 output 字符串形状跳过；未知 call_id 不建条目", () => {
+  it("progress 空字符串跳过；未知 call_id 不建条目", () => {
     streamStore.drop("session-progress");
     streamStore.start("session-progress", null);
 
@@ -62,7 +62,7 @@ describe("streamStore tool execution progress（v0.9.4 需求8）", () => {
     streamStore.push("session-progress", chunk({
       kind: "tool_use_progress",
       call_id: "ghost",
-      partial_output: { output: "x" },
+      partial_output: "x",
     }));
     expect(streamStore.getState("session-progress")!.tools).toHaveLength(0);
 
@@ -72,16 +72,11 @@ describe("streamStore tool execution progress（v0.9.4 需求8）", () => {
       tool: "bash",
       input: { command: "echo hi" },
     }));
-    // 非 {output: string} 形状（如纯数字/缺 output）：跳过不猜形状。
+    // 空字符串（归一化层无有效文本时不发，防御兜底）：跳过。
     streamStore.push("session-progress", chunk({
       kind: "tool_use_progress",
       call_id: "call-2",
-      partial_output: 42,
-    }));
-    streamStore.push("session-progress", chunk({
-      kind: "tool_use_progress",
-      call_id: "call-2",
-      partial_output: { progress: 0.5 },
+      partial_output: "",
     }));
     expect(streamStore.getState("session-progress")!.tools[0].partialOutput).toBeUndefined();
   });
