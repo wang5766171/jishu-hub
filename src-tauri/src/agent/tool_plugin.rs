@@ -329,8 +329,10 @@ pub fn render_hub_mcp_resolver_hint(plugins: &[&ToolPlugin]) -> String {
     // 抄录，运行中启停的插件不在册上；hub_mcp_list/hub_mcp_call 是永不过期
     // 的解析器入口，「先查后调」实现热插拔（旧文案「动态发现/实时生效」与
     // 实际不符，即问题 B 根源）。
+    // v0.9.4 需求9 补充（用户裁决：任务驱动而非点名调用）：给模型明确的
+    // 决策规则——任务需要册子外能力时自发先查后调，而非等用户拖明工具名。
     format!(
-        "\n{MCP_HINT_OPEN}\n## jishu-hub — MCP 解析服务\n本会话可经 MCP 服务「jishu-hub」使用 hub 管理的全部 MCP 插件工具。已注册的 `插件id__` 前缀工具可直接调用；未注册的（如新启用的插件）：先调 `hub_mcp_list` 实时查看可用插件、工具与参数说明，再调 `hub_mcp_call` 代理调用——插件启停经 list 即时反映。不要尝试直连各 MCP 服务，也不要用 shell 命令替代。\n{MCP_HINT_CLOSE}"
+        "\n{MCP_HINT_OPEN}\n## jishu-hub — MCP 解析服务\n本会话可经 MCP 服务「jishu-hub」使用 hub 管理的全部 MCP 插件工具（联网搜索、读图识图、外部系统能力等）。当任务需要当前工具清单之外的能力时，不要放弃、不要改用 shell 命令——先调 `hub_mcp_list` 实时查看可用插件、工具与参数说明，再用 `hub_mcp_call` 代理调用目标工具；已注册的 `插件id__` 前缀工具可直接调用。插件启停经 list 即时反映（未列出即未启用/暂不可用，unavailable 项附原因）。不要尝试直连各 MCP 服务。\n{MCP_HINT_CLOSE}"
     )
 }
 
