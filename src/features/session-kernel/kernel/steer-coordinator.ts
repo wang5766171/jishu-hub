@@ -68,6 +68,23 @@ export class SteerCoordinator {
     this.notify();
   }
 
+  /**
+   * 注入兑现（steer_injected 到达）：pi 已把该条从队转 turn 消息——按文本
+   * 移除（匹配队首优先；展开变形时按最旧条目兜底）。占位随队列投影消失，
+   * 与流内 steerTexts 的「已注入隐藏」双保险。
+   */
+  consumeInjected(key: string, text: string): void {
+    const s = this.sessions.get(key);
+    if (!s || s.queue.length === 0) return;
+    const idx = s.queue.findIndex((q) => q.text === text);
+    const at = idx >= 0 ? idx : 0;
+    s.queue.splice(at, 1);
+    if (s.queue.length === 0 && s.pendingResend.length === 0) {
+      this.sessions.delete(key);
+    }
+    this.notify();
+  }
+
   /** 快照（渲染层派生占位用；勿持有引用后修改）。 */
   queueOf(key: string): readonly SteerQueueItem[] {
     return this.sessions.get(key)?.queue ?? [];

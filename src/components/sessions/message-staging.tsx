@@ -18,6 +18,12 @@ import { UserTextWithPills } from "./embedded-tools";
 export interface StagedMessage {
   id: string;
   content: string;
+  /** v0.9.4 需求8 补充：暂存即上传的附件标记行（批次/路径引用）——引导
+   * 发送时附加到消息（与普通发送的图片标记块同形状），带图 steer 不丢附件。 */
+  fileLines?: string[];
+  /** v0.9.4 需求8 补充：附件原始引用（上传完成前暂持；上传后以 fileLines
+   * 为准）。unknown[] + 调用方收敛类型，避免与 chat-input 的循环依赖。 */
+  files?: unknown[];
 }
 
 interface MessageStagingProps {

@@ -318,7 +318,9 @@
     "toolStatusRunning": "Running",
     "toolStatusDone": "Done",
     "toolStatusError": "Error",
-    "toolStatusAborted": "Aborted"
+    "toolStatusAborted": "Aborted",
+    "toolOutputTitle": "Output",
+    "toolOutputLines": "{{count}} lines"
   },
   "plugins": {
     "modalPipelineStages": "Stage pipeline",

@@ -227,6 +227,39 @@ describe("v0.9.4 需求7：steer 停止链路", () => {
     });
   });
 
+
+  it("测试期重构补丁：steer 注入即消费队列 + turn_complete 以 steerTexts 交错提交（多 turn 形态）", async () => {
+    steerCoordinator.stage("s1", "监控方案怎么做");
+    // A 回复流式
+    streamStore.push("s1", { session_id: "s1", event_type: "text_delta", data: { kind: "text_delta", delta: "部署方式如下" } } as never);
+    // steer 注入（pi turn 边界转新 turn，message_start user 回显归一化为 SteerInjected）
+    emit({
+      agent_id: "jishu-self",
+      session_id: "s1",
+      data: { kind: "steer_injected", content: "监控方案怎么做" },
+    });
+    // 注入即消费：占位（队列投影）立即消失
+    expect(steerCoordinator.queueOf("s1")).toHaveLength(0);
+    // B 回复流式（同一流，steerSplits 之后）
+    streamStore.push("s1", { session_id: "s1", event_type: "text_delta", data: { kind: "text_delta", delta: "监控用 Prometheus" } } as never);
+    // 缓冲合并后的唯一 TurnComplete
+    emit({
+      agent_id: "jishu-self",
+      session_id: "s1",
+      data: { kind: "turn_complete", reason: "Complete", usage: null },
+    });
+    await vi.waitFor(() => {
+      expect(streamStore.getState("s1")).toBeNull();
+    });
+    // 提交消息含 [A 回复, B 引导, B 回复] 交错（B 以流内 steerTexts 为源）
+    const setCalls = (deps.setSessionMessages as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const last = JSON.stringify(setCalls[setCalls.length - 1]);
+    expect(last).toContain("部署方式如下");
+    expect(last).toContain("监控方案怎么做");
+    expect(last).toContain("监控用 Prometheus");
+    expect(steerCoordinator.isEmpty("s1")).toBe(true);
+  });
+
   it("正常完成不清残队列（多条引导第 2+ 条等 follow-up turn，闸门仅限 Abort）", async () => {
     streamStore.drop("s1");
     streamStore.start("s1", "问");

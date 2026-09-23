@@ -165,7 +165,9 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           });
         }
 
-        // v0.9.4 需求7 测试期重构：clear_queue 对账全量入 SteerCoordinator。
+        // v0.9.4 需求7 测试期重构：会话键解析（cid → resolvedId 优先）。
+  const finalKeyRef = (cid: string): string => streamStore.getState(cid)?.resolvedId ?? cid;
+  // v0.9.4 需求7 测试期重构：clear_queue 对账全量入 SteerCoordinator。
         // steering（用户引导）进 pendingResend（Abort 终结时重发——用户期望
         // 「引导被回复」而非作废）；followUp 回填输入框（v0.9.1 语义）。
         // 占位即队列投影，reconcileCleared 内部同步消化（含展开变形兑底）。
@@ -185,6 +187,19 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             deps.chatInputRef.current?.restoreTexts(followUps);
           }
           continue;
+        }
+
+        // v0.9.4 需求7 测试期重构补丁：steer 注入事实落地时消费队列——pi 的
+        // steering 是「turn 边界转新 turn」形态（A 无工具 gap 时 B 不 fold 进
+        // 当前 turn），且 hub 将多 turn 的 TurnComplete 缓冲合并为最后一个，
+        // 旧的「turn_complete 时按队列消费」永远不触发 → 队列残留 → 占位
+        // 永挂底部 + steer user 消息不提交（用户实测 B 一直在最下面）。
+        // 注入事实以 steer_injected 到达为准（流内 steerTexts 同步记录），
+        // 消费精确匹配队首文本；提交路径（turn_complete 交错）同步改为以
+        // 流内 steerTexts 为源。
+        if (chunk.data.kind === "steer_injected") {
+          const queueKey0 = steerCoordinator.isEmpty(finalKeyRef(cid)) ? cid : finalKeyRef(cid);
+          steerCoordinator.consumeInjected(queueKey0, chunk.data.content);
         }
 
         // 需求1 A7：会话内 thinking 生效值（Pi clamp 后）回传。
@@ -401,6 +416,12 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // each injection point; we split there and interleave the queued
           // steers so the live order matches the JSONL Pi persists.
           const steerQueueKey = steerCoordinator.isEmpty(finalKey) ? cid : finalKey;
+          // v0.9.4 需求7 测试期重构补丁：提交源改为流内 steerTexts（注入事实）。
+          // pi 的 steering 是「turn 边界转新 turn」形态 + hub 缓冲合并多 turn 的
+          // TurnComplete——前端只见一次终结，注入的兑现以 steer_injected 到达为
+          // 准（store.steerTexts，coordinator 队列同刻消费）；队列此刻只承载
+          // 未注入的残留（防御路径）。
+          const steerTexts = state?.steerTexts ?? [];
           const queuedSteers = steerCoordinator.textsOf(steerQueueKey);
           // ── Build interactionInsertions with REAL indices ───────────────────
           // The snapshot `item.index` (content.length at interaction_request time)
@@ -439,13 +460,13 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             /* 占位从队列派生，consume 已同步消化 */
           };
           if (interactionInsertions.length > 0) {
-            const midSteerCount = Math.min(steerSplits.length, queuedSteers.length);
+            const midSteerCount = Math.min(steerSplits.length, steerTexts.length);
             const committed = commitAssistantWithInteractions({
               assistantContent,
               interactionInsertions,
               steerInsertions: steerSplits.slice(0, midSteerCount).map((index, i) => ({
                 index,
-                text: queuedSteers[i],
+                text: steerTexts[i],
               })),
               error: state?.error,
             });
@@ -472,12 +493,12 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
               consumeSteerFromQueue(1);
               dropLivePlaceholders(1);
             }
-          } else if (steerSplits.length > 0 && queuedSteers.length > 0) {
+          } else if (steerSplits.length > 0 && steerTexts.length > 0) {
             // TOOL-BEARING turn with mid-turn steers: split the accumulated
             // content at each injection point and interleave the steers
             // between segments — yielding [reply1a, steer, reply1b] instead of
             // [reply1a+reply1b, steer], matching the JSONL order.
-            const midCount = Math.min(steerSplits.length, queuedSteers.length);
+            const midCount = Math.min(steerSplits.length, steerTexts.length);
             let prevIdx = 0;
             for (let i = 0; i < midCount; i++) {
               const seg = assistantContent.slice(prevIdx, steerSplits[i]);
@@ -486,7 +507,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
               }
               newMessages.push({
                 role: "user",
-                content: [{ type: "text", text: queuedSteers[i] }],
+                content: [{ type: "text", text: steerTexts[i] }],
                 timestamp: Date.now(),
               });
               prevIdx = steerSplits[i];
@@ -819,7 +840,15 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           if (!followUpExpected && deps.stagedApiRef.current) {
             const claimed = deps.stagedApiRef.current.claimAll(finalKey);
             if (claimed.length > 0) {
-              const merged = claimed.map((m) => m.content).join("\n\n");
+              // v0.9.4 需求8 补充：暂存附件标记行随自动发送附加（与手动引导
+              // 同通道——文件落盘 + Read 引用）。
+              const claimedWithFiles = claimed.filter((m) => m.fileLines && m.fileLines.length > 0);
+              let fileBlock = "";
+              if (claimedWithFiles.length > 0) {
+                const lines = claimedWithFiles.flatMap((m) => m.fileLines ?? []);
+                fileBlock = "\n" + "\n" + "<!--JISHU_HUB_IMAGES_BEGIN-->" + "\n" + "[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]" + "\n" + lines.join("\n") + "\n" + "<!--JISHU_HUB_IMAGES_END-->";
+              }
+              const merged = claimed.map((m) => m.content).join("\n") + fileBlock;
               // Start WITHOUT pendingUserMessage: send_message delivers the
               // message to the backend (JSONL), so the reply's turn_complete
               // must NOT re-commit it (would duplicate). Commit it into the

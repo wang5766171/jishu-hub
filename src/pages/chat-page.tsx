@@ -2932,16 +2932,16 @@ export function ChatPage({
                     const steerSplits = Array.from(new Set(state.steerSplits))
                       .filter((idx) => idx > 0 && idx < state.content.length)
                       .sort((a, b) => a - b);
-                    const queuedSteers = steerCoordinator.textsOf(
-                      steerCoordinator.isEmpty(finalKey) ? selectedSession : finalKey,
-                    );
-                    const midSteerCount = Math.min(steerSplits.length, queuedSteers.length);
+                    // 注入事实以流内 steerTexts 为准（steer_injected 已同步
+                    // 消费 coordinator 队列）。
+                    const injectedSteerTexts = state.steerTexts ?? [];
+                    const midSteerCount = Math.min(steerSplits.length, injectedSteerTexts.length);
                     const committed = commitAssistantWithInteractions({
                       assistantContent,
                       interactionInsertions,
                       steerInsertions: steerSplits.slice(0, midSteerCount).map((index, i) => ({
                         index,
-                        text: queuedSteers[i],
+                        text: injectedSteerTexts[i],
                       })),
                       error: state.error,
                     });

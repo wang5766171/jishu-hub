@@ -805,6 +805,46 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
    * 标记——工具快照以 toolIds 返回值显式传递（流式渲染/引导占位用），回放
    * 由后端从注入块派生（extract_tool_snapshot）。任何新增的用户消息出口
    * 必须走这里（§16.8 组装单源）。 */
+  // v0.9.4 需求8 补充（用户实测：steer 带附件/图片丢失）：附件上传管线
+  // 提取共用——普通发送与引导暂存（steering）同源。返回文件标记行
+  //（批次/路径引用，模型经 Read 工具查看），空数组表示无附件。
+  const saveInputFiles = useCallback(
+    async (inputFiles: AttachedFile[]): Promise<string[]> => {
+      if (!projectPath || inputFiles.length === 0) return [];
+      const localFiles = inputFiles.filter((f) => f.localPath && projectPath && isInsideProject(f.localPath, projectPath));
+      const externalPathFiles = inputFiles.filter((f) => f.localPath && !(projectPath && isInsideProject(f.localPath, projectPath)));
+      const uploadFiles = inputFiles.filter((f) => !f.localPath);
+      const allFileLines = [];
+      for (const f of localFiles) {
+        allFileLines.push(`${f.label}: ${f.localPath}`);
+      }
+      const filesToUpload = [...uploadFiles, ...externalPathFiles];
+      if (filesToUpload.length > 0) {
+        for (const f of externalPathFiles) {
+          if (!f.data && f.localPath) {
+            try {
+              f.data = await invokeCommand("read_file_as_base64", { path: f.localPath });
+            } catch { f.data = ""; }
+          }
+        }
+        const payload = filesToUpload.map((f) => ({
+          data: f.data,
+          filename: f.filename,
+          label: f.label || null,
+        }));
+        const saved = await invokeCommand<SavedFile[]>("save_session_files", {
+          projectPath,
+          files: payload,
+        });
+        for (const sv of saved) {
+          allFileLines.push(`${sv.label}（批次 ${sv.batch_id}）: ${sv.path}`);
+        }
+      }
+      return allFileLines;
+    },
+    [projectPath],
+  );
+
   const composeOutgoing = useCallback(
     async (rawText: string): Promise<{ message: string; sessionKey: string; toolIds: string[] }> => {
       const sessionKey = nextPendingId();
@@ -905,10 +945,24 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     // interrupting the output. The user can then click "Guide" on the
     // staged message to deliver it (stop+send or steer).
     if (isStreaming) {
+      // v0.9.4 需求8 补充：暂存同步入列（files 随行，UI 即时可见）；附件
+      // 上传后台执行并回填 fileLines——旧实现 files 直接丢弃，带图引导
+      // 丢失附件（用户实测）。引导发送时若上传未完成则兜底等待。
+      const stagedId = crypto.randomUUID();
+      const stagedFiles = files;
       setCurrentStagedMessages((prev) => [
         ...prev,
-        { id: crypto.randomUUID(), content: message.trim() },
+        { id: stagedId, content: message.trim(), files: stagedFiles },
       ]);
+      void saveInputFiles(stagedFiles)
+        .then((lines) => {
+          if (lines.length > 0) {
+            setStagedMessagesForSession(stagingSessionKey, (prev) =>
+              prev.map((m) => (m.id === stagedId ? { ...m, fileLines: lines } : m)),
+            );
+          }
+        })
+        .catch((err) => console.warn("Failed to save staged files:", err));
       setMessage("");
       onDraftChange?.("");
       setFiles([]);
@@ -934,48 +988,15 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       setHistoryPos(null);
       draftBeforeHistoryRef.current = "";
 
-      const localFiles = files.filter((f) => f.localPath && projectPath && isInsideProject(f.localPath, projectPath));
-      const externalPathFiles = files.filter((f) => f.localPath && !(projectPath && isInsideProject(f.localPath, projectPath!)));
-      const uploadFiles = files.filter((f) => !f.localPath);
-
-      if (allowFiles && (localFiles.length > 0 || uploadFiles.length > 0)) {
-        const allFileLines: string[] = [];
-
-        // Local project files: reference directly
-        for (const f of localFiles) {
-          allFileLines.push(`${f.label}: ${f.localPath}`);
-        }
-
-        // External files: copy to session_files
-        const filesToUpload = [...uploadFiles, ...externalPathFiles];
-        if (filesToUpload.length > 0) {
-          // Read base64 for external path files (from URI-list paste)
-          for (const f of externalPathFiles) {
-            if (!f.data && f.localPath) {
-              try {
-                f.data = await invokeCommand<string>("read_file_as_base64", { path: f.localPath });
-              } catch { f.data = ""; }
-            }
-          }
-          const inputFiles = filesToUpload.map((f) => ({
-            data: f.data,
-            filename: f.filename,
-            label: f.label || null,
-          }));
-          const saved = await invokeCommand<SavedFile[]>("save_session_files", {
-            projectPath,
-            files: inputFiles,
-          });
-          for (const s of saved) {
-            allFileLines.push(`${s.label}（批次 ${s.batch_id}）: ${s.path}`);
-          }
-        }
-
+      if (allowFiles && files.length > 0) {
+        const allFileLines = await saveInputFiles(files);
         if (!fullMessage) {
           fullMessage = t("projects.defaultFileMessage");
         }
-        const fileListStr = allFileLines.join("\n");
-        fullMessage += `\n\n<!--JISHU_HUB_IMAGES_BEGIN-->\n[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]\n${fileListStr}\n<!--JISHU_HUB_IMAGES_END-->`;
+        if (allFileLines.length > 0) {
+          const fileListStr = allFileLines.join("\n");
+          fullMessage += `\n\n<!--JISHU_HUB_IMAGES_BEGIN-->\n[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]\n${fileListStr}\n<!--JISHU_HUB_IMAGES_END-->`;
+        }
       }
 
       await sendPreparedMessage(fullMessage, true, pendingId, composed.toolIds);
@@ -1005,9 +1026,29 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       // 写消息头标记（回放 pill）、并集写入会话集（注入生效）。修前引导
       // 完全绕过：token 原文进 prompt、无 pill、无注入。
       const { message, sessionKey, toolIds } = await composeOutgoing(rawContent);
+      // v0.9.4 需求8 补充：引导消息附加暂存附件的标记行（与普通发送同通道
+      // ——文件落盘 + Read 引用）。上传未完成时在此兜底等待（guide loading
+      // 态已覆盖等待期）。
+      const staged = stagedMessages.find((m) => m.id === id);
+      let fullGuide = message;
+      if (staged) {
+        let fileLines = staged.fileLines;
+        if (!fileLines && staged.files && staged.files.length > 0) {
+          const lines = await saveInputFiles(staged.files as AttachedFile[]);
+          if (lines.length > 0) {
+            fileLines = lines;
+            setStagedMessagesForSession(stagingSessionKey, (prev) =>
+              prev.map((m) => (m.id === id ? { ...m, fileLines: lines } : m)),
+            );
+          }
+        }
+        if (fileLines && fileLines.length > 0) {
+          fullGuide = `${message}\n\n<!--JISHU_HUB_IMAGES_BEGIN-->\n[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]\n${fileLines.join("\n")}\n<!--JISHU_HUB_IMAGES_END-->`;
+        }
+      }
       if (onGuideStaged) {
         // Caller handles delivery (steer for Pi RPC / ACP).
-        await onGuideStaged(message, toolIds);
+        await onGuideStaged(fullGuide, toolIds);
       } else {
         // CLI/embedded agents have no mid-turn steer. Stop the current turn
         // first, then send. The abort MUST be awaited so its streamStore.drop

@@ -1712,12 +1712,35 @@ pub(crate) fn normalize_pi_agent_event(
                 .get("result")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            // v0.9.4 需求8 测试期修复：pi 的 result 同为 AgentToolResult 形态
+            //（文本在 content[].text，与 update 的 partialResult 同源）——原样
+            // 透传导致前端结果区显示原始 JSON（用户截图实证）。提取文本后以
+            // 字符串透传；非该形状（如 MCP 工具自带结构）保持原样不猜。
+            let output = match result {
+                serde_json::Value::Null => serde_json::Value::Null,
+                ref v @ serde_json::Value::Object(_) => {
+                    let text = v.get("content").and_then(|c| c.as_array()).map(|arr| {
+                        let mut s = String::new();
+                        for item in arr {
+                            if let Some(t) = item.get("text").and_then(|x| x.as_str()) {
+                                s.push_str(t);
+                            }
+                        }
+                        s
+                    });
+                    match text {
+                        Some(t) if !t.is_empty() => serde_json::Value::String(t),
+                        _ => v.clone(),
+                    }
+                }
+                other => other,
+            };
             if call_id.is_empty() {
                 vec![]
             } else {
                 vec![NormalizedEvent::ToolUseResult {
                     call_id,
-                    output: result,
+                    output,
                     is_error,
                 }]
             }
