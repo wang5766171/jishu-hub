@@ -57,8 +57,15 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
       });
   }, [command, JSON.stringify(args)]);
 
+  // v0.9.4 需求7 测试期修复：refreshKey 触发的重拉走 silent——非 silent 会
+  // setLoading(true) 引发依赖 loading 的布局抖动（骨架/禁用态切换），回合完成
+  // 后的列表刷新等场景被用户感知为「界面刷新」。首挂与 args 变化（fetch 重建）
+  // 保持非 silent（清空 data + loading 骨架仍是正确反馈）。
+  const lastKeyRef = useRef(refreshKey);
   useEffect(() => {
-    fetch().catch((err) => {
+    const keyChanged = lastKeyRef.current !== refreshKey;
+    lastKeyRef.current = refreshKey;
+    fetch(keyChanged).catch((err) => {
       if (import.meta.env.DEV) console.warn("[useInvoke] fetch failed:", err);
     });
   }, [fetch, refreshKey]);

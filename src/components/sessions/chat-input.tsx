@@ -1070,14 +1070,11 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     if (abortKey) {
       await invokeCommand("abort_chat", { sessionId: abortKey });
       await onAbort?.();
-      // Only drop the abort key (the canonical id the backend tracked). The
-      // aborted turn's turn_complete handler in chat-page already drops the
-      // resolved id (cid). Dropping sessionId/activeSessionId here too would
-      // race that handler: while `abort_chat`'s IPC is in flight the
-      // turn_complete(Aborted) event arrives and is processed — which may start
-      // a NEW stream (e.g. sending a queued guide) under the resolved id. This
-      // subsequent drop would then wipe that freshly-started "thinking" state.
-      streamStore.drop(abortKey);
+      // v0.9.4 需求7 测试期重构：此处不再 drop 任何流键——抢先 drop 会让
+      // 晚到的 turn_complete(Aborted)（唯一回合终结者：重复提交防重 + steering
+      // 重发收口 + 流 drop）被 pushTracked 拒绝，收口死。流的生命周期归属
+      // turn_complete 处理；极端丢失（进程崩溃）由重挂载对账（chat_turn_active）
+      // 兜底。
       setSending(false);
       setActiveSessionId(null);
     } else {

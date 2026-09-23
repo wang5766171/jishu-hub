@@ -42,6 +42,7 @@ import {
   setCachedSessionMessages,
 } from "./session-cache";
 import { emitSessionSignal } from "../signals";
+import { steerCoordinator } from "./steer-coordinator";
 
 /** v0.9.4 需求6 v2：AI 标题生成前端触发一次守卫（会话 id 维度，进程内）。 */
 const titledOnce = new Set<string>();
@@ -57,7 +58,9 @@ export interface AgentEventPipelineDeps {
   messageAreaRef: MutableRefObject<HTMLDivElement | null>;
   newSessionStreamIdsRef: MutableRefObject<Set<string>>;
   pendingReplyStartedAtRef: MutableRefObject<Map<string, number>>;
-  pendingSteerMessagesRef: MutableRefObject<Map<string, string[]>>;
+  /** v0.9.4 需求7 测试期重构：停止时本地乐观提交标记（会话 key → 时刻）。
+   * turn_complete(Aborted) 凭此跳过重复提交，但收口（重发/drop）照常。 */
+  abortLocalCommitRef: MutableRefObject<Map<string, number>>;
   projectIdRef: MutableRefObject<string | null>;
   projectPathRef: MutableRefObject<string | null>;
   refetchSessionsRef: MutableRefObject<((silent?: boolean) => Promise<Session[]>) | null>;
@@ -74,7 +77,6 @@ export interface AgentEventPipelineDeps {
   setOptimisticSessions: Dispatch<SetStateAction<Session[]>>;
   setPendingApprovals: Dispatch<SetStateAction<PendingChatApproval[]>>;
   setPendingInteractions: Dispatch<SetStateAction<PendingChatInteraction[]>>;
-  setPendingSteerDisplay: Dispatch<SetStateAction<Record<string, Message[]>>>;
   setSelectedSession: Dispatch<SetStateAction<string | null>>;
   setSessionMessages: Dispatch<SetStateAction<Message[]>>;
   // —— 壳层回调（useCallback 稳定引用）——
@@ -163,88 +165,18 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           });
         }
 
-        // v0.9.4 需求7 缺陷二主修：分组对账 + 自动重发。clear_queue 响应
-        // 天然区分 steering（用户引导）与 followUp（普通排队）——点停止的
-        // 意图是「让引导快速生效」而非作废引导：steering 自动重发为真实
-        // 消息（用户期望引导被回复），followUp 回填输入框由用户决定（维持
-        // v0.9.1 需求3 #1 语义）。同步移除前端 steer 队列/占位——否则晚到
-        // 的 TurnComplete(Aborted) 会误判「pi 将回复 follow-up」而预创建
-        // 无超时 thinking 态（卡「思考中」根源，01 缺陷二）。
+        // v0.9.4 需求7 测试期重构：clear_queue 对账全量入 SteerCoordinator。
+        // steering（用户引导）进 pendingResend（Abort 终结时重发——用户期望
+        // 「引导被回复」而非作废）；followUp 回填输入框（v0.9.1 语义）。
+        // 占位即队列投影，reconcileCleared 内部同步消化（含展开变形兑底）。
         if (chunk.data.kind === "steer_queue_cleared") {
           const finalKey = streamStore.getState(cid)?.resolvedId ?? cid;
-          const queueKey = deps.pendingSteerMessagesRef.current.has(finalKey)
-            ? finalKey
-            : cid;
-          const followUps = chunk.data.follow_up_texts ?? [];
-          const steering = chunk.data.texts.filter((t) => !followUps.includes(t));
-          const queue = deps.pendingSteerMessagesRef.current.get(queueKey) ?? [];
-          // 对账移除用全集（steering + followUp 都已被 pi 作废：followUp 回填
-          // 输入框后若留在队列，将成为占位僵尸被后续 turn_complete 误提交）。
-          if (queue.length > 0 && chunk.data.texts.length > 0) {
-            const toRemove = [...chunk.data.texts];
-            const remaining = queue.filter((q) => {
-              const i = toRemove.indexOf(q);
-              if (i >= 0) {
-                toRemove.splice(i, 1);
-                return false;
-              }
-              return true;
-            });
-            const removedCount = queue.length - remaining.length;
-            if (remaining.length > 0) {
-              deps.pendingSteerMessagesRef.current.set(queueKey, remaining);
-            } else {
-              deps.pendingSteerMessagesRef.current.delete(queueKey);
-            }
-            if (removedCount > 0) {
-              deps.setPendingSteerDisplay((prev) => {
-                const list = prev[queueKey];
-                if (!list || list.length === 0) return prev;
-                const rest = list.slice(removedCount);
-                const next = { ...prev };
-                if (rest.length === 0) delete next[queueKey];
-                else next[queueKey] = rest;
-                return next;
-              });
-            }
-          }
-          if (steering.length > 0) {
-            // 自动重发：合并为一条（pi 队列本就 one-at-a-time，单 turn 语义）
-            // → 提交 user 消息 → thinking 态 + 防伪完成标记 → send_message
-            // 真实发送。后端 send_message 在 CancelPending 时进 buffer，
-            // agent_settled 后自动消化——与 abort 流程天然串接。
-            const merged = steering.join("\n\n");
-            const base =
-              getCachedSessionMessages(finalKey)
-              ?? getCachedSessionMessages(cid)
-              ?? [];
-            const updated = [...base, {
-              role: "user" as const,
-              content: [{ type: "text" as const, text: merged }],
-              timestamp: Date.now(),
-            }];
-            setCachedSessionMessages(finalKey, updated);
-            if (cid !== finalKey) setCachedSessionMessages(cid, updated);
-            if (deps.selectedSessionRef.current === cid || deps.selectedSessionRef.current === finalKey) {
-              deps.setSessionMessages(updated);
-            }
-            streamStore.start(finalKey, null);
-            if (cid !== finalKey) streamStore.alias(finalKey, cid);
-            deps.pendingReplyStartedAtRef.current.set(finalKey, Date.now());
-            void (async () => {
-              try {
-                await invokeCommand("send_message", {
-                  agentId: deps.activeIdRef.current ?? "",
-                  projectPath: deps.projectPathRef.current,
-                  sessionId: finalKey,
-                  message: merged,
-                });
-              } catch (err) {
-                console.error("Failed to resend cleared steering message:", err);
-                streamStore.drop(finalKey);
-              }
-            })();
-          }
+          const queueKey = steerCoordinator.isEmpty(finalKey) ? cid : finalKey;
+          const { followUps } = steerCoordinator.reconcileCleared(
+            queueKey,
+            chunk.data.texts,
+            chunk.data.follow_up_texts ?? [],
+          );
           // followUp 部分维持 v0.9.1 回填语义（仅正查看的会话，切走不越权改草稿）。
           if (
             followUps.length > 0
@@ -336,21 +268,11 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // once known) would miss the queue, leaving the live "已引导"
           // placeholder stuck even though Pi already processed the steer
           // (visible only after a JSONL refresh).
-          const queuedSteers = deps.pendingSteerMessagesRef.current.get(cid);
-          if (queuedSteers) {
-            deps.pendingSteerMessagesRef.current.set(realId, queuedSteers);
-            deps.pendingSteerMessagesRef.current.delete(cid);
+          const queuedSteers = steerCoordinator.queueOf(cid);
+          if (queuedSteers.length > 0) {
+            steerCoordinator.moveKey(cid, realId);
           }
-          // 直显占位记录同步换键（同因：引导常在 id 解析前排队，占位挂在
-          // pendingId 下——不换键则真实 id 选中态取不到，切回会话占位消失）。
-          deps.setPendingSteerDisplay((prev) => {
-            const live = prev[cid];
-            if (!live || live.length === 0) return prev;
-            const next = { ...prev };
-            next[realId] = [...(prev[realId] ?? []), ...live];
-            delete next[cid];
-            return next;
-          });
+          // 占位从队列派生（SteerCoordinator），moveKey 已同步——无需换键。
           // Migrate launch-injection marker: if the pending id was already
           // injected with launch instruction, the real id is too (same session).
           if (deps.injectedLaunchSessionsRef.current.has(cid)) {
@@ -442,6 +364,10 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           const explicitFailure =
             chunk.data.reason === "Error"
             || chunk.data.reason === "MaxTokens"
+            // v0.9.4 需求7 测试期修复二：Aborted 是用户主动动作的结果，必然
+            // 真实（重发后 2s 内再引导+停止的二次 Abort 曾被守卫吞掉——引导
+            // 丢失且重发 thinking 流无人 drop）——不受伪完成守卫约束。
+            || chunk.data.reason === "Aborted"
             || Boolean(state?.error);
           if (
             pendingReplyStartedAt !== undefined
@@ -474,10 +400,8 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // arrival order. `steerSplits` records the content-array index at
           // each injection point; we split there and interleave the queued
           // steers so the live order matches the JSONL Pi persists.
-          const steerQueueKey = deps.pendingSteerMessagesRef.current.has(finalKey)
-            ? finalKey
-            : cid;
-          const queuedSteers = deps.pendingSteerMessagesRef.current.get(steerQueueKey) ?? [];
+          const steerQueueKey = steerCoordinator.isEmpty(finalKey) ? cid : finalKey;
+          const queuedSteers = steerCoordinator.textsOf(steerQueueKey);
           // ── Build interactionInsertions with REAL indices ───────────────────
           // The snapshot `item.index` (content.length at interaction_request time)
           // goes stale once the agent emits more content after the request.
@@ -506,38 +430,13 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             includePending: isAbortedTurn,
           });
 
-          // Remove the first `count` steers from the session queue. Reads the
-          // CURRENT ref (not the `queuedSteers` snapshot) so successive calls
-          // within the same turn_complete — mid-turn steers then a leftover —
-          // compose correctly instead of re-slicing the original array.
+          // v0.9.4 需求7 测试期重构：队列消费/占位清理统一收敛 SteerCoordinator
+          //（占位即队列投影，单一真源，不再手工配对）。
           const consumeSteerFromQueue = (count: number) => {
-            if (count <= 0) return;
-            const current = deps.pendingSteerMessagesRef.current.get(steerQueueKey) ?? [];
-            const remaining = current.slice(count);
-            if (remaining.length > 0) {
-              deps.pendingSteerMessagesRef.current.set(steerQueueKey, remaining);
-            } else {
-              deps.pendingSteerMessagesRef.current.delete(steerQueueKey);
-            }
+            steerCoordinator.consume(steerQueueKey, count);
           };
-          // Drop the oldest `count` live placeholders (FIFO matches the queue
-          // shift) for THIS session's key — v0.9.2 需求4：按 key 删除不再要求
-          // 正在查看该会话，后台会话提交排队引导时同样正确消费自己的占位，
-          // 不会残留到用户切回时与新提交的消息重复。
-          const dropLivePlaceholders = (count: number) => {
-            if (count <= 0) return;
-            deps.setPendingSteerDisplay((prev) => {
-              const list = prev[steerQueueKey];
-              if (!list || list.length === 0) return prev;
-              const remaining = list.slice(count);
-              const next = { ...prev };
-              if (remaining.length === 0) {
-                delete next[steerQueueKey];
-              } else {
-                next[steerQueueKey] = remaining;
-              }
-              return next;
-            });
+          const dropLivePlaceholders = (_count: number) => {
+            /* 占位从队列派生，consume 已同步消化 */
           };
           if (interactionInsertions.length > 0) {
             const midSteerCount = Math.min(steerSplits.length, queuedSteers.length);
@@ -554,8 +453,8 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             consumeSteerFromQueue(midSteerCount);
             dropLivePlaceholders(midSteerCount);
 
-            const leftover = deps.pendingSteerMessagesRef.current.get(steerQueueKey);
-            if (leftover && leftover.length > 0) {
+            const leftover = steerCoordinator.textsOf(steerQueueKey);
+            if (leftover.length > 0) {
               if (isAbortedTurn) {
                 // v0.9.4 需求7 缺陷二兕底：abort 后 pi 队列已被 clear_queue
                 // 作废，follow-up 回复不会来临——不提交、不预创建无超时
@@ -610,8 +509,8 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             // processed as a follow-up turn. Commit it now (appended after the
             // tail) so it lands BEFORE its response, which arrives in the next
             // turn_complete — mirroring the no-tool FIFO behavior below.
-            const leftover = deps.pendingSteerMessagesRef.current.get(steerQueueKey);
-            if (leftover && leftover.length > 0) {
+            const leftover = steerCoordinator.textsOf(steerQueueKey);
+            if (leftover.length > 0) {
               if (isAbortedTurn) {
                 // v0.9.4 需求7 缺陷二兕底：同 interaction 分支——abort 后
                 // follow-up 不会来临，改真实重发，不预创建 thinking。
@@ -692,6 +591,18 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             }
           }
 
+          // v0.9.4 需求7 测试期重构：本地乐观提交防重——停止时 onAbort 先于
+          // 本事件执行（abort_chat 快速返回），已本地提交过 partial/交错内容
+          //（abortLocalCommitRef 标记）。此处跳过重复提交，但下方的收口
+          //（steering 重发）、流 drop、标记清理照常——turn_complete 仍是唯一
+          // 回合终结者。
+          const freshLocalCommit = (key: string): boolean => {
+            const at = deps.abortLocalCommitRef.current.get(key);
+            return at !== undefined && Date.now() - at < 5_000;
+          };
+          if (isAbortedTurn && (freshLocalCommit(finalKey) || freshLocalCommit(cid))) {
+            newMessages.length = 0;
+          }
           // Resolve the base messages from the cache (preferring real id).
           const baseMessages =
             getCachedSessionMessages(finalKey)
@@ -770,6 +681,8 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // forcing a synchronous flush here can remove the live row before
           // React commits its formal Markdown replacement.
           streamStore.drop(cid);
+          deps.abortLocalCommitRef.current.delete(finalKey);
+          deps.abortLocalCommitRef.current.delete(cid);
           if ((viewed === cid || viewed === finalKey) && shouldKeepFollowingOutput) {
             // The live turn and its committed Markdown use different DOM
             // subtrees. Wait for both the stream-store notification and the
@@ -789,6 +702,32 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // suppress a later legitimate turn_complete for this session.
           deps.pendingReplyStartedAtRef.current.delete(finalKey);
           deps.pendingReplyStartedAtRef.current.delete(cid);
+
+          // v0.9.4 需求7 测试期修复：Abort 回合终结兑底闸门——steer 队列/占位
+          // 的清理此前全靠各提交路径精确配对，任何一条漏清（事件丢失/文本
+          // 展开变形/时序交错）都会残留「已引导」占位僵尸（流 drop 后
+          // steerTexts 归零，占位隐藏失效全部重现，用户实测双条）。Abort 后
+          // pi 队列已被 clear_queue 作废，残留无意义，此处清零。仅限 Abort：
+          // 正常完成的多条引导第 2+ 条留在队列等 pi 的 follow-up turn，其
+          // turn_complete 自会提交，不能误杀。（followUpExpected /
+          // guideToSendAfterDrop 的新流在下方 start，不受影响。）
+          if (isAbortedTurn) {
+            // v0.9.4 需求7 测试期重构收口：暂存重发（SteerCoordinator
+            // pendingResend）与队列残留兑底（事件丢失场景）合并去重后走
+            // 真实重发通道（顺序：原回合已提交，B 重发在后）。两个候选键
+            // 各取一次（takeResend 一次性语义，取空无副作用）。
+            const resend = [
+              ...steerCoordinator.takeResend(finalKey),
+              ...steerCoordinator.takeResend(cid),
+            ];
+            if (resend.length > 0) {
+              const merged = new Set([...(guideToSendAfterDrop !== null ? [guideToSendAfterDrop] : []), ...resend]);
+              guideToSendAfterDrop = [...merged].join("\n\n");
+            }
+            // Abort 终结清零：pi 队列已作废，残留即僵尸（占位随队列投影消失）。
+            steerCoordinator.resetAborted(steerQueueKey);
+            if (cid !== steerQueueKey) steerCoordinator.resetAborted(cid);
+          }
 
           if (followUpExpected) {
             // A committed steer will be answered in a FOLLOW-UP turn (a

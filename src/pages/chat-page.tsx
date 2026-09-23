@@ -5,6 +5,8 @@ import {
   useSessionStream,
   useStreamingSessionIds,
 } from "@/hooks/use-stream-store";
+import { steerCoordinator } from "@/features/session-kernel/kernel/steer-coordinator";
+import { useSyncExternalStore } from "react";
 import { MessageView } from "@/components/sessions/message-view";
 import { buildTurnSummaries } from "@/components/sessions/turn-rail";
 import { SessionPanelLayer } from "@/features/session-kernel/plugins/mounts/session-panel-layer";
@@ -359,7 +361,16 @@ export function ChatPage({
   // sessionMessages) would place them ABOVE that reply. Instead they are
   // surfaced when the steer continuation's turn completes, slotted between
   // the first reply and the steer response (matching Pi's JSONL order).
-  const pendingSteerMessagesRef = useRef<Map<string, string[]>>(new Map());
+
+  // v0.9.4 需求7 测试期修复三：停止时本地已提交标记（会话 key → 时刻）。
+  // 停止链路的时序真相：abort_chat 快速返回（不等 agent_settled）→本地
+  // onAbort 先于 TurnComplete(Aborted) 执行。若本地 drop 流，晚到的
+  // TurnComplete 被 pushTracked 拒绝，重发收口（steering 重发）永远不执行
+  //（用户实测：引导 B+停止 → B 消失）。改为：本地提交后不 drop、只设此
+  // 标记；turn_complete(Aborted) 到达时凭标记跳过重复提交，但收口照常。
+  const abortLocalCommitRef = useRef<Map<string, number>>(new Map());
+  // v0.9.4 需求7 测试期重构：steer 队列（外部单例）变更驱动占位重渲染。
+  useSyncExternalStore(steerCoordinator.subscribe, steerCoordinator.getVersion, steerCoordinator.getVersion);
   // Live display of steered user messages, scoped per session (v0.9.2 需求4：
   // 此前为单一全局数组，任何会话视图都会渲染其他会话的引导占位——对某个
   // 任务节点发引导会串到所有子节点会话）。Rendered AFTER the streaming
@@ -367,7 +378,7 @@ export function ChatPage({
   // in-progress assistant reply). Each entry is removed when its turn
   // completes and the steer is committed into sessionMessages at its
   // correct position (between the prior reply and the steer's response).
-  const [pendingSteerDisplay, setPendingSteerDisplay] = useState<Record<string, Message[]>>({});
+
   // M5：引导占位气泡的 pill 中文名映射（按当前会话加载）。
   const steerToolNames = useSessionToolNames(selectedSession ?? null);
   // Subscribe to streaming state for the currently-selected session. Drives
@@ -419,8 +430,11 @@ export function ChatPage({
   const sessionsRef = useRef<Session[] | null>(null);
   sessionsRef.current = sessions ?? null;
 
-  // v0.9.4 需求6 v2：AI 会话标题生成完成信号 → 本地补丁 + 拉新列表
-  //（session_info 已落 JSONL，refetch 后 display_name 即 AI 标题）。
+  // v0.9.4 需求6 v2：AI 会话标题生成完成信号 → 本地补丁。
+  // v0.9.4 需求7 测试期修复：去掉随后的 setListRefreshKey 全列表重拉——本地补丁
+  // 已即时更新 display_name，重拉纯冗余且非 silent（sessionsLoading 翻真引发
+  // 布局抖动，用户实测「会话完成后刷新两次」的第二次）；标题不改排序，
+  // 列表基线由下次自然加载对齐。
   useEffect(() => {
     return subscribeSessionSignals((signal) => {
       if (signal.type !== "session-titled") return;
@@ -428,7 +442,6 @@ export function ChatPage({
       if (cur) {
         setSessions(cur.map((s) => (s.id === signal.sessionId ? { ...s, display_name: signal.title } : s)));
       }
-      setListRefreshKey((k) => k + 1);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -628,6 +641,10 @@ export function ChatPage({
 
   const handleRefresh = async () => {
     const newKey = await onRefresh();
+    // v0.9.4 需求7 测试期修复（方案 B，用户裁决）：refreshKey 重拉已 silent 化
+    //（消除自动刷新场景的 loading 抖动），手动刷新在此显式非 silent 重拉——
+    // 保留 loading 转圈反馈。
+    await refetchSessions();
     setListRefreshKey(newKey);
     refreshAccessMode();
   };
@@ -2305,7 +2322,7 @@ export function ChatPage({
         messageAreaRef,
         newSessionStreamIdsRef,
         pendingReplyStartedAtRef,
-        pendingSteerMessagesRef,
+        abortLocalCommitRef,
         projectIdRef,
         projectPathRef,
         refetchSessionsRef,
@@ -2321,7 +2338,6 @@ export function ChatPage({
         setOptimisticSessions,
         setPendingApprovals,
         setPendingInteractions,
-        setPendingSteerDisplay,
         setSelectedSession,
         setSessionMessages,
         applyTaskLaunchInstanceSnapshot,
@@ -2763,9 +2779,19 @@ export function ChatPage({
                 {(() => {
                 if (!selectedSession || selectedSession === "new") return null;
                 const steerInjectedCount = currentStream?.steerTexts?.length ?? 0;
-                // v0.9.2 需求4：只渲染当前会话自己的引导占位（此前全局数组
-                // 会把其他会话/其他任务节点的占位串进本视图）。
-                const visible = (pendingSteerDisplay[selectedSession] ?? []).slice(steerInjectedCount);
+                // v0.9.4 需求7 测试期重构：占位从 SteerCoordinator 队列派生
+                //（单一真源；已注入数随流内 steerTexts 前置隐藏）。
+                const queueKey = steerCoordinator.isEmpty(selectedSession)
+                  && currentStream?.resolvedId
+                  ? currentStream.resolvedId
+                  : selectedSession;
+                const visible = steerCoordinator.queueOf(queueKey)
+                  .slice(steerInjectedCount)
+                  .map((item) => ({
+                    role: "user" as const,
+                    content: [{ type: "text" as const, text: item.text, tool_ids: item.toolIds ?? [] }],
+                    timestamp: 0,
+                  }));
                 if (visible.length === 0) return null;
                 return (
                   <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-1">
@@ -2906,9 +2932,9 @@ export function ChatPage({
                     const steerSplits = Array.from(new Set(state.steerSplits))
                       .filter((idx) => idx > 0 && idx < state.content.length)
                       .sort((a, b) => a - b);
-                    const queuedSteers = pendingSteerMessagesRef.current.get(finalKey)
-                      ?? pendingSteerMessagesRef.current.get(selectedSession)
-                      ?? [];
+                    const queuedSteers = steerCoordinator.textsOf(
+                      steerCoordinator.isEmpty(finalKey) ? selectedSession : finalKey,
+                    );
                     const midSteerCount = Math.min(steerSplits.length, queuedSteers.length);
                     const committed = commitAssistantWithInteractions({
                       assistantContent,
@@ -2924,25 +2950,10 @@ export function ChatPage({
                     // 未注入的残留交给 steer_queue_cleared 对账/重发，及
                     // TurnComplete(Aborted) 兕底，此处不动）。
                     if (midSteerCount > 0) {
-                      const queueKey = pendingSteerMessagesRef.current.has(finalKey)
-                        ? finalKey
-                        : selectedSession;
-                      const current = pendingSteerMessagesRef.current.get(queueKey) ?? [];
-                      const remaining = current.slice(midSteerCount);
-                      if (remaining.length > 0) {
-                        pendingSteerMessagesRef.current.set(queueKey, remaining);
-                      } else {
-                        pendingSteerMessagesRef.current.delete(queueKey);
-                      }
-                      setPendingSteerDisplay((prev) => {
-                        const list = prev[queueKey];
-                        if (!list || list.length === 0) return prev;
-                        const rest = list.slice(midSteerCount);
-                        const next = { ...prev };
-                        if (rest.length === 0) delete next[queueKey];
-                        else next[queueKey] = rest;
-                        return next;
-                      });
+                      steerCoordinator.consume(
+                        steerCoordinator.isEmpty(finalKey) ? selectedSession : finalKey,
+                        midSteerCount,
+                      );
                     }
 
                     if (newMessages.length > 0) {
@@ -3002,14 +3013,15 @@ export function ChatPage({
                         console.warn("Failed to persist partial assistant after abort:", err);
                       });
                     }
-                    // v0.9.4 需求7 缺陷一附带：本地提交后 drop 流式态——防晚到
-                    // 的 TurnComplete(Aborted) 基于残留 state 二次提交同一回合
-                    // 内容（重复）。晚到事件到达时 state 为 null：伪完成守卫不
-                    // 吞（Boolean(null)=false），队列残留走 Abort 兕底重发；
-                    // steer_queue_cleared 的重发 thinking 态在具后 start，不受
-                    // 此处 drop 影响（事件序：clear_queue 响应先于 agent_settled）。
-                    streamStore.drop(finalKey);
-                    if (selectedSession !== finalKey) streamStore.drop(selectedSession);
+                    // v0.9.4 需求7 测试期重构：本地提交后**不再 drop**（旧 drop 在
+                    // TurnComplete(Aborted) 到达前杀流，晚到终结者被 pushTracked
+                    // 拒绝 → 重发收口永远不执行，用户实测引导 B+停止后 B 消失）。
+                    // 改设标记：turn_complete(Aborted) 凭标记跳过重复提交，收口
+                    //（steering 重发）照常——turn_complete 是唯一回合终结者。
+                    abortLocalCommitRef.current.set(finalKey, Date.now());
+                    if (selectedSession !== finalKey) {
+                      abortLocalCommitRef.current.set(selectedSession, Date.now());
+                    }
                   }
 
                   setPendingInteractions((current) =>
@@ -3066,20 +3078,9 @@ export function ChatPage({
                 // sessionMessages between that reply and the guide's response
                 // when the turn completes (or sent by Route 2 if it wasn't a
                 // real mid-turn injection).
-                const key = selectedSession;
-                const existing = pendingSteerMessagesRef.current.get(key) ?? [];
-                pendingSteerMessagesRef.current.set(key, [...existing, content]);
-                setPendingSteerDisplay((prev) => ({
-                  ...prev,
-                  [key]: [
-                    ...(prev[key] ?? []),
-                    {
-                      role: "user" as const,
-                      content: [{ type: "text" as const, text: content, tool_ids: toolIds ?? [] }],
-                      timestamp: Date.now(),
-                    },
-                  ],
-                }));
+                // v0.9.4 需求7 测试期重构：登记入 SteerCoordinator（占位由队列
+                // 派生，双状态同步问题根除）。
+                steerCoordinator.stage(selectedSession, content, toolIds);
               }}
             />
           </div>
