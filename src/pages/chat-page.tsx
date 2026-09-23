@@ -34,7 +34,7 @@ import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog
 import { RenameTaskSessionDialog } from "@/components/sessions/rename-task-session-dialog";
 import { ChatInput, type ChatInputHandle, type StagedGuideApi } from "@/components/sessions/chat-input";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
-import { clearImageCache } from "@/components/sessions/inline-image";
+import { clearImageCache, InlineImages, stripImagePrompt } from "@/components/sessions/inline-image";
 // 会话二级树（T3）：侧边栏任务会话区
 import type { NodeSessionSummary } from "@/features/task-workspace/types";
 // 任务模式右侧栏（减法重构：仅渲染任务步骤面板 + 治理面 + 画布，主会话区复用 chat-page）。
@@ -2789,7 +2789,10 @@ export function ChatPage({
                   .slice(steerInjectedCount)
                   .map((item) => ({
                     role: "user" as const,
-                    content: [{ type: "text" as const, text: item.text, tool_ids: item.toolIds ?? [] }],
+                    // v0.9.4 需求8 补充：stage 文本即发送文本（含附件标记块），
+                    // 占位文本剥标记显示，附件经 InlineImages 渲染缩略。
+                    content: [{ type: "text" as const, text: stripImagePrompt(item.text) || item.text, tool_ids: item.toolIds ?? [] }],
+                    attachmentsText: item.text,
                     timestamp: 0,
                   }));
                 if (visible.length === 0) return null;
@@ -2798,6 +2801,7 @@ export function ChatPage({
                     {visible.map((msg, i) => {
                       const textBlock = msg.content.find((c) => c.type === "text");
                       const text = textBlock?.text ?? "";
+                      const attachmentsText = (msg as { attachmentsText?: string }).attachmentsText ?? "";
                       const steerToolIds = (textBlock && textBlock.type === "text" ? textBlock.tool_ids : undefined) ?? [];
                       return (
                         <div
@@ -2817,6 +2821,7 @@ export function ChatPage({
                               className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] overflow-hidden min-w-0 max-w-full"
                               style={{ fontSize: "var(--font-size-prose)" }}
                             >
+                              <InlineImages text={attachmentsText} />
                               <UserTextWithPills text={text} toolIds={steerToolIds} toolNames={steerToolNames} />
                             </div>
                           </div>
@@ -2909,6 +2914,18 @@ export function ChatPage({
                 if (selectedSession) {
                   const state = streamStore.getState(selectedSession);
                   const finalKey = state?.resolvedId ?? selectedSession;
+                  // v0.9.4 需求7 测试期修复六：停止幂等——CancelPending 期间
+                  // （如 pi auto_retry 迟迟未 settled）重复点停止，旧逻辑每次
+                  // 都本地提交一遍 pendingUserMessage（用户实测：点一次停止
+                  // 多渲染一遍问题）。10s 窗口内只提交一次；重复点击仅重发
+                  // abort（chat-input 已发），静默。
+                  {
+                    const at = abortLocalCommitRef.current.get(finalKey)
+                      ?? abortLocalCommitRef.current.get(selectedSession);
+                    if (at !== undefined && Date.now() - at < 10_000) {
+                      return;
+                    }
+                  }
                   if (state) {
                     const newMessages: Message[] = [];
                     if (state.pendingUserMessage) {
