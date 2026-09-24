@@ -49,6 +49,9 @@ interface MessageViewProps {
   onSearchStatusChange?: (status: MessageSearchStatus) => void;
   flat?: boolean;
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
+  /** v0.9.4 性能优化：跳转扩窗信号（nonce 递增 → 渲染窗口扩至全量）——
+   * turn-rail 跳转目标在窗口外时由父组件 bump 后下一帧定位。 */
+  expandSignal?: number;
   /**
    * 可选角色解析器（三角色场景）。对 `user` 消息调用，返回非空 `MessageRoleView`
    * 时按解析结果渲染（如「任务助手」）。返回 `null` 走默认 `user` 渲染。
@@ -641,7 +644,9 @@ export const MessageView = memo(function MessageView({
   flat,
   scrollContainerRef,
   roleResolver,
+  expandSignal,
 }: MessageViewProps) {
+  const { t } = useTranslation();
   // v0.8.1 需求7：用户消息 pill 的 id→中文名映射（按会话加载一次）。
   const toolNames = useSessionToolNames(sessionId ?? null);
   const [localSearchQuery, setLocalSearchQuery] = useState(initialSearchQuery || "");
@@ -701,6 +706,29 @@ export const MessageView = memo(function MessageView({
   }, [messages]);
 
   const rows = useMemo<RenderRow[]>(() => buildSessionRows(messages), [messages]);
+  // v0.9.4 需求7 测试期性能优化（用户实测：长会话来回切换卡顿）：渲染窗口
+  // 化——默认只渲染最近 WINDOW 行（消息构建含 ReactMarkdown 全量解析与
+  // 代码高亮，数百条全量渲染是切换卡顿主因），顶部「加载更早」扩窗。
+  // 搜索激活（renderingQuery 非空）或外部跳转信号（expandNonce）自动全窗。
+  const RENDER_WINDOW_ROWS = 120;
+  const [windowRows, setWindowRows] = useState(RENDER_WINDOW_ROWS);
+  useEffect(() => {
+    setWindowRows(RENDER_WINDOW_ROWS);
+  }, [sessionId]);
+  // 外部跳转扩窗信号（turn-rail 目标在窗口外时父组件 bump）。
+  const lastExpandSignalRef = useRef(expandSignal ?? 0);
+  useEffect(() => {
+    const signal = expandSignal ?? 0;
+    if (lastExpandSignalRef.current === signal) return;
+    lastExpandSignalRef.current = signal;
+    setWindowRows(rows.length);
+  }, [expandSignal, rows.length]);
+  const effectiveWindow = renderingQuery.trim() ? rows.length : windowRows;
+  const visibleRows = useMemo(
+    () => (rows.length > effectiveWindow ? rows.slice(rows.length - effectiveWindow) : rows),
+    [rows, effectiveWindow],
+  );
+  const hiddenCount = rows.length - visibleRows.length;
   const [currentOcc, setCurrentOcc] = useState(0);
   const [scrollTrigger, setScrollTrigger] = useState(0);
 
@@ -791,7 +819,16 @@ export const MessageView = memo(function MessageView({
   // （buildSessionRows 计算，与轮次摘要消费方同源）。
   const fullMessageList = (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
-      {rows.map((row) => (
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setWindowRows((n) => n + RENDER_WINDOW_ROWS * 2)}
+          className="mx-auto block rounded-full border border-border/60 bg-muted/50 px-4 py-1.5 text-xs text-muted-foreground hover:bg-muted"
+        >
+          {t("sessions.loadEarlier", "加载更早的消息（剩余 {{count}} 行）", { count: hiddenCount })}
+        </button>
+      )}
+      {visibleRows.map((row) => (
         <div
           key={rowKey(row, messages)}
           data-user-message={row.kind === "user" ? "true" : undefined}

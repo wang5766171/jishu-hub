@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, memo } from "react";
+import { useState, useEffect, useMemo, memo, useRef } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { FileText } from "lucide-react";
 import { ImageViewer } from "./image-viewer";
@@ -94,8 +94,34 @@ export const InlineImageDisplay = memo(function InlineImageDisplay({ path }: { p
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const [previewing, setPreviewing] = useState(false);
+  const holderRef = useRef<HTMLDivElement | null>(null);
+  const [inView, setInView] = useState(false);
+
+  // v0.9.4 性能优化（用户实测：长会话切换卡顿）：视口懒加载——切回长会话
+  // 时全部图片并发 invoke 读取（IPC 风暴 + base64 解码）是卡顿来源之一，
+  // IntersectionObserver 进入视口（含 200px 预载边距）才发起读取。
+  useEffect(() => {
+    const holder = holderRef.current;
+    if (!holder || inView) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setInView(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setInView(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(holder);
+    return () => observer.disconnect();
+  }, [inView]);
 
   useEffect(() => {
+    if (!inView) return;
     let cancelled = false;
     loadImage(path)
       .then((url) => {
@@ -105,12 +131,12 @@ export const InlineImageDisplay = memo(function InlineImageDisplay({ path }: { p
         if (!cancelled) setError(true);
       });
     return () => { cancelled = true; };
-  }, [path]);
+  }, [path, inView]);
 
   if (error) return null;
   if (!dataUrl) {
     return (
-      <div className="inline-block w-16 h-16 rounded bg-muted animate-pulse" />
+      <div ref={holderRef} className="inline-block w-16 h-16 rounded bg-muted animate-pulse" />
     );
   }
 
