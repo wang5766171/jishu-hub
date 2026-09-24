@@ -34,7 +34,7 @@ export interface SessionSelectionDeps {
   selectedSessionRef: RefObject<string | null>;
   // 滚动/访问记录（页面持有 ref）
   messageAreaRef: RefObject<HTMLDivElement | null>;
-  scrollMemory: RefObject<Map<string, number>>;
+  scrollMemory: RefObject<Map<string, number | "bottom">>;
   visitedSessions: RefObject<Set<string>>;
   scrollAction: RefObject<{ type: "bottom" } | { type: "restore"; top: number } | null>;
   // 流式标记
@@ -150,7 +150,13 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
     closeViewer();
 
     if (selectedSessionRef.current && messageAreaRef.current) {
-      scrollMemory.current.set(selectedSessionRef.current, messageAreaRef.current.scrollTop);
+      // v0.9.4 需求7 测试期修复八：滚动记忆语义化——离开时在底部（距底
+      // 100px 内，与 isAwayFromBottom 同口径）记 "bottom" 而非绝对像素：
+      // 离开后回合继续追加内容（后台回复/引号重发），回来按旧像素恢复会
+      // 落在中间旧消息处（用户实测：底部离开回来定位到历史消息）。
+      const el = messageAreaRef.current;
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 100;
+      scrollMemory.current.set(selectedSessionRef.current, atBottom ? "bottom" : el.scrollTop);
     }
     const isFirstVisit = !visitedSessions.current.has(sessionId);
     setSelectedSession(sessionId);
@@ -211,9 +217,11 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
       visitedSessions.current.add(sessionId);
     } else {
       const saved = scrollMemory.current.get(sessionId);
-      scrollAction.current = saved !== undefined
-        ? { type: "restore", top: saved }
-        : { type: "bottom" };
+      scrollAction.current = saved === "bottom"
+        ? { type: "bottom" }
+        : saved !== undefined
+          ? { type: "restore", top: saved }
+          : { type: "bottom" };
     }
   };
   handleSelectSessionRef.current = handleSelectSession;
