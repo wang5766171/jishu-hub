@@ -475,7 +475,7 @@ function StreamingUserBubble({ text, toolIds, toolNames }: { text: string; toolI
         <div className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full" style={{ fontSize: "var(--font-size-prose)" }}>
           <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
           <InlineImages text={text} />
-          {stripImagePrompt(text)}
+          {stripImagePrompt(text) || (text.includes("JISHU_HUB_IMAGES") ? t("sessions.imageOnlyBubble", "📎 发送了附件") : text)}
         </div>
       </div>
     </div>
@@ -503,7 +503,8 @@ function UserBubble({ text, guided }: { text: string; guided?: boolean }) {
           className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full"
           style={{ fontSize: "var(--font-size-prose)" }}
         >
-          {text}
+          <InlineImages text={text} />
+          {stripImagePrompt(text) || (text.includes("JISHU_HUB_IMAGES") ? t("sessions.imageOnlyBubble", "📎 发送了附件") : text)}
         </div>
       </div>
     </div>

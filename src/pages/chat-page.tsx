@@ -288,6 +288,11 @@ export function ChatPage({
   // 高亮，替代原 isUserMessageAbove 上箭头显隐。
   const [activeTurnIndex, setActiveTurnIndex] = useState(0);
   const isAwayFromBottomRef = useRef(false);
+  // v0.9.4 需求7 测试期修复八（补）：底部恢复贴底跟随标记——消息异步分批
+  // 渲染（缓存先上、JSONL 重载追加）与图片/markdown 撑高使一次性
+  // scrollTop=scrollHeight 偏上（底部离开回来停在倒数第 6 条）。恢复 bottom
+  // 后置 true：内容变化持续贴底；用户上翻（awayFromBottom）即刻解除。
+  const bottomFollowRef = useRef(false);
   const activeIdRef = useRef<string | null>(activeId);
   const taskLaunchOpenRef = useRef(taskLaunchOpen);
   const taskLaunchPhaseRef = useRef<TaskLaunchPhase>(taskLaunchPhase);
@@ -322,7 +327,7 @@ export function ChatPage({
   // selectedSession 要等 session_resolved 才回填；任务实例事件到达时用它匹配关联）。
   const lastRealSessionIdRef = useRef<string | null>(null);
   const visitedSessions = useRef(new Set<string>());
-  const scrollMemory = useRef(new Map<string, number>());
+  const scrollMemory = useRef(new Map<string, number | "bottom">());
   const scrollAction = useRef<{ type: "bottom" } | { type: "restore", top: number } | null>(null);
   // v0.9.2 测试期二次返工（任务会话滚动定位）：scrollAction 经 useLayoutEffect
   // 消费的链路在消息异步到达 / markdown 后置撑高场景下时序脆弱（消费过早 →
@@ -798,12 +803,46 @@ export function ChatPage({
     if (sessionMessages.length === 0) return;
     const action = scrollAction.current;
     scrollAction.current = null;
+    bottomFollowRef.current = action.type === "bottom";
     if (action.type === "bottom") {
       messageAreaRef.current.scrollTop = messageAreaRef.current.scrollHeight;
     } else {
-      messageAreaRef.current.scrollTop = action.top;
+      const el = messageAreaRef.current;
+      el.scrollTop = action.top;
+      // v0.9.4 性能优化配套（渲染窗口化）：restore 的绝对像素基于全量渲染
+      // 时代的高度，窗口化后 scrollHeight 偏小会被 clamp 到底——检测到
+      // clamp 即 bump expandSignal 扩全窗，下一帧重设原位置。
+      const maxTop = el.scrollHeight - el.clientHeight;
+      if (action.top > maxTop + 50) {
+        setMessageExpandSignal((n) => n + 1);
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            const el2 = messageAreaRef.current;
+            if (el2) el2.scrollTop = Math.min(action.top, el2.scrollHeight - el2.clientHeight);
+          });
+        });
+      }
     }
   }, [sessionMessages]);
+
+  // v0.9.4 需求7 测试期修复八（补）：底部恢复的贴底跟随——内容异步到达
+  //（JSONL 重载追加/流式继续/图片与 markdown 撑高/懒加载）期间持续贴底。
+  // 短轮询（200ms × 10s）覆盖一切高度变化来源（length 依赖盖不住纯撑高）；
+  // 用户上翻即刻解除（onScroll 置 bottomFollowRef=false），超时自动停。
+  // turn-rail 高亮被动跟随滚动事件，滚动位置修准后其自准。
+  useEffect(() => {
+    if (!bottomFollowRef.current) return;
+    const start = Date.now();
+    const timer = window.setInterval(() => {
+      if (!bottomFollowRef.current || isAwayFromBottomRef.current || Date.now() - start > 10_000) {
+        window.clearInterval(timer);
+        return;
+      }
+      const el = messageAreaRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 200);
+    return () => window.clearInterval(timer);
+  }, [selectedSession]);
 
   // v0.9.1 需求5：轮次摘要（每轮用户问题 + agent 前几句回答）——横杠导航轨
   // 的数据源；划分语义与 MessageView user 行对齐（详见 turn-rail.tsx）。
@@ -813,19 +852,34 @@ export function ChatPage({
   useEffect(() => {
     const el = messageAreaRef.current;
     if (!el) return;
+    // v0.9.4 性能优化：滚动事件 rAF 节流——activeTurn 计算对全部消息 DOM 做
+    // querySelectorAll 遍历，长会话每次滚动事件全遍历是滚动卡顿主因之一。
+    let scrollTicking = false;
     const onScroll = () => {
-      const awayFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight > 100;
+      if (scrollTicking) return;
+      scrollTicking = true;
+      requestAnimationFrame(() => {
+        scrollTicking = false;
+        onScrollWork();
+      });
+    };
+    const onScrollWork = () => {
+      const el2 = messageAreaRef.current;
+      if (!el2) return;
+      const awayFromBottom = el2.scrollHeight - el2.scrollTop - el2.clientHeight > 100;
       isAwayFromBottomRef.current = awayFromBottom;
       setIsAwayFromBottom(awayFromBottom);
+      // 底部恢复贴底跟随解除：用户明确上翻即停（程序性贴底不触发本条件）。
+      if (awayFromBottom) bottomFollowRef.current = false;
       // 活动轮次 = 视口顶及以上最后一条用户消息的轮次（视口在第一轮内则
       // 为 0）。边界含容差 +1px：跳转顶对齐后目标行 top == 容器顶（平滑
       // 滚动还可能落在亚像素偏移上），严格“高于视口顶”会把边界行漏成
       // 上一轮（用户实测：定位到 A 高亮停在 A-1）。作用域限定主会话列表
       // （data-turn-scope="main"）：任务执行投影消息、流式气泡与追问占位
       // 都不参与计数，保证与横杠列表同序。
-      const containerTop = el.getBoundingClientRect().top;
+      const containerTop = el2.getBoundingClientRect().top;
       let active = 0;
-      el.querySelectorAll<HTMLElement>('[data-turn-scope="main"] [data-turn-index]').forEach((message) => {
+      el2.querySelectorAll<HTMLElement>('[data-turn-scope="main"] [data-turn-index]').forEach((message) => {
         if (message.getBoundingClientRect().top < containerTop + 1) {
           const idx = Number(message.dataset.turnIndex);
           if (!Number.isNaN(idx)) active = Math.max(active, idx);
@@ -840,17 +894,36 @@ export function ChatPage({
 
   // v0.9.1 需求5：横杠导航跳转——滚动到第 index 轮的用户消息行（顶对齐
   // 视口顶，与原上箭头跳转同语义）；先即时点亮该轮，滚动侦测随后接管。
+  // v0.9.4 性能优化（渲染窗口化配套）：跳转目标在窗口外（DOM 不存在）→
+  // bump expandSignal 让 MessageView 扩至全窗，下一帧重试定位。
+  const [messageExpandSignal, setMessageExpandSignal] = useState(0);
   const handleJumpToTurn = useCallback((index: number) => {
     const el = messageAreaRef.current;
     if (!el) return;
     setActiveTurnIndex(index);
-    const target = Array.from(
+    const findTarget = () => Array.from(
       el.querySelectorAll<HTMLElement>('[data-turn-scope="main"] [data-turn-index]'),
     ).find((message) => Number(message.dataset.turnIndex) === index);
-    if (!target) return;
-    const containerTop = el.getBoundingClientRect().top;
-    const top = el.scrollTop + target.getBoundingClientRect().top - containerTop;
-    el.scrollTo({ top, behavior: "smooth" });
+    // v0.9.4 需求7 测试期修复（用户裁决）：目标轮次的用户问题顶对齐视口；
+    // 若其后内容不足以撑满视口（clamp 会让目标停在半空），则滚到最底部。
+    const scrollTargetToTop = (t: HTMLElement) => {
+      const containerTop = el.getBoundingClientRect().top;
+      const desired = el.scrollTop + t.getBoundingClientRect().top - containerTop;
+      const maxTop = el.scrollHeight - el.clientHeight;
+      el.scrollTo({ top: Math.min(desired, maxTop), behavior: "smooth" });
+    };
+    let target = findTarget();
+    if (!target) {
+      setMessageExpandSignal((n) => n + 1);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const t = findTarget();
+          if (t) scrollTargetToTop(t);
+        });
+      });
+      return;
+    }
+    scrollTargetToTop(target);
   }, []);
 
   const handleScrollToBottom = useCallback(() => {
@@ -1012,13 +1085,17 @@ export function ChatPage({
       const saved = scrollMemory.current.get(selectedSession);
       // 双 rAF：等消息列表完成布局（markdown 撑高等）再定位，否则 scrollHeight
       // 偏小、定位停在半截（与 T8-P9 执行段自动滚底同一手法）。
+      // v0.9.4 需求7 测试期修复八："bottom" 语义（底部离开）滚到最新底——
+      // 离开后内容继续增长（后台回复），绝对像素恢复会落在中间旧消息。
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           const el = messageAreaRef.current;
           if (!el) return;
-          el.scrollTop = saved !== undefined
-            ? Math.max(0, Math.min(saved, el.scrollHeight - el.clientHeight))
-            : el.scrollHeight;
+          if (saved === "bottom" || saved === undefined) {
+            el.scrollTop = el.scrollHeight;
+          } else {
+            el.scrollTop = Math.max(0, Math.min(saved, el.scrollHeight - el.clientHeight));
+          }
         });
       });
     };
@@ -2681,6 +2758,7 @@ export function ChatPage({
                       onSearchStatusChange={handleMessageSearchStatusChange}
                       flat
                       scrollContainerRef={messageAreaRef}
+                      expandSignal={messageExpandSignal}
                     />
                   </div>
                 ) : null}
@@ -2791,7 +2869,13 @@ export function ChatPage({
                     role: "user" as const,
                     // v0.9.4 需求8 补充：stage 文本即发送文本（含附件标记块），
                     // 占位文本剥标记显示，附件经 InlineImages 渲染缩略。
-                    content: [{ type: "text" as const, text: stripImagePrompt(item.text) || item.text, tool_ids: item.toolIds ?? [] }],
+                    content: [{
+                      type: "text" as const,
+                      // 剥标记后为空（纯图片引导）→ 通用附件提示，不回退原文
+                      //（用户实测：标记块全文被 || 回退显示）。
+                      text: stripImagePrompt(item.text) || (item.text.includes("JISHU_HUB_IMAGES") ? t("sessions.imageOnlyBubble", "📎 发送了附件") : item.text),
+                      tool_ids: item.toolIds ?? [],
+                    }],
                     attachmentsText: item.text,
                     timestamp: 0,
                   }));

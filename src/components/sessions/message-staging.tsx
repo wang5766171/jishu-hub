@@ -13,6 +13,9 @@ import { useState } from "react";
 import { Edit3, Send, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
+import { InlineImages } from "@/components/sessions/inline-image";
+
+const STEER_NL = String.fromCharCode(10);
 import { UserTextWithPills } from "./embedded-tools";
 
 export interface StagedMessage {
@@ -106,11 +109,21 @@ export function MessageStaging({
             </div>
           ) : (
             <>
-              <p className="min-w-0 flex-1 text-xs leading-5 text-foreground">
-                {/* v0.9.0 需求3：暂存预览为 compose 前原文（@[token] 字面显示），
-                    tool_ids 快照在引导发送时才产生（见 chat-input composeOutgoing）。 */}
-                <UserTextWithPills text={msg.content} toolIds={[]} toolNames={toolNames ?? {}} />
-              </p>
+              <div className="min-w-0 flex-1 space-y-1.5">
+                {/* v0.9.4 需求8 补充（用户截图：暂存卡片无图片）：附件缩略预览
+                    ——fileLines（入列时已上传）组装为标记块喂 InlineImages，
+                    图片显示缩略、非图片文件显示徽标。 */}
+                {msg.fileLines && msg.fileLines.length > 0 && (
+                  <InlineImages
+                    text={STEER_NL + "[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]" + STEER_NL + msg.fileLines.join(STEER_NL) + STEER_NL}
+                  />
+                )}
+                <p className="text-xs leading-5 text-foreground">
+                  {/* v0.9.0 需求3：暂存预览为 compose 前原文（@[token] 字面显示），
+                      tool_ids 快照在引导发送时才产生（见 chat-input composeOutgoing）。 */}
+                  <UserTextWithPills text={msg.content} toolIds={[]} toolNames={toolNames ?? {}} />
+                </p>
+              </div>
               <div className="flex shrink-0 items-center gap-1">
                 <button
                   type="button"

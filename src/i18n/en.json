@@ -320,7 +320,8 @@
     "toolStatusError": "Error",
     "toolStatusAborted": "Aborted",
     "toolOutputTitle": "Output",
-    "toolOutputLines": "{{count}} lines"
+    "toolOutputLines": "{{count}} lines",
+    "loadEarlier": "Load earlier messages ({{count}} more rows)"
   },
   "plugins": {
     "modalPipelineStages": "Stage pipeline",

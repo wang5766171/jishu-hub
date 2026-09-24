@@ -320,7 +320,8 @@
     "toolStatusError": "出错",
     "toolStatusAborted": "已中止",
     "toolOutputTitle": "执行结果",
-    "toolOutputLines": "{{count}} 行输出"
+    "toolOutputLines": "{{count}} 行输出",
+    "loadEarlier": "加载更早的消息（剩余 {{count}} 行）"
   },
   "plugins": {
     "modalPipelineStages": "阶段流水线",
