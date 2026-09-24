@@ -321,7 +321,12 @@
     "toolStatusAborted": "已中止",
     "toolOutputTitle": "执行结果",
     "toolOutputLines": "{{count}} 行输出",
-    "loadEarlier": "加载更早的消息（剩余 {{count}} 行）"
+    "loadEarlier": "加载更早的消息（剩余 {{count}} 行）",
+    "agentOnTheWay": "{{name}} 正在赶来...",
+    "agentOnTheWayGeneric": "智能体正在赶来...",
+    "deepThinking": "深度思考中...",
+    "renderSourcePlugin": "插件渲染",
+    "renderSourceBuiltin": "内置渲染"
   },
   "plugins": {
     "modalPipelineStages": "阶段流水线",

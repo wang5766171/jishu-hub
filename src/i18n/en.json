@@ -321,7 +321,12 @@
     "toolStatusAborted": "Aborted",
     "toolOutputTitle": "Output",
     "toolOutputLines": "{{count}} lines",
-    "loadEarlier": "Load earlier messages ({{count}} more rows)"
+    "loadEarlier": "Load earlier messages ({{count}} more rows)",
+    "agentOnTheWay": "{{name}} is on the way...",
+    "agentOnTheWayGeneric": "Agent is on the way...",
+    "deepThinking": "Deep thinking...",
+    "renderSourcePlugin": "Plugin render",
+    "renderSourceBuiltin": "Builtin render"
   },
   "plugins": {
     "modalPipelineStages": "Stage pipeline",

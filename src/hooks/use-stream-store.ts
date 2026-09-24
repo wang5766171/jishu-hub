@@ -58,6 +58,9 @@ export interface SessionStreamState {
   thinking: string;
   error: string;
   tools: StreamToolUse[];
+  /** v0.9.4 需求10：首个 pi 内容事件是否已到达（区分「智能体连接中」与
+   * 「等待模型响应」两阶段的状态文案）。start/drop 重置。 */
+  hasReceivedEvent: boolean;
   pendingUserMessage: string | null;
   /** v0.9.0 需求3 方案 C：本条消息的工具插件 id 快照（compose 时前端已知，
    * 与 pendingUserMessage 并行；文本标记方案已废弃，不再从文本解析）。 */
@@ -122,6 +125,7 @@ function emptyState(
     steps: [],
     steerSplits: [],
     steerTexts: [],
+    hasReceivedEvent: false,
     interactionSplits: [],
     autoRetry: null,
     retryFailed: null,
@@ -193,11 +197,18 @@ class StreamStore {
     const prev = this.sessions.get(key) ?? emptyState(key, null);
 
     let { content, text, thinking, error, tools, resolvedId, steps, steerSplits, steerTexts, interactionSplits, autoRetry, retryFailed } = prev;
+    let { hasReceivedEvent: hasEvent } = prev;
     const pendingToolIds = prev.pendingToolIds;
     const { pendingUserMessage, abortKey, isStreaming } = prev;
     const chunks = [...prev.chunks, chunk];
 
     const data = chunk.data;
+    const isContentEvent = data.kind === "text_delta"
+      || data.kind === "thinking"
+      || data.kind === "tool_use_start"
+      || data.kind === "message"
+      || data.kind === "phase_divider";
+    hasEvent = hasEvent || isContentEvent;
     if (data.kind === "text_delta") {
       // Snapshot-echo guard: claude-agent-acp streams the reply as many small
       // text_delta chunks, then re-sends the WHOLE reply as one final text_delta
@@ -382,6 +393,7 @@ class StreamStore {
       thinking,
       error,
       tools,
+      hasReceivedEvent: hasEvent,
       pendingUserMessage,
       pendingToolIds,
       resolvedId,

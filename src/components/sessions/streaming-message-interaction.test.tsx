@@ -179,3 +179,48 @@ describe("v0.9.4 需求7 测试期：长时工具执行期间的卡片可见性�
     expect(screen.getByText(/vite building/)).toBeTruthy();
   });
 });
+
+describe("v0.9.4 需求10：会话阶段文案", () => {
+  afterEach(() => {
+    streamStore.drop(sessionId);
+  });
+
+  it("② 无任何内容且首事件未到 → 「正在赶来」", () => {
+    streamStore.start(sessionId, "帮我做点事");
+    render(<FileViewerProvider><StreamingMessage sessionId={sessionId} isComplete={false} agentDisplayName="机枢助手" /></FileViewerProvider>);
+    expect(screen.getByText(/机枢助手 is on the way/)).toBeTruthy();
+  });
+
+  it("③ 首事件已到但无思考/工具/正文 → 「思考中」", () => {
+    streamStore.start(sessionId, "帮我做点事");
+    // 首事件：空 content 的 message（连接已建立但无可见输出）
+    streamStore.push(sessionId, chunk({ kind: "message", content: [] }));
+    render(<FileViewerProvider><StreamingMessage sessionId={sessionId} isComplete={false} /></FileViewerProvider>);
+    expect(screen.getByText(/Thinking/)).toBeTruthy();
+  });
+
+  it("④ thinking 流入 → 「深度思考中」", () => {
+    streamStore.start(sessionId, null);
+    streamStore.push(sessionId, chunk({ kind: "thinking", delta: "分析问题中" }));
+    render(<FileViewerProvider><StreamingMessage sessionId={sessionId} isComplete={false} /></FileViewerProvider>);
+    expect(screen.getByText(/Deep thinking/)).toBeTruthy();
+  });
+
+  it("⑤ 工具运行中 → 「工具调用中」", () => {
+    streamStore.start(sessionId, null);
+    streamStore.push(sessionId, chunk({ kind: "text_delta", delta: "正在处理" }));
+    streamStore.push(sessionId, chunk({
+      kind: "tool_use_start", call_id: "c-phase-1", tool: "bash",
+      input: { command: "ping -n 5 127.0.0.1" }, view: { kind: "shell_exec" },
+    }));
+    render(<FileViewerProvider><StreamingMessage sessionId={sessionId} isComplete={false} /></FileViewerProvider>);
+    expect(screen.getByText(/Running tools/)).toBeTruthy();
+  });
+
+  it("⑥ 正文输出中（无运行中工具、无思考）→ 「处理中」", () => {
+    streamStore.start(sessionId, null);
+    streamStore.push(sessionId, chunk({ kind: "text_delta", delta: "回答内容" }));
+    render(<FileViewerProvider><StreamingMessage sessionId={sessionId} isComplete={false} /></FileViewerProvider>);
+    expect(screen.getByText(/Processing/)).toBeTruthy();
+  });
+});

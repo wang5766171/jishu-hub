@@ -2841,6 +2841,7 @@ export function ChatPage({
                     sessionId={selectedSession}
                     isComplete={false}
                     scrollContainerRef={messageAreaRef}
+                    agentDisplayName={active?.display_name}
                   />
                 )}
               {/* Live placeholders for guided (steer) messages that have NOT

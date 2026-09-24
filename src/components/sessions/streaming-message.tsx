@@ -12,7 +12,7 @@ import { ToolGroup } from "@/components/observability/tool-call-card";
 import { resolveToolKind } from "@/components/observability/tool-call-card/types";
 import type { ToolCall } from "@/components/observability/tool-call-card";
 import type { ContentBlock } from "@/types";
-import { InteractionCard } from "./interaction-card";
+import { InteractionBlockWithRenderers } from "./interaction-card";
 import { dedupeInteractionItems, isInteractionToolName, isInteractionToolUseBlock } from "@/lib/interaction-tools";
 import { PhaseDivider, ThinkingBlock } from "./conversation-content";
 
@@ -23,6 +23,8 @@ interface StreamingMessageProps {
   /** Session id (pending or real) whose streaming state to render. */
   sessionId: string | null;
   isComplete?: boolean;
+  /** v0.9.4 需求10：当前智能体显示名（「正在赶来」文案用；空回退通用文案）。 */
+  agentDisplayName?: string | null;
   /**
    * Optional override for the leading user message bubble.
    * When omitted, falls back to the pending user message tracked in the store.
@@ -36,7 +38,7 @@ interface StreamingMessageProps {
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
 }
 
-export const StreamingMessage = memo(function StreamingMessage({ sessionId, isComplete = false, userMessage, userToolIds, scrollContainerRef }: StreamingMessageProps) {
+export const StreamingMessage = memo(function StreamingMessage({ sessionId, isComplete = false, userMessage, userToolIds, scrollContainerRef, agentDisplayName }: StreamingMessageProps) {
   const state = useSessionStream(sessionId);
   const { t } = useTranslation();
   // v0.8.1 需求7：用户消息气泡内 pill 显示插件中文名（id→显示名映射）。
@@ -57,6 +59,27 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   const resolvedUserMessage = userMessage === undefined ? state?.pendingUserMessage ?? undefined : userMessage ?? undefined;
   const resolvedUserToolIds = userToolIds ?? state?.pendingToolIds ?? [];
   const userScrolledRef = useRef(false);
+
+  // v0.9.4 需求10：会话阶段判定（用户确认话术）——
+  // ② 连接中（无任何内容且首事件未到）→ {agent} 正在赶来
+  // ③ 等待模型响应（首事件已到、暂无思考/工具/正文）→ 思考中
+  // ④ 思考生成中 → 深度思考中
+  // ⑤ 工具调用中（有运行中工具）→ 工具调用中
+  // ⑥ 回复生成中（正文输出）→ 处理中
+  const hasRunningTool = toolUses.some((tool) => tool.output === undefined);
+  const phaseLabel = (() => {
+    const hasAnyContent = displayText.length > 0 || thinkingText.length > 0 || toolUses.length > 0 || content.length > 0;
+    if (!hasAnyContent) {
+      return state?.hasReceivedEvent
+        ? t("sessions.thinkingDots")
+        : (agentDisplayName
+          ? t("sessions.agentOnTheWay", "{{name}} 正在赶来...", { name: agentDisplayName })
+          : t("sessions.agentOnTheWayGeneric", "智能体正在赶来..."));
+    }
+    if (hasRunningTool) return t("sessions.toolCalling");
+    if (thinkingText.length > 0 && displayText.length === 0) return t("sessions.deepThinking", "深度思考中...");
+    return t("sessions.processing");
+  })();
 
   const isNearBottom = useCallback(() => {
     if (!scrollContainerRef?.current) return true;
@@ -272,7 +295,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                   <span className="font-medium text-muted-foreground">{t("sessions.assistant")}</span>
                 </div>
                 <div className="rounded-xl bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)] px-3 py-2 overflow-hidden min-w-0 max-w-full">
-                  <InteractionCard
+                  <InteractionBlockWithRenderers
                     items={part.items}
                     origin={part.origin}
                     defaultOpen={false}
@@ -302,7 +325,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                 {showThinking ? (
                   <div className="rounded-xl px-3 py-2 bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)] overflow-hidden">
                     <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm font-medium">
-                      <span className="processing-marquee">{t("sessions.thinkingDots")}</span>
+                      <span className="processing-marquee">{phaseLabel}</span>
                     </div>
                   </div>
                 ) : (
@@ -392,9 +415,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                         )}
                         {isLast && !isComplete && (
                           <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm font-medium">
-                            <span className="processing-marquee">
-                              {toolUses.length > 0 ? t("sessions.toolCalling") : t("sessions.processing")}
-                            </span>
+                            <span className="processing-marquee">{phaseLabel}</span>
                           </div>
                         )}
                       </div>
