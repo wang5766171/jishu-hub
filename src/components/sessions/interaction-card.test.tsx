@@ -27,7 +27,7 @@ describe("InteractionCard", () => {
     expect(screen.getAllByText("B")).toHaveLength(1);
   });
 
-  it("uses localized generic origin labels instead of engine names", () => {
+  it("v0.9.4 需求11：卡内不再渲染 agent 来源徽标（原「内置/外部助手」文案废弃）", () => {
     render(
       <InteractionCard
         defaultOpen
@@ -36,9 +36,8 @@ describe("InteractionCard", () => {
       />,
     );
 
-    expect(screen.getByText("External assistant")).toBeInTheDocument();
-    expect(screen.queryByText("Claude Code")).not.toBeInTheDocument();
-    expect(screen.queryByText("Codex")).not.toBeInTheDocument();
-    expect(screen.queryByText("Jishu Agent")).not.toBeInTheDocument();
+    expect(screen.queryByText("External assistant")).not.toBeInTheDocument();
+    expect(screen.queryByText("Built-in assistant")).not.toBeInTheDocument();
+    expect(screen.getByText("Question")).toBeInTheDocument();
   });
 });

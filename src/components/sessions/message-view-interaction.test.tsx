@@ -1,5 +1,5 @@
 import i18n from "@/i18n";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { Message } from "@/types";
@@ -54,7 +54,7 @@ describe("MessageView interaction rendering", () => {
     const cards = screen.getAllByRole("button", { name: /Ask user/i });
     expect(cards).toHaveLength(1);
 
-    fireEvent.click(cards[0]);
+    // v0.9.4 需求11：回放卡默认展开（保留选项）——无需点击即见内容。
     const card = cards[0].closest("div");
     expect(card).not.toBeNull();
     const scope = within(card as HTMLElement);

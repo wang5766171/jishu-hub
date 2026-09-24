@@ -13,7 +13,7 @@ import { EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
 import { ToolGroup } from "@/components/observability/tool-call-card";
 import { resolveToolKind } from "@/components/observability/tool-call-card/types";
 import type { ToolCall } from "@/components/observability/tool-call-card";
-import { InteractionCard } from "./interaction-card";
+import { InteractionBlockWithRenderers as InteractionBlock } from "./interaction-card";
 import type { InteractionCardItem } from "./interaction-card";
 import { isInteractionToolName, looksLikeInteractionToolInput } from "@/lib/interaction-tools";
 import { PhaseDivider } from "./conversation-content";
@@ -303,27 +303,9 @@ function PhaseDividerBlockWithRenderers({ phase, title }: { phase: string; title
 }
 
 function InteractionBlockWithRenderers({ items, origin }: { items: InteractionCardItem[]; origin?: string }) {
-  const renderers = useBlockRenderers();
-  const renderer = matchBlockTypeRenderer(renderers, "interaction");
-  if (renderer) {
-    const Block = renderer.BlockComponent;
-    return (
-      <>
-        {items.map((item, idx) => (
-          <Block
-            key={idx}
-            block={{
-              type: "interaction",
-              text: item.prompt,
-              options: (item.options ?? []).map((o) => ({ id: o.option_id, label: o.label })),
-              answer: item.answer || undefined,
-            }}
-          />
-        ))}
-      </>
-    );
-  }
-  return <InteractionCard items={items} origin={origin} />;
+  // v0.9.4 需求11（修正版）：共享咨询渲染链（插件优先保留，回退内置默认
+  // 展开保留选项）——与流式侧同一组件，两侧一致。
+  return <InteractionBlock items={items} origin={origin} defaultOpen />;
 }
 
 // buildRenderRows/isUserToolResultOnlyMessage 已迁移至

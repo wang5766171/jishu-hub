@@ -48,6 +48,10 @@ export interface PluginBlock {
   options?: Array<{ id: string; label: string }>;
   /** phase_divider 标题（v0.9.3 需求10 B1：插件接管渲染所需的完整块数据）。 */
   title?: string;
+  /** interaction 来源（v0.9.4 需求11：插件委托内置卡时的 origin 透传）。 */
+  origin?: string;
+  /** 渲染链路徽标（插件渲染/内置渲染）——插件委托卡时透传到卡内 header。 */
+  renderSource?: string;
   /** interaction 已选答案。 */
   answer?: string;
   /** thinking 内容。 */
