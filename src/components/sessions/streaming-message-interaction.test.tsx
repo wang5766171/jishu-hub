@@ -5,6 +5,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { streamStore } from "@/hooks/use-stream-store";
 import type { StreamChunk } from "@/types";
 import { StreamingMessage } from "./streaming-message";
+import { FileViewerProvider } from "@/components/file-viewer";
 
 const sessionId = "session-streaming-interaction";
 
@@ -136,5 +137,45 @@ describe("StreamingMessage interaction ordering", () => {
 
     expect(screen.getByText("Ask user")).toBeInTheDocument();
     expect(screen.queryByText("Tool")).not.toBeInTheDocument();
+  });
+});
+
+describe("v0.9.4 需求7 测试期：长时工具执行期间的卡片可见性（用户实测不可见）", () => {
+  afterEach(() => {
+    streamStore.drop(sessionId);
+  });
+
+  it("tool_use_start 后（执行中、无 result）即渲染工具卡（含命令）", () => {
+    streamStore.start(sessionId, "帮我打包");
+    streamStore.push(sessionId, chunk({ kind: "text_delta", delta: "正在执行打包" }));
+    streamStore.push(sessionId, chunk({
+      kind: "tool_use_start",
+      call_id: "call-build-1",
+      tool: "bash",
+      input: { command: "npm run build" },
+      view: { kind: "shell_exec" },
+    }));
+    render(<FileViewerProvider><StreamingMessage sessionId={sessionId} isComplete={false} /></FileViewerProvider>);
+    // 命令应在执行期间即可见（工具卡展开区或 header 路径）
+    expect(screen.getByText(/npm run build/)).toBeTruthy();
+  });
+
+  it("tool_use_progress 期间卡片保持且显示中间输出", () => {
+    streamStore.start(sessionId, "帮我打包");
+    streamStore.push(sessionId, chunk({
+      kind: "tool_use_start",
+      call_id: "call-build-2",
+      tool: "bash",
+      input: { command: "npm run build" },
+      view: { kind: "shell_exec" },
+    }));
+    streamStore.push(sessionId, chunk({
+      kind: "tool_use_progress",
+      call_id: "call-build-2",
+      partial_output: "vite building... 30%",
+    }));
+    render(<FileViewerProvider><StreamingMessage sessionId={sessionId} isComplete={false} /></FileViewerProvider>);
+    expect(screen.getAllByText(/npm run build/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/vite building/)).toBeTruthy();
   });
 });
