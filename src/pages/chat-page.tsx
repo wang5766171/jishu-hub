@@ -2384,7 +2384,49 @@ export function ChatPage({
     // sessionMessages.length === 0 且元素未找到 → 消息尚在加载，等下次 dep 变化重试。
   }, [taskLaunchOpen, taskModeActive, taskLaunchPhase, selectedSession, currentStream?.isStreaming, sessionMessages.length]);
 
+  /** 5f（v0.9.5 需求1，原需求26）：会话内 /plugin 命令——/plugin <id> 触发
+   *  插件默认使用（面板型 → openPanel 展开；动作型 → 首个动作执行）。
+   *  拦截在 onBeforeSend 缝（本地消费不发送给 agent）。 */
+  const runPluginCommand = useCallback(async (pluginId: string): Promise<boolean> => {
+    try {
+      const items = (await invokeCommand<Array<{ id: string; manifest: { render?: { mount?: string }; action?: Array<Record<string, unknown>> } }>>(
+        "composed_plugin_manifests",
+      )) ?? [];
+      const item = items.find((x) => x.id === pluginId);
+      if (!item) return false;
+      const mount = item.manifest.render?.mount;
+      if (mount === "dock-panel" || mount === "sidebar-panel") {
+        requestPanelActivation(pluginId);
+        return true;
+      }
+      const first = (item.manifest.action ?? [])[0];
+      if (first) {
+        const { actionRegistry } = await import("@/features/session-kernel/capabilities/actions");
+        const handler = actionRegistry.get(String(first.type));
+        if (handler) {
+          await handler.run(first, { kind: "aggregate", data: [] } as never, {
+            sessionId: selectedSession,
+            pluginId,
+          });
+          return true;
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }, [selectedSession]);
+
   const handleTaskLaunchBeforeSend = useCallback(async (_message: string) => {
+    // 5f：/plugin <id> 本地命令（面板展开/默认动作）——不发给 agent。
+    const pluginMatch = /^\/plugin\s+(\S+)\s*$/.exec(_message.trim());
+    if (pluginMatch) {
+      const fired = await runPluginCommand(pluginMatch[1]);
+      if (!fired) {
+        console.warn(`[slash] /plugin ${pluginMatch[1]} 未命中可触发的插件或动作`);
+      }
+      return true;
+    }
     // conductor 驱动的任务模式：首条消息由 prepareTaskLaunchMessage 包装为 /jishu-task 命令激活 conductor，
     // 无需前端拦截或技能安装检查（conductor 扩展随 Hub 启动自动部署）。消息正常发送。
     return false;
