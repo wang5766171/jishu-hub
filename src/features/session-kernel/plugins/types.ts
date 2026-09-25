@@ -146,6 +146,11 @@ export interface SessionKernelContext {
   /** 自动压缩偏好（null = 跟随 agent 默认/未配置）。 */
   autoCompaction: boolean | null;
   setAutoCompaction(enabled: boolean): void;
+  /** v0.9.4 需求12：开发日志（插件问题排查）——写入 dev 日志中心（dev only，
+   *  生产 no-op）。message 约定以 `[插件id]` 开头以便区分来源；data 为可选
+   *  结构化载荷（JSON 序列化展示，超长截断）。
+   *  示例：ctx.devLog("[session.context-ring] 水位更新", { used, total }); */
+  devLog(message: string, data?: unknown): void;
   /** 弹确认对话框（Promise<boolean>）。 */
   confirmDialog(opts: { title: string; description?: string; variant?: "default" | "destructive" }): Promise<boolean>;
   /** 会话信息解析：id → 标题 + 类型。 */

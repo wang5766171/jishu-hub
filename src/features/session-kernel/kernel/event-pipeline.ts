@@ -43,6 +43,7 @@ import {
 } from "./session-cache";
 import { emitSessionSignal } from "../signals";
 import { steerCoordinator } from "./steer-coordinator";
+import { devLog } from "@/lib/dev-log";
 
 /** v0.9.4 需求6 v2：AI 标题生成前端触发一次守卫（会话 id 维度，进程内）。 */
 const titledOnce = new Set<string>();
@@ -109,6 +110,17 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
         }
 
         const cid = chunk.session_id;
+
+        // v0.9.4 需求12：dev 日志（关键 chunk；高频 delta 不逐条）。
+        if (chunk.data.kind !== "text_delta" && chunk.data.kind !== "thinking") {
+          devLog("pipeline", `chunk ${chunk.data.kind}`, {
+            session: cid,
+            agent: chunk.agent_id,
+            detail: "reason" in chunk.data ? String((chunk.data as { reason?: string }).reason ?? "")
+              : "call_id" in chunk.data ? String((chunk.data as { call_id?: string }).call_id ?? "")
+              : undefined,
+          });
+        }
 
         // v0.9.4 需求8：工具进度节流（per call_id 200ms）——bash 类长时工具
         // 的行级输出事件高频，逐事件打 store 会冲击渲染；进度语义允许
@@ -416,6 +428,13 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // each injection point; we split there and interleave the queued
           // steers so the live order matches the JSONL Pi persists.
           const steerQueueKey = steerCoordinator.isEmpty(finalKey) ? cid : finalKey;
+          devLog("pipeline", "turn_complete 处理", {
+            session: cid, finalKey, reason: chunk.data.reason,
+            steerSplits: (state?.steerSplits ?? []).length,
+            steerTexts: (state?.steerTexts ?? []).length,
+            queue: steerCoordinator.textsOf(steerQueueKey).length,
+            localCommitted: deps.abortLocalCommitRef.current.has(finalKey) || deps.abortLocalCommitRef.current.has(cid),
+          });
           // v0.9.4 需求7 测试期重构补丁：提交源改为流内 steerTexts（注入事实）。
           // pi 的 steering 是「turn 边界转新 turn」形态 + hub 缓冲合并多 turn 的
           // TurnComplete——前端只见一次终结，注入的兑现以 steer_injected 到达为
@@ -741,6 +760,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
               ...steerCoordinator.takeResend(finalKey),
               ...steerCoordinator.takeResend(cid),
             ];
+            devLog("pipeline", "Abort 收口：重发合并", { resend: resend.length, hasGuide: guideToSendAfterDrop !== null });
             if (resend.length > 0) {
               const merged = new Set([...(guideToSendAfterDrop !== null ? [guideToSendAfterDrop] : []), ...resend]);
               guideToSendAfterDrop = [...merged].join("\n\n");

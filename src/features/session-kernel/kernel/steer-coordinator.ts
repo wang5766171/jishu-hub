@@ -63,6 +63,7 @@ export class SteerCoordinator {
 
   /** 登记一条引导（onGuideStaged：steer_chat 发出后调用）。 */
   stage(key: string, text: string, toolIds?: string[]): void {
+    devLog("steer", "stage", { key, text: text.slice(0, 60), toolIds });
     const s = this.stateOf(key);
     s.queue.push({ text, toolIds });
     this.notify();
@@ -74,6 +75,7 @@ export class SteerCoordinator {
    * 与流内 steerTexts 的「已注入隐藏」双保险。
    */
   consumeInjected(key: string, text: string): void {
+    devLog("steer", "consumeInjected", { key, text: text.slice(0, 60) });
     const s = this.sessions.get(key);
     if (!s || s.queue.length === 0) return;
     const idx = s.queue.findIndex((q) => q.text === text);
@@ -123,6 +125,7 @@ export class SteerCoordinator {
     texts: string[],
     followUpTexts: string[],
   ): { steering: string[]; followUps: string[] } {
+    devLog("steer", "reconcileCleared", { key, texts: texts.length, followUps: followUpTexts.length });
     const steering = texts.filter((t) => !followUpTexts.includes(t));
     const s = this.sessions.get(key);
     if (!s || s.queue.length === 0) {
@@ -165,6 +168,7 @@ export class SteerCoordinator {
    * 与队列残留（事件丢失兜底）由调用方合并处理。
    */
   takeResend(key: string): string[] {
+    devLog("steer", "takeResend", { key });
     const s = this.sessions.get(key);
     if (!s || s.pendingResend.length === 0) return [];
     const out = s.pendingResend;
@@ -180,6 +184,7 @@ export class SteerCoordinator {
    * 正常完成**不得**调用（多条引导第 2+ 条等 pi follow-up turn）。
    */
   resetAborted(key: string): void {
+    devLog("steer", "resetAborted", { key });
     const s = this.sessions.get(key);
     if (!s) return;
     // pendingResend 保留：takeResend 与 reset 的调用顺序是「先取走再清零」，
@@ -196,6 +201,7 @@ export class SteerCoordinator {
 
   /** 会话 id 解析后的键迁移（pending → real id，事件管线 realId 分支）。 */
   moveKey(from: string, to: string): void {
+    devLog("steer", "moveKey", { from, to });
     if (from === to) return;
     const s = this.sessions.get(from);
     if (!s) return;
@@ -216,6 +222,8 @@ export class SteerCoordinator {
     this.notify();
   }
 }
+
+import { devLog } from "@/lib/dev-log";
 
 /** 全局单例（与 streamStore 同生命周期模式）。 */
 export const steerCoordinator = new SteerCoordinator();

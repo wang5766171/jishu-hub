@@ -105,8 +105,10 @@ export function useAccessMode(deps: AccessModeDeps) {
         };
         await invokeCommand("save_project_settings_local", { agentId: activeId, projectPath, settings: nextSettings });
       } else if (permissionModeProvider === "hub_tool_mode") {
+        (await import("@/lib/dev-log")).devLog("ipc", "切换工具模式", { mode });
         await invokeCommand("set_agent_tool_mode", { agentId: activeId, mode });
       } else if (permissionModeProvider === "agent_config") {
+        (await import("@/lib/dev-log")).devLog("ipc", "切换权限模式", { mode });
         await invokeCommand("set_agent_permission_mode", { agentId: activeId, mode });
       }
     } finally {

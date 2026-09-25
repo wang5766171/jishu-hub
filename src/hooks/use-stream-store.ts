@@ -165,6 +165,7 @@ class StreamStore {
 
   /** Begin tracking a session that we just sent a message to. */
   start(canonicalId: string, pendingUserMessage: string | null, pendingToolIds: string[] = []): void {
+    devLog("store", "start", { id: canonicalId, pending: pendingUserMessage?.slice(0, 40) ?? null });
     const key = this.canonical(canonicalId);
     // Reset the state for a new turn, even if the key already exists
     // (e.g. second message in the same session).
@@ -174,6 +175,7 @@ class StreamStore {
 
   /** Record that `otherId` refers to the same stream as `canonicalId`. */
   alias(canonicalId: string, otherId: string): void {
+    devLog("store", "alias", { id: canonicalId, other: otherId });
     if (otherId === canonicalId) return;
     const key = this.canonical(canonicalId);
     this.aliases.set(otherId, key);
@@ -208,6 +210,9 @@ class StreamStore {
       || data.kind === "tool_use_start"
       || data.kind === "message"
       || data.kind === "phase_divider";
+    if (!hasEvent && isContentEvent) {
+      devLog("store", "首个内容事件到达（连接建立，②→③）", { id: key, kind: data.kind });
+    }
     hasEvent = hasEvent || isContentEvent;
     if (data.kind === "text_delta") {
       // Snapshot-echo guard: claude-agent-acp streams the reply as many small
@@ -489,6 +494,7 @@ class StreamStore {
 
   /** Remove all state for a session. */
   drop(sid: string): void {
+    devLog("store", "drop", { id: sid });
     const key = this.canonical(sid);
     this.sessions.delete(key);
     for (const [k, v] of Array.from(this.aliases.entries())) {
@@ -561,6 +567,8 @@ class StreamStore {
     this.listeners.forEach((l) => l());
   }
 }
+
+import { devLog } from "@/lib/dev-log";
 
 export const streamStore = new StreamStore();
 

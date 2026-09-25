@@ -67,6 +67,9 @@ export function useModelPicker(
       const model = rest.join("/");
       setActiveValue(value);
       try {
+        // v0.9.4 需求12：模型切换语义埋点（下次 send 触发签名漂移回收重拉——
+        // 后续 send_message 耗时会显著变长，此标记用于对齐时序）。
+        (await import("@/lib/dev-log")).devLog("ipc", "模型切换", { from: "见 set_active ok", to: model, provider });
         await invokeCommand("set_active", { agentId, active: { provider, model } });
         onModelChanged?.();
       } catch (err) {

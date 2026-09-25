@@ -1360,5 +1360,15 @@
     "failed": "任务失败",
     "cancelled": "任务已取消",
     "counts": "成功 {{succeeded}} / 失败 {{failed}} / 跳过 {{skipped}} · 共 {{total}}"
+  },
+  "devLog": {
+    "openTitle": "开发日志中心",
+    "title": "开发日志中心",
+    "copy": "复制日志",
+    "copied": "已复制",
+    "clear": "清空",
+    "pauseScroll": "暂停自动滚动",
+    "resumeScroll": "恢复自动滚动",
+    "empty": "暂无日志（操作会话后产生）"
   }
 }

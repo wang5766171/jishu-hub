@@ -73,7 +73,33 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
   return { data, loading, error, refetch: fetch, setData };
 }
 
+import { devLog } from "@/lib/dev-log";
+
+const DEV_TRACED_COMMANDS = new Set([
+  "send_message", "abort_chat", "steer_chat", "chat_turn_active",
+  "get_session_messages", "session_generate_title", "persist_partial_assistant",
+  "respond_chat_interaction", "resolve_chat_approval",
+  // v0.9.4 需求12（用户补充）：模型切换 / 会话压缩 / 权限与工具模式。
+  "set_active", "compact_chat", "set_agent_tool_mode", "set_agent_permission_mode",
+  "session_set_tools", "fork_agent_session",
+]);
+
 export async function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  // v0.9.4 需求12：dev 日志（会话关键命令 + 耗时；其余命令不记）。
+  if (DEV_TRACED_COMMANDS.has(command)) {
+    const t = Date.now();
+    try {
+      const r = await timedInvoke<T>(command, args);
+      const brief = command === "set_active"
+        ? { ms: Date.now() - t, model: (args?.active as { provider?: string; model?: string } | undefined)?.model }
+        : { ms: Date.now() - t, sessionId: args?.sessionId ?? args?.session_id, mode: args?.mode };
+      devLog("ipc", `${command} ok`, brief);
+      return r;
+    } catch (e) {
+      devLog("ipc", `${command} FAIL`, { ms: Date.now() - t, error: String(e).slice(0, 120), args: command === "send_message" ? { sessionId: args?.sessionId } : undefined });
+      throw e;
+    }
+  }
   return timedInvoke<T>(command, args);
 }
 

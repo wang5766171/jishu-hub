@@ -1360,5 +1360,15 @@
     "failed": "Task failed",
     "cancelled": "Task cancelled",
     "counts": "{{succeeded}} ok / {{failed}} failed / {{skipped}} skipped · {{total}} total"
+  },
+  "devLog": {
+    "openTitle": "Dev Log Center",
+    "title": "Dev Log Center",
+    "copy": "Copy logs",
+    "copied": "Copied",
+    "clear": "Clear",
+    "pauseScroll": "Pause auto-scroll",
+    "resumeScroll": "Resume auto-scroll",
+    "empty": "No logs yet (interact with a session)"
   }
 }

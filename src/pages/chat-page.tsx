@@ -6,6 +6,7 @@ import {
   useStreamingSessionIds,
 } from "@/hooks/use-stream-store";
 import { steerCoordinator } from "@/features/session-kernel/kernel/steer-coordinator";
+import { devLog } from "@/lib/dev-log";
 import { useSyncExternalStore } from "react";
 import { MessageView } from "@/components/sessions/message-view";
 import { buildTurnSummaries } from "@/components/sessions/turn-rail";
@@ -201,6 +202,7 @@ export function ChatPage({
   const compaction = useCompaction(activeId, supportsCompact);
   const { compacting, autoCompaction: autoCompactionPref } = compaction;
   const handleCompactSession = useCallback(async () => {
+    devLog("ipc", "手动压缩会话（compact_chat）", { session: selectedSessionRef.current });
     const sessionId = selectedSessionRef.current;
     if (!sessionId || sessionId === "new" || compacting) return;
     try {
@@ -804,6 +806,7 @@ export function ChatPage({
     const action = scrollAction.current;
     scrollAction.current = null;
     bottomFollowRef.current = action.type === "bottom";
+    devLog("session", "scrollAction 消费", { type: action.type, top: action.type === "restore" ? action.top : undefined });
     if (action.type === "bottom") {
       messageAreaRef.current.scrollTop = messageAreaRef.current.scrollHeight;
     } else {
@@ -870,6 +873,9 @@ export function ChatPage({
       isAwayFromBottomRef.current = awayFromBottom;
       setIsAwayFromBottom(awayFromBottom);
       // 底部恢复贴底跟随解除：用户明确上翻即停（程序性贴底不触发本条件）。
+      if (awayFromBottom && bottomFollowRef.current) {
+        devLog("session", "贴底跟随解除（用户上翻）", {});
+      }
       if (awayFromBottom) bottomFollowRef.current = false;
       // 活动轮次 = 视口顶及以上最后一条用户消息的轮次（视口在第一轮内则
       // 为 0）。边界含容差 +1px：跳转顶对齐后目标行 top == 容器顶（平滑
@@ -1855,6 +1861,8 @@ export function ChatPage({
       autoCompaction: autoCompactionPref ?? null,
       setAutoCompaction: (enabled) => void handleAutoCompactionChange(enabled),
       confirmDialog: (opts) => confirmDialog(opts),
+      // v0.9.4 需求12：插件底座日志能力（dev 日志中心，plugin 类别）。
+      devLog: (message, data) => devLog("plugin", message, data),
       task: taskPanelCtx,
       sessionId: selectedSession && selectedSession !== "new" ? selectedSession : null,
       sessionTitle:
@@ -3008,6 +3016,7 @@ export function ChatPage({
                     const at = abortLocalCommitRef.current.get(finalKey)
                       ?? abortLocalCommitRef.current.get(selectedSession);
                     if (at !== undefined && Date.now() - at < 10_000) {
+                      devLog("session", "onAbort 幂等命中（跳过重复提交）", { session: selectedSession });
                       return;
                     }
                   }
@@ -3120,6 +3129,7 @@ export function ChatPage({
                     // 拒绝 → 重发收口永远不执行，用户实测引导 B+停止后 B 消失）。
                     // 改设标记：turn_complete(Aborted) 凭标记跳过重复提交，收口
                     //（steering 重发）照常——turn_complete 是唯一回合终结者。
+                    devLog("session", "onAbort 本地提交+标记", { session: finalKey });
                     abortLocalCommitRef.current.set(finalKey, Date.now());
                     if (selectedSession !== finalKey) {
                       abortLocalCommitRef.current.set(selectedSession, Date.now());

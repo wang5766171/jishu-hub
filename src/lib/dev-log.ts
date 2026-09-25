@@ -1,0 +1,100 @@
+/**
+ * v0.9.4 需求12：dev 全流程日志总线（日志中心的数据层）。
+ *
+ * 设计要点：
+ * - **生产零开销**：`import.meta.env.DEV` 为 false 时 devLog 内部短路——无缓冲
+ *   写入、无订阅通知，调用点零样板（不需要 if (DEV) 包裹）。
+ * - **环形缓冲**（默认 3000 条，超出丢最旧）——排查会话流转/时序足够回溯，
+ *   不吃内存。
+ * - **订阅推送**：日志中心面板实时刷新（带版本号通知）。
+ * - 高频事件（text_delta/thinking_delta/tool_use_progress）由调用方自行聚合
+ *   或跳过，本层不做节流（保持简单）。
+ *
+ * 类别约定：pipeline（事件管线）/ store（流式态）/ steer（引导协调器）/
+ * ipc（会话命令）/ session（切换/滚动）/ approval（审批交互）。
+ */
+
+export type DevLogCategory =
+  | "pipeline"
+  | "store"
+  | "steer"
+  | "ipc"
+  | "session"
+  | "approval"
+  /** v0.9.4 需求12：插件经底座 ctx.devLog 发出的日志（message 约定以 [插件id] 开头）。 */
+  | "plugin";
+
+export interface DevLogEntry {
+  /** 单调序号（复制与定位用）。 */
+  seq: number;
+  /** epoch ms。 */
+  ts: number;
+  category: DevLogCategory;
+  message: string;
+  data?: unknown;
+}
+
+const MAX_ENTRIES = 3000;
+
+const IS_DEV = typeof import.meta !== "undefined" && Boolean(import.meta.env?.DEV);
+
+let entries: DevLogEntry[] = [];
+let nextSeq = 1;
+let t0 = 0;
+let version = 0;
+const listeners = new Set<() => void>();
+
+export function devLog(category: DevLogCategory, message: string, data?: unknown): void {
+  if (!IS_DEV) return;
+  const ts = Date.now();
+  if (t0 === 0) t0 = ts;
+  entries.push({ seq: nextSeq++, ts, category, message, data });
+  if (entries.length > MAX_ENTRIES) {
+    entries = entries.slice(-MAX_ENTRIES);
+  }
+  version += 1;
+  for (const l of listeners) l();
+}
+
+/** 快照（最新在末尾）。 */
+export function getDevLogs(): readonly DevLogEntry[] {
+  return entries;
+}
+
+export function devLogVersion(): number {
+  return version;
+}
+
+export function subscribeDevLogs(listener: () => void): () => void {
+  if (!IS_DEV) return () => {};
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function clearDevLogs(): void {
+  entries = [];
+  version += 1;
+  for (const l of listeners) l();
+}
+
+/** 格式化为可复制文本（用户粘贴给 agent 排查用）。 */
+export function formatDevLogs(filter?: readonly DevLogCategory[]): string {
+  const t0Local = entries[0]?.ts ?? 0;
+  const lines = entries
+    .filter((e) => !filter || filter.length === 0 || filter.includes(e.category))
+    .map((e) => {
+      const rel = `+${String(e.ts - t0Local).padStart(6, " ")}ms`;
+      const data = e.data === undefined ? "" : " " + safeJson(e.data);
+      return `#${e.seq} [${rel}] [${e.category}] ${e.message}${data}`;
+    });
+  return lines.join("\n");
+}
+
+function safeJson(v: unknown): string {
+  try {
+    const s = JSON.stringify(v);
+    return s !== undefined && s.length > 400 ? s.slice(0, 400) + "…(" + s.length + ")" : (s ?? "");
+  } catch {
+    return String(v);
+  }
+}

@@ -9,6 +9,7 @@
  * setter/ref 注入。refreshSessionUsage 定义序在钩子之后，经 ref 运行时取用。
  */
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { devLog } from "@/lib/dev-log";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { invokeCommand } from "@/hooks/use-invoke";
@@ -156,6 +157,7 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
       // 落在中间旧消息处（用户实测：底部离开回来定位到历史消息）。
       const el = messageAreaRef.current;
       const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 100;
+      devLog("session", "切换会话（离开记录）", { from: selectedSessionRef.current, to: sessionId, atBottom });
       scrollMemory.current.set(selectedSessionRef.current, atBottom ? "bottom" : el.scrollTop);
     }
     const isFirstVisit = !visitedSessions.current.has(sessionId);
