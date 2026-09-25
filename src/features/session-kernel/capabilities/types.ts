@@ -19,11 +19,25 @@ export type SourcePayload =
   | { kind: "signal"; signal: unknown };
 
 export interface SourceDeclaration {
-  type: "code-block" | "block-type" | "messages" | "turns" | "stream-state" | "task" | "signal";
+  type:
+    | "code-block"
+    | "block-type"
+    | "messages"
+    | "turns"
+    | "stream-state"
+    | "task"
+    | "signal"
+    /** v0.9.5 需求1（原需求26）8b：工具返回值源——配 tool-output 挂载
+     *  （渲染在 tool_use 卡 output 区，替换默认文本/嗅探）。 */
+    | "tool-result";
   languages?: string[];
   blockTypes?: string[];
   aggregate?: string;
   signals?: string[];
+  /** tool-result 源：精确工具名。 */
+  tool_name?: string;
+  /** tool-result 源：工具名正则（tool_name 未声明时生效）。 */
+  tool_pattern?: string;
 }
 
 /** messages 源的聚合器（注册表键 → 消息流压缩为 payload.data）。 */
@@ -143,6 +157,10 @@ const MOUNT_SOURCE_MATRIX: Record<string, string[]> = {
   "sidebar-panel": ["messages", "turns", "stream-state", "task"],
   "composer-trailing": ["messages", "turns", "stream-state"],
   "event-hook": ["signal"],
+  // 8b：工具返回值挂载语义（渲染在 tool_use 卡 output 区——非独立块；
+  // P1-4 更正：tool_result 块不作为独立块渲染，此挂载由 ToolCallCard 的
+  // matchToolResultRenderer 咨询消费）。
+  "tool-output": ["tool-result"],
 };
 
 /** manifest 校验：结构合法 + 组件键存在 + 源域字段显式且互斥 + 挂载配对

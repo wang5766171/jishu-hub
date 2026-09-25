@@ -244,6 +244,20 @@ export function buildComposedDescriptor(
         }
       },
     } as SessionPluginDescriptor["mounts"][number]);
+  } else if (render.mount === "tool-output") {
+    // 8b：工具返回值挂载——组件经注册表/@file: 解析，挂载声明交
+    // matchToolResultRenderer 咨询消费（ToolCallCard output 区替换渲染）。
+    const fileComp = (manifest.render?.component ?? "").startsWith("@file:") ? hybrid?.component : undefined;
+    const reg = fileComp ? undefined : rendererRegistry.get(render.component);
+    const Comp = (fileComp ?? reg?.component) as ComponentType<RendererComponentProps> | undefined;
+    if (Comp) {
+      mounts.push({
+        kind: "tool-result-renderer",
+        toolName: source.tool_name,
+        toolPattern: source.tool_pattern,
+        component: Comp as unknown as ComponentType<Record<string, unknown>>,
+      } as SessionPluginDescriptor["mounts"][number]);
+    }
   } else {
     // rail-widget / dock-panel / sidebar-panel / composer-trailing：数据面挂件。
     const mountBase = {

@@ -329,3 +329,68 @@ function NonePrimitive(): null {
   return null;
 }
 rendererRegistry.register({ key: "render.none", component: NonePrimitive, description: "无渲染（纯动作/事件类插件占位）" });
+
+// ── 8c（v0.9.5 需求1，原需求26）：工具返回值渲染原语（tool-result 源配
+// tool-output 挂载）——render.table / render.image。payload 形状：
+// { kind: "tool-result", toolName, output }（matchToolResultRenderer 咨询链）。
+
+function ToolResultTablePrimitive({ payload }: RendererComponentProps<SourcePayload>) {
+  const p = payload as { kind: string; output?: string };
+  let parsed: { columns?: unknown[]; rows?: unknown[][] } | null = null;
+  try {
+    const raw = JSON.parse((p.output ?? "").trim());
+    const obj = Array.isArray(raw) ? raw[0] : raw;
+    if (obj && typeof obj === "object" && Array.isArray((obj as { columns?: unknown }).columns) && Array.isArray((obj as { rows?: unknown }).rows)) {
+      parsed = obj as { columns?: unknown[]; rows?: unknown[][] };
+    }
+  } catch {
+    parsed = null;
+  }
+  if (!parsed) {
+    return <div className="p-2 text-xs text-muted-foreground">非表格 JSON（需含 columns + rows）</div>;
+  }
+  const heads = (parsed.columns ?? []).map(String);
+  return (
+    <div className="max-h-64 overflow-auto rounded-md border border-border/45">
+      <table className="w-full border-collapse text-left font-mono text-[11px]">
+        <thead className="sticky top-0 bg-[var(--tool-card-code-bg)]">
+          <tr>{heads.map((h, i) => <th key={i} className="border-b border-border/50 px-2 py-1 font-medium">{h}</th>)}</tr>
+        </thead>
+        <tbody>
+          {(parsed.rows ?? []).slice(0, 100).map((row, r) => (
+            <tr key={r} className="odd:bg-muted/20">
+              {heads.map((_, c) => (
+                <td key={c} className="border-b border-border/25 px-2 py-1 align-top text-foreground/75">
+                  {row?.[c] === null || row?.[c] === undefined ? "" : typeof row?.[c] === "object" ? JSON.stringify(row[c]) : String(row[c])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ToolResultImagePrimitive({ payload }: RendererComponentProps<SourcePayload>) {
+  const p = payload as { kind: string; output?: string };
+  const raw = (p.output ?? "").trim();
+  const url = raw.startsWith("data:") ? raw : raw.startsWith("<svg") ? `data:image/svg+xml;utf8,${encodeURIComponent(raw)}` : `data:image/png;base64,${raw.replace(/\s+/g, "")}`;
+  return (
+    <div className="flex max-h-64 items-center justify-center overflow-auto rounded-md border border-border/45 bg-white p-2">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={url} alt="工具图片输出" className="max-h-60 max-w-full" />
+    </div>
+  );
+}
+
+rendererRegistry.register({
+  key: "render.table",
+  component: ToolResultTablePrimitive,
+  description: "工具返回值表格（JSON columns+rows；tool-result 源）",
+});
+rendererRegistry.register({
+  key: "render.image",
+  component: ToolResultImagePrimitive,
+  description: "工具返回值图片（data:/base64/SVG；tool-result 源）",
+});

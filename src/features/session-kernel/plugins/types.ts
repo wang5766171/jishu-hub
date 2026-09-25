@@ -308,7 +308,8 @@ export type PluginMount =
   | BlockRendererMount
   | ComposerTrailingMount
   | EventHookMount
-  | HeaderActionMount;
+  | HeaderActionMount
+  | ToolResultRendererMount;
 
 /** 内核信号（事件钩子挂载点的数据面）。 */
 export type SessionSignal =
@@ -326,6 +327,20 @@ export type SessionSignal =
    *  总线层 >3 阻断防循环）；payload 携带业务数据（payload_key 取自渲染
    *  payload 顶层字段）。 */
   | { type: `plugin:${string}:${string}`; sessionId?: string; payload?: unknown; depth?: number };
+
+/** 工具返回值渲染挂载（v0.9.5 需求1（原需求26）8b——方向：渲染在
+ *  tool_use 卡的 output 区，替换默认文本/嗅探）：声明 tool_name 精确匹配
+ *  或 tool_pattern 正则；组件 props 形状 {payload:{kind:"tool-result",
+ *  toolName, output}, options, actions}。 */
+export interface ToolResultRendererMount {
+  kind: "tool-result-renderer";
+  /** 精确工具名（优先）。 */
+  toolName?: string;
+  /** 工具名正则（toolName 未声明时生效）。 */
+  toolPattern?: string;
+  component: ComponentType<Record<string, unknown>>;
+  options?: Record<string, unknown>;
+}
 
 /** 事件钩子挂载点：无 UI 的事件消费（通知/音效等）。 */
 export interface EventHookMount {

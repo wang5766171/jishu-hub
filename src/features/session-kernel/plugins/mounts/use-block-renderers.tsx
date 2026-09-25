@@ -65,3 +65,36 @@ export function matchBlockTypeRenderer(
 export function useBlockRenderers(): BlockRendererMount[] {
   return useContext(BlockRenderersContext);
 }
+/** 8b（v0.9.5 需求1）：工具返回值渲染咨询——按工具名匹配已启用插件的
+ *  tool-result-renderer 挂载（toolName 精确优先，toolPattern 正则兜底）。
+ *  非 hooks 语境（ToolCallCard body 内同步调用）——直接扫 listSessionPlugins
+ *  （注册表快照，loader 装载后稳定）。 */
+export function matchToolResultRenderer(
+  toolName: string,
+): { component: import("react").ComponentType<Record<string, unknown>>; options?: Record<string, unknown> } | null {
+  for (const plugin of listSessionPlugins()) {
+    for (const mount of plugin.mounts) {
+      if (mount.kind !== "tool-result-renderer") continue;
+      const m = mount as import("../types").ToolResultRendererMount;
+      if (m.toolName && m.toolName === toolName) {
+        return { component: m.component, options: m.options };
+      }
+    }
+  }
+  for (const plugin of listSessionPlugins()) {
+    for (const mount of plugin.mounts) {
+      if (mount.kind !== "tool-result-renderer") continue;
+      const m = mount as import("../types").ToolResultRendererMount;
+      if (m.toolPattern) {
+        try {
+          if (new RegExp(m.toolPattern).test(toolName)) {
+            return { component: m.component, options: m.options };
+          }
+        } catch {
+          // 非法正则跳过
+        }
+      }
+    }
+  }
+  return null;
+}
