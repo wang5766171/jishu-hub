@@ -13,9 +13,11 @@ import type { AgentStatus } from "@/agents/types";
 import { PluginCreateDialog } from "./plugin-create-dialog";
 import { PluginDetailModal, type DrawerPluginInfo } from "./plugin-detail-modal";
 import { PluginComposeDialog } from "./plugin-compose-dialog";
+// 3a-1（v0.9.5 需求1，原需敆26）：统一创建入口——类型选择卡片页分流。
+import { PluginCreateEntry } from "./plugin-create-entry";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
 import { composedVersion, subscribeComposed } from "@/features/session-kernel/capabilities/composition/loader";
-import { Info, Puzzle, Settings2 } from "lucide-react";
+import { Info, Settings2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -135,6 +137,8 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
   const [detailTarget, setDetailTarget] = useState<PluginDescriptor | null>(null);
   // v0.9.3 需求13 C3：新建组合插件向导。
   const [composeOpen, setComposeOpen] = useState(false);
+  // 3a-1（v0.9.5 需求1）：统一创建入口（类型选择卡片页）。
+  const [entryOpen, setEntryOpen] = useState(false);
   const [detailTab, setDetailTab] = useState<"info" | "settings">("info");
   const [panelOutputs, setPanelOutputs] = useState<Record<number, string>>({});
   const [panelRunning, setPanelRunning] = useState<number | null>(null);
@@ -547,6 +551,35 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
     <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-6">
       {dialogNode}
       <PluginComposeDialog open={composeOpen} onOpenChange={setComposeOpen} onCreated={refresh} />
+      {/* 3a-1：统一创建入口——四类型卡片分流（agent-tool → agents 向导；
+          session-composed → 组合式向导；pipeline/hybrid → 指引卡；describe →
+          引导到会话对话创建）。替换原两并列按钮（新建插件/新建组合插件）。 */}
+      <PluginCreateEntry
+        open={entryOpen}
+        onOpenChange={setEntryOpen}
+        onChoose={(choice) => {
+          switch (choice.kind) {
+            case "agent-tool":
+              setEditPluginId(null);
+              setCreateOpen(true);
+              break;
+            case "session-composed":
+              setComposeOpen(true);
+              break;
+            case "describe":
+              void alertDialog({
+                title: tr("plugins.entryDescribeTitle", "去会话中创建"),
+                description: tr(
+                  "plugins.entryDescribeBody",
+                  "切到任意会话，直接告诉 agent 你想要的插件（如“每轮结束在输入框旁显示花销”），它会按插件创作指南产出、校验并安装，安装后在本页确认卡启用。",
+                ),
+              });
+              break;
+            default:
+              break; // pipeline/hybrid 指引卡在入口组件内消化
+          }
+        }}
+      />
       {detailTarget ? (
         <PluginDetailModal
           plugin={detailTarget satisfies DrawerPluginInfo as DrawerPluginInfo}
@@ -578,23 +611,14 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
         </div>
         <div className="flex items-center gap-2">
           <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setComposeOpen(true)}
-            title="零代码组合基座能力（源×渲染组件×动作×配置）生成插件"
-          >
-            <Puzzle className="h-4 w-4" />
-            <span className="ml-1.5">新建组合插件</span>
-          </Button>
-          <Button
             size="sm"
             onClick={() => {
               setEditPluginId(null);
-              setCreateOpen(true);
+              setEntryOpen(true);
             }}
           >
             <Plus className="h-4 w-4" />
-            <span className="ml-1.5">{tr("plugins.createTitle", "新建插件")}</span>
+            <span className="ml-1.5">{tr("plugins.createTitle", "创建插件")}</span>
           </Button>
           <Button variant="outline" size="sm" onClick={handleReload} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
