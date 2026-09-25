@@ -454,6 +454,17 @@ pub enum PluginAction {
         /// Plugin identifier.
         id: String,
     },
+
+    /// Validate a plugin directory (or a single manifest TOML) without
+    /// installing: basic structural checks locally + full validation via the
+    /// running hub's TS validators (same implementation as the GUI wizard;
+    /// falls back to basic-only with a warning when the hub is not running).
+    /// v0.9.5 需求1（原需敆26）1c：命令面净增的唯一新命令。
+    Validate {
+        /// Path to the plugin directory (holding plugin.toml [+ component.js])
+        /// or a single plugin.toml file.
+        path: String,
+    },
 }
 
 // ── Task artifact（v0.8.1 需求10：自适应插件 CLI 形态）───────────────────────

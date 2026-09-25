@@ -368,6 +368,33 @@ pub(crate) fn plugin_confirm_pending() -> Vec<agent::plugin::PendingHybridPlugin
     agent::plugin::pending_confirm_list()
 }
 
+/// CLI plugins validate 的跨进程信箱（v0.9.5 需求1（原需求26）1c）：读请求
+/// 标记（CLI 写入的 .cli-validate-req.json——manifest JSON + componentJs
+/// 源码自包含，前端零任意路径访问）。返回 None 表示无待处理请求。
+#[tauri::command]
+pub(crate) fn cli_validate_poll() -> Option<serde_json::Value> {
+    let req_path = agent::manifest::hub_home().join(".cli-validate-req.json");
+    let Ok(content) = std::fs::read_to_string(&req_path) else {
+        return None;
+    };
+    // 上次 CLI 中断残留的旧响应——清掉避免本次误配（nonce 匹配在 CLI 侧）。
+    let resp_path = agent::manifest::hub_home().join(".cli-validate-resp.json");
+    if resp_path.exists() {
+        let _ = std::fs::remove_file(&resp_path);
+    }
+    serde_json::from_str(&content).ok()
+}
+
+/// CLI validate 信箱回写：前端校验器（validateManifest/validatePipeline——
+/// 与 GUI 向导同一份 TS 实现）跑完写 .cli-validate-resp.json，CLI 轮询
+/// 匹配 nonce 取结果。
+#[tauri::command]
+pub(crate) fn cli_validate_submit(response: serde_json::Value) -> Result<(), String> {
+    let resp_path = agent::manifest::hub_home().join(".cli-validate-resp.json");
+    crate::util::atomic_write(&resp_path, response.to_string().as_bytes())
+        .map_err(|e| format!("cannot write validate response: {e}"))
+}
+
 /// v0.9.3 需求13 C3：删除用户组合插件（内置拒绝）并广播。
 #[tauri::command]
 pub(crate) fn composed_plugin_delete(app: tauri::AppHandle, id: String) -> Result<(), String> {

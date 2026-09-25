@@ -26,6 +26,9 @@ import {
 } from "@/features/session-kernel/shell/session-sidebar";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { HybridInstallConfirmation } from "@/components/hybrid-install-confirmation";
+// v0.9.5 需求1（原需敆26）1c：CLI plugins validate 跨进程校验桥（轮询
+// 标记信箱，复用 hub 侧 TS 校验器——与 GUI 向导同一份实现）。
+import { useCliValidateBridge } from "@/features/session-kernel/capabilities/cli-validate-bridge";
 import { HybridErrorNotification } from "@/features/session-kernel/capabilities/composition/hybrid-errors";
 import type { Page, Project, ProjectMeta } from "@/types";
 
@@ -430,6 +433,8 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
 function AppContent() {
   // v0.7.0 需求一：会话作用域状态。项目/会话/元数据随会话作用域 agent 切换重新拉取。
   const { chatAgentId, setChatAgent, setManageAgent } = useAgent();
+  // 1c（v0.9.5 需求1）：CLI plugins validate 跨进程校验桥。
+  useCliValidateBridge();
   const [currentPage, setCurrentPage] = useState<Page>("chat");
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [projectSessionsLoading, setProjectSessionsLoading] = useState(false);
@@ -643,6 +648,7 @@ useEffect(() => {
             项目切换不卸载；组件内部 createPortal 到 body，轮询
             plugin_confirm_pending，无待确认项时渲染 null。 */}
         <HybridInstallConfirmation />
+        {/* 1c：CLI validate 信箱轮询（无 UI 纯逻辑钩子，与确认卡同区域挂载） */}
         <HybridErrorNotification />
       </div>
     </FileViewerProvider>

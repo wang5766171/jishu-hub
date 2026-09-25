@@ -23,6 +23,7 @@ pub fn run(action: PluginAction, ctx: &ExecutionContext) -> Result<(), CliError>
         PluginAction::Remove { id } => remove(&id, ctx),
         PluginAction::Enable { id } => set_enabled(&id, true, ctx),
         PluginAction::Disable { id } => set_enabled(&id, false, ctx),
+        PluginAction::Validate { path } => validate(&path, ctx),
     }
 }
 
@@ -511,6 +512,172 @@ fn set_enabled(id: &str, enabled: bool, ctx: &ExecutionContext) -> Result<(), Cl
             "Plugin {id} {}d (restart the GUI or reload its plugin page to apply).",
             if enabled { "enable" } else { "disable" }
         );
+    }
+    Ok(())
+}
+
+/// 校验插件目录/清单（1c，v0.9.5 需求1（原需求26））：基础结构检查（Rust
+/// 本地）+ 经标记文件调运行中 hub 前端的 TS 校验器（validateManifest /
+/// validatePipeline——与 GUI 向导同一份实现，单一校验真源）。hub 未运行
+/// （响应超时）时降级：仅输出基础校验结果 + ⚠ 提示，不静默失败。
+///
+/// 标记协议（CLI ↔ hub 前端的跨进程信箱，同 .pending-confirm 模式）：
+/// - 请求 `.cli-validate-req.json`：{nonce, dir, manifest, componentJs}——
+///   manifest 为 toml→JSON 转换值（前端校验器直接消费），componentJs 为
+///   目录内 component.js 源码（前端做契约检查，无任意路径文件访问）；
+/// - 响应 `.cli-validate-resp.json`：{nonce, valid, errors}——前端校验
+///   完成后经 cli_validate_submit 命令写回，CLI 轮询匹配 nonce 取结果。
+fn validate(path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
+    let input = std::path::Path::new(path);
+    let (dir, toml_path) = if input.is_dir() {
+        (input.to_path_buf(), input.join("plugin.toml"))
+    } else if input.extension().is_some_and(|e| e == "toml") {
+        (
+            input.parent().unwrap_or(input).to_path_buf(),
+            input.to_path_buf(),
+        )
+    } else {
+        return Err(CliError::InvalidArg(
+            "expected a plugin directory (holding plugin.toml) or a plugin.toml file".to_string(),
+        ));
+    };
+    if !toml_path.exists() {
+        return Err(CliError::InvalidArg(format!(
+            "plugin.toml not found: {}",
+            toml_path.display()
+        )));
+    }
+    let content = std::fs::read_to_string(&toml_path)
+        .map_err(|e| CliError::InvalidArg(format!("cannot read {}: {e}", toml_path.display())))?;
+
+    // ── 基础校验（Rust 结构检查——hub 未运行时的降级面）──
+    let value: toml::Value = content
+        .parse()
+        .map_err(|e| CliError::InvalidArg(format!("invalid TOML: {e}")))?;
+    let mut basic_errors: Vec<String> = Vec::new();
+    let id = value
+        .get("plugin")
+        .and_then(|p| p.get("id"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| CliError::InvalidArg("manifest missing [plugin].id".to_string()))?
+        .to_string();
+    if !id.starts_with("session.") {
+        basic_errors.push(format!("[plugin] id 须以 session. 开头（安装通道要求），got {id:?}"));
+    }
+    if let Some(component) = value
+        .get("render")
+        .and_then(|r| r.get("component"))
+        .and_then(|v| v.as_str())
+    {
+        if let Some(rel) = component.strip_prefix("@file:") {
+            let file = dir.join(rel);
+            if !file.exists() {
+                basic_errors.push(format!("[render] @file: 引用的文件不存在: {rel}"));
+            }
+        }
+    }
+    if let Some(stages) = value.get("pipeline").and_then(|p| p.get("stages")) {
+        if stages.as_array().is_none_or(|a| a.is_empty()) {
+            basic_errors.push("[pipeline] stages 为空（流水线至少需要一个阶段）".to_string());
+        }
+    }
+    let component_js = match std::fs::read_to_string(dir.join("component.js")) {
+        Ok(code) => {
+            if !code.contains("JishuPlugin.register") {
+                basic_errors.push(
+                    "component.js missing \"JishuPlugin.register\" (code contract)".to_string(),
+                );
+            }
+            if !code.contains("version: 1") && !code.contains("version:1") {
+                basic_errors.push(
+                    "component.js 应声明 version: 1（当前 PLUGIN_API_VERSION）".to_string(),
+                );
+            }
+            Some(code)
+        }
+        Err(_) => None,
+    };
+
+    // ── 完整校验（hub 运行中）：写请求标记 → 轮询响应 ──
+    let manifest_json = serde_json::to_value(&value)
+        .map_err(|e| CliError::InvalidArg(format!("manifest 转换失败: {e}")))?;
+    let nonce = crate::util::now_ms() as u64;
+    let req = serde_json::json!({
+        "nonce": nonce,
+        "dir": dir.to_string_lossy(),
+        "manifest": manifest_json,
+        "componentJs": component_js,
+    });
+    let hub = agent::manifest::hub_home();
+    let req_path = hub.join(".cli-validate-req.json");
+    let resp_path = hub.join(".cli-validate-resp.json");
+    crate::util::atomic_write(&req_path, req.to_string().as_bytes())
+        .map_err(|e| CliError::InvalidArg(format!("cannot write validate request: {e}")))?;
+
+    let mut hub_errors: Option<Vec<String>> = None;
+    for _ in 0..24 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if let Ok(resp_content) = std::fs::read_to_string(&resp_path) {
+            if let Ok(resp) = serde_json::from_str::<serde_json::Value>(&resp_content) {
+                if resp.get("nonce").and_then(|n| n.as_u64()) == Some(nonce) {
+                    hub_errors = Some(
+                        resp.get("errors")
+                            .and_then(|e| e.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|x| x.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    );
+                    let _ = std::fs::remove_file(&resp_path);
+                    break;
+                }
+            }
+        }
+    }
+
+    let (valid, mut all_errors, hub_live) = match hub_errors {
+        Some(hub_errs) => {
+            let mut errs = basic_errors.clone();
+            errs.extend(hub_errs);
+            (errs.is_empty(), errs, true)
+        }
+        None => (basic_errors.is_empty(), basic_errors.clone(), false),
+    };
+    let _ = std::fs::remove_file(&req_path);
+
+    if ctx.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "id": id,
+                "path": toml_path.to_string_lossy(),
+                "valid": valid,
+                "hubFullValidation": hub_live,
+                "errors": all_errors,
+            })
+        );
+    } else {
+        if valid {
+            println!("✓ valid: {id} ({})", toml_path.display());
+        } else {
+            println!("✗ invalid: {id}");
+            for e in &all_errors {
+                println!("  - {e}");
+            }
+        }
+        if !hub_live {
+            println!("⚠ hub 未运行，仅完成基础校验；完整校验需启动 hub 后重试");
+        }
+    }
+    if !valid {
+        // 校验失败以非零码退出（脚本可判）——std::process::exit 由 main 层统一，
+        // 这里返回 InvalidArg 语义化（json 模式已打印结果）。
+        return Err(CliError::InvalidArg(format!(
+            "validation failed with {} error(s)",
+            all_errors.len()
+        )));
     }
     Ok(())
 }
