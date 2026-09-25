@@ -288,6 +288,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+        // v0.9.4 需求12：开发日志强制开关（settings.json 持久化）。
+        commands::dev_log::get_dev_log_forced,
+        commands::dev_log::set_dev_log_forced,
             commands::agents::list_agents,
             commands::projects::scan_projects,
             commands::projects::list_project_files,

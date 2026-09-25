@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DevLogCenter } from "@/components/dev/dev-log-center";
+import { isDevLogForced } from "@/lib/dev-log";
 import { useTranslation } from "react-i18next";
 import { ChartPie, LayoutGrid, Map, Package, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -267,7 +268,7 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
 
       {/* v0.9.4 需求12：dev 日志中心（生产构建整段剔除——import.meta.env.DEV
           静态可判定，vite 构建时 dead-code eliminate）。 */}
-      {import.meta.env.DEV && <DevLogCenter />}
+      {(import.meta.env.DEV || isDevLogForced()) && <DevLogCenter />}
 
       {/* ── 能力中心按钮（图标 = 当前展开插件）── */}
       <div ref={hubRef} className="pointer-events-auto absolute right-2 top-2">

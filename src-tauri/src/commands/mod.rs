@@ -33,4 +33,5 @@ pub(crate) use sessions::*;
 pub(crate) use settings::*;
 pub(crate) use task::*;
 pub(crate) use terminal::*;
-pub(crate) use update::*;
+pub(crate) use update::*;pub mod dev_log;
+

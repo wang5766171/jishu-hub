@@ -38,6 +38,47 @@ const MAX_ENTRIES = 3000;
 
 const IS_DEV = typeof import.meta !== "undefined" && Boolean(import.meta.env?.DEV);
 
+/**
+ * v0.9.4 需求12 测试期（用户：安装包测试更稳定——dev 启动会被代码改动重启）：
+ * 运行时强制开关——设置页打开后**生产构建同样启用日志中心**（localStorage
+ * 持久化，属显示层调试开关）。dev 构建恒启用。
+ */
+let forceEnabled = false;
+void 0;
+export function isDevLogForced(): boolean {
+  return forceEnabled;
+}
+
+/** 启动时从后端 settings.json 水合（app 挂载早期调用一次；后端为主权威，
+ *  localStorage 仅作水合前的闪断兜底——用户实测 localStorage 跨启动丢失，
+ *  后端持久化解决）。 */
+export async function hydrateDevLogForced(): Promise<void> {
+  try {
+    const { invokeCommand } = await import("@/hooks/use-invoke");
+    forceEnabled = await invokeCommand<boolean>("get_dev_log_forced");
+  } catch {
+    forceEnabled = false;
+  }
+  version += 1;
+  for (const l of listeners) l();
+}
+
+export async function setDevLogForced(v: boolean): Promise<void> {
+  forceEnabled = v;
+  version += 1;
+  for (const l of listeners) l();
+  try {
+    const { invokeCommand } = await import("@/hooks/use-invoke");
+    await invokeCommand("set_dev_log_forced", { enabled: v });
+  } catch (e) {
+    console.warn("[dev-log] 持久化开关失败（内存态仍生效）:", e);
+  }
+}
+
+function enabled(): boolean {
+  return IS_DEV || forceEnabled;
+}
+
 let entries: DevLogEntry[] = [];
 let nextSeq = 1;
 let t0 = 0;
@@ -45,7 +86,7 @@ let version = 0;
 const listeners = new Set<() => void>();
 
 export function devLog(category: DevLogCategory, message: string, data?: unknown): void {
-  if (!IS_DEV) return;
+  if (!enabled()) return;
   const ts = Date.now();
   if (t0 === 0) t0 = ts;
   entries.push({ seq: nextSeq++, ts, category, message, data });
@@ -66,7 +107,7 @@ export function devLogVersion(): number {
 }
 
 export function subscribeDevLogs(listener: () => void): () => void {
-  if (!IS_DEV) return () => {};
+  if (!enabled()) return () => {};
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
