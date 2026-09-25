@@ -13,6 +13,10 @@ import { useCallback, useEffect, useState } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { ShieldAlert, Check, X } from "lucide-react";
 import { createPortal } from "react-dom";
+// 5a（v0.9.5 需求1，原需敆26）：安装后自动展示——面板自动展开/挂件高亮/
+// 测试通知，复用既有面板激活性与动作命令链。
+import { requestPanelActivation } from "@/features/session-kernel/shell/panel-activation";
+import { requestInstallSpotlight } from "@/features/session-kernel/shell/install-spotlight";
 
 interface PendingHybridPlugin {
   /** 插件 id（session.xxx）。 */
@@ -30,6 +34,41 @@ interface PendingHybridPlugin {
 /** 轮询间隔：安装后 CLI 侧即时广播 plugins-changed 但确认卡需要额外数据，
  *  每 5s 刷新一次（轻量——后端在无待确认项时返回空数组）。 */
 const POLL_INTERVAL_MS = 5000;
+
+/** 5a：启用后自动展示（按 pending.mount 分派）。 */
+function afterEnableShowcase(item: PendingHybridPlugin): void {
+  switch (item.mount) {
+    case "dock-panel":
+    case "sidebar-panel":
+      // 面板自动展开：等 plugins-changed → loader 热重建（异步）后面板
+      // 可挂载，延迟后再请求激活（requestPanelActivation 复用 openPanel
+      // 命令链——dock 悬浮展开 / sidebar 侧栏顶开，单选互斥）。
+      window.setTimeout(() => requestPanelActivation(item.id), 900);
+      break;
+    case "rail-widget":
+    case "composer-trailing":
+      // 挂件位置高亮闪烁一次（rail 宿主消费 spotlight；composer 挂件同链）。
+      window.setTimeout(() => requestInstallSpotlight(item.id), 900);
+      break;
+    case "event-hook":
+      // 测试通知：确认通知通道畅通（复用 desktop-notify 动作的后端命令）。
+      window.setTimeout(() => {
+        void invokeCommand("desktop_notify_send", {
+          title: "通知插件已启用",
+          body: "这是一条测试通知——插件工作正常。",
+          sessionId: null,
+          sound: null,
+        }).catch(() => undefined);
+      }, 600);
+      break;
+    case "pipeline":
+      // 流水线：确认卡文案已提示「立即试用」路径（插件中心·流水线 tab
+      // 详情页「作为任务启动」）；/jishu-pipeline 命令亦可直达。
+      break;
+    default:
+      break;
+  }
+}
 
 export function HybridInstallConfirmation() {
   const [pending, setPending] = useState<PendingHybridPlugin[]>([]);
@@ -57,10 +96,15 @@ export function HybridInstallConfirmation() {
     try {
       await invokeCommand("plugin_set_enabled", { pluginId: id, enabled });
       setPending(prev => prev.filter(p => p.id !== id));
+      if (enabled) {
+        // 5a：装好了在哪用？——按挂载形态自动展示（不用去能力中心找）。
+        const item = pending.find(p => p.id === id);
+        if (item) afterEnableShowcase(item);
+      }
     } finally {
       setBusyId(null);
     }
-  }, []);
+  }, [pending]);
 
   if (pending.length === 0) return null;
 

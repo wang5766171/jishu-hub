@@ -17,6 +17,9 @@ import type { SessionKernelContext } from "../types";
  *
  * 挂载位置：父容器需 position:relative（与 TurnRail 原绝对定位约束一致）。
  */
+// 5a（v0.9.5 需求1）：安装后挂件高亮（确认卡启用 → 位置提示一次）。
+import { useInstallSpotlight } from "../../shell/install-spotlight";
+
 export function SessionRailSlot({ ctx }: { ctx: SessionKernelContext }) {
   const enabled = useEnabledSessionPlugins();
   const [layout, setLayout] = useState<SessionLayoutState>(() => loadLayout());
@@ -44,6 +47,17 @@ export function SessionRailSlot({ ctx }: { ctx: SessionKernelContext }) {
   const bySide: Record<RailSide, typeof widgets> = { left: [], right: [] };
   for (const widget of widgets) bySide[widget.side].push(widget);
 
+  // 5a：spotlight 目标（一次性 pulse，3s 后自动熄灭——提示挂件位置）。
+  const spotlight = useInstallSpotlight();
+  const [pulsingId, setPulsingId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!spotlight) return;
+    setPulsingId(spotlight.pluginId);
+    const timer = window.setTimeout(() => setPulsingId(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [spotlight?.seq]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+
   return (
     <>
       {(Object.keys(bySide) as RailSide[]).map((side) => {
@@ -64,6 +78,7 @@ export function SessionRailSlot({ ctx }: { ctx: SessionKernelContext }) {
                 <div
                   key={id}
                   data-rail-widget={id}
+                  className={pulsingId === id ? "animate-pulse rounded-md ring-2 ring-primary/60" : undefined}
                   onDragOver={(e) => {
                     // 挂件本体拖到对侧：拖拽体携带插件 id，落位切缘。
                     if (e.dataTransfer.types.includes("application/x-jishu-rail")) {
