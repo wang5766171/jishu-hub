@@ -2620,7 +2620,13 @@ export function ChatPage({
       />
 
       {/* Right: Chat area */}
-      <div className="flex-1 flex flex-col min-w-0 bg-background">
+      <div className="relative flex-1 flex flex-col min-w-0 bg-background">
+        {/* v0.9.2 需求1 P4 + v0.9.4 需求7 测试期（用户裁决）：贴边挂件宿主
+            定位于「标题以下会话区」（top 避开标题栏、上下留固定间隔）——
+            导航条在该区间居中，不顶格。 */}
+        <div className="absolute left-0 top-24 bottom-10 w-6 pointer-events-none">
+          <SessionRailSlot ctx={sessionKernelCtx} />
+        </div>
         {/* 新建任务对话（TaskInstance 尚未创建）的顶栏：标题 + 关闭。
             减法重构：TaskHeaderBar 已随 TaskWorkspace 退役，这里用内联顶栏保留关闭能力，
             不引入独立组件；任务激活后主区沿用 chat-page 常规会话头。 */}
@@ -2925,9 +2931,6 @@ export function ChatPage({
                 );
               })()}
                 </div>
-                {/* v0.9.2 需求1 P4：贴边挂件宿主——导航列等 rail-widget 插件
-                    经统一注册表挂载（原硬编码 TurnRail 装配退役；插件页可启停）。 */}
-                <SessionRailSlot ctx={sessionKernelCtx} />
               </div>
           </>
         )}

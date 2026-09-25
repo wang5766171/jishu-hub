@@ -70,7 +70,9 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   const phaseLabel = (() => {
     const hasAnyContent = displayText.length > 0 || thinkingText.length > 0 || toolUses.length > 0 || content.length > 0;
     if (!hasAnyContent) {
-      return state?.hasReceivedEvent
+      // v0.9.4 需求12 测试期修复（用户实测切模型卡②）：③「思考中」的权威
+      // 信号 = session_resolved（连接建立）；send IPC 返回过早（spawn 中）。
+      return state?.sessionResolved || state?.hasReceivedEvent
         ? t("sessions.thinkingDots")
         : (agentDisplayName
           ? t("sessions.agentOnTheWay", "{{name}} 正在赶来...", { name: agentDisplayName })

@@ -61,6 +61,14 @@ export interface SessionStreamState {
   /** v0.9.4 需求10：首个 pi 内容事件是否已到达（区分「智能体连接中」与
    * 「等待模型响应」两阶段的状态文案）。start/drop 重置。 */
   hasReceivedEvent: boolean;
+  /** v0.9.4 需求12 测试期：send_message 已受理（IPC 返回）——②「正在赶来」
+   * 仅在 spawn 期间（send 未确认）显示；复用进程场景模型首响应慢（20-40s）
+   * 应显示③「思考中」而非误导性的「正在赶来」（用户实测）。 */
+  promptAccepted: boolean;
+  /** v0.9.4 需求12 测试期修复（用户实测切模型卡②）：session_resolved 已到
+   * （resume attach 完成 = 连接真正建立）——②→③ 的权威切换信号。切模型后
+   * 回收重拉耗时 40s+，send_message IPC 返回过早（新进程尚在 spawn）。 */
+  sessionResolved: boolean;
   pendingUserMessage: string | null;
   /** v0.9.0 需求3 方案 C：本条消息的工具插件 id 快照（compose 时前端已知，
    * 与 pendingUserMessage 并行；文本标记方案已废弃，不再从文本解析）。 */
@@ -126,6 +134,8 @@ function emptyState(
     steerSplits: [],
     steerTexts: [],
     hasReceivedEvent: false,
+    promptAccepted: false,
+    sessionResolved: false,
     interactionSplits: [],
     autoRetry: null,
     retryFailed: null,
@@ -182,6 +192,29 @@ class StreamStore {
     this.aliases.set(canonicalId, key);
   }
 
+  /** v0.9.4 需求12：send_message 受理确认（chat-input IPC 返回后调用）——
+   *  阶段文案②→③切换信号（与 hasReceivedEvent 独立：受理后模型未吐字 =
+   *  等待模型响应而非连接中）。 */
+  markPromptAccepted(sid: string): void {
+    const key = this.canonical(sid);
+    const prev = this.sessions.get(key);
+    if (!prev || prev.promptAccepted) return;
+    this.sessions.set(key, { ...prev, promptAccepted: true });
+    devLog("store", "send 受理确认（②→③：等待模型响应）", { id: sid });
+    this.scheduleFlush();
+  }
+
+  /** v0.9.4 需求12 测试期修复：session_resolved 到达（连接建立）——②→③
+   * 权威切换（同时视为 hasReceivedEvent：连接后必有内容流）。 */
+  markSessionResolved(sid: string): void {
+    const key = this.canonical(sid);
+    const prev = this.sessions.get(key);
+    if (!prev || prev.sessionResolved) return;
+    this.sessions.set(key, { ...prev, sessionResolved: true, hasReceivedEvent: true });
+    devLog("store", "session_resolved（②→③：连接建立）", { id: sid });
+    this.scheduleFlush();
+  }
+
   /** Push only events that belong to an existing stream or can start a
    *  continuation. Lifecycle-only events must not create empty streaming state. */
   pushTracked(sid: string, chunk: StreamChunk): boolean {
@@ -199,7 +232,7 @@ class StreamStore {
     const prev = this.sessions.get(key) ?? emptyState(key, null);
 
     let { content, text, thinking, error, tools, resolvedId, steps, steerSplits, steerTexts, interactionSplits, autoRetry, retryFailed } = prev;
-    let { hasReceivedEvent: hasEvent } = prev;
+    let { hasReceivedEvent: hasEvent, sessionResolved } = prev;
     const pendingToolIds = prev.pendingToolIds;
     const { pendingUserMessage, abortKey, isStreaming } = prev;
     const chunks = [...prev.chunks, chunk];
@@ -399,6 +432,8 @@ class StreamStore {
       error,
       tools,
       hasReceivedEvent: hasEvent,
+      sessionResolved: sessionResolved || (resolvedId !== undefined && resolvedId !== null && resolvedId !== ""),
+      promptAccepted: prev.promptAccepted,
       pendingUserMessage,
       pendingToolIds,
       resolvedId,

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 // v0.9.2 需求1 P1：轮次语义迁移至会话内核统一视图模型（与消息渲染同源）。
@@ -47,7 +47,21 @@ function waveWidth(distance: number): string {
 export function TurnRail({ turns, activeIndex, onJump }: TurnRailProps) {
   const { t } = useTranslation();
   const railRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState<{ index: number; top: number } | null>(null);
+
+  // v0.9.4 需求7 测试期（用户：参考 zcode 丝滑——可滚 + 跟随）：活动轮变化
+  // 时轨道内平滑滚到活动横杠（block:nearest 不强拉——用户手动浏览时跟随
+  // 阅读位置；最新轮激活时自然滚到底，解决「最后一项显示旧轮次」）。
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || activeIndex < 0) return;
+    const item = el.querySelector<HTMLElement>(`[data-turn-rail-item="${activeIndex}"]`);
+    // jsdom 无 scrollIntoView（测试环境）——存在性防御。
+    if (item && typeof item.scrollIntoView === "function") {
+      item.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [activeIndex]);
 
   if (turns.length === 0) return null;
 
@@ -63,10 +77,19 @@ export function TurnRail({ turns, activeIndex, onJump }: TurnRailProps) {
       ref={railRef}
       role="navigation"
       aria-label={t("sessions.turnRail.label")}
-      className="pointer-events-none absolute inset-y-0 left-0 z-10 flex w-6 flex-col items-center"
+      // v0.9.4 需求7 测试期（用户对比 zcode，两轮修正）：**纯 flex 稳态结构**
+      // ——占满全高 + justify-center 垂直居中（不溢出时）+ 内层 min-h-0
+      // overflow-y-auto（溢出时内部滚动）+ py-6 恒定上下留白。
+      // 弃用 absolute top:50%+translateY 技巧（多层定位祖先下百分比 maxHeight
+      // 与高度收缩行为不稳定，用户实测仍占满全高不居中）。
+      className="pointer-events-none absolute inset-y-0 left-0 z-10 flex w-6 flex-col items-center justify-center"
     >
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <div className="m-auto flex flex-col items-center gap-0.5" onMouseLeave={() => setHovered(null)}>
+      {/* 滚动层：min-h-0（flex 收缩许可）+ 可滚轮；横杠列 m-auto 不溢出居中。 */}
+      <div
+        ref={scrollRef}
+        className="pointer-events-auto flex min-h-0 flex-col overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
+        <div className="flex flex-col items-center gap-0.5" onMouseLeave={() => setHovered(null)}>
           {turns.map((_turn, index) => {
             const distance = hovered === null ? Infinity : Math.abs(index - hovered.index);
             const width = hovered === null ? BASE_WIDTH : waveWidth(distance);
