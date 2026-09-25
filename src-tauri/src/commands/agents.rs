@@ -885,6 +885,12 @@ pub(crate) fn pi_extension_import(path: String) -> Result<String, String> {
     agent::pi_extension_import::import_pi_extension(&path)
 }
 
+/// 8d：成套导入（extension.ts + plugin.toml + renderer.toml 三件一次装）。
+#[tauri::command]
+pub(crate) fn pi_extension_import_bundle(path: String) -> Result<agent::pi_extension_import::ExtensionBundleReport, String> {
+    agent::pi_extension_import::import_extension_bundle(&path)
+}
+
 #[tauri::command]
 pub(crate) fn pi_extension_enable(fileName: String) -> Result<(), String> {
     agent::pi_extension_import::enable_pi_extension(&fileName)

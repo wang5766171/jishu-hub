@@ -423,6 +423,7 @@ pub fn run() {
             commands::agents::pi_extension_scan,
             commands::agents::pi_extension_safety_notes,
             commands::agents::pi_extension_import,
+            commands::agents::pi_extension_import_bundle,
             commands::agents::pi_extension_enable,
             commands::agents::pi_extension_ignore,
             commands::agents::session_tool_list,

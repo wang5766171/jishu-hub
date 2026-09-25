@@ -342,3 +342,138 @@ export default function(pi) {
         assert!(!s.has_default_export);
     }
 }
+
+/// 成套导入（8d）：目录含 extension.ts + plugin.toml + renderer.toml 三件
+/// 一次装——pi 扩展（复制，默认不启用）+ 工具插件（agents/ 安装）+ 会话
+/// 渲染插件（plugins/ 安装 + 确认卡）。单文件路径回落普通扩展导入。
+pub fn import_extension_bundle(path: &str) -> Result<ExtensionBundleReport, String> {
+    let p = std::path::Path::new(path);
+    if !p.is_dir() {
+        // 单文件回落（普通扩展导入）。
+        let target = import_pi_extension(path)?;
+        return Ok(ExtensionBundleReport {
+            kind: "extension-only",
+            extension: Some(target),
+            tool_plugin: None,
+            renderer_plugin: None,
+        });
+    }
+    let has_ext = p.join("extension.ts").is_file();
+    let has_tool = p.join("plugin.toml").is_file();
+    let has_renderer = p.join("renderer.toml").is_file();
+    if !has_ext && !has_tool && !has_renderer {
+        return Err(format!(
+            "目录 {path} 不含可导入件（期望 extension.ts / plugin.toml / renderer.toml 任一）"
+        ));
+    }
+    let mut report = ExtensionBundleReport {
+        kind: "bundle",
+        extension: None,
+        tool_plugin: None,
+        renderer_plugin: None,
+    };
+    if has_ext {
+        report.extension = Some(import_pi_extension(&p.join("extension.ts").to_string_lossy())?);
+    }
+    if has_tool {
+        let content = std::fs::read_to_string(p.join("plugin.toml"))
+            .map_err(|e| format!("读取 plugin.toml 失败: {e}"))?;
+        let parsed: crate::agent::manifest::schema::AgentManifestFile = toml::from_str(&content)
+            .map_err(|e| format!("plugin.toml 解析失败: {e}"))?;
+        parsed.validate().map_err(|e| format!("plugin.toml 校验失败: {e}"))?;
+        let (id, _target) = crate::agent::plugin::install_manifest_file(&parsed, &content)
+            .map_err(|e| format!("工具插件安装失败: {e}"))?;
+        report.tool_plugin = Some(id);
+    }
+    if has_renderer {
+        let content = std::fs::read_to_string(p.join("renderer.toml"))
+            .map_err(|e| format!("读取 renderer.toml 失败: {e}"))?;
+        let value: toml::Value = content
+            .parse()
+            .map_err(|e| format!("renderer.toml 解析失败: {e}"))?;
+        let id = value
+            .get("plugin")
+            .and_then(|v| v.get("id"))
+            .and_then(|v| v.as_str())
+            .ok_or("renderer.toml 缺少 [plugin].id")?
+            .to_string();
+        crate::agent::plugin::save_composed_manifest(&id, &content)
+            .map_err(|e| format!("渲染插件安装失败: {e}"))?;
+        // 默认禁用 + 确认卡（与 add 组合臂同策略——CLI/导入通道统一安全阀）。
+        let _ = crate::agent::plugin::set_plugin_enabled(&id, false);
+        let dir = crate::agent::plugin::composed_plugins_dir().join(&id);
+        let pending = serde_json::json!({
+            "id": id,
+            "name": value.get("plugin").and_then(|v| v.get("name")).and_then(|v| v.as_str()).unwrap_or(&id),
+            "mount": value.get("render").and_then(|r| r.get("mount")).and_then(|v| v.as_str()).unwrap_or("unknown"),
+            "codeLines": 0,
+            "dir": dir.to_string_lossy(),
+        });
+        let _ = crate::util::atomic_write(&dir.join(".pending-confirm"), pending.to_string().as_bytes());
+        report.renderer_plugin = Some(id);
+    }
+    Ok(report)
+}
+
+/// 成套导入报告。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionBundleReport {
+    pub kind: &'static str,
+    pub extension: Option<String>,
+    pub tool_plugin: Option<String>,
+    pub renderer_plugin: Option<String>,
+}
+
+#[cfg(test)]
+mod bundle_tests {
+    use super::*;
+
+    /// 8d：成套导入（三件一次装——扩展复制/工具安装/渲染确认卡）。
+    #[test]
+    fn import_bundle_installs_all_three() {
+        let _guard = crate::agent::manifest::env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(src.path().join("extension.ts"), "export default function(pi) {\n  pi.registerTool({ name: \"bundle_tool\", execute: async () => ({}) });\n}\n").unwrap();
+        std::fs::write(
+            src.path().join("plugin.toml"),
+            "schema = 1\nkind = \"tool\"\n\n[info]\nid = \"bundle-tool\"\ndisplay_name = \"Bundle Tool\"\n\n[tool]\nusage = \"echo hi\"\ndescription = \"test\"\nexample = \"echo hi\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.path().join("renderer.toml"),
+            "[plugin]\nid = \"session.bundle-renderer\"\nname = \"Bundle Renderer\"\nkind = \"session-composed\"\n\n[source]\ntype = \"tool-result\"\ntool_name = \"bundle_tool\"\n\n[render]\ncomponent = \"render.table\"\nmount = \"tool-output\"\n",
+        )
+        .unwrap();
+
+        let report = import_extension_bundle(src.path().to_str().unwrap()).unwrap();
+        assert_eq!(report.kind, "bundle");
+        assert!(report.extension.is_some());
+        assert_eq!(report.tool_plugin.as_deref(), Some("bundle-tool"));
+        assert_eq!(report.renderer_plugin.as_deref(), Some("session.bundle-renderer"));
+        // 渲染插件默认禁用 + 确认卡标记。
+        assert!(crate::agent::plugin::load_plugin_config()
+            .disabled
+            .iter()
+            .any(|x| x == "session.bundle-renderer"));
+        assert!(crate::agent::plugin::composed_plugins_dir()
+            .join("session.bundle-renderer")
+            .join(".pending-confirm")
+            .exists());
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// 空目录拒绝（无可导入件）。
+    #[test]
+    fn import_bundle_rejects_empty_dir() {
+        let _guard = crate::agent::manifest::env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let empty = tempfile::tempdir().unwrap();
+        let err = import_extension_bundle(empty.path().to_str().unwrap()).unwrap_err();
+        assert!(err.contains("不含可导入件"), "got: {err}");
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+}

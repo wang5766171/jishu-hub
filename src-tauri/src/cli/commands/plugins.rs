@@ -520,6 +520,25 @@ fn set_enabled(id: &str, enabled: bool, ctx: &ExecutionContext) -> Result<(), Cl
 /// 导入 pi 扩展（7c 层三）：安全摘要输出 + 复制到 extensions/（默认不启用
 /// ——显式启用走 hub GUI 提示卡或下次会话手动注册 settings.json）。
 fn import_extension(path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
+    // 8d：目录路径走成套导入（三件一次装）；单文件回落普通扩展导入。
+    if std::path::Path::new(path).is_dir() {
+        let report = crate::agent::pi_extension_import::import_extension_bundle(path)
+            .map_err(CliError::InvalidArg)?;
+        if ctx.json {
+            println!("{}", serde_json::json!({
+                "kind": report.kind,
+                "extension": report.extension,
+                "toolPlugin": report.tool_plugin,
+                "rendererPlugin": report.renderer_plugin,
+            }));
+        } else {
+            println!("Imported extension bundle ({}):", report.kind);
+            if let Some(ext) = &report.extension { println!("  extension  → {ext}（默认不启用）"); }
+            if let Some(id) = &report.tool_plugin { println!("  tool plugin → agents/{id}.toml"); }
+            if let Some(id) = &report.renderer_plugin { println!("  renderer    → plugins/{id}（确认卡启用）"); }
+        }
+        return Ok(());
+    }
     let source = std::fs::read_to_string(path)
         .map_err(|e| CliError::InvalidArg(format!("cannot read {path}: {e}")))?;
     let summary = crate::agent::pi_extension_import::parse_extension_summary(&source);
