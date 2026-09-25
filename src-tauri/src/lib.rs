@@ -147,6 +147,8 @@ pub fn run() {
             // v0.9.5 需求1 6b：plugin-invoke 扩展部署 + agent-tools 物化
             //（方向四：agent 按需调用插件动作）。
             task_plan::ensure_plugin_invoke_extension();
+            // v0.9.5 需求2：subagent 委派扩展（dispatch_subagent）。
+            task_plan::ensure_jishu_subagent_extension();
             agent::plugin::materialize_agent_tools();
             let registry = Arc::new(agent::AgentRegistry::new());
             // v0.9.0 需求1 P2/二期：四家 MCP 配置同步（MCP 解析器 mcp-resolver

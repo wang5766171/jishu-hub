@@ -5,6 +5,8 @@ pub(crate) mod paths;
 pub(crate) mod pi_model;
 pub(crate) mod pi_models_config;
 pub(crate) mod pi_runtime;
+// v0.9.5 需求2：subagent 扩展的 JISHU_PI_CLI env 注入（agent_runtime 消费）。
+pub(crate) use pi_runtime::coding_agent_entry_for_env;
 pub(crate) mod pi_session;
 pub(crate) mod session_title;
 mod probe;

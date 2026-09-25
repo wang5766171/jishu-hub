@@ -151,6 +151,10 @@ const HTML_PREVIEW_EXTENSION_TS: &str =
 const PLUGIN_INVOKE_EXTENSION_TS: &str =
     include_str!("../resources/extensions/plugin-invoke.ts");
 
+/// v0.9.5 需求2：通用任务委派扩展（dispatch_subagent——print mode 子进程）。
+const JISHU_SUBAGENT_EXTENSION_TS: &str =
+    include_str!("../resources/extensions/jishu-subagent.ts");
+
 /// 部署内嵌扩展源到 `<agent_dir>/<rel_path>`，自动建父目录；内容相同则跳过写入。
 pub(crate) fn deploy_extension_file(agent_dir: &Path, rel_path: &str, source: &str) {
     let target = agent_dir.join(rel_path);
@@ -309,6 +313,17 @@ pub fn ensure_plugin_invoke_extension() {
     };
     const REL: &str = "extensions/plugin-invoke.ts";
     deploy_extension_file(&agent_dir, REL, PLUGIN_INVOKE_EXTENSION_TS);
+    register_extension_in_settings(&agent_dir, REL);
+}
+
+/// v0.9.5 需求2：subagent 委派扩展部署（幂等）——dispatch_subagent 工具
+/// （主模型委派指定模型子任务，识图场景：GLM-5.3 → GLM-5.3-FLASH）。
+pub fn ensure_jishu_subagent_extension() {
+    let Ok(agent_dir) = jishu_agent_dir() else {
+        return;
+    };
+    const REL: &str = "extensions/jishu-subagent.ts";
+    deploy_extension_file(&agent_dir, REL, JISHU_SUBAGENT_EXTENSION_TS);
     register_extension_in_settings(&agent_dir, REL);
 }
 

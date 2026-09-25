@@ -88,6 +88,18 @@ where
     )
 }
 
+/// v0.9.5 需求2：coding_agent_entry 的 env 注入包装（JISHU_PI_CLI 值——
+/// agent 目录下 cli.js 绝对路径字符串；找不到返回 None，env 不注入）。
+pub(crate) fn coding_agent_entry_for_env() -> Option<String> {
+    let agent_dir = super::pi_agent_dir()?;
+    let file_exists = |p: &std::path::Path| p.is_file();
+    coding_agent_entry(std::path::Path::new(&agent_dir), &file_exists).map(|p| {
+        let s = p.to_string_lossy().into_owned();
+        // Windows 路径反斜杠在子进程 spawn args 无碍；保持原样。
+        s
+    })
+}
+
 /// 解析 pi coding-agent 的 CLI 入口。
 /// v0.85.0 起产物为上游 bundle 布局（packages/coding-agent/dist/bundle/cli.js），
 /// 旧安装（≤0.84.2-11）为 dist/cli.js——新布局优先，旧布局回退保兼容。
