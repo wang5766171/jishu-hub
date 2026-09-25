@@ -23,6 +23,8 @@ import {
   X,
 } from "lucide-react";
 import { createPortal } from "react-dom";
+// 3a-4：描述功能 → 实时推荐类型。
+import { recommendIntent, intentLabel } from "./plugin-intent-recommend";
 
 export type CreateEntryChoice =
   | { kind: "agent-tool" } // → PluginCreateDialog（agents 流程）
@@ -146,6 +148,7 @@ export function PluginCreateEntry({
 }) {
   const { t } = useTranslation();
   const [guide, setGuide] = useState<"pipeline" | "hybrid" | null>(null);
+  const [describeText, setDescribeText] = useState("");
   if (!open) return null;
 
   const cards: Array<{
@@ -226,20 +229,48 @@ export function PluginCreateEntry({
             </button>
           ))}
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            onOpenChange(false);
-            onChoose({ kind: "describe" });
-          }}
-          className="mt-3 flex w-full items-center gap-2 rounded-lg border border-dashed border-border px-4 py-2.5 text-left text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
-        >
-          <Lightbulb className="h-4 w-4 shrink-0 text-amber-500" />
-          {t(
-            "plugins.entryDescribe",
-            "不确定？直接在会话中描述你想要的功能，让 agent 按插件创作指南帮你创建",
-          )}
-        </button>
+        <div className="mt-3 rounded-lg border border-dashed border-border px-4 py-2.5">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Lightbulb className="h-4 w-4 shrink-0 text-amber-500" />
+            {t("plugins.entryDescribe", "不确定？描述你想要的功能，我来推荐类型")}
+          </div>
+          <input
+            className="mt-2 h-7 w-full rounded-md border border-border/70 bg-transparent px-2 text-xs outline-none focus:border-primary/60"
+            value={describeText}
+            onChange={(e) => setDescribeText(e.target.value)}
+            placeholder="如：每轮结束在输入框旁显示花销 / 让 AI 能搜索网页"
+          />
+          {(() => {
+            const rec = recommendIntent(describeText);
+            if (!rec) return null;
+            const composed = rec.intent === "data-panel" || rec.intent === "notify" || rec.intent === "content-render" || rec.intent === "navigation";
+            const jump = () => {
+              onOpenChange(false);
+              if (composed) onChoose({ kind: "session-composed" });
+              else if (rec.intent === "pipeline") setGuide("pipeline");
+              else if (rec.intent === "hybrid") setGuide("hybrid");
+              else onChoose({ kind: "agent-tool" });
+            };
+            return (
+              <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-1.5">
+                <span className="min-w-0 text-[11px] text-muted-foreground">
+                  <span className="font-medium text-foreground">{intentLabel(rec.intent)}</span>
+                  <span className="ml-1.5">{rec.reason}</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={jump}
+                  className="shrink-0 rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90"
+                >
+                  {t("plugins.entryGo", "去创建")}
+                </button>
+              </div>
+            );
+          })()}
+          <div className="mt-1.5 text-[10px] text-muted-foreground/70">
+            也可以直接在会话中告诉 agent——它会按插件创作指南（jishu-plugin-authoring）产出并安装。
+          </div>
+        </div>
       </div>
       {guide === "pipeline" && (
         <GuideCard
