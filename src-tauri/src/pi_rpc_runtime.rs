@@ -2192,6 +2192,39 @@ fn handle_hub_invoke(
             serde_json::to_value(serde_json::json!({ "opened": true, "file": canonical }))
                 .map_err(|e| e.to_string())
         }
+        // v0.9.5 需求1（原需求26）6b——方向四：agent 经 plugin-invoke 扩展
+        // 触发插件动作。闸门：agent-tools.json 物化清单存在该工具（= 插件
+        // 启用且声明过 [[agent-tool]]）；执行：向 webview 广播事件（前端
+        // 动作链消费），同步返回受理结果（UI 类动作异步执行——工具返回
+        // "已触发"语义，与 preview_html 的受理模式同构）。
+        "plugin_invoke" => {
+            let tool = params
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .ok_or("plugin_invoke 参数缺少 tool")?;
+            let args = params.get("args").cloned().unwrap_or(serde_json::Value::Null);
+            let tools = crate::agent::plugin::load_agent_tools();
+            let entry = tools
+                .iter()
+                .find(|e| e.name == tool)
+                .ok_or(format!("agent-tool {tool:?} 不存在或插件已停用"))?;
+            if let Some(app) = HUB_APP_HANDLE.get() {
+                use tauri::Emitter;
+                let _ = app.emit(
+                    "plugin-tool-invoke",
+                    serde_json::json!({
+                        "pluginId": entry.plugin_id,
+                        "tool": entry.name,
+                        "args": args,
+                    }),
+                );
+            }
+            Ok(serde_json::json!({
+                "triggered": true,
+                "pluginId": entry.plugin_id,
+                "tool": entry.name,
+            }))
+        }
         _ => Err(format!("未知 hub_invoke 命令: {command}")),
     }
 }

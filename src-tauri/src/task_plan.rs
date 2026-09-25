@@ -147,6 +147,9 @@ const SESSION_CONTEXT_EXTENSION_TS: &str =
 /// 本地 HTML 文件渲染到 Hub 右侧面板）。
 const HTML_PREVIEW_EXTENSION_TS: &str =
     include_str!("../resources/extensions/html-preview.ts");
+/// v0.9.5 需求1（原需求26）6b：通用 plugin-invoke 扩展（agent-tool 动态注册）。
+const PLUGIN_INVOKE_EXTENSION_TS: &str =
+    include_str!("../resources/extensions/plugin-invoke.ts");
 
 /// 部署内嵌扩展源到 `<agent_dir>/<rel_path>`，自动建父目录；内容相同则跳过写入。
 pub(crate) fn deploy_extension_file(agent_dir: &Path, rel_path: &str, source: &str) {
@@ -295,6 +298,18 @@ pub fn ensure_html_preview_extension() {
     const HP_EXT_REL: &str = "extensions/html-preview.ts";
     deploy_extension_file(&agent_dir, HP_EXT_REL, HTML_PREVIEW_EXTENSION_TS);
     register_extension_in_settings(&agent_dir, HP_EXT_REL);
+}
+
+/// v0.9.5 需求1（原需求26）6b：通用 plugin-invoke 扩展部署（幂等）——读取
+/// hub 物化的 agent-tools.json 动态注册 agent 工具（扩展文件静态，声明数据
+/// 运行时读；启停联动经 materialize_agent_tools 刷新物化面）。
+pub fn ensure_plugin_invoke_extension() {
+    let Ok(agent_dir) = jishu_agent_dir() else {
+        return;
+    };
+    const REL: &str = "extensions/plugin-invoke.ts";
+    deploy_extension_file(&agent_dir, REL, PLUGIN_INVOKE_EXTENSION_TS);
+    register_extension_in_settings(&agent_dir, REL);
 }
 
 pub fn read_installed_skill(dir: &Path, skill_id: &str) -> Result<Option<TaskPlanSkill>, String> {

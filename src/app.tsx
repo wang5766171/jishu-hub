@@ -33,6 +33,8 @@ import { CommandPalette } from "@/components/command-palette";
 // v0.9.5 需求1（原需敆26）1c：CLI plugins validate 跨进程校验桥（轮询
 // 标记信箱，复用 hub 侧 TS 校验器——与 GUI 向导同一份实现）。
 import { useCliValidateBridge } from "@/features/session-kernel/capabilities/cli-validate-bridge";
+// 6b（v0.9.5 需求1）：agent-tool 前端执行桥（plugin-invoke 扩展 → hub_invoke → 事件 → 动作）。
+import { usePluginToolInvokeBridge } from "@/features/session-kernel/capabilities/plugin-tool-invoke-bridge";
 import { HybridErrorNotification } from "@/features/session-kernel/capabilities/composition/hybrid-errors";
 import type { Page, Project, ProjectMeta } from "@/types";
 
@@ -439,6 +441,8 @@ function AppContent() {
   const { chatAgentId, setChatAgent, setManageAgent } = useAgent();
   // 1c（v0.9.5 需求1）：CLI plugins validate 跨进程校验桥。
   useCliValidateBridge();
+  // 6b：agent-tool 执行桥。
+  usePluginToolInvokeBridge();
   const [currentPage, setCurrentPage] = useState<Page>("chat");
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [projectSessionsLoading, setProjectSessionsLoading] = useState(false);

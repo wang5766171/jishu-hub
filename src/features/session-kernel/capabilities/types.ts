@@ -94,6 +94,19 @@ export interface ComposedConfigFieldDecl {
   description?: string;
 }
 
+/** agent 可调用工具声明（v0.9.5 需求1（原需求26）6a——方向四：任何插件
+ *  都能声明 agent 按需触发的入口；通用 plugin-invoke pi 扩展动态注册为
+ *  agent 工具（hub_invoke 桥，pi v0.87.1 起 registerTool 强制 object
+ *  parameters schema——缺省由扩展兜底空 Object）。 */
+export interface AgentToolDecl {
+  /** 工具名（全局唯一——6c 冲突检查；与既有 agent 工具撞名拒绝）。 */
+  name: string;
+  /** agent 读它判断调用时机（与 [tool].description 同理）。 */
+  description: string;
+  /** 可选参数 schema（JSON Schema object 形态）。 */
+  parameters?: Record<string, unknown>;
+}
+
 export interface SessionComposedManifest {
   /** C4：阶段流水线声明（pipeline 型插件——编排定义，可无渲染挂载）。
    *  v0.9.5 需求1（原需汅26）1a：pipeline 与渲染挂载可共存（engine 合并装配），
@@ -106,6 +119,8 @@ export interface SessionComposedManifest {
   render?: { component: string; mount: string; fallback?: string };
   action?: ActionDeclaration[];
   config?: ComposedConfigFieldDecl[];
+  /** [[agent-tool]] 声明段（6a；可选——缺失即旧行为）。 */
+  agent_tool?: AgentToolDecl[];
 }
 
 // ── 组合引擎对外产物（挂载生成所需） ──

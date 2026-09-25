@@ -144,6 +144,10 @@ pub fn run() {
             task_plan::ensure_session_context_extension();
             // v0.9.2 测试期：部署 html-preview 扩展（preview_html 工具，agent 主动渲染 HTML 预览）
             task_plan::ensure_html_preview_extension();
+            // v0.9.5 需求1 6b：plugin-invoke 扩展部署 + agent-tools 物化
+            //（方向四：agent 按需调用插件动作）。
+            task_plan::ensure_plugin_invoke_extension();
+            agent::plugin::materialize_agent_tools();
             let registry = Arc::new(agent::AgentRegistry::new());
             // v0.9.0 需求1 P2/二期：四家 MCP 配置同步（MCP 解析器 mcp-resolver
             // 系统插件默认启用 → 注入 jishu-hub 聚合条目，禁用 → 回收；
