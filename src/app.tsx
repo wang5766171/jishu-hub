@@ -28,6 +28,8 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { HybridInstallConfirmation } from "@/components/hybrid-install-confirmation";
 // 5d（v0.9.5 需求1）：选中文本右键菜单（发送到插件）。
 import { SelectionContextMenu } from "@/components/selection-context-menu";
+// 5e（v0.9.5 需求1）：Ctrl+K 命令面板（搜索插件快速执行）。
+import { CommandPalette } from "@/components/command-palette";
 // v0.9.5 需求1（原需敆26）1c：CLI plugins validate 跨进程校验桥（轮询
 // 标记信箱，复用 hub 侧 TS 校验器——与 GUI 向导同一份实现）。
 import { useCliValidateBridge } from "@/features/session-kernel/capabilities/cli-validate-bridge";
@@ -652,6 +654,8 @@ useEffect(() => {
         <HybridInstallConfirmation />
         {/* 5d：选中文本右键菜单（发送到插件） */}
         <SelectionContextMenu />
+        {/* 5e：Ctrl+K 命令面板 */}
+        <CommandPalette sessionId={null} />
         {/* 1c：CLI validate 信箱轮询（无 UI 纯逻辑钩子，与确认卡同区域挂载） */}
         <HybridErrorNotification />
       </div>
