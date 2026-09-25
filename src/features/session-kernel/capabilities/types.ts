@@ -93,12 +93,15 @@ export interface ComposedConfigFieldDecl {
 }
 
 export interface SessionComposedManifest {
-  /** C4：阶段流水线声明（pipeline 型插件——编排定义，无渲染挂载）。 */
+  /** C4：阶段流水线声明（pipeline 型插件——编排定义，可无渲染挂载）。
+   *  v0.9.5 需求1（原需汅26）1a：pipeline 与渲染挂载可共存（engine 合并装配），
+   *  source/render 改可选——纯流水线清单（如 video-maker）不再被迫填假渲染臂；
+   *  「至少一臂」由 validateManifest 保证（无 pipeline 且无 source/render 拒绝）。 */
   pipeline?: import("./pipeline/contracts").PipelineDeclaration;
   plugin: { id: string; name: string; description?: string };
   kind: "session-composed";
-  source: SourceDeclaration;
-  render: { component: string; mount: string; fallback?: string };
+  source?: SourceDeclaration;
+  render?: { component: string; mount: string; fallback?: string };
   action?: ActionDeclaration[];
   config?: ComposedConfigFieldDecl[];
 }
@@ -138,6 +141,15 @@ export function validateManifest(
 ): string[] {
   const errors: string[] = [];
   if (!manifest.plugin?.id) errors.push("[plugin] id 缺失");
+  // 1a（v0.9.5 需求1，原需敆26）：至少一臂——无 pipeline 且无渲染声明（source/render
+  // 均缺失）的空清单拒绝；纯 pipeline 清单（如 video-maker）不再强求渲染字段。
+  // 声明了 source/render 任一字段即视为声明了渲染臂，按完整渲染校验（残缺报具体缺失）。
+  const hasPipeline = Boolean(manifest.pipeline);
+  const hasRenderArm = Boolean(manifest.source) || Boolean(manifest.render);
+  if (!hasPipeline && !hasRenderArm) {
+    errors.push("清单需至少声明 pipeline 或 source/render 之一");
+  }
+  if (!hasRenderArm) return errors;
   // Rust 扫描注入的代码文件存在性错误（@file: 引用缺失）优先透出。
   const fileError = (manifest as SessionComposedManifest & { _file_error?: string })._file_error;
   if (fileError) errors.push(`[render] ${fileError}`);

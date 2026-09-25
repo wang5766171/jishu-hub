@@ -61,7 +61,7 @@ function buildActions(
         const params = resolveActionParams(action, options);
         // export-file 的转换器由引擎注入（组件能力，动作层不感知注册表键）。
         if (action.type === "export-file") {
-          const renderer = rendererRegistry.get(manifest.render.component);
+          const renderer = rendererRegistry.get(manifest.render?.component ?? "");
           params.__toFile = renderer?.capabilities?.toFile;
           // 组件转换管线的配置直通（pngScale 等读取整个 options——修复21
           // 返工：此前仅传 payload/format，PNG 倍率读 undefined 崩）。
@@ -101,9 +101,9 @@ function RendererShell({
       </HybridErrorBoundary>
     );
   }
-  const reg = rendererRegistry.get(manifest.render.component);
+  const reg = rendererRegistry.get(manifest.render!.component);
   if (!reg) {
-    return <div className="p-2 text-xs text-muted-foreground">渲染组件未注册：{manifest.render.component}</div>;
+    return <div className="p-2 text-xs text-muted-foreground">渲染组件未注册：{manifest.render!.component}</div>;
   }
   const Comp = reg.component as ComponentType<RendererComponentProps>;
   return <Comp payload={payload} options={values} actions={buildActions(manifest, values, sessionId, payload)} />;
@@ -122,7 +122,7 @@ function SourceShell({
   fileComponent?: ComponentType<RendererComponentProps>;
 }) {
   const payload = useMemo<SourcePayload>(() => {
-    switch (manifest.source.type) {
+    switch (manifest.source!.type) {
       case "turns":
         return { kind: "turns", turns: ctx.turns, activeIndex: ctx.activeTurnIndex, jump: (i: number) => ctx.scrollToTurn(i) };
       case "task":
@@ -131,59 +131,61 @@ function SourceShell({
       case "stream-state":
       default: {
         // 聚合器应用（tool-stats 等）；未声明聚合器时透传消息流。
-        const aggregator = getAggregator(manifest.source.aggregate);
+        const aggregator = getAggregator(manifest.source!.aggregate);
         return { kind: "aggregate", data: aggregator ? aggregator(ctx.messages) : ctx.messages };
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ctx.messages, ctx.turns, ctx.activeTurnIndex, manifest.source.type]);
+  }, [ctx.messages, ctx.turns, ctx.activeTurnIndex, manifest.source!.type]);
   return <RendererShell manifest={manifest} schema={schema} payload={payload} sessionId={ctx.sessionId} fileComponent={fileComponent} />;
 }
 
 /** manifest → 描述符（校验失败抛错，loader 负责隔离）。
  *  v0.9.3 需求25：render.component 为 "@file:<rel>" 时经 hybrid.component
- *  直供组件（混合插件）；数据面挂载的 SourceShell→RendererShell 全链透传。 */
+ *  直供组件（混合插件）；数据面挂载的 SourceShell→RendererShell 全链透传。
+ *  v0.9.5 需求1（原需敆26）1a：去 pipeline 早退——两臂合并装配，同一清单
+ *  同时声明 pipeline 与 source/render 时流水线阶段与渲染挂载**同时生效**
+ *  （原早退会静默丢弃渲染声明）；纯 pipeline 清单（video-maker） mounts 留空。 */
 export function buildComposedDescriptor(
   manifest: SessionComposedManifest,
   hybrid?: { component: ComponentType<RendererComponentProps> },
 ): SessionPluginDescriptor {
   const id = manifest.plugin.id;
-  // v0.9.3 需求13 C4：pipeline 型清单——编排定义类插件，无渲染挂载；
-  // 校验走流水线契约，描述符透出声明（详情模态/任务启动消费）。
+  // C4：pipeline 臂——编排定义类声明，校验走流水线契约，描述符透出
+  //（详情模态/任务启动消费）；无 pipeline 时跳过。
   if (manifest.pipeline) {
     const pipelineErrors = validatePipeline(manifest.pipeline);
     if (pipelineErrors.length) throw new Error(`组合清单校验失败: ${pipelineErrors.join("; ")}`);
-    return {
-      id,
-      displayNameKey: "",
-      displayNameFallback: manifest.plugin.name,
-      descriptionKey: "",
-      descriptionFallback: manifest.plugin.description ?? "",
-      contractVersion: SESSION_PLUGIN_CONTRACT_VERSION,
-      source: "config",
-      permissions: ["read:blocks"],
-      configSchema: manifest.config?.length ? configDeclsToSchema(manifest.config) : undefined,
-      pipeline: manifest.pipeline,
-      mounts: [],
-    };
   }
-  const errors = validateManifest(manifest, rendererRegistry, {
-    fileComponentReady: Boolean(hybrid),
-  });
-  if (errors.length) throw new Error(`组合清单校验失败: ${errors.join("; ")}`);
+  // 渲染臂：无 source/render 声明的纯流水线清单跳过（validateManifest 的
+  // 「至少一臂」总校验保证空清单在此前已被拒）。
+  const hasRenderArm = Boolean(manifest.source) || Boolean(manifest.render);
+  // 无条件校验：validateManifest 内部按「是否声明渲染臂」门控字段校验——
+  // 纯 pipeline 清单返回空（video-maker 形态）；空清单报「至少一臂」。
+  {
+    const errors = validateManifest(manifest, rendererRegistry, {
+      fileComponentReady: Boolean(hybrid),
+    });
+    if (errors.length) throw new Error(`组合清单校验失败: ${errors.join("; ")}`);
+  }
   const schema = configDeclsToSchema(manifest.config);
   const mounts: SessionPluginDescriptor["mounts"] = [];
 
-  if (manifest.render.mount === "block-renderer") {
+  if (hasRenderArm) {
+    // 校验已保证两字段存在（缺失在校验期抛），收窄供装配链使用。
+    const source = manifest.source as NonNullable<SessionComposedManifest["source"]>;
+    const render = manifest.render as NonNullable<SessionComposedManifest["render"]>;
+
+    if (render.mount === "block-renderer") {
     // 匹配域按源类型定臂（测试期修复23 结构收口）：code-block 源 → 代码块域
     // （语言过滤在 languages 表达，detect 恒真=声明语言内全收）；block-type
     // 源 → 块类型域（无语言/detect 字段，类型层不可误入语言咨询路径）。
     mounts.push(
-      manifest.source.blockTypes?.length
+      source.blockTypes?.length
         ? {
             kind: "block-renderer",
             matching: "block-type",
-            blockTypes: manifest.source.blockTypes,
+            blockTypes: source.blockTypes,
             BlockComponent: ({ block }: { block: PluginBlock }) => (
               <RendererShell manifest={manifest} schema={schema} payload={{ kind: "block", blockType: block.type, block }} sessionId={null} />
             ),
@@ -191,19 +193,19 @@ export function buildComposedDescriptor(
         : {
             kind: "block-renderer",
             matching: "code",
-            languages: manifest.source.languages ?? [],
+            languages: source.languages ?? [],
             detect: () => true,
             Component: ({ code, language }: { code: string; language: string }) => (
               <RendererShell manifest={manifest} schema={schema} payload={{ kind: "code-block", language, code }} sessionId={null} />
             ),
           },
     );
-  } else if (manifest.render.mount === "event-hook") {
+  } else if (render.mount === "event-hook") {
     mounts.push({
       kind: "event-hook",
       onSignal(signal, ctx) {
         const signalType = (signal as { type?: string }).type ?? "";
-        if (manifest.source.signals && !manifest.source.signals.includes(signalType)) return;
+        if (source.signals && !source.signals.includes(signalType)) return;
         const options = getPluginConfigSync(id, schema);
         // 触发口径门控（desktop-notify 类：三类触发各一开关）。
         const gateKey =
@@ -238,10 +240,10 @@ export function buildComposedDescriptor(
         <SourceShell manifest={manifest} schema={schema} ctx={props.ctx} fileComponent={hybrid?.component} />
       ),
     };
-    if (manifest.render.mount === "dock-panel") {
+    if (render.mount === "dock-panel") {
       // C5-slice1：dock 槽位可声明（slot = "left" | "right" | "float"，缺省
       // float）——任务看板等重面板默认停靠右侧（随迁 session.flow 形态）。
-      const declaredSlot = (manifest.render as { slot?: string }).slot;
+      const declaredSlot = (render as { slot?: string }).slot;
       const defaultSlot =
         declaredSlot === "left" || declaredSlot === "right" ? declaredSlot : "float";
       mounts.push({
@@ -251,15 +253,16 @@ export function buildComposedDescriptor(
         defaultSlot,
         ...mountBase,
       } as SessionPluginDescriptor["mounts"][number]);
-    } else if (manifest.render.mount === "sidebar-panel") {
+    } else if (render.mount === "sidebar-panel") {
       mounts.push({ kind: "sidebar-panel", ...mountBase } as SessionPluginDescriptor["mounts"][number]);
-    } else if (manifest.render.mount === "composer-trailing") {
+    } else if (render.mount === "composer-trailing") {
       mounts.push({ kind: "composer-trailing", ...mountBase } as SessionPluginDescriptor["mounts"][number]);
     } else {
-      const side = (manifest.render as { side?: "left" | "right" }).side === "left" ? "left" : "right";
+      const side = (render as { side?: "left" | "right" }).side === "left" ? "left" : "right";
       mounts.push({ kind: "rail-widget", defaultSide: side, ...mountBase } as SessionPluginDescriptor["mounts"][number]);
     }
   }
+  }  // 闭 if (hasRenderArm)——两臂合并装配
 
   return {
     id,
@@ -271,6 +274,7 @@ export function buildComposedDescriptor(
     source: "config",
     permissions: ["read:blocks"],
     configSchema: schema.length ? schema : undefined,
+    pipeline: manifest.pipeline,
     mounts,
   };
 }
