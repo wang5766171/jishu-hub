@@ -55,9 +55,9 @@
 |------|-----|
 | 上游仓库 | `https://github.com/earendil-works/pi` |
 | 自有 fork | `https://github.com/wang5766171/pi` |
-| 当前维护分支 | `release_v0.85.0-11` |
+| 当前维护分支 | `release_v0.87.1-13` |
 | `.gitmodules` URL | `https://github.com/wang5766171/pi` |
-| `.gitmodules` branch | `release_v0.85.0-11` |
+| `.gitmodules` branch | `release_v0.87.1-13` |
 
 ## 1.5 日常源码变动流程
 
@@ -118,6 +118,55 @@
 ---
 
 # 第二部分：改动记录
+
+## 2026-09-26 | 合并上游 v0.87.1（release_v0.87.1-13）——jishu-hub v0.9.5 需求1 前置
+
+**版本**：上游从 `v0.85.0` 跨越 `v0.85.1`/`v0.86.0`/`v0.86.1`/`v0.87.0` 到 `v0.87.1`（226 commits、692 files、+8.1万/-2.3万行）。按版本规则（§1.3），Pi 版本升至 `0.87.1`、自研尾号保持 `-13`，完整版本号 `0.87.1-13`，分支 `release_v0.87.1-13`。合并提交 `947480fa7` + 适配提交 `9ea517c42`/`58e3114e9`/`018e93cf3`。**fork 分支已推送远端**（`git push -u origin release_v0.87.1-13` 完成，submodule 指针远端可达）。
+
+### 合并动机（用户指令）
+
+jishu-hub v0.9.5 需求1（插件体系深度完善）方向四「Agent 按需调用」依赖 pi 扩展动态注册工具（plugin-invoke 扩展 + hub_invoke 桥）；用户要求先合并上游最新 tag、确认满足需求后再开发。评估结论：**机制满足**——hub_invoke 桥零依赖 pi 源码（约定层在主仓 Rust），registerTool 机制保留且增强；唯一新约束见下「对 jishu-hub 需求1 的影响」。
+
+### 上游重点变更（与自研面交互）
+
+1. **扩展工具注册强制 schema**（`acaa253cc`，#9300）：`registerTool` 注册期校验 `parameters` 必须为 object——无 schema 直接拒绝（原为运行时序列化炸）。存量主仓部署扩展全部合规（html-preview/conductor 的 Type.Object；approval/batch-guard/session-context 不注册工具）。
+2. **扩展 API 演进**：事件退订（`on()` 返回 `() => void`，#9630）、`agent_before_settle` 新事件、扩展 crash 栈标识（`63787ee6b`）、扩展加载器依赖懒加载（`40c256ccc`，jiti 按 Node/Bun/SEA 分流）。
+3. **compaction modelOverrides**（上游新特性）：`CompactionSettings.modelOverrides`（`"provider/modelId"` 键）支持 per-model 覆盖 token 设置；`getCompactionTokenSetting` 统一 ordinary→override→default 三级回退。
+4. **新包**：`durable`（版本化文档存储/Pico 内核，独立无依赖方不入运行时闭包）；ai 包模型数据更新（grok-4.7/opus-5.5/gpt-6 Sol·Luna/copilot 等）。
+
+### 冲突解决（9 文件 + 后续类型连锁）
+
+| 冲突 | 解决 |
+|---|---|
+| `extensions/types.ts` | `on()` 重载列表整取上游（退订返回值 + agent_before_settle），自研 `get context()` 桥插回（jishu-tool-approval.ts 在用 `pi.context.ui.confirm`）；multiSelect 在冲突区外自动保留 |
+| `settings-manager.ts` ×2 | 融合：上游 `getCompactionTokenSetting`（modelOverrides 三级回退）与自研 `thresholdPercent` 正交共存——`CompactionModelOverride` 新增 `thresholdPercent` 字段（per-model 触发线覆盖，对齐上游机制）；`getCompactionSettings()` 返回 `{enabled, thresholdPercent, keepRecentTokens}`；顶层 `reserveTokens` 键运行时仍被校验通道读取（兼容旧配置报错）但主链路不再消费 |
+| package.json ×N | 版本统一 `0.87.1-13`；内部依赖（含 `@earendil-works/chord`）钉精确版本（caret 风险，-11 教训）；coding-agent 恢复 `bin.jishu`/`piConfig{jishu,.jishu-agent}`（冲突取 HEAD 时丢失）；build 脚本补回 `&& node build-bundle.mjs`（runtime-deps 清单生成尾段） |
+| shrinkwrap/install-lock | 取上游后重生成（143/144 包，`--check` 通过） |
+| `agent-session-compaction.test.ts` | 取上游 it.each 结构（#8133/#9740 回归），配置按自研语义换算（reserveTokens→thresholdPercent：2600 窗口 400→85%，override 2000→50%），断言双分支期望 |
+| 上游新增测试连锁（tsgo 报） | `agent-session-boundaries.test.ts`（reserveTokens 0→thresholdPercent 99；300/10000 窗口→97）、`9340-9777-auto-compaction-cancellation`（50/200→75）、`agent-session-compaction-model-overrides.test.ts`（全面换算：faux 默认窗口 128000 无法整除，first/second 模型显式声明 contextWindow 4000；预算断言 1600=0.8×(4000×50%) 精确等价）、`settings-manager-compaction.test.ts`（全面重写：defaults 改 thresholdPercent 形态；reserveTokens 校验触发器改经 getCompactionReserveTokens；ordinary 无效值校验收窄为 keepRecentTokens）、`experimental/micro/runtime.ts`（threshold 换算改窗口百分比语义） |
+
+### 保留自研（上游 v0.87.1 均未实现，逐一核实）
+
+与 -13 基线一致：`piConfig{jishu,.jishu-agent}`/`bin.jishu`、品牌文案（onboarding/trust/first-time-setup/theme-schema）、earendil 公告停用、multiSelect 五文件、compaction thresholdPercent（主链路）、`build-bundle.mjs` 清单生成、husky 安全化、`.publish-stage/` gitignore。
+
+### 对 jishu-hub 需求1（v0.9.5）的影响
+
+- **方向四 plugin-invoke 扩展**：动态注册的 `[[agent-tool]]` 工具必须带 object `parameters` schema——清单段需支持 parameters 声明，扩展侧兜底生成空 `Type.Object({})`（设计文档 01 §五实施时回写）。
+- hub_invoke 桥、扩展部署链（settings.json extensions 数组）、`~/.jishu-agent/agent/extensions/` 自动发现均不受影响。
+
+### 验证
+
+- 全仓 `tsgo --noEmit` **0 error**（ai 模型数据 `generate-models` 重生成后）。
+- 定向测试 173+ 项全过：compaction ×3（26/29/8）、model-overrides 8、boundaries 29、9340-9777 6、extensions-runner 55、extensions-discovery、auto-compaction-queue 6、input-event；compaction-extensions 8 skip 为 Windows 既有。
+- bundle 产物：`dist/bundle/cli.js --version` → `0.87.1-13`、`--help` jishu 品牌、cli/rpc-entry 各一 shebang、index 无、runtime-deps.json 26 项。
+- 主仓配套：`pack-pi.mjs` 全过（26 依赖断言）、`cargo check` 通过。
+
+### 主仓配套（jishu-hub 同步落地）
+
+- `.gitmodules` branch → `release_v0.87.1-13`；`PI_AGENT_VERSION` → `0.87.1-13`；submodule 指针 → `018e93cf3`。
+- publish-pi/upgrade-version 脚本无改动（chord/client/protocol/telemetry 映射 -11 已就绪；durable 非运行时闭包不入流水线）。
+
+---
 
 ## 2026-09-18 | 需求22 P1/P2：审批与批次守卫迁主仓部署扩展——fork 净减（release_v0.85.0-13）
 
