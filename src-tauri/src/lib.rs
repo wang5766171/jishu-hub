@@ -413,6 +413,8 @@ pub fn run() {
             commands::agents::plugin_confirm_pending,
             commands::agents::cli_validate_poll,
             commands::agents::cli_validate_submit,
+            commands::agents::hybrid_preview_write,
+            commands::agents::hybrid_preview_dir,
             commands::agents::session_tool_list,
             commands::agents::session_set_tools,
             commands::sessions::persist_agent_turn,

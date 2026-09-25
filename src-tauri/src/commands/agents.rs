@@ -395,6 +395,22 @@ pub(crate) fn cli_validate_submit(response: serde_json::Value) -> Result<(), Str
         .map_err(|e| format!("cannot write validate response: {e}"))
 }
 
+/// 混合插件预览代码写入（v0.9.5 需求1（原需敆26）2b）：向导编辑器源码 →
+/// `plugins/.preview/component.js`（assetProtocol scope 内的隐藏目录，
+/// 无 plugin.toml 不会破插件扫描；原子写）→ 返回指纹（内容长度+毫秒时戳，
+/// 前端 loadHybridComponent 按指纹热更重注入）。预览链完全复用正式装载
+/// 链（非沙箱——评审 P1-6：iframe 沙箱与 CSP/assetProtocol 冲突）。
+#[tauri::command]
+pub(crate) fn hybrid_preview_write(source: String) -> Result<String, String> {
+    let dir = agent::plugin::composed_plugins_dir().join(".preview");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create preview dir: {e}"))?;
+    let fingerprint = format!("{}-{}", source.len(), crate::util::now_ms());
+    let target = dir.join("component.js");
+    crate::util::atomic_write(&target, source.as_bytes())
+        .map_err(|e| format!("cannot write preview component: {e}"))?;
+    Ok(fingerprint)
+}
+
 /// v0.9.3 需求13 C3：删除用户组合插件（内置拒绝）并广播。
 #[tauri::command]
 pub(crate) fn composed_plugin_delete(app: tauri::AppHandle, id: String) -> Result<(), String> {
@@ -805,4 +821,13 @@ pub(crate) fn set_agent_permission_mode(
             )
         })?
         .set_permission_mode(&mode)
+}
+
+/// 预览目录绝对路径（2b：前端 loadHybridComponent 的 dir 参数——拼 asset URL）。
+#[tauri::command]
+pub(crate) fn hybrid_preview_dir() -> Result<String, String> {
+    Ok(agent::plugin::composed_plugins_dir()
+        .join(".preview")
+        .to_string_lossy()
+        .into_owned())
 }
