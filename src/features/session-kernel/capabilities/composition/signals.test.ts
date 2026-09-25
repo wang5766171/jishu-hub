@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { emitSessionSignal, subscribeSessionSignals } from "../../signals";
+import { subscribeSessionSignals } from "../../signals";
 import { buildComposedDescriptor } from "./engine";
 import { actionRegistry } from "../actions";
 import { rendererRegistry } from "../renderers/registry";
