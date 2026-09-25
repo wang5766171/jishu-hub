@@ -266,8 +266,9 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
         />
       ))}
 
-      {/* v0.9.4 需求12：dev 日志中心（生产构建整段剔除——import.meta.env.DEV
-          静态可判定，vite 构建时 dead-code eliminate）。 */}
+      {/* v0.9.4 需求12：dev 日志中心——dev 构建恒启用；生产构建默认剔除
+          （import.meta.env.DEV 静态 false），强制开关（isDevLogForced，
+          settings.json 持久化）可开（安装包排查场景）。 */}
       {(import.meta.env.DEV || isDevLogForced()) && <DevLogCenter />}
 
       {/* ── 能力中心按钮（图标 = 当前展开插件）── */}

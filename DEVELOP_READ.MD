@@ -308,9 +308,20 @@ GUI（插件页 + 创建/编辑对话框）与 CLI（`jishu-cli plugins add/list
 - **启停通道**：复用统一插件管线（PluginKind::Session + plugins.json + plugins-changed 热生效），前端注册表做「id → 实现」映射与启用过滤。
 - **演进预留**：配置型（TOML 参数化模板）→ 代码型（沙箱）→ 分发（签名与契约版本协商）三阶段，方向全文见版本文档；描述符自带 `contractVersion` 与 `source` 字段为协商基础。
 - **数据枢纽与真订阅（v0.9.3 需求3）**：`SessionDataHub`（`session-kernel/kernel/data-hub.ts`）持有各数据面监听器集合与最新快照——ctx.subscribe 注册即回放、数据变更 publish 逐个回调、退订真实移除；ctx 重建只重放快照不丢订阅。ctx 命令面含会话压缩（compactSession/isCompacting/autoCompaction，需求8）。
+- **内建会话插件**（v0.9.4 盘点，`plugins/builtin/` 九款）：交互问答卡 / HTML 实时渲染 / 上下文水位环 / 消息搜索 / 流式状态指示 / 用量成本面板 / 产物中心（+台账）/ 会话导出。内置插件的块渲染样式 = 产品视觉的权威形态：**接管同一块类型的渲染件与内置卡样式必须一致**（如 interaction 的插件渲染件委托内置 InteractionCard），禁止另起视觉。
 
 ### 16.10 会话内核纪律
 
 - **内核零任务语义**：任务/流程能力一律经「任务流程」插件的挂载点进入，内核不含任务分支。
 - **插件作用域**：一切会话域易变状态（引导占位等）必须按会话 key 作用域，禁止跨会话泄漏。
 - **扩展工具注入**：pi 扩展工具必须经 §16.4 闸门声明注入；hub spawn 白名单聚合是唯一通道，禁止旁路直改 pi 工具集。
+- **会话状态文案按阶段准确**（v0.9.4 需求10，用户裁决话术）：流式状态按真实阶段区分显示——连接中（agent 正在赶来）/等待模型响应（思考中）/思考生成（深度思考中）/工具调用中/回复生成（处理中）；切换信号以 session_resolved（连接建立）与首个内容事件为准，禁止一律「思考中」误导。禁止把「send IPC 返回」当作连接建立的信号（spawn 未完成时为时过早）。
+
+### 16.11 dev 日志中心（v0.9.4）
+
+会话全流程的可观测底座：**日志总线 + 统一渲染入口 + 插件发日志能力**，dev 专属（生产构建零包含）。
+
+- **日志总线**（`lib/dev-log.ts`）：环形缓冲 + 订阅推送 + 格式化复制导出；`import.meta.env.DEV` 内部短路（生产零效果、近零开销——调用点参数构造仍在，量级可忽略），运行时强制开关持久化于 settings.json（`devLogForced`，安装包测试比 dev 稳定——dev 会被代码改动重启）。
+- **七类埋点**：pipeline（关键 chunk + turn_complete 决策快照）/ store（start/drop/alias/首个内容事件）/ steer（SteerCoordinator 全 API——时序主战场）/ ipc（会话关键命令+耗时成败）/ session（切换/滚动/停止幂等）/ approval / plugin（插件底座）。高频 delta（text/thinking）聚合记录不逐条。
+- **渲染入口唯一**：`DevLogCenter`（能力中心下方悬浮入口，面板含类别筛选/自动滚底/复制/清空）。
+- **插件发日志**：`ctx.devLog(message, data?)`（SessionKernelContext 命令面），类别 `plugin`；message 约定以 `[插件id]` 前缀区分来源。插件禁止绕过 ctx 直写 console 之外的日志通道。
