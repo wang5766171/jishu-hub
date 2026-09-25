@@ -17,6 +17,8 @@ import { closeSessionSidebar } from "@/features/session-kernel/shell/session-sid
 import { BlockRenderersProvider } from "@/features/session-kernel/plugins/mounts/use-block-renderers";
 import { PluginSignalBridge } from "@/features/session-kernel/plugins/mounts/plugin-signal-bridge";
 import { SessionPluginActions } from "@/features/session-kernel/plugins/mounts/session-plugin-actions";
+// 5c（v0.9.5 需求1）：面板插件快捷区（头部图标横排 toggle）。
+import { SessionPanelShortcuts } from "@/features/session-kernel/plugins/mounts/session-panel-shortcuts";
 import { FlowBoardOverlay } from "@/features/task-workspace/board/flow-board-overlay";
 import { useTaskInstance } from "@/features/task-instance/use-task-instance";
 import { useNodeSession } from "@/features/task-instance/use-node-session";
@@ -2771,6 +2773,7 @@ export function ChatPage({
                   </Button>
                   {/* v0.9.2 需求1 M4：插件头部动作宿主（会话导出等轻动作）。 */}
                   <SessionPluginActions ctx={sessionKernelCtx} enabled={enabledSessionPlugins} />
+                  <SessionPanelShortcuts enabled={enabledSessionPlugins} />
                 </div>
               </div>
             ) : (
