@@ -476,7 +476,10 @@
     "skillNameRequired": "Required when multiple (deployed as pluginId__name)",
     "skillNameOptional": "Leave empty to name by plugin id (single-skill form)",
     "removeSkillEntry": "Remove",
-    "fSkillName": "Skill name (optional)"
+    "fSkillName": "Skill name (optional)",
+    "devLogName": "Dev Log Center",
+    "devLogKind": "Debug capability",
+    "devLogDesc": "Shows the session-area log center entry (production builds included). Full-flow session logs, copyable for troubleshooting. Off by default."
   },
   "config": {
     "title": "Configuration",
@@ -1370,5 +1373,9 @@
     "pauseScroll": "Pause auto-scroll",
     "resumeScroll": "Resume auto-scroll",
     "empty": "No logs yet (interact with a session)"
+  },
+  "envCheck": {
+    "devLogTitle": "Dev Log Center",
+    "devLogDesc": "When enabled, production builds (installer) also show the log center entry in the session area — stable full-flow debugging with the installed app (dev restarts on code changes). Always on in dev builds. Persists across restarts."
   }
 }

@@ -476,7 +476,10 @@
     "skillNameRequired": "多条时必填（部署名：插件id__名称）",
     "skillNameOptional": "留空 = 以插件 id 命名（单 skill 形态）",
     "removeSkillEntry": "移除",
-    "fSkillName": "Skill 名（可选）"
+    "fSkillName": "Skill 名（可选）",
+    "devLogName": "开发日志中心",
+    "devLogKind": "调试能力",
+    "devLogDesc": "开启后显示会话区日志中心入口（含生产构建），全流程会话流转/时序日志可复制导出，便于问题排查。默认关闭。"
   },
   "config": {
     "title": "配置管理",
@@ -1370,5 +1373,9 @@
     "pauseScroll": "暂停自动滚动",
     "resumeScroll": "恢复自动滚动",
     "empty": "暂无日志（操作会话后产生）"
+  },
+  "envCheck": {
+    "devLogTitle": "开发日志中心",
+    "devLogDesc": "开启后生产构建（安装包）同样显示会话区的日志中心入口，便于用安装包做全流程排查（比 dev 稳定——dev 会被代码改动重启）。dev 构建恒启用。设置跨启动保持。"
   }
 }

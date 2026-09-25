@@ -1,5 +1,6 @@
 
 import "@/i18n";
+import { hydrateDevLogForced } from "@/lib/dev-log";
 import { lazy, Suspense } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { useTranslation } from "react-i18next";
@@ -443,7 +444,12 @@ function AppContent() {
   const blockingLoading = loading || !initialProjectRestored || projectSessionsLoading;
 
   // Restore last project on startup
-  useEffect(() => {
+  // v0.9.4 需求12：开发日志强制开关水合（后端 settings.json 权威）。
+useEffect(() => {
+  void hydrateDevLogForced();
+}, []);
+
+useEffect(() => {
     if (!projects || initialProjectRestored) return;
     let cancelled = false;
     invokeCommand<string | null>("load_last_project")

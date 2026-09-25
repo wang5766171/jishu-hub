@@ -1016,6 +1016,11 @@ async fn pi_rpc_connection_loop(
                                 continue;
                             }
 
+                            log::info!(
+                                "[tool-visibility] extension_ui_request method={} id={}",
+                                msg.get("method").and_then(|v| v.as_str()).unwrap_or("?"),
+                                msg.get("id").and_then(|v| v.as_str()).unwrap_or("?"),
+                            );
                             if let Some(event) = convert_extension_ui_request(&msg) {
                                 // Track only requests that actually wait for a response.
                                 if matches!(event, NormalizedEvent::InteractionRequest { .. }) {
@@ -1624,6 +1629,13 @@ pub(crate) fn normalize_pi_agent_event(
 
         // -- Tool execution lifecycle -------------------------------------
         "tool_execution_start" => {
+            // v0.9.4 需求12 测试期诊断（用户实测：长命令执行期间前端无工具卡
+            // ——需区分「pi 未发 start」与「hub→前端链路丢」）。dev 终端可见。
+            log::info!(
+                "[tool-visibility] tool_execution_start call_id={} tool={}",
+                event.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("?"),
+                event.get("toolName").and_then(|v| v.as_str()).unwrap_or("?"),
+            );
             let call_id = event
                 .get("toolCallId")
                 .and_then(|v| v.as_str())

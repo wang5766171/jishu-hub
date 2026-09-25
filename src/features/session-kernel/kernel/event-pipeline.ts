@@ -236,9 +236,13 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
         const realId = extractRealSessionId(chunk.data);
         if (realId) {
           deps.lastRealSessionIdRef.current = realId;
+          // 同 id 解析（无别名切换）同样标记连接建立。
+          streamStore.markSessionResolved(realId);
         }
         if (realId && realId !== cid) {
           streamStore.alias(cid, realId);
+          // v0.9.4 需求12 测试期修复：连接建立（②→③ 权威切换信号）。
+          streamStore.markSessionResolved(cid);
           // 新任务讨论关联：用 Pi 真实 session id（= conductor 写入任务的 requirement_session_id）
           // 触发 discover。ChatInput 的 onSessionResolved 拿的是 send_message 同步返回值（新 session
           // 仍为 pending），匹配不到 conductor 写的真 id；只有此处 session_resolved 事件携带真 id。

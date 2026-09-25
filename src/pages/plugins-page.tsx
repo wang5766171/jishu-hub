@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { AlertCircle, Download, Loader2, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { AlertCircle, Download, Loader2, Pencil, Plus, RefreshCw, Trash2 , Bug as BugIcon } from "lucide-react";
 import type { AgentStatus } from "@/agents/types";
 import { PluginCreateDialog } from "./plugin-create-dialog";
 import { PluginDetailModal, type DrawerPluginInfo } from "./plugin-detail-modal";
@@ -642,6 +642,9 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
 
       {/* 卡片网格：自适应列数铺满区域（v0.9.3 需求11，minmax 卡宽 ~230px）。 */}
       <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(230px,1fr))]">
+        {/* v0.9.4 需求12：开发日志中心虚拟卡（用户裁决：入口放插件中心核心引擎
+            分类，默认关闭手动开启；开关写 settings.json 跨启动保持）。 */}
+        {activeTab === "core" && <DevLogCard />}
         {(result?.plugins ?? [])
           .filter((x) => categoryOf(x) === activeTab)
           .map((plugin) => renderCard(plugin))}
@@ -694,6 +697,76 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
           </div>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+/**
+ * v0.9.4 需求12：开发日志中心卡（用户裁决：入口放插件中心「核心引擎」分类，
+ * 默认关闭、手动开启）——开关写 ~/.jishu-hub/settings.json 的 devLogForced
+ *（后端权威持久化，跨启动保持），开启后生产构建同样显示会话区日志中心。
+ */
+function DevLogCard() {
+  const { t } = useTranslation();
+  const [forced, setForced] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    invokeCommand<boolean>("get_dev_log_forced")
+      .then(setForced)
+      .catch(() => setForced(false));
+  }, []);
+
+  const toggle = async () => {
+    if (busy || forced === null) return;
+    setBusy(true);
+    try {
+      await invokeCommand("set_dev_log_forced", { enabled: !forced });
+      setForced(!forced);
+    } catch (e) {
+      console.warn("[dev-log] 切换失败:", e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3 transition-colors hover:border-border">
+      <div className="flex items-center gap-2">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted/50 text-muted-foreground">
+          <BugIcon className="h-4 w-4" />
+        </div>
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
+          {t("plugins.devLogName", { defaultValue: "开发日志中心" })}
+        </span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={forced === true}
+          disabled={forced === null || busy}
+          onClick={() => void toggle()}
+          className={
+            "relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 " +
+            (forced ? "bg-primary" : "bg-muted-foreground/30")
+          }
+        >
+          <span
+            className={
+              "absolute top-0.5 h-4 w-4 rounded-full bg-background shadow transition-all " +
+              (forced ? "left-[18px]" : "left-0.5")
+            }
+          />
+        </button>
+      </div>
+      <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+        <span className="inline-flex items-center rounded-full bg-primary/10 px-1.5 py-0.5 font-medium text-primary">
+          {t("plugins.coreBadge", "核心引擎")}
+        </span>
+        <span>{t("plugins.devLogKind", { defaultValue: "调试能力" })}</span>
+      </div>
+      <p className="line-clamp-2 min-h-[2em] text-xs leading-relaxed text-muted-foreground">
+        {t("plugins.devLogDesc", { defaultValue: "开启后显示会话区日志中心入口（含生产构建），全流程会话流转/时序日志可复制导出，便于问题排查。默认关闭。" })}
+      </p>
     </div>
   );
 }
