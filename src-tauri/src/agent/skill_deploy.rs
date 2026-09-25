@@ -217,12 +217,24 @@ pub fn load_skill_decls() -> Vec<SkillDeclEntry> {
 /// 但仍受 skill-resolver 总开关治理（关闭即随全量回收）。
 pub fn builtin_skill_decls() -> Vec<SkillDeclEntry> {
     let content = include_str!("../../resources/skills/jishu-hub-capabilities/SKILL.md");
-    vec![SkillDeclEntry {
-        dir_name: BUILTIN_CAPABILITY_SKILL_DIR.to_string(),
-        description: BUILTIN_CAPABILITY_SKILL_DESC.to_string(),
-        content: content.to_string(),
-        source_dir: None,
-    }]
+    let authoring = include_str!("../../resources/skills/jishu-plugin-authoring/SKILL.md");
+    vec![
+        SkillDeclEntry {
+            dir_name: BUILTIN_CAPABILITY_SKILL_DIR.to_string(),
+            description: BUILTIN_CAPABILITY_SKILL_DESC.to_string(),
+            content: content.to_string(),
+            source_dir: None,
+        },
+        // v0.9.5 需求1（原需敆26）4a：插件创作四层指南（判断/模板/API/陷阱）
+        //——「对话即创建」的路由层：agent 读后能产出正确形态的插件并经
+        // CLI 安装（add 统一寻址 / validate / add-hybrid）。
+        SkillDeclEntry {
+            dir_name: PLUGIN_AUTHORING_SKILL_DIR.to_string(),
+            description: PLUGIN_AUTHORING_SKILL_DESC.to_string(),
+            content: authoring.to_string(),
+            source_dir: None,
+        },
+    ]
 }
 
 /// 内置能力 skill 的目录名（= frontmatter name，部署与回收的归属粒度）。
@@ -231,6 +243,12 @@ pub const BUILTIN_CAPABILITY_SKILL_DIR: &str = "jishu-hub-capabilities";
 /// 路由描述（与 SKILL.md frontmatter 的 description 保持一致；此处单点
 /// 供测试校验两者同步）。
 pub const BUILTIN_CAPABILITY_SKILL_DESC: &str = "在 Jishu Hub 会话中向用户呈现内容前必读——图表/流程图/框架/关系图直接输出 mermaid 代码块、网页/原型输出 html 代码块（会话界面原生渲染，无需生成文件）；HTML 交付文件预览用 preview_html 工具；MCP 工具与 skill 的调用指引。";
+
+/// 插件创作 skill 目录名（v0.9.5 需求1（原需敆26）4a）。
+pub const PLUGIN_AUTHORING_SKILL_DIR: &str = "jishu-plugin-authoring";
+
+/// 路由描述（与 SKILL.md frontmatter 同步；单点供测试校验）。
+pub const PLUGIN_AUTHORING_SKILL_DESC: &str = "创建/安装 Jishu Hub 插件前必读——四层指南：①判断指南（用户想要什么 → 该造哪种插件：智能体工具/会话界面组合式/混合代码/流水线/自建智能体/MCP/Skill）；②六形态可复制模板（plugin.toml + component.js 完整示例）；③混合插件 component.js API 参考（JishuPlugin.register/h/useState/props 形状）；④陷阱与最佳实践。配套 CLI：plugins add（统一寻址）/ validate / add-hybrid。用户说\"加一个插件/让 AI 能 X/在会话里显示 X\"时按本指南产出并安装。";
 
 #[derive(Debug, Default, serde::Serialize)]
 pub struct SkillSyncReport {
@@ -547,7 +565,7 @@ body").unwrap();
         let targets = vec![("test-agent".to_string(), root.path().join("skills"))];
 
         let decls = builtin_skill_decls();
-        assert_eq!(decls.len(), 1);
+        assert_eq!(decls.len(), 2); // capabilities + plugin-authoring（4a）
         let content = &decls[0].content;
 
         // frontmatter 与常量同步（description 是系统提示词里的路由层）。
