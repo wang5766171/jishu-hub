@@ -24,6 +24,7 @@ pub fn run(action: PluginAction, ctx: &ExecutionContext) -> Result<(), CliError>
         PluginAction::Enable { id } => set_enabled(&id, true, ctx),
         PluginAction::Disable { id } => set_enabled(&id, false, ctx),
         PluginAction::Validate { path } => validate(&path, ctx),
+        PluginAction::ImportExtension { path } => import_extension(&path, ctx),
     }
 }
 
@@ -512,6 +513,52 @@ fn set_enabled(id: &str, enabled: bool, ctx: &ExecutionContext) -> Result<(), Cl
             "Plugin {id} {}d (restart the GUI or reload its plugin page to apply).",
             if enabled { "enable" } else { "disable" }
         );
+    }
+    Ok(())
+}
+
+/// 导入 pi 扩展（7c 层三）：安全摘要输出 + 复制到 extensions/（默认不启用
+/// ——显式启用走 hub GUI 提示卡或下次会话手动注册 settings.json）。
+fn import_extension(path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| CliError::InvalidArg(format!("cannot read {path}: {e}")))?;
+    let summary = crate::agent::pi_extension_import::parse_extension_summary(&source);
+    let target = crate::agent::pi_extension_import::import_pi_extension(path)
+        .map_err(CliError::InvalidArg)?;
+    if ctx.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "imported": true,
+                "path": target,
+                "enabled": false,
+                "summary": {
+                    "tools": summary.tools,
+                    "commands": summary.commands,
+                    "events": summary.events,
+                    "fileOps": summary.file_ops,
+                    "network": summary.network,
+                    "subprocess": summary.subprocess,
+                    "arbitraryCodeWarning": crate::agent::pi_extension_import::ARBITRARY_CODE_WARNING,
+                },
+            })
+        );
+    } else {
+        println!("Imported pi extension → {target}");
+        println!("Disabled by default; enable via the hub GUI extension card.");
+        if !summary.tools.is_empty() {
+            println!("  tools: {}", summary.tools.join(", "));
+        }
+        if !summary.commands.is_empty() {
+            println!("  commands: {}", summary.commands.join(", "));
+        }
+        if !summary.events.is_empty() {
+            println!("  events: {}", summary.events.join(", "));
+        }
+        if summary.file_ops || summary.network || summary.subprocess {
+            println!("  ⚠ fileOps={} network={} subprocess={}", summary.file_ops, summary.network, summary.subprocess);
+        }
+        println!("  ⚠ {}", crate::agent::pi_extension_import::ARBITRARY_CODE_WARNING);
     }
     Ok(())
 }

@@ -465,6 +465,15 @@ pub enum PluginAction {
         /// or a single plugin.toml file.
         path: String,
     },
+
+    /// Import a pi extension (.ts) into the agent extensions dir (disabled
+    /// by default; enable via the hub GUI card or pi_extension_enable).
+    /// v0.9.5 需求1（原需求26）7c 层三：agent/高级用户路径。
+    #[command(name = "import-extension")]
+    ImportExtension {
+        /// Path to the extension .ts file.
+        path: String,
+    },
 }
 
 // ── Task artifact（v0.8.1 需求10：自适应插件 CLI 形态）───────────────────────

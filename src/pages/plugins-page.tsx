@@ -21,7 +21,7 @@ import { PluginPipelineWizard } from "./plugin-pipeline-wizard";
 import { PluginCreateEntry } from "./plugin-create-entry";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
 import { composedVersion, subscribeComposed } from "@/features/session-kernel/capabilities/composition/loader";
-import { Info, Settings2 } from "lucide-react";
+import { Info, Settings2, FileCode2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -244,6 +244,26 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
     },
     [confirmDialog, t, withBusy],
   );
+
+  /** 7c 层二：导入扩展（文件选择 → 摘要确认 → 复制，默认不启用——
+   * 启用经发现卡「启用」动作）。 */
+  const handleImportExtension = async (): Promise<void> => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({
+        multiple: false,
+        filters: [{ name: "pi 扩展", extensions: ["ts"] }],
+      });
+      if (typeof picked !== "string" || !picked) return;
+      const target = await invokeCommand<string>("pi_extension_import", { path: picked });
+      await alertDialog({
+        title: "扩展已导入（默认不启用）",
+        description: target + " —— 启用请重启或稍后经「发现新扩展」提示卡点「启用」（注册 settings.json 后下次会话生效）。",
+      });
+    } catch (err) {
+      await alertDialog({ title: "导入失败", description: String(err) });
+    }
+  };
 
   const handleReload = useCallback(async () => {
     setLoading(true);
@@ -635,6 +655,15 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
           >
             <Plus className="h-4 w-4" />
             <span className="ml-1.5">{tr("plugins.createTitle", "创建插件")}</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void handleImportExtension()}
+            title="导入 .ts pi 扩展文件（安全摘要确认后复制，默认不启用）"
+          >
+            <FileCode2 className="h-4 w-4" />
+            <span className="ml-1.5">导入扩展</span>
           </Button>
           <Button variant="outline" size="sm" onClick={handleReload} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}

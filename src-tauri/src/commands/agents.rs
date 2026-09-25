@@ -863,3 +863,34 @@ pub(crate) fn hybrid_plugin_save(
     let _ = app.emit("plugins-changed", ());
     Ok(())
 }
+
+// ── pi 扩展导入（v0.9.5 需求1（原需求26）V4-P7）：扫描/导入/启用/忽略 ──
+
+#[tauri::command]
+pub(crate) fn pi_extension_scan() -> Vec<agent::pi_extension_import::UnregisteredExtension> {
+    agent::pi_extension_import::scan_unregistered_extensions()
+}
+
+/// 摘要展示所需的安全声明常量（前端确认卡一并展示——评审 P1-7）。
+#[tauri::command]
+pub(crate) fn pi_extension_safety_notes() -> serde_json::Value {
+    serde_json::json!({
+        "arbitraryCodeWarning": agent::pi_extension_import::ARBITRARY_CODE_WARNING,
+        "knownBypassSurface": agent::pi_extension_import::KNOWN_BYPASS_SURFACE,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn pi_extension_import(path: String) -> Result<String, String> {
+    agent::pi_extension_import::import_pi_extension(&path)
+}
+
+#[tauri::command]
+pub(crate) fn pi_extension_enable(fileName: String) -> Result<(), String> {
+    agent::pi_extension_import::enable_pi_extension(&fileName)
+}
+
+#[tauri::command]
+pub(crate) fn pi_extension_ignore(fileName: String) -> Result<(), String> {
+    agent::pi_extension_import::ignore_pi_extension(&fileName)
+}
