@@ -831,3 +831,35 @@ pub(crate) fn hybrid_preview_dir() -> Result<String, String> {
         .to_string_lossy()
         .into_owned())
 }
+
+/// 混合插件 GUI 保存（v0.9.5 需求1（原需求26）3b）：向导产物落盘
+/// plugins/<id>/（plugin.toml + component.js）——TOML 走 save_composed_manifest
+/// 守卫，代码原子写；默认禁用 + `.pending-confirm` 标记（对齐 add-hybrid
+/// 安全哲学：含代码的插件经确认卡启用，预览过也要确认）；广播热重建。
+#[tauri::command]
+pub(crate) fn hybrid_plugin_save(
+    app: tauri::AppHandle,
+    id: String,
+    toml: String,
+    component_js: String,
+) -> Result<(), String> {
+    agent::plugin::save_composed_manifest(&id, &toml)?;
+    let dir = agent::plugin::composed_plugins_dir().join(&id);
+    crate::util::atomic_write(&dir.join("component.js"), component_js.as_bytes())
+        .map_err(|e| format!("cannot write component.js: {e}"))?;
+    // 默认禁用（确认卡安全阀——GUI 亲手创建同样走确认，与 CLI 通道一致）。
+    let _ = agent::plugin::set_plugin_enabled(&id, false);
+    let toml_value: toml::Value = toml.parse().map_err(|e| format!("TOML 解析失败: {e}"))?;
+    let pending = serde_json::json!({
+        "id": id,
+        "name": toml_value.get("plugin").and_then(|p| p.get("name")).and_then(|v| v.as_str()).unwrap_or(&id),
+        "mount": toml_value.get("render").and_then(|r| r.get("mount")).and_then(|v| v.as_str()).unwrap_or("unknown"),
+        "codeLines": component_js.lines().count(),
+        "dir": dir.to_string_lossy(),
+    });
+    crate::util::atomic_write(&dir.join(".pending-confirm"), pending.to_string().as_bytes())
+        .map_err(|e| format!("cannot write pending-confirm marker: {e}"))?;
+    use tauri::Emitter;
+    let _ = app.emit("plugins-changed", ());
+    Ok(())
+}

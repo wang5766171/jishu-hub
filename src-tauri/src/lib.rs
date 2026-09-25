@@ -415,6 +415,7 @@ pub fn run() {
             commands::agents::cli_validate_submit,
             commands::agents::hybrid_preview_write,
             commands::agents::hybrid_preview_dir,
+            commands::agents::hybrid_plugin_save,
             commands::agents::session_tool_list,
             commands::agents::session_set_tools,
             commands::sessions::persist_agent_turn,

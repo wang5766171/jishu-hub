@@ -184,7 +184,7 @@ export function PluginCreateEntry({
       icon: Code2,
       title: t("plugins.entryHybrid", "混合代码插件"),
       desc: t("plugins.entryHybridDesc", "写自定义代码的会话界面插件（TOML + component.js）"),
-      ready: false,
+      ready: true,
     },
   ];
 
@@ -207,8 +207,6 @@ export function PluginCreateEntry({
               onClick={() => {
                 if (c.key === "pipeline-guide") {
                   setGuide("pipeline");
-                } else if (c.key === "hybrid-guide") {
-                  setGuide("hybrid");
                 } else {
                   onOpenChange(false);
                   onChoose({ kind: c.key } as CreateEntryChoice);
