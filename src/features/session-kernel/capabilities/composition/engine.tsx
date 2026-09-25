@@ -208,15 +208,26 @@ export function buildComposedDescriptor(
         if (source.signals && !source.signals.includes(signalType)) return;
         const options = getPluginConfigSync(id, schema);
         // 触发口径门控（desktop-notify 类：三类触发各一开关）。
+        // v0.9.5 需求1（原需求26）5b：gateKey 数据驱动——内置三类信号维持
+        // 硬编码映射；自定义信号（plugin: 前缀）由信号名推导 notify_<name>，
+        // 配置无该键则不门控（设计裁决：无配置即放行）。
         const gateKey =
           signalType === "turn-complete" ? "notifyTurnComplete"
           : signalType === "approval-request" ? "notifyApproval"
-          : signalType === "task-run-failed" ? "notifyTaskFailed" : null;
+          : signalType === "task-run-failed" ? "notifyTaskFailed"
+          : signalType.startsWith("plugin:") ? `notify_${signalType.split(":").pop() ?? ""}` : null;
         if (gateKey && options[gateKey] === false) return;
         for (const action of manifest.action ?? []) {
           const handler = actionRegistry.get(action.type);
           if (!handler) continue;
           const params = resolveActionParams(action, options);
+          if (action.type === "emit-signal") {
+            // 5b：链式信号——onSignal 消费的自定义信号再发射，来源深度传入
+            //（handler 内 +1 且 >3 阻断，防 A→B→C→A 循环）。
+            params.__fromDepth = (signal as { depth?: number }).depth ?? 1;
+            void handler.run(params, { kind: "signal", signal }, { sessionId: ctx.sessionId, pluginId: id });
+            continue;
+          }
           if (action.type === "desktop-notify") {
             const sig = signal as { error?: boolean; title?: string; sessionId?: string };
             const sid = (sig.sessionId ?? ctx.sessionId ?? "").slice(0, 12);

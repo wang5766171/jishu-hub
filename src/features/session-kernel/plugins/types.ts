@@ -319,7 +319,13 @@ export type SessionSignal =
   | { type: "task-run-failed"; taskId: string; title: string }
   /** 文件预览请求（v0.9.2 测试期）：agent 工具（如 preview_html）经内核
    * 事件管线转发——插件自行决定是否响应（产物中心打开侧栏渲染）。 */
-  | { type: "file-preview-request"; file: string; sessionId?: string };
+  | { type: "file-preview-request"; file: string; sessionId?: string }
+  /** v0.9.5 需求1（原需求26）5b：插件间自定义信号（emit-signal 动作产生；
+   *  命名空间前缀 plugin:<pluginId>:<name> 防跨插件冲突——订阅方在
+   *  [source].signals 里声明带前缀全名；depth 为触发深度（发射端 +1 传播，
+   *  总线层 >3 阻断防循环）；payload 携带业务数据（payload_key 取自渲染
+   *  payload 顶层字段）。 */
+  | { type: `plugin:${string}:${string}`; sessionId?: string; payload?: unknown; depth?: number };
 
 /** 事件钩子挂载点：无 UI 的事件消费（通知/音效等）。 */
 export interface EventHookMount {

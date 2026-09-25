@@ -22,6 +22,7 @@ async function blobToBase64(blob: Blob): Promise<string> {
 }
 
 /** export-file：渲染组件 toFile → 保存对话框 → 写文件。 */
+import { emitSessionSignal } from "../../signals";
 actionRegistry.register({
   type: "export-file",
   async run(params, payload) {
@@ -55,6 +56,41 @@ actionRegistry.register({
 });
 
 /** clipboard：复制 payload 文本。 */
+/** emit-signal：发射插件间自定义信号（v0.9.5 需求1（原需求26）5b）。
+ *  命名空间 plugin:<pluginId>:<signal> 防跨插件冲突；payload_key 从当前渲染
+ *  payload 顶层取值（无通用表达式语法——设计裁决避免 @payload.* 模板语言）；
+ *  深度限制 ≤3 层（引擎 onSignal 触发时经 __fromDepth 传入来源深度，
+ *  防循环触发：A→B→C→A 链第 4 层阻断）。 */
+actionRegistry.register({
+  type: "emit-signal",
+  run(params, payload, ctx) {
+    const signalName = String(params.signal ?? "").trim();
+    if (!signalName) {
+      console.warn("[emit-signal] missing signal name");
+      return;
+    }
+    const fromDepth = typeof params.__fromDepth === "number" ? params.__fromDepth : 0;
+    const depth = fromDepth + 1;
+    if (depth > 3) {
+      console.warn(
+        `[emit-signal] ${ctx.pluginId} → ${signalName} 阻断：信号链深度 ${depth} 超过 3 层（防循环触发）`,
+      );
+      return;
+    }
+    const key = params.payload_key ? String(params.payload_key) : null;
+    const value =
+      key && payload && typeof payload === "object"
+        ? (payload as Record<string, unknown>)[key]
+        : undefined;
+    emitSessionSignal({
+      type: `plugin:${ctx.pluginId}:${signalName}`,
+      sessionId: ctx.sessionId ?? undefined,
+      payload: value,
+      depth,
+    });
+  },
+});
+
 actionRegistry.register({
   type: "clipboard",
   async run(_params, payload) {

@@ -159,6 +159,13 @@ export function usePluginConfig(
   return { values, ready: cache != null };
 }
 
+/** 测试口：直写配置缓存（vitest 语境无 Tauri 后端）。 */
+export function setPluginConfigForTest(user: PluginConfigValues): void {
+  cache = { __test__: user } as AllPluginConfigs;
+  // getPluginConfig(pluginId) 走 cache[pluginId]——测试以固定键占位读取。
+  cache["__test_plugin__"] = user;
+}
+
 /** 非 React 消费者（event-hook 等）同步快照——缓存未就绪时回 defaults。 */
 export function getPluginConfig(pluginId: string, schema: PluginConfigField[]): PluginConfigValues {
   return mergeConfig(schema, cache?.[pluginId]);

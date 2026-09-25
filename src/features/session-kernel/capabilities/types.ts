@@ -60,7 +60,9 @@ export interface RendererRegistration {
 // ── 动作 ──
 
 export interface ActionDeclaration {
-  type: "export-file" | "open-external" | "desktop-notify" | "clipboard" | "insert-composer" | "jump";
+  /** v0.9.5 需求1（原需求26）5b：emit-signal——发射插件间自定义信号
+   *  （params: signal 自定义名 / payload_key 从渲染 payload 顶层取值）。 */
+  type: "export-file" | "open-external" | "desktop-notify" | "clipboard" | "insert-composer" | "jump" | "emit-signal";
   [key: string]: unknown;
 }
 
