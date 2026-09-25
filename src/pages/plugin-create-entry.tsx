@@ -177,7 +177,7 @@ export function PluginCreateEntry({
       icon: ListChecks,
       title: t("plugins.entryPipeline", "任务流水线"),
       desc: t("plugins.entryPipelineDesc", "多阶段工作流编排：讨论→设计→执行→审查"),
-      ready: false,
+      ready: true,
     },
     {
       key: "hybrid-guide",
@@ -206,7 +206,8 @@ export function PluginCreateEntry({
               type="button"
               onClick={() => {
                 if (c.key === "pipeline-guide") {
-                  setGuide("pipeline");
+                  onOpenChange(false);
+                  onChoose({ kind: "pipeline-guide" });
                 } else {
                   onOpenChange(false);
                   onChoose({ kind: c.key } as CreateEntryChoice);

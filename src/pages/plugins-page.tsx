@@ -15,6 +15,8 @@ import { PluginDetailModal, type DrawerPluginInfo } from "./plugin-detail-modal"
 import { PluginComposeDialog } from "./plugin-compose-dialog";
 // 3b（v0.9.5 需求1）：混合插件可视化向导（编辑器 + 预览 + API 参考）。
 import { PluginHybridWizard } from "./plugin-hybrid-wizard";
+// 3c（v0.9.5 需求1）：流水线向导（列表式阶段编排器）。
+import { PluginPipelineWizard } from "./plugin-pipeline-wizard";
 // 3a-1（v0.9.5 需求1，原需敆26）：统一创建入口——类型选择卡片页分流。
 import { PluginCreateEntry } from "./plugin-create-entry";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
@@ -143,6 +145,8 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
   const [entryOpen, setEntryOpen] = useState(false);
   // 3b：混合插件向导。
   const [hybridOpen, setHybridOpen] = useState(false);
+  // 3c：流水线向导。
+  const [pipelineOpen, setPipelineOpen] = useState(false);
   const [detailTab, setDetailTab] = useState<"info" | "settings">("info");
   const [panelOutputs, setPanelOutputs] = useState<Record<number, string>>({});
   const [panelRunning, setPanelRunning] = useState<number | null>(null);
@@ -556,6 +560,7 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
       {dialogNode}
       <PluginComposeDialog open={composeOpen} onOpenChange={setComposeOpen} onCreated={refresh} />
       <PluginHybridWizard open={hybridOpen} onOpenChange={setHybridOpen} onCreated={refresh} />
+      <PluginPipelineWizard open={pipelineOpen} onOpenChange={setPipelineOpen} onCreated={refresh} />
       {/* 3a-1：统一创建入口——四类型卡片分流（agent-tool → agents 向导；
           session-composed → 组合式向导；pipeline/hybrid → 指引卡；describe →
           引导到会话对话创建）。替换原两并列按钮（新建插件/新建组合插件）。 */}
@@ -573,6 +578,9 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
               break;
             case "hybrid-guide":
               setHybridOpen(true);
+              break;
+            case "pipeline-guide":
+              setPipelineOpen(true);
               break;
             case "describe":
               void alertDialog({
