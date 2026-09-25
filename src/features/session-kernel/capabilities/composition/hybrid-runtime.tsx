@@ -53,7 +53,10 @@ export function setScriptInjectorForTest(injector: (url: string, onerror: () => 
   injectScriptElement = injector;
 }
 
-/** 混合代码契约版本；hub 升级保证兼容或给出明确迁移错误。 */
+/** 混合代码契约版本；hub 升级保证兼容或给出明确迁移错误。
+ *  bump 判据（1e 同 SESSION_PLUGIN_CONTRACT_VERSION）：纯加法（新可选
+ *  API/props 字段）不 bump；注入 API 签名变化/删除/语义变更必须 bump，
+ *  且旧版本 component.js 装载时给出明确迁移错误。 */
 export const PLUGIN_API_VERSION = 1;
 
 /** 注入给插件 factory 的 API 面（v1）。 */
