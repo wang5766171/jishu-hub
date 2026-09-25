@@ -1218,6 +1218,13 @@ export function PluginCreateDialog({
     if (tpl) setTemplateKey(tpl.key);
   };
 
+  /** 3a-2（v0.9.5 需求1）：能力段多选引导——勾选段 → 自动选型（单段=对应
+   *  类型；多段=custom 自由组合）。pi_extension 段创建期无表单（已裁剪），
+   *  引导注明经 TOML 编辑添加。 */
+  const [segCli, setSegCli] = useState(false);
+  const [segMcp, setSegMcp] = useState(false);
+  const [segSkill, setSegSkill] = useState(false);
+
   /** MCP JSON 批量导入（需求19 第二轮）：多 server → 多插件，逐条落盘。 */
   const [batchOpen, setBatchOpen] = useState(false);
 
@@ -1512,6 +1519,47 @@ export function PluginCreateDialog({
               )}
             </div>
 
+            {/* 3a-2：能力段多选引导（创建模式）——先勾段后自动选型 */}
+            {!isEdit && (
+              <div className="rounded-lg border border-dashed border-border/70 bg-muted/10 px-3 py-2.5">
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                  <span className="font-medium text-foreground/80">想组合多种能力？勾选要包含的段：</span>
+                  {([
+                    ["CLI 工具（命令）", segCli, setSegCli],
+                    ["MCP 工具（服务）", segMcp, setSegMcp],
+                    ["Skill 知识（文件）", segSkill, setSegSkill],
+                  ] as const).map(([text, on, set]) => (
+                    <label key={text} className="flex cursor-pointer items-center gap-1 rounded-md border border-border/60 px-2 py-1 hover:border-primary/40">
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        onChange={(e) => (set as (v: boolean) => void)(e.target.checked)}
+                        className="h-3 w-3 accent-primary"
+                      />
+                      {text}
+                    </label>
+                  ))}
+                  <button
+                    type="button"
+                    disabled={!(segCli || segMcp || segSkill)}
+                    onClick={() => {
+                      const n = Number(segCli) + Number(segMcp) + Number(segSkill);
+                      if (n === 1) {
+                        pickType(segCli ? "cli" : segMcp ? "mcp" : "skill");
+                      } else if (n >= 2) {
+                        pickType("custom");
+                      }
+                    }}
+                    className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
+                  >
+                    按此选型
+                  </button>
+                  <span className="text-[10px] text-muted-foreground/60">
+                    Agent 扩展（pi_extension）段创建期无表单——保存后在详情页 TOML 编辑添加
+                  </span>
+                </div>
+              </div>
+            )}
             {/* 模版（仅当前类型；类型已选定，分组标签冗余——需求19 去噪） */}
             <div>
               <p className="text-xs font-medium mb-2">{tr("plugins.tplSection", "从模版开始")}</p>
