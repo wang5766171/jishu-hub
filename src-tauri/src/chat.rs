@@ -96,6 +96,7 @@ pub async fn send_message(
     project_path: String,
     session_id: Option<String>,
     message: String,
+    model_override: Option<(String, String)>,
 ) -> Result<ChatSession, String> {
     log::info!(
         "send_message: agent={}, project={}, session={:?}, message_len={}",
@@ -179,6 +180,7 @@ pub async fn send_message(
                 session_id: Some(pending_session_id.clone()),
                 message,
                 timeout_secs: 0,
+                model_override,
             },
         )?
     };
@@ -270,6 +272,7 @@ fn current_spawn_signature(
             session_id: Some(session_id.to_string()),
             message: String::new(),
             timeout_secs: 0,
+                model_override: None,
         },
     )
     .ok()?;
@@ -645,6 +648,7 @@ async fn spawn_resume_fork_process(
                 session_id: Some(session_id.to_string()),
                 message: String::new(),
                 timeout_secs: 0,
+                model_override: None,
             },
         )?
     };

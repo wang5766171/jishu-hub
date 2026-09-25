@@ -667,6 +667,11 @@ pub struct ChatRequest {
     pub project_path: String,
     pub session_id: Option<String>,
     pub message: String,
+    /// v0.9.5 需求2：模型覆盖 (provider, model)——None 用全局 active；
+    /// 流程节点子会话按节点声明模型 spawn（spawn 签名机制天然区分：
+    /// 不同模型=不同签名=独立进程，互不干扰）。仅 jishu-self 消费
+    ///（--provider/--model 为 pi 参数）；其余 adapter 忽略。
+    pub model_override: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

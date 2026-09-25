@@ -1015,6 +1015,7 @@ mod tests {
                 project_path: "/p".to_string(),
                 session_id: None,
                 message: "hi".to_string(),
+                model_override: None,
             })
             .expect("claude_code supports ACP");
 

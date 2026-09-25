@@ -121,6 +121,7 @@ pub fn conductor_dispatch_to_node(
                     project_path,
                     Some(sid),
                     content,
+                    None, // v0.9.5 需求2 B-4：节点模型声明接入后此处传节点声明值
                 )
                 .await
                 {

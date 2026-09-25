@@ -2225,6 +2225,7 @@ mod tests {
                 project_path: "D:\\MyCodes\\jishu-hub".to_string(),
                 session_id: None,
                 message: "hello opencode".to_string(),
+                model_override: None,
             }),
             vec!["run", "--format", "json", "hello opencode"]
         );
@@ -2237,6 +2238,7 @@ mod tests {
                 project_path: "D:\\MyCodes\\jishu-hub".to_string(),
                 session_id: Some("ses_123".to_string()),
                 message: "continue".to_string(),
+                model_override: None,
             }),
             vec![
                 "run",

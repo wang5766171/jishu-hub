@@ -14,6 +14,36 @@ use crate::agent::jishu_self::pi_models_config;
 /// Read jishu's active provider+model and build the matching Pi args.
 /// Returns an Err if no active model is set, or if the active
 /// provider isn't in `~/.jishu-agent/models.json`.
+/// v0.9.5 需求2：带覆盖的模型参数——prefer (provider, model) 时校验并
+/// 直接使用（跳过全局 active）；None 回落 active。校验口径一致（models.json
+/// 存在性——覆盖值拼错与 active 拼错同样 fail loud）。
+pub fn build_pi_model_args_with_override(
+    prefer: Option<&(String, String)>,
+) -> Result<Vec<String>, String> {
+    if let Some((provider_id, model_id)) = prefer {
+        let provider = pi_models_config::get_provider(provider_id)?.ok_or_else(|| {
+            format!("Override provider '{provider_id}' is not in ~/.jishu-agent/models.json")
+        })?;
+        let has_model = provider
+            .models
+            .as_ref()
+            .map(|models| models.iter().any(|m| m.id == *model_id))
+            .unwrap_or(false);
+        if !has_model {
+            return Err(format!(
+                "Override model '{model_id}' is not listed under provider '{provider_id}' in ~/.jishu-agent/models.json"
+            ));
+        }
+        return Ok(vec![
+            "--provider".to_string(),
+            provider_id.clone(),
+            "--model".to_string(),
+            model_id.clone(),
+        ]);
+    }
+    build_pi_model_args_from_active()
+}
+
 pub fn build_pi_model_args_from_active() -> Result<Vec<String>, String> {
     let active = jishu_settings::get_active()?.ok_or_else(|| {
         "No active model — set one in the GUI (Models page) or write ~/.jishu-hub/settings.json"

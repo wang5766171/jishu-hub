@@ -864,7 +864,11 @@ impl TransportAdapter for JishuSelfAgent {
         }
         args.push("--append-system-prompt".to_string());
         args.push(JISHU_AGENT_IDENTITY_PROMPT.to_string());
-        args.extend(pi_model::build_pi_model_args_from_active()?);
+        // v0.9.5 需求2：节点/委派模型覆盖（ChatRequest.model_override）——
+        // 优先于全局 active；签名机制天然区分（不同模型=独立进程）。
+        args.extend(pi_model::build_pi_model_args_with_override(
+            req.model_override.as_ref(),
+        )?);
 
         let mut envs = Vec::new();
         envs.push(("PI_SKIP_VERSION_CHECK".to_string(), "1".to_string()));

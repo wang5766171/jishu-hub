@@ -242,6 +242,7 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                     project_path: request.project_path.clone(),
                     session_id: request.session_id.clone(),
                     message: request.prompt.clone(),
+                    model_override: None,
                 };
                 let acp_command = agent
                     .build_acp_command(&req)
@@ -412,6 +413,7 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                             session_id: request.session_id,
                             message: request.prompt,
                             timeout_secs: (timeout_ms.saturating_add(999) / 1000).max(1),
+                            model_override: None,
                         },
                         None,
                         Some(cancellation),

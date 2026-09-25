@@ -558,6 +558,7 @@ chat_command = ["x", "--prompt", "{prompt}", "--cwd", "{cwd}"]
             project_path: "D:\\proj".to_string(),
             session_id: Some("s1".to_string()),
             message: "hi there; rm -rf /".to_string(),
+            model_override: None,
         };
         // build_chat_command 返回 Command（无法检视 argv）——经 expand_template
         // 间接验证：值里的 shell 元字符只作为单个 argv 段传递。
