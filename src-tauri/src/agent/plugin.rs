@@ -299,6 +299,18 @@ fn composed_plugins_root() -> PathBuf {
     super::manifest::hub_home().join("plugins")
 }
 
+/// 组合式插件根目录（v0.9.5 需求1（原需求26）1b：CLI 统一寻址——get/update/remove
+/// 需直达 plugins/<id>/plugin.toml）。
+pub fn composed_plugins_dir() -> PathBuf {
+    composed_plugins_root()
+}
+
+/// 内置（随包）组合插件判定（1b：CLI remove 的内置保护——卸载是无操作，
+/// 与 agents/ 分支的 is_system_plugin 同纪律）。
+pub fn is_builtin_composed(id: &str) -> bool {
+    BUILTIN_COMPOSED_MANIFESTS.iter().any(|(bid, _)| *bid == id)
+}
+
 /// 幂等部署内置组合清单（lib.rs 启动调用）。
 pub fn ensure_builtin_composed_manifests() {
     for (id, toml) in BUILTIN_COMPOSED_MANIFESTS {
