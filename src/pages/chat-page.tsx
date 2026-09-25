@@ -3024,6 +3024,25 @@ export function ChatPage({
                     }
                   }
                   if (state) {
+                    // v0.9.4 需求13：纯压缩流（压缩 divider 起的续流）停止时
+                    // 跳过本地提交——无可提交的回合内容（pending=null、无
+                    // partial 文本/思考/工具），提交只会产生一条"压缩中…"
+                    // 占位消息，与压缩结束沿统一提交的"已压缩/已取消"divider
+                    // 形成双条。pi 的 abort 含 abortCompaction：取消后
+                    // compaction_end(aborted) → pipeline 终结沿统一收口。
+                    const isPureCompaction = state.pendingUserMessage === null
+                      && state.text === "" && state.thinking === ""
+                      && state.tools.length === 0 && state.steerTexts.length === 0
+                      && state.content.length > 0
+                      && state.content.every((b) => b.type === "phase_divider" && b.phase === "compaction");
+                    if (isPureCompaction) {
+                      devLog("session", "onAbort 纯压缩流（跳过本地提交，等待压缩取消收口）", { session: finalKey });
+                      abortLocalCommitRef.current.set(finalKey, Date.now());
+                      if (selectedSession !== finalKey) {
+                        abortLocalCommitRef.current.set(selectedSession, Date.now());
+                      }
+                      return;
+                    }
                     const newMessages: Message[] = [];
                     if (state.pendingUserMessage) {
                       newMessages.push({

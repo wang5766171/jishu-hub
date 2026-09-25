@@ -78,6 +78,15 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
           ? t("sessions.agentOnTheWay", "{{name}} 正在赶来...", { name: agentDisplayName })
           : t("sessions.agentOnTheWayGeneric", "智能体正在赶来..."));
     }
+    // v0.9.4 需求13：纯压缩流（内容只有 compaction divider）→ 压缩中文案
+    //（大上下文压缩可持续 2 分钟+，落"处理中"误导用户以为模型在干活）。
+    if (
+      content.length > 0 && displayText.length === 0 && thinkingText.length === 0
+      && toolUses.length === 0
+      && content.every((b) => b.type === "phase_divider" && b.phase === "compaction")
+    ) {
+      return t("sessions.compacting", "上下文压缩中...");
+    }
     if (hasRunningTool) return t("sessions.toolCalling");
     if (thinkingText.length > 0 && displayText.length === 0) return t("sessions.deepThinking", "深度思考中...");
     return t("sessions.processing");

@@ -325,6 +325,7 @@
     "agentOnTheWay": "{{name}} is on the way...",
     "agentOnTheWayGeneric": "Agent is on the way...",
     "deepThinking": "Deep thinking...",
+    "compacting": "Compacting context...",
     "renderSourcePlugin": "Plugin render",
     "renderSourceBuiltin": "Builtin render"
   },

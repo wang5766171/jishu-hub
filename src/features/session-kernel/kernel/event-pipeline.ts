@@ -92,6 +92,8 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
   let cancelled = false;
   // v0.9.4 需求8：工具进度节流表（`${cid}\x1f${call_id}` → 上次放行时刻）。
   const toolProgressThrottle = new Map<string, number>();
+  // v0.9.4 需求12：thinking 聚合观测表（think-<cid> → start/last）
+  const thinkingAggRef = new Map<string, { start: number; last: number }>();
   listen<AgentEventPayload>("agent-event", (event) => {
       const payload = event.payload;
       const chunks = Array.isArray(payload) ? payload : [payload];
@@ -120,6 +122,27 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
               : "call_id" in chunk.data ? String((chunk.data as { call_id?: string }).call_id ?? "")
               : undefined,
           });
+        }
+        // thinking 聚合观测（用户实测：模型思考 50s+ 无感知）——首条记开始、
+        // 每 15s 记持续、结束（tool_use_start/text）记总时长。
+        if (chunk.data.kind === "thinking") {
+          const tk = `think-${cid}`;
+          const now = Date.now();
+          const st = thinkingAggRef.get(tk);
+          if (!st) {
+            thinkingAggRef.set(tk, { start: now, last: now });
+            devLog("pipeline", "模型开始思考", { session: cid });
+          } else if (now - st.last > 15_000) {
+            st.last = now;
+            devLog("pipeline", `模型思考中…已持续 ${Math.round((now - st.start) / 1000)}s`, { session: cid });
+          }
+        } else if (chunk.data.kind === "tool_use_start" || chunk.data.kind === "text_delta") {
+          const tk = `think-${cid}`;
+          const st = thinkingAggRef.get(tk);
+          if (st) {
+            devLog("pipeline", `模型思考结束（持续 ${Math.round((Date.now() - st.start) / 1000)}s）`, { session: cid });
+            thinkingAggRef.delete(tk);
+          }
         }
 
         // v0.9.4 需求8：工具进度节流（per call_id 200ms）——bash 类长时工具
@@ -225,8 +248,36 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
         // 后 turn_complete 沿再刷新一次。
         if (chunk.data.kind === "compaction_status") {
           if (!chunk.data.active) {
-            const usageSid = streamStore.getState(cid)?.resolvedId ?? cid;
+            const st0 = streamStore.getState(cid);
+            const usageSid = st0?.resolvedId ?? cid;
             void deps.refreshSessionUsage(usageSid);
+            // v0.9.4 需求13：压缩流程不发 turn_complete（它是 operation 不是
+            // turn）——压缩引发的纯压缩流（divider 到达时 pushTracked 自动
+            // start，pending=null）在 active=false（权威结束信号）到达时终结：
+            // divider 按回放形态（JSONL compaction entry → assistant 消息单
+            // divider）提交进缓存，再 drop。否则"处理中"永挂 + 压缩结束后
+            // 停止打空（pi 已空闲，无 turn_complete(Aborted) 收尾）。
+            if (
+              st0 && st0.pendingUserMessage === null && st0.text === ""
+              && st0.thinking === "" && st0.tools.length === 0
+              && st0.steerTexts.length === 0 && !st0.error
+            ) {
+              const finalKey = st0.resolvedId ?? cid;
+              const divider = [...st0.content]
+                .reverse()
+                .find((b) => b.type === "phase_divider" && b.phase === "compaction");
+              if (divider) {
+                const base = getCachedSessionMessages(finalKey)
+                  ?? getCachedSessionMessages(cid) ?? [];
+                setCachedSessionMessages(finalKey, [...base, {
+                  role: "assistant" as const,
+                  content: [divider],
+                  timestamp: Date.now(),
+                }]);
+              }
+              streamStore.drop(finalKey);
+              devLog("pipeline", "压缩结束：终结纯压缩流（divider 已提交缓存）", { session: finalKey });
+            }
           }
           continue;
         }

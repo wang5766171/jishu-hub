@@ -325,6 +325,7 @@
     "agentOnTheWay": "{{name}} 正在赶来...",
     "agentOnTheWayGeneric": "智能体正在赶来...",
     "deepThinking": "深度思考中...",
+    "compacting": "上下文压缩中...",
     "renderSourcePlugin": "插件渲染",
     "renderSourceBuiltin": "内置渲染"
   },
