@@ -437,6 +437,7 @@
     "tplSkill": "Skill 示例",
     "catCore": "核心引擎",
     "catSession": "会话能力",
+    "catPipeline": "流水线",
     "mcpBatchImport": "JSON 批量导入",
     "mcpBatchTitle": "批量导入 MCP 服务",
     "mcpBatchDesc": "粘贴包含多个 server 的 JSON（支持 mcpServers 包裹）；每个服务将创建一个独立 MCP 插件（插件 ID 由名称生成）。",

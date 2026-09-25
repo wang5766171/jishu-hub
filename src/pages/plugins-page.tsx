@@ -59,6 +59,9 @@ interface PluginDescriptor {
   system?: boolean;
   /** v0.9.3 需求13：组合式插件（manifest 装配；用户创建的可删除）。 */
   composed?: boolean;
+  /** v0.9.5 需求1（原需敆26）1d：声明了 [[pipeline.stages]]（流水线形态——
+   * 插件中心独立「流水线」tab，不混入「会话能力」）。 */
+  has_pipeline?: boolean;
 }
 
 interface PluginListResult {
@@ -70,7 +73,7 @@ interface PluginListResult {
  * 核心引擎 = core（jishu-self）+ 解析器系统插件（mcp-resolver；后续
  * skill/CLI 解析器并入此判定）；MCP/CLI 按 kind=tool 的 has_mcp 分流；
  * 智能体 = 内置适配器与 manifest 智能体。 */
-type PluginCategory = "core" | "session" | "mcp" | "skill" | "cli" | "custom" | "agent";
+type PluginCategory = "core" | "session" | "pipeline" | "mcp" | "skill" | "cli" | "custom" | "agent";
 
 /** 核心引擎 = core + 解析器 + 预置指南插件（v0.9.0 需求22 并入）。 */
 const CORE_ENGINE_PLUGIN_IDS = new Set([
@@ -83,7 +86,9 @@ const CORE_ENGINE_PLUGIN_IDS = new Set([
 
 function categoryOf(p: PluginDescriptor): PluginCategory {
   // v0.9.2 需求1：会话能力插件（前端注册表实现，此处统一管理面启停）。
-  if (p.kind === "session") return "session";
+  // v0.9.5 需求1（原需敆26）1d：声明 pipeline 的组合式插件归独立「流水线」
+  // tab（video-maker 等编排形态，原混在「会话能力」里不可辨）。
+  if (p.kind === "session") return p.has_pipeline ? "pipeline" : "session";
   if (p.core || CORE_ENGINE_PLUGIN_IDS.has(p.id)) return "core";
   if (p.kind === "tool") {
     if (p.has_mcp) return "mcp";
@@ -103,6 +108,7 @@ const PLUGIN_CATEGORIES: Array<{ key: PluginCategory; labelKey: string; fallback
   { key: "agent", labelKey: "plugins.typeAgent", fallback: "智能体" },
   { key: "core", labelKey: "plugins.catCore", fallback: "核心引擎" },
   { key: "session", labelKey: "plugins.catSession", fallback: "会话能力" },
+  { key: "pipeline", labelKey: "plugins.catPipeline", fallback: "流水线" },
   { key: "mcp", labelKey: "plugins.typeMcp", fallback: "MCP" },
   { key: "skill", labelKey: "plugins.typeSkill", fallback: "Skill" },
   { key: "cli", labelKey: "plugins.typeCli", fallback: "CLI" },

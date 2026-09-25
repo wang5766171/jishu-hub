@@ -437,6 +437,7 @@
     "tplSkill": "Skill example",
     "catCore": "Core engines",
     "catSession": "Session capabilities",
+    "catPipeline": "Pipelines",
     "mcpBatchImport": "JSON batch import",
     "mcpBatchTitle": "Batch import MCP servers",
     "mcpBatchDesc": "Paste JSON containing multiple servers (mcpServers wrapper supported); each server becomes a standalone MCP plugin (plugin id derived from its name).",

@@ -72,6 +72,9 @@ pub struct PluginDescriptor {
     pub icon: String,
     /// 组合式插件（v0.9.3 需求13：manifest 装配，可经向导创建/删除）。
     pub composed: bool,
+    /// 声明了 [[pipeline.stages]]（v0.9.5 需求1（原需求26）1d：流水线形态
+    /// 插件——插件中心独立「流水线」tab，不混入「会话能力」）。
+    pub has_pipeline: bool,
 }
 
 /// [panel] 声明的 UI 投影（v0.9.0 需求8）。
@@ -671,6 +674,10 @@ pub fn composed_session_plugin_specs(disabled: &HashSet<String>) -> Vec<PluginDe
             system: BUILTIN_COMPOSED_MANIFESTS.iter().any(|(bid, _)| *bid == id),
             icon: String::new(),
             composed: false,
+            // 1d：声明 [[pipeline.stages]] 的组合式插件归「流水线」分类
+            //（video-maker 等编排形态；pipeline+render 共存型同样以流水线
+            // 为主导形态分派）。
+            has_pipeline: manifest.get("pipeline").is_some(),
         })
         .collect()
 }
@@ -697,6 +704,7 @@ pub fn session_plugin_descriptors(disabled: &HashSet<String>) -> Vec<PluginDescr
             system: false,
             icon: String::new(),
             composed: false,
+        has_pipeline: false,
         })
         .collect()
 }
@@ -1066,6 +1074,7 @@ pub fn assemble(
             system: false,
             icon: info.icon.clone(),
             composed: false,
+        has_pipeline: false,
         });
     }
 
@@ -1097,6 +1106,7 @@ pub fn assemble(
             system: false,
             icon: file.info.icon.clone(),
             composed: false,
+        has_pipeline: false,
         });
     }
 
@@ -1170,6 +1180,7 @@ pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescrip
         system: is_system_plugin(&plugin.file.info.id),
         icon: plugin.file.info.icon.clone(),
         composed: false,
+    has_pipeline: false,
     }
 }
 
