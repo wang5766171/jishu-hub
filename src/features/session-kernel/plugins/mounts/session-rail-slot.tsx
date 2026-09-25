@@ -29,6 +29,19 @@ export function SessionRailSlot({ ctx }: { ctx: SessionKernelContext }) {
     saveLayout(layout);
   }, [layout]);
 
+  // 5a：spotlight 目标（一次性 pulse，3s 后自动熄灭——提示挂件位置）。
+  // ⚠ 必须在下方 widgets early return **之前**——挂件 0→N 重渲染（loader
+  // 异步装载完成）会走到此处，hooks 数量变化触发 React #310（生产实测）。
+  const spotlight = useInstallSpotlight();
+  const [pulsingId, setPulsingId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!spotlight) return;
+    setPulsingId(spotlight.pluginId);
+    const timer = window.setTimeout(() => setPulsingId(null), 3000);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spotlight?.seq]);
+
   const widgets = listSessionPlugins()
     .filter((plugin) => enabled.has(plugin.id))
     .flatMap((plugin) =>
@@ -47,16 +60,6 @@ export function SessionRailSlot({ ctx }: { ctx: SessionKernelContext }) {
   const bySide: Record<RailSide, typeof widgets> = { left: [], right: [] };
   for (const widget of widgets) bySide[widget.side].push(widget);
 
-  // 5a：spotlight 目标（一次性 pulse，3s 后自动熄灭——提示挂件位置）。
-  const spotlight = useInstallSpotlight();
-  const [pulsingId, setPulsingId] = useState<string | null>(null);
-  useEffect(() => {
-    if (!spotlight) return;
-    setPulsingId(spotlight.pluginId);
-    const timer = window.setTimeout(() => setPulsingId(null), 3000);
-    return () => window.clearTimeout(timer);
-  }, [spotlight?.seq]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
 
   return (
     <>
