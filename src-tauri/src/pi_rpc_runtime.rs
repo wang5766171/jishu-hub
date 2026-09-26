@@ -23,6 +23,8 @@ use crate::agent::normalized::{
     InteractionOrigin, InteractionTransport, NormalizedEvent, TurnEndReason, UsageStats,
 };
 use crate::agent::ResolvedSessionPromptInjection;
+// v0.9.5 需求2 测试期：连接循环关键事实 → 前端日志中心（[runtime] 类别）。
+use crate::dev_log_bridge::{dev_log_emitter, noop_dev_log_emitter, DevLogEmit};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -42,6 +44,9 @@ pub fn spawn_pi_rpc_session(
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
 ) -> AcpControl {
+    // v0.9.5 需求2 测试期：日志中心桥发射器需借用 app——先于 emitter 构造
+    //（tauri_event_emitter 接收 app 所有权）。
+    let devlog = dev_log_emitter(&app);
     let emit = tauri_event_emitter(app, agent_id.clone());
     // 需求1 A7：Hub 侧 thinking 档位偏好（state.json），spawn 时应用。
     let thinking_pref = crate::hub::load_agent_thinking_level(&agent_id);
@@ -49,6 +54,7 @@ pub fn spawn_pi_rpc_session(
     let auto_compaction_pref = crate::hub::load_agent_auto_compaction(&agent_id);
     spawn_pi_rpc_session_inner(
         emit,
+        devlog,
         agent_id,
         pending_session_id,
         child,
@@ -77,6 +83,8 @@ pub fn spawn_pi_rpc_session_with_emitter(
 ) -> AcpControl {
     spawn_pi_rpc_session_inner(
         emit,
+        // 编排器会话无 AppHandle——非 GUI 会话不进日志中心。
+        noop_dev_log_emitter(),
         agent_id,
         pending_session_id,
         child,
@@ -93,6 +101,7 @@ pub fn spawn_pi_rpc_session_with_emitter(
 #[allow(clippy::too_many_arguments)]
 fn spawn_pi_rpc_session_inner(
     emit: AcpEventEmit,
+    devlog: DevLogEmit,
     agent_id: String,
     pending_session_id: String,
     mut child: tokio::process::Child,
@@ -148,6 +157,7 @@ fn spawn_pi_rpc_session_inner(
     tauri::async_runtime::spawn(async move {
         let result = pi_rpc_connection_loop(
             emit.clone(),
+            devlog.clone(),
             agent_id.clone(),
             pending_session_id.clone(),
             stdin_arc,
@@ -178,6 +188,12 @@ fn spawn_pi_rpc_session_inner(
                 err.clone()
             };
             log::warn!("Pi RPC connection loop exited with error: {}", enriched_err);
+            devlog(
+                "error",
+                "连接循环退出（异常——Error+TurnComplete 已发前端）",
+                &pending_session_id,
+                json!({ "error": enriched_err }),
+            );
             let events = vec![
                 NormalizedEvent::SessionResolved {
                     session_id: pending_session_id.clone(),
@@ -197,6 +213,12 @@ fn spawn_pi_rpc_session_inner(
             log::info!(
                 "Pi RPC connection loop exited normally for session {}",
                 pending_session_id
+            );
+            devlog(
+                "info",
+                "连接循环退出（正常路径——idle 回收/Shutdown/EOF/watchdog 杀进程，见上方 runtime 日志）",
+                &pending_session_id,
+                json!({}),
             );
         }
 
@@ -256,6 +278,7 @@ pub(crate) fn apply_resolved_session_prompt_injection(
 #[allow(clippy::too_many_arguments)]
 async fn pi_rpc_connection_loop(
     emit: AcpEventEmit,
+    devlog: DevLogEmit,
     agent_id: String,
     pending_session_id: String,
     stdin_arc: Arc<TokioMutex<ChildStdin>>,
@@ -493,13 +516,65 @@ async fn pi_rpc_connection_loop(
                                 log::info!("Pi RPC prompt sent to Pi ({} bytes)", msg.len());
                                 prompt_ack_at = Some(tokio::time::Instant::now() + PROMPT_ACK_TIMEOUT);
                                 state = LoopState::Prompting;
+                                devlog(
+                                    "info",
+                                    "Prompt 直发 pi（Prompting，20s 看门狗武装）",
+                                    &session_id,
+                                    json!({ "bytes": msg.len() }),
+                                );
                             }
                             LoopState::Prompting => {
-                                log::warn!("Pi RPC prompt ignored: still in Prompting state");
+                                // v0.9.5 需求2 测试期（会话 01a0d868 实证）：GUI 仅在
+                                // 自认空闲时发新消息（isStreaming 时前端走暂存/引导，不
+                                // 发 Prompt），此刻仍 Prompting = 循环视图滞留——settle
+                                // 后晚到的 agent_start 把 Idle 翻回 Prompting（无内容的
+                                // 生命周期事件），或滞留回合的模型流挂死。原「静默忽略」
+                                // = 用户消息丢失 + GUI 永等（turn 2 发「继续」后零事件）。
+                                // 改按「停止后重发」语义收口：取消滞留回合（含 pending
+                                // extension_ui 释放，abort 打断不了它的等待），本条消息进
+                                // pending_prompt，settle 后由 CancelPending 通道送达；pi
+                                // 无响应时 cancel watchdog 15s 杀进程兜底。
+                                log::warn!(
+                                    "Pi RPC prompt in Prompting state — aborting stale turn and resending"
+                                );
+                                if let Some(id) = pending_interaction_id.take() {
+                                    let _ = send_pi_command(&stdin_arc, &json!({
+                                        "type": "extension_ui_response",
+                                        "id": id,
+                                        "cancelled": true
+                                    })).await;
+                                }
+                                pending_turn_complete = Some(NormalizedEvent::TurnComplete {
+                                    reason: TurnEndReason::Aborted,
+                                    usage: None,
+                                });
+                                let _ = send_pi_command(&stdin_arc, &json!({
+                                    "type": "clear_queue"
+                                })).await;
+                                let _ = send_pi_command(&stdin_arc, &json!({
+                                    "type": "abort"
+                                })).await;
+                                cancel_settle_at =
+                                    Some(tokio::time::Instant::now() + CANCEL_SETTLE_TIMEOUT);
+                                state = LoopState::CancelPending {
+                                    pending_prompt: Some(msg),
+                                };
+                                devlog(
+                                    "warn",
+                                    "Prompting 态收到 Prompt：滞留回合取消重发（clear_queue+abort，消息缓冲，15s 收口看门狗）",
+                                    &session_id,
+                                    json!({}),
+                                );
                             }
                             LoopState::CancelPending { pending_prompt } => {
                                 log::warn!("Pi RPC prompt buffered: still CancelPending (awaiting agent_settled after abort)");
                                 *pending_prompt = Some(msg);
+                                devlog(
+                                    "warn",
+                                    "CancelPending 态收到 Prompt：缓冲，settle 后送达",
+                                    &session_id,
+                                    json!({}),
+                                );
                             }
                         }
                         false
@@ -702,6 +777,14 @@ async fn pi_rpc_connection_loop(
                                         if success {
                                             // Prompt accepted, events will follow
                                             log::info!("Pi RPC response for {}: success=true", response_cmd);
+                                            if response_cmd == "prompt" {
+                                                devlog(
+                                                    "info",
+                                                    "pi 受理 prompt（response success，等待回合启动）",
+                                                    &session_id,
+                                                    json!({}),
+                                                );
+                                            }
                                         } else {
                                             log::error!("Pi RPC response for {}: success=false", response_cmd);
                                             let err_msg = msg
@@ -1113,6 +1196,18 @@ async fn pi_rpc_connection_loop(
                         if matches!(event_type, "agent_start" | "turn_start")
                             && !matches!(state, LoopState::CancelPending { .. })
                         {
+                            // v0.9.5 需求2 测试期：settle 后晚到的 agent_start 会把
+                            // Idle 翻回 Prompting（01a0d868 事故「路径 A」的签名）——
+                            // 此后无事件的 Prompting 是看门狗盲区。仅在翻转发生时
+                            // 打点（Prompting 内的常规 agent_start 不记，防噪声）。
+                            if matches!(state, LoopState::Idle) {
+                                devlog(
+                                    "info",
+                                    "回合启动（Idle→Prompting 翻转）",
+                                    &session_id,
+                                    json!({ "event": event_type }),
+                                );
+                            }
                             state = LoopState::Prompting;
                         }
 
@@ -1235,6 +1330,7 @@ async fn pi_rpc_connection_loop(
                             last_flush = std::time::Instant::now();
 
                             // A user prompt may arrive while cancellation is settling.
+                            let mut resent_buffered = false;
                             state = if let LoopState::CancelPending { pending_prompt } = &mut state {
                                 let buffered = pending_prompt.take();
                                 if let Some(msg) = buffered {
@@ -1247,6 +1343,11 @@ async fn pi_rpc_connection_loop(
                                         "type": "prompt",
                                         "message": msg
                                     })).await?;
+                                    // v0.9.5 需求2 测试期：settle 后重发的 prompt 同样
+                                    // 纳入 20s prompt_ack 看门狗（与 Idle 直发一致）——
+                                    // 滞留回合恢复后 pi 若再次无响应，兜底终结而非永挂。
+                                    prompt_ack_at = Some(tokio::time::Instant::now() + PROMPT_ACK_TIMEOUT);
+                                    resent_buffered = true;
                                     LoopState::Prompting
                                 } else {
                                     LoopState::Idle
@@ -1254,6 +1355,16 @@ async fn pi_rpc_connection_loop(
                             } else {
                                 LoopState::Idle
                             };
+                            devlog(
+                                "info",
+                                if resent_buffered {
+                                    "agent_settled：重发缓冲 prompt（Prompting，20s 看门狗武装）"
+                                } else {
+                                    "agent_settled：回合收口 → Idle"
+                                },
+                                &session_id,
+                                json!({ "resent_buffered": resent_buffered }),
+                            );
                         } else if buf.len() >= 32
                             || last_flush.elapsed() >= Duration::from_millis(8)
                         {
@@ -1289,6 +1400,12 @@ async fn pi_rpc_connection_loop(
                         "[watchdog] Pi RPC prompt unacknowledged 20s (session {session_id}) — \
                          round never started (message not persisted); synthesizing abort"
                     );
+                    devlog(
+                        "error",
+                        "prompt 看门狗触发：20s 零事件——回合未启动（消息未送达），合成 Aborted 终结，可重发",
+                        &session_id,
+                        json!({}),
+                    );
                     flush_buf(&emit, &session_id, &mut buf);
                     emit(
                         &[
@@ -1308,6 +1425,12 @@ async fn pi_rpc_connection_loop(
                     // 杀进程终结流。
                     log::warn!(
                         "[watchdog] Pi RPC cancel unsettled 15s (session {session_id}) — killing process"
+                    );
+                    devlog(
+                        "error",
+                        "cancel 看门狗触发：15s 未收口（pi 滞留）——杀 pi 进程终结",
+                        &session_id,
+                        json!({}),
                     );
                     flush_buf(&emit, &session_id, &mut buf);
                     emit(

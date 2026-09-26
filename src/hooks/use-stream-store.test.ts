@@ -181,3 +181,41 @@ describe("getStreamingIds（v0.9.3 测试期修复：别名展开）", () => {
     streamStore.drop(pendingId);
   });
 });
+
+describe("v0.9.5 需求2 测试期：复用连接回合的阶段升级（resolvedOnce 跨回合记忆）", () => {
+  it("曾 session_resolved 的会话：后续回合 markPromptAccepted 直入③（思考中），不再永显②「正在赶来」", () => {
+    const pendingId = "pending-reuse-001";
+    const realId = "pi-reuse-real-session-id-01";
+    // 第一回合：spawn → session_resolved（真实 id 经 push 登记别名与 resolvedOnce）→ 结束 drop。
+    streamStore.start(pendingId, "第一条");
+    streamStore.push(pendingId, {
+      agent_id: "jishu-self",
+      session_id: pendingId,
+      data: { kind: "session_resolved", session_id: realId },
+    } as never);
+    expect(streamStore.getState(pendingId)?.sessionResolved).toBe(true);
+    streamStore.drop(pendingId);
+
+    // 第二回合（复用进程：连接只解析一次，不会再发 session_resolved）——
+    // 模型流挂死/首响应慢时，受理确认即应升级③，而非停在②。
+    streamStore.start(realId, "继续");
+    expect(streamStore.getState(realId)?.sessionResolved).toBe(false); // start 重置
+    streamStore.markPromptAccepted(realId);
+    const state = streamStore.getState(realId);
+    expect(state?.promptAccepted).toBe(true);
+    expect(state?.sessionResolved).toBe(true);
+    expect(state?.hasReceivedEvent).toBe(true);
+    streamStore.drop(realId);
+  });
+
+  it("全新会话（从未解析过）：markPromptAccepted 保持②——spawn 期间 IPC 早返回，等权威 session_resolved", () => {
+    const pendingId = "pending-fresh-never-resolved";
+    streamStore.start(pendingId, "首条");
+    streamStore.markPromptAccepted(pendingId);
+    const state = streamStore.getState(pendingId);
+    expect(state?.promptAccepted).toBe(true);
+    expect(state?.sessionResolved).toBe(false);
+    expect(state?.hasReceivedEvent).toBe(false);
+    streamStore.drop(pendingId);
+  });
+});

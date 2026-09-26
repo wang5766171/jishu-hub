@@ -162,6 +162,13 @@ class StreamStore {
   private sessions = new Map<string, SessionStreamState>();
   /** Any-id -> canonical key. */
   private aliases = new Map<string, string>();
+  /** v0.9.5 需求2 测试期（会话 01a0d868 实证）：曾完成连接解析的会话 id
+   *  （session_resolved 到达过；跨回合记忆，drop 不清——同 conductorPhases
+   *  先例）。复用进程的后续回合连接只解析一次、不会再发 session_resolved，
+   *  markPromptAccepted 凭此记忆把已建立连接的回合直接升级③「思考中」，
+   *  避免模型首响应慢/滞留时误导性显示②「正在赶来」（需求12 修过一次，
+   *  后被「③权威信号=session_resolved」的测试期修复回归）。 */
+  private resolvedOnce = new Set<string>();
   /** Per-session conductor phase (from phase_divider events). Independent of
    *  stream state so it survives drop() — used to tell conductor-driven
    *  followUp (execute node advance) apart from a final turn. */
@@ -192,22 +199,34 @@ class StreamStore {
     this.aliases.set(canonicalId, key);
   }
 
-  /** v0.9.4 需求12：send_message 受理确认（chat-input IPC 返回后调用）——
-   *  阶段文案②→③切换信号（与 hasReceivedEvent 独立：受理后模型未吐字 =
-   *  等待模型响应而非连接中）。 */
+  /** v0.9.4 需求12：send_message 受理确认（IPC 返回后调用）——
+   *  已建立连接（本会话曾 session_resolved，复用进程路径）的回合直接
+   *  升级③「思考中」；spawn 中的新连接保持②「正在赶来」等权威信号。 */
   markPromptAccepted(sid: string): void {
     const key = this.canonical(sid);
     const prev = this.sessions.get(key);
     if (!prev || prev.promptAccepted) return;
-    this.sessions.set(key, { ...prev, promptAccepted: true });
-    devLog("store", "send 受理确认（②→③：等待模型响应）", { id: sid });
+    const established = !prev.sessionResolved && this.resolvedOnce.has(key);
+    this.sessions.set(key, {
+      ...prev,
+      promptAccepted: true,
+      ...(established ? { sessionResolved: true, hasReceivedEvent: true } : {}),
+    });
+    devLog(
+      "store",
+      established ? "send 受理确认（复用连接：直入③思考中）" : "send 受理确认（连接建立中，保持②正在赶来）",
+      { id: sid },
+    );
     this.scheduleFlush();
   }
 
   /** v0.9.4 需求12 测试期修复：session_resolved 到达（连接建立）——②→③
-   * 权威切换（同时视为 hasReceivedEvent：连接后必有内容流）。 */
+   * 权威切换（同时视为 hasReceivedEvent：连接后必有内容流）。
+   * v0.9.5 需求2 测试期：登记 resolvedOnce（跨回合记忆，drop 不清）。 */
   markSessionResolved(sid: string): void {
     const key = this.canonical(sid);
+    this.resolvedOnce.add(key);
+    this.resolvedOnce.add(sid);
     const prev = this.sessions.get(key);
     if (!prev || prev.sessionResolved) return;
     this.sessions.set(key, { ...prev, sessionResolved: true, hasReceivedEvent: true });
@@ -335,6 +354,10 @@ class StreamStore {
       const realId = data.session_id;
       if (typeof realId === "string" && realId.length >= 8) {
         resolvedId = realId;
+        // v0.9.5 需求2 测试期：与 markSessionResolved 同源登记（真实 id +
+        // 规范键都记，markPromptAccepted 升级③时可靠命中）。
+        this.resolvedOnce.add(realId);
+        this.resolvedOnce.add(key);
         if (realId !== key) {
           this.aliases.set(realId, key);
         }
