@@ -12,17 +12,19 @@ import {
 } from "lucide-react";
 import type { ToolKind } from "./types";
 
+// v0.9.5 需求4：工具名汉化（用户裁决——edit/bash/write 等英文换中文；
+// 英文 id 作为次要信息保留在工具卡详情/原始输出层）。
 const kindConfig: Record<ToolKind, { icon: typeof FileText; label: string; bgVar: string }> = {
-  file_read: { icon: FileText, label: "Read", bgVar: "--tool-bg-file-read" },
-  file_edit: { icon: FilePen, label: "Edit", bgVar: "--tool-bg-file-edit" },
-  file_write: { icon: FilePlus, label: "Write", bgVar: "--tool-bg-file-write" },
-  file_delete: { icon: FileX, label: "Delete", bgVar: "--tool-bg-file-delete" },
-  shell_exec: { icon: Terminal, label: "Bash", bgVar: "--tool-bg-shell" },
-  search: { icon: Search, label: "Search", bgVar: "--tool-bg-search" },
-  web: { icon: Globe, label: "Web", bgVar: "--tool-bg-web" },
-  think: { icon: Brain, label: "Thinking", bgVar: "--tool-bg-think" },
-  subtask: { icon: Bot, label: "Task", bgVar: "--tool-bg-subtask" },
-  other: { icon: Wrench, label: "Tool", bgVar: "--tool-bg-other" },
+  file_read: { icon: FileText, label: "查阅", bgVar: "--tool-bg-file-read" },
+  file_edit: { icon: FilePen, label: "编辑", bgVar: "--tool-bg-file-edit" },
+  file_write: { icon: FilePlus, label: "创建", bgVar: "--tool-bg-file-write" },
+  file_delete: { icon: FileX, label: "删除", bgVar: "--tool-bg-file-delete" },
+  shell_exec: { icon: Terminal, label: "执行", bgVar: "--tool-bg-shell" },
+  search: { icon: Search, label: "搜索", bgVar: "--tool-bg-search" },
+  web: { icon: Globe, label: "网络", bgVar: "--tool-bg-web" },
+  think: { icon: Brain, label: "思考", bgVar: "--tool-bg-think" },
+  subtask: { icon: Bot, label: "委派", bgVar: "--tool-bg-subtask" },
+  other: { icon: Wrench, label: "工具", bgVar: "--tool-bg-other" },
 };
 
 export function KindIcon({ kind }: { kind: ToolKind }) {
