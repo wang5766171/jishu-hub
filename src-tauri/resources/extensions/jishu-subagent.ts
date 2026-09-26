@@ -48,8 +48,13 @@ function agentDir(): string {
   // JISHU_AGENT_DATA_DIR 是唯一可靠来源；反推仅 env 缺失时兜底。
   const fromEnv = process.env["JISHU_AGENT_DATA_DIR"];
   if (fromEnv && fromEnv.trim()) return fromEnv;
-  const root = path.resolve(piCliPath(), "..", "..", "..");
-  return path.join(root, "agent");
+  // 反推兜底：不数上溯层数（bundle 与非 bundle 布局差一级，硬数必错一个）
+  // ——找 "packages/coding-agent" 段截断到 root，再拼数据子目录 agent/。
+  const norm = path.resolve(piCliPath());
+  const marker = path.join("packages", "coding-agent");
+  const at = norm.lastIndexOf(marker);
+  if (at > 0) return path.join(norm.slice(0, at), "agent");
+  return path.join(path.dirname(norm), "agent");
 }
 
 /** 渠道模型目录（~/.jishu-agent/agent/models.json → 扁平条目）。 */
