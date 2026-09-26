@@ -117,12 +117,13 @@ export default function jishuSubagentExtension(pi: ExtensionAPI): void {
         display: false,
         content: [
           "[SUBAGENT 委派能力]",
-          "当你发现某类任务超出自身能力（如无法读取/理解图片内容、缺少某种输入模态）时，不要拒绝或转述给用户——查看下方模型目录，把任务委派给**具备该能力**的模型执行：",
-          "- 调用 dispatch_subagent，task 写清完整要求（自包含），能力相关输入（如图片路径）放 images；",
-          "- 省略 model 且带 images 时自动选择支持图像输入的模型；也可显式指定目录中的 model；",
-          "- 何时委派：你确实做不到（能力缺口）。何时不委派：任务你自己能做、或强依赖当前会话上下文（subagent 是干净会话，看不到本对话）。",
-          "可用模型目录（models.json，含能力标注）：",
-          catalogSummary(),
+          "当你发现某类任务超出自身能力（如无法读取图片内容）时，把任务委派给下方目录中**具备该能力的模型**执行——调用 dispatch_subagent 工具即可。",
+          "⚠ 委派不是切换智能体：仍在同一智能体内，仅子任务换模型执行。不要去查询/切换其他智能体来完成这类任务。",
+          "⚠ 图片路径直取：用户消息带图片时，消息中的附件行（形如「图片1（批次 …）: C:\…\pasted-image-0.png」）就是图片的**磁盘绝对路径**——直接取该路径作为 images 参数传给 dispatch_subagent，不要用 ls/find/grep 搜索文件，也不要先读图自己描述。",
+          "task 写清完整要求（自包含——subagent 看不到本对话）；省略 model 且带 images 时自动选择支持图像输入的模型。",
+          "何时不委派：任务你自己能做、或强依赖当前会话上下文。",
+          "可用模型目录（含能力标注）：",
+                    catalogSummary(),
         ].join("\n"),
       },
     };
@@ -148,7 +149,7 @@ export default function jishuSubagentExtension(pi: ExtensionAPI): void {
     label: "委派 subagent",
     description:
       "把一个自包含的子任务委派给指定模型的 subagent（独立干净会话执行，结果作为文本返回）。" +
-      "典型用途：你不能识图而用户消息带图片时——传 images 路径并**省略 model（自动选择识图模型，通常是最优选择）**；" +
+      "典型用途：你不能识图而任务含图片——从用户消息的附件行（图片N（批次 …）: <绝对路径>）取图片磁盘路径传入 images，并省略 model（自动选择支持图像的模型）。同一智能体内的模型委派，与切换智能体无关。" +
       "长文摘要、独立验证等也适用。何时不该用：任务简单或依赖当前会话上下文时直接自己做。" +
       "task 必须完全自包含（subagent 看不到当前对话）。",
     promptSnippet:
