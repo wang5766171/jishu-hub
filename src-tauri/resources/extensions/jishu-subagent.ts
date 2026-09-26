@@ -222,7 +222,6 @@ export default function jishuSubagentExtension(pi: ExtensionAPI): void {
       const cliArgs: string[] = [];
       if (provider) cliArgs.push("--provider", provider);
       if (model) cliArgs.push("--model", model);
-      cliArgs.push("--no-auto-retry"); // 一次性任务：失败快速失败（不进 retry 退避）
       cliArgs.push("--print", task);
       for (const img of images) {
         cliArgs.push(img.startsWith("@") ? img : `@${img}`);

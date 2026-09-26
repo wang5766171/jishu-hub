@@ -119,18 +119,6 @@
 
 # 第二部分：改动记录
 
-## 2026-09-26 | --no-auto-retry flag（release_v0.87.1-14）
-
-**动机**（jishu-hub v0.9.5 需求2 测试期）：subagent 委派的 print mode 子进程（一次性任务）模型调用失败后进入 pi auto retry 指数退避循环（2s/4s/8s...max 60s），实测主 agent 干等 220s+——一次性任务应失败快速失败。
-
-**改动**（最小侵入，复用既有通道）：
-- `cli/args.ts`：解析 `--no-auto-retry`（布尔 flag，jishu 自有——上游无此需求形态）；
-- `main.ts`：runtimeSettingsManager 构造后 `setRetryEnabled(false)`（复用 set_auto_retry RPC 的既有设置通道，零新机制）。
-
-**验证**：tsgo 全仓 0；extensions-runner 55 过；bundle 重建（56 files, 8.2 MiB）+ shrinkwrap/install-lock 重生成（143/144 包）。
-
----
-
 ## 2026-09-26 | 合并上游 v0.87.1（release_v0.87.1-13）——jishu-hub v0.9.5 需求1 前置
 
 **版本**：上游从 `v0.85.0` 跨越 `v0.85.1`/`v0.86.0`/`v0.86.1`/`v0.87.0` 到 `v0.87.1`（226 commits、692 files、+8.1万/-2.3万行）。按版本规则（§1.3），Pi 版本升至 `0.87.1`、自研尾号保持 `-13`，完整版本号 `0.87.1-13`，分支 `release_v0.87.1-13`。合并提交 `947480fa7` + 适配提交 `9ea517c42`/`58e3114e9`/`018e93cf3`。**fork 分支已推送远端**（`git push -u origin release_v0.87.1-13` 完成，submodule 指针远端可达）。
