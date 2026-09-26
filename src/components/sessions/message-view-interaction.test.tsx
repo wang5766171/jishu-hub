@@ -53,6 +53,8 @@ describe("MessageView interaction rendering", () => {
 
     // v0.9.5 需求4：工作项（含交互卡）默认折叠——先展开「已工作」区。
     fireEvent.click(screen.getByRole("button", { name: /已工作/ }));
+    // 分类卡（图 1 形态）：问答类组内默认收起——再点分类展开。
+    fireEvent.click(screen.getByRole("button", { name: /问答/ }));
     const cards = screen.getAllByRole("button", { name: /Ask user/i });
     expect(cards).toHaveLength(1);
 
@@ -111,6 +113,7 @@ describe("MessageView interaction rendering", () => {
     // 而非一律 success（失败 edit 被掩成 Done）。
     // v0.9.5 需求4：工具组默认折叠——展开后断言状态徽标。
     fireEvent.click(screen.getByRole("button", { name: /已工作/ }));
+    fireEvent.click(screen.getByRole("button", { name: /(查阅|编辑|执行|工具)/ }));
     expect(screen.getByText("Error")).toBeTruthy();
     expect(screen.getByText("Done")).toBeTruthy();
   });

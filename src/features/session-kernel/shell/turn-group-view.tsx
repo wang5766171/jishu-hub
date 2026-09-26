@@ -10,6 +10,9 @@ import { memo, useState } from "react";
 import { ChevronDown, ChevronRight, FileDiff, Hammer } from "lucide-react";
 import type { RenderItem } from "@/components/sessions/message-view";
 import { fileChangesSummary, type FileChangeEntry } from "@/features/session-kernel/view-model/build-turn-segments";
+import type { ToolCall } from "@/components/observability/tool-call-card/types";
+import { KindIcon, kindLabel } from "@/components/observability/tool-call-card/kind-icon";
+import { ToolGroup } from "@/components/observability/tool-call-card";
 import { cn } from "@/lib/utils";
 
 export interface TurnGroupViewProps {
@@ -58,7 +61,9 @@ export const TurnGroupView = memo(function TurnGroupView({
           </button>
           {workOpen && (
             <div className="space-y-1.5 border-t border-border/30 p-2">
-              {renderWorkItems(segments.workItems)}
+              {/* v0.9.5 需求4：分类卡片展示（图 1/图 3）——按工具类型分组，
+                  组内默认收起，点击组展开明细（分层折叠）。 */}
+              <WorkCategoryList items={segments.workItems} renderOther={renderWorkItems} />
             </div>
           )}
         </div>
@@ -122,6 +127,116 @@ const FileChangesCard = memo(function FileChangesCard({ changes }: { changes: Fi
             </li>
           ))}
         </ul>
+      )}
+    </div>
+  );
+});
+
+// ── 分类卡片（已工作展开后的按类分组——图 1 形态）──
+
+interface WorkCategory {
+  key: string;
+  label: string;
+  icon: React.ReactNode;
+  items: RenderItem[];
+  callCount: number;
+}
+
+/** 工作项按类型分组：tool-group 拆按 kind；非工具块各成组（思考/分隔等）。 */
+function groupWorkItems(items: RenderItem[]): WorkCategory[] {
+  const groups = new Map<string, WorkCategory>();
+  const ensure = (key: string, label: string, icon: React.ReactNode): WorkCategory => {
+    let g = groups.get(key);
+    if (!g) {
+      g = { key, label, icon, items: [], callCount: 0 };
+      groups.set(key, g);
+    }
+    return g;
+  };
+  for (const item of items) {
+    if (item.kind === "tool-group") {
+      // 按工具 kind 拆组（同 kind 的调用聚成一类卡）。
+      const byKind = new Map<string, ToolCall[]>();
+      for (const call of item.calls) {
+        const list = byKind.get(call.kind) ?? [];
+        list.push(call);
+        byKind.set(call.kind, list);
+      }
+      for (const [kind, calls] of byKind) {
+        const g = ensure(kind, kindLabel(kind as never), null);
+        g.items.push({ kind: "tool-group", calls });
+        g.callCount += calls.length;
+      }
+    } else {
+      const label = item.kind === "block"
+        ? item.block.type === "thinking" ? "思考" : item.block.type === "phase_divider" ? "阶段" : "其他"
+        : "问答";
+      const g = ensure(`blk-${label}`, label, null);
+      g.items.push(item);
+      g.callCount += 1;
+    }
+  }
+  // 图标（工具类用 KindIcon）。
+  for (const g of groups.values()) {
+    if (!g.icon && !g.key.startsWith("blk-")) {
+      g.icon = <KindIcon kind={g.key as never} />;
+    }
+  }
+  return [...groups.values()];
+}
+
+const WorkCategoryList = memo(function WorkCategoryList({
+  items,
+  renderOther,
+}: {
+  items: RenderItem[];
+  renderOther: (items: RenderItem[]) => React.ReactNode;
+}) {
+  const categories = groupWorkItems(items);
+  return (
+    <div className="space-y-1.5">
+      {categories.map((cat) => (
+        <WorkCategoryCard key={cat.key} category={cat} renderOther={renderOther} />
+      ))}
+    </div>
+  );
+});
+
+const WorkCategoryCard = memo(function WorkCategoryCard({
+  category,
+  renderOther,
+}: {
+  category: WorkCategory;
+  renderOther: (items: RenderItem[]) => React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const isToolCat = !category.key.startsWith("blk-");
+  return (
+    <div className="overflow-hidden rounded-[6px] border border-border/35 bg-background/40">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-muted-foreground transition-fast hover:bg-accent/40"
+      >
+        {category.icon}
+        <span className="font-medium">{category.label}</span>
+        <span className="rounded-full bg-background/70 px-1.5 py-0.5 text-[10px]">{category.callCount} 项</span>
+        <span className="ml-auto shrink-0">
+          {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        </span>
+      </button>
+      {open && (
+        <div className="space-y-1.5 border-t border-border/25 p-1.5">
+          {isToolCat
+            ? category.items.map((item) =>
+                item.kind === "tool-group"
+                  ? item.calls.map((call) => (
+                      <ToolGroup key={call.id} calls={[call]} />
+                    ))
+                  : null,
+              )
+            : renderOther(category.items)}
+        </div>
       )}
     </div>
   );
