@@ -371,11 +371,26 @@ pub fn extract_tool_snapshot(text: &str) -> (String, Vec<String>) {
 
 /// 剥离注入块（回放路径）。兼容块后紧跟的空行残留；无标记时原样返回。
 pub fn strip_tool_block(text: &str) -> String {
-    strip_image_dispatch_block(&strip_mcp_hint_block(&strip_plugins_block(text)))
+    strip_legacy_image_hint_line(&strip_image_dispatch_block(&strip_mcp_hint_block(
+        &strip_plugins_block(text),
+    )))
 }
 
 /// 剥离 <jishu-image-dispatch>…</jishu-image-dispatch>（图片委派提示，
 /// v0.9.5 需求2——展示面不可见）。
+/// 兼容 2026-09-26 修复前的历史数据：提示曾以「[图片处理] …」纯行前缀
+/// 注入（无标记对）——该版历史会话回放剥此行。
+fn strip_legacy_image_hint_line(text: &str) -> String {
+    const LEGACY_PREFIX: &str = "[图片处理] ";
+    if !text.contains(LEGACY_PREFIX) {
+        return text.to_string();
+    }
+    text.lines()
+        .filter(|l| !l.starts_with(LEGACY_PREFIX))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn strip_image_dispatch_block(text: &str) -> String {
     let Some(start) = text.find(IMAGE_DISPATCH_OPEN) else {
         return text.to_string();
@@ -546,6 +561,20 @@ mod tests {
             strip_tool_block(&format!("msg\n{TOOL_BLOCK_OPEN}\nbroken")),
             "msg"
         );
+    }
+
+    /// v0.9.5 需求2：图片委派标记对剥离 + 旧前缀行兼容（2026-09-26 修复前
+    /// 历史数据以「[图片处理] …」纯行前缀注入）。
+    #[test]
+    fn strips_image_dispatch_and_legacy_prefix() {
+        let injected = "<jishu-image-dispatch>提示内容</jishu-image-dispatch>
+
+帮我看图";
+        assert_eq!(strip_tool_block(injected), "帮我看图");
+        let legacy = "[图片处理] 本条消息含图片提示长文
+帮我看图";
+        assert_eq!(strip_tool_block(legacy), "帮我看图");
+        assert_eq!(strip_tool_block("普通消息"), "普通消息");
     }
 
     #[test]

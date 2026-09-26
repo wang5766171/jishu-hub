@@ -175,7 +175,7 @@ export default function jishuSubagentExtension(pi: ExtensionAPI): void {
         Type.Number({ description: `超时秒数（默认 ${DEFAULT_TIMEOUT_SECS}）` }),
       ),
     }),
-    execute: async (args) => {
+    execute: async (_id, args, signal, onUpdate) => {
       const task = String(args.task ?? "").trim();
       if (!task) {
         return { content: [{ type: "text" as const, text: "dispatch_subagent: task 不能为空" }] };
@@ -210,8 +210,16 @@ export default function jishuSubagentExtension(pi: ExtensionAPI): void {
         cliArgs.push(img.startsWith("@") ? img : `@${img}`);
       }
       const startedAt = Date.now();
+      // 进度透传（10s 心跳——主会话前端不再「思考中」无反馈；pi 经
+      // tool_execution_update 事件转发 onUpdate 部分结果）。
+      const progressTimer = setInterval(() => {
+        const secs = Math.round((Date.now() - startedAt) / 1000);
+        onUpdate?.({
+          content: [{ type: "text" as const, text: `subagent ${model || "auto-model"} 运行中… ${secs}s` }],
+        });
+      }, 10_000);
       const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
-        execFile(
+        const child = execFile(
           process.execPath,
           [cli, ...cliArgs],
           {
@@ -228,7 +236,13 @@ export default function jishuSubagentExtension(pi: ExtensionAPI): void {
             resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? ""), code });
           },
         );
+        // 用户停止（pi abort 工具执行）→ 杀子进程（否则 print mode 继续跑
+        // 到超时，主会话「停止后仍挂」体感来源之一）。
+        signal?.addEventListener("abort", () => {
+          try { child.kill(); } catch { /* 已退出 */ }
+        }, { once: true });
       });
+      clearInterval(progressTimer);
       const elapsed = Math.round((Date.now() - startedAt) / 1000);
       const out = result.stdout.trim();
       if (!out) {
