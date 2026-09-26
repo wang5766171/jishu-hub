@@ -1,5 +1,5 @@
 import i18n from "@/i18n";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { streamStore } from "@/hooks/use-stream-store";
@@ -175,7 +175,12 @@ describe("v0.9.4 需求7 测试期：长时工具执行期间的卡片可见性�
       partial_output: "vite building... 30%",
     }));
     render(<FileViewerProvider><StreamingMessage sessionId={sessionId} isComplete={false} /></FileViewerProvider>);
+    // v0.9.5 需求4：工具卡恒收起——命令在卡标题可见，中间输出需点击展开。
     expect(screen.getAllByText(/npm run build/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/vite building/)).toBeNull();
+    // 点击展开后中间输出可见。
+    const summary = screen.getAllByRole("button").find((b) => b.textContent?.includes("npm run build"));
+    fireEvent.click(summary!);
     expect(screen.getByText(/vite building/)).toBeTruthy();
   });
 });
