@@ -228,11 +228,16 @@ pub fn builtin_session_plugin_specs() -> &'static [(&'static str, &'static str)]
 
 /// pi 扩展工具兜底集（v0.9.2 需求7 fail-safe）：清单聚合结果为空时回落，
 /// 宁可"关不掉"不可"流程死"（历史教训：lock_requirement 缺失致需求讨论停摆）。
-pub const DEFAULT_PI_TOOLS: [&str; 4] = [
+pub const DEFAULT_PI_TOOLS: [&str; 6] = [
     "request_user_input",
     "lock_requirement",
     "commit_plan",
     "dispatch_to_node",
+    // v0.9.5 需求2：subagent 委派扩展（jishu-subagent.ts，hub 内置部署）。
+    // ⚠ pi 的 --tools 是硬白名单——内置扩展工具必须显式进名单，否则
+    // 扩展加载成功但工具被过滤（实测：指南注入生效而工具列表缺失）。
+    "dispatch_subagent",
+    "list_subagent_models",
 ];
 
 /// 聚合已启用插件声明的 pi 扩展工具（v0.9.2 需求7 热插拔闸门，纯函数）：
