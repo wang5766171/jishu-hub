@@ -1,30 +1,27 @@
 /**
  * jishu-subagent —— 通用任务委派扩展（v0.9.5 需求2）。
  *
- * 场景：主模型（如 GLM-5.3，无图像能力）把子任务委派给具备对应能力的
- * 模型（如 GLM-5.3-FLASH 识图）作为 subagent 执行，结果回传主会话。
- * **模型自动选择**（用户诉求：不说用哪个模型，agent 自己知道）：
- * - 渠道模型目录可查询（list_subagent_models 工具 + 每轮注入简表）；
- * - dispatch_subagent 带 images 且未指定 model 时，自动选择支持识图的
- *   模型（激活渠道优先）——用户贴图即可，无需点名模型。
- *
- * 机制：pi print mode 单轮子进程（`pi --provider X --model Y -p "<task>"
- * @img1 @img2`）：stdout = 最终回复；每次全新会话（不污染主会话）。
- * hub 经 env 注入 JISHU_PI_CLI（cli.js 路径）与 JISHU_ACTIVE_MODEL
- * （provider|model）；node 用 process.execPath。
+ * 机制：pi print mode（--mode json 事件流）子进程——spawn 逐行解析，
+ * 子 agent 的思考/回答实时经 onUpdate 转发（主会话工具卡的实时输出区
+ * 可展开查看子 agent 过程，不产生独立会话）：
+ * - stdin=ignore（pi print 检测非 TTY 等 EOF——pipe 挂死教训的根治形态）；
+ * - 会话目录隔离：JISHU_CODING_AGENT_SESSION_DIR 指到 ~/.jishu-hub/
+ *   subagent-sessions/<nonce>/（hub 会话列表不扫描，文件保留可回溯）；
+ * - 结果 = 流中最后一条 assistant 消息的文本聚合。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // getAgentDir：pi 权威数据目录 API（~/.jishu-agent/agent——models.json
 // / settings.json 所在）。扩展跑在 pi 进程内直接问 pi，零 env 零反推。
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import * as path from "node:path";
 import * as fs from "node:fs";
+import * as os from "node:os";
 
 /** 默认超时（秒）。 */
 const DEFAULT_TIMEOUT_SECS = 120;
-/** 子进程 stdout 上限（字节）。 */
+/** stdout 累计上限（字节）。 */
 const MAX_OUTPUT_BYTES = 512 * 1024;
 
 interface ModelEntry {
@@ -44,8 +41,7 @@ function piCliPath(): string {
 }
 
 /** pi 数据目录（models.json / settings.json 所在）——pi 权威 API 直达
- * （getAgentDir = ~/.jishu-agent/agent）。扩展跑在 pi 进程内，直接问 pi，
- * 零 env 零反推（hub 与扩展无需互相告知安装布局）。 */
+ * （getAgentDir = ~/.jishu-agent/agent）。 */
 function agentDir(): string {
   return getAgentDir();
 }
@@ -125,6 +121,58 @@ function catalogSummary(): string {
     .join("\n");
 }
 
+/** 子会话隔离目录（hub 不扫描；文件保留可回溯）。 */
+function subagentSessionDir(): string {
+  const dir = path.join(
+    os.homedir(),
+    ".jishu-hub",
+    "subagent-sessions",
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+  );
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** 从 json 事件流的一行提取文本增量（assistant 内容流）。 */
+function extractDelta(lineJson: string): { thinking?: string; text?: string } | null {
+  let ev: Record<string, unknown>;
+  try {
+    ev = JSON.parse(lineJson) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (ev["type"] !== "message_update") return null;
+  const ame = ev["assistantMessageEvent"] as Record<string, unknown> | undefined;
+  if (!ame) return null;
+  const t = ame["type"];
+  if (t === "text_delta" && typeof ame["text"] === "string") return { text: ame["text"] };
+  if (t === "thinking_delta" && typeof ame["thinking"] === "string") return { thinking: ame["thinking"] };
+  return null;
+}
+
+/** 从 json 事件流的 message_end 提取完整 assistant 文本（权威最终结果）。 */
+function extractFinalText(lineJson: string): string | null {
+  let ev: Record<string, unknown>;
+  try {
+    ev = JSON.parse(lineJson) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (ev["type"] !== "message_end") return null;
+  const msg = ev["message"] as Record<string, unknown> | undefined;
+  if (!msg || msg["role"] !== "assistant") return null;
+  const content = msg["content"];
+  if (!Array.isArray(content)) return null;
+  const texts: string[] = [];
+  for (const b of content) {
+    if ((b as Record<string, unknown>)["type"] === "text") {
+      const s = (b as Record<string, unknown>)["text"];
+      if (typeof s === "string" && s) texts.push(s);
+    }
+  }
+  return texts.length ? texts.join("\n") : null;
+}
+
 export default function jishuSubagentExtension(pi: ExtensionAPI): void {
   // ── 每轮注入委派指南（agent「自己知道」的关键——贴图不必点名模型）──
   pi.on("before_agent_start", async () => {
@@ -136,11 +184,11 @@ export default function jishuSubagentExtension(pi: ExtensionAPI): void {
           "[SUBAGENT 委派能力]",
           "当你发现某类任务超出自身能力（如无法读取图片内容）时，把任务委派给下方目录中**具备该能力的模型**执行——调用 dispatch_subagent 工具即可。",
           "⚠ 委派不是切换智能体：仍在同一智能体内，仅子任务换模型执行。不要去查询/切换其他智能体来完成这类任务。",
-          "⚠ 图片路径直取：用户消息带图片时，消息中的附件行（形如「图片1（批次 …）: C:\…\pasted-image-0.png」）就是图片的**磁盘绝对路径**——直接取该路径作为 images 参数传给 dispatch_subagent，不要用 ls/find/grep 搜索文件，也不要先读图自己描述。",
+          "⚠ 图片路径直取：用户消息带图片时，消息中的附件行（形如「图片1（批次 …）: C:…pasted-image-0.png」）就是图片的**磁盘绝对路径**——直接取该路径作为 images 参数传给 dispatch_subagent，不要用 ls/find/grep 搜索文件，也不要先读图自己描述。",
           "task 写清完整要求（自包含——subagent 看不到本对话）；省略 model 且带 images 时自动选择支持图像输入的模型。task 必须按用户实际问题定制识别目标：把用户问题转写成针对图片的具体分析任务（问数据就读数据、问文字就提取文字、问布局就描述布局），不要写「识别这张图」这类泛泛指令。",
           "何时不委派：任务你自己能做、或强依赖当前会话上下文。",
           "可用模型目录（含能力标注）：",
-                    catalogSummary(),
+          catalogSummary(),
         ].join("\n"),
       },
     };
@@ -165,10 +213,9 @@ export default function jishuSubagentExtension(pi: ExtensionAPI): void {
     name: "dispatch_subagent",
     label: "委派 subagent",
     description:
-      "把一个自包含的子任务委派给指定模型的 subagent（独立干净会话执行，结果作为文本返回）。" +
+      "把一个自包含的子任务委派给指定模型的 subagent（独立干净会话执行，过程与结果回传本会话工具卡——可展开实时查看子 agent 的思考与回答）。" +
       "典型用途：你不能识图而任务含图片——从用户消息的附件行（图片N（批次 …）: <绝对路径>）取图片磁盘路径传入 images，并省略 model（自动选择支持图像的模型）。同一智能体内的模型委派，与切换智能体无关。" +
-      "长文摘要、独立验证等也适用。何时不该用：任务简单或依赖当前会话上下文时直接自己做。" +
-      "task 必须完全自包含（subagent 看不到当前对话）。",
+      "长文摘要、独立验证等也适用。何时不该用：任务你能做、或强依赖当前会话上下文（subagent 看不到本对话）。",
     promptSnippet:
       "dispatch_subagent: 委派子任务给其他模型（带图时省略 model=自动选识图模型），task 须自包含",
     parameters: Type.Object({
@@ -213,7 +260,7 @@ export default function jishuSubagentExtension(pi: ExtensionAPI): void {
           return {
             content: [{
               type: "text" as const,
-              text: "dispatch_subagent：当前模型目录中没有支持图像输入的模型（可用 list_subagent_models 核对）——无法自动识图。",
+              text: "dispatch_subagent：当前可见模型中没有支持图像输入的模型（可用 list_subagent_models 核对）——无法自动识图。",
             }],
           };
         }
@@ -222,56 +269,100 @@ export default function jishuSubagentExtension(pi: ExtensionAPI): void {
       const cliArgs: string[] = [];
       if (provider) cliArgs.push("--provider", provider);
       if (model) cliArgs.push("--model", model);
-      cliArgs.push("--print", task);
+      cliArgs.push("--mode", "json", task);
       for (const img of images) {
         cliArgs.push(img.startsWith("@") ? img : `@${img}`);
       }
+
+      // 子会话隔离目录（不进 hub 会话列表；JSONL 保留可回溯）。
+      const sessionDir = subagentSessionDir();
       const startedAt = Date.now();
-      // 进度透传（10s 心跳——主会话前端不再「思考中」无反馈；pi 经
-      // tool_execution_update 事件转发 onUpdate 部分结果）。
-      const progressTimer = setInterval(() => {
-        const secs = Math.round((Date.now() - startedAt) / 1000);
-        onUpdate?.({
-          content: [{ type: "text" as const, text: `subagent ${model || "auto-model"} 运行中… ${secs}s` }],
+
+      const result = await new Promise<{ finalText: string; textSnap: string; stderr: string; code: number | null; killed: boolean }>((resolve) => {
+        const child = spawn(process.execPath, [cli, ...cliArgs], {
+          cwd: process.cwd(),
+          env: { ...process.env, JISHU_CODING_AGENT_SESSION_DIR: sessionDir },
+          // stdin=ignore：pi print 检测非 TTY 后等 stdin EOF——ignore 天然
+          // 立即 EOF（pipe 不关闭会无限挂死——实测教训）。
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
         });
-      }, 10_000);
-      const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
-        const child = execFile(
-          process.execPath,
-          [cli, ...cliArgs],
-          {
-            timeout: timeoutSecs * 1000,
-            maxBuffer: MAX_OUTPUT_BYTES,
-            windowsHide: true,
-            cwd: process.cwd(),
-            env: { ...process.env },
-          },
-          (err, stdout, stderr) => {
-            const code = err && typeof (err as { code?: unknown }).code === "number"
-              ? ((err as { code?: unknown }).code as number)
-              : err ? null : 0;
-            resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? ""), code });
-          },
-        );
-        // 用户停止（pi abort 工具执行）→ 杀子进程（否则 print mode 继续跑
-        // 到超时，主会话「停止后仍挂」体感来源之一）。
-        // ⚠ print mode 等 stdin EOF——execFile 默认 stdin=pipe 永不关闭，
-        // pi 会无限等待（实测挂死 90s+ 零输出）。立即 end 触发 EOF。
-        child.stdin?.end();
+        let killed = false;
+        const timer = setTimeout(() => {
+          killed = true;
+          try { child.kill(); } catch { /* 已退出 */ }
+        }, timeoutSecs * 1000);
         signal?.addEventListener("abort", () => {
+          killed = true;
           try { child.kill(); } catch { /* 已退出 */ }
         }, { once: true });
+
+        let stderr = "";
+        let finalText = "";
+        // 实时内容快照（onUpdate 转发——主会话工具卡实时输出区）。
+        let thinkingSnap = "";
+        let textSnap = "";
+        let lastPush = 0;
+        let bytes = 0;
+        let lineBuf = "";
+        const pushProgress = (force = false) => {
+          const now = Date.now();
+          if (!force && now - lastPush < 800) return;
+          lastPush = now;
+          const parts: string[] = [];
+          if (thinkingSnap) parts.push(`[思考] ${thinkingSnap.slice(-600)}`);
+          if (textSnap) parts.push(`[回答] ${textSnap.slice(-1200)}`);
+          if (parts.length) {
+            onUpdate?.({ content: [{ type: "text" as const, text: parts.join("\n") }] });
+          }
+        };
+        child.stdout.setEncoding("utf-8");
+        child.stdout.on("data", (chunk: string) => {
+          bytes += chunk.length;
+          if (bytes > MAX_OUTPUT_BYTES * 4) {
+            killed = true;
+            try { child.kill(); } catch { /* 防巨量输出 */ }
+            return;
+          }
+          lineBuf += chunk;
+          let nl: number;
+          while ((nl = lineBuf.indexOf("\n")) >= 0) {
+            const line = lineBuf.slice(0, nl).trim();
+            lineBuf = lineBuf.slice(nl + 1);
+            if (!line) continue;
+            const final = extractFinalText(line);
+            if (final !== null) finalText = final;
+            const delta = extractDelta(line);
+            if (delta?.thinking) thinkingSnap += delta.thinking;
+            if (delta?.text) textSnap += delta.text;
+          }
+          pushProgress();
+        });
+        child.stderr.setEncoding("utf-8");
+        child.stderr.on("data", (chunk: string) => {
+          stderr = (stderr + chunk).slice(-4096);
+        });
+        child.on("error", (err) => {
+          clearTimeout(timer);
+          resolve({ finalText: "", textSnap, stderr: stderr + String(err), code: null, killed });
+        });
+        child.on("close", (code) => {
+          clearTimeout(timer);
+          pushProgress(true);
+          resolve({ finalText, textSnap, stderr, code, killed });
+        });
       });
-      clearInterval(progressTimer);
+
       const elapsed = Math.round((Date.now() - startedAt) / 1000);
-      const out = result.stdout.trim();
+      // json 流缺 message_end（异常中断）时退化为流内文本快照。
+      const out = result.finalText.trim() || result.textSnap.trim();
       if (!out) {
         const detail = result.stderr.trim().slice(0, 600);
         return {
           content: [{
             type: "text" as const,
             text:
-              `dispatch_subagent 失败（${elapsed}s，exit=${result.code}）` +
+              `dispatch_subagent 失败（${elapsed}s，exit=${result.code}${result.killed ? "，超时中止" : ""}）` +
               (detail ? `：${detail}` : "（无输出——检查模型是否支持该任务/图片路径是否存在）"),
           }],
         };
