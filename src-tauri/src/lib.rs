@@ -10,6 +10,8 @@ mod codex_app_server_runtime;
 mod command;
 mod commands;
 mod config;
+// v0.9.5 需求2 测试期：后端运行时日志 → 前端日志中心桥（hub-dev-log 事件）。
+mod dev_log_bridge;
 mod dialog_commands;
 mod history;
 mod hub;

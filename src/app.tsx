@@ -1,6 +1,6 @@
 
 import "@/i18n";
-import { hydrateDevLogForced } from "@/lib/dev-log";
+import { attachRuntimeLogBridge, hydrateDevLogForced } from "@/lib/dev-log";
 import { lazy, Suspense } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { useTranslation } from "react-i18next";
@@ -460,9 +460,15 @@ function AppContent() {
 
   // Restore last project on startup
   // v0.9.4 需求12：开发日志强制开关水合（后端 settings.json 权威）。
-useEffect(() => {
-  void hydrateDevLogForced();
-}, []);
+  // v0.9.5 需求2 测试期：同时挂后端运行时日志桥（hub-dev-log → [runtime]）。
+  useEffect(() => {
+    void hydrateDevLogForced();
+    let unlistenRuntime: (() => void) | null = null;
+    void attachRuntimeLogBridge().then((fn) => {
+      unlistenRuntime = fn;
+    });
+    return () => unlistenRuntime?.();
+  }, []);
 
 useEffect(() => {
     if (!projects || initialProjectRestored) return;
