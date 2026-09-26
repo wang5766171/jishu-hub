@@ -691,11 +691,14 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           //（abortLocalCommitRef 标记）。此处跳过重复提交，但下方的收口
           //（steering 重发）、流 drop、标记清理照常——turn_complete 仍是唯一
           // 回合终结者。
-          const freshLocalCommit = (key: string): boolean => {
-            const at = deps.abortLocalCommitRef.current.get(key);
-            return at !== undefined && Date.now() - at < 5_000;
-          };
-          if (isAbortedTurn && (freshLocalCommit(finalKey) || freshLocalCommit(cid))) {
+          // v0.9.5 需求2 测试期修正：Aborted 终结者的防重不看时间窗口——
+          // abort 已本地提交的流，晚到的 turn_complete(Aborted)（实测 5.5 分钟
+          // 后才到——pi 滞留）只收口不再提交（旧 5s 窗口外的晚到终结者重复
+          // 提交用户消息 = 「停止后消息重复渲染」根因）。标记在本流收口时
+          // 清理（779 行），正常后续回合不受影响。
+          const localCommittedAbort = (key: string): boolean =>
+            deps.abortLocalCommitRef.current.has(key);
+          if (isAbortedTurn && (localCommittedAbort(finalKey) || localCommittedAbort(cid))) {
             newMessages.length = 0;
           }
           // Resolve the base messages from the cache (preferring real id).

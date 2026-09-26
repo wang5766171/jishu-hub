@@ -103,6 +103,8 @@ fn spawn_pi_rpc_session_inner(
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
 ) -> AcpControl {
+    // v0.9.5：watchdog 杀进程用 pid（child 的所有权在下方移入清理任务）。
+    let child_pid = child.id();
     let stdin = child.stdin.take().expect("Pi RPC process must have stdin");
     let stdout = child
         .stdout
@@ -158,6 +160,7 @@ fn spawn_pi_rpc_session_inner(
             auto_compaction_pref,
             turn_active_for_loop,
             &on_session_resolved,
+            child_pid,
         )
         .await;
 
@@ -229,6 +232,14 @@ enum LoopState {
     CancelPending { pending_prompt: Option<String> },
 }
 
+/// v0.9.5 需求2 测试期：prompt 回合启动 watchdog——prompt 发出后该时限内
+/// 无任何 pi 事件（连 message_start 都没有）视为回合未启动（实测 01a0db68：
+/// 消息不落盘、模型请求未发出、前端思考中 5.5 分钟）。事件到达即清零。
+const PROMPT_ACK_TIMEOUT: Duration = Duration::from_secs(20);
+/// CancelPending（abort 后）收尾 watchdog——pi 滞留时 agent_settled 永不到
+///（停止不了的兜底）——超时杀进程终结流。
+const CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_secs(15);
+
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub(crate) fn apply_resolved_session_prompt_injection(
@@ -257,6 +268,7 @@ async fn pi_rpc_connection_loop(
     auto_compaction_pref: Option<bool>,
     turn_active: Arc<AtomicBool>,
     on_session_resolved: &(dyn Fn(&str) + Send + Sync),
+    child_pid: Option<u32>,
 ) -> Result<(), String> {
     // 1. stdout reader sub-task
     let (stdout_tx, mut stdout_rx) = tokio::sync::mpsc::channel(64);
@@ -386,6 +398,14 @@ async fn pi_rpc_connection_loop(
     }
     on_session_resolved(&session_id);
 
+    // v0.9.5 需求2 测试期 watchdog 状态（绝对时刻）：
+    // - prompt_ack_at：prompt 发出后 20s 内未收到任何 pi 事件的判定线——
+    //   事件到达（回合启动）即清零；回合启动后的间隙（模型慢）不再计时。
+    // - cancel_settle_at：abort 进入 CancelPending 后 15s 未 agent_settled
+    //   的判定线——杀进程终结（pi 滞留时 turn_end(Aborted) 永不到）。
+    let mut prompt_ack_at: Option<tokio::time::Instant> = None;
+    let mut cancel_settle_at: Option<tokio::time::Instant> = None;
+
     // 3. Send first prompt. v0.8.0 需求1 A5：resume-fork 形态传 None——不发
     // prompt，连接停在 Idle 等待 ForkSession（历史会话静默分支，零历史污染）。
     let mut state = LoopState::Idle;
@@ -401,6 +421,7 @@ async fn pi_rpc_connection_loop(
         )
         .await?;
         log::debug!("Pi RPC sent first prompt");
+        prompt_ack_at = Some(tokio::time::Instant::now() + PROMPT_ACK_TIMEOUT);
         state = LoopState::Prompting;
     }
     // v0.8.0 需求10：经 Steer 命令注入的文本登记——用于区分 pi 回显的
@@ -445,6 +466,13 @@ async fn pi_rpc_connection_loop(
         turn_active.store(!matches!(state, LoopState::Idle), Ordering::Relaxed);
         let cmd_future = command_rx.recv();
         let idle_deadline = tokio::time::Instant::now() + IDLE_TIMEOUT;
+        // v0.9.5 需求2 测试期：watchdog deadline（绝对时刻，事件到达清零——
+        // 非每轮重算，防模型慢时误杀）。
+        let next_deadline = [Some(idle_deadline), prompt_ack_at, cancel_settle_at]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(idle_deadline);
 
         let exit = tokio::select! {
             cmd = cmd_future => {
@@ -463,6 +491,7 @@ async fn pi_rpc_connection_loop(
                                     "message": msg
                                 })).await?;
                                 log::info!("Pi RPC prompt sent to Pi ({} bytes)", msg.len());
+                                prompt_ack_at = Some(tokio::time::Instant::now() + PROMPT_ACK_TIMEOUT);
                                 state = LoopState::Prompting;
                             }
                             LoopState::Prompting => {
@@ -578,6 +607,8 @@ async fn pi_rpc_connection_loop(
                                     "type": "abort"
                                 })).await;
                                 log::info!("Pi RPC cancel sent (clear_queue + abort)");
+                                cancel_settle_at =
+                                    Some(tokio::time::Instant::now() + CANCEL_SETTLE_TIMEOUT);
                                 state = LoopState::CancelPending {
                                     pending_prompt: None,
                                 };
@@ -1076,6 +1107,9 @@ async fn pi_rpc_connection_loop(
                             );
                         }
 
+                        // v0.9.5：任何 pi 事件到达 = pi 活着且（若在）回合已启动
+                        // ——清 prompt watchdog（回合启动后不再计时，防模型慢误杀）。
+                        prompt_ack_at = None;
                         if matches!(event_type, "agent_start" | "turn_start")
                             && !matches!(state, LoopState::CancelPending { .. })
                         {
@@ -1151,6 +1185,7 @@ async fn pi_rpc_connection_loop(
                             last_flush = std::time::Instant::now();
                         } else if pi_prompt_is_settled(event_type) {
                             log::info!("Pi RPC agent_settled received (state={})", loop_state_name(&state));
+                            cancel_settle_at = None;
                             if matches!(state, LoopState::CancelPending { .. }) {
                                 pending_turn_complete = Some(NormalizedEvent::TurnComplete {
                                     reason: TurnEndReason::Aborted,
@@ -1240,13 +1275,48 @@ async fn pi_rpc_connection_loop(
                     }
                 }
             }
-            _ = tokio::time::sleep_until(idle_deadline) => {
-                if matches!(state, LoopState::Idle) {
+            _ = tokio::time::sleep_until(next_deadline) => {
+                if matches!(state, LoopState::Idle) && idle_deadline <= next_deadline {
                     log::info!(
                         "Pi RPC idle timeout ({}s), shutting down session {}",
                         IDLE_TIMEOUT.as_secs(),
                         session_id
                     );
+                    true
+                } else if prompt_ack_at.is_some() && tokio::time::Instant::now() >= prompt_ack_at.unwrap() {
+                    // ⚠ prompt 送达后回合未启动（20s 无任何事件）——合成终结。
+                    log::warn!(
+                        "[watchdog] Pi RPC prompt unacknowledged 20s (session {session_id}) — \
+                         round never started (message not persisted); synthesizing abort"
+                    );
+                    flush_buf(&emit, &session_id, &mut buf);
+                    emit(
+                        &[
+                            NormalizedEvent::Error {
+                                message: "pi 未响应本轮（20 秒无事件，回合未启动——消息未送达模型）。请重新发送；若反复出现请重启会话。".to_string(),
+                                recoverable: true,
+                            },
+                            NormalizedEvent::TurnComplete { reason: TurnEndReason::Aborted, usage: None },
+                        ],
+                        &session_id,
+                    );
+                    prompt_ack_at = None;
+                    state = LoopState::Idle;
+                    false
+                } else if cancel_settle_at.is_some() && tokio::time::Instant::now() >= cancel_settle_at.unwrap() {
+                    // ⚠ abort 后 15s 未收尾（pi 滞留，agent_settled 永不到）——
+                    // 杀进程终结流。
+                    log::warn!(
+                        "[watchdog] Pi RPC cancel unsettled 15s (session {session_id}) — killing process"
+                    );
+                    flush_buf(&emit, &session_id, &mut buf);
+                    emit(
+                        &[NormalizedEvent::TurnComplete { reason: TurnEndReason::Aborted, usage: None }],
+                        &session_id,
+                    );
+                    if let Some(pid) = child_pid {
+                        let _ = crate::process_control::terminate_process_tree(pid);
+                    }
                     true
                 } else {
                     false
