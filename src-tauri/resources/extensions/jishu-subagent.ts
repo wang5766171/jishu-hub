@@ -256,6 +256,9 @@ export default function jishuSubagentExtension(pi: ExtensionAPI): void {
         );
         // 用户停止（pi abort 工具执行）→ 杀子进程（否则 print mode 继续跑
         // 到超时，主会话「停止后仍挂」体感来源之一）。
+        // ⚠ print mode 等 stdin EOF——execFile 默认 stdin=pipe 永不关闭，
+        // pi 会无限等待（实测挂死 90s+ 零输出）。立即 end 触发 EOF。
+        child.stdin?.end();
         signal?.addEventListener("abort", () => {
           try { child.kill(); } catch { /* 已退出 */ }
         }, { once: true });
