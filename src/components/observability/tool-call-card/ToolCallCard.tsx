@@ -105,18 +105,9 @@ const statusBorder: Record<ToolCall["status"], string> = {
 };
 
 export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCall }) {
-  const [expanded, setExpanded] = useState(call.status === "error" || (call.status === "running" && Boolean(call.partialOutput)));
-  // v0.9.5 需求4：完成自动收起——流式期 running(+中间输出) 默认展开用于观察，
-  // status 转 success 的完成瞬间收起（expanded 是 useState 初值语义，不随
-  // status 重算——用户观感「完成后仍默认展开」的遗留来源）。用户此后手动
-  // 展开不受影响（只在跃迁瞬间收一次）。
-  const prevStatusRef = useRef(call.status);
-  useEffect(() => {
-    if (prevStatusRef.current === "running" && call.status === "success") {
-      setExpanded(false);
-    }
-    prevStatusRef.current = call.status;
-  }, [call.status]);
+  // v0.9.5 需求4（用户裁决）：默认恒收起——流式/完成/错误态一律收起，
+  // 仅用户点击展开（要观察长时执行或错误详情时主动点开）。
+  const [expanded, setExpanded] = useState(false);
   const { openViewer } = useFileViewer();
   const { t } = useTranslation();
   const diff = call.kind === "file_edit" || call.kind === "file_write" ? buildDiffPreview(call.input) : null;
