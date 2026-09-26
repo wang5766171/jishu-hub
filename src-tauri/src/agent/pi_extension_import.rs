@@ -58,13 +58,39 @@ pub const KNOWN_BYPASS_SURFACE: &str =
     "正则提取的已知绕过面：动态 import()、eval、new Function、字符串拼接调用、经第三方依赖间接调用均不会被发现";
 
 fn extensions_dir() -> Result<std::path::PathBuf, String> {
-    let agent_dir = crate::agent::jishu_self::paths::agent_dir().map_err(|e| e.to_string())?;
-    Ok(agent_dir.join("extensions"))
+    Ok(agent_dir_for_tests()?.join("extensions"))
+}
+
+/// 测试隔离（v0.9.5 需求2 测试期教训：bundle 测试曾把测试扩展写进真实
+/// ~/.jishu-agent/agent/extensions/ 导致用户 pi 启动崩溃——JISHU_HUB_HOME
+/// 只隔离 hub 目录，agent 目录无隔离）。与 hub_home 同款双模式：
+/// JISHU_AGENT_DIR env 显式覆盖；cfg(test) 自动落进程级临时目录。
+fn agent_dir_for_tests() -> Result<std::path::PathBuf, String> {
+    if let Ok(dir) = std::env::var("JISHU_AGENT_DIR") {
+        if !dir.trim().is_empty() {
+            return Ok(std::path::PathBuf::from(dir));
+        }
+    }
+    #[cfg(test)]
+    {
+        static TEST_AGENT_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        return Ok(TEST_AGENT_DIR
+            .get_or_init(|| {
+                tempfile::tempdir()
+                    .expect("create test agent dir")
+                    .keep()
+                    .join("agent")
+            })
+            .clone());
+    }
+    #[allow(unreachable_code)]
+    {
+        crate::agent::jishu_self::paths::agent_dir().map_err(|e| e.to_string())
+    }
 }
 
 fn settings_path() -> Result<std::path::PathBuf, String> {
-    let agent_dir = crate::agent::jishu_self::paths::agent_dir().map_err(|e| e.to_string())?;
-    Ok(agent_dir.join("settings.json"))
+    Ok(agent_dir_for_tests()?.join("settings.json"))
 }
 
 /// 已注册的扩展相对路径集合（settings.json extensions 数组）。
