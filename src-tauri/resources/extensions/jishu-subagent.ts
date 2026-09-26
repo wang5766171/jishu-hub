@@ -50,6 +50,17 @@ function agentDir(): string {
   return getAgentDir();
 }
 
+/** 会话可见模型清单（hub 注入 JISHU_VISIBLE_MODELS——"provider/id" 逗号
+ * 分隔；hub 侧已剔除显式隐藏）。null = env 未注入（无隐藏记录）= 全可见。
+ * 目录/自动选模/指南统一在 readModelCatalog 出口过滤。 */
+function visibleFilter(): Set<string> | null {
+  const raw = process.env["JISHU_VISIBLE_MODELS"];
+  if (!raw || !raw.trim()) return null;
+  return new Set(
+    raw.split(",").map((s) => s.trim()).filter(Boolean),
+  );
+}
+
 /** 渠道模型目录（~/.jishu-agent/agent/models.json → 扁平条目）。 */
 function readModelCatalog(): ModelEntry[] {
   try {
@@ -70,7 +81,13 @@ function readModelCatalog(): ModelEntry[] {
         });
       }
     }
-    return out.filter((m) => m.id);
+    let entries = out.filter((m) => m.id);
+    // 可见性过滤（hub 清单——显式隐藏的模型不进目录/自动选/指南）。
+    const allow = visibleFilter();
+    if (allow) {
+      entries = entries.filter((m) => allow.has(`${m.provider}/${m.id}`));
+    }
+    return entries;
   } catch {
     return [];
   }
