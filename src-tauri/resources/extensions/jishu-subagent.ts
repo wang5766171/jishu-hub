@@ -119,8 +119,10 @@ export default function jishuSubagentExtension(pi: ExtensionAPI): void {
         display: false,
         content: [
           "[SUBAGENT 委派能力]",
-          "你不具备的能力（如图像识别）可委派给具备该能力的 subagent 模型执行：",
-          "用户消息含图片而你不能识图时，**直接调用 dispatch_subagent 并省略 model 参数（自动选择识图模型），无需询问用户**。",
+          "当你发现某类任务超出自身能力（如无法读取/理解图片内容、缺少某种输入模态）时，不要拒绝或转述给用户——查看下方模型目录，把任务委派给**具备该能力**的模型执行：",
+          "- 调用 dispatch_subagent，task 写清完整要求（自包含），能力相关输入（如图片路径）放 images；",
+          "- 省略 model 且带 images 时自动选择支持图像输入的模型；也可显式指定目录中的 model；",
+          "- 何时委派：你确实做不到（能力缺口）。何时不委派：任务你自己能做、或强依赖当前会话上下文（subagent 是干净会话，看不到本对话）。",
           "可用模型目录（models.json，含能力标注）：",
           catalogSummary(),
         ].join("\n"),
