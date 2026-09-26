@@ -49,11 +49,55 @@ impl ChatState {
 /// v0.9.0 需求3 方案 C：前端不再嵌 [JISHU-TOOLS] 文本标记，净化步骤删除
 /// （版本级裁决：手输字面标记亦不防御）；本条消息的工具快照由注入块
 /// 随 prompt 持久化、回放经 extract_tool_snapshot 派生。
+/** 图片委派提示（需求2）：消息含附件行「图片N（批次 …）: <路径>」且激活
+ *  模型 input 不含 image → 前缀一行指令（含路径直取与自动选模，路径最短）。 */
+fn maybe_prefix_image_dispatch_hint(message: &str) -> String {
+    let has_image_line = message
+        .lines()
+        .any(|l| l.contains("（批次") && l.contains("图片") && l.contains(':'));
+    if !has_image_line {
+        return message.to_string();
+    }
+    if active_model_supports_image() {
+        return message.to_string();
+    }
+    format!(
+        "[图片处理] 本条消息含图片，而你不支持图像输入——直接调用 dispatch_subagent 工具识别：images 参数取上方附件行「图片N（批次 …）」中的磁盘路径，省略 model（自动选择识图模型），task 写清要识别什么。不要自行读图、不要查询其他智能体。
+{}",
+        message
+    )
+}
+
+/** 激活模型的图像输入能力（models.json 条目 input 含 "image"）。 */
+fn active_model_supports_image() -> bool {
+    let Ok(Some(active)) = crate::agent::jishu_self::jishu_settings::get_active() else {
+        return false;
+    };
+    let Ok(Some(provider)) =
+        crate::agent::jishu_self::pi_models_config::get_provider(&active.provider)
+    else {
+        return false;
+    };
+    provider
+        .models
+        .as_ref()
+        .map(|models| {
+            models
+                .iter()
+                .any(|m| m.id == active.model && m.input.iter().any(|i| i == "image"))
+        })
+        .unwrap_or(false)
+}
+
 fn compose_tool_message(
     state: &tauri::State<'_, Mutex<AppState>>,
     session_id: &str,
     message: String,
 ) -> String {
+    // v0.9.5 需求2 测试期：图片委派直给——消息带图片附件行且当前激活模型
+    // 不支持图像输入时，一句话点破正确路径（贴图即触发，不依赖模型自行
+    // 觉察能力缺口——实测泛化指南下模型仍绕路：先读图、再查智能体）。
+    let message = maybe_prefix_image_dispatch_hint(&message);
     agent::tool_plugin::migrate_session_tools(
         agent::tool_plugin::STAGING_SESSION_KEY,
         session_id,
