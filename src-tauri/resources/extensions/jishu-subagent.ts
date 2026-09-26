@@ -43,13 +43,13 @@ function piCliPath(): string {
 /** agent 目录（models.json / settings.json 所在）：JISHU_PI_CLI 反推
  * （<agentDir>/packages/coding-agent/dist/[bundle/]cli.js）。 */
 function agentDir(): string {
-  const cli = piCliPath();
-  // dist/bundle/cli.js → 上 4 级；dist/cli.js → 上 3 级。
-  const norm = path.resolve(cli);
-  if (norm.includes(path.join("dist", "bundle"))) {
-    return path.resolve(norm, "..", "..", "..", "..");
-  }
-  return path.resolve(norm, "..", "..", "..");
+  // ⚠ pi 数据目录（agent/）≠ 本体目录（root，packages 所在）——JISHU_PI_CLI
+  // 反推只能得到 root（实测教训：曾因此读不到 models.json）。hub 注入的
+  // JISHU_AGENT_DATA_DIR 是唯一可靠来源；反推仅 env 缺失时兜底。
+  const fromEnv = process.env["JISHU_AGENT_DATA_DIR"];
+  if (fromEnv && fromEnv.trim()) return fromEnv;
+  const root = path.resolve(piCliPath(), "..", "..", "..");
+  return path.join(root, "agent");
 }
 
 /** 渠道模型目录（~/.jishu-agent/agent/models.json → 扁平条目）。 */
