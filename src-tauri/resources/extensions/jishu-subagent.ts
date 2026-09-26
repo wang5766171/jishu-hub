@@ -39,6 +39,7 @@ export default function jishuSubagentExtension(pi: ExtensionAPI): void {
     name: "dispatch_subagent",
     label: "委派 subagent",
     description:
+      "**图片/图像识别的唯一正确通道**：当前模型无识图能力时，必须经本工具委派多模态模型（如 glm-5.3-flash）识图——直接传 images 图片路径，不要尝试用 bash 手动拼 CLI 命令（本工具即其封装）。" +
       "把一个自包含的子任务委派给指定模型的 subagent（独立干净会话执行，结果作为文本返回）。" +
       "典型用途：主模型不具备某能力时委派具备该能力的模型——尤其图像识别（传 images 图片绝对路径，" +
       "用多模态模型如 GLM-5.3-FLASH）；长文摘要、独立验证、翻译等也适用。" +
