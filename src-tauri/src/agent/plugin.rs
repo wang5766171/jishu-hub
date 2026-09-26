@@ -106,7 +106,7 @@ pub const CORE_PLUGIN_IDS: [&str; 1] = [super::JISHU_SELF_AGENT_ID];
 /// 系统插件 id 清单（v0.9.0 需求1 二期）：hub 随包分发、启动幂等重部署——
 /// 卸载/编辑无意义（下次启动即恢复），plugin_remove 拒绝、前端隐藏入口；
 /// 可禁用（mcp-resolver 禁用 = MCP 服务总开关，见 mcp_inject）。
-pub const SYSTEM_PLUGIN_IDS: [&str; 7] = [
+pub const SYSTEM_PLUGIN_IDS: [&str; 8] = [
     "mcp-resolver",
     "skill-resolver",
     "task-requirements",
@@ -115,6 +115,8 @@ pub const SYSTEM_PLUGIN_IDS: [&str; 7] = [
     "jishu-cli-guide",
     "mcp-create-tool",
     "skill-create-tool",
+    // v0.9.5 需求2：subagent 委派（纯闸门）。
+    "jishu-subagent",
 ];
 
 /// 系统插件判定。
@@ -233,9 +235,8 @@ pub const DEFAULT_PI_TOOLS: [&str; 6] = [
     "lock_requirement",
     "commit_plan",
     "dispatch_to_node",
-    // v0.9.5 需求2：subagent 委派扩展（jishu-subagent.ts，hub 内置部署）。
-    // ⚠ pi 的 --tools 是硬白名单——内置扩展工具必须显式进名单，否则
-    // 扩展加载成功但工具被过滤（实测：指南注入生效而工具列表缺失）。
+    // v0.9.5 需求2：subagent 工具兜底（正解在 jishu-subagent 系统插件
+    // 清单——merged 恒非空时本兜底不执行；保留作全系统插件禁用时双保险）。
     "dispatch_subagent",
     "list_subagent_models",
 ];
@@ -907,6 +908,12 @@ pub fn builtin_adaptive_plugins() -> Vec<(&'static str, &'static str)> {
         (
             "html-preview",
             include_str!("../../resources/plugins/html-preview/plugin.toml"),
+        ),
+        // v0.9.5 需求2：subagent 委派纯闸门插件（治理 dispatch_subagent /
+        // list_subagent_models，热插拔；工具由 extensions/jishu-subagent.ts 注册）。
+        (
+            "jishu-subagent",
+            include_str!("../../resources/plugins/jishu-subagent/plugin.toml"),
         ),
         // v0.9.0 需求22：预置核心引擎指南插件（[skill] 声明——经 Skill 解析器
         // 分发到 agent skill 目录，agent 原生发现；内容 = 给 agent 的操作指南）。
