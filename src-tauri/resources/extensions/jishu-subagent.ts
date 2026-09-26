@@ -14,6 +14,9 @@
  * （provider|model）；node 用 process.execPath。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+// getAgentDir：pi 权威数据目录 API（~/.jishu-agent/agent——models.json
+// / settings.json 所在）。扩展跑在 pi 进程内直接问 pi，零 env 零反推。
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { execFile } from "node:child_process";
 import * as path from "node:path";
@@ -40,21 +43,11 @@ function piCliPath(): string {
   return path.join(path.dirname(self), "cli.js");
 }
 
-/** agent 目录（models.json / settings.json 所在）：JISHU_PI_CLI 反推
- * （<agentDir>/packages/coding-agent/dist/[bundle/]cli.js）。 */
+/** pi 数据目录（models.json / settings.json 所在）——pi 权威 API 直达
+ * （getAgentDir = ~/.jishu-agent/agent）。扩展跑在 pi 进程内，直接问 pi，
+ * 零 env 零反推（hub 与扩展无需互相告知安装布局）。 */
 function agentDir(): string {
-  // ⚠ pi 数据目录（agent/）≠ 本体目录（root，packages 所在）——JISHU_PI_CLI
-  // 反推只能得到 root（实测教训：曾因此读不到 models.json）。hub 注入的
-  // JISHU_AGENT_DATA_DIR 是唯一可靠来源；反推仅 env 缺失时兜底。
-  const fromEnv = process.env["JISHU_AGENT_DATA_DIR"];
-  if (fromEnv && fromEnv.trim()) return fromEnv;
-  // 反推兜底：不数上溯层数（bundle 与非 bundle 布局差一级，硬数必错一个）
-  // ——找 "packages/coding-agent" 段截断到 root，再拼数据子目录 agent/。
-  const norm = path.resolve(piCliPath());
-  const marker = path.join("packages", "coding-agent");
-  const at = norm.lastIndexOf(marker);
-  if (at > 0) return path.join(norm.slice(0, at), "agent");
-  return path.join(path.dirname(norm), "agent");
+  return getAgentDir();
 }
 
 /** 渠道模型目录（~/.jishu-agent/agent/models.json → 扁平条目）。 */
