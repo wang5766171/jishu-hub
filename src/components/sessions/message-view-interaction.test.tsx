@@ -1,5 +1,5 @@
 import i18n from "@/i18n";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { Message } from "@/types";
@@ -51,6 +51,8 @@ describe("MessageView interaction rendering", () => {
 
     render(<MessageView messages={messages} flat />);
 
+    // v0.9.5 需求4：工作项（含交互卡）默认折叠——先展开「已工作」区。
+    fireEvent.click(screen.getByRole("button", { name: /已工作/ }));
     const cards = screen.getAllByRole("button", { name: /Ask user/i });
     expect(cards).toHaveLength(1);
 
@@ -107,6 +109,8 @@ describe("MessageView interaction rendering", () => {
 
     // v0.9.3 测试期修复：回放按 tool_result.is_error 显示状态徽标，
     // 而非一律 success（失败 edit 被掩成 Done）。
+    // v0.9.5 需求4：工具组默认折叠——展开后断言状态徽标。
+    fireEvent.click(screen.getByRole("button", { name: /已工作/ }));
     expect(screen.getByText("Error")).toBeTruthy();
     expect(screen.getByText("Done")).toBeTruthy();
   });

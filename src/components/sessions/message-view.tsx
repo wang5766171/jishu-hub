@@ -20,6 +20,9 @@ import { PhaseDivider } from "./conversation-content";
 // v0.9.2 需求1 P1：行/轮次语义迁移至会话内核统一视图模型（单一权威，
 // 导航轨等轮次消费方读同一份，消除双实现契约对齐负担）。
 import { buildSessionRows, type SessionRowModel } from "@/features/session-kernel/view-model";
+// v0.9.5 需求4 P2：轮级三段式（已工作折叠 + 正文 + 文件改动概览）。
+import { buildTurnSegments } from "@/features/session-kernel/view-model/build-turn-segments";
+import { TurnGroupView } from "@/features/session-kernel/shell/turn-group-view";
 // v0.9.2 需求1 M4：块渲染器咨询点（HTML/Mermaid 等插件经 Context 接管代码块）。
 import {
   matchBlockRenderer,
@@ -85,7 +88,7 @@ export interface MessageSearchNavigation {
   nonce: number;
 }
 
-type RenderItem =
+export type RenderItem =
   | { kind: "block"; block: ContentBlock; messageIndex: number; blockIndex: number }
   | { kind: "interaction"; items: InteractionCardItem[]; origin?: string; messageIndex: number; blockIndex: number }
   | { kind: "tool-group"; calls: ToolCall[] };
@@ -466,43 +469,53 @@ function AssistantBubble({
 }) {
   const { t } = useTranslation();
 
+  // v0.9.5 需求4 P2：三段式重组（工作项折叠 + 正文 + 文件概览）。
+  const segments = buildTurnSegments(items);
+  const renderItems = (list: RenderItem[]) =>
+      list.map((item, idx) => {
+        if (item.kind === "tool-group") {
+          return (
+            <div key={`tg-${idx}`} className="rounded-[8px]">
+              <ToolGroup calls={item.calls} />
+            </div>
+          );
+        }
+
+        if (item.kind === "interaction") {
+          return (
+            <div key={`interaction-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
+              <InteractionBlockWithRenderers items={item.items} origin={item.origin} />
+            </div>
+          );
+        }
+
+        const offsetKey = `${item.messageIndex}-${item.blockIndex}`;
+        return (
+          <div key={`b-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
+            {renderBlock(
+              item.block,
+              renderingQuery,
+              false,
+              searchOffsets.get(offsetKey) ?? 0,
+              currentOcc,
+            )}
+          </div>
+        );
+      });
+
   return (
     <div className="w-full">
       <div className="max-w-full min-w-0 flex flex-col">
         <div className="flex items-center gap-2 mb-0.5 text-[11px]">
           <span className="font-medium text-muted-foreground">{t("sessions.assistant")}</span>
         </div>
-        <div className="min-w-0 max-w-full space-y-2 rounded-xl px-3 py-2 bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)]">
-          {items.map((item, idx) => {
-            if (item.kind === "tool-group") {
-              return (
-                <div key={`tg-${idx}`} className="rounded-[8px]">
-                  <ToolGroup calls={item.calls} />
-                </div>
-              );
-            }
-
-            if (item.kind === "interaction") {
-              return (
-                <div key={`interaction-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
-                  <InteractionBlockWithRenderers items={item.items} origin={item.origin} />
-                </div>
-              );
-            }
-
-            const offsetKey = `${item.messageIndex}-${item.blockIndex}`;
-            return (
-              <div key={`b-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
-                {renderBlock(
-                  item.block,
-                  renderingQuery,
-                  false,
-                  searchOffsets.get(offsetKey) ?? 0,
-                  currentOcc,
-                )}
-              </div>
-            );
-          })}
+        {/* v0.9.5 需求4 P2：三段式——已工作折叠 + 正文 + 文件改动概览。 */}
+        <div className="min-w-0 max-w-full rounded-xl px-3 py-2 bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)]">
+          <TurnGroupView
+            segments={segments}
+            renderTextItems={renderItems}
+            renderWorkItems={renderItems}
+          />
         </div>
         <div className="self-start">
           <CopyButton text={copyText} />
@@ -511,6 +524,7 @@ function AssistantBubble({
     </div>
   );
 }
+
 
 function UserBubble({
   msg,
