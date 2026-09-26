@@ -62,8 +62,9 @@ fn maybe_prefix_image_dispatch_hint(message: &str) -> String {
         return message.to_string();
     }
     format!(
-        "[图片处理] 本条消息含图片，而你不支持图像输入——直接调用 dispatch_subagent 工具识别：images 参数取上方附件行「图片N（批次 …）」中的磁盘路径，省略 model（自动选择识图模型），task 写清要识别什么。不要自行读图、不要查询其他智能体。
-{}",
+        "{}本条消息含图片，而你不支持图像输入——直接调用 dispatch_subagent 工具识别：images 参数取上方附件行「图片N（批次 …）」中的磁盘路径，省略 model（自动选择识图模型），task 写清要识别什么。不要自行读图、不要查询其他智能体。{}\n{}",
+        agent::tool_plugin::IMAGE_DISPATCH_OPEN,
+        agent::tool_plugin::IMAGE_DISPATCH_CLOSE,
         message
     )
 }

@@ -21,6 +21,10 @@ pub const TOOL_BLOCK_CLOSE: &str = "</jishu-tool-plugins>";
 /// v0.9.2：MCP 解析服务提示块标记（agent 可见、展示面剥离）。
 pub const MCP_HINT_OPEN: &str = "<jishu-mcp-hint>";
 pub const MCP_HINT_CLOSE: &str = "</jishu-mcp-hint>";
+/// v0.9.5 需求2：图片委派提示块标记（agent 可见、展示面剥离——
+/// 消息带图且当前模型不识图时的动态直给，回放同链剥离）。
+pub const IMAGE_DISPATCH_OPEN: &str = "<jishu-image-dispatch>";
+pub const IMAGE_DISPATCH_CLOSE: &str = "</jishu-image-dispatch>";
 
 #[derive(Debug)]
 pub struct ToolPlugin {
@@ -367,7 +371,25 @@ pub fn extract_tool_snapshot(text: &str) -> (String, Vec<String>) {
 
 /// 剥离注入块（回放路径）。兼容块后紧跟的空行残留；无标记时原样返回。
 pub fn strip_tool_block(text: &str) -> String {
-    strip_mcp_hint_block(&strip_plugins_block(text))
+    strip_image_dispatch_block(&strip_mcp_hint_block(&strip_plugins_block(text)))
+}
+
+/// 剥离 <jishu-image-dispatch>…</jishu-image-dispatch>（图片委派提示，
+/// v0.9.5 需求2——展示面不可见）。
+fn strip_image_dispatch_block(text: &str) -> String {
+    let Some(start) = text.find(IMAGE_DISPATCH_OPEN) else {
+        return text.to_string();
+    };
+    let mut result = String::new();
+    let prefix = &text[..start];
+    if !prefix.trim().is_empty() {
+        result.push_str(prefix);
+    }
+    if let Some(end_rel) = text[start..].find(IMAGE_DISPATCH_CLOSE) {
+        let after = &text[start + end_rel + IMAGE_DISPATCH_CLOSE.len()..];
+        result.push_str(after.trim_start_matches(['\r', '\n']));
+    }
+    result.trim_end().to_string()
 }
 
 /// 剥离 <jishu-mcp-hint>…</jishu-mcp-hint>（MCP 解析服务提示，展示面不可见）。
