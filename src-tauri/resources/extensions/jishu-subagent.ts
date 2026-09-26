@@ -23,7 +23,7 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 
 /** 默认超时（秒）。 */
-const DEFAULT_TIMEOUT_SECS = 300;
+const DEFAULT_TIMEOUT_SECS = 120;
 /** 子进程 stdout 上限（字节）。 */
 const MAX_OUTPUT_BYTES = 512 * 1024;
 
@@ -120,7 +120,7 @@ export default function jishuSubagentExtension(pi: ExtensionAPI): void {
           "当你发现某类任务超出自身能力（如无法读取图片内容）时，把任务委派给下方目录中**具备该能力的模型**执行——调用 dispatch_subagent 工具即可。",
           "⚠ 委派不是切换智能体：仍在同一智能体内，仅子任务换模型执行。不要去查询/切换其他智能体来完成这类任务。",
           "⚠ 图片路径直取：用户消息带图片时，消息中的附件行（形如「图片1（批次 …）: C:\…\pasted-image-0.png」）就是图片的**磁盘绝对路径**——直接取该路径作为 images 参数传给 dispatch_subagent，不要用 ls/find/grep 搜索文件，也不要先读图自己描述。",
-          "task 写清完整要求（自包含——subagent 看不到本对话）；省略 model 且带 images 时自动选择支持图像输入的模型。",
+          "task 写清完整要求（自包含——subagent 看不到本对话）；省略 model 且带 images 时自动选择支持图像输入的模型。task 必须按用户实际问题定制识别目标：把用户问题转写成针对图片的具体分析任务（问数据就读数据、问文字就提取文字、问布局就描述布局），不要写「识别这张图」这类泛泛指令。",
           "何时不委派：任务你自己能做、或强依赖当前会话上下文。",
           "可用模型目录（含能力标注）：",
                     catalogSummary(),
@@ -156,7 +156,7 @@ export default function jishuSubagentExtension(pi: ExtensionAPI): void {
       "dispatch_subagent: 委派子任务给其他模型（带图时省略 model=自动选识图模型），task 须自包含",
     parameters: Type.Object({
       task: Type.String({
-        description: "委派给 subagent 的完整任务描述（自包含：目标、输入说明、期望产出格式）",
+        description: "委派任务描述（自包含）。⚠ 按用户实际问题定制：把用户问题转写成针对输入（图片等）的具体分析任务——用户问图表数据就写「读取图表并回答X」，不要写「识别这张图」这类泛泛指令。subagent 看不到当前对话，目标/输入说明/期望产出格式都要写全。",
       }),
       model: Type.Optional(
         Type.String({
@@ -205,6 +205,7 @@ export default function jishuSubagentExtension(pi: ExtensionAPI): void {
       const cliArgs: string[] = [];
       if (provider) cliArgs.push("--provider", provider);
       if (model) cliArgs.push("--model", model);
+      cliArgs.push("--no-auto-retry"); // 一次性任务：失败快速失败（不进 retry 退避）
       cliArgs.push("--print", task);
       for (const img of images) {
         cliArgs.push(img.startsWith("@") ? img : `@${img}`);

@@ -274,6 +274,35 @@ pub(crate) fn visibility_map(
     Ok(map)
 }
 
+/// v0.9.5 需求2：可见模型清单 env 值（hub_context_envs 注入 → subagent
+/// 扩展过滤）——models.json 全目录减去显式 hidden；空清单返回 None（env
+/// 不注入 = 扩展全可见，向后兼容）。
+pub(crate) fn visible_models_env_value(agent_id: &str) -> Option<String> {
+    let hidden = visibility_map(agent_id).ok()?;
+    if hidden.is_empty() {
+        return None;
+    }
+    // 全目录：models.json 各 provider 的模型。
+    let mut visible: Vec<String> = Vec::new();
+    let Ok(config) = crate::agent::jishu_self::pi_models_config::load() else {
+        return None;
+    };
+    for (provider, pconf) in config.providers {
+        let hidden_ids = hidden.get(&provider);
+        for model in pconf.models.unwrap_or_default() {
+            if hidden_ids.is_some_and(|m| m.get(&model.id) == Some(&true)) {
+                continue;
+            }
+            visible.push(format!("{provider}/{}", model.id));
+        }
+    }
+    if visible.is_empty() {
+        Some(String::new())
+    } else {
+        Some(visible.join(","))
+    }
+}
+
 /// 读取渠道内显式可见性记录（无记录 = 空对象 → 前端走默认规则）。
 #[tauri::command]
 pub(crate) async fn model_visibility_list(
