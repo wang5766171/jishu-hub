@@ -1,6 +1,6 @@
 import { memo, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight, MessageCircleQuestion } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, MessageCircleQuestion } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { devLog } from "@/lib/dev-log";
 import { dedupeInteractionItems } from "@/lib/interaction-tools";
@@ -124,12 +124,19 @@ export const InteractionCard = memo(function InteractionCard({
                             : "border-border/40 bg-muted/10 text-muted-foreground",
                         )}
                       >
+                        {/* v0.9.5 需求5 测试期（用户裁决）：选中指示统一为
+                            「实心主色圆 + 镂空对号」——与活卡 composer 一致，
+                            单选/多选同款。 */}
                         <span
                           className={cn(
-                            "mt-[3px] inline-block h-3.5 w-3.5 shrink-0 rounded-full border",
-                            selected ? "border-primary bg-primary/80" : "border-muted-foreground/40",
+                            "mt-[3px] flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
+                            selected
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : "border-muted-foreground/40",
                           )}
-                        />
+                        >
+                          {selected && <Check className="h-2.5 w-2.5" strokeWidth={3} />}
+                        </span>
                         <span className="min-w-0 flex-1">
                           <span className={cn("block", selected && "font-medium")}>{opt.label}</span>
                           {opt.description && (
@@ -213,8 +220,13 @@ export function InteractionBlockWithRenderers({
             block={{
               type: "interaction",
               text: item.prompt,
-              options: (item.options ?? []).map((o) => ({ id: o.option_id, label: o.label })),
+              options: (item.options ?? []).map((o) => ({
+                id: o.option_id,
+                label: o.label,
+                description: o.description ?? null,
+              })),
               answer: item.answer || undefined,
+              selectedOptions: item.selectedOptions,
               origin,
               renderSource: sourceBadge,
             }}

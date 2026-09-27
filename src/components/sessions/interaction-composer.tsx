@@ -134,7 +134,7 @@ export function InteractionComposer({
             >
               <span
                 className={cn(
-                  "mt-0.5 flex h-5 min-w-5 items-center justify-center rounded-md border px-1 text-[10px] font-bold",
+                  "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] font-bold",
                   selected
                     ? "border-primary bg-primary text-primary-foreground"
                     : "border-border bg-muted/70 text-muted-foreground",
@@ -169,7 +169,7 @@ export function InteractionComposer({
           >
             <span
               className={cn(
-                "mt-0.5 flex h-5 min-w-5 items-center justify-center rounded-md border px-1 text-[10px] font-bold",
+                "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] font-bold",
                 customSelected
                   ? "border-primary bg-primary text-primary-foreground"
                   : "border-border bg-muted/70 text-muted-foreground",

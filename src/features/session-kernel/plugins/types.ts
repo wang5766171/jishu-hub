@@ -54,8 +54,8 @@ export interface PluginBlock {
   output?: string;
   /** tool_result 是否错误。 */
   isError?: boolean;
-  /** interaction 选项。 */
-  options?: Array<{ id: string; label: string }>;
+  /** interaction 选项（description 为选项说明次行；v0.9.5 需求5 T6 透传）。 */
+  options?: Array<{ id: string; label: string; description?: string | null }>;
   /** phase_divider 标题（v0.9.3 需求10 B1：插件接管渲染所需的完整块数据）。 */
   title?: string;
   /** interaction 来源（v0.9.4 需求11：插件委托内置卡时的 origin 透传）。 */
@@ -64,6 +64,9 @@ export interface PluginBlock {
   renderSource?: string;
   /** interaction 已选答案。 */
   answer?: string;
+  /** interaction 已选选项 id 列表（多选高亮；v0.9.5 需求5 T6——此前插件
+   * 中转丢字段致多选回放仅剩答案文字行）。 */
+  selectedOptions?: string[];
   /** thinking 内容。 */
   thinking?: string;
 }

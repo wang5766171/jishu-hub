@@ -19,8 +19,15 @@ function InteractionBlockRenderer({ block }: { block: PluginBlock }) {
     <InteractionCard
       items={[{
         prompt: block.text ?? "",
-        options: (block.options ?? []).map((o) => ({ option_id: o.id, label: o.label })),
+        options: (block.options ?? []).map((o) => ({
+          option_id: o.id,
+          label: o.label,
+          description: o.description ?? null,
+        })),
         answer: block.answer ?? "",
+        // v0.9.5 需求5 T6：selectedOptions 透传——多选回放以选项高亮表达
+        //（此前插件中转丢字段，多选只剩下方答案文字行）。
+        selectedOptions: block.selectedOptions,
       }]}
       origin={block.origin}
       renderSource={block.renderSource}

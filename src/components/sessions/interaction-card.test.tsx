@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { InteractionCard } from "./interaction-card";
+import { interactionRenderPlugin } from "@/features/session-kernel/plugins/builtin/interaction-render";
 
 describe("InteractionCard", () => {
   beforeAll(async () => {
@@ -84,5 +85,38 @@ describe("InteractionCard", () => {
     );
     // 答案可由选项高亮表达 → 不再显示答案文本行
     expect(screen.queryByText("2. 小明 — 再读一遍", { selector: "p" })).not.toBeInTheDocument();
+  });
+
+  it("v0.9.5 需求5 T6：插件渲染链透传 selectedOptions——多选回放以选项高亮表达，不落答案文字行", () => {
+    // session.interaction-render 插件的真实 BlockComponent（经 useBlockRenderers
+    // 咨询命中后的渲染路径，即 GUI 回放实际走的链）
+    const Block = (interactionRenderPlugin.mounts[0] as unknown as {
+      BlockComponent: React.ComponentType<{ block: Record<string, unknown> }>;
+    }).BlockComponent;
+    render(
+      <Block
+        block={{
+          type: "interaction",
+          text: "[多选题] 哪些东西被打破后大家很高兴？",
+          options: [
+            { id: "1. 世界纪录 — 运动员最爱", label: "1. 世界纪录 — 运动员最爱" },
+            { id: "2. 沉默 — 会议需要", label: "2. 沉默 — 会议需要" },
+            { id: "3. 僵局 — 谈判需要", label: "3. 僵局 — 谈判需要" },
+          ],
+          answer: "3. 僵局 — 谈判需要" + String.fromCharCode(10) + "2. 沉默 — 会议需要",
+          selectedOptions: ["3. 僵局 — 谈判需要", "2. 沉默 — 会议需要"],
+        }}
+      />,
+    );
+    // 净化后标签 + 两项选中高亮（font-medium）
+    const silence = screen.getByText("沉默");
+    const deadlock = screen.getByText("僵局");
+    expect(silence.className).toContain("font-medium");
+    expect(deadlock.className).toContain("font-medium");
+    // 未选中项不高亮
+    const record = screen.getByText("世界纪录");
+    expect(record.className).not.toContain("font-medium");
+    // 已可由选项高亮表达 → 不再渲染答案文字行
+    expect(screen.queryByText(/3\. 僵局/)).not.toBeInTheDocument();
   });
 });
