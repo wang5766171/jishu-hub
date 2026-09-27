@@ -3,7 +3,7 @@ import { Check, ListChecks, Send } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
-import { validateInteractionSubmission } from "@/lib/conversation-interaction";
+import { decorateInteractionOptions, validateInteractionSubmission } from "@/lib/conversation-interaction";
 import { cn } from "@/lib/utils";
 import type {
   ConversationInteractionRequest,
@@ -39,6 +39,13 @@ export function InteractionComposer({
   const selectedOptionSet = useMemo(
     () => new Set(selectedOptionIds),
     [selectedOptionIds],
+  );
+
+  // v0.9.5 需求5 测试期：rpiv-ask 选项串展示净化（剥序号/统一描述隐藏）——
+  // 提交仍用原始 optionId，协议不变。
+  const displayOptions = useMemo(
+    () => decorateInteractionOptions(request.options),
+    [request.options],
   );
 
   const toggleOption = (optionId: string) => {
@@ -108,7 +115,7 @@ export function InteractionComposer({
       </div>
 
       <div className="grid gap-2.5 sm:grid-cols-2">
-        {request.options.map((option, index) => {
+        {displayOptions.map((option, index) => {
           const selected = selectedOptionSet.has(option.optionId);
           return (
             <button
@@ -146,7 +153,7 @@ export function InteractionComposer({
             </button>
           );
         })}
-        {request.allowCustomText && request.options.length > 0 ? (
+        {request.allowCustomText && displayOptions.length > 0 ? (
           <button
             type="button"
             aria-pressed={customSelected}
@@ -168,7 +175,7 @@ export function InteractionComposer({
                   : "border-border bg-muted/70 text-muted-foreground",
               )}
             >
-              {customSelected ? <Check className="h-3 w-3" /> : String.fromCharCode(65 + request.options.length)}
+              {customSelected ? <Check className="h-3 w-3" /> : String.fromCharCode(65 + displayOptions.length)}
             </span>
             <span className="min-w-0">
               <span className="block text-sm font-medium">
@@ -179,7 +186,7 @@ export function InteractionComposer({
         ) : null}
       </div>
 
-      {request.allowCustomText && (customSelected || request.options.length === 0) ? (
+      {request.allowCustomText && (customSelected || displayOptions.length === 0) ? (
         <textarea
           value={customText}
           onChange={(event) => {

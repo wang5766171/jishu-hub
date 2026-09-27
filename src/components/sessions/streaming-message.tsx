@@ -13,6 +13,7 @@ import { resolveToolKind } from "@/components/observability/tool-call-card/types
 import type { ToolCall } from "@/components/observability/tool-call-card";
 import type { ContentBlock } from "@/types";
 import { InteractionBlockWithRenderers } from "./interaction-card";
+import { devLog } from "@/lib/dev-log";
 import { dedupeInteractionItems, isInteractionToolName, isInteractionToolUseBlock } from "@/lib/interaction-tools";
 import { PhaseDivider, ThinkingBlock } from "./conversation-content";
 
@@ -299,6 +300,8 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
         }
 
         if (part.kind === "interaction") {
+          // v0.9.5 需求5 T3 排查：流式 part 渲染点
+          devLog("session", "ia-render:stream-part", { items: part.items.length });
           return (
             <div key={`interaction-${i}`} className="w-full">
               <div className="max-w-full min-w-0 flex flex-col">

@@ -1,6 +1,7 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { devLog } from "@/lib/dev-log";
 import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -278,6 +279,8 @@ function renderBlock(
     case "thinking":
       return <ThinkingBlock block={block} />;
     case "interaction":
+      // v0.9.5 需求5 T3 排查：单块渲染点
+      devLog("session", "ia-render:block", { prompt: block.prompt.slice(0, 24) });
       return (
         <InteractionBlockWithRenderers items={[interactionBlockToItem(block)]} origin={block.origin} />
       );
@@ -482,8 +485,16 @@ function AssistantBubble({
         }
 
         if (item.kind === "interaction") {
+          // v0.9.5 需求5 T3 排查：assistant 组渲染点（带间距修复的分支）
+          devLog("session", "ia-render:assistant-group", {
+            items: item.items.length,
+            blockIndex: item.blockIndex,
+          });
           return (
-            <div key={`interaction-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
+            <div
+              key={`interaction-${item.messageIndex}-${item.blockIndex}`}
+              className="overflow-hidden [&:not(:first-child)]:mt-3"
+            >
               <InteractionBlockWithRenderers items={item.items} origin={item.origin} />
             </div>
           );
@@ -582,8 +593,16 @@ function UserBubble({
             }
 
             if (item.kind === "interaction") {
+              // v0.9.5 需求5 T3 排查：user 组渲染点（带间距修复的分支）
+              devLog("session", "ia-render:user-group", {
+                items: item.items.length,
+                blockIndex: item.blockIndex,
+              });
               return (
-                <div key={`interaction-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
+                <div
+                  key={`interaction-${item.messageIndex}-${item.blockIndex}`}
+                  className="overflow-hidden [&:not(:first-child)]:mt-3"
+                >
                   <InteractionBlockWithRenderers items={item.items} origin={item.origin} />
                 </div>
               );

@@ -6,7 +6,44 @@ import type {
 
 interface InteractionSubmissionInput {
   selectedOptionIds: string[];
-  customText?: string;
+  customText?: string | null;
+}
+
+/**
+ * v0.9.5 需求5 测试期：rpiv-ask RPC 问答器把每题选项烘焙成
+ * "N. label — description" 单串（含自动追加的哨兵行已被 hub 剥离）。
+ * 展示层净化（不改协议——提交仍回传原始 optionId/串）：
+ * - 全员命中 "N. " 前缀 → 剥序号（卡片自带 A/B/C 徽标，双编号冗余）；
+ * - 拆出 label/description，description 全部相同（模型被要求"别给提示"时的
+ *   统一占位文案，如「就选这个？」）或为空 → 不展示；
+ * - description 各不相同（真实权衡说明）→ label 主行 + description 次行。
+ * 非 rpiv 形态（无序号前缀，如 conductor 的原生 select）原样返回。
+ */
+export function decorateInteractionOptions<
+  T extends { optionId?: string; option_id?: string; label: string; description?: string | null },
+>(options: T[]): Array<T & { label: string; description: string | null }> {
+  const numbered = options.map((option) => option.label.match(/^(\d+)\.\s*(.*)$/s));
+  const allNumbered = numbered.length > 0 && numbered.every((m) => m !== null);
+  if (!allNumbered) {
+    return options.map((option) => ({ ...option, description: option.description ?? null }));
+  }
+  const parsed = options.map((_option, index) => {
+    const rest = numbered[index]![2];
+    const sep = rest.indexOf(" — ");
+    if (sep >= 0) {
+      return { label: rest.slice(0, sep), description: rest.slice(sep + 3) };
+    }
+    return { label: rest, description: "" };
+  });
+  const descs = parsed.map((p) => p.description.trim());
+  const allHaveDesc = descs.every((d) => d.length > 0);
+  const uniform = allHaveDesc && new Set(descs).size === 1;
+  return options.map((option, index) => ({
+    ...option,
+    label: parsed[index]!.label,
+    description:
+      allHaveDesc && !uniform ? parsed[index]!.description : option.description ?? null,
+  }));
 }
 
 export function validateInteractionSubmission(

@@ -1159,6 +1159,33 @@ async fn pi_rpc_connection_loop(
                                 msg.get("method").and_then(|v| v.as_str()).unwrap_or("?"),
                                 msg.get("id").and_then(|v| v.as_str()).unwrap_or("?"),
                             );
+                            // v0.9.5 需求5 测试期 T1：rpiv-ask 哨兵行适配——select
+                            // 末项为 "N. Type something." 时剥离（自定义入口收敛
+                            // 到 hub 卡片自带「其他」），登记 request_id→哨兵原文
+                            //（respond_chat_interaction 应答改写用）。
+                            let msg = strip_sentinel_option(msg);
+                            // T1：哨兵追问的 input 到达且本会话挂有自动应答文本
+                            // → 幕后直接回填，不转发前端（用户一次输入直接生效，
+                            // 扩展收到合法的「哨兵→input 文本」两步协议）。
+                            if msg.get("method").and_then(|v| v.as_str()) == Some("input") {
+                                let auto_answer = take_interaction_auto_answer(&session_id);
+                                if let Some(text) = auto_answer {
+                                    let id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                    log::info!(
+                                        "[pi-ext] sentinel follow-up auto-answered (session {session_id}, id {id})"
+                                    );
+                                    let _ = send_pi_command(
+                                        &stdin_arc,
+                                        &json!({
+                                            "type": "extension_ui_response",
+                                            "id": id,
+                                            "value": text
+                                        }),
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                            }
                             if let Some(event) = convert_extension_ui_request(&msg) {
                                 // Track only requests that actually wait for a response.
                                 if matches!(event, NormalizedEvent::InteractionRequest { .. }) {
@@ -2184,6 +2211,100 @@ struct PiToolApproval {
     summary: String,
 }
 
+/// v0.9.5 需求5 测试期 T1：rpiv-ask 哨兵行适配。包的 RPC 问答器给每道
+/// 单选题自动追加 "N. Type something." 自定义输入行（i18n 未装时英文
+/// 兜底，包固有设计不可配置）；hub 卡片另有自带「其他」输入——双入口
+/// 重复且语义错位（哨兵行需二次输入、纯文本回传会被扩展按取消处理）。
+/// 适配三步（02 测试期 T1 定案）：① select 末项命中哨兵 → 从卡面剥离
+/// （登记 request_id→哨兵原文）；② 「其他」纯文本应答 → 回传改写为哨兵
+/// 原文（扩展协议要求选项原文），原文暂存；③ 哨兵触发的 input 追问到达
+/// → 用暂存文本幕后自动应答（不转发前端）。检测失败优雅降级走旧路径。
+fn is_sentinel_option(option: &str) -> bool {
+    let Some(rest) = option.strip_suffix("Type something.") else {
+        return false;
+    };
+    let Some(num) = rest.strip_suffix(". ") else {
+        return false;
+    };
+    !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// T1：request_id → 哨兵选项原文（应答改写取用即消费）。
+static INTERACTION_SENTINELS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// T1：session_id → 用户自定义文本（哨兵追问 input 到达时自动应答）。
+static INTERACTION_AUTO_ANSWER: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// T1 ①：select 请求剥离末尾哨兵行（非 select / 无哨兵原样返回）。
+fn strip_sentinel_option(mut msg: serde_json::Value) -> serde_json::Value {
+    if msg.get("method").and_then(|v| v.as_str()) != Some("select") {
+        return msg;
+    }
+    let Some(options) = msg.get_mut("options").and_then(|v| v.as_array_mut()) else {
+        return msg;
+    };
+    let sentinel = match options.last().and_then(|v| v.as_str()) {
+        Some(last) if is_sentinel_option(last) => last.to_string(),
+        _ => return msg,
+    };
+    options.pop();
+    if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
+        INTERACTION_SENTINELS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.to_string(), sentinel);
+    }
+    msg
+}
+
+/// T1 ③：取走（消费）本会话挂起的哨兵自动应答文本。
+fn take_interaction_auto_answer(session_id: &str) -> Option<String> {
+    INTERACTION_AUTO_ANSWER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(session_id)
+}
+
+/// T1 ②：应答改写——PiRpc select 的「其他」纯文本应答（无选中项）且该
+/// 请求挂有哨兵时，回传哨兵原文、暂存用户文本（chat.rs respond 路径调用；
+/// 其余情形原样返回 value）。
+pub(crate) fn rewrite_sentinel_response(
+    request_id: &str,
+    session_id: &str,
+    value: &str,
+    interaction: Option<&serde_json::Value>,
+) -> String {
+    if value.is_empty() {
+        return value.to_string();
+    }
+    let selected_empty = interaction
+        .and_then(|v| v.get("selected_options"))
+        .and_then(|v| v.as_array())
+        .map_or(true, |arr| arr.is_empty());
+    if !selected_empty {
+        return value.to_string();
+    }
+    let sentinel = INTERACTION_SENTINELS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(request_id);
+    match sentinel {
+        Some(s) => {
+            INTERACTION_AUTO_ANSWER
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(session_id.to_string(), value.to_string());
+            log::info!("[pi-ext] sentinel rewrite for request {request_id} (session {session_id})");
+            s
+        }
+        None => value.to_string(),
+    }
+}
+
 fn convert_extension_ui_request(msg: &serde_json::Value) -> Option<NormalizedEvent> {
     let method = msg.get("method").and_then(|v| v.as_str())?;
     let id = msg.get("id").and_then(|v| v.as_str())?.to_string();
@@ -2533,6 +2654,97 @@ fn flush_buf(emit: &AcpEventEmit, session_id: &str, buf: &mut Vec<NormalizedEven
 #[cfg(test)]
 mod tests {
     use super::handle_hub_invoke;
+
+    /// v0.9.5 需求5 测试期 T1：rpiv-ask 哨兵行判定——精确匹配
+    /// "N. Type something."（N 为纯数字），其他形态（含正常选项）不命中。
+    #[test]
+    fn sentinel_option_detection() {
+        assert!(super::is_sentinel_option("4. Type something."));
+        assert!(super::is_sentinel_option("1. Type something."));
+        assert!(!super::is_sentinel_option("1. 红 — 红色选项"));
+        assert!(!super::is_sentinel_option("Type something."));
+        assert!(!super::is_sentinel_option("x. Type something."));
+        assert!(!super::is_sentinel_option("12. Type something. extra"));
+    }
+
+    /// T1 ①：select 末项哨兵剥离 + 登记；非 select / 无哨兵原样返回。
+    #[test]
+    fn strip_sentinel_from_select_request() {
+        let msg = serde_json::json!({
+            "type": "extension_ui_request",
+            "method": "select",
+            "id": "t1-strip",
+            "title": "颜色？",
+            "options": ["1. 红 — 红", "2. 绿 — 绿", "3. Type something."]
+        });
+        let stripped = super::strip_sentinel_option(msg.clone());
+        let options = stripped["options"].as_array().unwrap();
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].as_str().unwrap(), "1. 红 — 红");
+        // 登记可取回（取用即消费）
+        {
+            let mut reg = super::INTERACTION_SENTINELS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            assert_eq!(reg.remove("t1-strip").as_deref(), Some("3. Type something."));
+        }
+        // 无哨兵：原样
+        let plain = serde_json::json!({
+            "method": "select", "id": "t1-plain", "options": ["a", "b"]
+        });
+        assert_eq!(super::strip_sentinel_option(plain.clone()), plain);
+        // input 方法：不动
+        let input = serde_json::json!({"method": "input", "id": "t1-in", "title": "q"});
+        assert_eq!(super::strip_sentinel_option(input.clone()), input);
+    }
+
+    /// T1 ②：应答改写——无选中项纯文本 + 挂有哨兵 → 回传哨兵并暂存文本；
+    /// 有选中项 / 未挂哨兵 → 原样。
+    #[test]
+    fn sentinel_response_rewrite_rules() {
+        // 准备登记（本测试独立 key）
+        {
+            let mut reg = super::INTERACTION_SENTINELS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.insert("t2-rw".to_string(), "3. Type something.".to_string());
+        }
+        let interaction = serde_json::json!({"selected_options": []});
+        let rewritten = super::rewrite_sentinel_response(
+            "t2-rw",
+            "t2-session",
+            "自定义：蓝色",
+            Some(&interaction),
+        );
+        assert_eq!(rewritten, "3. Type something.");
+        // 暂存文本可取（消费式）
+        {
+            let mut stash = super::INTERACTION_AUTO_ANSWER
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            assert_eq!(
+                stash.remove("t2-session").as_deref(),
+                Some("自定义：蓝色")
+            );
+        }
+        // 已消费（登记被取走）：再次应答原样返回
+        assert_eq!(
+            super::rewrite_sentinel_response("t2-rw", "t2-session", "再来一次", Some(&interaction)),
+            "再来一次"
+        );
+        // 有选中项（普通选项点击）：即使挂哨兵也不改写
+        {
+            let mut reg = super::INTERACTION_SENTINELS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.insert("t2-opt".to_string(), "3. Type something.".to_string());
+        }
+        let with_selection = serde_json::json!({"selected_options": ["1. 红 — 红"]});
+        assert_eq!(
+            super::rewrite_sentinel_response("t2-opt", "s", "1. 红 — 红", Some(&with_selection)),
+            "1. 红 — 红"
+        );
+    }
 
     // v0.9.2 测试期：plugin_preview_html 校验阶梯——文件存在性/扩展名/大小
     // 逐级拒绝；合法文件在无 Hub 句柄的测试环境落到「界面未就绪」分支

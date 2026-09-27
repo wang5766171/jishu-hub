@@ -2,8 +2,26 @@ import { memo, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, MessageCircleQuestion } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { devLog } from "@/lib/dev-log";
 import { dedupeInteractionItems } from "@/lib/interaction-tools";
+import { decorateInteractionOptions } from "@/lib/conversation-interaction";
 import { useBlockRenderers, matchBlockTypeRenderer } from "@/features/session-kernel/plugins/mounts/use-block-renderers";
+
+/**
+ * v0.9.5 需求5 测试期 T4：选项选中判定——selected_options 精确命中优先；
+ * answer 兜底改**精确等值**（answer === option_id / label）。原子串包含
+ * （answer.includes(label)）在 rpiv 自定义答案场景误高亮——净化后的短
+ * 标签（如「小明」）被自定义文本（如「小明明」）子串命中。旧数据
+ *（request_user_input 时代 option_id = 选项原文 = answer）精确等值同样成立。
+ */
+function isOptionSelected(
+  item: Pick<InteractionCardItem, "selectedOptions" | "answer">,
+  opt: Pick<InteractionCardOption, "option_id" | "label">,
+): boolean {
+  if (item.selectedOptions?.includes(opt.option_id)) return true;
+  if (!item.answer) return false;
+  return item.answer === opt.option_id || item.answer === opt.label;
+}
 
 export interface InteractionCardOption {
   option_id: string;
@@ -35,7 +53,22 @@ export const InteractionCard = memo(function InteractionCard({
   void origin;
   const { t } = useTranslation();
   const [open, setOpen] = useState(defaultOpen);
-  const itemsToRender = useMemo(() => dedupeInteractionItems(items), [items]);
+  // v0.9.5 需求5 T3 排查：每张卡的实际渲染（items 数 / 展开态 / 渲染链）。
+  devLog("session", "ia-card", {
+    items: items.length,
+    open: defaultOpen,
+    source: renderSource ?? "builtin",
+  });
+  const itemsToRender = useMemo(
+    () =>
+      dedupeInteractionItems(items).map((item) => ({
+        ...item,
+        // v0.9.5 需求5 测试期：rpiv-ask 选项串展示净化（剥序号/统一描述
+        // 隐藏）；选中判定仍按原始 option_id，答案文本子串匹配不受影响。
+        options: item.options ? decorateInteractionOptions(item.options) : item.options,
+      })),
+    [items],
+  );
 
   return (
     <div
@@ -80,8 +113,7 @@ export const InteractionCard = memo(function InteractionCard({
               {item.options && item.options.length > 0 && (
                 <div className="space-y-1">
                   {item.options.map((opt) => {
-                    const selected = item.selectedOptions?.includes(opt.option_id)
-                      || (item.answer ? item.answer.includes(opt.label) : false);
+                    const selected = isOptionSelected(item, opt);
                     return (
                       <div
                         key={opt.option_id}
@@ -114,10 +146,7 @@ export const InteractionCard = memo(function InteractionCard({
                   「答了什么」；自定义文本回答（不匹配任何选项）或无选项时
                   才显示答案文本行。 */}
               {(() => {
-                const selectedHit = (item.options ?? []).some((opt) =>
-                  item.selectedOptions?.includes(opt.option_id)
-                  || (item.answer ? item.answer.includes(opt.label) : false),
-                );
+                const selectedHit = (item.options ?? []).some((opt) => isOptionSelected(item, opt));
                 const showAnswerLine = !selectedHit;
                 if (!showAnswerLine) return null;
                 return (
@@ -172,8 +201,12 @@ export function InteractionBlockWithRenderers({
     const Block = renderer.BlockComponent;
     // 徽标经 PluginBlock.renderSource 透传（插件委托卡时由插件渲染在卡内
     // header 箭头左侧；见 interaction-render 插件委托实现）。
+    // v0.9.5 需求5 T3 定案修复：多题问卷经 buildRenderItems 的「连续
+    // interaction 合并」进同一 item，插件分支逐题平铺渲染——此前裸
+    // Fragment 零间距（真根因；前两轮容器级修复因合并为单 item 不触达）。
+    // 卡间加 12px（约半行字），与 wrapper 层间距口径一致。
     return (
-      <>
+      <div className="[&>*:not(:first-child)]:mt-3">
         {items.map((item, idx) => (
           <Block
             key={idx}
@@ -187,7 +220,7 @@ export function InteractionBlockWithRenderers({
             }}
           />
         ))}
-      </>
+      </div>
     );
   }
   return <InteractionCard items={items} origin={origin} defaultOpen={defaultOpen} renderSource={sourceBadge} />;

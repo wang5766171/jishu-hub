@@ -11,6 +11,7 @@ import { ChevronDown, ChevronRight, FileDiff, Hammer } from "lucide-react";
 import type { RenderItem } from "@/components/sessions/message-view";
 import { fileChangesSummary, type FileChangeEntry } from "@/features/session-kernel/view-model/build-turn-segments";
 import { cn } from "@/lib/utils";
+import { devLog } from "@/lib/dev-log";
 
 export interface TurnGroupViewProps {
   /** 重组后的三段。 */
@@ -33,6 +34,12 @@ export const TurnGroupView = memo(function TurnGroupView({
 }: TurnGroupViewProps) {
   const [workOpen, setWorkOpen] = useState(false);
   const hasWork = segments.workItems.length > 0;
+
+  // v0.9.5 需求5 T3 排查：三段式分组去向（interaction 进 work 还是 text）。
+  devLog("session", "ia-render:turngroup", {
+    work: segments.workItems.map((i) => i.kind),
+    text: segments.textItems.map((i) => i.kind),
+  });
 
   return (
     <div className="space-y-2">
@@ -57,7 +64,7 @@ export const TurnGroupView = memo(function TurnGroupView({
             </span>
           </button>
           {workOpen && (
-            <div className="space-y-1.5 border-t border-border/30 p-2">
+            <div className="space-y-3 border-t border-border/30 p-2">
               {/* 用户裁决（实测 21:58）：展开直接平铺工具卡与思考（卡自带
                   分类标识——图标+中文名），不加中间分组层（层级简化对齐 zcode）。 */}
               {renderWorkItems(segments.workItems)}
