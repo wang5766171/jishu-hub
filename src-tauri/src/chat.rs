@@ -968,13 +968,27 @@ pub async fn respond_chat_interaction(
             // v0.9.5 需求5 测试期 T1：PiRpc select 的「其他」纯文本应答在挂有
             // 哨兵时改写为哨兵原文回传（扩展协议要求选项原文），用户文本由
             // pi_rpc 侧在哨兵追问 input 到达时自动应答；持久化仍记用户原文。
+            // T5：多选题还原卡的应答翻译（选中项 → "1,3" 序号串）优先——
+            // 两登记集按 request_id 互斥（T1 键为 select id，T5 键为 input id）。
             let wire_value = if persist_with_session_adapter {
-                crate::pi_rpc_runtime::rewrite_sentinel_response(
+                let translated = crate::pi_rpc_runtime::rewrite_multiselect_response(
                     &request_id,
-                    &session_id,
                     &value,
                     interaction.as_ref(),
-                )
+                );
+                if translated != value {
+                    log::info!(
+                        "[pi-ext] multi-select response translated to indices (session {session_id})"
+                    );
+                    translated
+                } else {
+                    crate::pi_rpc_runtime::rewrite_sentinel_response(
+                        &request_id,
+                        &session_id,
+                        &value,
+                        interaction.as_ref(),
+                    )
+                }
             } else {
                 value.clone()
             };

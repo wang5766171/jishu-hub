@@ -36,7 +36,7 @@ pub fn spawn_pi_rpc_session(
     app: tauri::AppHandle,
     agent_id: String,
     pending_session_id: String,
-    mut child: tokio::process::Child,
+    child: tokio::process::Child,
     _project_path: String,
     _requested_session_id: Option<String>,
     first_message: Option<String>,
@@ -842,7 +842,7 @@ async fn pi_rpc_connection_loop(
                                         // 排队）分开，前端对 steering 自动重发、
                                         // followUp 回填输入框。
                                         if success {
-                                            let mut collect = |key: &str| -> Vec<String> {
+                                            let collect = |key: &str| -> Vec<String> {
                                                 let mut out: Vec<String> = Vec::new();
                                                 if let Some(arr) = msg
                                                     .get("data")
@@ -1090,14 +1090,8 @@ async fn pi_rpc_connection_loop(
                                             &request_id,
                                             &approval_ctx,
                                         );
-                                        pending_tool_approvals.insert(
-                                            request_id.clone(),
-                                            PiToolApproval {
-                                                request_id: request_id.clone(),
-                                                tool: tool.to_string(),
-                                                summary: message.clone(),
-                                            },
-                                        );
+                                        pending_tool_approvals
+                                            .insert(request_id.clone(), PiToolApproval);
                                         buf.push(NormalizedEvent::ApprovalRequest {
                                             request_id,
                                             // 审批类型按工具名分类（bash→命令执行，
@@ -1163,7 +1157,10 @@ async fn pi_rpc_connection_loop(
                             // 末项为 "N. Type something." 时剥离（自定义入口收敛
                             // 到 hub 卡片自带「其他」），登记 request_id→哨兵原文
                             //（respond_chat_interaction 应答改写用）。
-                            let msg = strip_sentinel_option(msg);
+                            // T1 + T5：先做 select 哨兵剥离与 input 多选题还原
+                            //（多选题还原把 method 改写为 multiSelect，须在下方
+                            // 哨兵追问自动应答的 input 判定之前）。
+                            let msg = rewrite_multiselect_input(strip_sentinel_option(msg));
                             // T1：哨兵追问的 input 到达且本会话挂有自动应答文本
                             // → 幕后直接回填，不转发前端（用户一次输入直接生效，
                             // 扩展收到合法的「哨兵→input 文本」两步协议）。
@@ -2205,11 +2202,8 @@ pub(crate) fn normalize_pi_agent_event(
 /// `select` and `input` are converted (they require a user response). Fire-and-
 /// forget methods (notify, setStatus, etc.) are ignored.
 /// v0.8.0 需求1 P-2：审批型 extension_ui 的待回写登记（Delegate 路径）。
-struct PiToolApproval {
-    request_id: String,
-    tool: String,
-    summary: String,
-}
+/// 「该 request_id 已登记审批」标记（字段无读取面——ResolvePermission 按 id 回写）。
+struct PiToolApproval;
 
 /// v0.9.5 需求5 测试期 T1：rpiv-ask 哨兵行适配。包的 RPC 问答器给每道
 /// 单选题自动追加 "N. Type something." 自定义输入行（i18n 未装时英文
@@ -2267,6 +2261,113 @@ fn take_interaction_auto_answer(session_id: &str) -> Option<String> {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(session_id)
+}
+
+/// v0.9.5 需求5 测试期 T5：rpiv-ask 多选题 RPC 降级还原。包在 RPC 宿主把
+/// 多选题降级为 `ui.input`——题干塞选项列表 + 英文序号说明（包固有权衡，
+/// rpc-fallback.ts MULTI_SELECT_INSTRUCTIONS 常量）。hub 转换层还原成真
+/// 多选卡：检测该固定格式 → 改写为 multiSelect 交互请求（可点选）；
+/// 作答时把选择翻译回扩展期待的「1,3」序号串（rewrite_multiselect_
+/// response）。检测失败（如装了 rpiv-i18n 后文案本地化）优雅降级为
+/// 原输入框形态。
+const MULTI_SELECT_INSTRUCTIONS: &str = "Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a custom answer as plain text.";
+
+/// T5：request_id 登记集（该 input 已被还原为多选卡，应答需序号翻译）。
+static MULTI_SELECT_REQUESTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+/// 选项行带 "N. " 序号前缀（rpiv formatOptionLine 形态）。
+fn numbered_option_line(line: &str) -> bool {
+    let Some((num, rest)) = line.split_once(". ") else {
+        return false;
+    };
+    !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit()) && !rest.is_empty()
+}
+
+/// T5 ①：input → multiSelect 还原（非多选形态原样返回）。题干结构 =
+/// "{header}{question}\n\n{序号选项行…}\n\n{英文序号说明}"（包侧拼接顺序）。
+fn rewrite_multiselect_input(mut msg: serde_json::Value) -> serde_json::Value {
+    if msg.get("method").and_then(|v| v.as_str()) != Some("input") {
+        return msg;
+    }
+    let Some(title) = msg
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+    else {
+        return msg;
+    };
+    let Some(stripped) = title
+        .strip_suffix(MULTI_SELECT_INSTRUCTIONS)
+        .and_then(|t| t.strip_suffix("\n\n"))
+    else {
+        return msg;
+    };
+    let Some((question, list)) = stripped.split_once("\n\n") else {
+        return msg;
+    };
+    let lines: Vec<String> = list.split('\n').map(str::to_string).collect();
+    if lines.is_empty() || !lines.iter().all(|l| numbered_option_line(l)) {
+        return msg;
+    }
+    let id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if id.is_empty() {
+        return msg;
+    }
+    MULTI_SELECT_REQUESTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(id.clone());
+    msg["method"] = serde_json::Value::String("multiSelect".to_string());
+    msg["title"] = serde_json::Value::String(question.to_string());
+    msg["options"] = serde_json::Value::Array(
+        lines
+            .into_iter()
+            .map(serde_json::Value::String)
+            .collect(),
+    );
+    log::info!("[pi-ext] multi-select input restored to selectable card (id {id})");
+    msg
+}
+
+/// T5 ②：多选卡应答翻译——选中项（"N. xxx" 原文）→ "1,3" 序号串（扩展
+/// grammar：全数字 token 才算选择，否则整串按自定义答案）。纯自定义文本
+/// 原样透传；任一选中项解析不出序号则原样返回（安全降级）。
+pub(crate) fn rewrite_multiselect_response(
+    request_id: &str,
+    value: &str,
+    interaction: Option<&serde_json::Value>,
+) -> String {
+    let known = MULTI_SELECT_REQUESTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(request_id);
+    if !known {
+        return value.to_string();
+    }
+    let selected: Vec<String> = interaction
+        .and_then(|v| v.get("selected_options"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if selected.is_empty() {
+        return value.to_string();
+    }
+    let mut numbers: Vec<String> = Vec::with_capacity(selected.len());
+    for option in &selected {
+        let Some((num, _)) = option.split_once(". ") else {
+            return value.to_string();
+        };
+        if num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit()) {
+            return value.to_string();
+        }
+        numbers.push(num.to_string());
+    }
+    numbers.join(",")
 }
 
 /// T1 ②：应答改写——PiRpc select 的「其他」纯文本应答（无选中项）且该
@@ -2698,6 +2799,96 @@ mod tests {
         assert_eq!(super::strip_sentinel_option(input.clone()), input);
     }
 
+    /// v0.9.5 需求5 测试期 T5：多选题 input 还原——题干含序号选项块 +
+    /// 英文序号说明 → 改写 multiSelect（题干=问句、选项=序号行）；非该
+    /// 形态（普通 input / 选项块非全序号 / select）原样返回。
+    #[test]
+    fn multiselect_input_restored_from_rpc_fallback() {
+        let msg = serde_json::json!({
+            "type": "extension_ui_request",
+            "method": "input",
+            "id": "t5-multi",
+            "title": "[多选题] 哪些鸟不会飞？
+
+1. 企鹅 — 南极
+2. 鸵鸟 — 最大
+3. 天鹅 — 会飞
+
+Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a custom answer as plain text.",
+            "placeholder": "1,3"
+        });
+        let rewritten = super::rewrite_multiselect_input(msg);
+        assert_eq!(rewritten["method"].as_str().unwrap(), "multiSelect");
+        assert_eq!(rewritten["title"].as_str().unwrap(), "[多选题] 哪些鸟不会飞？");
+        let options = rewritten["options"].as_array().unwrap();
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0].as_str().unwrap(), "1. 企鹅 — 南极");
+        assert!(super::MULTI_SELECT_REQUESTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove("t5-multi"));
+
+        // 普通 input（无英文说明）不动
+        let plain = serde_json::json!({"method": "input", "id": "t5-plain", "title": "随便说点什么"});
+        assert_eq!(super::rewrite_multiselect_input(plain.clone()), plain);
+        // 选项块含非序号行 → 不还原（防误伤含空行的题干）
+        let bad = serde_json::json!({
+            "method": "input", "id": "t5-bad",
+            "title": "问题
+
+1. 企鹅 — 南极
+补充说明一行
+
+Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a custom answer as plain text."
+        });
+        assert_eq!(super::rewrite_multiselect_input(bad.clone()), bad);
+        // select 方法不动
+        let sel = serde_json::json!({"method": "select", "id": "t5-sel", "title": "x", "options": ["1. a"]});
+        assert_eq!(super::rewrite_multiselect_input(sel.clone()), sel);
+    }
+
+    /// T5 ②：多选卡应答翻译——选中序号行 → "1,3"；纯自定义文本透传；
+    /// 未登记的请求原样返回。
+    #[test]
+    fn multiselect_response_translated_to_indices() {
+        {
+            let mut reg = super::MULTI_SELECT_REQUESTS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.insert("t5-rw".to_string());
+        }
+        let interaction = serde_json::json!({
+            "selected_options": ["1. 企鹅 — 南极", "3. 天鹅 — 会飞"]
+        });
+        assert_eq!(
+            super::rewrite_multiselect_response("t5-rw", "1. 企鹅 — 南极
+3. 天鹅 — 会飞", Some(&interaction)),
+            "1,3"
+        );
+        // 已消费：再答原样
+        assert_eq!(
+            super::rewrite_multiselect_response("t5-rw", "再来", Some(&interaction)),
+            "再来"
+        );
+        // 纯自定义（无选中）透传
+        {
+            let mut reg = super::MULTI_SELECT_REQUESTS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.insert("t5-custom".to_string());
+        }
+        let custom = serde_json::json!({"selected_options": []});
+        assert_eq!(
+            super::rewrite_multiselect_response("t5-custom", "鹦鹉不会飞", Some(&custom)),
+            "鹦鹉不会飞"
+        );
+        // 未登记请求不动
+        assert_eq!(
+            super::rewrite_multiselect_response("t5-unknown", "1. a", Some(&interaction)),
+            "1. a"
+        );
+    }
+
     /// T1 ②：应答改写——无选中项纯文本 + 挂有哨兵 → 回传哨兵并暂存文本；
     /// 有选中项 / 未挂哨兵 → 原样。
     #[test]
@@ -2828,7 +3019,6 @@ mod tests {
         let _ = std::fs::remove_file(&html);
     }
 
-    #[test]
     /// 真实形态回归：写小说场景的分段（thinking + text + toolCall=write +
     /// toolResults），验证分段记账的精确字段与内容归因。
     #[test]
@@ -2910,6 +3100,7 @@ mod tests {
         assert_eq!(empty.first_kept_entry_id, None);
     }
 
+    #[test]
     fn pi_turn_usage_maps_turn_end_usage_with_watermark() {
         let event = serde_json::json!({
             "type": "turn_end",
@@ -3103,8 +3294,7 @@ mod tests {
     /// streaming state early.  The consequence is that a tool returning
     /// `terminate: true` produces *no* TurnComplete anywhere, which is why the
     /// settle branch in `run_loop` has to synthesise one (B2.5 T3).
-    #[test]
-
+    ///
     /// v0.9.4 需求8：tool_execution_update → ToolUseProgress（partialResult
     /// 透传不解析；无 callId 丢弃）。
     #[test]
@@ -3163,6 +3353,7 @@ mod tests {
         assert!(events.is_empty(), "no callId should be dropped: {events:?}");
     }
 
+        #[test]
         fn tool_use_turn_end_yields_no_events() {
         let events = normalize_pi_agent_event(
             &json!({
