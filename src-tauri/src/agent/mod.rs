@@ -360,7 +360,16 @@ impl AgentRegistry {
         let mut plugins = plugins;
         plugins.extend(plugin::session_plugin_descriptors(&disabled));
         // v0.9.3 需求13 C1：组合式插件（manifest 驱动，前端引擎装配）。
-        plugins.extend(plugin::composed_session_plugin_specs(&disabled));
+        // v0.9.5 需求5 测试期修复：按 id 去重——内置会话描述符与部署组合
+        // 清单可能同 id（session.mermaid-render 双注册，插件中心渲染重复
+        // 卡 + React key 冲突致 tab 切换串台）；内置登记优先保留。
+        let known_ids: std::collections::HashSet<String> =
+            plugins.iter().map(|p| p.id.clone()).collect();
+        plugins.extend(
+            plugin::composed_session_plugin_specs(&disabled)
+                .into_iter()
+                .filter(|p| !known_ids.contains(&p.id)),
+        );
 
         Self {
             agents,
