@@ -163,3 +163,95 @@ mod tests {
         assert!(ids.is_empty());
     }
 }
+
+// ── v0.9.5 需求5 T9：识图路由（解析与话术合成纯函数）──
+mod image_dispatch_tests {
+    use crate::chat::{compose_image_dispatch_hint, resolve_mcp_vision_tools, ImageDispatchRoute};
+
+    #[test]
+    fn mcp_tools_config_empty_falls_back_to_declarations() {
+        let declared = vec![
+            ("zai-mcp-server".to_string(), vec!["analyze_image".to_string()]),
+            ("other".to_string(), vec!["a".to_string(), "b".to_string()]),
+        ];
+        let tools = resolve_mcp_vision_tools("", &declared);
+        assert_eq!(
+            tools,
+            vec![
+                "zai-mcp-server__analyze_image",
+                "other__a",
+                "other__b"
+            ]
+        );
+    }
+
+    #[test]
+    fn mcp_tools_short_name_completed_and_unknown_passthrough() {
+        let declared = vec![("zai-mcp-server".to_string(), vec!["analyze_image".to_string()])];
+        let tools = resolve_mcp_vision_tools("analyze_image, custom__tool, 未声明名", &declared);
+        assert_eq!(
+            tools,
+            vec![
+                "zai-mcp-server__analyze_image",
+                "custom__tool",
+                "未声明名"
+            ]
+        );
+    }
+
+    #[test]
+    fn default_hint_contains_scene_routing_and_fallbacks() {
+        // 显式配置工具时点名直呼（钉定场景）
+        let route = ImageDispatchRoute {
+            custom_prompt: None,
+            mcp_tools: vec!["some-mcp__analyze".to_string()],
+            subagent_model: Some("zhipu/glm-5.3-flash".to_string()),
+        };
+        let hint = compose_image_dispatch_hint(&route);
+        assert!(hint.contains("简单识别"), "缺简单识别路由");
+        assert!(hint.contains("复杂分析"), "缺复杂分析路由");
+        assert!(hint.contains("some-mcp__analyze"));
+        assert!(hint.contains("zhipu/glm-5.3-flash"));
+        assert!(hint.contains(r#""action":"list""#), "缺清单查询步骤");
+        assert!(hint.contains("改用另一条途径"), "缺互为兜底");
+        assert!(hint.contains("严禁编造图片内容"), "缺双败如实告知");
+    }
+
+    #[test]
+    fn default_hint_without_config_lets_agent_discover_mcp_itself() {
+        // 用户裁决：默认不点名任何具体 MCP——模型自行搜索发现识图工具
+        let route = ImageDispatchRoute {
+            custom_prompt: None,
+            mcp_tools: vec![],
+            subagent_model: Some("zhipu/glm-5.3-flash".to_string()),
+        };
+        let hint = compose_image_dispatch_hint(&route);
+        assert!(hint.contains("先自行发现识图工具"), "缺自搜索指引");
+        assert!(hint.contains("hub_mcp_list"), "缺全量列举入口");
+        assert!(hint.contains("describe"), "缺确认步骤");
+        assert!(!hint.contains("zai"), "默认话术不得点名具体 MCP 服务");
+    }
+
+    #[test]
+    fn default_hint_without_tools_or_model_degrades_gracefully() {
+        let route = ImageDispatchRoute {
+            custom_prompt: None,
+            mcp_tools: vec![],
+            subagent_model: None,
+        };
+        let hint = compose_image_dispatch_hint(&route);
+        assert!(hint.contains("先自行发现识图工具"), "无工具时应走自搜索指引");
+        assert!(!hint.contains("model 参数填"), "无模型时不应有 model 指引");
+    }
+
+    #[test]
+    fn custom_prompt_placeholders_substituted() {
+        let route = ImageDispatchRoute {
+            custom_prompt: Some("工具：{{mcp_tools}}；模型：{{subagent_model}}".to_string()),
+            mcp_tools: vec!["p__t".to_string()],
+            subagent_model: Some("prov/m".to_string()),
+        };
+        let hint = compose_image_dispatch_hint(&route);
+        assert_eq!(hint, "工具：p__t；模型：prov/m");
+    }
+}

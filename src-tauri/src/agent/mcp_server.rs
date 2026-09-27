@@ -1374,6 +1374,7 @@ mod tests {
         use crate::agent::manifest::schema::{McpSection, McpTransportKind};
         // 缺省 stdio（command 必填由 schema 校验兜底，映射层只搬运）。
         let mut sec = McpSection {
+            vision_tools: None,
             transport: McpTransportKind::Stdio,
             command: Some("npx".into()),
             args: Some(vec!["-y".into(), "pkg".into()]),

@@ -398,6 +398,10 @@ const BUILTIN_COMPOSED_MANIFESTS: &[(&str, &str)] = &[
     // v0.9.3 需求13 C5-slice1：任务看板自 session.flow 组合化（task 源 ×
     // render.task-board × dock；内置 TS 插件随之退役）。
     ("session.task-board", include_str!("../../resources/composed-plugins/task-board.toml")),
+    // v0.9.5 需求5 T9：识图路由（纯配置载体组合插件——无挂载无动作，
+    // 承载图片委派话术/识图工具/识图模型三项配置，chat.rs 消费；系统
+    // 语义随包分发，禁用 = 注入内置兜底话术）。
+    ("session.image-dispatch", include_str!("../../resources/composed-plugins/image-dispatch.toml")),
 ];
 
 fn composed_plugins_root() -> PathBuf {
@@ -1635,6 +1639,18 @@ mod tests {
         save_plugin_config(&cfg).unwrap();
         assert!(!is_mcp_resolver_enabled());
         std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// v0.9.5 需求5 测试期修复回归：统一插件清单 id 无重复（内置会话描述符
+    /// 与组合清单同 id 双注册曾致插件中心重复卡 + React key 冲突串台）。
+    #[test]
+    fn registry_plugin_ids_unique() {
+        let reg = super::super::AgentRegistry::new();
+        let mut ids: Vec<String> = reg.list_plugins().into_iter().map(|p| p.id).collect();
+        let total = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), total, "插件清单存在重复 id");
     }
 
     /// v0.9.5 需求5：packages 注册同步纯函数——启用归一化钉定源（含旧

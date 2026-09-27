@@ -1,0 +1,26 @@
+[plugin]
+id = "session.image-dispatch"
+kind = "session-composed"
+name = "图片识图路由"
+description = "图片消息且主模型不支持识图时的委派路由。默认话术按场景路由：简单识别（看内容/类型/读文字）优先 MCP 识图工具，复杂分析（多图对比/推理/结合代码文档深析）优先 subagent 委派；一条途径失败自动改用另一条，两条都失败如实告知用户。禁用本插件 = 注入同样的内置兜底话术（自定义配置失效）。"
+
+[[config]]
+key = "prompt"
+type = "textarea"
+label = "自定义识图话术"
+description = "留空使用内置默认话术。支持占位符：{{mcp_tools}}（解析后的 mcp 识图工具名）、{{subagent_model}}（解析后的 subagent 识图模型）"
+default = ""
+
+[[config]]
+key = "mcp_tools"
+type = "text"
+label = "mcp 识图工具"
+description = "逗号分隔。可写短名（如 analyze_image，hub 自动补全为 插件id__工具名 全名）；留空自动发现（依据 MCP 插件 manifest 的 vision_tools 声明）"
+default = ""
+
+[[config]]
+key = "subagent_models"
+type = "text"
+label = "subagent 识图模型优先级"
+description = "逗号分隔 provider/model，从高到低取首个可用；留空自动取 models.json 中首个可见的识图模型"
+default = ""
