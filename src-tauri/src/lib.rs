@@ -137,8 +137,9 @@ pub fn run() {
             agent::jishu_self::config::ensure_default_retry_settings();
             // v0.9.0 需求2：[pi_extension] 声明插件的 entry 部署/回收（幂等）。
             agent::pi_deploy::ensure_pi_extension_deployments();
-            // 自动部署 request_user_input 扩展（conductor 的 discuss/plan 阶段依赖此工具）
-            task_plan::ensure_request_user_input_extension();
+            // v0.9.5 需求5：自研 request_user_input 扩展下线（能力由 npm 包
+            // rpiv-ask-user-question 的 ask_user_question 承接，确认卡链路不变）。
+            task_plan::retire_request_user_input_extension();
             // v0.9.3 需求22 P1/P2：审批与批次守卫扩展（自 pi 内置迁移，零 fork）。
             task_plan::ensure_jishu_tool_approval_extension();
             task_plan::ensure_jishu_batch_guard_extension();
@@ -149,8 +150,12 @@ pub fn run() {
             // v0.9.5 需求1 6b：plugin-invoke 扩展部署 + agent-tools 物化
             //（方向四：agent 按需调用插件动作）。
             task_plan::ensure_plugin_invoke_extension();
-            // v0.9.5 需求2：subagent 委派扩展（dispatch_subagent）。
-            task_plan::ensure_jishu_subagent_extension();
+            // v0.9.5 需求5：自研 dispatch_subagent 扩展下线（能力由 npm 包
+            // pi-subagents 的 subagent 承接，前台流式工具卡不变）+ pi-subagents
+            // 运行时配置（asyncByDefault:false）+ packages 注册与插件启停对齐。
+            task_plan::retire_jishu_subagent_extension();
+            task_plan::ensure_subagents_runtime_config();
+            agent::plugin::sync_pi_packages_with_plugins();
             agent::plugin::materialize_agent_tools();
             let registry = Arc::new(agent::AgentRegistry::new());
             // v0.9.0 需求1 P2/二期：四家 MCP 配置同步（MCP 解析器 mcp-resolver
@@ -180,11 +185,22 @@ pub fn run() {
             // v0.9.1 需求11：MCP 适配器自动安装自愈——安装器阶段已尝试装，
             // 此处幂等兜底（离线安装失败后每次启动重试）。后台执行不阻塞
             // 启动，失败仅告警；环境检测页手动安装保留为最终兜底。
+            // v0.9.5 需求5：4 个 pi 扩展包（pi-subagents / rpiv-ask-user-question /
+            // rpiv-todo / pi-lens）同款自愈 + 装后 packages 注册对齐。
             tauri::async_runtime::spawn(async {
                 match agent::jishu_self::JishuSelfAgent::ensure_mcp_adapter_installed().await {
                     Ok(true) => log::info!("[startup] MCP adapter auto-installed"),
                     Ok(false) => {}
                     Err(e) => log::warn!("[startup] MCP adapter auto-install deferred: {e}"),
+                }
+                match agent::jishu_self::JishuSelfAgent::ensure_pi_extensions_installed().await {
+                    Ok(installed) if !installed.is_empty() => {
+                        log::info!("[startup] pi extensions installed: {:?}", installed);
+                        task_plan::ensure_subagents_runtime_config();
+                        agent::plugin::sync_pi_packages_with_plugins();
+                    }
+                    Ok(_) => {}
+                    Err(e) => log::warn!("[startup] pi extensions install deferred: {e}"),
                 }
             });
             // v0.7.0：全局 active agent 已移除（需求一：智能体切换去全局化）。

@@ -147,11 +147,22 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
     let output = install_pi_bundle_from(&source)?;
     // v0.9.1 需求11：agent 装好顺手确保 MCP 适配器（幂等；失败不阻断——
     // 启动自愈与环境检测页手动安装兜底）。
-    Ok(match crate::agent::jishu_self::JishuSelfAgent::ensure_mcp_adapter_installed().await {
+    // v0.9.5 需求5：4 个 pi 扩展包同款确保 + 运行时配置 + packages 对齐。
+    let mut summary = match crate::agent::jishu_self::JishuSelfAgent::ensure_mcp_adapter_installed().await {
         Ok(true) => format!("{output}\nMCP adapter auto-installed."),
         Ok(false) => output,
         Err(e) => format!("{output}\nMCP adapter auto-install skipped: {e}"),
-    })
+    };
+    match crate::agent::jishu_self::JishuSelfAgent::ensure_pi_extensions_installed().await {
+        Ok(installed) if !installed.is_empty() => {
+            crate::task_plan::ensure_subagents_runtime_config();
+            crate::agent::plugin::sync_pi_packages_with_plugins();
+            summary = format!("{summary}\npi extensions installed: {:?}", installed);
+        }
+        Ok(_) => {}
+        Err(e) => summary = format!("{summary}\npi extensions install skipped: {e}"),
+    }
+    Ok(summary)
 }
 
 /// 核心：把 pi-bundle 源目录安装到 ~/.jishu-agent（备份+覆盖+回滚）。
@@ -251,6 +262,21 @@ pub fn run_install_agent_cli() -> i32 {
                 Ok(true) => eprintln!("[install-agent] MCP adapter auto-installed"),
                 Ok(false) => {}
                 Err(e) => eprintln!("[install-agent] MCP adapter auto-install skipped: {e}"),
+            }
+            // v0.9.5 需求5：4 个 pi 扩展包同款确保（失败仅告警）。
+            match tauri::async_runtime::block_on(
+                crate::agent::jishu_self::JishuSelfAgent::ensure_pi_extensions_installed(),
+            ) {
+                Ok(installed) if !installed.is_empty() => {
+                    eprintln!(
+                        "[install-agent] pi extensions installed: {:?}",
+                        installed
+                    );
+                    crate::task_plan::ensure_subagents_runtime_config();
+                    crate::agent::plugin::sync_pi_packages_with_plugins();
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("[install-agent] pi extensions install skipped: {e}"),
             }
             0
         }

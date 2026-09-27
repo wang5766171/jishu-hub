@@ -1,0 +1,16 @@
+schema = 1
+kind = "tool"
+
+[info]
+id = "mcp-adapter"
+display_name = "MCP 适配器"
+
+# v0.9.5 需求5：纯闸门形态——pi-mcp-adapter（npm 包，pi install 注册于
+# settings.json packages）注册的 mcp 代理工具与 mcpScript 脚本工具；本清单
+# 治理其 spawn --tools 白名单归属（启停热联动，禁用同时经 packages 同步
+# 摘除扩展装载）。⚠ 修复存量问题：mcp/mcpScript 此前不在任何白名单声明，
+# 被 --tools 硬白名单滤出工具册子（01 §四实测），pi 会话实际无法经
+# adapter 调 MCP。
+[pi_extension]
+target_agent = "jishu-self"
+tools = ["mcp", "mcpScript"]

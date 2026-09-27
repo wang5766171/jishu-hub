@@ -27,7 +27,7 @@ impl JishuSelfAgent {
     /// Standalone async MCP install — does not borrow &self, so it can be
     /// awaited without holding the AgentRegistry MutexGuard.
     pub async fn install_mcp_standalone() -> Result<String, String> {
-        Self::run_mcp_package_command("install").await
+        Self::run_pi_package_command("install", MCP_ADAPTER_SOURCE).await
     }
 
     /// pi-mcp-adapter 安装位置（pi install npm:pkg 落
@@ -57,14 +57,14 @@ impl JishuSelfAgent {
     }
 
     pub async fn update_mcp_standalone() -> Result<String, String> {
-        Self::run_mcp_package_command("update").await
+        Self::run_pi_package_command("update", MCP_ADAPTER_SOURCE).await
     }
 
-    async fn run_mcp_package_command(action: &str) -> Result<String, String> {
+    async fn run_pi_package_command(action: &str, source: &str) -> Result<String, String> {
         let runtime = pi_runtime::resolve_pi_runtime()
             .map_err(|e| format!("Failed to resolve Pi runtime: {e}"))?;
 
-        let args = mcp_package_args(&runtime.base_args, action);
+        let args = pi_package_args(&runtime.base_args, action, source);
 
         let mut cmd =
             crate::os_adapter::shell::shell_command(&runtime.program.to_string_lossy(), args);
@@ -76,16 +76,75 @@ impl JishuSelfAgent {
         let output = cmd
             .output()
             .await
-            .map_err(|e| format!("Failed to run pi {action}: {e}"))?;
+            .map_err(|e| format!("Failed to run pi {action} {source}: {e}"))?;
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         } else {
             Err(format!(
-                "pi {action} failed: {}",
+                "pi {action} {source} failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             ))
         }
+    }
+
+    /// v0.9.5 需求5：4 个 pi 扩展包逐个幂等安装（缺哪个装哪个；单包失败
+    /// 记 warn 继续下一个，Err 汇总失败清单——启动自愈下轮重试，不阻断
+    /// hub 启动）。探测与 mcp 同口径（node_modules 目录名含 scoped 包的
+    /// @scope/ 层级）且**校验版本**：pi resolve 对「已注册但版本不匹配」
+    /// 的包判 needsInstall，PI_OFFLINE 下静默跳过 → 扩展整个不装载——故
+    /// 装了旧版本也必须重装到钉定版本。
+    pub async fn ensure_pi_extensions_installed() -> Result<Vec<&'static str>, String> {
+        let Some(base) = pi_config_dir() else {
+            return Err("cannot resolve ~/.jishu-agent/agent directory".to_string());
+        };
+        let root = std::path::Path::new(&base).join("npm").join("node_modules");
+        let mut installed: Vec<&'static str> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
+        for (source, dir_name) in PI_EXTENSION_PACKAGES {
+            let target = root.join(dir_name);
+            let pinned_ver = source.rsplit_once('@').map(|(_, v)| v).unwrap_or_default();
+            let up_to_date = target.exists()
+                && std::fs::read_to_string(target.join("package.json"))
+                    .ok()
+                    .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                    .and_then(|p| {
+                        p.get("version")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                    })
+                    .is_some_and(|v| v == pinned_ver);
+            if up_to_date {
+                continue;
+            }
+            match Self::run_pi_package_command("install", source).await {
+                Ok(_) => {
+                    log::info!("[pi-ext] installed {source}");
+                    installed.push(source);
+                }
+                Err(e) => {
+                    log::warn!("[pi-ext] install {source} deferred: {e}");
+                    failed.push(format!("{source}: {e}"));
+                }
+            }
+        }
+        if failed.is_empty() {
+            Ok(installed)
+        } else {
+            Err(failed.join("; "))
+        }
+    }
+
+    /// v0.9.5 需求5：npm 包名 → 钉定安装源（含 mcp 共 5 项）——packages
+    /// 注册同步（plugin::sync_pi_packages_with_plugins）复用同一真源。
+    pub(crate) fn pinned_source_for_package(name: &str) -> Option<&'static str> {
+        if name == "pi-mcp-adapter" {
+            return Some(MCP_ADAPTER_SOURCE);
+        }
+        PI_EXTENSION_PACKAGES
+            .iter()
+            .find(|(_, dir)| *dir == name)
+            .map(|(source, _)| *source)
     }
 }
 
@@ -693,14 +752,35 @@ fn ensure_default_tools_arg(
     }
 }
 
-fn mcp_package_args(base_args: &[String], action: &str) -> Vec<String> {
+/// v0.9.3 测试期钉 2.32.1：最新 2.33.0 把 @modelcontextprotocol/{client,core}
+/// 钉到 pkg.pr.new（PR 预览 CDN），公司/受限网络拦截域名致 npm ETIMEDOUT；
+/// 2.32.1 为最后一个纯 registry 依赖版本（pack-pi 烘焙同钉）。上游修复
+/// （依赖回正式 registry）后可解除钉定。
+pub(crate) const MCP_ADAPTER_SOURCE: &str = "npm:pi-mcp-adapter@2.32.1";
+
+/// v0.9.5 需求5：随包初始化安装的 pi 扩展（钉定版本，与 mcp 同策略——
+/// 可预测、离线可复现；peer 面已核 fork 0.87.1-13 全覆盖）。元素 =
+/// (npm 安装源, node_modules 目录名——scoped 包含 @scope/ 层级)。
+/// 版本依据 2026-09-27 npm 元数据；升级走此处改钉 + update 命令。
+pub(crate) const PI_EXTENSION_PACKAGES: &[(&str, &str)] = &[
+    // 子代理委派（subagent/bg_wait 工具；替换自研 jishu-subagent.ts）
+    ("npm:pi-subagents@0.72.0", "pi-subagents"),
+    // 选项式提问（ask_user_question 工具；替换自研 request-user-input.ts）
+    (
+        "npm:@juicesharp/rpiv-ask-user-question@2.11.0",
+        "@juicesharp/rpiv-ask-user-question",
+    ),
+    // 待办清单（todo 工具）
+    ("npm:@juicesharp/rpiv-todo@2.11.0", "@juicesharp/rpiv-todo"),
+    // 写后诊断（lens_diagnostics/ast_grep_*/lsp_navigation 等 13 工具）
+    ("npm:pi-lens@4.3.0", "pi-lens"),
+];
+
+/// pi 包管理命令行参数（install/update <source>）——mcp 与 4 扩展共用。
+fn pi_package_args(base_args: &[String], action: &str, source: &str) -> Vec<String> {
     let mut args = base_args.to_vec();
     args.push(action.to_string());
-    // v0.9.3 测试期钉 2.32.1：最新 2.33.0 把 @modelcontextprotocol/{client,core}
-    // 钉到 pkg.pr.new（PR 预览 CDN），公司/受限网络拦截域名致 npm ETIMEDOUT；
-    // 2.32.1 为最后一个纯 registry 依赖版本（pack-pi 烘焙同钉）。上游修复
-    // （依赖回正式 registry）后可解除钉定。
-    args.push("npm:pi-mcp-adapter@2.32.1".to_string());
+    args.push(source.to_string());
     args
 }
 
@@ -725,7 +805,7 @@ fn spawn_env_overrides(
 
 #[cfg(test)]
 mod mcp_tests {
-    use super::mcp_package_args;
+    use super::{pi_package_args, PI_EXTENSION_PACKAGES};
 
     /// v0.9.1 需求13：未配置 defaultTools → 追加 --tools 全集；已配置 → 不动。
     #[test]
@@ -789,9 +869,48 @@ mod mcp_tests {
     fn mcp_update_uses_pi_single_package_update_command() {
         // v0.9.3 测试期钉 2.32.1（最新 2.33.0 依赖走 pkg.pr.new，受限网络不可达）。
         assert_eq!(
-            mcp_package_args(&["cli.js".to_string()], "update"),
+            pi_package_args(
+                &["cli.js".to_string()],
+                "update",
+                super::MCP_ADAPTER_SOURCE
+            ),
             vec!["cli.js", "update", "npm:pi-mcp-adapter@2.32.1"]
         );
+    }
+
+    /// v0.9.5 需求5：4 扩展钉定源与目录名对齐（安装探测落点 = node_modules/
+    /// <目录名>；scoped 包目录名含 @scope/ 层级），且源均为 npm: 带精确版本。
+    #[test]
+    fn pi_extension_packages_pinned_and_scoped_dirs() {
+        assert_eq!(PI_EXTENSION_PACKAGES.len(), 4);
+        for (source, dir) in PI_EXTENSION_PACKAGES {
+            assert!(source.starts_with("npm:"), "{source} 非 npm 源");
+            let name = source
+                .strip_prefix("npm:")
+                .and_then(|s| s.rsplit_once('@'))
+                .map(|(n, ver)| {
+                    assert!(
+                        ver.chars().all(|c| c.is_ascii_digit() || c == '.'),
+                        "{source} 版本非精确钉定"
+                    );
+                    n
+                })
+                .unwrap();
+            assert_eq!(name, *dir, "{source} 与目录名 {dir} 不一致");
+        }
+        // 包名 → 钉定源反查（packages 同步真源）：4 扩展 + mcp 全覆盖。
+        for name in [
+            "pi-mcp-adapter",
+            "pi-subagents",
+            "@juicesharp/rpiv-ask-user-question",
+            "@juicesharp/rpiv-todo",
+            "pi-lens",
+        ] {
+            assert!(
+                super::JishuSelfAgent::pinned_source_for_package(name).is_some(),
+                "{name} 无钉定源"
+            );
+        }
     }
 }
 

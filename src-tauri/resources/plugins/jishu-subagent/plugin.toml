@@ -5,12 +5,13 @@ kind = "tool"
 id = "jishu-subagent"
 display_name = "Subagent 任务委派"
 
-# v0.9.5 需求2：纯闸门形态（同 html-preview）——dispatch_subagent /
-# list_subagent_models 工具由全局部署的 extensions/jishu-subagent.ts 扩展
-# 注册；本清单治理其 spawn --tools 白名单归属（启停热联动）。⚠ pi 的
-# --tools 是硬白名单且系统插件 [pi_extension].tools 声明使 merged 恒非空
-# ——DEFAULT_PI_TOOLS 兜底分支不执行，内置扩展工具必须走本清单（实测：
-# 指南注入生效而工具列表缺失的第一层根因）。
+# v0.9.5 需求2→需求5：纯闸门形态——自研 extensions/jishu-subagent.ts 已
+# 下线，委派能力改由 npm 包 pi-subagents 提供（subagent 前台子代理 +
+# bg_wait 后台等待工具；hub 侧配置 asyncByDefault:false 保前台流式，
+# 与旧 dispatch_subagent 工具卡交互一致）。本清单治理 spawn --tools
+# 白名单归属（启停热联动，禁用同时经 packages 同步摘除扩展装载）。
+# ⚠ pi 的 --tools 是硬白名单且系统插件 [pi_extension].tools 声明使
+# merged 恒非空——DEFAULT_PI_TOOLS 兜底分支不执行。
 [pi_extension]
 target_agent = "jishu-self"
-tools = ["dispatch_subagent", "list_subagent_models"]
+tools = ["subagent", "bg_wait"]

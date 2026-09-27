@@ -131,9 +131,9 @@ const PHASE_ALLOWED_TOOLS: Partial<Record<Phase, string[]>> = {
     "find",
     "ls",
     "lock_requirement",
-    "request_user_input",
+    "ask_user_question",
   ],
-  plan: ["read", "grep", "find", "ls", "commit_plan", "request_user_input"],
+  plan: ["read", "grep", "find", "ls", "commit_plan", "ask_user_question"],
   // v0.9.2 测试期（执行期方案调整打通）：commit_plan 在 execute 亦可用——
   // 执行期提交 = 方案修订（既有图新 revision，运行中应用，见 conductor_revise_plan）。
   execute: [
@@ -161,7 +161,7 @@ function allowedToolsFor(
     const stage = pipeline.stages.find((item) => item.key === phase);
     if (!stage) return undefined;
     if (stage.template === "phase.execute" && executorMode === "external") {
-      return ["read", "grep", "find", "ls", "commit_plan", "dispatch_to_node", "request_user_input"];
+      return ["read", "grep", "find", "ls", "commit_plan", "dispatch_to_node", "ask_user_question"];
     }
     const templateTools = stage.template
       ? PHASE_ALLOWED_TOOLS[stage.template.slice("phase.".length) as SkillPhase]
@@ -171,14 +171,14 @@ function allowedToolsFor(
     if (declared.length === 0) return undefined;
     const extras: string[] = [];
     if (stage.template === "phase.discuss") {
-      extras.push("lock_requirement", "request_user_input");
+      extras.push("lock_requirement", "ask_user_question");
     } else if (stage.template === "phase.plan") {
-      extras.push("commit_plan", "request_user_input");
+      extras.push("commit_plan", "ask_user_question");
     } else if (stage.template === "phase.execute") {
       extras.push("commit_plan", "dispatch_to_node");
     } else {
       // 自定义段 / review 模板段：以 commit_stage 声明完成。
-      extras.push("commit_stage", "request_user_input");
+      extras.push("commit_stage", "ask_user_question");
     }
     const merged = [...declared];
     for (const tool of extras) {
@@ -189,7 +189,7 @@ function allowedToolsFor(
   // #5 纵深防御：external 模式 execute 阶段 Conductor 不执行，收窄为只读（硬保障靠 commit_plan 的 terminate）
   if (phase === "execute" && executorMode === "external") {
     // 监督态保留方案修订、持续下发与问答（规划性操作，非节点执行）。
-    return ["read", "grep", "find", "ls", "commit_plan", "dispatch_to_node", "request_user_input"];
+    return ["read", "grep", "find", "ls", "commit_plan", "dispatch_to_node", "ask_user_question"];
   }
   return PHASE_ALLOWED_TOOLS[phase];
 }
@@ -198,8 +198,9 @@ function allowedToolsFor(
 // 即 PI_CODING_AGENT_DIR=<根> 时的 <根>/agent/skills，Hub 部署侧同源——见
 // src-tauri/src/agent/jishu_self/paths.rs）。此前默认拼到 <根>/skills（不存在），
 // loadSkill 恒走 Missing skill 兜底，需求讨论阶段的问答卡片指令从未到达模型。
-// 不 import pi 的 getAgentDir（值导入在 pi Node-mode loader 下解析失败，见
-// request-user-input.ts 头注），按同一规则本地解析。
+// 不 import pi 的 getAgentDir（值导入在 pi Node-mode loader 下解析失败，
+// 历史佐证见 v0.9.5 需求5 已下线的 request-user-input.ts 头注），按同一
+// 规则本地解析。
 const piAgentDir = (() => {
   const envDir = process.env.PI_CODING_AGENT_DIR;
   const homeDir = process.env.HOME || process.env.USERPROFILE || "~";
@@ -267,7 +268,7 @@ function stageDiscipline(stage: PipelineStage): string {
     stage.gate === "confirm"
       ? "2. 完成后调用 commit_stage 提交阶段小结；用户确认后才进入下一阶段。"
       : "2. 完成后调用 commit_stage 提交阶段小结并推进。",
-    "3. 未到提交时机不要反复询问是否继续；需要用户输入时用 request_user_input。",
+    "3. 未到提交时机不要反复询问是否继续；需要用户输入时用 ask_user_question。",
   ].join("\n");
 }
 
@@ -1641,7 +1642,7 @@ export default function conductorExtension(pi: ExtensionAPI): void {
           customType: phaseTag(),
           display: false,
           content: `[JISHU-TASK:${state.domain}:execute] === 流程执行（监督态）===\n执行由界面工作台驱动（用户为节点选智能体并点击“执行”，由 Orchestrator 引擎执行）。你不执行任何节点、不调用写工具（write/bash/edit）。本阶段无需你的动作；如用户提问可只读查阅后简答。
-【方案调整与持续下发（支持）】用户要求追加/补充/修改工作时，按意图分三条路径：①追加临时性工作到已执行的节点（上下文在线）→ dispatch_to_node(node_id, 自包含工作内容)；②修改既有节点的职责定义（用户说「给XX节点加上YY职责」「把截图加到测试环节里」）→ 在修订计划中**保持该节点原 id、更新其 responsibility/acceptance 字段**后调用 commit_plan（同 id = 更新语义，不建新节点）；③增加全新环节（当前计划中没有对应方向）→ 修订计划中新节点起新 id 并接好依赖后调用 commit_plan——执行中：变更并入当前执行；任务已完成：引擎自动增量续跑（已成功且未变更的节点结转不重跑，变更过的节点重新执行）。dispatch_to_node 失败（节点无会话）时不要机械降级到③，应根据用户意图选②或③。禁止反复读取任务文件/产物空转；不确定用户意图时用 request_user_input 确认一次即可。`,
+【方案调整与持续下发（支持）】用户要求追加/补充/修改工作时，按意图分三条路径：①追加临时性工作到已执行的节点（上下文在线）→ dispatch_to_node(node_id, 自包含工作内容)；②修改既有节点的职责定义（用户说「给XX节点加上YY职责」「把截图加到测试环节里」）→ 在修订计划中**保持该节点原 id、更新其 responsibility/acceptance 字段**后调用 commit_plan（同 id = 更新语义，不建新节点）；③增加全新环节（当前计划中没有对应方向）→ 修订计划中新节点起新 id 并接好依赖后调用 commit_plan——执行中：变更并入当前执行；任务已完成：引擎自动增量续跑（已成功且未变更的节点结转不重跑，变更过的节点重新执行）。dispatch_to_node 失败（节点无会话）时不要机械降级到③，应根据用户意图选②或③。禁止反复读取任务文件/产物空转；不确定用户意图时用 ask_user_question 确认一次即可。`,
         },
       };
     }

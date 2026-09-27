@@ -1,0 +1,15 @@
+schema = 1
+kind = "tool"
+
+[info]
+id = "pi-todo"
+display_name = "待办清单"
+
+# v0.9.5 需求5：纯闸门形态——@juicesharp/rpiv-todo（npm 包）注册的 todo
+# 工具（模型维护的待办清单，≈ TodoWrite）；本清单治理其 spawn --tools
+# 白名单归属（启停热联动，禁用同时经 packages 同步摘除扩展装载）。
+# 已知降级：TUI 常驻浮层（setWidget）在 RPC 宿主不渲染，GUI 侧以工具卡
+# 呈现 todo 调用结果。
+[pi_extension]
+target_agent = "jishu-self"
+tools = ["todo"]

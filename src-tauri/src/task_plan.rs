@@ -135,8 +135,6 @@ const CONDUCTOR_PLAN_SKILL: &str =
     include_str!("../resources/task-plan/jishu-conductor-dev/plan.SKILL.md");
 const CONDUCTOR_EXECUTE_SKILL: &str =
     include_str!("../resources/task-plan/jishu-conductor-dev/execute.SKILL.md");
-const REQUEST_USER_INPUT_EXTENSION_TS: &str =
-    include_str!("../resources/extensions/request-user-input.ts");
 const JISHU_TOOL_APPROVAL_EXTENSION_TS: &str =
     include_str!("../resources/extensions/jishu-tool-approval.ts");
 const JISHU_BATCH_GUARD_EXTENSION_TS: &str =
@@ -150,10 +148,6 @@ const HTML_PREVIEW_EXTENSION_TS: &str =
 /// v0.9.5 需求1（原需求26）6b：通用 plugin-invoke 扩展（agent-tool 动态注册）。
 const PLUGIN_INVOKE_EXTENSION_TS: &str =
     include_str!("../resources/extensions/plugin-invoke.ts");
-
-/// v0.9.5 需求2：通用任务委派扩展（dispatch_subagent——print mode 子进程）。
-const JISHU_SUBAGENT_EXTENSION_TS: &str =
-    include_str!("../resources/extensions/jishu-subagent.ts");
 
 /// 部署内嵌扩展源到 `<agent_dir>/<rel_path>`，自动建父目录；内容相同则跳过写入。
 pub(crate) fn deploy_extension_file(agent_dir: &Path, rel_path: &str, source: &str) {
@@ -242,9 +236,8 @@ fn ensure_conductor_extension_in(agent_dir: &Path) {
     }
 }
 
-/// 自动部署 `request_user_input` 扩展（conductor 的 discuss/plan 阶段依赖此工具）。
-/// 在 Hub setup hook 调用，每次启动自动确保。
 /// v0.9.3 需求22 P1：逐次工具审批扩展（自 pi 内置迁主仓部署，零 fork）。
+/// 在 Hub setup hook 调用，每次启动自动确保。
 pub fn ensure_jishu_tool_approval_extension() {
     let Ok(agent_dir) = jishu_agent_dir() else {
         return;
@@ -264,17 +257,92 @@ pub fn ensure_jishu_batch_guard_extension() {
     register_extension_in_settings(&agent_dir, REL);
 }
 
-pub fn ensure_request_user_input_extension() {
+/// v0.9.5 需求5：settings.json extensions 数组幂等移除 `rel_path`（register
+/// 的逆；数组移空则保留空数组，不动其它键）。
+pub(crate) fn unregister_extension_from_settings(agent_dir: &Path, rel_path: &str) {
+    let settings_path = agent_dir.join("settings.json");
+    let content = std::fs::read_to_string(&settings_path).unwrap_or_else(|_| "{}".to_string());
+    let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+    if !settings.is_object() {
+        return;
+    }
+    let Some(arr) = settings.get_mut("extensions").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    let before = arr.len();
+    arr.retain(|v| v.as_str() != Some(rel_path));
+    if arr.len() == before {
+        return;
+    }
+    if let Ok(new_content) = serde_json::to_string_pretty(&settings) {
+        let _ = std::fs::write(&settings_path, new_content);
+    }
+}
+
+/// v0.9.5 需求5：下线自研 pi 扩展（一次性迁移，幂等）——删除已部署的
+/// 扩展文件 + settings.json extensions 注册条目。被 npm 包扩展替换：
+/// request-user-input.ts → @juicesharp/rpiv-ask-user-question（ask_user_question），
+/// jishu-subagent.ts → pi-subagents（subagent/bg_wait）。
+pub(crate) fn retire_extension(agent_dir: &Path, rel_path: &str) {
+    let target = agent_dir.join(rel_path);
+    if target.exists() {
+        let _ = std::fs::remove_file(&target);
+    }
+    unregister_extension_from_settings(agent_dir, rel_path);
+}
+
+/// v0.9.5 需求5：自研 request_user_input 扩展下线（能力由 npm 包
+/// rpiv-ask-user-question 的 ask_user_question 承接，GUI 确认卡链路不变）。
+pub fn retire_request_user_input_extension() {
     let Ok(agent_dir) = jishu_agent_dir() else {
         return;
     };
-    ensure_request_user_input_extension_in(&agent_dir);
+    retire_extension(&agent_dir, "extensions/request-user-input.ts");
 }
 
-fn ensure_request_user_input_extension_in(agent_dir: &Path) {
-    const RUI_EXT_REL: &str = "extensions/request-user-input.ts";
-    deploy_extension_file(agent_dir, RUI_EXT_REL, REQUEST_USER_INPUT_EXTENSION_TS);
-    register_extension_in_settings(agent_dir, RUI_EXT_REL);
+/// v0.9.5 需求5：自研 dispatch_subagent 委派扩展下线（能力由 npm 包
+/// pi-subagents 的 subagent 承接，前台流式工具卡交互不变）。
+pub fn retire_jishu_subagent_extension() {
+    let Ok(agent_dir) = jishu_agent_dir() else {
+        return;
+    };
+    retire_extension(&agent_dir, "extensions/jishu-subagent.ts");
+}
+
+/// v0.9.5 需求5：pi-subagents 运行时配置（幂等）——HUB 每消息一个 pi
+/// 进程，异步 runner 在 win32 非 detached 会被进程回收连带杀掉，故钉
+/// `asyncByDefault:false`（前台进程内子代理 + onUpdate 流式，与旧
+/// dispatch_subagent 工具卡一致）。落点 `extensions/subagent/config.json`
+///（包内 getAgentDir 经宿主 piConfig 解析到 ~/.jishu-agent/agent）。
+/// 仅当键缺失时补写——用户显式配置（true/false）优先。
+pub fn ensure_subagents_runtime_config() {
+    let Ok(agent_dir) = jishu_agent_dir() else {
+        return;
+    };
+    ensure_subagents_runtime_config_in(&agent_dir);
+}
+
+fn ensure_subagents_runtime_config_in(agent_dir: &Path) {
+    let config_path = agent_dir.join("extensions").join("subagent").join("config.json");
+    let mut config: serde_json::Value = match std::fs::read_to_string(&config_path) {
+        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(v) if v.is_object() => v,
+            _ => serde_json::json!({}),
+        },
+        Err(_) => serde_json::json!({}),
+    };
+    if config.get("asyncByDefault").is_some() {
+        return;
+    }
+    config["asyncByDefault"] = serde_json::Value::Bool(false);
+    if let Some(parent) = config_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(content) = serde_json::to_string_pretty(&config) {
+        let _ = std::fs::write(&config_path, content);
+    }
 }
 
 /// 自动部署 `session-context` 扩展：把当前 session_id 注入 system prompt（每轮），
@@ -313,17 +381,6 @@ pub fn ensure_plugin_invoke_extension() {
     };
     const REL: &str = "extensions/plugin-invoke.ts";
     deploy_extension_file(&agent_dir, REL, PLUGIN_INVOKE_EXTENSION_TS);
-    register_extension_in_settings(&agent_dir, REL);
-}
-
-/// v0.9.5 需求2：subagent 委派扩展部署（幂等）——dispatch_subagent 工具
-/// （主模型委派指定模型子任务，识图场景：GLM-5.3 → GLM-5.3-FLASH）。
-pub fn ensure_jishu_subagent_extension() {
-    let Ok(agent_dir) = jishu_agent_dir() else {
-        return;
-    };
-    const REL: &str = "extensions/jishu-subagent.ts";
-    deploy_extension_file(&agent_dir, REL, JISHU_SUBAGENT_EXTENSION_TS);
     register_extension_in_settings(&agent_dir, REL);
 }
 
@@ -714,18 +771,79 @@ description: demo
     fn ensure_both_extensions_deploy_and_register() {
         let dir = ext_test_dir("both");
         ensure_conductor_extension_in(&dir);
-        ensure_request_user_input_extension_in(&dir);
-        // 两个 .ts 扩展文件已部署
+        // conductor .ts 扩展文件已部署
         assert!(dir.join("extensions/jishu-task-conductor.ts").is_file());
-        assert!(dir.join("extensions/request-user-input.ts").is_file());
         // conductor skill pack 仍在
         assert!(dir
             .join("skills/jishu-conductor-dev/discuss.SKILL.md")
             .is_file());
-        // settings.json 同时含两条扩展
+        // settings.json 含 conductor 扩展
         let arr = settings_extensions(&dir);
         assert!(arr.contains(&"extensions/jishu-task-conductor.ts".into()));
-        assert!(arr.contains(&"extensions/request-user-input.ts".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.9.5 需求5：自研扩展下线迁移——retire_extension 删文件 + 摘
+    /// settings.json 注册（幂等：重复调用无副作用，未部署过也安全）。
+    #[test]
+    fn retire_extension_removes_file_and_registration() {
+        let dir = ext_test_dir("retire");
+        std::fs::create_dir_all(dir.join("extensions")).unwrap();
+        std::fs::write(dir.join("extensions/x-retire.ts"), "old").unwrap();
+        // settings.json 预置：目标条目 + 其它条目共存
+        let settings = serde_json::json!({
+            "extensions": ["extensions/x-retire.ts", "extensions/keep.ts"],
+            "packages": ["npm:pi-subagents@0.72.0"],
+        });
+        std::fs::write(
+            dir.join("settings.json"),
+            serde_json::to_string_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+
+        retire_extension(&dir, "extensions/x-retire.ts");
+        assert!(!dir.join("extensions/x-retire.ts").exists());
+        let arr = settings_extensions(&dir);
+        assert!(!arr.contains(&"extensions/x-retire.ts".to_string()));
+        assert!(arr.contains(&"extensions/keep.ts".to_string()));
+        // packages 键不受影响（扩展注册与包注册分治）
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            parsed["packages"][0].as_str().unwrap(),
+            "npm:pi-subagents@0.72.0"
+        );
+        // 幂等：再次 retire 无副作用
+        retire_extension(&dir, "extensions/x-retire.ts");
+        assert!(settings_extensions(&dir).contains(&"extensions/keep.ts".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.9.5 需求5：pi-subagents 运行时配置——缺键补 asyncByDefault:false，
+    /// 已有显式值不覆盖。
+    #[test]
+    fn subagents_runtime_config_patched_only_when_key_missing() {
+        let dir = ext_test_dir("subagent-cfg");
+        let config_path = dir.join("extensions").join("subagent").join("config.json");
+        ensure_subagents_runtime_config_in(&dir); // 缺文件 → 建默认
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(cfg["asyncByDefault"].as_bool(), Some(false));
+        // 用户显式 true + 其它键 → 不覆盖、不丢失
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(
+                &serde_json::json!({"asyncByDefault": true, "maxSubagentDepth": 2}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        ensure_subagents_runtime_config_in(&dir);
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(cfg["asyncByDefault"].as_bool(), Some(true));
+        assert_eq!(cfg["maxSubagentDepth"].as_u64(), Some(2));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

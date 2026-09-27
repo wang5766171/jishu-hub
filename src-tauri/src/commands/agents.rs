@@ -95,6 +95,9 @@ fn rebuild_registry(app: &tauri::AppHandle, state: &tauri::State<'_, Mutex<AppSt
     let _ = crate::agent::skill_deploy::sync_skill_deployments(false);
     // v0.9.0 需求2：pi 扩展部署随插件启停同步。
     crate::agent::pi_deploy::ensure_pi_extension_deployments();
+    // v0.9.5 需求5：npm 扩展包注册（settings.json packages）随插件启停
+    // 对齐——禁用即摘条目（扩展不装载，含事件钩子），启用即补钉定源。
+    crate::agent::plugin::sync_pi_packages_with_plugins();
 }
 
 /// 启停插件并热生效（core 插件拒绝；写 plugins.json 持久化；agent 与 tool

@@ -148,7 +148,7 @@ pub fn classify_name(name: &str) -> ToolViewKind {
     if n == "websearch" || n == "web_search" || n == "google_web_search" {
         return ToolViewKind::Web;
     }
-    if n == "task" || n.starts_with("subagent_") || n == "invoke_agent" {
+    if n == "task" || n == "subagent" || n.starts_with("subagent_") || n == "invoke_agent" {
         return ToolViewKind::Subtask;
     }
     if n == "thinking" || n == "think" || n == "update_topic" {
@@ -286,8 +286,9 @@ mod tests {
         ] {
             assert_eq!(classify_name(name), ToolViewKind::Web, "{name}");
         }
-        // subtask：精确 + 前缀 + invoke_agent
-        for name in ["task", "subagent_researcher", "invoke_agent"] {
+        // subtask：精确 + 前缀 + invoke_agent（v0.9.5 需求5：pi-subagents
+        // 的 subagent 工具收编为精确项——委派图标/标签）
+        for name in ["task", "subagent", "subagent_researcher", "invoke_agent"] {
             assert_eq!(classify_name(name), ToolViewKind::Subtask, "{name}");
         }
         // think：含 update_topic

@@ -106,7 +106,7 @@ pub const CORE_PLUGIN_IDS: [&str; 1] = [super::JISHU_SELF_AGENT_ID];
 /// 系统插件 id 清单（v0.9.0 需求1 二期）：hub 随包分发、启动幂等重部署——
 /// 卸载/编辑无意义（下次启动即恢复），plugin_remove 拒绝、前端隐藏入口；
 /// 可禁用（mcp-resolver 禁用 = MCP 服务总开关，见 mcp_inject）。
-pub const SYSTEM_PLUGIN_IDS: [&str; 8] = [
+pub const SYSTEM_PLUGIN_IDS: [&str; 11] = [
     "mcp-resolver",
     "skill-resolver",
     "task-requirements",
@@ -117,11 +117,99 @@ pub const SYSTEM_PLUGIN_IDS: [&str; 8] = [
     "skill-create-tool",
     // v0.9.5 需求2：subagent 委派（纯闸门）。
     "jishu-subagent",
+    // v0.9.5 需求5：pi 扩展包插件化治理（纯闸门 + packages 注册同步）。
+    "mcp-adapter",
+    "pi-todo",
+    "pi-lens",
 ];
 
 /// 系统插件判定。
 pub fn is_system_plugin(id: &str) -> bool {
     SYSTEM_PLUGIN_IDS.contains(&id)
+}
+
+/// v0.9.5 需求5：npm 扩展包 ↔ 插件 id 映射（packages 注册同步的治理面）。
+/// `--tools` 白名单只藏工具不卸载扩展（pi-lens 的 tool_result 事件钩子在
+/// 「禁用但包仍注册」时依旧运行自动诊断），故启停须同步 settings.json
+/// `packages` 数组：禁用 → 摘除该包全部条目（下轮 spawn 生效）；启用 →
+/// 确保钉定源条目在（真源 jishu_self::pinned_source_for_package）。
+pub const PI_PACKAGE_PLUGIN_MAP: &[(&str, &str)] = &[
+    ("mcp-adapter", "pi-mcp-adapter"),
+    ("jishu-subagent", "pi-subagents"),
+    ("interactive-qa", "@juicesharp/rpiv-ask-user-question"),
+    ("pi-todo", "@juicesharp/rpiv-todo"),
+    ("pi-lens", "pi-lens"),
+];
+
+/// packages 条目与包名匹配（`npm:<name>` 精确或 `npm:<name>@<ver>` 前缀）。
+fn package_entry_matches(entry: &str, name: &str) -> bool {
+    entry == format!("npm:{name}") || entry.starts_with(&format!("npm:{name}@"))
+}
+
+/// 纯函数：按插件启停计算 packages 数组目标形态（启用 → 归一化为钉定
+/// 源条目——已装盘面被安装器钉版本，条目版本若不归一会致 pi 判
+/// needsInstall 离线跳过不装载；禁用 → 摘该包全部条目；其余用户条目
+/// 原样保留）。
+pub fn plan_packages_sync(
+    existing: &[String],
+    enabled_packages: &[(&str, bool)],
+) -> Vec<String> {
+    let mut out: Vec<String> = existing.to_vec();
+    for (name, enabled) in enabled_packages {
+        if *enabled {
+            let pinned = super::jishu_self::JishuSelfAgent::pinned_source_for_package(name);
+            let has_pinned = pinned.is_some_and(|src| out.iter().any(|v| v == src));
+            if pinned.is_some() && !has_pinned {
+                // 保留无关条目，摘该包旧变体，补钉定源（追加在末尾）。
+                out.retain(|v| !package_entry_matches(v, name));
+                out.push(pinned.unwrap().to_string());
+            }
+        } else {
+            out.retain(|v| !package_entry_matches(v, name));
+        }
+    }
+    out
+}
+
+/// packages 注册与插件启停对齐（启动与 rebuild_registry 调用；幂等——
+/// 目标态与现状一致则不写盘）。
+pub fn sync_pi_packages_with_plugins() {
+    let Ok(agent_dir) = super::jishu_self::paths::agent_dir() else {
+        return;
+    };
+    let settings_path = agent_dir.join("settings.json");
+    let content = std::fs::read_to_string(&settings_path).unwrap_or_else(|_| "{}".to_string());
+    let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) else {
+        log::warn!("[plugin] pi settings.json invalid, skip packages sync");
+        return;
+    };
+    if !settings.is_object() {
+        return;
+    }
+    let existing: Vec<String> = settings
+        .get("packages")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let disabled = load_plugin_config().disabled;
+    let enabled_packages: Vec<(&str, bool)> = PI_PACKAGE_PLUGIN_MAP
+        .iter()
+        .map(|(id, name)| (*name, !disabled.iter().any(|d| d == id)))
+        .collect();
+    let next = plan_packages_sync(&existing, &enabled_packages);
+    if next == existing {
+        return;
+    }
+    settings["packages"] = serde_json::Value::Array(
+        next.into_iter().map(serde_json::Value::String).collect(),
+    );
+    if let Ok(new_content) = serde_json::to_string_pretty(&settings) {
+        let _ = std::fs::write(&settings_path, new_content);
+    }
 }
 
 /// MCP 解析器启用态（注入门控，mcp_inject::sync_hub_mcp_entries）：
@@ -230,15 +318,20 @@ pub fn builtin_session_plugin_specs() -> &'static [(&'static str, &'static str)]
 
 /// pi 扩展工具兜底集（v0.9.2 需求7 fail-safe）：清单聚合结果为空时回落，
 /// 宁可"关不掉"不可"流程死"（历史教训：lock_requirement 缺失致需求讨论停摆）。
-pub const DEFAULT_PI_TOOLS: [&str; 6] = [
-    "request_user_input",
+/// v0.9.5 需求5：自研 request_user_input / dispatch_subagent /
+/// list_subagent_models 下线，兜底集换为等价新集合（ask_user_question /
+/// subagent / bg_wait）+ 新纳管包工具（todo / mcp / mcpScript）；lens 可
+/// 禁用能力不进兜底。
+pub const DEFAULT_PI_TOOLS: [&str; 9] = [
+    "ask_user_question",
     "lock_requirement",
     "commit_plan",
     "dispatch_to_node",
-    // v0.9.5 需求2：subagent 工具兜底（正解在 jishu-subagent 系统插件
-    // 清单——merged 恒非空时本兜底不执行；保留作全系统插件禁用时双保险）。
-    "dispatch_subagent",
-    "list_subagent_models",
+    "subagent",
+    "bg_wait",
+    "todo",
+    "mcp",
+    "mcpScript",
 ];
 
 /// 聚合已启用插件声明的 pi 扩展工具（v0.9.2 需求7 热插拔闸门，纯函数）：
@@ -898,7 +991,8 @@ pub fn builtin_adaptive_plugins() -> Vec<(&'static str, &'static str)> {
             "task-plan",
             include_str!("../../resources/plugins/task-plan/plugin.toml"),
         ),
-        // v0.9.2 需求7：交互问答纯闸门插件（治理 request_user_input，热插拔）。
+        // v0.9.2 需求7：交互问答纯闸门插件（v0.9.5 需求5 改治 npm 包
+        // rpiv-ask-user-question 的 ask_user_question，热插拔）。
         (
             "interactive-qa",
             include_str!("../../resources/plugins/interactive-qa/plugin.toml"),
@@ -909,11 +1003,25 @@ pub fn builtin_adaptive_plugins() -> Vec<(&'static str, &'static str)> {
             "html-preview",
             include_str!("../../resources/plugins/html-preview/plugin.toml"),
         ),
-        // v0.9.5 需求2：subagent 委派纯闸门插件（治理 dispatch_subagent /
-        // list_subagent_models，热插拔；工具由 extensions/jishu-subagent.ts 注册）。
+        // v0.9.5 需求2→需求5：subagent 委派纯闸门插件——自研 jishu-subagent.ts
+        // 已下线，现治理 npm 包 pi-subagents 的 subagent/bg_wait（热插拔）。
         (
             "jishu-subagent",
             include_str!("../../resources/plugins/jishu-subagent/plugin.toml"),
+        ),
+        // v0.9.5 需求5：npm 扩展包插件化治理——mcp-adapter（修复 mcp/mcpScript
+        // 被 --tools 硬白名单滤出的存量问题）、pi-todo、pi-lens。
+        (
+            "mcp-adapter",
+            include_str!("../../resources/plugins/mcp-adapter/plugin.toml"),
+        ),
+        (
+            "pi-todo",
+            include_str!("../../resources/plugins/pi-todo/plugin.toml"),
+        ),
+        (
+            "pi-lens",
+            include_str!("../../resources/plugins/pi-lens/plugin.toml"),
         ),
         // v0.9.0 需求22：预置核心引擎指南插件（[skill] 声明——经 Skill 解析器
         // 分发到 agent skill 目录，agent 原生发现；内容 = 给 agent 的操作指南）。
@@ -1518,6 +1626,42 @@ mod tests {
         save_plugin_config(&cfg).unwrap();
         assert!(!is_mcp_resolver_enabled());
         std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// v0.9.5 需求5：packages 注册同步纯函数——启用归一化钉定源（含旧
+    /// 版本变体收敛）、禁用摘全部条目、无关条目原样保留。
+    #[test]
+    fn plan_packages_sync_adds_enabled_removes_disabled() {
+        let existing = vec![
+            "npm:pi-mcp-adapter@2.32.1".to_string(),
+            "npm:pi-subagents@0.71.0".to_string(), // 用户自装旧版 → 归一化
+            "npm:other-package".to_string(),       // 无关包
+        ];
+        let plan = plan_packages_sync(
+            &existing,
+            &[
+                ("pi-mcp-adapter", false), // 禁用 → 摘
+                ("pi-subagents", true),    // 启用 → 旧变体归一化为钉定源
+                ("pi-lens", true),         // 启用 → 缺条目补钉定源
+            ],
+        );
+        assert!(!plan.iter().any(|v| v.starts_with("npm:pi-mcp-adapter")));
+        assert!(plan.contains(&"npm:pi-subagents@0.72.0".to_string()));
+        assert!(!plan.contains(&"npm:pi-subagents@0.71.0".to_string()));
+        assert!(plan.contains(&"npm:pi-lens@4.3.0".to_string()));
+        assert!(plan.contains(&"npm:other-package".to_string()));
+        // 幂等：目标态再跑不变。
+        assert_eq!(plan_packages_sync(&plan, &[("pi-lens", true)]), plan);
+        // 精确名匹配（npm:<name> 无版本后缀）也算该包条目（禁用侧）。
+        let exact = vec!["npm:pi-lens".to_string()];
+        assert!(plan_packages_sync(&exact, &[("pi-lens", false)]).is_empty());
+        // scoped 包名前缀匹配不误伤同前缀其它包。
+        let scoped = vec![
+            "npm:@juicesharp/rpiv-todo@2.10.0".to_string(),
+            "npm:@juicesharp/other".to_string(),
+        ];
+        let plan3 = plan_packages_sync(&scoped, &[("@juicesharp/rpiv-todo", false)]);
+        assert_eq!(plan3, vec!["npm:@juicesharp/other".to_string()]);
     }
 
     #[test]

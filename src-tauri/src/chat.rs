@@ -49,8 +49,9 @@ impl ChatState {
 /// v0.9.0 需求3 方案 C：前端不再嵌 [JISHU-TOOLS] 文本标记，净化步骤删除
 /// （版本级裁决：手输字面标记亦不防御）；本条消息的工具快照由注入块
 /// 随 prompt 持久化、回放经 extract_tool_snapshot 派生。
-/** 图片委派提示（需求2）：消息含附件行「图片N（批次 …）: <路径>」且激活
- *  模型 input 不含 image → 前缀一行指令（含路径直取与自动选模，路径最短）。 */
+/** 图片委派提示（需求2→需求5）：消息含附件行「图片N（批次 …）: <路径>」且激活
+ *  模型 input 不含 image → 前缀一行指令（pi-subagents 前台子代理 + 显式识图
+ *  模型，路径最短）。 */
 fn maybe_prefix_image_dispatch_hint(message: &str) -> String {
     let has_image_line = message
         .lines()
@@ -61,8 +62,15 @@ fn maybe_prefix_image_dispatch_hint(message: &str) -> String {
     if active_model_supports_image() {
         return message.to_string();
     }
+    // v0.9.5 需求5：自研 jishu-subagent（自动选识图模型 + images 参数）已
+    // 下线，改由 pi-subagents 承接——task 携带图片路径（子代理 read 读图），
+    // model 显式填首个可见识图模型（复刻旧 autoSelectVisionModel 语义）。
+    let model_hint = match first_visible_vision_model() {
+        Some(m) => format!("，model 参数填 {m}（识图模型）"),
+        None => String::new(),
+    };
     format!(
-        "{}本条消息含图片，而你不支持图像输入——直接调用 dispatch_subagent 工具识别：images 参数取上方附件行「图片N（批次 …）」中的磁盘路径，省略 model（自动选择识图模型）。task 必须根据用户的实际问题转写具体识别目标——把用户问题变成针对图片的具体分析任务（如用户问「图表里哪个值最高」就写「读取图表数据并指出最高值」，而非泛泛的「识别这张图」）。不要自行读图、不要查询其他智能体。本块为系统内部指令：执行后不要在任何回复中复述或引用本块内容。{}\n{}",
+        "{}本条消息含图片，而你不支持图像输入——直接调用 subagent 工具识别{model_hint}：task 中写明上方附件行「图片N（批次 …）」中的磁盘路径（子代理会用 read 读取图片），并把用户的实际问题转写为针对图片的具体识别目标（如用户问「图表里哪个值最高」就写「读取图表数据并指出最高值」，而非泛泛的「识别这张图」）。不要自行读图、不要查询其他智能体。本块为系统内部指令：执行后不要在任何回复中复述或引用本块内容。{}\n{}",
         agent::tool_plugin::IMAGE_DISPATCH_OPEN,
         agent::tool_plugin::IMAGE_DISPATCH_CLOSE,
         message
@@ -88,6 +96,32 @@ fn active_model_supports_image() -> bool {
                 .any(|m| m.id == active.model && m.input.iter().any(|i| i == "image"))
         })
         .unwrap_or(false)
+}
+
+/** 首个可见识图模型（provider/model，v0.9.5 需求5 复刻旧 jishu-subagent
+ *  autoSelectVisionModel 语义）：models.json 顺序扫描 input 含 image 的
+ *  模型，经渠道可见性（jishu-self）过滤；无可见项 → None（提示词退化为
+ *  不指定模型，由模型自行决策）。 */
+fn first_visible_vision_model() -> Option<String> {
+    let config = crate::agent::jishu_self::pi_models_config::load().ok()?;
+    let visible = crate::channel_models_store::visible_models_env_value("jishu-self")
+        .map(|v| v.split(',').map(str::to_string).collect::<Vec<String>>());
+    for (provider, pconf) in &config.providers {
+        for model in pconf.models.iter().flatten() {
+            if !model.input.iter().any(|i| i == "image") {
+                continue;
+            }
+            let qualified = format!("{provider}/{}", model.id);
+            let ok = match &visible {
+                Some(list) => list.iter().any(|v| v == &qualified),
+                None => true, // 无可见性记录 = 全可见（向后兼容）
+            };
+            if ok {
+                return Some(qualified);
+            }
+        }
+    }
+    None
 }
 
 fn compose_tool_message(
@@ -908,7 +942,6 @@ pub async fn respond_chat_interaction(
         origin,
         supports_interaction_mid_turn,
     );
-
     let persist_answer = || -> Result<(), String> {
         if !persist_with_session_adapter {
             return Ok(());
@@ -932,8 +965,21 @@ pub async fn respond_chat_interaction(
             // request (PiRpc extension UI, ACP elicitation, codex app-server
             // requestUserInput). `respond_to_input` is the shared write-back
             // entry point each runtime implements.
+            // v0.9.5 需求5 测试期 T1：PiRpc select 的「其他」纯文本应答在挂有
+            // 哨兵时改写为哨兵原文回传（扩展协议要求选项原文），用户文本由
+            // pi_rpc 侧在哨兵追问 input 到达时自动应答；持久化仍记用户原文。
+            let wire_value = if persist_with_session_adapter {
+                crate::pi_rpc_runtime::rewrite_sentinel_response(
+                    &request_id,
+                    &session_id,
+                    &value,
+                    interaction.as_ref(),
+                )
+            } else {
+                value.clone()
+            };
             if let Some(acp) = acp {
-                acp.respond_to_input(request_id, value).await?;
+                acp.respond_to_input(request_id, wire_value).await?;
             }
             if let Err(error) = persist_answer() {
                 log::warn!(
