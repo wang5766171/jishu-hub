@@ -15,10 +15,13 @@ import type { SessionPluginDescriptor } from "../types";
  *   脚本（ResizeObserver + load/resize + ESC 转发）经 postMessage 上报
  *   （sandbox 跨源可行），iframe 高度跟随内容。
  * - 放大（v0.9.3 测试期重设计）：HTML 会重排、不是图片——全屏+缩放不适用。
- *   改为**宽版阅读器**：Portal 挂 body，居中加宽卡片（≤1100px），内容
- *   自适应高度、**滚动在阅读器层**（顶部始终可达，等同读文档）；ESC（iframe
- *   聚焦后经 postMessage 转发——原父窗口 keydown 收不到 iframe 内按键，
- *   「点一下后 ESC 失效」的根因）/ 点空白 / 关闭钮退出。
+ *   改为**宽版阅读器**：Portal 挂 body，居中加宽卡片（≤1100px）。高度两段式
+ *   （测试期修复：原顶置布局内容矮时贴在窗口顶部像"很矮的弹窗"、超高时外层
+ *   滚动弹窗形态崩坏）：内容高度不超视口 → 卡片**垂直居中**；超出 → iframe
+ *   高度封顶视口（min(测量高, 100vh - 102px)），弹窗**铺满屏幕**、滚动条在
+ *   iframe 内、标题栏常驻。ESC（iframe 聚焦后经 postMessage 转发——原父窗口
+ *   keydown 收不到 iframe 内按键，「点一下后 ESC 失效」的根因）/ 点空白 /
+ *   关闭钮退出。
  * - 视图切换：**单按钮**，图标 = 当前视图（眼睛=卡片 / 代码=源码），点击切换。
  * - 「在新窗口打开」：内容落临时文件经系统默认浏览器打开（后端
  *   open_html_external，沙箱外的完整交互能力）。
@@ -100,7 +103,9 @@ function useIframeMessages(onEsc?: () => void): {
 }
 
 /** 宽版阅读器（Portal 挂 body——消息行 containment 会劫持 fixed 定位基准）。
- * 关闭三通道：ESC（含 iframe 内转发）/ 点空白区 / 关闭钮。 */
+ * 高度两段式：矮于视口 → items-center 垂直居中；超出 → iframe 封顶视口
+ * 高度、iframe 内滚动（标题栏常驻）。关闭三通道：ESC（含 iframe 内转发）/
+ * 点空白区 / 关闭钮。 */
 function HtmlZoomOverlay({ code, onClose }: { code: string; onClose: () => void }) {
   const { t } = useTranslation();
   const { iframeRef, height } = useIframeMessages(onClose);
@@ -123,47 +128,61 @@ function HtmlZoomOverlay({ code, onClose }: { code: string; onClose: () => void 
   return createPortal(
     <div className="fixed inset-0 z-[60]" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/50" />
-      {/* 滚动在阅读器层（非 iframe 内）：内容自适应高度、顶部始终可达；
-          空白区点击关闭（命中滚动容器本身才关，卡片冒泡不关）。 */}
+      {/* 滚动兜底层：正常情况下卡片高度已被 iframe 封顶不超出视口，此层仅作
+          超小窗口（<640px，p-4 下 100px 扣减略有富余）等边界兜底。 */}
       <div
         className="absolute inset-0 overflow-auto p-4 sm:p-8"
         onClick={(e) => {
           if (e.target === e.currentTarget) onClose();
         }}
       >
-        <div className="mx-auto flex w-[min(1100px,100%)] flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
-          <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/60 px-2">
-            <span className="text-xs font-medium text-foreground">
-              {t("sessionPlugins.htmlRender.zoomTitle", "HTML 放大")}
-            </span>
-            <button
-              type="button"
-              title={t("sessionPlugins.htmlRender.openExternal", "在新窗口打开（系统浏览器）")}
-              onClick={openExternal}
-              className="ml-3 rounded p-1 text-muted-foreground outline-none hover:bg-accent hover:text-foreground"
-            >
-              <ExternalLink className="h-3.5 w-3.5" />
-            </button>
-            <span className="ml-auto select-none rounded border border-border/60 px-1.5 py-0.5 text-[10px] text-muted-foreground/70">
-              {t("sessionPlugins.htmlRender.escHint", "ESC 关闭")}
-            </span>
-            <button
-              type="button"
-              title={t("sessionPlugins.htmlRender.close", "关闭")}
-              onClick={onClose}
-              className="ml-1.5 rounded p-1 text-muted-foreground outline-none hover:bg-accent hover:text-foreground"
-            >
-              <X className="h-4 w-4" />
-            </button>
+        {/* 居中层：min-h-full + items-center——内容矮时卡片垂直居中；卡片高度
+            由 iframe 的 min(测量高, 视口封顶) 保证不超视口，故无 flex 居中裁顶
+            问题。空白区点击关闭（命中滚动容器或居中层本身才关，卡片冒泡不关）。 */}
+        <div
+          className="mx-auto flex min-h-full w-[min(1100px,100%)] items-center"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) onClose();
+          }}
+        >
+          <div className="flex w-full flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
+            <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/60 px-2">
+              <span className="text-xs font-medium text-foreground">
+                {t("sessionPlugins.htmlRender.zoomTitle", "HTML 放大")}
+              </span>
+              <button
+                type="button"
+                title={t("sessionPlugins.htmlRender.openExternal", "在新窗口打开（系统浏览器）")}
+                onClick={openExternal}
+                className="ml-3 rounded p-1 text-muted-foreground outline-none hover:bg-accent hover:text-foreground"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+              </button>
+              <span className="ml-auto select-none rounded border border-border/60 px-1.5 py-0.5 text-[10px] text-muted-foreground/70">
+                {t("sessionPlugins.htmlRender.escHint", "ESC 关闭")}
+              </span>
+              <button
+                type="button"
+                title={t("sessionPlugins.htmlRender.close", "关闭")}
+                onClick={onClose}
+                className="ml-1.5 rounded p-1 text-muted-foreground outline-none hover:bg-accent hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <iframe
+              ref={iframeRef}
+              title={t("sessionPlugins.htmlRender.zoomTitle", "HTML 放大")}
+              sandbox="allow-scripts allow-forms allow-popups"
+              srcDoc={srcDoc}
+              /* 高度封顶：102px = 标题栏(h-9=36px) + 上下 padding(p-8=64px)
+                 + 卡片上下边框(2px)。内容超高时 iframe 固定视口高、iframe 内出
+                 滚动条（弹窗铺满屏幕且外层无溢出）；CSS min() 原生响应窗口缩放，
+                 无需 JS resize 监听。 */
+              style={{ height: `min(${height}px, calc(100vh - 102px))` }}
+              className="w-full border-0 bg-white"
+            />
           </div>
-          <iframe
-            ref={iframeRef}
-            title={t("sessionPlugins.htmlRender.zoomTitle", "HTML 放大")}
-            sandbox="allow-scripts allow-forms allow-popups"
-            srcDoc={srcDoc}
-            style={{ height }}
-            className="w-full border-0 bg-white"
-          />
         </div>
       </div>
     </div>,

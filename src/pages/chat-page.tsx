@@ -17,8 +17,9 @@ import { closeSessionSidebar } from "@/features/session-kernel/shell/session-sid
 import { BlockRenderersProvider } from "@/features/session-kernel/plugins/mounts/use-block-renderers";
 import { PluginSignalBridge } from "@/features/session-kernel/plugins/mounts/plugin-signal-bridge";
 import { SessionPluginActions } from "@/features/session-kernel/plugins/mounts/session-plugin-actions";
-// 5c（v0.9.5 需求1）：面板插件快捷区（头部图标横排 toggle）。
-import { SessionPanelShortcuts } from "@/features/session-kernel/plugins/mounts/session-panel-shortcuts";
+// 5c（v0.9.5 需求1）已回退（2026-09-30 测试期用户裁决）：头部插件快捷区
+// 与「能力中心统一调度」冲突——面板类插件默认收在能力中心，不在头部平铺。
+// 重新设计的入口形态见需求1 GUI 统一优化（02 §GUI 重设计）。
 // 5e/5f（v0.9.5 需求1）：插件快捷执行共享（命令面板 / /plugin 命令）。
 import { runPluginQuickAction } from "@/lib/plugin-quick-run";
 import { FlowBoardOverlay } from "@/features/task-workspace/board/flow-board-overlay";
@@ -2743,7 +2744,6 @@ export function ChatPage({
                   </Button>
                   {/* v0.9.2 需求1 M4：插件头部动作宿主（会话导出等轻动作）。 */}
                   <SessionPluginActions ctx={sessionKernelCtx} enabled={enabledSessionPlugins} />
-                  <SessionPanelShortcuts enabled={enabledSessionPlugins} />
                 </div>
               </div>
             ) : (
