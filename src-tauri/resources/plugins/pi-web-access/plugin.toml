@@ -1,0 +1,21 @@
+schema = 1
+kind = "tool"
+
+[info]
+id = "pi-web-access"
+display_name = "Web 搜索抓取"
+
+# v0.9.5 需求5 T8：纯闸门形态——pi-web-access（npm 包）为动态激活设计：
+# 常驻 web_enable 装载工具，激活后 web_search/source_check/fetch_content/
+# get_search_content 上册（四件必须同在白名单，否则激活后仍被滤除）。
+# 亦补齐 pi-subagents 内置 researcher 角色的工具依赖。启停热联动（禁用
+# 同时经 packages 同步摘除扩展装载）。
+[pi_extension]
+target_agent = "jishu-self"
+tools = [
+    "web_enable",
+    "web_search",
+    "source_check",
+    "fetch_content",
+    "get_search_content",
+]

@@ -106,7 +106,7 @@ pub const CORE_PLUGIN_IDS: [&str; 1] = [super::JISHU_SELF_AGENT_ID];
 /// 系统插件 id 清单（v0.9.0 需求1 二期）：hub 随包分发、启动幂等重部署——
 /// 卸载/编辑无意义（下次启动即恢复），plugin_remove 拒绝、前端隐藏入口；
 /// 可禁用（mcp-resolver 禁用 = MCP 服务总开关，见 mcp_inject）。
-pub const SYSTEM_PLUGIN_IDS: [&str; 11] = [
+pub const SYSTEM_PLUGIN_IDS: [&str; 12] = [
     "mcp-resolver",
     "skill-resolver",
     "task-requirements",
@@ -121,6 +121,8 @@ pub const SYSTEM_PLUGIN_IDS: [&str; 11] = [
     "mcp-adapter",
     "pi-todo",
     "pi-lens",
+    // v0.9.5 需求5 T8：Web 搜索/抓取（用户裁决默认安装）。
+    "pi-web-access",
 ];
 
 /// 系统插件判定。
@@ -139,6 +141,7 @@ pub const PI_PACKAGE_PLUGIN_MAP: &[(&str, &str)] = &[
     ("interactive-qa", "@juicesharp/rpiv-ask-user-question"),
     ("pi-todo", "@juicesharp/rpiv-todo"),
     ("pi-lens", "pi-lens"),
+    ("pi-web-access", "pi-web-access"),
 ];
 
 /// packages 条目与包名匹配（`npm:<name>` 精确或 `npm:<name>@<ver>` 前缀）。
@@ -1022,6 +1025,12 @@ pub fn builtin_adaptive_plugins() -> Vec<(&'static str, &'static str)> {
         (
             "pi-lens",
             include_str!("../../resources/plugins/pi-lens/plugin.toml"),
+        ),
+        // v0.9.5 需求5 T8：Web 搜索/抓取纯闸门插件（web_enable 装载器 +
+        // 激活后 4 件 web 工具全量白名单）。
+        (
+            "pi-web-access",
+            include_str!("../../resources/plugins/pi-web-access/plugin.toml"),
         ),
         // v0.9.0 需求22：预置核心引擎指南插件（[skill] 声明——经 Skill 解析器
         // 分发到 agent skill 目录，agent 原生发现；内容 = 给 agent 的操作指南）。

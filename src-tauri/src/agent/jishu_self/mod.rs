@@ -167,7 +167,7 @@ pub(crate) const JISHU_AGENT_IDENTITY_PROMPT: &str =
 You are not Pi. Use Pi's runtime, tools, and session engine invisibly, \
 but present yourself as jishu agent. Reply naturally in the user's language. \
 When replying in Chinese, your name is 「机枢 agent」(机枢); \
-never transliterate jishu as 「极数」 or anything else.";
+never transliterate jishu as 「极数」 or anything else. Before delegating via the subagent tool, always call it first with {\"action\":\"list\",\"capabilities\":true} and pick the agent strictly from the returned list — never guess agent names from prior habits.";
 
 pub(crate) fn resolve_jishu_cli_binary() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("JISHU_CLI_BIN") {
@@ -773,6 +773,10 @@ pub(crate) const PI_EXTENSION_PACKAGES: &[(&str, &str)] = &[
     ("npm:@juicesharp/rpiv-todo@2.11.0", "@juicesharp/rpiv-todo"),
     // 写后诊断（lens_diagnostics/ast_grep_*/lsp_navigation 等 13 工具）
     ("npm:pi-lens@4.3.0", "pi-lens"),
+    // Web 搜索/抓取（web_enable 装载器 + web_search/fetch_content 等 4 件，
+    // 亦补齐 pi-subagents 内置 researcher 角色的工具依赖——T7 诊断后用户
+    // 裁决默认安装，2026-09-27）
+    ("npm:pi-web-access@0.32.0", "pi-web-access"),
 ];
 
 /// pi 包管理命令行参数（install/update <source>）——mcp 与 4 扩展共用。
@@ -881,7 +885,7 @@ mod mcp_tests {
     /// <目录名>；scoped 包目录名含 @scope/ 层级），且源均为 npm: 带精确版本。
     #[test]
     fn pi_extension_packages_pinned_and_scoped_dirs() {
-        assert_eq!(PI_EXTENSION_PACKAGES.len(), 4);
+        assert_eq!(PI_EXTENSION_PACKAGES.len(), 5);
         for (source, dir) in PI_EXTENSION_PACKAGES {
             assert!(source.starts_with("npm:"), "{source} 非 npm 源");
             let name = source
@@ -904,6 +908,7 @@ mod mcp_tests {
             "@juicesharp/rpiv-ask-user-question",
             "@juicesharp/rpiv-todo",
             "pi-lens",
+            "pi-web-access",
         ] {
             assert!(
                 super::JishuSelfAgent::pinned_source_for_package(name).is_some(),
