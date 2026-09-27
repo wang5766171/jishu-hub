@@ -264,6 +264,15 @@ const CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_secs(15);
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// 归一化事件合批的 flush 间隔上限。行驱动的 flush 检查（每条 stdout 行
+/// 处理尾部）之外，buf 非空时以此间隔兜底：无输出长命令执行期间 pi 静默
+/// 无新行，若只靠行驱动，ToolUseStart 会在 buf 里滞留整个执行期
+///（需求4 打包卡事故：start 滞留 15 分钟才随命令结束的事件一起冲出）。
+const EVENT_FLUSH_INTERVAL: Duration = Duration::from_millis(8);
+/// 兜底 flush 触发时距上次 flush 超过此值 = 事件在静默期异常滞留，打
+/// 日志中心 warn（正常合批静默放行，不刷屏）。
+const EVENT_FLUSH_LAG_WARN: Duration = Duration::from_secs(1);
+
 pub(crate) fn apply_resolved_session_prompt_injection(
     message: String,
     session_id: &str,
@@ -491,11 +500,24 @@ async fn pi_rpc_connection_loop(
         let idle_deadline = tokio::time::Instant::now() + IDLE_TIMEOUT;
         // v0.9.5 需求2 测试期：watchdog deadline（绝对时刻，事件到达清零——
         // 非每轮重算，防模型慢时误杀）。
-        let next_deadline = [Some(idle_deadline), prompt_ack_at, cancel_settle_at]
-            .into_iter()
-            .flatten()
-            .min()
-            .unwrap_or(idle_deadline);
+        // 需求4 打包卡事故：buf 非空时把 flush 截止纳入 deadline——静默期
+        // 无新行驱动行尾 flush 检查，事件最多滞留一个 flush 间隔即被
+        // sleep 分支兜底发出。
+        let flush_deadline = if buf.is_empty() {
+            None
+        } else {
+            Some(tokio::time::Instant::from_std(last_flush) + EVENT_FLUSH_INTERVAL)
+        };
+        let next_deadline = [
+            Some(idle_deadline),
+            prompt_ack_at,
+            cancel_settle_at,
+            flush_deadline,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(idle_deadline);
 
         let exit = tokio::select! {
             cmd = cmd_future => {
@@ -963,7 +985,9 @@ async fn pi_rpc_connection_loop(
                                 }
 
                                 // Periodic flush
-                                if buf.len() >= 32 || last_flush.elapsed() >= Duration::from_millis(8) {
+                                if buf.len() >= 32
+                                    || last_flush.elapsed() >= EVENT_FLUSH_INTERVAL
+                                {
                                     flush_buf(&emit, &session_id, &mut buf);
                                     last_flush = std::time::Instant::now();
                                 }
@@ -1211,6 +1235,22 @@ async fn pi_rpc_connection_loop(
                             state = LoopState::Prompting;
                         }
 
+                        // 需求4 打包卡事故取证锚点：pi 事件到达 hub 的时刻进
+                        // 日志中心（[runtime]）。与前端 pipeline 的
+                        // "chunk tool_use_start" 对表——差值即归一化/转发链
+                        // 滞留；前端未见而此处已见 = 事件在 hub→前端链路丢失。
+                        if event_type == "tool_execution_start" {
+                            devlog(
+                                "info",
+                                "pi 事件到达 hub：tool_execution_start",
+                                &session_id,
+                                json!({
+                                    "call_id": msg.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("?"),
+                                    "tool": msg.get("toolName").and_then(|v| v.as_str()).unwrap_or("?"),
+                                }),
+                            );
+                        }
+
                         // Track interaction tool call IDs: when tool_execution_start
                         // returns empty events for an interaction tool (request_user_input,
                         // ask_user, etc.), record the call_id so we can suppress the
@@ -1366,7 +1406,7 @@ async fn pi_rpc_connection_loop(
                                 json!({ "resent_buffered": resent_buffered }),
                             );
                         } else if buf.len() >= 32
-                            || last_flush.elapsed() >= Duration::from_millis(8)
+                            || last_flush.elapsed() >= EVENT_FLUSH_INTERVAL
                         {
                             flush_buf(&emit, &session_id, &mut buf);
                             last_flush = std::time::Instant::now();
@@ -1387,6 +1427,24 @@ async fn pi_rpc_connection_loop(
                 }
             }
             _ = tokio::time::sleep_until(next_deadline) => {
+                // 合批兜底 flush：静默期（无新 stdout 行驱动行尾检查）buf 里的
+                // 事件最多滞留一个 flush 间隔。滞留超阈值时打点——静默期事件
+                // 滞留的异常签名（对表：pi 到达打点 ↔ 前端 chunk 到达打点）。
+                if !buf.is_empty() && last_flush.elapsed() >= EVENT_FLUSH_INTERVAL {
+                    if last_flush.elapsed() >= EVENT_FLUSH_LAG_WARN {
+                        devlog(
+                            "warn",
+                            "事件合批兜底 flush：静默期滞留超阈值，事件随本批发出",
+                            &session_id,
+                            json!({
+                                "events": buf.len(),
+                                "since_last_flush_ms": last_flush.elapsed().as_millis() as u64,
+                            }),
+                        );
+                    }
+                    flush_buf(&emit, &session_id, &mut buf);
+                    last_flush = std::time::Instant::now();
+                }
                 if matches!(state, LoopState::Idle) && idle_deadline <= next_deadline {
                     log::info!(
                         "Pi RPC idle timeout ({}s), shutting down session {}",
