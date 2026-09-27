@@ -1,11 +1,16 @@
-import { describe, expect, it, afterEach, beforeAll } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
-import { streamStore, type StreamChunk } from "@/hooks/use-stream-store";
-import type { StreamState } from "@/hooks/use-stream-store";
+import { describe, expect, it, afterEach } from "vitest";
+import { streamStore } from "@/hooks/use-stream-store";
+import type { SessionStreamState } from "@/hooks/use-stream-store";
+import type { AgentStreamChunk } from "@/types";
 
 /** 需求4 测试期（用户实测 08:39：打包工具卡丢失）：复现那轮真实事件序列。 */
-function chunk(data: Record<string, unknown>): StreamChunk {
-  return { agent_id: "jishu-self", session: "01a0d868", data } as StreamChunk;
+function chunk(data: Record<string, unknown>): AgentStreamChunk {
+  return {
+    agent_id: "jishu-self",
+    session_id: "01a0d868",
+    event_type: "agent_event",
+    data,
+  } as unknown as AgentStreamChunk;
 }
 
 describe("复现：长空窗后到达的工具卡是否保留", () => {
@@ -33,7 +38,7 @@ describe("复现：长空窗后到达的工具卡是否保留", () => {
     streamStore.push(sid, chunk({ kind: "tool_use_result", call_id: "call_b77", output: "built 57MB", is_error: false }));
     streamStore.push(sid, chunk({ kind: "text_delta", delta: "安装包已出" }));
 
-    const state = streamStore.getState(sid) as StreamState | undefined;
+    const state = streamStore.getState(sid) as SessionStreamState | undefined;
     expect(state).toBeTruthy();
     const b77 = state!.tools.find((t) => t.id === "call_b77");
     expect(b77, "tools 数组应含 b77").toBeTruthy();
@@ -59,7 +64,7 @@ describe("复现：长空窗后到达的工具卡是否保留", () => {
         { type: "tool_use", id: "call_x2", name: "bash", input: { command: "npm run build" } },
       ],
     }));
-    const state = streamStore.getState(sid) as StreamState | undefined;
+    const state = streamStore.getState(sid) as SessionStreamState | undefined;
     const ids = state!.tools.map((t) => t.id);
     expect(ids).toContain("call_x1");
     expect(ids).toContain("call_x2");
