@@ -1,5 +1,5 @@
 use super::normalized::{NormalizedEvent, TurnEndReason};
-use super::{AgentCapabilities, AgentHealth, AgentInfo, AgentPlugin, ChatRequest};
+use super::{AgentCapabilities, AgentHealth, AgentInfo, ChatRequest};
 
 pub struct ClaudeCodeAgent;
 

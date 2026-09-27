@@ -1,4 +1,3 @@
-use super::schedule::should_retry;
 use super::*;
 
 pub(super) async fn drive_loops(
@@ -109,7 +108,7 @@ pub(super) async fn drive_loops(
             }
         }
 
-        let mut result = crate::orchestrator::loop_controller::evaluate(
+        let result = crate::orchestrator::loop_controller::evaluate(
             config,
             iteration,
             now,

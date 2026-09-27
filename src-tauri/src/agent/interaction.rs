@@ -71,17 +71,10 @@ impl From<InteractionDelivery> for InteractionDeliveryHint {
 pub struct InteractionResponseDto {
     pub delivery: String,
 }
-
-impl InteractionResponseDto {
-    pub fn from_delivery(delivery: InteractionDelivery) -> Self {
-        Self {
-            delivery: delivery.as_str().to_string(),
-        }
-    }
-}
-
-/// Forward-looking hint embedded in the emitted interaction event. See module
-/// docs — advisory only, never authoritative.
+/// 交付矩阵纯函数——生产入口为 delivery_for_runtime（含
+/// supports_interaction_mid_turn 实测面），本组为矩阵锁定测试专用保留
+///（原实现原样：mid-turn 支持恒真的简化口径）。
+#[cfg(test)]
 pub fn delivery_hint_for(
     transport: TransportSurface,
     origin: InteractionOrigin,
@@ -92,17 +85,20 @@ pub fn delivery_hint_for(
     }
 }
 
-/// Authoritative delivery decision for an interaction of `origin` on `transport`.
-///
-/// This encodes the protocol-verified reachability table (ground-truth memory +
-/// spike §15). Callers in `respond_chat_interaction` pass the *actual* current
-/// transport; if a runtime's capability probe fails at answer time, it should
-/// return `FollowUp` regardless (the codex/ACP runtimes enforce their own
-/// capability gates before reaching here).
+/// 见 delivery_hint_for 的保留说明（矩阵锁定测试专用，原实现原样）。
+#[cfg(test)]
 pub fn delivery_for(transport: TransportSurface, origin: InteractionOrigin) -> InteractionDelivery {
     delivery_for_runtime(transport, origin, true)
 }
 
+
+impl InteractionResponseDto {
+    pub fn from_delivery(delivery: InteractionDelivery) -> Self {
+        Self {
+            delivery: delivery.as_str().to_string(),
+        }
+    }
+}
 /// Authoritative delivery decision with the runtime's live capability probe.
 pub fn delivery_for_runtime(
     transport: TransportSurface,

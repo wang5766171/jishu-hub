@@ -1,79 +1,5 @@
 use std::path::PathBuf;
 
-use crate::agent::capability::AgentHealth;
-
-/// Cross-platform binary discovery
-pub async fn probe_binary(name: &str, candidates: &[&str]) -> Option<PathBuf> {
-    // 1. Try which/where on PATH
-    #[cfg(target_os = "windows")]
-    let lookup_result = {
-        let mut command = tokio::process::Command::new("where");
-        crate::process_command::tokio_no_window(command.arg(name))
-            .output()
-            .await
-            .ok()
-            .filter(|o| o.status.success())
-    };
-
-    #[cfg(not(target_os = "windows"))]
-    let lookup_result = tokio::process::Command::new("which")
-        .arg(name)
-        .output()
-        .await
-        .ok()
-        .filter(|o| o.status.success());
-
-    if let Some(output) = lookup_result {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        #[cfg(target_os = "windows")]
-        {
-            // Prefer .cmd files on Windows (where returns shell script, .cmd, .ps1)
-            let mut first_valid = None;
-            for line in stdout.lines() {
-                let path = PathBuf::from(line.trim());
-                if path.exists() {
-                    if path.extension().map(|e| e == "cmd").unwrap_or(false) {
-                        return Some(path);
-                    }
-                    if first_valid.is_none() {
-                        first_valid = Some(path);
-                    }
-                }
-            }
-            if let Some(path) = first_valid {
-                return Some(path);
-            }
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            if let Some(first_line) = stdout.lines().next() {
-                let path = PathBuf::from(first_line.trim());
-                if path.exists() {
-                    return Some(path);
-                }
-            }
-        }
-    }
-
-    // 2. Explicit candidate paths
-    for c in candidates {
-        let expanded = expand_env_vars(c);
-        let p = PathBuf::from(&expanded);
-        if p.exists() {
-            return Some(p);
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let with_ext = p.with_extension("cmd");
-            if with_ext.exists() {
-                return Some(with_ext);
-            }
-        }
-    }
-
-    None
-}
-
 /// Synchronous binary discovery (mirrors `probe_binary` without a tokio runtime).
 /// Used by `probe_sync` so health checks never spin up a nested multi-thread
 /// runtime — which both wasted resources and could panic if ever reached from
@@ -219,43 +145,6 @@ fn expand_env_vars(s: &str) -> String {
 
     result
 }
-
-/// Get version string from a binary
-pub async fn version_of(path: &PathBuf) -> Option<String> {
-    let output = run_version_command(path).await?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if let Some(v) = extract_version(&stdout) {
-        return Some(v);
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    extract_version(&stderr)
-}
-
-async fn run_version_command(path: &PathBuf) -> Option<std::process::Output> {
-    let is_cmd = path.extension().map(|e| e == "cmd").unwrap_or(false);
-
-    #[cfg(target_os = "windows")]
-    if is_cmd {
-        let mut command = tokio::process::Command::new("cmd");
-        let output = crate::process_command::tokio_no_window(command.args([
-            "/C",
-            &path.to_string_lossy(),
-            "--version",
-        ]))
-        .output()
-        .await
-        .ok()?;
-        return Some(output);
-    }
-
-    let mut command = tokio::process::Command::new(path);
-    crate::process_command::tokio_no_window(command.arg("--version"))
-        .output()
-        .await
-        .ok()
-}
-
 fn extract_version(s: &str) -> Option<String> {
     for word in s.split_whitespace() {
         let trimmed = word.trim_start_matches('v');
@@ -272,25 +161,6 @@ fn extract_version(s: &str) -> Option<String> {
     }
     None
 }
-
-pub fn build_health(
-    binary: Option<PathBuf>,
-    version: Option<String>,
-    error: Option<String>,
-) -> AgentHealth {
-    AgentHealth {
-        installed: binary.is_some(),
-        version,
-        error,
-        binary_path: binary.map(|p| p.to_string_lossy().to_string()),
-        last_checked_at: now_ms(),
-    }
-}
-
-fn now_ms() -> i64 {
-    crate::util::now_ms()
-}
-
 /// Default candidate paths for known agents
 pub fn default_candidates_for(name: &str) -> Vec<String> {
     #[cfg(not(target_os = "windows"))]

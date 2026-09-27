@@ -22,6 +22,8 @@ pub enum DecisionChannel {
     /// 交互会话（GUI chat）——Delegate 可弹 UI 打扰用户。
     Interactive,
     /// 无头任务（HeadlessTask）——无用户在场，Delegate 等价拒绝。
+    /// 预留：headless 流水线通道（v0.8.0 需求1 框架面，未接线）。
+    #[allow(dead_code)]
     HeadlessTask,
     /// 编排器节点派发——Delegate 等待编排器审批流。
     Orchestrator,
@@ -30,7 +32,10 @@ pub enum DecisionChannel {
 /// 审批动作三分类（wire 语义，对齐 normalized::ApprovalKind）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalKindWire {
+    /// 预留：按工具类别的粗分 wire 变体（当前经 ApprovalKind::for_tool 动态分类）。
+    #[allow(dead_code)]
     Command,
+    #[allow(dead_code)]
     FileWrite,
     Other,
 }
@@ -38,6 +43,8 @@ pub enum ApprovalKindWire {
 /// 决策上下文：策略唯一输入（不可变快照，策略无副作用）。
 #[derive(Debug, Clone)]
 pub struct ApprovalContext {
+    /// 预留：无头通道策略件读取（HeadlessDenyPolicy 接线时启用）。
+    #[allow(dead_code)]
     pub channel: DecisionChannel,
     pub kind: ApprovalKindWire,
     pub session_id: String,
@@ -54,6 +61,8 @@ pub struct ApprovalContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyDecision {
     Allow,
+    /// 预留：策略链直接拒绝（当前链产物仅 Allow/Delegate，Deny 经 HeadlessDenyPolicy）。
+    #[allow(dead_code)]
     Deny,
     Delegate,
 }
@@ -101,6 +110,7 @@ impl PolicyChain {
         ChainOutcome::Delegate
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.policies.is_empty()
     }
@@ -118,6 +128,7 @@ impl std::fmt::Debug for PolicyChain {
 // 内置策略（v1 五个 + 编排器档位门控两个）
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 /// 无头通道拒绝：HeadlessTask → Deny；其余委托。替换 agent_runtime 无头
 /// 会话审批的硬编码自动拒绝（挂载点 1 生效后该分支成为防御断言）。
 pub struct HeadlessDenyPolicy;
@@ -168,6 +179,7 @@ impl ApprovalPolicy for AlwaysAllowPolicy {
     }
 }
 
+#[allow(dead_code)]
 /// 直接委托（即弹窗/等审批；编排器 Always 档 / 测试用）。
 pub struct AlwaysAskPolicy;
 
@@ -316,6 +328,7 @@ fn chain_for_tool_mode(mode: Option<&str>, session_id: &str) -> PolicyChain {
     }
 }
 
+#[allow(dead_code)]
 /// 无头会话默认链（经注册表挂会话记忆）。
 pub fn for_headless_session(session_id: &str) -> PolicyChain {
     PolicyChain::new(vec![

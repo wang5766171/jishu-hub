@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::orchestrator::domain::graph::{
-    AgentAssignmentConstraint, Contract, EdgeKind, ExecutablePayload, GraphEdge, GraphNode,
+    AgentAssignmentConstraint, Contract, ExecutablePayload, GraphEdge, GraphNode,
     GraphSnapshot, LoopControllerConfig, NodeKind, RoleRequirement,
 };
 use crate::orchestrator::domain::policy::NodePolicy;

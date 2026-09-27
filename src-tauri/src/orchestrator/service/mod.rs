@@ -17,7 +17,9 @@ use crate::orchestrator::domain::run::{
 };
 use crate::orchestrator::domain::state_machine::ValidationError;
 use crate::orchestrator::events::{build_event, payloads, TaskEvent, TaskEventType};
-use crate::orchestrator::runtime_bridge::{DefaultTaskAgentRuntime, TaskAgentRuntime};
+use crate::orchestrator::runtime_bridge::DefaultTaskAgentRuntime;
+#[cfg(test)]
+use crate::orchestrator::runtime_bridge::TaskAgentRuntime;
 use crate::orchestrator::store::{default_db_path, StoreError, TaskStore};
 use crate::util::{gen_id, now_ms};
 

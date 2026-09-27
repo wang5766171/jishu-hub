@@ -55,18 +55,6 @@ bitflags::bitflags! {
         const RPC_BIDIRECTIONAL    = 1 << 60;
     }
 }
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AgentManifest {
-    pub display_name: String,
-    pub icon: String,
-    pub logo_path: Option<String>,
-    pub description: String,
-    pub homepage: Option<String>,
-    pub install_hint: Option<String>,
-    pub config_dir_hint: String,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentHealth {
     pub installed: bool,
@@ -74,12 +62,4 @@ pub struct AgentHealth {
     pub error: Option<String>,
     pub binary_path: Option<String>,
     pub last_checked_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DetailedAgentInfo {
-    pub id: String,
-    pub manifest: AgentManifest,
-    pub capabilities: AgentCapabilities,
-    pub health: AgentHealth,
 }

@@ -6,8 +6,6 @@ pub mod openai;
 pub mod sse;
 
 use message::LlmRequest;
-pub use message::LlmTool;
-pub use message::StopReason;
 
 #[derive(Clone)]
 pub struct CancelToken(pub std::sync::Arc<std::sync::atomic::AtomicBool>);
@@ -21,15 +19,15 @@ impl CancelToken {
     pub fn is_canceled(&self) -> bool {
         self.0.load(std::sync::atomic::Ordering::Relaxed)
     }
-    pub fn cancel(&self) {
-        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
 }
 
 #[derive(Debug)]
 pub struct LlmTurn {
     pub stop_reason: message::StopReason,
+    /// 预留：直连 LLM 轮次的工具调用/用量（llm 模块为 CLI 直连预留通道）。
+    #[allow(dead_code)]
     pub tool_calls: Vec<message::LlmToolCall>,
+    #[allow(dead_code)]
     pub usage: Option<crate::agent::normalized::UsageStats>,
 }
 

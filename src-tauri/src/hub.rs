@@ -332,17 +332,6 @@ pub fn add_manual_project(path: &str) -> Result<(), Box<dyn std::error::Error>> 
     }
     write_json(&path_obj, &data)
 }
-
-pub fn remove_manual_project(path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let path_obj = manual_projects_path()?;
-    if !path_obj.exists() {
-        return Ok(());
-    }
-    let mut data: ManualProjects = read_json(&path_obj)?;
-    data.paths.retain(|p| p != path);
-    write_json(&path_obj, &data)
-}
-
 pub fn load_manual_projects() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let path = manual_projects_path()?;
     if !path.exists() {
@@ -411,29 +400,9 @@ pub struct ProjectMerges {
     #[serde(default)]
     pub merges: HashMap<String, Vec<String>>,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PhysicalMergeUndo {
-    pub primary: String,
-    pub secondaries: Vec<SecondaryMove>,
-    pub timestamp: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SecondaryMove {
-    pub encoded_name: String,
-    pub claude_dir_backup: Option<String>,
-    pub project_claude_dir_backup: Option<String>,
-}
-
 fn project_merges_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(hub_dir()?.join("project_merges.json"))
 }
-
-fn physical_merge_undo_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    Ok(hub_dir()?.join("physical_merge_undo.json"))
-}
-
 pub fn load_project_merges() -> Result<ProjectMerges, Box<dyn std::error::Error>> {
     let path = project_merges_path()?;
     if !path.exists() {
@@ -484,18 +453,6 @@ pub fn get_all_secondaries() -> Result<Vec<String>, Box<dyn std::error::Error>> 
     let merges = load_project_merges()?;
     Ok(merges.merges.values().flatten().cloned().collect())
 }
-
-/// Given a secondary encoded name, find which primary it belongs to
-pub fn resolve_primary(secondary: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let merges = load_project_merges()?;
-    for (primary, secondaries) in &merges.merges {
-        if secondaries.contains(&secondary.to_string()) {
-            return Ok(Some(primary.clone()));
-        }
-    }
-    Ok(None)
-}
-
 // --- Terminal Session Tracking ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

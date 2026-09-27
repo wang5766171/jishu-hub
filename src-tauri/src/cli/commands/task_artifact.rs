@@ -131,6 +131,8 @@ fn validate_plan_nodes(nodes: &serde_json::Value) -> Result<(), String> {
     }
     #[derive(Clone, Copy, PartialEq)]
     enum Mark {
+        /// 环检测哨兵值（拓扑遍历未触发环路径，保留完备性）。
+        #[allow(dead_code)]
         White,
         Gray,
         Black,

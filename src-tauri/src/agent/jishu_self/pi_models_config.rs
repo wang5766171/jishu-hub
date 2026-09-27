@@ -71,6 +71,8 @@ pub struct PiProviderConfig {
 
 impl PiProviderConfig {
     /// Empty provider — used when the GUI is creating a new one.
+    /// 预留：模型页新建 provider 入口（当前经 channel_models_store 全量写入）。
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -280,34 +282,9 @@ fn cleanup_old_models_backups(backup_dir: &Path, keep: usize) {
         let _ = fs::remove_file(old);
     }
 }
-
-// ---------------------------------------------------------------------------
-// Convenience
-// ---------------------------------------------------------------------------
-
-pub fn upsert_provider(name: &str, provider: PiProviderConfig) -> Result<(), String> {
-    let mut config = load()?;
-    config.providers.insert(name.to_string(), provider);
-    save(&config)
-}
-
-pub fn delete_provider(name: &str) -> Result<bool, String> {
-    let mut config = load()?;
-    let removed = config.providers.remove(name).is_some();
-    if removed {
-        save(&config)?;
-    }
-    Ok(removed)
-}
-
 pub fn get_provider(name: &str) -> Result<Option<PiProviderConfig>, String> {
     Ok(load()?.providers.remove(name))
 }
-
-pub fn list_providers() -> Result<Vec<(String, PiProviderConfig)>, String> {
-    Ok(load()?.providers.into_iter().collect())
-}
-
 /// 由渠道 + 模型条目构造最小连通性测试用的 ModelPreset（GUI test_model
 /// 与 CLI `agent model test` 共用）：模型级 api/baseUrl 覆盖渠道级，
 /// 协议缺省 anthropic-messages，密钥取渠道级 apiKey。
@@ -483,22 +460,20 @@ mod tests {
 
     #[test]
     fn upsert_and_delete_provider() {
+        // upsert/delete_provider 已随 GUI 模型页改走 channel_models_store 下线；
+        // 保留同等回归价值：load_from → 改写 → save_to 的读写往返。
         let dir = unique_tmp("upsert");
-        // override default path by writing to a temp file and using the
-        // path-bound helpers. For convenience we touch the file directly
-        // and use upsert_provider on a real-ish path.
-        let home = dirs::home_dir().unwrap();
-        let _ = std::fs::create_dir_all(home.join(".jishu-agent").join("agent"));
-        // Use a non-default name to avoid clobbering a real file.
+        let path = dir.join("models.json");
         let probe_name = format!("__test_zhipu_{}", std::process::id());
-        let probe = sample_zhipu();
-        upsert_provider(&probe_name, probe).unwrap();
-        let got = get_provider(&probe_name).unwrap();
-        assert!(got.is_some(), "provider should exist after upsert");
-        let removed = delete_provider(&probe_name).unwrap();
-        assert!(removed);
-        let after = get_provider(&probe_name).unwrap();
-        assert!(after.is_none(), "provider should be gone after delete");
+        let mut config = PiModelsConfig::default();
+        config.providers.insert(probe_name.clone(), sample_zhipu());
+        save_to(&path, &config).unwrap();
+        let mut reloaded = load_from(&path).unwrap();
+        assert!(reloaded.providers.contains_key(&probe_name), "provider should round-trip");
+        reloaded.providers.remove(&probe_name);
+        save_to(&path, &reloaded).unwrap();
+        let after = load_from(&path).unwrap();
+        assert!(!after.providers.contains_key(&probe_name), "provider should be gone");
     }
 
     #[test]

@@ -10,10 +10,9 @@ pub(crate) use pi_runtime::coding_agent_entry_for_env;
 pub(crate) mod pi_session;
 pub(crate) mod session_title;
 mod probe;
-mod store;
 
 use crate::agent::capability::AgentCapabilities;
-use crate::agent::{AgentInfo, AgentPlugin, ChatRequest, ResolvedSessionPromptInjection};
+use crate::agent::{AgentInfo, ChatRequest, ResolvedSessionPromptInjection};
 use crate::project_config::ProjectSettings;
 use std::path::PathBuf;
 

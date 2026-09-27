@@ -1009,6 +1009,8 @@ fn prompt_matches_question(value: &serde_json::Value, prompt: &str) -> bool {
     })
 }
 
+/// 仅测试使用（生产路径经 pi 会话适配器读 JSONL）。
+#[cfg(test)]
 pub fn load_session(path: &Path) -> Option<Session> {
     load_session_with_filter(path, |_| false)
 }
@@ -1134,11 +1136,6 @@ where
         agent_id: None,
     })
 }
-
-pub fn list_sessions(project_dir: &Path) -> Vec<Session> {
-    list_sessions_with_filter(project_dir, |_| false)
-}
-
 pub fn list_sessions_with_filter<F>(project_dir: &Path, should_skip_record: F) -> Vec<Session>
 where
     F: Fn(&serde_json::Value) -> bool + Copy,

@@ -703,7 +703,7 @@ fn validate(path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
         }
     }
 
-    let (valid, mut all_errors, hub_live) = match hub_errors {
+    let (valid, all_errors, hub_live) = match hub_errors {
         Some(hub_errs) => {
             let mut errs = basic_errors.clone();
             errs.extend(hub_errs);

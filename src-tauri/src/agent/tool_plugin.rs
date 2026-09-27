@@ -448,7 +448,7 @@ fn strip_plugins_block(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::agent::manifest::schema::{
-        InfoSection, ManifestKind, ToolSection, TransportSection,
+        InfoSection, ManifestKind, ToolSection,
     };
 
     use crate::agent::manifest::env_test_lock;

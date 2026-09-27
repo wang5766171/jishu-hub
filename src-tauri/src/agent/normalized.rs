@@ -537,30 +537,6 @@ pub struct ImageSource {
     pub data_base64: Option<String>,
     pub mime: Option<String>,
 }
-
-#[derive(Debug, Clone, Serialize)]
-pub struct NormalizedMessage {
-    pub role: String,
-    pub content: Vec<ContentBlock>,
-    pub timestamp: Option<i64>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum AgentError {
-    #[error("Agent not found: {0}")]
-    NotFound(String),
-    #[error("Agent not installed: {0}")]
-    NotInstalled(String),
-    #[error("Unsupported operation")]
-    Unsupported,
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("Serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
-    #[error("{0}")]
-    Other(String),
-}
-
 #[cfg(test)]
 mod tests_v6 {
     use super::*;

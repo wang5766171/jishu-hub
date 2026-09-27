@@ -1,12 +1,10 @@
 pub mod checkpoint;
 
-pub use checkpoint::ProjectionStore;
 
 use crate::orchestrator::domain::run::{NodeRunStatus, RunStatus};
 use crate::orchestrator::events::RunProjection;
 use crate::orchestrator::store::{StoreError, TaskStore};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// A queryable view over the task store that combines persisted projections
 /// with incremental event replay.

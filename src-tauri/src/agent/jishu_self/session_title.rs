@@ -108,7 +108,7 @@ pub async fn generate_and_persist(session_id: &str) -> Option<String> {
 
     let response = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let resp_clone = response.clone();
-    let mut emitter = Box::new(move |event| {
+    let emitter = Box::new(move |event| {
         if let crate::agent::NormalizedEvent::TextDelta { delta } = event {
             if let Ok(mut s) = resp_clone.lock() {
                 s.push_str(&delta);

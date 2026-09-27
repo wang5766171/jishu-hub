@@ -48,27 +48,6 @@ pub fn extend_path_for_child_tokio(
     command.env("PATH", joined);
     command
 }
-
-pub fn extend_path_for_child_std(
-    command: &mut std::process::Command,
-) -> &mut std::process::Command {
-    let extra = collect_user_paths();
-    if extra.is_empty() {
-        return command;
-    }
-    let current_path = std::env::var_os("PATH").unwrap_or_default();
-    let mut parts: Vec<std::path::PathBuf> = std::env::split_paths(&current_path).collect();
-    for dir in extra {
-        let path_dir = std::path::PathBuf::from(&dir);
-        if !parts.contains(&path_dir) {
-            parts.push(path_dir);
-        }
-    }
-    let joined = std::env::join_paths(parts).unwrap_or(current_path);
-    command.env("PATH", joined);
-    command
-}
-
 /// 收集用户级 PATH 目录（返回 &str 引用，避免在 hot path 重复分配）。
 fn collect_user_paths() -> Vec<String> {
     let mut dirs = Vec::new();

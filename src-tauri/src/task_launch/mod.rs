@@ -60,6 +60,7 @@ pub struct TaskLaunchInstance {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct TaskRequirementMessage {
     pub role: String,
     pub content: String,
@@ -97,6 +98,7 @@ pub struct TaskRequirementFinalized {
 /// 设计依据：`任务数据结构与生命周期设计_20260622.md` §1.3。
 /// 注意：主任务会话是 task_event 投影的"虚拟会话"，无真实 session_id，此处不包含它。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct TaskSessionEntry {
     pub phase: String,
     pub session_id: String,
@@ -106,6 +108,7 @@ pub struct TaskSessionEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct TaskSessionIndex {
     pub task_id: String,
     pub entries: Vec<TaskSessionEntry>,
@@ -126,8 +129,11 @@ use instance_store::TaskInstanceStore;
 
 pub use conductor::{
     conductor_load_task_state, conductor_sync_phase, ConductorLoadStateResult,
-    ConductorSyncArtifacts, ConductorSyncPhaseRequest, ConductorSyncPhaseResult,
+    ConductorSyncPhaseRequest, ConductorSyncPhaseResult,
 };
+// ConductorSyncArtifacts 仅测试构造使用（生产路径经 conductor 模块内部）。
+#[cfg(test)]
+pub use conductor::ConductorSyncArtifacts;
 pub use instance_store::{
     attach_graph, create_from_existing_graph, delete_task, finalize_requirement, find_by_session,
     get_task_instance, list_task_instances, mark_task_stage_session,
@@ -136,11 +142,11 @@ pub use instance_store::{
 mod revise;
 
 pub use proposal::{
-    orchestrator_validate_proposal, ValidateProposalRequest, ValidateProposalResult,
+    orchestrator_validate_proposal, ValidateProposalRequest,
 };
-pub use revise::{conductor_revise_plan, RevisePlanRequest, RevisePlanResult};
+pub use revise::{conductor_revise_plan, RevisePlanRequest};
 mod dispatch;
-pub use dispatch::{conductor_dispatch_to_node, DispatchToNodeRequest, DispatchToNodeResult};
+pub use dispatch::{conductor_dispatch_to_node, DispatchToNodeRequest};
 pub use run::{
     orchestrator_start_run_from_revision, sync_run_status_to_task_instance, task_launch_start_run,
     StartRunFromRevisionRequest, StartRunFromRevisionResult, TaskLaunchStartRunRequest,

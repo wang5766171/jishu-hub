@@ -1,5 +1,6 @@
 use super::*;
-use crate::orchestrator::commands::{CreateGraphInput, NodePatch};
+use crate::orchestrator::commands::CreateGraphInput;
+use crate::orchestrator::commands::apply::NodePatch;
 use crate::orchestrator::domain::graph::{
     EdgeKind, ExecutablePayload, GraphEdge, GraphNode, NodeKind,
 };

@@ -963,6 +963,8 @@ impl McpServer {
         }
     }
 
+    /// 测试注入专用构造（生产经 Default + 声明源注册）。
+    #[cfg(test)]
     fn with_decl_source(source: Box<dyn Fn() -> Vec<McpPluginDecl> + Send>) -> McpServer {
         McpServer {
             children: Vec::new(),

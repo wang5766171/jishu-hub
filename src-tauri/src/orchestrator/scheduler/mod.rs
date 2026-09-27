@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn test_compute_ready_set_simple_chain() {
-        let mut n1 = GraphNode {
+        let n1 = GraphNode {
             node_id: "A".into(),
             parent_id: None,
             title: "A".into(),

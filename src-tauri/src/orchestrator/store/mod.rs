@@ -7,7 +7,7 @@ use crate::orchestrator::conversation::{TaskInteractionRequest, TaskInteractionS
 use crate::orchestrator::domain::graph::TaskGraph;
 use crate::orchestrator::domain::revision::GraphRevision;
 use crate::orchestrator::domain::run::{
-    AgentAssignment, ApprovalRequest, ArtifactRef, AttemptDispatch, BudgetState, GraphRun,
+    ApprovalRequest, ArtifactRef, AttemptDispatch, BudgetState, GraphRun,
     NodeAttempt, NodeRun, NodeRunStatus, NodeSessionSummary, RunPlanningSnapshot,
     RunRevisionProposal, RunStatus,
 };

@@ -112,34 +112,6 @@ pub fn spawn_codex_app_server_session(
         on_session_resolved,
     )
 }
-
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_codex_app_server_session_with_policy(
-    app: tauri::AppHandle,
-    agent_id: String,
-    pending_session_id: String,
-    child: tokio::process::Child,
-    project_path: String,
-    requested_session_id: Option<String>,
-    first_message: String,
-    policy: crate::agent::policy::PolicyChain,
-    on_finish: impl FnOnce() + Send + 'static,
-    on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
-) -> AcpControl {
-    let emit = tauri_event_emitter(app, agent_id);
-    spawn_codex_app_server_session_inner(
-        emit,
-        pending_session_id,
-        child,
-        project_path,
-        requested_session_id,
-        first_message,
-        policy,
-        on_finish,
-        on_session_resolved,
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
 fn spawn_codex_app_server_session_inner(
     emit: AcpEventEmit,

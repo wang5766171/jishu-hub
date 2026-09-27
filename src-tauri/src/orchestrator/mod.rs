@@ -1,3 +1,6 @@
+//! 编排器（在建子系统，v0.9.4 起）：领域模型/事件/投影/调度等部分预留面
+//! 尚未接线——模块级放行 dead_code，接线完成后再收紧。
+#![allow(dead_code)]
 pub mod commands;
 pub mod conversation;
 pub mod daemon;
@@ -16,36 +19,18 @@ pub mod store;
 
 // ── Public re-exports ────────────────────────────────────────────────────
 
-pub use commands::{
-    apply_commands, graph_create, graph_diff, graph_validate, CreateGraphInput, GraphCommand,
-    NodePatch, RevisionResult,
-};
+pub use commands::graph_validate;
 pub use domain::graph::{
-    AgentAssignmentConstraint, ApprovalGateConfig, ApprovalRisk, Contract, EdgeKind, EvaluatorSpec,
-    ExecutablePayload, GraphEdge, GraphNode, GraphSnapshot, LoopControllerConfig, NodeKind,
-    RoleRequirement, TaskGraph, VerifyCheck,
+    AgentAssignmentConstraint, EdgeKind,
+    ExecutablePayload, GraphEdge, GraphNode, GraphSnapshot, NodeKind,
+    RoleRequirement, TaskGraph,
 };
-pub use domain::policy::{
-    ApprovalPolicy, IdempotencyPolicy, NodePolicy, PermissionScope, ResourceRequirements,
-    RetryPolicy,
-};
-pub use domain::revision::{
-    diff_snapshots, CanonicalSnapshot, ContentHash, GraphRevision, NodeDiff, PlannerPolicyRef,
-    PolicyChange, RevisionDiff, SkillRef, TemplateRef, CURRENT_SCHEMA_VERSION,
-};
+pub use domain::revision::GraphRevision;
 pub use domain::run::{
-    AgentAssignment, ApprovalRequest, ArtifactRef, ArtifactSensitivity, AttemptError, AttemptUsage,
-    BudgetState, ErrorCategory, GraphRun, Lease, LeasedResource, LockMode, NodeAttempt, NodeRun,
-    NodeRunStatus, RunPlanningSnapshot, RunStatus, TaskError, TaskErrorCategory,
-};
-pub use domain::state_machine::{
-    validate_node_run_transition, validate_run_transition, NodeRunTransitionError,
-    RunTransitionError, ValidationError, ValidationResult,
+    BudgetState, GraphRun, NodeRun, RunPlanningSnapshot, RunStatus,
 };
 pub use events::{
-    build_event, rebuild_projection, EventBatch, RunProjection, TaskEvent, TaskEventType,
-    EVENT_SCHEMA_VERSION,
+    build_event, TaskEvent, TaskEventType,
 };
-pub use planner::{GraphProposal, PlannerService, PlanningRequest};
-pub use service::{TaskService, TaskServiceError};
-pub use store::{default_data_dir, default_db_path, StoreError, TaskStore};
+pub use service::TaskService;
+pub use store::{default_db_path, TaskStore};

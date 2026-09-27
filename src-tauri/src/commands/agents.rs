@@ -295,7 +295,7 @@ pub(crate) fn plugin_get(
     state: tauri::State<'_, Mutex<AppState>>,
     plugin_id: String,
 ) -> Result<serde_json::Value, String> {
-    let s = state
+    let _s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
     // agent 与 tool 两类 manifest 插件都在 ~/.jishu-hub/agents/ 下——直接按
@@ -895,11 +895,11 @@ pub(crate) fn pi_extension_import_bundle(path: String) -> Result<agent::pi_exten
 }
 
 #[tauri::command]
-pub(crate) fn pi_extension_enable(fileName: String) -> Result<(), String> {
-    agent::pi_extension_import::enable_pi_extension(&fileName)
+pub(crate) fn pi_extension_enable(file_name: String) -> Result<(), String> {
+    agent::pi_extension_import::enable_pi_extension(&file_name)
 }
 
 #[tauri::command]
-pub(crate) fn pi_extension_ignore(fileName: String) -> Result<(), String> {
-    agent::pi_extension_import::ignore_pi_extension(&fileName)
+pub(crate) fn pi_extension_ignore(file_name: String) -> Result<(), String> {
+    agent::pi_extension_import::ignore_pi_extension(&file_name)
 }

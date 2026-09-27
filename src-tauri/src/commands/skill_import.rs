@@ -194,7 +194,7 @@ pub(crate) fn skill_import_file(app: tauri::AppHandle) -> Result<SkillFolderPayl
         // 选到 SKILL.md 文件：同目录存在附属文件 → 该目录即 skill 目录。
         let parent_assets = path
             .parent()
-            .filter(|p| {
+            .filter(|_p| {
                 path.file_name()
                     .map(|n| n == "SKILL.md")
                     .unwrap_or(false)

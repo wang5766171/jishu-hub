@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use crate::hub;
 use crate::image;
 use crate::session;
-use crate::{with_app_state, AppState};
+use crate::AppState;
 
 const TEXT_PREVIEW_MAX_BYTES: usize = 512 * 1024;
 

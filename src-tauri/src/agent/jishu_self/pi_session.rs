@@ -1645,7 +1645,7 @@ Task Orchestrator execution contract:\n\
     /// produced on a real run. Captures a snapshot at
     /// `tests/fixtures/pi_session_real.jsonl`; the test loads and
     /// parses it the same way the GUI would.
-    #[test]
+    ///
     /// v0.9.1 需求14 测试期：errorMessage-only 失败消息投影为 error 分隔线，
     /// 连续多条（重试各一次）折叠为一条——会话重载后失败原因可见。
     #[test]
@@ -1678,6 +1678,7 @@ Task Orchestrator execution contract:\n\
         ));
     }
 
+    #[test]
     fn parses_real_pi_session_jsonl_fixture() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")

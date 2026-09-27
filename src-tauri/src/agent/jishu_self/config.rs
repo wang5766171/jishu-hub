@@ -125,7 +125,7 @@ fn upsert_hub_entry_in_root(
 fn upsert_standard_global_mcp(
     entry: Option<&crate::config::McpServerConfig>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::agent::mcp_server::HUB_MCP_ENTRY_NAME;
+    
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
     let path = home.join(".config").join("mcp").join("mcp.json");
     let mut root: serde_json::Value = if path.exists() {

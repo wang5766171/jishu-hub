@@ -1,5 +1,8 @@
 use crate::orchestrator::events::{apply_events_to_projection, rebuild_projection};
-use crate::orchestrator::store::{StoreError, TaskStore};
+use crate::orchestrator::store::StoreError;
+#[cfg(test)]
+use crate::orchestrator::store::TaskStore;
+#[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Maximum number of delta events to fetch in one incremental batch.

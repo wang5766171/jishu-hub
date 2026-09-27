@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use crate::hub;
 use crate::project;
 use crate::project_config;
-use crate::{agent, with_app_state, AppState};
+use crate::{with_app_state, AppState};
 
 #[tauri::command]
 pub(crate) async fn scan_projects(
@@ -331,7 +331,7 @@ mod file_list_tests {
         for i in 0..80 {
             std::fs::write(root.join(format!("f{i:03}.txt")), "x").unwrap();
         }
-        let mut out = Vec::new();
+        let out = Vec::new();
         // 用小上限验证截断逻辑（正式上限 5000 不在测试中构造）
         let mut capped = out;
         walk_project_files(&root, std::path::Path::new(""), 0, &mut capped);

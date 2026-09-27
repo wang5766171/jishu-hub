@@ -344,8 +344,8 @@ pub(crate) async fn channel_models_probe_and_store(
     api_key: String,
 ) -> Result<ChannelModelsProbe, String> {
     let probe = {
-        let agent_id = agent_id.clone();
-        let channel_key = channel_key.clone();
+        let _agent_id = agent_id.clone();
+        let _channel_key = channel_key.clone();
         let base_url = base_url.clone();
         let api_key = api_key.clone();
         tauri::async_runtime::spawn_blocking(move || {

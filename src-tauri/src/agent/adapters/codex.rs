@@ -1,7 +1,4 @@
-use crate::agent::{
-    normalized::{NormalizedEvent, TurnEndReason},
-    AgentCapabilities, AgentHealth, AgentInfo, AgentPlugin, ChatRequest,
-};
+use crate::agent::{AgentCapabilities, AgentHealth, AgentInfo, ChatRequest};
 use serde::Deserialize;
 use std::io::BufRead;
 
@@ -12,81 +9,6 @@ impl CodexAdapter {
         Self
     }
 }
-
-pub fn normalize_stream_event(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    match event.get("type").and_then(|v| v.as_str()) {
-        Some("message_delta") | Some("exec_command_output_delta") => {
-            let delta = event
-                .get("delta")
-                .or_else(|| event.get("text"))
-                .or_else(|| event.get("output"))
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            if delta.is_empty() {
-                raw(event)
-            } else {
-                vec![NormalizedEvent::TextDelta {
-                    delta: delta.to_string(),
-                }]
-            }
-        }
-        Some("message") => normalize_codex_message(event),
-        Some("result") | Some("turn_complete") => normalize_codex_complete(event),
-        _ => raw(event),
-    }
-}
-
-fn normalize_codex_message(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    if let Some(text) = event
-        .get("message")
-        .or_else(|| event.get("content"))
-        .and_then(|v| v.as_str())
-    {
-        return vec![NormalizedEvent::TextDelta {
-            delta: text.to_string(),
-        }];
-    }
-
-    raw(event)
-}
-
-fn normalize_codex_complete(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    let mut normalized = Vec::new();
-    if let Some(session_id) = event
-        .get("session_id")
-        .or_else(|| event.get("sessionId"))
-        .and_then(|v| v.as_str())
-    {
-        normalized.push(NormalizedEvent::SessionResolved {
-            session_id: session_id.to_string(),
-        });
-    }
-
-    if let Some(error) = event.get("error").and_then(|v| v.as_str()) {
-        normalized.push(NormalizedEvent::Error {
-            message: error.to_string(),
-            recoverable: false,
-        });
-        normalized.push(NormalizedEvent::TurnComplete {
-            reason: TurnEndReason::Error,
-            usage: None,
-        });
-    } else {
-        normalized.push(NormalizedEvent::TurnComplete {
-            reason: TurnEndReason::Complete,
-            usage: None,
-        });
-    }
-    normalized
-}
-
-fn raw(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    vec![NormalizedEvent::Raw {
-        agent: "codex".to_string(),
-        raw: event.clone(),
-    }]
-}
-
 use crate::agent::traits::{
     AgentManifest, ConfigAdapter, EventNormalizer, ProjectAdapter, SessionAdapter, TerminalAdapter,
     TransportAdapter,
@@ -1356,6 +1278,8 @@ fn apply_reasoning_effort(
 #[derive(Debug, Clone)]
 pub struct CodexModelInfo {
     pub id: String,
+    /// 上游模型目录字段镜像（排障日志/未来模型页展示用）。
+    #[allow(dead_code)]
     pub display_name: String,
 }
 
@@ -1591,7 +1515,7 @@ mod model_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::normalized::{NormalizedEvent, TurnEndReason};
+    
 
     #[test]
     fn rollout_stats_derive_cwd_counts_and_mtime() {
@@ -1677,39 +1601,4 @@ mod tests {
         assert!(table.get("model_reasoning_effort").is_none());
     }
 
-    #[test]
-    fn normalizes_codex_message_delta() {
-        let event = serde_json::json!({
-            "type": "message_delta",
-            "delta": "hello"
-        });
-
-        assert_eq!(
-            normalize_stream_event(&event),
-            vec![NormalizedEvent::TextDelta {
-                delta: "hello".to_string()
-            }]
-        );
-    }
-
-    #[test]
-    fn normalizes_codex_turn_complete_with_session() {
-        let event = serde_json::json!({
-            "type": "turn_complete",
-            "session_id": "codex-session"
-        });
-
-        assert_eq!(
-            normalize_stream_event(&event),
-            vec![
-                NormalizedEvent::SessionResolved {
-                    session_id: "codex-session".to_string()
-                },
-                NormalizedEvent::TurnComplete {
-                    reason: TurnEndReason::Complete,
-                    usage: None,
-                },
-            ]
-        );
-    }
 }

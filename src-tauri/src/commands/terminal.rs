@@ -27,7 +27,7 @@ pub(crate) fn open_in_terminal(
 
 #[tauri::command]
 pub(crate) fn register_terminal_session(
-    state: tauri::State<'_, Mutex<AppState>>,
+    _state: tauri::State<'_, Mutex<AppState>>,
     session_id: String,
     pid: u32,
     project_path: String,

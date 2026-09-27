@@ -279,7 +279,7 @@ pub(crate) use self::interaction::{permission_option_id, write_permission_respon
 pub(crate) use self::protocol::acp_initialize_params;
 pub use self::protocol::{handle_acp_response_line, write_jsonrpc_request, AcpResponse};
 
-use self::elicitation::{extract_ask_user_prompts, parse_acp_elicitation, AcpElicitation};
+use self::elicitation::{extract_ask_user_prompts, parse_acp_elicitation};
 use self::interaction::{
     cancel_pending_elicitations, elicit_result_payload, parse_sub_request_id,
     permission_request_key, reject_pending_permissions, route_acp_interaction_response,

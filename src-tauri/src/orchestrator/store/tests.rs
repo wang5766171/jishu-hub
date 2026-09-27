@@ -1,6 +1,6 @@
 use super::*;
 use crate::agent::normalized::InteractionOption;
-use crate::orchestrator::domain::graph::{EdgeKind, GraphEdge, GraphNode, GraphSnapshot, NodeKind};
+use crate::orchestrator::domain::graph::{GraphNode, GraphSnapshot, NodeKind};
 use crate::orchestrator::domain::revision::GraphRevision;
 use crate::orchestrator::domain::run::ArtifactSensitivity;
 use crate::orchestrator::events::{build_event, payloads, TaskEventType};

@@ -54,7 +54,7 @@ where
     // 2. User-installed Node Module (from UI updates)
     if let Some(agent_dir) = crate::agent::jishu_self::pi_agent_dir() {
         if let Some(entry) = coding_agent_entry(Path::new(&agent_dir), &file_exists) {
-            let mut base_args = vec![entry.to_string_lossy().to_string()];
+            let base_args = vec![entry.to_string_lossy().to_string()];
             return Ok(PiRuntimeCommand {
                 program: node_bin,
                 base_args,
@@ -73,7 +73,7 @@ where
 
     if let Some(agent_dir) = Some(internal_pi_dir) {
         if let Some(entry) = coding_agent_entry(&agent_dir, &file_exists) {
-            let mut base_args = vec![entry.to_string_lossy().to_string()];
+            let base_args = vec![entry.to_string_lossy().to_string()];
             return Ok(PiRuntimeCommand {
                 program: node_bin,
                 base_args,

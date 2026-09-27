@@ -4,10 +4,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::agent::{
-    normalized::{NormalizedEvent, TurnEndReason},
-    AgentCapabilities, AgentHealth, AgentInfo, AgentPlugin, ChatRequest,
-};
+use crate::agent::{AgentCapabilities, AgentHealth, AgentInfo, ChatRequest};
 
 pub struct OpencodeAdapter;
 
@@ -16,204 +13,12 @@ impl OpencodeAdapter {
         Self
     }
 }
-
-pub fn normalize_stream_event(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    match event_type(event) {
-        Some("step_start") | Some("step-start") => normalize_opencode_session(event),
-        Some("text") | Some("text_delta") | Some("message.delta") => {
-            let delta = event
-                .get("text")
-                .or_else(|| event.get("delta"))
-                .or_else(|| event.get("content"))
-                .or_else(|| event.get("part").and_then(|part| part.get("text")))
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            if delta.is_empty() {
-                raw(event)
-            } else {
-                vec![NormalizedEvent::TextDelta {
-                    delta: delta.to_string(),
-                }]
-            }
-        }
-        Some("reasoning") => normalize_opencode_reasoning(event),
-        Some("tool_use") => normalize_opencode_tool_use(event),
-        Some("message") | Some("message.completed") => normalize_opencode_message(event),
-        Some("step_finish") | Some("step-finish") => normalize_opencode_step_finish(event),
-        Some("error") => normalize_opencode_error(event),
-        Some("session.idle") | Some("result") => normalize_opencode_complete(event),
-        _ => raw(event),
-    }
-}
-
 fn event_type(event: &serde_json::Value) -> Option<&str> {
     event
         .get("type")
         .or_else(|| event.get("part").and_then(|part| part.get("type")))
         .and_then(|v| v.as_str())
 }
-
-fn normalize_opencode_session(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    if let Some(session_id) = opencode_session_id(event) {
-        return vec![NormalizedEvent::SessionResolved {
-            session_id: session_id.to_string(),
-        }];
-    }
-    raw(event)
-}
-
-fn normalize_opencode_message(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    if let Some(text) = event
-        .get("text")
-        .or_else(|| event.get("content"))
-        .or_else(|| event.get("part").and_then(|part| part.get("text")))
-        .and_then(|v| v.as_str())
-    {
-        return vec![NormalizedEvent::TextDelta {
-            delta: text.to_string(),
-        }];
-    }
-    raw(event)
-}
-
-fn normalize_opencode_reasoning(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    if let Some(thinking) = event
-        .get("text")
-        .or_else(|| event.get("content"))
-        .or_else(|| event.get("part").and_then(|part| part.get("text")))
-        .and_then(|v| v.as_str())
-    {
-        return vec![NormalizedEvent::Thinking {
-            delta: thinking.to_string(),
-        }];
-    }
-    raw(event)
-}
-
-fn normalize_opencode_tool_use(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    let part = event.get("part").unwrap_or(event);
-    let state = part.get("state").unwrap_or(part);
-    let call_id = part
-        .get("callID")
-        .or_else(|| part.get("call_id"))
-        .or_else(|| event.get("callID"))
-        .or_else(|| event.get("call_id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let tool = part
-        .get("tool")
-        .or_else(|| event.get("tool"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("tool")
-        .to_string();
-    let input = state
-        .get("input")
-        .or_else(|| part.get("input"))
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
-
-    if call_id.is_empty() {
-        return raw(event);
-    }
-
-    let view = crate::agent::tool_view::classify_tool_view_for("opencode", &tool, &input);
-    let mut normalized = vec![NormalizedEvent::ToolUseStart {
-        call_id: call_id.clone(),
-        tool,
-        input,
-        view: Some(view),
-    }];
-
-    if let Some(output) = state.get("output").or_else(|| part.get("output")).cloned() {
-        let is_error = state
-            .get("status")
-            .and_then(|v| v.as_str())
-            .map(|status| status.eq_ignore_ascii_case("error"))
-            .unwrap_or(false);
-        normalized.push(NormalizedEvent::ToolUseResult {
-            call_id,
-            output,
-            is_error,
-        });
-    }
-
-    normalized
-}
-
-fn normalize_opencode_step_finish(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    match event
-        .get("reason")
-        .or_else(|| event.get("part").and_then(|part| part.get("reason")))
-        .and_then(|v| v.as_str())
-    {
-        Some("tool-calls") => vec![],
-        Some("error") => vec![NormalizedEvent::TurnComplete {
-            reason: TurnEndReason::Error,
-            usage: None,
-        }],
-        _ => vec![NormalizedEvent::TurnComplete {
-            reason: TurnEndReason::Complete,
-            usage: None,
-        }],
-    }
-}
-
-fn normalize_opencode_error(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    let message = event
-        .get("error")
-        .and_then(|error| error.get("data"))
-        .and_then(|data| data.get("message"))
-        .or_else(|| event.get("error").and_then(|error| error.get("message")))
-        .or_else(|| event.get("message"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("opencode error")
-        .to_string();
-
-    vec![
-        NormalizedEvent::Error {
-            message,
-            recoverable: false,
-        },
-        NormalizedEvent::TurnComplete {
-            reason: TurnEndReason::Error,
-            usage: None,
-        },
-    ]
-}
-
-fn normalize_opencode_complete(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    let mut normalized = Vec::new();
-    if let Some(session_id) = opencode_session_id(event) {
-        normalized.push(NormalizedEvent::SessionResolved {
-            session_id: session_id.to_string(),
-        });
-    }
-    normalized.push(NormalizedEvent::TurnComplete {
-        reason: TurnEndReason::Complete,
-        usage: None,
-    });
-    normalized
-}
-
-fn opencode_session_id(event: &serde_json::Value) -> Option<&str> {
-    event
-        .get("sessionID")
-        .or_else(|| event.get("session_id"))
-        .or_else(|| event.get("sessionId"))
-        .or_else(|| event.get("part").and_then(|part| part.get("sessionID")))
-        .or_else(|| event.get("part").and_then(|part| part.get("session_id")))
-        .or_else(|| event.get("part").and_then(|part| part.get("sessionId")))
-        .and_then(|v| v.as_str())
-}
-
-fn raw(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    vec![NormalizedEvent::Raw {
-        agent: "opencode".to_string(),
-        raw: event.clone(),
-    }]
-}
-
 #[derive(Debug, Deserialize)]
 struct OpencodeSessionListEntry {
     id: String,
@@ -1758,7 +1563,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::agent::normalized::{NormalizedEvent, TurnEndReason};
+    
 
     #[test]
     fn uses_open_code_display_name() {
@@ -2183,42 +1988,6 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_opencode_text_delta() {
-        let event = serde_json::json!({
-            "type": "text_delta",
-            "text": "hello"
-        });
-
-        assert_eq!(
-            normalize_stream_event(&event),
-            vec![NormalizedEvent::TextDelta {
-                delta: "hello".to_string()
-            }]
-        );
-    }
-
-    #[test]
-    fn normalizes_opencode_idle_as_complete() {
-        let event = serde_json::json!({
-            "type": "session.idle",
-            "sessionID": "open-session"
-        });
-
-        assert_eq!(
-            normalize_stream_event(&event),
-            vec![
-                NormalizedEvent::SessionResolved {
-                    session_id: "open-session".to_string()
-                },
-                NormalizedEvent::TurnComplete {
-                    reason: TurnEndReason::Complete,
-                    usage: None,
-                },
-            ]
-        );
-    }
-
-    #[test]
     fn builds_opencode_run_json_args() {
         assert_eq!(
             build_run_args(&ChatRequest {
@@ -2251,89 +2020,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn normalizes_opencode_jsonl_events() {
-        let start = serde_json::json!({
-            "type": "step_start",
-            "sessionID": "ses_abc"
-        });
-        assert_eq!(
-            normalize_stream_event(&start),
-            vec![NormalizedEvent::SessionResolved {
-                session_id: "ses_abc".to_string()
-            }]
-        );
-
-        let text = serde_json::json!({
-            "type": "text",
-            "text": "hello"
-        });
-        assert_eq!(
-            normalize_stream_event(&text),
-            vec![NormalizedEvent::TextDelta {
-                delta: "hello".to_string()
-            }]
-        );
-
-        let finish = serde_json::json!({
-            "type": "step_finish",
-            "reason": "stop"
-        });
-        assert_eq!(
-            normalize_stream_event(&finish),
-            vec![NormalizedEvent::TurnComplete {
-                reason: TurnEndReason::Complete,
-                usage: None,
-            }]
-        );
-
-        let finish_hyphen = serde_json::json!({
-            "type": "step-finish",
-            "sessionID": "ses_abc",
-            "part": {
-                "type": "step-finish",
-                "reason": "stop"
-            }
-        });
-        assert_eq!(
-            normalize_stream_event(&finish_hyphen),
-            vec![NormalizedEvent::TurnComplete {
-                reason: TurnEndReason::Complete,
-                usage: None,
-            }]
-        );
-
-        let tool_step = serde_json::json!({
-            "type": "step_finish",
-            "part": {
-                "reason": "tool-calls"
-            }
-        });
-        assert_eq!(
-            normalize_stream_event(&tool_step),
-            Vec::<NormalizedEvent>::new()
-        );
-
-        let error = serde_json::json!({
-            "type": "error",
-            "error": {
-                "data": {
-                    "message": "rate limit"
-                }
-            }
-        });
-        assert_eq!(
-            normalize_stream_event(&error),
-            vec![
-                NormalizedEvent::Error {
-                    message: "rate limit".to_string(),
-                    recoverable: false,
-                },
-                NormalizedEvent::TurnComplete {
-                    reason: TurnEndReason::Error,
-                    usage: None,
-                },
-            ]
-        );
-    }
 }

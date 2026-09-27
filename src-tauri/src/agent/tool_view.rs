@@ -185,6 +185,10 @@ pub fn extract_locations(input: &Value) -> Vec<ViewLocation> {
 /// **交互工具权威名单**（02 §1.6）：前端 interaction-tools.ts 8 名单与
 /// 后端原 is_elicitation_only_tool 3 名单的并集（8 ⊇ 3，收敛为前端全集）。
 /// 判定含与两版一致的规范化（取 `/`、`:` 之后的尾段 + `-`→`_` + 小写）。
+/// 交互工具权威名单（02 §1.6）——当前生产判定走 session.rs 本地名单与
+/// normalized.rs 白名单（各自历史实现），本函数作为唯一并集真源保留，
+/// 由 tool-view.test.ts（vitest）与 Rust 单测双向锁定同步。
+#[allow(dead_code)]
 pub fn is_interaction_tool(tool: &str) -> bool {
     let normalized = tool
         .rsplit(['/', ':'])

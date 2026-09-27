@@ -27,8 +27,8 @@ pub struct RevisePlanResult {
 
 pub fn conductor_revise_plan(req: RevisePlanRequest) -> Result<RevisePlanResult, String> {
     use crate::orchestrator::{
-        default_db_path, graph_validate, EdgeKind, ExecutablePayload, GraphEdge, GraphNode,
-        GraphRevision, GraphSnapshot, NodeKind, RoleRequirement, TaskService, TaskStore,
+        default_db_path, graph_validate, EdgeKind, GraphEdge, GraphNode,
+        GraphRevision, GraphSnapshot, NodeKind, TaskService, TaskStore,
     };
     use crate::util::gen_id;
 
