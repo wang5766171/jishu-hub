@@ -119,7 +119,9 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
     || (call.input.command as string)
     || (call.input.pattern as string)
     || "";
-  const shortPath = path.length > 60 ? "..." + path.slice(path.length - 55) : path;
+  // v0.9.5 需求4（用户实测 08:18）：收起态命令完整显示（自动换行），
+  // 不做 60 字符截断——前导 ... 看不到命令开头。
+  const shortPath = path;
   const duration = useRunningElapsed(call.startedAt, call.endedAt);
   const isFile = call.kind.startsWith("file_") && path;
   // v0.9.1 需求3 #3 测试期补充：powershell 与 bash 共用 shell_exec 卡片
@@ -146,7 +148,7 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
         <span className="text-[0.73em] font-semibold text-muted-foreground uppercase tracking-wide">
           {headerLabel}
         </span>
-        <span className="flex-1 font-mono text-[0.95em] truncate text-[var(--color-foreground)]" title={path}>
+        <span className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-[0.95em] text-[var(--color-foreground)]" title={path}>
           {shortPath}
         </span>
         {diff && (
