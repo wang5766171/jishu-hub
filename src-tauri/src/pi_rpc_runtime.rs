@@ -273,6 +273,15 @@ const EVENT_FLUSH_INTERVAL: Duration = Duration::from_millis(8);
 /// 日志中心 warn（正常合批静默放行，不刷屏）。
 const EVENT_FLUSH_LAG_WARN: Duration = Duration::from_secs(1);
 
+/// 需求8：get_state 握手总预算。原 30s 一刀切在「5 扩展包随装 + 大会话
+/// resume」冷启动下不够（jiti 冷编译扩展/会话 JSONL 重放/lens 首跑扫描，
+/// 用户实测 30s 超时后手动重发即成功——冷活在首进程后台已完成，第二进程
+/// 秒连）。改为同进程等到底：总预算 150s，每 30s 打进度日志（stdout 保持
+/// 打开即进程存活；真死亡走「stdout closed」路径即时报错）。
+const PI_STATE_HANDSHAKE_BUDGET: Duration = Duration::from_secs(150);
+/// 握手等待进度日志步长。
+const PI_STATE_HANDSHAKE_LOG_STEP: Duration = Duration::from_secs(30);
+
 pub(crate) fn apply_resolved_session_prompt_injection(
     message: String,
     session_id: &str,
@@ -315,12 +324,39 @@ async fn pi_rpc_connection_loop(
     let mut initial_auto_compaction: Option<bool> = None;
     // v0.8.0 需求1 A5：fork 后进程重绑到分支会话，此变量随之更新——
     // 事件 envelope、prompt 注入、日志统一引用最新会话 id。
+    // 需求8：预算制等待（见 PI_STATE_HANDSHAKE_BUDGET 注释）——同进程
+    // 等到底，不杀进程不重发；期间每 30s 打 runtime 进度日志（日志中心
+    // 可见「正在等什么」），stdout 关闭（进程死）仍即时失败。
+    let handshake_deadline = tokio::time::Instant::now() + PI_STATE_HANDSHAKE_BUDGET;
+    let mut handshake_next_log = tokio::time::Instant::now() + PI_STATE_HANDSHAKE_LOG_STEP;
     let mut session_id = loop {
-        let line = tokio::time::timeout(Duration::from_secs(30), stdout_rx.recv())
+        let remaining = handshake_deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "Pi RPC get_state timeout ({}s)—Pi 启动超预算（扩展装载/会话恢复），重发消息可恢复",
+                PI_STATE_HANDSHAKE_BUDGET.as_secs()
+            ));
+        }
+        let line = tokio::time::timeout(remaining, stdout_rx.recv())
             .await
-            .map_err(|_| "Pi RPC get_state timeout (30s)".to_string())?
+            .map_err(|_| {
+                format!(
+                    "Pi RPC get_state timeout ({}s)—Pi 启动超预算（扩展装载/会话恢复），重发消息可恢复",
+                    PI_STATE_HANDSHAKE_BUDGET.as_secs()
+                )
+            })?
             .ok_or_else(|| "Pi RPC stdout closed before get_state response. Pi may have crashed during startup.".to_string())?;
 
+        if tokio::time::Instant::now() >= handshake_next_log {
+            let waited = PI_STATE_HANDSHAKE_BUDGET - remaining;
+            devlog(
+                "runtime",
+                "Pi RPC 握手等待中（扩展装载/会话恢复冷启动可能较慢）",
+                &pending_session_id,
+                json!({ "waitedSecs": waited.as_secs(), "budgetSecs": PI_STATE_HANDSHAKE_BUDGET.as_secs() }),
+            );
+            handshake_next_log += PI_STATE_HANDSHAKE_LOG_STEP;
+        }
         if line.trim().is_empty() {
             continue;
         }
