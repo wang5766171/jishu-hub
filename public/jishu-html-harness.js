@@ -17,9 +17,17 @@
 (function () {
   "use strict";
   function report() {
+    var body = document.body;
+    var root = document.documentElement;
+    // 内容高取 body.scrollHeight 与 html 布局高较大者；**不用**
+    // documentElement.scrollHeight——根元素滚动区=视口，会被当前 iframe 视口
+    // 高兜底（内容矮于视口时测量值恒=视口高，iframe 高度只涨不缩，起始 240
+    // 会把内容钉死在 240）。html 的 getBoundingClientRect().height 无视口
+    // 兜底（height:auto=内容高）；vh/百分比布局（html/body 100%）则天然
+    // =视口高——矮内容能缩、满幅内容能撑，两类都测准。
     var h = Math.max(
-      document.body ? document.body.scrollHeight : 0,
-      document.documentElement ? document.documentElement.scrollHeight : 0
+      body ? body.scrollHeight : 0,
+      root ? root.getBoundingClientRect().height : 0
     );
     parent.postMessage({ type: "jishu-html-height", height: h }, "*");
   }
