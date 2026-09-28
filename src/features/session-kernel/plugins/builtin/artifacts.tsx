@@ -133,7 +133,7 @@ export function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
   );
   const [nodeArtifacts, setNodeArtifacts] = useState<Array<{ file: string; source: string }>>([]);
   // 修复20：路径台账（agent 操作推导的迁移/落位记录）——主会话 + 子节点双源。
-  const [nodeLedger, setNodeLedger] = useState<PathLedger>({ moves: [], lastWrites: new Map() });
+  const [nodeLedger, setNodeLedger] = useState<PathLedger>({ moves: [], lastWrites: new Map(), writesByFile: new Map() });
   const [rescanNonce, setRescanNonce] = useState(0);
   useEffect(() => {
     let cancelled = false;
@@ -150,7 +150,7 @@ export function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
           artifacts: Array<{ file: string; source: string }>;
           ledger: PathLedger;
         }> => {
-          if (!ns.sessionId) return { artifacts: [], ledger: { moves: [], lastWrites: new Map() } };
+          if (!ns.sessionId) return { artifacts: [], ledger: { moves: [], lastWrites: new Map(), writesByFile: new Map() } };
           try {
             const msgs = await invoke<
               Array<{ content?: Array<{ type?: string; name?: string; input?: unknown }> }>
@@ -170,16 +170,25 @@ export function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
           } catch {
             return {
               artifacts: [] as Array<{ file: string; source: string }>,
-              ledger: { moves: [], lastWrites: new Map() } as PathLedger,
+              ledger: { moves: [], lastWrites: new Map(), writesByFile: new Map() } as PathLedger,
             };
           }
         }),
       );
       if (!cancelled) {
         setNodeArtifacts(results.flatMap((r) => r.artifacts));
+        const mergedWrites = new Map<string, Set<string>>();
+        for (const r of results) {
+          for (const [k, set] of r.ledger.writesByFile) {
+            const existing = mergedWrites.get(k) ?? new Set<string>();
+            for (const v of set) existing.add(v);
+            mergedWrites.set(k, existing);
+          }
+        }
         setNodeLedger({
           moves: results.flatMap((r) => r.ledger.moves),
           lastWrites: new Map(results.flatMap((r) => [...r.ledger.lastWrites.entries()])),
+          writesByFile: mergedWrites,
         });
       }
     })();
@@ -195,6 +204,17 @@ export function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
     return {
       moves: [...main.moves, ...nodeLedger.moves],
       lastWrites: new Map([...main.lastWrites, ...nodeLedger.lastWrites]),
+      writesByFile: (() => {
+        const merged = new Map<string, Set<string>>();
+        for (const source of [main.writesByFile, nodeLedger.writesByFile]) {
+          for (const [k, set] of source) {
+            const existing = merged.get(k) ?? new Set<string>();
+            for (const v of set) existing.add(v);
+            merged.set(k, existing);
+          }
+        }
+        return merged;
+      })(),
     };
   }, [ctx.messages, nodeLedger]);
   /** 旧产物记录 → 最终落位（无换算命中时回原路径，由动作层报错）。 */

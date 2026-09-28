@@ -5,6 +5,14 @@ import type { PathLedger } from "./artifacts-ledger";
 
 const use = (name: string, input: Record<string, unknown>) => ({ type: "tool_use", name, input });
 
+
+/** 测试便捷：由 lastWrites 推导 writesByFile（每条记录位置都视为被写过）。 */
+function buildWrites(last: Map<string, { path: string }>): Map<string, Set<string>> {
+  const m = new Map<string, Set<string>>();
+  for (const [k, v] of last) m.set(k, new Set([v.path]));
+  return m;
+}
+
 describe("parseMoveCommand", () => {
   it("parses mv / git mv / Move-Item with quotes (keeps original casing)", () => {
     expect(parseMoveCommand("mv A/B C")).toEqual([
@@ -48,6 +56,7 @@ describe("resolveLedgerPath", () => {
   const ledger: PathLedger = {
     moves: [{ from: "e:/proj/b", to: "e:/proj/c", fromDisplay: "E:/proj/B", toDisplay: "E:/proj/C" }],
     lastWrites: new Map([["foo.java", { path: "e:/proj/backend/foo.java", display: "E:/proj/backend/Foo.java" }]]),
+writesByFile: buildWrites(new Map([["foo.java", { path: "e:/proj/backend/foo.java", display: "E:/proj/backend/Foo.java" }]])),
   };
 
   it("rewrites stale paths under a moved directory, keeping original casing", () => {
@@ -61,6 +70,7 @@ describe("resolveLedgerPath", () => {
         { from: "e:/proj/c", to: "e:/proj/d", fromDisplay: "e:/proj/c", toDisplay: "e:/proj/d" },
       ],
       lastWrites: new Map(),
+      writesByFile: new Map(),
     };
     expect(resolveLedgerPath("E:/proj/B/x.java", chained)).toBe("e:/proj/d/x.java");
   });
@@ -77,6 +87,7 @@ describe("resolveLedgerPath", () => {
         { from: "e:/jishutest/声音的颜色.md", to: "e:/jishutest/小说/声音的颜色.md", fromDisplay: "E:/JishuTest/声音的颜色.md", toDisplay: "E:/JishuTest/小说/声音的颜色.md" },
       ],
       lastWrites: new Map([["声音的颜色.md", { path: "e:/jishutest/声音的颜色.md", display: "E:/JishuTest/声音的颜色.md" }]]),
+writesByFile: buildWrites(new Map([["声音的颜色.md", { path: "e:/jishutest/声音的颜色.md", display: "E:/JishuTest/声音的颜色.md" }]])),
     };
     expect(resolveLedgerPath("E:/JishuTest/小说/声音的颜色.md", regressed)).toBeNull();
     // 旧位解析仍应命中移动规则得到新位。
@@ -97,5 +108,26 @@ describe("buildPathLedger", () => {
     ]);
     expect(ledger.moves).toHaveLength(2);
     expect(ledger.lastWrites.get("app.java")).toEqual({ path: "c/app.java", display: "C/app.java" });
+  });
+});
+
+// 需求7 复现：跨目录同名文件碰撞——产物在仓库 docs，会话中曾 read 过
+// Obsidian 文档库的同名文件，lastWrites 兜底不得把产物路径改写到另一处。
+describe("同名跨目录碰撞（需求7）", () => {
+  it("read 过另一目录的同名文件，resolve 不改写产物路径", () => {
+    const ledger = buildPathLedger([
+      {
+        content: [
+          { type: "tool_use", name: "write", input: { path: "D:/MyCodes/jishu-hub/docs/v0.9.5/需求1-插件体系深度完善/06-呈现与挂载统一设计.md" } },
+          { type: "tool_use", name: "read", input: { path: "D:/Obsidian/graphify/个人项目/Jishu Hub/docs/v0.9.5/需求1-插件体系统一设计/06-呈现与挂载统一设计.md" } },
+        ],
+      },
+    ]);
+    const resolved = resolveLedgerPath(
+      "D:/MyCodes/jishu-hub/docs/v0.9.5/需求1-插件体系深度完善/06-呈现与挂载统一设计.md",
+      ledger,
+    );
+    // 需求7：原路径有写入记录（权威）→ 不得被同名 read 污染改写到 Obsidian
+    expect(resolved).toBeNull();
   });
 });

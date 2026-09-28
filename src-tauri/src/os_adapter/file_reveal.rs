@@ -25,9 +25,12 @@ fn validated_existing_path(path: &str) -> Result<String, String> {
     if !raw.exists() {
         return Err(format!("Path does not exist: {path}"));
     }
-    let canonical = std::fs::canonicalize(&raw)
+    // 需求7：不解析符号链接（canonicalize 会把用户可见的链接路径换成
+    // 物理路径，如仓库 docs → Obsidian 库）；absolute() 仅补全相对段/
+    // 折叠 ./..，Windows 经 GetFullPathName 出反斜杠、无 verbatim 前缀。
+    let absolute = std::path::absolute(&raw)
         .map_err(|e| format!("Path not accessible: {path} ({e})"))?;
-    Ok(strip_verbatim_prefix(&canonical.to_string_lossy()))
+    Ok(strip_verbatim_prefix(&absolute.to_string_lossy()))
 }
 
 /// spawn 后不阻塞调用方；Unix 下以守护线程回收子进程，避免僵尸。
@@ -57,7 +60,12 @@ pub fn reveal_in_file_manager(path: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let mut command = std::process::Command::new("explorer.exe");
-        command.arg(format!("/select,{display}"));
+        // 需求7：/select,<path> 不能让 Rust 按默认规则整体加引号（路径含
+        // 空格时 explorer 解析失败，回落打开「文档」文件夹——用户实测
+        // 「打开到了文档目录」的根因）。raw_arg 手工拼 `/select,"路径"`
+        // 形态（explorer 官方接受引号包路径段）。
+        use std::os::windows::process::CommandExt;
+        command.raw_arg(format!("/select,\"{display}\""));
         spawn_detached(&mut command, "File Explorer")
     }
     #[cfg(target_os = "macos")]
@@ -85,4 +93,27 @@ pub fn open_with_default_app(path: &str) -> Result<(), String> {
     let canonical = validated_existing_path(path)?;
     let pb = PathBuf::from(&canonical);
     open::that_detached(&pb).map_err(|e| format!("Failed to open with default app: {e}"))
+}
+
+#[cfg(test)]
+mod req7_tests {
+    use super::validated_existing_path;
+
+    /// 需求7：规范化不解析符号链接——开发机仓库 docs 即软链接（指向
+    /// Obsidian 库），规范化后必须保留用户提交的可见路径形态（仅正斜杠
+    /// 转反斜杠），不得换成物理路径。
+    #[test]
+    fn normalization_preserves_symlink_path() {
+        let repo_docs = r"D:\MyCodes\jishu-hub\docs";
+        if !std::path::Path::new(repo_docs).exists() {
+            return; // 非开发机跳过（链接为该机环境事实）
+        }
+        let probe = format!(r"{repo_docs}\v0.9.5");
+        let normalized = validated_existing_path(&probe).unwrap();
+        assert!(
+            normalized.starts_with(r"D:\MyCodes\jishu-hub\docs"),
+            "符号链接路径被解析成物理路径: {normalized}"
+        );
+        assert!(!normalized.contains('/'), "应规范为反斜杠: {normalized}");
+    }
 }

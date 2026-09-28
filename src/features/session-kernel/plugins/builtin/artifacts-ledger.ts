@@ -20,7 +20,18 @@ export interface PathLedger {
   moves: MoveRule[];
   /** 文件名（小写）→ 最后已知位置（norm 小写 + display 原大小写）。 */
   lastWrites: Map<string, { path: string; display: string }>;
+  /** 需求7：文件名（小写）→ 全部写入位置集合（norm）——同名兜底的
+   * 碰撞防护（原路径有写入记录即权威；多写入位歧义不改写）。 */
+  writesByFile: Map<string, Set<string>>;
 }
+
+/** 需求7：写入类工具名白名单（pi/codex/claude 方言）——read/grep 等只读
+ * 工具的 input.path 不计入同名兜底（读取污染曾致跨目录同名改写）。 */
+const WRITE_TOOL_NAMES = new Set([
+  "write", "write_file", "create_file",
+  "edit", "edit_file", "str_replace", "str_replace_based_edit", "multiedit",
+  "apply_patch", "apply_changes", "notebook_edit",
+]);
 
 interface ToolUseLike {
   type?: string;
@@ -134,6 +145,7 @@ function parseSingleMoveCommand(segment: string): MoveRule[] {
 export function buildPathLedger(messages: Array<{ blocks?: ToolUseLike[]; content?: ToolUseLike[] }>): PathLedger {
   const moves: MoveRule[] = [];
   const lastWrites = new Map<string, { path: string; display: string }>();
+  const writesByFile = new Map<string, Set<string>>();
   const blocksOf = (m: { blocks?: ToolUseLike[]; content?: ToolUseLike[] }): ToolUseLike[] =>
     m.blocks ?? m.content ?? [];
   for (const message of messages) {
@@ -148,16 +160,19 @@ export function buildPathLedger(messages: Array<{ blocks?: ToolUseLike[]; conten
       if ((name === "bash" || name === "powershell") && command) {
         moves.push(...parseMoveCommand(command));
       }
-      if (typeof input.path === "string" && input.path.trim()) {
+      const isWriteTool = WRITE_TOOL_NAMES.has(name);
+      if (isWriteTool && typeof input.path === "string" && input.path.trim()) {
         const display = toForward(input.path);
-        lastWrites.set(display.split("/").pop()?.toLowerCase() ?? "", {
-          path: normalizeWithMap(display).norm,
-          display,
-        });
+        const norm = normalizeWithMap(display).norm;
+        const nameKey = display.split("/").pop()?.toLowerCase() ?? "";
+        lastWrites.set(nameKey, { path: norm, display });
+        const set = writesByFile.get(nameKey) ?? new Set<string>();
+        set.add(norm);
+        writesByFile.set(nameKey, set);
       }
     }
   }
-  return { moves, lastWrites };
+  return { moves, lastWrites, writesByFile };
 }
 
 /** 台账解析：移动规则链式前缀改写（最长前缀优先，≤5 跳）→ 同名最后写入。
@@ -193,7 +208,15 @@ export function resolveLedgerPath(path: string, ledger: PathLedger): string | nu
   // 才采用该兜底。
   const name = norm.split("/").pop() ?? "";
   const last = ledger.lastWrites.get(name);
-  if (last && last.path !== norm) {
+  // 需求7 碰撞防护：原路径自身有写入记录 = 显示路径是活的真实位置（权威，
+  // 不得被同名兜底改写到别处）；写入位不唯一 = 同名多文件歧义，不改写。
+  const writeLocations = ledger.writesByFile.get(name);
+  if (
+    last
+    && last.path !== norm
+    && !writeLocations?.has(norm)
+    && writeLocations?.size === 1
+  ) {
     let finalNorm = last.path;
     for (let guard = 0; guard < 5; guard += 1) {
       const h = ledger.moves
