@@ -255,6 +255,10 @@ export function buildComposedDescriptor(
         kind: "tool-result-renderer",
         toolName: source.tool_name,
         toolPattern: source.tool_pattern,
+        // SAFETY: 渲染器组件签名 ComponentType<RendererComponentProps> 与
+        // ToolResultRendererMount 的 Record<string, unknown> props 袋运行时
+        // 兼容——两者均为纯 props 透传（payload/ctx 形状由注册表装载期校验
+        // 背书），无构造器/泛型逆变等 TS 可检查的等价关系。
         component: Comp as unknown as ComponentType<Record<string, unknown>>,
       } as SessionPluginDescriptor["mounts"][number]);
     }
@@ -289,6 +293,13 @@ export function buildComposedDescriptor(
   }
   }  // 闭 if (hasRenderArm)——两臂合并装配
 
+  // v0.9.5 需求1 GUI 改造 批次2：实现维度标记（双维度 X 轴，plugins-page
+  // 双徽标/筛选消费）——combo（流水线与数据面臂并存）> code（@file: 代码
+  // 组件）> config（纯清单声明）。
+  const hasCodeFile = (manifest.render?.component ?? "").startsWith("@file:");
+  const implKind: SessionPluginDescriptor["implKind"] =
+    manifest.pipeline && hasRenderArm ? "combo" : hasCodeFile ? "code" : "config";
+
   return {
     id,
     displayNameKey: "",
@@ -297,6 +308,7 @@ export function buildComposedDescriptor(
     descriptionFallback: manifest.plugin.description ?? "",
     contractVersion: SESSION_PLUGIN_CONTRACT_VERSION,
     source: "config",
+    implKind,
     permissions: ["read:blocks"],
     configSchema: schema.length ? schema : undefined,
     pipeline: manifest.pipeline,

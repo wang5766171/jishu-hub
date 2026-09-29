@@ -9,7 +9,7 @@
  * 无 schema 仅概览。详情按钮进概览 tab，编辑按钮直落设置 tab。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
+import { UniModal } from "@/components/ui/uni-modal";
 import { useTranslation } from "react-i18next";
 import { Loader2, Rocket, RotateCcw, Save, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -19,9 +19,12 @@ import { AgentLogo } from "@/agents";
 import { PluginIcon } from "@/components/ui/icon-picker";
 import {
   diffAgainstDefaults,
+  getPluginBehavior,
   getPluginConfig,
   mergeConfig,
+  setPluginBehavior,
   setPluginConfig,
+  type PluginBehaviorConfig,
   type PluginConfigField,
   type PluginConfigValues,
 } from "@/features/session-kernel/plugins/config-plane";
@@ -188,6 +191,212 @@ function SettingsForm({
   );
 }
 
+/** 批次3：使用行为段（设置 tab 下半段，双维度「业务驱动」侧）——仅数据面
+ *  挂载（面板/挂件）的会话插件显示；选择即保存热生效（批次4 会话区消费）。 */
+/** 差异性完善（06 §5.2）：行为段按挂载臂动态拼装——面板/挂件/动作/渲染
+ *  各自的设置项集；多臂并集。 */
+interface UsageFaces {
+  panel: boolean;
+  rail: boolean;
+  composer: boolean;
+  action: boolean;
+  render: boolean;
+}
+
+/** 快捷键捕获：聚焦后按组合键录入（ctrl/shift/alt + 主键），退格清除。 */
+function ShortcutCapture({
+  value,
+  onChange,
+}: {
+  value?: string;
+  onChange: (combo: string | undefined) => void;
+}) {
+  const [armed, setArmed] = useState(false);
+  return (
+    <input
+      readOnly
+      value={value ?? ""}
+      placeholder={armed ? "按下组合键…" : "点击录入"}
+      onFocus={() => setArmed(true)}
+      onBlur={() => setArmed(false)}
+      onKeyDown={(e) => {
+        e.preventDefault();
+        if (e.key === "Backspace" || e.key === "Delete" || e.key === "Escape") {
+          onChange(undefined);
+          return;
+        }
+        const main = e.key.toLowerCase();
+        if (["control", "shift", "alt", "meta"].includes(main)) return;
+        const parts: string[] = [];
+        if (e.ctrlKey || e.metaKey) parts.push("ctrl");
+        if (e.shiftKey) parts.push("shift");
+        if (e.altKey) parts.push("alt");
+        parts.push(main);
+        onChange(parts.join("+"));
+      }}
+      className={cn(
+        "h-7 w-36 rounded-md border px-2 text-center font-mono text-[11px] outline-none",
+        armed ? "border-primary/60 bg-primary/5" : "border-border/70 bg-transparent",
+      )}
+    />
+  );
+}
+
+function BehaviorSection({
+  faces,
+  behavior,
+  saving,
+  onChange,
+}: {
+  faces: UsageFaces;
+  behavior: PluginBehaviorConfig;
+  saving: boolean;
+  onChange: (next: PluginBehaviorConfig) => void;
+}) {
+  const { t } = useTranslation();
+  const selectCls =
+    "h-7 rounded-md border border-border/70 bg-transparent px-2 text-xs outline-none focus:border-primary/60";
+  const showScope = faces.panel || faces.rail || faces.composer || faces.render;
+  return (
+    <section className="mt-5">
+      <h4 className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        {t("plugins.behaviorTitle", "使用行为")}
+        {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+      </h4>
+      <p className="mb-1 text-[11px] text-muted-foreground/70">
+        {t("plugins.behaviorHint", "插件在会话区的呈现方式——选择即保存，即时生效。")}
+      </p>
+      <div className="divide-y divide-border/40">
+        {faces.panel ? (
+          <>
+            <div className="flex items-center justify-between gap-6 py-3">
+              <div className="min-w-0">
+                <div className="text-sm text-foreground/90">{t("plugins.behaviorSlot", "默认归所")}</div>
+                <div className="mt-0.5 max-w-md text-xs leading-relaxed text-muted-foreground/80">
+                  {t("plugins.behaviorSlotDesc", "面板默认挂载位置；临时拖拽不覆写此设置")}
+                </div>
+              </div>
+              <select
+                className={cn(selectCls, "shrink-0")}
+                value={behavior.defaultSlot ?? ""}
+                onChange={(e) =>
+                  onChange({
+                    ...behavior,
+                    defaultSlot: (e.target.value || undefined) as PluginBehaviorConfig["defaultSlot"],
+                  })
+                }
+              >
+                <option value="">{t("plugins.behaviorSlotDefault", "跟随插件声明")}</option>
+                <option value="left">{t("plugins.behaviorSlotLeft", "悬浮 · 左侧")}</option>
+                <option value="right">{t("plugins.behaviorSlotRight", "悬浮 · 右侧")}</option>
+                <option value="sidebar">{t("plugins.behaviorSlotSidebar", "右侧栏（挤压式）")}</option>
+              </select>
+            </div>
+            <div className="flex items-center justify-between gap-6 py-3">
+              <div className="min-w-0">
+                <div className="text-sm text-foreground/90">{t("plugins.behaviorAutoOpen", "自动展开")}</div>
+                <div className="mt-0.5 max-w-md text-xs leading-relaxed text-muted-foreground/80">
+                  {t("plugins.behaviorAutoOpenDesc", "不经能力中心自动打开面板的时机")}
+                </div>
+              </div>
+              <select
+                className={cn(selectCls, "shrink-0")}
+                value={behavior.autoOpen ?? "install-once"}
+                onChange={(e) => onChange({ ...behavior, autoOpen: e.target.value as PluginBehaviorConfig["autoOpen"] })}
+              >
+                <option value="install-once">{t("plugins.behaviorAutoOnce", "安装后一次")}</option>
+                <option value="every-session">{t("plugins.behaviorAutoEvery", "每个新会话")}</option>
+                <option value="never">{t("plugins.behaviorAutoNever", "从不")}</option>
+              </select>
+            </div>
+          </>
+        ) : null}
+        {faces.rail ? (
+          <div className="flex items-center justify-between gap-6 py-3">
+            <div className="min-w-0">
+              <div className="text-sm text-foreground/90">{t("plugins.behaviorSide", "贴边侧位")}</div>
+              <div className="mt-0.5 max-w-md text-xs leading-relaxed text-muted-foreground/80">
+                {t("plugins.behaviorSideDesc", "挂件默认贴边；拖拽切缘仅为临时记忆")}
+              </div>
+            </div>
+            <select
+              className={cn(selectCls, "shrink-0")}
+              value={behavior.side ?? ""}
+              onChange={(e) => onChange({ ...behavior, side: (e.target.value || undefined) as PluginBehaviorConfig["side"] })}
+            >
+              <option value="">{t("plugins.behaviorSideDefault", "跟随插件声明")}</option>
+              <option value="left">{t("plugins.behaviorSideLeft", "左缘")}</option>
+              <option value="right">{t("plugins.behaviorSideRight", "右缘")}</option>
+            </select>
+          </div>
+        ) : null}
+        {faces.composer ? (
+          <div className="flex items-center justify-between gap-6 py-3">
+            <div className="min-w-0">
+              <div className="text-sm text-foreground/90">{t("plugins.behaviorVisible", "显示挂件")}</div>
+              <div className="mt-0.5 max-w-md text-xs leading-relaxed text-muted-foreground/80">
+                {t("plugins.behaviorVisibleDesc", "隐藏仅不呈现，插件仍启用（≠停用）")}
+              </div>
+            </div>
+            <Switch
+              checked={behavior.visible !== false}
+              onCheckedChange={(v) => onChange({ ...behavior, visible: v ? undefined : false })}
+            />
+          </div>
+        ) : null}
+        {faces.action ? (
+          <div className="flex items-center justify-between gap-6 py-3">
+            <div className="min-w-0">
+              <div className="text-sm text-foreground/90">{t("plugins.behaviorConfirm", "执行前确认")}</div>
+              <div className="mt-0.5 max-w-md text-xs leading-relaxed text-muted-foreground/80">
+                {t("plugins.behaviorConfirmDesc", "点击动作按钮后先弹确认再执行")}
+              </div>
+            </div>
+            <Switch
+              checked={behavior.confirm === true}
+              onCheckedChange={(v) => onChange({ ...behavior, confirm: v ? true : undefined })}
+            />
+          </div>
+        ) : null}
+        {faces.panel || faces.action ? (
+          <div className="flex items-center justify-between gap-6 py-3">
+            <div className="min-w-0">
+              <div className="text-sm text-foreground/90">{t("plugins.behaviorShortcut", "快捷键")}</div>
+              <div className="mt-0.5 max-w-md text-xs leading-relaxed text-muted-foreground/80">
+                {t("plugins.behaviorShortcutDesc", "全局组合键切换面板/触发动作；退格清除")}
+              </div>
+            </div>
+            <ShortcutCapture value={behavior.shortcut} onChange={(combo) => onChange({ ...behavior, shortcut: combo })} />
+          </div>
+        ) : null}
+        {showScope ? (
+          <div className="flex items-center justify-between gap-6 py-3">
+            <div className="min-w-0">
+              <div className="text-sm text-foreground/90">{t("plugins.behaviorScope", "作用域")}</div>
+              <div className="mt-0.5 max-w-md text-xs leading-relaxed text-muted-foreground/80">
+                {t("plugins.behaviorScopeDesc", "在哪些会话呈现（仅任务会话 = 任务工作区内的会话）")}
+              </div>
+            </div>
+            <select
+              className={cn(selectCls, "shrink-0")}
+              value={behavior.scope ?? "all"}
+              onChange={(e) => onChange({ ...behavior, scope: e.target.value as PluginBehaviorConfig["scope"] })}
+            >
+              <option value="all">{t("plugins.behaviorScopeAll", "全部会话")}</option>
+              <option value="task-only">{t("plugins.behaviorScopeTask", "仅任务会话")}</option>
+            </select>
+          </div>
+        ) : null}
+        {faces.render ? (
+          <p className="py-2 text-[10.5px] text-muted-foreground/60">
+            {t("plugins.behaviorRenderPending", "渲染类默认视图/自动渲染开关属后续批次（06 §5.2 block-renderer 行）；作用域已生效。")}
+          </p>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 export function PluginDetailModal({
   plugin,
   initialTab = "info",
@@ -211,6 +420,19 @@ export function PluginDetailModal({
     ? listSessionPlugins().find((p) => p.id === plugin.id)
     : null;
   const configSchema = sessionDescriptor?.configSchema;
+  // 批次3：使用行为段适用面——数据面挂载（面板/挂件）才呈现；面板类才有
+  // 「默认归所/自动展开」两项（双维度：业务形态驱动行为段内容）。
+  const usageMountKinds = new Set(sessionDescriptor?.mounts.map((m) => m.kind) ?? []);
+  // 批次3→差异性完善：使用行为段适用面按挂载臂拼装（06 §5.2/5.4 第三层：
+  // 只渲染已声明臂对应设置段——渲染/动作臂也纳入）。
+  const usageFaces = {
+    panel: usageMountKinds.has("dock-panel") || usageMountKinds.has("sidebar-panel"),
+    rail: usageMountKinds.has("rail-widget"),
+    composer: usageMountKinds.has("composer-trailing"),
+    action: usageMountKinds.has("header-action"),
+    render: usageMountKinds.has("block-renderer") || usageMountKinds.has("tool-result-renderer"),
+  };
+  const hasUsageFace = Object.values(usageFaces).some(Boolean);
   // v0.9.3 需求13 C4：pipeline 型插件——阶段流水线可视化（模板段带标记）。
   const pipelineStages = useMemo(
     () => (sessionDescriptor?.pipeline ? resolveStages(sessionDescriptor.pipeline) : null),
@@ -220,6 +442,23 @@ export function PluginDetailModal({
   useEffect(() => {
     if (configSchema) setStored(getPluginConfig(plugin.id, configSchema));
   }, [plugin.id, configSchema]);
+
+  // 批次3：行为键状态（选即存即生效；config 缓存就绪后校正初值）。
+  const [behavior, setBehavior] = useState<PluginBehaviorConfig>(() => getPluginBehavior(plugin.id));
+  const [behaviorSaving, setBehaviorSaving] = useState(false);
+  useEffect(() => {
+    setBehavior(getPluginBehavior(plugin.id));
+  }, [plugin.id]);
+  const changeBehavior = useCallback(
+    (next: PluginBehaviorConfig) => {
+      setBehavior(next);
+      setBehaviorSaving(true);
+      setPluginBehavior(plugin.id, next)
+        .catch((e) => setError(String(e)))
+        .finally(() => setBehaviorSaving(false));
+    },
+    [plugin.id],
+  );
 
   const effective = useMemo(
     () => (configSchema ? mergeConfig(configSchema, diffOf(stored, configSchema)) : {}),
@@ -267,24 +506,16 @@ export function PluginDetailModal({
     }
   }, [configSchema, plugin.id]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !dirty) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, dirty]);
+  // 批次1 统一弹窗：Esc/遮罩关闭由 UniModal 承担（preventClose=dirty 同源）。
 
   const description = plugin.kind === "session"
     ? sessionDescriptor?.descriptionFallback ?? plugin.display_name
     : plugin.description || t("plugins.descFallbackBuiltin", "内置智能体适配器");
 
-  return createPortal(
-    <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/50" onClick={() => !dirty && onClose()} />
-      <div className="relative flex h-[min(80vh,760px)] w-[min(920px,94vw)] flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
-        {/* 头部：大图标 + 名称/徽章 + id/版本；右侧启停语义提示（启停开关在
-            列表卡片上，模态内不重复——保持单一操作位）。 */}
+  return (
+    <UniModal open onClose={onClose} preventClose={dirty} size="xl" fixedHeight label={plugin.display_name}>
+      {/* 头部：大图标 + 名称/徽章 + id/版本；右侧启停语义提示（启停开关在
+          列表卡片上，模态内不重复——保持单一操作位）。 */}
         <div className="flex shrink-0 items-start gap-4 border-b border-border/50 px-6 py-4">
           {plugin.kind === "builtin" ? (
             <AgentLogo agentId={plugin.id} size={44} />
@@ -318,7 +549,7 @@ export function PluginDetailModal({
           </div>
           <button
             type="button"
-            title={t("common.close", "关闭")}
+            title={dirty ? t("plugins.detailDirtyHint", "有未保存修改") : t("common.close", "关闭")}
             onClick={() => !dirty && onClose()}
             className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
           >
@@ -326,8 +557,8 @@ export function PluginDetailModal({
           </button>
         </div>
 
-        {/* tab 行（有配置面才有设置页签） */}
-        {configSchema ? (
+        {/* tab 行（批次3：有配置面或有使用面均有设置页签——双段结构） */}
+        {configSchema || hasUsageFace ? (
           <div className="flex shrink-0 items-center gap-1 border-b border-border/40 px-6">
             {(["info", "settings"] as const).map((key) => (
               <button
@@ -351,12 +582,31 @@ export function PluginDetailModal({
 
         {/* 主体 */}
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
-          {tab === "settings" && configSchema ? (
+          {tab === "settings" && (configSchema || hasUsageFace) ? (
             <>
-              <SettingsForm
-                schema={configSchema}
-                values={values}
-                onChange={(key, value) => setDraft((prev) => ({ ...(prev ?? effective), [key]: value }))}
+              {/* 批次3 双段结构：上半「实现配置段」（实现维度驱动：表单/无则缺省） */}
+              {configSchema ? (
+                <>
+                  <h4 className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    {t("plugins.implSettingsTitle", "实现配置")}
+                  </h4>
+                  <SettingsForm
+                    schema={configSchema}
+                    values={values}
+                    onChange={(key, value) => setDraft((prev) => ({ ...(prev ?? effective), [key]: value }))}
+                  />
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground/70">
+                  {t("plugins.noSchemaHint", "该插件无可调参数——仅支持使用行为设置。")}
+                </p>
+              )}
+              {/* 下半「使用行为段」（业务维度驱动：按挂载臂拼装） */}
+              <BehaviorSection
+                faces={usageFaces}
+                behavior={behavior}
+                saving={behaviorSaving}
+                onChange={changeBehavior}
               />
               {error ? (
                 <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
@@ -464,9 +714,7 @@ export function PluginDetailModal({
             </div>
           </div>
         ) : null}
-      </div>
-    </div>,
-    document.body,
+    </UniModal>
   );
 }
 

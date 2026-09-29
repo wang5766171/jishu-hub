@@ -9,6 +9,7 @@ import {
 } from "../../shell/dock-layout";
 import { listSessionPlugins, useEnabledSessionPlugins } from "../registry";
 import { railWidgetsOf } from "../types";
+import { useAllPluginBehaviors } from "../config-plane";
 import type { SessionKernelContext } from "../types";
 
 /**
@@ -19,6 +20,8 @@ import type { SessionKernelContext } from "../types";
  */
 // 5a（v0.9.5 需求1）：安装后挂件高亮（确认卡启用 → 位置提示一次）。
 import { useInstallSpotlight } from "../../shell/install-spotlight";
+// 批次5：挂件右键菜单（停用/在插件中心设置）。
+import { useWidgetContextMenu } from "./widget-context-menu";
 
 export function SessionRailSlot({ ctx }: { ctx: SessionKernelContext }) {
   const enabled = useEnabledSessionPlugins();
@@ -42,15 +45,32 @@ export function SessionRailSlot({ ctx }: { ctx: SessionKernelContext }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spotlight?.seq]);
 
+  // 批次4：作用域过滤（task-only 仅任务会话呈现）——与面板/侧栏同口径。
+  const behaviors = useAllPluginBehaviors();
+  const inTaskSession = ctx.task != null;
   const widgets = listSessionPlugins()
     .filter((plugin) => enabled.has(plugin.id))
+    .filter((plugin) => {
+      const bhv = behaviors[plugin.id];
+      return bhv?.scope !== "task-only" || inTaskSession;
+    })
     .flatMap((plugin) =>
       railWidgetsOf(plugin).map((mount) => ({
         id: plugin.id,
+        name: plugin.displayNameFallback,
         mount,
-        side: railWidgetSideOf(layout, plugin.id, mount.defaultSide),
+        // 差异性完善（06 ui.side）：行为键贴边优先于 defaultSide（布局记忆
+        // 在 railWidgetSideOf 内仍最优先）。
+        side: railWidgetSideOf(
+          layout,
+          plugin.id,
+          behaviors[plugin.id]?.side ?? mount.defaultSide,
+        ),
       })),
     );
+
+  // 批次5：右键菜单（停用/设置）——与 spotlight 同层宿主能力。
+  const widgetMenu = useWidgetContextMenu();
 
   if (widgets.length === 0) return null;
 
@@ -75,13 +95,15 @@ export function SessionRailSlot({ ctx }: { ctx: SessionKernelContext }) {
             )}
             data-rail-side={side}
           >
-            {group.map(({ id, mount, side: widgetSide }) => {
+            {group.map(({ id, name, mount, side: widgetSide }) => {
               const Host = mount.Component;
               return (
                 <div
                   key={id}
                   data-rail-widget={id}
                   className={pulsingId === id ? "animate-pulse rounded-md ring-2 ring-primary/60" : undefined}
+                  // 批次5：右键 → 挂件管理菜单（停用/在插件中心设置）。
+                  onContextMenu={(e) => widgetMenu.openFor(id, name, e)}
                   onDragOver={(e) => {
                     // 挂件本体拖到对侧：拖拽体携带插件 id，落位切缘。
                     if (e.dataTransfer.types.includes("application/x-jishu-rail")) {
@@ -118,6 +140,7 @@ export function SessionRailSlot({ ctx }: { ctx: SessionKernelContext }) {
           </div>
         );
       })}
+      {widgetMenu.node}
     </>
   );
 }

@@ -4,6 +4,8 @@ import { composerTrailingsOf } from "../types";
 import type { SessionKernelContext } from "../types";
 // 5a（v0.9.5 需求1）：安装后挂件高亮（确认卡启用 → 位置提示一次）。
 import { useInstallSpotlight } from "../../shell/install-spotlight";
+import { useAllPluginBehaviors } from "../config-plane";
+import { useWidgetContextMenu } from "./widget-context-menu";
 import { cn } from "@/lib/utils";
 
 /**
@@ -13,11 +15,25 @@ import { cn } from "@/lib/utils";
  */
 export function SessionComposerTrailing({ ctx }: { ctx: SessionKernelContext }) {
   const enabled = useEnabledSessionPlugins();
+  // 批次4：作用域过滤（task-only 仅任务会话呈现）——与面板/挂件同口径。
+  const behaviors = useAllPluginBehaviors();
+  const inTaskSession = ctx.task != null;
   const widgets = listSessionPlugins()
     .filter((plugin) => enabled.has(plugin.id))
-    .flatMap((plugin) => composerTrailingsOf(plugin).map((m) => ({ ...m, pluginId: plugin.id })));
+    .filter((plugin) => {
+      const bhv = behaviors[plugin.id];
+      if (bhv?.scope === "task-only" && !inTaskSession) return false;
+      // 差异性完善（06 ui.visible）：显隐开关（隐藏≠停用——插件仍启用）。
+      if (bhv?.visible === false) return false;
+      return true;
+    })
+    .flatMap((plugin) =>
+      composerTrailingsOf(plugin).map((m) => ({ ...m, pluginId: plugin.id, name: plugin.displayNameFallback })),
+    );
   // 5a：spotlight 目标（一次性 pulse，3s 后自动熄灭）。
   const spotlight = useInstallSpotlight();
+  // 批次5：右键菜单（停用/在插件中心设置）。
+  const widgetMenu = useWidgetContextMenu();
   const [pulsingId, setPulsingId] = useState<string | null>(null);
   useEffect(() => {
     if (!spotlight) return;
@@ -38,11 +54,14 @@ export function SessionComposerTrailing({ ctx }: { ctx: SessionKernelContext }) 
               "inline-flex",
               pulsingId === mount.pluginId && "animate-pulse rounded-md ring-2 ring-primary/60",
             )}
+            // 批次5：右键 → 挂件管理菜单。
+            onContextMenu={(e) => widgetMenu.openFor(mount.pluginId, mount.name, e)}
           >
             <Host ctx={ctx} />
           </span>
         );
       })}
+      {widgetMenu.node}
     </>
   );
 }

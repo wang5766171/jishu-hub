@@ -22,8 +22,12 @@ import {
   useSessionSidebar,
 } from "../../shell/session-sidebar";
 import { usePanelActivation } from "../../shell/panel-activation";
+// 批次5：能力中心常驻挂件定位（复用 5a spotlight 脉冲）与管理页导航。
+import { requestInstallSpotlight } from "../../shell/install-spotlight";
+import { openManagePage } from "@/lib/app-nav";
+import { useAllPluginBehaviors } from "../config-plane";
 import { listSessionPlugins, useEnabledSessionPlugins } from "../registry";
-import { dockPanelsOf, sidebarPanelsOf } from "../types";
+import { dockPanelsOf, sidebarPanelsOf, railWidgetsOf, composerTrailingsOf } from "../types";
 import type { SessionKernelContext } from "../types";
 
 /**
@@ -66,6 +70,10 @@ function isWindowMaximized(): boolean {
 export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
   const { t } = useTranslation();
   const enabled = useEnabledSessionPlugins();
+  // 批次4：使用行为键（管理面设置 tab 驱动，保存热生效）：默认归所/
+  // 自动展开策略/作用域。
+  const behaviors = useAllPluginBehaviors();
+  const inTaskSession = ctx.task != null;
   const [layout, setLayout] = useState<SessionLayoutState>(() => loadLayout());
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [hubOpen, setHubOpen] = useState(false);
@@ -122,15 +130,16 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, []);
 
-  // ── 快捷键框架 ──
+  // ── 快捷键框架（差异性完善：行为键 ui.shortcut 优先于描述符声明）──
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const shortcuts: Array<{ id: string; combo: string }> = [];
       for (const plugin of listSessionPlugins()) {
         if (!enabled.has(plugin.id)) continue;
         const desc = plugin as { shortcut?: string };
-        if (desc.shortcut) {
-          shortcuts.push({ id: plugin.id, combo: desc.shortcut });
+        const combo = behaviors[plugin.id]?.shortcut ?? desc.shortcut;
+        if (combo) {
+          shortcuts.push({ id: plugin.id, combo });
         }
       }
       if (shortcuts.length === 0) return;
@@ -154,8 +163,17 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
     const entries: PanelEntry[] = [];
     for (const plugin of listSessionPlugins()) {
       if (!enabled.has(plugin.id)) continue;
+      // 批次4：作用域过滤（task-only 仅任务会话呈现）。
+      const bhv = behaviors[plugin.id];
+      if (bhv?.scope === "task-only" && !inTaskSession) continue;
       for (const mount of dockPanelsOf(plugin)) {
-        const resolved = panelLayoutOf(layout, plugin.id, mount.defaultSlot);
+        // 批次4：行为键归所——sidebar 归所的面板交侧栏层渲染（不进悬浮列表）；
+        // left/right 覆盖声明槽位（仅无布局记忆时生效——panelLayoutOf 内
+        // state.panels 命中分支记忆优先）。
+        if (bhv?.defaultSlot === "sidebar") continue;
+        const declared =
+          bhv?.defaultSlot === "left" || bhv?.defaultSlot === "right" ? bhv.defaultSlot : mount.defaultSlot;
+        const resolved = panelLayoutOf(layout, plugin.id, declared);
         entries.push({
           id: plugin.id,
           title: t(mount.titleKey, mount.titleFallback),
@@ -167,24 +185,47 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
       }
     }
     return entries;
-  }, [enabled, layout, t]);
+  }, [enabled, layout, t, behaviors, inTaskSession]);
 
   // ── 侧边栏形态插件（v0.9.2 测试期：能力中心统一调度悬浮/侧栏两形态）──
   const sidebarEntries = useMemo(() => {
     const entries: Array<{ id: string; title: string }> = [];
     for (const plugin of listSessionPlugins()) {
       if (!enabled.has(plugin.id)) continue;
+      const bhv = behaviors[plugin.id];
+      if (bhv?.scope === "task-only" && !inTaskSession) continue;
       for (const mount of sidebarPanelsOf(plugin)) {
         entries.push({ id: plugin.id, title: t(mount.titleKey, mount.titleFallback) });
       }
     }
     return entries;
-  }, [enabled, t]);
+  }, [enabled, t, behaviors, inTaskSession]);
   const sidebarOpenId = useSessionSidebar().openId;
+  // 批次4：行为键「右侧栏」归所的面板按侧栏形态调度（能力中心/激活路由）。
   const isSidebarPlugin = useCallback(
-    (id: string) => sidebarEntries.some((entry) => entry.id === id),
-    [sidebarEntries],
+    (id: string) =>
+      sidebarEntries.some((entry) => entry.id === id) || behaviors[id]?.defaultSlot === "sidebar",
+    [sidebarEntries, behaviors],
   );
+
+  // 批次5：常驻挂件清单（rail/composer/**动作位**，作用域同口径）——能力中心
+  // 第二组仅定位（点击 spotlight 脉冲）；启停归插件中心/挂件右键（双开关口径铁律）。
+  const residentEntries = useMemo(() => {
+    const entries: Array<{ id: string; title: string }> = [];
+    for (const plugin of listSessionPlugins()) {
+      if (!enabled.has(plugin.id)) continue;
+      const bhv = behaviors[plugin.id];
+      if (bhv?.scope === "task-only" && !inTaskSession) continue;
+      if (
+        railWidgetsOf(plugin).length ||
+        composerTrailingsOf(plugin).length ||
+        plugin.mounts.some((m) => m.kind === "header-action")
+      ) {
+        entries.push({ id: plugin.id, title: t(plugin.displayNameKey, plugin.displayNameFallback) });
+      }
+    }
+    return entries;
+  }, [enabled, t, behaviors, inTaskSession]);
 
   const hideAllDockPanels = useCallback(() => {
     setLayout((prev) => {
@@ -232,6 +273,31 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
     // seq 驱动：同一插件重复请求（连续预览刷新）也重新激活。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activation?.seq]);
+
+  // 批次4：autoOpen=every-session——进入新会话（含首次挂载）自动展开首个
+  // 命中面板（单选互斥取一）；never/install-once（默认）不在此动作——
+  // install-once 由 5a 确认卡链路承担。仅会话切换驱动（行为保存不重开）。
+  const autoOpenSession = ctx.sessionId;
+  useEffect(() => {
+    if (!autoOpenSession) return;
+    for (const plugin of listSessionPlugins()) {
+      if (!enabled.has(plugin.id)) continue;
+      const bhv = behaviors[plugin.id];
+      if (bhv?.autoOpen !== "every-session") continue;
+      if (!dockPanelsOf(plugin).length && !sidebarPanelsOf(plugin).length) continue;
+      if (bhv.scope === "task-only" && ctx.task == null) continue;
+      if (isSidebarPlugin(plugin.id)) {
+        hideAllDockPanels();
+        if (sidebarOpenId !== plugin.id) openSessionSidebar(plugin.id);
+      } else {
+        closeSessionSidebar();
+        showPanel(plugin.id);
+      }
+      break;
+    }
+    // 依赖仅会话 id：切换会话触发；behaviors/enabled 快照取当次值。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenSession]);
 
   const hasAnyMount = panels.length > 0 || sidebarEntries.length > 0;
   if (!hasAnyMount) return null;
@@ -300,9 +366,14 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
         </button>
 
         {hubOpen && (
-          <div className="absolute right-0 top-10 w-56 rounded-xl border border-border/70 bg-popover/95 p-3 shadow-lg backdrop-blur">
-            <div className="mb-1.5 text-[9px] font-medium text-muted-foreground">
+          <div className="absolute right-0 top-10 w-60 rounded-xl border border-border/70 bg-popover/95 p-3 shadow-lg backdrop-blur">
+            <div className="mb-1 text-[9px] font-medium text-muted-foreground">
               {t("sessionPanels.hub.title", "能力中心")}
+            </div>
+            {/* 批次5：分组呈现——面板可调度（点击 toggle）；常驻挂件仅定位
+                （点击闪烁提示位置；启停归插件中心/右键菜单，双开关口径铁律）。 */}
+            <div className="mb-1 text-[9px] text-muted-foreground/70">
+              {t("sessionPanels.hub.groupPanels", "面板 · 点击调度")}
             </div>
             <div className="grid grid-cols-4 gap-1.5">
               {[...panels, ...sidebarEntries].map((entry) => {
@@ -329,6 +400,49 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
                   </button>
                 );
               })}
+            </div>
+            {residentEntries.length > 0 ? (
+              <>
+                <div className="mb-1 mt-2.5 text-[9px] text-muted-foreground/70">
+                  {t("sessionPanels.hub.groupResidents", "常驻挂件 · 点击定位")}
+                </div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {residentEntries.map((entry) => {
+                    const Icon = PLUGIN_ICONS[entry.id] ?? LayoutGrid;
+                    return (
+                      <button
+                        key={entry.id}
+                        type="button"
+                        title={t("sessionPanels.hub.locateHint", "{{name}}（常驻——点击高亮定位；右键挂件可停用/设置）", { name: entry.title })}
+                        onClick={() => {
+                          requestInstallSpotlight(entry.id);
+                          setHubOpen(false);
+                        }}
+                        className="flex h-14 flex-col items-center justify-center gap-1 rounded-lg border border-border/40 px-0.5 text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                      >
+                        <Icon className="h-3.5 w-3.5" />
+                        <span className="text-[9px] font-medium leading-tight whitespace-nowrap">{entry.title}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            ) : null}
+            {/* 批次5：底部管理入口（管理面唯一开关口径的导航闭环）。 */}
+            <div className="mt-2.5 flex items-center justify-between border-t border-border/50 pt-2">
+              <span className="text-[9px] text-muted-foreground/60">
+                {panels.length + sidebarEntries.length} {t("sessionPanels.hub.panelCount", "面板")} · {residentEntries.length} {t("sessionPanels.hub.widgetCount", "挂件")}
+              </span>
+              <button
+                type="button"
+                className="text-[10px] text-primary/90 transition-colors hover:text-primary"
+                onClick={() => {
+                  setHubOpen(false);
+                  openManagePage("plugins");
+                }}
+              >
+                {t("sessionPanels.hub.manage", "管理插件…")} →
+              </button>
             </div>
           </div>
         )}

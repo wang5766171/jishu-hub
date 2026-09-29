@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { ShieldAlert, Check, X } from "lucide-react";
-import { createPortal } from "react-dom";
+import { UniModal } from "@/components/ui/uni-modal";
 // 5a（v0.9.5 需求1，原需敆26）：安装后自动展示——面板自动展开/挂件高亮/
 // 测试通知，复用既有面板激活性与动作命令链。
 import { requestPanelActivation } from "@/features/session-kernel/shell/panel-activation";
@@ -108,12 +108,21 @@ export function HybridInstallConfirmation() {
 
   if (pending.length === 0) return null;
 
-  return createPortal(
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 backdrop-blur-sm">
-      {pending.map(p => (
+  // 批次1：统一弹窗外壳（不可关闭——安全阀语义，preventClose 固定）；
+  // 卡片本身为馆市场警示形态，中和 UniModal 卡底色（透明壳）。
+  return (
+    <UniModal
+      open
+      onClose={() => undefined}
+      preventClose
+      label="混合插件安装确认"
+      className="w-auto max-w-none border-0 bg-transparent shadow-none"
+    >
+      <div className="flex max-w-[96vw] items-center justify-center gap-4 overflow-x-auto p-2">
+      {pending.map((p) => (
         <div
           key={p.id}
-          className="w-[min(480px,92vw)] rounded-xl border border-amber-500/40 bg-background p-5 shadow-2xl"
+          className="w-[min(480px,92vw)] shrink-0 rounded-xl border border-amber-500/40 bg-background p-5 shadow-2xl"
         >
           <div className="flex items-start gap-3">
             <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
@@ -153,7 +162,7 @@ export function HybridInstallConfirmation() {
           </div>
         </div>
       ))}
-    </div>,
-    document.body,
+      </div>
+    </UniModal>
   );
 }

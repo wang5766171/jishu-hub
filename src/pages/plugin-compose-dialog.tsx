@@ -10,6 +10,7 @@ import { Loader2, Plus, Trash2, ArrowLeft, Lightbulb } from "lucide-react";
 import { INTENT_CARDS, intentLabel, recommendIntent, type PluginIntent } from "./plugin-intent-recommend";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { UniModal, UniModalHeader } from "@/components/ui/uni-modal";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { rendererRegistry } from "@/features/session-kernel/capabilities/renderers/registry";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -200,17 +201,15 @@ export function PluginComposeDialog({
   const label = "mb-1 block text-[11px] font-medium text-muted-foreground";
   const input = "h-7 w-full rounded-md border border-border/70 bg-transparent px-2 text-xs outline-none focus:border-primary/60";
 
+  // 批次1 统一弹窗：外壳收敛 UniModal（z-80/遮罩/Esc），表单与创建链不变。
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center p-6" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/50" onClick={() => onOpenChange(false)} />
-      <div className="relative flex max-h-[86vh] w-[min(720px,94vw)] flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
-        <div className="flex shrink-0 items-center justify-between border-b border-border/50 px-5 py-3.5">
-          <div>
-            <div className="text-sm font-semibold">新建组合插件</div>
-            <div className="mt-0.5 text-[11px] text-muted-foreground">选内容源与渲染组件，零代码生成插件（TOML 组合清单）</div>
-          </div>
-          <div className="font-mono text-[10px] text-muted-foreground/70">{id}</div>
-        </div>
+    <UniModal open onClose={() => onOpenChange(false)} size="lg" label="新建组合插件">
+      <UniModalHeader
+        title="新建组合插件"
+        subtitle="选内容源与渲染组件，零代码生成插件（TOML 组合清单）"
+        trailing={<span className="font-mono text-[10px] text-muted-foreground/70">{id}</span>}
+        onClose={() => onOpenChange(false)}
+      />
         <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-5 py-4">
           {step === "intent" ? (
             <div className="space-y-3">
@@ -399,7 +398,6 @@ export function PluginComposeDialog({
             <span className="ml-1">创建插件</span>
           </Button>
         </div>
-      </div>
-    </div>
+    </UniModal>
   );
 }

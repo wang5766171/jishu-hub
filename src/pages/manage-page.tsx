@@ -20,6 +20,8 @@ import {
   DatabaseBackup,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+// 批次5（v0.9.5 需求1 GUI 改造）：会话区 → 管理页导航事件。
+import { onManageNav } from "@/lib/app-nav";
 import type { AgentConfigSection, ManageTab, Project, ProjectMeta } from "@/types";
 
 interface ManagePageProps {
@@ -99,6 +101,12 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigat
   const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<ManageTab>("projects");
   const prevNavRef = useRef(0);
+
+  // 批次5（v0.9.5 需求1 GUI 改造）：会话区入口导航事件（能力中心「管理
+  // 插件…」/挂件右键「在插件中心设置」）→ 切到目标 tab。
+  useEffect(() => onManageNav((detail) => {
+    if (detail.tab) setActiveTab(detail.tab as ManageTab);
+  }), []);
 
   useEffect(() => {
     if (navigateToProjects && navigateToProjects !== prevNavRef.current) {

@@ -6,6 +6,7 @@
  * （prompt/gate）→ TOML 生成预览 → composed_plugin_save 保存（1a 后流水线
  * 清单可不写 source/render，保存后出现在插件中心「流水线」tab）。
  */
+import { UniModal, UniModalHeader } from "@/components/ui/uni-modal";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, Plus, Trash2, ArrowUp, ArrowDown } from "lucide-react";
@@ -124,18 +125,13 @@ export function PluginPipelineWizard({
   };
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center p-6" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/50" onClick={() => onOpenChange(false)} />
-      <div className="relative flex max-h-[86vh] w-[min(720px,94vw)] flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
-        <div className="flex shrink-0 items-center justify-between border-b border-border/50 px-5 py-3.5">
-          <div>
-            <div className="text-sm font-semibold">流水线向导（阶段编排）</div>
-            <div className="mt-0.5 text-[11px] text-muted-foreground">
-              编排多阶段工作流——阶段优先用内置模板（讨论/规划/执行/评审），自定义阶段写提示词与门禁
-            </div>
-          </div>
-          <div className="font-mono text-[10px] text-muted-foreground/70">{id}</div>
-        </div>
+    <UniModal open={open} onClose={() => onOpenChange(false)} size="lg" label="流水线向导">
+      <UniModalHeader
+        title="流水线向导（阶段编排）"
+        subtitle="编排多阶段工作流——阶段优先用内置模板（讨论/规划/执行/评审），自定义阶段写提示词与门禁"
+        trailing={<span className="font-mono text-[10px] text-muted-foreground/70">{id}</span>}
+        onClose={() => onOpenChange(false)}
+      />
         <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-5 py-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -267,7 +263,6 @@ export function PluginPipelineWizard({
             <span className="ml-1">创建流水线</span>
           </Button>
         </div>
-      </div>
-    </div>
+    </UniModal>
   );
 }

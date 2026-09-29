@@ -380,6 +380,11 @@ export interface SessionPluginDescriptor {
   contractVersion: number;
   /** 来源标记（本期恒 builtin）。 */
   source: "builtin" | "config" | "dynamic";
+  /** v0.9.5 需求1 GUI 改造 批次2：实现维度标记（双维度分类 X 轴）——
+   * 组合式由 engine 装配时计算（combo=流水线与数据面臂并存 > code=含
+   * @file: 代码组件 > config=纯清单）；内置插件不写（消费侧按 source=builtin
+   * 判「内置」）。管理面双徽标/筛选消费（plugins-page）。 */
+  implKind?: "config" | "code" | "combo";
   /** 声明制授权（本期仅数据订阅面，占位对齐 05 §3.3）。 */
   permissions: string[];
   mounts: PluginMount[];

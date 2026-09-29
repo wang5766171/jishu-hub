@@ -5,6 +5,7 @@
  * 代码编辑（CodeEditor 实时语法/契约校验 + API v1 参考面板 + 实时预览
  * HybridPreviewPanel）→ 保存（hybrid_plugin_save → 默认禁用 + 确认卡启用）。
  */
+import { UniModal, UniModalHeader } from "@/components/ui/uni-modal";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, BookOpen } from "lucide-react";
@@ -63,16 +64,19 @@ export function PluginHybridWizard({
   open,
   onOpenChange,
   onCreated,
+  presetMount,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated?: () => void;
+  /** 批次6：创建入口业务形态预选挂载（面板→dock-panel/挂件→rail-widget）。 */
+  presetMount?: "dock-panel" | "rail-widget" | "sidebar-panel" | "composer-trailing";
 }) {
   const { t } = useTranslation();
   const { alert: alertDialog } = useConfirmDialog();
   const [name, setName] = useState("");
   const [sourceType, setSourceType] = useState<HybridSourceType>("messages");
-  const [mount, setMount] = useState<HybridMount>("dock-panel");
+  const [mount, setMount] = useState<HybridMount>(presetMount ?? "dock-panel");
   const [code, setCode] = useState("");
   const [codeTouched, setCodeTouched] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -139,19 +143,15 @@ export function PluginHybridWizard({
   const label = "mb-1 block text-[11px] font-medium text-muted-foreground";
   const inputCls = "h-7 w-full rounded-md border border-border/70 bg-transparent px-2 text-xs outline-none focus:border-primary/60";
 
+  // 批次1 统一弹窗：外壳收敛 UniModal（z-80/遮罩/Esc），编辑器/预览链不变。
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center p-6" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/50" onClick={() => onOpenChange(false)} />
-      <div className="relative flex max-h-[88vh] w-[min(1020px,96vw)] flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
-        <div className="flex shrink-0 items-center justify-between border-b border-border/50 px-5 py-3.5">
-          <div>
-            <div className="text-sm font-semibold">混合插件向导（TOML + component.js）</div>
-            <div className="mt-0.5 text-[11px] text-muted-foreground">
-              自定义渲染的会话界面插件——左侧编辑代码（实时校验），右侧实时预览
-            </div>
-          </div>
-          <div className="font-mono text-[10px] text-muted-foreground/70">{id}</div>
-        </div>
+    <UniModal open={open} onClose={() => onOpenChange(false)} className="w-[min(1020px,96vw)]" label="混合插件向导">
+      <UniModalHeader
+        title="混合插件向导（TOML + component.js）"
+        subtitle="自定义渲染的会话界面插件——左侧编辑代码（实时校验），右侧实时预览"
+        trailing={<span className="font-mono text-[10px] text-muted-foreground/70">{id}</span>}
+        onClose={() => onOpenChange(false)}
+      />
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           <div className="grid grid-cols-3 gap-3">
             <div>
@@ -231,7 +231,6 @@ export function PluginHybridWizard({
             <span className="ml-1">保存并安装</span>
           </Button>
         </div>
-      </div>
-    </div>
+    </UniModal>
   );
 }

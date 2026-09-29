@@ -109,6 +109,30 @@ function categoryOf(p: PluginDescriptor): PluginCategory {
   return "agent";
 }
 
+/** v0.9.5 需求1 GUI 改造 批次2：实现维度（双维度 X 轴）——业务 tab 之外的第二
+ * 视角（怎么造的/能不能改）。会话插件看描述符（engine 装配标记 implKind；
+ * source=builtin → 内置🔒只读）；非会话插件 core/system → 内置，
+ * 其余（tool/manifest 声明式清单）→ 配置。 */
+type ImplKind = "config" | "code" | "builtin" | "combo";
+
+function implKindOf(p: PluginDescriptor): ImplKind {
+  if (p.kind === "session") {
+    const d = listSessionPlugins().find((x) => x.id === p.id);
+    if (!d) return "config";
+    return d.source === "builtin" ? "builtin" : d.implKind ?? "config";
+  }
+  if (p.core || p.system) return "builtin";
+  return "config";
+}
+
+/** 实现徽标（颜色对应 v3 原型：绿配置/紫代码/灰内置/橙组合）。 */
+const IMPL_BADGE: Record<ImplKind, { key: string; fallback: string; cls: string }> = {
+  config: { key: "plugins.implConfig", fallback: "配置", cls: "border-emerald-500/40 text-emerald-600" },
+  code: { key: "plugins.implCode", fallback: "代码", cls: "border-fuchsia-500/40 text-fuchsia-600" },
+  builtin: { key: "plugins.implBuiltin", fallback: "内置", cls: "border-slate-400/40 text-slate-500" },
+  combo: { key: "plugins.implCombo", fallback: "组合", cls: "border-amber-500/40 text-amber-600" },
+};
+
 /** v0.9.3 需求11：分类改横向 tab（顺序按用户口径，智能体置首）。 */
 const PLUGIN_CATEGORIES: Array<{ key: PluginCategory; labelKey: string; fallback: string }> = [
   { key: "agent", labelKey: "plugins.typeAgent", fallback: "智能体" },
@@ -145,6 +169,8 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
   const [entryOpen, setEntryOpen] = useState(false);
   // 3b：混合插件向导。
   const [hybridOpen, setHybridOpen] = useState(false);
+  // 批次6：创建入口业务形态 → 混合向导挂载预选。
+  const [hybridPresetMount, setHybridPresetMount] = useState<"dock-panel" | "rail-widget" | "sidebar-panel" | "composer-trailing" | undefined>(undefined);
   // 3c：流水线向导。
   const [pipelineOpen, setPipelineOpen] = useState(false);
   const [detailTab, setDetailTab] = useState<"info" | "settings">("info");
@@ -347,6 +373,8 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
       // 存储不可用时仅本次会话生效
     }
   };
+  // 批次2：实现维度筛选（与业务 tab 正交——双视角管理，v3 双维度设计）。
+  const [implFilter, setImplFilter] = useState<ImplKind | "all">("all");
 
   // v0.9.0 需求1 二期：MCP 解析器（mcp-resolver 系统插件）启用态——新建
   // 插件对话框的 MCP 区门控（列表未加载完成前按启用放行，避免首开误锁）。
@@ -408,7 +436,19 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
                   {tr("plugins.disabledBadge", "已禁用")}
                 </Badge>
               )}
-              {plugin.kind === "builtin" || plugin.kind === "session" ? (
+              {/* 批次2：会话插件显示实现维度徽标（配置/代码/内置/组合，双维度
+                  X 轴）——取代原「内置」kind 徽标（组合式被误标内置的问题顺带
+                  修复）；非会话插件保持原 kind 徽标（实现维度无信息增益）。 */}
+              {plugin.kind === "session" ? (
+                (() => {
+                  const b = IMPL_BADGE[implKindOf(plugin)];
+                  return (
+                    <Badge variant="outline" className={cn("px-1 py-0 text-[9px]", b.cls)}>
+                      {tr(b.key, b.fallback)}
+                    </Badge>
+                  );
+                })()
+              ) : plugin.kind === "builtin" ? (
                 <Badge variant="secondary" className="px-1 py-0 text-[9px]">
                   {tr("plugins.kindBuiltin", "内置")}
                 </Badge>
@@ -579,7 +619,7 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
     <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-6">
       {dialogNode}
       <PluginComposeDialog open={composeOpen} onOpenChange={setComposeOpen} onCreated={refresh} />
-      <PluginHybridWizard open={hybridOpen} onOpenChange={setHybridOpen} onCreated={refresh} />
+      <PluginHybridWizard open={hybridOpen} onOpenChange={setHybridOpen} onCreated={refresh} presetMount={hybridPresetMount} />
       <PluginPipelineWizard open={pipelineOpen} onOpenChange={setPipelineOpen} onCreated={refresh} />
       {/* 3a-1：统一创建入口——四类型卡片分流（agent-tool → agents 向导；
           session-composed → 组合式向导；pipeline/hybrid → 指引卡；describe →
@@ -597,6 +637,10 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
               setComposeOpen(true);
               break;
             case "hybrid-guide":
+              // 批次6：业务形态预选挂载（面板→停靠面板/挂件→贴边挂件）。
+              setHybridPresetMount(
+                choice.face === "panel" ? "dock-panel" : choice.face === "widget" ? "rail-widget" : undefined,
+              );
               setHybridOpen(true);
               break;
             case "pipeline-guide":
@@ -688,9 +732,10 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
         </div>
       )}
 
-      {/* v0.9.3 需求11：分类横向 tab（胶囊形态，workbuddy 风格）——切换
-          不同类型卡片的展示；tab 计数常显（空分类也可见，承需求9 裁决）。 */}
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-border/40 pb-3">
+      {/* v0.9.3 需求11：分类横向 tab（胶囊形态）——业务 tab（Y 轴：在哪用）
+          × 实现筛选（X 轴：怎么造）双视角（批次2）。 */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-3">
+        <div className="flex flex-wrap items-center gap-1.5">
         {PLUGIN_CATEGORIES.map((cat) => {
           const items = (result?.plugins ?? []).filter((x) => categoryOf(x) === cat.key);
           const active = activeTab === cat.key;
@@ -713,18 +758,39 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
             </button>
           );
         })}
+        </div>
+        {/* 批次2：实现维度筛选 chips（X 轴：怎么造的/能不能改；🔒内置只读）。 */}
+        <div className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
+          <span className="mr-0.5">{tr("plugins.implFilterLabel", "实现")}</span>
+          {(["all", "config", "code", "builtin", "combo"] as const).map((k) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setImplFilter(k)}
+              className={cn(
+                "rounded-full border px-2 py-0.5 transition-colors",
+                implFilter === k
+                  ? "border-primary/60 bg-primary/10 text-primary"
+                  : "border-border/60 text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {k === "all" ? tr("plugins.implAll", "全部") : tr(IMPL_BADGE[k].key, IMPL_BADGE[k].fallback)}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* 卡片网格：自适应列数铺满区域（v0.9.3 需求11，minmax 卡宽 ~230px）。 */}
+      {/* 卡片网格：自适应列数铺满区域（v0.9.3 需求11，minmax 卡宽 ~230px）；
+          批次2：叠加实现维度过滤。 */}
       <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(230px,1fr))]">
         {/* v0.9.4 需求12：开发日志中心虚拟卡（用户裁决：入口放插件中心核心引擎
             分类，默认关闭手动开启；开关写 settings.json 跨启动保持）。 */}
         {activeTab === "core" && <DevLogCard />}
         {(result?.plugins ?? [])
-          .filter((x) => categoryOf(x) === activeTab)
+          .filter((x) => categoryOf(x) === activeTab && (implFilter === "all" || implKindOf(x) === implFilter))
           .map((plugin) => renderCard(plugin))}
       </div>
-      {(result?.plugins ?? []).filter((x) => categoryOf(x) === activeTab).length === 0 && (
+      {(result?.plugins ?? []).filter((x) => categoryOf(x) === activeTab && (implFilter === "all" || implKindOf(x) === implFilter)).length === 0 && (
         <p className="py-10 text-center text-sm text-muted-foreground">
           {result && result.plugins.length === 0
             ? tr("plugins.empty", "无插件")
