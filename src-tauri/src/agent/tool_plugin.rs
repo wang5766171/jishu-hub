@@ -350,7 +350,10 @@ pub fn extract_tool_snapshot(text: &str) -> (String, Vec<String>) {
         // 只在「会话未勾选工具」时注入（chat.rs compose_tool_message 的空
         // 工具集分支），早退原样返回导致回放显示系统提示词（v0.9.2 修复的
         // 漏网分支：只覆盖了带工具块的组合）。
-        return (strip_mcp_hint_block(text), Vec::new());
+        // v0.9.5 测试期同洞回潮：图片委派块也在同一空工具集分支注入，早退
+        // 只剥 MCP 提示导致回放用户消息泄漏识图路由话术——改走
+        // strip_tool_block 全链（本分支无工具块，各段对无标记文本均 no-op）。
+        return (strip_tool_block(text), Vec::new());
     };
     let mut ids: Vec<String> = Vec::new();
     if let Some(end_rel) = text[start..].find(TOOL_BLOCK_CLOSE) {
@@ -575,6 +578,24 @@ mod tests {
 帮我看图";
         assert_eq!(strip_tool_block(legacy), "帮我看图");
         assert_eq!(strip_tool_block("普通消息"), "普通消息");
+    }
+
+    /// v0.9.5 测试期回归：无工具块时 extract_tool_snapshot 早退分支也必须剥
+    /// 图片委派块——图片消息恰好多发在「未勾选工具」的会话（compose_tool_message
+    /// 空工具集分支），早退曾只剥 MCP 提示，回放用户消息泄漏识图路由话术。
+    #[test]
+    fn extract_snapshot_without_tool_block_strips_image_dispatch() {
+        // 无 MCP 提示形态（未启用 MCP 插件的会话）
+        let injected = "<jishu-image-dispatch>识图路由话术</jishu-image-dispatch>\n帮我看图";
+        let (clean, ids) = extract_tool_snapshot(injected);
+        assert_eq!(clean, "帮我看图");
+        assert!(ids.is_empty());
+        // 组合形态（启用 MCP 插件、未勾工具——compose_tool_message 真实注入顺序：
+        // MCP 提示前缀 + 图片委派块 + 正文）
+        let combined = "\n<jishu-mcp-hint>MCP 提示</jishu-mcp-hint>\n\n<jishu-image-dispatch>识图路由话术</jishu-image-dispatch>\n帮我看图";
+        let (clean, ids) = extract_tool_snapshot(combined);
+        assert_eq!(clean, "帮我看图");
+        assert!(ids.is_empty());
     }
 
     #[test]
