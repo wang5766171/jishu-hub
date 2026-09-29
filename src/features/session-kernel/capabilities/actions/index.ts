@@ -4,6 +4,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
+import { devLog } from "@/lib/dev-log";
 import type { ActionDeclaration, SourcePayload } from "../types";
 import { actionRegistry } from "./registry";
 
@@ -119,14 +120,25 @@ actionRegistry.register({
     const title = String(params.title ?? "通知");
     const body = String(params.body ?? "");
     try {
-      await invoke("desktop_notify_send", {
+      const result = await invoke<string>("desktop_notify_send", {
         title,
         body,
         sessionId: ctx.sessionId ?? null,
         sound: !quiet && soundOn ? null : false,
       });
+      // v0.9.5 测试期（用户实测「系统通知没有效果了」排查）：通知链路
+      // 打点进日志中心——后端返回的提交结果（AUMID/launch）可见，断链时
+      // 与「turn-complete 通知信号已发」对表即可三分定位（信号未发/动作
+      // 未达/toast 提交失败）。
+      devLog("session", "desktop_notify_send 已提交", {
+        title,
+        result,
+        quiet,
+        plugin: ctx.pluginId,
+      });
     } catch (error) {
       console.warn("desktop notify failed:", error);
+      devLog("session", "desktop_notify_send 失败", { title, error: String(error) });
     }
   },
 });

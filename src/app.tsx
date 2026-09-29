@@ -1,6 +1,7 @@
 
 import "@/i18n";
 import { attachRuntimeLogBridge, hydrateDevLogForced } from "@/lib/dev-log";
+import { attachWindowActivityTracking } from "@/features/session-kernel/window-activity";
 import { lazy, Suspense } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { useTranslation } from "react-i18next";
@@ -38,6 +39,8 @@ import { useCliValidateBridge } from "@/features/session-kernel/capabilities/cli
 // 6b（v0.9.5 需求1）：agent-tool 前端执行桥（plugin-invoke 扩展 → hub_invoke → 事件 → 动作）。
 import { usePluginToolInvokeBridge } from "@/features/session-kernel/capabilities/plugin-tool-invoke-bridge";
 import { HybridErrorNotification } from "@/features/session-kernel/capabilities/composition/hybrid-errors";
+// 批次5（v0.9.5 需求1 GUI 改造）：会话区 → 管理页导航事件。
+import { onManageNav } from "@/lib/app-nav";
 import type { Page, Project, ProjectMeta } from "@/types";
 
 const ChatPage = lazy(() => import("@/pages/chat-page").then(m => ({ default: m.ChatPage })));
@@ -446,6 +449,9 @@ function AppContent() {
   // 6b：agent-tool 执行桥。
   usePluginToolInvokeBridge();
   const [currentPage, setCurrentPage] = useState<Page>("chat");
+  // 批次5（v0.9.5 需求1 GUI 改造）：会话区入口（能力中心/挂件右键）→
+  // 管理页导航事件（tab 消费在 manage-page 内）。
+  useEffect(() => onManageNav(() => setCurrentPage("manage")), []);
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [projectSessionsLoading, setProjectSessionsLoading] = useState(false);
   const [initialProjectRestored, setInitialProjectRestored] = useState(false);
@@ -461,13 +467,19 @@ function AppContent() {
   // Restore last project on startup
   // v0.9.4 需求12：开发日志强制开关水合（后端 settings.json 权威）。
   // v0.9.5 需求2 测试期：同时挂后端运行时日志桥（hub-dev-log → [runtime]）。
+  // v0.9.5 测试期（系统通知修复）：窗口激活跟踪（turn-complete 通知门控
+  // 消费——最小化/失焦时当前会话也通知）。
   useEffect(() => {
     void hydrateDevLogForced();
+    const detachActivity = attachWindowActivityTracking();
     let unlistenRuntime: (() => void) | null = null;
     void attachRuntimeLogBridge().then((fn) => {
       unlistenRuntime = fn;
     });
-    return () => unlistenRuntime?.();
+    return () => {
+      detachActivity();
+      unlistenRuntime?.();
+    };
   }, []);
 
 useEffect(() => {

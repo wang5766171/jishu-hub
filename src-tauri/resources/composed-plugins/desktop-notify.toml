@@ -1,7 +1,7 @@
 [plugin]
 id = "session.desktop-notify"
 name = "桌面通知"
-description = "回合完成、需审批、任务失败时发送系统通知"
+description = "回合完成、需审批、任务失败时发送系统通知（窗口最小化/失焦时当前会话也通知）"
 kind = "session-composed"
 
 [source]
@@ -19,7 +19,7 @@ type = "desktop-notify"
 key = "notifyTurnComplete"
 type = "switch"
 label = "回合完成通知"
-description = "后台会话回复完毕时通知（正在查看的会话不打扰）"
+description = "回合完成时通知（窗口激活且正在查看的会话不打扰；最小化/失焦时当前会话也通知）"
 default = true
 
 [[config]]

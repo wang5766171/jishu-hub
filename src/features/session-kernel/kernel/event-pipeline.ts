@@ -23,6 +23,7 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import type { Message, Session } from "@/types";
 import type { TaskLaunchInstanceSummary } from "@/features/task-instance/types";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
+import { isAppWindowActive } from "../window-activity";
 import { interactionRequestFromEvent } from "@/lib/conversation-interaction";
 import {
   buildInteractionInsertions,
@@ -406,12 +407,22 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             }
           }
           // v0.9.2 需求1 M4：后台会话回合完成信号（正在查看的会话不打扰）。
-          if (cid !== deps.selectedSessionRef.current) {
+          // v0.9.5 测试期修复（用户实测「系统通知没有效果了」）：「正在查看」
+          // 修正为「窗口激活在看」——最小化/失焦时当前会话也通知（v0.9.5 起
+          // subagent 集成主会话工具卡、不再产生后台会话，旧门控下通知实际
+          // 触发面归零）；窗口激活时维持原语义（正在看的会话不打扰）。
+          const turnCompleteBackground = cid !== deps.selectedSessionRef.current;
+          if (turnCompleteBackground || !isAppWindowActive()) {
             emitSessionSignal({
               type: "turn-complete",
               sessionId: cid,
               agentId: chunk.agent_id,
               error: chunk.data.reason === "Error",
+            });
+            devLog("session", "turn-complete 通知信号已发", {
+              session: cid,
+              background: turnCompleteBackground,
+              windowActive: isAppWindowActive(),
             });
           }
           // Build final assistant/user messages from the accumulated state.
@@ -483,12 +494,21 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // each injection point; we split there and interleave the queued
           // steers so the live order matches the JSONL Pi persists.
           const steerQueueKey = steerCoordinator.isEmpty(finalKey) ? cid : finalKey;
+          // v0.9.5 需求2 测试期修正：防重判定改「回合令牌」比对（与 chat-page
+          // onAbort 同源）：标记值 === 当前流 turnToken 才算同回合已本地提交。
+          // 旧 has(key) 存在跨回合误判：上一回合的终结者丢失时标记残留，新回
+          // 合的 turn_complete(Aborted) 会被错误跳过提交（内容丢失）。令牌不
+          // 等则视为陈旧标记，照常提交。
+          const currentTurnToken = state?.turnToken ?? -1;
+          const localCommittedAbort = (key: string): boolean =>
+            currentTurnToken >= 0
+            && deps.abortLocalCommitRef.current.get(key) === currentTurnToken;
           devLog("pipeline", "turn_complete 处理", {
             session: cid, finalKey, reason: chunk.data.reason,
             steerSplits: (state?.steerSplits ?? []).length,
             steerTexts: (state?.steerTexts ?? []).length,
             queue: steerCoordinator.textsOf(steerQueueKey).length,
-            localCommitted: deps.abortLocalCommitRef.current.has(finalKey) || deps.abortLocalCommitRef.current.has(cid),
+            localCommitted: localCommittedAbort(finalKey) || localCommittedAbort(cid),
           });
           // v0.9.4 需求7 测试期重构补丁：提交源改为流内 steerTexts（注入事实）。
           // pi 的 steering 是「turn 边界转新 turn」形态 + hub 缓冲合并多 turn 的
@@ -689,15 +709,14 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // v0.9.4 需求7 测试期重构：本地乐观提交防重——停止时 onAbort 先于
           // 本事件执行（abort_chat 快速返回），已本地提交过 partial/交错内容
           //（abortLocalCommitRef 标记）。此处跳过重复提交，但下方的收口
-          //（steering 重发）、流 drop、标记清理照常——turn_complete 仍是唯一
-          // 回合终结者。
-          // v0.9.5 需求2 测试期修正：Aborted 终结者的防重不看时间窗口——
-          // abort 已本地提交的流，晚到的 turn_complete(Aborted)（实测 5.5 分钟
-          // 后才到——pi 滞留）只收口不再提交（旧 5s 窗口外的晚到终结者重复
-          // 提交用户消息 = 「停止后消息重复渲染」根因）。标记在本流收口时
-          // 清理（779 行），正常后续回合不受影响。
-          const localCommittedAbort = (key: string): boolean =>
-            deps.abortLocalCommitRef.current.has(key);
+          //（steering 重发）、流 drop、标记清理照常——turn_complete 仍是唯一回
+          // 合终结者。
+          // v0.9.5 需求2 测试期修正：防重判定由 has(key) 升级为回合令牌比对
+          //（localCommittedAbort 已提前定义，见上方）——标记值与当前流
+          // turnToken 相等才跳过：① 晚到的 turn_complete(Aborted)（实测 5.5
+          // 分钟后才到——pi 滞留）只收口不再提交；② 上一回合终结者丢失残留的
+          // 陈旧标记不再误杀新回合的提交（令牌不等）。标记在本流收口时清理，
+          // 正常后续回合不受影响。
           if (isAbortedTurn && (localCommittedAbort(finalKey) || localCommittedAbort(cid))) {
             newMessages.length = 0;
           }

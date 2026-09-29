@@ -10,7 +10,7 @@
  * 驱动消费者下次读取新快照）。组件纪律：不出现魔法数字，一律经
  * usePluginConfig（React）/ getPluginConfig（非 React）取值。
  */
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 
 // ── 类型系统（02 §关键设计：扁平值形状，section 仅表单分组）──
@@ -159,11 +159,11 @@ export function usePluginConfig(
   return { values, ready: cache != null };
 }
 
-/** 测试口：直写配置缓存（vitest 语境无 Tauri 后端）。 */
-export function setPluginConfigForTest(user: PluginConfigValues): void {
+/** 测试口：直写配置缓存（vitest 语境无 Tauri 后端）。pluginId 可指定
+ *  写入键（端到端验证某插件真实 id 的配置消费——desktop-notify 门控等）。 */
+export function setPluginConfigForTest(user: PluginConfigValues, pluginId = "__test_plugin__"): void {
   cache = { __test__: user } as AllPluginConfigs;
-  // getPluginConfig(pluginId) 走 cache[pluginId]——测试以固定键占位读取。
-  cache["__test_plugin__"] = user;
+  cache[pluginId] = user;
 }
 
 /** 非 React 消费者（event-hook 等）同步快照——缓存未就绪时回 defaults。 */
@@ -199,9 +199,113 @@ export async function setPluginConfig(
   values: PluginConfigValues,
 ): Promise<void> {
   const diff = diffAgainstDefaults(schema, values);
-  await invokeCommand("plugin_config_set", { pluginId, values: diff });
+  // 批次3：行为键（ui.*）与 schema 值同槽全量替换——保存 schema 时保留既有
+  // 行为键（否则详情页「保存」会清掉使用行为设置）。
+  const prevUi = uiKeysOf(cache?.[pluginId]);
+  const merged = { ...prevUi, ...diff };
+  await invokeCommand("plugin_config_set", { pluginId, values: merged });
   // Rust 侧也会广播 plugins-config-changed；本进程先行更新缓存让 UI 即时反馈
   //（事件到达时会整体失效重拉，双路径收敛一致）。
-  cache = cache ? { ...cache, [pluginId]: diff } : { [pluginId]: diff };
+  cache = cache ? { ...cache, [pluginId]: merged } : { [pluginId]: merged };
+  bump();
+}
+
+// ── 使用行为键（v0.9.5 需求1 GUI 改造 批次3/4：管理面设置 → 会话区归置）──
+//
+// 双维度设计的「使用行为段」：管理面设置 tab 下半段写入，会话区挂载层
+// （session-panel-layer / dock-layout）读取。键名 ui.* 前缀与插件自身
+// configSchema 键隔离（setPluginConfig 保存时保留 ui.*，见上）。
+
+export interface PluginBehaviorConfig {
+  /** 默认归所覆盖（面板类）：未设置 = 跟随插件声明槽位。（06 §5.2 ui.home
+   * 的实现态：三值含悬浮左右缘，更贴 dock-layout 槽位语义——文档已回写对齐） */
+  defaultSlot?: "left" | "right" | "sidebar";
+  /** 自动展开策略（面板类）：install-once（默认，装完展示一次）/
+   * every-session（每新会话自动打开）/ never。 */
+  autoOpen?: "install-once" | "every-session" | "never";
+  /** 作用域：all（默认）/ task-only（仅任务会话）。 */
+  scope?: "all" | "task-only";
+  /** 贴边侧位（rail 挂件）：未设置 = defaultSide/布局记忆。（06 ui.side） */
+  side?: "left" | "right";
+  /** 显隐（composer 挂件）：false = 隐藏呈现但插件仍启用。（06 ui.visible） */
+  visible?: boolean;
+  /** 执行前确认（header-action 动作）。（06 ui.confirm） */
+  confirm?: boolean;
+  /** 全局快捷键（调度位/动作位）：如 "ctrl+shift+t"，行为键优先于描述符
+   * shortcut 声明。（06 shortcut） */
+  shortcut?: string;
+}
+
+function uiKeysOf(user: PluginConfigValues | undefined): PluginConfigValues {
+  const out: PluginConfigValues = {};
+  for (const [k, v] of Object.entries(user ?? {})) {
+    if (k.startsWith("ui.") && v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
+/** 同步读行为键（缓存未就绪回空——跟随插件默认）。 */
+export function getPluginBehavior(pluginId: string): PluginBehaviorConfig {
+  return behaviorFromValues(cache?.[pluginId]);
+}
+
+function behaviorFromValues(user: PluginConfigValues | undefined): PluginBehaviorConfig {
+  if (!user) return {};
+  const out: PluginBehaviorConfig = {};
+  if (user["ui.slot"] === "left" || user["ui.slot"] === "right" || user["ui.slot"] === "sidebar") {
+    out.defaultSlot = user["ui.slot"];
+  }
+  if (user["ui.autoOpen"] === "install-once" || user["ui.autoOpen"] === "every-session" || user["ui.autoOpen"] === "never") {
+    out.autoOpen = user["ui.autoOpen"];
+  }
+  if (user["ui.scope"] === "task-only") out.scope = "task-only";
+  // 差异性完善（06 §5.2 对齐）：贴边/显隐/确认/快捷键四键。
+  if (user["ui.side"] === "left" || user["ui.side"] === "right") out.side = user["ui.side"];
+  if (typeof user["ui.visible"] === "boolean") out.visible = user["ui.visible"];
+  if (user["ui.confirm"] === true) out.confirm = true;
+  if (typeof user["ui.shortcut"] === "string" && /^[a-z+]{2,24}$/.test(user["ui.shortcut"])) {
+    out.shortcut = user["ui.shortcut"];
+  }
+  return out;
+}
+
+/** 批次4：会话区挂载层消费——全部插件行为键快照（保存 → 热重渲染）。
+ *  仅含有行为键的插件（稀疏 map）。 */
+export function useAllPluginBehaviors(): Record<string, PluginBehaviorConfig> {
+  const all = useSyncExternalStore(subscribe, snapshot);
+  return useMemo(() => {
+    const out: Record<string, PluginBehaviorConfig> = {};
+    for (const [id, values] of Object.entries(all)) {
+      const b = behaviorFromValues(values);
+      if (
+        b.defaultSlot || b.autoOpen || b.scope || b.side ||
+        b.visible === false || b.confirm || b.shortcut
+      ) out[id] = b;
+    }
+    return out;
+    // all 引用变化（缓存重建）即重算。
+  }, [all]);
+}
+
+/** 写行为键（仅覆盖 ui.*，保留插件自身配置值；选即存即热生效）。 */
+export async function setPluginBehavior(
+  pluginId: string,
+  behavior: PluginBehaviorConfig,
+): Promise<void> {
+  const kept = Object.fromEntries(
+    Object.entries(cache?.[pluginId] ?? {}).filter(([k]) => !k.startsWith("ui.")),
+  );
+  const ui: PluginConfigValues = {};
+  if (behavior.defaultSlot) ui["ui.slot"] = behavior.defaultSlot;
+  if (behavior.autoOpen && behavior.autoOpen !== "install-once") ui["ui.autoOpen"] = behavior.autoOpen;
+  if (behavior.scope === "task-only") ui["ui.scope"] = "task-only";
+  // 差异性完善：四新键（非默认态才落盘——存储即差异语义）。
+  if (behavior.side) ui["ui.side"] = behavior.side;
+  if (behavior.visible === false) ui["ui.visible"] = false;
+  if (behavior.confirm === true) ui["ui.confirm"] = true;
+  if (behavior.shortcut) ui["ui.shortcut"] = behavior.shortcut;
+  const merged = { ...kept, ...ui };
+  await invokeCommand("plugin_config_set", { pluginId, values: merged });
+  cache = cache ? { ...cache, [pluginId]: merged } : { [pluginId]: merged };
   bump();
 }
