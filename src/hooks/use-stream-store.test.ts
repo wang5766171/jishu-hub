@@ -219,3 +219,52 @@ describe("v0.9.5 需求2 测试期：复用连接回合的阶段升级（resolve
     streamStore.drop(pendingId);
   });
 });
+
+// v0.9.5 需求2 测试期修复（会话 01a0ed19 实证）：回合令牌（turnToken）——
+// 停止幂等的判别依据。同回合（同 start）令牌稳定（push 透传不换），新回合
+//（新 start）必换新令牌；替代旧 10s 墙钟时间窗（窗口过期后同一滞留流再次
+// 本地提交 = spawn 期停止后用户消息重复渲染的根因）。
+describe("streamStore turnToken（停止幂等的回合令牌）", () => {
+  it("同回合：push 逐字段重建不换令牌；新回合（重新 start）必换新令牌", () => {
+    const sid = "session-turn-token";
+    streamStore.drop(sid);
+    streamStore.start(sid, "首条");
+    const token1 = streamStore.getState(sid)!.turnToken;
+
+    streamStore.push(sid, chunk({
+      kind: "text_delta",
+      delta: "部分回复",
+    }));
+    expect(streamStore.getState(sid)!.turnToken).toBe(token1);
+
+    streamStore.push(sid, chunk({
+      kind: "tool_use_start",
+      call_id: "call-1",
+      tool: "read",
+      input: {},
+    }));
+    expect(streamStore.getState(sid)!.turnToken).toBe(token1);
+
+    // 停止后重发（新回合）：新令牌 → 幂等标记（旧令牌）自动失配放行。
+    streamStore.start(sid, "第二条");
+    const token2 = streamStore.getState(sid)!.turnToken;
+    expect(token2).not.toBe(token1);
+    streamStore.drop(sid);
+  });
+
+  it("别名解析后（pending → 真实 id）令牌同源：两键读到同一令牌", () => {
+    const pendingId = "pending-turn-token";
+    const realId = "real-turn-token";
+    streamStore.drop(pendingId);
+    streamStore.start(pendingId, "首条");
+    streamStore.push(pendingId, {
+      session_id: pendingId,
+      event_type: "session_resolved",
+      data: { kind: "session_resolved", session_id: realId },
+    } as never);
+    const viaPending = streamStore.getState(pendingId)!.turnToken;
+    const viaReal = streamStore.getState(realId)!.turnToken;
+    expect(viaPending).toBe(viaReal);
+    streamStore.drop(pendingId);
+  });
+});

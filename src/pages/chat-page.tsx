@@ -374,12 +374,17 @@ export function ChatPage({
   // surfaced when the steer continuation's turn completes, slotted between
   // the first reply and the steer response (matching Pi's JSONL order).
 
-  // v0.9.4 需求7 测试期修复三：停止时本地已提交标记（会话 key → 时刻）。
-  // 停止链路的时序真相：abort_chat 快速返回（不等 agent_settled）→本地
-  // onAbort 先于 TurnComplete(Aborted) 执行。若本地 drop 流，晚到的
-  // TurnComplete 被 pushTracked 拒绝，重发收口（steering 重发）永远不执行
-  //（用户实测：引导 B+停止 → B 消失）。改为：本地提交后不 drop、只设此
-  // 标记；turn_complete(Aborted) 到达时凭标记跳过重复提交，但收口照常。
+  // v0.9.4 需求7 测试期修复三：停止时本地已提交标记。停止链路的时序真相：
+  // abort_chat 快速返回（不等 agent_settled）→本地 onAbort 先于
+  // TurnComplete(Aborted) 执行。若本地 drop 流，晚到的 TurnComplete 被
+  // pushTracked 拒绝，重发收口（steering 重发）永远不执行（用户实测：
+  // 引导 B+停止 → B 消失）。改为：本地提交后不 drop、只设此标记；
+  // turn_complete(Aborted) 到达时凭标记跳过重复提交，但收口照常。
+  // v0.9.5 需求2 测试期修正（会话 01a0ed19 实证）：值语义从「时刻」改为
+  // 「回合令牌」（streamStore.turnToken）——同回合重复点停止永久幂等，
+  // 新回合（新 start）令牌不同自动放行；旧 10s 墙钟窗口过期后同一滞留
+  // 流会再次提交（spawn 期停止后用户连点 6 次、第 4 次落在窗口外 →
+  // 用户消息重复渲染，实证根因）。
   const abortLocalCommitRef = useRef<Map<string, number>>(new Map());
   // v0.9.4 需求7 测试期重构：steer 队列（外部单例）变更驱动占位重渲染。
   useSyncExternalStore(steerCoordinator.subscribe, steerCoordinator.getVersion, steerCoordinator.getVersion);
@@ -1215,7 +1220,11 @@ export function ChatPage({
         "find_session_terminal", { sessionId }
       );
       if (existing) {
-        try { await invokeCommand<boolean>("focus_session_terminal", { sessionId }); } catch {}
+        try {
+          await invokeCommand<boolean>("focus_session_terminal", { sessionId });
+        } catch (err) {
+          console.warn("Failed to focus session terminal:", err);
+        }
         setLoadingSessionId(null);
         return;
       }
@@ -3025,15 +3034,17 @@ export function ChatPage({
                 if (selectedSession) {
                   const state = streamStore.getState(selectedSession);
                   const finalKey = state?.resolvedId ?? selectedSession;
-                  // v0.9.4 需求7 测试期修复六：停止幂等——CancelPending 期间
-                  // （如 pi auto_retry 迟迟未 settled）重复点停止，旧逻辑每次
-                  // 都本地提交一遍 pendingUserMessage（用户实测：点一次停止
-                  // 多渲染一遍问题）。10s 窗口内只提交一次；重复点击仅重发
-                  // abort（chat-input 已发），静默。
+                  // v0.9.5 需求2 测试期修正（会话 01a0ed19 实证）：停止幂等改
+                  // 「回合令牌」比对（废弃 v0.9.4 需求7 修复六的 10s 墙钟窗口）。
+                  // 实证链：spawn 期（②正在赶来）停止后终结者可滞后数十秒（握手
+                  // 预算 150s），期间②气泡与停止键不撤 → 用户连点 6 次，第 4 次
+                  //（首次提交后 13.1s）落在 10s 窗口外 → 同一滞留流再次本地提交
+                  // pendingUserMessage → 用户消息重复渲染。同令牌（同回合）永久
+                  // 跳过；新回合（新 start 铸新令牌）自动放行，不依赖时间假设。
                   {
-                    const at = abortLocalCommitRef.current.get(finalKey)
+                    const committedToken = abortLocalCommitRef.current.get(finalKey)
                       ?? abortLocalCommitRef.current.get(selectedSession);
-                    if (at !== undefined && Date.now() - at < 10_000) {
+                    if (committedToken !== undefined && committedToken === state?.turnToken) {
                       devLog("session", "onAbort 幂等命中（跳过重复提交）", { session: selectedSession });
                       return;
                     }
@@ -3052,9 +3063,9 @@ export function ChatPage({
                       && state.content.every((b) => b.type === "phase_divider" && b.phase === "compaction");
                     if (isPureCompaction) {
                       devLog("session", "onAbort 纯压缩流（跳过本地提交，等待压缩取消收口）", { session: finalKey });
-                      abortLocalCommitRef.current.set(finalKey, Date.now());
+                      abortLocalCommitRef.current.set(finalKey, state.turnToken);
                       if (selectedSession !== finalKey) {
-                        abortLocalCommitRef.current.set(selectedSession, Date.now());
+                        abortLocalCommitRef.current.set(selectedSession, state.turnToken);
                       }
                       return;
                     }
@@ -3167,9 +3178,37 @@ export function ChatPage({
                     // 改设标记：turn_complete(Aborted) 凭标记跳过重复提交，收口
                     //（steering 重发）照常——turn_complete 是唯一回合终结者。
                     devLog("session", "onAbort 本地提交+标记", { session: finalKey });
-                    abortLocalCommitRef.current.set(finalKey, Date.now());
+                    abortLocalCommitRef.current.set(finalKey, state.turnToken);
                     if (selectedSession !== finalKey) {
-                      abortLocalCommitRef.current.set(selectedSession, Date.now());
+                      abortLocalCommitRef.current.set(selectedSession, state.turnToken);
+                    }
+                    // v0.9.5 需求2 测试期修复（会话 01a0ed19 实证）：②「正在赶来」
+                    //（spawn 握手期：零事件/零内容/连接未解析）停止的本地终结。
+                    // 此阶段无回合可收口——后端 abort_chat 走 ACP cancel 通道仅
+                    // 入队（连接循环握手完成后才处理，预算 150s），终结者可滞后
+                    // 数十秒；旧逻辑不 drop → ②气泡（含 pendingUserMessage 用户
+                    // 消息）与已提交的本地副本即时双渲染，且停止键永驻诱导用户
+                    // 反复点击。此处提交（仅用户消息，无回合内容可提交）后立即
+                    // drop：气泡/停止键/列表动效同步撤下。晚到的 session_resolved
+                    // 照常推进会话键解析（别名/resolvedOnce/乐观行升级与流状态
+                    // 无关）；若 pi 竟先吐内容，pushTracked 以新回合自起续流
+                    //（pending=null，无重复用户消息）；晚到的终结者无状态可终结
+                    //（生命周期事件不能起续流）→ 静默跳过，无重复提交。
+                    const isSpawnPhaseStream = state.isStreaming
+                      && !state.hasReceivedEvent && !state.sessionResolved
+                      && state.content.length === 0
+                      && state.text === "" && state.thinking === ""
+                      && state.tools.length === 0 && state.steps.length === 0
+                      && state.steerTexts.length === 0
+                      && state.interactionSplits.length === 0
+                      && state.autoRetry === null && state.retryFailed === null
+                      && state.error === "";
+                    if (isSpawnPhaseStream) {
+                      streamStore.drop(finalKey);
+                      if (selectedSession !== finalKey) {
+                        streamStore.drop(selectedSession);
+                      }
+                      devLog("session", "onAbort spawn 期终结（本地 drop：无回合可收口，②气泡/停止键立即撤下）", { session: finalKey });
                     }
                   }
 

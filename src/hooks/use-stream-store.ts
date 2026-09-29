@@ -111,6 +111,13 @@ export interface SessionStreamState {
   /** v0.9.1 需求14：重试耗尽的最终失败（end success=false + finalError）——
    * 保留至下一轮开始（emptyState 重置），页面显性展示最终失败原因。 */
   retryFailed: { attempt: number; finalError: string } | null;
+  /** v0.9.5 需求2 测试期修复（会话 01a0ed19 实证）：回合令牌——每次 start()
+   *  铸造新值（模块级递增），push 逐字段重建时透传。停止幂等的判别依据：
+   *  abortLocalCommitRef 记录「已本地提交的回合令牌」，同令牌（同回合）
+   *  重复点停止永久跳过重复提交（替代旧 10s 墙钟时间窗——窗口过期后
+   *  同一滞留流再次提交 = 「停止后消息重复渲染」根因）；新回合（新
+   *  start）令牌不同，自动放行，无需任何清理配合。 */
+  turnToken: number;
 }
 
 function emptyState(
@@ -139,8 +146,12 @@ function emptyState(
     interactionSplits: [],
     autoRetry: null,
     retryFailed: null,
+    turnToken: nextTurnToken++,
   };
 }
+
+/** v0.9.5 需求2 测试期修复：回合令牌单调源（见 SessionStreamState.turnToken）。 */
+let nextTurnToken = 1;
 
 export interface InteractionResponseCheckpoint {
   key: string;
@@ -253,7 +264,7 @@ class StreamStore {
     let { content, text, thinking, error, tools, resolvedId, steps, steerSplits, steerTexts, interactionSplits, autoRetry, retryFailed } = prev;
     let { hasReceivedEvent: hasEvent, sessionResolved } = prev;
     const pendingToolIds = prev.pendingToolIds;
-    const { pendingUserMessage, abortKey, isStreaming } = prev;
+    const { pendingUserMessage, abortKey, isStreaming, turnToken } = prev;
     const chunks = [...prev.chunks, chunk];
 
     const data = chunk.data;
@@ -468,6 +479,7 @@ class StreamStore {
       interactionSplits,
       autoRetry,
       retryFailed,
+      turnToken,
     });
     this.scheduleFlush();
   }
