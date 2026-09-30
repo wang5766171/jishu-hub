@@ -53,6 +53,25 @@ pub fn manifest_dir() -> PathBuf {
     hub_home().join("agents")
 }
 
+/// 目录形式插件（plugins/<id>/plugin.toml）是否携带 skill 目录源
+///（skills/<name>/SKILL.md，v0.9.4 需求3）：落盘链路剥离 [skill] 段后
+/// 的“裸骨架”合法性依据（validate_with_bare_tool）。轻量探测不解析内容
+///——只看一级子目录有无 SKILL.md；agents/ 单文件形式恒 false。
+pub fn dir_form_has_skill_source(toml_path: &std::path::Path) -> bool {
+    if toml_path.file_name().and_then(|n| n.to_str()) != Some("plugin.toml") {
+        return false;
+    }
+    let Some(plugin_root) = toml_path.parent() else {
+        return false;
+    };
+    let Ok(entries) = std::fs::read_dir(plugin_root.join("skills")) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|e| e.path().join("SKILL.md").is_file())
+}
+
 /// 扫描并加载全部合法 manifest（v0.8.1 需求7：按 kind 分流）。
 ///
 /// `builtin_ids`：内置 agent id 清单（冲突拒绝，agent 与 tool 共享 id
@@ -66,23 +85,24 @@ pub fn load_manifests(
     Vec<(String, String)>,
 ) {
     let dir = manifest_dir();
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        // 目录不存在（或不可读）= 没有声明式插件，静默空清单。
-        Err(_) => return (Vec::new(), Vec::new(), Vec::new()),
-    };
+    // v0.9.4 需求3 修复：agents/ 不存在时不再 early return——否则全新
+    // 环境（从未装过单文件插件）下 plugins/<id>/ 目录形式插件全部静默
+    // 不加载（skill 插件导入后“失联”被回收链删除的直接诱因之一）。
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|e| e == "toml"))
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
 
     let mut seen_ids: Vec<String> = builtin_ids.to_vec();
     let mut agent_manifests = Vec::new();
     let mut tool_manifests = Vec::new();
     let mut errors = Vec::new();
-
-    let mut files: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "toml"))
-        .collect();
-    files.sort();
 
     // v0.9.0 需求2：目录形式插件 `~/.jishu-hub/plugins/<id>/plugin.toml`
     //（pi 扩展插件的 entry TS 与插件目录同放；agents/ 单文件形式优先——
@@ -139,7 +159,7 @@ pub fn load_manifests(
                 continue;
             }
         };
-        if let Err(reason) = parsed.validate() {
+        if let Err(reason) = parsed.validate_with_bare_tool(dir_form_has_skill_source(&path)) {
             errors.push((file_name, reason));
             continue;
         }
@@ -192,5 +212,73 @@ mod tests {
             assert!(tools.is_empty());
             assert!(errors.is_empty());
         }
+    }
+
+    /// 目录形式 skill 骨架插件（plugin_create_skill_folder 落盘产物：
+    /// 剥离 [skill] 段、能力声明在 skills/<name>/SKILL.md）——修复前
+    /// load_manifests 以 "requires a [tool] section" 拒绝，插件中心报错
+    /// 且分发回收链把已分发 skill 目录回收删除；修复后凭目录源放行。
+    /// agents/ 单文件骨架（无目录源佐证）仍被拒绝。
+    #[test]
+    fn dir_form_bare_skeleton_loads_with_skill_source() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+
+        // 1) 目录形式骨架 + skills/<name>/SKILL.md → 装载成功。
+        let plugin_root = tmp.path().join("plugins").join("my-pack");
+        let skill_dir = plugin_root.join("skills").join("demo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: demo\ndescription: d\n---\nbody",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_root.join("plugin.toml"),
+            "schema = 1\nkind = \"tool\"\n\n[info]\nid = \"my-pack\"\ndisplay_name = \"My Pack\"\n",
+        )
+        .unwrap();
+
+        let (agents, tools, errors) = load_manifests(&[]);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert!(agents.is_empty());
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].0.info.id, "my-pack");
+        assert!(tools[0].0.tool.is_none());
+        assert_eq!(
+            tools[0].1,
+            plugin_root.join("plugin.toml"),
+            "source_path 指向目录形式 plugin.toml（目录源分发依赖 parent 目录名 = id）"
+        );
+
+        // 2) 同骨架无 skills/ 目录源 → 拒绝（凭空裸骨架不合法）。
+        let bare_root = tmp.path().join("plugins").join("bare-pack");
+        std::fs::create_dir_all(&bare_root).unwrap();
+        std::fs::write(
+            bare_root.join("plugin.toml"),
+            "schema = 1\nkind = \"tool\"\n\n[info]\nid = \"bare-pack\"\ndisplay_name = \"Bare\"\n",
+        )
+        .unwrap();
+        let (_agents, tools, errors) = load_manifests(&[]);
+        assert_eq!(tools.len(), 1, "bare-pack 不应装载");
+        assert!(errors
+            .iter()
+            .any(|(f, r)| f == "plugin.toml" && r.contains("requires a [tool] section")));
+
+        // 3) agents/ 单文件骨架（目录源探测恒 false）→ 拒绝。
+        std::fs::create_dir_all(tmp.path().join("agents")).unwrap();
+        std::fs::write(
+            tmp.path().join("agents").join("single.toml"),
+            "schema = 1\nkind = \"tool\"\n\n[info]\nid = \"single\"\ndisplay_name = \"Single\"\n",
+        )
+        .unwrap();
+        let (_agents, tools, errors) = load_manifests(&[]);
+        assert_eq!(tools.len(), 1, "single 不应装载");
+        assert!(errors
+            .iter()
+            .any(|(f, r)| f == "single.toml" && r.contains("requires a [tool] section")));
+
+        std::env::remove_var("JISHU_HUB_HOME");
     }
 }

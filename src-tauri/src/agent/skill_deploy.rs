@@ -77,6 +77,18 @@ pub fn render_skill_md(id: &str, description: &str, body: &str) -> String {
 }
 
 /// 归属记录 key：`<agent_id>:<plugin_id>`。
+/// 多 skill / 目录源声明的部署目录名：`<pid>__<name>`；skill 名与插件 id
+/// 相同时直接用 skill 名（`x__x` 重复无信息量——单 skill 插件目录名 = id
+/// 的既有语义自然对齐）。frontmatter name 保持声明原值不变。回填还原
+///（plugin_get 的 strip_prefix unwrap_or 兜底）与此规则互逆。
+pub fn skill_dir_name(pid: &str, name: &str) -> String {
+    if name == pid {
+        pid.to_string()
+    } else {
+        format!("{pid}__{name}")
+    }
+}
+
 fn own_key(agent_id: &str, plugin_id: &str) -> String {
     format!("{agent_id}:{plugin_id}")
 }
@@ -156,7 +168,7 @@ pub(crate) fn dir_source_skills(plugin_root: &Path, plugin_id: &str) -> Vec<Skil
             .map(|v| v.trim().to_string())
             .unwrap_or_default();
         out.push(SkillDeclEntry {
-            dir_name: format!("{plugin_id}__{name}"),
+            dir_name: skill_dir_name(plugin_id, &name),
             description,
             content,
             source_dir: Some(entry.path()),
@@ -180,15 +192,13 @@ pub fn load_skill_decls() -> Vec<SkillDeclEntry> {
         let pid = plugin.id().to_string();
         if let Some(decl) = plugin.file.skill.as_ref() {
             for (name, description, body) in decl.entries() {
-                let dir_name = name.map(|n| format!("{pid}__{n}")).unwrap_or_else(|| pid.clone());
+                let dir_name = name
+                    .map(|n| skill_dir_name(&pid, n))
+                    .unwrap_or_else(|| pid.clone());
                 out.push(SkillDeclEntry {
                     dir_name,
                     description: description.to_string(),
-                    content: render_skill_md(
-                        name.unwrap_or(&pid),
-                        description,
-                        body,
-                    ),
+                    content: render_skill_md(name.unwrap_or(&pid), description, body),
                     source_dir: None,
                 });
             }
@@ -258,7 +268,8 @@ pub struct SkillSyncReport {
 
 impl SkillSyncReport {
     fn push(&mut self, agent_id: &str, skill_dir: &str, action: &str) {
-        self.actions.push(format!("{agent_id}/{skill_dir}: {action}"));
+        self.actions
+            .push(format!("{agent_id}/{skill_dir}: {action}"));
     }
 }
 
@@ -272,7 +283,11 @@ fn sync_skill_folder(src: &Path, dst: &Path) -> Result<&'static str, String> {
     fn walk_src(src: &Path, dst: &Path, prefix: &str, changed: &mut bool) -> Result<(), String> {
         for entry in std::fs::read_dir(src).map_err(|e| e.to_string())?.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+            let rel = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
             let s = entry.path();
             let d = dst.join(&name);
             if std::fs::metadata(&s).map(|m| m.is_dir()).unwrap_or(false) {
@@ -302,7 +317,11 @@ fn sync_skill_folder(src: &Path, dst: &Path) -> Result<&'static str, String> {
             let d = src.join(&name);
             if std::fs::metadata(&s).map(|m| m.is_dir()).unwrap_or(false) {
                 walk_dst(&d, &s, changed)?;
-                if std::fs::read_dir(&s).map_err(|e| e.to_string())?.next().is_none() {
+                if std::fs::read_dir(&s)
+                    .map_err(|e| e.to_string())?
+                    .next()
+                    .is_none()
+                {
                     let _ = std::fs::remove_dir(&s);
                 }
             } else if !d.exists() {
@@ -451,11 +470,15 @@ mod tests {
         let skill = src.path().join("my-skill");
         std::fs::create_dir_all(skill.join("references")).unwrap();
         std::fs::create_dir_all(skill.join("scripts")).unwrap();
-        std::fs::write(skill.join("SKILL.md"), "---
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---
 name: my-skill
 description: d
 ---
-body").unwrap();
+body",
+        )
+        .unwrap();
         std::fs::write(skill.join("references/guide.md"), "guide-v1").unwrap();
         std::fs::write(skill.join("scripts/tool.mjs"), "tool-v1").unwrap();
 
@@ -477,7 +500,10 @@ body").unwrap();
             std::fs::read_to_string(dst.join("references/guide.md")).unwrap(),
             "guide-v1"
         );
-        assert_eq!(std::fs::read_to_string(dst.join("scripts/tool.mjs")).unwrap(), "tool-v1");
+        assert_eq!(
+            std::fs::read_to_string(dst.join("scripts/tool.mjs")).unwrap(),
+            "tool-v1"
+        );
         assert!(dst.join("SKILL.md").is_file());
 
         // 2. 增量：无变化 → Skipped。
@@ -495,7 +521,10 @@ body").unwrap();
             std::fs::read_to_string(dst.join("references/guide.md")).unwrap(),
             "guide-v2"
         );
-        assert_eq!(std::fs::read_to_string(dst.join("scripts/sub/deep.txt")).unwrap(), "deep");
+        assert_eq!(
+            std::fs::read_to_string(dst.join("scripts/sub/deep.txt")).unwrap(),
+            "deep"
+        );
 
         // 4. 镜像删除：源侧删 scripts/tool.mjs → 目标侧同步消失。
         std::fs::remove_file(skill.join("scripts/tool.mjs")).unwrap();
@@ -529,11 +558,101 @@ body").unwrap();
         };
         let targets = vec![("test-agent".to_string(), dst_root.path().join("skills"))];
         sync_with(vec![decl], &targets, true);
-        assert!(dst_root.path().join("skills/p2__gone-skill/references/a.md").is_file());
+        assert!(dst_root
+            .path()
+            .join("skills/p2__gone-skill/references/a.md")
+            .is_file());
 
         // 空清单 → 回收整个目录。
         sync_with(Vec::new(), &targets, true);
         assert!(!dst_root.path().join("skills/p2__gone-skill").exists());
+
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// 修复回归（目录形式骨架校验缺口）：plugin.toml 剥离 [skill] 段的
+    /// 骨架插件经 load_manifests 放行后，load_skill_decls 展开目录源
+    /// decl——修复前插件加载失败 → decl 失联 → sync_with 回收已分发
+    /// skill 目录（用户 skill “莫名消失”的真正机制）。
+    #[test]
+    fn bare_skeleton_plugin_expands_dir_source_decls() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+
+        let plugin_root = tmp.path().join("plugins").join("pack9");
+        let skill_dir = plugin_root.join("skills").join("demo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: demo\ndescription: 描述\n---\n正文",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_root.join("plugin.toml"),
+            "schema = 1\nkind = \"tool\"\n\n[info]\nid = \"pack9\"\ndisplay_name = \"Pack 9\"\n",
+        )
+        .unwrap();
+
+        let decls = load_skill_decls();
+        let entry = decls
+            .iter()
+            .find(|d| d.dir_name == "pack9__demo")
+            .expect("skeleton dir-source plugin expands to decl");
+        assert!(entry.content.contains("正文"));
+        assert_eq!(entry.source_dir.as_deref(), Some(skill_dir.as_path()));
+
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// skill 名与插件 id 相同时部署目录名去重（`x__x` 无意义，直接用
+    /// skill 名）；并验证旧重复名目录经归属记录自动迁移（失联回收 +
+    /// 新名分发），无需手工迁移。
+    #[test]
+    fn dir_name_dedupes_when_skill_name_equals_plugin_id() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(skill_dir_name("vm", "setup"), "vm__setup");
+        assert_eq!(skill_dir_name("vm", "vm"), "vm");
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let src = tempfile::tempdir().unwrap();
+        let skill = src.path().join("vm");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: vm\ndescription: d\n---\nb",
+        )
+        .unwrap();
+        let decl = SkillDeclEntry {
+            dir_name: skill_dir_name("vm", "vm"),
+            description: "d".to_string(),
+            content: std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+            source_dir: Some(skill),
+        };
+        assert_eq!(decl.dir_name, "vm");
+
+        let root = tempfile::tempdir().unwrap();
+        let targets = vec![("test-agent".to_string(), root.path().join("skills"))];
+        // 预置旧重复名目录 + 归属记录（存量用户环境形态）。
+        let legacy = root.path().join("skills/vm__vm");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("SKILL.md"), "old").unwrap();
+        save_deploy_registry(
+            &[
+                "test-agent:vm__vm".to_string(),
+                "test-agent:other".to_string(),
+            ]
+            .into_iter()
+            .collect(),
+        );
+
+        sync_with(vec![decl], &targets, true);
+        assert!(root.path().join("skills/vm/SKILL.md").is_file(), "新名分发");
+        assert!(!legacy.exists(), "旧重复名目录失联回收（自动迁移）");
+        let owned = load_deploy_registry();
+        assert!(owned.contains("test-agent:vm"));
+        assert!(!owned.contains("test-agent:vm__vm"));
 
         std::env::remove_var("JISHU_HUB_HOME");
     }
@@ -579,20 +698,21 @@ body").unwrap();
 
         // 部署 + 幂等（内容一致 → Skipped）。
         let report = sync_with(decls.clone(), &targets, true);
-        assert!(report
-            .actions
-            .iter()
-            .any(|a| a.contains(&format!("test-agent/{BUILTIN_CAPABILITY_SKILL_DIR}: Deployed"))));
+        assert!(report.actions.iter().any(|a| a.contains(&format!(
+            "test-agent/{BUILTIN_CAPABILITY_SKILL_DIR}: Deployed"
+        ))));
         let deployed = std::fs::read_to_string(
-            root.path().join("skills").join(BUILTIN_CAPABILITY_SKILL_DIR).join("SKILL.md"),
+            root.path()
+                .join("skills")
+                .join(BUILTIN_CAPABILITY_SKILL_DIR)
+                .join("SKILL.md"),
         )
         .unwrap();
         assert_eq!(deployed, *content);
         let report = sync_with(decls, &targets, true);
-        assert!(report
-            .actions
-            .iter()
-            .any(|a| a.contains(&format!("test-agent/{BUILTIN_CAPABILITY_SKILL_DIR}: Skipped"))));
+        assert!(report.actions.iter().any(|a| a.contains(&format!(
+            "test-agent/{BUILTIN_CAPABILITY_SKILL_DIR}: Skipped"
+        ))));
 
         std::env::remove_var("JISHU_HUB_HOME");
     }
@@ -613,14 +733,20 @@ body").unwrap();
 
         // 1) 首次分发 → Deployed + 归属记录。
         let report = sync_with(vec![decl("s1", "content-v1")], &targets, true);
-        assert!(report.actions.iter().any(|a| a.contains("test-agent/s1: Deployed")));
+        assert!(report
+            .actions
+            .iter()
+            .any(|a| a.contains("test-agent/s1: Deployed")));
         let md = std::fs::read_to_string(root.path().join("skills/s1/SKILL.md")).unwrap();
         assert_eq!(md, "content-v1");
         assert!(load_deploy_registry().contains("test-agent:s1"));
 
         // 2) 内容一致 → Skipped。
         let report = sync_with(vec![decl("s1", "content-v1")], &targets, true);
-        assert!(report.actions.iter().any(|a| a.contains("test-agent/s1: Skipped")));
+        assert!(report
+            .actions
+            .iter()
+            .any(|a| a.contains("test-agent/s1: Skipped")));
 
         // 3) 内容变化 → 覆盖更新。
         let report = sync_with(vec![decl("s1", "content-v2")], &targets, true);
@@ -635,7 +761,10 @@ body").unwrap();
         std::fs::create_dir_all(&user_dir).unwrap();
         std::fs::write(user_dir.join("SKILL.md"), "user own").unwrap();
         let report = sync_with(Vec::new(), &targets, false); // 清空清单 = 回收自家
-        assert!(report.actions.iter().any(|a| a.contains("test-agent/s1: Removed")));
+        assert!(report
+            .actions
+            .iter()
+            .any(|a| a.contains("test-agent/s1: Removed")));
         assert!(user_dir.exists(), "用户自建同名目录不受影响");
         assert!(load_deploy_registry().is_empty());
 
@@ -672,7 +801,10 @@ body").unwrap();
 
         // 清单仅剩 p1__b → 只回收 p1__a。
         let report = sync_with(vec![decl("p1__b", "b-content")], &targets, true);
-        assert!(report.actions.iter().any(|a| a.contains("test-agent/p1__a: Removed")));
+        assert!(report
+            .actions
+            .iter()
+            .any(|a| a.contains("test-agent/p1__a: Removed")));
         assert!(!root.path().join("skills/p1__a").exists());
         assert!(root.path().join("skills/p1__b/SKILL.md").is_file());
 

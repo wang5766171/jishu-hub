@@ -1,5 +1,5 @@
-use std::sync::Mutex;
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use tauri::Manager;
 
@@ -222,30 +222,52 @@ pub(crate) fn session_tool_list(
     tools
         .iter()
         .filter(|p| p.enabled)
-        .map(|p| SessionToolInfo {
-            id: p.id().to_string(),
-            display_name: p.file.info.display_name.clone(),
-            description: p
+        .map(|p| {
+            // v0.9.4 需求3 补口：目录形式 skill 骨架（无 [skill] 段，能力
+            // 声明在插件目录 skills/）——描述/injectable/category 以目录源
+            // 为准，与插件中心 tool_descriptor 同口径。
+            let dir_root = p
+                .source_path
+                .parent()
+                .filter(|r| r.file_name().is_some_and(|n| n == p.id()));
+            let dir_skills = dir_root
+                .map(|r| agent::skill_deploy::dir_source_skills(r, p.id()))
+                .unwrap_or_default();
+            let has_dir_skill = !dir_skills.is_empty();
+            let description = p
                 .file
                 .tool
                 .as_ref()
                 .map(|t| t.description.clone())
-                .unwrap_or_default(),
-            usage: p
-                .file
-                .tool
-                .as_ref()
-                .map(|t| t.usage.clone())
-                .unwrap_or_default(),
-            enabled: selected.contains(p.id()),
-            injectable: p.file.tool.is_some() || p.file.mcp.is_some() || p.file.skill.is_some(),
-            category: if p.file.mcp.is_some() {
-                "mcp".to_string()
-            } else if p.file.skill.is_some() {
-                "skill".to_string()
-            } else {
-                "cli".to_string()
-            },
+                .unwrap_or_else(|| {
+                    dir_skills
+                        .first()
+                        .map(|d| d.description.clone())
+                        .unwrap_or_default()
+                });
+            SessionToolInfo {
+                id: p.id().to_string(),
+                display_name: p.file.info.display_name.clone(),
+                description,
+                usage: p
+                    .file
+                    .tool
+                    .as_ref()
+                    .map(|t| t.usage.clone())
+                    .unwrap_or_default(),
+                enabled: selected.contains(p.id()),
+                injectable: p.file.tool.is_some()
+                    || p.file.mcp.is_some()
+                    || p.file.skill.is_some()
+                    || has_dir_skill,
+                category: if p.file.mcp.is_some() {
+                    "mcp".to_string()
+                } else if p.file.skill.is_some() || has_dir_skill {
+                    "skill".to_string()
+                } else {
+                    "cli".to_string()
+                },
+            }
         })
         .collect()
 }
@@ -436,7 +458,8 @@ pub(crate) fn composed_plugin_manifests() -> Result<Vec<serde_json::Value>, Stri
 
 /// v0.9.3 需求12 P1：插件配置面——全量读取（前端与 defaults 合并）。
 #[tauri::command]
-pub(crate) fn plugin_config_get_all() -> Result<HashMap<String, HashMap<String, serde_json::Value>>, String> {
+pub(crate) fn plugin_config_get_all(
+) -> Result<HashMap<String, HashMap<String, serde_json::Value>>, String> {
     Ok(agent::plugin_options::load_all())
 }
 
@@ -497,7 +520,10 @@ pub(crate) fn plugin_update(
     crate::util::atomic_write(&path, content_toml.as_bytes())
         .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     if let Some(decl) = skill_entries {
-        let root = path.parent().expect("plugin.toml has parent").join("skills");
+        let root = path
+            .parent()
+            .expect("plugin.toml has parent")
+            .join("skills");
         for (name, description, body) in decl.entries() {
             let dir_name = name.unwrap_or(&plugin_id);
             let target = root.join(dir_name).join("SKILL.md");
@@ -505,9 +531,8 @@ pub(crate) fn plugin_update(
                 continue; // 表单条目对应目录不存在（新建 skill 走创建流程）
             }
             let md = agent::skill_deploy::render_skill_md(dir_name, description, body);
-            crate::util::atomic_write(&target, md.as_bytes()).map_err(|e| {
-                format!("cannot write {}: {e}", target.display())
-            })?;
+            crate::util::atomic_write(&target, md.as_bytes())
+                .map_err(|e| format!("cannot write {}: {e}", target.display()))?;
         }
     }
     rebuild_registry(&app, &state);
@@ -860,8 +885,11 @@ pub(crate) fn hybrid_plugin_save(
         "codeLines": component_js.lines().count(),
         "dir": dir.to_string_lossy(),
     });
-    crate::util::atomic_write(&dir.join(".pending-confirm"), pending.to_string().as_bytes())
-        .map_err(|e| format!("cannot write pending-confirm marker: {e}"))?;
+    crate::util::atomic_write(
+        &dir.join(".pending-confirm"),
+        pending.to_string().as_bytes(),
+    )
+    .map_err(|e| format!("cannot write pending-confirm marker: {e}"))?;
     use tauri::Emitter;
     let _ = app.emit("plugins-changed", ());
     Ok(())
@@ -890,7 +918,9 @@ pub(crate) fn pi_extension_import(path: String) -> Result<String, String> {
 
 /// 8d：成套导入（extension.ts + plugin.toml + renderer.toml 三件一次装）。
 #[tauri::command]
-pub(crate) fn pi_extension_import_bundle(path: String) -> Result<agent::pi_extension_import::ExtensionBundleReport, String> {
+pub(crate) fn pi_extension_import_bundle(
+    path: String,
+) -> Result<agent::pi_extension_import::ExtensionBundleReport, String> {
     agent::pi_extension_import::import_extension_bundle(&path)
 }
 

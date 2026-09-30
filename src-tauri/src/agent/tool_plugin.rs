@@ -239,10 +239,19 @@ pub fn render_tool_block(plugins: &[&ToolPlugin]) -> String {
     out.push_str(&super::internal_prompts::PROMPT_TOOL_HEADER.body());
     out.push('\n');
     for plugin in plugins {
+        // v0.9.4 需求3 补口：目录形式 skill 骨架（plugin.toml 剥离 [skill]
+        // 段，能力声明在插件目录 skills/<name>/SKILL.md）凭目录源参与注入
+        //——与 tool_descriptor/分发链（dir_source_skills）同口径。
+        let dir_skills = plugin
+            .source_path
+            .parent()
+            .filter(|p| p.file_name().is_some_and(|n| n == plugin.id()))
+            .map(|r| super::skill_deploy::dir_source_skills(r, plugin.id()))
+            .unwrap_or_default();
         // M3 → v0.9.0 需求2 接线：注入参与判定收敛到 adaptive 引擎
         //（participates_in_injection = 有 [tool]/[mcp]/[skill] 段；PiOnly
         // 形态走 pi 扩展部署管线，不进 prompt 注入——跳过而非 panic）。
-        if !super::adaptive::participates_in_injection(&plugin.file) {
+        if !super::adaptive::participates_in_injection(&plugin.file) && dir_skills.is_empty() {
             log::debug!(
                 "[tool-plugin] skip {} in prompt injection (no [tool]/[mcp]/[skill] section)",
                 plugin.id()
@@ -273,11 +282,23 @@ pub fn render_tool_block(plugins: &[&ToolPlugin]) -> String {
                 schema::SkillDecl::Many(entries) => {
                     for e in entries {
                         out.push_str(&format!(
-                            "本会话启用了 skill「{}__{}」：{}\n（skill 文件已在你可访问的 skill 目录中，按 skill 名即可使用。）\n",
-                            plugin.file.info.id, e.name, e.description
+                            "本会话启用了 skill「{}」：{}\n（skill 文件已在你可访问的 skill 目录中，按 skill 名即可使用。）\n",
+                            super::skill_deploy::skill_dir_name(&plugin.file.info.id, &e.name),
+                            e.description
                         ));
                     }
                 }
+            }
+        }
+        // v0.9.4 需求3：目录形式 skill 骨架逐项小节（同 [[skill]] 多项
+        // 形态的口径，部署名即 dir_name = `<pid>__<name>`）。
+        if !dir_skills.is_empty() {
+            out.push_str(&format!("\n## {} — Skill\n", plugin.file.info.id));
+            for d in &dir_skills {
+                out.push_str(&format!(
+                    "本会话启用了 skill「{}」：{}\n（skill 文件已在你可访问的 skill 目录中，按 skill 名即可使用。）\n",
+                    d.dir_name, d.description
+                ));
             }
         }
         let Some(tool) = plugin.file.tool.as_ref() else {
@@ -332,9 +353,7 @@ pub fn render_hub_mcp_resolver_hint(plugins: &[&ToolPlugin]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::manifest::schema::{
-        InfoSection, ManifestKind, ToolSection,
-    };
+    use crate::agent::manifest::schema::{InfoSection, ManifestKind, ToolSection};
 
     use crate::agent::manifest::env_test_lock;
 
@@ -687,5 +706,4 @@ usage = "u"
         assert_eq!(get_session_tools("real-session"), vec!["c".to_string()]);
         std::env::remove_var("JISHU_HUB_HOME");
     }
-
 }

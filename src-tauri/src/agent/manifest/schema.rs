@@ -330,7 +330,21 @@ fn default_true() -> bool {
 
 impl AgentManifestFile {
     /// 加载期校验：全部规则纯函数，返回 Err(原因) 时整文件拒绝。
+    ///
+    /// 严格语义：单文件（agents/<id>.toml）与创建/更新命令的内存校验走
+    /// 此入口——kind = "tool" 必须携带至少一个能力段。
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_with_bare_tool(false)
+    }
+
+    /// 校验（目录形式 skill 插件感知，v0.9.4 需求3 落盘链路与加载校验的
+    /// 豁免缺口修复）：`plugin_create_skill_folder` / `plugin_update` 落盘
+    /// 目录形式插件（plugins/<id>/plugin.toml）时刻意剥离 [skill] 段
+    ///（skills/<name>/SKILL.md 文件即权威，避免双源），落盘产物即
+    /// “无能力段骨架”。`allow_bare_tool = true` 放行该形态——调用方
+    /// 须先探测插件目录 skills/ 下确实存在 SKILL.md 源（见
+    /// manifest::dir_form_has_skill_source），凭空裸骨架仍被拒绝。
+    pub fn validate_with_bare_tool(&self, allow_bare_tool: bool) -> Result<(), String> {
         if self.schema != SCHEMA_VERSION {
             return Err(format!(
                 "unsupported schema version {} (expected {})",
@@ -345,7 +359,7 @@ impl AgentManifestFile {
         }
         match self.kind {
             ManifestKind::Agent => self.validate_agent()?,
-            ManifestKind::Tool => self.validate_tool()?,
+            ManifestKind::Tool => self.validate_tool(allow_bare_tool)?,
         }
         if let Some(probe) = &self.probe {
             if probe.command.trim().is_empty() {
@@ -361,7 +375,9 @@ impl AgentManifestFile {
 
     /// kind = "tool"：[tool] 必填；agent 专属段（transport/session/
     /// capabilities/config）全部禁止；[pi_extension] 允许并存（自适应插件）。
-    fn validate_tool(&self) -> Result<(), String> {
+    /// `allow_bare_tool`：目录形式 skill 骨架放行（见
+    /// [`validate_with_bare_tool`] 文档）。
+    fn validate_tool(&self, allow_bare_tool: bool) -> Result<(), String> {
         if self.transport.is_some() {
             return Err("[transport] is only allowed for agent plugins".to_string());
         }
@@ -468,11 +484,13 @@ impl AgentManifestFile {
         let tool = match self.tool.as_ref() {
             Some(tool) => tool,
             // 仅 [pi_extension]/[mcp]/[panel]/[skill] 无 [tool]：合法（深度
-            // 形态 / 纯结构化工具 / 纯面板 / 纯 skill 插件）。
+            // 形态 / 纯结构化工具 / 纯面板 / 纯 skill 插件）；目录形式
+            // skill 骨架（能力声明在 skills/ 目录，调用方已探测）同放行。
             None if self.pi_extension.is_some()
                 || self.mcp.is_some()
                 || self.panel.is_some()
-                || self.skill.is_some() =>
+                || self.skill.is_some()
+                || allow_bare_tool =>
             {
                 return Ok(());
             }
@@ -519,14 +537,12 @@ impl AgentManifestFile {
                             .to_string(),
                     );
                 }
-                if transport.pipe_stdin {
-                    if cmd.iter().any(|s| s.contains("{prompt}")) {
-                        return Err(
-                            "transport.pipe_stdin = true but chat_command contains {prompt} \
+                if transport.pipe_stdin && cmd.iter().any(|s| s.contains("{prompt}")) {
+                    return Err(
+                        "transport.pipe_stdin = true but chat_command contains {prompt} \
                              (prompt travels via stdin, remove it from the command)"
-                                .to_string(),
-                        );
-                    }
+                            .to_string(),
+                    );
                 }
                 for seg in cmd {
                     check_template_vars(seg)?;
@@ -678,6 +694,26 @@ mod tests {
     #[test]
     fn valid_manifest_passes() {
         assert!(base_manifest().validate().is_ok());
+    }
+
+    /// 目录形式 skill 骨架（v0.9.4 需求3 落盘产物：剥离 [skill] 段后无任何
+    /// 能力段）——严格模式拒绝；探测到 skills/ 目录源后（allow_bare_tool）
+    /// 放行。凭空裸骨架（无目录源佐证）仍被拒绝。
+    #[test]
+    fn bare_tool_skeleton_gated_by_dir_skill_source() {
+        let mut m = base_manifest();
+        m.kind = ManifestKind::Tool;
+        m.transport = None;
+        let err = m.validate().unwrap_err();
+        assert!(err.contains("requires a [tool] section"), "got: {err}");
+        assert!(m.validate_with_bare_tool(true).is_ok());
+        // 骨架携带其他能力段时不受该开关影响（既有豁免分支仍生效）。
+        let mut with_skill = m.clone();
+        with_skill.skill = Some(SkillDecl::One(SkillSection {
+            description: "d".to_string(),
+            body: "b".to_string(),
+        }));
+        assert!(with_skill.validate().is_ok());
     }
 
     #[test]
