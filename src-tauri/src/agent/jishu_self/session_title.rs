@@ -216,7 +216,7 @@ fn first_user_text_from_lines(lines: &[&str]) -> Option<String> {
             for block in blocks {
                 if block.get("type").and_then(|t| t.as_str()) == Some("text") {
                     let text = block.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                    let (clean, _ids) = crate::agent::tool_plugin::extract_tool_snapshot(text);
+                    let (clean, _ids) = crate::agent::internal_prompts::extract_tool_snapshot(text);
                     if !clean.trim().is_empty() {
                         return Some(clean.trim().to_string());
                     }
@@ -361,13 +361,13 @@ mod tests {
     #[test]
     fn session_info_detection_and_first_user() {
         let lines = vec![
-            r#"{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"<jishu-tool-plugins>注入块</jishu-tool-plugins>\n开启v0.9.4版本开发"}]}}"#,
+            r#"{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"<JISHU-TOOL-PLUGINS>注入块</JISHU-TOOL-PLUGINS>\n开启v0.9.4版本开发"}]}}"#,
             r#"{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"收到"}],"provider":"zhipu","model":"glm-5.3"}}"#,
         ];
         assert!(!has_session_info(&lines));
         let user = first_user_text_from_lines(&lines).unwrap();
         assert!(user.contains("开启v0.9.4版本开发"));
-        assert!(!user.contains("jishu-tool-plugins"));
+        assert!(!user.contains("JISHU-TOOL-PLUGINS"));
         assert_eq!(
             last_model_from_lines(&lines),
             Some(("zhipu".to_string(), "glm-5.3".to_string()))

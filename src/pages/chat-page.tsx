@@ -98,7 +98,7 @@ import { ThinkingLevelSelect } from "@/components/sessions/thinking-level-select
 import {
   buildAssistantContentFromStreamState,
   PHASE_LAUNCH_RANK,
-  stripTaskLaunchInstructionFromMessages,
+  filterInvisibleUserMessages,
   TerminalIcon,
   uniqueSessionsById,
   type TaskLaunchPhase,
@@ -1141,7 +1141,7 @@ export function ChatPage({
         .then((messages) => {
           if (cancelled) return;
           const visibleMessages = truncateStreamingTurn(
-            stripTaskLaunchInstructionFromMessages(messages),
+            filterInvisibleUserMessages(messages),
           );
           setCachedSessionMessages(selectedSession, visibleMessages);
           setSessionMessages(visibleMessages);
@@ -1305,7 +1305,7 @@ export function ChatPage({
         // 最短呈现 400ms：保证旋转/高亮反馈可被肉眼捕捉。
         new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, 400 - (Date.now() - startedAt)))),
       ]);
-      const visibleMessages = stripTaskLaunchInstructionFromMessages(msgs);
+      const visibleMessages = filterInvisibleUserMessages(msgs);
       setCachedSessionMessages(sessionId, visibleMessages);
       if (selectedSessionRef.current === sessionId) {
         setSessionMessages(visibleMessages);
@@ -3237,7 +3237,7 @@ export function ChatPage({
                         sessionId: selectedSession,
                         encodedName: projectId,
                       });
-                      const visibleMessages = stripTaskLaunchInstructionFromMessages(msgs);
+                      const visibleMessages = filterInvisibleUserMessages(msgs);
                       setCachedSessionMessages(selectedSession, visibleMessages);
                       setSessionMessages(visibleMessages);
                     } catch (e) {

@@ -201,26 +201,21 @@ pub(super) fn agent_prompt_with_policy(
     policy: &crate::orchestrator::domain::policy::NodePolicy,
 ) -> String {
     let permissions = &policy.permission_scope;
-    // v0.7.0 需求二-问题4：用 [JISHU-PROMT:开始]...[JISHU-PROMT:结束] 配对块标记包裹
-    // 系统内部契约提示词，前端渲染时统一剥离，不向用户展示。
+    // v0.9.5 统一裁决：执行契约也是内部提示词——标记 <JISHU-EXEC-CONTRACT>、
+    // 后缀注入（用户消息在前）、话术版本登记（resources/prompts/exec-contract.md），
+    // 回放剥离统一走 internal_prompts 剥离链；旧 [JISHU-PROMT:开始/结束]
+    // 配对块前缀格式不兼容（版本级裁决，历史会话原样呈现）。
+    let contract = crate::agent::internal_prompts::PROMPT_EXEC_CONTRACT
+        .body()
+        .replace("{{read_files}}", &permissions.can_read_files.to_string())
+        .replace("{{write_files}}", &permissions.can_write_files.to_string())
+        .replace("{{run_commands}}", &permissions.can_run_commands.to_string())
+        .replace("{{access_network}}", &permissions.can_access_network.to_string())
+        .replace("{{deploy}}", &permissions.can_deploy.to_string());
     format!(
-        "[JISHU-PROMT:开始]\n\
-Task Orchestrator execution contract:\n\
-- read_files: {}\n\
-- write_files: {}\n\
-- run_commands: {}\n\
-- access_network: {}\n\
-- deploy: {}\n\
-Do not perform or ask a sub-agent to perform any action marked false. \
-Stay within the project root and the declared task scope. \
-Return concrete output and acceptance evidence.\n\
-[JISHU-PROMT:结束]\n\n{}",
-        permissions.can_read_files,
-        permissions.can_write_files,
-        permissions.can_run_commands,
-        permissions.can_access_network,
-        permissions.can_deploy,
-        prompt
+        "{prompt}\n\n{}\n{contract}\n{}",
+        crate::agent::internal_prompts::EXEC_CONTRACT_OPEN,
+        crate::agent::internal_prompts::EXEC_CONTRACT_CLOSE,
     )
 }
 

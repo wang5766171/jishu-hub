@@ -35,7 +35,7 @@ pub enum ContentBlock {
     Text {
         text: String,
         /// v0.9.0 需求3 方案 C：本条用户消息关联的工具插件 id 快照（回放时
-        /// 从注入块派生填充，见 tool_plugin::extract_tool_snapshot）。
+        /// 从注入块派生填充，见 agent::internal_prompts::extract_tool_snapshot）。
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tool_ids: Vec<String>,
     },
@@ -1048,7 +1048,7 @@ where
             if msg.role == "user" {
                 for block in &mut msg.content {
                     if let ContentBlock::Text { text, tool_ids } = block {
-                        let (clean, ids) = crate::agent::tool_plugin::extract_tool_snapshot(text);
+                        let (clean, ids) = crate::agent::internal_prompts::extract_tool_snapshot(text);
                         *text = clean;
                         *tool_ids = ids;
                     }
@@ -1117,8 +1117,8 @@ where
     // v0.8.1 需求10 → v0.9.0 需求3：会话列表名清洗注入块（文本标记已废弃）——
     // 标题必须呈现用户真实问题，不得泄漏插件注入块（§16.3 剥离契约）。
     let display_name = last_ai_title
-        .map(|t| crate::agent::tool_plugin::strip_tool_block(&t))
-        .or_else(|| first_user_text.map(|t| smart_summary(&crate::agent::tool_plugin::strip_tool_block(&t))));
+        .map(|t| crate::agent::internal_prompts::strip_internal_prompts(&t))
+        .or_else(|| first_user_text.map(|t| smart_summary(&crate::agent::internal_prompts::strip_internal_prompts(&t))));
 
     let project_path = path
         .parent()

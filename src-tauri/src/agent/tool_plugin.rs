@@ -3,8 +3,9 @@
 //! 与智能体插件同目录（`~/.jishu-hub/agents/*.toml`）、同 schema 家族，按
 //! manifest 顶层 `kind = "tool"` 分流——**不进 AgentRegistry**（无会话语义）。
 //! 使用面：会话输入区「+」菜单勾选后，send_message 组装 prompt 时把选中
-//! 工具的说明块作为前缀注入智能体上下文（智能体经其原生 shell 工具调用，
-//! 审批走既有策略链）。历史回放在 get_session_messages 命令层剥离标记块。
+//! 工具的说明块作为后缀注入智能体上下文（智能体经其原生 shell 工具调用，
+//! 审批走既有策略链）。历史回放在 get_session_messages 命令层剥离标记块
+//! （注入标记与剥离链统一于 internal_prompts.rs）。
 //!
 //! 会话启用集合持久化于 `~/.jishu-hub/session-tools.json`
 //! （{ sessionId: [toolId] }，hub 会话状态文件族先例；读写失败降级）。
@@ -14,17 +15,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::manifest::schema::{self, AgentManifestFile};
-
-/// 注入块的标记对：agent 原生历史会记录注入后的消息，回放时剥离。
-pub const TOOL_BLOCK_OPEN: &str = "<jishu-tool-plugins>";
-pub const TOOL_BLOCK_CLOSE: &str = "</jishu-tool-plugins>";
-/// v0.9.2：MCP 解析服务提示块标记（agent 可见、展示面剥离）。
-pub const MCP_HINT_OPEN: &str = "<jishu-mcp-hint>";
-pub const MCP_HINT_CLOSE: &str = "</jishu-mcp-hint>";
-/// v0.9.5 需求2：图片委派提示块标记（agent 可见、展示面剥离——
-/// 消息带图且当前模型不识图时的动态直给，回放同链剥离）。
-pub const IMAGE_DISPATCH_OPEN: &str = "<jishu-image-dispatch>";
-pub const IMAGE_DISPATCH_CLOSE: &str = "</jishu-image-dispatch>";
 
 #[derive(Debug)]
 pub struct ToolPlugin {
@@ -240,17 +230,14 @@ pub fn cleanup_stale_pending_sessions() {
 // 注入与剥离
 // ---------------------------------------------------------------------------
 
-/// 渲染注入块：紧凑说明（每工具 3-5 行），标记对包裹供回放剥离。
+/// 渲染注入块：紧凑说明（每工具 3-5 行），标记对包裹供回放剥离
+/// （标记与头部话术统一于 internal_prompts，头部话术带版本登记）。
 pub fn render_tool_block(plugins: &[&ToolPlugin]) -> String {
     let mut out = String::new();
-    out.push_str(TOOL_BLOCK_OPEN);
+    out.push_str(super::internal_prompts::TOOL_BLOCK_OPEN);
     out.push('\n');
-    out.push_str(
-        "本会话启用了以下工具插件。用法给出命令模板的，直接经你的 shell 工具执行（遵循既有审批规则）；\n",
-    );
-    out.push_str(
-        "标注「命令未检测到」的（或用法为能力描述而非命令的），不要尝试按插件名调用命令——按其描述用等效的 shell 方式实现该能力。\n",
-    );
+    out.push_str(&super::internal_prompts::PROMPT_TOOL_HEADER.body());
+    out.push('\n');
     for plugin in plugins {
         // M3 → v0.9.0 需求2 接线：注入参与判定收敛到 adaptive 引擎
         //（participates_in_injection = 有 [tool]/[mcp]/[skill] 段；PiOnly
@@ -315,7 +302,7 @@ pub fn render_tool_block(plugins: &[&ToolPlugin]) -> String {
             out.push_str(&format!("注意: {notes}\n"));
         }
     }
-    out.push_str(TOOL_BLOCK_CLOSE);
+    out.push_str(super::internal_prompts::TOOL_BLOCK_CLOSE);
     out
 }
 
@@ -329,122 +316,17 @@ pub fn render_hub_mcp_resolver_hint(plugins: &[&ToolPlugin]) -> String {
         return String::new();
     }
     // v0.9.2 用户裁决：用标记包裹，展示面按格式剥离（agent 可见、用户不可见）。
-    // v0.9.4 需求9 P2：文案改为如实两步走——册子上的工具集是 spawn 时静态
-    // 抄录，运行中启停的插件不在册上；hub_mcp_list/hub_mcp_call 是永不过期
-    // 的解析器入口，「先查后调」实现热插拔（旧文案「动态发现/实时生效」与
-    // 实际不符，即问题 B 根源）。
-    // v0.9.4 需求9 补充（用户裁决：任务驱动而非点名调用）：给模型明确的
-    // 决策规则——任务需要册子外能力时自发先查后调，而非等用户拖明工具名。
+    // v0.9.4 需求9 P2：文案如实两步走——册子上的工具集是 spawn 时静态抄录，
+    // hub_mcp_list/hub_mcp_call 先查后调实现热插拔；需求9 补充：任务驱动而非
+    // 点名调用。
+    // v0.9.5 重构：正文迁 resources/prompts/mcp-hint.md（internal_prompts
+    // 版本登记，变更台账见该目录 CHANGELOG.md）。
     format!(
-        "\n{MCP_HINT_OPEN}\n## jishu-hub — MCP 解析服务\n本会话可经 MCP 服务「jishu-hub」使用 hub 管理的全部 MCP 插件工具（联网搜索、读图识图、外部系统能力等）。当任务需要当前工具清单之外的能力时，不要放弃、不要改用 shell 命令——先调 `hub_mcp_list` 实时查看可用插件、工具与参数说明，再用 `hub_mcp_call` 代理调用目标工具；已注册的 `插件id__` 前缀工具可直接调用。插件启停经 list 即时反映（未列出即未启用/暂不可用，unavailable 项附原因）。不要尝试直连各 MCP 服务。\n{MCP_HINT_CLOSE}"
+        "{}\n{}\n{}",
+        super::internal_prompts::MCP_HINT_OPEN,
+        super::internal_prompts::PROMPT_MCP_HINT.body(),
+        super::internal_prompts::MCP_HINT_CLOSE
     )
-}
-
-/// 回放派生（v0.9.0 需求3 方案 C）：剥注入块 + 从块内 `## <id> — <desc>`
-/// 头提取本条消息的工具 id 快照。注入块随 compose 后 prompt 持久化进各家
-/// 原生 JSONL，是每条消息工具快照的唯一保真来源（文本标记方案已按版本级
-/// 裁决整体废弃，无旧数据兼容层）。无块时原样返回、快照为空。
-pub fn extract_tool_snapshot(text: &str) -> (String, Vec<String>) {
-    let Some(start) = text.find(TOOL_BLOCK_OPEN) else {
-        // v0.9.3 测试期修复：无工具注入块时也必须剥 MCP 提示块——hint 恰好
-        // 只在「会话未勾选工具」时注入（chat.rs compose_tool_message 的空
-        // 工具集分支），早退原样返回导致回放显示系统提示词（v0.9.2 修复的
-        // 漏网分支：只覆盖了带工具块的组合）。
-        // v0.9.5 测试期同洞回潮：图片委派块也在同一空工具集分支注入，早退
-        // 只剥 MCP 提示导致回放用户消息泄漏识图路由话术——改走
-        // strip_tool_block 全链（本分支无工具块，各段对无标记文本均 no-op）。
-        return (strip_tool_block(text), Vec::new());
-    };
-    let mut ids: Vec<String> = Vec::new();
-    if let Some(end_rel) = text[start..].find(TOOL_BLOCK_CLOSE) {
-        let block = &text[start..start + end_rel];
-        for line in block.lines() {
-            if let Some(rest) = line.strip_prefix("## ") {
-                if let Some((id, _)) = rest.split_once(" — ") {
-                    let id = id.trim();
-                    if !id.is_empty() && !ids.iter().any(|x| x == id) {
-                        ids.push(id.to_string());
-                    }
-                }
-            }
-        }
-    }
-    (strip_tool_block(text), ids)
-}
-
-/// 剥离注入块（回放路径）。兼容块后紧跟的空行残留；无标记时原样返回。
-pub fn strip_tool_block(text: &str) -> String {
-    strip_legacy_image_hint_line(&strip_image_dispatch_block(&strip_mcp_hint_block(
-        &strip_plugins_block(text),
-    )))
-}
-
-/// 剥离 <jishu-image-dispatch>…</jishu-image-dispatch>（图片委派提示，
-/// v0.9.5 需求2——展示面不可见）。
-/// 兼容 2026-09-26 修复前的历史数据：提示曾以「[图片处理] …」纯行前缀
-/// 注入（无标记对）——该版历史会话回放剥此行。
-fn strip_legacy_image_hint_line(text: &str) -> String {
-    const LEGACY_PREFIX: &str = "[图片处理] ";
-    if !text.contains(LEGACY_PREFIX) {
-        return text.to_string();
-    }
-    text.lines()
-        .filter(|l| !l.starts_with(LEGACY_PREFIX))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn strip_image_dispatch_block(text: &str) -> String {
-    let Some(start) = text.find(IMAGE_DISPATCH_OPEN) else {
-        return text.to_string();
-    };
-    let mut result = String::new();
-    let prefix = &text[..start];
-    if !prefix.trim().is_empty() {
-        result.push_str(prefix);
-    }
-    if let Some(end_rel) = text[start..].find(IMAGE_DISPATCH_CLOSE) {
-        let after = &text[start + end_rel + IMAGE_DISPATCH_CLOSE.len()..];
-        result.push_str(after.trim_start_matches(['\r', '\n']));
-    }
-    result.trim_end().to_string()
-}
-
-/// 剥离 <jishu-mcp-hint>…</jishu-mcp-hint>（MCP 解析服务提示，展示面不可见）。
-/// 注入形态恒为前缀 `"\n{OPEN}…{CLOSE}\n\n"`（chat.rs compose）——标记前的
-/// 纯空白前缀与标记后的换行分隔一并清理，避免剥后残留空行（v0.9.3 测试期）。
-fn strip_mcp_hint_block(text: &str) -> String {
-    let Some(start) = text.find(MCP_HINT_OPEN) else {
-        return text.to_string();
-    };
-    let mut result = String::new();
-    let prefix = &text[..start];
-    if !prefix.trim().is_empty() {
-        result.push_str(prefix);
-    }
-    if let Some(end_rel) = text[start..].find(MCP_HINT_CLOSE) {
-        let after = &text[start + end_rel + MCP_HINT_CLOSE.len()..];
-        result.push_str(after.trim_start_matches(['\r', '\n']));
-    }
-    result.trim_end().to_string()
-}
-
-/// 剥离 <jishu-tool-plugins>…</jishu-tool-plugins>（工具插件注入块）。
-fn strip_plugins_block(text: &str) -> String {
-    let Some(start) = text.find(TOOL_BLOCK_OPEN) else {
-        return text.to_string();
-    };
-    let mut result = String::new();
-    result.push_str(&text[..start]);
-    if let Some(end_rel) = text[start..].find(TOOL_BLOCK_CLOSE) {
-        let after = &text[start + end_rel + TOOL_BLOCK_CLOSE.len()..];
-        // 块与消息之间的分隔空行（含 CRLF 序列）一并吃掉，避免前导空行。
-        result.push_str(after.trim_start_matches(['\r', '\n']));
-    } else {
-        // 未闭合（异常半写）：丢弃其后内容，保守清理。
-    }
-    // 前缀剥离后的尾部空白（块在末尾时）。
-    result.trim_end().to_string()
 }
 
 #[cfg(test)]
@@ -543,68 +425,17 @@ mod tests {
         ];
         let refs: Vec<&ToolPlugin> = plugins.iter().collect();
         let block = render_tool_block(&refs);
-        assert!(block.starts_with(TOOL_BLOCK_OPEN));
-        assert!(block.ends_with(TOOL_BLOCK_CLOSE));
+        assert!(block.starts_with(crate::agent::internal_prompts::TOOL_BLOCK_OPEN));
+        assert!(block.ends_with(crate::agent::internal_prompts::TOOL_BLOCK_CLOSE));
         assert!(block.contains("## gh — GitHub CLI"));
         // 无 [probe] 的 fixture → 状态行走「未检测到」分支（引导等效实现）。
         assert!(block.contains("状态: 命令未检测到"));
         assert!(block.contains("用法: gh pr list"));
         assert!(block.contains("示例: gh pr view 42"));
         assert!(block.contains("注意: 需要登录"));
-
-        // 注入形态：块 + 空行 + 用户消息
-        let injected = format!("{block}\n\n帮我看一下 PR 列表");
-        assert_eq!(strip_tool_block(&injected), "帮我看一下 PR 列表");
-        // 无块原样
-        assert_eq!(strip_tool_block("普通消息"), "普通消息");
-        // 块在末尾
-        assert_eq!(strip_tool_block(&format!("消息\n\n{block}")), "消息");
-        // 未闭合块：清理
-        assert_eq!(
-            strip_tool_block(&format!("msg\n{TOOL_BLOCK_OPEN}\nbroken")),
-            "msg"
-        );
-    }
-
-    /// v0.9.5 需求2：图片委派标记对剥离 + 旧前缀行兼容（2026-09-26 修复前
-    /// 历史数据以「[图片处理] …」纯行前缀注入）。
-    #[test]
-    fn strips_image_dispatch_and_legacy_prefix() {
-        let injected = "<jishu-image-dispatch>提示内容</jishu-image-dispatch>
-
-帮我看图";
-        assert_eq!(strip_tool_block(injected), "帮我看图");
-        let legacy = "[图片处理] 本条消息含图片提示长文
-帮我看图";
-        assert_eq!(strip_tool_block(legacy), "帮我看图");
-        assert_eq!(strip_tool_block("普通消息"), "普通消息");
-    }
-
-    /// v0.9.5 测试期回归：无工具块时 extract_tool_snapshot 早退分支也必须剥
-    /// 图片委派块——图片消息恰好多发在「未勾选工具」的会话（compose_tool_message
-    /// 空工具集分支），早退曾只剥 MCP 提示，回放用户消息泄漏识图路由话术。
-    #[test]
-    fn extract_snapshot_without_tool_block_strips_image_dispatch() {
-        // 无 MCP 提示形态（未启用 MCP 插件的会话）
-        let injected = "<jishu-image-dispatch>识图路由话术</jishu-image-dispatch>\n帮我看图";
-        let (clean, ids) = extract_tool_snapshot(injected);
-        assert_eq!(clean, "帮我看图");
-        assert!(ids.is_empty());
-        // 组合形态（启用 MCP 插件、未勾工具——compose_tool_message 真实注入顺序：
-        // MCP 提示前缀 + 图片委派块 + 正文）
-        let combined = "\n<jishu-mcp-hint>MCP 提示</jishu-mcp-hint>\n\n<jishu-image-dispatch>识图路由话术</jishu-image-dispatch>\n帮我看图";
-        let (clean, ids) = extract_tool_snapshot(combined);
-        assert_eq!(clean, "帮我看图");
-        assert!(ids.is_empty());
-    }
-
-    #[test]
-    fn strip_is_idempotent_and_handles_crlf() {
-        let block = render_tool_block(&[&tool_plugin("a", "A", "a run", None, None)]);
-        let injected = format!("{block}\r\n\r\nhi");
-        let once = strip_tool_block(&injected);
-        assert_eq!(once, "hi");
-        assert_eq!(strip_tool_block(&once), once);
+        // 头部话术经 internal_prompts 版本登记（剥离 roundtrip 见其模块测试
+        // 与 chat_tests 的 compose 契约测试）。
+        assert!(block.contains("本会话启用了以下工具插件"));
     }
 
     #[test]
@@ -786,7 +617,7 @@ usage = "u"
         assert!(block.contains("自查清单"));
         assert!(!block.contains("## skill-y — d")); // skill-only 无 [tool] 小节
                                                     // 快照提取：两 id 均入列。
-        let (_, ids) = extract_tool_snapshot(&block);
+        let (_, ids) = crate::agent::internal_prompts::extract_tool_snapshot(&block);
         assert!(ids.contains(&"mcp-x".to_string()));
         assert!(ids.contains(&"skill-y".to_string()));
     }
@@ -857,57 +688,4 @@ usage = "u"
         std::env::remove_var("JISHU_HUB_HOME");
     }
 
-    #[test]
-    fn extract_tool_snapshot_parses_ids_and_strips_block() {
-        // v0.9.0 需求3 方案 C：回放派生契约——注入块内 `## id — desc` 头
-        // 提取 id 快照，块本身剥净。
-        let block = format!(
-            "{}\n## task-requirements — 需求讨论\n用法: x\n\n## task-plan — 方案规划\n用法: y\n{}",
-            TOOL_BLOCK_OPEN, TOOL_BLOCK_CLOSE
-        );
-        let text = format!("{block}\n\n用户的问题正文");
-        let (clean, ids) = extract_tool_snapshot(&text);
-        assert_eq!(clean, "用户的问题正文");
-        assert_eq!(ids, vec!["task-requirements", "task-plan"]);
-    }
-
-    #[test]
-    fn extract_tool_snapshot_no_block_passthrough() {
-        let (clean, ids) = extract_tool_snapshot("普通消息（无注入块）");
-        assert_eq!(clean, "普通消息（无注入块）");
-        assert!(ids.is_empty());
-    }
-
-    #[test]
-    fn extract_tool_snapshot_dedup_keeps_order() {
-        let block = format!(
-            "{}\n## a — 一\n## a — 重复\n## b — 二\n{}",
-            TOOL_BLOCK_OPEN, TOOL_BLOCK_CLOSE
-        );
-        let (_, ids) = extract_tool_snapshot(&block);
-        assert_eq!(ids, vec!["a", "b"]);
-    }
-}
-
-/// v0.9.3 测试期修复回归：未勾选工具的会话（只有 MCP 提示块、无工具注入
-/// 块）——extract_tool_snapshot 早退分支此前原样返回，回放显示系统提示词。
-#[test]
-fn extract_tool_snapshot_strips_mcp_hint_without_tool_block() {
-    let hint = render_hub_mcp_resolver_hint(&[]); // 空则无块——手构同款文本
-    assert!(hint.is_empty());
-    let text = format!(
-        "\n{MCP_HINT_OPEN}\n## jishu-hub — MCP 解析服务\n指引内容\n{MCP_HINT_CLOSE}\n\n帮我看一下 PR 列表"
-    );
-    let (clean, ids) = extract_tool_snapshot(&text);
-    assert_eq!(clean, "帮我看一下 PR 列表");
-    assert!(ids.is_empty());
-
-    // 纯提示词消息（用户文本为空的前缀场景）：剥后为空。
-    let (clean_only, _) = extract_tool_snapshot(&format!(
-        "\n{MCP_HINT_OPEN}\n## jishu-hub — MCP 解析服务\n指引\n{MCP_HINT_CLOSE}\n\n"
-    ));
-    assert_eq!(clean_only.trim(), "");
-
-    // 普通消息不受影响。
-    assert_eq!(extract_tool_snapshot("普通消息").0, "普通消息");
 }

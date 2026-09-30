@@ -222,14 +222,20 @@ fn resolved_interaction_builds_a_visible_same_session_reply() {
 fn agent_prompt_reflects_permission_scope() {
     // 契约注入（agent_prompt_with_policy）把 permission_scope 拼成硬执行契约。
     // default 现授予 read/write=true —— 执行节点默认能读写文件，不再因全 false 空转。
+    // v0.9.5：契约块后缀注入（用户消息在前），剥离开销走 internal_prompts 统一链。
     let policy = NodePolicy::default();
     let prompt = agent_prompt_with_policy("do work", &policy);
+    assert!(prompt.starts_with("do work"), "用户消息应位于契约块之前");
+    assert!(prompt.contains("<JISHU-EXEC-CONTRACT>"));
     assert!(prompt.contains("read_files: true"));
     assert!(prompt.contains("write_files: true"));
     assert!(prompt.contains("run_commands: false"));
     assert!(prompt.contains("access_network: false"));
     assert!(prompt.contains("deploy: false"));
-    assert!(prompt.ends_with("do work"));
+    assert_eq!(
+        crate::agent::internal_prompts::strip_internal_prompts(&prompt),
+        "do work"
+    );
 
     // 显式关闭写权限 → 契约注入 write_files:false（覆盖 review-only 节点路径）。
     let mut review_policy = NodePolicy::default();

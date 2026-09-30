@@ -237,24 +237,26 @@ npx vitest run test/<相关文件>.test.ts
 
 ### 16.3 工具插件与会话注入
 
-**数据流**（2026-08-31 用户裁决保持 workbuddy 形态；M0 键位修复 + M1 净化定稿）：
+**数据流**（2026-08-31 用户裁决保持 workbuddy 形态；v0.9.0 需求3 方案 C 废弃文本标记；v0.9.5 重构：注入后缀化 + 内部提示词单源管理 + 标记统一大写横线）：
 
-- **消息即所见（用户裁决）**：+ 菜单点击 → 插入 `@[显示名]` pill 到输入框 → 发送时 `extractToolTokens` 剥 token + token→id 归一 → **本条 token 集合 = 本条工具集**（所见即所得：空 token = 本条不带工具，覆盖写入会话集合）→ 消息头嵌 `[JISHU-TOOLS:id,...]` 供回放渲染 pill。
+- **消息即所见（用户裁决）**：+ 菜单点击 → 插入 `@[显示名]` pill 到输入框 → 发送时 `extractToolTokens` 剥 token + token→id 归一 → **本条 token 集合 = 本条工具集**（所见即所得：空 token = 本条不带工具，覆盖写入会话集合）。回放 pill 数据源 = 后端从注入块 `## id — desc` 头派生的 tool_ids（`extract_tool_snapshot`），消息文本不再嵌任何标记。
 - **写入键同源（M0）**：`session_set_tools` 的键 = `send_message` 携带的 sessionId（前端 `nextPendingId`：续聊真实 id / 新会话 `pending-<ts>`）——修前用 `activeSessionId`（流式引用，非流式恒 null）写入全落暂存键、注入永不命中。新会话草稿落 `__new_session__`，首条消息由后端 compose 前迁移（`migrate_session_tools`），会话 id 解析回调再迁移 pending→真实 id，启动清扫孤儿 pending 键。
-- **注入（M1）**：`compose_tool_message`（统一入口，ACP 早退与 spawn 两路径共享）→ 迁移暂存键 → `render_tool_block` 前缀 `<jishu-tool-plugins>` 块（无 `[tool]` 段的 PiOnly 插件跳过）→ **prompt 净化**（`strip_all_markers` 剥消息内一切展示标记后才拼接）→ agent 经原生 shell 执行，审批走既有策略链。
+- **注入（M1 → v0.9.5 后缀化）**：`compose_tool_message`（统一入口，ACP 早退与 spawn 两路径共享）→ 迁移暂存键 → 注入块**后缀追加**在用户消息之后（图片派发块紧随消息、直指上方附件行，工具块 / MCP 提示殿后）→ agent 经原生 shell 执行，审批走既有策略链。无净化步骤（v0.9.0 方案 C 版本级裁决：手输字面标记亦不防御）。
+- **内部提示词单源（v0.9.5 重构）**：标记对、话术版本登记、回放剥离链统一于 `agent/internal_prompts.rs`；话术正文存 `src-tauri/resources/prompts/`（一文件一话术，`{{占位符}}` 由注入方填充），版本台账见该目录 `CHANGELOG.md`，启动日志打印版本锚点。改话术 = 改文件 + 版本号 +1 + 台账记一行。
 - **消息组装单源（M5）**：`composeOutgoing`（chat-input.tsx）为发送/引导/steer 唯一组装函数。
 
-**标记契约**（三种标记各有剥离责任方，分层剥离）：
+**标记契约**（注入块统一由后端剥离链处理；命名规范 `JISHU-` 大写横线）：
 
 | 标记 | 出现位置 | 剥离方 |
 |---|---|---|
 | `@[显示名]` | 输入框（用户可见 pill） | 前端 `extractToolTokens`（`composeOutgoing` 内） |
-| `[JISHU-TOOLS:id]` | 消息头（pill 渲染依据；消息载荷面保留） | 后端 `compose_tool_message` 注入前（`strip_all_markers`，agent 永不可见）+ 前端 `parseEmbeddedTools`（渲染时） |
-| `<jishu-tool-plugins>` | agent 收到的 prompt 前缀 | 后端 `get_session_messages` 统一剥离（回放载荷）+ `strip_all_markers`（标题等非渲染面） |
+| `<JISHU-TOOL-PLUGINS>` / `<JISHU-MCP-HINT>` / `<JISHU-IMAGE-DISPATCH>` | 用户消息 prompt 后缀 | 后端 `agent::internal_prompts` 统一剥离链（get_session_messages / session 加载 / 标题摘要全经此，含 tool_ids 派生） |
+| `<JISHU-EXEC-CONTRACT>` | orchestrator 节点 prompt 后缀（permission_scope 硬契约，标记与正文一并剥） | 同上（v0.9.5 自 `[JISHU-PROMT]` 配对块换标，话术入 prompts/exec-contract.md） |
+| `[JISHU-TASK:…]` 前缀消息 | Conductor 方法论注入（display:false 但写 JSONL） | 前端 `filterInvisibleUserMessages`（chat-page-utils.tsx，回放过滤） |
 
-**分层剥离白名单**：消息载荷面（get_session_messages、session 加载、pi_session）只剥注入块、**保留** `[JISHU-TOOLS]` 标记（pill 数据源）；prompt 面（compose）与标题/摘要/导出类非渲染面全剥。新增消费面对号入座，不得自定规则。
+**无历史兼容（用户裁决 2026-09-30）**：旧小写连字符标记（`<jishu-*>`）、`[JISHU-PROMT:开始/结束]` 配对块、`[图片处理] ` 行前缀、旧 `<jishu-task-*>` 标签——剥离逻辑全部移除，不做兜底；相关历史会话回放原样呈现。
 
-**禁止复制正则**：标记的正则只允许单一宿主定义——后端 `tool_plugin::strip_all_markers`（Rust）、前端 `embedded-tools.tsx` / `chat-input.tsx`（TS）。任何新增展示/持久化面必须复用既有剥离函数，不得自写。
+**禁止复制正则**：标记常量与剥离链只允许单一宿主定义——后端 `agent/internal_prompts.rs`（Rust）、前端 `embedded-tools.tsx` / `chat-input.tsx` / `chat-page-utils.tsx`（TS，token 剥离与回放过滤）。任何新增展示/持久化面必须复用既有剥离函数，不得自写。
 
 **回放渲染**：前端 `UserTextWithPills`（embedded-tools.tsx）为全部用户消息展示面的统一组件（pill + 正文同一内联流）——流式/回放/引导占位/暂存四个面共用，新增面必须复用它。
 
@@ -286,10 +288,13 @@ GUI（插件页 + 创建/编辑对话框）与 CLI（`jishu-cli plugins add/list
 
 ### 16.8 硬边界追加
 
-- **插件标记正则单源**：三种标记（`@[token]` / `[JISHU-TOOLS:id]` / `<jishu-tool-plugins>`）的正则只允许在 `tool_plugin.rs`（后端）和 `embedded-tools.tsx` / `chat-input.tsx`（前端）定义，禁止在其他文件复制。
-- **token→id 归一**：发送路径的 token（可能是显示名）必须在 `chat-input.tsx` 归一为插件 id 后再调 `session_set_tools` / 写入 `[JISHU-TOOLS:...]` 标记——后端严格校验 id。
-- **注入统一入口**：`compose_tool_message` 是工具注入的唯一入口，ACP 早退路径与 spawn 路径都必须经此函数（禁止直接 `send_prompt(原消息)`）。
-- **prompt 净化**（M1）：`compose_tool_message` 必须在拼接说明块前调用 `strip_all_markers`——任何展示标记（`[JISHU-TOOLS:…]` / 残留注入块）禁止进入 agent prompt。
+- **插件标记正则单源**：注入标记对（`<jishu-tool-plugins>` / `<jishu-mcp-hint>` / `<jishu-image-dispatch>`）与剥离链只允许在 `agent/internal_prompts.rs`（后端）定义，`@[token]` 剥离只允许在 `embedded-tools.tsx` / `chat-input.tsx`（前端），禁止在其他文件复制。
+- **token→id 归一**：发送路径的 token（可能是显示名）必须在 `chat-input.tsx` 归一为插件 id 后再调 `session_set_tools`——后端严格校验 id。
+- **注入统一入口**：`compose_tool_message` 是内部提示词注入的唯一入口，ACP 早退路径与 spawn 路径都必须经此函数（禁止直接 `send_prompt(原消息)`）。
+- **后缀注入**（v0.9.5 用户裁决）：内部提示词块一律追加在用户消息之后（消息在前），禁止改回前缀。
+- **标记命名规范**（v0.9.5 用户裁决）：注入标记统一 `JISHU-` 大写横线（`<JISHU-TOOL-PLUGINS>` 等，与 `[JISHU-TASK:` 同族），新增标记必须遵守。
+- **无历史格式兼容**（v0.9.5 用户裁决）：旧小写标记与 legacy 纯行/配对块的剥离兜底已整体移除，禁止再加回；换标记格式时旧格式不剥（版本级裁决）。
+- **话术版本登记**（v0.9.5）：内部提示词正文改动必须走 `resources/prompts/` 文件 + `internal_prompts.rs` 版本号 +1 + CHANGELOG.md 台账记录，禁止话术回迁代码内联。
 - **集合写入键同源**（M0）：`session_set_tools` 的写入键必须与 `send_message` 携带的 sessionId 同源（`nextPendingId`）——修前写暂存键导致注入永不命中。语义为本条 token 集合覆盖（所见即所得，用户裁决）。
 - **消息组装单源**（M5）：所有用户消息出口（发送/引导/steer）必须经 `composeOutgoing`，禁止各自拼装标记或另走旁路。
 - **渲染单源**（M5）：用户消息展示一律用 `UserTextWithPills`，禁止裸渲染含标记文本。

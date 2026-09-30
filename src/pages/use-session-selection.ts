@@ -19,7 +19,7 @@ import {
   setCachedSessionMessages,
 } from "@/features/session-kernel/kernel/session-cache";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
-import { stripTaskLaunchInstructionFromMessages } from "./chat-page-utils";
+import { filterInvisibleUserMessages } from "./chat-page-utils";
 import type { Message, Project, Session } from "@/types";
 import type { TaskLaunchPhase } from "./chat-page-utils";
 
@@ -185,7 +185,7 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
           sessionId,
           encodedName: projectId,
         });
-        let visibleMessages = stripTaskLaunchInstructionFromMessages(messages);
+        let visibleMessages = filterInvisibleUserMessages(messages);
         // v0.8.0 需求7：缓存缺失但该会话正在流式输出（本应用生命周期内首次
         // 打开的后台流式会话）——CLI 已把当前回合的用户消息落盘，直接渲染会
         // 与流式气泡的 pendingUserMessage 各出现一次。从最后一条与回合

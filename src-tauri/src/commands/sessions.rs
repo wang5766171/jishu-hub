@@ -50,7 +50,7 @@ pub(crate) async fn get_session_messages(
         if message.role == "user" {
             for block in &mut message.content {
                 if let crate::session::ContentBlock::Text { text, tool_ids } = block {
-                    let (clean, ids) = crate::agent::tool_plugin::extract_tool_snapshot(text);
+                    let (clean, ids) = crate::agent::internal_prompts::extract_tool_snapshot(text);
                     *text = clean;
                     *tool_ids = ids;
                 }

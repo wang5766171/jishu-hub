@@ -278,6 +278,17 @@ pub fn run() {
             // v0.8.1 M0：清扫上次运行残留的孤儿 pending-* 会话工具键
             // （发送中断未迁移的占位条目，防跨草稿会话串扰）。
             agent::tool_plugin::cleanup_stale_pending_sessions();
+            // v0.9.5：内部提示词版本锚点（resources/prompts/ 台账对账——
+            // 历史会话剥离异常时先核对此行与话术版本是否匹配）。
+            log::info!(
+                "[startup] internal prompts: {} v{}, {} v{}, {} v{}",
+                agent::internal_prompts::PROMPT_MCP_HINT.id,
+                agent::internal_prompts::PROMPT_MCP_HINT.version,
+                agent::internal_prompts::PROMPT_IMAGE_DISPATCH.id,
+                agent::internal_prompts::PROMPT_IMAGE_DISPATCH.version,
+                agent::internal_prompts::PROMPT_TOOL_HEADER.id,
+                agent::internal_prompts::PROMPT_TOOL_HEADER.version,
+            );
             // v0.8.1 M6：装载期预热工具插件安装探测（PATH where/which 与
             // --version）——compose_tool_message 持 AppState 锁渲染说明块时
             // 惰性探测会同步 spawn 子进程并阻塞全部命令，预热后命中缓存。

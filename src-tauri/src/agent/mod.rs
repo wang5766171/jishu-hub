@@ -29,6 +29,8 @@ pub mod mcp_server;
 pub mod skill_deploy;
 // v0.9.0 需求2：pi 扩展部署管线（[pi_extension].entry → pi extensions 目录）。
 pub mod pi_deploy;
+// v0.9.5 重构：内部提示词统一管理（标记对 + 话术版本登记 + 回放剥离单源）。
+pub mod internal_prompts;
 pub mod plugin;
 pub mod tool_plugin;
 pub mod traits;
