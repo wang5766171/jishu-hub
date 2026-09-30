@@ -19,9 +19,10 @@
 //! （CLI serve 进程 / 普通 #[test]）。
 
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::agent::tool_plugin;
 
@@ -62,6 +63,97 @@ pub fn split_namespaced(name: &str) -> Option<(String, String)> {
         return None;
     }
     Some((plugin.to_string(), tool.to_string()))
+}
+
+/// pi 侧可见工具名：pi 的 MCP 客户端（pi-mcp-adapter）以 `<服务名>_<工具名>`
+/// 暴露聚合 server 的工具——hub 规范名（`插件id__工具`）需加 `jishu-hub_`
+/// 前缀才是模型可直接调用的名字（2026-09-30 实测：识图话术曾以规范名点名，
+/// pi 报 Tool not found 并建议 jishu-hub_ 前缀全名）。
+pub fn pi_visible_tool_name(namespaced_tool: &str) -> String {
+    format!("{HUB_MCP_ENTRY_NAME}_{namespaced_tool}")
+}
+
+// ---------------------------------------------------------------------------
+// 识图路由话术的 schema 查询（app 进程侧）
+// ---------------------------------------------------------------------------
+
+/// schema 查询截止：话术合成发生在 send 路径，宁可降级（describe 兜底）
+/// 不拖发送。
+const HINT_SCHEMA_DEADLINE: Duration = Duration::from_secs(5);
+/// 阴性缓存冷却：查询失败的插件短期内不再试，避免每次发图都白等一遍。
+const HINT_NEGATIVE_COOLDOWN: Duration = Duration::from_secs(600);
+
+/// 插件工具清单的进程内缓存：plugin_id → (最近查询时刻, 工具清单)。
+/// Some(Vec) = 成功（长期有效——schema 变化频率远低于冷却粒度）；
+/// None = 最近一次失败（冷却期内直接降级）。
+static HINT_TOOL_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<String, (Instant, Option<Vec<McpToolDef>>)>>,
+> = std::sync::OnceLock::new();
+
+/// 查询命名空间工具（`插件id__工具名`）的 inputSchema——识图路由话术内联
+/// 参数说明用（能力对齐直连：直连时模型在工具清单里就能看到 schema，
+/// 经解析器点名调用时话术连同 schema 一并给到，免去 describe 一跳与
+/// 参数猜测）。进程内缓存 + 短截止；插件不存在/超时/握手失败 → None
+/// （调用方降级）；超时的后台线程完成后回填缓存，下次发图生效。
+///
+/// 与 serve 进程的连接池彼此独立（本查询在 app 进程内为单个工具临时
+/// spawn 一条连接，取完清单即回收；无状态工具 server 无并发副作用）。
+pub fn cached_tool_input_schema(namespaced_tool: &str) -> Option<Value> {
+    let (plugin_id, tool) = split_namespaced(namespaced_tool)?;
+    let tools = fetch_plugin_tools_cached(&plugin_id)?;
+    tools
+        .iter()
+        .find(|t| t.name == tool)
+        .map(|t| t.input_schema.clone())
+}
+
+/// 带缓存的插件工具清单查询（cache 命中即时返回；miss 时后台线程取数、
+/// 主线程限时等待——超时返回 None 且不取消线程，晚归结果仍写缓存）。
+fn fetch_plugin_tools_cached(plugin_id: &str) -> Option<Vec<McpToolDef>> {
+    let cache = HINT_TOOL_CACHE.get_or_init(Default::default);
+    {
+        let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, tools)) = guard.get(plugin_id) {
+            match tools {
+                Some(_) => return tools.clone(),
+                None if at.elapsed() < HINT_NEGATIVE_COOLDOWN => return None,
+                None => {} // 阴性过冷却 → 重查
+            }
+        }
+    }
+    // 声明查找（锁外文件 IO）。插件未声明/未启用 → 阴性缓存后速回。
+    let Some(decl) = load_mcp_plugin_decls()
+        .into_iter()
+        .find(|d| d.plugin_id() == plugin_id)
+    else {
+        let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+        guard.insert(plugin_id.to_string(), (Instant::now(), None));
+        return None;
+    };
+    // 后台线程取数（spawn+handshake 含 tools/list），完成后**先写缓存再发信号**
+    // ——主线程限时等信号；超时则本轮回 None，线程晚归时缓存已自愈。
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    let owner = plugin_id.to_string();
+    let cache_ref: &'static std::sync::Mutex<HashMap<_, _>> = cache;
+    std::thread::spawn(move || {
+        let outcome = spawn_transport(&decl).map(|live| {
+            let tools = live.tools;
+            // LivePlugin drop → transport kill（stdio 关 stdin，子进程自退）。
+            tools
+        });
+        let mut guard = cache_ref.lock().unwrap_or_else(|e| e.into_inner());
+        guard.insert(owner, (Instant::now(), outcome.clone().ok()));
+        drop(guard);
+        let _ = tx.send(outcome.map(|_| ()));
+    });
+    match rx.recv_timeout(HINT_SCHEMA_DEADLINE) {
+        Ok(Ok(())) => {
+            let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+            guard.get(plugin_id).and_then(|(_, t)| t.clone())
+        }
+        Ok(Err(_)) => None,   // 握手失败已记阴性缓存
+        Err(_) => None,       // 超时：线程晚归自愈缓存，本次降级
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +229,7 @@ pub fn builtin_tool_defs() -> Vec<McpToolDef> {
         },
         McpToolDef {
             name: "hub_mcp_call".into(),
-            description: "经 MCP 解析器代理调用插件工具：传入 hub_mcp_list 返回的工具名（如 插件id__工具名）与参数。册子上已直接注册的 插件id__ 工具优先直接调用".into(),
+            description: "经 MCP 解析器代理调用插件工具：传入 hub_mcp_list 返回的工具名与参数（册子上已直接注册的同名工具也可优先直调，完整注册名以各运行时为准）".into(),
             input_schema: obj_schema(
                 json!({
                     "tool": { "type": "string", "description": "目标工具名（插件id__工具名 或 builtin 名）" },
@@ -1279,6 +1371,32 @@ mod tests {
         );
         let resp = request(&mut s, "ping", json!({}));
         assert_eq!(resp["result"], json!({}));
+    }
+
+    /// v0.9.5 识图路由实测修复：hub 规范名经 pi 的 MCP 客户端暴露时带
+    /// `jishu-hub_` 前缀——话术点名必须用 pi 可见名。
+    #[test]
+    fn pi_visible_tool_name_adds_entry_prefix() {
+        assert_eq!(
+            pi_visible_tool_name("zai-mcp-server__analyze_image"),
+            "jishu-hub_zai-mcp-server__analyze_image"
+        );
+    }
+
+    /// 未声明/未启用的插件：schema 查询快速降级（阴性缓存，不 spawn）。
+    /// 用不可能存在的插件 id，避免依赖本机插件清单。
+    #[test]
+    fn cached_schema_unknown_plugin_degrades_fast() {
+        let start = std::time::Instant::now();
+        assert!(cached_tool_input_schema("definitely-not-a-plugin-9f8e7d__analyze").is_none());
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "未知插件应即时降级而非等待 spawn"
+        );
+        // 阴性缓存：二次查询同样即时。
+        assert!(cached_tool_input_schema("definitely-not-a-plugin-9f8e7d__analyze").is_none());
+        // 非命名空间名（无 __）→ None。
+        assert!(cached_tool_input_schema("plain_name").is_none());
     }
 
     #[test]

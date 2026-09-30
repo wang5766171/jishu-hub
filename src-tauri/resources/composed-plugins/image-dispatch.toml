@@ -15,7 +15,7 @@ default = ""
 key = "mcp_tools"
 type = "text"
 label = "mcp 识图工具"
-description = "逗号分隔。可写短名（如 analyze_image，hub 自动补全为 插件id__工具名 全名）；留空自动发现（依据 MCP 插件 manifest 的 vision_tools 声明）"
+description = "逗号分隔，点名直调（可写短名如 analyze_image，hub 按 manifest 的 vision_tools 声明补全为全名）。留空 = 不点名任何工具，agent 经 mcp 搜索 / hub_mcp_list 自行发现并选择识图工具（推荐——不同用户装的识图插件不同）"
 default = ""
 
 [[config]]

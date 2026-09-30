@@ -163,9 +163,11 @@ pub struct McpSection {
     pub url: Option<String>,
     #[serde(default)]
     pub headers: Option<std::collections::HashMap<String, String>>,
-    /// v0.9.5 需求5 T9：声明本 server 的识图工具名（自动发现用——识图路由
-    /// 插件未显式指定工具时，hub 据此把 `插件id__工具` 全名写进图片委派
-    /// 话术）。声明是提示性质，不影响 MCP 装载/转发。
+    /// v0.9.5 需求5 T9：声明本 server 的识图工具名。仅作识图路由插件
+    /// 「mcp 识图工具」显式配置的短名补全字典（如 analyze_image →
+    /// 插件id__analyze_image）——默认不据此点名（用户裁决 2026-09-30：
+    /// 发现交给 agent 经 hub_mcp_list 自选）。声明是提示性质，不影响
+    /// MCP 装载/转发。
     #[serde(default)]
     pub vision_tools: Option<Vec<String>>,
 }

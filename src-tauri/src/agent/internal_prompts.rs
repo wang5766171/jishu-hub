@@ -55,10 +55,12 @@ impl VersionedPrompt {
     }
 }
 
-/// MCP 解析服务提示正文（v1）。
+/// MCP 解析服务提示正文（v2：注册名描述如实化——各运行时前缀不同，以
+/// hub_mcp_list 返回名为准，不引导拼接 `插件id__` 前缀；v1 该句在 pi 侧
+/// 与实际注册名 `jishu-hub_插件id__工具` 不符，实测诱发 Tool not found）。
 pub const PROMPT_MCP_HINT: VersionedPrompt = VersionedPrompt {
     id: "mcp-hint",
-    version: 1,
+    version: 2,
     body: include_str!("../../resources/prompts/mcp-hint.md"),
 };
 

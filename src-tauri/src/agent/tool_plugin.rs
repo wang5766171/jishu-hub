@@ -255,7 +255,7 @@ pub fn render_tool_block(plugins: &[&ToolPlugin]) -> String {
         if plugin.file.mcp.is_some() {
             out.push_str(&format!("\n## {} — MCP 服务\n", plugin.file.info.id));
             out.push_str(&format!(
-                "本会话启用了 MCP 服务「{}」。调用它的工具时**优先**使用 jishu-hub 解析服务提供的、以 `{}__` 开头的 MCP 工具（结构化通道，直接调用，无需 shell、不要自行拼接命令行）；未选中的 MCP 服务同样经 jishu-hub 在线可用，按同样的 `插件id__` 前缀规则发现即可。\n",
+                "本会话启用了 MCP 服务「{}」。调用它的工具时**优先**使用 jishu-hub 解析服务提供的、以 `{}__` 为名干的 MCP 工具（结构化通道，直接调用，无需 shell、不要自行拼接命令行；完整注册名各运行时前缀不同，以 hub_mcp_list 返回为准）；未选中的 MCP 服务同样经 jishu-hub 在线可用，按同样的命名规则经 hub_mcp_list 发现。\n",
                 plugin.file.info.display_name, plugin.file.info.id
             ));
         }
@@ -561,12 +561,12 @@ usage = "u"
             PathBuf::from("/agents/skill-y.toml"),
             true,
         );
-        // v0.9.1 需求12：全局解析服务提示块——启用 [mcp] 插件才有，
-        // 文案含两步走指引与前缀规则（v0.9.4 需求9 P2：动态发现文案）。
+        // v0.9.1 需求12：全局解析服务提示块——启用 [mcp] 插件才有
+        //（v0.9.5 mcp-hint v2：注册名以 list 返回为准，不引导拼接前缀）。
         {
             let block = render_hub_mcp_resolver_hint(&[&mcp_plugin]);
             assert!(block.contains("jishu-hub — MCP 解析服务"));
-            assert!(block.contains("插件id__"));
+            assert!(block.contains("以 list 返回的名称为准"), "缺注册名如实指引");
             assert!(block.contains("hub_mcp_list"));
             assert!(block.contains("hub_mcp_call"));
             // 无 [mcp] 插件 → 空块。

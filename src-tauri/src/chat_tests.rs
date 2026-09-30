@@ -173,23 +173,21 @@ mod tests {
 
 // ── v0.9.5 需求5 T9：识图路由（解析与话术合成纯函数）──
 mod image_dispatch_tests {
-    use crate::chat::{compose_image_dispatch_hint, resolve_mcp_vision_tools, ImageDispatchRoute};
+    use crate::chat::{
+        compose_image_dispatch_hint_with, resolve_mcp_vision_tools, ImageDispatchRoute,
+    };
+    use serde_json::json;
 
     #[test]
-    fn mcp_tools_config_empty_falls_back_to_declarations() {
+    fn mcp_tools_config_empty_names_nothing() {
+        // 用户裁决 2026-09-30：识图工具不写死——配置为空 → 空集（不点名），
+        // 发现交给 agent 经 mcp 搜索 / hub_mcp_list 自选；声明仅作显式
+        // 配置的短名补全字典，不再自动全量点名。
         let declared = vec![
             ("zai-mcp-server".to_string(), vec!["analyze_image".to_string()]),
             ("other".to_string(), vec!["a".to_string(), "b".to_string()]),
         ];
-        let tools = resolve_mcp_vision_tools("", &declared);
-        assert_eq!(
-            tools,
-            vec![
-                "zai-mcp-server__analyze_image",
-                "other__a",
-                "other__b"
-            ]
-        );
+        assert!(resolve_mcp_vision_tools("", &declared).is_empty());
     }
 
     #[test]
@@ -208,20 +206,56 @@ mod image_dispatch_tests {
 
     #[test]
     fn default_hint_contains_scene_routing_and_fallbacks() {
-        // 显式配置工具时点名直呼（钉定场景）
+        // 显式配置工具时点名直呼（钉定场景）。v0.9.5：点名用 pi 可见名
+        // （jishu-hub_ 前缀——hub 规范名 pi 不识别，实测 Tool not found）；
+        // schema 查不到时降级为 describe 指引（假查询器固定降级路径）。
         let route = ImageDispatchRoute {
             custom_prompt: None,
             mcp_tools: vec!["some-mcp__analyze".to_string()],
             subagent_model: Some("zhipu/glm-5.3-flash".to_string()),
         };
-        let hint = compose_image_dispatch_hint(&route);
+        let hint = compose_image_dispatch_hint_with(&route, &|_| None);
         assert!(hint.contains("简单识别"), "缺简单识别路由");
         assert!(hint.contains("复杂分析"), "缺复杂分析路由");
-        assert!(hint.contains("some-mcp__analyze"));
+        assert!(hint.contains("jishu-hub_some-mcp__analyze"), "缺 pi 可见名");
         assert!(hint.contains("zhipu/glm-5.3-flash"));
         assert!(hint.contains(r#""action":"list""#), "缺清单查询步骤");
         assert!(hint.contains("改用另一条途径"), "缺互为兜底");
         assert!(hint.contains("严禁编造图片内容"), "缺双败如实告知");
+        assert!(hint.contains("describe 返回的 schema"), "降级缺 describe 指引");
+    }
+
+    /// v0.9.5 解析器能力对齐直连（用户裁决 2026-09-30）：点名工具内联参数
+    /// schema——模型首调即知参数名（实测曾以 image_path 猜 image_source，
+    /// 白挨一轮 -32602）。
+    #[test]
+    fn configured_tools_inline_schema() {
+        let route = ImageDispatchRoute {
+            custom_prompt: None,
+            mcp_tools: vec!["zai-mcp-server__analyze_image".to_string()],
+            subagent_model: Some("zhipu/glm-5.3-flash".to_string()),
+        };
+        let hint = compose_image_dispatch_hint_with(&route, &|tool| {
+            assert_eq!(tool, "zai-mcp-server__analyze_image", "查询应使用 hub 规范名");
+            Some(json!({
+                "type": "object",
+                "properties": {
+                    "image_source": { "type": "string", "description": "本地图路径或远程 URL" },
+                    "prompt": { "type": "string", "description": "分析要求" },
+                    "detail": { "type": "string" }
+                },
+                "required": ["image_source", "prompt"]
+            }))
+        });
+        assert!(hint.contains("jishu-hub_zai-mcp-server__analyze_image"));
+        assert!(
+            hint.contains("- image_source（string，必填）：本地图路径或远程 URL"),
+            "缺 image_source 参数行"
+        );
+        assert!(hint.contains("- prompt（string，必填）：分析要求"));
+        assert!(hint.contains("- detail（string，可选）"), "无描述参数仅标类型与必填");
+        assert!(hint.contains("args 传参数对象的 JSON 字符串"));
+        assert!(!hint.contains("describe 返回的 schema"), "有 schema 不应走降级");
     }
 
     #[test]
@@ -232,7 +266,7 @@ mod image_dispatch_tests {
             mcp_tools: vec![],
             subagent_model: Some("zhipu/glm-5.3-flash".to_string()),
         };
-        let hint = compose_image_dispatch_hint(&route);
+        let hint = compose_image_dispatch_hint_with(&route, &|_| None);
         assert!(hint.contains("先自行发现识图工具"), "缺自搜索指引");
         assert!(hint.contains("hub_mcp_list"), "缺全量列举入口");
         assert!(hint.contains("describe"), "缺确认步骤");
@@ -246,7 +280,7 @@ mod image_dispatch_tests {
             mcp_tools: vec![],
             subagent_model: None,
         };
-        let hint = compose_image_dispatch_hint(&route);
+        let hint = compose_image_dispatch_hint_with(&route, &|_| None);
         assert!(hint.contains("先自行发现识图工具"), "无工具时应走自搜索指引");
         assert!(!hint.contains("model 参数填"), "无模型时不应有 model 指引");
     }
@@ -260,13 +294,13 @@ mod image_dispatch_tests {
             mcp_tools: vec!["p__t".to_string()],
             subagent_model: Some("prov/m".to_string()),
         };
-        let hint = compose_image_dispatch_hint(&route);
+        let hint = compose_image_dispatch_hint_with(&route, &|_| None);
         assert!(
             hint.starts_with("本条消息含图片，而你不支持图像输入。按下列路由识图："),
             "开头话术漂移"
         );
         assert!(
-            hint.contains("优先 MCP：经 mcp 工具调用 p__t（参数按其 schema"),
+            hint.contains("优先 MCP：经 mcp 工具调用 jishu-hub_p__t，把上方附件行"),
             "MCP 条款接缝"
         );
         assert!(
@@ -284,7 +318,7 @@ mod image_dispatch_tests {
             mcp_tools: vec![],
             subagent_model: None,
         };
-        let hint2 = compose_image_dispatch_hint(&bare);
+        let hint2 = compose_image_dispatch_hint_with(&bare, &|_| None);
         assert!(
             hint2.contains("（禁止编造角色名），task 中写明"),
             "无模型时接缝应自然闭合"
@@ -299,7 +333,7 @@ mod image_dispatch_tests {
             mcp_tools: vec!["p__t".to_string()],
             subagent_model: Some("prov/m".to_string()),
         };
-        let hint = compose_image_dispatch_hint(&route);
-        assert_eq!(hint, "工具：p__t；模型：prov/m");
+        let hint = compose_image_dispatch_hint_with(&route, &|_| None);
+        assert_eq!(hint, "工具：jishu-hub_p__t；模型：prov/m");
     }
 }

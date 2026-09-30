@@ -18,6 +18,16 @@
   `<JISHU-MCP-HINT>` / `<JISHU-IMAGE-DISPATCH>` / `<JISHU-EXEC-CONTRACT>`，与
   `[JISHU-TASK:` 同族）；历史格式（小写连字符标记、legacy 纯行/配对块）剥离
   兼容按用户裁决整体移除。
+- 2026-09-30 mcp-hint v2：注册名描述如实化（「已注册的 `插件id__` 前缀工具
+  可直接调用」在 pi 侧与实际注册名 `jishu-hub_插件id__工具` 不符——同日识图
+  实测 Tool not found 即此因；改为「以 hub_mcp_list 返回的名称为准，不要
+  自行拼接猜测」）。同日识图路由配套：点名的识图工具改用 pi 可见名并内联
+  参数 schema（image-dispatch 模板骨架未动，仍 v1——子句在 chat.rs 代码侧
+  合成）。
+- 2026-09-30 识图路由默认不点名（用户裁决）：「mcp 识图工具」配置为空 →
+  空集，发现交给 agent 经 mcp 搜索 / hub_mcp_list 列表自选；插件 manifest
+  的 vision_tools 声明降级为显式配置的短名补全字典，不再自动全量点名
+  （原「声明全集」回退 = 隐性绑定具体识图插件，其他用户未必使用）。
 
 ## 各话术占位符
 

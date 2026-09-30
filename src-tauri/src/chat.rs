@@ -125,7 +125,9 @@ fn resolve_image_dispatch_route() -> ImageDispatchRoute {
 }
 
 /// 扫描已启用的 [mcp] 插件声明的识图工具（manifest vision_tools 字段，
-/// 排除禁用插件），产出 (插件 id, 工具名列表)。
+/// 排除禁用插件），产出 (插件 id, 工具名列表)。仅作用户显式配置
+/// 「mcp 识图工具」时的短名补全字典——不用于默认点名（用户裁决
+/// 2026-09-30：默认发现交给 agent 经 hub_mcp_list 自选）。
 fn collect_declared_vision_tools(
     disabled: &[String],
 ) -> Vec<(String, Vec<String>)> {
@@ -152,8 +154,11 @@ fn collect_declared_vision_tools(
         .collect()
 }
 
-/// T9 纯函数：mcp 识图工具解析——配置为空 → 声明全集（全名）；非空 → 逐项
-/// 短名补全（在声明里按 `id__工具` 或工具名匹配；补不上保留原文交模型试）。
+/// T9 纯函数：mcp 识图工具解析——**配置为空 → 空集（不点名）**（用户裁决
+/// 2026-09-30：识图工具不写死，声明自动点名 = 隐性绑定——其他用户未必用
+/// 同一个识图插件；发现交给 agent 经 mcp 搜索 / hub_mcp_list 列表自选）。
+/// 非空 → 逐项短名补全（在声明里按 `id__工具` 或工具名匹配；补不上保留
+/// 原文交模型试）。declared 仅作显式配置的短名补全字典。
 pub(crate) fn resolve_mcp_vision_tools(
     configured: &str,
     declared: &[(String, Vec<String>)],
@@ -166,10 +171,7 @@ pub(crate) fn resolve_mcp_vision_tools(
             .collect()
     };
     if configured.is_empty() {
-        return declared
-            .iter()
-            .flat_map(|(id, tools)| tools.iter().map(move |t| format!("{id}__{t}")))
-            .collect();
+        return Vec::new();
     }
     parse(configured)
         .into_iter()
@@ -222,11 +224,31 @@ fn model_exists(qualified: &str) -> bool {
 /// 或内置默认（resources/prompts/image-dispatch.md 模板，场景路由 + 互为
 /// 兜底 + 双败如实告知；模板占位符 {{mcp_clause}}/{{subagent_model_note}}
 /// 在此填充）。
+/// 生产入口：schema 查询走 mcp_server 的进程内缓存（短截止 + 降级）。
 pub(crate) fn compose_image_dispatch_hint(route: &ImageDispatchRoute) -> String {
+    compose_image_dispatch_hint_with(route, &agent::mcp_server::cached_tool_input_schema)
+}
+
+/// 话术合成（schema 查询器可注入——单测用假查询器，不 spawn 真实后端）。
+/// v0.9.5 解析器能力对齐直连（用户裁决 2026-09-30）：点名工具给 **pi 可见
+/// 名**（`jishu-hub_` 前缀——hub 规范名 pi 不识别，实测 Tool not found），
+/// 并**内联参数 schema**——直连时模型在工具清单里即可见 schema，经解析器
+/// 点名调用同样要给到，免去 describe 一跳与参数猜测；schema 查不到则降级
+/// 为 describe 指引（模型自愈路径不变）。
+pub(crate) fn compose_image_dispatch_hint_with(
+    route: &ImageDispatchRoute,
+    schema_of: &dyn Fn(&str) -> Option<serde_json::Value>,
+) -> String {
+    // 点名/占位符统一用 pi 可见名（模型可直接调用的名字）。
     let mcp_tools_text = if route.mcp_tools.is_empty() {
         "（未指定——请自行搜索选择识图工具）".to_string()
     } else {
-        route.mcp_tools.join(" / ")
+        route
+            .mcp_tools
+            .iter()
+            .map(|t| agent::mcp_server::pi_visible_tool_name(t))
+            .collect::<Vec<_>>()
+            .join(" / ")
     };
     let model_text = route.subagent_model.clone().unwrap_or_default();
     if let Some(custom) = &route.custom_prompt {
@@ -240,7 +262,30 @@ pub(crate) fn compose_image_dispatch_hint(route: &ImageDispatchRoute) -> String 
     let mcp_clause = if route.mcp_tools.is_empty() {
         "先自行发现识图工具——用 mcp 工具按关键词搜索（如 mcp 参数 {\"search\":\"image\"}）或调 hub_mcp_list 列出全部可用工具，从中挑一个能分析图片的（拿不准时用 describe 看其参数说明），确认后调用，把上方附件行「图片N（批次 …）」中的图片磁盘路径按其 schema 传入；若搜索后确实没有识图类工具，本条跳过、直接走第二条".to_string()
     } else {
-        format!("经 mcp 工具调用 {mcp_tools_text}（参数按其 schema，传上方附件行「图片N（批次 …）」中的图片磁盘路径）")
+        let mut clause = format!(
+            "经 mcp 工具调用 {mcp_tools_text}，把上方附件行「图片N（批次 …）」中的图片磁盘路径传入"
+        );
+        let mut schemas = String::new();
+        for tool in &route.mcp_tools {
+            // 查询用 hub 规范名（插件id__工具）——缓存与声明按插件 id 索引。
+            if let Some(schema) = schema_of(tool) {
+                let params = render_schema_params(&schema);
+                if !params.is_empty() {
+                    schemas.push_str(&format!(
+                        "\n{} 的参数：\n{}\n",
+                        agent::mcp_server::pi_visible_tool_name(tool),
+                        params
+                    ));
+                }
+            }
+        }
+        if schemas.is_empty() {
+            clause.push_str("；参数以 mcp describe 返回的 schema 为准");
+        } else {
+            clause.push_str("；参数如下（args 传参数对象的 JSON 字符串）：\n");
+            clause.push_str(schemas.trim_end());
+        }
+        clause
     };
     let model_note = match &route.subagent_model {
         Some(m) => format!("，model 参数填 {m}（识图模型）"),
@@ -250,6 +295,35 @@ pub(crate) fn compose_image_dispatch_hint(route: &ImageDispatchRoute) -> String 
         .body()
         .replace("{{mcp_clause}}", &mcp_clause)
         .replace("{{subagent_model_note}}", &model_note)
+}
+
+/// inputSchema → 参数说明行（`- 名（类型，必填/可选）：说明`）。MCP 工具
+/// 参数为第一层扁平对象；无 properties → 空串（调用方视为无 schema 降级）。
+fn render_schema_params(schema: &serde_json::Value) -> String {
+    let Some(props) = schema.get("properties").and_then(|v| v.as_object()) else {
+        return String::new();
+    };
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+        .unwrap_or_default();
+    let mut lines = Vec::new();
+    for (name, spec) in props {
+        let ty = spec.get("type").and_then(|v| v.as_str()).unwrap_or("any");
+        let req = if required.contains(&name.as_str()) {
+            "必填"
+        } else {
+            "可选"
+        };
+        match spec.get("description").and_then(|v| v.as_str()) {
+            Some(desc) if !desc.is_empty() => {
+                lines.push(format!("- {name}（{ty}，{req}）：{desc}"));
+            }
+            _ => lines.push(format!("- {name}（{ty}，{req}）")),
+        }
+    }
+    lines.join("\n")
 }
 
 /** 激活模型的图像输入能力（models.json 条目 input 含 "image"）。 */
