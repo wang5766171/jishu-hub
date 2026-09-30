@@ -31,7 +31,7 @@ pub fn run(action: McpAction, ctx: &ExecutionContext) -> Result<(), CliError> {
 fn serve() -> Result<(), CliError> {
     // stdio server：stdout 是协议通道，一切日志走 stderr。
     crate::agent::mcp_server::serve()
-        .map_err(|e| CliError::Internal(e))
+        .map_err(CliError::Internal)
 }
 
 fn print_report(report: &SyncReport, _ctx: &ExecutionContext) {

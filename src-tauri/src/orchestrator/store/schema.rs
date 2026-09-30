@@ -269,7 +269,7 @@ impl TaskStore {
         // ── 轻量 migration：对已有库补列（新库 CREATE TABLE 已含）──
         // dispatch_prompt：T0 新增，node_attempt 派发 prompt（三角色识别用）。
         // SQLite 没有 ADD COLUMN IF NOT EXISTS，先查 pragma 检查列是否存在。
-        ensure_column(&conn, "node_attempt", "dispatch_prompt", "TEXT")?;
+        ensure_column(conn, "node_attempt", "dispatch_prompt", "TEXT")?;
 
         conn.pragma_update(None, "user_version", TASK_STORE_SCHEMA_VERSION)?;
 

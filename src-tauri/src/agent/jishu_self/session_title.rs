@@ -275,7 +275,7 @@ fn append_session_info(path: &std::path::Path, title: &str) -> std::io::Result<(
     let parent_id: Option<String> = content
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .last()
+        .next_back()
         .and_then(|l| {
             serde_json::from_str::<serde_json::Value>(l)
                 .ok()

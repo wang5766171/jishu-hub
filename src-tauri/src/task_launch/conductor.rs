@@ -558,13 +558,12 @@ fn legacy_sync_phase(
             instance.current_phase = "execution".into();
             instance.status = STATUS_GRAPH_CREATED.into();
         }
-        "done" => {
+        "done"
             // done 不改 current_phase（保持 execution），只标记完成
             // 在 fallback 模式下无 run_id，用 run_status=completed 标记
-            if instance.run_status.is_none() {
+            if instance.run_status.is_none() => {
                 instance.run_status = Some(RUN_STATUS_COMPLETED.into());
             }
-        }
         _ => {}
     }
 

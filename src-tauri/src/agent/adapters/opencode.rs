@@ -435,8 +435,8 @@ fn datetime_from_millis(value: i64) -> Option<DateTime<Utc>> {
 }
 
 fn extract_json(raw: &str) -> Option<&str> {
-    let start = raw.find(|ch| ch == '{' || ch == '[')?;
-    let end = raw.rfind(|ch| ch == '}' || ch == ']')?;
+    let start = raw.find(['{', '['])?;
+    let end = raw.rfind(['}', ']'])?;
     if end > start {
         Some(raw[start..=end].trim())
     } else {

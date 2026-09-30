@@ -125,7 +125,6 @@ fn upsert_hub_entry_in_root(
 fn upsert_standard_global_mcp(
     entry: Option<&crate::config::McpServerConfig>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
     let path = home.join(".config").join("mcp").join("mcp.json");
     let mut root: serde_json::Value = if path.exists() {
@@ -136,7 +135,7 @@ fn upsert_standard_global_mcp(
     };
     upsert_hub_entry_in_root(
         &mut root,
-        entry.map(|e| serde_json::to_value(e)).transpose()?.as_ref(),
+        entry.map(serde_json::to_value).transpose()?.as_ref(),
     )?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -571,7 +570,6 @@ mod tests {
         // 幂等：再次运行无写入。
         assert!(!super::ensure_default_retry_in_value(&mut v2));
     }
-
 
     #[test]
     fn pi_project_settings_round_trip_preserves_unknown_keys() {

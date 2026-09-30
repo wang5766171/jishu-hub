@@ -153,10 +153,7 @@ fn package_entry_matches(entry: &str, name: &str) -> bool {
 /// 源条目——已装盘面被安装器钉版本，条目版本若不归一会致 pi 判
 /// needsInstall 离线跳过不装载；禁用 → 摘该包全部条目；其余用户条目
 /// 原样保留）。
-pub fn plan_packages_sync(
-    existing: &[String],
-    enabled_packages: &[(&str, bool)],
-) -> Vec<String> {
+pub fn plan_packages_sync(existing: &[String], enabled_packages: &[(&str, bool)]) -> Vec<String> {
     let mut out: Vec<String> = existing.to_vec();
     for (name, enabled) in enabled_packages {
         if *enabled {
@@ -207,9 +204,8 @@ pub fn sync_pi_packages_with_plugins() {
     if next == existing {
         return;
     }
-    settings["packages"] = serde_json::Value::Array(
-        next.into_iter().map(serde_json::Value::String).collect(),
-    );
+    settings["packages"] =
+        serde_json::Value::Array(next.into_iter().map(serde_json::Value::String).collect());
     if let Ok(new_content) = serde_json::to_string_pretty(&settings) {
         let _ = std::fs::write(&settings_path, new_content);
     }
@@ -387,21 +383,48 @@ pub fn enabled_pi_extension_tools() -> Vec<String> {
 /// manifest，启动幂等部署到 ~/.jishu-hub/plugins/<id>/plugin.toml（系统语义：
 /// 重部署覆盖，用户改造需经新建组合插件另存）。
 const BUILTIN_COMPOSED_MANIFESTS: &[(&str, &str)] = &[
-    ("session.mermaid-render", include_str!("../../resources/composed-plugins/mermaid-render.toml")),
-    ("session.phase-divider", include_str!("../../resources/composed-plugins/phase-divider.toml")),
-    ("session.tool-stats", include_str!("../../resources/composed-plugins/tool-stats.toml")),
-    ("session.outline", include_str!("../../resources/composed-plugins/outline.toml")),
-    ("session.navigation", include_str!("../../resources/composed-plugins/navigation.toml")),
-    ("session.desktop-notify", include_str!("../../resources/composed-plugins/desktop-notify.toml")),
+    (
+        "session.mermaid-render",
+        include_str!("../../resources/composed-plugins/mermaid-render.toml"),
+    ),
+    (
+        "session.phase-divider",
+        include_str!("../../resources/composed-plugins/phase-divider.toml"),
+    ),
+    (
+        "session.tool-stats",
+        include_str!("../../resources/composed-plugins/tool-stats.toml"),
+    ),
+    (
+        "session.outline",
+        include_str!("../../resources/composed-plugins/outline.toml"),
+    ),
+    (
+        "session.navigation",
+        include_str!("../../resources/composed-plugins/navigation.toml"),
+    ),
+    (
+        "session.desktop-notify",
+        include_str!("../../resources/composed-plugins/desktop-notify.toml"),
+    ),
     // v0.9.3 需求13 C4：pipeline 型样例（编排定义可视化；运行时驱动 C4-slice-2）。
-    ("session.video-maker", include_str!("../../resources/composed-plugins/video-maker.toml")),
+    (
+        "session.video-maker",
+        include_str!("../../resources/composed-plugins/video-maker.toml"),
+    ),
     // v0.9.3 需求13 C5-slice1：任务看板自 session.flow 组合化（task 源 ×
     // render.task-board × dock；内置 TS 插件随之退役）。
-    ("session.task-board", include_str!("../../resources/composed-plugins/task-board.toml")),
+    (
+        "session.task-board",
+        include_str!("../../resources/composed-plugins/task-board.toml"),
+    ),
     // v0.9.5 需求5 T9：识图路由（纯配置载体组合插件——无挂载无动作，
     // 承载图片委派话术/识图工具/识图模型三项配置，chat.rs 消费；系统
     // 语义随包分发，禁用 = 注入内置兜底话术）。
-    ("session.image-dispatch", include_str!("../../resources/composed-plugins/image-dispatch.toml")),
+    (
+        "session.image-dispatch",
+        include_str!("../../resources/composed-plugins/image-dispatch.toml"),
+    ),
 ];
 
 fn composed_plugins_root() -> PathBuf {
@@ -494,7 +517,12 @@ fn attach_plugin_files(json: &mut serde_json::Value, dir: &std::path::Path) {
             let digest = Sha256::digest(&bytes);
             files.insert(
                 name,
-                digest.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>().into(),
+                digest
+                    .iter()
+                    .take(4)
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+                    .into(),
             );
         }
     }
@@ -514,10 +542,7 @@ fn attach_plugin_files(json: &mut serde_json::Value, dir: &std::path::Path) {
                 );
             }
         }
-        obj.insert(
-            "_dir".into(),
-            dir.to_string_lossy().to_string().into(),
-        );
+        obj.insert("_dir".into(), dir.to_string_lossy().to_string().into());
         obj.insert("_files".into(), serde_json::Value::Object(files));
     }
 }
@@ -594,7 +619,7 @@ pub fn save_composed_manifest(id: &str, toml: &str) -> Result<(), String> {
     let tool_names: Vec<String> = value
         .get("agent-tool")
         .and_then(|v| v.as_array())
- .map(|arr| {
+        .map(|arr| {
             arr.iter()
                 .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(String::from))
                 .collect()
@@ -667,7 +692,9 @@ fn stage_template(key: &str) -> Option<serde_json::Value> {
 }
 
 /// manifest 阶段声明展开（模板默认 ⨯ 声明覆盖）→ 阶段数组（运行时统一形状）。
-pub fn resolve_pipeline_stages(manifest: &serde_json::Value) -> Result<Vec<serde_json::Value>, String> {
+pub fn resolve_pipeline_stages(
+    manifest: &serde_json::Value,
+) -> Result<Vec<serde_json::Value>, String> {
     let stages = manifest
         .get("pipeline")
         .and_then(|p| p.get("stages"))
@@ -824,7 +851,7 @@ pub fn session_plugin_descriptors(disabled: &HashSet<String>) -> Vec<PluginDescr
             system: false,
             icon: String::new(),
             composed: false,
-        has_pipeline: false,
+            has_pipeline: false,
         })
         .collect()
 }
@@ -920,11 +947,8 @@ pub fn install_skill_folder_plugin(
     // skills/<name>/ 整目录复制（跳过根 SKILL.md，随后以表单渲染覆写）。
     let skill_dst = plugin_root.join("skills").join(skill_name);
     copy_skill_tree(skill_src, &skill_dst)?;
-    crate::util::atomic_write(
-        &skill_dst.join("SKILL.md"),
-        skill_md_content.as_bytes(),
-    )
-    .map_err(|e| e.to_string())?;
+    crate::util::atomic_write(&skill_dst.join("SKILL.md"), skill_md_content.as_bytes())
+        .map_err(|e| e.to_string())?;
     log::info!(
         "[plugin] installed skill folder plugin {} -> {} (skill: {})",
         file.info.id,
@@ -1176,14 +1200,16 @@ pub fn builtin_plugin_specs() -> Vec<(PluginFactory, bool)> {
 /// 内置智能体的中文说明（AgentInfo 无 description 字段，此处单点对照；
 /// 未列出的 id（测试 fake 等）回退 None）。
 fn builtin_agent_description(id: &str) -> Option<String> {
-    Some(match id {
-        "jishu-self" => "内置智能体（内嵌 Pi 引擎，机枢 agent 本体，含任务流程编排能力）",
-        "claude-code" => "Claude Code 接入适配器（经 ACP 通道驱动官方 CLI）",
-        "codex" => "Codex 接入适配器（经 app-server 协议驱动官方 CLI）",
-        "opencode" => "OpenCode 接入适配器（第三方开源编码智能体）",
-        _ => return None,
-    }
-    .to_string())
+    Some(
+        match id {
+            "jishu-self" => "内置智能体（内嵌 Pi 引擎，机枢 agent 本体，含任务流程编排能力）",
+            "claude-code" => "Claude Code 接入适配器（经 ACP 通道驱动官方 CLI）",
+            "codex" => "Codex 接入适配器（经 app-server 协议驱动官方 CLI）",
+            "opencode" => "OpenCode 接入适配器（第三方开源编码智能体）",
+            _ => return None,
+        }
+        .to_string(),
+    )
 }
 
 /// 装配核心（纯函数，可测）：内建插件 + manifest 插件 + 禁用集合 →
@@ -1225,7 +1251,7 @@ pub fn assemble(
             system: false,
             icon: info.icon.clone(),
             composed: false,
-        has_pipeline: false,
+            has_pipeline: false,
         });
     }
 
@@ -1257,7 +1283,7 @@ pub fn assemble(
             system: false,
             icon: file.info.icon.clone(),
             composed: false,
-        has_pipeline: false,
+            has_pipeline: false,
         });
     }
 
@@ -1276,7 +1302,7 @@ fn manifest_plugin_description(file: &super::manifest::schema::AgentManifestFile
         return first_sentence.trim().to_string();
     }
     if let Some(skill) = file.skill.as_ref() {
-        for (_name, description, _body) in skill.entries() {
+        if let Some((_name, description, _body)) = skill.entries().into_iter().next() {
             return description.to_string();
         }
     }
@@ -1288,12 +1314,12 @@ pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescrip
     // v0.9.4 需求3：目录形式 skill 插件（plugins/<id>/skills/<name>/）无
     // [skill] 段——描述回退取首个 SKILL.md frontmatter，has_skill 以目录
     // 源存在为准（插件中心 skill 分类与状态展示不受影响）。
-    let dir_root = plugin
-        .source_path
-        .parent()
-        .filter(|p| p.file_name().is_some_and(|n| n == plugin.file.info.id.as_str()));
-    let dir_skills = dir_root
-        .map(|r| crate::agent::skill_deploy::dir_source_skills(r, &plugin.file.info.id));
+    let dir_root = plugin.source_path.parent().filter(|p| {
+        p.file_name()
+            .is_some_and(|n| n == plugin.file.info.id.as_str())
+    });
+    let dir_skills =
+        dir_root.map(|r| crate::agent::skill_deploy::dir_source_skills(r, &plugin.file.info.id));
     let mut description = manifest_plugin_description(&plugin.file);
     if description.is_empty() {
         if let Some(first) = dir_skills.as_ref().and_then(|v| v.first()) {
@@ -1311,10 +1337,7 @@ pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescrip
         enabled: plugin.enabled,
         has_mcp: plugin.file.mcp.is_some(),
         has_panel: plugin.file.panel.is_some(),
-        has_skill: plugin
-            .file
-            .skill
-            .is_some()
+        has_skill: plugin.file.skill.is_some()
             || dir_skills.as_ref().is_some_and(|v| !v.is_empty()),
         has_pi_extension: plugin.file.pi_extension.is_some(),
         panel: plugin.file.panel.as_ref().map(|p| PanelDecl {
@@ -1331,7 +1354,7 @@ pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescrip
         system: is_system_plugin(&plugin.file.info.id),
         icon: plugin.file.info.icon.clone(),
         composed: false,
-    has_pipeline: false,
+        has_pipeline: false,
     }
 }
 
@@ -1370,7 +1393,11 @@ mod tests {
         assert_eq!(first["key"], "discuss");
         assert_eq!(first["name"], "需求讨论");
         assert!(first["prompt"].as_str().unwrap().contains("澄清目标"));
-        assert!(first["tools"].as_array().unwrap().iter().any(|t| t == "lock_requirement"));
+        assert!(first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t == "lock_requirement"));
         assert_eq!(first["gate"], "confirm");
         // 自定义段：key 缺省 stage-N，声明覆盖 gate。
         let second = &stages[1];
@@ -1926,12 +1953,22 @@ mod agent_tool_tests {
     /// 6b/6c：物化（启用收录/禁用排除/撞名去重）+ 撞名拒绝 + roundtrip。
     #[test]
     fn materialize_and_conflict_checks() {
-        let _guard = crate::agent::manifest::env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
 
-        save_composed_manifest("session.tool-a", &composed_toml("session.tool-a", Some("export_session"))).unwrap();
-        save_composed_manifest("session.tool-b", &composed_toml("session.tool-b", Some("search_docs"))).unwrap();
+        save_composed_manifest(
+            "session.tool-a",
+            &composed_toml("session.tool-a", Some("export_session")),
+        )
+        .unwrap();
+        save_composed_manifest(
+            "session.tool-b",
+            &composed_toml("session.tool-b", Some("search_docs")),
+        )
+        .unwrap();
         // 禁用 tool-b：物化面排除。
         let _ = set_plugin_enabled("session.tool-b", false);
 
@@ -1964,7 +2001,9 @@ mod agent_tool_tests {
     /// 物化文件缺失/损坏 → 空集（闸门自然拒绝）。
     #[test]
     fn load_agent_tools_tolerates_missing_file() {
-        let _guard = crate::agent::manifest::env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
         assert!(load_agent_tools().is_empty());

@@ -55,8 +55,8 @@ fn add(path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
             .validate()
             .map_err(|e| CliError::InvalidArg(format!("invalid manifest: {e}")))?;
         // v0.8.1 需求6：落盘通道与 GUI plugin_create 共享（冲突检查 + 写文件）。
-        let (id, target) =
-            agent::plugin::install_manifest_file(&parsed, &content).map_err(CliError::InvalidArg)?;
+        let (id, target) = agent::plugin::install_manifest_file(&parsed, &content)
+            .map_err(CliError::InvalidArg)?;
 
         if ctx.json {
             println!(
@@ -227,8 +227,9 @@ fn add_hybrid(dir_path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
     agent::plugin::save_composed_manifest(&id, &toml_content).map_err(CliError::InvalidArg)?;
     let target_dir = agent::plugin::composed_plugins_dir().join(&id);
     let target_code = target_dir.join("component.js");
-    crate::util::atomic_write(&target_code, code.as_bytes())
-        .map_err(|e| CliError::InvalidArg(format!("cannot write {}: {e}", target_code.display())))?;
+    crate::util::atomic_write(&target_code, code.as_bytes()).map_err(|e| {
+        CliError::InvalidArg(format!("cannot write {}: {e}", target_code.display()))
+    })?;
 
     // 默认禁用 + 确认标记 + 输出（1b：与 add 组合臂共用公共尾部）。
     finalize_composed_install(&id, &name, &mount, code_lines as u64, ctx)
@@ -239,7 +240,9 @@ fn add_hybrid(dir_path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
 fn get(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
     // 1b 统一寻址：先查 agents/<id>.toml，未命中再查 plugins/<id>/plugin.toml。
     let agents_path = agent::manifest::manifest_dir().join(format!("{id}.toml"));
-    let composed_path = agent::plugin::composed_plugins_dir().join(id).join("plugin.toml");
+    let composed_path = agent::plugin::composed_plugins_dir()
+        .join(id)
+        .join("plugin.toml");
     let path = if agents_path.exists() {
         agents_path
     } else if composed_path.exists() {
@@ -287,7 +290,9 @@ fn update(id: &str, path_str: &str, ctx: &ExecutionContext) -> Result<(), CliErr
                 "plugin id cannot change on update (target {id:?}, manifest declares {decl_id:?}) — remove and re-add instead"
             )));
         }
-        let target = agent::plugin::composed_plugins_dir().join(id).join("plugin.toml");
+        let target = agent::plugin::composed_plugins_dir()
+            .join(id)
+            .join("plugin.toml");
         if !target.exists() {
             return Err(CliError::InvalidArg(format!(
                 "composed plugin not found: {id} (expected {}) — add it first",
@@ -378,8 +383,8 @@ fn list(ctx: &ExecutionContext) -> Result<(), CliError> {
     }
 
     println!(
-        "{:<16} {:<10} {:<8} {:<8} {}",
-        "ID", "KIND", "CORE", "ENABLED", "VERSION"
+        "{:<16} {:<10} {:<8} {:<8} VERSION",
+        "ID", "KIND", "CORE", "ENABLED"
     );
     for p in &plugins {
         println!(
@@ -438,16 +443,20 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
             // 先清 disabled 引用再删目录（known_plugin_ids 扫描 plugins/，
             // 目录删除后 id 不可知 → set_plugin_enabled 会拒）。
             let _ = agent::plugin::set_plugin_enabled(id, true);
-            std::fs::remove_dir_all(&dir)
-                .map_err(|e| CliError::InvalidArg(format!("cannot remove {}: {e}", dir.display())))?;
+            std::fs::remove_dir_all(&dir).map_err(|e| {
+                CliError::InvalidArg(format!("cannot remove {}: {e}", dir.display()))
+            })?;
             if ctx.json {
-                println!("{}", serde_json::json!({"removed": true, "id": id, "path": dir}));
+                println!(
+                    "{}",
+                    serde_json::json!({"removed": true, "id": id, "path": dir})
+                );
             } else {
                 println!("Removed composed plugin {id} ({})", dir.display());
             }
             return Ok(());
         }
-        (Some(p), _) => p.source_path.as_ref().map(|s| std::path::PathBuf::from(s)),
+        (Some(p), _) => p.source_path.as_ref().map(std::path::PathBuf::from),
         (None, Some(tp)) => Some(tp.source_path.clone()),
         (None, None) => {
             // 1b 统一寻址组合臂：plugins/<id>/ 目录（组合式/流水线/混合）。
@@ -470,10 +479,7 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
                     serde_json::json!({"removed": true, "id": id, "path": composed_dir})
                 );
             } else {
-                println!(
-                    "Removed composed plugin {id} ({})",
-                    composed_dir.display()
-                );
+                println!("Removed composed plugin {id} ({})", composed_dir.display());
             }
             return Ok(());
         }
@@ -525,17 +531,26 @@ fn import_extension(path: &str, ctx: &ExecutionContext) -> Result<(), CliError> 
         let report = crate::agent::pi_extension_import::import_extension_bundle(path)
             .map_err(CliError::InvalidArg)?;
         if ctx.json {
-            println!("{}", serde_json::json!({
-                "kind": report.kind,
-                "extension": report.extension,
-                "toolPlugin": report.tool_plugin,
-                "rendererPlugin": report.renderer_plugin,
-            }));
+            println!(
+                "{}",
+                serde_json::json!({
+                    "kind": report.kind,
+                    "extension": report.extension,
+                    "toolPlugin": report.tool_plugin,
+                    "rendererPlugin": report.renderer_plugin,
+                })
+            );
         } else {
             println!("Imported extension bundle ({}):", report.kind);
-            if let Some(ext) = &report.extension { println!("  extension  → {ext}（默认不启用）"); }
-            if let Some(id) = &report.tool_plugin { println!("  tool plugin → agents/{id}.toml"); }
-            if let Some(id) = &report.renderer_plugin { println!("  renderer    → plugins/{id}（确认卡启用）"); }
+            if let Some(ext) = &report.extension {
+                println!("  extension  → {ext}（默认不启用）");
+            }
+            if let Some(id) = &report.tool_plugin {
+                println!("  tool plugin → agents/{id}.toml");
+            }
+            if let Some(id) = &report.renderer_plugin {
+                println!("  renderer    → plugins/{id}（确认卡启用）");
+            }
         }
         return Ok(());
     }
@@ -575,9 +590,15 @@ fn import_extension(path: &str, ctx: &ExecutionContext) -> Result<(), CliError> 
             println!("  events: {}", summary.events.join(", "));
         }
         if summary.file_ops || summary.network || summary.subprocess {
-            println!("  ⚠ fileOps={} network={} subprocess={}", summary.file_ops, summary.network, summary.subprocess);
+            println!(
+                "  ⚠ fileOps={} network={} subprocess={}",
+                summary.file_ops, summary.network, summary.subprocess
+            );
         }
-        println!("  ⚠ {}", crate::agent::pi_extension_import::ARBITRARY_CODE_WARNING);
+        println!(
+            "  ⚠ {}",
+            crate::agent::pi_extension_import::ARBITRARY_CODE_WARNING
+        );
     }
     Ok(())
 }
@@ -628,7 +649,9 @@ fn validate(path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
         .ok_or_else(|| CliError::InvalidArg("manifest missing [plugin].id".to_string()))?
         .to_string();
     if !id.starts_with("session.") {
-        basic_errors.push(format!("[plugin] id 须以 session. 开头（安装通道要求），got {id:?}"));
+        basic_errors.push(format!(
+            "[plugin] id 须以 session. 开头（安装通道要求），got {id:?}"
+        ));
     }
     if let Some(component) = value
         .get("render")
@@ -655,9 +678,8 @@ fn validate(path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
                 );
             }
             if !code.contains("version: 1") && !code.contains("version:1") {
-                basic_errors.push(
-                    "component.js 应声明 version: 1（当前 PLUGIN_API_VERSION）".to_string(),
-                );
+                basic_errors
+                    .push("component.js 应声明 version: 1（当前 PLUGIN_API_VERSION）".to_string());
             }
             Some(code)
         }
@@ -794,14 +816,25 @@ mount = "dock-panel"
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
         let dir = tempfile::tempdir().unwrap();
         let toml_path = dir.path().join("panel.toml");
-        std::fs::write(&toml_path, composed_toml("session.cli-test-panel", "CLI 测试面板")).unwrap();
+        std::fs::write(
+            &toml_path,
+            composed_toml("session.cli-test-panel", "CLI 测试面板"),
+        )
+        .unwrap();
         add(toml_path.to_str().unwrap(), &ctx()).expect("add composed");
         // 1b-1：落在 plugins/<id>/plugin.toml（不是 agents/）。
         let target = composed_dir("session.cli-test-panel").join("plugin.toml");
-        assert!(target.exists(), "composed manifest should land in plugins/, got {target:?}");
-        assert!(!agent::manifest::manifest_dir().join("session.cli-test-panel.toml").exists());
+        assert!(
+            target.exists(),
+            "composed manifest should land in plugins/, got {target:?}"
+        );
+        assert!(!agent::manifest::manifest_dir()
+            .join("session.cli-test-panel.toml")
+            .exists());
         // 热生效链：.pending-confirm 标记就位（前端确认卡轮询数据源）。
-        assert!(composed_dir("session.cli-test-panel").join(".pending-confirm").exists());
+        assert!(composed_dir("session.cli-test-panel")
+            .join(".pending-confirm")
+            .exists());
         // 默认禁用（确认卡安全阀）。
         assert!(agent::plugin::load_plugin_config()
             .disabled
@@ -816,7 +849,11 @@ mount = "dock-panel"
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
         // 1b-2：get 统一寻址——组合式插件可从 plugins/<id>/ 读回完整 TOML。
-        agent::plugin::save_composed_manifest("session.cli-test-get", &composed_toml("session.cli-test-get", "面板")).unwrap();
+        agent::plugin::save_composed_manifest(
+            "session.cli-test-get",
+            &composed_toml("session.cli-test-get", "面板"),
+        )
+        .unwrap();
         get("session.cli-test-get", &ctx()).expect("get composed");
         // agents/ 优先：同 id 不存在时组合式命中（上面已证）；双缺失给双路径提示。
         let err = get("session.no-such-plugin", &ctx()).unwrap_err();
@@ -834,19 +871,27 @@ mount = "dock-panel"
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
         // 1b-3：组合式 update——id 一致校验 + 覆盖写回 + 确认卡标记。
-        agent::plugin::save_composed_manifest("session.cli-test-upd", &composed_toml("session.cli-test-upd", "v1")).unwrap();
+        agent::plugin::save_composed_manifest(
+            "session.cli-test-upd",
+            &composed_toml("session.cli-test-upd", "v1"),
+        )
+        .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let toml_path = dir.path().join("panel-v2.toml");
         std::fs::write(&toml_path, composed_toml("session.cli-test-upd", "面板 v2")).unwrap();
         update("session.cli-test-upd", toml_path.to_str().unwrap(), &ctx())
             .expect("update composed");
-        let content = std::fs::read_to_string(
-            composed_dir("session.cli-test-upd").join("plugin.toml"),
-        )
-        .unwrap();
-        assert!(content.contains("面板 v2"), "update should overwrite manifest");
+        let content =
+            std::fs::read_to_string(composed_dir("session.cli-test-upd").join("plugin.toml"))
+                .unwrap();
+        assert!(
+            content.contains("面板 v2"),
+            "update should overwrite manifest"
+        );
         // 热生效链：更新后确认标记在位。
-        assert!(composed_dir("session.cli-test-upd").join(".pending-confirm").exists());
+        assert!(composed_dir("session.cli-test-upd")
+            .join(".pending-confirm")
+            .exists());
         // id 不一致拒绝。
         let err = update("session.other-id", toml_path.to_str().unwrap(), &ctx()).unwrap_err();
         let msg = match err {
@@ -863,7 +908,11 @@ mount = "dock-panel"
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
         // 1b-4：组合式 remove——删除 plugins/<id>/ 目录 + 清 disabled 引用。
-        agent::plugin::save_composed_manifest("session.cli-test-rm", &composed_toml("session.cli-test-rm", "面板")).unwrap();
+        agent::plugin::save_composed_manifest(
+            "session.cli-test-rm",
+            &composed_toml("session.cli-test-rm", "面板"),
+        )
+        .unwrap();
         let _ = agent::plugin::set_plugin_enabled("session.cli-test-rm", false);
         remove("session.cli-test-rm", &ctx()).expect("remove composed");
         assert!(!composed_dir("session.cli-test-rm").exists());
@@ -898,9 +947,13 @@ mount = "dock-panel"
         // 既无 [plugin].id 也无 [info]/[schema]——判别失败给明确指引。
         let dir = tempfile::tempdir().unwrap();
         let toml_path = dir.path().join("mystery.toml");
-        std::fs::write(&toml_path, "[whatever]
+        std::fs::write(
+            &toml_path,
+            "[whatever]
 key = 1
-").unwrap();
+",
+        )
+        .unwrap();
         let err = add(toml_path.to_str().unwrap(), &ctx()).unwrap_err();
         let msg = match err {
             CliError::InvalidArg(m) => m,

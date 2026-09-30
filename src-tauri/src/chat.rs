@@ -134,7 +134,7 @@ fn collect_declared_vision_tools(
     let (_agents, tools, _errors) = agent::manifest::load_manifests(&[]);
     tools
         .into_iter()
-        .filter(|(file, _)| !disabled.iter().any(|d| *d == file.info.id))
+        .filter(|(file, _)| !disabled.contains(&file.info.id))
         .filter_map(|(file, _)| {
             let vision = file
                 .mcp
@@ -180,7 +180,7 @@ pub(crate) fn resolve_mcp_vision_tools(
                 return entry;
             }
             for (id, tools) in declared {
-                if tools.iter().any(|t| *t == entry) {
+                if tools.contains(&entry) {
                     return format!("{id}__{entry}");
                 }
             }

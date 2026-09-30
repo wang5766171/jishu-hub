@@ -279,8 +279,7 @@ fn try_advance_projection_checkpoint(
         .optional();
 
     let Some((last_seq, proj_json)) = checkpoint_result.map_err(|e| {
-        CheckpointAdvanceError::Deserialize(serde_json::Error::io(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        CheckpointAdvanceError::Deserialize(serde_json::Error::io(std::io::Error::other(
             format!("db query failed: {e}"),
         )))
     })?

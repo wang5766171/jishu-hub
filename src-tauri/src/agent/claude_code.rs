@@ -88,7 +88,8 @@ fn normalize_claude_assistant(event: &serde_json::Value) -> Vec<NormalizedEvent>
                 .get("input")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
-            let view = crate::agent::tool_view::classify_tool_view_for("claude-code", &tool, &input);
+            let view =
+                crate::agent::tool_view::classify_tool_view_for("claude-code", &tool, &input);
             normalized.push(NormalizedEvent::ToolUseStart {
                 call_id,
                 tool,
@@ -490,10 +491,11 @@ impl ConfigAdapter for ClaudeCodeAgent {
         Some(self)
     }
 
-    fn as_transport_bridge(&self) -> Option<&dyn crate::agent::config_roles::TransportBridgeDependency> {
+    fn as_transport_bridge(
+        &self,
+    ) -> Option<&dyn crate::agent::config_roles::TransportBridgeDependency> {
         Some(self)
     }
-
 }
 
 impl crate::agent::config_roles::RawConfigStore for ClaudeCodeAgent {
@@ -517,7 +519,6 @@ impl crate::agent::config_roles::RawConfigStore for ClaudeCodeAgent {
         let path = crate::config::config_path().map_err(|e| e.to_string())?;
         crate::util::atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())
     }
-
 }
 
 impl crate::agent::config_roles::ConfigBackupStore for ClaudeCodeAgent {
@@ -543,7 +544,6 @@ impl crate::agent::config_roles::ConfigBackupStore for ClaudeCodeAgent {
     // `claude-agent-acp` bridge is installed (probe-gated, design R4). The
     // env-check page surfaces this dependency and installs it on demand, the
     // same way jishu agent handles the pi-mcp-adapter.
-
 }
 
 impl crate::agent::config_roles::TransportBridgeDependency for ClaudeCodeAgent {
@@ -552,9 +552,7 @@ impl crate::agent::config_roles::TransportBridgeDependency for ClaudeCodeAgent {
         // upgrades to AcpPreferred only when this binary is resolvable.
         let path = probe_claude_acp_bridge();
         let installed = path.is_some();
-        let version = path
-            .as_ref()
-            .and_then(|p| super::discovery::version_of_sync(p));
+        let version = path.as_ref().and_then(super::discovery::version_of_sync);
         Ok(serde_json::json!({
             "installed": installed,
             "version": version,
@@ -719,7 +717,7 @@ impl TerminalAdapter for ClaudeCodeAgent {
         project_path: &str,
         command: &str,
     ) -> Result<u32, Box<dyn std::error::Error>> {
-        crate::command::open_in_terminal_with_command(project_path, &command)
+        crate::command::open_in_terminal_with_command(project_path, command)
     }
 
     fn build_resume_command(&self, session_id: &str) -> String {
@@ -904,7 +902,7 @@ mod tests {
                         line: None,
                     }],
                 }),
-        }]
+            }]
         );
     }
 

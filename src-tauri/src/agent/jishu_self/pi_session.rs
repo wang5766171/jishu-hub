@@ -343,7 +343,7 @@ fn last_pi_assistant_message_id(content: &str) -> Option<String> {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)
         })
-        .last()
+        .next_back()
 }
 
 fn persist_pi_interaction_blocks_at_path(

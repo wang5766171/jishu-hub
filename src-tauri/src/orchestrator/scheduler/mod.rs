@@ -104,7 +104,7 @@ pub fn compute_ready_set(snapshot: &GraphSnapshot, runs: &[NodeRun], now: i64) -
             }
             predecessors
                 .entry(edge.target_node_id.as_str())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(edge.source_node_id.as_str());
         }
     }
@@ -178,11 +178,11 @@ impl ReadySetComputer {
                 }
                 predecessors
                     .entry(edge.target_node_id.clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(edge.source_node_id.clone());
                 dependents
                     .entry(edge.source_node_id.clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(edge.target_node_id.clone());
             }
         }

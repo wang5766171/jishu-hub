@@ -784,9 +784,9 @@ impl TaskStore {
             return Ok(());
         };
         let mut lease: crate::orchestrator::domain::run::Lease =
-            serde_json::from_str(&lease_json).map_err(|e| StoreError::Serde(e.into()))?;
+            serde_json::from_str(&lease_json).map_err(|e| StoreError::Serde(e))?;
         lease.heartbeat_deadline = heartbeat_deadline;
-        let updated = serde_json::to_string(&lease).map_err(|e| StoreError::Serde(e.into()))?;
+        let updated = serde_json::to_string(&lease).map_err(|e| StoreError::Serde(e))?;
         conn.execute(
             "UPDATE node_attempt SET lease = ?1 WHERE attempt_id = ?2",
             params![updated, attempt_id],

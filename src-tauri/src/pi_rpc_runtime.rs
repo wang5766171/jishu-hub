@@ -2006,11 +2006,7 @@ pub(crate) fn normalize_pi_agent_event(
                         }
                     }
                     if !s.is_empty() { Some(s) } else { None }
-                } else if let Some(t) = p.get("output").and_then(|v| v.as_str()) {
-                    Some(t.to_string())
-                } else {
-                    None
-                }
+                } else { p.get("output").and_then(|v| v.as_str()).map(|t| t.to_string()) }
             });
             if call_id.is_empty() || text.is_none() {
                 vec![]

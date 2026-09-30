@@ -66,14 +66,14 @@ fn persist_turn_at(file: &std::path::Path, messages: &[Message]) -> Result<(), S
     if messages.is_empty() {
         return Ok(());
     }
-    std::fs::create_dir_all(file.parent().unwrap_or(&file))
+    std::fs::create_dir_all(file.parent().unwrap_or(file))
         .map_err(|e| format!("create session dir: {e}"))?;
     let is_new = !file.exists();
     use std::io::Write;
     let mut out = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&file)
+        .open(file)
         .map_err(|e| format!("open session file: {e}"))?;
     if is_new {
         let meta = SessionMeta {
@@ -97,7 +97,12 @@ pub fn read_messages(
     encoded_name: &str,
     session_id: &str,
 ) -> Result<Vec<Message>, String> {
-    read_messages_at(&session_file(agent_id, encoded_name, session_id), agent_id, encoded_name, session_id)
+    read_messages_at(
+        &session_file(agent_id, encoded_name, session_id),
+        agent_id,
+        encoded_name,
+        session_id,
+    )
 }
 
 fn read_messages_at(
@@ -135,7 +140,7 @@ pub fn list_sessions(agent_id: &str, encoded_name: &str) -> Vec<Session> {
 }
 
 fn list_sessions_at(dir: &std::path::Path) -> Vec<Session> {
-    let entries = match std::fs::read_dir(&dir) {
+    let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(_) => return Vec::new(),
     };
@@ -169,11 +174,14 @@ fn list_sessions_at(dir: &std::path::Path) -> Vec<Session> {
         sessions.push(Session {
             id: stem.to_string(),
             path: path.clone(),
-            agent_id: if agent_id.is_empty() { None } else { Some(agent_id.to_string()) },
+            agent_id: if agent_id.is_empty() {
+                None
+            } else {
+                Some(agent_id.to_string())
+            },
             messages: Vec::new(),
-            started_at: created_at.map(|ms| {
-                chrono::DateTime::from_timestamp_millis(ms).unwrap_or_default()
-            }),
+            started_at: created_at
+                .map(|ms| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_default()),
             display_name: if title.is_empty() { None } else { Some(title) },
             last_active: None,
             project_path: None,
@@ -216,8 +224,7 @@ mod tests {
         let turn2 = vec![msg("user", "again"), msg("assistant", "ok")];
         persist_turn_at(&file, &turn2).expect("persist 2");
 
-        let read =
-            read_messages_at(&file, "test-agent", "proj", "s1").expect("read");
+        let read = read_messages_at(&file, "test-agent", "proj", "s1").expect("read");
         assert_eq!(read.len(), 4);
         assert_eq!(read[0].role, "user");
 

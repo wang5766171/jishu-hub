@@ -1031,7 +1031,7 @@ where
         if serde_json::from_str::<serde_json::Value>(line)
             .ok()
             .as_ref()
-            .map(|v| should_skip_record(v))
+            .map(&should_skip_record)
             .unwrap_or(false)
         {
             continue;

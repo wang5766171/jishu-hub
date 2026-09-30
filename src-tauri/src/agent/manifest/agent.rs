@@ -12,12 +12,12 @@
 
 use super::schema::{self, AgentManifestFile, SessionStoreKind, TransportKind};
 use super::store;
+use crate::agent::capability::AgentHealth;
 use crate::agent::traits::*;
 use crate::agent::{
-    AgentCapabilities, AgentInfo, AcpCommandSpec, ChatRequest, NormalizedEvent,
+    AcpCommandSpec, AgentCapabilities, AgentInfo, ChatRequest, NormalizedEvent,
     StreamEventNormalizer, TransportSurface,
 };
-use crate::agent::capability::AgentHealth;
 use crate::session::{Message, Session};
 use serde_json::Value;
 use std::sync::Arc;
@@ -31,14 +31,14 @@ pub struct ManifestAgent {
 }
 
 /// abort_bytes intern 池：内容 → 'static 引用（进程生命周期，热重建安全）。
-static ABORT_BYTES_INTERN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<&'static [u8]>>> =
-    std::sync::OnceLock::new();
+static ABORT_BYTES_INTERN: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<&'static [u8]>>,
+> = std::sync::OnceLock::new();
 
 fn intern_bytes(bytes: Vec<u8>) -> &'static [u8] {
-    let pool_cell = ABORT_BYTES_INTERN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
-    let mut pool = pool_cell
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let pool_cell =
+        ABORT_BYTES_INTERN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let mut pool = pool_cell.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = pool.iter().find(|b| **b == bytes.as_slice()) {
         return existing;
     }
@@ -60,11 +60,7 @@ impl ManifestAgent {
 
     /// 模板替换：{prompt}/{cwd}/{session_id}（argv 直传——值里的任何字符
     /// 都不参与命令构造，替换结果仅作为单个 argv 段）。
-    fn expand_template(
-        &self,
-        arg: &str,
-        args: &ChatRequest,
-    ) -> String {
+    fn expand_template(&self, arg: &str, args: &ChatRequest) -> String {
         let session_id = args.session_id.as_deref().unwrap_or("");
         arg.replace("{prompt}", &args.message)
             .replace("{cwd}", &args.project_path)
@@ -173,10 +169,7 @@ pub fn probe_version_with_args(
     args: &[String],
     regex: Option<&str>,
 ) -> Option<String> {
-    let output = std::process::Command::new(path)
-        .args(args)
-        .output()
-        .ok()?;
+    let output = std::process::Command::new(path).args(args).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -237,7 +230,9 @@ impl TransportAdapter for ManifestAgent {
     }
 
     fn build_acp_command(&self, _args: &ChatRequest) -> Result<AcpCommandSpec, String> {
-        let transport = self.transport().ok_or("manifest has no [transport] section")?;
+        let transport = self
+            .transport()
+            .ok_or("manifest has no [transport] section")?;
         let argv = transport
             .acp_command
             .clone()
@@ -297,7 +292,9 @@ impl ConfigAdapter for ManifestAgent {
             .ok_or("manifest has no [config] section")?;
         let content = match section.format.as_str() {
             "toml" => toml::to_string_pretty(config).map_err(|e| format!("serialize TOML: {e}"))?,
-            _ => serde_json::to_string_pretty(config).map_err(|e| format!("serialize JSON: {e}"))?,
+            _ => {
+                serde_json::to_string_pretty(config).map_err(|e| format!("serialize JSON: {e}"))?
+            }
         };
         crate::agent::config_roles::RawConfigStore::save_raw_config(self, &content)
     }
@@ -318,8 +315,7 @@ impl crate::agent::config_roles::RawConfigStore for ManifestAgent {
             .path
             .as_deref()
             .ok_or("manifest [config] has no path")?;
-        std::fs::read_to_string(schema::expand_tilde(path))
-            .map_err(|e| format!("read config: {e}"))
+        std::fs::read_to_string(schema::expand_tilde(path)).map_err(|e| format!("read config: {e}"))
     }
 
     fn save_raw_config(&self, content: &str) -> Result<(), String> {
@@ -395,7 +391,9 @@ impl SessionAdapter for ManifestAgent {
             SessionStoreKind::Hub => {
                 store::delete_session(&self.file.info.id, encoded_name, session_id)
             }
-            SessionStoreKind::None => Err("Session deletion is not supported by this agent adapter".to_string()),
+            SessionStoreKind::None => {
+                Err("Session deletion is not supported by this agent adapter".to_string())
+            }
         }
     }
 }
@@ -473,13 +471,23 @@ impl ProjectAdapter for ManifestAgent {
     fn init_project(&self, _project_path: &str) -> Result<bool, String> {
         Ok(false)
     }
-    fn load_project_settings(&self, _path: &str) -> Result<crate::project_config::ProjectSettings, String> {
+    fn load_project_settings(
+        &self,
+        _path: &str,
+    ) -> Result<crate::project_config::ProjectSettings, String> {
         Err("Not supported".to_string())
     }
-    fn load_project_settings_local(&self, _path: &str) -> Result<crate::project_config::ProjectSettings, String> {
+    fn load_project_settings_local(
+        &self,
+        _path: &str,
+    ) -> Result<crate::project_config::ProjectSettings, String> {
         Err("Not supported".to_string())
     }
-    fn save_project_settings(&self, _path: &str, _settings: &crate::project_config::ProjectSettings) -> Result<(), String> {
+    fn save_project_settings(
+        &self,
+        _path: &str,
+        _settings: &crate::project_config::ProjectSettings,
+    ) -> Result<(), String> {
         Err("Not supported".to_string())
     }
     fn save_project_settings_local(

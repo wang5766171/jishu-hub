@@ -351,8 +351,7 @@ pub fn encode_project_path(path: &str) -> String {
     // 'E:\Claude\test' produce the same encoded name.
     let path = path.replace('/', "\\");
     path.replace(":\\", "--")
-        .replace('\\', "-")
-        .replace(' ', "-")
+        .replace(['\\', ' '], "-")
 }
 
 /// Get the level-1 directory from a project path.

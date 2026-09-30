@@ -8,7 +8,9 @@ use super::revision::{PlannerPolicyRef, SkillRef, TemplateRef};
 /// Run-level status machine.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum RunStatus {
+    #[default]
     Draft,
     Validating,
     Ready,
@@ -20,11 +22,6 @@ pub enum RunStatus {
     Cancelled,
 }
 
-impl Default for RunStatus {
-    fn default() -> Self {
-        Self::Draft
-    }
-}
 
 impl RunStatus {
     pub fn is_terminal(&self) -> bool {
@@ -55,7 +52,9 @@ impl RunStatus {
 /// NodeRun-level status machine.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum NodeRunStatus {
+    #[default]
     Blocked,
     Ready,
     Leased,
@@ -70,11 +69,6 @@ pub enum NodeRunStatus {
     Superseded,
 }
 
-impl Default for NodeRunStatus {
-    fn default() -> Self {
-        Self::Blocked
-    }
-}
 
 impl NodeRunStatus {
     pub fn is_terminal(&self) -> bool {

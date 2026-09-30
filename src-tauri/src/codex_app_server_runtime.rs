@@ -622,7 +622,7 @@ async fn wait_for_response(
         };
         match classify_line(&msg) {
             LineKind::Response { id, result, error } => {
-                if id == Value::from(expected_id) {
+                if id == expected_id {
                     if let Some(err) = error {
                         let message = err
                             .get("message")
@@ -1513,20 +1513,20 @@ fn initialize_params(experimental_api: bool) -> Value {
 /// Extract the turn id from a `turn/start` response result `{turn:{id,…}}`,
 /// tolerant of `id` vs `turnId`.
 fn extract_turn_id(resp: &Value) -> Option<String> {
-    resp.get("turn").or_else(|| Some(resp)).and_then(id_like)
+    resp.get("turn").or(Some(resp)).and_then(id_like)
 }
 
 fn extract_turn_id_from_params(params: &Value) -> Option<String> {
     params
         .get("turn")
-        .or_else(|| Some(params))
+        .or(Some(params))
         .and_then(id_like)
 }
 
 /// Extract the thread id from a `thread/start` response result `{thread:{id,…}}`,
 /// tolerant of `id` vs `threadId`.
 fn extract_thread_id(resp: &Value) -> Option<String> {
-    resp.get("thread").or_else(|| Some(resp)).and_then(id_like)
+    resp.get("thread").or(Some(resp)).and_then(id_like)
 }
 
 fn id_like(obj: &Value) -> Option<String> {

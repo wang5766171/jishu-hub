@@ -470,7 +470,7 @@ fn parse_skill_markdown(
         .unwrap_or_else(|| fallback_id.to_string());
     let name = meta.get("name").cloned().unwrap_or_else(|| id.clone());
     let description = meta.get("description").cloned().unwrap_or_default();
-    let content_bytes = content.as_bytes().len() as u64;
+    let content_bytes = content.len() as u64;
     let content_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
     let (valid, error, roles, workflow_hints) = match parse_manifest(content) {
         Ok(manifest) => {

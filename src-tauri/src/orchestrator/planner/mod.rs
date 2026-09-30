@@ -711,19 +711,16 @@ fn parse_draft(response: &str) -> Result<PlannerDraft, String> {
     if trimmed.is_empty() {
         return Err("planner response did not contain a JSON object".to_string());
     }
-    match serde_json::from_str::<serde_json::Value>(trimmed) {
-        Ok(value) => {
-            if !value.is_object() {
-                return Err(format!(
-                    "invalid planner proposal JSON: top-level value is {:?}, expected an object",
-                    classify_top_level(&value)
-                ));
-            }
-            let draft: PlannerDraft = serde_json::from_value(value)
-                .map_err(|error| format!("invalid planner proposal JSON: {error}"))?;
-            return ensure_non_empty_commands(draft);
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if !value.is_object() {
+            return Err(format!(
+                "invalid planner proposal JSON: top-level value is {:?}, expected an object",
+                classify_top_level(&value)
+            ));
         }
-        Err(_) => {}
+        let draft: PlannerDraft = serde_json::from_value(value)
+            .map_err(|error| format!("invalid planner proposal JSON: {error}"))?;
+        return ensure_non_empty_commands(draft);
     }
     if let Some(slice) = first_top_level_object(trimmed) {
         let draft: PlannerDraft = serde_json::from_str(slice)
