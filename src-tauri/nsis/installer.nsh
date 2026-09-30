@@ -123,12 +123,31 @@ Section -un.RemoveFromPath
 SectionEnd
 
 !macro NSIS_HOOK_POSTUNINSTALL
-  ; v0.7.2 需求 5：卸载时（非更新模式）无条件清理 jishu agent 本体（packages/
-  ; node_modules，由 hub 安装），避免残留与新版冲突。用户数据（settings/sessions/mcp）
-  ; 保留，由下方"删除用户数据"勾选决定是否一并清理。
+  ; ── 卸载清除边界（用户数据保护，与 Rust 侧 paths.rs/hub_home() 对齐）──
+  ;
+  ; 【hub 管理的本体（可随重装恢复，未勾选也可清）】
+  ;   $PROFILE\.jishu-agent\packages      pi runtime 本体（POSTINSTALL --install-agent 复制）
+  ;   $PROFILE\.jishu-agent\node_modules  pi-bundle 依赖树（同上）
+  ;
+  ; 【用户数据目录（仅勾选「删除应用数据」才清；未勾选时产禁触碰）】
+  ;   $PROFILE\.jishu-agent\agent\       Pi 运行数据：settings.json / models.json /
+  ;                                     mcp.json / auth.json / sessions\ / skills\（用户与
+  ;                                     分发 skill）/ extensions\（用户导入扩展）/ backups\ /
+  ;                                     npm\（官方扩展，重装自愈）/ missions\ / run-history
+  ;   $PROFILE\.jishu-hub\               hub 数据根：agents\（清单）/ plugins\（目录形式
+  ;                                     插件与 skill 源）/ plugins.json / plugins-config.json /
+  ;                                     agent-tools.json / session-tools.json /
+  ;                                     skill-deploy.json（分发归属）/ settings.json /
+  ;                                     agent-sessions\ / memory.db / approval.db
+  ;   $APPDATA\jishu-hub, $LOCALAPPDATA\jishu-hub   任务会话库 taskstore.db 等
+  ;   $APPDATA\com.jishu-hub.app 等标识符目录   Tauri 模板在勾选时自清（非本 hook）
   ${If} $UpdateMode <> 1
+    ; 仅本体：hub 安装器写入、可重装恢复的 runtime 目录。
     RMDir /r "$PROFILE\.jishu-agent\packages"
     RMDir /r "$PROFILE\.jishu-agent\node_modules"
+    ; 注意：不删 $PROFILE\.jishu-agent\agent ——其中的 skills\/extensions\/
+    ; sessions\ 等均为用户数据（历史版本曾因插件加载链 bug 导致分发 skill
+    ; 被回收误删，已在校验/加载侧修复；卸载器不碰用户目录）。
   ${EndIf}
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
