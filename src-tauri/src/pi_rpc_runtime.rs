@@ -1,5 +1,13 @@
 //! Pi native RPC protocol runtime (adapter for `--mode rpc`).
 //!
+//! 【§12 规模处置说明（v0.9.5 三轮评审 C13）】本文件 3700+ 行，超 2500
+//! 红线。**不拆理由与拆分预案**：连接循环（LoopState 状态机 + 三看门狗 +
+//! 合批 flush）是一环扣一环的整体，按 §12 边界问强耦合状态机整体保留；
+//! 但约 1100 行可纯移动拆出——①事件归一化（normalize_pi_agent_event 及
+//! 辅助函数）、②协议翻译（哨兵/多选静态表与函数）、③hub_invoke 分发表
+//! （handle_hub_invoke 各分支）。**触发条件**：下版触碰本文件的任意需求
+//! 实施前先执行三段拆分（零逻辑变更纯移动），主文件预计瘦身至 ~1600 行。
+//!
 //! Pi's RPC mode uses simple JSON-line commands/responses rather than
 //! JSON-RPC 2.0. This module translates between Pi's native protocol
 //! and the `AcpControl` / `NormalizedEvent` interfaces used by the GUI.
@@ -174,6 +182,14 @@ fn spawn_pi_rpc_session_inner(
         )
         .await;
 
+        // 三轮评审 B2：会话连接退出——清扫本会话挂起的哨兵自动应答（未这达
+        // 的追问 input 永不到，条目不再滞留；协议表其余两张按 request_id 键、
+        // 由 PROTOCOL_TABLE_LIMIT 守卫）。
+        INTERACTION_AUTO_ANSWER
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&pending_session_id);
+
         if let Err(err) = &result {
             // Enrich error with stderr output
             let stderr_content = stderr_buf.lock().await.clone();
@@ -333,25 +349,38 @@ async fn pi_rpc_connection_loop(
         let remaining = handshake_deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             return Err(format!(
-                "Pi RPC get_state timeout ({}s)—Pi 启动超预算（扩展装载/会话恢复），重发消息可恢复",
+                "智能体引擎启动超时（{}s）——扩展装载/会话恢复较慢，重发消息可恢复",
                 PI_STATE_HANDSHAKE_BUDGET.as_secs()
             ));
         }
-        let line = tokio::time::timeout(remaining, stdout_rx.recv())
-            .await
-            .map_err(|_| {
-                format!(
-                    "Pi RPC get_state timeout ({}s)—Pi 启动超预算（扩展装载/会话恢复），重发消息可恢复",
-                    PI_STATE_HANDSHAKE_BUDGET.as_secs()
-                )
-            })?
-            .ok_or_else(|| "Pi RPC stdout closed before get_state response. Pi may have crashed during startup.".to_string())?;
+        // 三轮评审 C11：等待拆 30s 步进——静默期（无 stdout 行）也能按步打
+        // 进度日志（修前进度检查在 recv 成功之后，静默挂起期日志中心零打
+        // 点，「正在等什么」对用户不可见）。步进超时≠预算尽：打点后继续等。
+        let wait_slice = remaining.min(PI_STATE_HANDSHAKE_LOG_STEP);
+        let line = match tokio::time::timeout(wait_slice, stdout_rx.recv()).await {
+            Ok(v) => {
+                v.ok_or_else(|| "智能体引擎在启动期间意外退出（连接中断），请重试。".to_string())?
+            }
+            Err(_) => {
+                // 步进到期（非总预算尽）——打进度日志继续等下一片。
+                let waited = PI_STATE_HANDSHAKE_BUDGET
+                    - handshake_deadline.saturating_duration_since(tokio::time::Instant::now());
+                devlog(
+                    "runtime",
+                    "智能体引擎握手等待中（扩展装载/会话恢复冷启动可能较慢）",
+                    &pending_session_id,
+                    json!({ "waitedSecs": waited.as_secs(), "budgetSecs": PI_STATE_HANDSHAKE_BUDGET.as_secs() }),
+                );
+                handshake_next_log = tokio::time::Instant::now() + PI_STATE_HANDSHAKE_LOG_STEP;
+                continue;
+            }
+        };
 
         if tokio::time::Instant::now() >= handshake_next_log {
             let waited = PI_STATE_HANDSHAKE_BUDGET - remaining;
             devlog(
                 "runtime",
-                "Pi RPC 握手等待中（扩展装载/会话恢复冷启动可能较慢）",
+                "智能体引擎握手等待中（扩展装载/会话恢复冷启动可能较慢）",
                 &pending_session_id,
                 json!({ "waitedSecs": waited.as_secs(), "budgetSecs": PI_STATE_HANDSHAKE_BUDGET.as_secs() }),
             );
@@ -612,6 +641,10 @@ async fn pi_rpc_connection_loop(
                                 let _ = send_pi_command(&stdin_arc, &json!({
                                     "type": "abort"
                                 })).await;
+                                // v0.9.5 三轮评审 P1-1：同 GUI 停止路径——进入
+                                // CancelPending 解除 prompt 看门狗（互斥，防双闹钟
+                                // 竞速时 ack 先检查误报失联并丢弃缓冲消息）。
+                                prompt_ack_at = None;
                                 cancel_settle_at =
                                     Some(tokio::time::Instant::now() + CANCEL_SETTLE_TIMEOUT);
                                 state = LoopState::CancelPending {
@@ -626,7 +659,22 @@ async fn pi_rpc_connection_loop(
                             }
                             LoopState::CancelPending { pending_prompt } => {
                                 log::warn!("Pi RPC prompt buffered: still CancelPending (awaiting agent_settled after abort)");
-                                *pending_prompt = Some(msg);
+                                // 三轮评审 C12：已有缓冲消息时拼接保留（\n 分隔）——
+                                // 修前静默覆盖丢前一条（编排器路径可触发：取消
+                                // 善中期连续派发多条）。拼接送达与 GUI 暂存多条
+                                // 合并发送同构。
+                                *pending_prompt = Some(match pending_prompt.take() {
+                                    Some(prev) => {
+                                        devlog(
+                                            "warn",
+                                            "CancelPending 态已缓冲一条，新消息拼接保留（不覆盖丢弃）",
+                                            &session_id,
+                                            json!({ "prevBytes": prev.len(), "newBytes": msg.len() }),
+                                        );
+                                        format!("{prev}\n{msg}")
+                                    }
+                                    None => msg,
+                                });
                                 devlog(
                                     "warn",
                                     "CancelPending 态收到 Prompt：缓冲，settle 后送达",
@@ -740,6 +788,11 @@ async fn pi_rpc_connection_loop(
                                     "type": "abort"
                                 })).await;
                                 log::info!("Pi RPC cancel sent (clear_queue + abort)");
+                                // v0.9.5 三轮评审 P1-1：进入停止善中即解除 prompt
+                                // 看门狗——两看门狗互斥（ack 只武装于 Idle/Prompting
+                                // 的「等回合启动」，CancelPending 的兜底职责归
+                                // settle 看门狗），否则停止后 20s 误报「pi 未响应」。
+                                prompt_ack_at = None;
                                 cancel_settle_at =
                                     Some(tokio::time::Instant::now() + CANCEL_SETTLE_TIMEOUT);
                                 state = LoopState::CancelPending {
@@ -829,6 +882,12 @@ async fn pi_rpc_connection_loop(
                             if cmd == "response" {
                                 let response_cmd = msg.get("command").and_then(|v| v.as_str()).unwrap_or_default();
                                 let success = msg.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+                                // v0.9.5 三轮评审 P1-1：response 到达（无论成败）=
+                                // pi 活着且已处理请求——解除 prompt 看门狗（事件类
+                                // 消息在下方统一清，response 不走那条路）。失败路径
+                                // 若不清：Error+TurnComplete 已发、state=Idle 后 20s
+                                // 看门狗仍会误触发一次「pi 未响应本轮」。
+                                prompt_ack_at = None;
 
                                 match response_cmd {
                                     "prompt" | "steer" | "follow_up" => {
@@ -861,6 +920,10 @@ async fn pi_rpc_connection_loop(
                                             flush_buf(&emit, &session_id, &mut buf);
 
                                             state = LoopState::Idle;
+                                            // v0.9.5 三轮评审 P1-1：失败已终结名单
+                                            // （Error+TurnComplete 已发），跳过下方通用
+                                            // !success 检查——否则同一失败报两次错。
+                                            continue;
                                         }
                                     }
                                     "abort" => {
@@ -1478,9 +1541,30 @@ async fn pi_rpc_connection_loop(
                         // If Pi closed while we were expecting a response, treat as error
                         if matches!(state, LoopState::Prompting) {
                             return Err(format!(
-                                "Pi process exited unexpectedly (session {}). Check stderr for details.",
+                                "智能体引擎意外退出（会话 {}），请查看日志后重试。",
                                 session_id
                             ));
+                        }
+                        // v0.9.5 三轮评审 P1-2：停止善中期进程退出（崩溃/被杀）——
+                        // agent_settled 永不到，若不补发终结名单，前端本轮永远等
+                        // 不到 turn_complete（界面永挂「处理中」）。此处统一补发：
+                        // pending_turn_complete（取消路径已备好的 Aborted）或直接
+                        // 合成 Aborted。
+                        if matches!(state, LoopState::CancelPending { .. }) {
+                            flush_buf(&emit, &session_id, &mut buf);
+                            let terminator = pending_turn_complete
+                                .take()
+                                .unwrap_or(NormalizedEvent::TurnComplete {
+                                    reason: TurnEndReason::Aborted,
+                                    usage: None,
+                                });
+                            emit(&[terminator], &session_id);
+                            devlog(
+                                "warn",
+                                "停止善中期 pi 进程退出：补发 Aborted 终结（防界面永挂）",
+                                &session_id,
+                                json!({}),
+                            );
                         }
                         true
                     }
@@ -1512,33 +1596,10 @@ async fn pi_rpc_connection_loop(
                         session_id
                     );
                     true
-                } else if prompt_ack_at.is_some() && tokio::time::Instant::now() >= prompt_ack_at.unwrap() {
-                    // ⚠ prompt 送达后回合未启动（20s 无任何事件）——合成终结。
-                    log::warn!(
-                        "[watchdog] Pi RPC prompt unacknowledged 20s (session {session_id}) — \
-                         round never started (message not persisted); synthesizing abort"
-                    );
-                    devlog(
-                        "error",
-                        "prompt 看门狗触发：20s 零事件——回合未启动（消息未送达），合成 Aborted 终结，可重发",
-                        &session_id,
-                        json!({}),
-                    );
-                    flush_buf(&emit, &session_id, &mut buf);
-                    emit(
-                        &[
-                            NormalizedEvent::Error {
-                                message: "pi 未响应本轮（20 秒无事件，回合未启动——消息未送达模型）。请重新发送；若反复出现请重启会话。".to_string(),
-                                recoverable: true,
-                            },
-                            NormalizedEvent::TurnComplete { reason: TurnEndReason::Aborted, usage: None },
-                        ],
-                        &session_id,
-                    );
-                    prompt_ack_at = None;
-                    state = LoopState::Idle;
-                    false
                 } else if cancel_settle_at.is_some() && tokio::time::Instant::now() >= cancel_settle_at.unwrap() {
+                    // v0.9.5 三轮评审 P1-1：检查序 settle 优先于 ack（防御性——
+                    // 进入 CancelPending 已清 ack，两者互斥；即便未来新增武装
+                    // 路径遗漏清理，取消收口（含缓冲消息语义）也不被 ack 抢跑）。
                     // ⚠ abort 后 15s 未收尾（pi 滞留，agent_settled 永不到）——
                     // 杀进程终结流。
                     log::warn!(
@@ -1559,6 +1620,32 @@ async fn pi_rpc_connection_loop(
                         let _ = crate::process_control::terminate_process_tree(pid);
                     }
                     true
+                } else if prompt_ack_at.is_some() && tokio::time::Instant::now() >= prompt_ack_at.unwrap() {
+                    // ⚠ prompt 送达后回合未启动（20s 无任何事件）——合成终结。
+                    log::warn!(
+                        "[watchdog] Pi RPC prompt unacknowledged 20s (session {session_id}) — \
+                         round never started (message not persisted); synthesizing abort"
+                    );
+                    devlog(
+                        "error",
+                        "prompt 看门狗触发：20s 零事件——回合未启动（消息未送达），合成 Aborted 终结，可重发",
+                        &session_id,
+                        json!({}),
+                    );
+                    flush_buf(&emit, &session_id, &mut buf);
+                    emit(
+                        &[
+                            NormalizedEvent::Error {
+                                message: "智能体未响应本轮（20 秒无事件，回合未启动——消息未送达模型）。请重新发送；若反复出现请重启会话。".to_string(),
+                                recoverable: true,
+                            },
+                            NormalizedEvent::TurnComplete { reason: TurnEndReason::Aborted, usage: None },
+                        ],
+                        &session_id,
+                    );
+                    prompt_ack_at = None;
+                    state = LoopState::Idle;
+                    false
                 } else {
                     false
                 }
@@ -1944,8 +2031,14 @@ pub(crate) fn normalize_pi_agent_event(
             // ——需区分「pi 未发 start」与「hub→前端链路丢」）。dev 终端可见。
             log::info!(
                 "[tool-visibility] tool_execution_start call_id={} tool={}",
-                event.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("?"),
-                event.get("toolName").and_then(|v| v.as_str()).unwrap_or("?"),
+                event
+                    .get("toolCallId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?"),
+                event
+                    .get("toolName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?"),
             );
             let call_id = event
                 .get("toolCallId")
@@ -2005,8 +2098,16 @@ pub(crate) fn normalize_pi_agent_event(
                             s.push_str(t);
                         }
                     }
-                    if !s.is_empty() { Some(s) } else { None }
-                } else { p.get("output").and_then(|v| v.as_str()).map(|t| t.to_string()) }
+                    if !s.is_empty() {
+                        Some(s)
+                    } else {
+                        None
+                    }
+                } else {
+                    p.get("output")
+                        .and_then(|v| v.as_str())
+                        .map(|t| t.to_string())
+                }
             });
             if call_id.is_empty() || text.is_none() {
                 vec![]
@@ -2256,9 +2357,28 @@ fn is_sentinel_option(option: &str) -> bool {
 }
 
 /// T1：request_id → 哨兵选项原文（应答改写取用即消费）。
+/// 三轮评审 B2：有界守护——未应答交互的条目无自然满理时机（用户关卡/
+/// 会话终止），尺寸超限时整体清空（登记丢失仅降级为「不剥哨兵行/不翻译」，
+/// 优雅降级路径在，语义无损）。
 static INTERACTION_SENTINELS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, String>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// 协议表尺寸上限（到达即清空——每条登记仅几十字节，256 条对应极端的
+/// 未应答交互堆积，远超任何正常会话负载）。
+const PROTOCOL_TABLE_LIMIT: usize = 256;
+
+/// B2：登记前守护（超限清空）。
+fn bounded_insert_sentinel(id: String, sentinel: String) {
+    let mut reg = INTERACTION_SENTINELS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if reg.len() >= PROTOCOL_TABLE_LIMIT {
+        reg.clear();
+        log::warn!("[pi-ext] INTERACTION_SENTINELS 达上限 {PROTOCOL_TABLE_LIMIT}，整体清空（未应答交互堆积——仅降级不影响正确性）");
+    }
+    reg.insert(id, sentinel);
+}
 
 /// T1：session_id → 用户自定义文本（哨兵追问 input 到达时自动应答）。
 static INTERACTION_AUTO_ANSWER: std::sync::LazyLock<
@@ -2279,10 +2399,7 @@ fn strip_sentinel_option(mut msg: serde_json::Value) -> serde_json::Value {
     };
     options.pop();
     if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
-        INTERACTION_SENTINELS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id.to_string(), sentinel);
+        bounded_insert_sentinel(id.to_string(), sentinel);
     }
     msg
 }
@@ -2302,11 +2419,17 @@ fn take_interaction_auto_answer(session_id: &str) -> Option<String> {
 /// 作答时把选择翻译回扩展期待的「1,3」序号串（rewrite_multiselect_
 /// response）。检测失败（如装了 rpiv-i18n 后文案本地化）优雅降级为
 /// 原输入框形态。
+/// ⚠ 三轮评审 B4（vendor 协议耦合）：本常量与哨兵行匹配（is_sentinel_
+/// option 的 "N. Type something."）均精确耦合 @juicesharp/rpiv-ask-user-
+/// question 包的英文常量——升级该包或装 rpiv-i18n 本地化时会**静默**降级
+/// （不报错但无人知晓）。升级包时必回归 sentinel_option_detection 与
+/// multiselect 相关测试；建议治理该包的 plugin.toml 钉定版本。
 const MULTI_SELECT_INSTRUCTIONS: &str = "Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a custom answer as plain text.";
 
 /// T5：request_id 登记集（该 input 已被还原为多选卡，应答需序号翻译）。
-static MULTI_SELECT_REQUESTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+static MULTI_SELECT_REQUESTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
 
 /// 选项行带 "N. " 序号前缀（rpiv formatOptionLine 形态）。
 fn numbered_option_line(line: &str) -> bool {
@@ -2342,22 +2465,26 @@ fn rewrite_multiselect_input(mut msg: serde_json::Value) -> serde_json::Value {
     if lines.is_empty() || !lines.iter().all(|l| numbered_option_line(l)) {
         return msg;
     }
-    let id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let id = msg
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if id.is_empty() {
         return msg;
     }
-    MULTI_SELECT_REQUESTS
+    let mut reg = MULTI_SELECT_REQUESTS
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(id.clone());
+        .unwrap_or_else(|e| e.into_inner());
+    if reg.len() >= PROTOCOL_TABLE_LIMIT {
+        reg.clear();
+        log::warn!("[pi-ext] MULTI_SELECT_REQUESTS 达上限 {PROTOCOL_TABLE_LIMIT}，整体清空（未应答交互堆积）");
+    }
+    reg.insert(id.clone());
     msg["method"] = serde_json::Value::String("multiSelect".to_string());
     msg["title"] = serde_json::Value::String(question.to_string());
-    msg["options"] = serde_json::Value::Array(
-        lines
-            .into_iter()
-            .map(serde_json::Value::String)
-            .collect(),
-    );
+    msg["options"] =
+        serde_json::Value::Array(lines.into_iter().map(serde_json::Value::String).collect());
     log::info!("[pi-ext] multi-select input restored to selectable card (id {id})");
     msg
 }
@@ -2427,10 +2554,14 @@ pub(crate) fn rewrite_sentinel_response(
         .remove(request_id);
     match sentinel {
         Some(s) => {
-            INTERACTION_AUTO_ANSWER
+            let mut reg = INTERACTION_AUTO_ANSWER
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(session_id.to_string(), value.to_string());
+                .unwrap_or_else(|e| e.into_inner());
+            if reg.len() >= PROTOCOL_TABLE_LIMIT {
+                reg.clear();
+                log::warn!("[pi-ext] INTERACTION_AUTO_ANSWER 达上限 {PROTOCOL_TABLE_LIMIT}，整体清空（未这达的追问堆积）");
+            }
+            reg.insert(session_id.to_string(), value.to_string());
             log::info!("[pi-ext] sentinel rewrite for request {request_id} (session {session_id})");
             s
         }
@@ -2707,23 +2838,30 @@ fn handle_hub_invoke(
                 .get("tool")
                 .and_then(|v| v.as_str())
                 .ok_or("plugin_invoke 参数缺少 tool")?;
-            let args = params.get("args").cloned().unwrap_or(serde_json::Value::Null);
+            let args = params
+                .get("args")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let tools = crate::agent::plugin::load_agent_tools();
             let entry = tools
                 .iter()
                 .find(|e| e.name == tool)
                 .ok_or(format!("agent-tool {tool:?} 不存在或插件已停用"))?;
-            if let Some(app) = HUB_APP_HANDLE.get() {
-                use tauri::Emitter;
-                let _ = app.emit(
-                    "plugin-tool-invoke",
-                    serde_json::json!({
-                        "pluginId": entry.plugin_id,
-                        "tool": entry.name,
-                        "args": args,
-                    }),
-                );
-            }
+            // 三轮评审 B1（能力诚实）：无 UI 宿主（无头/编排器会话）时明确报错
+            // 而非假报成功——与 plugin_preview_html 同款「Hub 界面未就绪」语义，
+            // agent 拿到真实失败可如实告知用户。
+            let app = HUB_APP_HANDLE
+                .get()
+                .ok_or("Hub 界面未就绪，无法触发插件动作（无 UI 宿主）")?;
+            use tauri::Emitter;
+            let _ = app.emit(
+                "plugin-tool-invoke",
+                serde_json::json!({
+                    "pluginId": entry.plugin_id,
+                    "tool": entry.name,
+                    "args": args,
+                }),
+            );
             Ok(serde_json::json!({
                 "triggered": true,
                 "pluginId": entry.plugin_id,
@@ -2753,13 +2891,19 @@ fn validate_loopback_preview_url(url: &str) -> Result<(), String> {
         .next()
         .unwrap_or("");
     let host = if authority.starts_with('[') {
-        authority.split(']').next().unwrap_or("").trim_start_matches('[') // IPv6 字面量 [::1]
+        authority
+            .split(']')
+            .next()
+            .unwrap_or("")
+            .trim_start_matches('[') // IPv6 字面量 [::1]
     } else {
         authority.split(':').next().unwrap_or("")
     };
     match host {
         "localhost" | "127.0.0.1" | "::1" => Ok(()),
-        other => Err(format!("仅支持本机回环地址预览（localhost/127.0.0.1），收到: {other}")),
+        other => Err(format!(
+            "仅支持本机回环地址预览（localhost/127.0.0.1），收到: {other}"
+        )),
     }
 }
 
@@ -2819,7 +2963,10 @@ mod tests {
             let mut reg = super::INTERACTION_SENTINELS
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            assert_eq!(reg.remove("t1-strip").as_deref(), Some("3. Type something."));
+            assert_eq!(
+                reg.remove("t1-strip").as_deref(),
+                Some("3. Type something.")
+            );
         }
         // 无哨兵：原样
         let plain = serde_json::json!({
@@ -2851,7 +2998,10 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
         });
         let rewritten = super::rewrite_multiselect_input(msg);
         assert_eq!(rewritten["method"].as_str().unwrap(), "multiSelect");
-        assert_eq!(rewritten["title"].as_str().unwrap(), "[多选题] 哪些鸟不会飞？");
+        assert_eq!(
+            rewritten["title"].as_str().unwrap(),
+            "[多选题] 哪些鸟不会飞？"
+        );
         let options = rewritten["options"].as_array().unwrap();
         assert_eq!(options.len(), 3);
         assert_eq!(options[0].as_str().unwrap(), "1. 企鹅 — 南极");
@@ -2861,7 +3011,8 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
             .remove("t5-multi"));
 
         // 普通 input（无英文说明）不动
-        let plain = serde_json::json!({"method": "input", "id": "t5-plain", "title": "随便说点什么"});
+        let plain =
+            serde_json::json!({"method": "input", "id": "t5-plain", "title": "随便说点什么"});
         assert_eq!(super::rewrite_multiselect_input(plain.clone()), plain);
         // 选项块含非序号行 → 不还原（防误伤含空行的题干）
         let bad = serde_json::json!({
@@ -2893,8 +3044,12 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
             "selected_options": ["1. 企鹅 — 南极", "3. 天鹅 — 会飞"]
         });
         assert_eq!(
-            super::rewrite_multiselect_response("t5-rw", "1. 企鹅 — 南极
-3. 天鹅 — 会飞", Some(&interaction)),
+            super::rewrite_multiselect_response(
+                "t5-rw",
+                "1. 企鹅 — 南极
+3. 天鹅 — 会飞",
+                Some(&interaction)
+            ),
             "1,3"
         );
         // 已消费：再答原样
@@ -2945,10 +3100,7 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
             let mut stash = super::INTERACTION_AUTO_ANSWER
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            assert_eq!(
-                stash.remove("t2-session").as_deref(),
-                Some("自定义：蓝色")
-            );
+            assert_eq!(stash.remove("t2-session").as_deref(), Some("自定义：蓝色"));
         }
         // 已消费（登记被取走）：再次应答原样返回
         assert_eq!(
@@ -2994,35 +3146,32 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
             "ftp://localhost",
             "http://localhost.evil.com",
         ] {
-            let err = handle_hub_invoke(
-                "plugin_preview_html",
-                &serde_json::json!({"url": bad}),
-            )
-            .unwrap_err();
+            let err = handle_hub_invoke("plugin_preview_html", &serde_json::json!({"url": bad}))
+                .unwrap_err();
             // 各级拒绝（scheme/回环）皆可，断言核心：到不了「界面未就绪」
             //（即校验全部放行的路径）。
-            assert!(!err.contains("未就绪"), "url={bad} should be rejected: {err}");
+            assert!(
+                !err.contains("未就绪"),
+                "url={bad} should be rejected: {err}"
+            );
         }
         for ok in [
             "http://localhost:5173",
             "http://127.0.0.1:3000/index.html",
             "https://localhost",
         ] {
-            let err = handle_hub_invoke(
-                "plugin_preview_html",
-                &serde_json::json!({"url": ok}),
-            )
-            .unwrap_err();
-            assert!(err.contains("未就绪"), "url={ok} should pass validation: {err}");
+            let err = handle_hub_invoke("plugin_preview_html", &serde_json::json!({"url": ok}))
+                .unwrap_err();
+            assert!(
+                err.contains("未就绪"),
+                "url={ok} should pass validation: {err}"
+            );
         }
     }
 
     #[test]
     fn plugin_preview_html_rejects_non_html_extension() {
-        let md = std::env::temp_dir().join(format!(
-            "jishu-hub-preview-{}.md",
-            std::process::id()
-        ));
+        let md = std::env::temp_dir().join(format!("jishu-hub-preview-{}.md", std::process::id()));
         std::fs::write(&md, "x").unwrap();
         let err = handle_hub_invoke(
             "plugin_preview_html",
@@ -3035,10 +3184,8 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
 
     #[test]
     fn plugin_preview_html_valid_file_reaches_hub_gate() {
-        let html = std::env::temp_dir().join(format!(
-            "jishu-hub-preview-{}.html",
-            std::process::id()
-        ));
+        let html =
+            std::env::temp_dir().join(format!("jishu-hub-preview-{}.html", std::process::id()));
         std::fs::write(&html, "<!DOCTYPE html><html></html>").unwrap();
         // 测试环境未注册 HUB_APP_HANDLE：合法文件应越过存在性/扩展名校验，
         // 落到「Hub 界面未就绪」而非文件错误。
@@ -3346,7 +3493,10 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
         );
         assert_eq!(events.len(), 1);
         match &events[0] {
-            NormalizedEvent::ToolUseProgress { call_id, partial_output } => {
+            NormalizedEvent::ToolUseProgress {
+                call_id,
+                partial_output,
+            } => {
                 assert_eq!(call_id, "call-1");
                 assert_eq!(partial_output, "step 3/45 done");
             }
@@ -3385,8 +3535,8 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
         assert!(events.is_empty(), "no callId should be dropped: {events:?}");
     }
 
-        #[test]
-        fn tool_use_turn_end_yields_no_events() {
+    #[test]
+    fn tool_use_turn_end_yields_no_events() {
         let events = normalize_pi_agent_event(
             &json!({
                 "type": "turn_end",
