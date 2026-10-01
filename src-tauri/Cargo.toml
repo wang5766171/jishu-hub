@@ -51,6 +51,9 @@ uuid = { version = "1", features = ["v4"] }
 reqwest = { version = "0.12", features = ["stream", "rustls-tls", "blocking", "json"], default-features = false }
 futures-util = "0.3"
 sha2 = "0.10"
+# v0.9.5 需求9：skill 分发回写母本时保留目标侧 mtime（新者胜判定的
+# 多目标收敛前提）。
+filetime = "0.2"
 tauri-plugin-notification = "2.4.0"
 # v0.9.3 测试期（通知点击跳回·通知中心补点）：protocol 激活的 toast 需要
 # 自定义 XML（winrt 封装库不暴露 launch 属性）；scheme 注册与运行中实例

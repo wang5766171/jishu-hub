@@ -18,6 +18,14 @@
 //! 自建目录不碰（对标 MCP 条目同名保护）。幂等：内容一致跳过写。
 //! 触发点：lib.rs 启动 + rebuild_registry（启停/卸载/编辑保存，与 mcp sync
 //! 同钩子）。
+//!
+//! v0.9.5 需求9（新者胜，废除母本单向镜像）：目录形式源的分发不再是
+//! 「母本覆盖目标」——目标侧（agent/用户改了分发副本）较新时**回写母本**
+//! 并传播到其余目标；目标侧独有文件按**方向判定**处置（追加裁决）：目标
+//! 侧较新 → 收编入母本，母本较新（用户编辑插件删内容等）→ 视为旧版残留
+//! 随母本删除，删除可传播。用户裁决：不允许旧母本静默吞掉任何一侧的新
+//! 内容，要么新者胜、要么交用户裁决（GUI 冲突选择为后续演进，见
+//! docs/v0.9.5/需求9）。
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -127,8 +135,9 @@ fn save_deploy_registry(set: &HashSet<String>) {
 /// 目录名（单数 [skill] = 插件 id；[[skill]] 数组与目录源 =
 /// `<plugin_id>__<name>`，对标 MCP 工具命名）；`content` = 完整 SKILL.md
 /// 内容（toml 源经 render_skill_md 渲染，目录源文件即权威原文）。
-/// v0.9.4 需求3：目录源附带 `source_dir`——分发侧镜像同步整个 skill 目录
-///（references/scripts 等附属文件一并落地），不再只写 SKILL.md 单文件。
+/// v0.9.4 需求3：目录源附带 `source_dir`——分发侧同步整个 skill 目录
+///（references/scripts 等附属文件一并落地，v0.9.5 需求9 改双向新者胜），
+/// 不再只写 SKILL.md 单文件。
 #[derive(Debug, Clone)]
 pub struct SkillDeclEntry {
     pub dir_name: String,
@@ -138,9 +147,10 @@ pub struct SkillDeclEntry {
     pub source_dir: Option<PathBuf>,
 }
 
-/// 目录形式源：`plugins/<id>/skills/<name>/SKILL.md`——文件即权威（自带
-/// frontmatter，部署原文照抄）。新增 skill = 加子目录，更新 skill = 改文件，
-/// rebuild（启动/启停/编辑保存）时自动同步——对标 MCP 的动态发现语义。
+/// 目录形式源：`plugins/<id>/skills/<name>/SKILL.md`——自带 frontmatter，
+/// 部署原文照抄。新增 skill = 加子目录，更新 skill = 改文件（任一侧，含
+/// agent 目录里的分发副本——v0.9.5 需求9 新者胜），rebuild（启动/启停/
+/// 编辑保存）时自动同步——对标 MCP 的动态发现语义。
 pub(crate) fn dir_source_skills(plugin_root: &Path, plugin_id: &str) -> Vec<SkillDeclEntry> {
     let skills_dir = plugin_root.join("skills");
     let Ok(entries) = std::fs::read_dir(&skills_dir) else {
@@ -273,68 +283,176 @@ impl SkillSyncReport {
     }
 }
 
-/// 整目录镜像同步（v0.9.4 需求3）：src → dst 逐文件比对（缺失/变更 →
-/// 复制），dst 中 src 没有的文件删除（文件即权威，插件禁用前的手工改动
-/// 会被镜像纠正）。全量一致返回 "Skipped"，有动作返回 "Deployed"。
-/// 复制用 fs::copy（skill 附件均为小文本/脚本，无需断点；目录先建后拷）。
+/// 整目录双向同步（v0.9.5 需求9，废除 v0.9.4 需求3 的母本单向镜像）：
+/// 逐文件内容一致跳过；不一致时 **mtime 新者胜**——目标侧较新（agent/
+/// 用户改了分发副本；同刻视为目标侧编辑，覆盖保时间戳的手工拷贝形态）
+/// → 回写源并保留目标 mtime，同轮后续目标经源自然收敛；源侧较新 → 正常
+/// 下发。目标侧独有文件按锚点方向判定（`anchor_target_newer`）：目标新
+/// → 收编入源；母本新 → 随母本删除（删除传播）。返回 "Skipped" /
+/// "Deployed" / "Adopted" / "Deployed+Adopted"。复制用 fs::copy（skill
+/// 附件均为小文本/脚本）。
 fn sync_skill_folder(src: &Path, dst: &Path) -> Result<&'static str, String> {
-    let mut changed = false;
-    // 收集源侧相对路径 → 内容比对/复制。
-    fn walk_src(src: &Path, dst: &Path, prefix: &str, changed: &mut bool) -> Result<(), String> {
-        for entry in std::fs::read_dir(src).map_err(|e| e.to_string())?.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let rel = if prefix.is_empty() {
-                name.clone()
-            } else {
-                format!("{prefix}/{name}")
-            };
-            let s = entry.path();
-            let d = dst.join(&name);
-            if std::fs::metadata(&s).map(|m| m.is_dir()).unwrap_or(false) {
-                std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
-                walk_src(&s, &d, &rel, changed)?;
-            } else {
-                let need = match std::fs::read(&d) {
-                    Ok(existing) => existing != std::fs::read(&s).map_err(|e| e.to_string())?,
-                    Err(_) => true,
-                };
-                if need {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    let mut deployed = false;
+    let mut adopted = false;
+    walk_merge(src, dst, "", &mut deployed, &mut adopted)?;
+    let target_newer = anchor_target_newer(src, dst);
+    resolve_extras(dst, src, target_newer, &mut deployed, &mut adopted)?;
+    Ok(if deployed && adopted {
+        "Deployed+Adopted"
+    } else if adopted {
+        "Adopted"
+    } else if deployed {
+        "Deployed"
+    } else {
+        "Skipped"
+    })
+}
+
+/// 目标侧独有文件的方向判定锚点：SKILL.md 的 mtime 双侧比对（内容比对
+/// 不参与——逐文件归 walk_merge）。目标锚点较新（含同刻，宁可收编不丢
+/// 数据）→ 目标侧是保留版，独有文件收编；母本锚点较新（如用户编辑插件
+/// 重写文件、删除了内容）→ 独有文件视为旧版残留，随母本删除。目标缺
+/// 锚点（首部署/空目录）按母本新。已知边界：删除是唯一改动且未触碰任何
+/// 留存文件时，锚点无法感知（删除不留时间戳）——编辑器保存须 touch
+/// SKILL.md 或记删除墓碑（用户编辑插件功能的前置约束，见需求9 01）。
+fn anchor_target_newer(src: &Path, dst: &Path) -> bool {
+    let s = src.join("SKILL.md");
+    let d = dst.join("SKILL.md");
+    let (Ok(sm), Ok(dm)) = (std::fs::metadata(&s), std::fs::metadata(&d)) else {
+        // 目标缺锚点（首部署/空目录）按母本新；母本缺锚点属异常形态，
+        // 保守按目标新（宁可收编不丢数据）。
+        return std::fs::metadata(&d).is_ok();
+    };
+    mtime_secs_from(&dm) >= mtime_secs_from(&sm)
+}
+
+fn mtime_secs_from(m: &std::fs::Metadata) -> u64 {
+    m.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// mtime 秒级截断——跨文件系统/拷贝工具的亚秒精度不可靠，同秒即视为
+/// 同刻（目标侧胜）。
+fn mtime_secs(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 拷贝并把 from 侧的 mtime 带到 to——回写/收编专用：若让 fs::copy 把
+/// 源刷成当前时刻，同轮后续目标会误判「源更新」而错误覆盖（多目标顺序
+/// 处理需收敛到全局最新，mtime 必须如实保留）。
+fn copy_preserving_mtime(from: &Path, to: &Path) -> Result<(), String> {
+    let mtime = std::fs::metadata(from)
+        .and_then(|m| m.modified())
+        .map(filetime::FileTime::from)
+        .map_err(|e| e.to_string())?;
+    std::fs::copy(from, to).map_err(|e| e.to_string())?;
+    filetime::set_file_mtime(to, mtime).map_err(|e| e.to_string())
+}
+
+/// src 侧为准逐文件与 dst 比对：内容一致跳过；不一致 mtime 新者胜
+/// （同刻目标胜）；dst 缺失 → 下发。
+fn walk_merge(
+    src: &Path,
+    dst: &Path,
+    prefix: &str,
+    deployed: &mut bool,
+    adopted: &mut bool,
+) -> Result<(), String> {
+    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())?.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let rel = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        let s = entry.path();
+        let d = dst.join(&name);
+        if std::fs::metadata(&s).map(|m| m.is_dir()).unwrap_or(false) {
+            std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+            walk_merge(&s, &d, &rel, deployed, adopted)?;
+            continue;
+        }
+        let s_bytes = std::fs::read(&s).map_err(|e| format!("read {rel}: {e}"))?;
+        match std::fs::read(&d) {
+            Ok(d_bytes) if d_bytes == s_bytes => {}
+            Ok(_) => {
+                if mtime_secs(&d) >= mtime_secs(&s) {
+                    copy_preserving_mtime(&d, &s).map_err(|e| format!("adopt {rel}: {e}"))?;
+                    *adopted = true;
+                    log::warn!("[skill-deploy] {rel}: 目标侧较新，已回写母本（新者胜）");
+                } else {
                     if let Some(parent) = d.parent() {
                         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                     }
                     std::fs::copy(&s, &d).map_err(|e| format!("copy {rel}: {e}"))?;
-                    *changed = true;
+                    *deployed = true;
                 }
             }
-        }
-        Ok(())
-    }
-    // 目标侧多余文件/空目录清理。
-    fn walk_dst(src: &Path, dst: &Path, changed: &mut bool) -> Result<(), String> {
-        for entry in std::fs::read_dir(dst).map_err(|e| e.to_string())?.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let s = entry.path();
-            let d = src.join(&name);
-            if std::fs::metadata(&s).map(|m| m.is_dir()).unwrap_or(false) {
-                walk_dst(&d, &s, changed)?;
-                if std::fs::read_dir(&s)
-                    .map_err(|e| e.to_string())?
-                    .next()
-                    .is_none()
-                {
-                    let _ = std::fs::remove_dir(&s);
+            Err(_) => {
+                if let Some(parent) = d.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                 }
-            } else if !d.exists() {
-                std::fs::remove_file(&s).map_err(|e| e.to_string())?;
-                *changed = true;
+                std::fs::copy(&s, &d).map_err(|e| format!("copy {rel}: {e}"))?;
+                *deployed = true;
             }
         }
-        Ok(())
     }
-    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
-    walk_src(src, dst, "", &mut changed)?;
-    walk_dst(src, dst, &mut changed)?;
-    Ok(if changed { "Deployed" } else { "Skipped" })
+    Ok(())
+}
+
+/// dst 侧独有文件按方向处置（需求9 追加裁决：不能一律收编）：目标侧较
+/// 新 → 收编入 src 并传播；母本较新（用户编辑插件删内容等）→ 视为旧版
+/// 残留删除，让删除能随母本传播。空目录清理保留。
+fn resolve_extras(
+    dst: &Path,
+    src: &Path,
+    target_newer: bool,
+    deployed: &mut bool,
+    adopted: &mut bool,
+) -> Result<(), String> {
+    let Ok(entries) = std::fs::read_dir(dst) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let d = entry.path();
+        let s = src.join(&name);
+        if std::fs::metadata(&d).map(|m| m.is_dir()).unwrap_or(false) {
+            resolve_extras(&d, &s, target_newer, deployed, adopted)?;
+            if std::fs::read_dir(&d)
+                .map_err(|e| e.to_string())?
+                .next()
+                .is_none()
+            {
+                let _ = std::fs::remove_dir(&d);
+            }
+        } else if !s.exists() {
+            if target_newer {
+                if let Some(parent) = s.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                copy_preserving_mtime(&d, &s).map_err(|e| format!("adopt extra {name}: {e}"))?;
+                *adopted = true;
+                log::warn!("[skill-deploy] {name}: 目标侧较新，独有文件收编入母本");
+            } else {
+                std::fs::remove_file(&d).map_err(|e| format!("remove extra {name}: {e}"))?;
+                *deployed = true;
+                log::warn!(
+                    "[skill-deploy] {name}: 母本较新，目标侧独有文件视为旧版残留，随母本删除"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 同步入口（条件语义）：skill-resolver（系统插件，默认启用）开 → 分发启用
@@ -369,8 +487,8 @@ fn sync_with(
     for (agent_id, root) in targets {
         for decl in &decls {
             let dir = root.join(&decl.dir_name);
-            // v0.9.4 需求3：目录形式源 → 整目录镜像同步（SKILL.md 一致且
-            // 附属文件一致才 Skipped；目标多余文件删除——文件即权威语义）。
+            // v0.9.5 需求9：目录形式源 → 整目录双向同步（新者胜：目标侧
+            // 较新回写母本并传播；目标独有文件收编；内容全一致才 Skipped）。
             let action = match &decl.source_dir {
                 Some(src) => match sync_skill_folder(src, &dir) {
                     Ok(a) => a,
@@ -459,8 +577,17 @@ mod tests {
     use super::*;
     use crate::agent::manifest::env_test_lock;
 
-    /// v0.9.4 需求3：目录形式源整目录镜像同步——首部署/增量跳过/更新传播/
-    /// 删多余四态。附属文件（references/scripts）与 SKILL.md 一并落地。
+    /// 测试用固定时间基（未来时刻，保证显式抬高的 mtime 恒大于部署写入
+    /// 产生的真实当前时刻——秒级同刻会走「目标胜」分支）。
+    const MTIME_BASE: u64 = 1_800_000_000;
+
+    fn set_mtime(path: &Path, secs: u64) {
+        filetime::set_file_mtime(path, filetime::FileTime::from_unix_time(secs as i64, 0)).unwrap();
+    }
+
+    /// 目录形式源整目录同步——首部署/增量跳过/更新传播/独有文件收编四态
+    ///（v0.9.4 需求3 原为「镜像删除」，v0.9.5 需求9 改新者胜双向同步）。
+    /// 附属文件（references/scripts）与 SKILL.md 一并落地。
     #[test]
     fn dir_source_folder_sync_full_lifecycle() {
         let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
@@ -511,10 +638,14 @@ body",
         assert!(report.actions.iter().any(|a| a.contains("Skipped")));
         assert!(!report.actions.iter().any(|a| a.contains("Deployed")));
 
-        // 3. 更新传播：源侧改 references/guide.md + 新增 scripts/sub/deep.txt。
+        // 3. 更新传播：源侧改 references/guide.md + 新增 scripts/sub/deep.txt
+        //（源侧显式抬高 mtime——部署写入的目标文件 mtime=当下，秒级同刻
+        // 会落入「目标胜」分支）。
         std::fs::write(skill.join("references/guide.md"), "guide-v2").unwrap();
+        set_mtime(&skill.join("references/guide.md"), MTIME_BASE + 10);
         std::fs::create_dir_all(skill.join("scripts/sub")).unwrap();
         std::fs::write(skill.join("scripts/sub/deep.txt"), "deep").unwrap();
+        set_mtime(&skill.join("scripts/sub/deep.txt"), MTIME_BASE + 10);
         let report = sync_with(vec![decl.clone()], &targets, true);
         assert!(report.actions.iter().any(|a| a.contains("Deployed")));
         assert_eq!(
@@ -526,12 +657,116 @@ body",
             "deep"
         );
 
-        // 4. 镜像删除：源侧删 scripts/tool.mjs → 目标侧同步消失。
+        // 4. v0.9.5 需求9：目标侧较新（部署刷新过目标锚点 mtime）→
+        //    源侧删掉的文件不被镜像删除，改收编回源。
         std::fs::remove_file(skill.join("scripts/tool.mjs")).unwrap();
+        let report = sync_with(vec![decl.clone()], &targets, true);
+        assert!(report.actions.iter().any(|a| a.contains("Adopted")));
+        assert!(
+            dst.join("scripts/tool.mjs").exists(),
+            "目标侧文件保留（不再镜像删除）"
+        );
+        assert!(skill.join("scripts/tool.mjs").exists(), "独有文件收编回源");
+        assert!(dst.join("SKILL.md").is_file());
+
+        // 5. 需求9 追加裁决：母本锚点较新（模拟未来用户编辑插件删内容
+        //    ——编辑重写母本文件抬高 mtime）→ 目标侧独有文件视为旧版
+        //    残留删除，删除随母本传播。
+        std::fs::write(dst.join("references/leftover.md"), "stale").unwrap();
+        set_mtime(&skill.join("SKILL.md"), MTIME_BASE + 300);
         let report = sync_with(vec![decl], &targets, true);
         assert!(report.actions.iter().any(|a| a.contains("Deployed")));
-        assert!(!dst.join("scripts/tool.mjs").exists());
+        assert!(
+            !dst.join("references/leftover.md").exists(),
+            "母本较新：独有文件随母本删除（删除可传播）"
+        );
         assert!(dst.join("SKILL.md").is_file());
+
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// v0.9.5 需求9（新者胜）：目标侧编辑（agent/用户改分发副本）→ 回写
+    /// 母本并同轮传播其余目标；同刻不同内容（保时间戳手工拷贝形态）→
+    /// 目标胜；全量一致后收敛 Skipped。事故场景回归：旧母本不再覆盖新编辑。
+    #[test]
+    fn target_edit_adopts_back_and_propagates() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let src = tempfile::tempdir().unwrap();
+        let skill = src.path().join("s9");
+        std::fs::create_dir_all(skill.join("references")).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: s9\ndescription: d\n---\nv1",
+        )
+        .unwrap();
+        std::fs::write(skill.join("references/guide.md"), "guide-v1").unwrap();
+        set_mtime(&skill.join("SKILL.md"), MTIME_BASE);
+        set_mtime(&skill.join("references/guide.md"), MTIME_BASE);
+
+        let t1 = tempfile::tempdir().unwrap();
+        let t2 = tempfile::tempdir().unwrap();
+        let targets = vec![
+            ("a1".to_string(), t1.path().join("skills")),
+            ("a2".to_string(), t2.path().join("skills")),
+        ];
+        let decl = SkillDeclEntry {
+            dir_name: "s9".to_string(),
+            description: "d".to_string(),
+            content: std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+            source_dir: Some(skill.clone()),
+        };
+
+        // 1. 首部署两目标。
+        sync_with(vec![decl.clone()], &targets, true);
+        let d1 = t1.path().join("skills/s9");
+        let d2 = t2.path().join("skills/s9");
+        assert!(d1.join("SKILL.md").is_file() && d2.join("SKILL.md").is_file());
+
+        // 2. 目标侧编辑（较新）→ 回写母本 + 同轮传播另一目标。
+        std::fs::write(d1.join("references/guide.md"), "guide-v2-by-target").unwrap();
+        set_mtime(&d1.join("references/guide.md"), MTIME_BASE + 100);
+        let report = sync_with(vec![decl.clone()], &targets, true);
+        assert!(report.actions.iter().any(|a| a.contains("Adopted")));
+        assert_eq!(
+            std::fs::read_to_string(skill.join("references/guide.md")).unwrap(),
+            "guide-v2-by-target",
+            "目标侧较新回写母本（不再被旧母本覆盖）"
+        );
+        assert_eq!(
+            std::fs::read_to_string(d2.join("references/guide.md")).unwrap(),
+            "guide-v2-by-target",
+            "同轮传播其余目标"
+        );
+
+        // 3. 同刻不同内容（保时间戳手工拷贝形态）→ 目标胜。
+        std::fs::write(
+            d2.join("SKILL.md"),
+            "---\nname: s9\ndescription: d\n---\nv2-tie",
+        )
+        .unwrap();
+        set_mtime(&d2.join("SKILL.md"), MTIME_BASE + 200);
+        set_mtime(&skill.join("SKILL.md"), MTIME_BASE + 200);
+        let report = sync_with(vec![decl.clone()], &targets, true);
+        assert!(report.actions.iter().any(|a| a.contains("Adopted")));
+        assert_eq!(
+            std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+            "---\nname: s9\ndescription: d\n---\nv2-tie",
+            "同刻目标胜（手工拷贝视为目标侧编辑）"
+        );
+
+        // 4. 收敛：第一轮把 v2-tie 补发到仍为 v1 的 a1（a1 在 a2 之前
+        //    处理、未见到 a2 采纳的新内容），第二轮全量一致。
+        sync_with(vec![decl.clone()], &targets, true);
+        assert_eq!(
+            std::fs::read_to_string(d1.join("SKILL.md")).unwrap(),
+            "---\nname: s9\ndescription: d\n---\nv2-tie"
+        );
+        let report = sync_with(vec![decl], &targets, true);
+        assert!(report.actions.iter().any(|a| a.contains("Skipped")));
+        assert!(!report.actions.iter().any(|a| a.contains("Deployed")));
+        assert!(!report.actions.iter().any(|a| a.contains("Error")));
 
         std::env::remove_var("JISHU_HUB_HOME");
     }
