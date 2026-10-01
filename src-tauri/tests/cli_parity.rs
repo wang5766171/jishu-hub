@@ -39,8 +39,22 @@ fn cli_args_define_all_public_subcommands() {
     let content = std::fs::read_to_string(&args_path).unwrap();
 
     let expected_variants = [
-        "Agents", "Chat", "Doctor", "Plan", "Task", "Event", "Run", "Model", "Daemon", "Evolve",
-        "Acp", "Plugins", "TaskArtifact", "Memory", "Mcp", "Skill",
+        "Agents",
+        "Chat",
+        "Doctor",
+        "Plan",
+        "Task",
+        "Event",
+        "Run",
+        "Model",
+        "Daemon",
+        "Evolve",
+        "Acp",
+        "Plugins",
+        "TaskArtifact",
+        "Memory",
+        "Mcp",
+        "Skill",
     ];
 
     for variant in &expected_variants {
