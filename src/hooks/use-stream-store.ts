@@ -180,6 +180,13 @@ class StreamStore {
    *  避免模型首响应慢/滞留时误导性显示②「正在赶来」（需求12 修过一次，
    *  后被「③权威信号=session_resolved」的测试期修复回归）。 */
   private resolvedOnce = new Set<string>();
+  /** 三轮评审 C20：resolvedOnce 登记时的进程 id（连接世代）——进程死后
+   *  重连（新 pid）时 markPromptAccepted 不再凭旧记忆直升③「思考中」
+   *  （修前重连窗口误报阶段）；复用连接（同 pid）保持原优化。 */
+  private resolvedPid = new Map<string, number>();
+  /** 本回合 send 返回的进程 id（noteProcess 供给，session_resolved 到达
+   *  时快照进 resolvedPid）。 */
+  private currentPid = new Map<string, number>();
   /** Per-session conductor phase (from phase_divider events). Independent of
    *  stream state so it survives drop() — used to tell conductor-driven
    *  followUp (execute node advance) apart from a final turn. */
@@ -212,12 +219,16 @@ class StreamStore {
 
   /** v0.9.4 需求12：send_message 受理确认（IPC 返回后调用）——
    *  已建立连接（本会话曾 session_resolved，复用进程路径）的回合直接
-   *  升级③「思考中」；spawn 中的新连接保持②「正在赶来」等权威信号。 */
-  markPromptAccepted(sid: string): void {
+   *  升级③「思考中」；spawn 中的新连接保持②「正在赶来」等权威信号。
+   *  C20：带 pid 时比对连接世代——新进程（重连）不直升，等 session_resolved。 */
+  markPromptAccepted(sid: string, pid?: number): void {
     const key = this.canonical(sid);
     const prev = this.sessions.get(key);
     if (!prev || prev.promptAccepted) return;
-    const established = !prev.sessionResolved && this.resolvedOnce.has(key);
+    const rememberedPid = this.resolvedPid.get(key);
+    const generationMatch =
+      pid === undefined || rememberedPid === undefined || rememberedPid === pid;
+    const established = !prev.sessionResolved && this.resolvedOnce.has(key) && generationMatch;
     this.sessions.set(key, {
       ...prev,
       promptAccepted: true,
@@ -225,10 +236,20 @@ class StreamStore {
     });
     devLog(
       "store",
-      established ? "send 受理确认（复用连接：直入③思考中）" : "send 受理确认（连接建立中，保持②正在赶来）",
-      { id: sid },
+      established
+        ? "send 受理确认（复用连接：直入③思考中）"
+        : pid !== undefined && !generationMatch
+          ? "send 受理确认（新进程重连：保持②正在赶来，等 session_resolved）"
+          : "send 受理确认（连接建立中，保持②正在赶来）",
+      { id: sid, pid: pid ?? null, rememberedPid: rememberedPid ?? null },
     );
     this.scheduleFlush();
+  }
+
+  /** C20：登记本回合进程 id（send_message 返回的 process_id——连接世代
+   *  信号；session_resolved 到达时快照进 resolvedPid）。 */
+  noteProcess(sid: string, pid: number): void {
+    this.currentPid.set(this.canonical(sid), pid);
   }
 
   /** v0.9.4 需求12 测试期修复：session_resolved 到达（连接建立）——②→③
@@ -366,9 +387,17 @@ class StreamStore {
       if (typeof realId === "string" && realId.length >= 8) {
         resolvedId = realId;
         // v0.9.5 需求2 测试期：与 markSessionResolved 同源登记（真实 id +
-        // 规范键都记，markPromptAccepted 升级③时可靠命中）。
+        // 规范键都记，markPromptAccepted 升级③时可靠命中）。C20：同刻
+        // 快照连接世代 pid（currentPid 由 noteProcess 供给）。
         this.resolvedOnce.add(realId);
         this.resolvedOnce.add(key);
+        {
+          const pid = this.currentPid.get(key);
+          if (pid !== undefined) {
+            this.resolvedPid.set(realId, pid);
+            this.resolvedPid.set(key, pid);
+          }
+        }
         if (realId !== key) {
           this.aliases.set(realId, key);
         }

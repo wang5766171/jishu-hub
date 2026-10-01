@@ -287,13 +287,20 @@ export function useAllPluginBehaviors(): Record<string, PluginBehaviorConfig> {
   }, [all]);
 }
 
-/** 写行为键（仅覆盖 ui.*，保留插件自身配置值；选即存即热生效）。 */
+/** 写行为键（仅覆盖 ui.*，保留插件自身配置值；选即存即热生效）。
+ * 三轮评审 C23：缓存未就绪（cache=null，配置首次加载完成前用户保存行为键）
+ * 时不得空合并——修前 kept 取空集，写入会抹掉该插件全部 schema 配置值；
+ * 此时先等全量配置就绪再合并。 */
 export async function setPluginBehavior(
   pluginId: string,
   behavior: PluginBehaviorConfig,
 ): Promise<void> {
+  let snapshot = cache;
+  if (!snapshot) {
+    snapshot = await loadAll();
+  }
   const kept = Object.fromEntries(
-    Object.entries(cache?.[pluginId] ?? {}).filter(([k]) => !k.startsWith("ui.")),
+    Object.entries(snapshot[pluginId] ?? {}).filter(([k]) => !k.startsWith("ui.")),
   );
   const ui: PluginConfigValues = {};
   if (behavior.defaultSlot) ui["ui.slot"] = behavior.defaultSlot;

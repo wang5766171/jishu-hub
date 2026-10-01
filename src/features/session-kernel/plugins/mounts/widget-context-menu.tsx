@@ -8,6 +8,7 @@
  */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import i18n from "@/i18n";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { openManagePage } from "@/lib/app-nav";
 
@@ -78,7 +79,7 @@ export function useWidgetContextMenu(): WidgetContextMenu {
             onClick={() => void disable()}
             className="w-full rounded-md px-2 py-1.5 text-left text-xs text-foreground/90 transition-colors hover:bg-accent"
           >
-            停用插件
+            {i18n.t("plugins.disablePlugin", { defaultValue: "" })}
           </button>
           <button
             type="button"
@@ -88,7 +89,7 @@ export function useWidgetContextMenu(): WidgetContextMenu {
             }}
             className="w-full rounded-md px-2 py-1.5 text-left text-xs text-foreground/90 transition-colors hover:bg-accent"
           >
-            在插件中心设置…
+            {i18n.t("plugins.openInCenter", { defaultValue: "" })}
           </button>
         </div>,
         document.body,

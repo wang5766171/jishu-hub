@@ -34,7 +34,10 @@ export function attachWindowActivityTracking(): () => void {
   if (attached) return () => undefined;
   attached = true;
   visible = document.visibilityState === "visible";
-  focused = true;
+  // 三轮评审 C27：初始聚焦态从真实窗口状态取——修前假设 true（应用启动时
+  // 用户可能尚未聚焦到本窗口，通知会被误抑制一轮）；hasFocus 是同步快照，
+  // 仅作初值（后续由 focus/blur 事件驱动，与设计注释的「不轮询」不冲突）。
+  focused = document.hasFocus();
   window.addEventListener("focus", onFocus);
   window.addEventListener("blur", onBlur);
   document.addEventListener("visibilitychange", onVisibilityChange);

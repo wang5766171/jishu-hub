@@ -52,7 +52,8 @@ describe("MessageView interaction rendering", () => {
     render(<MessageView messages={messages} flat />);
 
     // v0.9.5 需求4：工作项（含交互卡）默认折叠——先展开「已工作」区。
-    fireEvent.click(screen.getByRole("button", { name: /已工作/ }));
+    // 三轮评审 i18n 配套：文案走 i18n（本测试固定 en），断言按 en 文案。
+    fireEvent.click(screen.getByRole("button", { name: /Worked/i }));
     const cards = screen.getAllByRole("button", { name: /Ask user/i });
     expect(cards).toHaveLength(1);
 
@@ -109,8 +110,9 @@ describe("MessageView interaction rendering", () => {
 
     // v0.9.3 测试期修复：回放按 tool_result.is_error 显示状态徽标，
     // 而非一律 success（失败 edit 被掩成 Done）。
-    // v0.9.5 需求4：工具组默认折叠——展开后断言状态徽标。
-    fireEvent.click(screen.getByRole("button", { name: /已工作/ }));
+    // v0.9.5 需求4：工具组默认折叠——展开后断言状态徽标。三轮评审 i18n
+    // 配套：按 en 文案断言（本测试固定 en）。
+    fireEvent.click(screen.getByRole("button", { name: /Worked/i }));
     expect(screen.getByText("Error")).toBeTruthy();
     expect(screen.getByText("Done")).toBeTruthy();
   });

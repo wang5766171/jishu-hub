@@ -143,7 +143,7 @@ function SourceShell({
 /** manifest → 描述符（校验失败抛错，loader 负责隔离）。
  *  v0.9.3 需求25：render.component 为 "@file:<rel>" 时经 hybrid.component
  *  直供组件（混合插件）；数据面挂载的 SourceShell→RendererShell 全链透传。
- *  v0.9.5 需求1（原需敆26）1a：去 pipeline 早退——两臂合并装配，同一清单
+ *  v0.9.5 需求1（原需求26）1a：去 pipeline 早退——两臂合并装配，同一清单
  *  同时声明 pipeline 与 source/render 时流水线阶段与渲染挂载**同时生效**
  *  （原早退会静默丢弃渲染声明）；纯 pipeline 清单（video-maker） mounts 留空。 */
 export function buildComposedDescriptor(
@@ -211,11 +211,15 @@ export function buildComposedDescriptor(
         // v0.9.5 需求1（原需求26）5b：gateKey 数据驱动——内置三类信号维持
         // 硬编码映射；自定义信号（plugin: 前缀）由信号名推导 notify_<name>，
         // 配置无该键则不门控（设计裁决：无配置即放行）。
+        // 三轮评审 gateKey 撞键修复：推导带插件 id 段（notify_<pluginId>_<name>）
+        // ——修前取末段，两个插件发同名信号共用同一开关键互相串。
         const gateKey =
           signalType === "turn-complete" ? "notifyTurnComplete"
           : signalType === "approval-request" ? "notifyApproval"
           : signalType === "task-run-failed" ? "notifyTaskFailed"
-          : signalType.startsWith("plugin:") ? `notify_${signalType.split(":").pop() ?? ""}` : null;
+          : signalType.startsWith("plugin:")
+            ? `notify_${id}__${signalType.split(":").pop() ?? ""}`
+            : null;
         if (gateKey && options[gateKey] === false) return;
         for (const action of manifest.action ?? []) {
           const handler = actionRegistry.get(action.type);

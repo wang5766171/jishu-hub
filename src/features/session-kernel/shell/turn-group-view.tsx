@@ -8,6 +8,7 @@
  */
 import { memo, useState } from "react";
 import { ChevronDown, ChevronRight, FileDiff, Hammer } from "lucide-react";
+import i18n from "@/i18n";
 import type { RenderItem } from "@/components/sessions/message-view";
 import { fileChangesSummary, type FileChangeEntry } from "@/features/session-kernel/view-model/build-turn-segments";
 import { cn } from "@/lib/utils";
@@ -54,7 +55,7 @@ export const TurnGroupView = memo(function TurnGroupView({
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground transition-fast hover:bg-accent/40"
           >
             <Hammer className="h-3.5 w-3.5 shrink-0" />
-            <span className="font-medium">已工作 · {segments.workCount} 项</span>
+            <span className="font-medium">{i18n.t("turnGroup.workedCount", { count: segments.workCount, defaultValue: "" })}</span>
             <span className="ml-auto shrink-0">
               {workOpen ? (
                 <ChevronDown className="h-3.5 w-3.5" />
@@ -80,11 +81,11 @@ export const TurnGroupView = memo(function TurnGroupView({
   );
 });
 
-const OP_LABEL: Record<FileChangeEntry["op"], string> = {
-  edit: "编辑",
-  write: "创建",
-  delete: "删除",
-};
+// 三轮评审 P1-6：操作徽标走 i18n（按需解析，语言切换即生效）。
+function opLabel(op: FileChangeEntry["op"]): string {
+  const key = op === "edit" ? "opEdit" : op === "write" ? "opWrite" : "opDelete";
+  return i18n.t(`turnGroup.${key}`, { defaultValue: op });
+}
 
 const FileChangesCard = memo(function FileChangesCard({ changes }: { changes: FileChangeEntry[] }) {
   const [open, setOpen] = useState(false);
@@ -99,7 +100,7 @@ const FileChangesCard = memo(function FileChangesCard({ changes }: { changes: Fi
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground transition-fast hover:bg-accent/40"
       >
         <FileDiff className="h-3.5 w-3.5 shrink-0" />
-        <span className="font-medium">文件改动 · {fileChangesSummary(changes)}</span>
+        <span className="font-medium">{i18n.t("turnGroup.fileChangesSummary", { summary: fileChangesSummary(changes), defaultValue: "" })}</span>
         <span className="ml-auto shrink-0">
           {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
         </span>
@@ -116,7 +117,7 @@ const FileChangesCard = memo(function FileChangesCard({ changes }: { changes: Fi
                   c.op === "delete" && "bg-destructive/15 text-destructive",
                 )}
               >
-                {OP_LABEL[c.op]}
+                {opLabel(c.op)}
               </span>
               <span className="truncate font-mono text-muted-foreground" title={c.path}>
                 {c.path}

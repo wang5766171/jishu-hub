@@ -6,6 +6,7 @@
  */
 import { memo } from "react";
 import Markdown from "react-markdown";
+import i18n from "@/i18n";
 import { sniffContentType } from "./output-sniff";
 
 function JsonTable({ columns, rows }: { columns: unknown[]; rows: unknown[][] }): React.JSX.Element {
@@ -33,7 +34,7 @@ function JsonTable({ columns, rows }: { columns: unknown[]; rows: unknown[][] })
         </tbody>
       </table>
       {rows.length > 100 && (
-        <div className="px-2 py-1 text-[10px] text-muted-foreground">… 共 {rows.length} 行（显示前 100）</div>
+        <div className="px-2 py-1 text-[10px] text-muted-foreground">{i18n.t("tools.rowsTruncated", { count: rows.length, defaultValue: "" })}</div>
       )}
     </div>
   );
@@ -54,7 +55,7 @@ export const SniffedOutput = memo(function SniffedOutput({ output }: { output: s
       return (
         <div className="flex max-h-64 items-center justify-center overflow-auto rounded-md border border-border/45 bg-white p-2">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={url} alt="SVG 输出" className="max-h-60 max-w-full" />
+          <img src={url} alt={i18n.t("tools.svgOutput", { defaultValue: "SVG" })} className="max-h-60 max-w-full" />
         </div>
       );
     }
@@ -63,14 +64,14 @@ export const SniffedOutput = memo(function SniffedOutput({ output }: { output: s
       return (
         <div className="flex max-h-64 items-center justify-center overflow-auto rounded-md border border-border/45 p-2">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={url} alt="图片输出" className="max-h-60 max-w-full" />
+          <img src={url} alt={i18n.t("tools.imageOutput", { defaultValue: "Image" })} className="max-h-60 max-w-full" />
         </div>
       );
     }
     case "html":
       return (
         <iframe
-          title="HTML 输出"
+          title={i18n.t("tools.htmlOutput", { defaultValue: "HTML" })}
           srcDoc={output}
           sandbox=""
           className="h-56 w-full rounded-md border border-border/45 bg-white"

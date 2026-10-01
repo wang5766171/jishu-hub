@@ -1555,7 +1555,7 @@ export function PluginCreateDialog({
                     按此选型
                   </button>
                   <span className="text-[10px] text-muted-foreground/60">
-                    Agent 扩展（pi_extension）段创建期无表单——保存后在详情页 TOML 编辑添加
+                    智能体扩展（pi_extension 配置段）创建期无表单——保存后在详情页 TOML 编辑添加
                   </span>
                 </div>
               </div>

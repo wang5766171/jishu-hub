@@ -17,7 +17,7 @@ import { PluginComposeDialog } from "./plugin-compose-dialog";
 import { PluginHybridWizard } from "./plugin-hybrid-wizard";
 // 3c（v0.9.5 需求1）：流水线向导（列表式阶段编排器）。
 import { PluginPipelineWizard } from "./plugin-pipeline-wizard";
-// 3a-1（v0.9.5 需求1，原需敆26）：统一创建入口——类型选择卡片页分流。
+// 3a-1（v0.9.5 需求1，原需求26）：统一创建入口——类型选择卡片页分流。
 import { PluginCreateEntry } from "./plugin-create-entry";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
 import { composedVersion, subscribeComposed } from "@/features/session-kernel/capabilities/composition/loader";
@@ -65,7 +65,7 @@ interface PluginDescriptor {
   system?: boolean;
   /** v0.9.3 需求13：组合式插件（manifest 装配；用户创建的可删除）。 */
   composed?: boolean;
-  /** v0.9.5 需求1（原需敆26）1d：声明了 [[pipeline.stages]]（流水线形态——
+  /** v0.9.5 需求1（原需求26）1d：声明了 [[pipeline.stages]]（流水线形态——
    * 插件中心独立「流水线」tab，不混入「会话能力」）。 */
   has_pipeline?: boolean;
 }
@@ -92,7 +92,7 @@ const CORE_ENGINE_PLUGIN_IDS = new Set([
 
 function categoryOf(p: PluginDescriptor): PluginCategory {
   // v0.9.2 需求1：会话能力插件（前端注册表实现，此处统一管理面启停）。
-  // v0.9.5 需求1（原需敆26）1d：声明 pipeline 的组合式插件归独立「流水线」
+  // v0.9.5 需求1（原需求26）1d：声明 pipeline 的组合式插件归独立「流水线」
   // tab（video-maker 等编排形态，原混在「会话能力」里不可辨）。
   if (p.kind === "session") return p.has_pipeline ? "pipeline" : "session";
   if (p.core || CORE_ENGINE_PLUGIN_IDS.has(p.id)) return "core";
@@ -278,7 +278,7 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
       const { open } = await import("@tauri-apps/plugin-dialog");
       const picked = await open({
         multiple: false,
-        filters: [{ name: "pi 扩展", extensions: ["ts"] }],
+        filters: [{ name: "智能体扩展", extensions: ["ts"] }],
       });
       if (typeof picked !== "string" || !picked) return;
       const target = await invokeCommand<string>("pi_extension_import", { path: picked });
@@ -704,7 +704,7 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
             variant="outline"
             size="sm"
             onClick={() => void handleImportExtension()}
-            title="导入 .ts pi 扩展文件（安全摘要确认后复制，默认不启用）"
+            title="导入 .ts 智能体扩展文件（安全摘要确认后复制，默认不启用）"
           >
             <FileCode2 className="h-4 w-4" />
             <span className="ml-1.5">导入扩展</span>

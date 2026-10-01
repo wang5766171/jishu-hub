@@ -9,6 +9,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import i18n from "@/i18n";
 import { invokeCommand } from "@/hooks/use-invoke";
 
 interface PluginActionEntry {
@@ -22,6 +23,19 @@ interface MenuState {
   x: number;
   y: number;
   text: string;
+}
+
+/** 适配选中文本语义的动作类型（通知/剪贴板/插入输入框）。
+ * 三轮评审开闭原则修复：新增动作类型想接入右键菜单时，在动作声明上加
+ * `text_selection = true` 标记即可（清单自描述，宿主零改动）——白名单仅
+ * 作为无标记历史清单的兼容回退，新动作禁止再加自名单。 */
+const TEXT_SELECTION_FALLBACK_TYPES = new Set(["desktop-notify", "clipboard", "insert-composer"]);
+
+/** 动作是否适配选中文本：显式声明优先，无声明回退白名单（历史兼容）。 */
+function supportsTextSelection(action: Record<string, unknown>): boolean {
+  if (action.text_selection === true) return true;
+  if (action.text_selection === false) return false;
+  return TEXT_SELECTION_FALLBACK_TYPES.has(String(action.type ?? ""));
 }
 
 /** 消息流容器选择器（chat 滚动区——选区限定在消息内才拦截）。 */
@@ -56,8 +70,7 @@ export function SelectionContextMenu() {
           for (const item of items) {
             for (const action of item.manifest.action ?? []) {
               const type = String(action.type ?? "");
-              // 适配选中文本语义的动作类型（通知/剪贴板/插入输入框）。
-              if (type !== "desktop-notify" && type !== "clipboard" && type !== "insert-composer") {
+              if (!supportsTextSelection(action)) {
                 continue;
               }
               out.push({
@@ -92,7 +105,7 @@ export function SelectionContextMenu() {
       const handler = actionRegistry.get(entry.actionType);
       if (!handler) return;
       await handler.run(
-        { title: `来自选中文本（${entry.pluginName}）`, body: text.slice(0, 200), text },
+        { title: i18n.t("contextMenu.fromSelection", { plugin: entry.pluginName, defaultValue: "" }), body: text.slice(0, 200), text },
         { kind: "aggregate", data: [] } as never,
         { sessionId: null, pluginId: entry.pluginId },
       );
@@ -120,7 +133,7 @@ export function SelectionContextMenu() {
         }}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-accent"
       >
-        复制（{menu.text.length > 12 ? menu.text.slice(0, 12) + "…" : menu.text}）
+        {i18n.t("contextMenu.copyWithPreview", { text: menu.text.length > 12 ? menu.text.slice(0, 12) + "…" : menu.text, defaultValue: "" })}
       </button>
       {entries.map((entry) => (
         <button
@@ -129,7 +142,7 @@ export function SelectionContextMenu() {
           onClick={() => void runAction(entry, menu.text)}
           className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-accent"
         >
-          <span className="text-muted-foreground">发送到插件</span>
+          <span className="text-muted-foreground">{i18n.t("contextMenu.sendToPlugin", { defaultValue: "" })}</span>
           <span className="font-medium">{entry.pluginName}</span>
           <span className="text-muted-foreground/70">（{entry.label}）</span>
         </button>

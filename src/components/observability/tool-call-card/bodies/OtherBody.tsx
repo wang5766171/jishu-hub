@@ -1,4 +1,5 @@
 import { memo } from "react";
+import i18n from "@/i18n";
 import type { ToolKind } from "../types";
 import { kindLabel } from "../kind-icon";
 // 8a（v0.9.5 需求1，原需求26）：output 区内容嗅探——SVG/HTML/表格/图片/
@@ -25,7 +26,7 @@ export const OtherBody = memo(function OtherBody({ input, output, kind, toolName
           <SniffedOutput output={output} />
           <details className="group">
             <summary className="cursor-pointer select-none text-[10px] text-muted-foreground/70 hover:text-foreground">
-              原始输出
+              {i18n.t("tools.rawOutput", { defaultValue: "Raw output" })}
             </summary>
             <pre className="mt-1 font-mono text-[0.95em] bg-[var(--tool-card-code-bg)] border border-border/45 rounded-[6px] p-2.5 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre">
               {output.length > 2000 ? output.slice(0, 2000) + "\n… (truncated)" : output}

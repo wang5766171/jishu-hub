@@ -12,6 +12,7 @@
  * 显示具体错误信息（复用 hybrid-runtime 错误态文案语义）。
  */
 import { createElement, useEffect, useState } from "react";
+import i18n from "@/i18n";
 import type { ComponentType } from "react";
 import { Loader2 } from "lucide-react";
 import { invokeCommand } from "@/hooks/use-invoke";
@@ -77,8 +78,11 @@ export function HybridPreviewPanel({
 
   useEffect(() => {
     // 防抖：编辑器停顿 600ms 后再写盘装载（每次击键都注入会抖）。
+    // 三轮评审 C25：cancelled 提升到 effect 顶层——修前写在 setTimeout 回调
+    // 内部且 return 的 cleanup 无人接收（回调返回值被丢弃），异步装载在途时
+    // 组件卸载/源码更换后 cancelled 恒 false，旧慢结果会反过来覆盖新结果。
+    let cancelled = false;
     const timer = window.setTimeout(() => {
-      let cancelled = false;
       void (async () => {
         setLoading(true);
         setError(null);
@@ -108,11 +112,11 @@ export function HybridPreviewPanel({
           if (!cancelled) setLoading(false);
         }
       })();
-      return () => {
-        cancelled = true;
-      };
     }, 600);
-    return () => window.clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [source, pluginId]);
 
   const payload = demoPayloadOf(sourceType);
@@ -125,12 +129,12 @@ export function HybridPreviewPanel({
       {loading && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/40 text-xs text-muted-foreground">
           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          预览装载中…
+          {i18n.t("hybridPreview.loading", { defaultValue: "" })}
         </div>
       )}
       {error && (
         <div className="space-y-1 p-2 font-mono text-[11px] leading-relaxed text-destructive">
-          <div className="font-semibold">预览失败</div>
+          <div className="font-semibold">{i18n.t("hybridPreview.failed", { defaultValue: "" })}</div>
           <div className="whitespace-pre-wrap">{error}</div>
         </div>
       )}
@@ -141,7 +145,7 @@ export function HybridPreviewPanel({
       )}
       {!error && !component && !loading && (
         <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-          编写代码后此处实时预览（模拟数据）
+          {i18n.t("hybridPreview.empty", { defaultValue: "" })}
         </div>
       )}
     </div>

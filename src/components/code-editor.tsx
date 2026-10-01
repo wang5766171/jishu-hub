@@ -12,6 +12,7 @@ import { Suspense, useCallback, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { lazy } from "react";
 import { Loader2 } from "lucide-react";
+import i18n from "@/i18n";
 import { validateComponentJs } from "@/features/session-kernel/capabilities/composition/code-validate";
 
 const CodeMirror = lazy(() => import("@uiw/react-codemirror"));
@@ -102,7 +103,7 @@ export function CodeEditor({
           fallback={
             <div className="flex h-[200px] items-center justify-center text-xs text-muted-foreground">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              加载编辑器…
+              {i18n.t("codeEditor.loading", { defaultValue: "" })}
             </div>
           }
         >
@@ -137,19 +138,19 @@ function DefaultErrorPanel({
 }) {
   if (syntax.length === 0 && contract.length === 0) {
     return (
-      <div className="px-1 text-[11px] text-emerald-600">✓ 语法正确 · 契约完整</div>
+      <div className="px-1 text-[11px] text-emerald-600">{i18n.t("codeEditor.syntaxOk", { defaultValue: "" })}</div>
     );
   }
   return (
     <div className="max-h-28 space-y-0.5 overflow-y-auto rounded-md border border-border/40 bg-muted/20 px-2 py-1.5 font-mono text-[11px]">
       {syntax.map((s, i) => (
         <div key={`s${i}`} className="text-destructive">
-          ❌ 第 {s.line} 行 第 {s.col} 列：{s.message}
+          {i18n.t("codeEditor.errorAt", { line: s.line, col: s.col, message: s.message, defaultValue: "" })}
         </div>
       ))}
       {contract.map((c, i) => (
         <div key={`c${i}`} className="text-amber-600">
-          ⚠ {c}
+          {i18n.t("codeEditor.warnAt", { message: c, defaultValue: "" })}
         </div>
       ))}
     </div>

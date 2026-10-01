@@ -11,6 +11,10 @@ import { invokeCommand } from "@/hooks/use-invoke";
 export function usePluginToolInvokeBridge(): void {
   useEffect(() => {
     let unlisten: (() => void) | null = null;
+    // 三轮评审 C18：退订竞态守卫——effect cleanup 早于 import/listen 就绪
+    // 到达时（StrictMode 双挂载/快速卸载），迟到的监听器必须立即退订，
+    // 否则首个监听器泄漏、每个事件双执行。
+    let disposed = false;
     void import("@tauri-apps/api/event")
       .then(({ listen }) =>
         listen<{ pluginId: string; tool: string; args?: Record<string, unknown> }>(
@@ -34,8 +38,16 @@ export function usePluginToolInvokeBridge(): void {
                   );
                   const handler = actionRegistry.get(String(first.type));
                   if (handler) {
+                    // 三轮评审 C19：agent 参数只作数据注入——过滤 type（防换
+                    // 动作类型，handler 按 first.type 查得而 run 收合并值会错
+                    // 乱）与 __ 前缀内部字段（防循环深度等被拉负/覆写）。
+                    const safeArgs = Object.fromEntries(
+                      Object.entries(args ?? {}).filter(
+                        ([k]) => k !== "type" && !k.startsWith("__"),
+                      ),
+                    );
                     await handler.run(
-                      { ...first, ...(args ?? {}) },
+                      { ...first, ...safeArgs },
                       { kind: "aggregate", data: [] } as never,
                       { sessionId: null, pluginId },
                     );
@@ -59,11 +71,19 @@ export function usePluginToolInvokeBridge(): void {
         ),
       )
       .then((fn) => {
+        // C18：cleanup 已先行到达（import/listen 在途卸载）——立即退订刚
+        // 注册的监听器，防泄漏与双执行。
+        if (disposed) {
+          fn();
+          return;
+        }
         unlisten = fn;
       })
       .catch(() => undefined);
     return () => {
+      disposed = true;
       unlisten?.();
+      unlisten = null;
     };
   }, []);
 }

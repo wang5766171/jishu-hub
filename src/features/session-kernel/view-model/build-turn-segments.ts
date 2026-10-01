@@ -12,6 +12,7 @@
  */
 import type { RenderItem } from "@/components/sessions/message-view";
 import type { ToolCall } from "@/components/observability/tool-call-card/types";
+import i18n from "@/i18n";
 
 /** 文件改动条目（轮尾概览数据）。 */
 export interface FileChangeEntry {
@@ -112,7 +113,8 @@ export function buildTurnSegments(items: RenderItem[]): TurnSegments {
   return { workItems, workCount, textItems, fileChanges: [...changeMap.values()] };
 }
 
-/** 概览行摘要（N 个文件 · +a/−r）。 */
+/** 概览行摘要（N 个文件 · +a/−r）。三轮评审 P1-6：文案走 i18n（非组件
+ * 语境用实例直取）。 */
 export function fileChangesSummary(changes: FileChangeEntry[]): string {
   if (changes.length === 0) return "";
   let added = 0;
@@ -121,7 +123,7 @@ export function fileChangesSummary(changes: FileChangeEntry[]): string {
     added += c.added;
     removed += c.removed;
   }
-  const parts = [`${changes.length} 个文件`];
+  const parts = [i18n.t("turnGroup.fileCount", { count: changes.length, defaultValue: "" })];
   if (added || removed) parts.push(`+${added}/−${removed}`);
   return parts.join(" · ");
 }

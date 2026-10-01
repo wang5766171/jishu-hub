@@ -925,7 +925,9 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     );
     // v0.9.4 需求12：send 受理确认（spawn 完成 + prompt 已发出）——阶段文案
     // 从②「正在赶来」切③「思考中」（模型首响应慢不再误导为连接中）。
-    streamStore.markPromptAccepted(pendingId);
+    // C20：携带 process_id（连接世代）——新进程重连不凭旧记忆直升③。
+    streamStore.noteProcess(pendingId, chatSession.process_id);
+    streamStore.markPromptAccepted(pendingId, chatSession.process_id);
 
     setActiveSessionId(chatSession.session_id);
     await onSessionResolved?.(pendingId, chatSession.session_id);

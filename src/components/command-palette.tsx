@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { LayoutDashboard, Zap, Search } from "lucide-react";
+import i18n from "@/i18n";
 import { listQuickActions, runPluginQuickAction } from "@/lib/plugin-quick-run";
 
 interface PaletteItem {
@@ -100,7 +101,7 @@ export function CommandPalette({ sessionId }: { sessionId: string | null }) {
               setIndex(0);
             }}
             onKeyDown={onInputKeyDown}
-            placeholder="搜索插件…（面板展开 / 执行动作）"
+            placeholder={i18n.t("commandPalette.searchPlaceholder", { defaultValue: "" })}
             className="h-6 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
           />
           <kbd className="rounded border border-border/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">Esc</kbd>
@@ -108,7 +109,7 @@ export function CommandPalette({ sessionId }: { sessionId: string | null }) {
         <div className="max-h-72 overflow-y-auto py-1">
           {filtered.length === 0 && (
             <div className="px-4 py-6 text-center text-xs text-muted-foreground">
-              {items.length === 0 ? "暂无可快捷执行的插件" : "无匹配插件"}
+              {items.length === 0 ? i18n.t("commandPalette.empty", { defaultValue: "" }) : i18n.t("commandPalette.noMatch", { defaultValue: "" })}
             </div>
           )}
           {filtered.map((it, i) => (
@@ -130,7 +131,7 @@ export function CommandPalette({ sessionId }: { sessionId: string | null }) {
               <span className="font-medium">{it.name}</span>
               <span className="truncate font-mono text-[10px] text-muted-foreground/60">{it.pluginId}</span>
               <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-                {it.kind === "panel" ? "展开面板" : it.actionLabel}
+                {it.kind === "panel" ? i18n.t("commandPalette.openPanel", { defaultValue: "" }) : it.actionLabel}
               </span>
             </button>
           ))}
