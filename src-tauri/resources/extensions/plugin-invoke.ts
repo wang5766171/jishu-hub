@@ -17,15 +17,19 @@ import * as path from "node:path";
 import * as os from "node:os";
 
 interface AgentToolEntry {
-  pluginId: string;
+  plugin_id: string;
   name: string;
   description: string;
   parameters?: Record<string, unknown>;
 }
 
-/** 物化清单路径（hub 权威写——materialize_agent_tools）。 */
+/** 物化清单路径（hub 权威写——materialize_agent_tools）。三轮评审 C17：
+ * 优先读 hub 注入的 JISHU_HUB_HOME（测试隔离/自定义 hub 目录与后端同源），
+ * 未注入时回落用户主目录默认值。 */
 function agentToolsPath(): string {
-  return path.join(os.homedir(), ".jishu-hub", "agent-tools.json");
+  const hubHome = process.env.JISHU_HUB_HOME;
+  const base = hubHome && hubHome.trim() !== "" ? hubHome : path.join(os.homedir(), ".jishu-hub");
+  return path.join(base, "agent-tools.json");
 }
 
 function loadAgentTools(): AgentToolEntry[] {
@@ -46,7 +50,7 @@ export default function pluginInvokeExtension(pi: ExtensionAPI): void {
       label: entry.name,
       description:
         entry.description ||
-        `触发 Jishu Hub 插件 ${entry.pluginId} 的动作。用户明确要求该操作时使用。`,
+        `触发 Jishu Hub 插件 ${entry.plugin_id} 的动作。用户明确要求该操作时使用。`,
       parameters: (entry.parameters as never) ?? Type.Object({}),
       execute: async (args: Record<string, unknown>) => {
         // hub_invoke 桥（与 html-preview 同机制）：select 标题携带
@@ -71,7 +75,7 @@ export default function pluginInvokeExtension(pi: ExtensionAPI): void {
             {
               type: "text" as const,
               text: ok
-                ? `已触发插件动作 ${entry.name}（插件 ${entry.pluginId}）——效果将在 Hub 界面呈现。`
+                ? `已触发插件动作 ${entry.name}（插件 ${entry.plugin_id}）——效果将在 Hub 界面呈现。`
                 : `插件动作 ${entry.name} 触发失败（插件可能已停用或 Hub 未运行）。`,
             },
           ],

@@ -1,6 +1,12 @@
 //! 统一插件模型（v0.8.1 需求2）：内建 Rust 实现 agent 与 manifest 声明式
 //! agent 的统一装载层。
 //!
+//! 【§12 规模处置说明（v0.9.5 三轮评审）】本文件 2000+ 行（1000–2500 区间）。
+//! **拆分预案**：agent-tool 物化与冲突检查（materialize_agent_tools 及同族）
+//! 与组合插件落盘/导入（save_composed_manifest / import_extension_bundle 辅助）
+//! 可各自拆子模块（零逻辑纯移动）。**触发条件**：下版触碰本文件的需求
+//! 实施前先执行；在此之前维持现状（单一装载层的内聚性优先）。
+//!
 //! 「插件」= agent 的装载单元。内建插件（claude-code / codex / opencode /
 //! jishu-self）随 hub 分发，经 [`builtin_plugin_specs`] 工厂清单注入——
 //! AgentRegistry::new() 不再硬编码 insert；manifest 插件（需求1 M2）自
@@ -207,7 +213,11 @@ pub fn sync_pi_packages_with_plugins() {
     settings["packages"] =
         serde_json::Value::Array(next.into_iter().map(serde_json::Value::String).collect());
     if let Ok(new_content) = serde_json::to_string_pretty(&settings) {
-        let _ = std::fs::write(&settings_path, new_content);
+        // 三轮评审 B3：原子写——pi 进程并发读取 settings.json 不致读到半写
+        // 文件（与全仓 atomic_write 惯例对齐）。
+        if let Err(e) = crate::util::atomic_write(&settings_path, new_content.as_bytes()) {
+            log::warn!("[plugin] pi settings.json 原子写失败: {e}");
+        }
     }
 }
 
@@ -1847,8 +1857,9 @@ mod tests {
 
 /// 单条 agent-tool 声明（物化文件 agent-tools.json 的条目形状；与前端
 /// AgentToolDecl 及 plugin-invoke 扩展的读取端三方同形）。
+/// 三轮评审 P1-7：跨端序列化一律 snake_case（§4）——物化文件启动 ensure
+/// 全量重写，无存量 camelCase 数据兼容包袱；前端/扩展读取端同步改。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AgentToolEntry {
     pub plugin_id: String,
     pub name: String,

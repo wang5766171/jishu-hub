@@ -666,7 +666,7 @@ fn validate(path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
         }
     }
     if let Some(stages) = value.get("pipeline").and_then(|p| p.get("stages")) {
-        if stages.as_array().is_none_or(|a| a.is_empty()) {
+        if stages.as_array().map_or(true, |a| a.is_empty()) {
             basic_errors.push("[pipeline] stages 为空（流水线至少需要一个阶段）".to_string());
         }
     }
@@ -697,8 +697,10 @@ fn validate(path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
         "componentJs": component_js,
     });
     let hub = agent::manifest::hub_home();
-    let req_path = hub.join(".cli-validate-req.json");
-    let resp_path = hub.join(".cli-validate-resp.json");
+    // 三轮评审信箱并发修复：请求/响应文件名带 nonce——多终端并发 validate
+    // 不共用单一文件（hub 侧 poll/submit 按同名约定联动）。
+    let req_path = hub.join(format!(".cli-validate-req-{nonce}.json"));
+    let resp_path = hub.join(format!(".cli-validate-resp-{nonce}.json"));
     crate::util::atomic_write(&req_path, req.to_string().as_bytes())
         .map_err(|e| CliError::InvalidArg(format!("cannot write validate request: {e}")))?;
 

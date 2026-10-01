@@ -394,33 +394,64 @@ pub(crate) fn plugin_confirm_pending() -> Vec<agent::plugin::PendingHybridPlugin
 }
 
 /// CLI plugins validate 的跨进程信箱（v0.9.5 需求1（原需求26）1c）：读请求
-/// 标记（CLI 写入的 .cli-validate-req.json——manifest JSON + componentJs
+/// 标记（CLI 写入的 .cli-validate-req-<nonce>.json——manifest JSON + componentJs
 /// 源码自包含，前端零任意路径访问）。返回 None 表示无待处理请求。
+/// 三轮评审信箱并发修复：请求/响应文件名带 nonce 后缀——多终端并发
+/// validate 不再共用单一文件互相覆盖（修前第二个 CLI 覆盖第一个的请求，
+/// nonce 不匹配各自超时）。取最早写入的请求（FIFO）。
 #[tauri::command]
 pub(crate) fn cli_validate_poll() -> Option<serde_json::Value> {
-    let req_path = agent::manifest::hub_home().join(".cli-validate-req.json");
+    let hub = agent::manifest::hub_home();
+    let mut oldest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    let Ok(entries) = std::fs::read_dir(&hub) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(".cli-validate-req-") || !name.ends_with(".json") {
+            continue;
+        }
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        // MSRV 1.77.2：is_none_or 需 1.82，用 map_or 等价表达。
+        if oldest.as_ref().map_or(true, |(t, _)| mtime < *t) {
+            oldest = Some((mtime, entry.path()));
+        }
+    }
+    let (_, req_path) = oldest?;
     let Ok(content) = std::fs::read_to_string(&req_path) else {
         return None;
     };
-    // 上次 CLI 中断残留的旧响应——清掉避免本次误配（nonce 匹配在 CLI 侧）。
-    let resp_path = agent::manifest::hub_home().join(".cli-validate-resp.json");
-    if resp_path.exists() {
-        let _ = std::fs::remove_file(&resp_path);
+    // 同 nonce 的旧响应残留——清掉避免本次误配（nonce 匹配在 CLI 侧）。
+    if let Some(nonce) = serde_json::from_str::<serde_json::Value>(&content)
+        .ok()
+        .and_then(|v| v.get("nonce").and_then(|n| n.as_u64()))
+    {
+        let resp_path = hub.join(format!(".cli-validate-resp-{nonce}.json"));
+        if resp_path.exists() {
+            let _ = std::fs::remove_file(&resp_path);
+        }
     }
     serde_json::from_str(&content).ok()
 }
 
 /// CLI validate 信箱回写：前端校验器（validateManifest/validatePipeline——
-/// 与 GUI 向导同一份 TS 实现）跑完写 .cli-validate-resp.json，CLI 轮询
-/// 匹配 nonce 取结果。
+/// 与 GUI 向导同一份 TS 实现）跑完写 .cli-validate-resp-<nonce>.json，CLI
+/// 轮询匹配 nonce 取结果（并发隔离，见 poll 注释）。
 #[tauri::command]
 pub(crate) fn cli_validate_submit(response: serde_json::Value) -> Result<(), String> {
-    let resp_path = agent::manifest::hub_home().join(".cli-validate-resp.json");
+    let nonce = response
+        .get("nonce")
+        .and_then(|n| n.as_u64())
+        .ok_or("cli_validate_submit 响应缺少 nonce")?;
+    let resp_path = agent::manifest::hub_home().join(format!(".cli-validate-resp-{nonce}.json"));
     crate::util::atomic_write(&resp_path, response.to_string().as_bytes())
         .map_err(|e| format!("cannot write validate response: {e}"))
 }
 
-/// 混合插件预览代码写入（v0.9.5 需求1（原需敆26）2b）：向导编辑器源码 →
+/// 混合插件预览代码写入（v0.9.5 需求1（原需求26）2b）：向导编辑器源码 →
 /// `plugins/.preview/component.js`（assetProtocol scope 内的隐藏目录，
 /// 无 plugin.toml 不会破插件扫描；原子写）→ 返回指纹（内容长度+毫秒时戳，
 /// 前端 loadHybridComponent 按指纹热更重注入）。预览链完全复用正式装载

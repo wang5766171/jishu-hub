@@ -15,8 +15,9 @@
 use serde::Serialize;
 
 /// 未注册扩展（扫描产物：文件在 extensions/ 但 settings.json 未声明）。
+/// 三轮评审 P1-7：跨端序列化一律 snake_case（§4——修前 camelCase；前端
+/// 消费接口 pi-extension-import-card.tsx 同步改）。
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct UnregisteredExtension {
     /// 扩展文件名（如 my-extension.ts）。
     pub file_name: String,
@@ -30,7 +31,6 @@ pub struct UnregisteredExtension {
 
 /// 安全摘要（正则提取的「静态发现的能力」——非沙箱结论）。
 #[derive(Debug, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ExtensionSummary {
     /// 注册的工具（pi.registerTool({ name: "xxx"）。
     pub tools: Vec<String>,
@@ -171,8 +171,8 @@ pub fn parse_extension_summary(source: &str) -> ExtensionSummary {
         || source.contains("child_process")
         || source.contains("execSync")
         || source.contains("execFile");
-    summary.has_default_export =
-        source.contains("export default function") || source.contains("export default async function");
+    summary.has_default_export = source.contains("export default function")
+        || source.contains("export default async function");
     summary
 }
 
@@ -242,8 +242,7 @@ pub fn import_pi_extension(src_path: &str) -> Result<String, String> {
     if src.extension().is_some_and(|e| e != "ts") {
         return Err("仅支持 .ts 扩展文件".to_string());
     }
-    let source = std::fs::read_to_string(src)
-        .map_err(|e| format!("无法读取源文件: {e}"))?;
+    let source = std::fs::read_to_string(src).map_err(|e| format!("无法读取源文件: {e}"))?;
     // 7d 静态形状检查：default export function（真实加载由 pi 运行时裁决）。
     let summary = parse_extension_summary(&source);
     if !summary.has_default_export {
@@ -255,6 +254,20 @@ pub fn import_pi_extension(src_path: &str) -> Result<String, String> {
     let dir = extensions_dir()?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let target = dir.join(src.file_name().unwrap_or_default());
+    // 三轮评审新增：同名覆盖防护——extensions/ 已有同名文件且内容不同时
+    // 拒绝静默覆盖（旧版覆盖新版/反之都无提示）；相同内容幂等放行。启用前
+    // 删除旧文件或换名后重导。
+    if target.exists() {
+        let existing = std::fs::read(&target).unwrap_or_default();
+        let incoming = std::fs::read(src).unwrap_or_default();
+        if existing != incoming {
+            return Err(format!(
+                "已存在同名扩展且内容不同（{}）——如需覆盖请先删除旧文件或重命名后再导入",
+                target.display()
+            ));
+        }
+        return Ok(target.to_string_lossy().into_owned());
+    }
     std::fs::copy(src, &target).map_err(|e| format!("复制失败: {e}"))?;
     Ok(target.to_string_lossy().into_owned())
 }
@@ -270,12 +283,14 @@ pub fn enable_pi_extension(file_name: &str) -> Result<(), String> {
     if !dir.join(file_name).exists() {
         return Err(format!("扩展文件不存在: {file_name}（先导入）"));
     }
-    let agent_dir = crate::agent::jishu_self::paths::agent_dir().map_err(|e| e.to_string())?;
+    // 三轮评审 C8：settings 写入统一走 settings_path()（与上方存在性检查的
+    // extensions_dir() 同源 agent_dir_for_tests——修前检查走测试隔离目录、
+    // 写入直拼真实目录，单测一旦触达本函数会写真实用户 settings.json）。
     let rel = format!("extensions/{file_name}");
-    let settings_path = agent_dir.join("settings.json");
+    let settings_path = settings_path()?;
     let content = std::fs::read_to_string(&settings_path).unwrap_or_else(|_| "{}".to_string());
-    let mut settings: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("settings.json 解析失败: {e}"))?;
+    let mut settings: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("settings.json 解析失败: {e}"))?;
     if !settings.is_object() {
         settings = serde_json::json!({});
     }
@@ -311,8 +326,11 @@ pub fn ignore_pi_extension(file_name: &str) -> Result<(), String> {
     if !list.iter().any(|x| x == file_name) {
         list.push(file_name.to_string());
     }
-    std::fs::write(&path, serde_json::to_string_pretty(&list).unwrap_or_default())
-        .map_err(|e| e.to_string())?;
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&list).unwrap_or_default(),
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -357,7 +375,9 @@ export default function(pi) {
     /// 绕过面样本：动态调用不触发迹象位（已知限制——摘要非沙箱）。
     #[test]
     fn summary_known_bypass_surface() {
-        let s = parse_extension_summary("const f = globalThis['ev' + 'al']; export default function(pi){}");
+        let s = parse_extension_summary(
+            "const f = globalThis['ev' + 'al']; export default function(pi){}",
+        );
         assert!(!s.subprocess && !s.network && !s.file_ops);
     }
 
@@ -399,14 +419,18 @@ pub fn import_extension_bundle(path: &str) -> Result<ExtensionBundleReport, Stri
         renderer_plugin: None,
     };
     if has_ext {
-        report.extension = Some(import_pi_extension(&p.join("extension.ts").to_string_lossy())?);
+        report.extension = Some(import_pi_extension(
+            &p.join("extension.ts").to_string_lossy(),
+        )?);
     }
     if has_tool {
         let content = std::fs::read_to_string(p.join("plugin.toml"))
             .map_err(|e| format!("读取 plugin.toml 失败: {e}"))?;
-        let parsed: crate::agent::manifest::schema::AgentManifestFile = toml::from_str(&content)
-            .map_err(|e| format!("plugin.toml 解析失败: {e}"))?;
-        parsed.validate().map_err(|e| format!("plugin.toml 校验失败: {e}"))?;
+        let parsed: crate::agent::manifest::schema::AgentManifestFile =
+            toml::from_str(&content).map_err(|e| format!("plugin.toml 解析失败: {e}"))?;
+        parsed
+            .validate()
+            .map_err(|e| format!("plugin.toml 校验失败: {e}"))?;
         let (id, _target) = crate::agent::plugin::install_manifest_file(&parsed, &content)
             .map_err(|e| format!("工具插件安装失败: {e}"))?;
         report.tool_plugin = Some(id);
@@ -435,7 +459,10 @@ pub fn import_extension_bundle(path: &str) -> Result<ExtensionBundleReport, Stri
             "codeLines": 0,
             "dir": dir.to_string_lossy(),
         });
-        let _ = crate::util::atomic_write(&dir.join(".pending-confirm"), pending.to_string().as_bytes());
+        let _ = crate::util::atomic_write(
+            &dir.join(".pending-confirm"),
+            pending.to_string().as_bytes(),
+        );
         report.renderer_plugin = Some(id);
     }
     Ok(report)
@@ -443,7 +470,6 @@ pub fn import_extension_bundle(path: &str) -> Result<ExtensionBundleReport, Stri
 
 /// 成套导入报告。
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ExtensionBundleReport {
     pub kind: &'static str,
     pub extension: Option<String>,
@@ -458,7 +484,9 @@ mod bundle_tests {
     /// 8d：成套导入（三件一次装——扩展复制/工具安装/渲染确认卡）。
     #[test]
     fn import_bundle_installs_all_three() {
-        let _guard = crate::agent::manifest::env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
         let src = tempfile::tempdir().unwrap();
@@ -478,7 +506,10 @@ mod bundle_tests {
         assert_eq!(report.kind, "bundle");
         assert!(report.extension.is_some());
         assert_eq!(report.tool_plugin.as_deref(), Some("bundle-tool"));
-        assert_eq!(report.renderer_plugin.as_deref(), Some("session.bundle-renderer"));
+        assert_eq!(
+            report.renderer_plugin.as_deref(),
+            Some("session.bundle-renderer")
+        );
         // 渲染插件默认禁用 + 确认卡标记。
         assert!(crate::agent::plugin::load_plugin_config()
             .disabled
@@ -494,7 +525,9 @@ mod bundle_tests {
     /// 空目录拒绝（无可导入件）。
     #[test]
     fn import_bundle_rejects_empty_dir() {
-        let _guard = crate::agent::manifest::env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
         let empty = tempfile::tempdir().unwrap();

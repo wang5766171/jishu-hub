@@ -151,8 +151,16 @@ fn fetch_plugin_tools_cached(plugin_id: &str) -> Option<Vec<McpToolDef>> {
             let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
             guard.get(plugin_id).and_then(|(_, t)| t.clone())
         }
-        Ok(Err(_)) => None,   // 握手失败已记阴性缓存
-        Err(_) => None,       // 超时：线程晚归自愈缓存，本次降级
+        Ok(Err(_)) => None, // 握手失败已记阴性缓存
+        Err(_) => {
+            // 三轮评审 C9：超时也写阴性缓存——修前不写，后台线程挂死（server
+            // 装死）时缓存永 miss，每次重触发再 spawn 一套线程+子进程（重复
+            // 滞留）。写阴性后冷却期内重复触发速回 None；晚归线程成功时仍
+            // 覆写为真实结果（自愈语义不变）。
+            let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+            guard.insert(plugin_id.to_string(), (Instant::now(), None));
+            None
+        }
     }
 }
 
@@ -355,7 +363,10 @@ pub fn decl_from_section(
 
 /// 生产数据源：启用的 [mcp] 声明工具插件（读取 plugins.json disabled 集）。
 pub fn load_mcp_plugin_decls() -> Vec<McpPluginDecl> {
-    let disabled = crate::agent::plugin::load_plugin_config().disabled.into_iter().collect();
+    let disabled = crate::agent::plugin::load_plugin_config()
+        .disabled
+        .into_iter()
+        .collect();
     tool_plugin::load_tool_plugins(&disabled)
         .into_iter()
         .filter(|p| p.enabled)
@@ -585,10 +596,12 @@ impl HttpStreamableClient {
             .and_then(Value::as_str)
             .unwrap_or("?")
             .to_string();
-        let resp = req
-            .json(body)
-            .send()
-            .map_err(|e| format!("plugin `{}` http request `{}` failed: {e}", self.plugin_id, method))?;
+        let resp = req.json(body).send().map_err(|e| {
+            format!(
+                "plugin `{}` http request `{}` failed: {e}",
+                self.plugin_id, method
+            )
+        })?;
         if !resp.status().is_success() {
             return Err(format!(
                 "plugin `{}` http request `{}` returned {}",
@@ -631,9 +644,12 @@ impl PluginTransport for HttpStreamableClient {
             let msg = read_sse_message(resp, id, &self.plugin_id)?;
             return message_result(&msg, &self.plugin_id);
         }
-        let v: Value = resp
-            .json()
-            .map_err(|e| format!("plugin `{}` http response decode failed: {e}", self.plugin_id))?;
+        let v: Value = resp.json().map_err(|e| {
+            format!(
+                "plugin `{}` http response decode failed: {e}",
+                self.plugin_id
+            )
+        })?;
         message_result(&v, &self.plugin_id)
     }
 
@@ -659,8 +675,7 @@ impl SseFrameAcc {
 
     fn feed(&mut self, line: &str) -> Option<(String, String)> {
         if line.is_empty() {
-            let out = (!self.data.is_empty())
-                .then(|| (self.event.clone(), self.data.clone()));
+            let out = (!self.data.is_empty()).then(|| (self.event.clone(), self.data.clone()));
             self.event.clear();
             self.data.clear();
             return out;
@@ -787,9 +802,7 @@ impl SseClient {
         let post_url = loop {
             let now = std::time::Instant::now();
             if now >= deadline {
-                return Err(format!(
-                    "plugin `{plugin_id}` sse endpoint event timed out"
-                ));
+                return Err(format!("plugin `{plugin_id}` sse endpoint event timed out"));
             }
             match rx.recv_timeout(deadline - now) {
                 Ok(SseEvent::Endpoint(u)) => break join_url(&base, &u),
@@ -800,9 +813,7 @@ impl SseClient {
                 }
                 Ok(SseEvent::Message(_)) => continue, // endpoint 前不应有响应，容忍跳过
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    return Err(format!(
-                        "plugin `{plugin_id}` sse endpoint event timed out"
-                    ))
+                    return Err(format!("plugin `{plugin_id}` sse endpoint event timed out"))
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(format!(
@@ -899,7 +910,10 @@ fn join_url(base: &str, target: &str) -> String {
         return target.to_string();
     };
     let after = scheme_idx + 3;
-    let origin_end = base[after..].find('/').map(|i| after + i).unwrap_or(base.len());
+    let origin_end = base[after..]
+        .find('/')
+        .map(|i| after + i)
+        .unwrap_or(base.len());
     let origin = &base[..origin_end];
     if target.starts_with('/') {
         format!("{origin}{target}")
@@ -1029,10 +1043,7 @@ fn spawn_transports_parallel(
                 for decl in pending.drain(..) {
                     out.push((
                         decl.plugin_id().to_string(),
-                        Err(format!(
-                            "连接超时（>{}s，含握手）",
-                            deadline.as_secs()
-                        )),
+                        Err(format!("连接超时（>{}s，含握手）", deadline.as_secs())),
                     ));
                 }
             }
@@ -1110,14 +1121,12 @@ impl McpServer {
                 match outcome {
                     Ok(live) => {
                         // 冷却重试成功：替换旧 Failed 条目（若有）。
-                        self.children
-                            .retain(|c| c.plugin_id() != plugin_id);
+                        self.children.retain(|c| c.plugin_id() != plugin_id);
                         self.children.push(PluginChild::Live(live));
                     }
                     Err(error) => {
                         log::warn!("[hub-mcp] {error}");
-                        self.children
-                            .retain(|c| c.plugin_id() != plugin_id);
+                        self.children.retain(|c| c.plugin_id() != plugin_id);
                         self.children.push(PluginChild::Failed {
                             plugin_id,
                             error,
@@ -1130,7 +1139,9 @@ impl McpServer {
         let mut tools = builtin_tool_defs();
         for c in &self.children {
             match c {
-                PluginChild::Failed { plugin_id, error, .. } => {
+                PluginChild::Failed {
+                    plugin_id, error, ..
+                } => {
                     tools.push(McpToolDef {
                         name: namespaced_tool_name(plugin_id, "error"),
                         description: format!("插件 MCP server 不可用：{error}"),
@@ -1162,8 +1173,7 @@ impl McpServer {
             "hub_mcp_list" => {
                 self.refresh_and_list();
                 let plugins = self.plugin_catalog();
-                let text = serde_json::to_string_pretty(&plugins)
-                    .map_err(|e| e.to_string())?;
+                let text = serde_json::to_string_pretty(&plugins).map_err(|e| e.to_string())?;
                 return Ok(json!({
                     "content": [{ "type": "text", "text": text }],
                 }));
@@ -1179,10 +1189,7 @@ impl McpServer {
                         "hub_mcp_call 不允许嵌套调用解析器入口工具（got {tool}）；请直接调 {tool} 或先 hub_mcp_list 查看插件工具"
                     ));
                 }
-                let inner = arguments
-                    .get("arguments")
-                    .cloned()
-                    .unwrap_or(json!({}));
+                let inner = arguments.get("arguments").cloned().unwrap_or(json!({}));
                 // 复用既有路由：builtin 直调 / 插件工具转发（不存在或
                 // Failed 时错误信息含原因，模型可据提示先 hub_mcp_list）。
                 return self.call_tool(&tool, &inner);
@@ -1194,7 +1201,11 @@ impl McpServer {
                 .children
                 .iter_mut()
                 .find(|c| c.plugin_id() == plugin_id)
-                .ok_or_else(|| format!("unknown plugin tool: {name}；可先调 hub_mcp_list 查看当前启用的插件与工具"))?;
+                .ok_or_else(|| {
+                    format!(
+                        "unknown plugin tool: {name}；可先调 hub_mcp_list 查看当前启用的插件与工具"
+                    )
+                })?;
             match child {
                 PluginChild::Failed { error, .. } => return Err(error.clone()),
                 PluginChild::Live(live) => {
@@ -1224,7 +1235,9 @@ impl McpServer {
         let mut out: Vec<Value> = Vec::new();
         for child in &self.children {
             match child {
-                PluginChild::Failed { plugin_id, error, .. } => {
+                PluginChild::Failed {
+                    plugin_id, error, ..
+                } => {
                     out.push(json!({
                         "plugin": plugin_id,
                         "status": "unavailable",
@@ -1296,9 +1309,7 @@ fn handle_request(server: &mut McpServer, msg: &Value) -> Option<Value> {
                 .pointer("/params/arguments")
                 .cloned()
                 .unwrap_or(json!({}));
-            server
-                .call_tool(name, &arguments)
-                .map_err(|e| (-32000, e))
+            server.call_tool(name, &arguments).map_err(|e| (-32000, e))
         }
         _ => Err((-32601, format!("method not found: {method}"))),
     };
@@ -1365,10 +1376,7 @@ mod tests {
     fn initialize_and_ping() {
         let mut s = empty_server();
         let resp = request(&mut s, "initialize", json!({}));
-        assert_eq!(
-            resp["result"]["serverInfo"]["name"],
-            HUB_MCP_ENTRY_NAME
-        );
+        assert_eq!(resp["result"]["serverInfo"]["name"], HUB_MCP_ENTRY_NAME);
         let resp = request(&mut s, "ping", json!({}));
         assert_eq!(resp["result"], json!({}));
     }
@@ -1404,10 +1412,7 @@ mod tests {
         let mut s = empty_server();
         let resp = request(&mut s, "tools/list", json!({}));
         let tools = resp["result"]["tools"].as_array().expect("tools array");
-        let names: Vec<&str> = tools
-            .iter()
-            .filter_map(|t| t["name"].as_str())
-            .collect();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         for builtin in builtin_tool_defs() {
             assert!(names.contains(&builtin.name.as_str()), "{}", builtin.name);
         }
@@ -1479,10 +1484,7 @@ mod tests {
         }));
         let resp = request(&mut s, "tools/list", json!({}));
         let tools = resp["result"]["tools"].as_array().expect("tools array");
-        let names: Vec<&str> = tools
-            .iter()
-            .filter_map(|t| t["name"].as_str())
-            .collect();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         assert!(names.contains(&"broken__error"));
         assert!(names.contains(&"hub_projects_list"));
     }
@@ -1501,7 +1503,12 @@ mod tests {
             headers: None,
         };
         match decl_from_section("p1", &sec) {
-            McpPluginDecl::Stdio { plugin_id, command, args, env } => {
+            McpPluginDecl::Stdio {
+                plugin_id,
+                command,
+                args,
+                env,
+            } => {
                 assert_eq!(plugin_id, "p1");
                 assert_eq!(command, "npx");
                 assert_eq!(args, vec!["-y".to_string(), "pkg".to_string()]);
@@ -1511,12 +1518,23 @@ mod tests {
         }
         sec.transport = McpTransportKind::Http;
         sec.url = Some("https://x/mcp".into());
-        sec.headers = Some([("Authorization".to_string(), "Bearer t".to_string())].into_iter().collect());
+        sec.headers = Some(
+            [("Authorization".to_string(), "Bearer t".to_string())]
+                .into_iter()
+                .collect(),
+        );
         match decl_from_section("p2", &sec) {
-            McpPluginDecl::Http { plugin_id, url, headers } => {
+            McpPluginDecl::Http {
+                plugin_id,
+                url,
+                headers,
+            } => {
                 assert_eq!(plugin_id, "p2");
                 assert_eq!(url, "https://x/mcp");
-                assert_eq!(headers, vec![("Authorization".to_string(), "Bearer t".to_string())]);
+                assert_eq!(
+                    headers,
+                    vec![("Authorization".to_string(), "Bearer t".to_string())]
+                );
             }
             other => panic!("expected Http, got {other:?}"),
         }
@@ -1529,13 +1547,25 @@ mod tests {
 
     #[test]
     fn join_url_resolves_relative_endpoints() {
-        assert_eq!(join_url("https://h.io/base/sse", "/messages?sid=1"), "https://h.io/messages?sid=1");
-        assert_eq!(join_url("https://h.io/base/sse", "messages?sid=1"), "https://h.io/messages?sid=1");
-        assert_eq!(join_url("https://h.io:8080/sse", "/m"), "https://h.io:8080/m");
+        assert_eq!(
+            join_url("https://h.io/base/sse", "/messages?sid=1"),
+            "https://h.io/messages?sid=1"
+        );
+        assert_eq!(
+            join_url("https://h.io/base/sse", "messages?sid=1"),
+            "https://h.io/messages?sid=1"
+        );
+        assert_eq!(
+            join_url("https://h.io:8080/sse", "/m"),
+            "https://h.io:8080/m"
+        );
         // origin 无路径（base 以 host 结尾）。
         assert_eq!(join_url("https://h.io", "/m"), "https://h.io/m");
         // 绝对地址原样。
-        assert_eq!(join_url("https://h.io/sse", "http://other:9/x"), "http://other:9/x");
+        assert_eq!(
+            join_url("https://h.io/sse", "http://other:9/x"),
+            "http://other:9/x"
+        );
         // base 异常（无 scheme）→ 原样返回，交由后续请求报错。
         assert_eq!(join_url("not-a-url", "/m"), "/m");
     }
@@ -1566,7 +1596,10 @@ mod tests {
 
     #[test]
     fn message_result_maps_error_field() {
-        assert_eq!(message_result(&json!({"result": {"ok": 1}}), "p"), Ok(json!({"ok": 1})));
+        assert_eq!(
+            message_result(&json!({"result": {"ok": 1}}), "p"),
+            Ok(json!({"ok": 1}))
+        );
         assert!(message_result(&json!({"error": {"message": "boom"}}), "p")
             .unwrap_err()
             .contains("boom"));
@@ -1582,7 +1615,11 @@ mod tests {
             plugin_id: "slow".into(),
             // Windows: waitfor 定时等待且无 stdout（ping 会持续输出行、
             // timeout 会倒计时输出，都无法阻塞握手 read）；Unix: sleep。
-            command: if cfg!(windows) { "waitfor".into() } else { "sleep".into() },
+            command: if cfg!(windows) {
+                "waitfor".into()
+            } else {
+                "sleep".into()
+            },
             args: if cfg!(windows) {
                 vec!["/t".into(), "30".into(), "jishuTest".into()]
             } else {
@@ -1645,7 +1682,11 @@ mod tests {
             "tools/call",
             json!({ "name": "hub_mcp_call", "arguments": { "tool": "hub_projects_list" } }),
         );
-        assert_eq!(resp["result"]["isError"], serde_json::Value::Null, "builtin 路由应成功");
+        assert_eq!(
+            resp["result"]["isError"],
+            serde_json::Value::Null,
+            "builtin 路由应成功"
+        );
 
         // hub_mcp_call 拒绝嵌套解析器入口。
         let resp = request(
@@ -1679,7 +1720,10 @@ mod tests {
         assert_eq!(catalog.len(), 1);
         assert_eq!(catalog[0]["plugin"], "broken");
         assert_eq!(catalog[0]["status"], "unavailable");
-        assert!(!catalog[0]["error"].as_str().unwrap().is_empty(), "失败原因应非空");
+        assert!(
+            !catalog[0]["error"].as_str().unwrap().is_empty(),
+            "失败原因应非空"
+        );
 
         // hub_mcp_call 调 Failed 插件工具：错误含原因。
         let resp = request(
@@ -1696,6 +1740,9 @@ mod tests {
             json!({ "name": "hub_mcp_call", "arguments": { "tool": "nosuch__tool" } }),
         );
         let msg = resp["error"]["message"].as_str().unwrap();
-        assert!(msg.contains("hub_mcp_list"), "未知插件错误应提示先查目录: {msg}");
+        assert!(
+            msg.contains("hub_mcp_list"),
+            "未知插件错误应提示先查目录: {msg}"
+        );
     }
 }
