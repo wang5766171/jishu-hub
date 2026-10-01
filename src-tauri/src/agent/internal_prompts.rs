@@ -93,6 +93,16 @@ pub const PROMPT_EXEC_CONTRACT: VersionedPrompt = VersionedPrompt {
     body: include_str!("../../resources/prompts/exec-contract.md"),
 };
 
+/// 工具块内 MCP 服务小节正文（v1）。占位符由 tool_plugin::render_tool_block
+/// 按选中插件填充：`{{display_name}}` / `{{plugin_id}}`。三轮评审 C15：
+/// 自 f1a960e 起内联于代码，按话术三件套纪律迁入文件（同批修正「为名干」
+/// 笔误 → 「名字以 `{}__` 为前缀的」）。
+pub const PROMPT_MCP_SECTION: VersionedPrompt = VersionedPrompt {
+    id: "mcp-section",
+    version: 1,
+    body: include_str!("../../resources/prompts/mcp-section.md"),
+};
+
 // ---------------------------------------------------------------------------
 // 回放剥离链（消息载荷面唯一入口）
 // ---------------------------------------------------------------------------
@@ -231,6 +241,7 @@ mod tests {
             &PROMPT_IMAGE_DISPATCH,
             &PROMPT_TOOL_HEADER,
             &PROMPT_EXEC_CONTRACT,
+            &PROMPT_MCP_SECTION,
         ] {
             let body = prompt.body();
             assert!(!body.trim().is_empty(), "{} 正文为空", prompt.id);
@@ -240,21 +251,46 @@ mod tests {
                 IMAGE_DISPATCH_OPEN,
                 EXEC_CONTRACT_OPEN,
             ] {
-                assert!(!body.contains(marker), "{} 正文混入标记 {}", prompt.id, marker);
+                assert!(
+                    !body.contains(marker),
+                    "{} 正文混入标记 {}",
+                    prompt.id,
+                    marker
+                );
             }
             assert!(!body.contains("\r"), "{} 正文含 CR（归一失效）", prompt.id);
         }
         let dispatch_body = PROMPT_IMAGE_DISPATCH.body();
-        assert!(dispatch_body.contains("{{mcp_clause}}"), "缺 {{mcp_clause}} 占位符");
+        assert!(
+            dispatch_body.contains("{{mcp_clause}}"),
+            "缺 {{mcp_clause}} 占位符"
+        );
         assert!(
             dispatch_body.contains("{{subagent_model_note}}"),
             "缺 {{subagent_model_note}} 占位符"
         );
-        assert!(PROMPT_MCP_HINT.body().contains("## jishu-hub — MCP 解析服务"));
+        assert!(PROMPT_MCP_HINT
+            .body()
+            .contains("## jishu-hub — MCP 解析服务"));
         let contract = PROMPT_EXEC_CONTRACT.body();
-        for ph in ["{{read_files}}", "{{write_files}}", "{{run_commands}}", "{{access_network}}", "{{deploy}}"] {
+        for ph in [
+            "{{read_files}}",
+            "{{write_files}}",
+            "{{run_commands}}",
+            "{{access_network}}",
+            "{{deploy}}",
+        ] {
             assert!(contract.contains(ph), "执行契约缺占位符 {ph}");
         }
+        let mcp_section = PROMPT_MCP_SECTION.body();
+        assert!(
+            mcp_section.contains("{{display_name}}"),
+            "缺 {{display_name}} 占位符"
+        );
+        assert!(
+            mcp_section.contains("{{plugin_id}}"),
+            "缺 {{plugin_id}} 占位符"
+        );
     }
 
     // ── 新后缀注入形态（v0.9.5 起：用户消息在前，注入块追加在后）──
@@ -313,7 +349,10 @@ mod tests {
         let old = "<jishu-image-dispatch>话术</jishu-image-dispatch>\n帮我看图";
         assert_eq!(strip_internal_prompts(old), old);
         // legacy [图片处理] 行 / [JISHU-PROMT] 配对块：同理不剥。
-        assert_eq!(strip_internal_prompts("[图片处理] 提示\n正文"), "[图片处理] 提示\n正文");
+        assert_eq!(
+            strip_internal_prompts("[图片处理] 提示\n正文"),
+            "[图片处理] 提示\n正文"
+        );
         assert_eq!(
             strip_internal_prompts("[JISHU-PROMT:开始]\n契约\n[JISHU-PROMT:结束]\n\n正文"),
             "[JISHU-PROMT:开始]\n契约\n[JISHU-PROMT:结束]\n\n正文"

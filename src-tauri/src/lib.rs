@@ -11,6 +11,7 @@ mod command;
 mod commands;
 mod config;
 // v0.9.5 需求2 测试期：后端运行时日志 → 前端日志中心桥（hub-dev-log 事件）。
+mod channel_models_store;
 mod dev_log_bridge;
 mod dialog_commands;
 mod history;
@@ -28,7 +29,6 @@ mod project_config;
 mod session;
 mod task_launch;
 mod task_plan;
-mod channel_models_store;
 mod usage_store;
 mod util;
 
@@ -97,13 +97,12 @@ pub fn run() {
     // 起不来、vite 被 teardown 连杀（退出码 -1）。开发期允许与安装版并存
     // （通知点击链路在安装版上验证）。
     #[cfg(not(debug_assertions))]
-    let builder = tauri::Builder::default().plugin(tauri_plugin_single_instance::init(
-        |app, argv, _cwd| {
+    let builder =
+        tauri::Builder::default().plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if let Some(url) = argv.iter().find(|a| a.starts_with("jishu-hub://")) {
                 handle_deep_link(app, url);
             }
-        },
-    ));
+        }));
     #[cfg(debug_assertions)]
     let builder = tauri::Builder::default();
 
@@ -279,15 +278,20 @@ pub fn run() {
             // （发送中断未迁移的占位条目，防跨草稿会话串扰）。
             agent::tool_plugin::cleanup_stale_pending_sessions();
             // v0.9.5：内部提示词版本锚点（resources/prompts/ 台账对账——
-            // 历史会话剥离异常时先核对此行与话术版本是否匹配）。
+            // 历史会话剥离异常时先核对此行与话术版本是否匹配）。三轮评审 C14：
+            // 补全全部五个话术（修前漏 exec-contract，台账与锚点对不上账）。
             log::info!(
-                "[startup] internal prompts: {} v{}, {} v{}, {} v{}",
+                "[startup] internal prompts: {} v{}, {} v{}, {} v{}, {} v{}, {} v{}",
                 agent::internal_prompts::PROMPT_MCP_HINT.id,
                 agent::internal_prompts::PROMPT_MCP_HINT.version,
                 agent::internal_prompts::PROMPT_IMAGE_DISPATCH.id,
                 agent::internal_prompts::PROMPT_IMAGE_DISPATCH.version,
                 agent::internal_prompts::PROMPT_TOOL_HEADER.id,
                 agent::internal_prompts::PROMPT_TOOL_HEADER.version,
+                agent::internal_prompts::PROMPT_EXEC_CONTRACT.id,
+                agent::internal_prompts::PROMPT_EXEC_CONTRACT.version,
+                agent::internal_prompts::PROMPT_MCP_SECTION.id,
+                agent::internal_prompts::PROMPT_MCP_SECTION.version,
             );
             // v0.8.1 M6：装载期预热工具插件安装探测（PATH where/which 与
             // --version）——compose_tool_message 持 AppState 锁渲染说明块时
@@ -323,9 +327,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-        // v0.9.4 需求12：开发日志强制开关（settings.json 持久化）。
-        commands::dev_log::get_dev_log_forced,
-        commands::dev_log::set_dev_log_forced,
+            // v0.9.4 需求12：开发日志强制开关（settings.json 持久化）。
+            commands::dev_log::get_dev_log_forced,
+            commands::dev_log::set_dev_log_forced,
             commands::agents::list_agents,
             commands::projects::scan_projects,
             commands::projects::list_project_files,

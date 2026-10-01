@@ -263,10 +263,16 @@ pub fn render_tool_block(plugins: &[&ToolPlugin]) -> String {
         // skill 目录）。header 形态沿用 `## id — desc`（tool_ids 快照兼容）。
         if plugin.file.mcp.is_some() {
             out.push_str(&format!("\n## {} — MCP 服务\n", plugin.file.info.id));
-            out.push_str(&format!(
-                "本会话启用了 MCP 服务「{}」。调用它的工具时**优先**使用 jishu-hub 解析服务提供的、以 `{}__` 为名干的 MCP 工具（结构化通道，直接调用，无需 shell、不要自行拼接命令行；完整注册名各运行时前缀不同，以 hub_mcp_list 返回为准）；未选中的 MCP 服务同样经 jishu-hub 在线可用，按同样的命名规则经 hub_mcp_list 发现。\n",
-                plugin.file.info.display_name, plugin.file.info.id
-            ));
+            // 三轮评审 C15：小节正文迁入 prompts/mcp-section.md（话术三件套
+            // 纪律：改话术 = 改文件 + 版本号 +1 + CHANGELOG 台账；同批修正
+            // 「为名干」笔误）。
+            out.push_str(
+                &crate::agent::internal_prompts::PROMPT_MCP_SECTION
+                    .body()
+                    .replace("{{display_name}}", &plugin.file.info.display_name)
+                    .replace("{{plugin_id}}", &plugin.file.info.id),
+            );
+            out.push('\n');
         }
         // v0.9.1 需求9：[skill] 单/双形态共用小节——单数沿用插件 id 名，
         // 多 skill 逐项列出（部署名 `<pid>__<name>`）。

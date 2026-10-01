@@ -1,0 +1,1 @@
+本会话启用了 MCP 服务「{{display_name}}」。调用它的工具时**优先**使用 jishu-hub 解析服务提供的、名字以 `{{plugin_id}}__` 为前缀的 MCP 工具（结构化通道，直接调用，无需 shell、不要自行拼接命令行；完整注册名各运行时前缀不同，以 hub_mcp_list 返回为准）；未选中的 MCP 服务同样经 jishu-hub 在线可用，按同样的命名规则经 hub_mcp_list 发现。
