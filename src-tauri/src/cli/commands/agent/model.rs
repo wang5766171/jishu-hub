@@ -72,7 +72,9 @@ fn list(ctx: &ExecutionContext) -> Result<(), CliError> {
 
 fn test(target: &str, _ctx: &ExecutionContext) -> Result<(), CliError> {
     let (provider, id) = target.split_once('/').ok_or_else(|| {
-        CliError::InvalidArg("expected <provider>/<model>, e.g. zhipu/glm-5.3 (see `list`)".to_string())
+        CliError::InvalidArg(
+            "expected <provider>/<model>, e.g. zhipu/glm-5.3 (see `list`)".to_string(),
+        )
     })?;
     let config = pi_models_config::load().map_err(CliError::Internal)?;
     let provider_cfg = config.providers.get(provider).ok_or_else(|| {

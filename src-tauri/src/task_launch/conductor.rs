@@ -132,10 +132,7 @@ pub fn conductor_sync_phase(
             .map(serde_json::from_str)
             .transpose()
             .map_err(|e| format!("stages_json 解析失败: {e}"))?,
-        None => request
-            .stages
-            .clone()
-            .filter(|stages| !stages.is_empty()),
+        None => request.stages.clone().filter(|stages| !stages.is_empty()),
     };
     if pipeline_stages.is_some() {
         return sync_pipeline_phase(request, &store, existing, pipeline_stages.unwrap());
@@ -200,7 +197,10 @@ fn sync_pipeline_phase(
         ("idle", target) => keys.first() == Some(&target),
         (from, "done") => keys.last() == Some(&from),
         (from, target) => {
-            match (keys.iter().position(|k| *k == from), keys.iter().position(|k| *k == target)) {
+            match (
+                keys.iter().position(|k| *k == from),
+                keys.iter().position(|k| *k == target),
+            ) {
                 (Some(i), Some(j)) => j == i + 1,
                 _ => false,
             }
@@ -353,7 +353,10 @@ fn stage_keys_and_templates(
             .filter(|k| !k.is_empty())
             .ok_or_else(|| format!("阶段 {} 缺少 key", index + 1))?
             .to_string();
-        if out.iter().any(|(k, _): &(String, Option<String>)| *k == key) {
+        if out
+            .iter()
+            .any(|(k, _): &(String, Option<String>)| *k == key)
+        {
             return Err(format!("阶段 key 重复: {key}"));
         }
         let template = stage
@@ -434,7 +437,8 @@ fn legacy_sync_phase(
             }
             _ => "idle",
         };
-        if expected != current_conductor_phase && current_conductor_phase != target_conductor_phase {
+        if expected != current_conductor_phase && current_conductor_phase != target_conductor_phase
+        {
             return Ok(ConductorSyncPhaseResult {
                 success: false,
                 instance: existing.unwrap_or_else(|| TaskLaunchInstance {
@@ -629,7 +633,13 @@ mod pipeline_tests {
         ]
     }
 
-    fn sync(root: &str, task_id: &str, phase: &str, expected: Option<&str>, stages: Option<Vec<serde_json::Value>>) -> ConductorSyncPhaseResult {
+    fn sync(
+        root: &str,
+        task_id: &str,
+        phase: &str,
+        expected: Option<&str>,
+        stages: Option<Vec<serde_json::Value>>,
+    ) -> ConductorSyncPhaseResult {
         conductor_sync_phase(ConductorSyncPhaseRequest {
             task_id: task_id.into(),
             project_root: root.into(),
@@ -655,7 +665,10 @@ mod pipeline_tests {
         assert_eq!(inst.current_phase, "discuss");
         assert_eq!(inst.status, STATUS_REQUIREMENTS_DISCUSSING);
         assert_eq!(inst.skill_id, "pipeline:session.video-maker");
-        assert_eq!(inst.requirement_session_id.as_deref(), Some("session-pipe-1"));
+        assert_eq!(
+            inst.requirement_session_id.as_deref(),
+            Some("session-pipe-1")
+        );
         assert!(inst.stages_json.is_some());
         let persisted: Vec<serde_json::Value> =
             serde_json::from_str(inst.stages_json.as_deref().unwrap()).unwrap();
@@ -696,11 +709,17 @@ mod pipeline_tests {
         assert!(!early.success);
         // 走到末阶段。
         for key in ["storyboard", "assets", "render"] {
-            assert!(sync(&root, "task_p3", key, None, None).success, "advance {key}");
+            assert!(
+                sync(&root, "task_p3", key, None, None).success,
+                "advance {key}"
+            );
         }
         let done = sync(&root, "task_p3", "done", Some("render"), None);
         assert!(done.success, "{:?}", done.error);
-        assert_eq!(done.instance.run_status.as_deref(), Some(RUN_STATUS_COMPLETED));
+        assert_eq!(
+            done.instance.run_status.as_deref(),
+            Some(RUN_STATUS_COMPLETED)
+        );
         assert_eq!(done.instance.current_phase, "render");
     }
 
@@ -725,7 +744,10 @@ mod pipeline_tests {
             session_id: None,
             stages: Some(stages),
         });
-        assert!(result.is_err(), "plan 模板阶段缺哈希应 Err（沿用 legacy 校验强度）: {result:?}");
+        assert!(
+            result.is_err(),
+            "plan 模板阶段缺哈希应 Err（沿用 legacy 校验强度）: {result:?}"
+        );
         assert!(result.unwrap_err().contains("artifact_hash"));
     }
 

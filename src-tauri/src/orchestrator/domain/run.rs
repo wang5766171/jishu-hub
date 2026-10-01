@@ -22,7 +22,6 @@ pub enum RunStatus {
     Cancelled,
 }
 
-
 impl RunStatus {
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
@@ -68,7 +67,6 @@ pub enum NodeRunStatus {
     Cancelled,
     Superseded,
 }
-
 
 impl NodeRunStatus {
     pub fn is_terminal(&self) -> bool {

@@ -30,8 +30,7 @@ pub fn run(action: McpAction, ctx: &ExecutionContext) -> Result<(), CliError> {
 
 fn serve() -> Result<(), CliError> {
     // stdio server：stdout 是协议通道，一切日志走 stderr。
-    crate::agent::mcp_server::serve()
-        .map_err(CliError::Internal)
+    crate::agent::mcp_server::serve().map_err(CliError::Internal)
 }
 
 fn print_report(report: &SyncReport, _ctx: &ExecutionContext) {
@@ -77,8 +76,12 @@ fn status(_ctx: &ExecutionContext) {
         mcp_inject::resolve_cli_path().unwrap_or_else(|e| format!("<unresolved: {e}>"))
     );
     if resolver_on {
-        println!("(entry sync runs at app start / plugin enable-disable; use `mcp inject` to force)");
+        println!(
+            "(entry sync runs at app start / plugin enable-disable; use `mcp inject` to force)"
+        );
     } else {
-        println!("(resolver disabled: hub entries removed; enable plugin `mcp-resolver` to turn on)");
+        println!(
+            "(resolver disabled: hub entries removed; enable plugin `mcp-resolver` to turn on)"
+        );
     }
 }

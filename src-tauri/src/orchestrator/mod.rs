@@ -21,16 +21,11 @@ pub mod store;
 
 pub use commands::graph_validate;
 pub use domain::graph::{
-    AgentAssignmentConstraint, EdgeKind,
-    ExecutablePayload, GraphEdge, GraphNode, GraphSnapshot, NodeKind,
-    RoleRequirement, TaskGraph,
+    AgentAssignmentConstraint, EdgeKind, ExecutablePayload, GraphEdge, GraphNode, GraphSnapshot,
+    NodeKind, RoleRequirement, TaskGraph,
 };
 pub use domain::revision::GraphRevision;
-pub use domain::run::{
-    BudgetState, GraphRun, NodeRun, RunPlanningSnapshot, RunStatus,
-};
-pub use events::{
-    build_event, TaskEvent, TaskEventType,
-};
+pub use domain::run::{BudgetState, GraphRun, NodeRun, RunPlanningSnapshot, RunStatus};
+pub use events::{build_event, TaskEvent, TaskEventType};
 pub use service::TaskService;
 pub use store::{default_db_path, TaskStore};

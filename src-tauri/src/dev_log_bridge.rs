@@ -23,17 +23,19 @@ pub type DevLogEmit = Arc<dyn Fn(&str, &str, &str, Value) + Send + Sync>;
 /// GUI 会话用发射器（捕获 AppHandle，emit `hub-dev-log` 事件）。 */
 pub fn dev_log_emitter(app: &tauri::AppHandle) -> DevLogEmit {
     let app = app.clone();
-    Arc::new(move |level: &str, message: &str, session: &str, data: Value| {
-        let _ = app.emit(
-            "hub-dev-log",
-            json!({
-                "level": level,
-                "message": message,
-                "session": session,
-                "data": data,
-            }),
-        );
-    })
+    Arc::new(
+        move |level: &str, message: &str, session: &str, data: Value| {
+            let _ = app.emit(
+                "hub-dev-log",
+                json!({
+                    "level": level,
+                    "message": message,
+                    "session": session,
+                    "data": data,
+                }),
+            );
+        },
+    )
 }
 
 /// 编排器会话（无 AppHandle）的空实现——非 GUI 会话不进日志中心。 */

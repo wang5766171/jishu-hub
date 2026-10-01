@@ -209,8 +209,14 @@ pub(super) fn agent_prompt_with_policy(
         .body()
         .replace("{{read_files}}", &permissions.can_read_files.to_string())
         .replace("{{write_files}}", &permissions.can_write_files.to_string())
-        .replace("{{run_commands}}", &permissions.can_run_commands.to_string())
-        .replace("{{access_network}}", &permissions.can_access_network.to_string())
+        .replace(
+            "{{run_commands}}",
+            &permissions.can_run_commands.to_string(),
+        )
+        .replace(
+            "{{access_network}}",
+            &permissions.can_access_network.to_string(),
+        )
         .replace("{{deploy}}", &permissions.can_deploy.to_string());
     format!(
         "{prompt}\n\n{}\n{contract}\n{}",

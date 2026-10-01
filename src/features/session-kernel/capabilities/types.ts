@@ -176,7 +176,7 @@ export function validateManifest(
 ): string[] {
   const errors: string[] = [];
   if (!manifest.plugin?.id) errors.push("[plugin] id 缺失");
-  // 1a（v0.9.5 需求1，原需敆26）：至少一臂——无 pipeline 且无渲染声明（source/render
+  // 1a（v0.9.5 需求1，原需求26）：至少一臂——无 pipeline 且无渲染声明（source/render
   // 均缺失）的空清单拒绝；纯 pipeline 清单（如 video-maker）不再强求渲染字段。
   // 声明了 source/render 任一字段即视为声明了渲染臂，按完整渲染校验（残缺报具体缺失）。
   const hasPipeline = Boolean(manifest.pipeline);

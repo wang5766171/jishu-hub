@@ -437,22 +437,42 @@ mod tests {
     #[test]
     fn headless_deny_only_targets_headless_channel() {
         let p = HeadlessDenyPolicy;
-        assert_eq!(p.evaluate(&ctx(DecisionChannel::HeadlessTask, None)), PolicyDecision::Deny);
-        assert_eq!(p.evaluate(&ctx(DecisionChannel::Interactive, None)), PolicyDecision::Delegate);
-        assert_eq!(p.evaluate(&ctx(DecisionChannel::Orchestrator, None)), PolicyDecision::Delegate);
+        assert_eq!(
+            p.evaluate(&ctx(DecisionChannel::HeadlessTask, None)),
+            PolicyDecision::Deny
+        );
+        assert_eq!(
+            p.evaluate(&ctx(DecisionChannel::Interactive, None)),
+            PolicyDecision::Delegate
+        );
+        assert_eq!(
+            p.evaluate(&ctx(DecisionChannel::Orchestrator, None)),
+            PolicyDecision::Delegate
+        );
     }
 
     #[test]
     fn low_risk_only_allows_known_readonly_kinds() {
         let p = LowRiskAutoAllowPolicy;
         for tool in ["read", "grep", "glob", "thinking"] {
-            assert_eq!(p.evaluate(&ctx(DecisionChannel::Interactive, Some(tool))), PolicyDecision::Allow, "{tool}");
+            assert_eq!(
+                p.evaluate(&ctx(DecisionChannel::Interactive, Some(tool))),
+                PolicyDecision::Allow,
+                "{tool}"
+            );
         }
         for tool in ["bash", "write", "edit", "unknown", "webfetch"] {
-            assert_eq!(p.evaluate(&ctx(DecisionChannel::Interactive, Some(tool))), PolicyDecision::Delegate, "{tool}");
+            assert_eq!(
+                p.evaluate(&ctx(DecisionChannel::Interactive, Some(tool))),
+                PolicyDecision::Delegate,
+                "{tool}"
+            );
         }
         // 无工具名 → 委托（保守）。
-        assert_eq!(p.evaluate(&ctx(DecisionChannel::Interactive, None)), PolicyDecision::Delegate);
+        assert_eq!(
+            p.evaluate(&ctx(DecisionChannel::Interactive, None)),
+            PolicyDecision::Delegate
+        );
     }
 
     #[test]
@@ -472,7 +492,10 @@ mod tests {
         memory.remember_once("s1", &OnceApprovalPolicy::action_key(&first));
         assert_eq!(chain.evaluate(&first), ChainOutcome::Allow("once-approval"));
         // 不同会话不共享记忆。
-        let other_session = ApprovalContext { session_id: "s2".into(), ..ctx(DecisionChannel::Interactive, Some("bash")) };
+        let other_session = ApprovalContext {
+            session_id: "s2".into(),
+            ..ctx(DecisionChannel::Interactive, Some("bash"))
+        };
         assert_eq!(chain.evaluate(&other_session), ChainOutcome::Delegate);
         // 只读工具即使无记忆也被 low-risk 放行（链顺序语义）。
         assert_eq!(
@@ -524,7 +547,8 @@ mod tests {
         let mut arrival = ctx(DecisionChannel::Interactive, Some("bash"));
         // session_id 与链/记忆桶一致（evaluate 有 ctx.session_id == policy.session 前置）。
         arrival.session_id = "s-roundtrip".into();
-        arrival.payload = serde_json::json!({ "tool": "bash", "summary": "rm -rf", "mode": "smart" });
+        arrival.payload =
+            serde_json::json!({ "tool": "bash", "summary": "rm -rf", "mode": "smart" });
         // 注入内存 Once 记忆（对齐 ：452 测试的既有模式）：default_memory 是
         // SQLite 持久库（approval.db 跨进程重启）——本测试自 remember 后若走
         // 默认库，下一轮跑测首评直接命中 Allow 而失败（v0.9.4 需求6 全量跑测
@@ -544,12 +568,16 @@ mod tests {
             "s-roundtrip",
             &OnceApprovalPolicy::action_key(&replayed),
         );
-        assert_eq!(chain.evaluate(&arrival), ChainOutcome::Allow("once-approval"));
+        assert_eq!(
+            chain.evaluate(&arrival),
+            ChainOutcome::Allow("once-approval")
+        );
         // 登记已被取走清理；同动作不同工具仍委托（action_key 含工具名）。
         assert!(take_arrival_context("req-1").is_none());
         let mut other_tool = arrival.clone();
         other_tool.tool = Some("write".into());
-        other_tool.payload = serde_json::json!({ "tool": "write", "summary": "x", "mode": "smart" });
+        other_tool.payload =
+            serde_json::json!({ "tool": "write", "summary": "x", "mode": "smart" });
         assert_eq!(chain.evaluate(&other_tool), ChainOutcome::Delegate);
     }
 

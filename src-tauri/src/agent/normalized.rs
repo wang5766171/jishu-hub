@@ -780,7 +780,9 @@ mod tests_v0_9_4 {
         };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(
-            json.get("follow_up_texts").and_then(|v| v.as_array()).map(|a| a.len()),
+            json.get("follow_up_texts")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
             Some(1),
             "follow_up_texts 应序列化"
         );
@@ -794,7 +796,10 @@ mod tests_v0_9_4 {
         });
         let decoded: NormalizedEvent = serde_json::from_value(legacy).unwrap();
         match decoded {
-            NormalizedEvent::SteerQueueCleared { texts, follow_up_texts } => {
+            NormalizedEvent::SteerQueueCleared {
+                texts,
+                follow_up_texts,
+            } => {
                 assert_eq!(texts, vec!["旧文本".to_string()]);
                 assert!(follow_up_texts.is_empty(), "缺省字段应为空集");
             }

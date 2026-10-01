@@ -1462,8 +1462,8 @@ async fn drive_loops_skips_when_active_revision_changed() {
 
 // 拆分后补充：兄弟模块中的被测函数（原同模块可见）
 use super::execute::{
-    agent_prompt_with_policy, approval_requirement, execute_agent,
-    task_continuation_from_request, PreparedAgentExecution,
+    agent_prompt_with_policy, approval_requirement, execute_agent, task_continuation_from_request,
+    PreparedAgentExecution,
 };
 use super::lease::recover_lost_lease;
 use super::loops::drive_loops;

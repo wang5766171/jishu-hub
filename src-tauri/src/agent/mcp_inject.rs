@@ -21,7 +21,8 @@ use crate::agent::traits::ConfigAdapter;
 /// hub 条目的识别签名：args 前两项恰为 mcp / serve（command 路径随安装
 /// 位置变化，不作判据）。
 fn looks_like_hub_entry(args: &[String]) -> bool {
-    args.first().map(String::as_str) == Some("mcp") && args.get(1).map(String::as_str) == Some("serve")
+    args.first().map(String::as_str) == Some("mcp")
+        && args.get(1).map(String::as_str) == Some("serve")
 }
 
 /// v0.9.1 需求12：与 [mcp] 插件同名的全部插件 id（含禁用——禁用插件的
@@ -73,7 +74,11 @@ fn entry_args_of(v: &Value) -> Vec<String> {
 
 /// JSON 形态 upsert：在 `servers_key` 对象内写 hub 条目。
 /// 返回 Injected（新写）/ Updated（更新自家旧条目）/ Protected（同名非自家）。
-pub fn upsert_entry_json(config_json: &mut Value, servers_key: &str, cli_path: &str) -> &'static str {
+pub fn upsert_entry_json(
+    config_json: &mut Value,
+    servers_key: &str,
+    cli_path: &str,
+) -> &'static str {
     let entry = json!({
         "command": cli_path,
         "args": ["mcp", "serve"],
@@ -107,12 +112,13 @@ pub fn upsert_entry_json(config_json: &mut Value, servers_key: &str, cli_path: &
 
 /// JSON 形态回收：仅当条目形态属自家时删除。返回 Removed/Protected/Noop。
 pub fn remove_entry_json(config_json: &mut Value, servers_key: &str) -> &'static str {
-    let Some(servers) = config_json.get_mut(servers_key).and_then(Value::as_object_mut)
+    let Some(servers) = config_json
+        .get_mut(servers_key)
+        .and_then(Value::as_object_mut)
     else {
         return "Noop";
     };
-    let Some(existing) = servers.get(HUB_MCP_ENTRY_NAME)
-    else {
+    let Some(existing) = servers.get(HUB_MCP_ENTRY_NAME) else {
         return "Noop";
     };
     if looks_like_hub_entry(&entry_args_of(existing)) {
@@ -133,8 +139,7 @@ pub struct SyncReport {
 
 /// jishu-cli 绝对路径（hub 进程内定位同级 CLI；CLI 进程内即自身）。
 pub fn resolve_cli_path() -> Result<String, String> {
-    crate::agent::jishu_self::resolve_jishu_cli_binary()
-        .map(|p| p.to_string_lossy().to_string())
+    crate::agent::jishu_self::resolve_jishu_cli_binary().map(|p| p.to_string_lossy().to_string())
 }
 
 /// 同步入口（二期门控反转）：MCP 解析器（mcp-resolver，默认启用）开 →
@@ -280,7 +285,12 @@ fn cleanup_stale_claude_settings_entry(_resolver_on: bool) {
         .unwrap_or(false);
     if is_ours {
         servers.remove(HUB_MCP_ENTRY_NAME);
-        if cfg.mcp_servers.as_ref().map(|m| m.is_empty()).unwrap_or(false) {
+        if cfg
+            .mcp_servers
+            .as_ref()
+            .map(|m| m.is_empty())
+            .unwrap_or(false)
+        {
             cfg.mcp_servers = None;
         }
         let _ = crate::config::save_config(&cfg);
@@ -334,19 +344,34 @@ mod tests {
     #[test]
     fn upsert_inject_update_protect() {
         let mut cfg = json!({});
-        assert_eq!(upsert_entry_json(&mut cfg, "mcpServers", "/bin/jishu-cli"), "Injected");
+        assert_eq!(
+            upsert_entry_json(&mut cfg, "mcpServers", "/bin/jishu-cli"),
+            "Injected"
+        );
         assert_eq!(
             cfg["mcpServers"][HUB_MCP_ENTRY_NAME]["args"],
             json!(["mcp", "serve"])
         );
         // 自家旧条目（路径变化）→ Updated 覆盖。
         cfg["mcpServers"][HUB_MCP_ENTRY_NAME]["command"] = json!("/old/path/jishu-cli");
-        assert_eq!(upsert_entry_json(&mut cfg, "mcpServers", "/new/jishu-cli"), "Updated");
-        assert_eq!(cfg["mcpServers"][HUB_MCP_ENTRY_NAME]["command"], json!("/new/jishu-cli"));
+        assert_eq!(
+            upsert_entry_json(&mut cfg, "mcpServers", "/new/jishu-cli"),
+            "Updated"
+        );
+        assert_eq!(
+            cfg["mcpServers"][HUB_MCP_ENTRY_NAME]["command"],
+            json!("/new/jishu-cli")
+        );
         // 用户自建同名条目（args 形态不符）→ Protected 不动。
         cfg["mcpServers"][HUB_MCP_ENTRY_NAME] = json!({ "url": "http://x", "args": ["--stdio"] });
-        assert_eq!(upsert_entry_json(&mut cfg, "mcpServers", "/bin/jishu-cli"), "Protected");
-        assert_eq!(cfg["mcpServers"][HUB_MCP_ENTRY_NAME]["url"], json!("http://x"));
+        assert_eq!(
+            upsert_entry_json(&mut cfg, "mcpServers", "/bin/jishu-cli"),
+            "Protected"
+        );
+        assert_eq!(
+            cfg["mcpServers"][HUB_MCP_ENTRY_NAME]["url"],
+            json!("http://x")
+        );
     }
 
     #[test]
@@ -373,7 +398,10 @@ mod tests {
         // 键必须是 mcpServers（一期误用蛇形 mcp_servers，typed 解析恒 None →
         // mcp.json 恒空 → pi-mcp-adapter 拿不到任何 server）。
         let mut cfg = json!({});
-        assert_eq!(upsert_entry_json(&mut cfg, "mcpServers", "/bin/jishu-cli"), "Injected");
+        assert_eq!(
+            upsert_entry_json(&mut cfg, "mcpServers", "/bin/jishu-cli"),
+            "Injected"
+        );
         assert!(cfg["mcpServers"][HUB_MCP_ENTRY_NAME].is_object());
         assert!(cfg.get("mcp_servers").is_none());
     }
@@ -392,7 +420,11 @@ mod tests {
         let removed = remove_direct_plugin_entries_json(
             &mut cfg,
             "mcpServers",
-            &["web-reader".to_string(), "zread".to_string(), "absent".to_string()],
+            &[
+                "web-reader".to_string(),
+                "zread".to_string(),
+                "absent".to_string(),
+            ],
         );
         assert_eq!(removed, vec!["web-reader", "zread"]);
         assert!(cfg["mcpServers"].get("web-reader").is_none());
@@ -412,8 +444,12 @@ mod tests {
     fn claude_user_config_plane_roundtrip() {
         // claude-code user-scope 平面 = ~/.claude.json 顶层 mcpServers（与
         // codex/opencode 相同的 upsert/remove 纯函数，键名不同）。
-        let mut cfg = json!({ "numStartups": 42, "mcpServers": { "user-tool": { "command": "npx" } } });
-        assert_eq!(upsert_entry_json(&mut cfg, "mcpServers", "/bin/jishu-cli"), "Injected");
+        let mut cfg =
+            json!({ "numStartups": 42, "mcpServers": { "user-tool": { "command": "npx" } } });
+        assert_eq!(
+            upsert_entry_json(&mut cfg, "mcpServers", "/bin/jishu-cli"),
+            "Injected"
+        );
         assert_eq!(
             cfg["mcpServers"][HUB_MCP_ENTRY_NAME]["args"],
             json!(["mcp", "serve"])

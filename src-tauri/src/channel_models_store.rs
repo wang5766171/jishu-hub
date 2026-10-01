@@ -8,9 +8,9 @@
 //! 同 usage_store 模式：OnceLock + Mutex<Connection>；schema 版本不符直接
 //! DROP 重建（无迁移策略，用户裁决）。
 
+use crate::commands::channel_probe::ChannelModelsProbe;
 use rusqlite::Connection;
 use serde::Serialize;
-use crate::commands::channel_probe::ChannelModelsProbe;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
@@ -76,7 +76,9 @@ fn store() -> Result<&'static ChannelModelsStore, String> {
     let _ = STORE.set(ChannelModelsStore {
         conn: Mutex::new(conn),
     });
-    STORE.get().ok_or_else(|| "channel models store init failed".into())
+    STORE
+        .get()
+        .ok_or_else(|| "channel models store init failed".into())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -126,7 +128,11 @@ fn lookup(agent_id: &str, channel_key: &str) -> Result<Option<StoredChannelModel
     match result {
         Ok((json, endpoint, fetched_at)) => {
             let models = serde_json::from_str(&json).unwrap_or_default();
-            Ok(Some(StoredChannelModels { models, endpoint, fetched_at }))
+            Ok(Some(StoredChannelModels {
+                models,
+                endpoint,
+                fetched_at,
+            }))
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.to_string()),
@@ -165,7 +171,9 @@ pub(crate) fn custom_lookup(
         |row| row.get::<_, String>(0),
     );
     match result {
-        Ok(json) => Ok(Some(serde_json::from_str(&json).unwrap_or(serde_json::Value::Null))),
+        Ok(json) => Ok(Some(
+            serde_json::from_str(&json).unwrap_or(serde_json::Value::Null),
+        )),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.to_string()),
     }

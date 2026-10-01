@@ -8,8 +8,7 @@ pub const DEFAULT_MAX_REPAIR_DEPTH: u32 = 2;
 
 /// Policy attached to each GraphNode.
 /// Proposed by Planner, adjusted by user, validated and enforced by Task Orchestrator.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NodePolicy {
     #[serde(default)]
     pub timeout_ms: Option<u64>,
@@ -48,7 +47,6 @@ impl NodePolicy {
         self.max_repair_depth.unwrap_or(DEFAULT_MAX_REPAIR_DEPTH)
     }
 }
-
 
 /// Retry configuration for transient failures.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,7 +142,6 @@ pub enum ApprovalPolicy {
     OnHighRisk,
 }
 
-
 /// Resource requirements for the Resource Arbiter.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ResourceRequirements {
@@ -180,7 +177,6 @@ pub enum IdempotencyPolicy {
     /// Not safe to retry — fail fast.
     NoRetry,
 }
-
 
 #[cfg(test)]
 mod tests {

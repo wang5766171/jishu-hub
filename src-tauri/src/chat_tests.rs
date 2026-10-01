@@ -124,10 +124,7 @@ mod tests {
         assert!(out.contains(ip::TOOL_BLOCK_OPEN));
         assert!(out.contains("gh repo view"));
         // v0.9.5 重构：后缀注入——用户消息在前，注入块殿后。
-        assert!(
-            out.starts_with("列出我的仓库"),
-            "用户消息应位于注入块之前"
-        );
+        assert!(out.starts_with("列出我的仓库"), "用户消息应位于注入块之前");
         // v0.9.0 需求3：回放派生——块剥净、正文还原、id 快照可提取
         let (clean, ids) = ip::extract_tool_snapshot(&out);
         assert_eq!(clean, "列出我的仓库");
@@ -184,7 +181,10 @@ mod image_dispatch_tests {
         // 发现交给 agent 经 mcp 搜索 / hub_mcp_list 自选；声明仅作显式
         // 配置的短名补全字典，不再自动全量点名。
         let declared = vec![
-            ("zai-mcp-server".to_string(), vec!["analyze_image".to_string()]),
+            (
+                "zai-mcp-server".to_string(),
+                vec!["analyze_image".to_string()],
+            ),
             ("other".to_string(), vec!["a".to_string(), "b".to_string()]),
         ];
         assert!(resolve_mcp_vision_tools("", &declared).is_empty());
@@ -192,15 +192,14 @@ mod image_dispatch_tests {
 
     #[test]
     fn mcp_tools_short_name_completed_and_unknown_passthrough() {
-        let declared = vec![("zai-mcp-server".to_string(), vec!["analyze_image".to_string()])];
+        let declared = vec![(
+            "zai-mcp-server".to_string(),
+            vec!["analyze_image".to_string()],
+        )];
         let tools = resolve_mcp_vision_tools("analyze_image, custom__tool, 未声明名", &declared);
         assert_eq!(
             tools,
-            vec![
-                "zai-mcp-server__analyze_image",
-                "custom__tool",
-                "未声明名"
-            ]
+            vec!["zai-mcp-server__analyze_image", "custom__tool", "未声明名"]
         );
     }
 
@@ -222,7 +221,10 @@ mod image_dispatch_tests {
         assert!(hint.contains(r#""action":"list""#), "缺清单查询步骤");
         assert!(hint.contains("改用另一条途径"), "缺互为兜底");
         assert!(hint.contains("严禁编造图片内容"), "缺双败如实告知");
-        assert!(hint.contains("describe 返回的 schema"), "降级缺 describe 指引");
+        assert!(
+            hint.contains("describe 返回的 schema"),
+            "降级缺 describe 指引"
+        );
     }
 
     /// v0.9.5 解析器能力对齐直连（用户裁决 2026-09-30）：点名工具内联参数
@@ -236,7 +238,10 @@ mod image_dispatch_tests {
             subagent_model: Some("zhipu/glm-5.3-flash".to_string()),
         };
         let hint = compose_image_dispatch_hint_with(&route, &|tool| {
-            assert_eq!(tool, "zai-mcp-server__analyze_image", "查询应使用 hub 规范名");
+            assert_eq!(
+                tool, "zai-mcp-server__analyze_image",
+                "查询应使用 hub 规范名"
+            );
             Some(json!({
                 "type": "object",
                 "properties": {
@@ -253,9 +258,15 @@ mod image_dispatch_tests {
             "缺 image_source 参数行"
         );
         assert!(hint.contains("- prompt（string，必填）：分析要求"));
-        assert!(hint.contains("- detail（string，可选）"), "无描述参数仅标类型与必填");
+        assert!(
+            hint.contains("- detail（string，可选）"),
+            "无描述参数仅标类型与必填"
+        );
         assert!(hint.contains("args 传参数对象的 JSON 字符串"));
-        assert!(!hint.contains("describe 返回的 schema"), "有 schema 不应走降级");
+        assert!(
+            !hint.contains("describe 返回的 schema"),
+            "有 schema 不应走降级"
+        );
     }
 
     #[test]
@@ -281,7 +292,10 @@ mod image_dispatch_tests {
             subagent_model: None,
         };
         let hint = compose_image_dispatch_hint_with(&route, &|_| None);
-        assert!(hint.contains("先自行发现识图工具"), "无工具时应走自搜索指引");
+        assert!(
+            hint.contains("先自行发现识图工具"),
+            "无工具时应走自搜索指引"
+        );
         assert!(!hint.contains("model 参数填"), "无模型时不应有 model 指引");
     }
 

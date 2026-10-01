@@ -215,10 +215,7 @@ fn spawn_codex_app_server_session_inner(
                 NormalizedEvent::TurnComplete {
                     reason: TurnEndReason::Error,
                     // v0.9.0 需求5：连接异常退出也带出最后已知用量（可能为 None）。
-                    usage: usage_cell
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .take(),
+                    usage: usage_cell.lock().unwrap_or_else(|e| e.into_inner()).take(),
                 },
             ];
             emit(&events, &pending_session_id);
@@ -761,10 +758,7 @@ async fn handle_line(
                 buf.push(NormalizedEvent::TurnComplete {
                     reason,
                     // v0.9.0 需求5：轮末带出累积用量（tokenUsage 累积器 take）。
-                    usage: usage_cell
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .take(),
+                    usage: usage_cell.lock().unwrap_or_else(|e| e.into_inner()).take(),
                 });
                 // v0.7.0：turn/completed 是 turn 的最后一条消息，之后 codex 进入 idle，
                 // 没有更多事件触发 flush_maybe。必须强制 flush，否则 TurnComplete 留在
@@ -929,10 +923,7 @@ async fn handle_command(
                 buf.push(NormalizedEvent::TurnComplete {
                     reason: TurnEndReason::Aborted,
                     // v0.9.0 需求5：无活跃回合取消时带出最后已知用量（对齐 ACP cancel）。
-                    usage: usage_cell
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .take(),
+                    usage: usage_cell.lock().unwrap_or_else(|e| e.into_inner()).take(),
                 });
                 flush_buf(emit, session_id, buf);
                 *state = LoopState::Idle {
@@ -1077,51 +1068,57 @@ async fn register_server_request(
                 }
             }
         }
-        "item/commandExecution/requestApproval" => try_policy_or_register(
-            id,
-            params,
-            thread,
-            &turn,
-            ApprovalKind::Command,
-            ApprovalWriteback::Decision,
-            pending_approvals,
-            emit,
-            session_id,
-            buf,
-            policy,
-            writer,
-        )
-        .await,
-        "item/fileChange/requestApproval" => try_policy_or_register(
-            id,
-            params,
-            thread,
-            &turn,
-            ApprovalKind::FileWrite,
-            ApprovalWriteback::Decision,
-            pending_approvals,
-            emit,
-            session_id,
-            buf,
-            policy,
-            writer,
-        )
-        .await,
-        "item/permissions/requestApproval" => try_policy_or_register(
-            id,
-            params,
-            thread,
-            &turn,
-            ApprovalKind::Other,
-            ApprovalWriteback::Decision,
-            pending_approvals,
-            emit,
-            session_id,
-            buf,
-            policy,
-            writer,
-        )
-        .await,
+        "item/commandExecution/requestApproval" => {
+            try_policy_or_register(
+                id,
+                params,
+                thread,
+                &turn,
+                ApprovalKind::Command,
+                ApprovalWriteback::Decision,
+                pending_approvals,
+                emit,
+                session_id,
+                buf,
+                policy,
+                writer,
+            )
+            .await
+        }
+        "item/fileChange/requestApproval" => {
+            try_policy_or_register(
+                id,
+                params,
+                thread,
+                &turn,
+                ApprovalKind::FileWrite,
+                ApprovalWriteback::Decision,
+                pending_approvals,
+                emit,
+                session_id,
+                buf,
+                policy,
+                writer,
+            )
+            .await
+        }
+        "item/permissions/requestApproval" => {
+            try_policy_or_register(
+                id,
+                params,
+                thread,
+                &turn,
+                ApprovalKind::Other,
+                ApprovalWriteback::Decision,
+                pending_approvals,
+                emit,
+                session_id,
+                buf,
+                policy,
+                writer,
+            )
+            .await
+        }
         other => {
             // Unhandled server request (e.g. mcpServer/elicitation/request).
             // We cannot answer it correctly without the schema; left unregistered
@@ -1135,7 +1132,6 @@ async fn register_server_request(
         }
     }
 }
-
 
 /// v0.8.0 需求2 Phase 2 挂载点 1（codex）：审批到达先过策略链——
 /// Allow/Deny 直接 `respond` 回写不打扰用户；Delegate 走 register_approval
@@ -1517,10 +1513,7 @@ fn extract_turn_id(resp: &Value) -> Option<String> {
 }
 
 fn extract_turn_id_from_params(params: &Value) -> Option<String> {
-    params
-        .get("turn")
-        .or(Some(params))
-        .and_then(id_like)
+    params.get("turn").or(Some(params)).and_then(id_like)
 }
 
 /// Extract the thread id from a `thread/start` response result `{thread:{id,…}}`,
@@ -2012,7 +2005,10 @@ mod tests {
         });
         capture_token_usage("thread/tokenUsage/updated", &payload, &cell);
         assert_eq!(
-            cell.lock().unwrap().as_ref().and_then(|u| u.context_remaining),
+            cell.lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|u| u.context_remaining),
             Some(90)
         );
         // 非目标方法不触碰 cell。

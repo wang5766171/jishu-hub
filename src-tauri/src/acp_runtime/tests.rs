@@ -758,8 +758,7 @@ fn parse_then_route_yields_enum_matching_content() {
 // 拆分后补充：兄弟模块中被测项（原同模块可见）
 use super::elicitation::{is_question_field, parse_acp_elicitation, AcpQuestion};
 use super::interaction::{
-    elicit_result_payload, AcpInteractionRoute, ElicitAction,
-    PendingElicitation, PendingPermission,
+    elicit_result_payload, AcpInteractionRoute, ElicitAction, PendingElicitation, PendingPermission,
 };
 use super::normalize::acp_unexpected_eof_error;
 use super::protocol::handle_prompt_response;

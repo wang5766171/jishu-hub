@@ -639,12 +639,13 @@ impl TaskService {
             NodeRecoveryAction::Retry => NodeRunStatus::Blocked,
             NodeRecoveryAction::Skip => NodeRunStatus::Skipped,
         };
-        validate_node_run_transition(&node_run.status, &new_status)
-            .map_err(|e| TaskServiceError::Conflict {
+        validate_node_run_transition(&node_run.status, &new_status).map_err(|e| {
+            TaskServiceError::Conflict {
                 message: e.to_string(),
                 current_revision: None,
                 current_run_seq: None,
-            })?;
+            }
+        })?;
 
         // run 拉回：Failed→Running（人工干预转移）。run 仍 Running（失败与
         // tick 收尾之间的窗口）时无需 run 事件，只流转节点。

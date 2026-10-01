@@ -265,7 +265,10 @@ pub fn save_claude_user_config_value(
         let _ = std::fs::create_dir_all(&backup_dir);
         let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
         if path.exists() {
-            let _ = std::fs::copy(&path, backup_dir.join(format!("userconfig_{timestamp}.json")));
+            let _ = std::fs::copy(
+                &path,
+                backup_dir.join(format!("userconfig_{timestamp}.json")),
+            );
         }
         let _ = cleanup_old_backups(&backup_dir, 10);
     }

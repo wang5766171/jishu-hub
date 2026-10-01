@@ -129,7 +129,7 @@ SectionEnd
   ;   $PROFILE\.jishu-agent\packages      pi runtime 本体（POSTINSTALL --install-agent 复制）
   ;   $PROFILE\.jishu-agent\node_modules  pi-bundle 依赖树（同上）
   ;
-  ; 【用户数据目录（仅勾选「删除应用数据」才清；未勾选时产禁触碰）】
+  ; 【用户数据目录（仅勾选「删除应用数据」才清；未勾选时严禁触碰）】
   ;   $PROFILE\.jishu-agent\agent\       Pi 运行数据：settings.json / models.json /
   ;                                     mcp.json / auth.json / sessions\ / skills\（用户与
   ;                                     分发 skill）/ extensions\（用户导入扩展）/ backups\ /

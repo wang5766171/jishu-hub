@@ -1,6 +1,5 @@
 pub mod checkpoint;
 
-
 use crate::orchestrator::domain::run::{NodeRunStatus, RunStatus};
 use crate::orchestrator::events::RunProjection;
 use crate::orchestrator::store::{StoreError, TaskStore};

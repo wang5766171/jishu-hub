@@ -845,7 +845,10 @@ pub(crate) fn remove_mcp_entry_raw(name: &str) -> Result<bool, String> {
         return Ok(false);
     }
     let mut value = read_opencode_config_value().map_err(|e| e.to_string())?;
-    let Some(mcp) = value.get_mut("mcp").and_then(serde_json::Value::as_object_mut) else {
+    let Some(mcp) = value
+        .get_mut("mcp")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
         return Ok(false);
     };
     if mcp.remove(name).is_none() {
@@ -1191,7 +1194,6 @@ impl ConfigAdapter for OpencodeAdapter {
     fn as_backup_store(&self) -> Option<&dyn crate::agent::config_roles::ConfigBackupStore> {
         Some(self)
     }
-
 }
 
 impl crate::agent::config_roles::RawConfigStore for OpencodeAdapter {
@@ -1218,7 +1220,6 @@ impl crate::agent::config_roles::RawConfigStore for OpencodeAdapter {
         }
         crate::util::atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())
     }
-
 }
 
 impl crate::agent::config_roles::ConfigBackupStore for OpencodeAdapter {
@@ -1563,7 +1564,6 @@ mod tests {
     }
 
     use super::*;
-    
 
     #[test]
     fn uses_open_code_display_name() {
@@ -2019,5 +2019,4 @@ mod tests {
             ]
         );
     }
-
 }

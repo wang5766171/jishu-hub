@@ -469,11 +469,17 @@ mod tests {
         config.providers.insert(probe_name.clone(), sample_zhipu());
         save_to(&path, &config).unwrap();
         let mut reloaded = load_from(&path).unwrap();
-        assert!(reloaded.providers.contains_key(&probe_name), "provider should round-trip");
+        assert!(
+            reloaded.providers.contains_key(&probe_name),
+            "provider should round-trip"
+        );
         reloaded.providers.remove(&probe_name);
         save_to(&path, &reloaded).unwrap();
         let after = load_from(&path).unwrap();
-        assert!(!after.providers.contains_key(&probe_name), "provider should be gone");
+        assert!(
+            !after.providers.contains_key(&probe_name),
+            "provider should be gone"
+        );
     }
 
     #[test]

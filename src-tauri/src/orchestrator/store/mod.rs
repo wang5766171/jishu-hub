@@ -7,9 +7,8 @@ use crate::orchestrator::conversation::{TaskInteractionRequest, TaskInteractionS
 use crate::orchestrator::domain::graph::TaskGraph;
 use crate::orchestrator::domain::revision::GraphRevision;
 use crate::orchestrator::domain::run::{
-    ApprovalRequest, ArtifactRef, AttemptDispatch, BudgetState, GraphRun,
-    NodeAttempt, NodeRun, NodeRunStatus, NodeSessionSummary, RunPlanningSnapshot,
-    RunRevisionProposal, RunStatus,
+    ApprovalRequest, ArtifactRef, AttemptDispatch, BudgetState, GraphRun, NodeAttempt, NodeRun,
+    NodeRunStatus, NodeSessionSummary, RunPlanningSnapshot, RunRevisionProposal, RunStatus,
 };
 use crate::orchestrator::events::TaskEvent;
 use crate::orchestrator::projections::checkpoint::ProjectionReadModel;
@@ -279,9 +278,9 @@ fn try_advance_projection_checkpoint(
         .optional();
 
     let Some((last_seq, proj_json)) = checkpoint_result.map_err(|e| {
-        CheckpointAdvanceError::Deserialize(serde_json::Error::io(std::io::Error::other(
-            format!("db query failed: {e}"),
-        )))
+        CheckpointAdvanceError::Deserialize(serde_json::Error::io(std::io::Error::other(format!(
+            "db query failed: {e}"
+        ))))
     })?
     else {
         return Ok(());

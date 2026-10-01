@@ -73,9 +73,11 @@ pub async fn generate_and_persist(session_id: &str) -> Option<String> {
             return None;
         }
     };
-    let Ok(preset) =
-        crate::agent::jishu_self::pi_models_config::to_test_preset(&provider_id, provider_cfg, &model)
-    else {
+    let Ok(preset) = crate::agent::jishu_self::pi_models_config::to_test_preset(
+        &provider_id,
+        provider_cfg,
+        &model,
+    ) else {
         eprintln!("[session-title] to_test_preset failed for {provider_id}/{model_id}");
         return None;
     };
@@ -154,10 +156,7 @@ pub async fn generate_and_persist(session_id: &str) -> Option<String> {
 
 /// sessions 根目录下扫全部项目目录定位 `<session_id>.jsonl`。
 fn find_session_file(session_id: &str) -> Option<PathBuf> {
-    if session_id.is_empty()
-        || session_id.contains(['/', '\\'])
-        || session_id.contains("..")
-    {
+    if session_id.is_empty() || session_id.contains(['/', '\\']) || session_id.contains("..") {
         return None; // 纯 id，防路径逃逸
     }
     let root = crate::agent::jishu_self::pi_session::pi_sessions_root().ok()?;
@@ -192,8 +191,11 @@ fn has_session_info(lines: &[&str]) -> bool {
             .ok()
             .and_then(|v| {
                 (v.get("type")?.as_str()? == "session_info"
-                    && v.get("name").and_then(|n| n.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false))
-                    .then_some(())
+                    && v.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false))
+                .then_some(())
             })
             .is_some()
     })
@@ -343,8 +345,14 @@ mod tests {
 
     #[test]
     fn sanitize_strips_quotes_and_punctuation() {
-        assert_eq!(sanitize_title("「开启v0.9.4版本开发」").as_deref(), Some("开启v0.9.4版本开发"));
-        assert_eq!(sanitize_title("\"Fix login bug\"").as_deref(), Some("Fix login bug"));
+        assert_eq!(
+            sanitize_title("「开启v0.9.4版本开发」").as_deref(),
+            Some("开启v0.9.4版本开发")
+        );
+        assert_eq!(
+            sanitize_title("\"Fix login bug\"").as_deref(),
+            Some("Fix login bug")
+        );
         assert_eq!(sanitize_title("修复标题。").as_deref(), Some("修复标题"));
         assert_eq!(sanitize_title("多行\n输出取首行").as_deref(), Some("多行"));
         assert_eq!(sanitize_title("   ").as_deref(), None);
@@ -389,7 +397,10 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let title = rt.block_on(generate_and_persist(&sid));
         println!("[live] generated title = {title:?}");
-        assert!(title.is_some(), "generation chain failed (see warn logs above)");
+        assert!(
+            title.is_some(),
+            "generation chain failed (see warn logs above)"
+        );
     }
 
     #[test]

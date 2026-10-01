@@ -141,9 +141,7 @@ pub use instance_store::{
 };
 mod revise;
 
-pub use proposal::{
-    orchestrator_validate_proposal, ValidateProposalRequest,
-};
+pub use proposal::{orchestrator_validate_proposal, ValidateProposalRequest};
 pub use revise::{conductor_revise_plan, RevisePlanRequest};
 mod dispatch;
 pub use dispatch::{conductor_dispatch_to_node, DispatchToNodeRequest};

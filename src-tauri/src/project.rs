@@ -350,8 +350,7 @@ pub fn encode_project_path(path: &str) -> String {
     // Normalize forward slashes to backslashes first so that 'E:/Claude/test' and
     // 'E:\Claude\test' produce the same encoded name.
     let path = path.replace('/', "\\");
-    path.replace(":\\", "--")
-        .replace(['\\', ' '], "-")
+    path.replace(":\\", "--").replace(['\\', ' '], "-")
 }
 
 /// Get the level-1 directory from a project path.

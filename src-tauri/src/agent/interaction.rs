@@ -91,7 +91,6 @@ pub fn delivery_for(transport: TransportSurface, origin: InteractionOrigin) -> I
     delivery_for_runtime(transport, origin, true)
 }
 
-
 impl InteractionResponseDto {
     pub fn from_delivery(delivery: InteractionDelivery) -> Self {
         Self {

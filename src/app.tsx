@@ -33,7 +33,7 @@ import { SelectionContextMenu } from "@/components/selection-context-menu";
 import { PiExtensionImportCard } from "@/components/pi-extension-import-card";
 // 5e（v0.9.5 需求1）：Ctrl+K 命令面板（搜索插件快速执行）。
 import { CommandPalette } from "@/components/command-palette";
-// v0.9.5 需求1（原需敆26）1c：CLI plugins validate 跨进程校验桥（轮询
+// v0.9.5 需求1（原需求26）1c：CLI plugins validate 跨进程校验桥（轮询
 // 标记信箱，复用 hub 侧 TS 校验器——与 GUI 向导同一份实现）。
 import { useCliValidateBridge } from "@/features/session-kernel/capabilities/cli-validate-bridge";
 // 6b（v0.9.5 需求1）：agent-tool 前端执行桥（plugin-invoke 扩展 → hub_invoke → 事件 → 动作）。

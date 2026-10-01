@@ -245,7 +245,7 @@ pub fn builtin_skill_decls() -> Vec<SkillDeclEntry> {
             content: content.to_string(),
             source_dir: None,
         },
-        // v0.9.5 需求1（原需敆26）4a：插件创作四层指南（判断/模板/API/陷阱）
+        // v0.9.5 需求1（原需求26）4a：插件创作四层指南（判断/模板/API/陷阱）
         //——「对话即创建」的路由层：agent 读后能产出正确形态的插件并经
         // CLI 安装（add 统一寻址 / validate / add-hybrid）。
         SkillDeclEntry {
@@ -264,7 +264,7 @@ pub const BUILTIN_CAPABILITY_SKILL_DIR: &str = "jishu-hub-capabilities";
 /// 供测试校验两者同步）。
 pub const BUILTIN_CAPABILITY_SKILL_DESC: &str = "在 Jishu Hub 会话中向用户呈现内容前必读——图表/流程图/框架/关系图直接输出 mermaid 代码块、网页/原型输出 html 代码块（会话界面原生渲染，无需生成文件）；HTML 交付文件预览用 preview_html 工具；MCP 工具与 skill 的调用指引。";
 
-/// 插件创作 skill 目录名（v0.9.5 需求1（原需敆26）4a）。
+/// 插件创作 skill 目录名（v0.9.5 需求1（原需求26）4a）。
 pub const PLUGIN_AUTHORING_SKILL_DIR: &str = "jishu-plugin-authoring";
 
 /// 路由描述（与 SKILL.md frontmatter 同步；单点供测试校验）。

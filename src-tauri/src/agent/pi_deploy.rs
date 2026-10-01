@@ -126,7 +126,6 @@ fn undeploy_stale(agent_dir: &std::path::Path, active: &[(String, PathBuf, Strin
 
 #[cfg(test)]
 mod tests {
-    
 
     // 部署/回收的文件级行为经 tempdir 造 hub_home + plugins 目录锁定
     //（hub_home 尊重 JISHU_HUB_HOME 测试隔离；agent_dir 侧经环境注入的

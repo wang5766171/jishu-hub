@@ -260,7 +260,9 @@ pub(crate) fn desktop_notify_send(
 
     // 首选 protocol toast：弹窗与通知中心点击统一走系统激活。
     if show_protocol_toast(aumid, &title, &body, &launch, sound.unwrap_or(true)).is_ok() {
-        return Ok(format!("toast(protocol) 已提交（AUMID={aumid}, launch={launch}）"));
+        return Ok(format!(
+            "toast(protocol) 已提交（AUMID={aumid}, launch={launch}）"
+        ));
     }
 
     // 回退：notify-rust 普通通知 + 进程内 Activated（仅弹窗期点击有效，
@@ -278,20 +280,18 @@ pub(crate) fn desktop_notify_send(
     {
         let app = app.clone();
         std::thread::spawn(move || {
-            let _ = handle.wait_for_response(
-                |response: &notify_rust::NotificationResponse| {
-                    if response.is_default_action() {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.unminimize();
-                            let _ = window.set_focus();
-                        }
-                        let _ = app.emit(
-                            "desktop-notify-click",
-                            serde_json::json!({ "sessionId": session_id }),
-                        );
+            let _ = handle.wait_for_response(|response: &notify_rust::NotificationResponse| {
+                if response.is_default_action() {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.unminimize();
+                        let _ = window.set_focus();
                     }
-                },
-            );
+                    let _ = app.emit(
+                        "desktop-notify-click",
+                        serde_json::json!({ "sessionId": session_id }),
+                    );
+                }
+            });
         });
     }
     Ok(format!("toast(fallback) 已提交（AUMID={aumid}）"))
@@ -309,7 +309,13 @@ fn xml_escape(text: &str) -> String {
 /// 经 WinRT 直发 protocol 激活的 toast（`activationType="protocol"`）。
 /// tauri-winrt-notification 封装不暴露 launch 属性，故此处手搓 XML——
 /// 这是「通知中心补点也能激活应用」的唯一路径（进程内事件不覆盖补点）。
-fn show_protocol_toast(aumid: &str, title: &str, body: &str, launch: &str, sound: bool) -> Result<(), String> {
+fn show_protocol_toast(
+    aumid: &str,
+    title: &str,
+    body: &str,
+    launch: &str,
+    sound: bool,
+) -> Result<(), String> {
     use windows::core::HSTRING;
     use windows::Data::Xml::Dom::XmlDocument;
     use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
@@ -340,7 +346,9 @@ fn show_protocol_toast(aumid: &str, title: &str, body: &str, launch: &str, sound
     // 当前应用的包标识，未打包应用必须用 Id 版指定 AUMID）。
     let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(aumid))
         .map_err(|e| format!("CreateToastNotifier failed: {e}"))?;
-    notifier.Show(&toast).map_err(|e| format!("Show failed: {e}"))
+    notifier
+        .Show(&toast)
+        .map_err(|e| format!("Show failed: {e}"))
 }
 
 #[tauri::command]
@@ -382,10 +390,8 @@ mod tests {
     #[test]
     fn exports_binary_file_roundtrip() {
         // v0.9.2 测试期（mermaid PNG 导出）：base64 解码落盘往返。
-        let path = std::env::temp_dir().join(format!(
-            "jishu-hub-export-bin-{}.png",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("jishu-hub-export-bin-{}.png", std::process::id()));
         let payload: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF];
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
@@ -398,7 +404,10 @@ mod tests {
     #[test]
     fn rejects_invalid_base64_export() {
         let err = super::export_binary_file(
-            std::env::temp_dir().join("jishu-hub-export-bin-bad.png").to_string_lossy().into_owned(),
+            std::env::temp_dir()
+                .join("jishu-hub-export-bin-bad.png")
+                .to_string_lossy()
+                .into_owned(),
             "!!not-base64!!".to_string(),
         )
         .unwrap_err();
@@ -559,8 +568,6 @@ mod tests {
 /// 全程 fail-soft——失败静默（标题回落 smart_summary 规则截断），前端
 /// 回合完成后触发一次。
 #[tauri::command]
-pub(crate) async fn session_generate_title(
-    session_id: String,
-) -> Result<Option<String>, String> {
+pub(crate) async fn session_generate_title(session_id: String) -> Result<Option<String>, String> {
     Ok(crate::agent::jishu_self::session_title::generate_and_persist(&session_id).await)
 }

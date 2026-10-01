@@ -1352,7 +1352,11 @@ fn create_run_with_event_and_seeds_atomic_visibility() {
     );
 
     store
-        .create_run_with_event_and_seeds(&run, &started, &[(seed_a, resolved_a), (seed_b, resolved_b)])
+        .create_run_with_event_and_seeds(
+            &run,
+            &started,
+            &[(seed_a, resolved_a), (seed_b, resolved_b)],
+        )
         .unwrap();
 
     // 引擎首读即终态：run_seq 最终值 + 种子节点 Succeeded。
@@ -1360,7 +1364,9 @@ fn create_run_with_event_and_seeds_atomic_visibility() {
     assert_eq!(reloaded.run_seq, 3);
     let node_runs = store.get_node_runs("run1").unwrap();
     assert_eq!(node_runs.len(), 2);
-    assert!(node_runs.iter().all(|nr| nr.status == NodeRunStatus::Succeeded));
+    assert!(node_runs
+        .iter()
+        .all(|nr| nr.status == NodeRunStatus::Succeeded));
 
     // 后续 save_execution_update 从最终 run_seq 续写不冲突（守卫与常规路径衔接）。
     let mut next = NodeRun::new("nr-c", "run1", "n3", "rev1");

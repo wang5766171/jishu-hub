@@ -49,7 +49,9 @@ fn dispatch(cmd: Commands, ctx: &ExecutionContext) -> Result<(), CliError> {
         } => commands::orchestrator::evolve::run(plan.as_deref(), &project, dry_run, ctx),
         Commands::Acp { action } => commands::acp::run(action, ctx),
         Commands::Plugins { action } => commands::plugins::run(action, ctx),
-        Commands::TaskArtifact { action } => commands::task_artifact::run_task_artifact(action, ctx),
+        Commands::TaskArtifact { action } => {
+            commands::task_artifact::run_task_artifact(action, ctx)
+        }
         Commands::Memory { action } => commands::memory::run(action, ctx),
         Commands::Mcp { action } => commands::mcp::run(action, ctx),
         Commands::Skill { action } => commands::skill::run(action, ctx),

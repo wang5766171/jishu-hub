@@ -60,21 +60,33 @@ pub(crate) fn probe_channel_models_impl(base_url: &str, api_key: &str) -> Channe
         } else {
             format!("{base}/v1/models")
         };
-        return fetch_models(&endpoint, |req| req.header("x-api-key", api_key), parse_data_ids);
+        return fetch_models(
+            &endpoint,
+            |req| req.header("x-api-key", api_key),
+            parse_data_ids,
+        );
     }
     // 百炼原生：分页结构 output.models[].model（单页 100 足够渠道展示）。
     if lower.contains("dashscope.aliyuncs.com/api/v1")
         || lower.contains(".maas.aliyuncs.com/api/v1")
     {
         let endpoint = format!("{base}/models?page_size=100");
-        return fetch_models(&endpoint, |req| req.header("Authorization", format!("Bearer {api_key}")), parse_dashscope);
+        return fetch_models(
+            &endpoint,
+            |req| req.header("Authorization", format!("Bearer {api_key}")),
+            parse_dashscope,
+        );
     }
 
     // OpenAI 兼容（openai 官方 / 智谱 paas / Kimi / DeepSeek / 兼容模式 /
     // 自定义兜底）：Authorization Bearer + {base}/models（base 以 /v1、
     // /v4、/compatible-mode/v1 等版本段结尾时直接拼接）。
     let endpoint = format!("{base}/models");
-    fetch_models(&endpoint, |req| req.header("Authorization", format!("Bearer {api_key}")), parse_data_ids)
+    fetch_models(
+        &endpoint,
+        |req| req.header("Authorization", format!("Bearer {api_key}")),
+        parse_data_ids,
+    )
 }
 
 fn fetch_models(

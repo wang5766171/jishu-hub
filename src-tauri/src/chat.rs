@@ -5,8 +5,8 @@ use tauri::{AppHandle, Manager};
 use tokio::io::AsyncWriteExt;
 use tokio::process::ChildStdin;
 
-use crate::agent_runtime::{self, AgentTurnRequest};
 use crate::agent;
+use crate::agent_runtime::{self, AgentTurnRequest};
 use crate::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,7 +117,11 @@ fn resolve_image_dispatch_route() -> ImageDispatchRoute {
     ImageDispatchRoute {
         custom_prompt: {
             let p = cfg_str("prompt");
-            if p.is_empty() { None } else { Some(p) }
+            if p.is_empty() {
+                None
+            } else {
+                Some(p)
+            }
         },
         mcp_tools: resolve_mcp_vision_tools(&cfg_str("mcp_tools"), &declared),
         subagent_model: resolve_subagent_vision_model(&cfg_str("subagent_models")),
@@ -128,9 +132,7 @@ fn resolve_image_dispatch_route() -> ImageDispatchRoute {
 /// 排除禁用插件），产出 (插件 id, 工具名列表)。仅作用户显式配置
 /// 「mcp 识图工具」时的短名补全字典——不用于默认点名（用户裁决
 /// 2026-09-30：默认发现交给 agent 经 hub_mcp_list 自选）。
-fn collect_declared_vision_tools(
-    disabled: &[String],
-) -> Vec<(String, Vec<String>)> {
+fn collect_declared_vision_tools(disabled: &[String]) -> Vec<(String, Vec<String>)> {
     let (_agents, tools, _errors) = agent::manifest::load_manifests(&[]);
     tools
         .into_iter()
@@ -214,9 +216,7 @@ fn model_exists(qualified: &str) -> bool {
     agent::jishu_self::pi_models_config::get_provider(provider_id)
         .ok()
         .flatten()
-        .and_then(|p| {
-            p.models.map(|ms| ms.iter().any(|m| m.id == model_id))
-        })
+        .and_then(|p| p.models.map(|ms| ms.iter().any(|m| m.id == model_id)))
         .unwrap_or(false)
 }
 
@@ -382,10 +382,7 @@ fn compose_tool_message(
     // 图片委派块紧随其后（直指上方附件行），工具块 / MCP 提示殿后。历史格式
     // （v0.9.5 前的前缀/小写标记）不做剥离兼容（版本级裁决）。
     let message = append_image_dispatch_hint(&message);
-    agent::tool_plugin::migrate_session_tools(
-        agent::tool_plugin::STAGING_SESSION_KEY,
-        session_id,
-    );
+    agent::tool_plugin::migrate_session_tools(agent::tool_plugin::STAGING_SESSION_KEY, session_id);
     let tool_ids = agent::tool_plugin::get_session_tools(session_id);
     let Ok(s) = state.lock() else {
         return message;
@@ -600,7 +597,7 @@ fn current_spawn_signature(
             session_id: Some(session_id.to_string()),
             message: String::new(),
             timeout_secs: 0,
-                model_override: None,
+            model_override: None,
         },
     )
     .ok()?;
@@ -1075,7 +1072,9 @@ pub fn chat_turn_active(app: AppHandle, session_id: String) -> bool {
 /// v0.8.0 需求10：读取会话累计用量（SQLite 权威来源；无记录返回全零行）。
 /// 记账在 Rust turn_end 侧完成（usage_store），前端只读展示。
 #[tauri::command]
-pub fn get_session_usage(session_id: String) -> Result<crate::usage_store::SessionUsageRow, String> {
+pub fn get_session_usage(
+    session_id: String,
+) -> Result<crate::usage_store::SessionUsageRow, String> {
     crate::usage_store::get(&session_id)
 }
 

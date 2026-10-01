@@ -51,13 +51,17 @@ pub(crate) async fn get_model_picker_options(
                 let model = v.get("model").and_then(|m| m.as_str())?.to_string();
                 Some((provider, model))
             });
-            return Ok(agent::jishu_self::model_picker::picker_options_with_visibility(
-                &config,
-                &visibility,
-                active,
-            ));
+            return Ok(
+                agent::jishu_self::model_picker::picker_options_with_visibility(
+                    &config,
+                    &visibility,
+                    active,
+                ),
+            );
         }
-        Ok(agent::jishu_self::model_picker::picker_options_from_config(&config))
+        Ok(agent::jishu_self::model_picker::picker_options_from_config(
+            &config,
+        ))
     })
     .await
     .map_err(|e| format!("model picker load task failed: {e}"))?
@@ -155,9 +159,7 @@ pub(crate) fn load_raw_config(
     let raw = agent
         .as_raw_config()
         .ok_or("Agent does not support raw config")?;
-    let format = raw
-        .config_format()
-        .unwrap_or_else(|| "unknown".to_string());
+    let format = raw.config_format().unwrap_or_else(|| "unknown".to_string());
     let content = raw.load_raw_config()?;
     Ok(RawConfigInfo { content, format })
 }
@@ -214,9 +216,7 @@ pub(crate) async fn save_config(
             .map(|v| v as u32);
         if enabled.is_some() || threshold_percent.is_some() {
             for acp in crate::chat::live_acp_controls_for_agent(&app, &agent_id) {
-                let _ = acp
-                    .set_auto_compaction(enabled, threshold_percent)
-                    .await;
+                let _ = acp.set_auto_compaction(enabled, threshold_percent).await;
             }
         }
     }
@@ -248,7 +248,8 @@ pub(crate) fn restore_backup(
         let s = state
             .lock()
             .map_err(|_| "App state lock poisoned".to_string())?;
-        let store = s.registry
+        let store = s
+            .registry
             .require_agent(&agent_id)?
             .as_backup_store()
             .ok_or("Agent does not support config backups")?;

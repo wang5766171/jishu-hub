@@ -459,7 +459,7 @@ pub enum PluginAction {
     /// installing: basic structural checks locally + full validation via the
     /// running hub's TS validators (same implementation as the GUI wizard;
     /// falls back to basic-only with a warning when the hub is not running).
-    /// v0.9.5 需求1（原需敆26）1c：命令面净增的唯一新命令。
+    /// v0.9.5 需求1（原需求26）1c：命令面净增的唯一新命令。
     Validate {
         /// Path to the plugin directory (holding plugin.toml [+ component.js])
         /// or a single plugin.toml file.

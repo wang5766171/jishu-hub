@@ -62,7 +62,10 @@ pub(crate) fn scan_skill_assets(dir: &std::path::Path) -> Vec<String> {
             } else {
                 format!("{prefix}/{name}")
             };
-            if std::fs::metadata(entry.path()).map(|m| m.is_dir()).unwrap_or(false) {
+            if std::fs::metadata(entry.path())
+                .map(|m| m.is_dir())
+                .unwrap_or(false)
+            {
                 walk(&entry.path(), &rel, out);
             } else {
                 out.push(rel);
@@ -121,7 +124,10 @@ fn import_roots() -> Vec<(&'static str, std::path::PathBuf)> {
     let home = dirs::home_dir();
     if let Some(h) = &home {
         roots.push(("claude-code", h.join(".claude").join("skills")));
-        roots.push(("opencode", h.join(".config").join("opencode").join("skills")));
+        roots.push((
+            "opencode",
+            h.join(".config").join("opencode").join("skills"),
+        ));
     }
     if let Ok(agent_dir) = crate::agent::jishu_self::paths::agent_dir() {
         roots.push(("jishu-self", agent_dir.join("skills")));
@@ -146,10 +152,7 @@ pub(crate) fn skill_import_sources() -> Vec<SkillSourceEntry> {
             let Ok(content) = std::fs::read_to_string(&skill_md) else {
                 continue;
             };
-            let dir_name = entry
-                .file_name()
-                .to_string_lossy()
-                .to_string();
+            let dir_name = entry.file_name().to_string_lossy().to_string();
             let parsed = parse_skill_md(&content, &dir_name);
             let asset_count = scan_skill_assets(&entry.path()).len() as u32;
             out.push(SkillSourceEntry {
@@ -194,19 +197,16 @@ pub(crate) fn skill_import_file(app: tauri::AppHandle) -> Result<SkillFolderPayl
         // 选到 SKILL.md 文件：同目录存在附属文件 → 该目录即 skill 目录。
         let parent_assets = path
             .parent()
-            .filter(|_p| {
-                path.file_name()
-                    .map(|n| n == "SKILL.md")
-                    .unwrap_or(false)
-            })
+            .filter(|_p| path.file_name().map(|n| n == "SKILL.md").unwrap_or(false))
             .map(scan_skill_assets);
         match parent_assets {
-            Some(assets) if !assets.is_empty() => (path.clone(), path.parent().map(|p| p.to_path_buf())),
+            Some(assets) if !assets.is_empty() => {
+                (path.clone(), path.parent().map(|p| p.to_path_buf()))
+            }
             _ => (path.clone(), None),
         }
     };
-    let content = std::fs::read_to_string(&skill_md)
-        .map_err(|e| format!("读取失败：{e}"))?;
+    let content = std::fs::read_to_string(&skill_md).map_err(|e| format!("读取失败：{e}"))?;
     let fallback = skill_md
         .parent()
         .and_then(|p| p.file_name())
@@ -239,8 +239,7 @@ pub(crate) fn skill_import_folder(app: tauri::AppHandle) -> Result<SkillFolderPa
     if !skill_md.is_file() {
         return Err("所选文件夹中未找到 SKILL.md".to_string());
     }
-    let content = std::fs::read_to_string(&skill_md)
-        .map_err(|e| format!("读取失败：{e}"))?;
+    let content = std::fs::read_to_string(&skill_md).map_err(|e| format!("读取失败：{e}"))?;
     let fallback = dir
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -261,7 +260,8 @@ mod tests {
 
     #[test]
     fn parse_skill_md_frontmatter_and_body() {
-        let md = "---\nname: code-review\ndescription: 提交前自查清单\n---\n\n第一步：通读 diff。\n";
+        let md =
+            "---\nname: code-review\ndescription: 提交前自查清单\n---\n\n第一步：通读 diff。\n";
         let p = parse_skill_md(md, "fallback");
         assert_eq!(p.name, "code-review");
         assert_eq!(p.description, "提交前自查清单");
@@ -276,10 +276,7 @@ mod tests {
         assert_eq!(p.description, "");
         assert_eq!(p.body, "直接正文");
         // frontmatter 无 name → fallback；带引号值剥引号。
-        let p = parse_skill_md(
-            "---\ndescription: \"quoted\"\n---\nbody",
-            "dir-name",
-        );
+        let p = parse_skill_md("---\ndescription: \"quoted\"\n---\nbody", "dir-name");
         assert_eq!(p.name, "dir-name");
         assert_eq!(p.description, "quoted");
         assert_eq!(p.body, "body");

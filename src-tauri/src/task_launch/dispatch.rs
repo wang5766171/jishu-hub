@@ -58,8 +58,8 @@ pub fn conductor_dispatch_to_node(
             break;
         }
     }
-    let (session_id, _run_id, agent_id) = found
-        .ok_or("该节点尚无已执行的子会话（新节点请经方案修订加入后执行）")?;
+    let (session_id, _run_id, agent_id) =
+        found.ok_or("该节点尚无已执行的子会话（新节点请经方案修订加入后执行）")?;
 
     // 经全局句柄取 ChatState 中的活连接
     let app = crate::pi_rpc_runtime::HUB_APP_HANDLE

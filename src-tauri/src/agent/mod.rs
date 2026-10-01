@@ -18,14 +18,14 @@ pub mod jishu_self;
 pub mod policy_store;
 // v0.8.1 需求1 M2（Phase 3）：声明式 agent manifest——标准形态 CLI/ACP agent 零代码接入。
 pub mod manifest;
-pub mod pi_extension_import;
 pub mod normalized;
+pub mod pi_extension_import;
 // v0.8.1 需求2：统一插件模型（内建/manifest 插件的描述符、启停配置、装配管线）。
 pub mod adaptive;
 // v0.9.0 需求1 P2：hub MCP 聚合 server + 四家配置注入（方案 b 聚合代理）。
 pub mod mcp_inject;
-pub mod plugin_options;
 pub mod mcp_server;
+pub mod plugin_options;
 pub mod skill_deploy;
 // v0.9.0 需求2：pi 扩展部署管线（[pi_extension].entry → pi extensions 目录）。
 pub mod pi_deploy;

@@ -27,8 +27,8 @@ pub struct RevisePlanResult {
 
 pub fn conductor_revise_plan(req: RevisePlanRequest) -> Result<RevisePlanResult, String> {
     use crate::orchestrator::{
-        default_db_path, graph_validate, EdgeKind, GraphEdge, GraphNode,
-        GraphRevision, GraphSnapshot, NodeKind, TaskService, TaskStore,
+        default_db_path, graph_validate, EdgeKind, GraphEdge, GraphNode, GraphRevision,
+        GraphSnapshot, NodeKind, TaskService, TaskStore,
     };
     use crate::util::gen_id;
 
@@ -161,7 +161,10 @@ pub fn conductor_revise_plan(req: RevisePlanRequest) -> Result<RevisePlanResult,
     // v0.9.2 二次修复：用既有 store 连接查 run 状态（此前 open_store_only 开新连接，
     // get_run 静默失败时整个 carry-over 分支被跳过且无任何日志——draft 更新了但
     // 无新 run，子节点收到旧 revision 的 dispatch prompt）。
-    let reference_run_id = instance.active_run_id.clone().or_else(|| instance.last_run_id.clone());
+    let reference_run_id = instance
+        .active_run_id
+        .clone()
+        .or_else(|| instance.last_run_id.clone());
     let mut run_updated = false;
     if let Some(run_id) = reference_run_id {
         let service = TaskService::open_store_only(
@@ -170,7 +173,11 @@ pub fn conductor_revise_plan(req: RevisePlanRequest) -> Result<RevisePlanResult,
         );
         let run_result = service.get_run(&run_id);
         if let Err(ref e) = run_result {
-            tracing::warn!("[revise] get_run({}) failed: {:?} — carry-over skipped", run_id, e);
+            tracing::warn!(
+                "[revise] get_run({}) failed: {:?} — carry-over skipped",
+                run_id,
+                e
+            );
         }
         if let Ok(run) = run_result {
             if !run.status.is_terminal() && run.active_revision_id != revision_id {
@@ -395,7 +402,10 @@ fn rebuild_executable_node(
     );
     let mut metadata = std::collections::HashMap::new();
     if !acceptance.is_empty() {
-        metadata.insert("acceptance".to_string(), serde_json::Value::String(acceptance));
+        metadata.insert(
+            "acceptance".to_string(),
+            serde_json::Value::String(acceptance),
+        );
     }
     Ok(GraphNode {
         node_id,
@@ -513,7 +523,10 @@ mod tests {
         let base = base_node_with(Some(locked_constraint("developer", "jishu-self")));
         let node = rebuild_executable_node(
             &proposal_node("developer", "开发登录页面，并增加粒子动态效果"),
-            &[proposal_node("developer", "开发登录页面，并增加粒子动态效果")],
+            &[proposal_node(
+                "developer",
+                "开发登录页面，并增加粒子动态效果",
+            )],
             "登录 demo",
             None,
             Some(&base),
@@ -521,7 +534,8 @@ mod tests {
         .unwrap();
         // 谁来做：锁定保留
         assert_eq!(
-            node.agent_assignment_constraint.and_then(|c| c.locked_agent_id),
+            node.agent_assignment_constraint
+                .and_then(|c| c.locked_agent_id),
             Some("jishu-self".into())
         );
         // 做什么：派发 prompt 来自新职责（含新内容，不含旧职责字样）
@@ -529,10 +543,17 @@ mod tests {
             Some(crate::orchestrator::ExecutablePayload::Dispatch { prompt, .. }) => prompt,
             other => panic!("expected dispatch payload, got {other:?}"),
         };
-        assert!(prompt.contains("粒子动态效果"), "prompt 应含新职责: {prompt}");
+        assert!(
+            prompt.contains("粒子动态效果"),
+            "prompt 应含新职责: {prompt}"
+        );
         assert!(!prompt.contains("旧职责"), "prompt 不应含旧职责: {prompt}");
         // 职责字段本体也是新的
-        assert!(node.description.as_deref().unwrap_or("").contains("粒子动态效果"));
+        assert!(node
+            .description
+            .as_deref()
+            .unwrap_or("")
+            .contains("粒子动态效果"));
     }
 
     /// 角色前提校验：同 id 角色变更（developer→tester）→ 锁定按旧角色表达，

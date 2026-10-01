@@ -69,7 +69,7 @@ fn send(
             session_id: session,
             message: msg,
             timeout_secs: 600,
-                model_override: None,
+            model_override: None,
         },
         None,
     )

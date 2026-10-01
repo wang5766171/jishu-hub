@@ -199,9 +199,7 @@ impl ConfigAdapter for CodexAdapter {
     }
 
     /// v0.9.0 需求14：模型库角色接入（model/list 拉取 + config.toml model 键）。
-    fn as_model_store(
-        &self,
-    ) -> Option<&dyn crate::agent::config_roles::ModelStore> {
+    fn as_model_store(&self) -> Option<&dyn crate::agent::config_roles::ModelStore> {
         Some(self)
     }
 
@@ -482,10 +480,11 @@ impl ConfigAdapter for CodexAdapter {
         Some(self)
     }
 
-    fn as_permission_mode_config(&self) -> Option<&dyn crate::agent::config_roles::PermissionModeConfig> {
+    fn as_permission_mode_config(
+        &self,
+    ) -> Option<&dyn crate::agent::config_roles::PermissionModeConfig> {
         Some(self)
     }
-
 }
 
 impl crate::agent::config_roles::RawConfigStore for CodexAdapter {
@@ -519,7 +518,6 @@ impl crate::agent::config_roles::RawConfigStore for CodexAdapter {
         }
         crate::util::atomic_write(&config_path, content.as_bytes()).map_err(|e| e.to_string())
     }
-
 }
 
 impl crate::agent::config_roles::PermissionModeConfig for CodexAdapter {
@@ -556,7 +554,11 @@ impl crate::agent::config_roles::PermissionModeConfig for CodexAdapter {
             // 导致完全访问模式下仍无法写文件——用户实测反馈）。映射：
             // never → danger-full-access / 其余 → workspace-write（仍可
             // 在工作区内工作，越权操作由审批链拦截）。
-            let sandbox = if mode == "never" { "danger-full-access" } else { "workspace-write" };
+            let sandbox = if mode == "never" {
+                "danger-full-access"
+            } else {
+                "workspace-write"
+            };
             table.insert(
                 "sandbox_mode".to_string(),
                 toml::Value::String(sandbox.to_string()),
@@ -566,7 +568,6 @@ impl crate::agent::config_roles::PermissionModeConfig for CodexAdapter {
             toml::to_string_pretty(&toml_val).map_err(|e| format!("Serialization error: {}", e))?;
         crate::agent::config_roles::RawConfigStore::save_raw_config(self, &content)
     }
-
 }
 
 impl SessionAdapter for CodexAdapter {
@@ -1128,8 +1129,10 @@ fn parse_rollout_messages(path: &std::path::Path) -> Result<Vec<crate::session::
                     }
                 })
                 .collect::<Vec<_>>()
-                .join("
-");
+                .join(
+                    "
+",
+                );
             // 过滤 codex 注入的系统前导块（skills/plugins 等 XML 标签开头）
             if role == "user" && text.trim_start().starts_with('<') {
                 continue;
@@ -1324,10 +1327,7 @@ fn probe_codex_models() -> Result<Vec<CodexModelInfo>, String> {
     let mut reader = BufReader::new(stdout);
     let mut writer = stdin;
 
-    fn send(
-        writer: &mut std::process::ChildStdin,
-        obj: serde_json::Value,
-    ) -> Result<(), String> {
+    fn send(writer: &mut std::process::ChildStdin, obj: serde_json::Value) -> Result<(), String> {
         let mut line = serde_json::to_string(&obj).map_err(|e| e.to_string())?;
         line.push('\n');
         writer
@@ -1465,8 +1465,7 @@ impl crate::agent::config_roles::ModelStore for CodexAdapter {
             .get("model")
             .and_then(|v| v.as_str())
             .map(str::to_string);
-        Ok(model
-            .map(|m| serde_json::json!({ "provider": "codex", "model": m })))
+        Ok(model.map(|m| serde_json::json!({ "provider": "codex", "model": m })))
     }
 
     fn set_active_model(&self, active: Option<&serde_json::Value>) -> Result<(), String> {
@@ -1515,7 +1514,6 @@ mod model_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn rollout_stats_derive_cwd_counts_and_mtime() {
@@ -1600,5 +1598,4 @@ mod tests {
         apply_reasoning_effort(&mut table, &serde_json::json!({}));
         assert!(table.get("model_reasoning_effort").is_none());
     }
-
 }

@@ -188,7 +188,10 @@ fn parse_content_blocks(value: &serde_json::Value) -> Vec<ContentBlock> {
             if s.trim().is_empty() {
                 vec![]
             } else {
-                vec![ContentBlock::Text { text: s.clone(), tool_ids: Vec::new() }]
+                vec![ContentBlock::Text {
+                    text: s.clone(),
+                    tool_ids: Vec::new(),
+                }]
             }
         }
         serde_json::Value::Array(arr) => arr
@@ -1048,7 +1051,8 @@ where
             if msg.role == "user" {
                 for block in &mut msg.content {
                     if let ContentBlock::Text { text, tool_ids } = block {
-                        let (clean, ids) = crate::agent::internal_prompts::extract_tool_snapshot(text);
+                        let (clean, ids) =
+                            crate::agent::internal_prompts::extract_tool_snapshot(text);
                         *text = clean;
                         *tool_ids = ids;
                     }
@@ -1118,7 +1122,10 @@ where
     // 标题必须呈现用户真实问题，不得泄漏插件注入块（§16.3 剥离契约）。
     let display_name = last_ai_title
         .map(|t| crate::agent::internal_prompts::strip_internal_prompts(&t))
-        .or_else(|| first_user_text.map(|t| smart_summary(&crate::agent::internal_prompts::strip_internal_prompts(&t))));
+        .or_else(|| {
+            first_user_text
+                .map(|t| smart_summary(&crate::agent::internal_prompts::strip_internal_prompts(&t)))
+        });
 
     let project_path = path
         .parent()
@@ -1212,7 +1219,10 @@ mod tests {
     fn test_smart_summary_keeps_version_numbers() {
         assert_eq!(smart_summary("开启v0.9.4版本开发"), "开启v0.9.4版本开发");
         assert_eq!(smart_summary("Fix v2.1 bug"), "Fix v2.1 bug");
-        assert_eq!(smart_summary("升级到 3.14.2 后闪退"), "升级到 3.14.2 后闪退");
+        assert_eq!(
+            smart_summary("升级到 3.14.2 后闪退"),
+            "升级到 3.14.2 后闪退"
+        );
         // 半角逗号后跟空格 → 仍是句界。
         assert_eq!(smart_summary("Fix A, then B"), "Fix A");
         // 多行取首行。

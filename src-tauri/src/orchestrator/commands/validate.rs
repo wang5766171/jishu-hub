@@ -215,7 +215,7 @@ mod tests {
     use crate::orchestrator::domain::graph::{
         EdgeKind, ExecutablePayload, GraphEdge, GraphNode, NodeKind,
     };
-    
+
     use std::collections::HashMap;
     use std::path::PathBuf;
 

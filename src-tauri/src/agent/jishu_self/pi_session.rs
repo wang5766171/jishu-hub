@@ -647,17 +647,17 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
                     .get("timestamp")
                     .and_then(|v| v.as_str())
                     .and_then(parse_rfc3339_millis);
-                    if let Some(message) = parse_pi_message(value.get("message")?, entry_timestamp) {
-                        if display_name.is_none() && message.role == "user" {
-                            // 统一剥离链（internal_prompts）剥注入块后取摘要；
-                            // 剥离后为空（纯系统提示词）则跳过，display_name 继续
-                            // 找下一条 user 消息——pi JSONL 记录的是 compose 后的
-                            // 完整 prompt，标题必须呈现用户真实问题（§16.3 契约）。
-                            display_name = first_text(&message)
-                                .map(|t| crate::agent::internal_prompts::strip_internal_prompts(&t))
-                                .filter(|t| !t.trim().is_empty())
-                                .map(smart_summary);
-                        }
+                if let Some(message) = parse_pi_message(value.get("message")?, entry_timestamp) {
+                    if display_name.is_none() && message.role == "user" {
+                        // 统一剥离链（internal_prompts）剥注入块后取摘要；
+                        // 剥离后为空（纯系统提示词）则跳过，display_name 继续
+                        // 找下一条 user 消息——pi JSONL 记录的是 compose 后的
+                        // 完整 prompt，标题必须呈现用户真实问题（§16.3 契约）。
+                        display_name = first_text(&message)
+                            .map(|t| crate::agent::internal_prompts::strip_internal_prompts(&t))
+                            .filter(|t| !t.trim().is_empty())
+                            .map(smart_summary);
+                    }
                     let is_launch = is_task_launch_message(&message);
                     // v0.9.1 需求14 测试期：连续 error 分隔线折叠（重试每试一条），
                     // 与 pi_message_positions 的计数折叠保持同步。
@@ -860,7 +860,10 @@ fn parse_pi_message(
 fn parse_user_content(value: &serde_json::Value) -> Vec<crate::session::ContentBlock> {
     match value {
         serde_json::Value::String(text) if !text.trim().is_empty() => {
-            vec![crate::session::ContentBlock::Text { text: text.clone(), tool_ids: Vec::new() }]
+            vec![crate::session::ContentBlock::Text {
+                text: text.clone(),
+                tool_ids: Vec::new(),
+            }]
         }
         serde_json::Value::Array(items) => items
             .iter()
@@ -953,7 +956,6 @@ fn first_text(message: &crate::session::Message) -> Option<String> {
         _ => None,
     })
 }
-
 
 fn smart_summary(text: String) -> String {
     let text = text.trim();
@@ -1229,7 +1231,10 @@ mod tests {
         // Error 徽标（此前丢失导致失败工具回放成 Done）。
         assert!(matches!(
             &session.messages[2].content[0],
-            ContentBlock::ToolResult { is_error: false, .. }
+            ContentBlock::ToolResult {
+                is_error: false,
+                ..
+            }
         ));
         assert_eq!(session.messages[3].role, "user");
         assert!(matches!(
@@ -1302,10 +1307,9 @@ mod tests {
             })
             .expect("应重建 plan 分隔线消息");
         assert!(
-            plan_divider
-                .content
-                .iter()
-                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text.contains("进入流程规划"))),
+            plan_divider.content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text, .. } if text.contains("进入流程规划"))
+            ),
             "plan 分隔线消息应携带标记的展示文本"
         );
 

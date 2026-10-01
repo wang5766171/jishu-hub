@@ -13,7 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { ShieldAlert, Check, X } from "lucide-react";
 import { UniModal } from "@/components/ui/uni-modal";
-// 5a（v0.9.5 需求1，原需敆26）：安装后自动展示——面板自动展开/挂件高亮/
+// 5a（v0.9.5 需求1，原需求26）：安装后自动展示——面板自动展开/挂件高亮/
 // 测试通知，复用既有面板激活性与动作命令链。
 import { requestPanelActivation } from "@/features/session-kernel/shell/panel-activation";
 import { requestInstallSpotlight } from "@/features/session-kernel/shell/install-spotlight";
@@ -109,7 +109,7 @@ export function HybridInstallConfirmation() {
   if (pending.length === 0) return null;
 
   // 批次1：统一弹窗外壳（不可关闭——安全阀语义，preventClose 固定）；
-  // 卡片本身为馆市场警示形态，中和 UniModal 卡底色（透明壳）。
+  // 卡片本身为安全警示形态，中和 UniModal 卡底色（透明壳）。
   return (
     <UniModal
       open

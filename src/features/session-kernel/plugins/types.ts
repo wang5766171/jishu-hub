@@ -16,7 +16,7 @@ export type { DockSlot };
 
 export const SESSION_PLUGIN_CONTRACT_VERSION = 1;
 
-/** 契约版本 bump 判据（v0.9.5 需求1（原需敆26）1e 明确）：
+/** 契约版本 bump 判据（v0.9.5 需求1（原需求26）1e 明确）：
  *  - **不 bump**（兼容加法）：新增可选段/可选字段（如 [[agent-tool]]、
  *    has_pipeline）、既有字段放宽（如 source/render 改可选——旧清单必然
  *    兼容：缺失即旧行为，校验只拒绝「双臂全无」的空清单）；

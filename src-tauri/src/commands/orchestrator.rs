@@ -579,7 +579,9 @@ pub(crate) fn orchestrator_retry_node(
         .task_service
         .lock()
         .map_err(|e| task_ipc_internal(e.to_string()))?;
-    task_service.retry_node(&run_id, &node_id).map_err(Into::into)
+    task_service
+        .retry_node(&run_id, &node_id)
+        .map_err(Into::into)
 }
 
 #[cfg(feature = "orchestrator")]
@@ -594,7 +596,9 @@ pub(crate) fn orchestrator_skip_node(
         .task_service
         .lock()
         .map_err(|e| task_ipc_internal(e.to_string()))?;
-    task_service.skip_node(&run_id, &node_id).map_err(Into::into)
+    task_service
+        .skip_node(&run_id, &node_id)
+        .map_err(Into::into)
 }
 
 // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€

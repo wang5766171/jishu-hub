@@ -33,10 +33,7 @@ pub(crate) async fn plugin_panel_run(
         let s = state
             .lock()
             .map_err(|_| "App state lock poisoned".to_string())?;
-        let plugins = s
-            .tool_plugins
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let plugins = s.tool_plugins.lock().unwrap_or_else(|e| e.into_inner());
         let plugin = plugins
             .iter()
             .find(|p| p.id() == plugin_id)

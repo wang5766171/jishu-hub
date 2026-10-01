@@ -66,14 +66,15 @@ fn open_connection() -> Option<Connection> {
     // M6：建库失败降级 None → 内存实现（fail-soft，与 memory_store 同风
     // 格）——修前 panic! 会炸掉命令线程（approval.db 损坏/权限问题时），
     // 与文档自称的 fail-soft 矛盾。
-    let conn = Connection::open(&path).map_err(|err| {
-        log::warn!(
+    let conn = Connection::open(&path)
+        .map_err(|err| {
+            log::warn!(
             "[policy-store] failed to open approval db at {}: {err} (falling back to in-memory)",
             path.display()
         );
-        err
-    })
-    .ok()?;
+            err
+        })
+        .ok()?;
     conn.pragma_update(None, "journal_mode", "WAL").ok();
     Some(conn)
 }
@@ -143,7 +144,9 @@ pub fn default_memory() -> Arc<dyn OnceMemory> {
         .get_or_init(|| match SqliteOnceMemory::new() {
             Some(sqlite) => Arc::new(sqlite) as Arc<dyn OnceMemory>,
             None => {
-                log::warn!("[policy-store] approval memory degraded to in-memory (won't survive restart)");
+                log::warn!(
+                    "[policy-store] approval memory degraded to in-memory (won't survive restart)"
+                );
                 Arc::new(InMemoryOnceMemory::new())
             }
         })

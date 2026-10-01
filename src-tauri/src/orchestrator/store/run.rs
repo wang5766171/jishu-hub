@@ -95,8 +95,7 @@ impl TaskStore {
                 || node_run.run_id != run.run_id
             {
                 return Err(StoreError::Conflict(
-                    "carryover seed events must occupy sequences 2..=n+1 for the same run"
-                        .into(),
+                    "carryover seed events must occupy sequences 2..=n+1 for the same run".into(),
                 ));
             }
         }

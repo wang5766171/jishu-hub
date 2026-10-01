@@ -45,7 +45,10 @@ fn node_is_ready(
     if let Some(preds) = predecessors.get(node.node_id.as_str()) {
         for pred_id in preds {
             let pred_status = status_map.get(*pred_id).unwrap_or(&NodeRunStatus::Blocked);
-            if !matches!(pred_status, NodeRunStatus::Succeeded | NodeRunStatus::Skipped) {
+            if !matches!(
+                pred_status,
+                NodeRunStatus::Succeeded | NodeRunStatus::Skipped
+            ) {
                 return false;
             }
         }

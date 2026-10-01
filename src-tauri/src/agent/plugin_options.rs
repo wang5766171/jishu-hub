@@ -74,7 +74,8 @@ mod tests {
         .unwrap();
         let all = load_all();
         assert_eq!(
-            all.get("session.mermaid-render").and_then(|v| v.get("inlineScalePct")),
+            all.get("session.mermaid-render")
+                .and_then(|v| v.get("inlineScalePct")),
             Some(&serde_json::json!(65))
         );
 
@@ -85,6 +86,5 @@ mod tests {
         // 损坏文件 → 空配置不 panic。
         std::fs::write(config_path(), "{invalid").unwrap();
         assert!(load_all().is_empty());
-
     }
 }

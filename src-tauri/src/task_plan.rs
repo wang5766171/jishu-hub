@@ -143,11 +143,9 @@ const SESSION_CONTEXT_EXTENSION_TS: &str =
     include_str!("../resources/extensions/session-context.ts");
 /// v0.9.2 测试期：HTML 页面预览扩展（preview_html 工具——agent 可主动把
 /// 本地 HTML 文件渲染到 Hub 右侧面板）。
-const HTML_PREVIEW_EXTENSION_TS: &str =
-    include_str!("../resources/extensions/html-preview.ts");
+const HTML_PREVIEW_EXTENSION_TS: &str = include_str!("../resources/extensions/html-preview.ts");
 /// v0.9.5 需求1（原需求26）6b：通用 plugin-invoke 扩展（agent-tool 动态注册）。
-const PLUGIN_INVOKE_EXTENSION_TS: &str =
-    include_str!("../resources/extensions/plugin-invoke.ts");
+const PLUGIN_INVOKE_EXTENSION_TS: &str = include_str!("../resources/extensions/plugin-invoke.ts");
 
 /// 部署内嵌扩展源到 `<agent_dir>/<rel_path>`，自动建父目录；内容相同则跳过写入。
 pub(crate) fn deploy_extension_file(agent_dir: &Path, rel_path: &str, source: &str) {
@@ -268,7 +266,10 @@ pub(crate) fn unregister_extension_from_settings(agent_dir: &Path, rel_path: &st
     if !settings.is_object() {
         return;
     }
-    let Some(arr) = settings.get_mut("extensions").and_then(|v| v.as_array_mut()) else {
+    let Some(arr) = settings
+        .get_mut("extensions")
+        .and_then(|v| v.as_array_mut())
+    else {
         return;
     };
     let before = arr.len();
@@ -325,7 +326,10 @@ pub fn ensure_subagents_runtime_config() {
 }
 
 fn ensure_subagents_runtime_config_in(agent_dir: &Path) {
-    let config_path = agent_dir.join("extensions").join("subagent").join("config.json");
+    let config_path = agent_dir
+        .join("extensions")
+        .join("subagent")
+        .join("config.json");
     let mut config: serde_json::Value = match std::fs::read_to_string(&config_path) {
         Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
             Ok(v) if v.is_object() => v,
