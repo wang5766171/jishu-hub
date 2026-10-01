@@ -15,22 +15,24 @@ import { CodeEditor } from "@/components/code-editor";
 import { HybridPreviewPanel } from "@/components/hybrid-preview-panel";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { invokeCommand } from "@/hooks/use-invoke";
+import { composedIdTaken, slugify } from "./plugin-wizard-utils";
 
 type HybridSourceType = "messages" | "turns" | "task" | "stream-state";
 type HybridMount = "dock-panel" | "rail-widget" | "sidebar-panel" | "composer-trailing";
 
-const SOURCE_TYPES: Array<{ value: HybridSourceType; label: string; hint: string }> = [
-  { value: "messages", label: "消息流", hint: "props.payload.data = Message[]（可配聚合器）" },
-  { value: "turns", label: "轮次视图", hint: "props.payload.turns / activeIndex / jump(i)" },
-  { value: "task", label: "任务信息", hint: "props.payload.task" },
-  { value: "stream-state", label: "流状态", hint: "同消息流形态" },
+// 三轮评审 P1-5：label 改 i18n 键（渲染点翻译，语言切换即生效）。
+const SOURCE_TYPES: Array<{ value: HybridSourceType; labelKey: string; hint: string }> = [
+  { value: "messages", labelKey: "plugins.wiz.srcMessages", hint: "props.payload.data = Message[]（可配聚合器）" },
+  { value: "turns", labelKey: "plugins.wiz.srcTurns", hint: "props.payload.turns / activeIndex / jump(i)" },
+  { value: "task", labelKey: "plugins.wiz.srcTask", hint: "props.payload.task" },
+  { value: "stream-state", labelKey: "plugins.wiz.srcStreamState", hint: "同消息流形态" },
 ];
 
-const MOUNTS: Array<{ value: HybridMount; label: string }> = [
-  { value: "dock-panel", label: "停靠面板（侧边，可收起）" },
-  { value: "rail-widget", label: "贴边挂件（会话边缘小图标）" },
-  { value: "sidebar-panel", label: "侧栏面板（多标签）" },
-  { value: "composer-trailing", label: "输入框尾部（行内小部件）" },
+const MOUNTS: Array<{ value: HybridMount; labelKey: string }> = [
+  { value: "dock-panel", labelKey: "plugins.wiz.mountDock" },
+  { value: "rail-widget", labelKey: "plugins.wiz.mountRail" },
+  { value: "sidebar-panel", labelKey: "plugins.wiz.mountSidebar" },
+  { value: "composer-trailing", labelKey: "plugins.wiz.mountComposer" },
 ];
 
 function templateCode(id: string, sourceType: HybridSourceType): string {
@@ -82,10 +84,9 @@ export function PluginHybridWizard({
   const [saving, setSaving] = useState(false);
   const [showApiRef, setShowApiRef] = useState(true);
 
-  const id = useMemo(() => {
-    const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "hybrid";
-    return `session.${slug}`;
-  }, [name]);
+  // 三轮评审 P1-3：slugify Unicode 感知——修前纯中文名全部坍缩为
+  // session.hybrid 互相静默覆盖。
+  const id = useMemo(() => `session.${slugify(name, "hybrid")}`, [name]);
 
   // 未手改过代码时随基本信息联动刷新模板（手改后不再覆盖）。
   const effectiveCode = codeTouched
@@ -111,11 +112,19 @@ export function PluginHybridWizard({
 
   const save = async () => {
     if (!name.trim()) {
-      await alertDialog({ title: "请填写插件名称" });
+      await alertDialog({ title: t("plugins.wiz.nameRequired", "请填写插件名称") });
       return;
     }
     if (!codeTouched || !effectiveCode.includes("JishuPlugin.register")) {
-      await alertDialog({ title: "代码缺少 JishuPlugin.register 注册调用" });
+      await alertDialog({ title: t("plugins.wiz.registerMissing", "代码缺少 JishuPlugin.register 注册调用") });
+      return;
+    }
+    // 三轮评审 P1-3：id 占用检测——同名插件已存在时阻止静默覆盖。
+    if (await composedIdTaken(id)) {
+      await alertDialog({
+        title: t("plugins.wiz.idTaken", { id, defaultValue: "" }),
+        description: t("plugins.wiz.idTakenDesc", ""),
+      });
       return;
     }
     setSaving(true);
@@ -128,12 +137,11 @@ export function PluginHybridWizard({
       onCreated?.();
       onOpenChange(false);
       await alertDialog({
-        title: "已保存（默认禁用）",
-        description:
-          "混合插件包含自定义代码，安装确认卡已出现——点「启用」后生效（含代码的插件统一走确认安全阀）。",
+        title: t("plugins.wiz.savedDisabled", ""),
+        description: t("plugins.wiz.savedDisabledDesc", ""),
       });
     } catch (e) {
-      await alertDialog({ title: "保存失败", description: String(e) });
+      await alertDialog({ title: t("plugins.wiz.saveFailed", ""), description: String(e) });
     } finally {
       setSaving(false);
     }
@@ -145,33 +153,33 @@ export function PluginHybridWizard({
 
   // 批次1 统一弹窗：外壳收敛 UniModal（z-80/遮罩/Esc），编辑器/预览链不变。
   return (
-    <UniModal open={open} onClose={() => onOpenChange(false)} className="w-[min(1020px,96vw)]" label="混合插件向导">
+    <UniModal open={open} onClose={() => onOpenChange(false)} className="w-[min(1020px,96vw)]" label={t("plugins.wiz.hybridTitle", "混合插件向导")}>
       <UniModalHeader
-        title="混合插件向导（TOML + component.js）"
-        subtitle="自定义渲染的会话界面插件——左侧编辑代码（实时校验），右侧实时预览"
+        title={t("plugins.wiz.hybridTitle", "混合插件向导") + "（TOML + component.js）"}
+        subtitle={t("plugins.wiz.hybridSubtitle", "")}
         trailing={<span className="font-mono text-[10px] text-muted-foreground/70">{id}</span>}
         onClose={() => onOpenChange(false)}
       />
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           <div className="grid grid-cols-3 gap-3">
             <div>
-              <span className={label}>名称 *</span>
-              <Input className="h-7 text-xs" value={name} onChange={(e) => setName(e.target.value)} placeholder="如：轮次花销" />
+              <span className={label}>{t("plugins.wiz.nameStar", "名称 *")}</span>
+              <Input className="h-7 text-xs" value={name} onChange={(e) => setName(e.target.value)} placeholder={t("plugins.wiz.namePlaceholderHybrid", "")} />
             </div>
             <div>
-              <span className={label}>内容源</span>
+              <span className={label}>{t("plugins.wiz.contentSource", "内容源")}</span>
               <select className={inputCls} value={sourceType} onChange={(e) => setSourceType(e.target.value as HybridSourceType)}>
                 {SOURCE_TYPES.map((s) => (
-                  <option key={s.value} value={s.value}>{s.label}</option>
+                  <option key={s.value} value={s.value}>{t(s.labelKey, "")}</option>
                 ))}
               </select>
               <div className="mt-0.5 text-[10px] text-muted-foreground/70">{SOURCE_TYPES.find((s) => s.value === sourceType)?.hint}</div>
             </div>
             <div>
-              <span className={label}>挂载（@file: 限定数据面）</span>
+              <span className={label}>{t("plugins.wiz.mountLabel", "挂载（@file: 限定数据面）")}</span>
               <select className={inputCls} value={mount} onChange={(e) => setMount(e.target.value as HybridMount)}>
                 {MOUNTS.map((m) => (
-                  <option key={m.value} value={m.value}>{m.label}</option>
+                  <option key={m.value} value={m.value}>{t(m.labelKey, "")}</option>
                 ))}
               </select>
             </div>
@@ -180,14 +188,14 @@ export function PluginHybridWizard({
           <div className="mt-4 grid grid-cols-[1fr_340px] gap-4">
             <div>
               <div className="mb-1.5 flex items-center justify-between">
-                <span className="text-[11px] font-medium text-muted-foreground">component.js（实时语法 + 契约校验）</span>
+                <span className="text-[11px] font-medium text-muted-foreground">{t("plugins.wiz.codeSection", "")}</span>
                 <button
                   type="button"
                   onClick={() => setShowApiRef((v) => !v)}
                   className="flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
                 >
                   <BookOpen className="h-3 w-3" />
-                  API 参考
+                  {t("plugins.wiz.apiRef", "API 参考")}
                 </button>
               </div>
               {showApiRef && (

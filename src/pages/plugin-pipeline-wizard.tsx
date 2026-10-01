@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { invokeCommand } from "@/hooks/use-invoke";
+import { composedIdTaken, slugify, tomlStr } from "./plugin-wizard-utils";
 import {
   STAGE_TEMPLATES,
   type StageTemplateKey,
@@ -32,9 +33,8 @@ function newStage(): StageDraft {
   return { name: "", template: "phase.discuss", prompt: "", gate: false };
 }
 
-function tomlStr(v: string): string {
-  return `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-}
+// 三轮评审 P1-3：tomlStr/slugify 统一走 plugin-wizard-utils（换行安全转义
+// + Unicode 感知 id，修前纯中文名全部坍缩为 session.flow 互相覆盖）。
 
 export function PluginPipelineWizard({
   open,
@@ -56,10 +56,7 @@ export function PluginPipelineWizard({
   const [expanded, setExpanded] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const id = useMemo(() => {
-    const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "flow";
-    return `session.${slug}`;
-  }, [name]);
+  const id = useMemo(() => `session.${slugify(name, "flow")}`, [name]);
 
   const buildToml = (): string => {
     const lines: string[] = [];
@@ -87,11 +84,30 @@ export function PluginPipelineWizard({
 
   const save = async () => {
     if (!name.trim()) {
-      await alertDialog({ title: "请填写流水线名称" });
+      await alertDialog({ title: t("plugins.wiz.pipelineNameRequired", "请填写流水线名称") });
       return;
     }
     if (stages.length === 0) {
-      await alertDialog({ title: "流水线至少需要一个阶段" });
+      await alertDialog({ title: t("plugins.wiz.pipelineStagesRequired", "流水线至少需要一个阶段") });
+      return;
+    }
+    // 三轮评审 P1-③：自定义阶段的提示词必填（模板阶段有模板基座可空）。
+    const missingIdx = stages.findIndex((s) => s.template === "custom" && !s.prompt.trim());
+    if (missingIdx >= 0) {
+      await alertDialog({
+        title: t("plugins.wiz.stagePromptMissing", { index: missingIdx + 1, defaultValue: "" }),
+        description: t("plugins.wiz.stagePromptMissingDesc", ""),
+      });
+      setExpanded(missingIdx);
+      return;
+    }
+    // 三轮评审 P1-②：id 占用检测——同名插件已存在时阻止静默覆盖（保存按
+    // id 全量替换目录）。
+    if (await composedIdTaken(id)) {
+      await alertDialog({
+        title: t("plugins.wiz.idTaken", { id, defaultValue: "" }),
+        description: t("plugins.wiz.idTakenDesc", ""),
+      });
       return;
     }
     setSaving(true);
@@ -100,7 +116,7 @@ export function PluginPipelineWizard({
       onCreated?.();
       onOpenChange(false);
     } catch (e) {
-      await alertDialog({ title: "保存失败", description: String(e) });
+      await alertDialog({ title: t("plugins.wiz.saveFailed", "保存失败"), description: String(e) });
     } finally {
       setSaving(false);
     }
@@ -127,26 +143,26 @@ export function PluginPipelineWizard({
   return (
     <UniModal open={open} onClose={() => onOpenChange(false)} size="lg" label="流水线向导">
       <UniModalHeader
-        title="流水线向导（阶段编排）"
-        subtitle="编排多阶段工作流——阶段优先用内置模板（讨论/规划/执行/评审），自定义阶段写提示词与门禁"
+        title={t("plugins.wiz.pipelineTitle", "流水线向导（阶段编排）")}
+        subtitle={t("plugins.wiz.pipelineSubtitle", "编排多阶段工作流——阶段优先用内置模板（讨论/规划/执行/评审），自定义阶段写提示词与门禁")}
         trailing={<span className="font-mono text-[10px] text-muted-foreground/70">{id}</span>}
         onClose={() => onOpenChange(false)}
       />
         <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-5 py-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <span className={label}>名称 *</span>
-              <Input className="h-7 text-xs" value={name} onChange={(e) => setName(e.target.value)} placeholder="如：视频制作" />
+              <span className={label}>{t("plugins.wiz.name", "名称")} *</span>
+              <Input className="h-7 text-xs" value={name} onChange={(e) => setName(e.target.value)} placeholder={t("plugins.wiz.namePlaceholder", "如：视频制作")} />
             </div>
             <div>
-              <span className={label}>说明</span>
-              <Input className="h-7 text-xs" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="一句话用途" />
+              <span className={label}>{t("plugins.wiz.desc", "说明")}</span>
+              <Input className="h-7 text-xs" value={description} onChange={(e) => setDescription(e.target.value)} placeholder={t("plugins.wiz.descPlaceholder", "一句话用途")} />
             </div>
           </div>
 
           <div>
             <div className="mb-1.5 flex items-center justify-between">
-              <span className="text-[11px] font-medium text-muted-foreground">阶段编排（{stages.length} 个，自上而下依次执行）</span>
+              <span className="text-[11px] font-medium text-muted-foreground">{t("plugins.wiz.stageListTitle", { count: stages.length, defaultValue: "" })}</span>
               <Button
                 variant="outline"
                 size="sm"
@@ -157,7 +173,7 @@ export function PluginPipelineWizard({
                 }}
               >
                 <Plus className="h-3 w-3" />
-                <span className="ml-1">添加阶段</span>
+                <span className="ml-1">{t("plugins.wiz.addStage", "添加阶段")}</span>
               </Button>
             </div>
             <div className="space-y-1.5">
@@ -173,22 +189,22 @@ export function PluginPipelineWizard({
                       onClick={() => setExpanded(expanded === i ? null : i)}
                     >
                       <span className="text-xs font-medium">
-                        {stage.name.trim() || (stage.template !== "custom" ? STAGE_TEMPLATES[stage.template].name : "（未命名）")}
+                        {stage.name.trim() || (stage.template !== "custom" ? STAGE_TEMPLATES[stage.template].name : t("plugins.wiz.stageUnnamed", "（未命名）"))}
                       </span>
                       <span className="ml-2 text-[10px] text-muted-foreground">
-                        {stage.template !== "custom" ? `模板 ${stage.template}` : "自定义"}
-                        {stage.gate ? " · 需确认" : ""}
+                        {stage.template !== "custom" ? t("plugins.wiz.stageTemplate", { tpl: stage.template, defaultValue: "" }) : t("plugins.wiz.stageCustom", "自定义")}
+                        {stage.gate ? t("plugins.wiz.stageGate", " · 需确认") : ""}
                       </span>
                     </button>
-                    <button type="button" title="上移" onClick={() => move(i, -1)} className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground">
+                    <button type="button" title={t("plugins.wiz.moveUp", "上移")} onClick={() => move(i, -1)} className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground">
                       <ArrowUp className="h-3 w-3" />
                     </button>
-                    <button type="button" title="下移" onClick={() => move(i, 1)} className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground">
+                    <button type="button" title={t("plugins.wiz.moveDown", "下移")} onClick={() => move(i, 1)} className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground">
                       <ArrowDown className="h-3 w-3" />
                     </button>
                     <button
                       type="button"
-                      title="删除阶段"
+                      title={t("plugins.wiz.deleteStage", "删除阶段")}
                       onClick={() => setStages((prev) => prev.filter((_, j) => j !== i))}
                       className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                     >
@@ -199,16 +215,16 @@ export function PluginPipelineWizard({
                     <div className="space-y-2 border-t border-border/50 bg-muted/10 px-3 py-2.5">
                       <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <span className={label}>阶段名</span>
+                          <span className={label}>{t("plugins.wiz.stageName", "阶段名")}</span>
                           <Input
                             className="h-7 text-xs"
                             value={stage.name}
                             onChange={(e) => patch(i, { name: e.target.value })}
-                            placeholder={stage.template !== "custom" ? STAGE_TEMPLATES[stage.template].name : "如：分镜设计"}
+                            placeholder={stage.template !== "custom" ? STAGE_TEMPLATES[stage.template].name : t("plugins.wiz.stageNamePlaceholder", "如：分镜设计")}
                           />
                         </div>
                         <div>
-                          <span className={label}>阶段来源</span>
+                          <span className={label}>{t("plugins.wiz.stageSource", "阶段来源")}</span>
                           <select
                             className={inputCls}
                             value={stage.template}
@@ -217,7 +233,7 @@ export function PluginPipelineWizard({
                             {TEMPLATE_KEYS.map((k) => (
                               <option key={k} value={k}>{STAGE_TEMPLATES[k].name}（{k}）</option>
                             ))}
-                            <option value="custom">自定义</option>
+                            <option value="custom">{t("plugins.wiz.stageCustomOption", "自定义")}</option>
                           </select>
                         </div>
                       </div>
@@ -227,12 +243,12 @@ export function PluginPipelineWizard({
                         </div>
                       )}
                       <div>
-                        <span className={label}>提示词{stage.template !== "custom" ? "（追加在模板基座上）" : " *"}</span>
+                        <span className={label}>{t("plugins.wiz.promptLabel", "提示词")}{stage.template !== "custom" ? t("plugins.wiz.promptAppendNote", "（追加在模板基座上）") : t("plugins.wiz.promptRequired", " *")}</span>
                         <textarea
                           className="min-h-16 w-full rounded-md border border-border/70 bg-transparent px-2 py-1.5 text-xs outline-none focus:border-primary/60"
                           value={stage.prompt}
                           onChange={(e) => patch(i, { prompt: e.target.value })}
-                          placeholder={stage.template === "custom" ? "该阶段的指令（必填）" : "对模板提示词的补充（可选）"}
+                          placeholder={stage.template === "custom" ? t("plugins.wiz.promptPlaceholderCustom", "该阶段的指令（必填）") : t("plugins.wiz.promptPlaceholderTemplate", "对模板提示词的补充（可选）")}
                         />
                       </div>
                       <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -242,7 +258,7 @@ export function PluginPipelineWizard({
                           onChange={(e) => patch(i, { gate: e.target.checked })}
                           className="h-3 w-3 accent-primary"
                         />
-                        进下一阶段前需要用户确认（gate = "confirm"）
+                        {t("plugins.wiz.gateLabel", "进下一阶段前需要用户确认（gate = \"confirm\"）")}
                       </label>
                     </div>
                   )}
@@ -252,7 +268,7 @@ export function PluginPipelineWizard({
           </div>
 
           <div className="rounded-lg bg-muted/40 p-2.5">
-            <div className="mb-1 text-[10px] font-medium text-muted-foreground">生成预览（plugin.toml——流水线清单无需 source/render）</div>
+            <div className="mb-1 text-[10px] font-medium text-muted-foreground">{t("plugins.wiz.previewTitle", "生成预览（plugin.toml——流水线清单无需 source/render）")}</div>
             <pre className="max-h-36 overflow-auto font-mono text-[10px] leading-relaxed text-foreground/80">{buildToml()}</pre>
           </div>
         </div>
@@ -260,7 +276,7 @@ export function PluginPipelineWizard({
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>{t("common.cancel", "取消")}</Button>
           <Button size="sm" onClick={() => void save()} disabled={saving}>
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            <span className="ml-1">创建流水线</span>
+            <span className="ml-1">{t("plugins.wiz.savePipeline", "创建流水线")}</span>
           </Button>
         </div>
     </UniModal>

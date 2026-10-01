@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { UniModal, UniModalHeader } from "@/components/ui/uni-modal";
 import { invokeCommand } from "@/hooks/use-invoke";
+import { composedIdTaken, slugify, tomlStr } from "./plugin-wizard-utils";
 import { rendererRegistry } from "@/features/session-kernel/capabilities/renderers/registry";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 
@@ -48,9 +49,8 @@ function defaultMountOf(source: SourceType): string {
   }
 }
 
-function tomlStr(v: string): string {
-  return `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-}
+// 三轮评审 P1-3：tomlStr/slugify 统一走 plugin-wizard-utils（换行安全转义
+// + Unicode 感知 id，修前纯中文名全部坍缩为 session.custom 互相覆盖）。
 
 export function PluginComposeDialog({
   open,
@@ -83,10 +83,7 @@ export function PluginComposeDialog({
   const renderer = renderers.find((r) => r.key === component);
   const exportFormatsAvailable = renderer?.capabilities?.exportFormats ?? [];
 
-  const id = useMemo(() => {
-    const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "custom";
-    return `session.${slug}`;
-  }, [name]);
+  const id = useMemo(() => `session.${slugify(name, "custom")}`, [name]);
 
   if (!open) return null;
 
@@ -153,6 +150,14 @@ export function PluginComposeDialog({
     }
     if (sourceType === "code-block" && !languages.trim()) {
       await alertDialog({ title: "代码块源需要至少一个语言标记（如 katex）" });
+      return;
+    }
+    // 三轮评审 P1-3：id 占用检测——同名插件已存在时阻止静默覆盖。
+    if (await composedIdTaken(id)) {
+      await alertDialog({
+        title: `插件 ${id} 已存在`,
+        description: "同名插件已安装，请换个名称（或先在插件中心删除旧插件）。",
+      });
       return;
     }
     setSaving(true);
