@@ -5,11 +5,9 @@ pub(crate) mod paths;
 pub(crate) mod pi_model;
 pub(crate) mod pi_models_config;
 pub(crate) mod pi_runtime;
-// v0.9.5 需求2：subagent 扩展的 JISHU_PI_CLI env 注入（agent_runtime 消费）。
-pub(crate) use pi_runtime::coding_agent_entry_for_env;
 pub(crate) mod pi_session;
-pub(crate) mod session_title;
 mod probe;
+pub(crate) mod session_title;
 
 use crate::agent::capability::AgentCapabilities;
 use crate::agent::{AgentInfo, ChatRequest, ResolvedSessionPromptInjection};
@@ -872,11 +870,7 @@ mod mcp_tests {
     fn mcp_update_uses_pi_single_package_update_command() {
         // v0.9.3 测试期钉 2.32.1（最新 2.33.0 依赖走 pkg.pr.new，受限网络不可达）。
         assert_eq!(
-            pi_package_args(
-                &["cli.js".to_string()],
-                "update",
-                super::MCP_ADAPTER_SOURCE
-            ),
+            pi_package_args(&["cli.js".to_string()], "update", super::MCP_ADAPTER_SOURCE),
             vec!["cli.js", "update", "npm:pi-mcp-adapter@2.32.1"]
         );
     }
@@ -1032,7 +1026,11 @@ impl TransportAdapter for JishuSelfAgent {
             "JISHU_MCP_REV".to_string(),
             format!(
                 "resolver:{}",
-                if crate::agent::plugin::is_mcp_resolver_enabled() { "on" } else { "off" }
+                if crate::agent::plugin::is_mcp_resolver_enabled() {
+                    "on"
+                } else {
+                    "off"
+                }
             ),
         ));
 
