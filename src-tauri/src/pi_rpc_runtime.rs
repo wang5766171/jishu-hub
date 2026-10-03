@@ -131,6 +131,9 @@ fn spawn_pi_rpc_session_inner(
 
     let stdin_arc = Arc::new(TokioMutex::new(stdin));
     let acp_session_id = Arc::new(std::sync::Mutex::new(None::<String>));
+    // 四轮评审 P2-1：退出清扫需读 resolve 后的真实会话 id（原件 move 进
+    // 连接循环，此处留一份给循环退出后的清扫路径）。
+    let acp_session_id_for_cleanup = acp_session_id.clone();
 
     // Capture stderr for diagnostics
     let stderr_buf = Arc::new(TokioMutex::new(String::new()));
@@ -182,13 +185,24 @@ fn spawn_pi_rpc_session_inner(
         )
         .await;
 
-        // 三轮评审 B2：会话连接退出——清扫本会话挂起的哨兵自动应答（未这达
+        // 三轮评审 B2：会话连接退出——清扫本会话挂起的哨兵自动应答（未送达
         // 的追问 input 永不到，条目不再滞留；协议表其余两张按 request_id 键、
-        // 由 PROTOCOL_TABLE_LIMIT 守卫）。
-        INTERACTION_AUTO_ANSWER
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&pending_session_id);
+        // 由 PROTOCOL_TABLE_LIMIT 守卫）。四轮评审 P2-1：resolve 后登记键是
+        // pi 真实 id（migrate_auto_answer_key 已随迁），真实 id 键一并清扫；
+        // pending 键防御性同删（resolve 前退出时兜底）。
+        {
+            let real_id = acp_session_id_for_cleanup
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let mut reg = INTERACTION_AUTO_ANSWER
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.remove(&pending_session_id);
+            if let Some(real) = real_id {
+                reg.remove(&real);
+            }
+        }
 
         if let Err(err) = &result {
             // Enrich error with stderr output
@@ -438,6 +452,11 @@ async fn pi_rpc_connection_loop(
         let mut guard = acp_session_id.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(session_id.clone());
     }
+    // v0.9.5 四轮评审 P2-1（B2 收尾）：resolve（pending 幂等 id → pi 真实
+    // id）时迁移挂起应答键——登记（chat.rs respond 传 resolve 后的 id）与
+    // 消费（循环内 session_id）都用真实 id；不迁移则退出清扫的 pending 键
+    // 与登记键不同源，新会话场景（两 id 不同）清扫恒 miss。
+    migrate_auto_answer_key(&pending_session_id, &session_id);
 
     // Emit SessionResolved
     emit(
@@ -2412,6 +2431,22 @@ fn take_interaction_auto_answer(session_id: &str) -> Option<String> {
         .remove(session_id)
 }
 
+/// v0.9.5 四轮评审 P2-1：会话 resolve（pending 幂等 id → pi 真实 id）时把
+/// 挂起的哨兵自动应答键随迁——登记与消费键均为真实 id，不迁移则键位不同
+/// 源（新会话场景清扫 miss）。真实键已有值时保守不覆盖。
+fn migrate_auto_answer_key(from: &str, to: &str) {
+    if from == to {
+        return;
+    }
+    let mut reg = INTERACTION_AUTO_ANSWER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(v) = reg.remove(from) {
+        log::info!("[pi-ext] interaction auto-answer key migrated: {from} -> {to}");
+        reg.entry(to.to_string()).or_insert(v);
+    }
+}
+
 /// v0.9.5 需求5 测试期 T5：rpiv-ask 多选题 RPC 降级还原。包在 RPC 宿主把
 /// 多选题降级为 `ui.input`——题干塞选项列表 + 英文序号说明（包固有权衡，
 /// rpc-fallback.ts MULTI_SELECT_INSTRUCTIONS 常量）。hub 转换层还原成真
@@ -2559,7 +2594,7 @@ pub(crate) fn rewrite_sentinel_response(
                 .unwrap_or_else(|e| e.into_inner());
             if reg.len() >= PROTOCOL_TABLE_LIMIT {
                 reg.clear();
-                log::warn!("[pi-ext] INTERACTION_AUTO_ANSWER 达上限 {PROTOCOL_TABLE_LIMIT}，整体清空（未这达的追问堆积）");
+                log::warn!("[pi-ext] INTERACTION_AUTO_ANSWER 达上限 {PROTOCOL_TABLE_LIMIT}，整体清空（未送达的追问堆积）");
             }
             reg.insert(session_id.to_string(), value.to_string());
             log::info!("[pi-ext] sentinel rewrite for request {request_id} (session {session_id})");
@@ -3074,6 +3109,61 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
             super::rewrite_multiselect_response("t5-unknown", "1. a", Some(&interaction)),
             "1. a"
         );
+    }
+
+    /// 四轮评审 P2-1：resolve 键迁移——pending 键的挂起应答随迁到真实 id；
+    /// 真实键已有值时保守不覆盖；同 id 不动。
+    #[test]
+    fn auto_answer_key_migration_on_resolve() {
+        {
+            let mut reg = super::INTERACTION_AUTO_ANSWER
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.insert("p21-pending".to_string(), "答案A".to_string());
+        }
+        super::migrate_auto_answer_key("p21-pending", "p21-real");
+        {
+            let reg = super::INTERACTION_AUTO_ANSWER
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            assert!(reg.get("p21-pending").is_none());
+            assert_eq!(reg.get("p21-real").map(String::as_str), Some("答案A"));
+        }
+        // 真实键已有值：保守不覆盖（迁移值丢弃）
+        {
+            let mut reg = super::INTERACTION_AUTO_ANSWER
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.insert("p21-pending2".to_string(), "旧答案".to_string());
+            reg.insert("p21-real2".to_string(), "已有答案".to_string());
+        }
+        super::migrate_auto_answer_key("p21-pending2", "p21-real2");
+        {
+            let reg = super::INTERACTION_AUTO_ANSWER
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            assert_eq!(
+                reg.get("p21-real2").map(String::as_str),
+                Some("已有答案")
+            );
+            assert!(reg.get("p21-pending2").is_none());
+        }
+        // 同 id：无操作（不丢已有值）
+        super::migrate_auto_answer_key("p21-real", "p21-real");
+        {
+            let reg = super::INTERACTION_AUTO_ANSWER
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            assert_eq!(reg.get("p21-real").map(String::as_str), Some("答案A"));
+        }
+        // 清理（全局静态表，防污染其他用例）
+        {
+            let mut reg = super::INTERACTION_AUTO_ANSWER
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.remove("p21-real");
+            reg.remove("p21-real2");
+        }
     }
 
     /// T1 ②：应答改写——无选中项纯文本 + 挂有哨兵 → 回传哨兵并暂存文本；
