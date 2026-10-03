@@ -259,8 +259,8 @@ pub fn import_pi_extension(src_path: &str) -> Result<String, String> {
     // 删除旧文件或换名后重导。
     if target.exists() {
         let existing = std::fs::read(&target).unwrap_or_default();
-        let incoming = std::fs::read(src).unwrap_or_default();
-        if existing != incoming {
+        // 四轮评审 P2-2：源内容已在手（上方 source），不再重复读盘。
+        if existing.as_slice() != source.as_bytes() {
             return Err(format!(
                 "已存在同名扩展且内容不同（{}）——如需覆盖请先删除旧文件或重命名后再导入",
                 target.display()
