@@ -3,10 +3,63 @@
 !include /NONFATAL "cli-source.nsh"
 
 ; Override the welcome page text
-LangString welcomeText ${LANG_ENGLISH} "Before installing, please close other CLI agent programs (such as Claude Code, OpenAI Codex, Open Code, etc.). This ensures the installer can update necessary system files without requiring a restart after installation.$\r$\n$\r$\n$_CLICK"
-LangString welcomeText ${LANG_SIMPCHINESE} "在安装之前，请先关闭其他 CLI 智能体程序（如 Claude Code、OpenAI Codex、Open Code 等）。这将确保安装程序能够更新所需的系统文件，从而避免在安装后重新启动计算机。$\r$\n$\r$\n$_CLICK"
+LangString welcomeText ${LANG_ENGLISH} "Before installing, please close other CLI agent programs (such as Claude Code, OpenAI Codex, Open Code, etc.), and exit the running Jishu Hub (including its background agent processes). This ensures the installer can update necessary system files without requiring a restart after installation.$\r$\n$\r$\n$_CLICK"
+LangString welcomeText ${LANG_SIMPCHINESE} "在安装之前，请先关闭其他 CLI 智能体程序（如 Claude Code、OpenAI Codex、Open Code 等），并退出正在运行的 Jishu Hub（含后台智能体进程）。这将确保安装程序能够更新所需的系统文件，从而避免在安装后重新启动计算机。$\r$\n$\r$\n$_CLICK"
 
 !define MUI_WELCOMEPAGE_TEXT "$(welcomeText)"
+
+; === 升级/卸载防护（v0.9.5 需求10）===
+; 场景：旧版曾以管理员身份装在 Program Files 等受保护位置，升级沿用其
+; InstallLocation——currentUser 安装/卸载器（不提权）对只读目录删不动/写
+; 不进，模板表现为「卸载失败→重弹卸载页→安装报错需管理员」连环模糊失败。
+; 防护：①可写性探测+明确指引；②进程清理（含 pi 引擎 node 子进程，
+; 按安装路径精确匹配——严格避免误杀用户其他 node 进程）。
+LangString jishuInstallDirDenied ${LANG_ENGLISH} "Cannot write to the installation folder:$\r$\n$INSTDIR$\r$\n$\r$\nThis usually happens when the previous version was installed to a protected location (e.g. Program Files) with administrator rights, while this installer runs as the current user.$\r$\n$\r$\nPlease re-run this installer as administrator, or uninstall the old version first and install to your user folder (default path)."
+LangString jishuInstallDirDenied ${LANG_SIMPCHINESE} "无法写入安装目录：$\r$\n$INSTDIR$\r$\n$\r$\n常见原因：旧版本曾以管理员身份安装在受保护位置（如 Program Files），而本安装程序以当前用户身份运行。$\r$\n$\r$\n请以管理员身份重新运行本安装程序；或先卸载旧版本，再将 Jishu Hub 安装到用户目录（默认路径）。"
+LangString jishuUninstallDirDenied ${LANG_ENGLISH} "Cannot uninstall from:$\r$\n$INSTDIR$\r$\n$\r$\nThis folder requires administrator rights (e.g. it is under Program Files), while the uninstaller runs as the current user.$\r$\n$\r$\nPlease run the uninstaller as administrator: right-click uninstall.exe in the installation folder and choose 'Run as administrator'."
+LangString jishuUninstallDirDenied ${LANG_SIMPCHINESE} "无法卸载，安装目录需要管理员权限：$\r$\n$INSTDIR$\r$\n$\r$\n该目录位于受保护位置（如 Program Files），而卸载程序以当前用户身份运行。$\r$\n$\r$\n请以管理员身份运行卸载程序：到安装目录下右键 uninstall.exe，选择「以管理员身份运行」。"
+
+; 进程清理（安装/卸载双侧复用）：hub 主进程按进程名杀（名字唯一）；
+; pi 引擎 node 子进程按安装路径匹配（$$_ / $$env 为 NSIS 的 $ 字面转义，
+; 避免被当作 NSIS 变量展开）。
+!macro _JishuKillRunningProcesses
+  InitPluginsDir
+  ClearErrors
+  FileOpen $R8 "$PLUGINSDIR\jishu-kill.ps1" w
+  ${IfNot} ${Errors}
+    FileWrite $R8 'Stop-Process -Name "jishu-hub" -Force -ErrorAction SilentlyContinue$\r$\n'
+    FileWrite $R8 'Get-Process -Name node -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like "$$env:USERPROFILE\.jishu-agent\bin\*" } | Stop-Process -Force -ErrorAction SilentlyContinue$\r$\n'
+    FileClose $R8
+    ExecWait 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\jishu-kill.ps1"' $R9
+    Delete "$PLUGINSDIR\jishu-kill.ps1"
+  ${EndIf}
+!macroend
+
+; 可写性探测（双侧复用）：探测失败 = 目标目录不可写 → 明确指引后中止，
+; 好过连环模糊失败。$ERRMSG 为调用方传入的 LangString 名。
+!macro _JishuAssertInstDirWritable ERRMSG
+  ClearErrors
+  FileOpen $R8 "$INSTDIR\.jishu-write-probe" w
+  ${If} ${Errors}
+    MessageBox MB_OK|MB_ICONSTOP "${ERRMSG}"
+    Abort
+  ${EndIf}
+  FileClose $R8
+  Delete "$INSTDIR\.jishu-write-probe"
+!macroend
+
+!macro NSIS_HOOK_PREINSTALL
+  ; 需求10：先清进程（文件占用会卡住解压/删除），再验可写性。
+  !insertmacro _JishuKillRunningProcesses
+  !insertmacro _JishuAssertInstDirWritable `$(jishuInstallDirDenied)`
+!macroend
+
+!macro NSIS_HOOK_PREUNINSTALL
+  ; 需求10：卸载侧同防护——先杀进程（否则 POSTUNINSTALL 清理
+  ; .jishu-agent 会被运行中的 node 占用卡住），再验目录可写性。
+  !insertmacro _JishuKillRunningProcesses
+  !insertmacro _JishuAssertInstDirWritable `$(jishuUninstallDirDenied)`
+!macroend
 
 ; --- PATH injection for jishu CLI ---
 
