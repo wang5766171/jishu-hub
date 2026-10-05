@@ -1,3 +1,22 @@
+// §12 处置说明（v0.9.5 收口遗留②立案，2026-10-05）
+// ─────────────────────────────────────────────────────────────────────
+// 现状：3402 行，ChatPage 单函数（32 useState / 48 useEffect）。历史拆分
+// （4734→3151）已迁出九模块：kernel/event-pipeline、kernel/data-hub、
+// kernel/session-cache、chat-approvals、use-task-instance-sync、
+// use-task-session-routing、use-access-mode、use-session-selection、
+// chat-sidebar；本版增量来自需求2 M3-2 方案卡与执行启动流。
+// 剩余三簇与边界设计（先设计后分批，禁机械切割——effect 间存在隐式执行
+// 序：滚动指令消费 → 消息加载 → 节点会话轮询回填，历史上 fix22 静默断裂
+// 事故即源于此区，每簇迁移须配 GUI 实测）：
+//   簇A 滚动系统（~190 行）：滚动指令消费 + rAF 节流 + activeTurn 全遍历
+//     计算。边界 = use-chat-scroll(containerRef, messages, turnSegments)，
+//     对外只暴露 scrollSignal 消费接口。
+//   簇B 节点/任务会话加载（~250 行）：节点会话缓存先行 + session_id 未
+//     回填时 2s 轮询 + entry key 变化定位。边界 = use-node-session-load，
+//     入参 entryKey/attempt 绑定，出参 {messages, loading}。
+//   簇C 任务模式主区分支（~200 行 JSX）：方案卡/执行启动/失败节点动作
+//     （handleFailedNodeAction）。边界 = TaskModeStage 子组件 props 化。
+// 触发条件：下版任何触碰 chat-page 的需求实施前，先执行对应簇的迁移。
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import {

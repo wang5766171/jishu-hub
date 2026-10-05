@@ -27,7 +27,9 @@ fn validated_existing_path(path: &str) -> Result<String, String> {
     }
     // 需求7：不解析符号链接（canonicalize 会把用户可见的链接路径换成
     // 物理路径，如仓库 docs → Obsidian 库）；absolute() 仅补全相对段/
-    // 折叠 ./..，Windows 经 GetFullPathName 出反斜杠、无 verbatim 前缀。
+    // 折叠 ./..，Windows 经 GetFullPathName 出反斜杠、无 verbatim 前缀
+    //（absolute 需 1.79，与 Cargo.toml rust-version 声明一致——2026-10-05
+    // 用户裁决由 1.77.2 提至 1.79）。
     let absolute =
         std::path::absolute(&raw).map_err(|e| format!("Path not accessible: {path} ({e})"))?;
     Ok(strip_verbatim_prefix(&absolute.to_string_lossy()))

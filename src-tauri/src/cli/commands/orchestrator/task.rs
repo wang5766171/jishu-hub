@@ -36,6 +36,8 @@ pub fn run(action: TaskAction, ctx: &ExecutionContext) -> Result<(), CliError> {
 
 /// Find a task instance by session ID.
 fn run_find(session: &str, project: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
+    // absolute 需 1.79（rust-version 已同步声明，2026-10-05 用户裁决）；
+    // Windows 语义说明见 os_adapter/file_reveal 同调用点注释。
     let project_root = std::path::absolute(project)
         .map_err(|e| CliError::Internal(format!("Cannot resolve project path: {e}")))?
         .to_string_lossy()

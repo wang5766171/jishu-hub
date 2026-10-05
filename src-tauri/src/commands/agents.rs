@@ -415,7 +415,7 @@ pub(crate) fn cli_validate_poll() -> Option<serde_json::Value> {
             .metadata()
             .and_then(|m| m.modified())
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        // MSRV 1.77.2：is_none_or 需 1.82，用 map_or 等价表达。
+        // MSRV 1.79：is_none_or 需 1.82，用 map_or 等价表达。
         if oldest.as_ref().map_or(true, |(t, _)| mtime < *t) {
             oldest = Some((mtime, entry.path()));
         }
