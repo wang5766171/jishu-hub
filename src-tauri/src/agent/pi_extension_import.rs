@@ -247,7 +247,9 @@ pub fn import_pi_extension(src_path: &str) -> Result<String, String> {
     let summary = parse_extension_summary(&source);
     if !summary.has_default_export {
         return Err(
-            "扩展缺少 default export function（pi 扩展契约：export default function(pi) {...}）"
+            // 三轮评审 P1-4 补漏：散文部分不写内部代号（函数签名的 pi 参数是
+            // 扩展 API 形状，与 pi_extension 配置段名同级，允许保留）。
+            "扩展缺少 default export function（扩展契约：export default function(pi) {...}）"
                 .to_string(),
         );
     }

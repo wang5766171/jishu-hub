@@ -573,6 +573,7 @@
       "savedDisabled": "已保存（默认禁用）",
       "savedDisabledDesc": "混合插件包含自定义代码，安装确认卡已出现——点「启用」后生效（含代码的插件统一走确认安全阀）。",
       "saveFailed": "保存失败",
+      "saveAndInstall": "保存并安装",
       "hybridSubtitle": "自定义渲染的会话界面插件——左侧编辑代码（实时校验），右侧实时预览",
       "nameStar": "名称 *",
       "contentSource": "内容源",
@@ -582,12 +583,20 @@
       "srcTurns": "轮次视图",
       "srcTask": "任务信息",
       "srcStreamState": "流状态",
+      "srcHintMessages": "props.payload.data = Message[]（可配聚合器）",
+      "srcHintTurns": "props.payload.turns / activeIndex / jump(i)",
+      "srcHintTask": "props.payload.task",
+      "srcHintStreamState": "同消息流形态",
       "mountDock": "停靠面板（侧边，可收起）",
       "mountRail": "贴边挂件（会话边缘小图标）",
       "mountSidebar": "侧栏面板（多标签）",
       "mountComposer": "输入框尾部（行内小部件）",
       "codeSection": "component.js（实时语法 + 契约校验）",
-      "apiRef": "API 参考"
+      "apiRef": "API 参考",
+      "apiPropsLine": "props.payload（按内容源形状）· options（配置值）· actions（动作条）",
+      "apiRegisterLabel": "注册",
+      "livePreview": "实时预览（模拟数据，非沙箱）",
+      "tomlPreview": "生成预览（plugin.toml + 保存位置 plugins/{{id}}/）"
     }
   },
   "config": {

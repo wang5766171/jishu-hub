@@ -573,6 +573,7 @@
       "savedDisabled": "Saved (disabled by default)",
       "savedDisabledDesc": "The hybrid plugin contains custom code — an install confirmation card appeared. Click \"Enable\" to activate (code-bearing plugins go through the confirmation safety gate).",
       "saveFailed": "Save failed",
+      "saveAndInstall": "Save & install",
       "hybridSubtitle": "Custom-rendered session UI plugin — edit code on the left (live validation), live preview on the right",
       "nameStar": "Name *",
       "contentSource": "Content source",
@@ -582,12 +583,20 @@
       "srcTurns": "Turns",
       "srcTask": "Task info",
       "srcStreamState": "Stream state",
+      "srcHintMessages": "props.payload.data = Message[] (optional aggregator)",
+      "srcHintTurns": "props.payload.turns / activeIndex / jump(i)",
+      "srcHintTask": "props.payload.task",
+      "srcHintStreamState": "Same shape as the messages source",
       "mountDock": "Dock panel (side, collapsible)",
       "mountRail": "Rail widget (edge icon)",
       "mountSidebar": "Sidebar panel (tabs)",
       "mountComposer": "Composer trailing (inline widget)",
       "codeSection": "component.js (live syntax + contract validation)",
-      "apiRef": "API reference"
+      "apiRef": "API reference",
+      "apiPropsLine": "props.payload (shape per source) · options (config values) · actions (action bar)",
+      "apiRegisterLabel": "Register",
+      "livePreview": "Live preview (mock data, not sandboxed)",
+      "tomlPreview": "Generated preview (plugin.toml + saved under plugins/{{id}}/)"
     }
   },
   "config": {

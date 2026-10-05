@@ -141,7 +141,7 @@ export function PluginPipelineWizard({
   };
 
   return (
-    <UniModal open={open} onClose={() => onOpenChange(false)} size="lg" label="流水线向导">
+    <UniModal open={open} onClose={() => onOpenChange(false)} size="lg" label={t("plugins.wiz.pipelineTitle", "流水线向导（阶段编排）")}>
       <UniModalHeader
         title={t("plugins.wiz.pipelineTitle", "流水线向导（阶段编排）")}
         subtitle={t("plugins.wiz.pipelineSubtitle", "编排多阶段工作流——阶段优先用内置模板（讨论/规划/执行/评审），自定义阶段写提示词与门禁")}

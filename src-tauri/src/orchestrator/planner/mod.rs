@@ -870,7 +870,9 @@ fn validate_plan_shape<S: AsRef<str>>(
                 agent_roles.insert(role_id.clone());
                 if description
                     .as_deref()
-                    .is_none_or(|value| value.trim().is_empty())
+                    // MSRV 1.77.2：is_none_or 需 1.82，用 map_or 等价表达
+                    //（三轮评审在 agents.rs 清理同款时此处漏网）。
+                    .map_or(true, |value| value.trim().is_empty())
                     || prompt.trim().is_empty()
                     || acceptance.is_empty()
                     || acceptance.iter().any(|item| item.trim().is_empty())

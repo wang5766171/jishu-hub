@@ -20,12 +20,13 @@ import { composedIdTaken, slugify } from "./plugin-wizard-utils";
 type HybridSourceType = "messages" | "turns" | "task" | "stream-state";
 type HybridMount = "dock-panel" | "rail-widget" | "sidebar-panel" | "composer-trailing";
 
-// 三轮评审 P1-5：label 改 i18n 键（渲染点翻译，语言切换即生效）。
-const SOURCE_TYPES: Array<{ value: HybridSourceType; labelKey: string; hint: string }> = [
-  { value: "messages", labelKey: "plugins.wiz.srcMessages", hint: "props.payload.data = Message[]（可配聚合器）" },
-  { value: "turns", labelKey: "plugins.wiz.srcTurns", hint: "props.payload.turns / activeIndex / jump(i)" },
-  { value: "task", labelKey: "plugins.wiz.srcTask", hint: "props.payload.task" },
-  { value: "stream-state", labelKey: "plugins.wiz.srcStreamState", hint: "同消息流形态" },
+// 三轮评审 P1-5：label/hint 全改 i18n 键（渲染点翻译，语言切换即生效——
+// 三轮修复只迁了 label 漏了 hint，本轮补齐）。
+const SOURCE_TYPES: Array<{ value: HybridSourceType; labelKey: string; hintKey: string }> = [
+  { value: "messages", labelKey: "plugins.wiz.srcMessages", hintKey: "plugins.wiz.srcHintMessages" },
+  { value: "turns", labelKey: "plugins.wiz.srcTurns", hintKey: "plugins.wiz.srcHintTurns" },
+  { value: "task", labelKey: "plugins.wiz.srcTask", hintKey: "plugins.wiz.srcHintTask" },
+  { value: "stream-state", labelKey: "plugins.wiz.srcStreamState", hintKey: "plugins.wiz.srcHintStreamState" },
 ];
 
 const MOUNTS: Array<{ value: HybridMount; labelKey: string }> = [
@@ -173,7 +174,7 @@ export function PluginHybridWizard({
                   <option key={s.value} value={s.value}>{t(s.labelKey, "")}</option>
                 ))}
               </select>
-              <div className="mt-0.5 text-[10px] text-muted-foreground/70">{SOURCE_TYPES.find((s) => s.value === sourceType)?.hint}</div>
+              <div className="mt-0.5 text-[10px] text-muted-foreground/70">{t(SOURCE_TYPES.find((s) => s.value === sourceType)?.hintKey ?? "", "")}</div>
             </div>
             <div>
               <span className={label}>{t("plugins.wiz.mountLabel", "挂载（@file: 限定数据面）")}</span>
@@ -201,8 +202,8 @@ export function PluginHybridWizard({
               {showApiRef && (
                 <div className="mb-2 rounded-md border border-border/40 bg-muted/20 px-3 py-2 font-mono text-[10px] leading-relaxed text-muted-foreground">
                   <div><span className="text-foreground/80">api.</span>h(tag, props, ...children) · useState · useEffect · useMemo · useRef · useCallback · t(key, fallback) · cn(...cls)</div>
-                  <div><span className="text-foreground/80">props.</span>payload（按内容源形状）· options（配置值）· actions（动作条）</div>
-                  <div><span className="text-foreground/80">注册.</span>JishuPlugin.register("{id}", {"{"} version: 1, component (api) =&gt; (props) =&gt; vnode {"}"})</div>
+                  <div><span className="text-foreground/80">props.</span>{t("plugins.wiz.apiPropsLine", "")}</div>
+                  <div><span className="text-foreground/80">{t("plugins.wiz.apiRegisterLabel", "")}.</span>JishuPlugin.register("{id}", {"{"} version: 1, component (api) =&gt; (props) =&gt; vnode {"}"})</div>
                 </div>
               )}
               <CodeEditor
@@ -217,7 +218,7 @@ export function PluginHybridWizard({
               />
             </div>
             <div>
-              <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">实时预览（模拟数据，非沙箱）</div>
+              <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">{t("plugins.wiz.livePreview", "")}</div>
               <HybridPreviewPanel
                 source={effectiveCode}
                 pluginId={id}
@@ -228,7 +229,7 @@ export function PluginHybridWizard({
           </div>
 
           <div className="mt-3 rounded-lg bg-muted/40 p-2.5">
-            <div className="mb-1 text-[10px] font-medium text-muted-foreground">生成预览（plugin.toml + 保存位置 plugins/{id}/）</div>
+            <div className="mb-1 text-[10px] font-medium text-muted-foreground">{t("plugins.wiz.tomlPreview", { id })}</div>
             <pre className="max-h-28 overflow-auto font-mono text-[10px] leading-relaxed text-foreground/80">{buildToml()}</pre>
           </div>
         </div>
@@ -236,7 +237,7 @@ export function PluginHybridWizard({
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>{t("common.cancel", "取消")}</Button>
           <Button size="sm" onClick={() => void save()} disabled={saving}>
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            <span className="ml-1">保存并安装</span>
+            <span className="ml-1">{t("plugins.wiz.saveAndInstall", "")}</span>
           </Button>
         </div>
     </UniModal>

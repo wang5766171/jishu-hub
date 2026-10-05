@@ -609,11 +609,12 @@ fn import_extension(path: &str, ctx: &ExecutionContext) -> Result<(), CliError> 
 /// （响应超时）时降级：仅输出基础校验结果 + ⚠ 提示，不静默失败。
 ///
 /// 标记协议（CLI ↔ hub 前端的跨进程信箱，同 .pending-confirm 模式）：
-/// - 请求 `.cli-validate-req.json`：{nonce, dir, manifest, componentJs}——
+/// - 请求 `.cli-validate-req-<nonce>.json`：{nonce, dir, manifest, componentJs}——
 ///   manifest 为 toml→JSON 转换值（前端校验器直接消费），componentJs 为
 ///   目录内 component.js 源码（前端做契约检查，无任意路径文件访问）；
-/// - 响应 `.cli-validate-resp.json`：{nonce, valid, errors}——前端校验
-///   完成后经 cli_validate_submit 命令写回，CLI 轮询匹配 nonce 取结果。
+///   nonce 后缀支持多终端并发互不踩（三轮评审信箱并发修复）；
+/// - 响应 `.cli-validate-resp-<nonce>.json`：{nonce, valid, errors}——前端校
+///   验完成后经 cli_validate_submit 命令写回，CLI 轮询匹配 nonce 取结果。
 fn validate(path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
     let input = std::path::Path::new(path);
     let (dir, toml_path) = if input.is_dir() {
