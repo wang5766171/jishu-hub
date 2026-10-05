@@ -11,7 +11,7 @@ import {
   parseMcpServersBatch,
   serverToMcpSection,
   type FormState,
-} from "./plugin-create-dialog";
+} from "./plugin-create-dialog-model";
 
 /** 最小 tool 表单（其余字段取 emptyForm 等价值）。 */
 function toolForm(partial: Partial<FormState>): FormState {
