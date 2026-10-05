@@ -33,10 +33,10 @@ pub(crate) use normalize::{
 };
 #[allow(unused_imports)]
 pub(crate) use protocol::{
-    convert_extension_ui_request, is_sentinel_option, migrate_auto_answer_key,
-    rewrite_multiselect_input, rewrite_multiselect_response, rewrite_sentinel_response,
-    strip_sentinel_option, take_interaction_auto_answer, PiToolApproval, INTERACTION_AUTO_ANSWER,
-    INTERACTION_SENTINELS, MULTI_SELECT_REQUESTS, PROTOCOL_TABLE_LIMIT,
+    convert_extension_ui_request, interaction_auto_answer, interaction_sentinels,
+    is_sentinel_option, migrate_auto_answer_key, multi_select_requests, rewrite_multiselect_input,
+    rewrite_multiselect_response, rewrite_sentinel_response, strip_sentinel_option,
+    take_interaction_auto_answer, PiToolApproval, PROTOCOL_TABLE_LIMIT,
 };
 
 use serde_json::json;
@@ -62,6 +62,7 @@ use crate::dev_log_bridge::{dev_log_emitter, noop_dev_log_emitter, DevLogEmit};
 
 /// Spawn the Pi RPC driver: starts Pi in `--mode rpc`, returns an
 /// `AcpControl` that speaks Pi's native protocol internally.
+#[allow(clippy::too_many_arguments)] // 连接装配参数清单（各 transport 同形态），打包结构体属 API 重设计
 pub fn spawn_pi_rpc_session(
     app: tauri::AppHandle,
     agent_id: String,
@@ -168,6 +169,17 @@ fn spawn_pi_rpc_session_inner(
                 let mut buf = stderr_buf_clone.lock().await;
                 buf.push_str(&line);
                 buf.push('\n');
+                // v0.9.5 收口质量审查 P2：诊断用 stderr 环形截断——失败取证
+                // 只取尾部（stderr 富化取尾 500 字节），长会话全量堆内存无收益。
+                // 切割点对齐 UTF-8 字符边界（drain 落在多字节字符中间会 panic）。
+                const STDERR_TAIL_LIMIT: usize = 8 * 1024;
+                if buf.len() > STDERR_TAIL_LIMIT {
+                    let mut cut = buf.len() - STDERR_TAIL_LIMIT;
+                    while !buf.is_char_boundary(cut) {
+                        cut += 1;
+                    }
+                    buf.drain(..cut);
+                }
             }
         });
     }
@@ -217,7 +229,7 @@ fn spawn_pi_rpc_session_inner(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
-            let mut reg = INTERACTION_AUTO_ANSWER
+            let mut reg = interaction_auto_answer()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             reg.remove(&pending_session_id);
@@ -962,6 +974,17 @@ async fn pi_rpc_connection_loop(
                                             });
                                             flush_buf(&emit, &session_id, &mut buf);
 
+                                            // v0.9.5 收口质量审查 P1：失败响应本身已
+                                            // 终结名单（Error+TurnComplete 已发）——若此
+                                            // 刻仍在取消收尾中（CancelPending），settle 看
+                                            // 门狗与预备 Aborted 终结者均被本分支取代：
+                                            // 解除闹钟（防 15s 后误杀重发中的新回合）、
+                                            // 丢弃预备终结者（防迟到 agent_settled 对新一
+                                            // 轮补发陈旧 Aborted）。
+                                            if matches!(state, LoopState::CancelPending { .. }) {
+                                                cancel_settle_at = None;
+                                                pending_turn_complete = None;
+                                            }
                                             state = LoopState::Idle;
                                             // v0.9.5 三轮评审 P1-1：失败已终结名单
                                             // （Error+TurnComplete 已发），跳过下方通用
@@ -1077,6 +1100,13 @@ async fn pi_rpc_connection_loop(
                                                 .and_then(|v| v.as_str());
                                             match branch_id {
                                                 Some(new_id) => {
+                                                    // v0.9.5 收口质量审查 P2：fork 重绑与
+                                                    // resolve 同为会话 id 变更点——挂起哨兵
+                                                    // 应答键随迁（与四轮 resolve 路径对称，
+                                                    // 防退出清扫恒 miss、只能等 256 达限兜底）。
+                                                    if session_id != new_id {
+                                                        migrate_auto_answer_key(&session_id, new_id);
+                                                    }
                                                     session_id = new_id.to_string();
                                                     {
                                                         let mut guard = acp_session_id
@@ -1122,6 +1152,13 @@ async fn pi_rpc_connection_loop(
                                         usage: None,
                                     });
                                     flush_buf(&emit, &session_id, &mut buf);
+                                    // v0.9.5 收口质量审查 P1：与上方 prompt 失败分支
+                                    // 同款——失败响应已终结名单，取消收尾的 settle 看门
+                                    // 狗与预备 Aborted 终结者同步解除/丢弃。
+                                    if matches!(state, LoopState::CancelPending { .. }) {
+                                        cancel_settle_at = None;
+                                        pending_turn_complete = None;
+                                    }
                                     state = LoopState::Idle;
                                     continue;
                                 }
@@ -1639,10 +1676,16 @@ async fn pi_rpc_connection_loop(
                         session_id
                     );
                     true
-                } else if cancel_settle_at.is_some() && tokio::time::Instant::now() >= cancel_settle_at.unwrap() {
+                } else if cancel_settle_at.is_some()
+                    && matches!(state, LoopState::CancelPending { .. })
+                    && tokio::time::Instant::now() >= cancel_settle_at.unwrap()
+                {
                     // v0.9.5 三轮评审 P1-1：检查序 settle 优先于 ack（防御性——
                     // 进入 CancelPending 已清 ack，两者互斥；即便未来新增武装
                     // 路径遗漏清理，取消收口（含缓冲消息语义）也不被 ack 抢跑）。
+                    // v0.9.5 收口质量审查 P1：补状态守卫——仅 CancelPending 态可
+                    // 触发（失败响应等已翻 Idle 的路径由分支侧解除闹钟，此处双保险，
+                    // 防未来新增离开路径遗漏清理时误杀重发中的新回合）。
                     // ⚠ abort 后 15s 未收尾（pi 滞留，agent_settled 永不到）——
                     // 杀进程终结流。
                     log::warn!(
@@ -1799,7 +1842,7 @@ mod tests {
         assert_eq!(options[0].as_str().unwrap(), "1. 红 — 红");
         // 登记可取回（取用即消费）
         {
-            let mut reg = super::INTERACTION_SENTINELS
+            let mut reg = super::interaction_sentinels()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             assert_eq!(
@@ -1844,7 +1887,7 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
         let options = rewritten["options"].as_array().unwrap();
         assert_eq!(options.len(), 3);
         assert_eq!(options[0].as_str().unwrap(), "1. 企鹅 — 南极");
-        assert!(super::MULTI_SELECT_REQUESTS
+        assert!(super::multi_select_requests()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove("t5-multi"));
@@ -1874,7 +1917,7 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
     #[test]
     fn multiselect_response_translated_to_indices() {
         {
-            let mut reg = super::MULTI_SELECT_REQUESTS
+            let mut reg = super::multi_select_requests()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             reg.insert("t5-rw".to_string());
@@ -1898,7 +1941,7 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
         );
         // 纯自定义（无选中）透传
         {
-            let mut reg = super::MULTI_SELECT_REQUESTS
+            let mut reg = super::multi_select_requests()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             reg.insert("t5-custom".to_string());
@@ -1920,14 +1963,14 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
     #[test]
     fn auto_answer_key_migration_on_resolve() {
         {
-            let mut reg = super::INTERACTION_AUTO_ANSWER
+            let mut reg = super::interaction_auto_answer()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             reg.insert("p21-pending".to_string(), "答案A".to_string());
         }
         super::migrate_auto_answer_key("p21-pending", "p21-real");
         {
-            let reg = super::INTERACTION_AUTO_ANSWER
+            let reg = super::interaction_auto_answer()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             assert!(reg.get("p21-pending").is_none());
@@ -1935,7 +1978,7 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
         }
         // 真实键已有值：保守不覆盖（迁移值丢弃）
         {
-            let mut reg = super::INTERACTION_AUTO_ANSWER
+            let mut reg = super::interaction_auto_answer()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             reg.insert("p21-pending2".to_string(), "旧答案".to_string());
@@ -1943,7 +1986,7 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
         }
         super::migrate_auto_answer_key("p21-pending2", "p21-real2");
         {
-            let reg = super::INTERACTION_AUTO_ANSWER
+            let reg = super::interaction_auto_answer()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             assert_eq!(reg.get("p21-real2").map(String::as_str), Some("已有答案"));
@@ -1952,14 +1995,14 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
         // 同 id：无操作（不丢已有值）
         super::migrate_auto_answer_key("p21-real", "p21-real");
         {
-            let reg = super::INTERACTION_AUTO_ANSWER
+            let reg = super::interaction_auto_answer()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             assert_eq!(reg.get("p21-real").map(String::as_str), Some("答案A"));
         }
         // 清理（全局静态表，防污染其他用例）
         {
-            let mut reg = super::INTERACTION_AUTO_ANSWER
+            let mut reg = super::interaction_auto_answer()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             reg.remove("p21-real");
@@ -1973,7 +2016,7 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
     fn sentinel_response_rewrite_rules() {
         // 准备登记（本测试独立 key）
         {
-            let mut reg = super::INTERACTION_SENTINELS
+            let mut reg = super::interaction_sentinels()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             reg.insert("t2-rw".to_string(), "3. Type something.".to_string());
@@ -1988,7 +2031,7 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
         assert_eq!(rewritten, "3. Type something.");
         // 暂存文本可取（消费式）
         {
-            let mut stash = super::INTERACTION_AUTO_ANSWER
+            let mut stash = super::interaction_auto_answer()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             assert_eq!(stash.remove("t2-session").as_deref(), Some("自定义：蓝色"));
@@ -2000,7 +2043,7 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
         );
         // 有选中项（普通选项点击）：即使挂哨兵也不改写
         {
-            let mut reg = super::INTERACTION_SENTINELS
+            let mut reg = super::interaction_sentinels()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             reg.insert("t2-opt".to_string(), "3. Type something.".to_string());

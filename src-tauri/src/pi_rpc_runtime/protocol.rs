@@ -38,9 +38,14 @@ pub(crate) fn is_sentinel_option(option: &str) -> bool {
 /// 三轮评审 B2：有界守护——未应答交互的条目无自然满理时机（用户关卡/
 /// 会话终止），尺寸超限时整体清空（登记丢失仅降级为「不剥哨兵行/不翻译」，
 /// 优雅降级路径在，语义无损）。
-pub(crate) static INTERACTION_SENTINELS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, String>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+/// v0.9.5 clippy 批次：MSRV 兼容（LazyLock 需 1.80 > 声明）——协议表用 OnceLock
+/// + 访问器，调用面 `interaction_sentinels().lock()` 与原静态形态等价。
+pub(crate) fn interaction_sentinels(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
+    static CELL: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    CELL.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
 
 /// 协议表尺寸上限（到达即清空——每条登记仅几十字节，256 条对应极端的
 /// 未应答交互堆积，远超任何正常会话负载）。
@@ -48,7 +53,7 @@ pub(crate) const PROTOCOL_TABLE_LIMIT: usize = 256;
 
 /// B2：登记前守护（超限清空）。
 fn bounded_insert_sentinel(id: String, sentinel: String) {
-    let mut reg = INTERACTION_SENTINELS
+    let mut reg = interaction_sentinels()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     if reg.len() >= PROTOCOL_TABLE_LIMIT {
@@ -59,9 +64,12 @@ fn bounded_insert_sentinel(id: String, sentinel: String) {
 }
 
 /// T1：session_id → 用户自定义文本（哨兵追问 input 到达时自动应答）。
-pub(crate) static INTERACTION_AUTO_ANSWER: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, String>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+pub(crate) fn interaction_auto_answer(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
+    static CELL: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    CELL.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
 
 /// T1 ①：select 请求剥离末尾哨兵行（非 select / 无哨兵原样返回）。
 pub(crate) fn strip_sentinel_option(mut msg: serde_json::Value) -> serde_json::Value {
@@ -84,7 +92,7 @@ pub(crate) fn strip_sentinel_option(mut msg: serde_json::Value) -> serde_json::V
 
 /// T1 ③：取走（消费）本会话挂起的哨兵自动应答文本。
 pub(crate) fn take_interaction_auto_answer(session_id: &str) -> Option<String> {
-    INTERACTION_AUTO_ANSWER
+    interaction_auto_answer()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(session_id)
@@ -97,7 +105,7 @@ pub(crate) fn migrate_auto_answer_key(from: &str, to: &str) {
     if from == to {
         return;
     }
-    let mut reg = INTERACTION_AUTO_ANSWER
+    let mut reg = interaction_auto_answer()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     if let Some(v) = reg.remove(from) {
@@ -121,9 +129,12 @@ pub(crate) fn migrate_auto_answer_key(from: &str, to: &str) {
 const MULTI_SELECT_INSTRUCTIONS: &str = "Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a custom answer as plain text.";
 
 /// T5：request_id 登记集（该 input 已被还原为多选卡，应答需序号翻译）。
-pub(crate) static MULTI_SELECT_REQUESTS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashSet<String>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+pub(crate) fn multi_select_requests() -> &'static std::sync::Mutex<std::collections::HashSet<String>>
+{
+    static CELL: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    CELL.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
 
 /// 选项行带 "N. " 序号前缀（rpiv formatOptionLine 形态）。
 fn numbered_option_line(line: &str) -> bool {
@@ -167,7 +178,7 @@ pub(crate) fn rewrite_multiselect_input(mut msg: serde_json::Value) -> serde_jso
     if id.is_empty() {
         return msg;
     }
-    let mut reg = MULTI_SELECT_REQUESTS
+    let mut reg = multi_select_requests()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     if reg.len() >= PROTOCOL_TABLE_LIMIT {
@@ -191,7 +202,7 @@ pub(crate) fn rewrite_multiselect_response(
     value: &str,
     interaction: Option<&serde_json::Value>,
 ) -> String {
-    let known = MULTI_SELECT_REQUESTS
+    let known = multi_select_requests()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(request_id);
@@ -242,13 +253,13 @@ pub(crate) fn rewrite_sentinel_response(
     if !selected_empty {
         return value.to_string();
     }
-    let sentinel = INTERACTION_SENTINELS
+    let sentinel = interaction_sentinels()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(request_id);
     match sentinel {
         Some(s) => {
-            let mut reg = INTERACTION_AUTO_ANSWER
+            let mut reg = interaction_auto_answer()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             if reg.len() >= PROTOCOL_TABLE_LIMIT {
