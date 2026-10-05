@@ -83,12 +83,14 @@ const HINT_SCHEMA_DEADLINE: Duration = Duration::from_secs(5);
 /// 阴性缓存冷却：查询失败的插件短期内不再试，避免每次发图都白等一遍。
 const HINT_NEGATIVE_COOLDOWN: Duration = Duration::from_secs(600);
 
+/// 插件工具清单缓存表：plugin_id → (最近查询时刻, 工具清单/失败标记)。
+type HintToolCacheMap = HashMap<String, (Instant, Option<Vec<McpToolDef>>)>;
+
 /// 插件工具清单的进程内缓存：plugin_id → (最近查询时刻, 工具清单)。
 /// Some(Vec) = 成功（长期有效——schema 变化频率远低于冷却粒度）；
 /// None = 最近一次失败（冷却期内直接降级）。
-static HINT_TOOL_CACHE: std::sync::OnceLock<
-    std::sync::Mutex<HashMap<String, (Instant, Option<Vec<McpToolDef>>)>>,
-> = std::sync::OnceLock::new();
+static HINT_TOOL_CACHE: std::sync::OnceLock<std::sync::Mutex<HintToolCacheMap>> =
+    std::sync::OnceLock::new();
 
 /// 查询命名空间工具（`插件id__工具名`）的 inputSchema——识图路由话术内联
 /// 参数说明用（能力对齐直连：直连时模型在工具清单里就能看到 schema，

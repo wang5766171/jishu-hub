@@ -14,6 +14,7 @@ use super::*;
 /// - `turn_start`, `turn_end`
 /// - `message_start`, `message_update`, `message_end`
 /// - `tool_execution_start`, `tool_execution_update`, `tool_execution_end`
+///
 /// 从 turn_end 的 message.usage 构造 UsageStats（v0.7.3 需求2：jishu-self 用量与水位）。
 /// context_tokens 公式对齐 pi `calculateContextTokens`（totalTokens 优先，否则四项求和）；
 /// context_window 来自启动时 get_state 的 model.contextWindow，缺失时仅报 in/out/cost。
@@ -419,13 +420,16 @@ pub(crate) fn normalize_pi_agent_event(
                         .map(|t| t.to_string())
                 }
             });
-            if call_id.is_empty() || text.is_none() {
+            if call_id.is_empty() {
                 vec![]
             } else {
-                vec![NormalizedEvent::ToolUseProgress {
-                    call_id,
-                    partial_output: text.unwrap(),
-                }]
+                match text {
+                    None => vec![],
+                    Some(partial_output) => vec![NormalizedEvent::ToolUseProgress {
+                        call_id,
+                        partial_output,
+                    }],
+                }
             }
         }
         "tool_execution_end" => {

@@ -595,7 +595,7 @@ impl SessionAdapter for ClaudeCodeAgent {
             }
         }
 
-        all_sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        all_sessions.sort_by_key(|s| std::cmp::Reverse(s.started_at));
         // v0.7.0 需求一：回填 agent_id（通用 load_session 不知 agent，adapter 补齐）。
         for session in &mut all_sessions {
             session.agent_id = Some("claude-code".to_string());
@@ -852,6 +852,51 @@ fn now_ms() -> i64 {
     crate::util::now_ms()
 }
 
+/// 「原生 API」模版配置：Anthropic 官方直连（v0.7.4 审查 A4 从 hub 层迁入；
+/// v0.7.5 需求6 迭代三补 permissions.defaultMode 行为字段——claude settings
+/// 真实字段，与模型配置一同构成完整模版）。
+fn anthropic_official_config() -> serde_json::Value {
+    let config = crate::config::ClaudeConfig {
+        api_provider: Some("anthropic".into()),
+        model: Some("claude-sonnet-4-6".into()),
+        permissions: Some(crate::config::PermissionsConfig {
+            allow: None,
+            deny: None,
+            default_mode: Some("default".into()),
+            additional_directories: None,
+        }),
+        env: Some({
+            let mut env = std::collections::HashMap::new();
+            env.insert("ANTHROPIC_AUTH_TOKEN".into(), String::new());
+            env
+        }),
+        ..Default::default()
+    };
+    serde_json::to_value(config).unwrap_or_default()
+}
+
+/// 「中转配置」模版配置：国内中转供应商（baseURL/token/model 三项补填）。
+fn third_party_proxy_config() -> serde_json::Value {
+    let config = crate::config::ClaudeConfig {
+        api_provider: Some("anthropic".into()),
+        permissions: Some(crate::config::PermissionsConfig {
+            allow: None,
+            deny: None,
+            default_mode: Some("default".into()),
+            additional_directories: None,
+        }),
+        env: Some({
+            let mut env = std::collections::HashMap::new();
+            env.insert("ANTHROPIC_BASE_URL".into(), String::new());
+            env.insert("ANTHROPIC_AUTH_TOKEN".into(), String::new());
+            env.insert("ANTHROPIC_MODEL".into(), String::new());
+            env
+        }),
+        ..Default::default()
+    };
+    serde_json::to_value(config).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1059,49 +1104,4 @@ mod tests {
         assert_eq!(status["name"], serde_json::json!("claude-agent-acp"));
         assert!(status["installed"].is_boolean());
     }
-}
-
-/// 「原生 API」模版配置：Anthropic 官方直连（v0.7.4 审查 A4 从 hub 层迁入；
-/// v0.7.5 需求6 迭代三补 permissions.defaultMode 行为字段——claude settings
-/// 真实字段，与模型配置一同构成完整模版）。
-fn anthropic_official_config() -> serde_json::Value {
-    let config = crate::config::ClaudeConfig {
-        api_provider: Some("anthropic".into()),
-        model: Some("claude-sonnet-4-6".into()),
-        permissions: Some(crate::config::PermissionsConfig {
-            allow: None,
-            deny: None,
-            default_mode: Some("default".into()),
-            additional_directories: None,
-        }),
-        env: Some({
-            let mut env = std::collections::HashMap::new();
-            env.insert("ANTHROPIC_AUTH_TOKEN".into(), String::new());
-            env
-        }),
-        ..Default::default()
-    };
-    serde_json::to_value(config).unwrap_or_default()
-}
-
-/// 「中转配置」模版配置：国内中转供应商（baseURL/token/model 三项补填）。
-fn third_party_proxy_config() -> serde_json::Value {
-    let config = crate::config::ClaudeConfig {
-        api_provider: Some("anthropic".into()),
-        permissions: Some(crate::config::PermissionsConfig {
-            allow: None,
-            deny: None,
-            default_mode: Some("default".into()),
-            additional_directories: None,
-        }),
-        env: Some({
-            let mut env = std::collections::HashMap::new();
-            env.insert("ANTHROPIC_BASE_URL".into(), String::new());
-            env.insert("ANTHROPIC_AUTH_TOKEN".into(), String::new());
-            env.insert("ANTHROPIC_MODEL".into(), String::new());
-            env
-        }),
-        ..Default::default()
-    };
-    serde_json::to_value(config).unwrap_or_default()
 }

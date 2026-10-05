@@ -110,6 +110,7 @@ pub struct GuiTurnHandle {
 /// - args 中 `--session-id <值>`（首条消息以 pending id 启动、后续以真实 id
 ///   重建，值不同但进程语义相同，不排除会每轮假漂移）；
 /// - env `JISHU_SESSION_ID`（同因）。
+///
 /// 其余任何差异（--provider/--model、通道 env、工具面、系统提示）都视为
 /// 配置漂移——调用方据此回收长驻进程并按当前配置重拉。
 pub fn acp_turn_signature(prepared: &PreparedGuiTurn) -> Option<String> {

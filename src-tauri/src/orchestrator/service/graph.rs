@@ -127,7 +127,7 @@ impl TaskService {
             ));
         }
 
-        summaries.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        summaries.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
         Ok(summaries)
     }
 

@@ -39,6 +39,8 @@ pub fn run(action: ChatAction, _ctx: &ExecutionContext) -> Result<(), CliError> 
     }
 }
 
+// CLI send 的参数面与 ChatAction 解构一一对应，参数无法再收窄。
+#[allow(clippy::too_many_arguments)]
 fn send(
     agent_id: String,
     project: String,
@@ -221,8 +223,7 @@ fn build_jishu_self_interactive_invocation(
     args.push("--append-system-prompt".to_string());
     args.push(crate::agent::jishu_self::JISHU_AGENT_IDENTITY_PROMPT.to_string());
 
-    let mut envs = Vec::new();
-    envs.push(("PI_SKIP_VERSION_CHECK".to_string(), "1".to_string()));
+    let envs = vec![("PI_SKIP_VERSION_CHECK".to_string(), "1".to_string())];
 
     ProcessInvocation {
         program: runtime.program,

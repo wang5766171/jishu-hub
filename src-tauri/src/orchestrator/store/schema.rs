@@ -1,6 +1,9 @@
 use super::*;
 
 impl TaskStore {
+    /// 迁移前备份：若 user_version 与当前 schema 版本不一致（即 create_schema 即将
+    /// DROP 全表重建），先把 WAL 合并回主库文件，复制一份带版本与时间戳的备份。
+    /// 全新库（version=0）或版本一致时跳过。备份保留最近 5 份，超出清理。
     pub(super) fn backup_before_migrate(conn: &Connection, db_path: &Path) {
         let current_version: i64 =
             match conn.pragma_query_value(None, "user_version", |row| row.get(0)) {
@@ -56,15 +59,11 @@ impl TaskStore {
             return;
         }
         // 按修改时间倒序，保留最新的 5 份，删除其余。
-        backups.sort_by(|a, b| b.1.cmp(&a.1));
+        backups.sort_by_key(|b| std::cmp::Reverse(b.1));
         for (path, _) in backups.into_iter().skip(5) {
             let _ = std::fs::remove_file(path);
         }
     }
-
-    /// Open an in-memory store for testing.
-    /// Uses a unique named in-memory database per call, combining a global counter
-    /// with the thread ID so each invocation gets its own isolated database.
 
     pub(super) fn create_schema(conn: &Connection) -> Result<(), StoreError> {
         let current_version: i64 =

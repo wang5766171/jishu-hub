@@ -137,9 +137,7 @@ pub async fn generate_and_persist(session_id: &str) -> Option<String> {
     };
 
     let _ = turn; // 文本经 emitter 收集
-    let Some(raw) = response.lock().ok().map(|s| s.clone()) else {
-        return None;
-    };
+    let raw = response.lock().ok().map(|s| s.clone())?;
     let Some(title) = sanitize_title(&raw) else {
         eprintln!("[session-title] sanitized title empty, raw={raw:?}");
         return None;
@@ -276,8 +274,7 @@ fn append_session_info(path: &std::path::Path, title: &str) -> std::io::Result<(
     let content = std::fs::read_to_string(path)?;
     let parent_id: Option<String> = content
         .lines()
-        .filter(|l| !l.trim().is_empty())
-        .next_back()
+        .rfind(|l| !l.trim().is_empty())
         .and_then(|l| {
             serde_json::from_str::<serde_json::Value>(l)
                 .ok()

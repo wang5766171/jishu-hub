@@ -636,7 +636,7 @@ impl SessionAdapter for CodexAdapter {
             });
         }
         // 按最后活跃时间降序排列
-        sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.last_active));
         Ok(sessions)
     }
 
@@ -1084,7 +1084,9 @@ fn parse_rollout_messages(path: &std::path::Path) -> Result<Vec<crate::session::
     let reader = std::io::BufReader::new(file);
 
     let mut messages = Vec::new();
-    for line in reader.lines().flatten() {
+    // v0.9.5 clippy 批次：map_while 首个 Err 即止——Lines 出错后可能无限
+    // 产出 Err（flatten/filter_map 形态会死循环）。
+    for line in reader.lines().map_while(Result::ok) {
         let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };

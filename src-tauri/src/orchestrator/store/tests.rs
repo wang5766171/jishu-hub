@@ -1148,8 +1148,8 @@ fn setup_run_with_nodes(store: &TaskStore, run_id: &str, nodes: &[(&str, &str)])
         edges: vec![],
     };
     let revision = GraphRevision::from_snapshot(
-        &format!("rev-{run_id}"),
-        &format!("g-{run_id}"),
+        format!("rev-{run_id}"),
+        format!("g-{run_id}"),
         None,
         &snapshot,
         "user",

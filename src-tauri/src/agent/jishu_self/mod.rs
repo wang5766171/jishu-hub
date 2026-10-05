@@ -948,22 +948,19 @@ impl TransportAdapter for JishuSelfAgent {
         // 对此后新 spawn 的进程生效（Pi 每条消息一个进程）。
         // v0.9.2 需求7：扩展工具按启用插件聚合（热插拔）。
         let pi_extension_tools = crate::agent::plugin::enabled_pi_extension_tools();
-        match crate::hub::load_agent_tool_mode("jishu-self").as_deref() {
-            Some("readonly") => {
-                // 只读模式保留交互与任务提交类扩展工具（问答纯交互；
-                // lock/commit 为工作流操作，任务流须可用）。
-                let mut tools: Vec<String> = ["read", "grep", "find", "ls"]
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect();
-                tools.extend_from_slice(&pi_extension_tools);
-                args.push("--tools".to_string());
-                args.push(tools.join(","));
-            }
-            // full-approve 与 full 工具集相同，差异只在 toolApproval 审批
-            // 开关（set_agent_tool_mode 已联动写入 Pi settings）。
-            _ => {}
+        if let Some("readonly") = crate::hub::load_agent_tool_mode("jishu-self").as_deref() {
+            // 只读模式保留交互与任务提交类扩展工具（问答纯交互；
+            // lock/commit 为工作流操作，任务流须可用）。
+            let mut tools: Vec<String> = ["read", "grep", "find", "ls"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            tools.extend_from_slice(&pi_extension_tools);
+            args.push("--tools".to_string());
+            args.push(tools.join(","));
         }
+        // full-approve 与 full 工具集相同，差异只在 toolApproval 审批
+        // 开关（set_agent_tool_mode 已联动写入 Pi settings）。
         // v0.9.1 需求13：初始工具集默认=全部工具集——settings 未配置
         // defaultTools 时 spawn 显式传全集（Windows 含 powershell），消除
         // pi 回退仅四件的歧义（存量未配置用户无需改配置即生效）；已配置

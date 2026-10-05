@@ -83,7 +83,7 @@ fn parse_session_list(
         })
         .collect::<Vec<_>>();
 
-    sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.last_active));
     Ok(sessions)
 }
 
@@ -408,7 +408,7 @@ fn list_sessions_from_db(
         });
     }
 
-    sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.last_active));
     Ok(sessions)
 }
 
@@ -620,20 +620,20 @@ fn parse_opencode_config(raw: &str) -> Result<crate::config::ClaudeConfig, Strin
 fn opencode_value_to_shared_config(
     value: &serde_json::Value,
 ) -> Result<crate::config::ClaudeConfig, String> {
-    let mut config = crate::config::ClaudeConfig::default();
-    config.model = value
-        .get("model")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    // v0.7.4 R12：自定义供应商段原样透出（UI 全量带回，未知键保留）。
-    if let Some(providers) = value.get("provider").and_then(|v| v.as_object()) {
-        config.custom_providers = Some(providers.clone());
-    }
-    config.small_model = value
-        .get("small_model")
-        .or_else(|| value.get("smallModel"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let mut config = crate::config::ClaudeConfig {
+        model: value
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        // v0.7.4 R12：自定义供应商段原样透出（UI 全量带回，未知键保留）。
+        custom_providers: value.get("provider").and_then(|v| v.as_object()).cloned(),
+        small_model: value
+            .get("small_model")
+            .or_else(|| value.get("smallModel"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        ..Default::default()
+    };
 
     if let Some(mcp) = value.get("mcp").and_then(|v| v.as_object()) {
         let mut servers = HashMap::new();
@@ -1387,7 +1387,7 @@ impl ProjectAdapter for OpencodeAdapter {
             _ => {}
         }
 
-        let output = match {
+        let output_result = {
             let mut command = std::process::Command::new("opencode");
             crate::process_command::std_no_window(command.args([
                 "session",
@@ -1398,7 +1398,8 @@ impl ProjectAdapter for OpencodeAdapter {
                 "500",
             ]))
             .output()
-        } {
+        };
+        let output = match output_result {
             Ok(output) => output,
             Err(_) => return Vec::new(),
         };
@@ -1922,13 +1923,15 @@ mod tests {
             "small_model": "old-small",
             "mcp": {}
         });
-        let mut config = crate::config::ClaudeConfig::default();
-        config.model = Some("new/model".to_string());
-        config.small_model = Some("new/small".to_string());
-        config.enabled_plugins = Some(std::collections::HashMap::from([(
-            "@example/plugin".to_string(),
-            true,
-        )]));
+        let config = crate::config::ClaudeConfig {
+            model: Some("new/model".to_string()),
+            small_model: Some("new/small".to_string()),
+            enabled_plugins: Some(std::collections::HashMap::from([(
+                "@example/plugin".to_string(),
+                true,
+            )])),
+            ..Default::default()
+        };
 
         let merged = merge_opencode_config(existing, &config).unwrap();
 

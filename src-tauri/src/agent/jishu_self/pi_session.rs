@@ -45,7 +45,7 @@ pub(crate) fn list_pi_sessions(encoded_name: &str) -> Result<Vec<crate::session:
         }
     }
 
-    sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.last_active));
     Ok(sessions)
 }
 

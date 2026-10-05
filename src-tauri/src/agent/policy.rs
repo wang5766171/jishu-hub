@@ -221,9 +221,9 @@ impl OnceApprovalPolicy {
         // 注意含 tool 名（02 §2.3 偏离修正，测试锁定）：文档口径 kind+payload
         // 键会让「批准过 bash」误放行「grep」——同形状不同工具是不同动作。
         format!(
-            "{}|{}|{}",
+            "{}|{:?}|{}",
             ctx.tool.as_deref().unwrap_or(""),
-            format!("{:?}", ctx.kind),
+            ctx.kind,
             keys.join(",")
         )
     }

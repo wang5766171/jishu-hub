@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomCommand {
@@ -31,7 +31,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(
     Ok(serde_json::from_str(&content)?)
 }
 
-fn write_json<T: Serialize>(path: &PathBuf, data: &T) -> Result<(), Box<dyn std::error::Error>> {
+fn write_json<T: Serialize>(path: &Path, data: &T) -> Result<(), Box<dyn std::error::Error>> {
     let json = serde_json::to_string_pretty(data)?;
     crate::util::atomic_write(path, json.as_bytes())?;
     Ok(())

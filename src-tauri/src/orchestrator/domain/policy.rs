@@ -223,15 +223,19 @@ mod tests {
 
     #[test]
     fn repair_depth_limit_honors_explicit_max() {
-        let mut policy = NodePolicy::default();
-        policy.max_repair_depth = Some(5);
+        let policy = NodePolicy {
+            max_repair_depth: Some(5),
+            ..Default::default()
+        };
         assert_eq!(policy.repair_depth_limit(), 5);
     }
 
     #[test]
     fn repair_depth_limit_zero_disables_repair() {
-        let mut policy = NodePolicy::default();
-        policy.max_repair_depth = Some(0);
+        let policy = NodePolicy {
+            max_repair_depth: Some(0),
+            ..Default::default()
+        };
         assert_eq!(policy.repair_depth_limit(), 0);
     }
 

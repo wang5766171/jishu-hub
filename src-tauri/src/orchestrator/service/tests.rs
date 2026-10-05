@@ -1025,9 +1025,14 @@ fn approval_resolution_is_persisted_with_node_transition_and_event() {
             ..Default::default()
         })
         .unwrap();
-    let mut policy = NodePolicy::default();
-    policy.approval_policy = ApprovalPolicy::Always;
-    policy.permission_scope.can_write_files = true;
+    let policy = NodePolicy {
+        approval_policy: ApprovalPolicy::Always,
+        permission_scope: crate::orchestrator::domain::policy::PermissionScope {
+            can_write_files: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
     let result = svc
         .apply_commands(
             &graph.graph_id,
@@ -1153,9 +1158,14 @@ fn resolve_approval_resumes_awaiting_human_run() {
             ..Default::default()
         })
         .unwrap();
-    let mut policy = NodePolicy::default();
-    policy.approval_policy = ApprovalPolicy::Always;
-    policy.permission_scope.can_write_files = true;
+    let policy = NodePolicy {
+        approval_policy: ApprovalPolicy::Always,
+        permission_scope: crate::orchestrator::domain::policy::PermissionScope {
+            can_write_files: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
     let result = svc
         .apply_commands(
             &graph.graph_id,

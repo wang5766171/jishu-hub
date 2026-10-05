@@ -836,10 +836,9 @@ mod tests {
                 role_requirement: None,
                 capability_requirements: vec![],
                 agent_assignment_constraint: None,
-                policy: {
-                    let mut p = crate::orchestrator::domain::policy::NodePolicy::default();
-                    p.priority = 0;
-                    p
+                policy: crate::orchestrator::domain::policy::NodePolicy {
+                    priority: 0,
+                    ..Default::default()
                 },
                 metadata: Default::default(),
                 executable_payload: None,
@@ -857,10 +856,9 @@ mod tests {
                 role_requirement: None,
                 capability_requirements: vec![],
                 agent_assignment_constraint: None,
-                policy: {
-                    let mut p = crate::orchestrator::domain::policy::NodePolicy::default();
-                    p.priority = 10;
-                    p
+                policy: crate::orchestrator::domain::policy::NodePolicy {
+                    priority: 10,
+                    ..Default::default()
                 },
                 metadata: Default::default(),
                 executable_payload: None,

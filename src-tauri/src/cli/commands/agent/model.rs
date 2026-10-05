@@ -138,11 +138,9 @@ async fn async_test(
         crate::agent::NormalizedEvent::Thinking { delta } => {
             print!("[think: {delta}]");
         }
-        crate::agent::NormalizedEvent::TurnComplete { usage, .. } => {
-            if let Some(u) = usage {
-                if let Ok(mut info) = emitter_usage.lock() {
-                    *info = Some(u);
-                }
+        crate::agent::NormalizedEvent::TurnComplete { usage: Some(u), .. } => {
+            if let Ok(mut info) = emitter_usage.lock() {
+                *info = Some(u);
             }
         }
         _ => {}

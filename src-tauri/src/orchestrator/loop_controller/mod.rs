@@ -16,6 +16,8 @@ pub fn has_hard_budget(config: &LoopControllerConfig) -> bool {
         || config.no_progress_threshold.is_some()
 }
 
+// 循环评估需要同时拿到配置、迭代与用量全景，参数无法语义分组，机械清理批次不改签名。
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate(
     config: &LoopControllerConfig,
     iteration: u32,

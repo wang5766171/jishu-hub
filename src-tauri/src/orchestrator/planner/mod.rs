@@ -870,7 +870,7 @@ fn validate_plan_shape<S: AsRef<str>>(
                 agent_roles.insert(role_id.clone());
                 if description
                     .as_deref()
-                    // MSRV 1.77.2：is_none_or 需 1.82，用 map_or 等价表达
+                    // MSRV 1.79：is_none_or 需 1.82，用 map_or 等价表达
                     //（三轮评审在 agents.rs 清理同款时此处漏网）。
                     .map_or(true, |value| value.trim().is_empty())
                     || prompt.trim().is_empty()
@@ -1048,9 +1048,11 @@ fn draft_to_commands(
                 "planner node '{node_id}' references an unknown dependency"
             ));
         }
-        let mut policy = NodePolicy::default();
-        policy.permission_scope = permissions;
-        policy.approval_policy = ApprovalPolicy::OnHighRisk;
+        let policy = NodePolicy {
+            permission_scope: permissions,
+            approval_policy: ApprovalPolicy::OnHighRisk,
+            ..Default::default()
+        };
         commands.push(GraphCommand::AddNode {
             command_id: gen_id("planner_cmd"),
             node: GraphNode {

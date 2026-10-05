@@ -982,7 +982,6 @@ async fn handle_command(
 /// Register a server request and emit the matching NormalizedEvent. No stdin
 /// write — the write-back happens when the user later answers (command path).
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 async fn register_server_request(
     id: &Value,
     method: &str,
@@ -1136,6 +1135,8 @@ async fn register_server_request(
 /// v0.8.0 需求2 Phase 2 挂载点 1（codex）：审批到达先过策略链——
 /// Allow/Deny 直接 `respond` 回写不打扰用户；Delegate 走 register_approval
 /// 弹 UI。回写结果形状对齐 codex 协议（decision: approved/denied）。
+// 策略评估需要完整的审批上下文与回写通道，参数无法再收窄。
+#[allow(clippy::too_many_arguments)]
 async fn try_policy_or_register(
     id: &Value,
     params: &Value,

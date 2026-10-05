@@ -72,9 +72,7 @@ pub(crate) fn normalize_acp_update(
                 .or_else(|| update.get("input"))
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
-            if call_id.is_empty() {
-                vec![]
-            } else if is_elicitation_only_tool(&tool) {
+            if call_id.is_empty() || is_elicitation_only_tool(&tool) {
                 vec![]
             } else {
                 let interactions = interaction_requests_from_tool_call(&call_id, &tool, &input);

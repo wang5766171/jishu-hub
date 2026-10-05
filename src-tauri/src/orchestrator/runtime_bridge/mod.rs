@@ -20,6 +20,8 @@ use crate::orchestrator::domain::run::{
 /// arrive, can pause on `Event(ApprovalRequest|InteractionRequest)`, and is
 /// signalled completion by `Finished`. `RuntimeError` preserves the old
 /// "invoke-level Err" path (mapped to a retryable Transient attempt error).
+// 低频构造的内部枚举，装箱改公共形状收益为负（机械清理批次禁改形状）。
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum RuntimeStreamItem {
     /// One normalized transport event (progress/approval/interaction/session/turn-complete/error/...).

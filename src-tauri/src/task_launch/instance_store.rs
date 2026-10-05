@@ -216,7 +216,6 @@ impl TaskInstanceStore {
 }
 
 /// 打开（或创建）某项目根目录下的任务实例库。
-
 pub fn list_task_instances(project_root: &str) -> Result<Vec<TaskLaunchInstance>, String> {
     let store = open_store(project_root)?;
     store.list_by_project(project_root)

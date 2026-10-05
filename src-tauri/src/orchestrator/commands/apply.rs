@@ -590,8 +590,10 @@ mod tests {
         let mut snapshot = empty_snapshot();
         snapshot.nodes.push(make_executable("a"));
 
-        let mut new_policy = crate::orchestrator::domain::policy::NodePolicy::default();
-        new_policy.priority = 99;
+        let new_policy = crate::orchestrator::domain::policy::NodePolicy {
+            priority: 99,
+            ..Default::default()
+        };
 
         let commands = vec![GraphCommand::UpdatePolicy {
             command_id: "c1".into(),

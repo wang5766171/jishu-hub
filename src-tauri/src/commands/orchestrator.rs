@@ -1,3 +1,10 @@
+//! v0.9.5 clippy 机械清理批次：本模块全部 Tauri IPC 命令返回
+//! `Result<T, TaskError>`——TaskError 是跨端结构化错误（字段即 IPC 协议
+//! 形状，前端按字段渲染文案与补救动作），装箱（Box）会改变全部命令的
+//! 线上形状与既有调用链，超出机械清理边界——模块整体豁免
+//! result_large_err（38 处命令签名同源告警）。
+#![allow(clippy::result_large_err)]
+
 use tauri::Emitter;
 
 use crate::AppState;

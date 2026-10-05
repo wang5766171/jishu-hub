@@ -1,6 +1,7 @@
 //! `jishu-cli plugins` 子命令（v0.8.1 需求4）：manifest 插件的本地生命周期
 //! 管理——add（校验安装）/ add-hybrid（需求25 P2：混合插件目录包，默认禁用
 //! + 确认标记）/ list / remove / enable / disable。与 GUI 插件页（需求3）
+//!
 //! 共享 plugin.rs 的配置与 manifest 装载逻辑；CLI 是独立进程，写操作即时
 //! 落盘，运行中的 GUI 经插件页「重新加载」或重启感知。
 //!

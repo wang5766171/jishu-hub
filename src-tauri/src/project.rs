@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-fn serialize_pathbuf<S: serde::Serializer>(path: &PathBuf, s: S) -> Result<S::Ok, S::Error> {
+fn serialize_pathbuf<S: serde::Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&path.to_string_lossy())
 }
 
@@ -326,7 +326,7 @@ fn decode_by_fs_matching(current_dir: &Path, remaining: &str) -> Option<PathBuf>
     }
 
     // Greedy: try longest matches first
-    matches.sort_by(|a, b| b.1.cmp(&a.1));
+    matches.sort_by_key(|m| std::cmp::Reverse(m.1));
 
     for (path, consumed) in matches {
         let rest_after = &remaining[consumed..];

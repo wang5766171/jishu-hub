@@ -220,7 +220,6 @@ fn task_instances_db_path(project_root: &str) -> PathBuf {
 }
 
 #[cfg(test)]
-
 mod tests {
     use super::*;
 

@@ -1,5 +1,7 @@
 use super::*;
 
+// 参数为执行上下文的完整装配（策略/续跑/取消/回调各自独立传递），机械清理批次不改签名。
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn execute_node(
     node: &GraphNode,
     project_root: &std::path::Path,

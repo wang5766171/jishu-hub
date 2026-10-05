@@ -155,10 +155,9 @@ impl TaskStore {
         })
     }
 
-    /// 迁移前备份：若 user_version 与当前 schema 版本不一致（即 create_schema 即将
-    /// DROP 全表重建），先把 WAL 合并回主库文件，复制一份带版本与时间戳的备份。
-    /// 全新库（version=0）或版本一致时跳过。备份保留最近 5 份，超出清理。
-
+    /// Open an in-memory store for testing.
+    /// Uses a unique named in-memory database per call, combining a global counter
+    /// with the thread ID so each invocation gets its own isolated database.
     pub fn open_in_memory() -> Result<Self, StoreError> {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static TEST_DB_COUNTER: AtomicUsize = AtomicUsize::new(0);

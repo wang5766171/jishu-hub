@@ -1061,8 +1061,14 @@ fn recover_lost_lease_recovers_expired_leased_node() {
     assert_ne!(latest.status, NodeRunStatus::Leased);
 
     // Idempotency: second recovery should return false (no longer eligible)
-    let recovered_again = recover_lost_lease(&store, &arbiter, &run, &snapshot, &[latest.clone()])
-        .expect("recovery should succeed");
+    let recovered_again = recover_lost_lease(
+        &store,
+        &arbiter,
+        &run,
+        &snapshot,
+        std::slice::from_ref(latest),
+    )
+    .expect("recovery should succeed");
     assert!(
         !recovered_again,
         "already recovered node should not be recovered again"

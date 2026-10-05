@@ -178,16 +178,19 @@ pub fn validate_node_run_transition(
         return Ok(());
     }
 
-    let valid = match (from, to) {
-        (Blocked, Ready | Skipped) => true,
-        (Ready, Leased | Skipped | Blocked) => true,
-        (Leased, Running | Ready | Failed) => true,
-        (Running, AwaitingApproval | Succeeded | Failed | RetryWait | Repairing) => true,
-        (AwaitingApproval, Running | Succeeded | Failed) => true,
-        (RetryWait, Ready) => true,
-        (Repairing, Ready | Failed) => true,
-        _ => false,
-    };
+    let valid = matches!(
+        (from, to),
+        (Blocked, Ready | Skipped)
+            | (Ready, Leased | Skipped | Blocked)
+            | (Leased, Running | Ready | Failed)
+            | (
+                Running,
+                AwaitingApproval | Succeeded | Failed | RetryWait | Repairing
+            )
+            | (AwaitingApproval, Running | Succeeded | Failed)
+            | (RetryWait, Ready)
+            | (Repairing, Ready | Failed)
+    );
 
     if valid {
         Ok(())

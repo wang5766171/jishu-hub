@@ -1,5 +1,17 @@
 use super::*;
 
+/// `list_node_sessions` 单条 JOIN 行的原始列（node_id, node_run_id, status,
+/// attempt_number, session_id, agent_id, revision_id）。
+type LatestAttemptRow = (
+    String,         // node_id
+    String,         // node_run_id
+    String,         // status
+    u32,            // attempt_number
+    Option<String>, // session_id
+    Option<String>, // agent_id
+    String,         // revision_id
+);
+
 impl TaskStore {
     pub fn save_node_run(&self, node_run: &NodeRun) -> Result<(), StoreError> {
         let conn = self
@@ -569,15 +581,7 @@ impl TaskStore {
     pub fn list_node_sessions(&self, run_id: &str) -> Result<Vec<NodeSessionSummary>, StoreError> {
         // 1. 取出本 run 下所有节点的最新 attempt（含该节点所属的 revision_id）。
         //    用独立作用域持有 reader 锁，收集完即释放——避免后续 get_revision 再次加锁死锁。
-        let node_rows: Vec<(
-            String,         // node_id
-            String,         // node_run_id
-            String,         // status
-            u32,            // attempt_number
-            Option<String>, // session_id
-            Option<String>, // agent_id
-            String,         // revision_id
-        )> = {
+        let node_rows: Vec<LatestAttemptRow> = {
             let conn = self
                 .reader
                 .lock()
@@ -784,9 +788,9 @@ impl TaskStore {
             return Ok(());
         };
         let mut lease: crate::orchestrator::domain::run::Lease =
-            serde_json::from_str(&lease_json).map_err(|e| StoreError::Serde(e))?;
+            serde_json::from_str(&lease_json).map_err(StoreError::Serde)?;
         lease.heartbeat_deadline = heartbeat_deadline;
-        let updated = serde_json::to_string(&lease).map_err(|e| StoreError::Serde(e))?;
+        let updated = serde_json::to_string(&lease).map_err(StoreError::Serde)?;
         conn.execute(
             "UPDATE node_attempt SET lease = ?1 WHERE attempt_id = ?2",
             params![updated, attempt_id],

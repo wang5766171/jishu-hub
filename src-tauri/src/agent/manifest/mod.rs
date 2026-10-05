@@ -72,18 +72,20 @@ pub fn dir_form_has_skill_source(toml_path: &std::path::Path) -> bool {
         .any(|e| e.path().join("SKILL.md").is_file())
 }
 
+/// manifest 扫描结果三元组：(agent 形态清单, tool 形态清单, 错误清单)——
+/// 清单项为 (manifest, 来源路径)，错误项为 (文件名, 原因)。
+pub type ManifestScanResult = (
+    Vec<(schema::AgentManifestFile, PathBuf)>,
+    Vec<(schema::AgentManifestFile, PathBuf)>,
+    Vec<(String, String)>,
+);
+
 /// 扫描并加载全部合法 manifest（v0.8.1 需求7：按 kind 分流）。
 ///
 /// `builtin_ids`：内置 agent id 清单（冲突拒绝，agent 与 tool 共享 id
 /// namespace）。返回 (agent 形态清单, tool 形态清单, 错误清单)——清单项为
 /// (manifest, 来源路径)。错误项为 (文件名, 原因)，供环境检测页与插件页展示。
-pub fn load_manifests(
-    builtin_ids: &[String],
-) -> (
-    Vec<(schema::AgentManifestFile, PathBuf)>,
-    Vec<(schema::AgentManifestFile, PathBuf)>,
-    Vec<(String, String)>,
-) {
+pub fn load_manifests(builtin_ids: &[String]) -> ManifestScanResult {
     let dir = manifest_dir();
     // v0.9.4 需求3 修复：agents/ 不存在时不再 early return——否则全新
     // 环境（从未装过单文件插件）下 plugins/<id>/ 目录形式插件全部静默

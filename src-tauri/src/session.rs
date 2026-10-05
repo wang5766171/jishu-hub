@@ -6,7 +6,7 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-fn serialize_pathbuf<S: serde::Serializer>(path: &PathBuf, s: S) -> Result<S::Ok, S::Error> {
+fn serialize_pathbuf<S: serde::Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&path.to_string_lossy())
 }
 
@@ -1172,7 +1172,7 @@ where
         }
     }
 
-    sessions_with_time.sort_by(|a, b| b.1.cmp(&a.1));
+    sessions_with_time.sort_by_key(|s| std::cmp::Reverse(s.1));
     sessions_with_time.into_iter().map(|(s, _)| s).collect()
 }
 

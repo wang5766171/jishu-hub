@@ -517,6 +517,7 @@ mod tests {
 
     /// 用户质疑场景（2026-09-12 讨论）：同 id 同角色、职责变更（加粒子效果）
     /// + 锁定继承 → 派发 prompt 必须含**新**职责（内容全量重建，不因继承变旧），
+    ///
     /// 且 locked_agent_id 保留。
     #[test]
     fn rebuild_keeps_lock_and_composes_prompt_from_new_responsibility() {

@@ -183,10 +183,12 @@ pub fn plan_packages_sync(existing: &[String], enabled_packages: &[(&str, bool)]
         if *enabled {
             let pinned = super::jishu_self::JishuSelfAgent::pinned_source_for_package(name);
             let has_pinned = pinned.is_some_and(|src| out.iter().any(|v| v == src));
-            if pinned.is_some() && !has_pinned {
-                // 保留无关条目，摘该包旧变体，补钉定源（追加在末尾）。
-                out.retain(|v| !package_entry_matches(v, name));
-                out.push(pinned.unwrap().to_string());
+            if !has_pinned {
+                if let Some(pinned_src) = pinned {
+                    // 保留无关条目，摘该包旧变体，补钉定源（追加在末尾）。
+                    out.retain(|v| !package_entry_matches(v, name));
+                    out.push(pinned_src.to_string());
+                }
             }
         } else {
             out.retain(|v| !package_entry_matches(v, name));

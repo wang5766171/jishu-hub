@@ -134,8 +134,8 @@ pub fn conductor_sync_phase(
             .map_err(|e| format!("stages_json 解析失败: {e}"))?,
         None => request.stages.clone().filter(|stages| !stages.is_empty()),
     };
-    if pipeline_stages.is_some() {
-        return sync_pipeline_phase(request, &store, existing, pipeline_stages.unwrap());
+    if let Some(stages) = pipeline_stages {
+        return sync_pipeline_phase(request, &store, existing, stages);
     }
     legacy_sync_phase(request, &store, existing)
 }
@@ -397,11 +397,9 @@ fn legacy_sync_phase(
         // 从 TaskInstance 的 current_phase 反推 Conductor 阶段
         match inst.current_phase.as_str() {
             "requirements" => {
-                if inst.status == STATUS_REQUIREMENTS_DISCUSSING {
-                    "discuss"
-                } else {
-                    "discuss" // requirements_finalized 仍属 discuss→plan 过渡
-                }
+                // requirements_finalized 仍属 discuss→plan 过渡，两种状态
+                // 均映射 discuss。
+                "discuss"
             }
             "planning" => "plan",
             "execution" => {

@@ -180,6 +180,7 @@ pub fn set_session_tools(session_id: &str, tool_ids: &[String]) -> Result<(), St
 ///    输入框勾选的工具（暂存键）随首条消息落到 pending/真实键；
 /// 2. 会话 id 解析回调：pending-<ts> → 真实 session id——首条消息解析出
 ///    真实 id 后工具集跟着搬家，第二条消息起按真实键命中注入。
+///
 /// from == to 或 from 不存在时为无操作（幂等）。
 pub fn migrate_session_tools(from: &str, to: &str) {
     if from == to {
@@ -438,7 +439,7 @@ mod tests {
 
     #[test]
     fn render_and_strip_roundtrip() {
-        let plugins = vec![
+        let plugins = [
             tool_plugin(
                 "gh",
                 "GitHub CLI",

@@ -150,7 +150,6 @@ fn list_sessions_at(dir: &std::path::Path) -> Vec<Session> {
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
-        let agent_id = "";
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
@@ -174,11 +173,8 @@ fn list_sessions_at(dir: &std::path::Path) -> Vec<Session> {
         sessions.push(Session {
             id: stem.to_string(),
             path: path.clone(),
-            agent_id: if agent_id.is_empty() {
-                None
-            } else {
-                Some(agent_id.to_string())
-            },
+            // agent_id 由各 adapter 在装载后回填，此处恒为空。
+            agent_id: None,
             messages: Vec::new(),
             started_at: created_at
                 .map(|ms| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_default()),

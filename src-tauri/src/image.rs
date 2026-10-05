@@ -1,7 +1,7 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
 pub struct InputFile {
@@ -18,7 +18,7 @@ pub struct SavedFile {
     pub batch_id: String,
 }
 
-pub(crate) fn validate_path(p: &PathBuf) -> Result<(), String> {
+pub(crate) fn validate_path(p: &Path) -> Result<(), String> {
     let s = p.to_string_lossy().to_lowercase();
     if s.starts_with("\\\\") {
         return Err("UNC paths are not allowed".to_string());

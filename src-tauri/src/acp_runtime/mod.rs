@@ -65,9 +65,10 @@ pub enum AcpCommand {
     /// to the transport's mid-turn write-back channel:
     /// - PiRpc → `extension_ui_response` (production mid-turn baseline).
     /// - ACP   → a pending `elicitation/create` (claude_code, capability-gated;
-    ///           populated in Phase 3). ACP agents without an elicitation channel
-    ///           (opencode) have no mid-turn business path and must be answered
-    ///           as a follow-up message (handled by the frontend, not here).
+    ///   populated in Phase 3). ACP agents without an elicitation channel
+    ///   (opencode) have no mid-turn business path and must be answered
+    ///   as a follow-up message (handled by the frontend, not here).
+    ///
     /// `id` is the interaction request id; `value` is the user's choice/input.
     /// `response` carries the write-back outcome so the caller reports an
     /// authoritative `InteractionDelivery` (design R6).
@@ -334,6 +335,8 @@ fn pop_next_acp_follow_up(pending_follow_ups: &mut VecDeque<String>) -> Option<S
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 
+// 连接循环的启动参数按协议固定传递，参数面无法再收窄。
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_acp_session(
     app: tauri::AppHandle,
     agent_id: String,
@@ -479,6 +482,8 @@ pub fn spawn_acp_session_with_policy(
 // Internal: persistent connection loop
 // ---------------------------------------------------------------------------
 
+// 连接循环需持有全部通道端点与状态句柄，参数无法再收窄。
+#[allow(clippy::too_many_arguments)]
 async fn acp_connection_loop(
     emit: AcpEventEmit,
     pending_session_id: String,

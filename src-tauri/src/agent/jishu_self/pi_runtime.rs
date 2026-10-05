@@ -99,12 +99,9 @@ where
         .join("packages")
         .join("coding-agent")
         .join("dist");
-    for entry in [dist.join("bundle").join("cli.js"), dist.join("cli.js")] {
-        if file_exists(&entry) {
-            return Some(entry);
-        }
-    }
-    None
+    [dist.join("bundle").join("cli.js"), dist.join("cli.js")]
+        .into_iter()
+        .find(|entry| file_exists(entry))
 }
 
 /// 查找内嵌的便携 Node（v0.8.1 需求10：pi-bundle/bin/node.exe）。
