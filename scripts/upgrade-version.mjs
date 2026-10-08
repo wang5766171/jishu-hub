@@ -34,8 +34,12 @@ const pkgsToUpdate = [
   "packages/coding-agent/package.json",
   "packages/tui/package.json",
   "packages/server/package.json",
-  // v0.85.0 起进入 coding-agent 运行时闭包的包（chord/client/protocol/telemetry）。
+  // v0.85.0 起进入 coding-agent 运行时闭包的包（chord/client/protocol/telemetry）；
+  // v1.1.0 起新增 codemode/mcp（运行时闭包）；durable/env 不入闭包不发布，
+  // 但作为 workspace 包同样统一版本号。
   "packages/chord/package.json",
+  "packages/codemode/package.json",
+  "packages/mcp/package.json",
   "packages/client/package.json",
   "packages/protocol/package.json",
   "packages/telemetry/package.json",
@@ -45,7 +49,12 @@ const pkgsToUpdate = [
 for (const pkgPath of pkgsToUpdate) {
   const fullPath = path.join(ROOT_DIR, pkgPath);
   if (fs.existsSync(fullPath)) {
-    const json = JSON.parse(fs.readFileSync(fullPath, "utf-8"));
+    let json;
+    try {
+      json = JSON.parse(fs.readFileSync(fullPath, "utf-8"));
+    } catch (err) {
+      throw new Error(`upgrade-version: 读取/解析 ${pkgPath} 失败——fork 包结构异常`, { cause: err });
+    }
     const oldVersion = json.version;
     json.version = newVersion;
     
@@ -63,7 +72,7 @@ for (const pkgPath of pkgsToUpdate) {
     ];
     for (const depType of ["dependencies", "devDependencies", "peerDependencies"]) {
       if (json[depType]) {
-        for (const [dep, ver] of Object.entries(json[depType])) {
+        for (const dep of Object.keys(json[depType])) {
           if (internalDeps.includes(dep)) {
             json[depType][dep] = newVersion;
           }
@@ -80,32 +89,19 @@ for (const pkgPath of pkgsToUpdate) {
 console.log(`\n[3] Running npm install to sync the root package-lock.json...`);
 try {
   execSync("npm install", { cwd: ROOT_DIR, stdio: "inherit" });
-} catch (e) {
+} catch {
   console.error("❌ npm install failed");
   process.exit(1);
 }
 
-// 3.5 Regenerate coding-agent npm-shrinkwrap.json
-// `npm install` above only syncs the root package-lock.json. It does NOT touch
-// packages/coding-agent/npm-shrinkwrap.json — that is a separate file regenerated from
-// coding-agent/package.json + the root lock by generate-coding-agent-shrinkwrap.mjs.
-// Without this step the shrinkwrap keeps the OLD version while package.json moves ahead.
-// npm-shrinkwrap overrides package.json at install time, so a stale shrinkwrap makes the
-// published Lite package resolve its internal deps (@earendil-works/pi-*) to the
-// nonexistent previous version (404 / ERR_MODULE_NOT_FOUND). Regenerate it in lockstep.
-console.log(`\n[3.5] Regenerating packages/coding-agent/npm-shrinkwrap.json...`);
-try {
-  execSync("npm run shrinkwrap:coding-agent", { cwd: ROOT_DIR, stdio: "inherit" });
-} catch (e) {
-  console.error("❌ Failed to regenerate coding-agent npm-shrinkwrap.json");
-  process.exit(1);
-}
+// （v1.1.0 起：上游已移除 npm-shrinkwrap.json，coding-agent 只保留 install-lock，
+// 原步骤 3.5 的 shrinkwrap 重生成随之取消。）
 
 // 3.6 Regenerate coding-agent install-lock
 console.log(`\n[3.6] Regenerating packages/coding-agent/install-lock...`);
 try {
   execSync("npm run install-lock:coding-agent", { cwd: ROOT_DIR, stdio: "inherit" });
-} catch (e) {
+} catch {
   console.error("❌ Failed to regenerate coding-agent install-lock");
   process.exit(1);
 }

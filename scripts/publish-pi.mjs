@@ -34,10 +34,18 @@ console.log(`New Scope: ${SCOPE_NEW}`);
 if (DRY_RUN) console.log(`[DRY RUN MODE] Files will be written, but npm publish will not be executed.`);
 
 console.log(`\nRestoring dev dependencies for clean build...`);
-execSync("npm install", { cwd: ROOT_DIR, stdio: "inherit" });
+try {
+  execSync("npm install", { cwd: ROOT_DIR, stdio: "inherit" });
+} catch (err) {
+  throw new Error(`publish-pi: 恢复 dev 依赖失败（npm install）——fork 依赖树异常或网络问题，发布中止`, { cause: err });
+}
 
 console.log(`\nBuilding packages normally (using original source code)...`);
-execSync("npm run build", { cwd: ROOT_DIR, stdio: "inherit" });
+try {
+  execSync("npm run build", { cwd: ROOT_DIR, stdio: "inherit" });
+} catch (err) {
+  throw new Error(`publish-pi: 构建失败（npm run build）——发布中止`, { cause: err });
+}
 
 const nameMapping = {
   "coding-agent": `${SCOPE_NEW}/jishu-agent`,
@@ -48,16 +56,24 @@ const nameMapping = {
   // 但我们对外发布的 npm 包名仍保持 jishu-agent-orchestrator 以维持已发布版本名的连续性。
   "server": `${SCOPE_NEW}/jishu-agent-orchestrator`,
   // v0.85.0 起 coding-agent 运行时闭包新增/纳管的内部包：chord（应用组合运行时）、
-  // client/protocol（远程会话 CBOR 协议栈）、telemetry（agent/ai 的运行时依赖）。
-  // Lite 的 npm 别名解析要求所有 @earendil-works 依赖都有对应已发布别名包。
+  // telemetry（ai 的运行时依赖）；v1.1.0 起新增 codemode/mcp（入运行时闭包），
+  // client/protocol 降为 devDependencies（保留发布维持别名包连续性）。
+  // Lite 的 npm 别名解析要求运行时闭包内的 @earendil-works 依赖都有对应已发布别名包。
   "chord": `${SCOPE_NEW}/jishu-chord`,
+  "codemode": `${SCOPE_NEW}/jishu-agent-codemode`,
+  "mcp": `${SCOPE_NEW}/jishu-agent-mcp`,
   "client": `${SCOPE_NEW}/jishu-agent-client`,
   "protocol": `${SCOPE_NEW}/jishu-agent-protocol`,
   "telemetry": `${SCOPE_NEW}/jishu-agent-telemetry`,
 };
 
 // Retrieve the current version to use in the alias strings
-const rootPkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, "package.json"), "utf8"));
+let rootPkg;
+try {
+  rootPkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, "package.json"), "utf8"));
+} catch (err) {
+  throw new Error(`publish-pi: 读取/解析 fork 根 package.json 失败——发布中止`, { cause: err });
+}
 const version = rootPkg.version;
 console.log(`Workspace Version: ${version}`);
 
@@ -68,6 +84,8 @@ const replaceDepWithAlias = (dep) => {
   if (dep === "@earendil-works/pi-tui") return `npm:${nameMapping["tui"]}@${version}`;
   if (dep === "@earendil-works/pi-server") return `npm:${nameMapping["server"]}@${version}`;
   if (dep === "@earendil-works/chord") return `npm:${nameMapping["chord"]}@${version}`;
+  if (dep === "@earendil-works/pi-codemode") return `npm:${nameMapping["codemode"]}@${version}`;
+  if (dep === "@earendil-works/pi-mcp") return `npm:${nameMapping["mcp"]}@${version}`;
   if (dep === "@earendil-works/pi-client") return `npm:${nameMapping["client"]}@${version}`;
   if (dep === "@earendil-works/pi-protocol") return `npm:${nameMapping["protocol"]}@${version}`;
   if (dep === "@earendil-works/pi-telemetry") return `npm:${nameMapping["telemetry"]}@${version}`;
@@ -75,8 +93,8 @@ const replaceDepWithAlias = (dep) => {
 };
 
 // 按依赖拓扑排序：chord（无内部依赖）→ telemetry → tui → protocol → client
-// → ai → agent → server → coding-agent。
-const publishOrder = ["chord", "telemetry", "tui", "protocol", "client", "ai", "agent", "server", "coding-agent"];
+// → mcp → codemode（无内部依赖）→ ai → agent → server → coding-agent。
+const publishOrder = ["chord", "telemetry", "tui", "protocol", "client", "mcp", "codemode", "ai", "agent", "server", "coding-agent"];
 let packagesToPublish = packages.sort((a, b) => {
   const idxA = publishOrder.indexOf(a) === -1 ? 99 : publishOrder.indexOf(a);
   const idxB = publishOrder.indexOf(b) === -1 ? 99 : publishOrder.indexOf(b);
@@ -122,12 +140,17 @@ for (const pkg of packagesToPublish) {
 
   // Edit package.json in stage directory
   const stagePkgJsonPath = path.join(stageDir, "package.json");
-  const json = JSON.parse(fs.readFileSync(stagePkgJsonPath, "utf-8"));
+  let json;
+  try {
+    json = JSON.parse(fs.readFileSync(stagePkgJsonPath, "utf-8"));
+  } catch (err) {
+    throw new Error(`publish-pi: 读取/解析 ${pkg} 的 staging package.json 失败`, { cause: err });
+  }
   json.name = nameMapping[pkg];
   
   for (const depType of ["dependencies", "devDependencies", "peerDependencies"]) {
     if (json[depType]) {
-      for (const [dep, ver] of Object.entries(json[depType])) {
+      for (const dep of Object.keys(json[depType])) {
         const alias = replaceDepWithAlias(dep);
         if (alias) {
           json[depType][dep] = alias; // Keep the original key, just change the value to an NPM alias!
@@ -180,7 +203,12 @@ for (const pkg of packagesToPublish) {
   // inherited verbatim, preserving upstream's supply-chain hardening.
   const stageShrinkwrapPath = path.join(stageDir, "npm-shrinkwrap.json");
   if (fs.existsSync(stageShrinkwrapPath)) {
-    const shrinkwrap = JSON.parse(fs.readFileSync(stageShrinkwrapPath, "utf-8"));
+    let shrinkwrap;
+    try {
+      shrinkwrap = JSON.parse(fs.readFileSync(stageShrinkwrapPath, "utf-8"));
+    } catch (err) {
+      throw new Error(`publish-pi: 读取/解析 ${pkg} 的 staging npm-shrinkwrap.json 失败`, { cause: err });
+    }
 
     // @earendil-works npm name → @jishu-hub npm name. Must mirror replaceDepWithAlias.
     const earendilToJishu = {
@@ -190,6 +218,8 @@ for (const pkg of packagesToPublish) {
       "@earendil-works/pi-tui": `${SCOPE_NEW}/jishu-agent-tui`,
       "@earendil-works/pi-server": `${SCOPE_NEW}/jishu-agent-orchestrator`,
       "@earendil-works/chord": `${SCOPE_NEW}/jishu-chord`,
+      "@earendil-works/pi-codemode": `${SCOPE_NEW}/jishu-agent-codemode`,
+      "@earendil-works/pi-mcp": `${SCOPE_NEW}/jishu-agent-mcp`,
       "@earendil-works/pi-client": `${SCOPE_NEW}/jishu-agent-client`,
       "@earendil-works/pi-protocol": `${SCOPE_NEW}/jishu-agent-protocol`,
       "@earendil-works/pi-telemetry": `${SCOPE_NEW}/jishu-agent-telemetry`,
@@ -242,7 +272,7 @@ for (const pkg of packagesToPublish) {
     try {
       execSync(`npm publish --access public --registry=https://registry.npmjs.org/ --tag latest ${otpArg}`, { cwd: stageDir, stdio: "inherit" });
       console.log(`✅ Successfully published ${pkg}`);
-    } catch (err) {
+    } catch {
       console.error(`❌ Failed to publish ${pkg}`);
       process.exit(1);
     }
