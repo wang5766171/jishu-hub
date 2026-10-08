@@ -21,6 +21,9 @@ interface AgentToolEntry {
   name: string;
   description: string;
   parameters?: Record<string, unknown>;
+  /** v0.9.5 需求11（pi 1.1.0）：工具暴露方式——direct（默认）/ deferred
+   *（不进系统提示，模型经 tool_search 按需发现——插件多时的 context 优化）。 */
+  exposure?: "direct" | "deferred";
 }
 
 /** 物化清单路径（hub 权威写——materialize_agent_tools）。三轮评审 C17：
@@ -52,6 +55,8 @@ export default function pluginInvokeExtension(pi: ExtensionAPI): void {
         entry.description ||
         `触发 Jishu Hub 插件 ${entry.plugin_id} 的动作。用户明确要求该操作时使用。`,
       parameters: (entry.parameters as never) ?? Type.Object({}),
+      // 需求11：exposure 透传（pi 1.1.0 registerTool 可选参数；缺省 direct）。
+      ...(entry.exposure === "deferred" ? { exposure: "deferred" as const } : {}),
       execute: async (args: Record<string, unknown>) => {
         // hub_invoke 桥（与 html-preview 同机制）：select 标题携带
         // {command, params} JSON——Rust 识别直达后端，响应 value 为

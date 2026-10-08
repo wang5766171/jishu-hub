@@ -1523,6 +1523,12 @@ async fn pi_rpc_connection_loop(
                             last_flush = std::time::Instant::now();
                         } else if pi_prompt_is_settled(event_type) {
                             log::info!("Pi RPC agent_settled received (state={})", loop_state_name(&state));
+                            // v0.9.5 需求11（pi 1.1.0）：agent_settled 新增 aborted 字段
+                            //（#10607）——直接听 pi 说这轮是取消还是完成，取代纯状态推断。
+                            let settled_aborted = msg
+                                .get("aborted")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
                             cancel_settle_at = None;
                             if matches!(state, LoopState::CancelPending { .. }) {
                                 pending_turn_complete = Some(NormalizedEvent::TurnComplete {
@@ -1549,8 +1555,15 @@ async fn pi_rpc_connection_loop(
                             if pending_turn_complete.is_none()
                                 && matches!(state, LoopState::Prompting)
                             {
+                                // 需求11：Prompting 下 settle 但 pi 报 aborted——非用户取消路径
+                                //（provider 致命错误后 pi 自行中止等）精确标 Aborted，
+                                // 避免误标 Complete 掩盖异常收尾。
                                 pending_turn_complete = Some(NormalizedEvent::TurnComplete {
-                                    reason: TurnEndReason::Complete,
+                                    reason: if settled_aborted {
+                                        TurnEndReason::Aborted
+                                    } else {
+                                        TurnEndReason::Complete
+                                    },
                                     usage: None,
                                 });
                             }
@@ -1601,12 +1614,12 @@ async fn pi_rpc_connection_loop(
                             devlog(
                                 "info",
                                 if resent_buffered {
-                                    "agent_settled：重发缓冲 prompt（Prompting，20s 看门狗武装）"
+                                    "agent_settled：回合收口 → 重发缓冲 prompt（Prompting，20s 看门狗武装）"
                                 } else {
                                     "agent_settled：回合收口 → Idle"
                                 },
                                 &session_id,
-                                json!({ "resent_buffered": resent_buffered }),
+                                json!({ "resent_buffered": resent_buffered, "aborted": settled_aborted }),
                             );
                         } else if buf.len() >= 32
                             || last_flush.elapsed() >= EVENT_FLUSH_INTERVAL

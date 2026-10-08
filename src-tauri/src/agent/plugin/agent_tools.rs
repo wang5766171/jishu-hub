@@ -14,6 +14,11 @@ pub struct AgentToolEntry {
     pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parameters: Option<serde_json::Value>,
+    /// v0.9.5 需求11（pi 1.1.0）：工具暴露方式——direct（默认，逃系统提示
+    /// 直接可选）/ deferred（不进系统提示，模型经 tool_search 按需发现；
+    /// 插件多、工具多时的 context 优化）。可选，缺省 direct（现状不变）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<String>,
 }
 
 /// 物化启用的 agent-tool 清单到 `~/.jishu-hub/agent-tools.json`——plugin-invoke
@@ -44,6 +49,11 @@ pub fn materialize_agent_tools() {
                     .unwrap_or("")
                     .to_string(),
                 parameters: tool.get("parameters").cloned(),
+                // 需求11：[[agent-tool]] 可选 exposure 声明透传（direct/deferred）。
+                exposure: tool
+                    .get("exposure")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
             });
         }
     }
