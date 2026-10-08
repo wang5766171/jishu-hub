@@ -145,14 +145,14 @@ fn upsert_standard_global_mcp(
     Ok(())
 }
 
-/// Sync mcpServers from JishuConfig to ~/.jishu-agent/mcp.json.
-/// pi-mcp-adapter reads MCP server definitions from <Pi agent dir>/mcp.json,
-/// not from settings.json's mcpServers field.
+/// Sync mcpServers from JishuConfig to ~/.jishu-agent/agent/mcp.json.
+/// v0.9.5 需求11（pi 1.1.0）：该路径即 pi 原生 MCP 的用户级配置（configDir
+/// 下）——pi 原生 client 直接读取。同步改为**键级 upsert/remove**：只管
+/// jishu-hub 键（hub 配置面开→写入；关→回收），用户经 `pi mcp add` 等方式
+/// 自行添加的其他 server 条目原样保留（此前全量重建会覆盖用户条目）。
+/// user-global standard（~/.config/mcp/mcp.json）仍键级同步（通用标准位，
+/// 其他 MCP client 共享，pi 原生不读但无害）。
 pub fn sync_mcp_json(config: &JishuConfig) -> Result<(), Box<dyn std::error::Error>> {
-    // v0.9.0 需求20 第二轮真机根因补充：上游 pi-mcp-adapter 无 fork 的
-    // piConfig/env，agentDir 解析到 ~/.pi/agent——<agent_dir>/mcp.json 它不读。
-    // 改以 user-global standard（~/.config/mcp/mcp.json，其发现路径第一条）
-    // 为权威落点，键级 upsert/remove 只管 jishu-hub；agent-dir 副本保留。
     let hub_entry = config
         .mcp_servers
         .as_ref()
@@ -161,22 +161,32 @@ pub fn sync_mcp_json(config: &JishuConfig) -> Result<(), Box<dyn std::error::Err
 
     let mcp_path = super::paths::mcp_json_path()?;
 
-    let mcp_content = if let Some(servers) = &config.mcp_servers {
-        // Pass through all fields including `headers` for url-based servers.
-        // Full ServerEntry is preserved so any pi-mcp-adapter field works.
-        let entries: serde_json::Map<String, serde_json::Value> = servers
-            .iter()
-            .filter_map(|(name, entry)| serde_json::to_value(entry).ok().map(|v| (name.clone(), v)))
-            .collect();
-        let mut obj = serde_json::Map::new();
-        obj.insert("mcpServers".to_string(), serde_json::Value::Object(entries));
-        serde_json::to_string_pretty(&obj)?
+    let mut root: serde_json::Value = if mcp_path.exists() {
+        std::fs::read_to_string(&mcp_path)?
+            .parse()
+            .unwrap_or_else(|_| serde_json::json!({"mcpServers": {}}))
     } else {
-        // No mcpServers configured — write empty object so adapter sees no servers
-        serde_json::to_string_pretty(&serde_json::json!({"mcpServers": {}}))?
+        serde_json::json!({"mcpServers": {}})
     };
-
-    crate::util::atomic_write(&mcp_path, mcp_content.as_bytes())?;
+    if !root
+        .get("mcpServers")
+        .map(|v| v.is_object())
+        .unwrap_or(false)
+    {
+        root["mcpServers"] = serde_json::json!({});
+    }
+    match hub_entry {
+        Some(entry) => {
+            root["mcpServers"][crate::agent::mcp_server::HUB_MCP_ENTRY_NAME] =
+                serde_json::to_value(entry)?;
+        }
+        None => {
+            if let Some(servers) = root.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+                servers.remove(crate::agent::mcp_server::HUB_MCP_ENTRY_NAME);
+            }
+        }
+    }
+    crate::util::atomic_write(&mcp_path, serde_json::to_string_pretty(&root)?.as_bytes())?;
     Ok(())
 }
 

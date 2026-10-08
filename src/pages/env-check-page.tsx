@@ -454,9 +454,8 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
             }
           }
         }
-        if (agent.mcp_installed) {
-          packages.push([`mcp-${agent.id}`, "pi-mcp-adapter"]);
-        }
+        // v0.9.5 需求11：pi-mcp-adapter 退役——不再查 adapter npm 版本
+        //（接入状态经 check_mcp 的 native/installed 字段传导）。
       }
 
       if (packages.length > 0) {
@@ -626,7 +625,7 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5">
                           <span className="text-xs font-medium leading-tight">
-                            MCP {t("env.adapter", "适配器")}
+                            MCP {t("env.mcpEntry", "接入")}
                           </span>
                           {mcpVersion && (
                             <span className="text-[10px] font-mono text-muted-foreground bg-muted px-1 py-0.5 rounded">

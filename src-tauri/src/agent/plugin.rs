@@ -130,7 +130,7 @@ pub const CORE_PLUGIN_IDS: [&str; 1] = [super::JISHU_SELF_AGENT_ID];
 /// 系统插件 id 清单（v0.9.0 需求1 二期）：hub 随包分发、启动幂等重部署——
 /// 卸载/编辑无意义（下次启动即恢复），plugin_remove 拒绝、前端隐藏入口；
 /// 可禁用（mcp-resolver 禁用 = MCP 服务总开关，见 mcp_inject）。
-pub const SYSTEM_PLUGIN_IDS: [&str; 12] = [
+pub const SYSTEM_PLUGIN_IDS: [&str; 11] = [
     "mcp-resolver",
     "skill-resolver",
     "task-requirements",
@@ -142,7 +142,7 @@ pub const SYSTEM_PLUGIN_IDS: [&str; 12] = [
     // v0.9.5 需求2：subagent 委派（纯闸门）。
     "jishu-subagent",
     // v0.9.5 需求5：pi 扩展包插件化治理（纯闸门 + packages 注册同步）。
-    "mcp-adapter",
+    // （mcp-adapter 已随 pi 1.1.0 原生 MCP 退役移除——需求11）
     "pi-todo",
     "pi-lens",
     // v0.9.5 需求5 T8：Web 搜索/抓取（用户裁决默认安装）。
@@ -160,7 +160,9 @@ pub fn is_system_plugin(id: &str) -> bool {
 /// `packages` 数组：禁用 → 摘除该包全部条目（下轮 spawn 生效）；启用 →
 /// 确保钉定源条目在（真源 jishu_self::pinned_source_for_package）。
 pub const PI_PACKAGE_PLUGIN_MAP: &[(&str, &str)] = &[
-    ("mcp-adapter", "pi-mcp-adapter"),
+    // v0.9.5 需求11（pi 1.1.0）：mcp-adapter 已退役（pi 原生 MCP client 落地，
+    // adapter 的 /mcp 命令压制 builtin:mcp）——映射移除，残留清理见
+    // jishu_self::cleanup_retired_adapter。
     ("jishu-subagent", "pi-subagents"),
     ("interactive-qa", "@juicesharp/rpiv-ask-user-question"),
     ("pi-todo", "@juicesharp/rpiv-todo"),
@@ -622,12 +624,8 @@ pub fn builtin_adaptive_plugins() -> Vec<(&'static str, &'static str)> {
             "jishu-subagent",
             include_str!("../../resources/plugins/jishu-subagent/plugin.toml"),
         ),
-        // v0.9.5 需求5：npm 扩展包插件化治理——mcp-adapter（修复 mcp/mcpScript
-        // 被 --tools 硬白名单滤出的存量问题）、pi-todo、pi-lens。
-        (
-            "mcp-adapter",
-            include_str!("../../resources/plugins/mcp-adapter/plugin.toml"),
-        ),
+        // v0.9.5 需求5：npm 扩展包插件化治理——pi-todo、pi-lens。
+        // （mcp-adapter 条目已随 pi 1.1.0 原生 MCP 退役移除——需求11）
         (
             "pi-todo",
             include_str!("../../resources/plugins/pi-todo/plugin.toml"),
@@ -716,6 +714,10 @@ pub fn skill_resolver_plugin_toml() -> String {
     )
 }
 
+/// 退役内建插件 id 清单（幂等回收用）。v0.9.5 需求11：mcp-adapter——
+/// pi 1.1.0 原生 MCP client 落地，adapter 桥接层退役（D0 开源优先）。
+const RETIRED_BUILTIN_PLUGINS: &[&str] = &["mcp-adapter"];
+
 /// 部署内建自适应插件与 MCP 解析器（幂等——文件已存在且内容一致则跳过）。
 /// 仅写 manifest TOML 到 agents 目录（与用户自建走同一装载管线）；
 /// pi 扩展入口文件由 task_plan.rs 的 conductor 部署管线管理（v1 过渡：
@@ -723,6 +725,17 @@ pub fn skill_resolver_plugin_toml() -> String {
 pub fn ensure_builtin_adaptive_plugins() {
     let dir = super::manifest::manifest_dir();
     let _ = std::fs::create_dir_all(&dir);
+    // v0.9.5 需求11：退役内建插件回收——清单移除后已部署侧的 toml 残留
+    // 会以用户插件形态继续装载（闸门指向不存在的 adapter 工具），逐个清理。
+    for retired in RETIRED_BUILTIN_PLUGINS {
+        let target = dir.join(format!("{retired}.toml"));
+        if target.exists() {
+            match std::fs::remove_file(&target) {
+                Ok(()) => log::info!("[plugin] retired builtin plugin removed: {retired}"),
+                Err(e) => log::warn!("[plugin] cannot remove retired builtin {retired}: {e}"),
+            }
+        }
+    }
     let statics = builtin_adaptive_plugins();
     for (id, toml) in statics
         .into_iter()

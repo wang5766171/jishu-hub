@@ -65,12 +65,14 @@ pub fn split_namespaced(name: &str) -> Option<(String, String)> {
     Some((plugin.to_string(), tool.to_string()))
 }
 
-/// pi 侧可见工具名：pi 的 MCP 客户端（pi-mcp-adapter）以 `<服务名>_<工具名>`
-/// 暴露聚合 server 的工具——hub 规范名（`插件id__工具`）需加 `jishu-hub_`
-/// 前缀才是模型可直接调用的名字（2026-09-30 实测：识图话术曾以规范名点名，
-/// pi 报 Tool not found 并建议 jishu-hub_ 前缀全名）。
+/// pi 侧可见工具名：pi 1.1.0 原生 MCP client（builtin:mcp）以
+/// `mcp__<服务名>__<工具名>` 暴露聚合 server 的工具——hub 规范名
+///（`插件id__工具`）需转成 `mcp__jishu-hub__插件id__工具` 才是模型可直接
+/// 调用的名字（与 claude-code/codex/opencode 三家的 `mcp__` 前缀规律一致）。
+/// v0.9.5 需求11：adapter 退役前旧前缀为 `jishu-hub_`（pi-mcp-adapter 约定），
+/// 切原生后同步更新（识图话术/插件引用点同批）。
 pub fn pi_visible_tool_name(namespaced_tool: &str) -> String {
-    format!("{HUB_MCP_ENTRY_NAME}_{namespaced_tool}")
+    format!("mcp__{HUB_MCP_ENTRY_NAME}__{namespaced_tool}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1383,13 +1385,13 @@ mod tests {
         assert_eq!(resp["result"], json!({}));
     }
 
-    /// v0.9.5 识图路由实测修复：hub 规范名经 pi 的 MCP 客户端暴露时带
-    /// `jishu-hub_` 前缀——话术点名必须用 pi 可见名。
+    /// v0.9.5 需求11（pi 1.1.0）：adapter 退役切 pi 原生 MCP 后，工具名
+    /// 规律 = `mcp__<server>__<工具>`（与其余三家一致）。
     #[test]
     fn pi_visible_tool_name_adds_entry_prefix() {
         assert_eq!(
             pi_visible_tool_name("zai-mcp-server__analyze_image"),
-            "jishu-hub_zai-mcp-server__analyze_image"
+            "mcp__jishu-hub__zai-mcp-server__analyze_image"
         );
     }
 

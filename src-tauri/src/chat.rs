@@ -231,10 +231,13 @@ pub(crate) fn compose_image_dispatch_hint(route: &ImageDispatchRoute) -> String 
 
 /// 话术合成（schema 查询器可注入——单测用假查询器，不 spawn 真实后端）。
 /// v0.9.5 解析器能力对齐直连（用户裁决 2026-09-30）：点名工具给 **pi 可见
-/// 名**（`jishu-hub_` 前缀——hub 规范名 pi 不识别，实测 Tool not found），
-/// 并**内联参数 schema**——直连时模型在工具清单里即可见 schema，经解析器
-/// 点名调用同样要给到，免去 describe 一跳与参数猜测；schema 查不到则降级
-/// 为 describe 指引（模型自愈路径不变）。
+/// 名**（hub 规范名 pi 不识别，实测 Tool not found），并**内联参数 schema**
+///——直连时模型在工具清单里即可见 schema，经解析器点名调用同样要给到，
+/// 免去 describe 一跳与参数猜测；schema 查不到则降级为 list 指引（模型
+/// 自愈路径不变）。
+/// v0.9.5 需求11（pi 1.1.0）：adapter 退役切 pi 原生 MCP——可见名规律
+/// `mcp__jishu-hub__插件id__工具`（与其余三家一致），话术中的发现/调用
+/// 指引同步改为原生方式（hub_mcp_list 直调，无 mcp 代理工具/describe）。
 pub(crate) fn compose_image_dispatch_hint_with(
     route: &ImageDispatchRoute,
     schema_of: &dyn Fn(&str) -> Option<serde_json::Value>,
@@ -260,10 +263,10 @@ pub(crate) fn compose_image_dispatch_hint_with(
     // 交给模型自身（用户裁决 2026-09-27：具体工具因人而异，点名即绑定）；
     // 显式配置 mcp_tools 时才钉定直呼其名。
     let mcp_clause = if route.mcp_tools.is_empty() {
-        "先自行发现识图工具——用 mcp 工具按关键词搜索（如 mcp 参数 {\"search\":\"image\"}）或调 hub_mcp_list 列出全部可用工具，从中挑一个能分析图片的（拿不准时用 describe 看其参数说明），确认后调用，把上方附件行「图片N（批次 …）」中的图片磁盘路径按其 schema 传入；若搜索后确实没有识图类工具，本条跳过、直接走第二条".to_string()
+        "先自行发现识图工具——调 hub_mcp_list（mcp__jishu-hub__hub_mcp_list）实时列出全部可用工具与参数说明，从中挑一个能分析图片的，把上方附件行「图片N（批次 …）」中的图片磁盘路径按其参数说明传入；若确实没有识图类工具，本条跳过、直接走第二条".to_string()
     } else {
         let mut clause = format!(
-            "经 mcp 工具调用 {mcp_tools_text}，把上方附件行「图片N（批次 …）」中的图片磁盘路径传入"
+            "调用工具 {mcp_tools_text}，把上方附件行「图片N（批次 …）」中的图片磁盘路径传入"
         );
         let mut schemas = String::new();
         for tool in &route.mcp_tools {
@@ -280,9 +283,9 @@ pub(crate) fn compose_image_dispatch_hint_with(
             }
         }
         if schemas.is_empty() {
-            clause.push_str("；参数以 mcp describe 返回的 schema 为准");
+            clause.push_str("；参数以 hub_mcp_list 返回的参数说明为准");
         } else {
-            clause.push_str("；参数如下（args 传参数对象的 JSON 字符串）：\n");
+            clause.push_str("；参数如下（按各参数说明直接传入）：\n");
             clause.push_str(schemas.trim_end());
         }
         clause

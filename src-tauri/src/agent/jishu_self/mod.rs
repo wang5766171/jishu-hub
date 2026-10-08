@@ -21,14 +21,18 @@ impl JishuSelfAgent {
         Self
     }
 
-    /// Standalone async MCP install — does not borrow &self, so it can be
+    /// Standalone async MCP ensure — does not borrow &self, so it can be
     /// awaited without holding the AgentRegistry MutexGuard.
+    /// v0.9.5 需求11（pi 1.1.0）：pi 原生 MCP client 落地，pi-mcp-adapter
+    /// 扩展退役（D0 开源优先：上游原生覆盖桥接层）——本方法改为「确保
+    /// pi 用户级 mcp.json 的 jishu-hub 条目 + 清理 adapter 残留」。
     pub async fn install_mcp_standalone() -> Result<String, String> {
-        Self::run_pi_package_command("install", MCP_ADAPTER_SOURCE).await
+        Self::ensure_native_mcp_entry().await
     }
 
-    /// pi-mcp-adapter 安装位置（pi install npm:pkg 落
-    /// `<config_dir>/npm/node_modules/<pkg>`，与 check_mcp 同口径）。
+    /// pi-mcp-adapter（已退役）安装位置残留检测——pi install npm:pkg 落
+    /// `<config_dir>/npm/node_modules/<pkg>`，与 check_mcp 的
+    /// adapter_residual 同口径（存在即需 cleanup_retired_adapter 清理）。
     pub(crate) fn mcp_adapter_dir() -> Option<std::path::PathBuf> {
         pi_config_dir().map(|dir| {
             std::path::Path::new(&dir)
@@ -38,23 +42,143 @@ impl JishuSelfAgent {
         })
     }
 
-    /// v0.9.1 需求11：MCP 适配器自动安装（幂等）——hub 安装期（NSIS
-    /// POSTINSTALL `--install-agent` / GUI 环境检测内装）与每次启动后台
-    /// 自愈共用：已安装 → Ok(false)；缺失 → `pi install npm:pi-mcp-adapter`
-    /// → Ok(true)。失败返回 Err（调用方仅告警不阻断——环境检测页的手动
-    /// 安装按钮保留为离线兜底）。
-    pub async fn ensure_mcp_adapter_installed() -> Result<bool, String> {
-        let Some(dir) = Self::mcp_adapter_dir() else {
-            return Err("cannot resolve ~/.jishu-agent/agent directory".to_string());
-        };
-        if dir.exists() {
-            return Ok(false);
+    /// v0.9.5 需求11：pi 原生 MCP 接入自愈（幂等）——hub 安装期/启动后台
+    /// 共用：①确保 `~/.jishu-agent/agent/mcp.json`（pi 原生用户级位，
+    /// configDir 下）有 jishu-hub 条目（command=jishu-cli, args=[mcp,serve]，
+    /// 与其他三家同构）；②清理退役 adapter 残留（settings.json packages
+    /// 条目 + npm/node_modules 目录）——残留的 `/mcp` 命令会压制 pi 内置
+    /// builtin:mcp 扩展（实测 pi 1.1.0 警告二选一）。纯文件操作，离线可用。
+    /// 返回描述性消息（changed=true 表示本次有变更）。
+    pub async fn ensure_native_mcp_entry() -> Result<String, String> {
+        let mut changed = false;
+        // ① mcp.json 条目（键级，不动用户其它 server 条目）
+        match Self::upsert_native_hub_entry() {
+            Ok(c) => changed |= c,
+            Err(e) => return Err(format!("ensure mcp.json entry failed: {e}")),
         }
-        Self::install_mcp_standalone().await.map(|_| true)
+        // ② adapter 残留清理
+        match Self::cleanup_retired_adapter() {
+            Ok(c) => changed |= c,
+            Err(e) => log::warn!("[mcp-native] adapter cleanup deferred: {e}"),
+        }
+        Ok(if changed {
+            "pi 原生 MCP 接入已就绪（jishu-hub 条目写入 + adapter 残留清理）".to_string()
+        } else {
+            "pi 原生 MCP 接入已就绪（无需变更）".to_string()
+        })
     }
 
-    pub async fn update_mcp_standalone() -> Result<String, String> {
-        Self::run_pi_package_command("update", MCP_ADAPTER_SOURCE).await
+    /// mcp.json 键级 upsert jishu-hub 条目；返回是否有变更。
+    fn upsert_native_hub_entry() -> Result<bool, String> {
+        use serde_json::json;
+        let path = crate::agent::jishu_self::paths::mcp_json_path().map_err(|e| e.to_string())?;
+        let cli = crate::agent::jishu_self::resolve_jishu_cli_binary()
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .to_string();
+        let desired = json!({
+            "command": cli,
+            "args": ["mcp", "serve"],
+        });
+        let mut root: serde_json::Value = if path.exists() {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|c| serde_json::from_str(&c).ok())
+                .unwrap_or_else(|| json!({"mcpServers": {}}))
+        } else {
+            json!({"mcpServers": {}})
+        };
+        if !root
+            .get("mcpServers")
+            .map(|v| v.is_object())
+            .unwrap_or(false)
+        {
+            root["mcpServers"] = json!({});
+        }
+        let existing = root
+            .get("mcpServers")
+            .and_then(|s| s.get(crate::agent::mcp_server::HUB_MCP_ENTRY_NAME));
+        let matches = existing
+            .and_then(|e| serde_json::to_value(e).ok())
+            .map(|v| v == desired)
+            .unwrap_or(false)
+            // command 路径随安装位置变化，args 形态一致且 command 存在即视为就绪
+            || existing
+                .and_then(|e| e.get("args"))
+                .and_then(|a| a.as_array())
+                .map(|a| {
+                    a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>() == ["mcp", "serve"]
+                        && existing
+                            .and_then(|e| e.get("command"))
+                            .and_then(|c| c.as_str())
+                            .is_some_and(|c| !c.is_empty())
+                })
+                .unwrap_or(false);
+        if matches {
+            return Ok(false);
+        }
+        root["mcpServers"][crate::agent::mcp_server::HUB_MCP_ENTRY_NAME] = desired;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        crate::util::atomic_write(
+            &path,
+            serde_json::to_string_pretty(&root).unwrap().as_bytes(),
+        )
+        .map_err(|e| e.to_string())?;
+        log::info!(
+            "[mcp-native] upserted jishu-hub entry in {}",
+            path.display()
+        );
+        Ok(true)
+    }
+
+    /// 退役 adapter 残留清理：settings.json packages 数组摘 npm:pi-mcp-adapter*
+    /// 条目 + 删 npm/node_modules/pi-mcp-adapter 目录。返回是否有变更。
+    fn cleanup_retired_adapter() -> Result<bool, String> {
+        let mut changed = false;
+        let Some(agent_dir) = crate::agent::jishu_self::paths::agent_dir().ok() else {
+            return Err("cannot resolve agent dir".to_string());
+        };
+        let settings_path = agent_dir.join("settings.json");
+        if let Ok(content) = std::fs::read_to_string(&settings_path) {
+            if let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(pkgs) = settings.get_mut("packages").and_then(|v| v.as_array_mut()) {
+                    let before = pkgs.len();
+                    pkgs.retain(|v| {
+                        !v.as_str()
+                            .map(|s| {
+                                s == "npm:pi-mcp-adapter" || s.starts_with("npm:pi-mcp-adapter@")
+                            })
+                            .unwrap_or(false)
+                    });
+                    if pkgs.len() != before {
+                        crate::util::atomic_write(
+                            &settings_path,
+                            serde_json::to_string_pretty(&settings)
+                                .unwrap_or_default()
+                                .as_bytes(),
+                        )
+                        .map_err(|e| e.to_string())?;
+                        changed = true;
+                        log::info!("[mcp-native] removed retired adapter from settings packages");
+                    }
+                }
+            }
+        }
+        let npm_dir = agent_dir
+            .join("npm")
+            .join("node_modules")
+            .join("pi-mcp-adapter");
+        if npm_dir.is_dir() {
+            std::fs::remove_dir_all(&npm_dir).map_err(|e| format!("remove adapter dir: {e}"))?;
+            changed = true;
+            log::info!(
+                "[mcp-native] removed retired adapter dir {}",
+                npm_dir.display()
+            );
+        }
+        Ok(changed)
     }
 
     async fn run_pi_package_command(action: &str, source: &str) -> Result<String, String> {
@@ -132,12 +256,10 @@ impl JishuSelfAgent {
         }
     }
 
-    /// v0.9.5 需求5：npm 包名 → 钉定安装源（含 mcp 共 5 项）——packages
+    /// v0.9.5 需求5：npm 包名 → 钉定安装源——packages
     /// 注册同步（plugin::sync_pi_packages_with_plugins）复用同一真源。
+    /// v0.9.5 需求11：pi-mcp-adapter 已退役（pi 1.1.0 原生 MCP），不再安装。
     pub(crate) fn pinned_source_for_package(name: &str) -> Option<&'static str> {
-        if name == "pi-mcp-adapter" {
-            return Some(MCP_ADAPTER_SOURCE);
-        }
         PI_EXTENSION_PACKAGES
             .iter()
             .find(|(_, dir)| *dir == name)
@@ -634,34 +756,30 @@ impl crate::agent::config_roles::ModelStore for JishuSelfAgent {
 
 impl crate::agent::config_roles::McpIntegration for JishuSelfAgent {
     fn check_mcp(&self) -> Result<serde_json::Value, String> {
-        // Auto-migrate on check (idempotent).
-        self.migrate_mcp_if_needed();
-
-        // pi install <npm:pkg> stores the package in
-        // <PI_CODING_AGENT_DIR>/npm/node_modules/<pkg>, not under packages/.
-        let adapter_dir = Self::mcp_adapter_dir()
-            .ok_or_else(|| "Cannot resolve ~/.jishu-agent/agent directory".to_string())?;
-
-        if !adapter_dir.exists() {
-            return Ok(serde_json::json!({"installed": false, "version": null}));
-        }
-
-        // Try reading version from package.json
-        let pkg_json = adapter_dir.join("package.json");
-        let version = if pkg_json.exists() {
-            std::fs::read_to_string(&pkg_json)
-                .ok()
-                .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-                .and_then(|v| {
-                    v.get("version")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                })
-        } else {
-            None
-        };
-
-        Ok(serde_json::json!({"installed": true, "version": version}))
+        // v0.9.5 需求11（pi 1.1.0）：adapter 退役后检查 = pi 原生 mcp.json 的
+        // jishu-hub 条目 + adapter 残留状态（残留会压制 builtin:mcp，须清理）。
+        let entry_ok = crate::agent::jishu_self::paths::mcp_json_path()
+            .ok()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+            .and_then(|root| {
+                root.get("mcpServers")?
+                    .get(crate::agent::mcp_server::HUB_MCP_ENTRY_NAME)?
+                    .get("args")?
+                    .as_array()
+                    .map(|a| {
+                        a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>() == ["mcp", "serve"]
+                    })
+            })
+            .unwrap_or(false);
+        let adapter_residual = Self::mcp_adapter_dir().map(|d| d.exists()).unwrap_or(false);
+        Ok(serde_json::json!({
+            "native": entry_ok,
+            "adapter_residual": adapter_residual,
+            // 兼容旧 UI 字段：installed 语义 = 原生接入就绪
+            "installed": entry_ok && !adapter_residual,
+            "version": null,
+        }))
     }
 
     fn install_mcp(
@@ -675,7 +793,9 @@ impl crate::agent::config_roles::McpIntegration for JishuSelfAgent {
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
     {
-        Box::pin(async { Self::update_mcp_standalone().await })
+        // v0.9.5 需求11：adapter 退役后无包可更新——update 复用 ensure 幂等
+        // （条目/残留状态归位）。
+        Box::pin(async { Self::ensure_native_mcp_entry().await })
     }
 
     fn migrate_mcp_if_needed(&self) {
@@ -749,10 +869,11 @@ fn ensure_default_tools_arg(
     }
 }
 
-/// v0.9.3 测试期钉 2.32.1：最新 2.33.0 把 @modelcontextprotocol/{client,core}
-/// 钉到 pkg.pr.new（PR 预览 CDN），公司/受限网络拦截域名致 npm ETIMEDOUT；
-/// 2.32.1 为最后一个纯 registry 依赖版本（pack-pi 烘焙同钉）。上游修复
-/// （依赖回正式 registry）后可解除钉定。
+/// （v0.9.5 需求11 退役留痕）pi-mcp-adapter 最后钉定源——pi 1.1.0 原生
+/// MCP client 落地后 adapter 扩展退役（D0 开源优先：上游原生覆盖桥接层；
+/// 其 /mcp 命令会压制 pi 内置 builtin:mcp）。仅存留作历史参考与测试
+/// 断言素材，不再用于安装/更新；残留清理见 ensure_native_mcp_entry。
+#[allow(dead_code)] // 仅测试模块引用（退役留痕，非生产路径）
 pub(crate) const MCP_ADAPTER_SOURCE: &str = "npm:pi-mcp-adapter@2.32.1";
 
 /// v0.9.5 需求5：随包初始化安装的 pi 扩展（钉定版本，与 mcp 同策略——
@@ -868,7 +989,8 @@ mod mcp_tests {
 
     #[test]
     fn mcp_update_uses_pi_single_package_update_command() {
-        // v0.9.3 测试期钉 2.32.1（最新 2.33.0 依赖走 pkg.pr.new，受限网络不可达）。
+        // （历史断言保留）退役前 adapter 包命令构造；退役后此参数构造仍被
+        // 其余 4 个 pi 扩展包的 update 路径复用（ensure_pi_extensions_installed）。
         assert_eq!(
             pi_package_args(&["cli.js".to_string()], "update", super::MCP_ADAPTER_SOURCE),
             vec!["cli.js", "update", "npm:pi-mcp-adapter@2.32.1"]
@@ -895,9 +1017,9 @@ mod mcp_tests {
                 .unwrap();
             assert_eq!(name, *dir, "{source} 与目录名 {dir} 不一致");
         }
-        // 包名 → 钉定源反查（packages 同步真源）：4 扩展 + mcp 全覆盖。
+        // 包名 → 钉定源反查（packages 同步真源）：4 扩展 + web 共 5 项
+        //（pi-mcp-adapter 已随 pi 1.1.0 原生 MCP 退役——需求11，不再安装）。
         for name in [
-            "pi-mcp-adapter",
             "pi-subagents",
             "@juicesharp/rpiv-ask-user-question",
             "@juicesharp/rpiv-todo",
@@ -909,6 +1031,10 @@ mod mcp_tests {
                 "{name} 无钉定源"
             );
         }
+        assert!(
+            super::JishuSelfAgent::pinned_source_for_package("pi-mcp-adapter").is_none(),
+            "退役包不得再有钉定源"
+        );
     }
 }
 
@@ -958,6 +1084,10 @@ impl TransportAdapter for JishuSelfAgent {
             tools.extend_from_slice(&pi_extension_tools);
             args.push("--tools".to_string());
             args.push(tools.join(","));
+            // v0.9.5 需求11：pi 1.0.4 起 --tools 白名单不再滤出 MCP 工具
+            //（04b97ef00）——只读档需显式 --no-mcp 保持「无外部工具」原语义
+            //（MCP 工具良菱不齐，变更类工具不应进只读会话）。
+            args.push("--no-mcp".to_string());
         }
         // full-approve 与 full 工具集相同，差异只在 toolApproval 审批
         // 开关（set_agent_tool_mode 已联动写入 Pi settings）。

@@ -181,16 +181,15 @@ pub fn run() {
             // v0.9.0 需求20：skill 分发同步（skill-resolver 门控；单目标失败
             // 不影响启动）。
             let _ = agent::skill_deploy::sync_skill_deployments(false);
-            // v0.9.1 需求11：MCP 适配器自动安装自愈——安装器阶段已尝试装，
-            // 此处幂等兜底（离线安装失败后每次启动重试）。后台执行不阻塞
-            // 启动，失败仅告警；环境检测页手动安装保留为最终兜底。
-            // v0.9.5 需求5：4 个 pi 扩展包（pi-subagents / rpiv-ask-user-question /
+            // v0.9.5 需求11（pi 1.1.0）：MCP 接入自愈改为 pi 原生 mcp.json 条目
+            // 确保 + 退役 adapter 残留清理（幂等；后台执行不阻塞启动，失败仅
+            // 告警；环境检测页手动安装保留为最终兜底）。
+            // 需求5：4 个 pi 扩展包（pi-subagents / rpiv-ask-user-question /
             // rpiv-todo / pi-lens）同款自愈 + 装后 packages 注册对齐。
             tauri::async_runtime::spawn(async {
-                match agent::jishu_self::JishuSelfAgent::ensure_mcp_adapter_installed().await {
-                    Ok(true) => log::info!("[startup] MCP adapter auto-installed"),
-                    Ok(false) => {}
-                    Err(e) => log::warn!("[startup] MCP adapter auto-install deferred: {e}"),
+                match agent::jishu_self::JishuSelfAgent::ensure_native_mcp_entry().await {
+                    Ok(_) => log::info!("[startup] native MCP entry ensured"),
+                    Err(e) => log::warn!("[startup] native MCP entry ensure deferred: {e}"),
                 }
                 match agent::jishu_self::JishuSelfAgent::ensure_pi_extensions_installed().await {
                     Ok(installed) if !installed.is_empty() => {

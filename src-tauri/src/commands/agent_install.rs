@@ -145,14 +145,14 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
         source = res_dir.join("_up_").join("third_party").join("pi-bundle");
     }
     let output = install_pi_bundle_from(&source)?;
-    // v0.9.1 需求11：agent 装好顺手确保 MCP 适配器（幂等；失败不阻断——
-    // 启动自愈与环境检测页手动安装兜底）。
-    // v0.9.5 需求5：4 个 pi 扩展包同款确保 + 运行时配置 + packages 对齐。
+    // v0.9.5 需求11（pi 1.1.0）：MCP 接入改为 pi 原生 mcp.json 条目自愈
+    //（幂等；失败不阻断——启动自愈与环境检测页手动安装兜底）。adapter
+    // 扩展已退役，残留清理一并在 ensure 内完成。
+    // 需求5：4 个 pi 扩展包同款确保 + 运行时配置 + packages 对齐。
     let mut summary =
-        match crate::agent::jishu_self::JishuSelfAgent::ensure_mcp_adapter_installed().await {
-            Ok(true) => format!("{output}\nMCP adapter auto-installed."),
-            Ok(false) => output,
-            Err(e) => format!("{output}\nMCP adapter auto-install skipped: {e}"),
+        match crate::agent::jishu_self::JishuSelfAgent::ensure_native_mcp_entry().await {
+            Ok(msg) => format!("{output}\n{msg}"),
+            Err(e) => format!("{output}\nMCP native entry ensure skipped: {e}"),
         };
     match crate::agent::jishu_self::JishuSelfAgent::ensure_pi_extensions_installed().await {
         Ok(installed) if !installed.is_empty() => {
@@ -254,15 +254,14 @@ pub fn run_install_agent_cli() -> i32 {
     }
     match install_pi_bundle_from(&source) {
         Ok(_) => {
-            // v0.9.1 需求11：POSTINSTALL 阶段顺手确保 MCP 适配器（幂等；
-            // npm 网络安装失败仅告警、不影响安装器退出码——首启后台自愈
-            // 与环境检测页手动安装兜底）。
+            // v0.9.5 需求11：POSTINSTALL 阶段确保 pi 原生 mcp.json 条目 +
+            // 清理退役 adapter 残留（幂等；失败仅告警、不影响安装器退出码
+            //——首启后台自愈与环境检测页手动安装兜底）。
             match tauri::async_runtime::block_on(
-                crate::agent::jishu_self::JishuSelfAgent::ensure_mcp_adapter_installed(),
+                crate::agent::jishu_self::JishuSelfAgent::ensure_native_mcp_entry(),
             ) {
-                Ok(true) => eprintln!("[install-agent] MCP adapter auto-installed"),
-                Ok(false) => {}
-                Err(e) => eprintln!("[install-agent] MCP adapter auto-install skipped: {e}"),
+                Ok(_) => {}
+                Err(e) => eprintln!("[install-agent] MCP native entry ensure skipped: {e}"),
             }
             // v0.9.5 需求5：4 个 pi 扩展包同款确保（失败仅告警）。
             match tauri::async_runtime::block_on(
