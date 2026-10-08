@@ -55,9 +55,9 @@
 |------|-----|
 | 上游仓库 | `https://github.com/earendil-works/pi` |
 | 自有 fork | `https://github.com/wang5766171/pi` |
-| 当前维护分支 | `release_v0.87.1-13` |
+| 当前维护分支 | `release_v1.1.0-13` |
 | `.gitmodules` URL | `https://github.com/wang5766171/pi` |
-| `.gitmodules` branch | `release_v0.87.1-13` |
+| `.gitmodules` branch | `release_v1.1.0-13` |
 
 ## 1.5 日常源码变动流程
 
@@ -118,6 +118,67 @@
 ---
 
 # 第二部分：改动记录
+
+## 2026-10-08 | 合并上游 v1.1.0（release_v1.1.0-13）——jishu-hub v0.9.5 需求 11
+
+**版本**：上游从 `v0.87.1` 跨越 `v0.99.0`/`v0.99.1`/`v0.99.2`、`v1.0.0`~`v1.0.4` 到 `v1.1.0`（9 个 tag、319 commits、1302 files、±12.6 万行，含 1.0 里程碑）。按版本规则（§1.3），Pi 版本升至 `1.1.0`、自研尾号保持 `-13`，完整版本号 `1.1.0-13`，分支 `release_v1.1.0-13`。合并提交 `e91862402` + 适配提交 `36aa34c73`/`88aa3c523`/`85e1c0573`。**fork 分支已推送远端**（submodule 指针 85e1c0573 远端可达）。
+
+### 合并动机（用户指令）
+
+jishu-hub v0.9.5 需求 11：用户指令「下一个需求，升级pi到1.1.0版本」。按 D1 评估（需求文档 01-合并评估.md）逐项裁决后执行。
+
+### 上游重点变更（与自研面交互）
+
+1. **包拓扑**：新增 `codemode`（quickjs 沙箱脚本）、`mcp`（MCP 客户端）、`durable`（实验文档存储）、`env`（SSH 远程环境）四包；**codemode/mcp 入 coding-agent 运行时闭包**，client/protocol/server 降为 devDependencies；agent 包不再依赖 telemetry（ai 仍依赖）。durable/env 不入任何运行时闭包。
+2. **构建体系**：TypeScript 7.0.2（build:unbundled 回归 `tsc`）；**npm-shrinkwrap.json 移除**（仅剩 install-lock，推荐 managed installer）；bundle 入口从 5 入口（cli/rpc-entry/coordinator/index/client）改为 `cli-runtime`/`index`/`rpc-entry` + lazyEntryPoints + codemode-worker；根 check 新增 `check:runtime-deps`（源码 import ↔ package.json 声明一致性检查，非 fork 的产物依赖清单机制）。
+3. **harness 从 agent 包移除**（`7fd478a2e`）：experimental/micro、session-backends/sqlite-node 一并删除（fork 侧跟随删除，toolApproval 孤儿注释顺带清理）。
+4. **TUI**：fullscreen 默认模式、System theme（ThemedText 组件）、启动横幅去 themes 段、OSC 7501 状态上报、3D easter-egg（playArmin3d/playPiLogo3d）。
+5. **MCP 大补**：OAuth 强化（RFC 9207 iss、per-server 凭据、动态客户端注册）、不再在首个 prompt 阻塞等 MCP server（`e029c3ed0`）、MCP manager 响应性修复（#10562）、`1387af7b4` 项目 mcp.json 可覆盖全局 server 启停。
+6. **扩展 API**：provider stream events 暴露给扩展（#9901）、builtin 解析为 `builtin:<name>` 路径（#10159）、扩展命令注册校验、防重复扩展运行时（#9863）。
+7. **模型**：GPT-6.1 Sol（Codex 默认）、Claude Haiku 5.5/Sonnet 5.5、Kimi K3、Azure Foundry Chat Completions、Radius、virtual models、classifier 基础设施；grok-mermaid 转必装依赖（本机历史「缺包 4 测试失败」环境问题消失）。
+
+### 冲突解决（21 处）
+
+| 冲突 | 解决 |
+|---|---|
+| package.json ×13（agent/ai/chord/client/protocol/server/durable/evals/telemetry/tui/install-lock + 根） | 依赖结构取上游 v1.1.0 拓扑（agent/server 瘦身、+codemode/mcp），版本统一 `1.1.0-13`、内部依赖钉精确（caret 风险，-11 教训） |
+| coding-agent/package.json ×4 块 | version 1.1.0-13；piConfig{jishu,.jishu-agent}/bin.jishu 自动合并保留；build 取上游结构（tsc + codemode-worker 入口）+ fork `&& node build-bundle.mjs` 清单尾段；deps/devDeps 上游拓扑钉精确 |
+| `settings-manager.ts` | 取上游 defaultTools 新注释（`+name`/`-name`），删 fork toolApproval 孤儿注释（字段 P1 迁移时已撤销，注释残留）；thresholdPercent 全部自动合并保住 |
+| `interactive-mode.ts` ×3 块 | ①import：保 earendil 停用 + 上游 easter-egg 新 import；②onboarding 大块：取上游 BuiltInHeader 函数式新结构，onboarding 文案 Pi→jishu；③trust 警告：上游 ThemedText 新结构 + jishu 文案 |
+| `5943-session-start-notify.test.ts` | 取上游共享 `createTestUiContext` 工厂，multiSelect 在 harness.ts 工厂内补齐（一处补全所有上游测试受益，v0.80.10 先例） |
+| DU ×4（harness/tools.ts、micro/runtime.ts、npm-shrinkwrap.json、sqlite-node） | 上游删除，fork 跟随删除（fork 侧均为已退役残留或版本号钉精确） |
+| package-lock ×2 | 取上游后 npm install 重生成（根 + install-lock 147 包） |
+
+### 保留自研（上游 v1.1.0 均未实现，逐一核实——D0 退役判据零命中）
+
+与 -13 基线一致：`piConfig{name=jishu,configDir=.jishu-agent}`/`bin.jishu`（src/config.ts:577-581 机制保留）、品牌文案（onboarding/trust jishu 化）、earendil 公告停用、multiSelect 五文件（上游 grep 零结果）、compaction thresholdPercent 主链路（上游仍 reserveTokens 绝对值：compaction.ts:128/269）+ modelOverrides 覆盖通道 + RPC 热推、`build-bundle.mjs` 清单生成（上游 check-runtime-deps 是源码声明检查非产物清单）、husky 安全化、`.publish-stage/` gitignore。**无退役项。**
+
+### 合并后适配（三提交）
+
+1. `36aa34c73`：build-bundle 清单扫描列表 +codemode/mcp −client/protocol（闭包变化）；virtual-models 测试 reserveTokens 0→thresholdPercent 99 等效换算；ai 模型数据 generate-models 重生成（Sonnet 5.5/Haiku 5.5/GPT-6.1 等）；harness.ts createTestUiContext 补 multiSelect。
+2. `88aa3c523`：mcp-command/mcp-extension 测试的硬编码 `pi mcp login` 文案与 `.pi` 目录改用 `APP_NAME`/`CONFIG_DIR_NAME` 常量（fork 品牌/configDir 下自动正确，上游亦兼容）；virtual-models 摘要预算断言按 fork 语义换算（window 50000×10%=5000，主摘要 min(0.8×5000,4000)=4000 / turn prefix min(0.5×5000,4000)=2500）。
+3. `85e1c0573`：**根 package.json 显式钉 openai 7.19.0 提升位**——autoevals（evals 依赖）的 `^6.7.0` 与 ai 包精确 7.19.0 冲突使 npm 将 7.19.0 嵌套至 packages/ai/node_modules，而 Full/Lite bundle external 'openai' 从 coding-agent 向上只解析根（会命中 6.x 错误大版本）；根级钉住后 autoevals 自动嵌套自身 6.x 互不影响（overrides 方案在本机 npm 对 workspace 既有 lock 不重算，弃用）。
+
+### 对 jishu-hub v0.9.5 需求的影响
+
+- **需求1/5（插件/扩展体系）**：registerTool 强制 parameters schema 约束不变；上游扩展加载演进（builtin: 路径、防重复运行时、provider stream events）自动获得；已部署主仓扩展（approval/batch-guard/plugin-invoke 等）需在 GUI 验证回归。
+- bundle 布局变化（coordinator/client 入口消失、codemode-worker/lazy entries 新增）——`pi-common.mjs` fixShebang 路径列表兼容无需改；`pack-pi.mjs` 断言动态读 runtime-deps.json 自动适配 28 项。
+
+### 验证
+
+- 全仓 `tsc --noEmit` 0 error（husky pre-commit 全套：biome/pinned-deps/runtime-deps/ts-imports/entry-graphs/install-lock/browser-smoke 全过，4 次提交均过）。
+- 定向测试 350+ 项：compaction 域 108 过（4 文件）、virtual-models 13 过（含换算）、boundaries 29 过、extensions-runner/discovery 128 过、compaction-summary-reasoning/7253/9340-9777 21 过、auto-compaction-queue/5943/system-prompt-updates/tool-renderer 18 过、compaction-extensions 8 skip（Windows 既有）、mcp/codemode 域 34 过 1 失败（`mcp-command` spawn ENOENT 断言在 Windows 报 GBK「不是内部或外部命令」——环境语义差异，非 fork 回归；服务状态/工具/config 校验断言全过）。
+- bundle 产物：`dist/bundle/cli.js --version` → `1.1.0-13`、`--help` jishu 品牌、cli/rpc-entry 各一 shebang、runtime-deps.json 28 项（+quickjs-wasi/grok-mermaid）。
+- 主仓配套：`cargo test` 675 全绿；`npm run build`（PI_SKIP_CACHE=1 全量）pack-pi 28 项断言全过、NSIS 安装包产出；pi-bundle cli 冒烟 `1.1.0-13`。
+
+### 主仓配套（jishu-hub 同步落地，提交 464d030）
+
+- `.gitmodules` branch → `release_v1.1.0-13`；submodule 指针 → `85e1c0573`；`PI_AGENT_VERSION` → `1.1.0-13`。
+- `publish-pi.mjs`：nameMapping/replaceDepWithAlias/earendilToJishu 增 codemode（`@jishu-hub/jishu-agent-codemode`）/mcp（`@jishu-hub/jishu-agent-mcp`）；publishOrder 重排 chord→telemetry→tui→protocol→client→mcp→codemode→ai→agent→server→coding-agent（client/protocol 降 devDeps 后保留发布维持别名包连续性）；shrinkwrap 改写段条件性自动失效（上游已删 shrinkwrap）；execSync/JSON.parse 包裹带上下文重抛（保持 fail-fast）。
+- `upgrade-version.mjs`：pkgsToUpdate +codemode/mcp；移除 shrinkwrap 重生成步骤（v1.1.0 起 coding-agent 无 shrinkwrap）；存量 lint 修复（未用变量/catch 参数）。
+- pi_runtime.rs `coding_agent_entry()`（bundle/cli.js 优先）与 pi-common.mjs fixShebang 无需改动（路径仍有效）。
+
+---
 
 ## 2026-09-26 | 合并上游 v0.87.1（release_v0.87.1-13）——jishu-hub v0.9.5 需求1 前置
 
