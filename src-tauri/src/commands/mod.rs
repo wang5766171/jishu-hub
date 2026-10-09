@@ -6,6 +6,7 @@ pub(crate) mod custom_commands;
 pub(crate) mod env_check;
 pub(crate) mod memory;
 pub(crate) mod models;
+pub(crate) mod native_mcp;
 #[cfg(feature = "orchestrator")]
 pub(crate) mod orchestrator;
 pub(crate) mod plugin_panel;

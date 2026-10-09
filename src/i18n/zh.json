@@ -980,7 +980,9 @@
     "modelTemplateHint": "模板仅带出上下文/输出/推理/输入/思考档位参数，模型 ID 需自行填写",
     "presetMoreOptions": "更多选项",
     "providerKeyAuto": "",
-    "refresh": "刷新"
+    "refresh": "刷新",
+    "codemode": "代码模式（实验）",
+    "codemodeHint": "模型可在沙箱内写脚本并行编排工具（pi codemode，quickjs 隔离无网络/文件系统）；对全体新会话生效"
   },
   "commands": {
     "title": "快捷命令",

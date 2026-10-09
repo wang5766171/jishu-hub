@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
+import { NativeMcpSection } from "./native-mcp-section";
 import { AgentLogo, useAgent } from "@/agents";
 import { PluginIcon } from "@/components/ui/icon-picker";
 import { Button } from "@/components/ui/button";
@@ -786,6 +787,9 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
         {/* v0.9.4 需求12：开发日志中心虚拟卡（用户裁决：入口放插件中心核心引擎
             分类，默认关闭手动开启；开关写 settings.json 跨启动保持）。 */}
         {activeTab === "core" && <DevLogCard />}
+        {/* 需求11 追加三 A：原生 MCP 服务管理区（jishu 直连条目，键级管
+            mcp.json 非 jishu-hub 用户条目；与聚合插件互补）。 */}
+        {activeTab === "mcp" && <NativeMcpSection />}
         {(result?.plugins ?? [])
           .filter((x) => categoryOf(x) === activeTab && (implFilter === "all" || implKindOf(x) === implFilter))
           .map((plugin) => renderCard(plugin))}

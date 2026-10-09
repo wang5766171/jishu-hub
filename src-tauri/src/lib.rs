@@ -575,6 +575,10 @@ pub fn run() {
             commands::task::task_launch_delete_task,
             commands::task::conductor_sync_phase,
             commands::task::conductor_load_task_state,
+            commands::native_mcp::native_mcp_list,
+            commands::native_mcp::native_mcp_upsert,
+            commands::native_mcp::native_mcp_remove,
+            commands::native_mcp::native_mcp_toggle,
             commands::models::test_model,
             commands::models::test_llm_connection,
         ])

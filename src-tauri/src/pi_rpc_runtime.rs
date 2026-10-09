@@ -949,12 +949,24 @@ async fn pi_rpc_connection_loop(
                                         if success {
                                             // Prompt accepted, events will follow
                                             log::info!("Pi RPC response for {}: success=true", response_cmd);
+                                            // 需求11 追加三 C：pi 1.1.0 起 prompt/steer/follow_up
+                                            // 响应携带 per-input disposition（started/handled/
+                                            // queued）——hub 当前消息策略（Prompting 态
+                                            // abort+缓冲重发、不用 pi 原生排队）下恒为
+                                            // started，先记入日志供可观测/排障；若后续改用
+                                            // pi 原生 steer/follow_up 排队（08 文档 C 节
+                                            // 演进项），此处是反馈接入点。
+                                            let disposition = msg
+                                                .get("data")
+                                                .and_then(|d| d.get("disposition"))
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("n/a");
                                             if response_cmd == "prompt" {
                                                 devlog(
                                                     "info",
                                                     "pi 受理 prompt（response success，等待回合启动）",
                                                     &session_id,
-                                                    json!({}),
+                                                    json!({ "disposition": disposition }),
                                                 );
                                             }
                                         } else {

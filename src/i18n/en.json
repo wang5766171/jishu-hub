@@ -980,7 +980,9 @@
     "modelTemplateHint": "Templates fill context/output/reasoning/input/thinking levels only; enter the model ID yourself",
     "presetMoreOptions": "More options",
     "providerKeyAuto": "",
-    "refresh": "Refresh"
+    "refresh": "Refresh",
+    "codemode": "Code mode (experimental)",
+    "codemodeHint": "The model can write sandboxed scripts that orchestrate tools in parallel (pi codemode, quickjs-isolated, no network/filesystem); applies to all new sessions"
   },
   "commands": {
     "title": "Commands",
