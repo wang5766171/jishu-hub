@@ -633,63 +633,6 @@ pub(crate) async fn agent_refresh_health(
     Ok(())
 }
 
-/// Check MCP adapter installation status for a specific agent (routed through adapter contract).
-#[tauri::command]
-pub(crate) fn check_mcp_adapter(
-    state: tauri::State<'_, Mutex<AppState>>,
-    agent_id: String,
-) -> Result<serde_json::Value, String> {
-    let s = state
-        .lock()
-        .map_err(|_| "App state lock poisoned".to_string())?;
-    let agent = s
-        .registry
-        .get(&agent_id)
-        .ok_or_else(|| format!("Agent not found: {}", agent_id))?;
-    agent
-        .as_mcp()
-        .ok_or_else(|| format!("Agent {} does not support MCP", agent_id))?
-        .check_mcp()
-}
-
-/// Install MCP adapter for a specific agent (routed through adapter contract).
-/// The MutexGuard is released before .await to keep the future Send-safe:
-/// clone the Arc'd registry out of the lock, then resolve the adapter again
-/// outside it (v0.8.1 需求1 M1：原先此处硬编码 JishuSelfAgent 静态方法，属
-/// commands 层 agent 具体类型违纪，现经 McpIntegration 角色分发).
-#[tauri::command]
-pub(crate) async fn install_mcp_adapter(
-    state: tauri::State<'_, Mutex<AppState>>,
-    agent_id: String,
-) -> Result<String, String> {
-    let registry = with_app_state(&state, |s| s.registry.clone())?;
-    let agent = registry
-        .get(&agent_id)
-        .ok_or_else(|| format!("Agent not found: {}", agent_id))?;
-    agent
-        .as_mcp()
-        .ok_or_else(|| format!("Agent {} does not support MCP", agent_id))?
-        .install_mcp()
-        .await
-}
-
-/// Update MCP adapter for a specific agent (routed through adapter contract).
-#[tauri::command]
-pub(crate) async fn update_mcp_adapter(
-    state: tauri::State<'_, Mutex<AppState>>,
-    agent_id: String,
-) -> Result<String, String> {
-    let registry = with_app_state(&state, |s| s.registry.clone())?;
-    let agent = registry
-        .get(&agent_id)
-        .ok_or_else(|| format!("Agent not found: {}", agent_id))?;
-    agent
-        .as_mcp()
-        .ok_or_else(|| format!("Agent {} does not support MCP", agent_id))?
-        .update_mcp()
-        .await
-}
-
 /// Check transport-bridge installation status for a specific agent (routed
 /// through adapter contract — e.g. claude_code's claude-agent-acp dependency).
 #[tauri::command]
