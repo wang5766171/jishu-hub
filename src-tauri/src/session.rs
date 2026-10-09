@@ -55,6 +55,11 @@ pub enum ContentBlock {
         /// 显示 Error 徽标；pi JSONL 的 isError / opencode 的 status=error）。
         #[serde(default, skip_serializing_if = "is_false")]
         is_error: bool,
+        /// v0.9.5 需求12：pi 工具结果的结构化 details（如 rpiv-todo 的全量
+        /// 任务快照 TaskDetails.tasks）——会话插件（待办看板）消费；
+        /// 可选字段，旧数据/无 details 工具不携带，向后兼容。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<serde_json::Value>,
     },
     #[serde(rename = "thinking")]
     Thinking { thinking: String },

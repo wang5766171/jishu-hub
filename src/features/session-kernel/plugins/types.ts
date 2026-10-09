@@ -54,6 +54,9 @@ export interface PluginBlock {
   output?: string;
   /** tool_result 是否错误。 */
   isError?: boolean;
+  /** v0.9.5 需求12：工具结果的结构化 details（如 rpiv-todo 的全量任务快照
+   * TaskDetails.tasks）——待办看板类插件消费；可选，无 details 工具不携带。 */
+  details?: Record<string, unknown>;
   /** interaction 选项（description 为选项说明次行；v0.9.5 需求5 T6 透传）。 */
   options?: Array<{ id: string; label: string; description?: string | null }>;
   /** phase_divider 标题（v0.9.3 需求10 B1：插件接管渲染所需的完整块数据）。 */

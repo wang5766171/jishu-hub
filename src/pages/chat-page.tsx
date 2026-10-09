@@ -1687,6 +1687,13 @@ export function ChatPage({
                     ? block.content
                     : JSON.stringify(block.content),
                 isError: (block as { is_error?: boolean }).is_error ?? false,
+                // 需求12：结构化 details 透传（rpiv-todo 全量任务快照等）——
+                // 待办看板插件消费。
+                details:
+                  (block as { details?: Record<string, unknown> }).details &&
+                  typeof (block as { details?: Record<string, unknown> }).details === "object"
+                    ? ((block as { details?: Record<string, unknown> }).details as Record<string, unknown>)
+                    : undefined,
               };
             case "interaction":
               return {

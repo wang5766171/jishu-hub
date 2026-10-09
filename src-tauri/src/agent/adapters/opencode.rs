@@ -285,6 +285,8 @@ fn append_part_blocks(part: &serde_json::Value, content: &mut Vec<crate::session
                             .and_then(|v| v.as_str())
                             .map(|status| status.eq_ignore_ascii_case("error"))
                             .unwrap_or(false),
+                        // 需求12：opencode 无 details 语义，None。
+                        details: None,
                     });
                 }
             }

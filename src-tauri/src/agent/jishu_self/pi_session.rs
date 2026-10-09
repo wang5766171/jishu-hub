@@ -850,6 +850,9 @@ fn parse_pi_message(
                     .get("isError")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
+                // 需求12：pi 工具结果的结构化 details 透传（如 rpiv-todo 的
+                // TaskDetails.tasks 全量快照）——会话插件待办看板消费。
+                details: value.get("details").cloned().filter(|d| !d.is_null()),
             }],
             timestamp,
         }),
