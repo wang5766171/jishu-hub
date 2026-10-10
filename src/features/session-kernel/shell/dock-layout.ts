@@ -24,6 +24,10 @@ export interface PanelLayout {
   slot: DockSlot;
   /** 呈现层显隐（快捷图标/收起钮控制；≠ 插件启停）。 */
   hidden: boolean;
+  /** v0.9.5 需求13 测试期二轮：活动功能的胶囊态——仅「点开后缩小」的功能
+   * 保留胶囊（能力中心是唯一入口原则：未点开的不悬浮在外）；切换活动
+   * 功能时随 hidden 一并清除（单选互斥含胶囊）。 */
+  collapsed?: boolean;
   /** 浮动面板位置与大小（仅 slot=float 时有意义）。 */
   floatRect?: FloatRect;
 }
@@ -63,6 +67,7 @@ export function sanitizeLayout(raw: unknown): SessionLayoutState {
         continue;
       }
       const layout: PanelLayout = { slot, hidden: panel.hidden === true };
+      if (panel.collapsed === true) layout.collapsed = true;
       if (slot === "float") {
         const rect = sanitizeFloatRect(panel.floatRect);
         if (rect) layout.floatRect = rect;

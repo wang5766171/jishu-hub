@@ -52,6 +52,8 @@ interface PanelEntry {
   title: string;
   slot: DockSlot;
   hidden: boolean;
+  /** 需求13 二轮：活动功能的胶囊态（仅 float 悬浮窗缩小时）。 */
+  collapsed?: boolean;
   floatRect?: FloatRect;
   Component: React.ComponentType<{ ctx: SessionKernelContext }>;
 }
@@ -125,10 +127,10 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
     lastOpenedRef.current = id;
     setLayout((prev) => {
       const next = { ...prev, panels: { ...prev.panels } };
-      // 先收起所有
+      // 先收起所有（需求13 二轮：清除胶囊态——切换活动功能时旧的连同胶囊隐藏）
       for (const [pid, panel] of Object.entries(next.panels)) {
-        if (!panel.hidden) {
-          next.panels[pid] = { ...panel, hidden: true };
+        if (!panel.hidden || panel.collapsed) {
+          next.panels[pid] = { ...panel, hidden: true, collapsed: false };
         }
       }
       // 再展开目标（或如果原本就是唯一展开的 → 切换关闭）
@@ -137,7 +139,7 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
         Object.values(prev.panels).filter((p) => !p.hidden).length === 1;
       if (!wasSoleVisible) {
         const current = next.panels[id] ?? { slot: "right" as DockSlot, hidden: true };
-        next.panels[id] = { ...current, hidden: false };
+        next.panels[id] = { ...current, hidden: false, collapsed: false };
       }
       return next;
     });
@@ -145,6 +147,22 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
 
   // 需求12：每渲染刷新稳定转发（全屏自动展开经此调用最新 showPanel）。
   showPanelStableRef.current = showPanel;
+
+  /** 需求13 二轮：缩小为胶囊——活动功能保留胶囊态（hidden+collapsed）；
+   * 仅 float 悬浮窗缩小为胶囊，停靠槽收起维持原 hidden 语义（无胶囊）。 */
+  const collapsePanel = useCallback((id: string) => {
+    setLayout((prev) => {
+      const target = prev.panels[id];
+      if (!target || target.slot !== "float") {
+        // 停靠槽：维持原单选切换（再次 showPanel 切换关闭）
+        return prev;
+      }
+      return {
+        ...prev,
+        panels: { ...prev.panels, [id]: { ...target, hidden: true, collapsed: true } },
+      };
+    });
+  }, []);
 
   // ── 点击面板外部：关闭能力列表（任意窗口形态）；非最大化窗口同时折叠当前面板 ──
   useEffect(() => {
@@ -221,6 +239,7 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
           title: t(mount.titleKey, mount.titleFallback),
           slot: resolved.slot,
           hidden: resolved.hidden,
+          collapsed: (layout.panels[plugin.id] as { collapsed?: boolean } | undefined)?.collapsed,
           floatRect: resolved.floatRect,
           Component: mount.Component,
         });
@@ -345,9 +364,9 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
   if (!hasAnyMount) return null;
 
   const visiblePanels = panels.filter((panel) => !panel.hidden);
-  // 需求13：胶囊态——缩小（hidden）的面板不再消失，以右侧悬浮胶囊常驻
-  //（图标+标题，点击扩大恢复悬浮窗；纵向堆叠避让）。
-  const collapsedPanels = panels.filter((panel) => panel.hidden);
+  // 需求13 二轮：胶囊仅限「点开后缩小」的活动功能（collapsed 标记）——
+  // 未点开的不悬浮在外（能力中心是唯一入口）；切换活动功能时胶囊随单选清除。
+  const collapsedPanels = panels.filter((panel) => panel.hidden && panel.collapsed);
   const activePanel = visiblePanels[0] ?? null;
   // 活动插件 = 悬浮面板或侧栏面板（图标/点击收起规则统一覆盖两形态）。
   const activePluginId = activePanel?.id ?? sidebarOpenId;
@@ -380,7 +399,7 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
           key={panel.id}
           panel={panel}
           ctx={ctx}
-          onHide={() => showPanel(panel.id)}
+          onHide={() => collapsePanel(panel.id)}
           onDockDragStart={() => setDraggingId(panel.id)}
           onDockDragEnd={() => setDraggingId(null)}
           onMoveFloat={(rect) => {
@@ -650,9 +669,9 @@ function PanelFrame({
           left:
             panel.floatRect?.x ??
             Math.max(120, window.innerWidth - EDGE_PANEL_WIDTH - 20),
-          top: panel.floatRect?.y ?? Math.round(window.innerHeight * 0.25),
+          top: panel.floatRect?.y ?? Math.round(window.innerHeight * 0.12),
           width: panel.floatRect?.w ?? EDGE_PANEL_WIDTH,
-          height: panel.floatRect?.h ?? Math.round(window.innerHeight * 0.5),
+          height: panel.floatRect?.h ?? Math.round(window.innerHeight * 0.55),
           zIndex: 30,
         }
       : panel.slot === "left" || panel.slot === "right"
