@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DevLogCenter } from "@/components/dev/dev-log-center";
 import { isDevLogForced } from "@/lib/dev-log";
 import { useTranslation } from "react-i18next";
+import { devLog } from "@/lib/dev-log";
 import { getCurrentWindow as tauriGetCurrentWindow } from "@tauri-apps/api/window";
 import { ChartPie, LayoutGrid, ListTodo, Map, Minimize2, Package, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -69,6 +70,16 @@ const PLUGIN_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   "session.artifacts": Package,
 };
 
+/** 需求13 五轮：插件声明的 dock 槽位（showPanel 无记录时的 fallback 真源）。 */
+function declaredSlotOf(pluginId: string): DockSlot | undefined {
+  for (const plugin of listSessionPlugins()) {
+    if (plugin.id !== pluginId) continue;
+    for (const mount of dockPanelsOf(plugin)) return mount.defaultSlot;
+    return undefined;
+  }
+  return undefined;
+}
+
 function isWindowMaximized(): boolean {
   return window.innerWidth * window.innerHeight >= screen.width * screen.height * 0.92;
 }
@@ -110,6 +121,7 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
         if (disposed || fs === lastFullscreen) return;
         lastFullscreen = fs;
         if (fs && lastOpenedRef.current) {
+          devLog("panel", "进入全屏：自动展开最近面板", { id: lastOpenedRef.current, action: "fullscreen-auto-open" });
           showPanelStableRef.current(lastOpenedRef.current);
         }
       } catch {
@@ -125,7 +137,8 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
   }, []);
 
   // ── 单选切换：展开一个时收起其他 ──
-  const showPanel = useCallback((id: string) => {
+  const showPanel = useCallback((id: string, source = "hub") => {
+    devLog("panel", `面板展开：${id}`, { id, source });
     lastOpenedRef.current = id;
     setLayout((prev) => {
       const next = { ...prev, panels: { ...prev.panels } };
@@ -140,7 +153,12 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
         !prev.panels[id]?.hidden &&
         Object.values(prev.panels).filter((p) => !p.hidden).length === 1;
       if (!wasSoleVisible) {
-        const current = next.panels[id] ?? { slot: "right" as DockSlot, hidden: true };
+        // 需求13 五轮：无布局记录时的 fallback 槽位用**插件声明**
+        //（dockPanelsOf 的 defaultSlot——弹窗类为 float；此前硬编码 right
+        // 是「最大化点缩小无反应」的根因：collapsePanel 仅对 float 生效）。
+        const declaredSlot =
+          declaredSlotOf(id) ?? ("right" as DockSlot);
+        const current = next.panels[id] ?? { slot: declaredSlot, hidden: true };
         next.panels[id] = { ...current, hidden: false, collapsed: false };
       }
       return next;
@@ -153,10 +171,12 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
   /** 需求13 二轮：缩小为胶囊——活动功能保留胶囊态（hidden+collapsed）；
    * 仅 float 悬浮窗缩小为胶囊，停靠槽收起维持原 hidden 语义（无胶囊）。 */
   const collapsePanel = useCallback((id: string) => {
+    devLog("panel", `面板缩小为胶囊：${id}`, { id, action: "collapse" });
     setLayout((prev) => {
       const target = prev.panels[id];
       if (!target || target.slot !== "float") {
         // 停靠槽：维持原单选切换（再次 showPanel 切换关闭）
+        devLog("panel", `缩小忽略（非 float 悬浮窗）：${id}`, { id, slot: target?.slot });
         return prev;
       }
       return {
@@ -175,16 +195,22 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
       if (isWindowMaximized()) return;
       if (layerRef.current?.contains(target)) return;
       setLayout((prev) => {
-        // 需求13：float 悬浮窗常驻（缩小为胶囊由用户手动控制），点击外部
-        // 只折叠停靠槽（left/right/top/bottom）面板。
-        const hasVisible = Object.values(prev.panels).some((p) => !p.hidden && p.slot !== "float");
+        // 需求13 五轮（用户裁决）：非最大化点击外部 = 缩小——float 悬浮窗
+        // 缩为胶囊（hidden+collapsed，与手动缩小同形态）；停靠槽维持原
+        // 裸隐藏（无胶囊语义）。最大化不在此路径（isWindowMaximized 早退）。
+        const hasVisible = Object.values(prev.panels).some((p) => !p.hidden);
         if (!hasVisible) return prev;
         const next = { ...prev, panels: { ...prev.panels } };
+        const shrunk: string[] = [];
         for (const [id, panel] of Object.entries(next.panels)) {
-          if (!panel.hidden && panel.slot !== "float") {
-            next.panels[id] = { ...panel, hidden: true };
-          }
+          if (panel.hidden) continue;
+          next.panels[id] =
+            panel.slot === "float"
+              ? { ...panel, hidden: true, collapsed: true }
+              : { ...panel, hidden: true };
+          shrunk.push(id);
         }
+        devLog("panel", "点击外部：面板缩小/隐藏", { shrunk });
         return next;
       });
     };
@@ -371,10 +397,12 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
   // 未点开的不悬浮在外（能力中心是唯一入口）；切换活动功能时胶囊随单选清除。
   const collapsedPanels = panels.filter((panel) => panel.hidden && panel.collapsed);
   const activePanel = visiblePanels[0] ?? null;
-  // 活动插件 = 悬浮面板或侧栏面板（图标/点击收起规则统一覆盖两形态）。
-  const activePluginId = activePanel?.id ?? sidebarOpenId;
+  // 活动插件 = 悬浮面板、胶囊（需求13 五轮：胶囊态也是「当前插件」，能力
+  // 中心按钮显示其图标）或侧栏面板。
+  const capsulePanel = collapsedPanels[0] ?? null;
+  const activePluginId = activePanel?.id ?? capsulePanel?.id ?? sidebarOpenId;
   const activeTitle =
-    activePanel?.title ?? sidebarEntries.find((e) => e.id === sidebarOpenId)?.title ?? null;
+    activePanel?.title ?? capsulePanel?.title ?? sidebarEntries.find((e) => e.id === sidebarOpenId)?.title ?? null;
   const ActiveIcon = activePluginId ? PLUGIN_ICONS[activePluginId] ?? LayoutGrid : LayoutGrid;
 
   return (
@@ -415,7 +443,7 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
               type="button"
               title={t("sessionPanels.expand", "展开悬浮窗") + " · " + panel.title}
               className="flex h-8 max-w-44 items-center gap-1.5 rounded-full border border-border/70 bg-[var(--color-layer-2)] px-3 shadow-md backdrop-blur transition-colors hover:border-primary/50"
-              onClick={() => showPanel(panel.id)}
+              onClick={() => showPanel(panel.id, "capsule")}
             >
               {Capsule ? <Capsule ctx={ctx} /> : (
                 <>
@@ -434,11 +462,15 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
             // 2026-09-11 三轮调整：有面板展开时点击 = 收起面板（图标复位能力
             // 中心）；无面板展开时才弹出/关闭能力列表。2026-09-12：统一覆盖
             // 悬浮/侧栏两形态。
-            if (activePluginId) {
-              if (sidebarOpenId && !activePanel) closeSessionSidebar();
-              else if (activePanel) showPanel(activePanel.id);
+            if (activePanel) {
+              // 可见面板态：收起（单选切换关闭）。
+              devLog("panel", `能力中心按钮：收起面板 ${activePanel.id}`, { id: activePanel.id, action: "hub-collapse" });
+              showPanel(activePanel.id);
               setHubOpen(false);
             } else {
+              // 需求13 五轮：胶囊态或无活动 → 弹能力清单（切换不同插件；
+              // 胶囊态时按钮已显示胶囊对应插件图标）。
+              devLog("panel", "能力中心按钮：弹出清单", { action: "hub-open", capsuleActive: capsulePanel?.id ?? null });
               setHubOpen((v) => !v);
             }
           }}

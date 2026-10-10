@@ -26,6 +26,7 @@ const CATEGORY_COLOR: Record<DevLogCategory, string> = {
   approval: "text-cyan-600 dark:text-cyan-400",
   plugin: "text-fuchsia-600 dark:text-fuchsia-400",
   runtime: "text-orange-600 dark:text-orange-400",
+  panel: "text-teal-600 dark:text-teal-400",
 };
 const CATEGORIES = Object.keys(CATEGORY_COLOR) as DevLogCategory[];
 

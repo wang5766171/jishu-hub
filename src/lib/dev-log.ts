@@ -26,7 +26,10 @@ export type DevLogCategory =
   | "plugin"
   /** v0.9.5 需求2 测试期：后端运行时桥接日志（hub-dev-log 事件——Pi RPC
    * 循环状态迁移/命令处置/watchdog；见 attachRuntimeLogBridge）。 */
-  | "runtime";
+  | "runtime"
+  /** v0.9.5 需求13 五轮（用户裁决）：能力中心/悬浮窗/胶囊的交互操作——
+   * 多轮形态调整的定位依据。 */
+  | "panel";
 
 export interface DevLogEntry {
   /** 单调序号（复制与定位用）。 */
