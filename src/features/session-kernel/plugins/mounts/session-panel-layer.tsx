@@ -174,11 +174,9 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
     devLog("panel", `面板缩小为胶囊：${id}`, { id, action: "collapse" });
     setLayout((prev) => {
       const target = prev.panels[id];
-      if (!target || target.slot !== "float") {
-        // 停靠槽：维持原单选切换（再次 showPanel 切换关闭）
-        devLog("panel", `缩小忽略（非 float 悬浮窗）：${id}`, { id, slot: target?.slot });
-        return prev;
-      }
+      if (!target) return prev;
+      // 需求13 六轮：不判槽位——任何面板缩小=胶囊（日志实证 slot 判断链
+      // 在脏记录下失效；统一形态也符合「所有弹窗类插件」口径）。
       return {
         ...prev,
         panels: { ...prev.panels, [id]: { ...target, hidden: true, collapsed: true } },
@@ -204,10 +202,9 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
         const shrunk: string[] = [];
         for (const [id, panel] of Object.entries(next.panels)) {
           if (panel.hidden) continue;
-          next.panels[id] =
-            panel.slot === "float"
-              ? { ...panel, hidden: true, collapsed: true }
-              : { ...panel, hidden: true };
+          // 需求13 六轮：统一缩小为胶囊（用户口径——非最大化点外部与手动
+          // 缩小同形态，不分槽位）。
+          next.panels[id] = { ...panel, hidden: true, collapsed: true };
           shrunk.push(id);
         }
         devLog("panel", "点击外部：面板缩小/隐藏", { shrunk });

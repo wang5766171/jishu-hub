@@ -41,9 +41,10 @@ export interface SessionLayoutState {
   railWidgets: Record<string, RailWidgetLayout>;
 }
 
-// v0.9.5 需求13 三轮：v2——悬浮窗改版重置布局记忆（旧 right 槽记忆会使
-// collapsePanel（float 限定）失效、旧贴边 floatRect 覆盖新默认右间隙）。
-const STORAGE_KEY = "jishu-hub.session-layout.v2";
+// v0.9.5 需求13 六轮：v3——v2 时期旧 fallback（硬编码 right）写入的脏记录
+// 使 collapsePanel 失效（日志实证 slot=right 残留），且 showPanel 有记录时
+// 不走 declaredSlotOf 修复路径——升版清除（用户位置记忆重建，可接受）。
+const STORAGE_KEY = "jishu-hub.session-layout.v3";
 
 /** 浮动窗口尺寸保护。 */
 export const FLOAT_MIN_W = 280;
