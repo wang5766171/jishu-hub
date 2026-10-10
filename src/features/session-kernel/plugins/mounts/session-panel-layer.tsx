@@ -56,6 +56,8 @@ interface PanelEntry {
   collapsed?: boolean;
   floatRect?: FloatRect;
   Component: React.ComponentType<{ ctx: SessionKernelContext }>;
+  /** 需求13 三轮：胶囊信息缩略渲染（缺省 fallback 图标+标题）。 */
+  CapsuleComponent?: React.ComponentType<{ ctx: SessionKernelContext }>;
 }
 
 /** 插件图标映射（按插件 id → lucide 图标组件）。 */
@@ -242,6 +244,7 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
           collapsed: (layout.panels[plugin.id] as { collapsed?: boolean } | undefined)?.collapsed,
           floatRect: resolved.floatRect,
           Component: mount.Component,
+          CapsuleComponent: mount.CapsuleComponent,
         });
       }
     }
@@ -376,24 +379,6 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
 
   return (
     <div ref={layerRef} className="pointer-events-none absolute inset-0 z-20">
-      {/* 需求13：胶囊列（右侧悬浮、不贴紧，留 16px；从顶部 1/6 起纵向堆叠）。 */}
-      <div className="pointer-events-none absolute right-4 flex flex-col items-end gap-2" style={{ top: "16%" }}>
-        {collapsedPanels.map((panel) => {
-          const Icon = PLUGIN_ICONS[panel.id] ?? LayoutGrid;
-          return (
-            <button
-              key={panel.id}
-              type="button"
-              title={t("sessionPanels.expand", "展开悬浮窗") + " · " + panel.title}
-              className="pointer-events-auto flex max-w-40 items-center gap-1.5 rounded-full border border-border/60 bg-[var(--color-layer-2)]/95 px-3 py-1.5 shadow-lg backdrop-blur transition-colors hover:border-primary/50"
-              onClick={() => showPanel(panel.id)}
-            >
-              <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="truncate text-[11px] font-medium text-foreground/90">{panel.title}</span>
-            </button>
-          );
-        })}
-      </div>
       {visiblePanels.map((panel) => (
         <PanelFrame
           key={panel.id}
@@ -419,8 +404,28 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
           settings.json 持久化）可开（安装包排查场景）。 */}
       {(import.meta.env.DEV || isDevLogForced()) && <DevLogCenter />}
 
-      {/* ── 能力中心按钮（图标 = 当前展开插件）── */}
-      <div ref={hubRef} className="pointer-events-auto absolute right-2 top-2">
+      {/* ── 能力中心按钮（图标 = 当前展开插件）+ 左侧并排胶囊（需求13 三轮：
+          胶囊在左/按钮在右/中间间隔 gap-2；胶囊 = 活动功能的信息缩略）── */}
+      <div ref={hubRef} className="pointer-events-auto absolute right-2 top-2 flex items-center gap-2">
+        {collapsedPanels.map((panel) => {
+          const Capsule = panel.CapsuleComponent;
+          return (
+            <button
+              key={panel.id}
+              type="button"
+              title={t("sessionPanels.expand", "展开悬浮窗") + " · " + panel.title}
+              className="flex h-8 max-w-44 items-center gap-1.5 rounded-full border border-border/70 bg-[var(--color-layer-2)] px-3 shadow-md backdrop-blur transition-colors hover:border-primary/50"
+              onClick={() => showPanel(panel.id)}
+            >
+              {Capsule ? <Capsule ctx={ctx} /> : (
+                <>
+                  <span className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate text-[11px] font-medium text-foreground/90">{panel.title}</span>
+                </>
+              )}
+            </button>
+          );
+        })}
         <button
           type="button"
           title={activeTitle ?? t("sessionPanels.hub.title", "能力中心")}
@@ -653,7 +658,7 @@ function PanelFrame({
   const Body = panel.Component;
   const frameClass =
     panel.slot === "float"
-      ? "pointer-events-auto absolute flex flex-col rounded-xl border border-border/70 bg-[var(--color-layer-2)]/95 shadow-xl backdrop-blur" /* 需求13：悬浮窗形态（阴影/圆角/留边见 frameStyle） */
+      ? "pointer-events-auto absolute flex flex-col rounded-xl border border-border bg-[var(--color-layer-2)] shadow-2xl ring-1 ring-black/10 backdrop-blur" /* 需求13 三轮：边缘区分度（实边框+ring+双层阴影，zcode 参考） */
       : panel.slot === "left"
         ? "pointer-events-auto absolute bottom-0 left-0 top-0 flex flex-col border-r border-border/60 bg-[var(--color-layer-2)]/95 backdrop-blur"
         : panel.slot === "right"
@@ -668,7 +673,7 @@ function PanelFrame({
           // 1/4），超出内容纵向滚动（内容容器 overflow-auto）。
           left:
             panel.floatRect?.x ??
-            Math.max(120, window.innerWidth - EDGE_PANEL_WIDTH - 20),
+            Math.max(120, window.innerWidth - EDGE_PANEL_WIDTH - 24),
           top: panel.floatRect?.y ?? Math.round(window.innerHeight * 0.12),
           width: panel.floatRect?.w ?? EDGE_PANEL_WIDTH,
           height: panel.floatRect?.h ?? Math.round(window.innerHeight * 0.55),

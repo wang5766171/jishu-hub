@@ -41,7 +41,9 @@ export interface SessionLayoutState {
   railWidgets: Record<string, RailWidgetLayout>;
 }
 
-const STORAGE_KEY = "jishu-hub.session-layout.v1";
+// v0.9.5 需求13 三轮：v2——悬浮窗改版重置布局记忆（旧 right 槽记忆会使
+// collapsePanel（float 限定）失效、旧贴边 floatRect 覆盖新默认右间隙）。
+const STORAGE_KEY = "jishu-hub.session-layout.v2";
 
 /** 浮动窗口尺寸保护。 */
 export const FLOAT_MIN_W = 280;

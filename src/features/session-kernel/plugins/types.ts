@@ -257,6 +257,9 @@ export interface DockPanelMount {
   Component: ComponentType<{ ctx: SessionKernelContext }>;
   /** 首次启用时的默认停靠槽位（此后跟随用户布局记忆）。 */
   defaultSlot: DockSlot;
+  /** v0.9.5 需求13 三轮：胶囊信息缩略渲染（缩小态与能力中心按钮并排）——
+   * 插件自定义缩略格式（如待办 done/total）；缺省 fallback 图标+标题。 */
+  CapsuleComponent?: ComponentType<{ ctx: SessionKernelContext }>;
 }
 
 /** 侧边栏面板挂载点（v0.9.2 测试期，用户裁决：能力中心支持两种形态）：

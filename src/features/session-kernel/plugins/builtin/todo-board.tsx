@@ -12,7 +12,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CheckCircle2, ChevronRight, Loader2 } from "lucide-react";
+import { CheckCircle2, ChevronRight, ListTodo, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SESSION_PLUGIN_CONTRACT_VERSION } from "../types";
 import type { SessionKernelContext, SessionPluginDescriptor } from "../types";
@@ -103,6 +103,27 @@ export function deriveTodoState(
   const visible = batches.flat();
   if (!anyTodo || visible.length === 0) return null;
   return { batches: batches.filter((b) => b.length > 0), subagentsRunning: openSubagentCalls.size };
+}
+
+/** 需求13 三轮：胶囊缩略（缩小态与能力中心按钮并排）——信息缩略而非
+ * 模块名：ListTodo 图标 + done/total（无数据显示模块名兜底）。 */
+function TodoCapsule({ ctx }: { ctx: SessionKernelContext }) {
+  const { t } = useTranslation();
+  const [messages, setMessages] = useState<Parameters<typeof deriveTodoState>[0] | null>(null);
+  useEffect(() => ctx.subscribe.messages((msgs) => setMessages(msgs)), [ctx]);
+  const state = useMemo(() => (messages ? deriveTodoState(messages) : null), [messages]);
+  const visible = state ? state.batches.flat() : [];
+  const done = visible.filter((task) => task.status === "completed").length;
+  return (
+    <>
+      <ListTodo className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <span className="truncate text-[11px] font-medium text-foreground/90">
+        {visible.length > 0
+          ? `${done}/${visible.length}`
+          : t("sessionPlugins.todoBoard.title", "待办")}
+      </span>
+    </>
+  );
 }
 
 function TodoBoardPanel({ ctx }: { ctx: SessionKernelContext }) {
@@ -230,7 +251,8 @@ export const todoBoardPlugin: SessionPluginDescriptor = {
       titleKey: "sessionPlugins.todoBoard.title",
       titleFallback: "待办",
       Component: TodoBoardPanel,
-      defaultSlot: "float"  /* 需求13：悬浮窗类插件默认悬浮形态 */,
+      defaultSlot: "float",  /* 需求13：悬浮窗类插件默认悬浮形态 */
+      CapsuleComponent: TodoCapsule,
     },
   ],
 };
