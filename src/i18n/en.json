@@ -1450,7 +1450,9 @@
       "collapse": "Collapse",
       "hint": "Todo list ({{done}}/{{total}} done)",
       "agents": "{{n}} subagent(s) running",
-      "empty": "No todos yet — ask the agent to add some and track them"
+      "empty": "No todos yet — ask the agent to add some and track them",
+      "batchDone": "Finished batch · {{n}} items",
+      "batchCurrent": "Current batch"
     }
   },
   "sessionPanels": {

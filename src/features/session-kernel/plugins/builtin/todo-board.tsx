@@ -12,7 +12,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CheckCircle2, Loader2 } from "lucide-react";
+import { CheckCircle2, ChevronRight, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SESSION_PLUGIN_CONTRACT_VERSION } from "../types";
 import type { SessionKernelContext, SessionPluginDescriptor } from "../types";
@@ -27,14 +27,17 @@ interface TodoTask {
 }
 
 interface TodoState {
-  tasks: TodoTask[];
+  /** 分批任务列表（按「旧批全部完成后出现新任务」切批；最后一批为当前批）。 */
+  batches: TodoTask[][];
   /** 运行中的 subagent 调用数（tool_use 无配对 result）。 */
   subagentsRunning: number;
 }
 
-/** 从消息流推导待办状态：最后一个 todo 工具调用的 details 快照胜出
- * （与 rpiv 回放同源）；subagent 运行计数 = 未配对 result 的 subagent
- * tool_use。纯函数便于测试。 */
+/** 从消息流推导分批待办状态：重放 todo 快照序列（与 rpiv 回放同源），
+ * 批次边界 = ①当前批活跃任务全部完成后出现**真实用户消息**，其后新建
+ * 任务开新批（同轮顺序执行 A 完成后建 B 不切批）；②action=clear 封批。
+ * 任务状态以各任务最后出现的快照为准（clear 后消失的旧任务保留封存态）。
+ * 纯函数便于测试。 */
 export function deriveTodoState(
   msgs: ReadonlyArray<{ role: string; blocks: ReadonlyArray<{
     type: string;
@@ -43,9 +46,32 @@ export function deriveTodoState(
     details?: Record<string, unknown>;
   }> }>,
 ): TodoState | null {
-  let latest: TodoTask[] | null = null;
   const openSubagentCalls = new Set<string>();
+  const batches: TodoTask[][] = [];
+  /** 批成员最后已知状态（跨快照累积；封批/收尾时取此）。 */
+  const lastById = new Map<number, TodoTask>();
+  let currentIds = new Set<number>();
+  /** 上批活跃清空后是否已跨过真实用户消息（批次边界的必要条件）。 */
+  let userTurnSinceIdle = false;
+  let anyTodo = false;
+
+  const sealBatch = () => {
+    if (currentIds.size === 0) return;
+    batches.push(
+      [...currentIds]
+        .map((id) => lastById.get(id))
+        .filter((t): t is TodoTask => !!t && t.status !== "deleted"),
+    );
+    currentIds = new Set();
+    userTurnSinceIdle = false;
+  };
+
   for (const msg of msgs) {
+    // 真实用户消息（含 text 块的 user 消息；toolResult 也挂 user role 需排除）。
+    if (msg.role === "user" && msg.blocks.some((b) => b.type === "text")) {
+      const active = [...currentIds].filter((id) => lastById.get(id)?.status === "in_progress" || lastById.get(id)?.status === "pending");
+      if (active.length === 0) userTurnSinceIdle = true;
+    }
     for (const block of msg.blocks) {
       if (block.type === "tool_use") {
         if (block.text === "subagent" && block.id) {
@@ -53,17 +79,30 @@ export function deriveTodoState(
         }
       } else if (block.type === "tool_result") {
         if (block.id) openSubagentCalls.delete(block.id);
-        // details.tasks 仅 todo 工具携带（非 todo 工具的 details 无 tasks
-        // 字段，天然无扰）。
-        const tasks = (block.details as { tasks?: unknown } | undefined)?.tasks;
-        if (Array.isArray(tasks)) {
-          latest = tasks as TodoTask[];
+        const details = block.details as { tasks?: unknown; action?: unknown } | undefined;
+        const tasks = details?.tasks;
+        if (!Array.isArray(tasks)) continue;
+        anyTodo = true;
+        const live = (tasks as TodoTask[]).filter((t) => t.status !== "deleted");
+        if (details?.action === "clear") {
+          sealBatch();
+          continue;
         }
+        for (const t of live) lastById.set(t.id, t);
+        const freshIds = live.filter((t) => !currentIds.has(t.id));
+        if (freshIds.length > 0 && currentIds.size > 0 && userTurnSinceIdle) {
+          // 上批已清空（活跃为 0）且跨过用户消息 → 新批次。
+          sealBatch();
+        }
+        // 只纳入新任务（封批后的旧任务不得回流新批；未封批时等价全量幂等加）。
+        for (const t of freshIds) currentIds.add(t.id);
       }
     }
   }
-  if (!latest) return null;
-  return { tasks: latest, subagentsRunning: openSubagentCalls.size };
+  sealBatch();
+  const visible = batches.flat();
+  if (!anyTodo || visible.length === 0) return null;
+  return { batches: batches.filter((b) => b.length > 0), subagentsRunning: openSubagentCalls.size };
 }
 
 function TodoBoardPanel({ ctx }: { ctx: SessionKernelContext }) {
@@ -75,7 +114,7 @@ function TodoBoardPanel({ ctx }: { ctx: SessionKernelContext }) {
 
   const state = useMemo(() => (messages ? deriveTodoState(messages) : null), [messages]);
 
-  if (!state || state.tasks.length === 0) {
+  if (!state || state.batches.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center p-4 text-xs text-muted-foreground">
         {tr("sessionPlugins.todoBoard.empty", "暂无待办——让 agent「创建几条待办并跟踪执行」")}
@@ -83,10 +122,12 @@ function TodoBoardPanel({ ctx }: { ctx: SessionKernelContext }) {
     );
   }
 
-  const visible = state.tasks.filter((task) => task.status !== "deleted");
-  const inProgress = visible.filter((task) => task.status === "in_progress");
-  const pending = visible.filter((task) => task.status === "pending");
+  // 需求12 测试期二轮：分批展示——历史批（全部完成）折叠为可展开条目，
+  // 当前批（最后一批，含活跃任务）完整展示。
+  const visible = state.batches.flat();
   const completed = visible.filter((task) => task.status === "completed");
+  const historicalBatches = state.batches.slice(0, -1);
+  const currentBatch = state.batches[state.batches.length - 1];
 
   const row = (task: TodoTask) => {
     const blocked =
@@ -149,9 +190,26 @@ function TodoBoardPanel({ ctx }: { ctx: SessionKernelContext }) {
         )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto py-1">
-        {inProgress.map(row)}
-        {pending.map(row)}
-        {completed.map(row)}
+        {historicalBatches.map((batch, i) => {
+          const allDone = batch.every((t) => t.status === "completed");
+          return (
+            <details key={`batch-${i}`} className="group border-b border-border/30 px-2 py-1">
+              <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[10px] text-muted-foreground">
+                <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
+                {tr("sessionPlugins.todoBoard.batchDone", "已完成批次 · {{n}} 条").replace("{{n}}", String(batch.length))}
+              </summary>
+              <div className={cn("pt-0.5", !allDone && "opacity-100")}>
+                {batch.map(row)}
+              </div>
+            </details>
+          );
+        })}
+        {state.batches.length > 1 && (
+          <div className="px-3 pb-1 pt-2 text-[10px] font-medium text-foreground/80">
+            {tr("sessionPlugins.todoBoard.batchCurrent", "当前批次")}
+          </div>
+        )}
+        {currentBatch.map(row)}
       </div>
     </div>
   );
