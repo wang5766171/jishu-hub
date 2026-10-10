@@ -230,7 +230,7 @@ export const todoBoardPlugin: SessionPluginDescriptor = {
       titleKey: "sessionPlugins.todoBoard.title",
       titleFallback: "待办",
       Component: TodoBoardPanel,
-      defaultSlot: "right",
+      defaultSlot: "float"  /* 需求13：悬浮窗类插件默认悬浮形态 */,
     },
   ],
 };

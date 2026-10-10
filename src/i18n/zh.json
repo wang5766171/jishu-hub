@@ -1466,7 +1466,9 @@
       "panelCount": "面板",
       "widgetCount": "挂件",
       "manage": "管理插件…"
-    }
+    },
+    "collapse": "缩小为胶囊",
+    "expand": "展开悬浮窗"
   },
   "taskPlan": {
     "cardTitle": "任务方案",

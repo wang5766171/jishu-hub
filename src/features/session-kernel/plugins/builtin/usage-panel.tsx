@@ -217,7 +217,7 @@ export const usagePanelPlugin: SessionPluginDescriptor = {
       titleKey: "sessionPlugins.usage.panelTitle",
       titleFallback: "用量",
       Component: UsagePanelBody,
-      defaultSlot: "right",
+      defaultSlot: "float"  /* 需求13：悬浮窗类插件默认悬浮形态 */,
     },
   ],
 };

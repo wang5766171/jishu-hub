@@ -3,7 +3,7 @@ import { DevLogCenter } from "@/components/dev/dev-log-center";
 import { isDevLogForced } from "@/lib/dev-log";
 import { useTranslation } from "react-i18next";
 import { getCurrentWindow as tauriGetCurrentWindow } from "@tauri-apps/api/window";
-import { ChartPie, LayoutGrid, Map, Package, Search, X } from "lucide-react";
+import { ChartPie, LayoutGrid, ListTodo, Map, Minimize2, Package, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   EDGE_PANEL_WIDTH,
@@ -59,6 +59,7 @@ interface PanelEntry {
 /** 插件图标映射（按插件 id → lucide 图标组件）。 */
 const PLUGIN_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   "session.task-board": Map,
+  "session.todo-board": ListTodo,
   "session.usage": ChartPie,
   "session.search": Search,
   "session.artifacts": Package,
@@ -154,11 +155,13 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
       if (isWindowMaximized()) return;
       if (layerRef.current?.contains(target)) return;
       setLayout((prev) => {
-        const hasVisible = Object.values(prev.panels).some((p) => !p.hidden);
+        // 需求13：float 悬浮窗常驻（缩小为胶囊由用户手动控制），点击外部
+        // 只折叠停靠槽（left/right/top/bottom）面板。
+        const hasVisible = Object.values(prev.panels).some((p) => !p.hidden && p.slot !== "float");
         if (!hasVisible) return prev;
         const next = { ...prev, panels: { ...prev.panels } };
         for (const [id, panel] of Object.entries(next.panels)) {
-          if (!panel.hidden) {
+          if (!panel.hidden && panel.slot !== "float") {
             next.panels[id] = { ...panel, hidden: true };
           }
         }
@@ -342,6 +345,9 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
   if (!hasAnyMount) return null;
 
   const visiblePanels = panels.filter((panel) => !panel.hidden);
+  // 需求13：胶囊态——缩小（hidden）的面板不再消失，以右侧悬浮胶囊常驻
+  //（图标+标题，点击扩大恢复悬浮窗；纵向堆叠避让）。
+  const collapsedPanels = panels.filter((panel) => panel.hidden);
   const activePanel = visiblePanels[0] ?? null;
   // 活动插件 = 悬浮面板或侧栏面板（图标/点击收起规则统一覆盖两形态）。
   const activePluginId = activePanel?.id ?? sidebarOpenId;
@@ -351,6 +357,24 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
 
   return (
     <div ref={layerRef} className="pointer-events-none absolute inset-0 z-20">
+      {/* 需求13：胶囊列（右侧悬浮、不贴紧，留 16px；从顶部 1/6 起纵向堆叠）。 */}
+      <div className="pointer-events-none absolute right-4 flex flex-col items-end gap-2" style={{ top: "16%" }}>
+        {collapsedPanels.map((panel) => {
+          const Icon = PLUGIN_ICONS[panel.id] ?? LayoutGrid;
+          return (
+            <button
+              key={panel.id}
+              type="button"
+              title={t("sessionPanels.expand", "展开悬浮窗") + " · " + panel.title}
+              className="pointer-events-auto flex max-w-40 items-center gap-1.5 rounded-full border border-border/60 bg-[var(--color-layer-2)]/95 px-3 py-1.5 shadow-lg backdrop-blur transition-colors hover:border-primary/50"
+              onClick={() => showPanel(panel.id)}
+            >
+              <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="truncate text-[11px] font-medium text-foreground/90">{panel.title}</span>
+            </button>
+          );
+        })}
+      </div>
       {visiblePanels.map((panel) => (
         <PanelFrame
           key={panel.id}
@@ -610,7 +634,7 @@ function PanelFrame({
   const Body = panel.Component;
   const frameClass =
     panel.slot === "float"
-      ? "pointer-events-auto absolute flex flex-col rounded-xl border border-border/70 bg-[var(--color-layer-2)]/95 shadow-xl backdrop-blur"
+      ? "pointer-events-auto absolute flex flex-col rounded-xl border border-border/70 bg-[var(--color-layer-2)]/95 shadow-xl backdrop-blur" /* 需求13：悬浮窗形态（阴影/圆角/留边见 frameStyle） */
       : panel.slot === "left"
         ? "pointer-events-auto absolute bottom-0 left-0 top-0 flex flex-col border-r border-border/60 bg-[var(--color-layer-2)]/95 backdrop-blur"
         : panel.slot === "right"
@@ -621,10 +645,14 @@ function PanelFrame({
   const frameStyle: React.CSSProperties =
     panel.slot === "float"
       ? {
-          left: panel.floatRect?.x ?? 80,
-          top: panel.floatRect?.y ?? 80,
+          // 需求13：默认悬浮位 = 右侧留边不贴紧（20px）、约半高（上下各留
+          // 1/4），超出内容纵向滚动（内容容器 overflow-auto）。
+          left:
+            panel.floatRect?.x ??
+            Math.max(120, window.innerWidth - EDGE_PANEL_WIDTH - 20),
+          top: panel.floatRect?.y ?? Math.round(window.innerHeight * 0.25),
           width: panel.floatRect?.w ?? EDGE_PANEL_WIDTH,
-          height: panel.floatRect?.h ?? 420,
+          height: panel.floatRect?.h ?? Math.round(window.innerHeight * 0.5),
           zIndex: 30,
         }
       : panel.slot === "left" || panel.slot === "right"
@@ -634,7 +662,7 @@ function PanelFrame({
   return (
     <div className={frameClass} style={frameStyle} data-panel-id={panel.id} data-panel-slot={panel.slot}>
       <div
-        className="flex h-9 shrink-0 cursor-grab items-center gap-2 border-b border-border/40 px-2.5"
+        className="flex h-9 shrink-0 cursor-grab items-center gap-2 rounded-t-xl border-b border-border/40 px-2.5 shadow-[0_1px_3px_rgba(0,0,0,0.08)]" /* 需求13：标题栏阴影分割 */
         draggable={panel.slot !== "float"}
         onDragStart={(e) => {
           e.dataTransfer.setData(PANEL_DRAG_MIME, panel.id);
@@ -656,11 +684,11 @@ function PanelFrame({
         <div className="ml-auto flex items-center gap-0.5">
           <button
             type="button"
-            title={t("sessionPanels.hide", "收起面板")}
+            title={t("sessionPanels.collapse", "缩小为胶囊")}
             className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
             onClick={onHide}
           >
-            <X className="h-3.5 w-3.5" />
+            <Minimize2 className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>

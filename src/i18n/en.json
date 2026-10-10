@@ -1466,7 +1466,9 @@
       "panelCount": "panels",
       "widgetCount": "widgets",
       "manage": "Manage plugins…"
-    }
+    },
+    "collapse": "Collapse to capsule",
+    "expand": "Expand floating window"
   },
   "taskPlan": {
     "cardTitle": "Task Plan",
