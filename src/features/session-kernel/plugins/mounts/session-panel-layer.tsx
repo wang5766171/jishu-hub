@@ -676,7 +676,12 @@ function PanelFrame({
             Math.max(120, window.innerWidth - EDGE_PANEL_WIDTH - 24),
           top: panel.floatRect?.y ?? Math.round(window.innerHeight * 0.12),
           width: panel.floatRect?.w ?? EDGE_PANEL_WIDTH,
-          height: panel.floatRect?.h ?? Math.round(window.innerHeight * 0.55),
+          // 需求13 四轮：高度内容自适应（zcode 口径——内容多高窗多高，不
+          // 顶头）；仅用户手动调过大小（floatRect.h 有值）才固定，否则只
+          // 设上限（约 70% 视口）超出内部滚动。
+          ...(panel.floatRect?.h
+            ? { height: panel.floatRect.h }
+            : { maxHeight: Math.round(window.innerHeight * 0.7) }),
           zIndex: 30,
         }
       : panel.slot === "left" || panel.slot === "right"
