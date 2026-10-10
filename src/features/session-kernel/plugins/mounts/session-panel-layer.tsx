@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DevLogCenter } from "@/components/dev/dev-log-center";
 import { isDevLogForced } from "@/lib/dev-log";
 import { useTranslation } from "react-i18next";
+import { getCurrentWindow as tauriGetCurrentWindow } from "@tauri-apps/api/window";
 import { ChartPie, LayoutGrid, Map, Package, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -79,13 +80,48 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
   const [hubOpen, setHubOpen] = useState(false);
   const layerRef = useRef<HTMLDivElement>(null);
   const hubRef = useRef<HTMLDivElement>(null);
+  // v0.9.5 需求12（2026-10-10 改版）：最近展开的面板 id——进入全屏时自动
+  // 展开（用户裁决「全屏的时候自动展开」）；仅记忆本会话内使用过的面板，
+  // 无记忆不动（不硬编码任何插件）。
+  const lastOpenedRef = useRef<string | null>(null);
+  // showPanel 稳定转发（全屏 effect 先于 showPanel 定义引用）。
+  const showPanelStableRef = useRef<(id: string) => void>(() => {});
 
   useEffect(() => {
     saveLayout(layout);
   }, [layout]);
 
+  // 需求12：全屏自动展开——Tauri 窗口进入全屏（onResized→isFullscreen）
+  // 展开最近使用的面板；退出全屏不强制收起（用户自己控制）。浏览器环境
+  // 守卫同 app.tsx 惯例。
+  useEffect(() => {
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+    let disposed = false;
+    let lastFullscreen = false;
+    const win = tauriGetCurrentWindow();
+    const sync = async () => {
+      try {
+        const fs = await win.isFullscreen();
+        if (disposed || fs === lastFullscreen) return;
+        lastFullscreen = fs;
+        if (fs && lastOpenedRef.current) {
+          showPanelStableRef.current(lastOpenedRef.current);
+        }
+      } catch {
+        /* IPC 失败静默 */
+      }
+    };
+    void sync();
+    const unlisten = win.onResized(() => void sync());
+    return () => {
+      disposed = true;
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
   // ── 单选切换：展开一个时收起其他 ──
   const showPanel = useCallback((id: string) => {
+    lastOpenedRef.current = id;
     setLayout((prev) => {
       const next = { ...prev, panels: { ...prev.panels } };
       // 先收起所有
@@ -105,6 +141,9 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
       return next;
     });
   }, []);
+
+  // 需求12：每渲染刷新稳定转发（全屏自动展开经此调用最新 showPanel）。
+  showPanelStableRef.current = showPanel;
 
   // ── 点击面板外部：关闭能力列表（任意窗口形态）；非最大化窗口同时折叠当前面板 ──
   useEffect(() => {
@@ -589,7 +628,7 @@ function PanelFrame({
           zIndex: 30,
         }
       : panel.slot === "left" || panel.slot === "right"
-        ? { width: EDGE_PANEL_WIDTH }
+        ? { width: EDGE_PANEL_WIDTH, zIndex: 20 }
         : {};
 
   return (

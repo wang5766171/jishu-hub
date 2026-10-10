@@ -1,21 +1,18 @@
 /**
- * 待办看板挂件（v0.9.5 需求12）：右上角悬浮待办列表——rpiv-todo 的
+ * 待办面板（v0.9.5 需求12，2026-10-10 测试期改版：rail 细条→dock-panel
+ * 右缘标准面板，用户裁决「参考任务看板的形式，在右侧」）——rpiv-todo 的
  * `todo` 工具全量快照（tool_result.details.tasks，与 rpiv 自身回放机制
  * 同源）+ pi-subagents 并行执行指示（subagent tool_use 未配对 result 计数）。
  *
- * 形态（用户裁决口径）：非看板/流程图——**右上角悬浮列表**；贴边挂件默认
- * 收起（图标 + 进行中 n / 总 m 徽章），点击展开；**全屏自动展开**（退出
- * 恢复收起，手动开合优先于自动）；blockedBy 依赖显示 ⛓ 标识；进行中行
- * 呼吸动效（activeForm 话术）。
- *
  * 集成（用户裁决）：与 rpiv-todo 在用户层面是**一个「待办」插件**——
- * 本挂件不注册独立管理条目（registry 代理映射：session.todo-board 启用态
- * ← 插件中心 pi-todo 条目），开关「待办」= 工具与挂件联动。
+ * registry 代理映射（session.todo-board 启用态 ← 插件中心 pi-todo 条目），
+ * 开关「待办」= 工具与面板联动。
+ * 全屏自动展开：面板层（session-panel-layer）统一承担（进入全屏展开最近
+ * 使用的面板），本组件不处理。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { CheckCircle2, ChevronDown, ChevronUp, ListTodo, Loader2 } from "lucide-react";
+import { CheckCircle2, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SESSION_PLUGIN_CONTRACT_VERSION } from "../types";
 import type { SessionKernelContext, SessionPluginDescriptor } from "../types";
@@ -56,8 +53,8 @@ export function deriveTodoState(
         }
       } else if (block.type === "tool_result") {
         if (block.id) openSubagentCalls.delete(block.id);
-        // details.tasks 仅 todo 工具携带（tool_result 与 tool_use 经 id 配对
-        // 的归属这里不区分——非 todo 工具的 details 无 tasks 字段，天然无扰）。
+        // details.tasks 仅 todo 工具携带（非 todo 工具的 details 无 tasks
+        // 字段，天然无扰）。
         const tasks = (block.details as { tasks?: unknown } | undefined)?.tasks;
         if (Array.isArray(tasks)) {
           latest = tasks as TodoTask[];
@@ -69,53 +66,27 @@ export function deriveTodoState(
   return { tasks: latest, subagentsRunning: openSubagentCalls.size };
 }
 
-function TodoBoardWidget({ ctx }: { ctx: SessionKernelContext }) {
+function TodoBoardPanel({ ctx }: { ctx: SessionKernelContext }) {
   const { t } = useTranslation();
   const tr = (key: string, fallback: string) => (t(key) === key ? fallback : t(key));
   const [messages, setMessages] = useState<Parameters<typeof deriveTodoState>[0] | null>(null);
-  const [open, setOpen] = useState(false);
-  /** 用户手动开合标记（手动操作后本会话内不再被全屏联动覆盖）。 */
-  const manualRef = useRef(false);
-  const [fullscreen, setFullscreen] = useState(false);
 
   useEffect(() => ctx.subscribe.messages((msgs) => setMessages(msgs)), [ctx]);
 
-  // 全屏联动（用户裁决：全屏自动展开）：Tauri 窗口 resize 事件查 isFullscreen
-  // （浏览器环境守卫同 app.tsx 惯例，纯 vite 预览不炸）。
-  useEffect(() => {
-    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
-    const win = getCurrentWindow();
-    let disposed = false;
-    const sync = async () => {
-      try {
-        const fs = await win.isFullscreen();
-        if (!disposed) setFullscreen(fs);
-      } catch {
-        /* IPC 失败静默 */
-      }
-    };
-    void sync();
-    const unlisten = win.onResized(() => void sync());
-    return () => {
-      disposed = true;
-      void unlisten.then((fn) => fn());
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!manualRef.current) setOpen(fullscreen);
-  }, [fullscreen]);
-
   const state = useMemo(() => (messages ? deriveTodoState(messages) : null), [messages]);
 
-  // 无待办数据：挂件不可见（与 rpiv 面板空态自动隐藏一致）。
-  if (!state || state.tasks.length === 0) return null;
+  if (!state || state.tasks.length === 0) {
+    return (
+      <div className="flex flex-1 items-center justify-center p-4 text-xs text-muted-foreground">
+        {tr("sessionPlugins.todoBoard.empty", "暂无待办——让 agent「创建几条待办并跟踪执行」")}
+      </div>
+    );
+  }
 
   const visible = state.tasks.filter((task) => task.status !== "deleted");
   const inProgress = visible.filter((task) => task.status === "in_progress");
   const pending = visible.filter((task) => task.status === "pending");
   const completed = visible.filter((task) => task.status === "completed");
-  const doneCount = completed.length;
 
   const row = (task: TodoTask) => {
     const blocked =
@@ -129,18 +100,18 @@ function TodoBoardWidget({ ctx }: { ctx: SessionKernelContext }) {
       <div
         key={task.id}
         className={cn(
-          "flex items-start gap-1.5 px-2 py-1 text-[11px] leading-snug",
+          "flex items-start gap-2 px-3 py-1.5 text-xs leading-snug",
           task.status === "completed" && "opacity-55",
         )}
       >
         {task.status === "completed" ? (
-          <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-[var(--icon-success)]" />
+          <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--icon-success)]" />
         ) : task.status === "in_progress" ? (
-          <Loader2 className="mt-0.5 h-3 w-3 shrink-0 animate-spin text-primary" />
+          <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
         ) : (
           <span
             className={cn(
-              "mt-1 h-2 w-2 shrink-0 rounded-full border border-muted-foreground/50",
+              "mt-1 h-2.5 w-2.5 shrink-0 rounded-full border border-muted-foreground/50",
               blocked && "border-amber-500/70",
             )}
           />
@@ -161,70 +132,27 @@ function TodoBoardWidget({ ctx }: { ctx: SessionKernelContext }) {
   };
 
   return (
-    <div className="pointer-events-auto relative">
-      {/* 展开面板：会话区右上角悬浮（宿主容器 relative；右偏移让出贴边条）。 */}
-      {open && (
-        <div className="absolute bottom-full right-3 mb-2 z-30 w-64 rounded-lg border border-border/70 bg-card/95 shadow-lg backdrop-blur">
-          <div className="flex items-center gap-1.5 border-b border-border/50 px-2.5 py-1.5">
-            <ListTodo className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-xs font-medium">
-              {tr("sessionPlugins.todoBoard.title", "待办")}
-            </span>
-            <span className="text-[10px] text-muted-foreground">
-              {doneCount}/{visible.length}
-            </span>
-            {state.subagentsRunning > 0 && (
-              <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-medium text-primary">
-                <Loader2 className="h-3 w-3 animate-spin" />
-                {tr("sessionPlugins.todoBoard.agents", "{{n}} 个子代理执行中").replace(
-                  "{{n}}",
-                  String(state.subagentsRunning),
-                )}
-              </span>
-            )}
-            <button
-              type="button"
-              className="ml-auto text-muted-foreground hover:text-foreground"
-              onClick={() => {
-                manualRef.current = true;
-                setOpen(false);
-              }}
-              aria-label={tr("sessionPlugins.todoBoard.collapse", "收起")}
-            >
-              <ChevronDown className="h-3.5 w-3.5" />
-            </button>
-          </div>
-          <div className="max-h-72 overflow-y-auto py-1">
-            {inProgress.map(row)}
-            {pending.map(row)}
-            {completed.map(row)}
-          </div>
-        </div>
-      )}
-      {/* 收起态：贴边细条按钮（徽章 = 进行中/总数）。 */}
-      <button
-        type="button"
-        className="flex h-8 w-6 flex-col items-center justify-center gap-0.5 rounded-md text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-        onClick={() => {
-          manualRef.current = true;
-          setOpen((v) => !v);
-        }}
-        title={tr(
-          "sessionPlugins.todoBoard.hint",
-          "待办列表（{{done}}/{{total}} 完成）",
-        ).replace("{{done}}", String(doneCount)).replace("{{total}}", String(visible.length))}
-        aria-label={tr("sessionPlugins.todoBoard.title", "待办")}
-      >
-        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
-        <span
-          className={cn(
-            "text-[8px] font-mono leading-none",
-            inProgress.length > 0 && "text-primary",
-          )}
-        >
-          {doneCount}/{visible.length}
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* 概要头：进度 + 子代理并行指示。 */}
+      <div className="flex items-center gap-2 border-b border-border/40 px-3 py-1.5 text-[11px] text-muted-foreground">
+        <span className="font-mono">
+          {completed.length}/{visible.length}
         </span>
-      </button>
+        {state.subagentsRunning > 0 && (
+          <span className="ml-auto inline-flex items-center gap-1 font-medium text-primary">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            {tr("sessionPlugins.todoBoard.agents", "{{n}} 个子代理执行中").replace(
+              "{{n}}",
+              String(state.subagentsRunning),
+            )}
+          </span>
+        )}
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto py-1">
+        {inProgress.map(row)}
+        {pending.map(row)}
+        {completed.map(row)}
+      </div>
     </div>
   );
 }
@@ -232,17 +160,19 @@ function TodoBoardWidget({ ctx }: { ctx: SessionKernelContext }) {
 export const todoBoardPlugin: SessionPluginDescriptor = {
   id: "session.todo-board",
   displayNameKey: "sessionPlugins.todoBoard.name",
-  displayNameFallback: "待办看板",
+  displayNameFallback: "待办面板",
   descriptionKey: "sessionPlugins.todoBoard.description",
-  descriptionFallback: "右上角悬浮待办列表（rpiv-todo 快照可视化 + 子代理并行指示；随「待办」插件启停）",
+  descriptionFallback: "右缘待办列表面板（rpiv-todo 快照可视化 + 子代理并行指示；随「待办」插件启停）",
   contractVersion: SESSION_PLUGIN_CONTRACT_VERSION,
   source: "builtin",
   permissions: ["read:messages"],
   mounts: [
     {
-      kind: "rail-widget",
-      Component: TodoBoardWidget,
-      defaultSide: "right",
+      kind: "dock-panel",
+      titleKey: "sessionPlugins.todoBoard.title",
+      titleFallback: "待办",
+      Component: TodoBoardPanel,
+      defaultSlot: "right",
     },
   ],
 };

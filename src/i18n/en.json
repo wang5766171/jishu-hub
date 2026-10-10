@@ -1444,12 +1444,13 @@
       "openFailed": "Open failed"
     },
     "todoBoard": {
-      "name": "Todo board",
-      "description": "Floating todo list at the top-right (rpiv-todo snapshot visualization + subagent parallel indicator; toggles with the Todo plugin)",
+      "name": "Todo panel",
+      "description": "Right-edge todo list panel (rpiv-todo snapshot visualization + subagent parallel indicator; toggles with the Todo plugin)",
       "title": "Todos",
       "collapse": "Collapse",
       "hint": "Todo list ({{done}}/{{total}} done)",
-      "agents": "{{n}} subagent(s) running"
+      "agents": "{{n}} subagent(s) running",
+      "empty": "No todos yet — ask the agent to add some and track them"
     }
   },
   "sessionPanels": {

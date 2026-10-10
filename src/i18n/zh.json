@@ -1444,12 +1444,13 @@
       "openFailed": "打开失败"
     },
     "todoBoard": {
-      "name": "待办看板",
-      "description": "右上角悬浮待办列表（rpiv-todo 快照可视化 + 子代理并行指示；随「待办」插件启停）",
+      "name": "待办面板",
+      "description": "右缘待办列表面板（rpiv-todo 快照可视化 + 子代理并行指示；随「待办」插件启停）",
       "title": "待办",
       "collapse": "收起",
       "hint": "待办列表（{{done}}/{{total}} 完成）",
-      "agents": "{{n}} 个子代理执行中"
+      "agents": "{{n}} 个子代理执行中",
+      "empty": "暂无待办——让 agent「创建几条待办并跟踪执行」"
     }
   },
   "sessionPanels": {
