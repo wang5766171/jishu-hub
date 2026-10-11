@@ -52,6 +52,13 @@ pub struct McpServerConfig {
     /// pi-mcp-adapter supports ${ENV_VAR} and $env:ENV_VAR interpolation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<std::collections::HashMap<String, String>>,
+    /// v0.9.5 需求11 追加四（二轮）：pi 1.1.0 原生 MCP 的工具暴露级别覆盖
+    /// （工具名 → direct/deferred/codemode/hidden）——hub 放行
+    /// hub_mcp_list/hub_mcp_call 为 direct（识图 MCP 路径修复）。此字段是
+    /// sync_mcp_json 链（jishu 配置 → agent/mcp.json）的透传关键：缺它会
+    /// 在结构体中转时被 serde 丢弃（一轮修复失效的根因）。
+    #[serde(rename = "toolExposure", skip_serializing_if = "Option::is_none")]
+    pub tool_exposure: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

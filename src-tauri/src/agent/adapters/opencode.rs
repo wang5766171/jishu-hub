@@ -689,6 +689,7 @@ fn opencode_value_to_shared_config(
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string()),
                         headers: None,
+                        tool_exposure: None,
                     },
                 );
             }
