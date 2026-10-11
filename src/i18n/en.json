@@ -1468,7 +1468,8 @@
       "manage": "Manage plugins…"
     },
     "collapse": "Collapse to capsule",
-    "expand": "Expand floating window"
+    "expand": "Expand floating window",
+    "expandAction": "Expand "
   },
   "taskPlan": {
     "cardTitle": "Task Plan",

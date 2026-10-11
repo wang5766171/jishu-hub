@@ -10,4 +10,4 @@ type = "task"
 [render]
 component = "render.task-board"
 mount = "dock-panel"
-slot = "right"
+slot = "float"  # 需求13 七轮：统一浮窗形态（曾 right 停靠整高贴边）

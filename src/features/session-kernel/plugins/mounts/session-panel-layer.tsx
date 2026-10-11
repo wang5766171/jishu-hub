@@ -434,17 +434,18 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
       <div ref={hubRef} className="pointer-events-auto absolute right-2 top-2 flex items-center gap-2">
         {collapsedPanels.map((panel) => {
           const Capsule = panel.CapsuleComponent;
+          const FallbackIcon = PLUGIN_ICONS[panel.id] ?? LayoutGrid;
           return (
             <button
               key={panel.id}
               type="button"
-              title={t("sessionPanels.expand", "展开悬浮窗") + " · " + panel.title}
+              title={`${t("sessionPanels.expandAction", "展开")}${panel.title}`}
               className="flex h-8 max-w-44 items-center gap-1.5 rounded-full border border-border/70 bg-[var(--color-layer-2)] px-3 shadow-md backdrop-blur transition-colors hover:border-primary/50"
               onClick={() => showPanel(panel.id, "capsule")}
             >
               {Capsule ? <Capsule ctx={ctx} /> : (
                 <>
-                  <span className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <FallbackIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <span className="truncate text-[11px] font-medium text-foreground/90">{panel.title}</span>
                 </>
               )}
@@ -697,22 +698,27 @@ function PanelFrame({
             : "pointer-events-auto absolute bottom-0 left-0 right-0 flex max-h-56 flex-col border-t border-border/60 bg-[var(--color-layer-2)]/95 backdrop-blur";
   const frameStyle: React.CSSProperties =
     panel.slot === "float"
-      ? {
-          // 需求13：默认悬浮位 = 右侧留边不贴紧（20px）、约半高（上下各留
-          // 1/4），超出内容纵向滚动（内容容器 overflow-auto）。
-          left:
-            panel.floatRect?.x ??
-            Math.max(120, window.innerWidth - EDGE_PANEL_WIDTH - 24),
-          top: panel.floatRect?.y ?? Math.round(window.innerHeight * 0.12),
-          width: panel.floatRect?.w ?? EDGE_PANEL_WIDTH,
-          // 需求13 四轮：高度内容自适应（zcode 口径——内容多高窗多高，不
-          // 顶头）；仅用户手动调过大小（floatRect.h 有值）才固定，否则只
-          // 设上限（约 70% 视口）超出内部滚动。
-          ...(panel.floatRect?.h
-            ? { height: panel.floatRect.h }
-            : { maxHeight: Math.round(window.innerHeight * 0.7) }),
-          zIndex: 30,
-        }
+      ? panel.floatRect
+        ? {
+            // 用户拖动/调整过（floatRect 相对面板层容器）——像素定位。
+            left: panel.floatRect.x,
+            top: panel.floatRect.y,
+            width: panel.floatRect.w,
+            height: panel.floatRect.h,
+            zIndex: 30,
+          }
+        : {
+            // 需求13 七轮：默认位置改 CSS 相对（right/top）——此前 left 按
+            // window.innerWidth 计算，但面板定位上下文是会话区容器（左侧有
+            // 会话列表侧栏），侧栏宽度即溢出量（图 3 右侧溢出根因）。相对
+            // 容器右缘 24px / 顶部 12%，任何侧栏宽度下都贴准不溢出；宽度
+            // 默认 340；高度内容自适应（上限 70% 容器高，超出内部滚动）。
+            right: 24,
+            top: "12%",
+            width: EDGE_PANEL_WIDTH,
+            maxHeight: "70%",
+            zIndex: 30,
+          }
       : panel.slot === "left" || panel.slot === "right"
         ? { width: EDGE_PANEL_WIDTH, zIndex: 20 }
         : {};
@@ -742,7 +748,7 @@ function PanelFrame({
         <div className="ml-auto flex items-center gap-0.5">
           <button
             type="button"
-            title={t("sessionPanels.collapse", "缩小为胶囊")}
+            title={t("sessionPanels.collapse", "收起为胶囊")}
             className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
             onClick={onHide}
           >
