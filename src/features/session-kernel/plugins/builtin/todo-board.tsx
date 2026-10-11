@@ -10,7 +10,7 @@
  * 全屏自动展开：面板层（session-panel-layer）统一承担（进入全屏展开最近
  * 使用的面板），本组件不处理。
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, ChevronRight, ListTodo, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -126,14 +126,34 @@ function TodoCapsule({ ctx }: { ctx: SessionKernelContext }) {
   );
 }
 
+/** 需求12 二轮：新增待办自动打开面板的跨层信号（DOM 事件桥——插件组件
+ * 无法直接触达面板层 showPanel；session-panel-layer 监听此事件）。 */
+export const OPEN_TODO_PANEL_EVENT = "jishu:open-panel";
+
 function TodoBoardPanel({ ctx }: { ctx: SessionKernelContext }) {
   const { t } = useTranslation();
   const tr = (key: string, fallback: string) => (t(key) === key ? fallback : t(key));
   const [messages, setMessages] = useState<Parameters<typeof deriveTodoState>[0] | null>(null);
+  /** 上一快照可见待办条数（新增检测；首轮/回放加载不触发自动打开）。 */
+  const lastCountRef = useRef<number | null>(null);
 
   useEffect(() => ctx.subscribe.messages((msgs) => setMessages(msgs)), [ctx]);
 
   const state = useMemo(() => (messages ? deriveTodoState(messages) : null), [messages]);
+
+  // 需求12 二轮：待办条数增加（新增待办）→ 自动打开待办面板（用户裁决
+  // 「新增的时候自动打开，而不是让用户去手动点击」）。首轮（null→N）与
+  // 回放加载不触发（lastCountRef 初始 null 只记录不派发）；条数减少/持平
+  // 不触发（完成/删除不打扰）。
+  useEffect(() => {
+    const count = state ? state.batches.flat().filter((task) => task.status !== "deleted").length : 0;
+    const prev = lastCountRef.current;
+    lastCountRef.current = count;
+    if (prev === null || count <= prev) return;
+    window.dispatchEvent(
+      new CustomEvent(OPEN_TODO_PANEL_EVENT, { detail: { id: "session.todo-board" } }),
+    );
+  }, [state]);
 
   if (!state || state.batches.length === 0) {
     return (

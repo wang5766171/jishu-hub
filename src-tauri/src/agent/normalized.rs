@@ -124,6 +124,11 @@ pub enum NormalizedEvent {
         call_id: String,
         output: serde_json::Value,
         is_error: bool,
+        /// v0.9.5 需求12 测试期二轮（实时链）：pi 工具结果的结构化 details
+        ///（如 rpiv-todo 全量任务快照）——实时事件流透传（此前仅回放链有：
+        /// message_end 被实时归一化忽略，待办面板重启才更新的根因）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<serde_json::Value>,
     },
     /// v0.9.4 需求8：工具执行中间进度（pi `tool_execution_update`，bash 类
     /// 长时工具的流式输出快照）。partial_output 为归一化层提取后的纯文本

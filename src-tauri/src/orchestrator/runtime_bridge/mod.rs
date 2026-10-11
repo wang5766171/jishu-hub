@@ -691,6 +691,7 @@ pub fn map_normalized_event(context: &RuntimeEventContext, event: &NormalizedEve
             call_id,
             output,
             is_error,
+            ..
         } => RuntimeFact::Diagnostic {
             context: context.clone(),
             payload: serde_json::json!({

@@ -123,6 +123,7 @@ fn normalizes_tool_call_update_completed() {
             call_id: "call_001".to_string(),
             output: json!("file contents here"),
             is_error: false,
+            details: None,
         }]
     );
 }

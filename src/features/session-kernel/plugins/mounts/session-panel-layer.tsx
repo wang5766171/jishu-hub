@@ -168,6 +168,17 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
   // 需求12：每渲染刷新稳定转发（全屏自动展开经此调用最新 showPanel）。
   showPanelStableRef.current = showPanel;
 
+  // 需求12 二轮：插件侧「自动打开面板」跨层信号（如待办新增自动展开）——
+  // DOM 事件桥（插件组件无法直接触达 showPanel）。
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const id = (e as CustomEvent<{ id?: string }>).detail?.id;
+      if (id) showPanelStableRef.current(id);
+    };
+    window.addEventListener("jishu:open-panel", onOpen);
+    return () => window.removeEventListener("jishu:open-panel", onOpen);
+  }, []);
+
   /** 需求13 二轮：缩小为胶囊——活动功能保留胶囊态（hidden+collapsed）；
    * 仅 float 悬浮窗缩小为胶囊，停靠槽收起维持原 hidden 语义（无胶囊）。 */
   const collapsePanel = useCallback((id: string) => {

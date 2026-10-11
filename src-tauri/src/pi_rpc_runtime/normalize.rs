@@ -446,6 +446,12 @@ pub(crate) fn normalize_pi_agent_event(
                 .get("result")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            // 需求12 二轮：结构化 details 原样透传（rpiv-todo 全量快照等）——
+            // 与 output 的文本提取互不影响。
+            let details = result
+                .get("details")
+                .filter(|d| d.is_object() && !d.as_object().map(|o| o.is_empty()).unwrap_or(false))
+                .cloned();
             // v0.9.4 需求8 测试期修复：pi 的 result 同为 AgentToolResult 形态
             //（文本在 content[].text，与 update 的 partialResult 同源）——原样
             // 透传导致前端结果区显示原始 JSON（用户截图实证）。提取文本后以
@@ -476,6 +482,7 @@ pub(crate) fn normalize_pi_agent_event(
                     call_id,
                     output,
                     is_error,
+                    details,
                 }]
             }
         }

@@ -135,6 +135,7 @@ pub(crate) fn normalize_acp_update(
                 call_id,
                 output,
                 is_error: false,
+                details: None,
             }]
         }
         "usage_update" => {

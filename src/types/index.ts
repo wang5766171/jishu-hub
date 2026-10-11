@@ -321,7 +321,7 @@ export type NormalizedEvent =
   | { kind: "message"; content: ContentBlock[] }
   | { kind: "tool_use_start"; call_id: string; tool: string; input: unknown; view?: ToolView }
   | { kind: "tool_use_progress"; call_id: string; partial_output: string }
-  | { kind: "tool_use_result"; call_id: string; output: unknown; is_error: boolean }
+  | { kind: "tool_use_result"; call_id: string; output: unknown; is_error: boolean; details?: unknown }
   | { kind: "thinking"; delta: string }
   | { kind: "approval_request"; request_id: string; approval_kind: string; payload: unknown }
   | {

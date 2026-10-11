@@ -360,7 +360,18 @@ class StreamStore {
         tool.id === data.call_id ? { ...tool, output: data.output, isError: data.is_error, endedAt } : tool
       ));
       if (!content.some((block) => block.type === "tool_result" && block.tool_use_id === data.call_id)) {
-        content = [...content, { type: "tool_result", tool_use_id: data.call_id, content: data.output }];
+        // 需求12 二轮：details 随块透传（待办面板等消费方实时取快照）。
+        content = [
+          ...content,
+          {
+            type: "tool_result",
+            tool_use_id: data.call_id,
+            content: data.output,
+            ...(data.details && typeof data.details === "object"
+              ? { details: data.details as Record<string, unknown> }
+              : {}),
+          },
+        ];
       }
     } else if (data.kind === "message") {
       const newTools = [...tools];

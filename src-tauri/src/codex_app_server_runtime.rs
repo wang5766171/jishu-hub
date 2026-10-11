@@ -1410,6 +1410,7 @@ fn normalize_notification(method: &str, params: &Value) -> Vec<NormalizedEvent> 
                 call_id,
                 output,
                 is_error: exit_code != 0,
+                details: None,
             }]
         }
         "item/fileChange/started" | "item/fileChange/updated" => {
@@ -1467,6 +1468,7 @@ fn normalize_notification(method: &str, params: &Value) -> Vec<NormalizedEvent> 
                 call_id,
                 output: serde_json::json!({ "path": path, "status": "done" }),
                 is_error: false,
+                details: None,
             }]
         }
         // thread/started and turn/started carry only state we track directly in
