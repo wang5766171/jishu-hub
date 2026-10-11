@@ -206,7 +206,7 @@ mod image_dispatch_tests {
     #[test]
     fn default_hint_contains_scene_routing_and_fallbacks() {
         // 显式配置工具时点名直呼（钉定场景）。v0.9.5：点名用 pi 可见名
-        // （mcp__jishu-hub__ 前缀——pi 1.1.0 原生 MCP 规律，需求11）；
+        // （mcp__jishu_hub__ 前缀——pi 1.1.0 原生 MCP 规律，需求11）；
         // schema 查不到时降级为 describe 指引（假查询器固定降级路径）。
         let route = ImageDispatchRoute {
             custom_prompt: None,
@@ -217,7 +217,7 @@ mod image_dispatch_tests {
         assert!(hint.contains("简单识别"), "缺简单识别路由");
         assert!(hint.contains("复杂分析"), "缺复杂分析路由");
         assert!(
-            hint.contains("mcp__jishu-hub__some-mcp__analyze"),
+            hint.contains("mcp__jishu_hub__some-mcp__analyze"),
             "缺 pi 可见名"
         );
         assert!(hint.contains("zhipu/glm-5.3-flash"));
@@ -255,7 +255,7 @@ mod image_dispatch_tests {
                 "required": ["image_source", "prompt"]
             }))
         });
-        assert!(hint.contains("mcp__jishu-hub__zai-mcp-server__analyze_image"));
+        assert!(hint.contains("mcp__jishu_hub__zai-mcp-server__analyze_image"));
         assert!(
             hint.contains("- image_source（string，必填）：本地图路径或远程 URL"),
             "缺 image_source 参数行"
@@ -283,7 +283,7 @@ mod image_dispatch_tests {
         let hint = compose_image_dispatch_hint_with(&route, &|_| None);
         assert!(hint.contains("先自行发现识图工具"), "缺自搜索指引");
         assert!(hint.contains("hub_mcp_list"), "缺全量列举入口");
-        assert!(hint.contains("mcp__jishu-hub__"), "缺原生命名规律提示");
+        assert!(hint.contains("mcp__jishu_hub__"), "缺原生命名规律提示");
         assert!(!hint.contains("zai"), "默认话术不得点名具体 MCP 服务");
     }
 
@@ -317,7 +317,7 @@ mod image_dispatch_tests {
             "开头话术漂移"
         );
         assert!(
-            hint.contains("优先 MCP：调用工具 mcp__jishu-hub__p__t，把上方附件行"),
+            hint.contains("优先 MCP：调用工具 mcp__jishu_hub__p__t，把上方附件行"),
             "MCP 条款接缝"
         );
         assert!(
@@ -351,6 +351,6 @@ mod image_dispatch_tests {
             subagent_model: Some("prov/m".to_string()),
         };
         let hint = compose_image_dispatch_hint_with(&route, &|_| None);
-        assert_eq!(hint, "工具：mcp__jishu-hub__p__t；模型：prov/m");
+        assert_eq!(hint, "工具：mcp__jishu_hub__p__t；模型：prov/m");
     }
 }

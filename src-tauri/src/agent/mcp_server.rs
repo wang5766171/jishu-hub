@@ -72,7 +72,11 @@ pub fn split_namespaced(name: &str) -> Option<(String, String)> {
 /// v0.9.5 需求11：adapter 退役前旧前缀为 `jishu-hub_`（pi-mcp-adapter 约定），
 /// 切原生后同步更新（识图话术/插件引用点同批）。
 pub fn pi_visible_tool_name(namespaced_tool: &str) -> String {
-    format!("mcp__{HUB_MCP_ENTRY_NAME}__{namespaced_tool}")
+    // 需求11 追加四三轮：pi 实名规则「server 名中非字母数字下划线字符全部
+    // 替换为 _」——jishu-hub → jishu_hub（话术点名旧前缀 mcp__jishu-hub__
+    // 与 schema 实名不符，实测 Tool not found 风险）。
+    let server = HUB_MCP_ENTRY_NAME.replace(['-', '.'], "_");
+    format!("mcp__{server}__{namespaced_tool}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1391,7 +1395,7 @@ mod tests {
     fn pi_visible_tool_name_adds_entry_prefix() {
         assert_eq!(
             pi_visible_tool_name("zai-mcp-server__analyze_image"),
-            "mcp__jishu-hub__zai-mcp-server__analyze_image"
+            "mcp__jishu_hub__zai-mcp-server__analyze_image"
         );
     }
 

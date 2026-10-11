@@ -236,7 +236,7 @@ pub(crate) fn compose_image_dispatch_hint(route: &ImageDispatchRoute) -> String 
 /// 免去 describe 一跳与参数猜测；schema 查不到则降级为 list 指引（模型
 /// 自愈路径不变）。
 /// v0.9.5 需求11（pi 1.1.0）：adapter 退役切 pi 原生 MCP——可见名规律
-/// `mcp__jishu-hub__插件id__工具`（与其余三家一致），话术中的发现/调用
+/// `mcp__jishu_hub__插件id__工具`（与其余三家一致），话术中的发现/调用
 /// 指引同步改为原生方式（hub_mcp_list 直调，无 mcp 代理工具/describe）。
 pub(crate) fn compose_image_dispatch_hint_with(
     route: &ImageDispatchRoute,
@@ -263,7 +263,7 @@ pub(crate) fn compose_image_dispatch_hint_with(
     // 交给模型自身（用户裁决 2026-09-27：具体工具因人而异，点名即绑定）；
     // 显式配置 mcp_tools 时才钉定直呼其名。
     let mcp_clause = if route.mcp_tools.is_empty() {
-        "先自行发现识图工具——调 hub_mcp_list（mcp__jishu-hub__hub_mcp_list）实时列出全部可用工具与参数说明，从中挑一个能分析图片的，把上方附件行「图片N（批次 …）」中的图片磁盘路径按其参数说明传入；若确实没有识图类工具，本条跳过、直接走第二条".to_string()
+        "先自行发现识图工具——调 hub_mcp_list（mcp__jishu_hub__hub_mcp_list）实时列出全部可用工具与参数说明，从中挑一个能分析图片的，把上方附件行「图片N（批次 …）」中的图片磁盘路径按其参数说明传入；若确实没有识图类工具，本条跳过、直接走第二条".to_string()
     } else {
         let mut clause = format!(
             "调用工具 {mcp_tools_text}，把上方附件行「图片N（批次 …）」中的图片磁盘路径传入"

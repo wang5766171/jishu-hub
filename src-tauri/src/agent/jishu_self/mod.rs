@@ -861,6 +861,11 @@ fn ensure_default_tools_arg(
             .map(|s| s.to_string())
             .collect();
         tools.extend_from_slice(pi_extension_tools);
+        // 需求11 追加四三轮：追加 MCP 通配模式——pi 1.1.0 的 --tools 绝对
+        // 名单会把 direct 暴露的 MCP 工具滤出 schema（实测复现：名单无此
+        // 模式时模型无 mcp__ 工具）；mcp__* 通配只放行已 direct 的工具
+        //（codemode 的不进 schema），随 toolExposure 配置自适应。
+        tools.push("mcp__*".to_string());
         args.push("--tools".to_string());
         args.push(tools.join(","));
         return;
@@ -880,6 +885,10 @@ fn ensure_default_tools_arg(
             if !names.iter().any(|n| n == tool) {
                 names.push(tool.to_string());
             }
+        }
+        // 同上（需求11 追加四三轮）：已配置清单同样追加 MCP 通配。
+        if !names.iter().any(|n| n == "mcp__*") {
+            names.push("mcp__*".to_string());
         }
         args.push("--tools".to_string());
         args.push(names.join(","));
@@ -965,9 +974,9 @@ mod mcp_tests {
 
         let mut args2 = vec!["--mode".to_string(), "rpc".to_string()];
         super::ensure_default_tools_arg(&mut args2, &Ok(json!({"defaultTools": ["read"]})), &ext);
-        // 已配置清单照常生效，追加已启用扩展工具
+        // 已配置清单照常生效，追加已启用扩展工具 + MCP 通配（需求11 三轮）
         assert_eq!(args2[2], "--tools");
-        assert_eq!(args2[3], "read,request_user_input,lock_requirement");
+        assert_eq!(args2[3], "read,request_user_input,lock_requirement,mcp__*");
 
         let mut args3 = vec![];
         super::ensure_default_tools_arg(&mut args3, &Err("io".into()), &ext);
