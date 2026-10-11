@@ -82,6 +82,12 @@ pub fn upsert_entry_json(
     let entry = json!({
         "command": cli_path,
         "args": ["mcp", "serve"],
+        // 需求11 追加四：代理发现/调用工具 direct 放行（识图 MCP 路径修复，
+        // 见 jishu_self::ensure_native_mcp_entry 同款注释）。
+        "toolExposure": {
+            "hub_mcp_list": "direct",
+            "hub_mcp_call": "direct",
+        },
     });
     if !config_json
         .get(servers_key)

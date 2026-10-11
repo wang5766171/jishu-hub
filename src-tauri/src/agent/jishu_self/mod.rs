@@ -79,6 +79,15 @@ impl JishuSelfAgent {
         let desired = json!({
             "command": cli,
             "args": ["mcp", "serve"],
+            // 需求11 追加四：pi 1.1.0 原生 MCP 默认 exposure=codemode（工具
+            // 不进模型 schema——识图话术的 hub_mcp_list 无调用入口，P0 切换
+            // 时漏验的可见性盲区）。toolExposure 放行两个代理工具为 direct：
+            // hub_mcp_list（发现）/ hub_mcp_call（代理调用）进 schema，其余
+            // 工具维持 codemode（不全量注入，context 增量最小）。
+            "toolExposure": {
+                "hub_mcp_list": "direct",
+                "hub_mcp_call": "direct",
+            },
         });
         let mut root: serde_json::Value = if path.exists() {
             std::fs::read_to_string(&path)
@@ -98,22 +107,30 @@ impl JishuSelfAgent {
         let existing = root
             .get("mcpServers")
             .and_then(|s| s.get(crate::agent::mcp_server::HUB_MCP_ENTRY_NAME));
+        // 需求11 追加四：就绪判定含 toolExposure——旧条目（无 direct 放行）
+        // 须重写补齐（识图路径修复的存量迁移）；command 路径随安装位置变化
+        // 不作比对（args 形态一致 + command 存在 + toolExposure 含两工具即就绪）。
+        let tool_exposure_ok = existing
+            .and_then(|e| e.get("toolExposure"))
+            .and_then(|t| {
+                Some(
+                    t.get("hub_mcp_list").and_then(|v| v.as_str()) == Some("direct")
+                        && t.get("hub_mcp_call").and_then(|v| v.as_str()) == Some("direct"),
+                )
+            })
+            .unwrap_or(false);
         let matches = existing
-            .and_then(|e| serde_json::to_value(e).ok())
-            .map(|v| v == desired)
-            .unwrap_or(false)
-            // command 路径随安装位置变化，args 形态一致且 command 存在即视为就绪
-            || existing
-                .and_then(|e| e.get("args"))
-                .and_then(|a| a.as_array())
-                .map(|a| {
-                    a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>() == ["mcp", "serve"]
-                        && existing
-                            .and_then(|e| e.get("command"))
-                            .and_then(|c| c.as_str())
-                            .is_some_and(|c| !c.is_empty())
-                })
-                .unwrap_or(false);
+            .and_then(|e| e.get("args"))
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>() == ["mcp", "serve"]
+                    && existing
+                        .and_then(|e| e.get("command"))
+                        .and_then(|c| c.as_str())
+                        .is_some_and(|c| !c.is_empty())
+                    && tool_exposure_ok
+            })
+            .unwrap_or(false);
         if matches {
             return Ok(false);
         }
