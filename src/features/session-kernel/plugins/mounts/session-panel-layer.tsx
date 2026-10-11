@@ -714,7 +714,9 @@ function PanelFrame({
             // 容器右缘 24px / 顶部 12%，任何侧栏宽度下都贴准不溢出；宽度
             // 默认 340；高度内容自适应（上限 70% 容器高，超出内部滚动）。
             right: 24,
-            top: "12%",
+            // 需求13 八轮：顶部对齐胶囊/能力中心按钮行（right-2 top-2 + h-8
+            // = 底缘 40px，窗自 48px 起——同一右上角区域，不再 12% 偏下）。
+            top: 48,
             width: EDGE_PANEL_WIDTH,
             maxHeight: "70%",
             zIndex: 30,
