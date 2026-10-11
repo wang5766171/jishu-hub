@@ -50,8 +50,11 @@ fn write_servers_map(servers: &serde_json::Map<String, Value>) -> Result<(), Str
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    crate::util::atomic_write(&path, serde_json::to_string_pretty(&root).unwrap().as_bytes())
-        .map_err(|e| e.to_string())
+    crate::util::atomic_write(
+        &path,
+        serde_json::to_string_pretty(&root).unwrap().as_bytes(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// 列出原生 MCP 服务（非 jishu-hub 条目）。`probe=true` 时经
@@ -78,7 +81,12 @@ pub(crate) async fn native_mcp_list(probe: bool) -> Result<Value, String> {
             .get("url")
             .and_then(|v| v.as_str())
             .map(str::to_string)
-            .or_else(|| entry.get("command").and_then(|v| v.as_str()).map(str::to_string))
+            .or_else(|| {
+                entry
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
             .unwrap_or_default();
         out.push(json!({
             "name": name,
