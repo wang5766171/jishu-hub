@@ -313,9 +313,12 @@ mod image_dispatch_tests {
         };
         let hint = compose_image_dispatch_hint_with(&route, &|_| None);
         assert!(
-            hint.starts_with("本条消息含图片，而你不支持图像输入。按下列路由识图："),
+            hint.starts_with("本条消息含图片，而你不支持图像输入。"),
             "开头话术漂移"
         );
+        // 需求11 三轮（判定准则 v2）：开头先判定准则再路由。
+        assert!(hint.contains("先判定任务类型再路由"), "缺判定准则");
+        assert!(hint.contains("拿不准倾向判定为分析"), "缺模糊带兜底");
         assert!(
             hint.contains("优先 MCP：调用工具 mcp__jishu_hub__p__t，把上方附件行"),
             "MCP 条款接缝"

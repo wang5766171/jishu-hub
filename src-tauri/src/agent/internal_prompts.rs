@@ -71,7 +71,10 @@ pub const PROMPT_MCP_HINT: VersionedPrompt = VersionedPrompt {
 /// 自定义话术（识图路由插件 session.image-dispatch 配置）为用户数据，不入登记。
 pub const PROMPT_IMAGE_DISPATCH: VersionedPrompt = VersionedPrompt {
     id: "image-dispatch",
-    version: 1,
+    // v2（需求11 三轮后）：路由判定准则显式化（客观转述→MCP/理解推理→
+    // subagent，拿不准倾向分析）——收紧「单图但要求分析」被误判简单识别
+    // 走 MCP 的模糊带（用户口径对齐）。
+    version: 2,
     body: include_str!("../../resources/prompts/image-dispatch.md"),
 };
 
