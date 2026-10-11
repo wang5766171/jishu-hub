@@ -101,7 +101,7 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
   // 无记忆不动（不硬编码任何插件）。
   const lastOpenedRef = useRef<string | null>(null);
   // showPanel 稳定转发（全屏 effect 先于 showPanel 定义引用）。
-  const showPanelStableRef = useRef<(id: string) => void>(() => {});
+  const showPanelStableRef = useRef<(id: string, source?: string) => void>(() => {});
 
   useEffect(() => {
     saveLayout(layout);
@@ -136,8 +136,19 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
     };
   }, []);
 
-  // ── 单选切换：展开一个时收起其他 ──
+  // ── 单选切换：展开一个时收起其他（需求12 四轮：展开幂等化）──
   const showPanel = useCallback((id: string, source = "hub") => {
+    // 需求12 四轮：目标已是唯一可见面板 → 幂等跳过（不切换关闭）。此前
+    // wasSoleVisible 翻转语义在「胶囊点击+自动打开」等并发信号下把刚展开
+    // 的面板又翻回关闭（实测日志 3ms 连续两次展开即「一闪就关」根因）；
+    // 显式收起走 hidePanel（能力中心按钮路径）。
+    const target = layout.panels[id];
+    const visibleCount = Object.values(layout.panels).filter((p) => !p.hidden).length;
+    if (target && !target.hidden && visibleCount === 1) {
+      devLog("panel", `面板已展开（幂等跳过）：${id}`, { id, source });
+      lastOpenedRef.current = id;
+      return;
+    }
     devLog("panel", `面板展开：${id}`, { id, source });
     lastOpenedRef.current = id;
     setLayout((prev) => {
@@ -148,20 +159,26 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
           next.panels[pid] = { ...panel, hidden: true, collapsed: false };
         }
       }
-      // 再展开目标（或如果原本就是唯一展开的 → 切换关闭）
-      const wasSoleVisible =
-        !prev.panels[id]?.hidden &&
-        Object.values(prev.panels).filter((p) => !p.hidden).length === 1;
-      if (!wasSoleVisible) {
-        // 需求13 五轮：无布局记录时的 fallback 槽位用**插件声明**
-        //（dockPanelsOf 的 defaultSlot——弹窗类为 float；此前硬编码 right
-        // 是「最大化点缩小无反应」的根因：collapsePanel 仅对 float 生效）。
-        const declaredSlot =
-          declaredSlotOf(id) ?? ("right" as DockSlot);
-        const current = next.panels[id] ?? { slot: declaredSlot, hidden: true };
-        next.panels[id] = { ...current, hidden: false, collapsed: false };
-      }
+      // 展开目标（幂等语义——不再有切换关闭分支）。需求13 五轮：无布局
+      // 记录时的 fallback 槽位用插件声明（declaredSlotOf；弹窗类为 float）。
+      const declaredSlot = declaredSlotOf(id) ?? ("right" as DockSlot);
+      const current = next.panels[id] ?? { slot: declaredSlot, hidden: true };
+      next.panels[id] = { ...current, hidden: false, collapsed: false };
       return next;
+    });
+  }, [layout]);
+
+  /** 需求12 四轮：显式收起（能力中心按钮「有展开点它=收起」的专用路径，
+   * 与 showPanel 幂等化解耦）。 */
+  const hidePanel = useCallback((id: string) => {
+    devLog("panel", `面板收起：${id}`, { id, action: "hide" });
+    setLayout((prev) => {
+      const target = prev.panels[id];
+      if (!target) return prev;
+      return {
+        ...prev,
+        panels: { ...prev.panels, [id]: { ...target, hidden: true, collapsed: false } },
+      };
     });
   }, []);
 
@@ -178,6 +195,50 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
     window.addEventListener("jishu:open-panel", onOpen);
     return () => window.removeEventListener("jishu:open-panel", onOpen);
   }, []);
+
+  // ── 需求12 四轮：自动打开通用底座监测 ──
+  // 收集全部启用插件的 dock-panel autoOpenOn 声明，订阅消息流：新出现的
+  // tool_use 块（call id 增量）匹配声明（tool 名 + inputContains 字段）→
+  // showPanel（幂等）。首轮消息（历史回放）只记 seen 不触发；程序化通道
+  // （CustomEvent）保留供插件运行时逻辑使用。
+  useEffect(() => {
+    const declares: Array<{ pluginId: string; tool: string; inputContains?: Record<string, string> }> = [];
+    for (const plugin of listSessionPlugins()) {
+      if (!enabled.has(plugin.id)) continue;
+      for (const mount of dockPanelsOf(plugin)) {
+        if (mount.autoOpenOn) {
+          declares.push({ pluginId: plugin.id, ...mount.autoOpenOn });
+        }
+      }
+    }
+    if (declares.length === 0) return;
+    const seenCalls = new Set<string>();
+    let firstBatch = true;
+    return ctx.subscribe.messages((msgs) => {
+      for (const msg of msgs) {
+        for (const block of msg.blocks) {
+          if (block.type !== "tool_use" || !block.id) continue;
+          if (seenCalls.has(block.id)) continue;
+          seenCalls.add(block.id);
+          if (firstBatch) continue;
+          for (const d of declares) {
+            if (block.text !== d.tool) continue;
+            if (d.inputContains) {
+              const input = (block.input ?? {}) as Record<string, unknown>;
+              const match = Object.entries(d.inputContains).every(
+                ([k, v]) => String(input[k]) === v,
+              );
+              if (!match) continue;
+            }
+            devLog("panel", `自动打开（工具触发）：${d.pluginId}`, { id: d.pluginId, tool: d.tool, action: "auto-open" });
+            showPanelStableRef.current(d.pluginId, "auto");
+            break;
+          }
+        }
+      }
+      firstBatch = false;
+    });
+  }, [enabled, ctx]);
 
   /** 需求13 二轮：缩小为胶囊——活动功能保留胶囊态（hidden+collapsed）；
    * 仅 float 悬浮窗缩小为胶囊，停靠槽收起维持原 hidden 语义（无胶囊）。 */
@@ -472,9 +533,8 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
             // 中心）；无面板展开时才弹出/关闭能力列表。2026-09-12：统一覆盖
             // 悬浮/侧栏两形态。
             if (activePanel) {
-              // 可见面板态：收起（单选切换关闭）。
-              devLog("panel", `能力中心按钮：收起面板 ${activePanel.id}`, { id: activePanel.id, action: "hub-collapse" });
-              showPanel(activePanel.id);
+              // 可见面板态：显式收起（需求12 四轮：与幂等展开解耦）。
+              hidePanel(activePanel.id);
               setHubOpen(false);
             } else {
               // 需求13 五轮：胶囊态或无活动 → 弹能力清单（切换不同插件；

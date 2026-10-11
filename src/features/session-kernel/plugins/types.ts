@@ -260,6 +260,15 @@ export interface DockPanelMount {
   /** v0.9.5 需求13 三轮：胶囊信息缩略渲染（缩小态与能力中心按钮并排）——
    * 插件自定义缩略格式（如待办 done/total）；缺省 fallback 图标+标题。 */
   CapsuleComponent?: ComponentType<{ ctx: SessionKernelContext }>;
+  /** v0.9.5 需求12 四轮（通用底座）：自动打开声明——匹配的工具被调用时
+   * 本面板自动展开（底座统一监测，插件零代码；agent 侧无需感知）。声明
+   * 式三字段：tool=工具名；inputContains=输入字段匹配（如 rpiv-todo 的
+   * {action:"create"}——只创建触发，update/list 不打扰）；缺省全调用触发。
+   * 会话首轮消息（历史回放）不触发——仅订阅后的增量调用。 */
+  autoOpenOn?: {
+    tool: string;
+    inputContains?: Record<string, string>;
+  };
 }
 
 /** 侧边栏面板挂载点（v0.9.2 测试期，用户裁决：能力中心支持两种形态）：
