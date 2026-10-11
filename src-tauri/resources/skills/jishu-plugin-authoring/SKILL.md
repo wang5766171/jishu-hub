@@ -74,6 +74,15 @@ type = "messages"          # messages | turns | task | signal
 [render]
 component = "render.list"  # 内置渲染件键
 mount = "dock-panel"       # dock-panel | rail-widget | sidebar-panel | composer-trailing
+# 可选（dock-panel 专属）：停靠槽位 slot = "float" | "left" | "right"（缺省
+# float——悬浮窗形态：右上角悬浮、高度自适应内容、可拖动/调大小；缩小后
+# 变胶囊与能力中心按钮并排，组合插件胶囊显示图标+面板名）。
+slot = "float"
+# 可选（dock-panel 专属，v0.9.5 需求12 通用底座）：自动打开声明——匹配的工具
+# 被 agent 调用时本面板自动展开。tool=工具名；inputContains=输入字段匹配
+#（可选，如 rpiv-todo 的 action="create"——只创建触发，查询/更新不打扰）。
+# 会话首轮（历史回放）不触发，仅订阅后的增量调用。
+autoOpenOn = { tool = "todo", inputContains = { action = "create" } }
 
 [[config]]
 key = "showDetails"
@@ -229,6 +238,14 @@ JishuPlugin.register(pluginId, {
     //   messages → { kind: "aggregate", data: Message[] }（可配聚合器）
     //   turns    → { kind: "turns", turns: TurnInfo[], activeIndex, jump(i) }
     //   task     → { kind: "task", task: TaskInfo }
+    // Message = { role, blocks: Block[] }；Block 按类型：
+    //   { type: "text", text }
+    //   { type: "thinking", thinking }
+    //   { type: "tool_use", id, text: 工具名, input: 参数对象 }
+    //   { type: "tool_result", id, output: 文本, isError,
+    //     details?: 对象 }  // v0.9.5 新增：工具结构化数据——如 rpiv-todo
+    //                       // 的全量任务快照（details.tasks），可做实时面板
+    //   { type: "image" } / { type: "phase_divider", title }
   options: // 配置面键值（[[config]] 声明的当前值，保存即热生效）
   actions: // 引擎装配的动作条 [{ key, label, run() }]——渲染按钮并转发
 }

@@ -279,11 +279,19 @@ export function buildComposedDescriptor(
       const declaredSlot = (render as { slot?: string }).slot;
       const defaultSlot =
         declaredSlot === "left" || declaredSlot === "right" ? declaredSlot : "float";
+      // 需求12 四轮（通用底座）：自动打开声明透传——组合清单 [render.autoOpenOn]
+      //（内联表 { tool = "todo", inputContains = { action = "create" } }）。
+      const declaredAutoOpen = (render as {
+        autoOpenOn?: { tool: string; inputContains?: Record<string, string> };
+      }).autoOpenOn;
       mounts.push({
         kind: "dock-panel",
         titleKey: "",
         titleFallback: manifest.plugin.name,
         defaultSlot,
+        ...(declaredAutoOpen?.tool
+          ? { autoOpenOn: declaredAutoOpen }
+          : {}),
         ...mountBase,
       } as SessionPluginDescriptor["mounts"][number]);
     } else if (render.mount === "sidebar-panel") {
