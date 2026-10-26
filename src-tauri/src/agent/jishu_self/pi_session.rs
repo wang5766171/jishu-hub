@@ -509,6 +509,7 @@ fn merge_pi_interaction_sidecar(session_path: &Path, messages: &mut Vec<crate::s
 
 fn pi_message_positions(content: &str) -> std::collections::HashMap<String, usize> {
     let mut positions = std::collections::HashMap::new();
+    let mut last_message_was_error = false;
     let mut message_index = 0;
 
     for line in content.lines().filter(|line| !line.trim().is_empty()) {
@@ -527,6 +528,13 @@ fn pi_message_positions(content: &str) -> std::collections::HashMap<String, usiz
                 else {
                     continue;
                 };
+                // v0.9.1 需求14 测试期：与 parse_pi_session_jsonl 同步折叠连续
+                // error 分隔线——被折叠的条目不占数组位置，索引不错位。
+                let is_err = is_error_divider_message(&message);
+                if is_err && last_message_was_error {
+                    continue;
+                }
+                last_message_was_error = is_err;
                 if let Some(id) = value.get("id").and_then(serde_json::Value::as_str) {
                     positions.insert(id.to_string(), message_index);
                 }
@@ -610,6 +618,8 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
     let mut started_at = None;
     let mut display_name = None;
     let mut messages = Vec::new();
+    // v0.9.1 需求14 测试期：连续 error 分隔线折叠状态（与 pi_message_positions 同步）。
+    let mut last_message_was_error = false;
 
     for line in content.lines().filter(|line| !line.trim().is_empty()) {
         let value: serde_json::Value = serde_json::from_str(line).ok()?;
@@ -641,17 +651,25 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
                         if display_name.is_none() && message.role == "user" {
                             // 剥离 [JISHU-PROMT:] 系统内部契约标记后再取摘要；
                             // 剥离后为空（纯系统提示词）则跳过，display_name 继续找下一条 user 消息。
-                            // v0.8.1 需求10：同时剥工具插件标记（注入块 +
-                            // [JISHU-TOOLS:…] 头）——pi JSONL 记录的是 compose 后
-                            // 的完整 prompt，标题必须呈现用户真实问题（§16.3 契约）。
+                            // v0.8.1 需求10 → v0.9.0 需求3：剥工具插件注入块（文本标
+                            // 记已废弃）——pi JSONL 记录的是 compose 后的完整 prompt，
+                            // 标题必须呈现用户真实问题（§16.3 契约）。
                             display_name = first_text(&message)
                                 .map(|t| strip_jishu_promt(&t))
-                                .map(|t| crate::agent::tool_plugin::strip_all_markers(&t))
+                                .map(|t| crate::agent::tool_plugin::strip_tool_block(&t))
                                 .filter(|t| !t.trim().is_empty())
                                 .map(smart_summary);
                         }
                     let is_launch = is_task_launch_message(&message);
-                    messages.push(message);
+                    // v0.9.1 需求14 测试期：连续 error 分隔线折叠（重试每试一条），
+                    // 与 pi_message_positions 的计数折叠保持同步。
+                    let is_err = is_error_divider_message(&message);
+                    if is_err && last_message_was_error {
+                        // 折叠丢弃：不计入消息数组。
+                    } else {
+                        last_message_was_error = is_err;
+                        messages.push(message);
+                    }
                     // 任务启动消息之后插入独立「需求讨论」分隔线——位于用户消息之下，
                     // 与 plan 分隔线（custom_message 重建）形态一致；不塞进用户消息内部。
                     if is_launch {
@@ -687,6 +705,7 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
                         if !text.trim().is_empty() {
                             content.push(crate::session::ContentBlock::Text {
                                 text: text.to_string(),
+                                tool_ids: Vec::new(),
                             });
                         }
                     }
@@ -753,13 +772,24 @@ fn phase_divider_title(phase: &str) -> &'static str {
     }
 }
 
+/// v0.9.1 需求14 测试期：errorMessage-only 助手消息投影出的 error 分隔线。
+/// pi 把每次失败尝试记为一条 errorMessage-only 消息（一次轮多次重试 =
+/// 多条连续记录），收集与索引两处同步折叠为一条（见 parse_pi_session_jsonl
+/// 与 pi_message_positions）。
+fn is_error_divider_message(message: &crate::session::Message) -> bool {
+    matches!(
+        message.content.first(),
+        Some(crate::session::ContentBlock::PhaseDivider { phase, .. }) if phase == "error"
+    )
+}
+
 /// 判断是否为 `/jishu-task …` 任务启动用户消息。
 /// conductor 没有为 discuss 发 phase-enter 标记（discuss 由启动命令开启），故从启动文本推导，
 /// 在调用处于此消息之后插入独立「需求讨论」分隔线。
 fn is_task_launch_message(message: &crate::session::Message) -> bool {
     message.role == "user"
         && message.content.iter().any(|b| match b {
-            crate::session::ContentBlock::Text { text } => {
+            crate::session::ContentBlock::Text { text, .. } => {
                 text.trim_start().starts_with("/jishu-task ")
             }
             _ => false,
@@ -783,12 +813,32 @@ fn parse_pi_message(
             timestamp,
         })
         .filter(|message| !message.content.is_empty()),
-        "assistant" => Some(crate::session::Message {
-            role: "assistant".to_string(),
-            content: parse_assistant_content(value.get("content")?),
-            timestamp,
-        })
-        .filter(|message| !message.content.is_empty()),
+        "assistant" => {
+            let content = parse_assistant_content(value.get("content")?);
+            if content.is_empty() {
+                // v0.9.1 需求14 测试期：失败持久化——pi 把失败尝试记为
+                // errorMessage-only 的 assistant 消息，此前被空内容过滤整条
+                // 丢弃，会话重载后失败原因无处可见（用户实测反馈）。投影为
+                // error 分隔线；连续多条（重试各一次）在收集/索引两处折叠。
+                let error = value
+                    .get("errorMessage")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|s| !s.trim().is_empty())?;
+                return Some(crate::session::Message {
+                    role: "assistant".to_string(),
+                    content: vec![crate::session::ContentBlock::PhaseDivider {
+                        phase: "error".to_string(),
+                        title: format!("请求失败：{error}"),
+                    }],
+                    timestamp,
+                });
+            }
+            Some(crate::session::Message {
+                role: "assistant".to_string(),
+                content,
+                timestamp,
+            })
+        }
         "toolResult" => Some(crate::session::Message {
             role: "user".to_string(),
             content: vec![crate::session::ContentBlock::ToolResult {
@@ -798,6 +848,10 @@ fn parse_pi_message(
                     .unwrap_or_default()
                     .to_string(),
                 content: pi_tool_result_content(value.get("content")),
+                is_error: value
+                    .get("isError")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
             }],
             timestamp,
         }),
@@ -808,7 +862,7 @@ fn parse_pi_message(
 fn parse_user_content(value: &serde_json::Value) -> Vec<crate::session::ContentBlock> {
     match value {
         serde_json::Value::String(text) if !text.trim().is_empty() => {
-            vec![crate::session::ContentBlock::Text { text: text.clone() }]
+            vec![crate::session::ContentBlock::Text { text: text.clone(), tool_ids: Vec::new() }]
         }
         serde_json::Value::Array(items) => items
             .iter()
@@ -816,10 +870,12 @@ fn parse_user_content(value: &serde_json::Value) -> Vec<crate::session::ContentB
                 Some("text") => item.get("text").and_then(|v| v.as_str()).map(|text| {
                     crate::session::ContentBlock::Text {
                         text: text.to_string(),
+                        tool_ids: Vec::new(),
                     }
                 }),
                 Some("image") => Some(crate::session::ContentBlock::Text {
                     text: "[image omitted]".to_string(),
+                    tool_ids: Vec::new(),
                 }),
                 _ => None,
             })
@@ -838,6 +894,7 @@ fn parse_assistant_content(value: &serde_json::Value) -> Vec<crate::session::Con
                     Some("text") => item.get("text").and_then(|v| v.as_str()).map(|text| {
                         crate::session::ContentBlock::Text {
                             text: text.to_string(),
+                            tool_ids: Vec::new(),
                         }
                     }),
                     Some("thinking") => {
@@ -892,7 +949,7 @@ fn pi_tool_result_content(value: Option<&serde_json::Value>) -> serde_json::Valu
 
 fn first_text(message: &crate::session::Message) -> Option<String> {
     message.content.iter().find_map(|block| match block {
-        crate::session::ContentBlock::Text { text } if !text.trim().is_empty() => {
+        crate::session::ContentBlock::Text { text, .. } if !text.trim().is_empty() => {
             Some(text.clone())
         }
         _ => None,
@@ -1188,8 +1245,9 @@ Task Orchestrator execution contract:\n\
             [
                 r#"{"type":"session","version":3,"id":"sid-1","timestamp":"2026-06-01T00:00:00.000Z","cwd":"D:\\Work\\app"}"#,
                 r#"{"type":"message_start","id":"u1","parentId":null,"timestamp":"2026-06-01T00:00:01.000Z","message":{"role":"user","content":"hello","timestamp":1780272001000}}"#,
-                r#"{"type":"message_end","id":"a1","parentId":"u1","timestamp":"2026-06-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"plan"},{"type":"text","text":"done"},{"type":"toolCall","id":"call-1","name":"Read","arguments":{"file":"Cargo.toml"}}],"api":"anthropic-messages","provider":"anthropic","model":"claude-sonnet-4-5","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":1780272002000}}"#,
+                r#"{"type":"message_end","id":"a1","parentId":"u1","timestamp":"2026-06-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"plan"},{"type":"text","text":"done"},{"type":"toolCall","id":"call-1","name":"Read","arguments":{"file":"Cargo.toml"}},{"type":"toolCall","id":"call-2","name":"edit","arguments":{"file":"a.md"}}],"api":"anthropic-messages","provider":"anthropic","model":"claude-sonnet-4-5","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":1780272002000}}"#,
                 r#"{"type":"message_end","id":"t1","parentId":"a1","timestamp":"2026-06-01T00:00:03.000Z","message":{"role":"toolResult","toolCallId":"call-1","toolName":"Read","content":[{"type":"text","text":"file contents"}],"isError":false,"timestamp":1780272003000}}"#,
+                r#"{"type":"message_end","id":"t2","parentId":"t1","timestamp":"2026-06-01T00:00:04.000Z","message":{"role":"toolResult","toolCallId":"call-2","toolName":"edit","content":[{"type":"text","text":"Could not find edits[5]"}],"details":{},"isError":true,"timestamp":1780272004000}}"#,
             ]
             .join("\n"),
         )
@@ -1200,7 +1258,7 @@ Task Orchestrator execution contract:\n\
         assert_eq!(session.id, "sid-1");
         assert_eq!(session.project_path, Some(r"D:\Work\app".to_string()));
         assert_eq!(session.display_name, Some("hello".to_string()));
-        assert_eq!(session.messages.len(), 3);
+        assert_eq!(session.messages.len(), 4);
         assert_eq!(session.messages[0].role, "user");
         assert!(matches!(
             session.messages[0].content[0],
@@ -1219,6 +1277,18 @@ Task Orchestrator execution contract:\n\
         assert!(matches!(
             session.messages[2].content[0],
             ContentBlock::ToolResult { .. }
+        ));
+        // v0.9.3 测试期修复：回放必须保留 pi 的 isError，前端据此显示
+        // Error 徽标（此前丢失导致失败工具回放成 Done）。
+        assert!(matches!(
+            &session.messages[2].content[0],
+            ContentBlock::ToolResult { is_error: false, .. }
+        ));
+        assert_eq!(session.messages[3].role, "user");
+        assert!(matches!(
+            &session.messages[3].content[0],
+            ContentBlock::ToolResult { is_error: true, tool_use_id, .. }
+                if tool_use_id == "call-2"
         ));
 
         let _ = fs::remove_dir_all(&root);
@@ -1253,7 +1323,7 @@ Task Orchestrator execution contract:\n\
         assert!(
             matches!(
                 session.messages[0].content[0],
-                ContentBlock::Text { ref text } if text.contains("/jishu-task ")
+                ContentBlock::Text { ref text, .. } if text.contains("/jishu-task ")
             ),
             "用户启动消息首块应为启动文本（分隔线在其下方独立渲染），实际：{:?}",
             session.messages[0].content[0]
@@ -1288,7 +1358,7 @@ Task Orchestrator execution contract:\n\
             plan_divider
                 .content
                 .iter()
-                .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("进入流程规划"))),
+                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text.contains("进入流程规划"))),
             "plan 分隔线消息应携带标记的展示文本"
         );
 
@@ -1394,7 +1464,7 @@ Task Orchestrator execution contract:\n\
         assert!(matches!(
             session.messages[1].content.as_slice(),
             [
-                ContentBlock::Text { text },
+                ContentBlock::Text { text, .. },
                 ContentBlock::Interaction { prompt, answer, .. }
             ] if text == "候选需求已提交。"
                 && prompt == "是否进入规划？"
@@ -1402,7 +1472,7 @@ Task Orchestrator execution contract:\n\
         ));
         assert!(matches!(
             session.messages[2].content.as_slice(),
-            [ContentBlock::Text { text }] if text == "开始流程规划。"
+            [ContentBlock::Text { text, .. }] if text == "开始流程规划。"
         ));
 
         let _ = fs::remove_dir_all(&root);
@@ -1446,7 +1516,7 @@ Task Orchestrator execution contract:\n\
             .iter()
             .find(|m| {
                 m.content.iter().any(
-                    |b| matches!(b, ContentBlock::Text { text } if text.contains("候选需求已提交")),
+                    |b| matches!(b, ContentBlock::Text { text, .. } if text.contains("候选需求已提交")),
                 )
             })
             .expect("应存在助手锚点消息");
@@ -1464,7 +1534,7 @@ Task Orchestrator execution contract:\n\
             .iter()
             .find(|m| {
                 m.content.iter().any(
-                    |b| matches!(b, ContentBlock::Text { text } if text.contains("用户的回答")),
+                    |b| matches!(b, ContentBlock::Text { text, .. } if text.contains("用户的回答")),
                 )
             })
             .expect("应存在用户回答消息");
@@ -1518,20 +1588,20 @@ Task Orchestrator execution contract:\n\
         assert!(matches!(
             session.messages[1].content.as_slice(),
             [
-                ContentBlock::Text { text },
+                ContentBlock::Text { text, .. },
                 ContentBlock::Interaction { prompt, answer, .. }
             ] if text == "先明确目标。" && prompt == "主要目的是什么？" && answer == "单页面"
         ));
         assert!(matches!(
             session.messages[2].content.as_slice(),
             [
-                ContentBlock::Text { text },
+                ContentBlock::Text { text, .. },
                 ContentBlock::Interaction { prompt, answer, .. }
             ] if text == "再明确技术栈。" && prompt == "用什么技术栈？" && answer == "原生 HTML"
         ));
         assert!(matches!(
             session.messages[3].content.as_slice(),
-            [ContentBlock::Text { text }] if text == "候选需求已提交。"
+            [ContentBlock::Text { text, .. }] if text == "候选需求已提交。"
         ));
 
         let _ = fs::remove_dir_all(&root);
@@ -1576,6 +1646,38 @@ Task Orchestrator execution contract:\n\
     /// `tests/fixtures/pi_session_real.jsonl`; the test loads and
     /// parses it the same way the GUI would.
     #[test]
+    /// v0.9.1 需求14 测试期：errorMessage-only 失败消息投影为 error 分隔线，
+    /// 连续多条（重试各一次）折叠为一条——会话重载后失败原因可见。
+    #[test]
+    fn error_only_assistant_messages_collapse_to_one_divider() {
+        let jsonl = r#"{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}
+{"type":"message","id":"e1","message":{"role":"assistant","content":[],"errorMessage":"Connection error."}}
+{"type":"message","id":"e2","message":{"role":"assistant","content":[],"errorMessage":"Connection error."}}
+{"type":"message","id":"e3","message":{"role":"assistant","content":[],"errorMessage":"Connection error."}}
+{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"recovered"}]}}
+"#;
+        let session = parse_pi_session_jsonl(Path::new("test.jsonl"), jsonl).expect("parse");
+        let error_dividers: Vec<&crate::session::Message> = session
+            .messages
+            .iter()
+            .filter(|m| is_error_divider_message(m))
+            .collect();
+        assert_eq!(error_dividers.len(), 1, "连续失败折叠为一条");
+        match &error_dividers[0].content[0] {
+            crate::session::ContentBlock::PhaseDivider { phase, title } => {
+                assert_eq!(phase, "error");
+                assert_eq!(title, "请求失败：Connection error.");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // 后续正常回复保留且顺序正确（user → error → recovered）。
+        assert_eq!(session.messages.len(), 3);
+        assert!(matches!(
+            &session.messages[2].content[0],
+            crate::session::ContentBlock::Text { text, .. } if text == "recovered"
+        ));
+    }
+
     fn parses_real_pi_session_jsonl_fixture() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -1594,7 +1696,7 @@ Task Orchestrator execution contract:\n\
                 .messages
                 .iter()
                 .any(|m| m.role == "assistant"
-                    && m.content.iter().any(|b| matches!(b, crate::session::ContentBlock::Text { text } if text.contains("jishu")))),
+                    && m.content.iter().any(|b| matches!(b, crate::session::ContentBlock::Text { text, .. } if text.contains("jishu")))),
             "real fixture must contain an assistant reply mentioning jishu",
         );
     }

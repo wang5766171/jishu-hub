@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Jishu Hub",
-  "version": "0.8.1",
+  "version": "0.9.4",
   "identifier": "com.jishu-hub.app",
   "build": {
     "frontendDist": "../dist",
@@ -24,7 +24,13 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost http://asset.localhost; font-src 'self' asset: https://asset.localhost; connect-src ipc: http://ipc.localhost https://ipc.localhost"
+      "csp": "default-src 'self'; script-src 'self' asset: https://asset.localhost http://asset.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost http://asset.localhost; font-src 'self' asset: https://asset.localhost; connect-src ipc: http://ipc.localhost https://ipc.localhost; frame-src 'self' http://localhost:* http://127.0.0.1:* https://localhost:* https://127.0.0.1:*",
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$HOME/.jishu-hub/plugins/**"
+        ]
+      }
     }
   },
   "bundle": {
@@ -62,6 +68,15 @@
     },
     "android": {
       "debugApplicationIdSuffix": ".debug"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "jishu-hub"
+        ]
+      }
     }
   }
 }

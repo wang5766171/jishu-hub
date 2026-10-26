@@ -84,6 +84,15 @@ impl ManifestAgent {
 }
 
 impl AgentManifest for ManifestAgent {
+    fn config_dir(&self) -> Option<std::path::PathBuf> {
+        // v0.9.0 需求21：按 [config].path 声明取父目录（~ 展开）。
+        self.file.config.as_ref().and_then(|c| {
+            crate::agent::manifest::schema::expand_tilde(&c.path.clone().unwrap_or_default())
+                .parent()
+                .map(|p| p.to_path_buf())
+        })
+    }
+
     fn info(&self) -> AgentInfo {
         let info = &self.file.info;
         AgentInfo {

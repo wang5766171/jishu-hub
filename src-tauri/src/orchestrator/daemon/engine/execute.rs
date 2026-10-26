@@ -6,6 +6,9 @@ pub(super) async fn execute_node(
     runtime: &dyn TaskAgentRuntime,
     prepared_agent: Result<Option<PreparedAgentExecution>, String>,
     continuation: Option<TaskContinuation>,
+    // 本次执行的 invocation id（v0.9.2 需求3：由调度层生成并持有，
+    // run 终态竞速分支据此对 live 会话主动 cancel）。
+    invocation_id: String,
     context: RuntimeEventContext,
     cancellation: Arc<AtomicBool>,
     on_session_resolved: Option<Arc<dyn Fn(String) + Send + Sync + 'static>>,
@@ -75,7 +78,7 @@ pub(super) async fn execute_node(
                 .map(|value| value.reply.clone())
                 .unwrap_or_else(|| agent_prompt_with_policy(prompt, &node.policy));
             let request = RuntimeInvocationRequest {
-                invocation_id: gen_id("invocation"),
+                invocation_id,
                 agent_id: prepared.assignment.agent_id.clone(),
                 role_id: prepared.assignment.role_id.clone(),
                 project_path: project
@@ -103,7 +106,7 @@ pub(super) async fn execute_node(
                 .map(|value| value.reply.clone())
                 .unwrap_or_else(|| question.clone());
             let request = RuntimeInvocationRequest {
-                invocation_id: gen_id("invocation"),
+                invocation_id,
                 agent_id: prepared.assignment.agent_id.clone(),
                 role_id: prepared.assignment.role_id.clone(),
                 project_path: project_root.to_string_lossy().into_owned(),
@@ -170,13 +173,13 @@ pub(super) fn approval_requirement(
         high_risk,
     };
     let chain = match node.policy.approval_policy {
-        ApprovalPolicy::Never => crate::agent::policy::PolicyChain::new(vec![
-            Box::new(crate::agent::policy::PayloadGatePolicy),
-        ]),
+        ApprovalPolicy::Never => crate::agent::policy::PolicyChain::new(vec![Box::new(
+            crate::agent::policy::PayloadGatePolicy,
+        )]),
         ApprovalPolicy::Once | ApprovalPolicy::Always => crate::agent::policy::PolicyChain::empty(),
-        ApprovalPolicy::OnHighRisk => crate::agent::policy::PolicyChain::new(vec![
-            Box::new(crate::agent::policy::HighRiskGatePolicy),
-        ]),
+        ApprovalPolicy::OnHighRisk => crate::agent::policy::PolicyChain::new(vec![Box::new(
+            crate::agent::policy::HighRiskGatePolicy,
+        )]),
     };
     let required = !matches!(
         chain.evaluate(&approval_ctx),

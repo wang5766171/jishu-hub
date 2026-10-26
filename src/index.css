@@ -160,9 +160,10 @@ select option {
   --icon-send-fg: var(--color-primary-foreground);
   --floating-indicator: hsl(240 5.9% 10%);
 
-  /* Font size presets (default: small) */
+  /* Font size presets (default: small)。
+  v0.9.3 测试期（用户对比 workbuddy 反馈正文太紧凑）：prose 12→14px。 */
   --font-size-base: 15px;
-  --font-size-prose: 12px;
+  --font-size-prose: 14px;
 
   /* Tool state colors */
   --tool-pending: hsl(240 5% 65%);
@@ -197,7 +198,11 @@ select option {
   --message-assistant-bg: transparent;
   --message-assistant-fg: var(--color-foreground);
   --message-thinking-bg: hsl(240 5% 96% / 0.75);
-  --message-content-max-width: 820px;
+  /* v0.9.1 需求4：会话内容列自适应——宽窗口（最大化）占第二栏 70%（mx-auto
+     居中即两侧各 15%），初始/窄窗口 820px 保底（观感零回退），更窄沿用
+     w-full 收缩。输入框高度在 chat-input.tsx 按同基准（820px）等比伸缩，
+     保持初始宽高比。 */
+  --message-content-max-width: max(820px, 70%);
   --tool-card-bg: hsl(0 0% 100%);
   --tool-card-header-bg: hsl(240 5% 97%);
   --tool-card-border: hsl(240 6% 86%);
@@ -421,11 +426,12 @@ select option {
 
 /* Markdown prose styles */
 .markdown-prose {
-  line-height: 1.6;
+  /* 1.6→1.7：行距同步放宽（测试期正文紧凑反馈） */
+  line-height: 1.7;
   font-size: var(--font-size-prose);
 }
 .markdown-prose p {
-  margin: 0.5em 0;
+  margin: 0.625em 0;
 }
 .markdown-prose p:first-child {
   margin-top: 0;

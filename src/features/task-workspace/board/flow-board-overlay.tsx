@@ -14,7 +14,7 @@
  */
 import { Suspense, lazy, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, X, Workflow } from "lucide-react";
+import { ArrowLeft, MessagesSquare, X, Workflow } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { isTerminalRunStatus } from "@/features/task-instance/graph/use-task-graph";
 import type { RunStatusValue, useTaskGraph } from "@/features/task-instance/graph/use-task-graph";
@@ -42,6 +42,9 @@ export interface FlowBoardOverlayProps {
   onSelectNode?: (nodeId: string | null) => void;
   /** 双击节点 → 关闭覆盖层 + 进节点会话 */
   onNodeDoubleClick?: (nodeId: string) => void;
+  /** 进入主会话（关闭覆盖层 + 清节点选择，主区回到任务的 conductor 阶段会话）。
+   *  未提供则不渲染入口（编辑模式/无主会话语境的宿主可省）。 */
+  onOpenMainSession?: () => void;
   /** 关闭覆盖层 */
   onClose: () => void;
   /** GraphEditor 所需的 taskGraph API */
@@ -69,6 +72,7 @@ export function FlowBoardOverlay({
   selectedNodeId,
   onSelectNode,
   onNodeDoubleClick,
+  onOpenMainSession,
   onClose,
   taskGraph,
   onStartRun,
@@ -155,6 +159,18 @@ export function FlowBoardOverlay({
 
         <div className="ml-auto flex items-center gap-1">
           {/* 视图适配由 GraphEditor 内置的 ReactFlow Controls 提供，此处不再重复入口。 */}
+          {onOpenMainSession ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onOpenMainSession}
+              className="gap-1.5 text-muted-foreground hover:text-foreground"
+              title={t("task.flow.openMainSessionHint", "关闭画布并回到任务的主会话（需求/规划/执行讨论所在会话）")}
+            >
+              <MessagesSquare className="h-4 w-4" />
+              <span className="text-xs">{t("task.flow.openMainSession", "进入主会话")}</span>
+            </Button>
+          ) : null}
           <Button
             variant="ghost"
             size="sm"

@@ -246,6 +246,12 @@ pub(super) async fn schedule_node(
         // Spawn heartbeat task and abort it when execution ends
         let heartbeat = tokio::spawn(heartbeat_loop(store.clone(), node_run_id.clone()));
 
+        // v0.9.2 需求3：invocation_id 提前到调度层生成，使 run 终态竞速分支
+        // 能对进行中的 invocation 主动发 cancel——此前 PiRpc 持久会话的连接
+        // 循环/子进程/事件镜像均为独立 spawn，仅丢弃 execute_node future
+        // 无法真正停止子节点，表现为「点了停止依然执行」。
+        let invocation_id = gen_id("invocation");
+
         let result = tokio::select! {
             result = execute_node(
                 &node,
@@ -253,6 +259,7 @@ pub(super) async fn schedule_node(
                 runtime.as_ref(),
                 prepared_agent,
                 continuation,
+                invocation_id.clone(),
                 RuntimeEventContext {
                     run_id: run_id.clone(),
                     node_run_id: node_run_id.clone(),
@@ -270,6 +277,10 @@ pub(super) async fn schedule_node(
                 })),
             ) => Some(result),
             _ = wait_for_terminal_run(&store, &run_id) => {
+                // run 进入终态（用户取消/预算失败等）：先向 live 会话发送
+                // cancel 终止当前 turn（PiRpc 会话保活，供事后引导），
+                // 再置 cancellation 标志（阻塞路径消费）。
+                runtime.cancel(&invocation_id);
                 cancellation.store(true, Ordering::Release);
                 None
             },

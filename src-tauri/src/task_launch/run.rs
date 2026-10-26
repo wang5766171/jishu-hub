@@ -1,4 +1,5 @@
 use super::*;
+use crate::orchestrator::{NodeRun, TaskEvent};
 
 /// 启动执行运行请求。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +178,58 @@ pub struct TaskLaunchStartRunRequest {
     pub project_root: String,
     pub revision_id: String,
     pub idempotency_key: String,
+    /// v0.9.3 需求4（评审 P2-1）：结转种子——run 创建时**单事务原子写入**的
+    /// Succeeded 节点（旧 run 已成功且新旧快照未变更者，不重跑）。UI 手动
+    /// 启动不传（serde default，前端旧载荷兼容）；revise 增量续跑传入。
+    #[serde(default)]
+    pub carryover: Vec<CarryoverSeed>,
+}
+
+/// 结转种子（随 run 创建原子落库；字段与 revise::CarriedNode 同源）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CarryoverSeed {
+    pub node_id: String,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+}
+
+/// v0.9.3 需求4：结转种子构造——Succeeded NodeRun + NodeResolved 事件
+/// （事件溯源投影同源，actor=conductor-carryover，与原 revise 后补写行为
+/// 逐字段一致，仅落库时机改为随 run 创建原子提交）。事件 run_seq 占用
+/// 2..=n+1，run 行以最终 run_seq（1+n）落库。
+pub(super) fn build_carryover_seeds(
+    run_id: &str,
+    revision_id: &str,
+    carried: &[CarryoverSeed],
+) -> Result<Vec<(NodeRun, TaskEvent)>, String> {
+    use crate::orchestrator::domain::run::NodeRunStatus;
+    use crate::orchestrator::events::payloads::NodeResolvedPayload;
+    use crate::orchestrator::{build_event, TaskEventType};
+    use crate::util::gen_id;
+
+    let mut seeds = Vec::with_capacity(carried.len());
+    for (index, carried_node) in carried.iter().enumerate() {
+        let mut seed = NodeRun::new(gen_id("nr"), run_id, &carried_node.node_id, revision_id);
+        seed.status = NodeRunStatus::Succeeded;
+        seed.started_at = carried_node.started_at;
+        seed.finished_at = carried_node.finished_at;
+        let event = build_event(
+            gen_id("evt"),
+            run_id,
+            index as u64 + 2,
+            TaskEventType::NodeResolved,
+            "conductor-carryover",
+            now_ms(),
+            serde_json::to_value(NodeResolvedPayload {
+                node_run_id: seed.node_run_id.clone(),
+                node_id: carried_node.node_id.clone(),
+                final_status: NodeRunStatus::Succeeded,
+            })
+            .map_err(|e| format!("serialize carryover payload failed: {e:?}"))?,
+        );
+        seeds.push((seed, event));
+    }
+    Ok(seeds)
 }
 
 /// UI 执行工作台手动启动 run：在指定 revision 上创建 GraphRun 并同步更新 TaskInstance。
@@ -199,6 +252,14 @@ pub fn task_launch_start_run(
     if let (Some(active_run), Some(last_key)) = (&instance.active_run_id, &instance.last_launch_key)
     {
         if *last_key == req.idempotency_key {
+            if !req.carryover.is_empty() {
+                // v0.9.3 需求4：结转种子只在 run 首建时原子写入；幂等重入若
+                // 携带种子说明调用方状态错乱（首次创建要么带种子要么没带）。
+                return Err(
+                    "carryover requested on idempotent re-entry: seeds are written atomically at first creation"
+                        .to_string(),
+                );
+            }
             let graph_id = instance.graph_id.clone().unwrap_or_default();
             return Ok(StartRunFromRevisionResult {
                 status: "already_running".to_string(),
@@ -219,8 +280,12 @@ pub fn task_launch_start_run(
         .map_err(|e| format!("get revision failed: {e}"))?;
     let graph_id = revision.graph_id.clone();
 
-    // 3. 创建 GraphRun（status=Running）
+    // 3. 创建 GraphRun（status=Running）。v0.9.3 需求4（评审 P2-1）：结转种子
+    //    随创建**单事务原子落库**——引擎任何时刻读库都看不到「run 已创建但
+    //    种子未落」的中间态，消除引擎先 tick 调度结转节点重跑的竞窗；run 行
+    //    直接以最终 run_seq（1+种子数）落库，种子事件严格占用 2..=n+1。
     let run_id = gen_id("run");
+    let carryover_seeds = build_carryover_seeds(&run_id, &req.revision_id, &req.carryover)?;
     let now = now_ms();
     let snapshot = revision
         .snapshot()
@@ -242,7 +307,7 @@ pub fn task_launch_start_run(
         graph_id: graph_id.clone(),
         active_revision_id: req.revision_id.clone(),
         status: RunStatus::Running,
-        run_seq: 1,
+        run_seq: 1 + carryover_seeds.len() as u64,
         budget_state: BudgetState::default(),
         planning_snapshot,
         started_at: now,
@@ -266,9 +331,15 @@ pub fn task_launch_start_run(
         .map_err(|e| format!("serialize event payload failed: {e}"))?,
     );
 
-    store
-        .create_run_with_event(&run, &event)
-        .map_err(|e| format!("create run failed: {e}"))?;
+    if carryover_seeds.is_empty() {
+        store
+            .create_run_with_event(&run, &event)
+            .map_err(|e| format!("create run failed: {e}"))?;
+    } else {
+        store
+            .create_run_with_event_and_seeds(&run, &event, &carryover_seeds)
+            .map_err(|e| format!("create run with carryover seeds failed: {e}"))?;
+    }
 
     // 4. 更新 TaskInstance
     let mut updated = instance;

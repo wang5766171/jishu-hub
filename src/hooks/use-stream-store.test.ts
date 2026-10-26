@@ -158,3 +158,26 @@ describe("streamStore interaction requests", () => {
     streamStore.drop(sessionId);
   });
 });
+
+describe("getStreamingIds（v0.9.3 测试期修复：别名展开）", () => {
+  it("流式状态的键与其别名（真实 session id）都在集合中——列表行整轮可匹配", () => {
+    const pendingId = "pending-abc";
+    const realId = "pi-real-session-id-1234";
+    streamStore.start(pendingId, "hi");
+    // session_resolved 路径：resolvedId 记录 + aliases 登记真实 id → 键。
+    streamStore.push(pendingId, {
+      agent_id: "jishu-self",
+      session_id: pendingId,
+      data: { kind: "session_resolved", session_id: realId },
+    } as never);
+    const ids = streamStore.getStreamingIds();
+    expect(ids).toContain(pendingId);
+    expect(ids).toContain(realId);
+    // 结束后两者都不在。
+    streamStore.end(pendingId);
+    const after = streamStore.getStreamingIds();
+    expect(after).not.toContain(pendingId);
+    expect(after).not.toContain(realId);
+    streamStore.drop(pendingId);
+  });
+});

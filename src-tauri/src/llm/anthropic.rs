@@ -574,6 +574,12 @@ impl LlmProvider for AnthropicProvider {
                 body["system"] = serde_json::Value::String(sys);
             }
 
+            // v0.9.4 需求6 v2：请求级关闭思考——标题生成等极小补全场景，
+            // 思考模型（如 GLM）会把小 max_tokens 预算吃光导致正文为空。
+            if req.disable_thinking {
+                body["thinking"] = serde_json::json!({ "type": "disabled" });
+            }
+
             // Add temperature if specified. Round to 2 decimal places and convert to f64
             // to avoid f32 precision artifacts (e.g. 0.7 becomes 0.699999988...) that
             // some providers reject.

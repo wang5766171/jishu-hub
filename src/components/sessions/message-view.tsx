@@ -8,14 +8,24 @@ import rehypeHighlight from "rehype-highlight";
 import { Check, Copy, Bot } from "lucide-react";
 import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
-import { parseEmbeddedTools, EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
+import { extractCodeText } from "./code-block-text";
+import { EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
 import { ToolGroup } from "@/components/observability/tool-call-card";
 import { resolveToolKind } from "@/components/observability/tool-call-card/types";
 import type { ToolCall } from "@/components/observability/tool-call-card";
-import { InteractionCard } from "./interaction-card";
+import { InteractionBlockWithRenderers as InteractionBlock } from "./interaction-card";
 import type { InteractionCardItem } from "./interaction-card";
 import { isInteractionToolName, looksLikeInteractionToolInput } from "@/lib/interaction-tools";
 import { PhaseDivider } from "./conversation-content";
+// v0.9.2 需求1 P1：行/轮次语义迁移至会话内核统一视图模型（单一权威，
+// 导航轨等轮次消费方读同一份，消除双实现契约对齐负担）。
+import { buildSessionRows, type SessionRowModel } from "@/features/session-kernel/view-model";
+// v0.9.2 需求1 M4：块渲染器咨询点（HTML/Mermaid 等插件经 Context 接管代码块）。
+import {
+  matchBlockRenderer,
+  matchBlockTypeRenderer,
+  useBlockRenderers,
+} from "@/features/session-kernel/plugins/mounts/use-block-renderers";
 
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS = [rehypeHighlight];
@@ -39,6 +49,9 @@ interface MessageViewProps {
   onSearchStatusChange?: (status: MessageSearchStatus) => void;
   flat?: boolean;
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
+  /** v0.9.4 性能优化：跳转扩窗信号（nonce 递增 → 渲染窗口扩至全量）——
+   * turn-rail 跳转目标在窗口外时由父组件 bump 后下一帧定位。 */
+  expandSignal?: number;
   /**
    * 可选角色解析器（三角色场景）。对 `user` 消息调用，返回非空 `MessageRoleView`
    * 时按解析结果渲染（如「任务助手」）。返回 `null` 走默认 `user` 渲染。
@@ -77,9 +90,7 @@ type RenderItem =
   | { kind: "interaction"; items: InteractionCardItem[]; origin?: string; messageIndex: number; blockIndex: number }
   | { kind: "tool-group"; calls: ToolCall[] };
 
-type RenderRow =
-  | { kind: "user"; messageIndex: number }
-  | { kind: "assistant"; startIndex: number; endIndex: number; messageIndices: number[] };
+type RenderRow = SessionRowModel;
 
 function highlightText(text: string, query: string, matchOffset: number, currentMatch: number): React.ReactNode {
   if (!query.trim()) return text;
@@ -163,12 +174,40 @@ const TextBlock = memo(function TextBlock({
 
   return (
     <div className="markdown-prose overflow-hidden">
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
+      {/* v0.9.2 需求1 M4：块渲染器咨询点——已启用插件（HTML/Mermaid 渲染等）
+          声明的代码块增强渲染在此接管；未命中回退默认 markdown 代码块。 */}
+      <ReactMarkdown
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
+        components={{ pre: MarkdownPreWithRenderers }}
+      >
         {text}
       </ReactMarkdown>
     </div>
   );
 });
+
+/** pre 覆写：提取子 code 的语言与文本，咨询块渲染器（Context 注入）。
+ * v0.9.3 测试期修复：取数改经 extractCodeText 递归提取——rehype-highlight
+ * 会把 html 等已识别语言拆成 hljs span 节点，原先只收集纯字符串子节点，
+ * 取出残缺文本导致 HTML 块恒不渲染（mermaid 非 hljs 语言不受影响）。 */
+function MarkdownPreWithRenderers({ children }: { children?: React.ReactNode }) {
+  const renderers = useBlockRenderers();
+  const child = Array.isArray(children) ? children[0] : children;
+  if (renderers.length > 0 && child && typeof child === "object" && "props" in child) {
+    const codeProps = (child as { props?: { className?: string; children?: unknown } }).props;
+    const language = /language-([\w-]+)/.exec(codeProps?.className ?? "")?.[1] ?? "";
+    const code = extractCodeText(codeProps?.children as React.ReactNode);
+    if (language && code) {
+      const renderer = matchBlockRenderer(renderers, language, code);
+      if (renderer) {
+        const Renderer = renderer.Component;
+        return <Renderer code={code} language={language} />;
+      }
+    }
+  }
+  return <pre>{children}</pre>;
+}
 
 function extractMessageText(msg: Message): string {
   return msg.content
@@ -237,62 +276,40 @@ function renderBlock(
       return <ThinkingBlock block={block} />;
     case "interaction":
       return (
-        <InteractionCard
-          items={[{
-            prompt: block.prompt,
-            options: block.options,
-            answer: block.answer,
-            selectedOptions: block.selected_options,
-          }]}
-          origin={block.origin}
-        />
+        <InteractionBlockWithRenderers items={[interactionBlockToItem(block)]} origin={block.origin} />
       );
     case "phase_divider":
-      return <PhaseDivider phase={block.phase} title={block.title} />;
+      return <PhaseDividerBlockWithRenderers phase={block.phase} title={block.title} />;
     default:
       return null;
   }
 }
 
-function isUserToolResultOnlyMessage(msg: Message): boolean {
-  if (msg.role !== "user" || msg.content.length === 0) return false;
-  return msg.content.every((block) => block.type === "tool_result");
+/** v0.9.3 需求2（P1-2）：interaction 块行级咨询点——渲染前咨询已启用插件
+ *  的 blockTypes 扩展接管（matchBlockTypeRenderer），未命中回退内置
+ *  InteractionCard。三个渲染点（renderBlock / 助手气泡分组项 / 用户侧气泡
+ *  分组项）统一经本组件，插件页开关自此真实生效。 */
+/** v0.9.3 需求10 B1：phase_divider 行级咨询点——渲染前咨询已启用插件的
+ * blockTypes 扩展接管（matchBlockTypeRenderer），未命中回退内置
+ * PhaseDivider（插件页开关真实生效；interaction 同款机制）。 */
+function PhaseDividerBlockWithRenderers({ phase, title }: { phase: string; title: string }) {
+  const renderers = useBlockRenderers();
+  const renderer = matchBlockTypeRenderer(renderers, "phase_divider");
+  if (renderer) {
+    const Block = renderer.BlockComponent;
+    return <Block block={{ type: "phase_divider", text: phase, title }} />;
+  }
+  return <PhaseDivider phase={phase} title={title} />;
 }
 
-function buildRenderRows(messages: Message[]): RenderRow[] {
-  const rows: RenderRow[] = [];
-  let assistantGroup: RenderRow & { kind: "assistant" } | null = null;
-
-  const flushAssistant = () => {
-    if (!assistantGroup) return;
-    rows.push(assistantGroup);
-    assistantGroup = null;
-  };
-
-  messages.forEach((msg, i) => {
-    if (msg.role === "assistant") {
-      if (!assistantGroup) {
-        assistantGroup = { kind: "assistant", startIndex: i, endIndex: i, messageIndices: [i] };
-      } else {
-        assistantGroup.endIndex = i;
-        assistantGroup.messageIndices.push(i);
-      }
-      return;
-    }
-
-    if (isUserToolResultOnlyMessage(msg) && assistantGroup) {
-      assistantGroup.endIndex = i;
-      assistantGroup.messageIndices.push(i);
-      return;
-    }
-
-    flushAssistant();
-    rows.push({ kind: "user", messageIndex: i });
-  });
-
-  flushAssistant();
-  return rows;
+function InteractionBlockWithRenderers({ items, origin }: { items: InteractionCardItem[]; origin?: string }) {
+  // v0.9.4 需求11（修正版）：共享咨询渲染链（插件优先保留，回退内置默认
+  // 展开保留选项）——与流式侧同一组件，两侧一致。
+  return <InteractionBlock items={items} origin={origin} defaultOpen />;
 }
+
+// buildRenderRows/isUserToolResultOnlyMessage 已迁移至
+// @/features/session-kernel/view-model（buildSessionRows）。
 
 const isInteractionTool = (name: string, input: any) => {
   return isInteractionToolName(name) || looksLikeInteractionToolInput(input);
@@ -307,7 +324,12 @@ function interactionBlockToItem(block: Extract<ContentBlock, { type: "interactio
   };
 }
 
-function buildRenderItemsForMessages(messages: Message[], messageIndices: number[], resultMap: Map<string, string>): RenderItem[] {
+function buildRenderItemsForMessages(
+  messages: Message[],
+  messageIndices: number[],
+  resultMap: Map<string, string>,
+  errorToolIds: Set<string>,
+): RenderItem[] {
   const items: RenderItem[] = [];
   let pendingTools: ToolCall[] = [];
   const hasPersistedInteraction = messageIndices.some((messageIndex) =>
@@ -369,7 +391,9 @@ function buildRenderItemsForMessages(messages: Message[], messageIndices: number
           toolName: block.name,
           kind: resolveToolKind(block.name, block.view),
           view: block.view,
-          status: "success",
+          // 回放状态与直播对齐：tool_result 带 is_error 的失败调用显示
+          // Error 徽标（此前硬编码 success，把真实失败掩成 Done）。
+          status: errorToolIds.has(block.id) ? "error" : "success",
           input: typeof block.input === "object" && block.input !== null
             ? (block.input as Record<string, unknown>)
             : {},
@@ -461,7 +485,7 @@ function AssistantBubble({
             if (item.kind === "interaction") {
               return (
                 <div key={`interaction-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
-                  <InteractionCard items={item.items} origin={item.origin} />
+                  <InteractionBlockWithRenderers items={item.items} origin={item.origin} />
                 </div>
               );
             }
@@ -508,11 +532,12 @@ function UserBubble({
   toolNames: Record<string, string>;
 }) {
   const { t } = useTranslation();
-  // v0.8.1 需求7：首文本块剥 [JISHU-TOOLS] 标记 → pill（displayText 供
-  // InlineImages 与渲染，copyText 保留标记以便复制原语义）。
+  // v0.9.0 需求3 方案 C：pill 数据源为首文本块的 tool_ids 元数据（回放由
+  // 后端 extract_tool_snapshot 从注入块派生）；文本标记解析已废弃。
   const firstTextBlock = msg.content.find((b) => b.type === "text");
   const rawText = firstTextBlock && firstTextBlock.type === "text" ? firstTextBlock.text : "";
-  const { text: displayText, toolIds } = parseEmbeddedTools(rawText);
+  const displayText = rawText;
+  const toolIds = (firstTextBlock && firstTextBlock.type === "text" ? firstTextBlock.tool_ids : undefined) ?? [];
   const copyText = extractMessageText(msg);
 
   // 三角色：roleResolver 解析为 orchestrator（主进程派发）→ 「任务助手」样式。
@@ -545,7 +570,7 @@ function UserBubble({
             if (item.kind === "interaction") {
               return (
                 <div key={`interaction-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
-                  <InteractionCard items={item.items} origin={item.origin} />
+                  <InteractionBlockWithRenderers items={item.items} origin={item.origin} />
                 </div>
               );
             }
@@ -601,7 +626,9 @@ export const MessageView = memo(function MessageView({
   flat,
   scrollContainerRef,
   roleResolver,
+  expandSignal,
 }: MessageViewProps) {
+  const { t } = useTranslation();
   // v0.8.1 需求7：用户消息 pill 的 id→中文名映射（按会话加载一次）。
   const toolNames = useSessionToolNames(sessionId ?? null);
   const [localSearchQuery, setLocalSearchQuery] = useState(initialSearchQuery || "");
@@ -648,7 +675,42 @@ export const MessageView = memo(function MessageView({
     return map;
   }, [messages]);
 
-  const rows = useMemo<RenderRow[]>(() => buildRenderRows(messages), [messages]);
+  const errorToolIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const msg of messages) {
+      for (const block of msg.content) {
+        if (block.type === "tool_result" && block.tool_use_id && block.is_error) {
+          ids.add(block.tool_use_id);
+        }
+      }
+    }
+    return ids;
+  }, [messages]);
+
+  const rows = useMemo<RenderRow[]>(() => buildSessionRows(messages), [messages]);
+  // v0.9.4 需求7 测试期性能优化（用户实测：长会话来回切换卡顿）：渲染窗口
+  // 化——默认只渲染最近 WINDOW 行（消息构建含 ReactMarkdown 全量解析与
+  // 代码高亮，数百条全量渲染是切换卡顿主因），顶部「加载更早」扩窗。
+  // 搜索激活（renderingQuery 非空）或外部跳转信号（expandNonce）自动全窗。
+  const RENDER_WINDOW_ROWS = 120;
+  const [windowRows, setWindowRows] = useState(RENDER_WINDOW_ROWS);
+  useEffect(() => {
+    setWindowRows(RENDER_WINDOW_ROWS);
+  }, [sessionId]);
+  // 外部跳转扩窗信号（turn-rail 目标在窗口外时父组件 bump）。
+  const lastExpandSignalRef = useRef(expandSignal ?? 0);
+  useEffect(() => {
+    const signal = expandSignal ?? 0;
+    if (lastExpandSignalRef.current === signal) return;
+    lastExpandSignalRef.current = signal;
+    setWindowRows(rows.length);
+  }, [expandSignal, rows.length]);
+  const effectiveWindow = renderingQuery.trim() ? rows.length : windowRows;
+  const visibleRows = useMemo(
+    () => (rows.length > effectiveWindow ? rows.slice(rows.length - effectiveWindow) : rows),
+    [rows, effectiveWindow],
+  );
+  const hiddenCount = rows.length - visibleRows.length;
   const [currentOcc, setCurrentOcc] = useState(0);
   const [scrollTrigger, setScrollTrigger] = useState(0);
 
@@ -705,7 +767,7 @@ export const MessageView = memo(function MessageView({
 
   const renderRow = useCallback((row: RenderRow) => {
     if (row.kind === "assistant") {
-      const items = buildRenderItemsForMessages(messages, row.messageIndices, resultMap);
+      const items = buildRenderItemsForMessages(messages, row.messageIndices, resultMap, errorToolIds);
       return (
         <AssistantBubble
           items={items}
@@ -718,7 +780,7 @@ export const MessageView = memo(function MessageView({
     }
 
     const msg = messages[row.messageIndex];
-    const items = buildRenderItemsForMessages(messages, [row.messageIndex], resultMap);
+    const items = buildRenderItemsForMessages(messages, [row.messageIndex], resultMap, errorToolIds);
     const roleView = roleResolver ? roleResolver(msg) : null;
     return (
       <UserBubble
@@ -732,14 +794,28 @@ export const MessageView = memo(function MessageView({
         toolNames={toolNames}
       />
     );
-  }, [currentOcc, messages, renderingQuery, resultMap, searchState.offsets, roleResolver, toolNames]);
+  }, [currentOcc, messages, renderingQuery, resultMap, errorToolIds, searchState.offsets, roleResolver, toolNames]);
 
+  // v0.9.1 需求5：user 行轮次序号（实例内从 0 递增），横杠导航轨按
+  // [data-turn-index] 定位跳转。v0.9.2 需求1 P1：序号由统一视图模型携带
+  // （buildSessionRows 计算，与轮次摘要消费方同源）。
   const fullMessageList = (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
-      {rows.map((row) => (
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setWindowRows((n) => n + RENDER_WINDOW_ROWS * 2)}
+          className="mx-auto block rounded-full border border-border/60 bg-muted/50 px-4 py-1.5 text-xs text-muted-foreground hover:bg-muted"
+        >
+          {t("sessions.loadEarlier", "加载更早的消息（剩余 {{count}} 行）", { count: hiddenCount })}
+        </button>
+      )}
+      {visibleRows.map((row) => (
         <div
           key={rowKey(row, messages)}
           data-user-message={row.kind === "user" ? "true" : undefined}
+          data-turn-index={row.kind === "user" ? row.turnIndex : undefined}
+          data-message-index={row.messageIndices[0]}
           style={ROW_STYLE}
         >
           {renderRow(row)}

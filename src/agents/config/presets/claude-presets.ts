@@ -45,6 +45,24 @@ export const CLAUDE_PROXY_PRESETS: ClaudeProxyPreset[] = [
 ];
 
 /**
+ * v0.9.2 需求12-3 返工：清除 env 中模型链路键的**大小写变体**——Windows
+ * 环境变量不区分大小写，旧手工配置的小写键（如 anthropic_model）会在
+ * claude 应用 env 时按序覆盖我们写的大写键，实际生效模型与界面所选不符。
+ */
+export function dedupeProxyEnvCase(
+  env: Record<string, string>,
+): Record<string, string> {
+  const canonical = new Set<string>(PROXY_ENV_KEYS);
+  const next = { ...env };
+  for (const k of Object.keys(next)) {
+    if (canonical.has(k.toUpperCase()) && k !== k.toUpperCase()) {
+      delete next[k];
+    }
+  }
+  return next;
+}
+
+/**
  * 将预设应用到 claude 配置的 env 草稿：只写本预设涉及的三个 key
  * （合并不覆盖其他 env）；custom 且无地址时不写入。
  */
@@ -54,7 +72,7 @@ export function applyProxyPresetToEnv(
   env: Record<string, string>,
 ): Record<string, string> {
   if (preset.custom || !preset.baseUrl) return env;
-  const next = { ...env };
+  const next = dedupeProxyEnvCase(env);
   next["ANTHROPIC_BASE_URL"] = preset.baseUrl;
   if (apiKey.trim()) next["ANTHROPIC_AUTH_TOKEN"] = apiKey.trim();
   if (preset.model) next["ANTHROPIC_MODEL"] = preset.model;
@@ -72,7 +90,7 @@ export const PROXY_ENV_KEYS = [
 export function removeProxyEnv(
   env: Record<string, string>,
 ): Record<string, string> {
-  const next = { ...env };
+  const next = dedupeProxyEnvCase(env);
   for (const k of PROXY_ENV_KEYS) delete next[k];
   return next;
 }

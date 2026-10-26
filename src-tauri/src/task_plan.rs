@@ -99,7 +99,7 @@ fn default_receive_rework() -> bool {
     true
 }
 
-fn jishu_agent_dir() -> Result<PathBuf, String> {
+pub(crate) fn jishu_agent_dir() -> Result<PathBuf, String> {
     crate::agent::jishu_self::paths::agent_dir().map_err(|e| e.to_string())
 }
 
@@ -137,11 +137,19 @@ const CONDUCTOR_EXECUTE_SKILL: &str =
     include_str!("../resources/task-plan/jishu-conductor-dev/execute.SKILL.md");
 const REQUEST_USER_INPUT_EXTENSION_TS: &str =
     include_str!("../resources/extensions/request-user-input.ts");
+const JISHU_TOOL_APPROVAL_EXTENSION_TS: &str =
+    include_str!("../resources/extensions/jishu-tool-approval.ts");
+const JISHU_BATCH_GUARD_EXTENSION_TS: &str =
+    include_str!("../resources/extensions/jishu-batch-guard.ts");
 const SESSION_CONTEXT_EXTENSION_TS: &str =
     include_str!("../resources/extensions/session-context.ts");
+/// v0.9.2 测试期：HTML 页面预览扩展（preview_html 工具——agent 可主动把
+/// 本地 HTML 文件渲染到 Hub 右侧面板）。
+const HTML_PREVIEW_EXTENSION_TS: &str =
+    include_str!("../resources/extensions/html-preview.ts");
 
 /// 部署内嵌扩展源到 `<agent_dir>/<rel_path>`，自动建父目录；内容相同则跳过写入。
-fn deploy_extension_file(agent_dir: &Path, rel_path: &str, source: &str) {
+pub(crate) fn deploy_extension_file(agent_dir: &Path, rel_path: &str, source: &str) {
     let target = agent_dir.join(rel_path);
     if let Some(parent) = target.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -154,7 +162,7 @@ fn deploy_extension_file(agent_dir: &Path, rel_path: &str, source: &str) {
 /// 在 `settings.json` 的 `extensions` 数组幂等追加 `rel_path`。
 /// settings.json 不存在 → 兜底创建（修复旧版静默跳过的隐患）；
 /// 存在但 JSON 损坏 / 顶层非 object → 保守 return，不动用户文件。
-fn register_extension_in_settings(agent_dir: &Path, rel_path: &str) {
+pub(crate) fn register_extension_in_settings(agent_dir: &Path, rel_path: &str) {
     let settings_path = agent_dir.join("settings.json");
     let content = std::fs::read_to_string(&settings_path).unwrap_or_else(|_| "{}".to_string());
     let mut settings = match serde_json::from_str::<serde_json::Value>(&content) {
@@ -204,6 +212,19 @@ fn ensure_conductor_extension_in(agent_dir: &Path) {
     let _ = std::fs::write(skill_dir.join("plan.SKILL.md"), CONDUCTOR_PLAN_SKILL);
     let _ = std::fs::write(skill_dir.join("execute.SKILL.md"), CONDUCTOR_EXECUTE_SKILL);
 
+    // 2b. v0.9.2 测试期修复（用户裁决：不做双写兼容，收敛唯一正确目录）：
+    // 技能包唯一位置 = Pi 原生 agent 目录（上文第 2 步）；扩展侧 SKILLS_DIR
+    // 已改为按 Pi getAgentDir() 同规则解析（<根>/agent/skills）。此处清理
+    // 历史错误位置（<根>/skills 下的 conductor 技能包）的残留。
+    if let Some(root) = agent_dir.parent() {
+        for stale in ["jishu-conductor-dev", "jishu-task-planner"] {
+            let stale_dir = root.join("skills").join(stale);
+            if stale_dir.exists() {
+                let _ = std::fs::remove_dir_all(&stale_dir);
+            }
+        }
+    }
+
     // 3. 注册 settings.json extensions（幂等）
     register_extension_in_settings(agent_dir, CONDUCTOR_EXT_REL);
 
@@ -216,6 +237,26 @@ fn ensure_conductor_extension_in(agent_dir: &Path) {
 
 /// 自动部署 `request_user_input` 扩展（conductor 的 discuss/plan 阶段依赖此工具）。
 /// 在 Hub setup hook 调用，每次启动自动确保。
+/// v0.9.3 需求22 P1：逐次工具审批扩展（自 pi 内置迁主仓部署，零 fork）。
+pub fn ensure_jishu_tool_approval_extension() {
+    let Ok(agent_dir) = jishu_agent_dir() else {
+        return;
+    };
+    const REL: &str = "extensions/jishu-tool-approval.ts";
+    deploy_extension_file(&agent_dir, REL, JISHU_TOOL_APPROVAL_EXTENSION_TS);
+    register_extension_in_settings(&agent_dir, REL);
+}
+
+/// v0.9.3 需求22 P2：工具批次守卫扩展（自 pi harness 内置迁主仓部署，零 fork）。
+pub fn ensure_jishu_batch_guard_extension() {
+    let Ok(agent_dir) = jishu_agent_dir() else {
+        return;
+    };
+    const REL: &str = "extensions/jishu-batch-guard.ts";
+    deploy_extension_file(&agent_dir, REL, JISHU_BATCH_GUARD_EXTENSION_TS);
+    register_extension_in_settings(&agent_dir, REL);
+}
+
 pub fn ensure_request_user_input_extension() {
     let Ok(agent_dir) = jishu_agent_dir() else {
         return;
@@ -243,6 +284,17 @@ fn ensure_session_context_extension_in(agent_dir: &Path) {
     const SC_EXT_REL: &str = "extensions/session-context.ts";
     deploy_extension_file(agent_dir, SC_EXT_REL, SESSION_CONTEXT_EXTENSION_TS);
     register_extension_in_settings(agent_dir, SC_EXT_REL);
+}
+
+/// 自动部署 `html-preview` 扩展（v0.9.2 测试期）：注册 preview_html 工具，
+/// agent 开发 HTML 页面后可主动调用，把文件渲染到 Hub 右侧预览面板。
+pub fn ensure_html_preview_extension() {
+    let Ok(agent_dir) = jishu_agent_dir() else {
+        return;
+    };
+    const HP_EXT_REL: &str = "extensions/html-preview.ts";
+    deploy_extension_file(&agent_dir, HP_EXT_REL, HTML_PREVIEW_EXTENSION_TS);
+    register_extension_in_settings(&agent_dir, HP_EXT_REL);
 }
 
 pub fn read_installed_skill(dir: &Path, skill_id: &str) -> Result<Option<TaskPlanSkill>, String> {
@@ -645,5 +697,31 @@ description: demo
         assert!(arr.contains(&"extensions/jishu-task-conductor.ts".into()));
         assert!(arr.contains(&"extensions/request-user-input.ts".into()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.9.2 测试期修复回归（用户裁决：唯一正确目录，无双写）：skill pack
+    /// 只写 Pi 原生 agent 目录；历史错误位置（<根>/skills）的残留被清理。
+    #[test]
+    fn conductor_skill_pack_single_location_and_stale_root_cleaned() {
+        let root = ext_test_dir("root-skills");
+        let agent_dir = root.join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        // 预置历史错误位置的残留
+        let stale = root.join("skills").join("jishu-conductor-dev");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("discuss.SKILL.md"), "stale").unwrap();
+
+        ensure_conductor_extension_in(&agent_dir);
+
+        for phase in ["discuss", "plan", "execute"] {
+            assert!(agent_dir
+                .join("skills")
+                .join("jishu-conductor-dev")
+                .join(format!("{phase}.SKILL.md"))
+                .is_file());
+        }
+        // 错误位置残留被清理（skills 目录本身若空也不强删——只清 conductor 相关）
+        assert!(!stale.exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

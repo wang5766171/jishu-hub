@@ -1,6 +1,8 @@
 // v0.7.4 需求2 R3：当前模型大卡（两 agent 统一的模型展示/切换入口）。
 // 扁平 provider/model 列表单选（与聊天页模型选择器同一心智）；
 // claude 侧开启 allowCustom 支持自由输入任意模型 ID。
+// v0.9.2 需求9 补丁二十九：readOnly 形态——只读展示当前模型（无下拉
+// 箭头、不可点开），供渠道内行级激活的页面使用（jishu）。
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -18,24 +20,28 @@ export interface ActiveModelOption {
 
 export function ActiveModelCard({
   current,
-  options,
+  options = [],
   onSelect,
   allowCustom = false,
   customPlaceholder,
   emptyHint,
   emptyActionLabel,
   onEmptyAction,
+  readOnly = false,
 }: {
   /** 当前值（value 形式）；null = 未配置 */
   current: ActiveModelOption | null;
-  options: ActiveModelOption[];
-  onSelect: (value: string) => void;
+  /** 下拉选项（readOnly 时可省） */
+  options?: ActiveModelOption[];
+  onSelect?: (value: string) => void;
   allowCustom?: boolean;
   customPlaceholder?: string;
   /** 未配置任何模型时的提示 */
   emptyHint?: string;
   emptyActionLabel?: string;
   onEmptyAction?: () => void;
+  /** 只读形态：仅展示当前模型，无下拉（v0.9.2 需求9 补丁二十九）。 */
+  readOnly?: boolean;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -59,6 +65,50 @@ export function ActiveModelCard({
     );
   }, [options, custom]);
 
+  const body = (
+    <>
+      <span
+        className={cn(
+          "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
+          current ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground",
+        )}
+      >
+        <Box className="h-4 w-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[11px] uppercase tracking-wider text-muted-foreground/70">
+          {t("config.currentModel")}
+        </span>
+        {current ? (
+          <span className="flex items-baseline gap-2">
+            <span className="truncate text-sm font-semibold">{current.label}</span>
+            {current.hint && (
+              <span className="truncate font-mono text-[11px] text-muted-foreground">
+                {current.hint}
+              </span>
+            )}
+          </span>
+        ) : (
+          <span className="text-sm text-muted-foreground">{emptyHint ?? t("config.noModelConfigured")}</span>
+        )}
+      </span>
+      {!readOnly && (
+        <ChevronDown className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
+      )}
+    </>
+  );
+
+  const surfaceClass = cn(
+    "flex w-full items-center gap-3 rounded-xl border bg-card px-4 py-3.5 text-left shadow-xs",
+    current ? "border-primary/40" : "border-dashed border-border/50",
+  );
+
+  if (readOnly) {
+    return (
+      <div className={surfaceClass}>{body}</div>
+    );
+  }
+
   return (
     <div ref={rootRef} className="relative">
       <button
@@ -67,39 +117,9 @@ export function ActiveModelCard({
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className={cn(
-          "flex w-full items-center gap-3 rounded-xl border bg-card px-4 py-3.5 text-left shadow-xs transition-fast",
-          current
-            ? "border-primary/40 hover:border-primary/60"
-            : "border-dashed border-border/50",
-        )}
+        className={cn(surfaceClass, "transition-fast hover:border-primary/60")}
       >
-        <span
-          className={cn(
-            "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
-            current ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground",
-          )}
-        >
-          <Box className="h-4 w-4" />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-[11px] uppercase tracking-wider text-muted-foreground/70">
-            {t("config.currentModel")}
-          </span>
-          {current ? (
-            <span className="flex items-baseline gap-2">
-              <span className="truncate text-sm font-semibold">{current.label}</span>
-              {current.hint && (
-                <span className="truncate font-mono text-[11px] text-muted-foreground">
-                  {current.hint}
-                </span>
-              )}
-            </span>
-          ) : (
-            <span className="text-sm text-muted-foreground">{emptyHint ?? t("config.noModelConfigured")}</span>
-          )}
-        </span>
-        <ChevronDown className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
+        {body}
       </button>
 
       {!current && emptyActionLabel && onEmptyAction && !open && (
@@ -122,7 +142,7 @@ export function ActiveModelCard({
               placeholder={customPlaceholder ?? t("config.modelComboboxPlaceholder")}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && custom.trim()) {
-                  onSelect(custom.trim());
+                  onSelect?.(custom.trim());
                   setCustom("");
                   setOpen(false);
                 }
@@ -145,7 +165,7 @@ export function ActiveModelCard({
                     active ? "bg-primary/10 text-primary" : "hover:bg-accent/50",
                   )}
                   onClick={() => {
-                    onSelect(o.value);
+                    onSelect?.(o.value);
                     setOpen(false);
                   }}
                 >

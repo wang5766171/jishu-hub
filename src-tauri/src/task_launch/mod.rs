@@ -25,7 +25,7 @@ pub const RUN_STATUS_FAILED: &str = "failed";
 pub const RUN_STATUS_CANCELLED: &str = "cancelled";
 
 /// task_instance 表 schema 版本。升级表结构时递增，并在 `migrate_schema` 中处理迁移。
-const TASK_INSTANCE_SCHEMA_VERSION: i64 = 2;
+const TASK_INSTANCE_SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TaskLaunchInstance {
@@ -51,6 +51,10 @@ pub struct TaskLaunchInstance {
     pub run_status: Option<String>,
     /// 幂等启动键（防止 fork/resume 重复启动 run）。
     pub last_launch_key: Option<String>,
+    /// 声明驱动阶段序列（v0.9.3 需求13 C4-slice2）：展开后阶段数组 JSON。
+    /// None = legacy 三段式（discuss→plan→execute，既有硬编码路径零变化）。
+    #[serde(default)]
+    pub stages_json: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -129,9 +133,14 @@ pub use instance_store::{
     get_task_instance, list_task_instances, mark_task_stage_session,
     planning_instruction_for_instance, rename_task, sync_run_status,
 };
+mod revise;
+
 pub use proposal::{
     orchestrator_validate_proposal, ValidateProposalRequest, ValidateProposalResult,
 };
+pub use revise::{conductor_revise_plan, RevisePlanRequest, RevisePlanResult};
+mod dispatch;
+pub use dispatch::{conductor_dispatch_to_node, DispatchToNodeRequest, DispatchToNodeResult};
 pub use run::{
     orchestrator_start_run_from_revision, sync_run_status_to_task_instance, task_launch_start_run,
     StartRunFromRevisionRequest, StartRunFromRevisionResult, TaskLaunchStartRunRequest,
@@ -317,6 +326,7 @@ mod tests {
             artifact_hash: None,
             title: Some("Conductor sync".into()),
             session_id: Some("session-1".into()),
+            stages: None,
         })
         .unwrap();
         assert!(created.success);
@@ -351,6 +361,7 @@ mod tests {
             artifact_hash: Some(requirements_hash),
             title: None,
             session_id: Some("session-1".into()),
+            stages: None,
         })
         .unwrap();
         assert!(planning.success);
@@ -375,6 +386,7 @@ mod tests {
             artifact_hash: Some("sha256:invalid".into()),
             title: None,
             session_id: None,
+            stages: None,
         });
         assert!(rejected.is_err());
 

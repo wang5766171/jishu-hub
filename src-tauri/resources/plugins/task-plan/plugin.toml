@@ -8,7 +8,7 @@ display_name = "流程规划"
 [pi_extension]
 entry = "plan.ts"
 target_agent = "jishu-self"
-
+tools = ["commit_plan", "dispatch_to_node"]
 [tool]
 description = "结构化流程规划工具——需求确认后，当任务需要拆分为多个有依赖关系的执行节点时使用。产出 flow-plan.json + flow-plan.md。单步可完成的简单任务不需要流程规划，直接执行。"
 usage = "jishu-cli task-artifact commit-plan --nodes '<JSON数组>' --project $JISHU_PROJECT_PATH"

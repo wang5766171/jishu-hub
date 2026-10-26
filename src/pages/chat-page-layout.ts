@@ -1,3 +1,6 @@
+import { computeStepOrder } from "@/features/task-workspace/steps/compute-step-order";
+import type { GraphSnapshot } from "@/features/task-instance/graph/use-task-graph";
+
 export function shouldRenderGlobalChatInput({
   projectId,
   taskModeActive,
@@ -31,4 +34,19 @@ export function resolvePhaseSessionId(
   if (phase === "requirements") return instance.requirement_session_id ?? null;
   // planning / execution / graph：优先规划会话（含规划产出），回退需求会话。
   return instance.planning_session_id ?? instance.requirement_session_id ?? null;
+}
+
+/**
+ * 可执行节点的拓扑执行序（v0.9.2 测试期修复节点顺序，A5 簇③ 随迁布局层）：
+ * 依赖波次（同层按 node_id 稳定），过滤 goal/循环节点——此前直接用
+ * snapshot.nodes 数组序（= LLM 提交计划的数组顺序），动态修订后顺序错乱。
+ */
+export function orderExecutableNodes(snapshot: GraphSnapshot | null | undefined): GraphSnapshot["nodes"] {
+  if (!snapshot) return [];
+  const order = computeStepOrder(snapshot);
+  const rank = new Map(order.map((id: string, index: number) => [id, index]));
+  return snapshot.nodes
+    .filter((node) => node.node_kind.toLowerCase() !== "goal" && !node.loop_config)
+    .slice()
+    .sort((a, b) => (rank.get(a.node_id) ?? order.length) - (rank.get(b.node_id) ?? order.length));
 }

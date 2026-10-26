@@ -215,7 +215,7 @@ npx vitest run test/<相关文件>.test.ts
 
 ### 16.1 统一插件模型
 
-一个 `PluginDescriptor`（id / display_name / kind / version / source_path / core / enabled），三类插件同一描述符、同一管理面（插件页一个条目一个开关）。`PluginKind::{Builtin, Manifest, Tool}`——Builtin = 随 hub 分发的 Rust 实现（agent 适配器）；Manifest = TOML 声明的 agent 插件；Tool = 工具插件（CLI 能力单元，不进 AgentRegistry）。
+一个 `PluginDescriptor`（id / display_name / kind / version / source_path / core / enabled），四类插件同一描述符、同一管理面（插件页一个条目一个开关）。`PluginKind::{Builtin, Manifest, Tool, Session}`——Builtin = 随 hub 分发的 Rust 实现（agent 适配器）；Manifest = TOML 声明的 agent 插件；Tool = 工具插件（CLI 能力单元，不进 AgentRegistry）；Session = 会话能力插件（v0.9.2，见 §16.9，前端注册表实现，描述符仅入统一管理面）。
 
 **装配管线**：`builtin_plugin_specs()`（工厂清单，顺序稳定）→ `manifest::load_manifests()`（只读扫 `~/.jishu-hub/agents/*.toml`，单文件失败局部化）→ `plugin::assemble()`（纯函数，无 IO）。`assemble` 按 `plugins.json` 的 disabled 集合过滤（core 插件恒装载，双层拒绝：API 层 + 装配层）。启停/卸载/重载/创建统一经 `rebuild_registry` 热生效（锁内替换 Arc + `retain_health_from` 保留旧健康缓存 + 广播 `plugins-changed`）。
 
@@ -262,7 +262,7 @@ npx vitest run test/<相关文件>.test.ts
 
 `resolve_form(manifest, plugin_dir, target_agent)` → `AdaptiveForm::{PiOnly, CliOnly, Both, None}`——按 `[pi_extension].target_agent` 匹配 + `[tool]` 段存在性判定。这是声明驱动的适配层逻辑核心：插件声明"能做什么"，适配引擎决定"在这个 agent 上走哪条通道"。
 
-**v1 现状**：`resolve_form` 已定义但未接入注入/部署管线（实际适配由 `load_manifests` 的 kind 分流隐式完成）。v2 接线点：注入管线消费 `participates_in_injection`、pi 部署管线消费 `needs_pi_deploy`。
+**已接线（v0.9.2）**：`[pi_extension]` 是 **pi 扩展工具的热插拔闸门**——manifest 以 `tools` 字段声明本插件治理的扩展工具名（entry 可选：纯闸门形态不部署扩展文件），adapter spawn 时按「插件已启用」聚合进 pi `--tools` 白名单（空集兜底常量，宁可关不掉不可流程死）。pi 的 `--tools` 是硬白名单：名单外扩展工具连会话内工具收窄也无法激活，故扩展工具必须显式声明注入（agent 私有知识，属 adapter 职责）。`resolve_form` 形态判定（PiOnly/Both/CliOnly）供部署管线消费。**工具组**（组 = 工具集的代理、多对多归属、enable_tool_group 自发现升级）为下版本规划，设计全文见 `docs/v0.9.2/需求7-扩展工具插件化与治理/02`。
 
 ### 16.5 CLI 形态底层
 
@@ -295,3 +295,33 @@ GUI（插件页 + 创建/编辑对话框）与 CLI（`jishu-cli plugins add/list
 - **渲染单源**（M5）：用户消息展示一律用 `UserTextWithPills`，禁止裸渲染含标记文本。
 - **内建自适应插件不可编辑卸载**：task-requirements / task-plan 由启动管线幂等覆写，GUI/CLI 编辑会被回滚——v1 如实接受（编辑这两个插件无意义），v2 加 managed 标志。
 - **无 [tool] 段插件不参与注入**（M3）：`render_tool_block` 跳过 PiOnly 形态（schema 允许 kind=tool 仅含 `[pi_extension]`），消费层不得假设 `[tool]` 段必存在。
+
+### 16.9 会话能力插件（v0.9.2）
+
+会话区的可插拔能力体系：**前端微内核与后端同构**（注册表 + 契约 + 受控上下文）。
+
+- **统一视图模型**：行/轮次语义的单一权威（消息渲染与轮次消费方同源），禁止任何插件或组件复制该语义。
+- **挂载点契约**：插件经声明式挂载点装配（停靠面板 / 贴边挂件 / 流内卡 / 块渲染器 / 列表装饰与操作 / 头部动作 / 事件钩子 / 全屏浮层 / 侧边栏面板（挤压式）/ composer 尾部控制行（v0.9.3 需求8，水位环）；预留项只定目录位不实装宿主）。挂载点宿主是通用容器，禁止内含任何插件专属逻辑——新增插件 = 新增描述符，零内核改动（开闭原则的机械检验标准）。
+- **受控上下文**（`SessionPluginContext`）：插件可触达的全部世界只有这一个对象（数据订阅 + 命令 + 白名单后端代理）；插件禁止 import 内核与页面模块。契约面数据必须可序列化（为后续沙箱协议化预留）。
+- **两层控制语义**：插件管理 = 能力**存不存在**（全局）；会话区操作（拖拽布局/收起/快捷图标）= **显示在哪**（呈现层，localStorage）。两层正交，不出现第二套开关语义。
+- **布局模型**：核心区（列表/消息流/输入）固定；能力面板停靠五槽位（预定义，不做自由分割），布局全局一份记忆。
+- **启停通道**：复用统一插件管线（PluginKind::Session + plugins.json + plugins-changed 热生效），前端注册表做「id → 实现」映射与启用过滤。
+- **演进预留**：配置型（TOML 参数化模板）→ 代码型（沙箱）→ 分发（签名与契约版本协商）三阶段，方向全文见版本文档；描述符自带 `contractVersion` 与 `source` 字段为协商基础。
+- **数据枢纽与真订阅（v0.9.3 需求3）**：`SessionDataHub`（`session-kernel/kernel/data-hub.ts`）持有各数据面监听器集合与最新快照——ctx.subscribe 注册即回放、数据变更 publish 逐个回调、退订真实移除；ctx 重建只重放快照不丢订阅。ctx 命令面含会话压缩（compactSession/isCompacting/autoCompaction，需求8）。
+- **内建会话插件**（v0.9.4 盘点，`plugins/builtin/` 九款）：交互问答卡 / HTML 实时渲染 / 上下文水位环 / 消息搜索 / 流式状态指示 / 用量成本面板 / 产物中心（+台账）/ 会话导出。内置插件的块渲染样式 = 产品视觉的权威形态：**接管同一块类型的渲染件与内置卡样式必须一致**（如 interaction 的插件渲染件委托内置 InteractionCard），禁止另起视觉。
+
+### 16.10 会话内核纪律
+
+- **内核零任务语义**：任务/流程能力一律经「任务流程」插件的挂载点进入，内核不含任务分支。
+- **插件作用域**：一切会话域易变状态（引导占位等）必须按会话 key 作用域，禁止跨会话泄漏。
+- **扩展工具注入**：pi 扩展工具必须经 §16.4 闸门声明注入；hub spawn 白名单聚合是唯一通道，禁止旁路直改 pi 工具集。
+- **会话状态文案按阶段准确**（v0.9.4 需求10，用户裁决话术）：流式状态按真实阶段区分显示——连接中（agent 正在赶来）/等待模型响应（思考中）/思考生成（深度思考中）/工具调用中/回复生成（处理中）；切换信号以 session_resolved（连接建立）与首个内容事件为准，禁止一律「思考中」误导。禁止把「send IPC 返回」当作连接建立的信号（spawn 未完成时为时过早）。
+
+### 16.11 dev 日志中心（v0.9.4）
+
+会话全流程的可观测底座：**日志总线 + 统一渲染入口 + 插件发日志能力**，dev 专属（生产构建零包含）。
+
+- **日志总线**（`lib/dev-log.ts`）：环形缓冲 + 订阅推送 + 格式化复制导出；`import.meta.env.DEV` 内部短路（生产零效果、近零开销——调用点参数构造仍在，量级可忽略），运行时强制开关持久化于 settings.json（`devLogForced`，安装包测试比 dev 稳定——dev 会被代码改动重启）。
+- **七类埋点**：pipeline（关键 chunk + turn_complete 决策快照）/ store（start/drop/alias/首个内容事件）/ steer（SteerCoordinator 全 API——时序主战场）/ ipc（会话关键命令+耗时成败）/ session（切换/滚动/停止幂等）/ approval / plugin（插件底座）。高频 delta（text/thinking）聚合记录不逐条。
+- **渲染入口唯一**：`DevLogCenter`（能力中心下方悬浮入口，面板含类别筛选/自动滚底/复制/清空）。
+- **插件发日志**：`ctx.devLog(message, data?)`（SessionKernelContext 命令面），类别 `plugin`；message 约定以 `[插件id]` 前缀区分来源。插件禁止绕过 ctx 直写 console 之外的日志通道。

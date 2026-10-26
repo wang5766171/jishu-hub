@@ -1,29 +1,57 @@
-import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import {
   streamStore,
   useSessionStream,
   useStreamingSessionIds,
 } from "@/hooks/use-stream-store";
-import { MessageView, type MessageSearchNavigation, type MessageSearchStatus } from "@/components/sessions/message-view";
+import { steerCoordinator } from "@/features/session-kernel/kernel/steer-coordinator";
+import { devLog } from "@/lib/dev-log";
+import { useSyncExternalStore } from "react";
+import { MessageView } from "@/components/sessions/message-view";
+import { buildTurnSummaries } from "@/components/sessions/turn-rail";
+import { SessionPanelLayer } from "@/features/session-kernel/plugins/mounts/session-panel-layer";
+import { SessionSidebarLayer } from "@/features/session-kernel/plugins/mounts/session-sidebar-layer";
+import { requestPanelActivation, requestPanelClose } from "@/features/session-kernel/shell/panel-activation";
+import { closeSessionSidebar } from "@/features/session-kernel/shell/session-sidebar";
+import { BlockRenderersProvider } from "@/features/session-kernel/plugins/mounts/use-block-renderers";
+import { PluginSignalBridge } from "@/features/session-kernel/plugins/mounts/plugin-signal-bridge";
+import { SessionPluginActions } from "@/features/session-kernel/plugins/mounts/session-plugin-actions";
+import { FlowBoardOverlay } from "@/features/task-workspace/board/flow-board-overlay";
+import { useTaskInstance } from "@/features/task-instance/use-task-instance";
+import { useNodeSession } from "@/features/task-instance/use-node-session";
+import { normalizeAgentId } from "@/features/task-instance/types";
+import { useEnabledSessionPlugins } from "@/features/session-kernel/plugins/registry";
+import { emitSessionSignal, subscribeSessionSignals } from "@/features/session-kernel/signals";
+import { SessionDataHub } from "@/features/session-kernel/kernel/data-hub";
+import { SessionRailSlot } from "@/features/session-kernel/plugins/mounts/session-rail-slot";
+import type {
+  SessionKernelContext,
+  PluginBlock,
+  PluginMessage,
+  PluginSearchMatch,
+} from "@/features/session-kernel/plugins/types";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
 import { RenameTaskSessionDialog } from "@/components/sessions/rename-task-session-dialog";
-import { ChatInput, type StagedGuideApi } from "@/components/sessions/chat-input";
+import { ChatInput, type ChatInputHandle, type StagedGuideApi } from "@/components/sessions/chat-input";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
-import { clearImageCache } from "@/components/sessions/inline-image";
+import { clearImageCache, InlineImages, stripImagePrompt } from "@/components/sessions/inline-image";
 // 会话二级树（T3）：侧边栏任务会话区
-import { TaskSessionTree } from "@/features/task-workspace/sidebar/task-session-tree";
+import type { NodeSessionSummary } from "@/features/task-workspace/types";
 // 任务模式右侧栏（减法重构：仅渲染任务步骤面板 + 治理面 + 画布，主会话区复用 chat-page）。
-import { TaskSidebar } from "@/features/task-workspace/task-sidebar";
 // 任务图数据：chat-page 顶层无条件持有（无 graph 时无副作用），主区 run 流与侧边栏共享。
-import { useTaskGraph, taskErrorMessage } from "@/features/task-instance/graph/use-task-graph";
+import { useTaskGraph, taskErrorMessage, type NodeRunLookupSource } from "@/features/task-instance/graph/use-task-graph";
 // T8-P1 三段合流：执行段的「流程执行」分隔线 + 会话区「是否开始执行」确认卡。
 import { PhaseDivider } from "@/components/sessions/conversation-content";
-import { ExecutionStartPrompt } from "@/features/task-workspace/execution-start-prompt";
-import { countExecutableSteps } from "@/features/task-workspace/steps/compute-step-order";
+import {
+  TaskPlanCard,
+  TaskNodeCards,
+  TaskSummaryCard,
+  type FlowNodeStatus,
+  type PlanNodeInfo,
+} from "@/features/task-workspace/task-flow-cards";
 import { startTaskRun } from "@/features/task-instance/start-run";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -32,78 +60,52 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
-import { MessageSquare, Search, X, Pencil, RotateCw, FolderOpen, SquarePen, ClipboardList, PanelLeftClose, PanelLeftOpen, PanelRightOpen, ArrowRight, ChevronUp, ArrowLeftRight, ChevronDown, ChevronRight, PictureInPicture2, Trash2, GitBranch, Cpu,
+import { MessageSquare, X, Pencil, RotateCw, FolderOpen, ArrowRight, ArrowLeftRight, ChevronDown, PictureInPicture2, Cpu,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
+import { Suspense } from "react";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
-import { ActivitySpinner } from "@/components/ui/activity-spinner";
 import { useFileViewer } from "@/components/file-viewer";
 import { cn } from "@/lib/utils";
-import { searchSessions } from "@/lib/session-search";
 import { openFloatingSession } from "@/lib/floating-window";
 import {
   buildInteractionInsertions,
   commitAssistantWithInteractions,
   type InteractionInsertion,
 } from "@/lib/deferred-user-message";
-import {
-  formatInteractionReply,
-  formatInteractionResponseValue,
-  interactionRequestFromEvent,
-} from "@/lib/conversation-interaction";
 import { AgentLogo, AgentSwitcher, useAgent } from "@/agents";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
-import { resolvePhaseSessionId, shouldRenderGlobalChatInput } from "./chat-page-layout";
+import { orderExecutableNodes, shouldRenderGlobalChatInput } from "./chat-page-layout";
+import { useTaskInstanceSync } from "./use-task-instance-sync";
+import { useAccessMode } from "./use-access-mode";
+import { ChatSidebar } from "./chat-sidebar";
+import { useSessionSelection } from "./use-session-selection";
+import { useTaskSessionRouting } from "./use-task-session-routing";
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
-import { setSessionUsage } from "@/lib/session-usage";
-import { ContextRing } from "@/components/sessions/context-ring";
+import { getSessionUsage, setSessionUsage } from "@/lib/session-usage";
+import { SessionComposerTrailing } from "@/features/session-kernel/plugins/mounts/session-composer-trailing";
 import { UserTextWithPills, useSessionToolNames } from "@/components/sessions/embedded-tools";
 import { useModelPicker } from "@/features/chat-core/use-model-picker";
 import { useCompaction } from "@/features/chat-core/use-compaction";
+import { useMessageSearch } from "@/features/chat-core/use-message-search";
 import { ThinkingLevelSelect } from "@/components/sessions/thinking-level-select";
 import {
   buildAssistantContentFromStreamState,
-  extractRealSessionId,
-  formatRelativeTime,
   PHASE_LAUNCH_RANK,
   stripTaskLaunchInstructionFromMessages,
   TerminalIcon,
   uniqueSessionsById,
-  type PendingChatApproval,
-  type PendingChatInteraction,
   type TaskLaunchPhase,
 } from "./chat-page-utils";
 import { type TaskPhase, type TaskLaunchInstanceSummary } from "@/features/task-instance/types";
 import type {
-  AgentEventPayload,
-  ConversationInteractionSubmission,
-  InteractionResponseDto,
   Message,
   Project,
   ProjectMeta,
-  ProjectSettings,
   Session,
   SessionSearchResult,
 } from "@/types";
-
-// v0.8.0 需求7：会话消息缓存提升为模块级。chat 页切到管理页会被整体卸载
-// （app.tsx 条件渲染），组件级缓存随之销毁，而 streamStore（模块级）与后端
-// 回合仍在运行；重挂载后 handleSelectSession 缓存必 miss → 重读 JSONL，CLI
-// 已落盘的当前回合用户消息与流式气泡的 pendingUserMessage 各渲染一次（用户
-// 问题出现两次）。模块级缓存让「流式期间不重读 JSONL」的不变量跨页面切换
-// 保持。
-const sessionMessagesCache = new Map<string, Message[]>();
-
-// 切换项目/agent 或组件重挂载时收缩缓存：仍处流式中的条目是流式气泡的消息
-// 基线，必须保留（丢了会复现重复渲染）；其余全部驱逐（点击时从 JSONL 重读，
-// 与组件级缓存的既有行为一致，也顺带完成内存回收）。
-function evictIdleSessionMessagesCache() {
-  for (const key of Array.from(sessionMessagesCache.keys())) {
-    if (!streamStore.hasState(key)) sessionMessagesCache.delete(key);
-  }
-}
 
 
 export function ChatPage({
@@ -115,6 +117,8 @@ export function ChatPage({
   onSwitchProject,
   onProjectSessionsLoadingChange,
   navigateToSession,
+  onNavigateAgentModels,
+  pipelineLaunch,
 }: {
   currentProject: Project | null;
   currentProjectMeta?: ProjectMeta;
@@ -124,6 +128,12 @@ export function ChatPage({
   onSwitchProject: () => void;
   onProjectSessionsLoadingChange?: (loading: boolean) => void;
   navigateToSession?: string | null;
+  /** v0.9.2 需求10：未配置模型时「前往配置」——跳管理页模型设置并
+   * 定位到当前会话智能体（agent 切换由 App 层注入）。 */
+  onNavigateAgentModels?: () => void;
+  /** v0.9.3 需求13 C4-slice2c：pipeline 插件「作为任务启动」（App 层已切
+   * jishu agent 与会话页）；key 变化时预填 /jishu-pipeline 命令并聚焦。 */
+  pipelineLaunch?: { key: number; pluginId: string; name: string } | null;
 }) {
   const { t } = useTranslation();
   // v0.7.0 需求一：会话作用域状态（chatAgentId 替代全局 activeId）。
@@ -141,7 +151,22 @@ export function ChatPage({
   // agent_config=agent 自己的配置文件。禁止按 agentId 分支。
   const permissionModes = active?.permission_modes ?? [];
   const permissionModeProvider = active?.permission_mode_provider ?? null;
-  const supportsAccessModeSwitch = permissionModes.length > 0;
+  // ── M3：访问/权限模式域迁 use-access-mode（三提供方加载/派生/变更保存/
+  // 刷新键；置于 modelPicker 之前——其刷新回调引用 refreshAccessMode）。 ──
+  const {
+    canSwitch: supportsAccessModeSwitch,
+    options: accessModeOptions,
+    value: accessModeValue,
+    label: accessModeLabel,
+    approvalAlwaysHidden,
+    handleChange: handleAccessModeChange,
+    refresh: refreshAccessMode,
+  } = useAccessMode({
+    activeId,
+    permissionModes,
+    permissionModeProvider,
+    projectPath: projectPathForSettings,
+  });
   // 应用内确认/提示弹窗（替代系统原生 confirm/message，样式与应用统一）。
   // 注意：解构必须先于所有把 confirmDialog/alertDialog 写进 useCallback
   // 依赖数组的 handler——依赖数组在渲染期求值，靠后的 const 会触发 TDZ
@@ -177,6 +202,7 @@ export function ChatPage({
   const compaction = useCompaction(activeId, supportsCompact);
   const { compacting, autoCompaction: autoCompactionPref } = compaction;
   const handleCompactSession = useCallback(async () => {
+    devLog("ipc", "手动压缩会话（compact_chat）", { session: selectedSessionRef.current });
     const sessionId = selectedSessionRef.current;
     if (!sessionId || sessionId === "new" || compacting) return;
     try {
@@ -220,13 +246,8 @@ export function ChatPage({
   // 正在重命名的任务会话；为 null 时弹窗关闭。用对象引用区分"重命名哪个任务会话"。
   const [renameTaskTarget, setRenameTaskTarget] = useState<TaskLaunchInstanceSummary | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
-  const [messageSearchStatus, setMessageSearchStatus] = useState<MessageSearchStatus>({ current: 0, total: 0 });
-  const [messageSearchNavigation, setMessageSearchNavigation] = useState<MessageSearchNavigation | null>(null);
   const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
-  const [optimisticSessions, setOptimisticSessions] = useState<Session[]>([]);
   // 三阶段任务容器（TaskPhaseContainer）状态。唯一任务界面。
   const [taskModeActive, setTaskModeActive] = useState(false);
   // 任务模式下选中的节点（步骤栏高亮 + 主区切换为该节点会话）。null = 未选节点。
@@ -235,26 +256,21 @@ export function ChatPage({
   // 加载节点会话消息需用此 agent_id 而非主会话的 activeId）。
   const [taskNodeSessionAgentId, setTaskNodeSessionAgentId] = useState<string | null>(null);
   // 任务侧边栏显隐（执行阶段的「显示/隐藏步骤栏」切换，P4c）。需求/规划阶段不显示侧边栏（P4a）。
-  const [taskSidebarHidden, setTaskSidebarHidden] = useState(false);
   const [taskLaunchOpen, setTaskLaunchOpen] = useState(false);
   const [taskLaunchReadOnly, setTaskLaunchReadOnly] = useState(false);
   const [taskLaunchPhase, setTaskLaunchPhase] = useState<TaskLaunchPhase>("requirements");
   const [activeTaskInstanceId, setActiveTaskInstanceId] = useState<string | null>(null);
   const [activeTaskRequirementFile, setActiveTaskRequirementFile] = useState<string | null>(null);
   const [selectedTaskSkillId, setSelectedTaskSkillId] = useState("jishu-conductor-dev");
-  const [taskLaunchSessions, setTaskLaunchSessions] = useState<TaskLaunchInstanceSummary[]>([]);
   // 记录上次已知 status，用于检测变化。
   const lastKnownStatusRef = useRef<string | null>(null);
   const [regularSessionsOpen, setRegularSessionsOpen] = useState(true);
-  const [pendingApprovals, setPendingApprovals] = useState<PendingChatApproval[]>([]);
-  const [pendingInteractions, setPendingInteractions] = useState<PendingChatInteraction[]>([]);
-  const [approvalResolving, setApprovalResolving] = useState(false);
 
   // v0.8.0 需求3：模型选择域拆分至 use-model-picker——候选/档位来自聚合
   // IPC（get_model_picker_options，Pi 语义解析唯一化在后端），前端解析块
   // 与三份双源（model-types 解析 / PI_THINKING_LEVELS 常量）一并消除。
   const modelPicker = useModelPicker(activeId, supportsModelPicker, () => {
-    setAccessRefreshKey(Date.now());
+    refreshAccessMode();
   });
   const { options: modelOptions, activeValue: activeModelValue } = modelPicker;
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -270,8 +286,15 @@ export function ChatPage({
   }, []);
 
   const messageAreaRef = useRef<HTMLDivElement>(null);
-  const [isUserMessageAbove, setIsUserMessageAbove] = useState(false);
+  // v0.9.1 需求5：当前阅读位置所在轮次（scroll-spy），驱动左缘横杠导航轨
+  // 高亮，替代原 isUserMessageAbove 上箭头显隐。
+  const [activeTurnIndex, setActiveTurnIndex] = useState(0);
   const isAwayFromBottomRef = useRef(false);
+  // v0.9.4 需求7 测试期修复八（补）：底部恢复贴底跟随标记——消息异步分批
+  // 渲染（缓存先上、JSONL 重载追加）与图片/markdown 撑高使一次性
+  // scrollTop=scrollHeight 偏上（底部离开回来停在倒数第 6 条）。恢复 bottom
+  // 后置 true：内容变化持续贴底；用户上翻（awayFromBottom）即刻解除。
+  const bottomFollowRef = useRef(false);
   const activeIdRef = useRef<string | null>(activeId);
   const taskLaunchOpenRef = useRef(taskLaunchOpen);
   const taskLaunchPhaseRef = useRef<TaskLaunchPhase>(taskLaunchPhase);
@@ -291,7 +314,7 @@ export function ChatPage({
   const selectedTaskSkillIdRef = useRef(selectedTaskSkillId);
   // 减法重构：节点选择不再需要跨页面桥接 ref —— TaskSidebar 与任务树同处 chat-page，
   // 统一由 taskSelectedNodeId 这一个受控状态驱动（树高亮 / 侧边栏高亮 / 主区会话）。
-  const chatInputRef = useRef<HTMLTextAreaElement>(null);
+  const chatInputRef = useRef<ChatInputHandle>(null);
   // Fresh project path for the agent-event listener (whose useEffect deps are
   // [], so it closes over a stale `currentProject`). Updated every render.
   const projectPathRef = useRef<string | null>(currentProject?.path ?? null);
@@ -302,9 +325,20 @@ export function ChatPage({
   // auto-send staged guides at turn_complete.
   const stagedApiRef = useRef<StagedGuideApi | null>(null);
   const selectedSessionRef = useRef<string | null>(null);
+  // v0.9.2 需求6：最近一次流式解析出的真实 session id（新会话从 "new" 起步时，
+  // selectedSession 要等 session_resolved 才回填；任务实例事件到达时用它匹配关联）。
+  const lastRealSessionIdRef = useRef<string | null>(null);
   const visitedSessions = useRef(new Set<string>());
-  const scrollMemory = useRef(new Map<string, number>());
+  const scrollMemory = useRef(new Map<string, number | "bottom">());
   const scrollAction = useRef<{ type: "bottom" } | { type: "restore", top: number } | null>(null);
+  // v0.9.2 测试期二次返工（任务会话滚动定位）：scrollAction 经 useLayoutEffect
+  // 消费的链路在消息异步到达 / markdown 后置撑高场景下时序脆弱（消费过早 →
+  // scrollHeight 偏小 → 停在顶部）。任务模式会话改由加载 effect 直接双 rAF
+  // 定位（等布局稳定）；taskEntryKeyRef 记录已定位的入口（sid#nodeId），同一
+  // 入口的流式重载不重复定位；taskScrollPendingRef 在消息尚未非空时保持待定，
+  // 由下一次到达的非空消息补定位。
+  const taskEntryKeyRef = useRef<string | null>(null);
+  const taskScrollPendingRef = useRef<string | null>(null);
   const sessionMessagesRef = useRef(sessionMessages);
   sessionMessagesRef.current = sessionMessages;
   const newSessionStreamIdsRef = useRef<Set<string>>(new Set());
@@ -320,9 +354,6 @@ export function ChatPage({
   const pendingReplyStartedAtRef = useRef<Map<string, number>>(new Map());
   const refetchSessionsRef = useRef<((silent?: boolean) => Promise<Session[]>) | null>(null);
   // Holds the latest handleSelectSession so the navigateToSession effect always
-  // invokes the freshest closure (current projectId/selectedSession) instead of
-  // a stale one captured when navigateToSession last changed. (K-MED-7)
-  const handleSelectSessionRef = useRef<(sessionId: string) => void>(() => {});
   /**
    * Per-session messages cache. Keyed by canonical session id (the id we
    * started the stream with) AND by resolvedId once known. While a session is
@@ -331,20 +362,30 @@ export function ChatPage({
    * been written to JSONL by the CLI but is also being rendered live by
    * `<StreamingMessage>` from the pending state.
    */
-  const sessionMessagesCacheRef = useRef<Map<string, Message[]>>(sessionMessagesCache);
   // Steered user messages queued while the agent is mid-turn. They are NOT
   // inserted into sessionMessages immediately — doing so while the first
   // turn's assistant reply is still streaming (not yet committed to
   // sessionMessages) would place them ABOVE that reply. Instead they are
   // surfaced when the steer continuation's turn completes, slotted between
   // the first reply and the steer response (matching Pi's JSONL order).
-  const pendingSteerMessagesRef = useRef<Map<string, string[]>>(new Map());
-  // Live display of steered user messages for the current session. Rendered
-  // AFTER the streaming bubble (a steer is inserted mid-output, so it must
-  // appear below the in-progress assistant reply). Each entry is removed when
-  // its turn completes and the steer is committed into sessionMessages at its
+
+  // v0.9.4 需求7 测试期修复三：停止时本地已提交标记（会话 key → 时刻）。
+  // 停止链路的时序真相：abort_chat 快速返回（不等 agent_settled）→本地
+  // onAbort 先于 TurnComplete(Aborted) 执行。若本地 drop 流，晚到的
+  // TurnComplete 被 pushTracked 拒绝，重发收口（steering 重发）永远不执行
+  //（用户实测：引导 B+停止 → B 消失）。改为：本地提交后不 drop、只设此
+  // 标记；turn_complete(Aborted) 到达时凭标记跳过重复提交，但收口照常。
+  const abortLocalCommitRef = useRef<Map<string, number>>(new Map());
+  // v0.9.4 需求7 测试期重构：steer 队列（外部单例）变更驱动占位重渲染。
+  useSyncExternalStore(steerCoordinator.subscribe, steerCoordinator.getVersion, steerCoordinator.getVersion);
+  // Live display of steered user messages, scoped per session (v0.9.2 需求4：
+  // 此前为单一全局数组，任何会话视图都会渲染其他会话的引导占位——对某个
+  // 任务节点发引导会串到所有子节点会话）。Rendered AFTER the streaming
+  // bubble (a steer is inserted mid-output, so it must appear below the
+  // in-progress assistant reply). Each entry is removed when its turn
+  // completes and the steer is committed into sessionMessages at its
   // correct position (between the prior reply and the steer's response).
-  const [pendingSteerDisplay, setPendingSteerDisplay] = useState<Message[]>([]);
+
   // M5：引导占位气泡的 pill 中文名映射（按当前会话加载）。
   const steerToolNames = useSessionToolNames(selectedSession ?? null);
   // Subscribe to streaming state for the currently-selected session. Drives
@@ -354,7 +395,7 @@ export function ChatPage({
   // 快照仅在集合成员变化时更新，流式内容增量不会引起列表重渲染。
   const streamingSessionIds = useStreamingSessionIds();
   // v0.8.0 需求4 补充：切换会话时自动收起右侧文件预览面板。
-  const { closeViewer } = useFileViewer();
+  const { openViewer, closeViewer } = useFileViewer();
   // 任务图数据：无条件持有（无 graph 时无副作用）。任务模式主区（run 流）与右侧 TaskSidebar 共享。
   const taskGraph = useTaskGraph();
   // v0.7.0：ref 镜像，供轮询回调（非 React 闭包）读 taskGraph 而不进入依赖数组。
@@ -395,60 +436,56 @@ export function ChatPage({
   // Ref mirror for use inside the mount-only stream listener closure.
   const sessionsRef = useRef<Session[] | null>(null);
   sessionsRef.current = sessions ?? null;
-  // 节点子代理会话 id 集合（常规会话列表过滤用，与 taskLaunchSessions 同节奏刷新）。
-  const [nodeSessionIds, setNodeSessionIds] = useState<string[]>([]);
-  const refreshTaskLaunchSessions = useCallback(async () => {
-    if (!projectPathForSettings) {
-      setTaskLaunchSessions([]);
-      setNodeSessionIds([]);
-      return;
-    }
-    try {
-      const [items, nodeIds] = await Promise.all([
-        invokeCommand<TaskLaunchInstanceSummary[]>(
-          "task_launch_list_sessions",
-          { projectRoot: projectPathForSettings },
-        ),
-        // 节点子代理会话 id（全局；orchestrator feature 关时命令不注册，降级为空）。
-        invokeCommand<string[]>("orchestrator_list_node_session_ids").catch(
-          () => [] as string[],
-        ),
-      ]);
-      setTaskLaunchSessions(items);
-      setNodeSessionIds(nodeIds);
 
-      // v0.7.0：检测当前任务的 active_run_id 变化（conductor 重试创建新 run）。
-      // 只在轮询回调里、且 run id 真正变化时 loadGraph，不会死循环。
-      // 注意：通过 ref 读 taskGraph，避免把它放进依赖数组（它是每次渲染的新对象，
-      // 会导致 useCallback 重建 → useEffect 重跑 → 死循环 → 界面一直加载中）。
-      const tg = taskGraphRef.current;
-      const activeInst = items.find((it) => it.task_id === activeTaskInstanceIdRef.current);
-      const newRunId = activeInst?.active_run_id ?? null;
-      if (
-        newRunId
-        && newRunId !== lastInstanceRunIdRef.current
-        && activeInst?.graph_id
-        && tg && tg.displayedRunId !== newRunId
-      ) {
-        lastInstanceRunIdRef.current = newRunId;
-        tg.loadGraph(activeInst.graph_id).catch(console.error);
+  // v0.9.4 需求6 v2：AI 会话标题生成完成信号 → 本地补丁。
+  // v0.9.4 需求7 测试期修复：去掉随后的 setListRefreshKey 全列表重拉——本地补丁
+  // 已即时更新 display_name，重拉纯冗余且非 silent（sessionsLoading 翻真引发
+  // 布局抖动，用户实测「会话完成后刷新两次」的第二次）；标题不改排序，
+  // 列表基线由下次自然加载对齐。
+  useEffect(() => {
+    return subscribeSessionSignals((signal) => {
+      if (signal.type !== "session-titled") return;
+      const cur = sessionsRef.current;
+      if (cur) {
+        setSessions(cur.map((s) => (s.id === signal.sessionId ? { ...s, display_name: signal.title } : s)));
       }
-    } catch (error) {
-      console.warn("Failed to load task launch sessions:", error);
-    }
-  }, [projectPathForSettings]);
-
-  useEffect(() => {
-    refreshTaskLaunchSessions().catch(console.error);
-  }, [refreshTaskLaunchSessions]);
-
-  useEffect(() => {
-    if (!projectPathForSettings) return;
-    const timer = window.setInterval(() => {
-      refreshTaskLaunchSessions().catch(console.error);
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [projectPathForSettings, refreshTaskLaunchSessions]);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // v0.9.0 需求7 D 域拆分：搜索状态组出界（useMessageSearch，纯移动）。
+  // 解构别名保持既有 JSX 用名不变。
+  const {
+    query: searchQuery,
+    setQuery: setSearchQuery,
+    deferredQuery: deferredSearchQuery,
+    searchResults,
+    showMessageSearchControls,
+    handleStatusChange: handleMessageSearchStatusChange,
+    navigation: messageSearchNavigation,
+    requestNavigation: requestMessageSearchNavigation,
+    total: messageSearchTotal,
+    label: messageSearchLabel,
+  } = useMessageSearch({ sessions, selectedSession });
+  // ── A5 簇①：任务实例同步钩子（装载/3s 轮询/事件刷新/快照应用） ──
+  // 状态（taskLaunchSessions/nodeSessionIds）由钩子拥有；discover 经 ref 回填
+  //（其定义依赖本钩子的列表 setter，位于下方）。
+  const discoverConductorTaskRef = useRef<(sessionId: string) => Promise<unknown>>(async () => {});
+  const { taskLaunchSessions, setTaskLaunchSessions, nodeSessionIds, applyTaskLaunchInstanceSnapshot } = useTaskInstanceSync({
+    projectPath: projectPathForSettings,
+    projectPathRef,
+    taskGraphRef,
+    activeTaskInstanceIdRef,
+    lastInstanceRunIdRef,
+    lastRealSessionIdRef,
+    discoverConductorTaskRef,
+    activeTaskResolved: useCallback((record: TaskLaunchInstanceSummary) => {
+      activeTaskRequirementFileRef.current = record.requirement_file ?? null;
+      setActiveTaskInstanceId(record.task_id);
+      setActiveTaskRequirementFile(record.requirement_file ?? null);
+      lastKnownStatusRef.current = record.status;
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []),
+  });
 
   useEffect(() => {
     refetchSessionsRef.current = refetchSessions;
@@ -467,10 +504,6 @@ export function ChatPage({
     return () => onProjectSessionsLoadingChange?.(false);
   }, [onProjectSessionsLoadingChange]);
 
-  const searchResults = useMemo<SessionSearchResult[]>(() => {
-    if (!sessions || !deferredSearchQuery.trim()) return [];
-    return searchSessions(sessions, deferredSearchQuery);
-  }, [sessions, deferredSearchQuery]);
   const taskLaunchSessionIds = useMemo(
     () => new Set(
       [
@@ -489,6 +522,49 @@ export function ChatPage({
   );
 
   // Build display session list with optimistic sessions prepended
+  // ── 需求10 收官刀②：会话选择/加载与发送链迁 use-session-selection ──
+  //（缓存优先/流式截断/滚动记忆/乐观会话/发送缓存播种/任务首条包装/通知定位；
+  //  refreshSessionUsage 定义序在钩子后，经 ref 运行时取用）。
+  const refreshSessionUsageRef = useRef<(sessionId: string) => void>(() => {});
+  const {
+    injectedLaunchSessionsRef,
+    optimisticSessions,
+    setOptimisticSessions,
+    handleSelectSession,
+    handleSelectSessionRef,
+    prepareTaskLaunchMessage,
+    handleMessageSent,
+    handleSessionResolved,
+  } = useSessionSelection({
+    projectId,
+    activeId,
+    currentProject,
+    sessions,
+    setSessionMessages,
+    sessionMessagesRef,
+    setSelectedSession,
+    selectedSessionRef,
+    messageAreaRef,
+    scrollMemory,
+    visitedSessions,
+    scrollAction,
+    newSessionStreamIdsRef,
+    setTaskModeActive,
+    setTaskLaunchOpen,
+    setTaskLaunchReadOnly,
+    taskLaunchOpenRef,
+    taskLaunchPhaseRef,
+    activeTaskInstanceIdRef,
+    activeTaskRequirementFileRef,
+    lastKnownStatusRef,
+    setActiveTaskInstanceId,
+    setActiveTaskRequirementFile,
+    setTaskSelectedNodeId,
+    setTaskNodeSessionAgentId,
+    closeViewer,
+    refreshSessionUsageRef,
+  });
+
   let displaySessions = regularSessions;
   if (deferredSearchQuery.trim() && sessions) {
     displaySessions = uniqueSessionsById(
@@ -510,8 +586,6 @@ export function ChatPage({
       .includes(query);
   });
 
-  const hasSearchQuery = searchQuery.trim().length > 0;
-  const showMessageSearchControls = hasSearchQuery && !!selectedSession && selectedSession !== "new";
   const showStartComposer = !!projectId && (!selectedSession || selectedSession === "new");
   const activeTaskLaunchInstance = useMemo(
     () => activeTaskInstanceId
@@ -526,57 +600,7 @@ export function ChatPage({
     [taskLaunchSessions],
   );
   // T7：taskLaunchPhaseStates（三阶段 tab 的 done/active/pending 派生）随 TaskPhaseNavBar 一并退役。
-  const [accessRefreshKey, setAccessRefreshKey] = useState(0);
-  const { data: projectSettings } = useInvoke<ProjectSettings>(
-    permissionModeProvider === "project_settings" && projectPathForSettings && activeId ? "load_project_settings_local" : "",
-    permissionModeProvider === "project_settings" && projectPathForSettings && activeId ? { agentId: activeId, projectPath: projectPathForSettings } : undefined,
-    accessRefreshKey,
-  );
-  // hub_tool_mode / agent_config 提供方的当前模式（project_settings 走上面的 useInvoke）
-  const [externalPermissionMode, setExternalPermissionMode] = useState<string | null>(null);
-  useEffect(() => {
-    if (permissionModeProvider !== "hub_tool_mode" && permissionModeProvider !== "agent_config") {
-      setExternalPermissionMode(null);
-      return;
-    }
-    let cancelled = false;
-    const cmd = permissionModeProvider === "hub_tool_mode" ? "get_agent_tool_mode" : "get_agent_permission_mode";
-    invokeCommand<string | null>(cmd, { agentId: activeId ?? "" })
-      .then((v) => { if (!cancelled) setExternalPermissionMode(v ?? null); })
-      .catch(() => { if (!cancelled) setExternalPermissionMode(null); });
-    return () => { cancelled = true; };
-  }, [permissionModeProvider, activeId, accessRefreshKey]);
-  const messageSearchTotal = showMessageSearchControls ? messageSearchStatus.total : 0;
-  const messageSearchLabel = messageSearchTotal > 0
-    ? `${messageSearchStatus.current}/${messageSearchTotal}`
-    : "0/0";
-
-  const requestMessageSearchNavigation = useCallback((direction: 1 | -1) => {
-    setMessageSearchNavigation((prev) => ({
-      direction,
-      nonce: (prev?.nonce ?? 0) + 1,
-    }));
-  }, []);
-
-  const handleMessageSearchStatusChange = useCallback((status: MessageSearchStatus) => {
-    setMessageSearchStatus((prev) => (
-      prev.current === status.current && prev.total === status.total ? prev : status
-    ));
-  }, []);
-
-  // Auto-clear optimistic sessions once real session appears in backend list
-  useEffect(() => {
-    if (sessions && optimisticSessions.length > 0) {
-      setOptimisticSessions(prev => prev.filter(opt => !sessions.some(s => s.id === opt.id)));
-    }
-  }, [sessions]);
-
-  useEffect(() => {
-    if (!showMessageSearchControls) {
-      setMessageSearchStatus({ current: 0, total: 0 });
-    }
-  }, [showMessageSearchControls]);
-
+  // M3：访问/权限模式域已上移 use-access-mode（permissionModes 定义处）。
   // Clear session state when project changes
   useEffect(() => {
     setSelectedSession(null);
@@ -624,48 +648,13 @@ export function ChatPage({
 
   const handleRefresh = async () => {
     const newKey = await onRefresh();
+    // v0.9.4 需求7 测试期修复（方案 B，用户裁决）：refreshKey 重拉已 silent 化
+    //（消除自动刷新场景的 loading 抖动），手动刷新在此显式非 silent 重拉——
+    // 保留 loading 转圈反馈。
+    await refetchSessions();
     setListRefreshKey(newKey);
-    setAccessRefreshKey(Date.now());
+    refreshAccessMode();
   };
-
-  const accessModeOptions = useMemo(() => {
-    const labels: Record<string, string> = {
-      default: t("sessions.accessDefault"),
-      bypassPermissions: t("sessions.accessBypass"),
-      plan: t("sessions.accessPlan"),
-      full: t("sessions.toolModeFull"),
-      "full-approve": t("sessions.toolModeFullApprove"),
-      "smart-approve": t("sessions.toolModeSmartApprove"),
-      readonly: t("sessions.toolModeReadonly"),
-      untrusted: t("sessions.approvalUntrusted"),
-      "on-failure": t("sessions.approvalOnFailure"),
-      "on-request": t("sessions.approvalOnRequest"),
-      never: t("sessions.approvalNever"),
-    };
-    const descriptions: Record<string, string> = {
-      full: t("sessions.toolModeFullDesc"),
-      "full-approve": t("sessions.toolModeFullApproveDesc"),
-      "smart-approve": t("sessions.toolModeSmartApproveDesc"),
-      readonly: t("sessions.toolModeReadonlyDesc"),
-    };
-    return permissionModes.map((value) => ({
-      value,
-      label: labels[value] ?? value,
-      description: descriptions[value],
-    }));
-  }, [permissionModes, t]);
-
-  const accessModeValue = permissionModeProvider === "project_settings"
-    ? projectSettings?.permissions?.defaultMode || "default"
-    : permissionModeProvider === "hub_tool_mode"
-      ? externalPermissionMode ?? "full"
-      : externalPermissionMode;
-  // 变更前审批档的策略链不含 Once 记忆，审批弹窗不提供「始终允许」。
-  const approvalAlwaysHidden =
-    permissionModeProvider === "hub_tool_mode" && accessModeValue === "full-approve";
-  const accessModeLabel = accessModeValue
-    ? accessModeOptions.find((option) => option.value === accessModeValue)?.label ?? accessModeValue
-    : t("sessions.accessUnset");
   // v0.8.0 需求1 A5：从当前会话末尾创建分支（capability SESSION_FORK 门控；
   // 仅 jishu-self——Pi 原生 clone RPC 复制整棵会话树并重绑进程）。后端返回
   // 分支会话 id 并把进程重挂到分支；此处以乐观条目挂载分支并切换加载历史，
@@ -708,7 +697,7 @@ export function ChatPage({
       setOptimisticSessions(prev => [forkEntry, ...prev.filter(s => s.id !== newId)]);
       // 分支历史在 Pi 侧 JSONL 已就绪，经 get_session_messages 加载（清掉可能
       // 残留的同 id 缓存，避免读到分支前的旧数据）。
-      sessionMessagesCacheRef.current.delete(newId);
+      deleteCachedSessionMessages(newId);
       await handleSelectSession(newId);
     } catch (err) {
       console.error("Failed to fork session:", err);
@@ -777,31 +766,18 @@ export function ChatPage({
   const taskModeCanSend =
     taskModeAgentReady && (capabilities?.has("TASK_MODE") ?? false);
 
-  const handleAccessModeChange = useCallback(async (value: string) => {
-    if (!supportsAccessModeSwitch || !activeId) return;
-    try {
-      if (permissionModeProvider === "project_settings") {
-        if (!projectPathForSettings) return;
-        const nextSettings: ProjectSettings = {
-          permissions: {
-            defaultMode: value === "default" ? null : value,
-            allow: projectSettings?.permissions?.allow ?? null,
-            deny: projectSettings?.permissions?.deny ?? null,
-          },
-          hooks: projectSettings?.hooks ?? null,
-          env: projectSettings?.env ?? null,
-          model: projectSettings?.model ?? null,
-        };
-        await invokeCommand("save_project_settings_local", { agentId: activeId, projectPath: projectPathForSettings, settings: nextSettings });
-      } else if (permissionModeProvider === "hub_tool_mode") {
-        await invokeCommand("set_agent_tool_mode", { agentId: activeId, mode: value });
-      } else if (permissionModeProvider === "agent_config") {
-        await invokeCommand("set_agent_permission_mode", { agentId: activeId, mode: value });
-      }
-    } finally {
-      setAccessRefreshKey(Date.now());
-    }
-  }, [activeId, permissionModeProvider, projectPathForSettings, projectSettings, supportsAccessModeSwitch]);
+  // v0.9.3 需求13 C4-slice2c：pipeline 插件「作为任务启动」——App 层已切
+  // jishu agent 并翻回会话页；此处按 key 预填 /jishu-pipeline 启动命令
+  // （追加式回填，用户补目标后发送；重复 key 不重复回填）。
+  const pipelineLaunchRef = useRef(0);
+  useEffect(() => {
+    if (!pipelineLaunch || pipelineLaunch.key === pipelineLaunchRef.current) return;
+    pipelineLaunchRef.current = pipelineLaunch.key;
+    if (activeId !== "jishu-self") setChatAgent("jishu-self");
+    chatInputRef.current?.restoreTexts([`/jishu-pipeline ${pipelineLaunch.pluginId} `]);
+  }, [pipelineLaunch, activeId, setChatAgent]);
+
+  // M3：handleAccessModeChange 已迁 use-access-mode（上方解构）。
 
   useEffect(() => {
     if (!taskLaunchOpen || agents.length === 0) return;
@@ -821,123 +797,139 @@ export function ChatPage({
     }
   }, [activeId, agents.length, setChatAgent, taskLaunchOpen, taskModeAgentReady, taskEngineAgent]);
 
-  const handleWorkModeChange = useCallback(async (value: string) => {
-    const nextIsTask = value === "task";
-    // 方式2：进入任务模式时若当前 agent 不支持任务模式（无 TASK_MODE 能力位），
-    // 弹窗确认后自动切到内建引擎 agent（v0.7.4 需求3 M2：去 agentId 写死）。
-    const engineId = taskEngineAgent?.id ?? "";
-    const needEngineSwitch = engineId !== "" && activeId !== engineId;
-    if (nextIsTask && needEngineSwitch) {
-      if (!taskModeAgentReady) {
-        await alertDialog({
-          title: "无法进入任务模式",
-          description: "任务模式需要先安装 Jishu Agent。请到环境检测页面完成安装后再发起任务。",
-        });
-        return;
-      }
-      const engineName = taskEngineAgent?.display_name ?? "Jishu Agent";
-      const confirmed = await confirmDialog({
-        title: `切换到 ${engineName}`,
-        description: `任务模式由 ${engineName} 提供。将切换到 ${engineName} 并进入任务模式，是否继续？`,
-        confirmText: "切换并继续",
-        cancelText: "取消",
-      });
-      if (!confirmed) return;
-      // 标记本次切换是为进入任务模式，阻止 activeId 变化时的清理 effect 重置任务模式
-      enteringTaskModeRef.current = true;
-    }
-    setTaskModeActive(false);
-    setTaskLaunchOpen(nextIsTask);
-    setTaskLaunchReadOnly(false);
-    setTaskLaunchPhase("requirements");
-    setActiveTaskInstanceId(null);
-    setActiveTaskRequirementFile(null);
-    taskLaunchOpenRef.current = nextIsTask;
-    taskLaunchPhaseRef.current = "requirements";
-    activeTaskInstanceIdRef.current = null;
-    activeTaskRequirementFileRef.current = null;
-    lastKnownStatusRef.current = null;
-    setSelectedSession("new");
-    selectedSessionRef.current = "new";
-    setSessionMessages([]);
-    setPendingSteerDisplay([]);
-    // v0.7.0：确认切换后主动切到引擎 agent（会话作用域；enteringTaskModeRef 已置，清理 effect 会跳过任务模式重置）
-    if (nextIsTask && needEngineSwitch) {
-      setChatAgent(engineId);
-    }
-    requestAnimationFrame(() => {
-      chatInputRef.current?.focus();
-    });
-  }, [activeId, taskModeAgentReady, setChatAgent, taskEngineAgent]);
-
-  // 记录哪些 session 已经注入过 launch instruction（只在每个阶段的首条消息注入一次，
-  // 后续消息复用 agent 进程上下文，不重复下达阶段指令，避免 agent 误以为每轮都是新阶段开始）。
-  const injectedLaunchSessionsRef = useRef<Set<string>>(new Set());
-
-  const prepareTaskLaunchMessage = useCallback((message: string) => {
-    if (!taskLaunchOpen) return message;
-    // 判断当前 session 是否已经激活过 conductor。
-    // selectedSession 为 null 或 "new" 时是首条消息，需要激活 conductor；
-    // 已有 session id 时，检查是否在已激活集合里。
-    const currentSession = selectedSessionRef.current;
-    const isFirstMessage = !currentSession || currentSession === "new";
-    const alreadyInjected = currentSession
-      ? injectedLaunchSessionsRef.current.has(currentSession)
-      : false;
-    if (!isFirstMessage && alreadyInjected) {
-      // 后续消息：conductor 已接管，原样透传（agent 进程已有上下文）。
-      return message;
-    }
-    // 标记当前 session 已激活（pending id 和后续 real id 都标记）。
-    if (currentSession && currentSession !== "new") {
-      injectedLaunchSessionsRef.current.add(currentSession);
-    }
-    // 首条消息：以 /jishu-task 命令激活 conductor 扩展，由其驱动 discuss→plan→execute。
-    // domain 默认 dev（Batch 4 增加 research 后可由 UI 选择）。
-    return `/jishu-task dev ${message}`;
-  }, [taskLaunchOpen]);
-
   useLayoutEffect(() => {
     if (!scrollAction.current || !messageAreaRef.current) return;
+    // v0.9.2 测试期修复：消息未加载时消费滚动指令 → scrollHeight=0 → 定位到
+    // 顶部而非底部。等待 sessionMessages 非空后再执行（restore 同理，空消息
+    // 时恢复无意义）。消息流式追加（非切换）不受影响（追加时 action 已消费）。
+    if (sessionMessages.length === 0) return;
     const action = scrollAction.current;
     scrollAction.current = null;
+    bottomFollowRef.current = action.type === "bottom";
+    devLog("session", "scrollAction 消费", { type: action.type, top: action.type === "restore" ? action.top : undefined });
     if (action.type === "bottom") {
       messageAreaRef.current.scrollTop = messageAreaRef.current.scrollHeight;
     } else {
-      messageAreaRef.current.scrollTop = action.top;
+      const el = messageAreaRef.current;
+      el.scrollTop = action.top;
+      // v0.9.4 性能优化配套（渲染窗口化）：restore 的绝对像素基于全量渲染
+      // 时代的高度，窗口化后 scrollHeight 偏小会被 clamp 到底——检测到
+      // clamp 即 bump expandSignal 扩全窗，下一帧重设原位置。
+      const maxTop = el.scrollHeight - el.clientHeight;
+      if (action.top > maxTop + 50) {
+        setMessageExpandSignal((n) => n + 1);
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            const el2 = messageAreaRef.current;
+            if (el2) el2.scrollTop = Math.min(action.top, el2.scrollHeight - el2.clientHeight);
+          });
+        });
+      }
     }
   }, [sessionMessages]);
+
+  // v0.9.4 需求7 测试期修复八（补）：底部恢复的贴底跟随——内容异步到达
+  //（JSONL 重载追加/流式继续/图片与 markdown 撑高/懒加载）期间持续贴底。
+  // 短轮询（200ms × 10s）覆盖一切高度变化来源（length 依赖盖不住纯撑高）；
+  // 用户上翻即刻解除（onScroll 置 bottomFollowRef=false），超时自动停。
+  // turn-rail 高亮被动跟随滚动事件，滚动位置修准后其自准。
+  useEffect(() => {
+    if (!bottomFollowRef.current) return;
+    const start = Date.now();
+    const timer = window.setInterval(() => {
+      if (!bottomFollowRef.current || isAwayFromBottomRef.current || Date.now() - start > 10_000) {
+        window.clearInterval(timer);
+        return;
+      }
+      const el = messageAreaRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 200);
+    return () => window.clearInterval(timer);
+  }, [selectedSession]);
+
+  // v0.9.1 需求5：轮次摘要（每轮用户问题 + agent 前几句回答）——横杠导航轨
+  // 的数据源；划分语义与 MessageView user 行对齐（详见 turn-rail.tsx）。
+  const turnSummaries = useMemo(() => buildTurnSummaries(sessionMessages), [sessionMessages]);
 
   // Track whether user has scrolled away from the bottom
   useEffect(() => {
     const el = messageAreaRef.current;
     if (!el) return;
+    // v0.9.4 性能优化：滚动事件 rAF 节流——activeTurn 计算对全部消息 DOM 做
+    // querySelectorAll 遍历，长会话每次滚动事件全遍历是滚动卡顿主因之一。
+    let scrollTicking = false;
     const onScroll = () => {
-      const awayFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight > 100;
+      if (scrollTicking) return;
+      scrollTicking = true;
+      requestAnimationFrame(() => {
+        scrollTicking = false;
+        onScrollWork();
+      });
+    };
+    const onScrollWork = () => {
+      const el2 = messageAreaRef.current;
+      if (!el2) return;
+      const awayFromBottom = el2.scrollHeight - el2.scrollTop - el2.clientHeight > 100;
       isAwayFromBottomRef.current = awayFromBottom;
       setIsAwayFromBottom(awayFromBottom);
-      const containerTop = el.getBoundingClientRect().top;
-      const hasUserMessageAbove = Array.from(
-        el.querySelectorAll<HTMLElement>('[data-user-message="true"]'),
-      ).some((message) => message.getBoundingClientRect().top < containerTop - 1);
-      setIsUserMessageAbove(hasUserMessageAbove);
+      // 底部恢复贴底跟随解除：用户明确上翻即停（程序性贴底不触发本条件）。
+      if (awayFromBottom && bottomFollowRef.current) {
+        devLog("session", "贴底跟随解除（用户上翻）", {});
+      }
+      if (awayFromBottom) bottomFollowRef.current = false;
+      // 活动轮次 = 视口顶及以上最后一条用户消息的轮次（视口在第一轮内则
+      // 为 0）。边界含容差 +1px：跳转顶对齐后目标行 top == 容器顶（平滑
+      // 滚动还可能落在亚像素偏移上），严格“高于视口顶”会把边界行漏成
+      // 上一轮（用户实测：定位到 A 高亮停在 A-1）。作用域限定主会话列表
+      // （data-turn-scope="main"）：任务执行投影消息、流式气泡与追问占位
+      // 都不参与计数，保证与横杠列表同序。
+      const containerTop = el2.getBoundingClientRect().top;
+      let active = 0;
+      el2.querySelectorAll<HTMLElement>('[data-turn-scope="main"] [data-turn-index]').forEach((message) => {
+        if (message.getBoundingClientRect().top < containerTop + 1) {
+          const idx = Number(message.dataset.turnIndex);
+          if (!Number.isNaN(idx)) active = Math.max(active, idx);
+        }
+      });
+      setActiveTurnIndex(active);
     };
     onScroll();
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
   }, [selectedSession, sessionMessages]);
 
-  const handleScrollToPreviousUserMessage = useCallback(() => {
+  // v0.9.1 需求5：横杠导航跳转——滚动到第 index 轮的用户消息行（顶对齐
+  // 视口顶，与原上箭头跳转同语义）；先即时点亮该轮，滚动侦测随后接管。
+  // v0.9.4 性能优化（渲染窗口化配套）：跳转目标在窗口外（DOM 不存在）→
+  // bump expandSignal 让 MessageView 扩至全窗，下一帧重试定位。
+  const [messageExpandSignal, setMessageExpandSignal] = useState(0);
+  const handleJumpToTurn = useCallback((index: number) => {
     const el = messageAreaRef.current;
     if (!el) return;
-    const containerTop = el.getBoundingClientRect().top;
-    const previousMessages = Array.from(
-      el.querySelectorAll<HTMLElement>('[data-user-message="true"]'),
-    ).filter((message) => message.getBoundingClientRect().top < containerTop - 1);
-    const target = previousMessages[previousMessages.length - 1];
-    if (!target) return;
-    const top = el.scrollTop + target.getBoundingClientRect().top - containerTop;
-    el.scrollTo({ top, behavior: "smooth" });
+    setActiveTurnIndex(index);
+    const findTarget = () => Array.from(
+      el.querySelectorAll<HTMLElement>('[data-turn-scope="main"] [data-turn-index]'),
+    ).find((message) => Number(message.dataset.turnIndex) === index);
+    // v0.9.4 需求7 测试期修复（用户裁决）：目标轮次的用户问题顶对齐视口；
+    // 若其后内容不足以撑满视口（clamp 会让目标停在半空），则滚到最底部。
+    const scrollTargetToTop = (t: HTMLElement) => {
+      const containerTop = el.getBoundingClientRect().top;
+      const desired = el.scrollTop + t.getBoundingClientRect().top - containerTop;
+      const maxTop = el.scrollHeight - el.clientHeight;
+      el.scrollTo({ top: Math.min(desired, maxTop), behavior: "smooth" });
+    };
+    let target = findTarget();
+    if (!target) {
+      setMessageExpandSignal((n) => n + 1);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const t = findTarget();
+          if (t) scrollTargetToTop(t);
+        });
+      });
+      return;
+    }
+    scrollTargetToTop(target);
   }, []);
 
   const handleScrollToBottom = useCallback(() => {
@@ -945,86 +937,6 @@ export function ChatPage({
       messageAreaRef.current.scrollTo({ top: messageAreaRef.current.scrollHeight, behavior: "smooth" });
     }
   }, []);
-
-  const handleSelectSession = async (sessionId: string) => {
-    setTaskModeActive(false);
-    setTaskLaunchOpen(false);
-    setTaskLaunchReadOnly(false);
-    taskLaunchOpenRef.current = false;
-    if (sessionId === selectedSession || !projectId) return;
-
-    // v0.8.0 需求4 补充：切换会话自动收起右侧预览——预览的文件属于上一会话
-    // 上下文，跨会话保留易误导。同会话重复点击已被上方守卫拦截。
-    closeViewer();
-
-    if (selectedSession && messageAreaRef.current) {
-      scrollMemory.current.set(selectedSession, messageAreaRef.current.scrollTop);
-    }
-    const isFirstVisit = !visitedSessions.current.has(sessionId);
-    setSelectedSession(sessionId);
-    selectedSessionRef.current = sessionId;
-    // Live steer placeholders belong to the previous session; drop them so
-    // they don't render under a different conversation. Any still-pending
-    // steer is committed into its own session's cache at turn_complete.
-    setPendingSteerDisplay([]);
-
-    // While a session is streaming we keep its message snapshot in
-    // `sessionMessagesCacheRef` and *do not* reload from JSONL — otherwise the
-    // user message that the CLI has already flushed to disk would appear twice
-    // (once from the JSONL, once from the live `<StreamingMessage>` bubble).
-    // Also trust the cache after streaming ends (turn_complete populates it
-    // with committed messages including interaction blocks), to avoid losing
-    // interaction cards when the user navigates between sessions.
-    const cached = sessionMessagesCacheRef.current.get(sessionId);
-    if (cached) {
-      setSessionMessages(cached);
-    } else {
-      try {
-        const messages = await invokeCommand<Message[]>("get_session_messages", {
-          agentId: activeId ?? "",
-          sessionId,
-          encodedName: projectId,
-        });
-        let visibleMessages = stripTaskLaunchInstructionFromMessages(messages);
-        // v0.8.0 需求7：缓存缺失但该会话正在流式输出（本应用生命周期内首次
-        // 打开的后台流式会话）——CLI 已把当前回合的用户消息落盘，直接渲染会
-        // 与流式气泡的 pendingUserMessage 各出现一次。从最后一条与回合
-        // prompt 相同的 user 消息处截断：其后是本回合的 steer 与增量回复，
-        // 均由流式气泡负责渲染。文本精确匹配，不匹配（CLI 改写 prompt 等）
-        // 时退回原样渲染。
-        const pending = streamStore.getState(sessionId)?.pendingUserMessage ?? null;
-        if (streamStore.isStreaming(sessionId) && pending != null) {
-          for (let i = visibleMessages.length - 1; i >= 0; i--) {
-            const m = visibleMessages[i];
-            if (m.role !== "user") continue;
-            const text = m.content.find((c) => c.type === "text")?.text ?? null;
-            if (text === pending) {
-              visibleMessages = visibleMessages.slice(0, i);
-              break;
-            }
-          }
-        }
-        sessionMessagesCacheRef.current.set(sessionId, visibleMessages);
-        setSessionMessages(visibleMessages);
-      } catch {
-        setSessionMessages([]);
-      }
-    }
-
-    // 会话打开即拉取权威用量（含重启后的历史累计）。
-    refreshSessionUsage(sessionId);
-
-    if (isFirstVisit) {
-      scrollAction.current = { type: "bottom" };
-      visitedSessions.current.add(sessionId);
-    } else {
-      const saved = scrollMemory.current.get(sessionId);
-      scrollAction.current = saved !== undefined
-        ? { type: "restore", top: saved }
-        : { type: "bottom" };
-    }
-  };
-  handleSelectSessionRef.current = handleSelectSession;
 
   // v0.8.0 需求10：从 Hub SQLite（get_session_usage）拉取会话累计用量写入
   // 前端缓存。回合结束与会话打开两个时机调用；失败静默（保留旧缓存）。
@@ -1069,6 +981,7 @@ export function ChatPage({
       })
       .catch(() => {});
   };
+  refreshSessionUsageRef.current = refreshSessionUsage;
 
   // v0.8.0 需求7：重挂载对账。agent-event 监听随组件卸载移除，卸载期间
   // 结束的回合收不到 turn_complete，streamStore 会永远停在 isStreaming
@@ -1084,7 +997,7 @@ export function ChatPage({
         .then((active) => {
           if (cancelled || active) return;
           streamStore.drop(sid);
-          sessionMessagesCacheRef.current.delete(sid);
+          deleteCachedSessionMessages(sid);
           if (selectedSessionRef.current === sid) {
             handleSelectSessionRef.current(sid);
           }
@@ -1127,49 +1040,146 @@ export function ChatPage({
   // T8-P1 修正：任务模式下所有 selectedSession 变更（进入任务、切换阶段、切换节点会话）
   // 都要加载对应会话消息。openTaskPhaseWorkspace / handleTaskSelectNode 直接 setSelectedSession，
   // 不走 handleSelectSession，因此需要此自动加载兜底，否则主区只显示执行段而看不到需求/规划内容。
+  // v0.9.2 测试期二次返工：
+  // ① 滚动定位——主任务会话此前完全没有定位（scrollAction 块限定 taskSelectedNodeId，
+  //   且 cached 命中时提前 return 根本走不到）；节点会话走 scrollAction/useLayoutEffect
+  //   消费链，消息异步到达 + markdown 后置撑高时序下不可靠。改为本 effect 在消息
+  //   到达后双 rAF 直接定位（等布局稳定），首访到底部、重访恢复上次离开位置
+  //   （cleanup 落盘 scrollMemory——任务会话不经 handleSelectSession，此前从未保存）。
+  // ② 节点会话空载重试——进入早于派发 prompt 落盘时 JSONL 读空，有限重试拉齐，
+  //   避免「空白很久才整段出现」；流式首条文本到达（streamStarted）再触发一次
+  //   重载（布尔依赖，避免逐 delta 重载刷 IPC）。
+  const streamStarted = (currentStream?.text?.length ?? 0) > 0;
   useEffect(() => {
-    if (!taskModeActive || !selectedSession || selectedSession === "new" || !projectId) return;
-    if (streamStore.hasState(selectedSession)) return;
+    if (!taskModeActive || !selectedSession || selectedSession === "new" || !projectId) {
+      // 离开任务模式后复位入口标记：下次进入同一任务会话仍算新入口（需定位）。
+      if (!taskModeActive) {
+        taskEntryKeyRef.current = null;
+        taskScrollPendingRef.current = null;
+      }
+      return;
+    }
+    if (selectedSession === "pending-node") return;
+    // v0.9.2 测试期修复（节点会话流式期间无历史）：此前 stream 有状态即整体跳过
+    // 加载——节点会话运行中打开时只剩流式气泡，派发指令（早已落盘 JSONL）与
+    // 历史全部不可见，回合结束才整段出现。改为照常加载；仅当该会话走"普通
+    // 发送路径"（流式态含 pendingUserMessage，用户消息会由流式气泡渲染）时，
+    // 截断本轮回合消息防重复——节点会话派发 prompt 走 spawn 参数、气泡无
+    // 用户消息，无需截断，历史与气泡恰好互补。
+    const truncateStreamingTurn = (messages: Message[]): Message[] => {
+      const pending = streamStore.getState(selectedSession)?.pendingUserMessage ?? null;
+      if (!streamStore.isStreaming(selectedSession) || pending == null) return messages;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role !== "user") continue;
+        const text = m.content.find((c) => c.type === "text")?.text ?? null;
+        if (text === pending) return messages.slice(0, i);
+      }
+      return messages;
+    };
 
-    const cached = sessionMessagesCacheRef.current.get(selectedSession);
+    // 入口定位：entry key 变化 = 新入口（进入任务/切节点/切回主会话）。
+    const entryKey = `${selectedSession}#${taskSelectedNodeId ?? "main"}`;
+    const isNewEntry = taskEntryKeyRef.current !== entryKey;
+    if (isNewEntry) {
+      taskEntryKeyRef.current = entryKey;
+      taskScrollPendingRef.current = entryKey;
+    }
+    const positionIfPending = () => {
+      if (taskScrollPendingRef.current !== entryKey) return;
+      taskScrollPendingRef.current = null;
+      const saved = scrollMemory.current.get(selectedSession);
+      // 双 rAF：等消息列表完成布局（markdown 撑高等）再定位，否则 scrollHeight
+      // 偏小、定位停在半截（与 T8-P9 执行段自动滚底同一手法）。
+      // v0.9.4 需求7 测试期修复八："bottom" 语义（底部离开）滚到最新底——
+      // 离开后内容继续增长（后台回复），绝对像素恢复会落在中间旧消息。
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const el = messageAreaRef.current;
+          if (!el) return;
+          if (saved === "bottom" || saved === undefined) {
+            el.scrollTop = el.scrollHeight;
+          } else {
+            el.scrollTop = Math.max(0, Math.min(saved, el.scrollHeight - el.clientHeight));
+          }
+        });
+      });
+    };
+
+    const cached = getCachedSessionMessages(selectedSession);
     // 节点会话可能在离开期间继续跑（后台节点的事件不进本视图），缓存往往是上次进入时的
     // 半截快照。因此进入节点会话时先渲染缓存避免闪空，再重读一次取最新基线；此后的增量
     // 由 agent-event 流式接续——与常规会话「进入读一次 + 事件流」完全同一套机制。
     const isNodeSession = !!taskSelectedNodeId;
     if (cached) {
       setSessionMessages(cached);
+      if (cached.length > 0) positionIfPending();
       if (!isNodeSession) return;
     }
 
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     // v0.7.0 需求二-问题3：节点会话用节点 attempt 绑定的 agent_id 加载消息
     // （节点子代理可能是 claude-code/codex 等非 jishu-self，消息存在各自 session 存储）。
     const nodeAgentId = isNodeSession ? (taskNodeSessionAgentId ?? activeId ?? "") : (activeId ?? "");
-    invokeCommand<Message[]>("get_session_messages", {
-      agentId: nodeAgentId,
-      sessionId: selectedSession,
-      encodedName: projectId,
-    })
-      .then((messages) => {
-        if (cancelled) return;
-        const visibleMessages = stripTaskLaunchInstructionFromMessages(messages);
-        sessionMessagesCacheRef.current.set(selectedSession, visibleMessages);
-        setSessionMessages(visibleMessages);
+    const load = (attempt: number) => {
+      invokeCommand<Message[]>("get_session_messages", {
+        agentId: nodeAgentId,
+        sessionId: selectedSession,
+        encodedName: projectId,
       })
-      .catch(() => {
-        if (!cancelled && !cached) setSessionMessages([]);
-      });
+        .then((messages) => {
+          if (cancelled) return;
+          const visibleMessages = truncateStreamingTurn(
+            stripTaskLaunchInstructionFromMessages(messages),
+          );
+          setCachedSessionMessages(selectedSession, visibleMessages);
+          setSessionMessages(visibleMessages);
+          if (visibleMessages.length > 0) {
+            positionIfPending();
+            return;
+          }
+          // 节点会话进入早于派发 prompt 落盘：JSONL 读空时有限重试（1.5s × 3），
+          // 之后由 streamStarted（首条流式文本）触发重载兜底。
+          if (isNodeSession && attempt < 3) {
+            retryTimer = setTimeout(() => load(attempt + 1), 1500);
+          }
+        })
+        .catch(() => {
+          if (!cancelled && !cached) setSessionMessages([]);
+        });
+    };
+    load(0);
 
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      // 离开该任务会话时记录滚动位置——任务会话不经 handleSelectSession，
+      // 此前从未保存 scrollMemory，「按上次离开位置进入」无从谈起。
+      // 占位/空消息不落盘（避免把 0 写进记忆，下次进入被拉回顶部）。
+      // 读 sessionMessagesRef（每渲染同步）：cleanup 闭包里的 state 是入口
+      // 时的快照，异步加载完成后并不更新。
+      if (
+        selectedSession !== "pending-node" &&
+        selectedSession !== "new" &&
+        messageAreaRef.current &&
+        sessionMessagesRef.current.length > 0
+      ) {
+        scrollMemory.current.set(selectedSession, messageAreaRef.current.scrollTop);
+      }
     };
-  }, [taskModeActive, selectedSession, projectId, taskSelectedNodeId, taskNodeSessionAgentId, activeId]);
+  }, [taskModeActive, selectedSession, projectId, taskSelectedNodeId, taskNodeSessionAgentId, activeId, streamStarted]);
 
   const handleNewSession = async () => {
     if (!projectId) return;
 
     // v0.8.0 需求4 补充：新建会话同样视为切换，收起右侧预览。
     closeViewer();
+    // v0.9.3 测试期修复22：同时显式收起会话侧栏（产物中心等 sidebar-panel
+    // 形态）——用户实测 A 会话 HTML 预览后点「新对话」，右半空白占位
+    //（openId 未清；插件自治收起链在组件测试中为绿，实机仍复现，改为
+    // 壳层确定性收起，与 closeViewer 同语义）。
+    closeSessionSidebar();
 
     setTaskModeActive(false);
     setTaskLaunchOpen(false);
@@ -1180,36 +1190,18 @@ export function ChatPage({
     lastKnownStatusRef.current = null;
     setActiveTaskInstanceId(null);
     setActiveTaskRequirementFile(null);
+    closeSessionSidebar();
     setSelectedSession("new");
     selectedSessionRef.current = "new";
     setSessionMessages([]);
-    setPendingSteerDisplay([]);
 
     requestAnimationFrame(() => {
       chatInputRef.current?.focus();
     });
   };
 
-  const handleOpenTaskConversation = useCallback(() => {
-    setTaskModeActive(false);
-    setTaskLaunchOpen(true);
-    setTaskLaunchReadOnly(false);
-    setTaskLaunchPhase("requirements");
-    setActiveTaskInstanceId(null);
-    setActiveTaskRequirementFile(null);
-    taskLaunchOpenRef.current = true;
-    taskLaunchPhaseRef.current = "requirements";
-    activeTaskInstanceIdRef.current = null;
-    activeTaskRequirementFileRef.current = null;
-    lastKnownStatusRef.current = null;
-    setSelectedSession("new");
-    selectedSessionRef.current = "new";
-    setSessionMessages([]);
-    setPendingSteerDisplay([]);
-    requestAnimationFrame(() => {
-      chatInputRef.current?.focus();
-    });
-  }, []);
+  // A5 簇②：handleOpenTaskConversation 已迁 use-task-session-routing（下方解构；
+  // 本处之前的闭包引用（handleSlashCommand）按运行时取值，无 TDZ）。
 
   const handleResumeSession = async (sessionId: string) => {
     setLoadingSessionId(sessionId);
@@ -1300,7 +1292,7 @@ export function ChatPage({
         new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, 400 - (Date.now() - startedAt)))),
       ]);
       const visibleMessages = stripTaskLaunchInstructionFromMessages(msgs);
-      sessionMessagesCacheRef.current.set(sessionId, visibleMessages);
+      setCachedSessionMessages(sessionId, visibleMessages);
       if (selectedSessionRef.current === sessionId) {
         setSessionMessages(visibleMessages);
       }
@@ -1325,76 +1317,7 @@ export function ChatPage({
     openFloatingSession(sessionId, name, activeId || "", currentProject?.encoded_name || "", active?.display_name);
   }, [sessionNames, sessions, activeId, active, currentProject]);
 
-  const applyTaskLaunchInstanceSnapshot = useCallback((record: TaskLaunchInstanceSummary) => {
-    const isCurrentTask = !activeTaskInstanceIdRef.current
-      || activeTaskInstanceIdRef.current === record.task_id;
-
-    logTaskPhaseDebug("snapshot:received", {
-      taskId: record.task_id,
-      isCurrentTask,
-      status: record.status,
-      currentPhase: record.current_phase,
-    });
-
-    if (isCurrentTask) {
-      activeTaskInstanceIdRef.current = record.task_id;
-      activeTaskRequirementFileRef.current = record.requirement_file ?? null;
-      setActiveTaskInstanceId(record.task_id);
-      setActiveTaskRequirementFile(record.requirement_file ?? null);
-      lastKnownStatusRef.current = record.status;
-    }
-
-    setTaskLaunchSessions((current) => {
-      const rest = current.filter((item) => item.task_id !== record.task_id);
-      return [record, ...rest];
-    });
-  }, []);
-
-  const handleMessageSent = useCallback((sid: string, msg: string) => {
-    // For new sessions, register a stream entry here. For existing sessions,
-    // chat-input.tsx already called streamStore.start() before invoking
-    // send_message, so we skip to avoid resetting accumulated chunks.
-    if (!streamStore.hasState(sid)) {
-      streamStore.start(sid, msg);
-    }
-
-    const isNewSessionSend = !selectedSession || selectedSession === "new";
-    if (isNewSessionSend) {
-      newSessionStreamIdsRef.current.add(sid);
-      // Task-mode sessions are tracked by the task instance list, not the
-      // regular optimistic sessions list. Adding them here would make a
-      // duplicate "new session" entry appear in the regular sidebar until the
-      // real session id resolves and the task filter catches up. Skip the
-      // optimistic entry for task mode; the task sidebar already shows it.
-      if (!taskLaunchOpenRef.current) {
-        const newOptSession: Session = {
-          id: sid,
-          path: currentProject?.path || "",
-          messages: [],
-          display_name: t("sessions.newChat") || "新对话",
-          started_at: new Date().toISOString(),
-          last_active: new Date().toISOString(),
-        };
-        setOptimisticSessions(prev => [newOptSession, ...prev]);
-      }
-      setSelectedSession(sid);
-      selectedSessionRef.current = sid;
-      // Seed the cache for this brand-new session with whatever the user is
-      // currently looking at (an empty list for a fresh session).
-      sessionMessagesCacheRef.current.set(sid, []);
-      setSessionMessages([]);
-    } else {
-      // Existing session: snapshot the currently displayed messages so we can
-      // append the assistant turn on completion without re-reading JSONL.
-      sessionMessagesCacheRef.current.set(sid, sessionMessagesRef.current);
-    }
-
-    requestAnimationFrame(() => {
-      if (messageAreaRef.current) {
-        messageAreaRef.current.scrollTop = messageAreaRef.current.scrollHeight;
-      }
-    });
-  }, [selectedSession, currentProject?.path, t]);
+  // A5 簇①：applyTaskLaunchInstanceSnapshot 已迁 use-task-instance-sync（上方解构）。
 
   // conductor 驱动的任务发现：首条消息激活 conductor 后，conductor 异步创建 TaskInstance（写入 requirement_session_id）。
   // 轮询任务列表按 requirement_session_id 匹配到该任务后，打开三阶段工作台（此处不标记 launch 会话，避免重复建任务；标记由流式 chunk 处理按需触发，见 task_launch_mark_session 内联调用）。
@@ -1437,127 +1360,585 @@ export function ChatPage({
     }
     logTaskPhaseDebug("conductor-task:not-found", { sessionId });
   }, []);
+  // A5 簇①：同步钩子的事件关联经此 ref 取发现函数（定义序在钩子之后，运行时回填）。
+  discoverConductorTaskRef.current = discoverConductorTask;
 
-  const handleSessionResolved = useCallback((_pendingSessionId: string, realSessionId: string) => {
-    if (!taskLaunchOpenRef.current) {
-      logTaskPhaseDebug("session-resolved:ignored", {
-        sessionId: realSessionId,
-        taskLaunchOpen: taskLaunchOpenRef.current,
-      });
-      return;
-    }
-    // realSessionId 来自 send_message 的同步返回值，新 session 时仍为 pending（Pi 真 id 由
-    // session_resolved 流式事件异步送达）。任务关联改在 stream listener 收到 session_resolved
-    // 时用真 id 触发 discoverConductorTask，不在此用 pending 触发（必 not-found）。
-    logTaskPhaseDebug("session-resolved", {
-      taskId: activeTaskInstanceIdRef.current,
-      sessionId: realSessionId,
-      phase: taskLaunchPhaseRef.current,
+  // v0.9.2 测试期修复：离开会话页（切管理页等，chat-page 卸载）时收起会话
+  // 侧栏。面板本体由 chat-page 承载随卸载消失，但顶开 margin 在 app 层
+  //（ViewerPushRow 读 session-sidebar 壳层状态）——不收起则管理页布局被
+  // 压去一半、原侧栏位置空白（用户实测）。会话侧栏是会话区语义，随宿主
+  // 页面生命周期收起，不做跨页面残留。
+  useEffect(() => () => closeSessionSidebar(), []);
+
+  // v0.9.2 测试期（插件机制）：agent 工具事件 → 内核信号管线。preview_html
+  // 等工具经 hub_invoke 校验后广播 session-plugin-preview；内核转发为
+  // file-preview-request 信号（严格走信号总线），插件（产物中心）经
+  // event-hook 消费并自行决定拉起面板——内核不感知具体插件。
+  useEffect(() => {
+    const unlisten = listen<{ file?: string; url?: string; session_id?: string }>("session-plugin-preview", (event) => {
+      // v0.9.3 测试期：url 模式（前端 dev server 预览，如 http://localhost:5173）
+      // 优先于 file——产物中心按 http 前缀分流为 iframe 直连。
+      const target = event.payload?.url ?? event.payload?.file;
+      if (typeof target === "string" && target) {
+        emitSessionSignal({
+          type: "file-preview-request",
+          file: target,
+          sessionId: event.payload?.session_id ?? undefined,
+        });
+      }
     });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
   }, []);
+
+  // A5 簇①：task-instance-changed 监听已迁 use-task-instance-sync。
 
   // T7：openTaskChatPhase（需求/规划走旧 chat 路径）已随三阶段形态退役——
   // 所有阶段统一由 openTaskPhaseWorkspace 进入「会话页 + 任务侧边栏」形态。
+  // A5 簇②：openTaskPhaseWorkspace / handleTaskSelectNode / handleTaskNodeSessionChange
+  // 已迁 use-task-session-routing（下方解构）。
 
-  const openTaskPhaseWorkspace = useCallback((
-    taskSession: TaskLaunchInstanceSummary,
-    phase: TaskPhase,
-    readOnly = false,
-  ) => {
-    // 短路：已是同一任务同一阶段（且非只读切换），避免重复清空 selectedNodeId 引起
-    // 节点会话闪烁/竞态（v0.7.0 需求二-问题2：节点选中后再次点击变任务选中效果）。
+  // v0.9.2 需求2 M3-5：节点会话机制自 TaskSidebar 移植（侧栏退役）——
+  // 选中节点变化时查其 attempt 会话并回填主区；run 状态回写任务实例。
+  const taskInstanceState = useTaskInstance({
+    projectRoot: currentProject?.path ?? "",
+    initialTaskId: activeTaskLaunchInstance?.task_id ?? null,
+  });
+  useEffect(() => {
+    if (activeTaskLaunchInstance?.task_id) {
+      taskInstanceState.openTask(activeTaskLaunchInstance.task_id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTaskLaunchInstance?.task_id]);
+
+  // v0.9.2 测试期修复（M3-5 侧栏退役时漏移植）：进入执行阶段时加载任务图——
+  // 原 TaskSidebar 的职责；缺失时 snapshot 恒空，方案卡/全景/子任务卡全部
+  // 落到空态（"流程尚未生成步骤"）。经 ref 读 taskGraph 防死循环（同上注释）。
+  // v0.9.2 二次修复：依赖加 taskModeActive——切走再切回时 graph 被清理但
+  // current_phase/graph_id 未变致 effect 不重触发，nodeRuns 恒空 → 节点恒显示
+  // "尚未开始执行"。
+  useEffect(() => {
     if (
-      activeTaskInstanceIdRef.current === taskSession.task_id &&
-      activeTaskLaunchInstance?.current_phase === taskSession.current_phase &&
       taskModeActive &&
-      !readOnly
+      activeTaskLaunchInstance?.current_phase === "execution" &&
+      activeTaskLaunchInstance.graph_id &&
+      activeTaskLaunchInstance.graph_id !== taskGraphRef.current.graph?.graph_id
     ) {
-      return;
+      taskGraphRef.current
+        .loadGraph(activeTaskLaunchInstance.graph_id)
+        .catch(console.error);
     }
-    logTaskPhaseDebug("workspace:open", {
-      taskId: taskSession.task_id,
-      phase,
-      readOnly,
-      status: taskSession.status,
-      currentPhase: taskSession.current_phase,
-      requirementSessionId: taskSession.requirement_session_id,
-      planningSessionId: taskSession.planning_session_id,
-      graphId: taskSession.graph_id,
-    });
-    // T4 合流：所有阶段统一进入任务模式（会话页 + TaskSidebar），不再区分 chat-phase 与 execution-phase 两条路径。
-    setActiveTaskInstanceId(taskSession.task_id);
-    setActiveTaskRequirementFile(taskSession.requirement_file ?? null);
-    setSelectedTaskSkillId(taskSession.skill_id || "jishu-conductor-dev");
-    activeTaskInstanceIdRef.current = taskSession.task_id;
-    activeTaskRequirementFileRef.current = taskSession.requirement_file ?? null;
-    selectedTaskSkillIdRef.current = taskSession.skill_id || "jishu-conductor-dev";
-    lastKnownStatusRef.current = taskSession.status;
-    setTaskModeActive(true);
-    setTaskLaunchOpen(false);
-    setTaskLaunchReadOnly(false);
-    taskLaunchOpenRef.current = false;
-    // 减法重构：不再进独立 TaskWorkspace 页面。直接把主会话区指向任务的阶段会话，
-    // 复用 chat-page 既有 MessageView/ChatInput。
-    // T8-P1：执行阶段不再置 null（此前导致会话区纯白、需求/规划内容全丢），
-    // 而是沿用 conductor 会话，在其下方合流「流程执行」分隔线 + run 事件流（需求六）。
-    const phaseSession = resolvePhaseSessionId(taskSession, phase);
-    setSelectedSession(phaseSession ?? null);
-    selectedSessionRef.current = phaseSession ?? null;
-    setTaskSelectedNodeId(null);
-    setPendingSteerDisplay([]);
-  }, []);
-  // 任务侧边栏节点选择 → 同步主区会话 + 步骤栏高亮
-  const handleTaskSelectNode = useCallback((nodeId: string | null) => {
-    // v0.7.0 需求二：重复点击同一节点不触发任何逻辑（与左侧列表行为一致，
-    // 只点一下选中，再点不清空内容）。nodeId 相同时直接 return。
-    if (nodeId !== null && nodeId === taskSelectedNodeIdRef.current) {
-      return;
-    }
-    setTaskSelectedNodeId(nodeId);
-    if (!nodeId) {
-      // 取消节点选择：清空节点会话 agent_id，主区恢复阶段会话
-      setTaskNodeSessionAgentId(null);
-      const sess = resolvePhaseSessionId(
-        activeTaskLaunchInstance,
-        activeTaskLaunchInstance?.current_phase,
-      );
-      setSelectedSession(sess);
-      selectedSessionRef.current = sess;
-    } else {
-      // v0.7.0 需求二-问题3：选中节点立即切到 pending-node 占位，清空上一个节点的
-      // 会话残留。session_id 回填后由 handleTaskNodeSessionChange 更新为真实节点会话。
-      // 此前不立即清空，导致新节点 session_id 回填前主区仍显示上一个节点的会话内容。
-      setTaskNodeSessionAgentId(null);
-      setSelectedSession("pending-node");
-      selectedSessionRef.current = "pending-node";
-      setSessionMessages([]);
-    }
-  }, [activeTaskLaunchInstance]);
-
-  // 选中节点的会话信息回填 → 主区渲染该节点会话（复用 chat-page 的 MessageView/ChatInput）
-  // v0.7.0 需求二-问题3：接收完整 info（含 agent_id），节点会话消息加载用节点绑定的 agent。
-  // 节点已运行但 session_id 尚未回填时，用 pending 标记占位，避免主区显示主流程会话。
-  const handleTaskNodeSessionChange = useCallback(
-    (info: { session_id: string | null; agent_id: string | null } | null) => {
-      if (info && info.session_id) {
-        setSelectedSession(info.session_id);
-        selectedSessionRef.current = info.session_id;
-      } else if (info) {
-        // 节点已运行但 session_id 未回填（attempt 存在但 Pi RPC SessionResolved 未到）
-        setSelectedSession("pending-node");
-        selectedSessionRef.current = "pending-node";
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskModeActive, activeTaskLaunchInstance?.current_phase, activeTaskLaunchInstance?.graph_id]);
+  // v0.9.3 需求1 P2-2：useNodeSession 只消费 node_run_id/node_id/status/
+  // attempt_count 四字段（NodeRunLookupSource 最小形状），内部 NodeRun 状态
+  // 结构满足，不再双重 cast 伪装完整 RunProjection（原先其余字段在 hook 内
+  // 零消费，属死重）。
+  const boardProjection = useMemo<NodeRunLookupSource | null>(() => {
+    const runId = taskGraph.displayedRunId ?? activeTaskLaunchInstance?.active_run_id ?? null;
+    if (!runId || !activeTaskLaunchInstance?.graph_id) return null;
+    return { node_runs: taskGraph.nodeRuns };
+  }, [activeTaskLaunchInstance?.graph_id, activeTaskLaunchInstance?.active_run_id, taskGraph.displayedRunId, taskGraph.nodeRuns]);
+  const boardNodeSession = useNodeSession({
+    projection: boardProjection,
+    onNodeSession: taskInstanceState.updateNodeSession,
+  });
+  const boardRunId = taskGraph.displayedRunId ?? activeTaskLaunchInstance?.active_run_id ?? null;
+  useEffect(() => {
+    taskInstanceState.selectNode(taskSelectedNodeId);
+    if (!taskSelectedNodeId || !boardRunId) return;
+    // v0.9.2 测试期二次返工（节点会话派发信息缺失）：本 effect 只在
+    // nodeId/runId/attempt_count/status 变化时触发；节点刚启动时 session_id
+    // 常常尚未由 Pi RPC SessionResolved 落库——此刻查询拿到 null 后再无
+    // 重试触发（status 长期停在 running），主区卡 "pending-node" 占位直到
+    // 节点终态才恢复。节点仍在执行且会话未回填时按 2s 轮询，直到拿到
+    // session_id 或节点终态为止。
+    const nodeStatus = taskGraph.nodeRuns[taskSelectedNodeId]?.status ?? null;
+    const nodeActive = nodeStatus === "leased" || nodeStatus === "running";
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      const info = await boardNodeSession.fetchNodeSession(taskSelectedNodeId).catch((e) => {
+        console.error(e);
+        return null;
+      });
+      if (cancelled) return;
+      if (nodeActive && (!info || info.session_id == null)) {
+        timer = setTimeout(() => void poll(), 2000);
       }
-      setTaskNodeSessionAgentId(info?.agent_id ?? null);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskSelectedNodeId, boardRunId,
+    taskSelectedNodeId ? taskGraph.nodeRuns[taskSelectedNodeId]?.attempt_count ?? 0 : 0,
+    taskSelectedNodeId ? taskGraph.nodeRuns[taskSelectedNodeId]?.status ?? null : null]);
+  useEffect(() => {
+    if (!taskSelectedNodeId) {
+      handleTaskNodeSessionChange(null);
+      return;
+    }
+    const info = taskInstanceState.nodeSessionMap[taskSelectedNodeId];
+    handleTaskNodeSessionChange(info ? { session_id: info.session_id, agent_id: info.agent_id } : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskSelectedNodeId, taskInstanceState.nodeSessionMap]);
+  useEffect(() => {
+    if (taskGraph.runStatus && boardRunId) {
+      taskInstanceState.syncRunStatus(boardRunId, taskGraph.runStatus);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskGraph.runStatus, boardRunId]);
+
+  // v0.9.2 需求2 M3：全景画布入口——信号递增唤起页面级画布 overlay（M3-5 起
+  // overlay 由页面持有；侧栏已退役）。
+  const [taskBoardSignal, setTaskBoardSignal] = useState(0);
+  const [taskBoardOpen, setTaskBoardOpen] = useState(false);
+  useEffect(() => {
+    if (taskBoardSignal > 0) setTaskBoardOpen(true);
+  }, [taskBoardSignal]);
+
+  // v0.9.2 需求2 M3-5：画布内指定节点执行者（自侧栏迁移；run 进行中禁止）。
+  const handleBoardAssignAgent = useCallback(
+    async (nodeId: string, agentId: string, roleId: string) => {
+      if (taskGraph.activeRunId) return;
+      try {
+        await taskGraph.applyCommands([
+          {
+            op: "update_node",
+            command_id: `assign-${nodeId}-${Date.now().toString(36)}`,
+            node_id: nodeId,
+            patch: {
+              agent_assignment_constraint: {
+                role_id: roleId,
+                locked_agent_id: agentId,
+                allowed_agent_ids: [],
+                denied_agent_ids: [],
+                required_capabilities: [],
+              },
+            },
+          },
+        ]);
+      } catch (err) {
+        console.error("Failed to assign agent:", err);
+      }
     },
-    [],
+    [taskGraph],
   );
+
+  // v0.9.2 需求2 M3：取消整个流程（二次确认在内核侧承担——插件面板只发命令）。
+  const handleTaskCancelRun = useCallback(() => {
+    void (async () => {
+      const confirmed = await confirmDialog({
+        title: t("task.execution.cancelRunTitle", "取消任务执行"),
+        description: t("task.execution.cancelRunConfirm", "进行中的子任务将全部停止，已完成的节点结果保留。确定取消？"),
+        variant: "destructive",
+      });
+      if (!confirmed) return;
+      taskGraphRef.current.cancelRun().catch((e) => console.warn("cancel run failed:", e));
+    })();
+  }, [confirmDialog, t]);
+
+  // v0.9.3 需求5：失败节点人工干预（汇总卡失败行按钮）——重试（Failed→Blocked
+  // 重新调度）/ 跳过（Failed→Skipped 下游继续）；run 终态由后端拉回 Running，
+  // 完成后重载图恢复轮询。
+  const [nodeActionBusy, setNodeActionBusy] = useState<string | null>(null);
+  const handleFailedNodeAction = useCallback(
+    (command: "orchestrator_retry_node" | "orchestrator_skip_node") => async (nodeId: string) => {
+      const graphId = activeTaskLaunchInstance?.graph_id;
+      const runId =
+        taskGraph.displayedRunId ?? activeTaskLaunchInstance?.active_run_id ?? null;
+      if (!graphId || !runId) return;
+      setNodeActionBusy(nodeId);
+      try {
+        await invokeCommand(command, { runId, nodeId });
+        await taskGraphRef.current.loadGraph(graphId);
+      } catch (err) {
+        console.error(`${command} failed:`, err);
+      } finally {
+        setNodeActionBusy(null);
+      }
+    },
+    [activeTaskLaunchInstance, taskGraph.displayedRunId],
+  );
+  const handleRetryNode = useMemo(
+    () => handleFailedNodeAction("orchestrator_retry_node"),
+    [handleFailedNodeAction],
+  );
+  const handleSkipNode = useMemo(
+    () => handleFailedNodeAction("orchestrator_skip_node"),
+    [handleFailedNodeAction],
+  );
+
+  // ── A5 簇②③：任务会话导流钩子（新建任务对话/工作模式切换/任务工作台/
+  // 节点选择与回填 + 任务面板 ctx——流程全景插件的数据面）。任务态 state 仍在
+  // 页面（读写面横跨发送链/流式管线/JSX），此处收拢动作与派生。 ──
+  const {
+    handleOpenTaskConversation,
+    handleWorkModeChange,
+    openTaskPhaseWorkspace,
+    handleTaskSelectNode,
+    handleTaskNodeSessionChange,
+    taskPanelCtx,
+  } = useTaskSessionRouting({
+    setTaskModeActive,
+    setTaskLaunchOpen,
+    setTaskLaunchReadOnly,
+    setTaskLaunchPhase,
+    setActiveTaskInstanceId,
+    setActiveTaskRequirementFile,
+    setSelectedTaskSkillId,
+    setTaskSelectedNodeId,
+    setTaskNodeSessionAgentId,
+    taskLaunchOpenRef,
+    taskLaunchPhaseRef,
+    activeTaskInstanceIdRef,
+    activeTaskRequirementFileRef,
+    lastKnownStatusRef,
+    taskSelectedNodeIdRef,
+    enteringTaskModeRef,
+    activeId,
+    taskModeActive,
+    activeTaskLaunchInstance,
+    taskSelectedNodeId,
+    taskGraph,
+    nodeSessionMap: taskInstanceState.nodeSessionMap,
+    closeSessionSidebar,
+    setSelectedSession,
+    selectedSessionRef,
+    setSessionMessages,
+    chatInputRef,
+    handleTaskCancelRun,
+    setTaskBoardSignal,
+    taskEngineAgent,
+    taskModeAgentReady,
+    setChatAgent,
+    confirmDialog,
+    alertDialog,
+  });
+
+  // v0.9.2 需求1：已启用会话插件集合（plugins-changed 热刷新）。
+  const enabledSessionPlugins = useEnabledSessionPlugins();
+
+  // v0.9.2 底座增强：当前会话消息的完整块投影（工具调用/思考/交互/图片/
+  // 分隔线均可见——统计/阅读/导出类插件的数据面）。
+  const ctxMessages = useMemo<PluginMessage[]>(
+    () =>
+      sessionMessages.map((msg) => ({
+        role: msg.role,
+        blocks: msg.content.map((block): PluginBlock => {
+          switch (block.type) {
+            case "text":
+              return { type: "text", text: block.text };
+            case "thinking":
+              return { type: "thinking", thinking: block.thinking };
+            case "tool_use":
+              return {
+                type: "tool_use",
+                id: block.id,
+                text: block.name,
+                input:
+                  typeof block.input === "object" && block.input !== null
+                    ? (block.input as Record<string, unknown>)
+                    : {},
+              };
+            case "tool_result":
+              return {
+                type: "tool_result",
+                id: block.tool_use_id,
+                output:
+                  typeof block.content === "string"
+                    ? block.content
+                    : JSON.stringify(block.content),
+                isError: (block as { is_error?: boolean }).is_error ?? false,
+              };
+            case "interaction":
+              return {
+                type: "interaction",
+                text: block.prompt,
+                options: (block.options ?? []).map((o) => ({
+                  id: o.option_id,
+                  label: o.label,
+                })),
+                answer: block.answer ?? undefined,
+              };
+            case "phase_divider":
+              return { type: "phase_divider", text: block.phase };
+            default:
+              return { type: "text", text: "" };
+          }
+        }),
+      })),
+    [sessionMessages],
+  );
+
+  // v0.9.2 底座增强：流式状态投影（阅读模式/实时监控类插件消费）。
+  const ctxStreamState = useMemo(() => {
+    if (!currentStream) return null;
+    return {
+      isStreaming: currentStream.isStreaming,
+      text: currentStream.text ?? "",
+      retry: currentStream.autoRetry
+        ? {
+            attempt: currentStream.autoRetry.attempt,
+            max: currentStream.autoRetry.maxAttempts,
+            reason: currentStream.autoRetry.errorMessage,
+          }
+        : null,
+      error: currentStream.error || null,
+      steerTexts: currentStream.steerTexts ?? [],
+    };
+  }, [currentStream]);
+
+  // v0.9.2 底座增强：会话元信息（agent/模型/思考档/上下文占用）。
+  const ctxSessionMeta = useMemo(
+    () => ({
+      agentId: chatAgentId,
+      agentName: chatAgent?.display_name ?? null,
+      model: activeModelValue ?? null,
+      thinkingLevel: thinkingLevelValue,
+      contextUsed: (() => {
+        const u = getSessionUsage(selectedSession ?? "");
+        return u?.inputTokens != null && u?.outputTokens != null
+          ? u.inputTokens + u.outputTokens
+          : null;
+      })(),
+      contextTotal: getSessionUsage(selectedSession ?? "")?.contextWindowTotal ?? null,
+      // v0.9.2 测试期：插件解析 tool_use 相对路径用（html-preview 会话产物）。
+      projectPath: currentProject?.path ?? null,
+      // 插件跨会话读取子节点会话产物（get_session_messages 的 encodedName 键）。
+      projectEncodedName: currentProject?.encoded_name ?? null,
+    }),
+    [chatAgentId, chatAgent, activeModelValue, thinkingLevelValue, selectedSession, currentProject],
+  );
+
+  // v0.9.2 底座增强：消息搜索（搜索插件消费）。
+  const searchMessages = useCallback(
+    (query: string): PluginSearchMatch[] => {
+      if (!query.trim()) return [];
+      const matches: PluginSearchMatch[] = [];
+      const q = query.toLowerCase();
+      ctxMessages.forEach((msg, mi) => {
+        msg.blocks.forEach((block, bi) => {
+          const text =
+            block.type === "text"
+              ? block.text ?? ""
+              : block.type === "tool_use"
+                ? block.text ?? ""
+                : "";
+          const idx = text.toLowerCase().indexOf(q);
+          if (idx >= 0) {
+            matches.push({
+              messageIndex: mi,
+              blockIndex: bi,
+              excerpt: text.slice(Math.max(0, idx - 20), idx + q.length + 40),
+            });
+          }
+        });
+      });
+      return matches;
+    },
+    [ctxMessages],
+  );
+
+  // v0.9.2 底座增强：滚动到指定消息（搜索跳转）。消息按行分组渲染
+  //（assistant 组多消息一行），data-message-index 记录行首消息下标，
+  // 查找时取「行首 ≤ 目标 index 的最后一行」。
+  const scrollToMessage = useCallback((messageIndex: number) => {
+    const el = messageAreaRef.current;
+    if (!el) return;
+    const rows = Array.from(
+      el.querySelectorAll<HTMLElement>('[data-turn-scope="main"] [data-message-index]'),
+    );
+    let best: HTMLElement | null = null;
+    for (const row of rows) {
+      const idx = Number(row.dataset.messageIndex);
+      if (Number.isNaN(idx)) continue;
+      if (idx <= messageIndex) {
+        best = row;
+      } else {
+        break;
+      }
+    }
+    if (best) {
+      best.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, []);
+
+  // v0.9.2 底座增强：插入文本到输入框（Prompt 模板/引导指令类插件消费）。
+  const insertToComposer = useCallback((text: string) => {
+    chatInputRef.current?.restoreTexts([text]);
+    chatInputRef.current?.focus();
+  }, []);
+
+  // 子节点会话标题（resolveSessionInfo 消费——用量面板等按会话 id 取标题）：
+  // 以 node_id→title 为源，再经 nodeSessionMap 折算出 session_id→title 索引。
+  // 左侧任务树不再展示子会话（2026-09-11 用户裁决），此映射改为看板/面板侧
+  // 唯一的标题来源；此前树侧曾按 session_id 查 node_id 键控表，恒落空回退
+  // 截断 id，本次一并修正。
+  const nodeTitleBySessionId = useMemo(() => {
+    const byNodeId: Record<string, string> = {};
+    for (const n of taskGraph.snapshot?.nodes ?? []) {
+      byNodeId[n.node_id] = n.title;
+    }
+    const bySessionId: Record<string, string> = {};
+    for (const [nodeId, info] of Object.entries(taskInstanceState.nodeSessionMap)) {
+      if (info.session_id && byNodeId[nodeId]) {
+        bySessionId[info.session_id] = byNodeId[nodeId];
+      }
+    }
+    return bySessionId;
+  }, [taskGraph.snapshot, taskInstanceState.nodeSessionMap]);
+
+  // v0.9.3 需求3（P1-3）：会话内核数据枢纽——ctx.subscribe 各数据面的真订阅
+  // 宿主（监听器集合 + 最新快照）。hub 生命周期 = 页面实例（useRef 惰性建），
+  // ctx 重建只重放快照，订阅不丢；数据变更经下方 publish effects 逐个回调。
+  // v0.9.3 需求10 A4：审批/交互队列剥离为 hook（纯搬迁；审批面经数据枢纽
+  // 发布为插件可消费能力）。置于 ctx 构造前——projection 进 seed。
+  const {
+    pendingApprovals,
+    setPendingApprovals,
+    setPendingInteractions,
+    approvalResolving,
+    activeApproval,
+    approvalDescKey,
+    activeInteraction,
+    handleInteractionSubmit,
+    resolveActiveApproval,
+  } = useChatApprovals({ selectedSession, handleMessageSent, activeIdRef, projectPathRef });
+  // 审批面投影 + 发布（插件消费：审批中心类组合插件）。
+  const approvalProjection = useMemo(
+    () =>
+      pendingApprovals.map((a) => ({
+        sessionId: a.sessionId,
+        requestId: a.requestId,
+        kind: a.approvalKind ?? "",
+      })),
+    [pendingApprovals],
+  );
+
+  const dataHubRef = useRef<SessionDataHub | null>(null);
+  if (!dataHubRef.current) dataHubRef.current = new SessionDataHub();
+  const dataHub = dataHubRef.current;
+
+  // v0.9.2 需求1：会话内核上下文——插件的唯一取数/命令入口（05 §3.2）。
+  useEffect(() => {
+    dataHub.publishApprovals(approvalProjection);
+  }, [approvalProjection, dataHub]);
+
+  const sessionKernelCtx = useMemo<SessionKernelContext>(
+    () => {
+      // ctx 构造即 seed：晚订阅者回放到的永远是当前值；seed 不通知既有
+      // 订阅者（通知职责归下方 publish effects，避免 ctx 重建引发重复回调）。
+      dataHub.seed({
+        messages: ctxMessages,
+        streamState: ctxStreamState,
+        sessionMeta: ctxSessionMeta,
+        turns: turnSummaries,
+        approvals: approvalProjection,
+      });
+      return {
+      approvals: approvalProjection,
+      turns: turnSummaries,
+      activeTurnIndex,
+      scrollToTurn: handleJumpToTurn,
+      searchMessages,
+      scrollToMessage,
+      insertToComposer,
+      switchSession: (id: string) => void handleSelectSession(id),
+      openFileViewer: (path: string) => openViewer({ kind: "file", path }),
+      // v0.9.2 测试期：插件展开自己面板的命令（event-hook 收到信号拉起面板，
+      // 如 file-preview-request）；经 shell 的激活性落点，由宿主按形态生效。
+      openPanel: (pluginId: string) => requestPanelActivation(pluginId),
+      closePanel: () => requestPanelClose(),
+      // v0.9.3 需求8：压缩命令面（上下文水位环插件消费——自内置渲染迁出）。
+      compactSession: () => void handleCompactSession(),
+      isCompacting: compacting,
+      capabilities: { compact: supportsCompact },
+      autoCompaction: autoCompactionPref ?? null,
+      setAutoCompaction: (enabled) => void handleAutoCompactionChange(enabled),
+      confirmDialog: (opts) => confirmDialog(opts),
+      // v0.9.4 需求12：插件底座日志能力（dev 日志中心，plugin 类别）。
+      devLog: (message, data) => devLog("plugin", message, data),
+      task: taskPanelCtx,
+      sessionId: selectedSession && selectedSession !== "new" ? selectedSession : null,
+      sessionTitle:
+        selectedSession && selectedSession !== "new"
+          ? sessions?.find((item) => item.id === selectedSession)?.display_name ?? null
+          : null,
+      messages: ctxMessages,
+      streamState: ctxStreamState,
+      sessionMeta: ctxSessionMeta,
+      // v0.9.3 需求3（P1-3）：真订阅——四个数据面经 SessionDataHub（注册即回放
+      // 快照，数据变更 publish 逐个回调，退订真实移除）；events 通道复用信号
+      // 总线（本就是真订阅）。v0.9.2 的「cb 调一次返回 no-op」假订阅删除。
+      subscribe: {
+        messages: (cb) => dataHub.subscribeMessages(cb),
+        streamState: (cb) => dataHub.subscribeStreamState(cb),
+        sessionMeta: (cb) => dataHub.subscribeSessionMeta(cb),
+        turns: (cb) => dataHub.subscribeTurns(cb),
+        approvals: (cb) => dataHub.subscribeApprovals(cb),
+        events: (cb) => subscribeSessionSignals(cb),
+      },
+      resolveSessionInfo: (sessionId: string) => {
+        const taskSession = taskLaunchSessions.find(
+          (item) =>
+            item.requirement_session_id === sessionId ||
+            item.planning_session_id === sessionId,
+        );
+        if (taskSession) return { title: taskSession.title, kind: "task" };
+        if (nodeSessionIds.includes(sessionId)) {
+          return { title: nodeTitleBySessionId[sessionId] ?? sessionId.slice(0, 12), kind: "node" };
+        }
+        const session = sessions?.find((item) => item.id === sessionId);
+        if (session) {
+          return {
+            title: sessionNames?.[sessionId] || session.display_name || sessionId.slice(0, 12),
+            kind: "session",
+          };
+        }
+        return null;
+      },
+      };
+    },
+    [turnSummaries, activeTurnIndex, handleJumpToTurn, taskPanelCtx, selectedSession, sessions, ctxMessages, ctxStreamState, ctxSessionMeta, searchMessages, scrollToMessage, insertToComposer, taskLaunchSessions, nodeSessionIds, nodeTitleBySessionId, sessionNames, confirmDialog, openViewer, dataHub],
+  );
+
+  // v0.9.3 需求3：数据面变更 → 枢纽 publish（订阅者逐个回调）。
+  useEffect(() => {
+    dataHub.publishMessages(ctxMessages);
+  }, [dataHub, ctxMessages]);
+  useEffect(() => {
+    dataHub.publishStreamState(ctxStreamState);
+  }, [dataHub, ctxStreamState]);
+  useEffect(() => {
+    dataHub.publishSessionMeta(ctxSessionMeta);
+  }, [dataHub, ctxSessionMeta]);
+  useEffect(() => {
+    dataHub.publishTurns(turnSummaries);
+  }, [dataHub, turnSummaries]);
+
+  // v0.9.2 需求1 M4：信号桥（内核事件 → 已启用插件 event-hook）。
+  // 任务失败信号：run 状态转 failed 时发射。
+  const prevRunStatusRef = useRef<string | null>(null);
+  useEffect(() => {
+    const status = taskPanelCtx?.runStatus ?? null;
+    const prev = prevRunStatusRef.current;
+    prevRunStatusRef.current = status;
+    if (status === "failed" && prev !== "failed" && taskPanelCtx) {
+      emitSessionSignal({ type: "task-run-failed", taskId: taskPanelCtx.taskId, title: taskPanelCtx.title });
+    }
+  }, [taskPanelCtx]);
 
   // 退出任务模式时清理图数据，避免残留 run 状态。
   // 注意：不依赖 taskGraph（每次渲染是新对象，会导致死循环），通过 ref 调用。
   useEffect(() => {
     if (!taskModeActive) {
       taskGraphRef.current.clearGraph();
-      setTaskSidebarHidden(false);
+      setTaskBoardOpen(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskModeActive]);
@@ -1572,19 +1953,6 @@ export function ChatPage({
   // - 重进已完成任务 → 回退成「是否开始执行」卡，且分隔线下的执行内容被挡住不显示；
   // - live 跑完那一刻 pollRunProjection 清 activeRunId，也会闪回开始卡。
   const taskRunStarted = Boolean(taskGraph.displayedRunId ?? activeTaskLaunchInstance?.active_run_id);
-  const taskStepCount = countExecutableSteps(taskGraph.snapshot);
-
-  // 活跃任务的真节点标题（与右侧步骤栏同源，来自 taskGraph.snapshot），
-  // 透传给左侧任务树覆盖 use-task-node-sessions 用 revision 取的占位标题（"A"/"B"）。
-  const activeTaskNodeTitles = useMemo(() => {
-    const map: Record<string, string> = {};
-    if (taskModeActive) {
-      for (const n of taskGraph.snapshot?.nodes ?? []) {
-        map[n.node_id] = n.title;
-      }
-    }
-    return map;
-  }, [taskModeActive, taskGraph.snapshot]);
 
   // 选中一个还没跑过的步骤时，主区给出明确占位——否则会继续显示上一个会话，
   // 用户以为点击没生效（需求：「点击右侧每一行都能看到每一条的执行情况」）。
@@ -1662,14 +2030,246 @@ export function ChatPage({
     return () => cancelAnimationFrame(raf);
   }, [taskExecutionMode, taskRunStarted, taskGraph.projectedMessages.length]);
 
+  // v0.9.2 需求2 M3-2：方案卡数据（graph snapshot 的可执行节点；acceptance
+  // 来自转图时写入的 metadata，见需求5 修复）。v0.9.3 需求5：携带锁定执行者
+  // 与角色前提（行内更换执行者下拉用，与画布 Inspector 同源）。
+  const taskPlanNodes = useMemo<PlanNodeInfo[]>(() => {
+    const snapshot = taskGraph.snapshot;
+    if (!snapshot) return [];
+    return orderExecutableNodes(snapshot)
+      .map((node) => {
+        const constraint = node.agent_assignment_constraint as
+          | { locked_agent_id?: unknown }
+          | null
+          | undefined;
+        const locked =
+          constraint && typeof constraint.locked_agent_id === "string" && constraint.locked_agent_id
+            ? constraint.locked_agent_id
+            : null;
+        const roleRequirement = node.role_requirement as { role_id?: unknown } | null | undefined;
+        const roleId =
+          roleRequirement && typeof roleRequirement.role_id === "string" && roleRequirement.role_id
+            ? roleRequirement.role_id
+            : node.node_id;
+        return {
+          nodeId: node.node_id,
+          title: node.title,
+          responsibility: typeof node.description === "string" ? node.description : "",
+          acceptance:
+            node.metadata && typeof node.metadata.acceptance === "string"
+              ? node.metadata.acceptance
+              : null,
+          agentId: locked,
+          roleId,
+        };
+      });
+  }, [taskGraph.snapshot]);
+
+  // v0.9.3 需求5：方案卡行内更换执行者——与画布 Inspector 同源 update_node
+  //（agent_assignment_constraint；null = 清除锁定回退角色解析），run 启动前可用。
+  const handlePlanAssignAgent = useCallback(
+    async (nodeId: string, agentId: string | null) => {
+      if (taskGraph.activeRunId) return;
+      const roleId = taskPlanNodes.find((n) => n.nodeId === nodeId)?.roleId ?? nodeId;
+      try {
+        await taskGraph.applyCommands([
+          {
+            op: "update_node",
+            command_id: `plan-assign-${nodeId}-${Date.now().toString(36)}`,
+            node_id: nodeId,
+            patch: {
+              agent_assignment_constraint: agentId
+                ? {
+                    role_id: roleId,
+                    locked_agent_id: agentId,
+                    allowed_agent_ids: [],
+                    denied_agent_ids: [],
+                    required_capabilities: [],
+                  }
+                : null,
+            },
+          },
+        ]);
+      } catch (err) {
+        console.error("Failed to assign agent:", err);
+      }
+    },
+    [taskGraph, taskPlanNodes],
+  );
+
+  // v0.9.2 测试期修复（终态渲染三问题）：各节点执行 agent 的权威来源——
+  // orchestrator_list_node_sessions 一次返回全 run 各节点的 agent_id（读
+  // taskstore attempt 的 agent_assignment，落库即有）。此前子任务卡/汇总卡
+  // 只从轮询事件流的 attempt_started 取 agent，事件缺失（轮询游标、时序）
+  // 时 badge 静默丢失——用户实测仅第一个节点有「Jishu Agent」标识。
+  // 状态签名（nodeId:status 拼接）作为刷新触发：只在节点状态真正变化时
+  // 重查，避免每次轮询对象身份变化都刷 IPC。
+  const [nodeAgentIds, setNodeAgentIds] = useState<Map<string, string>>(() => new Map());
+  const nodeRunStatusSignature = useMemo(
+    () =>
+      Object.entries(taskGraph.nodeRuns)
+        .map(([id, run]) => `${id}:${run.status}:${run.attempt_count}`)
+        .sort()
+        .join("|"),
+    [taskGraph.nodeRuns],
+  );
+
+  // v0.9.2 测试期（产物中心）：全量回填节点会话索引。nodeSessionMap 此前
+  // 只在「点选节点」时逐个填充——历史任务或未点选过的节点没有 session 记录，
+  // 产物中心识别不到其产出（用户实测）。任务图加载后与节点状态签名变化时
+  // 批量拉取全部已执行节点（refreshAll 只遍历 attempt_count>0 的节点，
+  // 一次状态变化一轮 IPC，量级可控）。
+  useEffect(() => {
+    if (!taskModeActive || !boardRunId) return;
+    boardNodeSession
+      .refreshAllNodeSessions()
+      .catch((e) => console.warn("refresh node sessions failed:", e));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskModeActive, boardRunId, nodeRunStatusSignature]);
+
+  useEffect(() => {
+    if (!boardRunId) {
+      setNodeAgentIds(new Map());
+      return;
+    }
+    let cancelled = false;
+    invokeCommand<NodeSessionSummary[]>("orchestrator_list_node_sessions", { runId: boardRunId })
+      .then((sessions) => {
+        if (cancelled) return;
+        const map = new Map<string, string>();
+        for (const s of sessions) {
+          if (s.agent_id) map.set(s.node_id, s.agent_id);
+        }
+        setNodeAgentIds(map);
+      })
+      .catch((e) => console.warn("list_node_sessions failed:", e));
+    return () => {
+      cancelled = true;
+    };
+  }, [boardRunId, nodeRunStatusSignature]);
+
+  // v0.9.2 需求2 M3-3：子任务卡/汇总卡数据——节点状态 + 执行者（attempt_started
+  // 事件快照 + node sessions 权威回退）+ 当前动作一行摘要（attempt_progressed
+  // 公开消息最新一条）。
+  const taskFlowNodes = useMemo<FlowNodeStatus[]>(() => {
+    const snapshot = taskGraph.snapshot;
+    const nodeRuns = taskGraph.nodeRuns;
+    if (!snapshot) return [];
+    const runIdToNodeId = new Map<string, string>();
+    for (const [nodeId, run] of Object.entries(nodeRuns)) {
+      runIdToNodeId.set(run.node_run_id, nodeId);
+    }
+    const agentByNode = new Map<string, string>();
+    const lastActionByNode = new Map<string, string>();
+    for (const event of taskGraph.events) {
+      const payload = (event.payload ?? {}) as Record<string, unknown>;
+      const nodeId =
+        typeof payload.node_id === "string" && payload.node_id
+          ? payload.node_id
+          : typeof payload.node_run_id === "string"
+            ? runIdToNodeId.get(payload.node_run_id)
+            : undefined;
+      if (!nodeId) continue;
+      if (event.event_type === "attempt_started") {
+        const assignment = payload.agent_assignment as { agent_id?: string } | undefined;
+        if (assignment?.agent_id) agentByNode.set(nodeId, assignment.agent_id);
+      } else if (event.event_type === "attempt_progressed") {
+        if (payload.public === false) continue;
+        const message = typeof payload.message === "string" ? payload.message : "";
+        // 纯标点/空白消息不作为动作摘要——节点 agent 收尾时常发「。」之类的
+        // 空消息，渲染成标题下游离的句号（用户实测反馈）。
+        if (message.trim() && !/^[\s。．.，,、;；!！?？·\-—~～*#]*$/.test(message)) {
+          lastActionByNode.set(nodeId, message.trim());
+        }
+      }
+    }
+    return orderExecutableNodes(snapshot)
+      .map((node) => {
+        const status = nodeRuns[node.node_id]?.status ?? "blocked";
+        const agentId = nodeAgentIds.get(node.node_id) ?? agentByNode.get(node.node_id) ?? null;
+        const agent = agentId ? agents.find((a) => a.id === agentId) : null;
+        return {
+          nodeId: node.node_id,
+          title: node.title,
+          status,
+          agentName: agent?.display_name ?? agentId,
+          lastAction: lastActionByNode.get(node.node_id) ?? null,
+          clickable: !["blocked", "ready"].includes(status),
+          // v0.9.3 需求5 摘要增强：耗时/验收/失败原因。
+          startedAt: nodeRuns[node.node_id]?.started_at ?? null,
+          finishedAt: nodeRuns[node.node_id]?.finished_at ?? null,
+          acceptance:
+            node.metadata && typeof node.metadata.acceptance === "string"
+              ? node.metadata.acceptance
+              : null,
+          error: nodeRuns[node.node_id]?.error ?? null,
+        };
+      });
+  }, [taskGraph.snapshot, taskGraph.nodeRuns, taskGraph.events, agents, nodeAgentIds]);
+
+  // v0.9.2 需求2 M3-2：方案卡确认——未勾选节点经 remove_node 命令移除（后端
+  // 级联清理边并重挂子节点），以新 revision 启动 run；全选直启。
+  const handleConfirmPlan = useCallback(
+    async (selectedIds: string[]) => {
+      const instance = activeTaskLaunchInstance;
+      const graphId = instance?.graph_id;
+      const revisionId = taskGraph.revision?.revision_id;
+      const projectRoot = currentProject?.path;
+      if (!instance || !graphId || !revisionId || !projectRoot) return;
+      const removed = taskPlanNodes
+        .filter((node) => !selectedIds.includes(node.nodeId))
+        .map((node) => node.nodeId);
+      setExecStarting(true);
+      setExecStartError(null);
+      try {
+        let effectiveRevisionId = revisionId;
+        if (removed.length > 0) {
+          const diff = await taskGraph.applyCommands(
+            removed.map((nodeId) => ({
+              op: "remove_node",
+              command_id: `plan-exclude-${nodeId}-${Date.now().toString(36)}`,
+              node_id: nodeId,
+            })),
+          );
+          if (diff?.to_revision_id) effectiveRevisionId = diff.to_revision_id;
+        }
+        const result = await startTaskRun({
+          taskId: instance.task_id,
+          projectRoot,
+          revisionId: effectiveRevisionId,
+        });
+        if (result?.run_id) {
+          await taskGraph.loadGraph(graphId);
+        }
+      } catch (err) {
+        console.error("Failed to confirm plan:", err);
+        setExecStartError(
+          `${t("task.execution.error.launchFailed", "启动执行失败")}：${taskErrorMessage(err)}`,
+        );
+      } finally {
+        setExecStarting(false);
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [activeTaskLaunchInstance, taskPlanNodes, taskGraph.applyCommands, taskGraph.revision?.revision_id, taskGraph.loadGraph, currentProject?.path, t],
+  );
+
   const handleStartExecutionFromChat = useCallback(async () => {
     const instance = activeTaskLaunchInstance;
-    const revisionId = taskGraph.revision?.revision_id;
     const projectRoot = currentProject?.path;
-    if (!instance || !revisionId || !projectRoot) return;
+    if (!instance || !projectRoot) return;
     setExecStarting(true);
     setExecStartError(null);
     try {
+      // v0.9.2 测试期修复（用户裁决：执行前修订方案后 dispatch prompt 仍旧版）：
+      // 启动前强制刷新 graph 拿最新 draft revision——修订（conductor_revise_plan）
+      // 创建新 revision 后 task-instance-changed 异步触发 loadGraph，但用户点
+      // 「确认执行」可能先于刷新完成，此时 taskGraph.revision 仍是旧 revision。
+      if (instance.graph_id) {
+        await taskGraphRef.current.loadGraph(instance.graph_id).catch(console.error);
+      }
+      const revisionId = taskGraphRef.current.revision?.revision_id;
+      if (!revisionId) return;
       const result = await startTaskRun({
         taskId: instance.task_id,
         projectRoot,
@@ -1722,6 +2322,33 @@ export function ChatPage({
           targetPhase,
         });
         openTaskPhaseWorkspace(activeTaskLaunchInstance, targetPhase);
+      } else if (!launchOpen && activeTaskLaunchInstance) {
+        // v0.9.2 需求6：会话模式（发起器未打开）下的自动跟随。原守卫要求
+        // launchOpen=true 且用户停在上一阶段标签——会话模式下二者永不满足，
+        // 阶段推进到 execution 时无人切换视图（需手动到列表底部找任务树）。
+        // 条件改为「正查看该任务的会话」：正在 conductor 会话里对话的用户
+        // 随阶段推进自动进入对应工作台；浏览其他会话的用户不被强行拽走。
+        const taskSessionIds = [
+          activeTaskLaunchInstance.requirement_session_id,
+          activeTaskLaunchInstance.planning_session_id,
+        ].filter((value): value is string => Boolean(value));
+        const currentConversationId =
+          selectedSessionRef.current === "new"
+            ? lastRealSessionIdRef.current
+            : selectedSessionRef.current;
+        const viewingTaskConversation =
+          !!currentConversationId && taskSessionIds.includes(currentConversationId);
+        logTaskPhaseDebug("launch-follow:session-mode", {
+          taskId: activeTaskLaunchInstance.task_id,
+          prev,
+          next,
+          viewingTaskConversation,
+        });
+        if (viewingTaskConversation) {
+          const targetPhase: TaskPhase = (
+            next === "execution" || next === "graph" ? "execution" : next) as TaskPhase;
+          openTaskPhaseWorkspace(activeTaskLaunchInstance, targetPhase);
+        }
       }
     }
     prevCurrentPhaseRef.current = next;
@@ -1766,657 +2393,46 @@ export function ChatPage({
   // Stream listener (mount-only). Each chunk is routed into the per-session
   // store entry via streamStore.push, regardless of which session is currently
   // selected — that's what makes parallel streaming work.
-  useEffect(() => {
-    let unlistenFn: (() => void) | null = null;
-    let cancelled = false;
-    listen<AgentEventPayload>("agent-event", (event) => {
-      const payload = event.payload;
-      const chunks = Array.isArray(payload) ? payload : [payload];
-
-      for (const chunk of chunks) {
-        // Ignore chunks for agents we're not currently using — UNLESS the chunk
-        // belongs to the session we're currently viewing. Execution-phase node
-        // sub-agent sessions run under a different agent_id than the active
-        // (conductor) agent, but when the user opens a node session we must
-        // stream its output live instead of waiting for a manual refresh (T8-P8).
-        if (
-          chunk.agent_id !== activeIdRef.current &&
-          chunk.session_id !== selectedSessionRef.current
-        ) {
-          continue;
-        }
-
-        const cid = chunk.session_id;
-
-        if (chunk.data.kind === "approval_request") {
-          const approval: PendingChatApproval = {
-            sessionId: cid,
-            requestId: chunk.data.request_id,
-            approvalKind: chunk.data.approval_kind,
-            payload: chunk.data.payload,
-          };
-          setPendingApprovals((current) => {
-            const exists = current.some(
-              (item) =>
-                item.sessionId === approval.sessionId
-                && item.requestId === approval.requestId,
-            );
-            return exists ? current : [...current, approval];
-          });
-        }
-
-        if (chunk.data.kind === "interaction_request") {
-          const request = interactionRequestFromEvent(chunk.data);
-          setPendingInteractions((current) => {
-            const next: PendingChatInteraction = {
-              agentId: chunk.agent_id,
-              sessionId: cid,
-              request,
-            };
-            const exists = current.some(
-              (item) =>
-                item.agentId === next.agentId
-                && item.sessionId === next.sessionId
-                && item.request.requestId === next.request.requestId,
-            );
-            return exists ? current : [...current, next];
-          });
-        }
-
-        // 需求1 A7：会话内 thinking 生效值（Pi clamp 后）回传。
-        if (chunk.data.kind === "thinking_level_changed") {
-          setLiveThinkingLevel(chunk.data.level);
-        }
-
-        // v0.8.0 需求10：上下文压缩状态——压缩进度由内容流中的两态分隔线
-        // （压缩中… → 已压缩）呈现；此处在压缩结束沿即时刷新圆环用量
-        // （record_compaction 已把水位更新为 窗口-压缩后规模），会话完成
-        // 后 turn_complete 沿再刷新一次。
-        if (chunk.data.kind === "compaction_status") {
-          if (!chunk.data.active) {
-            const usageSid = streamStore.getState(cid)?.resolvedId ?? cid;
-            void refreshSessionUsage(usageSid);
-          }
-          continue;
-        }
-
-        // Detect resolved session id and register it as an alias before pushing
-        // (so subsequent chunks under the real id route to the same entry).
-        const realId = extractRealSessionId(chunk.data);
-        if (realId && realId !== cid) {
-          streamStore.alias(cid, realId);
-          // 新任务讨论关联：用 Pi 真实 session id（= conductor 写入任务的 requirement_session_id）
-          // 触发 discover。ChatInput 的 onSessionResolved 拿的是 send_message 同步返回值（新 session
-          // 仍为 pending），匹配不到 conductor 写的真 id；只有此处 session_resolved 事件携带真 id。
-          if (taskLaunchOpenRef.current && !activeTaskInstanceIdRef.current) {
-            logTaskPhaseDebug("launch-link:resolve", {
-              pendingId: cid,
-              realId,
-              phase: taskLaunchPhaseRef.current,
-            });
-            discoverConductorTask(realId).catch((e) =>
-              console.warn("discoverConductorTask failed:", e),
-            );
-          }
-          // R2: 仅当已关联真任务（activeTaskInstanceId 非空）时才 mark。为空说明
-          // Conductor 建的真任务尚未被 discoverConductorTask 发现，此时 mark 会让后端
-          // mark_task_stage_session 的 unwrap_or_else 生成 uuid 占位任务（title="新任务"、
-          // 无图），导致会话列表出现两条数据。跳过 mark，交由 discoverConductorTask 按
-          // requirement_session_id 关联真任务；会话 id 由 Conductor 扩展 conductor_sync_phase
-          // 权威写入，不依赖此处 mark。
-          if (taskLaunchOpenRef.current && activeTaskInstanceIdRef.current) {
-            const projectRoot = projectPathRef.current;
-            if (projectRoot) {
-              invokeCommand<TaskLaunchInstanceSummary>("task_launch_mark_session", {
-                projectRoot,
-                taskId: activeTaskInstanceIdRef.current,
-                sessionId: realId,
-                skillId: selectedTaskSkillIdRef.current,
-                phase: taskLaunchPhaseRef.current,
-                title: null,
-              })
-                .then((record) => {
-                  applyTaskLaunchInstanceSnapshot(record);
-                })
-                .catch((error) => console.warn("Failed to mark task launch session:", error));
-            }
-          }
-
-          // Promote the optimistic session id to the real one in the UI.
-          setOptimisticSessions(prev => uniqueSessionsById(prev.map(s => s.id === cid ? { ...s, id: realId } : s)));
-          if (newSessionStreamIdsRef.current.has(cid)) {
-            newSessionStreamIdsRef.current.add(realId);
-          }
-          // Move messages cache entry from pending id to real id (and keep
-          // both keys pointing at the same array for safety).
-          const cached = sessionMessagesCacheRef.current.get(cid);
-          if (cached) sessionMessagesCacheRef.current.set(realId, cached);
-          // Migrate queued steer messages too. A user can guide (steer) while
-          // a tool-bearing turn is running — often BEFORE the session id
-          // resolves — so the steer is queued under the pending id. Without
-          // this migration, turn_complete (which looks up by the resolved id
-          // once known) would miss the queue, leaving the live "已引导"
-          // placeholder stuck even though Pi already processed the steer
-          // (visible only after a JSONL refresh).
-          const queuedSteers = pendingSteerMessagesRef.current.get(cid);
-          if (queuedSteers) {
-            pendingSteerMessagesRef.current.set(realId, queuedSteers);
-            pendingSteerMessagesRef.current.delete(cid);
-          }
-          // Migrate launch-injection marker: if the pending id was already
-          // injected with launch instruction, the real id is too (same session).
-          if (injectedLaunchSessionsRef.current.has(cid)) {
-            injectedLaunchSessionsRef.current.add(realId);
-          } else if (taskLaunchOpenRef.current) {
-            // 兜底：任务模式下首条消息发送时 selectedSession 往往还是 null/"new"，
-            // prepareTaskLaunchMessage 不会把 pending id 加入 set（786 行的 if 不满足），
-            // 导致上面的迁移找不到 pending id、real id 永不入 set。此后用户在任务会话里
-            // 发的任何消息都会被误判为首条、重新包装成 /jishu-task 命令——而 Conductor
-            // 命令 handler 见 phase !== "idle" 直接 return，Pi 不启动任何 run，界面卡死
-            // 在"思考中"。任务模式 session resolve 时无条件把 real id 标记为已激活，确保
-            // 后续消息原样透传给已激活的 Conductor。
-            injectedLaunchSessionsRef.current.add(realId);
-          }
-          setPendingInteractions((current) =>
-            current.map((item) =>
-              item.agentId === chunk.agent_id && item.sessionId === cid
-                ? { ...item, sessionId: realId }
-                : item,
-            ),
-          );
-          if (selectedSessionRef.current === cid) {
-            setSelectedSession(realId);
-            selectedSessionRef.current = realId;
-            visitedSessions.current.add(realId);
-          }
-        }
-
-        // Phase dividers and interaction requests may legitimately arrive after
-        // a prior run's stream state was dropped; lifecycle-only events may not
-        // create an empty continuation stream.
-        if (!streamStore.pushTracked(cid, chunk)) {
-          continue;
-        }
-
-        if (chunk.data.kind === "turn_complete") {
-          // Build final assistant/user messages from the accumulated state.
-          const state = streamStore.getState(cid);
-          const finalKey = state?.resolvedId ?? cid;
-          // v0.8.0 需求10：用量以 Hub SQLite 为权威（Rust turn_end 记账，
-          // 与页面在场无关）；回合结束后拉取最新行刷新前端缓存（圆环数据源）。
-          void refreshSessionUsage(finalKey);
-          // Spurious-completion guard: when a follow-up streaming state was just
-          // created at the end of a turn (a manually-guided steer committed as a
-          // follow-up, or Route 2 auto-sending staged guides), the (re)launched
-          // ACP/agent process can emit early turn_complete events (Complete,
-          // Error, …) before its real reply has begun — carrying no assistant
-          // text. Processing them would drop the freshly-created "thinking"
-          // state, leaving a blank gap until the real reply's first token.
-          // Detect them (follow-up started recently + no text produced) and skip:
-          // keep the state so the pending reply fills it naturally. The marker
-          // is retained across skips so consecutive spurious completions are all
-          // ignored; it is cleared only when a genuine completion (with text) is
-          // processed below, or expires after the window.
-          const pendingReplyStartedAt = pendingReplyStartedAtRef.current.get(finalKey)
-            ?? pendingReplyStartedAtRef.current.get(cid);
-          // state must exist (an aborted turn whose state was already dropped by
-          // handleAbort is null here and must NOT be skipped — its queued steers
-          // still need committing). content/tools may hold ACP startup noise so
-          // only text/thinking gate this.
-          const hasNoReplyText = Boolean(state)
-            && !(state!.text.length || state!.thinking.length);
-          if (
-            pendingReplyStartedAt !== undefined
-            && Date.now() - pendingReplyStartedAt < 2000
-            && hasNoReplyText
-          ) {
-            continue;
-          }
-          const isNewSessionStream =
-            newSessionStreamIdsRef.current.has(cid)
-            || newSessionStreamIdsRef.current.has(finalKey);
-          // For transports without mid-turn steer (ACP), a queued guide that
-          // couldn't be injected is sent as a real new message. Set in the
-          // no-tool branch below; the actual streamStore.start + send_message
-          // runs after this turn's drop(cid), so the new stream isn't cleared.
-          let guideToSendAfterDrop: string | null = null;
-          const newMessages: Message[] = [];
-          if (state?.pendingUserMessage) {
-            newMessages.push({
-              role: "user",
-              content: [{ type: "text", text: state.pendingUserMessage }],
-              timestamp: Date.now(),
-            });
-          }
-          // Build the assistant content blocks for this turn. When Pi
-          // delivers a steer mid-turn (at a tool-call gap) it folds the
-          // steer's reply into the SAME turn — so a single turn_complete can
-          // hold [reply1a, steer, reply1b] worth of content, accumulated in
-          // arrival order. `steerSplits` records the content-array index at
-          // each injection point; we split there and interleave the queued
-          // steers so the live order matches the JSONL Pi persists.
-          const steerQueueKey = pendingSteerMessagesRef.current.has(finalKey)
-            ? finalKey
-            : cid;
-          const queuedSteers = pendingSteerMessagesRef.current.get(steerQueueKey) ?? [];
-          // ── Build interactionInsertions with REAL indices ───────────────────
-          // The snapshot `item.index` (content.length at interaction_request time)
-          // goes stale once the agent emits more content after the request.
-          // Instead, after we've built the final assistantContent, re-scan it to
-          // find each answered interaction's tool_use block and use its REAL index.
-          // Sanitize + sort: each split marks the start of a new segment.
-          const steerSplits = Array.from(new Set(state?.steerSplits ?? []))
-            .filter((idx) => idx > 0 && idx < (state?.content.length ?? 0))
-            .sort((a, b) => a - b);
-
-          // True when a committed steer will be answered in a FOLLOW-UP turn
-          // (a leftover not delivered mid-turn, or the appended steer in a
-          // no-tool turn). Drives the pre-created "thinking" state below.
-          let followUpExpected = false;
-
-          const assistantContent = buildAssistantContentFromStreamState(state);
-          // An aborted turn (e.g. the user hit Stop on Claude Code's ACP
-          // transport, which emits TurnComplete(Aborted)) must still embed any
-          // pending, UNANSWERED interaction — otherwise the question vanishes
-          // the moment the stream state is dropped. On normal completion there
-          // are no pending interactions, so includePending only affects aborts.
-          const isAbortedTurn = chunk.data.reason === "Aborted";
-          const interactionInsertions = buildInteractionInsertions({
-            assistantContent,
-            interactionSplits: state?.interactionSplits ?? [],
-            includePending: isAbortedTurn,
-          });
-
-          // Remove the first `count` steers from the session queue. Reads the
-          // CURRENT ref (not the `queuedSteers` snapshot) so successive calls
-          // within the same turn_complete — mid-turn steers then a leftover —
-          // compose correctly instead of re-slicing the original array.
-          const consumeSteerFromQueue = (count: number) => {
-            if (count <= 0) return;
-            const current = pendingSteerMessagesRef.current.get(steerQueueKey) ?? [];
-            const remaining = current.slice(count);
-            if (remaining.length > 0) {
-              pendingSteerMessagesRef.current.set(steerQueueKey, remaining);
-            } else {
-              pendingSteerMessagesRef.current.delete(steerQueueKey);
-            }
-          };
-          // Drop the oldest `count` live placeholders (FIFO matches the queue
-          // shift) — but ONLY when this session is the one currently viewed.
-          // Live placeholders are session-specific (cleared on switch), so a
-          // background session committing its queued steer must not touch the
-          // viewed session's display array.
-          const dropLivePlaceholders = (count: number) => {
-            if (count <= 0) return;
-            const viewing = selectedSessionRef.current;
-            if (viewing === cid || viewing === finalKey) {
-              setPendingSteerDisplay((prev) => prev.slice(count));
-            }
-          };
-          if (interactionInsertions.length > 0) {
-            const midSteerCount = Math.min(steerSplits.length, queuedSteers.length);
-            const committed = commitAssistantWithInteractions({
-              assistantContent,
-              interactionInsertions,
-              steerInsertions: steerSplits.slice(0, midSteerCount).map((index, i) => ({
-                index,
-                text: queuedSteers[i],
-              })),
-              error: state?.error,
-            });
-            newMessages.push(...committed.messages);
-            consumeSteerFromQueue(midSteerCount);
-            dropLivePlaceholders(midSteerCount);
-
-            const leftover = pendingSteerMessagesRef.current.get(steerQueueKey);
-            if (leftover && leftover.length > 0) {
-              newMessages.push({
-                role: "user",
-                content: [{ type: "text", text: leftover[0] }],
-                timestamp: Date.now(),
-              });
-              followUpExpected = true;
-              consumeSteerFromQueue(1);
-              dropLivePlaceholders(1);
-            }
-          } else if (steerSplits.length > 0 && queuedSteers.length > 0) {
-            // TOOL-BEARING turn with mid-turn steers: split the accumulated
-            // content at each injection point and interleave the steers
-            // between segments — yielding [reply1a, steer, reply1b] instead of
-            // [reply1a+reply1b, steer], matching the JSONL order.
-            const midCount = Math.min(steerSplits.length, queuedSteers.length);
-            let prevIdx = 0;
-            for (let i = 0; i < midCount; i++) {
-              const seg = assistantContent.slice(prevIdx, steerSplits[i]);
-              if (seg.length > 0) {
-                newMessages.push({ role: "assistant", content: seg, timestamp: Date.now() });
-              }
-              newMessages.push({
-                role: "user",
-                content: [{ type: "text", text: queuedSteers[i] }],
-                timestamp: Date.now(),
-              });
-              prevIdx = steerSplits[i];
-            }
-            // Tail segment (after the final mid-turn steer); errors attach here.
-            const tail = assistantContent.slice(prevIdx);
-            if (state?.error) tail.push({ type: "text", text: state.error });
-            if (tail.length > 0) {
-              newMessages.push({ role: "assistant", content: tail, timestamp: Date.now() });
-            }
-            consumeSteerFromQueue(midCount);
-            dropLivePlaceholders(midCount);
-
-            // Pi delivers steers one-at-a-time; any queue entry left after the
-            // mid-turn steers was queued too late to be folded in and will be
-            // processed as a follow-up turn. Commit it now (appended after the
-            // tail) so it lands BEFORE its response, which arrives in the next
-            // turn_complete — mirroring the no-tool FIFO behavior below.
-            const leftover = pendingSteerMessagesRef.current.get(steerQueueKey);
-            if (leftover && leftover.length > 0) {
-              newMessages.push({
-                role: "user",
-                content: [{ type: "text", text: leftover[0] }],
-                timestamp: Date.now(),
-              });
-              followUpExpected = true;
-              consumeSteerFromQueue(1);
-              dropLivePlaceholders(1);
-            }
-          } else {
-            // No mid-turn steer injection: commit the turn as a single
-            // assistant message, then append one queued steer FIFO. With Pi's
-            // default one-at-a-time steering the steer is answered in a
-            // separate follow-up turn, so appending it here lands it between
-            // this reply and the next — [reply, steer, steerResponse].
-            if (state?.error) {
-              assistantContent.push({ type: "text", text: state.error });
-            }
-            if (assistantContent.length > 0) {
-              newMessages.push({ role: "assistant", content: assistantContent, timestamp: Date.now() });
-            }
-            if (queuedSteers.length > 0) {
-              if (supportsSteerRef.current) {
-                // Pi-RPC: the queued steer is answered in a follow-up turn.
-                // Commit it as a user message now; the response arrives in the
-                // next turn_complete. followUpExpected pre-creates a "thinking"
-                // state so the gap isn't blank.
-                newMessages.push({
-                  role: "user",
-                  content: [{ type: "text", text: queuedSteers[0] }],
-                  timestamp: Date.now(),
-                });
-                followUpExpected = true;
-                consumeSteerFromQueue(1);
-                dropLivePlaceholders(1);
-              } else {
-                // No mid-turn steer (ACP/claude-code): the queued guide was
-                // never injected, so no follow-up reply will come. Send it as a
-                // real new message (mirrors Route 2) so the agent actually
-                // processes it. Do NOT commit it as a user message here —
-                // send_message's own turn_complete will commit guide+reply
-                // naturally (committing now would duplicate it). The actual
-                // streamStore.start + send_message runs AFTER the drop below
-                // (same as Route 2) — otherwise this turn's drop(cid) would
-                // clear the freshly-started stream.
-                const guideText = queuedSteers[0];
-                consumeSteerFromQueue(1);
-                dropLivePlaceholders(1);
-                guideToSendAfterDrop = guideText;
-              }
-            }
-          }
-
-          // Resolve the base messages from the cache (preferring real id).
-          const baseMessages =
-            sessionMessagesCacheRef.current.get(finalKey)
-            ?? sessionMessagesCacheRef.current.get(cid)
-            ?? [];
-          const updated = [...baseMessages, ...newMessages];
-          sessionMessagesCacheRef.current.set(finalKey, updated);
-          if (cid !== finalKey) sessionMessagesCacheRef.current.set(cid, updated);
-
-          // Persist interaction blocks to JSONL (best-effort). The session's
-          // `path` field is the JSONL file location for existing sessions; new
-          // sessions may only have the project directory, in which case we skip
-          // the write (the interaction data is still in the cache, and the
-          // session loader filters interaction tool_use blocks on reload).
-          if (interactionInsertions.length > 0) {
-            const sessionList = sessionsRef.current;
-            const sessionPath = sessionList?.find(s => s.id === finalKey)?.path
-              ?? sessionList?.find(s => s.id === cid)?.path
-              ?? "";
-            invokeCommand("persist_interaction_blocks", {
-              agentId: activeIdRef.current ?? "",
-              sessionPath,
-              sessionId: finalKey,
-              encodedName: projectIdRef.current,
-              interactions: interactionInsertions.map(ins => ({
-                index: ins.index,
-                request_id: ins.requestId ?? null,
-                prompt: ins.prompt,
-                options: ins.options,
-                answer: ins.answer,
-                selected_options: ins.selectedOptions ?? [],
-                origin: ins.origin ?? null,
-              })),
-            }).catch((err: unknown) => {
-              console.warn("Failed to persist interaction blocks:", err);
-            });
-          }
-
-          // Persist the in-progress assistant text/thinking of an ABORTED turn
-          // so it survives a refresh. Claude Code's transcript is owned by the
-          // external `claude` CLI, which writes at message-completion
-          // boundaries and ABANDONS an interrupted message — so the JSONL a
-          // refresh reads would otherwise lack the partial the user already
-          // saw (opencode/jishu no-op their adapter: they persist their own
-          // store incrementally). Best-effort + idempotent: the backend strips
-          // anything Claude already durably wrote, so the racing onAbort path
-          // re-calling this is a safe no-op.
-          if (isAbortedTurn && (state?.text || state?.thinking)) {
-            const sessionList = sessionsRef.current;
-            const partialSessionPath = sessionList?.find(s => s.id === finalKey)?.path
-              ?? sessionList?.find(s => s.id === cid)?.path
-              ?? "";
-            invokeCommand("persist_partial_assistant", {
-              agentId: activeIdRef.current ?? "",
-              sessionPath: partialSessionPath,
-              sessionId: finalKey,
-              encodedName: projectIdRef.current,
-              text: state?.text ?? "",
-              thinking: state?.thinking ?? "",
-            }).catch((err: unknown) => {
-              console.warn("Failed to persist partial assistant after abort:", err);
-            });
-          }
-
-          // If the user is currently viewing this session, reflect the update
-          // immediately. Otherwise the cache will be used the next time they
-          // switch back to this session (without a JSONL reload).
-          const viewed = selectedSessionRef.current;
-          const shouldKeepFollowingOutput = !isAwayFromBottomRef.current;
-          if (viewed === cid || viewed === finalKey) {
-            setSessionMessages(updated);
-          }
-
-          // Convert the streaming bubble into the formal MessageView row in a
-          // single paint. drop() schedules the normal external-store update;
-          // forcing a synchronous flush here can remove the live row before
-          // React commits its formal Markdown replacement.
-          streamStore.drop(cid);
-          if ((viewed === cid || viewed === finalKey) && shouldKeepFollowingOutput) {
-            // The live turn and its committed Markdown use different DOM
-            // subtrees. Wait for both the stream-store notification and the
-            // Markdown layout before fixing the viewport at the output end.
-            // If the user scrolled up, preserve their reading position.
-            requestAnimationFrame(() => {
-              requestAnimationFrame(() => {
-                const currentViewed = selectedSessionRef.current;
-                if (currentViewed !== cid && currentViewed !== finalKey) return;
-                const scrollEl = messageAreaRef.current;
-                if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
-              });
-            });
-          }
-          // This was a genuine completion (had text, or the follow-up window
-          // elapsed) — clear the spurious-completion marker so it does not
-          // suppress a later legitimate turn_complete for this session.
-          pendingReplyStartedAtRef.current.delete(finalKey);
-          pendingReplyStartedAtRef.current.delete(cid);
-
-          if (followUpExpected) {
-            // A committed steer will be answered in a FOLLOW-UP turn (a
-            // leftover not delivered mid-turn in a tool turn, or the appended
-            // steer in a no-tool turn). Pre-create an empty streaming state so
-            // the "thinking" indicator shows immediately and PERSISTS until the
-            // agent actually responds — otherwise there's a blank gap until the
-            // response's first chunk re-activates the state via the
-            // content-chunk guard above. Mid-turn steers are folded into the
-            // committed segments above, so they do NOT trigger this. Use the
-            // resolved key + re-alias cid so response chunks route correctly
-            // after the drop cleared the alias map.
-            //
-            // No timeout: the response turn is guaranteed (Pi delivers the
-            // queued steer one-at-a-time), so the state is always resolved —
-            // either content arrives (fills it; the indicator is naturally
-            // replaced by the reply) or the response turn's turn_complete
-            // fires (drops the state, covering empty or error responses). An
-            // arbitrary cutoff would kill the indicator before a slow model's
-            // first token, exactly the bug we're fixing.
-            streamStore.start(finalKey, null);
-            if (cid !== finalKey) streamStore.alias(finalKey, cid);
-            pendingReplyStartedAtRef.current.set(finalKey, Date.now());
-          }
-
-          // ACP (no mid-turn steer): a queued guide that couldn't be injected
-          // is sent as a real new message now that this turn's drop has settled.
-          // Mirrors Route 2 — start the stream + record the spurious-completion
-          // marker + fire send_message in an async IIFE so the reply fills the
-          // "thinking" state naturally.
-          if (guideToSendAfterDrop !== null) {
-            const guideText = guideToSendAfterDrop;
-            // Start the reply stream WITHOUT pendingUserMessage: send_message
-            // already delivered the guide to the backend (it's in the JSONL),
-            // so the reply's turn_complete must NOT re-commit it as a user
-            // message (that would duplicate it). We commit the guide into the
-            // cache ourselves here, exactly once.
-            streamStore.start(finalKey, null);
-            if (cid !== finalKey) streamStore.alias(finalKey, cid);
-            pendingReplyStartedAtRef.current.set(finalKey, Date.now());
-            const guideBase =
-              sessionMessagesCacheRef.current.get(finalKey)
-              ?? sessionMessagesCacheRef.current.get(cid)
-              ?? [];
-            const guideUpdated = [...guideBase, {
-              role: "user" as const,
-              content: [{ type: "text" as const, text: guideText }],
-              timestamp: Date.now(),
-            }];
-            sessionMessagesCacheRef.current.set(finalKey, guideUpdated);
-            if (cid !== finalKey) sessionMessagesCacheRef.current.set(cid, guideUpdated);
-            if (selectedSessionRef.current === cid || selectedSessionRef.current === finalKey) {
-              setSessionMessages(guideUpdated);
-            }
-            const guideProjectPath = projectPathRef.current;
-            void (async () => {
-              try {
-                await invokeCommand("send_message", {
-                  agentId: activeIdRef.current ?? "",
-                  projectPath: guideProjectPath,
-                  sessionId: finalKey,
-                  message: guideText,
-                });
-              } catch (err) {
-                console.error("Failed to send queued guide:", err);
-                streamStore.drop(finalKey);
-              }
-            })();
-          }
-
-          // Route 2 (orthogonal to manual guide): when the turn ends, auto-send
-          // any messages the user staged but did NOT manually guide — merged
-          // into a single new turn. claimAll(finalKey) synchronously marks them
-          // sent for THIS session, so a manual click racing this moment (or a
-          // re-click) is blocked by the shared claimed-id set — each staged
-          // guide is delivered exactly once. Gated on !followUpExpected so it
-          // never competes with a manual steer's follow-up turn (that turn fires
-          // its own turn_complete, which re-evaluates).
-          //
-          // Targets the session whose turn just completed (finalKey), NOT the
-          // currently-viewed session. Staging state is partitioned by session
-          // (stagedMessagesBySession), so a background session's turn_complete
-          // claims only its own staged guides — never another conversation's.
-          // This fixes the case where the user staged a guide in session A,
-          // switched to B, and A's completion (while viewing B) must still send
-          // A's staged guide. Claiming is gated only on stagedApiRef existing
-          // (the ChatInput must be mounted) and !followUpExpected; the viewed
-          // session is irrelevant.
-          if (!followUpExpected && stagedApiRef.current) {
-            const claimed = stagedApiRef.current.claimAll(finalKey);
-            if (claimed.length > 0) {
-              const merged = claimed.map((m) => m.content).join("\n\n");
-              // Start WITHOUT pendingUserMessage: send_message delivers the
-              // message to the backend (JSONL), so the reply's turn_complete
-              // must NOT re-commit it (would duplicate). Commit it into the
-              // cache ourselves here, exactly once.
-              streamStore.start(finalKey, null);
-              if (cid !== finalKey) streamStore.alias(finalKey, cid);
-              pendingReplyStartedAtRef.current.set(finalKey, Date.now());
-              const autoBase =
-                sessionMessagesCacheRef.current.get(finalKey)
-                ?? sessionMessagesCacheRef.current.get(cid)
-                ?? [];
-              const autoUpdated = [...autoBase, {
-                role: "user" as const,
-                content: [{ type: "text" as const, text: merged }],
-                timestamp: Date.now(),
-              }];
-              sessionMessagesCacheRef.current.set(finalKey, autoUpdated);
-              if (cid !== finalKey) sessionMessagesCacheRef.current.set(cid, autoUpdated);
-              if (selectedSessionRef.current === cid || selectedSessionRef.current === finalKey) {
-                setSessionMessages(autoUpdated);
-              }
-              const projectPath = projectPathRef.current;
-              const restore = stagedApiRef.current.restore.bind(stagedApiRef.current);
-              void (async () => {
-                try {
-                  await invokeCommand("send_message", {
-                    agentId: activeIdRef.current ?? "",
-                    projectPath,
-                    sessionId: finalKey,
-                    message: merged,
-                  });
-                } catch (err) {
-                  console.error("Auto-send of staged guides failed:", err);
-                  streamStore.drop(finalKey);
-                  restore(finalKey, claimed);
-                }
-              })();
-            }
-          }
-
-          if (isNewSessionStream) {
-            newSessionStreamIdsRef.current.delete(cid);
-            newSessionStreamIdsRef.current.delete(finalKey);
-            refetchSessionsRef.current?.(true).catch(console.error);
-          }
-
-        }
-      }
-    }).then((fn) => {
-      if (cancelled) {
-        fn();
-      } else {
-        unlistenFn = fn;
-      }
-    });
-    return () => {
-      cancelled = true;
-      if (unlistenFn) unlistenFn();
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // v0.9.3 需求10 / M1①：agent-event 管线迁 kernel/event-pipeline（见模块头），
+  // 壳层只组装依赖并挂载（mount-only，refs/setters——与原 effect 同语义）。
+  useEffect(
+    () =>
+      startAgentEventPipeline({
+        activeIdRef,
+        activeTaskInstanceIdRef,
+        chatInputRef,
+        injectedLaunchSessionsRef,
+        isAwayFromBottomRef,
+        lastRealSessionIdRef,
+        messageAreaRef,
+        newSessionStreamIdsRef,
+        pendingReplyStartedAtRef,
+        abortLocalCommitRef,
+        projectIdRef,
+        projectPathRef,
+        refetchSessionsRef,
+        selectedSessionRef,
+        selectedTaskSkillIdRef,
+        sessionsRef,
+        stagedApiRef,
+        supportsSteerRef,
+        taskLaunchOpenRef,
+        taskLaunchPhaseRef,
+        visitedSessions,
+        setLiveThinkingLevel,
+        setOptimisticSessions,
+        setPendingApprovals,
+        setPendingInteractions,
+        setSelectedSession,
+        setSessionMessages,
+        applyTaskLaunchInstanceSnapshot,
+        refreshSessionUsage,
+        discoverConductorTask,
+        t,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
 
   // Derive display name for the current session
   const displayName = selectedSession
@@ -2427,142 +2443,6 @@ export function ChatPage({
     taskModeActive && taskSelectedNodeId
       ? taskGraph.snapshot?.nodes.find((n) => n.node_id === taskSelectedNodeId)?.title ?? displayName
       : displayName;
-  const activeApproval = pendingApprovals[0] ?? null;
-  // 审批类型 → 弹窗描述文案（后端按工具分类：bash→命令、write/edit→文件写入；
-  // wire 值 PascalCase，兼容 snake_case 历史值）。
-  const approvalKindRaw = (activeApproval?.approvalKind ?? "").toLowerCase();
-  const approvalDescKey =
-    approvalKindRaw === "command"
-      ? "sessions.permissionDescCommand"
-      : approvalKindRaw === "filewrite" || approvalKindRaw === "file_write"
-        ? "sessions.permissionDescFileWrite"
-        : "sessions.permissionDescOther";
-  // v0.7.0 需求二：节点会话的 interaction 来自节点子代理（agent_id 可能是非 activeId
-  // 的 claude-code/codex 等）。匹配只按 sessionId（已唯一标识会话），不限制 agentId，
-  // 否则节点执行阶段的 agent 问答无法显示和提交。
-  const activeInteraction = pendingInteractions.find(
-    (item) => item.sessionId === selectedSession,
-  ) ?? null;
-  const handleInteractionSubmit = useCallback(async (
-    submission: ConversationInteractionSubmission,
-  ) => {
-    // v0.7.0 需求二：节点会话 interaction 匹配只按 sessionId + requestId（不限制 agentId）。
-    const interaction = pendingInteractions.find(
-      (item) =>
-        item.sessionId === selectedSession
-        && item.request.requestId === submission.requestId,
-    );
-    if (!interaction) return;
-
-    const matchesInteraction = (item: PendingChatInteraction) =>
-      item.agentId === interaction.agentId
-      && item.sessionId === interaction.sessionId
-      && item.request.requestId === submission.requestId;
-    const value = formatInteractionResponseValue(interaction.request, submission);
-    const checkpoint = streamStore.recordInteractionResponseWithCheckpoint(
-      interaction.sessionId,
-      submission.requestId,
-      value,
-      submission.selectedOptionIds,
-    );
-    const restorePending = () =>
-      setPendingInteractions((current) =>
-        current.some(matchesInteraction) ? current : [...current, interaction],
-      );
-
-    // Hide the panel immediately; restored below on failure.
-    setPendingInteractions((current) => current.filter((item) => !matchesInteraction(item)));
-
-    // Hand the answer to the backend along with the interaction's origin. The
-    // backend takes the AUTHORITATIVE delivery decision from the process's
-    // actual transport (design R6 — never assume mid-turn from the event hint).
-    let result: InteractionResponseDto | null = null;
-    try {
-      result = await invokeCommand<InteractionResponseDto>("respond_chat_interaction", {
-        sessionId: interaction.sessionId,
-        requestId: submission.requestId,
-        value,
-        interaction: {
-          request_id: submission.requestId,
-          prompt: interaction.request.prompt,
-          options: interaction.request.options.map((option) => ({
-            option_id: option.optionId,
-            label: option.label,
-            description: option.description ?? null,
-          })),
-          answer: value,
-          selected_options: submission.selectedOptionIds,
-          origin: interaction.request.origin ?? null,
-        },
-        origin: interaction.request.origin,
-      });
-    } catch (error) {
-      streamStore.rollbackInteractionResponse(checkpoint);
-      restorePending();
-      throw error;
-    }
-
-    const delivery = result?.delivery ?? "follow_up";
-
-    if (delivery === "mid_turn") {
-      // The answer was recorded before IPC so a TurnComplete released by the
-      // extension_ui_response cannot commit an unanswered interaction.
-      return;
-    }
-
-    // Follow-up: this transport cannot answer mid-turn as a business question.
-    // Remove the inline placeholder (no phantom gap) and deliver the answer as
-    // a new user message — the design's safety net for transports without
-    // mid-turn reachability (CLI, capability-absent downgrade, opencode).
-    streamStore.removeInteractionSplit(interaction.sessionId, submission.requestId);
-    const replyText = formatInteractionReply(interaction.request, submission).trim();
-    if (!replyText) return;
-
-    // Mirror the standard send path: register a new turn's stream, snapshot the
-    // session cache, then dispatch send_message. The prior turn is persisted to
-    // the session JSONL and re-rendered from history on completion.
-    streamStore.start(interaction.sessionId, replyText);
-    handleMessageSent(interaction.sessionId, replyText);
-    try {
-      await invokeCommand("send_message", {
-        agentId: activeIdRef.current ?? "",
-        projectPath: projectPathRef.current ?? "",
-        sessionId: interaction.sessionId,
-        message: replyText,
-      });
-    } catch (sendError) {
-      console.error("Failed to send interaction follow-up message:", sendError);
-      streamStore.end(interaction.sessionId);
-      restorePending();
-    }
-  }, [
-    handleMessageSent,
-    pendingInteractions,
-    selectedSession,
-  ]);
-  const resolveActiveApproval = useCallback(async (approved: boolean, remember = false) => {
-    if (!activeApproval || approvalResolving) return;
-    setApprovalResolving(true);
-    try {
-      await invokeCommand("resolve_chat_permission", {
-        sessionId: activeApproval.sessionId,
-        requestId: activeApproval.requestId,
-        approved,
-        remember,
-      });
-      setPendingApprovals((current) =>
-        current.filter(
-          (item) =>
-            item.sessionId !== activeApproval.sessionId
-            || item.requestId !== activeApproval.requestId,
-        ),
-      );
-    } catch (error) {
-      console.error("Failed to resolve ACP permission request:", error);
-    } finally {
-      setApprovalResolving(false);
-    }
-  }, [activeApproval, approvalResolving]);
   const projectDisplayName = currentProjectMeta?.custom_name || currentProject?.name || t("sessions.noProject");
   const projectPath = currentProject?.path ?? "";
   const activeModelLabel = activeModelValue
@@ -2578,21 +2458,22 @@ export function ChatPage({
           {/* v0.8.0 需求4 补充（用户定序）：水位圆环 | 模型 | 思考强度——
               模型居中，圆环在其左（未对话/无用量数据时不渲染），思考档在其右。
               行宽 <560px 时模型名与思考档标签切换为图标（@container 由
-              ChatInput 底部行声明，作用于整组）。 */}
-          <ContextRing
-            agentId={activeId}
-            sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null}
-            compact={supportsCompact ? {
-              onCompact: () => void handleCompactSession(),
-              compacting,
-              autoCompaction: autoCompactionPref ?? null,
-              onAutoCompactionChange: (enabled) => void handleAutoCompactionChange(enabled),
-            } : undefined}
-          />
+              ChatInput 底部行声明，作用于整组）。
+              v0.9.3 需求8：水位环迁移为 session.context-ring 插件（composer-
+              trailing 挂载点，插件页可停用）。 */}
+          <SessionComposerTrailing ctx={sessionKernelCtx} />
           {modelOptions.length === 0 ? (
-            <span className="truncate text-amber-400">
-              {t("sessions.modelNotConfigured") || "No models — open 管理-配置"}
-            </span>
+            /* v0.9.2 需求10：黄色提示文案改为「前往配置」按钮——点击直达
+               管理页模型设置并定位当前会话智能体（App 层切 manageAgent）。 */
+            <button
+              type="button"
+              onClick={() => onNavigateAgentModels?.()}
+              title={t("sessions.modelNotConfigured")}
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 text-xs text-amber-500 transition-fast hover:bg-amber-500/20"
+            >
+              <Cpu className="h-3 w-3" />
+              {t("sessions.goModelConfig")}
+            </button>
           ) : (
             <>
               <button
@@ -2612,7 +2493,7 @@ export function ChatPage({
                 <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", modelMenuOpen && "rotate-180")} />
               </button>
               {modelMenuOpen && (
-                <div className="absolute bottom-full right-0 mb-1 z-50 max-h-64 w-48 overflow-y-auto rounded-lg border border-border bg-popover p-2 shadow-lg">
+                <div className="absolute bottom-full right-0 mb-1 z-50 max-h-64 w-[230px] overflow-y-auto rounded-lg border border-border bg-popover p-2 shadow-lg">
                   {modelOptions.map((o) => (
                     <button
                       key={o.value}
@@ -2668,16 +2549,8 @@ export function ChatPage({
         </span>
       )}
       {!supportsModelPicker && (
-        <ContextRing
-            agentId={activeId}
-            sessionId={selectedSession && selectedSession !== "new" ? selectedSession : null}
-            compact={supportsCompact ? {
-              onCompact: () => void handleCompactSession(),
-              compacting,
-              autoCompaction: autoCompactionPref ?? null,
-              onAutoCompactionChange: (enabled) => void handleAutoCompactionChange(enabled),
-            } : undefined}
-          />
+        /* v0.9.3 需求8：水位环迁移为 session.context-ring 插件（无模型行位点）。 */
+        <SessionComposerTrailing ctx={sessionKernelCtx} />
       )}
       {/* v0.7.0 需求一：原静态智能体展示位改为可切换（AgentSwitcher 受控）。
           新会话可切换（切换 = 新建会话）；任务态只有 jishu agent 可用，保持静态展示。 */}
@@ -2697,327 +2570,63 @@ export function ChatPage({
   ) : null;
 
   return (
+    <BlockRenderersProvider enabled={enabledSessionPlugins}>
+    <PluginSignalBridge enabled={enabledSessionPlugins} ctx={sessionKernelCtx} />
     <div className="flex h-full">
-      {/* Left sidebar */}
-      <div
-        className={cn(
-          "chat-sidebar flex flex-col shrink-0",
-          sidebarCollapsed ? "w-14" : "w-60"
-        )}
-      >
-        {/* Expanded sidebar */}
-        <div className={cn("flex flex-col", sidebarCollapsed && "hidden")} style={{ background: "var(--color-layer-1)" }}>
-          {/* Project card */}
-          {/* v0.7.3 需求2：项目切换移至输入区 footer（目录旁左右箭头），左上角仅展示项目名 */}
-          <div className="flex items-center gap-2 px-3 h-10 border-b border-border/20">
-            <FolderOpen className={cn("h-5 w-5 shrink-0 ml-1", currentProject ? "text-[var(--icon-folder)]" : "text-muted-foreground/40")} />
-            <span className={cn("truncate text-sm font-semibold flex-1 min-w-0 leading-none pt-[1px]", currentProject ? "text-foreground" : "text-muted-foreground")} title={currentProject ? projectDisplayName : undefined}>
-              {currentProject ? projectDisplayName : t("sessions.noProject")}
-            </span>
-          </div>
-          {/* Actions */}
-          <div className="flex items-center gap-1.5 px-3 h-11 pt-2 pb-1">
-            <button
-              onClick={projectId ? handleNewSession : undefined}
-              title={projectId ? t("sessions.newSession") : t("sessions.selectProject")}
-              className={cn(
-                "flex-1 flex items-center gap-2.5 h-8 pl-2 pr-2 rounded-lg transition-fast text-sm text-foreground",
-                projectId ? "hover:bg-accent" : "opacity-40 cursor-not-allowed"
-              )}
-            >
-              <SquarePen className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
-              <span className="truncate leading-none pt-[1px]">{t("sessions.startNewChat")}</span>
-            </button>
-            <button
-              onClick={handleRefresh}
-              title={t("sessions.refresh")}
-              className="shrink-0 h-7 w-7 flex items-center justify-center rounded-lg hover:bg-accent/50 transition-fast text-muted-foreground hover:text-foreground"
-            >
-              <RotateCw className="h-3.5 w-3.5" />
-            </button>
-            <button
-              onClick={() => setSidebarCollapsed(true)}
-              className="shrink-0 h-7 w-7 flex items-center justify-center rounded-lg hover:bg-accent/50 transition-fast text-muted-foreground hover:text-foreground"
-            >
-              <PanelLeftClose className="h-3.5 w-3.5" />
-            </button>
-          </div>
-          <div className="px-3 pb-2">
-            <button
-              onClick={projectId ? () => handleOpenTaskConversation() : undefined}
-              title={projectId ? t("tasks.startTask") : t("sessions.selectProject")}
-              className={cn(
-                "flex h-8 w-full items-center gap-2.5 rounded-lg pl-2 pr-2 text-sm text-foreground transition-fast",
-                projectId ? taskLaunchOpen ? "bg-primary/10 font-medium" : "hover:bg-accent" : "opacity-40 cursor-not-allowed"
-              )}
-            >
-              <ClipboardList className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
-              <span className="truncate leading-none pt-[1px]">{t("tasks.startTask")}</span>
-            </button>
-          </div>
-          {/* Search */}
-          <div className="px-3 h-10 pb-2">
-            <div className="relative h-8">
-              <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--icon-search)]" />
-              <Input
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={t("sessions.searchAll")}
-                className="h-full pl-8 pr-7 !text-sm !leading-none shadow-none rounded-lg border-border/40 truncate"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => { setSearchQuery(""); }}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-fast"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              )}
-              {showMessageSearchControls && (
-                <div className="absolute left-[calc(100%+0.42rem)] top-1/2 z-30 flex h-[2.55rem] -translate-y-1/2 overflow-hidden rounded-[12px] border border-border/50 bg-background/95 shadow-[0_0.45rem_1.25rem_rgba(0,0,0,0.16)] backdrop-blur">
-                  <span className="flex min-w-[2.85rem] items-center justify-center px-[0.65rem] text-[0.7rem] font-medium tabular-nums text-muted-foreground leading-none">
-                    {messageSearchLabel}
-                  </span>
-                  <div className="flex h-full w-[1.55rem] flex-col border-l border-border/40">
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      disabled={messageSearchTotal === 0}
-                      onClick={() => requestMessageSearchNavigation(-1)}
-                      title={t("sessions.previousMatch")}
-                      className="h-1/2 w-full rounded-none px-0 hover:bg-accent/70 disabled:opacity-30"
-                    >
-                      <ChevronUp className="size-[0.85rem]" strokeWidth={3} />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      disabled={messageSearchTotal === 0}
-                      onClick={() => requestMessageSearchNavigation(1)}
-                      title={t("sessions.nextMatch")}
-                      className="h-1/2 w-full rounded-none border-t border-border/30 px-0 hover:bg-accent/70 disabled:opacity-30"
-                    >
-                      <ChevronDown className="size-[0.85rem]" strokeWidth={3} />
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Collapsed sidebar header */}
-        <div className={cn("flex flex-col", !sidebarCollapsed && "hidden")} style={{ background: "var(--color-layer-1)" }}>
-          {/* Row 1: Project icon */}
-          <div className="flex items-center justify-center h-10 border-b border-border/20" title={currentProject?.name ?? t("sessions.noProject")}>
-            <FolderOpen className={cn("h-4 w-4", currentProject ? "text-[var(--icon-folder)]" : "text-muted-foreground/40")} />
-          </div>
-          {/* Row 2: Expand button */}
-          <div className="flex items-center justify-center h-11 pt-2 pb-1">
-            <button
-              onClick={() => setSidebarCollapsed(false)}
-              className="h-7 w-7 flex items-center justify-center rounded-lg hover:bg-accent/50 transition-fast text-muted-foreground hover:text-foreground"
-            >
-              <PanelLeftOpen className="h-4 w-4" />
-            </button>
-          </div>
-          {/* Row 3: New chat */}
-          <div className="flex items-center justify-center h-10 pb-2">
-            <button
-              onClick={projectId ? handleNewSession : undefined}
-              title={projectId ? t("sessions.newSession") : t("sessions.selectProject")}
-              className={cn(
-                "h-8 w-8 flex items-center justify-center rounded-lg transition-fast",
-                projectId ? "hover:bg-accent" : "opacity-40 cursor-not-allowed"
-              )}
-            >
-              <SquarePen className="h-4 w-4 text-[var(--icon-action)]" />
-            </button>
-          </div>
-          <div className="flex items-center justify-center h-10 pb-2">
-            <button
-              onClick={projectId ? () => handleOpenTaskConversation() : undefined}
-              title={projectId ? t("tasks.startTask") : t("sessions.selectProject")}
-              className={cn(
-                "flex h-8 w-8 items-center justify-center rounded-lg transition-fast",
-                projectId ? taskLaunchOpen ? "bg-primary/10" : "hover:bg-accent" : "opacity-40 cursor-not-allowed"
-              )}
-            >
-              <ClipboardList className="h-4 w-4 text-[var(--icon-action)]" />
-            </button>
-          </div>
-        </div>
-
-        {/* Session list: expanded */}
-        <div className={cn("flex-1 overflow-y-auto", sidebarCollapsed && "hidden")}>
-          <button
-            type="button"
-            onClick={() => setRegularSessionsOpen((open) => !open)}
-            className="flex h-8 w-full items-center gap-2 border-y border-border/20 bg-[var(--color-layer-1)] px-3 text-[11px] font-medium text-muted-foreground"
-          >
-            <span className="pl-2">{t("sessions.regularConversations")}</span>
-            <span className="tabular-nums">({displaySessions.length})</span>
-            <span className="ml-2 flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 hover:bg-accent hover:text-foreground">
-              {regularSessionsOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-            </span>
-          </button>
-          {regularSessionsOpen && displaySessions.map((session) => {
-            const isActive = session.id === selectedSession;
-            const name = sessionNames?.[session.id] || session.display_name || session.id.slice(0, 8);
-            const timeStr = session.last_active
-              ? formatRelativeTime(session.last_active, t)
-              : session.started_at
-                ? formatRelativeTime(session.started_at, t)
-                : null;
-            const searchHit = searchResults.find((r: SessionSearchResult) => r.sessionId === session.id);
-            // v0.8.0 需求5：该会话刷新中（右键/头部刷新）——行图标转圈 + 高亮，
-            // 让「点击过了」在非选中会话上同样可感知。
-            const rowRefreshing = refreshingSessionId === session.id;
-            // v0.8.0 需求6：该会话正在流式输出（含后台输出）——行图标换为
-            // 加载中动效，无需选中即可从列表分辨哪些会话仍在生成。
-            const rowStreaming = streamingSessionIds.includes(session.id);
-            return (
-              <ContextMenu key={session.id}>
-                <ContextMenuTrigger asChild>
-                  <button
-                    onClick={() => handleSelectSession(session.id)}
-                    className={cn(
-                      "flex flex-col w-full items-start pl-5 pr-2 py-2 text-xs transition-fast border-b border-border/10",
-                      isActive
-                        ? "bg-primary/10 text-foreground font-medium"
-                        : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
-                      rowRefreshing && "bg-primary/15",
-                    )}
-                  >
-                    <div className="flex items-center gap-3 w-full">
-                      {rowRefreshing ? (
-                        <RotateCw className="h-3 w-3 shrink-0 animate-spin text-[var(--icon-action)]" />
-                      ) : rowStreaming ? (
-                        <ActivitySpinner className="h-3.5 w-3.5 text-[var(--icon-action)]" />
-                      ) : (
-                        <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
-                      )}
-                      <span className="truncate flex-1 text-left min-w-0 leading-none pt-[1px]">{name}</span>
-                      {searchHit ? (
-                        <span className="shrink-0 rounded-full bg-primary/20 text-primary px-1.5 py-0.5 text-[9px] font-medium leading-none">
-                          {searchHit.matchCount}
-                        </span>
-                      ) : timeStr ? (
-                        <span className={cn(
-                          "text-[0.65em] shrink-0 tabular-nums",
-                          isActive ? "text-accent-foreground/40" : "text-muted-foreground/40"
-                        )}>{timeStr}</span>
-                      ) : null}
-                    </div>
-                    {searchHit && searchHit.previewText && (
-                      <div className="mt-1.5 pl-6 w-full text-left">
-                        <p className="text-[10px] text-muted-foreground/70 line-clamp-2 leading-tight break-all">
-                          {searchHit.previewText}
-                        </p>
-                      </div>
-                    )}
-                  </button>
-                </ContextMenuTrigger>
-                <ContextMenuContent>
-                  <ContextMenuItem onClick={() => handleFloatSession(session.id)}>
-                    <PictureInPicture2 className="h-3.5 w-3.5 mr-2" />
-                    {t("sessions.float", "悬浮窗口")}
-                  </ContextMenuItem>
-                  <ContextMenuItem onClick={() => handleResumeSession(session.id)}>
-                    <TerminalIcon className="h-3.5 w-3.5 mr-2" />
-                    {t("sessions.openTerminal")}
-                  </ContextMenuItem>
-                  <ContextMenuSeparator />
-                  <ContextMenuItem onClick={() => { handleSelectSession(session.id); setRenameOpen(true); }}>
-                    <Pencil className="h-3.5 w-3.5 mr-2" />
-                    {t("sessions.rename")}
-                  </ContextMenuItem>
-                  {capabilities?.has("SESSION_FORK") && (
-                    <ContextMenuItem
-                      disabled={forking || streamStore.isStreaming(session.id)}
-                      onClick={() => void handleForkSession(session.id)}
-                    >
-                      <GitBranch className="h-3.5 w-3.5 mr-2" />
-                      {t("sessions.fork", "创建分支")}
-                    </ContextMenuItem>
-                  )}
-                  {capabilities?.has("SESSION_DELETE") && (
-                    <ContextMenuItem onClick={() => void handleDeleteSession(session.id)}>
-                      <Trash2 className="h-3.5 w-3.5 mr-2 text-red-400" />
-                      {t("sessions.delete")}
-                    </ContextMenuItem>
-                  )}
-                  <ContextMenuItem
-                    disabled={streamStore.hasState(session.id) || refreshingSessionId === session.id}
-                    onClick={() => void handleRefreshSession(session.id)}
-                  >
-                    <RotateCw className={cn("h-3.5 w-3.5 mr-2", refreshingSessionId === session.id && "animate-spin")} />
-                    {t("sessions.refreshSession", "刷新会话")}
-                  </ContextMenuItem>
-                </ContextMenuContent>
-              </ContextMenu>
-            );
-          })}
-          <TaskSessionTree
-            tasks={displayTaskLaunchSessions}
-            activeTaskId={activeTaskInstanceId}
-            activeNodeId={activeTaskInstanceId ? taskSelectedNodeId : null}
-            titleByNodeId={activeTaskNodeTitles}
-            onSelectTask={(task) => {
-              // 树的 TaskSessionTreeTask 是 TaskLaunchInstanceSummary 的结构子集，
-              // 回传时按 task_id 反查完整实例（openTaskPhaseWorkspace 需要 project_root 等字段）。
-              const instance = findTaskInstance(task.task_id);
-              if (!instance) return;
-              const phase: TaskPhase =
-                instance.current_phase === "planning"
-                  ? "planning"
-                  : instance.current_phase === "execution" || instance.current_phase === "graph"
-                    ? "execution"
-                    : "requirements";
-              openTaskPhaseWorkspace(instance, phase);
-            }}
-            onSelectNode={(task, node) => {
-              const instance = findTaskInstance(task.task_id);
-              if (!instance) return;
-              // 若目标任务尚未激活，先进任务执行 workspace（会重置 selectedNodeId），
-              // 随后指定目标节点，TaskSidebar 收到受控 prop 后自行拉取节点会话并高亮。
-              // 若任务已激活（含再次点击当前节点），直接切节点，不再调 openTaskPhaseWorkspace，
-              // 避免重复清空 selectedNodeId 引起节点会话→任务主会话的闪烁/竞态
-              //（v0.7.0 需求二-问题2：节点选中后再次点击变任务选中效果）。
-              if (activeTaskInstanceIdRef.current !== task.task_id || !taskModeActive) {
-                openTaskPhaseWorkspace(instance, "execution");
-              }
-              // v0.7.0 需求二-问题3：统一走 handleTaskSelectNode，立即切 pending-node
-              // 占位，避免新节点 session_id 回填前主区显示上一个节点的会话。
-              handleTaskSelectNode(node.node_id);
-            }}
-            onRenameTask={(task) => setRenameTaskTarget(findTaskInstance(task.task_id))}
-            onDeleteTask={async (task) => {
-              if (!projectPathForSettings) return;
-              const confirmed = await confirmDialog({
-                title: t("tasks.deleteTask"),
-                description: t("tasks.deleteTaskConfirm", { title: task.title }),
-                variant: "destructive",
-              });
-              if (!confirmed) return;
-              if (task.graph_id) {
-                await invokeCommand("orchestrator_delete_graph", { graphId: task.graph_id });
-              }
-              await invokeCommand("task_launch_delete_task", {
-                projectRoot: projectPathForSettings,
-                taskId: task.task_id,
-              });
-              setTaskLaunchSessions((current) => current.filter((item) => item.task_id !== task.task_id));
-            }}
-          />
-        </div>
-
-        {/* Collapsed: empty body */}
-        <div className={cn("flex-1", !sidebarCollapsed && "hidden")} />
-      </div>
+      <ChatSidebar
+        currentProject={currentProject}
+        projectDisplayName={projectDisplayName}
+        projectId={projectId}
+        projectPath={projectPathForSettings}
+        sidebarCollapsed={sidebarCollapsed}
+        setSidebarCollapsed={setSidebarCollapsed}
+        taskLaunchOpen={taskLaunchOpen}
+        searchQuery={searchQuery}
+        setSearchQuery={setSearchQuery}
+        showMessageSearchControls={showMessageSearchControls}
+        messageSearchLabel={messageSearchLabel}
+        messageSearchTotal={messageSearchTotal}
+        requestMessageSearchNavigation={requestMessageSearchNavigation}
+        searchResults={searchResults}
+        displaySessions={displaySessions}
+        sessionNames={sessionNames}
+        selectedSession={selectedSession}
+        streamingSessionIds={streamingSessionIds}
+        refreshingSessionId={refreshingSessionId}
+        regularSessionsOpen={regularSessionsOpen}
+        setRegularSessionsOpen={setRegularSessionsOpen}
+        canForkSession={Boolean(capabilities?.has("SESSION_FORK"))}
+        canDeleteSession={Boolean(capabilities?.has("SESSION_DELETE"))}
+        forking={forking}
+        displayTaskLaunchSessions={displayTaskLaunchSessions}
+        activeTaskInstanceId={activeTaskInstanceId}
+        activeTaskInstanceIdRef={activeTaskInstanceIdRef}
+        findTaskInstance={findTaskInstance}
+        openTaskPhaseWorkspace={openTaskPhaseWorkspace}
+        handleTaskCancelRun={handleTaskCancelRun}
+        setTaskLaunchSessions={setTaskLaunchSessions}
+        confirmDialog={confirmDialog}
+        handleNewSession={handleNewSession}
+        handleRefresh={handleRefresh}
+        handleOpenTaskConversation={handleOpenTaskConversation}
+        handleSelectSession={handleSelectSession}
+        handleFloatSession={handleFloatSession}
+        handleResumeSession={handleResumeSession}
+        handleForkSession={handleForkSession}
+        handleDeleteSession={handleDeleteSession}
+        handleRefreshSession={handleRefreshSession}
+        setRenameOpen={setRenameOpen}
+        setRenameTaskTarget={setRenameTaskTarget}
+      />
 
       {/* Right: Chat area */}
-      <div className="flex-1 flex flex-col min-w-0 bg-background">
+      <div className="relative flex-1 flex flex-col min-w-0 bg-background">
+        {/* v0.9.2 需求1 P4 + v0.9.4 需求7 测试期（用户裁决）：贴边挂件宿主
+            定位于「标题以下会话区」（top 避开标题栏、上下留固定间隔）——
+            导航条在该区间居中，不顶格。 */}
+        <div className="absolute left-0 top-24 bottom-10 w-6 pointer-events-none">
+          <SessionRailSlot ctx={sessionKernelCtx} />
+        </div>
         {/* 新建任务对话（TaskInstance 尚未创建）的顶栏：标题 + 关闭。
             减法重构：TaskHeaderBar 已随 TaskWorkspace 退役，这里用内联顶栏保留关闭能力，
             不引入独立组件；任务激活后主区沿用 chat-page 常规会话头。 */}
@@ -3118,6 +2727,8 @@ export function ChatPage({
                   <Button variant="ghost" size="icon-xs" onClick={() => setRenameOpen(true)} title={t("sessions.rename")}>
                     <Pencil className="h-3 w-3" />
                   </Button>
+                  {/* v0.9.2 需求1 M4：插件头部动作宿主（会话导出等轻动作）。 */}
+                  <SessionPluginActions ctx={sessionKernelCtx} enabled={enabledSessionPlugins} />
                 </div>
               </div>
             ) : (
@@ -3129,6 +2740,12 @@ export function ChatPage({
             ) : null}
               {/* Messages */}
               <div className="relative flex-1 min-h-0">
+                {/* v0.9.2 需求1：停靠面板宿主（五槽位/浮动/快捷图标）——通用容器，
+                    无已显示面板时零渲染；M3 任务流程全景为首个真实面板。 */}
+                <SessionPanelLayer ctx={sessionKernelCtx} />
+                {/* v0.9.2 测试期：侧边栏面板宿主（sidebar-panel 挂载形态，挤压式
+                    布局；与悬浮宿主平行，由能力中心统一调度）。 */}
+                <SessionSidebarLayer ctx={sessionKernelCtx} />
                 <div ref={messageAreaRef} className="h-full overflow-y-auto">
                 {taskSelectedNodeNotStarted ? (
                   // 选中的步骤还没执行过——直接说明，而不是把上一段会话继续摆在这里。
@@ -3142,15 +2759,22 @@ export function ChatPage({
                     {t("task.execution.nodeStarting")}
                   </div>
                 ) : selectedSession && selectedSession !== "new" ? (
-                  <MessageView
-                    messages={sessionMessages}
-                    sessionId={selectedSession}
-                    searchQuery={searchQuery}
-                    searchNavigation={messageSearchNavigation}
-                    onSearchStatusChange={handleMessageSearchStatusChange}
-                    flat
-                    scrollContainerRef={messageAreaRef}
-                  />
+                  // v0.9.1 需求5：data-turn-scope="main" 圈定主会话列表——横杠
+                  // 导航轨的轮次定位/滚动侦测只在此作用域内查询，任务执行投影
+                  // 的第二个 MessageView 不参与计数。无样式普通块级 div，
+                  // 不影响内层 mx-auto 居中布局。
+                  <div data-turn-scope="main">
+                    <MessageView
+                      messages={sessionMessages}
+                      sessionId={selectedSession}
+                      searchQuery={searchQuery}
+                      searchNavigation={messageSearchNavigation}
+                      onSearchStatusChange={handleMessageSearchStatusChange}
+                      flat
+                      scrollContainerRef={messageAreaRef}
+                      expandSignal={messageExpandSignal}
+                    />
+                  </div>
                 ) : null}
                 {/* T8-P1 三段合流（需求六）：执行阶段不是独立页面，而是在上方 conductor 会话
                     （需求 + 规划）末尾接一条「流程执行」分隔线，再往下追加执行内容——
@@ -3161,24 +2785,61 @@ export function ChatPage({
                       <PhaseDivider phase="execute" title={t("task.phase.execution", "流程执行")} />
                     </div>
                     {taskRunStarted ? (
-                      <MessageView messages={taskGraph.projectedMessages} sessionId={selectedSession} flat />
+                      /* v0.9.2 测试期修复（终态渲染两遍流程）：run 终态时节点卡列表
+                         与汇总卡的节点行重复展示同一套流程（用户实测「显示两遍」）。
+                         终态只渲染汇总卡——其节点行自带状态图标/标题/执行 agent，
+                         且整行可点击进入会话；节点卡列表仅承担执行中的实时呈现。 */
+                      taskGraph.runStatus && ["completed", "failed", "cancelled"].includes(taskGraph.runStatus) ? (
+                        <TaskSummaryCard
+                          runStatus={taskGraph.runStatus}
+                          nodes={taskFlowNodes}
+                          onSelectNode={handleTaskSelectNode}
+                          onRetryNode={(nodeId) => void handleRetryNode(nodeId)}
+                          onSkipNode={(nodeId) => void handleSkipNode(nodeId)}
+                          nodeActionBusy={nodeActionBusy}
+                        />
+                      ) : (
+                        <TaskNodeCards
+                          nodes={taskFlowNodes}
+                          onSelectNode={handleTaskSelectNode}
+                        />
+                      )
                     ) : showExecutionStartPrompt ? (
-                      <ExecutionStartPrompt
-                        stepCount={taskStepCount}
+                      /* v0.9.2 需求2 M3-2：方案卡——勾选执行哪些子任务后确认。 */
+                      <TaskPlanCard
+                        nodes={taskPlanNodes}
                         canStart={Boolean(taskGraph.revision?.revision_id)}
                         starting={execStarting}
                         error={execStartError}
-                        onStart={handleStartExecutionFromChat}
+                        onConfirm={(selectedIds) => void handleConfirmPlan(selectedIds)}
                         onDismiss={() =>
                           setExecPromptDismissedTaskId(activeTaskLaunchInstance?.task_id ?? null)
                         }
+                        onOpenCanvas={() => setTaskBoardSignal((n) => n + 1)}
+                        assignableAgents={agents}
+                        agentsLoading={healthLoading}
+                        onAssignAgent={(nodeId, agentId) => void handlePlanAssignAgent(nodeId, agentId)}
                       />
                     ) : (
-                      <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4 pb-2 text-[12px] text-muted-foreground">
-                        {t(
-                          "task.execution.awaitingStart",
-                          "流程尚未开始。可继续在下方对话中调整流程，或在右侧步骤栏点击「开始执行」。",
-                        )}
+                      /* v0.9.2 测试期修复：收起方案卡后不再死路——提供恢复入口
+                         （原侧栏「开始执行」替代路径已随 M3-5 退役）。
+                         布局与其他执行段卡片同构（独立块 + 按钮在文字下方）。 */
+                      <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4 py-2">
+                        <div className="rounded-xl border border-border/60 bg-muted/30 px-3 py-2.5">
+                          <div className="text-[12px] text-muted-foreground">
+                            {t(
+                              "task.execution.awaitingStart",
+                              "流程尚未开始。可继续在下方对话中调整流程。",
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setExecPromptDismissedTaskId(null)}
+                            className="mt-2 flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-background px-2.5 text-[12px] text-foreground/80 transition-fast hover:bg-accent hover:text-foreground"
+                          >
+                            {t("task.execution.showPlanCard", "返回执行流程")}
+                          </button>
+                        </div>
                       </div>
                     )}
                   </>
@@ -3194,6 +2855,7 @@ export function ChatPage({
                     sessionId={selectedSession}
                     isComplete={false}
                     scrollContainerRef={messageAreaRef}
+                    agentDisplayName={active?.display_name}
                   />
                 )}
               {/* Live placeholders for guided (steer) messages that have NOT
@@ -3210,12 +2872,36 @@ export function ChatPage({
                 {(() => {
                 if (!selectedSession || selectedSession === "new") return null;
                 const steerInjectedCount = currentStream?.steerTexts?.length ?? 0;
-                const visible = pendingSteerDisplay.slice(steerInjectedCount);
+                // v0.9.4 需求7 测试期重构：占位从 SteerCoordinator 队列派生
+                //（单一真源；已注入数随流内 steerTexts 前置隐藏）。
+                const queueKey = steerCoordinator.isEmpty(selectedSession)
+                  && currentStream?.resolvedId
+                  ? currentStream.resolvedId
+                  : selectedSession;
+                const visible = steerCoordinator.queueOf(queueKey)
+                  .slice(steerInjectedCount)
+                  .map((item) => ({
+                    role: "user" as const,
+                    // v0.9.4 需求8 补充：stage 文本即发送文本（含附件标记块），
+                    // 占位文本剥标记显示，附件经 InlineImages 渲染缩略。
+                    content: [{
+                      type: "text" as const,
+                      // 剥标记后为空（纯图片引导）→ 通用附件提示，不回退原文
+                      //（用户实测：标记块全文被 || 回退显示）。
+                      text: stripImagePrompt(item.text) || (item.text.includes("JISHU_HUB_IMAGES") ? t("sessions.imageOnlyBubble", "📎 发送了附件") : item.text),
+                      tool_ids: item.toolIds ?? [],
+                    }],
+                    attachmentsText: item.text,
+                    timestamp: 0,
+                  }));
                 if (visible.length === 0) return null;
                 return (
                   <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-1">
                     {visible.map((msg, i) => {
-                      const text = msg.content.find((c) => c.type === "text")?.text ?? "";
+                      const textBlock = msg.content.find((c) => c.type === "text");
+                      const text = textBlock?.text ?? "";
+                      const attachmentsText = (msg as { attachmentsText?: string }).attachmentsText ?? "";
+                      const steerToolIds = (textBlock && textBlock.type === "text" ? textBlock.tool_ids : undefined) ?? [];
                       return (
                         <div
                           key={`pending-steer-${steerInjectedCount + i}`}
@@ -3234,7 +2920,8 @@ export function ChatPage({
                               className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] overflow-hidden min-w-0 max-w-full"
                               style={{ fontSize: "var(--font-size-prose)" }}
                             >
-                              <UserTextWithPills text={text} toolNames={steerToolNames} />
+                              <InlineImages text={attachmentsText} />
+                              <UserTextWithPills text={text} toolIds={steerToolIds} toolNames={steerToolNames} />
                             </div>
                           </div>
                         </div>
@@ -3244,15 +2931,6 @@ export function ChatPage({
                 );
               })()}
                 </div>
-                {isUserMessageAbove ? (
-                  <button
-                    onClick={handleScrollToPreviousUserMessage}
-                    className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-border/40 bg-background/80 text-muted-foreground shadow-sm backdrop-blur-sm transition-all hover:bg-accent hover:text-foreground hover:border-border/60 hover:shadow-md opacity-60 hover:opacity-100"
-                    title={t("sessions.scrollToPreviousUserMessage")}
-                  >
-                    <ChevronUp className="h-4 w-4" strokeWidth={2.5} />
-                  </button>
-                ) : null}
               </div>
           </>
         )}
@@ -3332,7 +3010,39 @@ export function ChatPage({
                 if (selectedSession) {
                   const state = streamStore.getState(selectedSession);
                   const finalKey = state?.resolvedId ?? selectedSession;
+                  // v0.9.4 需求7 测试期修复六：停止幂等——CancelPending 期间
+                  // （如 pi auto_retry 迟迟未 settled）重复点停止，旧逻辑每次
+                  // 都本地提交一遍 pendingUserMessage（用户实测：点一次停止
+                  // 多渲染一遍问题）。10s 窗口内只提交一次；重复点击仅重发
+                  // abort（chat-input 已发），静默。
+                  {
+                    const at = abortLocalCommitRef.current.get(finalKey)
+                      ?? abortLocalCommitRef.current.get(selectedSession);
+                    if (at !== undefined && Date.now() - at < 10_000) {
+                      devLog("session", "onAbort 幂等命中（跳过重复提交）", { session: selectedSession });
+                      return;
+                    }
+                  }
                   if (state) {
+                    // v0.9.4 需求13：纯压缩流（压缩 divider 起的续流）停止时
+                    // 跳过本地提交——无可提交的回合内容（pending=null、无
+                    // partial 文本/思考/工具），提交只会产生一条"压缩中…"
+                    // 占位消息，与压缩结束沿统一提交的"已压缩/已取消"divider
+                    // 形成双条。pi 的 abort 含 abortCompaction：取消后
+                    // compaction_end(aborted) → pipeline 终结沿统一收口。
+                    const isPureCompaction = state.pendingUserMessage === null
+                      && state.text === "" && state.thinking === ""
+                      && state.tools.length === 0 && state.steerTexts.length === 0
+                      && state.content.length > 0
+                      && state.content.every((b) => b.type === "phase_divider" && b.phase === "compaction");
+                    if (isPureCompaction) {
+                      devLog("session", "onAbort 纯压缩流（跳过本地提交，等待压缩取消收口）", { session: finalKey });
+                      abortLocalCommitRef.current.set(finalKey, Date.now());
+                      if (selectedSession !== finalKey) {
+                        abortLocalCommitRef.current.set(selectedSession, Date.now());
+                      }
+                      return;
+                    }
                     const newMessages: Message[] = [];
                     if (state.pendingUserMessage) {
                       newMessages.push({
@@ -3347,22 +3057,47 @@ export function ChatPage({
                       interactionSplits: state.interactionSplits,
                       includePending: true,
                     });
+                    // v0.9.4 需求7 缺陷一：已注入 steer 的交错提交必须在本地
+                    //（停止时）完成——晚到的 TurnComplete(Aborted) 依赖事件
+                    // 异步到达，用户新消息可能先 append，导致 steer 落位在
+                    // 新消息之后（顺序错乱）。与 turn_complete 的 interaction
+                    // 分支同构（steerInsertions 参数）。
+                    const steerSplits = Array.from(new Set(state.steerSplits))
+                      .filter((idx) => idx > 0 && idx < state.content.length)
+                      .sort((a, b) => a - b);
+                    // 注入事实以流内 steerTexts 为准（steer_injected 已同步
+                    // 消费 coordinator 队列）。
+                    const injectedSteerTexts = state.steerTexts ?? [];
+                    const midSteerCount = Math.min(steerSplits.length, injectedSteerTexts.length);
                     const committed = commitAssistantWithInteractions({
                       assistantContent,
                       interactionInsertions,
+                      steerInsertions: steerSplits.slice(0, midSteerCount).map((index, i) => ({
+                        index,
+                        text: injectedSteerTexts[i],
+                      })),
                       error: state.error,
                     });
                     newMessages.push(...committed.messages);
+                    // 消费已注入 steer 的队列与 live 占位（与交错提交等量；
+                    // 未注入的残留交给 steer_queue_cleared 对账/重发，及
+                    // TurnComplete(Aborted) 兕底，此处不动）。
+                    if (midSteerCount > 0) {
+                      steerCoordinator.consume(
+                        steerCoordinator.isEmpty(finalKey) ? selectedSession : finalKey,
+                        midSteerCount,
+                      );
+                    }
 
                     if (newMessages.length > 0) {
                       const baseMessages =
-                        sessionMessagesCacheRef.current.get(finalKey)
-                        ?? sessionMessagesCacheRef.current.get(selectedSession)
+                        getCachedSessionMessages(finalKey)
+                        ?? getCachedSessionMessages(selectedSession)
                         ?? [];
                       const updated = [...baseMessages, ...newMessages];
-                      sessionMessagesCacheRef.current.set(finalKey, updated);
+                      setCachedSessionMessages(finalKey, updated);
                       if (selectedSession !== finalKey) {
-                        sessionMessagesCacheRef.current.set(selectedSession, updated);
+                        setCachedSessionMessages(selectedSession, updated);
                       }
                       setSessionMessages(updated);
                     }
@@ -3411,6 +3146,16 @@ export function ChatPage({
                         console.warn("Failed to persist partial assistant after abort:", err);
                       });
                     }
+                    // v0.9.4 需求7 测试期重构：本地提交后**不再 drop**（旧 drop 在
+                    // TurnComplete(Aborted) 到达前杀流，晚到终结者被 pushTracked
+                    // 拒绝 → 重发收口永远不执行，用户实测引导 B+停止后 B 消失）。
+                    // 改设标记：turn_complete(Aborted) 凭标记跳过重复提交，收口
+                    //（steering 重发）照常——turn_complete 是唯一回合终结者。
+                    devLog("session", "onAbort 本地提交+标记", { session: finalKey });
+                    abortLocalCommitRef.current.set(finalKey, Date.now());
+                    if (selectedSession !== finalKey) {
+                      abortLocalCommitRef.current.set(selectedSession, Date.now());
+                    }
                   }
 
                   setPendingInteractions((current) =>
@@ -3418,7 +3163,7 @@ export function ChatPage({
                   );
                   if (
                     !state
-                    && !sessionMessagesCacheRef.current.has(selectedSession)
+                    && !hasCachedSessionMessages(selectedSession)
                   ) {
                     // A null `state` here means the abort-originated
                     // turn_complete (e.g. Claude Code's ACP cancel, which races
@@ -3439,7 +3184,7 @@ export function ChatPage({
                         encodedName: projectId,
                       });
                       const visibleMessages = stripTaskLaunchInstructionFromMessages(msgs);
-                      sessionMessagesCacheRef.current.set(selectedSession, visibleMessages);
+                      setCachedSessionMessages(selectedSession, visibleMessages);
                       setSessionMessages(visibleMessages);
                     } catch (e) {
                       console.error("Failed to refresh messages after abort", e);
@@ -3447,7 +3192,7 @@ export function ChatPage({
                   }
                 }
               }}
-              onGuideStaged={async (content: string) => {
+              onGuideStaged={async (content: string, toolIds?: string[]) => {
                 if (!selectedSession || selectedSession === "new") return;
                 // Pi-RPC delivers the guide as a real mid-turn injection
                 // (steer_chat + steer_injected event). ACP (claude-code) has no
@@ -3467,17 +3212,9 @@ export function ChatPage({
                 // sessionMessages between that reply and the guide's response
                 // when the turn completes (or sent by Route 2 if it wasn't a
                 // real mid-turn injection).
-                const key = selectedSession;
-                const existing = pendingSteerMessagesRef.current.get(key) ?? [];
-                pendingSteerMessagesRef.current.set(key, [...existing, content]);
-                setPendingSteerDisplay((prev) => [
-                  ...prev,
-                  {
-                    role: "user",
-                    content: [{ type: "text", text: content }],
-                    timestamp: Date.now(),
-                  },
-                ]);
+                // v0.9.4 需求7 测试期重构：登记入 SteerCoordinator（占位由队列
+                // 派生，双状态同步问题根除）。
+                steerCoordinator.stage(selectedSession, content, toolIds);
               }}
             />
           </div>
@@ -3487,57 +3224,40 @@ export function ChatPage({
       {/* 任务模式：右侧任务侧边栏。减法重构——唯一区别于普通会话页的组件；
           主会话区（上方 MessageView/ChatInput）原样复用 chat-page，不做任何复制。
           P4a：仅执行阶段显示；P4c：可被「隐藏步骤栏」收起。 */}
-      {taskModeActive && activeTaskLaunchInstance?.current_phase === "execution" && !taskSidebarHidden ? (
-        <TaskSidebar
-          taskId={activeTaskLaunchInstance.task_id}
-          projectPath={currentProject?.path ?? ""}
-          instance={activeTaskLaunchInstance}
-          taskGraph={taskGraph}
-          agents={agents.map((agent) => ({ id: agent.id, display_name: agent.display_name }))}
-          agentsLoading={healthLoading && agents.length === 0}
-          selectedNodeId={taskSelectedNodeId}
-          onSelectNode={handleTaskSelectNode}
-          onNodeSessionChange={handleTaskNodeSessionChange}
-          onHide={() => setTaskSidebarHidden(true)}
-        />
-      ) : null}
-
-      {/* P4c + T8-P8：侧边栏被隐藏后，渲染停靠在布局里的 40px 折叠栏
-          （展开按钮 + 进度点阵），而非浮层按钮——浮层易被输入区遮挡、易误认为缺失。 */}
-      {taskModeActive && activeTaskLaunchInstance?.current_phase === "execution" && taskSidebarHidden ? (
-        <div className="flex h-full w-10 shrink-0 flex-col items-center gap-2 border-l border-border/30 bg-background py-2">
-          <button
-            type="button"
-            onClick={() => setTaskSidebarHidden(false)}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-            title={t("task.steps.show", "显示步骤栏")}
-          >
-            <PanelRightOpen className="h-4 w-4" />
-          </button>
-          {/* 进度点阵：折叠态仍可见各节点状态（goal 节点排除）。 */}
-          <div className="mt-1 flex flex-1 flex-col items-center gap-1 overflow-hidden">
-            {(taskGraph.snapshot?.nodes ?? [])
-              .filter((n) => n.node_kind !== "goal")
-              .map((n) => {
-                const status = taskGraph.nodeRuns[n.node_id]?.status;
-                const dot =
-                  status === "succeeded" || status === "skipped"
-                    ? "bg-emerald-500"
-                    : status === "failed"
-                      ? "bg-red-500"
-                      : status === "running"
-                        ? "bg-primary animate-pulse"
-                        : "bg-muted-foreground/30";
-                return (
-                  <span
-                    key={n.node_id}
-                    className={`h-1.5 w-1.5 rounded-full ${dot}`}
-                    title={n.title}
-                  />
-                );
-              })}
-          </div>
-        </div>
+      {/* v0.9.2 需求2 M3-5：TaskSidebar 退役——步骤呈现归全景面板（session.flow
+          插件）与会话内子任务卡，画布 overlay 上移到页面级（全景面板「画布」
+          入口经 taskBoardSignal 唤起）。 */}
+      {taskBoardOpen && taskModeActive && activeTaskLaunchInstance?.graph_id ? (
+        <Suspense fallback={null}>
+          <FlowBoardOverlay
+            taskTitle={activeTaskLaunchInstance.title}
+            graphId={activeTaskLaunchInstance.graph_id}
+            runStarted={Boolean(taskGraph.activeRunId ?? activeTaskLaunchInstance.active_run_id)}
+            runStatus={taskGraph.runStatus}
+            selectedNodeId={taskSelectedNodeId}
+            onSelectNode={handleTaskSelectNode}
+            onNodeDoubleClick={(nodeId) => {
+              setTaskBoardOpen(false);
+              handleTaskSelectNode(nodeId);
+            }}
+            onOpenMainSession={() => {
+              setTaskBoardOpen(false);
+              handleTaskSelectNode(null);
+            }}
+            onClose={() => setTaskBoardOpen(false)}
+            taskGraph={taskGraph}
+            onStartRun={handleStartExecutionFromChat}
+            agents={agents.map((agent) => ({ id: agent.id, display_name: agent.display_name }))}
+            agentsLoading={healthLoading && agents.length === 0}
+            defaultAgentId={normalizeAgentId(activeTaskLaunchInstance.planner_agent_id)}
+            selectedNodeSession={
+              taskSelectedNodeId
+                ? taskInstanceState.nodeSessionMap[taskSelectedNodeId] ?? null
+                : null
+            }
+            onAssignAgent={handleBoardAssignAgent}
+          />
+        </Suspense>
       ) : null}
 
       <RenameSessionDialog
@@ -3613,6 +3333,16 @@ export function ChatPage({
         </DialogContent>
       </Dialog>
     </div>
+    </BlockRenderersProvider>
   );
 }
 
+import {
+  evictIdleSessionMessagesCache,
+  getCachedSessionMessages,
+  setCachedSessionMessages,
+  deleteCachedSessionMessages,
+  hasCachedSessionMessages,
+} from "@/features/session-kernel/kernel/session-cache";
+import { startAgentEventPipeline } from "@/features/session-kernel/kernel/event-pipeline";
+import { useChatApprovals } from "./chat-approvals";

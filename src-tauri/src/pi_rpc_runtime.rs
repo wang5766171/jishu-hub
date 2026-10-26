@@ -567,10 +567,17 @@ async fn pi_rpc_connection_loop(
                                     reason: TurnEndReason::Aborted,
                                     usage: None,
                                 });
+                                // v0.9.1 需求3 #1：pi 的 abort 会继续执行残留的排队
+                                // 消息（rpc.md），hub 停止语义为「作废」——先清空
+                                // 队列再 abort；被清空的文本经 clear_queue 响应回传
+                                // GUI 回填输入框（响应分支发 SteerQueueCleared）。
+                                let _ = send_pi_command(&stdin_arc, &json!({
+                                    "type": "clear_queue"
+                                })).await;
                                 let _ = send_pi_command(&stdin_arc, &json!({
                                     "type": "abort"
                                 })).await;
-                                log::info!("Pi RPC cancel sent");
+                                log::info!("Pi RPC cancel sent (clear_queue + abort)");
                                 state = LoopState::CancelPending {
                                     pending_prompt: None,
                                 };
@@ -689,6 +696,53 @@ async fn pi_rpc_connection_loop(
                                         // session.abort() responds after awaited agent_end
                                         // handlers and emits agent_settled, which owns final
                                         // completion and the local Idle transition.
+                                        continue;
+                                    }
+                                    "clear_queue" => {
+                                        // v0.9.1 需求3 #1：停止前清队的响应——
+                                        // 排队文本回传 GUI；空队列不发事件（无排队
+                                        // 消息的停止零噪声）。v0.9.4 需求7：分组回传
+                                        // ——steering（用户引导）与 followUp（普通
+                                        // 排队）分开，前端对 steering 自动重发、
+                                        // followUp 回填输入框。
+                                        if success {
+                                            let mut collect = |key: &str| -> Vec<String> {
+                                                let mut out: Vec<String> = Vec::new();
+                                                if let Some(arr) = msg
+                                                    .get("data")
+                                                    .and_then(|d| d.get(key))
+                                                    .and_then(|v| v.as_array())
+                                                {
+                                                    for item in arr {
+                                                        if let Some(text) = item.as_str() {
+                                                            if !text.trim().is_empty() {
+                                                                out.push(text.to_string());
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                out
+                                            };
+                                            let steering = collect("steering");
+                                            let follow_ups = collect("followUp");
+                                            // texts 保持「全部被清文本」语义（先
+                                            // steering 后 followUp，与旧合并序一致）。
+                                            let mut texts = steering.clone();
+                                            texts.extend(follow_ups.iter().cloned());
+                                            if !texts.is_empty() {
+                                                log::info!(
+                                                    "Pi RPC clear_queue: {} 条排队消息回传（steering {} / followUp {}）",
+                                                    texts.len(),
+                                                    steering.len(),
+                                                    follow_ups.len()
+                                                );
+                                                buf.push(NormalizedEvent::SteerQueueCleared {
+                                                    texts,
+                                                    follow_up_texts: follow_ups,
+                                                });
+                                                flush_buf(&emit, &session_id, &mut buf);
+                                            }
+                                        }
                                         continue;
                                     }
                                     "compact" => {
@@ -962,6 +1016,11 @@ async fn pi_rpc_connection_loop(
                                 continue;
                             }
 
+                            log::info!(
+                                "[tool-visibility] extension_ui_request method={} id={}",
+                                msg.get("method").and_then(|v| v.as_str()).unwrap_or("?"),
+                                msg.get("id").and_then(|v| v.as_str()).unwrap_or("?"),
+                            );
                             if let Some(event) = convert_extension_ui_request(&msg) {
                                 // Track only requests that actually wait for a response.
                                 if matches!(event, NormalizedEvent::InteractionRequest { .. }) {
@@ -1299,7 +1358,10 @@ fn pi_turn_usage(event: &serde_json::Value, context_window: Option<u64>) -> Opti
 /// v0.8.0 需求10：分段用量 + 内容归因。usage 部分复用 pi_turn_usage（精确）；
 /// 归因部分对 turn_end 的 message.content 逐块估算（thinking/text/toolCall），
 /// toolResults 估算为工具结果进入后续上下文的规模。
-fn pi_segment_usage(event: &serde_json::Value, context_window: Option<u64>) -> Option<crate::usage_store::SegmentUsage> {
+fn pi_segment_usage(
+    event: &serde_json::Value,
+    context_window: Option<u64>,
+) -> Option<crate::usage_store::SegmentUsage> {
     let base = pi_turn_usage(event, context_window)?;
     let mut seg = crate::usage_store::SegmentUsage {
         stop_reason: event
@@ -1357,8 +1419,8 @@ fn pi_segment_usage(event: &serde_json::Value, context_window: Option<u64>) -> O
                     // （实测仅 type/id/name/arguments 四字段），按用户裁决统一
                     // 归入工具桶；est_mcp_tool/mcp_calls 列留作前向预留。
                     let _name = block.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    let est = est_block_tokens(Some(&serde_json::Value::Null)) +
-                        est_block_tokens(block.get("arguments"));
+                    let est = est_block_tokens(Some(&serde_json::Value::Null))
+                        + est_block_tokens(block.get("arguments"));
                     seg.est_builtin_tool += est;
                     seg.tool_calls += 1;
                 }
@@ -1376,9 +1438,8 @@ fn pi_segment_usage(event: &serde_json::Value, context_window: Option<u64>) -> O
 
 /// 从 pi compaction_end 事件提取压缩记录（CompactionResult 字段）。
 fn pi_compaction_record(event: &serde_json::Value) -> crate::usage_store::CompactionRecord {
-    let num = |v: Option<&serde_json::Value>| {
-        v.and_then(|x| x.as_f64()).map(|x| x as u64).unwrap_or(0)
-    };
+    let num =
+        |v: Option<&serde_json::Value>| v.and_then(|x| x.as_f64()).map(|x| x as u64).unwrap_or(0);
     let result = event.get("result");
     let usage = result.and_then(|r| r.get("usage"));
     let cost = usage
@@ -1397,7 +1458,10 @@ fn pi_compaction_record(event: &serde_json::Value) -> crate::usage_store::Compac
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string(),
-        aborted: event.get("aborted").and_then(|v| v.as_bool()).unwrap_or(false),
+        aborted: event
+            .get("aborted")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         tokens_before: num(result.and_then(|r| r.get("tokensBefore"))),
         tokens_after: num(result.and_then(|r| r.get("estimatedTokensAfter"))),
         first_kept_entry_id: result
@@ -1435,6 +1499,36 @@ pub(crate) fn normalize_pi_agent_event(
         // v0.8.0 需求10：上下文压缩生命周期——开始→状态指示；结束→状态清除
         // + phase_divider(compaction) 分隔线（进内容流，turn_complete 时随
         // content 一并提交，重载时由 pi_session 的 compaction 条目重建）。
+        // v0.9.1 需求14：pi 主轮自动重试（agent-session _prepareRetry，RPC
+        // 原样透传）——start（attempt/maxAttempts/delayMs/errorMessage）与
+        // end（success/attempt/finalError）归一为状态事件；GUI 会话区显性
+        // 展示「第 N/M 次重试中（原因）」直至最终失败原因。
+        "auto_retry_start" | "auto_retry_end" => {
+            let active = event_type == "auto_retry_start";
+            vec![NormalizedEvent::AutoRetryStatus {
+                active,
+                attempt: event.get("attempt").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                max_attempts: event
+                    .get("maxAttempts")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32,
+                delay_ms: event.get("delayMs").and_then(|v| v.as_u64()).unwrap_or(0),
+                error_message: event
+                    .get("errorMessage")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                success: event
+                    .get("success")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                final_error: event
+                    .get("finalError")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+            }]
+        }
         "compaction_start" | "compaction_end" => {
             let active = event_type == "compaction_start";
             let reason = event
@@ -1442,25 +1536,56 @@ pub(crate) fn normalize_pi_agent_event(
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            // 分隔线两态：开始即入列「上下文压缩中…」，结束时 store 原地替换
-            // 为「上下文已压缩」（见 use-stream-store phase_divider 分支）——
-            // 用户可从分隔线本身看出压缩进度。
             if active {
                 vec![
                     NormalizedEvent::PhaseDivider {
                         phase: "compaction".to_string(),
                         title: "上下文压缩中…".to_string(),
                     },
-                    NormalizedEvent::CompactionStatus { active: true, reason },
-                ]
-            } else {
-                vec![
-                    NormalizedEvent::CompactionStatus { active: false, reason },
-                    NormalizedEvent::PhaseDivider {
-                        phase: "compaction".to_string(),
-                        title: "上下文已压缩".to_string(),
+                    NormalizedEvent::CompactionStatus {
+                        active: true,
+                        reason,
                     },
                 ]
+            } else {
+                // v0.9.1 需求3 #2：compaction_end 自带 aborted/errorMessage 字段
+                // （失败路径 agent-session.ts catch 分支），三态呈现——此前一律
+                // 「已压缩」把失败静默吞掉。
+                let aborted = event
+                    .get("aborted")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let error_message = event
+                    .get("errorMessage")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                let title = if error_message.is_some() {
+                    "上下文压缩失败".to_string()
+                } else if aborted {
+                    "上下文压缩已取消".to_string()
+                } else {
+                    "上下文已压缩".to_string()
+                };
+                let mut events = vec![
+                    NormalizedEvent::CompactionStatus {
+                        active: false,
+                        reason,
+                    },
+                    NormalizedEvent::PhaseDivider {
+                        phase: "compaction".to_string(),
+                        title,
+                    },
+                ];
+                if let Some(error) = error_message {
+                    // recoverable：压缩失败不中断会话，用户可重试（手动压缩/下一
+                    // 轮阈值触发自动重试）。
+                    events.push(NormalizedEvent::Error {
+                        message: error,
+                        recoverable: true,
+                    });
+                }
+                events
             }
         }
 
@@ -1504,6 +1629,13 @@ pub(crate) fn normalize_pi_agent_event(
 
         // -- Tool execution lifecycle -------------------------------------
         "tool_execution_start" => {
+            // v0.9.4 需求12 测试期诊断（用户实测：长命令执行期间前端无工具卡
+            // ——需区分「pi 未发 start」与「hub→前端链路丢」）。dev 终端可见。
+            log::info!(
+                "[tool-visibility] tool_execution_start call_id={} tool={}",
+                event.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("?"),
+                event.get("toolName").and_then(|v| v.as_str()).unwrap_or("?"),
+            );
             let call_id = event
                 .get("toolCallId")
                 .and_then(|v| v.as_str())
@@ -1523,7 +1655,11 @@ pub(crate) fn normalize_pi_agent_event(
             } else {
                 let interactions = interaction_requests_from_tool_call(&call_id, &tool, &input);
                 if interactions.is_empty() {
-                    let view = crate::agent::tool_view::classify_tool_view(&tool, &input);
+                    let view = crate::agent::tool_view::classify_tool_view_for(
+                        "jishu-self",
+                        &tool,
+                        &input,
+                    );
                     vec![NormalizedEvent::ToolUseStart {
                         call_id,
                         tool,
@@ -1536,6 +1672,42 @@ pub(crate) fn normalize_pi_agent_event(
                     // here creates a duplicate, non-answerable question.
                     vec![]
                 }
+            }
+        }
+        "tool_execution_update" => {
+            // v0.9.4 需求8：工具执行中间进度（bash 类长时工具的流式输出
+            // 快照）。pi 的 partialResult 是 AgentToolResult 形状——文本在
+            // content[].text（tools/bash.ts emitOutputUpdate），兜底直出
+            // output 字符串字段；均无则不发（不猜形状）。高频事件，前端
+            // event-pipeline 侧 per call_id 节流。
+            let call_id = event
+                .get("toolCallId")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let partial = event.get("partialResult");
+            let text: Option<String> = partial.and_then(|p| {
+                if let Some(arr) = p.get("content").and_then(|v| v.as_array()) {
+                    let mut s = String::new();
+                    for item in arr {
+                        if let Some(t) = item.get("text").and_then(|v| v.as_str()) {
+                            s.push_str(t);
+                        }
+                    }
+                    if !s.is_empty() { Some(s) } else { None }
+                } else if let Some(t) = p.get("output").and_then(|v| v.as_str()) {
+                    Some(t.to_string())
+                } else {
+                    None
+                }
+            });
+            if call_id.is_empty() || text.is_none() {
+                vec![]
+            } else {
+                vec![NormalizedEvent::ToolUseProgress {
+                    call_id,
+                    partial_output: text.unwrap(),
+                }]
             }
         }
         "tool_execution_end" => {
@@ -1552,12 +1724,35 @@ pub(crate) fn normalize_pi_agent_event(
                 .get("result")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            // v0.9.4 需求8 测试期修复：pi 的 result 同为 AgentToolResult 形态
+            //（文本在 content[].text，与 update 的 partialResult 同源）——原样
+            // 透传导致前端结果区显示原始 JSON（用户截图实证）。提取文本后以
+            // 字符串透传；非该形状（如 MCP 工具自带结构）保持原样不猜。
+            let output = match result {
+                serde_json::Value::Null => serde_json::Value::Null,
+                ref v @ serde_json::Value::Object(_) => {
+                    let text = v.get("content").and_then(|c| c.as_array()).map(|arr| {
+                        let mut s = String::new();
+                        for item in arr {
+                            if let Some(t) = item.get("text").and_then(|x| x.as_str()) {
+                                s.push_str(t);
+                            }
+                        }
+                        s
+                    });
+                    match text {
+                        Some(t) if !t.is_empty() => serde_json::Value::String(t),
+                        _ => v.clone(),
+                    }
+                }
+                other => other,
+            };
             if call_id.is_empty() {
                 vec![]
             } else {
                 vec![NormalizedEvent::ToolUseResult {
                     call_id,
-                    output: result,
+                    output,
                     is_error,
                 }]
             }
@@ -1625,16 +1820,34 @@ pub(crate) fn normalize_pi_agent_event(
                 let phase = custom_type
                     .strip_prefix("jishu-conductor:phase-enter:")
                     .unwrap_or("");
-                let title = match phase {
-                    "discuss" => "需求讨论",
-                    "plan" => "流程规划",
-                    "execute" => "流程执行",
-                    "done" => "已完成",
-                    other => other,
-                };
+                // C4-slice2：声明驱动流水线阶段名——消息内容首行 `=== 阶段名 ===`
+                // 标记优先（与 session.rs 回放投影同一解析），回落内置映射。
+                let content_text = event
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let marker_title = content_text.lines().take(3).find_map(|line| {
+                    let trimmed = line.trim();
+                    trimmed
+                        .strip_prefix("=== ")
+                        .and_then(|rest| rest.strip_suffix(" ==="))
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_string)
+                });
+                let title = marker_title.unwrap_or_else(|| {
+                    match phase {
+                        "discuss" => "需求讨论",
+                        "plan" => "流程规划",
+                        "execute" => "流程执行",
+                        "done" => "已完成",
+                        other => other,
+                    }
+                    .to_string()
+                });
                 return vec![NormalizedEvent::PhaseDivider {
                     phase: phase.to_string(),
-                    title: title.to_string(),
+                    title,
                 }];
             }
 
@@ -1698,7 +1911,8 @@ pub(crate) fn normalize_pi_agent_event(
         }
 
         // All other event types (agent_start, agent_end, turn_start,
-        // message_end, tool_execution_update) are ignored.
+        // message_end) are ignored (tool_execution_update is mapped to
+        // ToolUseProgress — see the branch above).
         _ => vec![],
     }
 }
@@ -1809,6 +2023,12 @@ fn convert_extension_ui_request(msg: &serde_json::Value) -> Option<NormalizedEve
 /// 扩展通过带保留标题前缀的 `extension_ui_request(method="select")` 发起同步调用，
 /// Hub 直接执行后端函数并通过 extension_ui_response 返回结果，不经过前端。
 /// 设计依据：`jishu-task-conductor_实施计划.md` Phase 2 任务 2.2。
+/// v0.9.2 测试期：桥接路径（hub_invoke）可用的全局 AppHandle——conductor_revise_plan
+/// 成功后向 webview 广播 task-instance-changed（前端据此重载任务图显示新节点）。
+/// lib.rs setup 时注册；未注册（测试/无头）时静默跳过。
+pub(crate) static HUB_APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> =
+    std::sync::OnceLock::new();
+
 fn handle_hub_invoke(
     command: &str,
     params: &serde_json::Value,
@@ -1819,6 +2039,44 @@ fn handle_hub_invoke(
                 serde_json::from_value(params.clone())
                     .map_err(|e| format!("conductor_sync_phase 参数解析失败: {e}"))?;
             let result = crate::task_launch::conductor_sync_phase(request)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        // v0.9.3 需求13 C4-slice2：/jishu-pipeline 扩展命令按插件 id 取
+        // 展开后的阶段声明（模板展开在 Rust 侧，扩展保持薄）。
+        "composed_plugin_pipeline" => {
+            let id = params
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or("composed_plugin_pipeline 参数缺少 id")?;
+            crate::agent::plugin::composed_pipeline_by_id(id)
+        }
+        "conductor_revise_plan" => {
+            let request: crate::task_launch::RevisePlanRequest =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| format!("conductor_revise_plan 参数解析失败: {e}"))?;
+            let project_root = request.project_root.clone();
+            let task_id = request.task_id.clone();
+            let result = crate::task_launch::conductor_revise_plan(request)?;
+            // 前端刷新信号：桥接路径无 AppHandle 入参，经全局句柄广播
+            //（与 commands/task.rs 的 conductor_sync_phase 同一事件契约）。
+            if let Some(app) = HUB_APP_HANDLE.get() {
+                use tauri::Emitter;
+                let _ = app.emit(
+                    "task-instance-changed",
+                    serde_json::json!({
+                        "project_root": project_root,
+                        "task_id": task_id,
+                        "current_phase": "execution",
+                    }),
+                );
+            }
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "conductor_dispatch_to_node" => {
+            let request: crate::task_launch::DispatchToNodeRequest =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| format!("conductor_dispatch_to_node 参数解析失败: {e}"))?;
+            let result = crate::task_launch::conductor_dispatch_to_node(request)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "conductor_load_task_state" => {
@@ -1850,7 +2108,120 @@ fn handle_hub_invoke(
             let result = crate::task_launch::orchestrator_start_run_from_revision(request)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+        // v0.9.2 测试期：preview_html 工具落点——校验文件后向前端广播预览事件
+        //（会话插件 session.html-preview 的停靠面板接收渲染并自动展开）。
+        // v0.9.3 测试期（前端项目预览）：新增 url 模式——agent 开发前端项目时
+        // 先起 dev server（vite/webpack 等），预览应指向 http://localhost:端口
+        // （外链 CSS/JS、HMR 均由 dev server 提供；单文件 srcDoc 预览必然丢样
+        // 式——用户实测 agent 被迫内联资源）。仅放行本机回环地址。
+        "plugin_preview_html" => {
+            let session_id = params
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if let Some(url) = params
+                .get("url")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+            {
+                validate_loopback_preview_url(url)?;
+                if let Some(app) = HUB_APP_HANDLE.get() {
+                    use tauri::Emitter;
+                    let _ = app.emit(
+                        "session-plugin-preview",
+                        serde_json::json!({
+                            "url": url,
+                            "session_id": session_id,
+                        }),
+                    );
+                } else {
+                    return Err("Hub 界面未就绪，无法打开预览".to_string());
+                }
+                return serde_json::to_value(serde_json::json!({ "opened": true, "url": url }))
+                    .map_err(|e| e.to_string());
+            }
+            let file = params
+                .get("file")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("plugin_preview_html: file is required")?;
+            let path = std::path::PathBuf::from(file);
+            if !path.is_file() {
+                return Err(format!("文件不存在: {file}"));
+            }
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase());
+            if !matches!(ext.as_deref(), Some("html") | Some("htm")) {
+                return Err("仅支持 .html / .htm 文件".to_string());
+            }
+            let size = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+            if size > 2 * 1024 * 1024 {
+                return Err(format!("文件 {size} 字节超过 2MB 预览上限"));
+            }
+            // Windows canonicalize() 产出 \\?\C:\... verbatim 前缀，会被
+            // read_text_file 的 validate_path 当 UNC 路径拒绝（用户实测
+            // 「UNC paths are not allowed」）——剥前缀还原普通盘符路径。
+            let canonical = {
+                let s = path
+                    .canonicalize()
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .into_owned();
+                let stripped = s
+                    .strip_prefix(r"\\?\UNC\")
+                    .map(|rest| format!(r"\\{rest}"))
+                    .or_else(|| s.strip_prefix(r"\\?\").map(|rest| rest.to_string()))
+                    .unwrap_or(s);
+                stripped
+            };
+            if let Some(app) = HUB_APP_HANDLE.get() {
+                use tauri::Emitter;
+                let _ = app.emit(
+                    "session-plugin-preview",
+                    serde_json::json!({
+                        "file": canonical,
+                        "session_id": session_id,
+                    }),
+                );
+            } else {
+                return Err("Hub 界面未就绪，无法打开预览".to_string());
+            }
+            serde_json::to_value(serde_json::json!({ "opened": true, "file": canonical }))
+                .map_err(|e| e.to_string())
+        }
         _ => Err(format!("未知 hub_invoke 命令: {command}")),
+    }
+}
+
+/// 预览 url 校验：仅放行 http/https 的本机回环地址（localhost / 127.0.0.1 /
+/// [::1]）。dev server 预览的安全边界——外网/内网地址一律拒绝（防把 Hub
+/// 面板当任意站点浏览器用）。
+fn validate_loopback_preview_url(url: &str) -> Result<(), String> {
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or("预览地址需为 http/https URL（dev server 地址，如 http://localhost:5173）")?;
+    if scheme != "http" && scheme != "https" {
+        return Err("预览地址仅支持 http/https（dev server 地址）".to_string());
+    }
+    // authority = 端口前的主机部分（截掉路径/查询/锚点；剥 userinfo）。
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .rsplit('@')
+        .next()
+        .unwrap_or("");
+    let host = if authority.starts_with('[') {
+        authority.split(']').next().unwrap_or("").trim_start_matches('[') // IPv6 字面量 [::1]
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    match host {
+        "localhost" | "127.0.0.1" | "::1" => Ok(()),
+        other => Err(format!("仅支持本机回环地址预览（localhost/127.0.0.1），收到: {other}")),
     }
 }
 
@@ -1877,6 +2248,90 @@ fn flush_buf(emit: &AcpEventEmit, session_id: &str, buf: &mut Vec<NormalizedEven
 
 #[cfg(test)]
 mod tests {
+    use super::handle_hub_invoke;
+
+    // v0.9.2 测试期：plugin_preview_html 校验阶梯——文件存在性/扩展名/大小
+    // 逐级拒绝；合法文件在无 Hub 句柄的测试环境落到「界面未就绪」分支
+    //（证明前两级校验已通过）。
+    #[test]
+    fn plugin_preview_html_rejects_missing_file() {
+        let err = handle_hub_invoke(
+            "plugin_preview_html",
+            &serde_json::json!({"file": "Z:/definitely/not/there.html"}),
+        )
+        .unwrap_err();
+        assert!(err.contains("不存在"), "unexpected: {err}");
+    }
+
+    // v0.9.3 测试期（前端项目预览）：url 模式回环校验——仅本机
+    // localhost/127.0.0.1/[::1] 的 http/https 放行，其余（外网/内网/非
+    // http scheme）拒绝；合法 url 在无 Hub 句柄环境落到「界面未就绪」。
+    #[test]
+    fn plugin_preview_html_url_loopback_ladder() {
+        for bad in [
+            "http://example.com:5173",
+            "http://192.168.1.10:3000",
+            "file://localhost/x",
+            "ftp://localhost",
+            "http://localhost.evil.com",
+        ] {
+            let err = handle_hub_invoke(
+                "plugin_preview_html",
+                &serde_json::json!({"url": bad}),
+            )
+            .unwrap_err();
+            // 各级拒绝（scheme/回环）皆可，断言核心：到不了「界面未就绪」
+            //（即校验全部放行的路径）。
+            assert!(!err.contains("未就绪"), "url={bad} should be rejected: {err}");
+        }
+        for ok in [
+            "http://localhost:5173",
+            "http://127.0.0.1:3000/index.html",
+            "https://localhost",
+        ] {
+            let err = handle_hub_invoke(
+                "plugin_preview_html",
+                &serde_json::json!({"url": ok}),
+            )
+            .unwrap_err();
+            assert!(err.contains("未就绪"), "url={ok} should pass validation: {err}");
+        }
+    }
+
+    #[test]
+    fn plugin_preview_html_rejects_non_html_extension() {
+        let md = std::env::temp_dir().join(format!(
+            "jishu-hub-preview-{}.md",
+            std::process::id()
+        ));
+        std::fs::write(&md, "x").unwrap();
+        let err = handle_hub_invoke(
+            "plugin_preview_html",
+            &serde_json::json!({"file": md.to_string_lossy()}),
+        )
+        .unwrap_err();
+        assert!(err.contains(".html"), "unexpected: {err}");
+        let _ = std::fs::remove_file(&md);
+    }
+
+    #[test]
+    fn plugin_preview_html_valid_file_reaches_hub_gate() {
+        let html = std::env::temp_dir().join(format!(
+            "jishu-hub-preview-{}.html",
+            std::process::id()
+        ));
+        std::fs::write(&html, "<!DOCTYPE html><html></html>").unwrap();
+        // 测试环境未注册 HUB_APP_HANDLE：合法文件应越过存在性/扩展名校验，
+        // 落到「Hub 界面未就绪」而非文件错误。
+        let err = handle_hub_invoke(
+            "plugin_preview_html",
+            &serde_json::json!({"file": html.to_string_lossy()}),
+        )
+        .unwrap_err();
+        assert!(err.contains("未就绪"), "unexpected: {err}");
+        let _ = std::fs::remove_file(&html);
+    }
+
     #[test]
     /// 真实形态回归：写小说场景的分段（thinking + text + toolCall=write +
     /// toolResults），验证分段记账的精确字段与内容归因。
@@ -1931,7 +2386,7 @@ mod tests {
             "aborted": false,
             "result": {
                 "summary": "## Goal
-- 用户要求写 20 万字小说",
+        - 用户要求写 20 万字小说",
                 "firstKeptEntryId": "entry-42",
                 "tokensBefore": 118_910,
                 "estimatedTokensAfter": 62_389,
@@ -2018,6 +2473,124 @@ mod tests {
         }
     }
 
+    /// v0.9.1 需求14：auto_retry_start/end 归一化——字段透传 + end 失败
+    /// 携最终原因。
+    #[test]
+    fn auto_retry_events_normalize_to_status() {
+        let mut steers = Vec::new();
+        let start = normalize_pi_agent_event(
+            &serde_json::json!({
+                "type": "auto_retry_start",
+                "attempt": 2,
+                "maxAttempts": 10,
+                "delayMs": 4000,
+                "errorMessage": "provider 503"
+            }),
+            None,
+            &mut steers,
+        );
+        assert_eq!(start.len(), 1);
+        match &start[0] {
+            NormalizedEvent::AutoRetryStatus {
+                active,
+                attempt,
+                max_attempts,
+                delay_ms,
+                error_message,
+                success,
+                final_error,
+            } => {
+                assert!(active);
+                assert_eq!((*attempt, *max_attempts, *delay_ms), (2, 10, 4000));
+                assert_eq!(error_message, "provider 503");
+                assert!(!success);
+                assert!(final_error.is_none());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let end = normalize_pi_agent_event(
+            &serde_json::json!({
+                "type": "auto_retry_end",
+                "success": false,
+                "attempt": 10,
+                "finalError": "all retries exhausted"
+            }),
+            None,
+            &mut steers,
+        );
+        match &end[0] {
+            NormalizedEvent::AutoRetryStatus {
+                active,
+                success,
+                final_error,
+                ..
+            } => {
+                assert!(!active);
+                assert!(!success);
+                assert_eq!(final_error.as_deref(), Some("all retries exhausted"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// v0.9.1 需求3 #2：compaction_end 三态呈现——成功「已压缩」、aborted
+    /// 「已取消」、errorMessage「失败 + Error(recoverable)」。字段形态对齐
+    /// pi agent-session catch 分支（errorMessage 仅非 abort 失败时下发）。
+    #[test]
+    fn compaction_end_renders_success_aborted_and_failure_states() {
+        let success = normalize_pi_agent_event(
+            &serde_json::json!({
+                "type": "compaction_end", "reason": "threshold",
+                "result": {"tokensBefore": 100, "estimatedTokensAfter": 50},
+                "aborted": false
+            }),
+            None,
+            &mut Vec::new(),
+        );
+        assert!(matches!(
+            success.as_slice(),
+            [
+                NormalizedEvent::CompactionStatus { active: false, .. },
+                NormalizedEvent::PhaseDivider { title, .. }
+            ] if title == "上下文已压缩"
+        ));
+
+        let aborted = normalize_pi_agent_event(
+            &serde_json::json!({
+                "type": "compaction_end", "reason": "manual",
+                "result": null, "aborted": true
+            }),
+            None,
+            &mut Vec::new(),
+        );
+        assert!(matches!(
+            aborted.as_slice(),
+            [
+                NormalizedEvent::CompactionStatus { active: false, .. },
+                NormalizedEvent::PhaseDivider { title, .. }
+            ] if title == "上下文压缩已取消"
+        ));
+
+        let failed = normalize_pi_agent_event(
+            &serde_json::json!({
+                "type": "compaction_end", "reason": "manual",
+                "result": null, "aborted": false,
+                "errorMessage": "Compaction failed: provider 500"
+            }),
+            None,
+            &mut Vec::new(),
+        );
+        assert!(matches!(
+            failed.as_slice(),
+            [
+                NormalizedEvent::CompactionStatus { active: false, .. },
+                NormalizedEvent::PhaseDivider { title, .. },
+                NormalizedEvent::Error { message, recoverable: true }
+            ] if title == "上下文压缩失败" && message.contains("provider 500")
+        ));
+    }
+
     use super::*;
 
     #[test]
@@ -2035,7 +2608,66 @@ mod tests {
     /// `terminate: true` produces *no* TurnComplete anywhere, which is why the
     /// settle branch in `run_loop` has to synthesise one (B2.5 T3).
     #[test]
-    fn tool_use_turn_end_yields_no_events() {
+
+    /// v0.9.4 需求8：tool_execution_update → ToolUseProgress（partialResult
+    /// 透传不解析；无 callId 丢弃）。
+    #[test]
+    fn tool_execution_update_maps_to_progress() {
+        let events = normalize_pi_agent_event(
+            &json!({
+                "type": "tool_execution_update",
+                "toolCallId": "call-1",
+                "toolName": "bash",
+                "partialResult": {
+                    "content": [{ "type": "text", "text": "step 3/45 done" }],
+                    "details": { "fullOutputPath": null }
+                }
+            }),
+            None,
+            &mut Vec::new(),
+        );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            NormalizedEvent::ToolUseProgress { call_id, partial_output } => {
+                assert_eq!(call_id, "call-1");
+                assert_eq!(partial_output, "step 3/45 done");
+            }
+            other => panic!("Expected ToolUseProgress, got {other:?}"),
+        }
+
+        // 兜底形状（output 直出）：也能提取。
+        let events = normalize_pi_agent_event(
+            &json!({
+                "type": "tool_execution_update",
+                "toolCallId": "call-1b",
+                "toolName": "bash",
+                "partialResult": { "output": "legacy shape" }
+            }),
+            None,
+            &mut Vec::new(),
+        );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            NormalizedEvent::ToolUseProgress { partial_output, .. } => {
+                assert_eq!(partial_output, "legacy shape");
+            }
+            other => panic!("Expected ToolUseProgress, got {other:?}"),
+        }
+
+        // 无 callId：丢弃（防御）。
+        let events = normalize_pi_agent_event(
+            &json!({
+                "type": "tool_execution_update",
+                "toolName": "bash",
+                "partialResult": { "output": "x" }
+            }),
+            None,
+            &mut Vec::new(),
+        );
+        assert!(events.is_empty(), "no callId should be dropped: {events:?}");
+    }
+
+        fn tool_use_turn_end_yields_no_events() {
         let events = normalize_pi_agent_event(
             &json!({
                 "type": "turn_end",
@@ -2043,7 +2675,7 @@ mod tests {
             }),
             None,
             &mut Vec::new(),
- );;
+        );
         assert!(
             events.is_empty(),
             "toolUse turn_end must stay suppressed, got {events:?}"
@@ -2061,7 +2693,7 @@ mod tests {
             }),
             None,
             &mut Vec::new(),
- );;
+        );
         assert!(
             events
                 .iter()
@@ -2084,7 +2716,7 @@ mod tests {
             }),
             None,
             &mut Vec::new(),
- );;
+        );
 
         assert!(events.is_empty());
     }
@@ -2104,7 +2736,7 @@ mod tests {
             }),
             None,
             &mut Vec::new(),
- );;
+        );
 
         match events.as_slice() {
             [NormalizedEvent::PhaseDivider { phase, title }] => {
@@ -2153,7 +2785,10 @@ mod tests {
             None,
             &mut Vec::new(),
         );
-        assert!(events.is_empty(), "prompt 回显不应产生 steer 事件: {events:?}");
+        assert!(
+            events.is_empty(),
+            "prompt 回显不应产生 steer 事件: {events:?}"
+        );
     }
 
     #[test]
@@ -2171,7 +2806,7 @@ mod tests {
             }),
             None,
             &mut Vec::new(),
- );;
+        );
         assert!(events.is_empty());
     }
 
@@ -2189,7 +2824,7 @@ mod tests {
             }),
             None,
             &mut Vec::new(),
- );;
+        );
         assert!(events.is_empty());
     }
 

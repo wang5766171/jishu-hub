@@ -24,6 +24,32 @@ async function safeInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
 const CHAT_AGENT_KEY = "jishu-hub.chatAgentId";
 const MANAGE_AGENT_KEY = "jishu-hub.manageAgentId";
 
+/**
+ * v0.9.2 需求8（用户裁决）：默认智能体 = jishu agent 的根本逻辑是
+ * **排在最前面**——首次进入（无 localStorage 记忆）时，会话/管理作用域
+ * 的「首个可用」兜底与 AgentSwitcher 展示序都自然命中 jishu-self；用户
+ * 显式切换后的记忆逻辑不变。纯函数导出供单测。
+ */
+export function sortAgentsJishuFirst<T extends { id: string }>(list: T[]): T[] {
+  const JISHU_SELF = "jishu-self";
+  return [...list].sort((a, b) => {
+    const av = a.id === JISHU_SELF ? 0 : 1;
+    const bv = b.id === JISHU_SELF ? 0 : 1;
+    return av - bv; // Array#sort 稳定：其余保持后端返回序
+  });
+}
+
+/** 默认智能体（v0.9.3 需求21 修复）：无用户记录时的兜底恒为 jishu-self——
+ * 此前取「后端原始序第一个已安装」：全新安装（无 localStorage）且用户机器
+ * 装过 opencode CLI（health.installed=true、后端序在前）时默认命中
+ * opencode（用户卸载重装实测）。jishu-self 缺席（不可能——core 恒在）才
+ * 回退首个已安装/首项。 */
+export function defaultAgentId(list: Array<{ id: string; health?: { installed?: boolean | null } }>): string {
+  const JISHU_SELF = "jishu-self";
+  if (list.some((a) => a.id === JISHU_SELF)) return JISHU_SELF;
+  return list.find((a) => a.health?.installed)?.id ?? list[0]?.id ?? "";
+}
+
 interface AgentContextValue {
   /** 全部智能体列表（全局共享，无作用域） */
   agents: AgentStatus[];
@@ -67,20 +93,18 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       // 会话/管理作用域的选择从 localStorage 记忆恢复，兜底首个可用 agent。
       const list = await safeInvoke<AgentStatus[]>("agent_list_statuses");
       if (list && list.length > 0) {
-        setAgents(list);
-        // 恢复会话作用域记忆，兜底第一个 agent
+        setAgents(sortAgentsJishuFirst(list));
+        // 恢复会话/管理作用域记忆；无记录（全新安装）兜底恒 jishu-self
+        //（需求21 修复：不再取后端序首个已安装——opencode 误默认根因）。
         const savedChat = localStorage.getItem(CHAT_AGENT_KEY);
-        const fallbackChat = list.find((a) => a.health.installed)?.id ?? list[0].id;
-        setChatAgentIdState(savedChat && list.some((a) => a.id === savedChat) ? savedChat : fallbackChat);
-        // 恢复管理作用域记忆
+        setChatAgentIdState(savedChat && list.some((a) => a.id === savedChat) ? savedChat : defaultAgentId(list));
         const savedManage = localStorage.getItem(MANAGE_AGENT_KEY);
-        const fallbackManage = list.find((a) => a.health.installed)?.id ?? list[0].id;
-        setManageAgentIdState(savedManage && list.some((a) => a.id === savedManage) ? savedManage : fallbackManage);
+        setManageAgentIdState(savedManage && list.some((a) => a.id === savedManage) ? savedManage : defaultAgentId(list));
       }
       setHealthLoading(true);
       await safeInvoke("agent_refresh_health");
       const refreshed = await safeInvoke<AgentStatus[]>("agent_list_statuses");
-      if (refreshed) setAgents(refreshed);
+      if (refreshed) setAgents(sortAgentsJishuFirst(refreshed));
       setHealthLoading(false);
     })();
   }, []);
@@ -102,7 +126,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       try {
         await safeInvoke("agent_refresh_health");
         const list = await safeInvoke<AgentStatus[]>("agent_list_statuses");
-        if (list) setAgents(list);
+        if (list) setAgents(sortAgentsJishuFirst(list));
       } finally {
         if (!silent) setHealthLoading(false);
       }

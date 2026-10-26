@@ -1462,3 +1462,226 @@ use super::execute::{
 use super::lease::recover_lost_lease;
 use super::loops::drive_loops;
 use super::schedule::should_retry;
+
+// v0.9.2 需求3：run 终态（用户取消）竞速分支必须对 live invocation 主动 cancel——
+// 修复前仅丢弃 execute_node future，PiRpc 持久会话照常执行（点了停止依然执行）。
+struct HangingAgentRuntime {
+    started: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    cancelled: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// 持有 sender 使 events 通道保持打开（否则通道关闭会让 execute_agent
+    /// 以「无显式 turn-complete」正常返回而非挂起等待）。
+    _keep_open: std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<RuntimeStreamItem>>>,
+}
+
+impl HangingAgentRuntime {
+    fn new() -> (Self, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let cancelled = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+            Self {
+                started: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                cancelled: cancelled.clone(),
+                _keep_open: std::sync::Mutex::new(Vec::new()),
+            },
+            cancelled,
+        )
+    }
+}
+
+impl TaskAgentRuntime for HangingAgentRuntime {
+    fn resolve_agent(
+        &self,
+        _node: &GraphNode,
+        role_id: &str,
+        _default_agent_id: Option<&str>,
+    ) -> Result<(crate::orchestrator::domain::run::AgentAssignment, String), String> {
+        Ok((
+            crate::orchestrator::domain::run::AgentAssignment {
+                agent_id: "fake-agent".into(),
+                role_id: role_id.into(),
+                adapter_capability_snapshot: vec!["stream_text_delta".into()],
+            },
+            "test".into(),
+        ))
+    }
+
+    fn invoke(
+        &self,
+        request: RuntimeInvocationRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<InvocationHandle, String>> + Send>>
+    {
+        self.started
+            .lock()
+            .unwrap()
+            .push(request.invocation_id.clone());
+        let (tx, rx) = tokio::sync::mpsc::channel::<RuntimeStreamItem>(8);
+        self._keep_open.lock().unwrap().push(tx);
+        let invocation_id = request.invocation_id;
+        Box::pin(async move {
+            Ok(InvocationHandle {
+                invocation_id,
+                events: rx,
+            })
+        })
+    }
+
+    fn cancel(&self, invocation_id: &str) {
+        self.cancelled
+            .lock()
+            .unwrap()
+            .push(invocation_id.to_string());
+    }
+}
+
+#[tokio::test]
+async fn run_terminal_during_execution_cancels_live_invocation() {
+    let store = Arc::new(TaskStore::open_in_memory().unwrap());
+    let snapshot = GraphSnapshot {
+        nodes: vec![GraphNode {
+            node_id: "dispatch".into(),
+            parent_id: None,
+            title: "Dispatch".into(),
+            description: None,
+            node_kind: NodeKind::Executable,
+            input_contract: Default::default(),
+            output_contract: Default::default(),
+            role_requirement: None,
+            capability_requirements: vec![],
+            agent_assignment_constraint: None,
+            policy: NodePolicy {
+                approval_policy: ApprovalPolicy::Never,
+                ..Default::default()
+            },
+            metadata: HashMap::new(),
+            executable_payload: Some(ExecutablePayload::Dispatch {
+                role_id: "implementer".into(),
+                prompt: "Implement the feature".into(),
+                project: None,
+                session: None,
+            }),
+            loop_config: None,
+            approval_gate_config: None,
+        }],
+        edges: vec![],
+    };
+    let graph = TaskGraph {
+        graph_id: "g-cancel".into(),
+        title: "Cancel Test".into(),
+        goal: "Dispatch".into(),
+        project_root: PathBuf::from("."),
+        owner: "test".into(),
+        current_draft_revision: Some("r-cancel".into()),
+        created_at: 1,
+        updated_at: 1,
+    };
+    let revision =
+        GraphRevision::from_snapshot("r-cancel", "g-cancel", None, &snapshot, "test", 1).unwrap();
+    let run = GraphRun {
+        run_id: "run-cancel".into(),
+        graph_id: "g-cancel".into(),
+        active_revision_id: "r-cancel".into(),
+        status: RunStatus::Running,
+        run_seq: 1,
+        budget_state: BudgetState::default(),
+        planning_snapshot: Default::default(),
+        started_at: 1,
+        finished_at: None,
+    };
+    let started = build_event(
+        "e-cancel",
+        "run-cancel",
+        1,
+        TaskEventType::RunStarted,
+        "test",
+        1,
+        serde_json::to_value(payloads::RunStartedPayload {
+            run_id: "run-cancel".into(),
+            graph_id: "g-cancel".into(),
+            revision_id: "r-cancel".into(),
+            initial_status: RunStatus::Running,
+            budget_state: run.budget_state.clone(),
+        })
+        .unwrap(),
+    );
+    {
+        store.create_graph_with_revision(&graph, &revision).unwrap();
+        store.create_run_with_event(&run, &started).unwrap();
+    }
+
+    let (runtime_impl, cancelled) = HangingAgentRuntime::new();
+    let started_ids = runtime_impl.started.clone();
+    let runtime: Arc<dyn TaskAgentRuntime> = Arc::new(runtime_impl);
+    let arbiter = Arc::new(ResourceArbiter::new(ResourceLimits::default()));
+    let tick_counter = Arc::new(AtomicU64::new(0));
+    let ready_caches: Arc<std::sync::Mutex<std::collections::HashMap<String, ReadySetComputer>>> =
+        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    tick(&store, &runtime, &arbiter, &tick_counter, &ready_caches)
+        .await
+        .unwrap();
+
+    // 等待节点被调度并进入执行（invocation 已启动）
+    for _ in 0..80 {
+        if !started_ids.lock().unwrap().is_empty() {
+            break;
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    let invocation_id = started_ids.lock().unwrap()[0].clone();
+    assert!(!invocation_id.is_empty());
+
+    // 模拟 TaskService::cancel_run：写 NodeCancelled + RunCancelled 使 run 进入终态
+    let run_now = store.get_run("run-cancel").unwrap();
+    let base_seq = run_now.run_seq;
+    let node_runs = store.get_node_runs("run-cancel").unwrap();
+    let active_ids = node_runs
+        .iter()
+        .filter(|node_run| !node_run.status.is_terminal())
+        .map(|node_run| node_run.node_run_id.clone())
+        .collect::<Vec<_>>();
+    let mut events = Vec::new();
+    for (index, node_run_id) in active_ids.iter().enumerate() {
+        events.push(build_event(
+            gen_id("evt"),
+            "run-cancel",
+            base_seq + 1 + index as u64,
+            TaskEventType::NodeCancelled,
+            "user",
+            2,
+            serde_json::to_value(payloads::NodeStatusChangedPayload {
+                node_run_id: node_run_id.clone(),
+                node_id: "dispatch".into(),
+                old_status: NodeRunStatus::Running,
+                new_status: NodeRunStatus::Cancelled,
+            })
+            .unwrap(),
+        ));
+    }
+    events.push(build_event(
+        gen_id("evt"),
+        "run-cancel",
+        base_seq + 1 + active_ids.len() as u64,
+        TaskEventType::RunCancelled,
+        "user",
+        2,
+        serde_json::Value::Null,
+    ));
+    store
+        .terminate_run_with_events(
+            "run-cancel",
+            &RunStatus::Running,
+            &RunStatus::Cancelled,
+            2,
+            &active_ids,
+            &events,
+        )
+        .unwrap();
+
+    // 竞速分支应在 wait_for_terminal_run（100ms 轮询）后对 live invocation 发 cancel
+    for _ in 0..80 {
+        if !cancelled.lock().unwrap().is_empty() {
+            break;
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    let cancelled = cancelled.lock().unwrap().clone();
+    assert_eq!(cancelled, vec![invocation_id]);
+}

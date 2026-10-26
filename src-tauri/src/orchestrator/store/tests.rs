@@ -1290,3 +1290,147 @@ fn task_interaction_is_persisted_resolved_and_consumed_once() {
         .unwrap()
         .is_none());
 }
+
+/// v0.9.3 需求4（评审 P2-1）：run 创建 + 结转种子原子落库——单事务后
+/// run_seq 为最终值、种子节点 Succeeded 可见（引擎首读即终态，无中间窗口）。
+#[test]
+fn create_run_with_event_and_seeds_atomic_visibility() {
+    let store = make_test_store();
+    let graph = TaskGraph {
+        graph_id: "g1".into(),
+        title: "T".into(),
+        goal: "G".into(),
+        project_root: PathBuf::from("/p"),
+        owner: "u".into(),
+        current_draft_revision: None,
+        created_at: now(),
+        updated_at: now(),
+    };
+    store.create_graph(&graph).unwrap();
+
+    let run = GraphRun {
+        run_id: "run1".into(),
+        graph_id: "g1".into(),
+        active_revision_id: "rev1".into(),
+        status: RunStatus::Running,
+        run_seq: 3, // 1 RunStarted + 2 seeds
+        budget_state: BudgetState::default(),
+        planning_snapshot: Default::default(),
+        started_at: now(),
+        finished_at: None,
+    };
+    let started = build_event(
+        "e1",
+        "run1",
+        1,
+        TaskEventType::RunStarted,
+        "conductor-carryover",
+        now(),
+        serde_json::json!({"run_id": "run1"}),
+    );
+    let mut seed_a = NodeRun::new("nr-a", "run1", "n1", "rev1");
+    seed_a.status = NodeRunStatus::Succeeded;
+    let resolved_a = build_event(
+        "e2",
+        "run1",
+        2,
+        TaskEventType::NodeResolved,
+        "conductor-carryover",
+        now(),
+        serde_json::json!({"node_id": "n1"}),
+    );
+    let mut seed_b = NodeRun::new("nr-b", "run1", "n2", "rev1");
+    seed_b.status = NodeRunStatus::Succeeded;
+    let resolved_b = build_event(
+        "e3",
+        "run1",
+        3,
+        TaskEventType::NodeResolved,
+        "conductor-carryover",
+        now(),
+        serde_json::json!({"node_id": "n2"}),
+    );
+
+    store
+        .create_run_with_event_and_seeds(&run, &started, &[(seed_a, resolved_a), (seed_b, resolved_b)])
+        .unwrap();
+
+    // 引擎首读即终态：run_seq 最终值 + 种子节点 Succeeded。
+    let reloaded = store.get_run("run1").unwrap();
+    assert_eq!(reloaded.run_seq, 3);
+    let node_runs = store.get_node_runs("run1").unwrap();
+    assert_eq!(node_runs.len(), 2);
+    assert!(node_runs.iter().all(|nr| nr.status == NodeRunStatus::Succeeded));
+
+    // 后续 save_execution_update 从最终 run_seq 续写不冲突（守卫与常规路径衔接）。
+    let mut next = NodeRun::new("nr-c", "run1", "n3", "rev1");
+    next.status = NodeRunStatus::Leased;
+    let next_event = build_event(
+        "e4",
+        "run1",
+        4,
+        TaskEventType::NodeResolved,
+        "engine",
+        now(),
+        serde_json::json!({"node_id": "n3"}),
+    );
+    store
+        .save_execution_update(&next, None, &[], &[next_event], None, None)
+        .unwrap();
+    assert_eq!(store.get_run("run1").unwrap().run_seq, 4);
+}
+
+/// 种子事件序号错位（未占用 2..=n+1）→ Conflict 拒绝，不产生半态。
+#[test]
+fn create_run_with_event_and_seeds_rejects_sequence_gap() {
+    let store = make_test_store();
+    let graph = TaskGraph {
+        graph_id: "g1".into(),
+        title: "T".into(),
+        goal: "G".into(),
+        project_root: PathBuf::from("/p"),
+        owner: "u".into(),
+        current_draft_revision: None,
+        created_at: now(),
+        updated_at: now(),
+    };
+    store.create_graph(&graph).unwrap();
+
+    let run = GraphRun {
+        run_id: "run1".into(),
+        graph_id: "g1".into(),
+        active_revision_id: "rev1".into(),
+        status: RunStatus::Running,
+        run_seq: 2,
+        budget_state: BudgetState::default(),
+        planning_snapshot: Default::default(),
+        started_at: now(),
+        finished_at: None,
+    };
+    let started = build_event(
+        "e1",
+        "run1",
+        1,
+        TaskEventType::RunStarted,
+        "conductor-carryover",
+        now(),
+        serde_json::json!({}),
+    );
+    let mut seed = NodeRun::new("nr-a", "run1", "n1", "rev1");
+    seed.status = NodeRunStatus::Succeeded;
+    // 错位：run_seq=2（1+1 种子）但种子事件用了 seq 3。
+    let resolved = build_event(
+        "e2",
+        "run1",
+        3,
+        TaskEventType::NodeResolved,
+        "conductor-carryover",
+        now(),
+        serde_json::json!({}),
+    );
+
+    let err = store.create_run_with_event_and_seeds(&run, &started, &[(seed, resolved)]);
+    assert!(matches!(err, Err(StoreError::Conflict(_))));
+    // 事务性：拒绝后 run 行未落库（无半态）。
+    assert!(store.get_run("run1").is_err());
+}

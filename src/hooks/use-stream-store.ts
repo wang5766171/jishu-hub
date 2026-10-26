@@ -11,6 +11,13 @@ export interface StreamToolUse {
   isError?: boolean;
   /** v0.8.0 需求2 Phase 1：渲染意图（tool_use_start 携带，提交时随块持久化）。 */
   view?: import("@/types").ToolView;
+  /** v0.9.4 需求8：tool_use_start 到达时刻（running 卡实时计时）。 */
+  startedAt?: number;
+  /** v0.9.4 需求8：tool_use_result 到达时刻（完成态定格总时长）。 */
+  endedAt?: number;
+  /** v0.9.4 需求8：最新中间输出快照（tool_execution_update，运行中展开
+   * 可见——与「卡死」明确区分；完成后由 output 接替）。 */
+  partialOutput?: string;
 }
 
 export interface StepInfo {
@@ -51,7 +58,21 @@ export interface SessionStreamState {
   thinking: string;
   error: string;
   tools: StreamToolUse[];
+  /** v0.9.4 需求10：首个 pi 内容事件是否已到达（区分「智能体连接中」与
+   * 「等待模型响应」两阶段的状态文案）。start/drop 重置。 */
+  hasReceivedEvent: boolean;
+  /** v0.9.4 需求12 测试期：send_message 已受理（IPC 返回）——②「正在赶来」
+   * 仅在 spawn 期间（send 未确认）显示；复用进程场景模型首响应慢（20-40s）
+   * 应显示③「思考中」而非误导性的「正在赶来」（用户实测）。 */
+  promptAccepted: boolean;
+  /** v0.9.4 需求12 测试期修复（用户实测切模型卡②）：session_resolved 已到
+   * （resume attach 完成 = 连接真正建立）——②→③ 的权威切换信号。切模型后
+   * 回收重拉耗时 40s+，send_message IPC 返回过早（新进程尚在 spawn）。 */
+  sessionResolved: boolean;
   pendingUserMessage: string | null;
+  /** v0.9.0 需求3 方案 C：本条消息的工具插件 id 快照（compose 时前端已知，
+   * 与 pendingUserMessage 并行；文本标记方案已废弃，不再从文本解析）。 */
+  pendingToolIds: string[];
   /** Real session id if a `session_resolved` event was seen. */
   resolvedId: string | null;
   /** Id to pass to `abort_chat` (matches what the backend tracks). */
@@ -84,9 +105,19 @@ export interface SessionStreamState {
    * responds via `extension_ui_response`.
    */
   interactionSplits: InteractionSplit[];
+  /** v0.9.1 需求14：自动重试进行态（pi auto_retry_start）——「第 N/M 次
+   * 重试中（原因）」；重试成功（end success）清除。 */
+  autoRetry: { attempt: number; maxAttempts: number; errorMessage: string } | null;
+  /** v0.9.1 需求14：重试耗尽的最终失败（end success=false + finalError）——
+   * 保留至下一轮开始（emptyState 重置），页面显性展示最终失败原因。 */
+  retryFailed: { attempt: number; finalError: string } | null;
 }
 
-function emptyState(abortKey: string, pendingUserMessage: string | null): SessionStreamState {
+function emptyState(
+  abortKey: string,
+  pendingUserMessage: string | null,
+  pendingToolIds: string[] = [],
+): SessionStreamState {
   return {
     chunks: [],
     content: [],
@@ -95,13 +126,19 @@ function emptyState(abortKey: string, pendingUserMessage: string | null): Sessio
     error: "",
     tools: [],
     pendingUserMessage,
+    pendingToolIds,
     resolvedId: null,
     abortKey,
     isStreaming: true,
     steps: [],
     steerSplits: [],
     steerTexts: [],
+    hasReceivedEvent: false,
+    promptAccepted: false,
+    sessionResolved: false,
     interactionSplits: [],
+    autoRetry: null,
+    retryFailed: null,
   };
 }
 
@@ -137,20 +174,45 @@ class StreamStore {
   }
 
   /** Begin tracking a session that we just sent a message to. */
-  start(canonicalId: string, pendingUserMessage: string | null): void {
+  start(canonicalId: string, pendingUserMessage: string | null, pendingToolIds: string[] = []): void {
+    devLog("store", "start", { id: canonicalId, pending: pendingUserMessage?.slice(0, 40) ?? null });
     const key = this.canonical(canonicalId);
     // Reset the state for a new turn, even if the key already exists
     // (e.g. second message in the same session).
-    this.sessions.set(key, emptyState(key, pendingUserMessage));
+    this.sessions.set(key, emptyState(key, pendingUserMessage, pendingToolIds));
     this.scheduleFlush();
   }
 
   /** Record that `otherId` refers to the same stream as `canonicalId`. */
   alias(canonicalId: string, otherId: string): void {
+    devLog("store", "alias", { id: canonicalId, other: otherId });
     if (otherId === canonicalId) return;
     const key = this.canonical(canonicalId);
     this.aliases.set(otherId, key);
     this.aliases.set(canonicalId, key);
+  }
+
+  /** v0.9.4 需求12：send_message 受理确认（chat-input IPC 返回后调用）——
+   *  阶段文案②→③切换信号（与 hasReceivedEvent 独立：受理后模型未吐字 =
+   *  等待模型响应而非连接中）。 */
+  markPromptAccepted(sid: string): void {
+    const key = this.canonical(sid);
+    const prev = this.sessions.get(key);
+    if (!prev || prev.promptAccepted) return;
+    this.sessions.set(key, { ...prev, promptAccepted: true });
+    devLog("store", "send 受理确认（②→③：等待模型响应）", { id: sid });
+    this.scheduleFlush();
+  }
+
+  /** v0.9.4 需求12 测试期修复：session_resolved 到达（连接建立）——②→③
+   * 权威切换（同时视为 hasReceivedEvent：连接后必有内容流）。 */
+  markSessionResolved(sid: string): void {
+    const key = this.canonical(sid);
+    const prev = this.sessions.get(key);
+    if (!prev || prev.sessionResolved) return;
+    this.sessions.set(key, { ...prev, sessionResolved: true, hasReceivedEvent: true });
+    devLog("store", "session_resolved（②→③：连接建立）", { id: sid });
+    this.scheduleFlush();
   }
 
   /** Push only events that belong to an existing stream or can start a
@@ -169,11 +231,22 @@ class StreamStore {
     const key = this.canonical(sid);
     const prev = this.sessions.get(key) ?? emptyState(key, null);
 
-    let { content, text, thinking, error, tools, resolvedId, steps, steerSplits, steerTexts, interactionSplits } = prev;
+    let { content, text, thinking, error, tools, resolvedId, steps, steerSplits, steerTexts, interactionSplits, autoRetry, retryFailed } = prev;
+    let { hasReceivedEvent: hasEvent, sessionResolved } = prev;
+    const pendingToolIds = prev.pendingToolIds;
     const { pendingUserMessage, abortKey, isStreaming } = prev;
     const chunks = [...prev.chunks, chunk];
 
     const data = chunk.data;
+    const isContentEvent = data.kind === "text_delta"
+      || data.kind === "thinking"
+      || data.kind === "tool_use_start"
+      || data.kind === "message"
+      || data.kind === "phase_divider";
+    if (!hasEvent && isContentEvent) {
+      devLog("store", "首个内容事件到达（连接建立，②→③）", { id: key, kind: data.kind });
+    }
+    hasEvent = hasEvent || isContentEvent;
     if (data.kind === "text_delta") {
       // Snapshot-echo guard: claude-agent-acp streams the reply as many small
       // text_delta chunks, then re-sends the WHOLE reply as one final text_delta
@@ -197,16 +270,43 @@ class StreamStore {
       }
     } else if (data.kind === "error") {
       error = data.message;
+    } else if (data.kind === "auto_retry_status") {
+      // v0.9.1 需求14：start → 进行态横幅（多次 start 后者覆盖）；end 成功
+      // 清除；end 失败保留最终失败原因至下轮。
+      // wire 字段为 snake_case（NormalizedEvent 仅 variant 名 snake 化，
+      // 字段原样序列化——对齐 approval_request 等既有约定）。
+      if (data.active) {
+        autoRetry = { attempt: data.attempt, maxAttempts: data.max_attempts, errorMessage: data.error_message };
+        retryFailed = null;
+      } else {
+        autoRetry = null;
+        if (!data.success && data.final_error) {
+          retryFailed = { attempt: data.attempt, finalError: data.final_error };
+        }
+      }
     } else if (data.kind === "tool_use_start") {
       if (!tools.some((tool) => tool.id === data.call_id)) {
         // v0.8.0 需求2 Phase 1：view 随事件透传（tools 与 content 同源），
         // turn 提交时 content 中的 tool_use 块即带 view 持久化。
-        tools = [...tools, { id: data.call_id, name: data.tool, input: data.input, view: data.view }];
+        // v0.9.4 需求8：登记起始时刻（running 卡实时计时）。
+        tools = [...tools, { id: data.call_id, name: data.tool, input: data.input, view: data.view, startedAt: Date.now() }];
         content = [...content, { type: "tool_use", id: data.call_id, name: data.tool, input: data.input, view: data.view }];
       }
+    } else if (data.kind === "tool_use_progress") {
+      // v0.9.4 需求8：中间输出快照（高频，上游 event-pipeline 已 per
+      // call_id 节流 200ms；文本已在归一化层提取为纯字符串——pi 形状
+      // content[].text）。只更新已登记工具；不建新条目（无 start 的
+      // 迟到进度无渲染意义）。
+      if (data.partial_output) {
+        tools = tools.map((tool) => (
+          tool.id === data.call_id ? { ...tool, partialOutput: data.partial_output } : tool
+        ));
+      }
     } else if (data.kind === "tool_use_result") {
+      // v0.9.4 需求8：结束时刻（完成态 duration 展示；startedAt 同源配对）。
+      const endedAt = Date.now();
       tools = tools.map((tool) => (
-        tool.id === data.call_id ? { ...tool, output: data.output, isError: data.is_error } : tool
+        tool.id === data.call_id ? { ...tool, output: data.output, isError: data.is_error, endedAt } : tool
       ));
       if (!content.some((block) => block.type === "tool_result" && block.tool_use_id === data.call_id)) {
         content = [...content, { type: "tool_result", tool_use_id: data.call_id, content: data.output }];
@@ -331,7 +431,11 @@ class StreamStore {
       thinking,
       error,
       tools,
+      hasReceivedEvent: hasEvent,
+      sessionResolved: sessionResolved || (resolvedId !== undefined && resolvedId !== null && resolvedId !== ""),
+      promptAccepted: prev.promptAccepted,
       pendingUserMessage,
+      pendingToolIds,
       resolvedId,
       abortKey,
       isStreaming,
@@ -339,6 +443,8 @@ class StreamStore {
       steerSplits,
       steerTexts,
       interactionSplits,
+      autoRetry,
+      retryFailed,
     });
     this.scheduleFlush();
   }
@@ -423,6 +529,7 @@ class StreamStore {
 
   /** Remove all state for a session. */
   drop(sid: string): void {
+    devLog("store", "drop", { id: sid });
     const key = this.canonical(sid);
     this.sessions.delete(key);
     for (const [k, v] of Array.from(this.aliases.entries())) {
@@ -441,13 +548,23 @@ class StreamStore {
     return this.getState(sid)?.isStreaming ?? false;
   }
 
-  /** v0.7.0 诊断：返回所有正在 streaming 的 session key（用于排查 turn_complete 丢失）。 */
+  /**
+   * 所有正在 streaming 的 session id（会话列表行加载图标消费）。
+   * v0.9.3 测试期修复：**键 + 别名一并展开**——流式状态以乐观 pending id
+   * 为键，session_resolved 后列表行换成真实 id（别名），原先只返回键导致
+   * 真实 id 行整轮匹配不上（加载图标只在 resolve 前的乐观行上短暂出现，
+   * 开始思考/输出即消失——用户实测）。
+   */
   getStreamingIds(): string[] {
-    const ids: string[] = [];
+    const streamingKeys = new Set<string>();
     for (const [key, value] of this.sessions) {
-      if (value.isStreaming) ids.push(key);
+      if (value.isStreaming) streamingKeys.add(key);
     }
-    return ids;
+    const ids = new Set(streamingKeys);
+    for (const [aliasId, key] of this.aliases) {
+      if (streamingKeys.has(key)) ids.add(aliasId);
+    }
+    return [...ids];
   }
 
   /** 当前会话的 conductor phase（从 phase_divider 事件跟踪），drop 后仍可读。 */
@@ -485,6 +602,8 @@ class StreamStore {
     this.listeners.forEach((l) => l());
   }
 }
+
+import { devLog } from "@/lib/dev-log";
 
 export const streamStore = new StreamStore();
 

@@ -1,4 +1,5 @@
 use crate::task_launch;
+use tauri::Emitter;
 
 #[tauri::command]
 pub(crate) fn task_launch_list_sessions(
@@ -7,8 +8,26 @@ pub(crate) fn task_launch_list_sessions(
     task_launch::list_task_instances(&project_root)
 }
 
+/// v0.9.2 需求6：任务实例创建/阶段推进后向 webview 广播，前端即时刷新任务
+/// 列表并在会话模式下关联当前会话的任务实例（替代 4.8s 一次性发现窗口）。
+fn emit_task_instance_changed(
+    app: &tauri::AppHandle,
+    project_root: &str,
+    instance: &task_launch::TaskLaunchInstance,
+) {
+    let _ = app.emit(
+        "task-instance-changed",
+        serde_json::json!({
+            "project_root": project_root,
+            "task_id": instance.task_id,
+            "current_phase": instance.current_phase,
+        }),
+    );
+}
+
 #[tauri::command]
 pub(crate) fn task_launch_mark_session(
+    app: tauri::AppHandle,
     project_root: String,
     task_id: Option<String>,
     session_id: String,
@@ -16,14 +35,16 @@ pub(crate) fn task_launch_mark_session(
     phase: Option<String>,
     title: Option<String>,
 ) -> Result<task_launch::TaskLaunchInstance, String> {
-    task_launch::mark_task_stage_session(
+    let instance = task_launch::mark_task_stage_session(
         &project_root,
         task_id.as_deref(),
         &session_id,
         &skill_id,
         phase.as_deref().unwrap_or("requirements"),
         title.as_deref(),
-    )
+    )?;
+    emit_task_instance_changed(&app, &project_root, &instance);
+    Ok(instance)
 }
 
 #[tauri::command]
@@ -102,9 +123,44 @@ pub(crate) fn task_launch_delete_task(project_root: String, task_id: String) -> 
 
 #[tauri::command]
 pub(crate) fn conductor_sync_phase(
+    app: tauri::AppHandle,
     request: task_launch::ConductorSyncPhaseRequest,
 ) -> Result<task_launch::ConductorSyncPhaseResult, String> {
-    task_launch::conductor_sync_phase(request)
+    // v0.9.2 需求7：任务模式防呆——阶段强依赖的工具插件被禁用时明确报错到
+    // 会话（防"工具静默缺失 → 流程停摆"的不可诊断形态；白名单闸门见
+    // jishu_self::ensure_default_tools_arg 的插件聚合注入）。
+    if matches!(request.phase.as_str(), "discuss" | "plan") {
+        let required = if request.phase == "discuss" {
+            "task-requirements"
+        } else {
+            "task-plan"
+        };
+        use tauri::Manager;
+        let enabled = app
+            .state::<std::sync::Mutex<crate::AppState>>()
+            .lock()
+            .ok()
+            .and_then(|state| {
+                state
+                    .registry
+                    .list_plugins()
+                    .into_iter()
+                    .find(|plugin| plugin.id == required)
+                    .map(|plugin| plugin.enabled)
+            })
+            .unwrap_or(false);
+        if !enabled {
+            return Err(format!(
+                "任务流程依赖的插件「{required}」已被禁用，请在「插件管理」中启用后重试。"
+            ));
+        }
+    }
+    let project_root = request.project_root.clone();
+    let result = task_launch::conductor_sync_phase(request)?;
+    if result.success {
+        emit_task_instance_changed(&app, &project_root, &result.instance);
+    }
+    Ok(result)
 }
 
 #[tauri::command]

@@ -1,22 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { resolveToolKind, classifyToolName } from "./types";
+import { resolveToolKind } from "./types";
 import { isInteractionToolName } from "@/lib/interaction-tools";
 
-describe("resolveToolKind（v0.8.0 需求2 Phase 1）", () => {
+/** v0.9.0 需求4：前端名称分类 fallback（classifyToolName）已删除——分类
+ * 唯一权威在 Rust tool_view.rs（v2），无 view 的旧块按 other 渲染（版本级
+ * 无旧数据兼容裁决）。权威规则快照由 Rust tool_view.rs 测试锁定。 */
+describe("resolveToolKind（v0.9.0 需求4：view 单源）", () => {
   it("优先用事件携带的渲染意图", () => {
     expect(resolveToolKind("whatever_dialect", { kind: "file_read" })).toBe("file_read");
     expect(resolveToolKind("bash", { kind: "search" })).toBe("search");
   });
 
-  it("view 缺失回退名称分类（历史数据 fallback）", () => {
-    expect(resolveToolKind("bash")).toBe("shell_exec");
-    expect(resolveToolKind("Write")).toBe("file_write");
-    expect(resolveToolKind("unknown_tool")).toBe(classifyToolName("unknown_tool"));
+  it("view 缺失按 other 渲染（名称分类 fallback 已删除）", () => {
+    expect(resolveToolKind("bash")).toBe("other");
+    expect(resolveToolKind("Write")).toBe("other");
+    expect(resolveToolKind("unknown_tool")).toBe("other");
   });
 
   it("kind 无效值不透传（类型防线）", () => {
-    // view.kind 在运行时来自 wire；非法值走 fallback 而非渲染未知卡片
-    expect(resolveToolKind("bash", { kind: "not_a_kind" as never })).toBe("shell_exec");
+    // view.kind 在运行时来自 wire；非法值回退 other 而非渲染未知卡片
+    expect(resolveToolKind("bash", { kind: "not_a_kind" as never })).toBe("other");
   });
 });
 

@@ -16,6 +16,12 @@ pub trait AgentManifest {
     fn capabilities(&self) -> AgentCapabilities {
         AgentCapabilities::empty()
     }
+    /// 智能体的配置目录（v0.9.0 需求21：CLI 未安装但目录存在——桌面端形态
+    /// ——也应能进入设置页配置；None = 无固定目录概念）。
+    fn config_dir(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+
     /// 本应用内建管理的 agent（随 hub 分发/升级；环境检测置顶展示、
     /// 承担任务模式引擎等核心职责）。v0.7.4 需求3：共享层按此标志分支，
     /// 不得写死 agent id（DEVELOP_READ §7）。

@@ -1,0 +1,66 @@
+schema = 1
+kind = "tool"
+
+[info]
+id = "mcp-create-tool"
+display_name = "MCP 创建工具"
+icon = "blocks"
+
+[skill]
+description = "把 MCP server（stdio/HTTP/SSE）注册进 jishu hub 的操作指南——用户要求接入/注册/添加某个 MCP 服务，或你发现某 MCP server 值得接入时使用。注册后四家智能体（claude/codex/opencode/jishu）共享可用。"
+body = '''
+# 把 MCP 服务注册进 jishu hub（三步）
+
+## 第 1 步：写 plugin.toml
+
+一个插件声明一个 MCP server；插件 id 即工具命名空间（agent 侧工具名为 `<插件id>__<工具名>`）。
+
+stdio（本地命令）示例：
+
+```toml
+schema = 1
+kind = "tool"
+
+[info]
+id = "web-reader"              # 命名空间，用服务的短名（kebab-case）
+display_name = "Web Reader"
+
+[mcp]
+type = "stdio"
+command = "npx"
+args = ["-y", "@some/mcp-server"]
+# env = { API_KEY = "xxx" }    # 可选
+```
+
+HTTP（Streamable HTTP）示例：
+
+```toml
+[mcp]
+type = "http"
+url = "https://open.example.com/api/mcp"
+# headers = { Authorization = "Bearer <token>" }   # 可选
+```
+
+SSE 示例：
+
+```toml
+[mcp]
+type = "sse"
+url = "https://open.example.com/sse"
+```
+
+## 第 2 步：安装
+
+`jishu-cli plugins add <toml文件>`
+
+## 第 3 步：生效与验证
+
+- 提示用户在 jishu hub「插件管理」页点「重新加载」（或重启 hub）；
+- `jishu-cli mcp status` 验证条目出现。
+
+## 生效语义（重要）
+
+- 注册后由 hub 的 MCP 解析器聚合：四家智能体各只需一条常驻 jishu-hub 条目即可用全部已注册 MCP 工具；新注册/启停在下一次工具列表刷新即生效，无需改各家配置。
+- 需要凭据的服务：凭据写入 env / headers；提醒用户凭据会明文落盘于 ~/.jishu-hub/agents/。
+- 同 id 重复注册：用 `jishu-cli plugins update <id> <新toml>` 覆盖，或先 remove 再 add。
+'''

@@ -57,8 +57,15 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
       });
   }, [command, JSON.stringify(args)]);
 
+  // v0.9.4 需求7 测试期修复：refreshKey 触发的重拉走 silent——非 silent 会
+  // setLoading(true) 引发依赖 loading 的布局抖动（骨架/禁用态切换），回合完成
+  // 后的列表刷新等场景被用户感知为「界面刷新」。首挂与 args 变化（fetch 重建）
+  // 保持非 silent（清空 data + loading 骨架仍是正确反馈）。
+  const lastKeyRef = useRef(refreshKey);
   useEffect(() => {
-    fetch().catch((err) => {
+    const keyChanged = lastKeyRef.current !== refreshKey;
+    lastKeyRef.current = refreshKey;
+    fetch(keyChanged).catch((err) => {
       if (import.meta.env.DEV) console.warn("[useInvoke] fetch failed:", err);
     });
   }, [fetch, refreshKey]);
@@ -66,7 +73,33 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
   return { data, loading, error, refetch: fetch, setData };
 }
 
+import { devLog } from "@/lib/dev-log";
+
+const DEV_TRACED_COMMANDS = new Set([
+  "send_message", "abort_chat", "steer_chat", "chat_turn_active",
+  "get_session_messages", "session_generate_title", "persist_partial_assistant",
+  "respond_chat_interaction", "resolve_chat_approval",
+  // v0.9.4 需求12（用户补充）：模型切换 / 会话压缩 / 权限与工具模式。
+  "set_active", "compact_chat", "set_agent_tool_mode", "set_agent_permission_mode",
+  "session_set_tools", "fork_agent_session",
+]);
+
 export async function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  // v0.9.4 需求12：dev 日志（会话关键命令 + 耗时；其余命令不记）。
+  if (DEV_TRACED_COMMANDS.has(command)) {
+    const t = Date.now();
+    try {
+      const r = await timedInvoke<T>(command, args);
+      const brief = command === "set_active"
+        ? { ms: Date.now() - t, model: (args?.active as { provider?: string; model?: string } | undefined)?.model }
+        : { ms: Date.now() - t, sessionId: args?.sessionId ?? args?.session_id, mode: args?.mode };
+      devLog("ipc", `${command} ok`, brief);
+      return r;
+    } catch (e) {
+      devLog("ipc", `${command} FAIL`, { ms: Date.now() - t, error: String(e).slice(0, 120), args: command === "send_message" ? { sessionId: args?.sessionId } : undefined });
+      throw e;
+    }
+  }
   return timedInvoke<T>(command, args);
 }
 

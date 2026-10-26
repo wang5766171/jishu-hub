@@ -53,12 +53,7 @@ where
 
     // 2. User-installed Node Module (from UI updates)
     if let Some(agent_dir) = crate::agent::jishu_self::pi_agent_dir() {
-        let entry = PathBuf::from(&agent_dir)
-            .join("packages")
-            .join("coding-agent")
-            .join("dist")
-            .join("cli.js");
-        if file_exists(&entry) {
+        if let Some(entry) = coding_agent_entry(Path::new(&agent_dir), &file_exists) {
             let mut base_args = vec![entry.to_string_lossy().to_string()];
             return Ok(PiRuntimeCommand {
                 program: node_bin,
@@ -77,12 +72,7 @@ where
     };
 
     if let Some(agent_dir) = Some(internal_pi_dir) {
-        let entry = PathBuf::from(&agent_dir)
-            .join("packages")
-            .join("coding-agent")
-            .join("dist")
-            .join("cli.js");
-        if file_exists(&entry) {
+        if let Some(entry) = coding_agent_entry(&agent_dir, &file_exists) {
             let mut base_args = vec![entry.to_string_lossy().to_string()];
             return Ok(PiRuntimeCommand {
                 program: node_bin,
@@ -96,6 +86,25 @@ where
         "Cannot find Pi agent. Ensure Jishu Agent is installed or pi submodule is built."
             .to_string(),
     )
+}
+
+/// 解析 pi coding-agent 的 CLI 入口。
+/// v0.85.0 起产物为上游 bundle 布局（packages/coding-agent/dist/bundle/cli.js），
+/// 旧安装（≤0.84.2-11）为 dist/cli.js——新布局优先，旧布局回退保兼容。
+fn coding_agent_entry<G>(agent_dir: &Path, file_exists: &G) -> Option<PathBuf>
+where
+    G: Fn(&Path) -> bool,
+{
+    let dist = PathBuf::from(agent_dir)
+        .join("packages")
+        .join("coding-agent")
+        .join("dist");
+    for entry in [dist.join("bundle").join("cli.js"), dist.join("cli.js")] {
+        if file_exists(&entry) {
+            return Some(entry);
+        }
+    }
+    None
 }
 
 /// 查找内嵌的便携 Node（v0.8.1 需求10：pi-bundle/bin/node.exe）。

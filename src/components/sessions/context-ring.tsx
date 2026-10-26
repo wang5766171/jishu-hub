@@ -33,11 +33,15 @@ function formatTokens(value: number): string {
 export const ContextRing = memo(function ContextRing({
   sessionId,
   agentId,
+  projectPath,
   compact,
 }: {
   sessionId: string | null;
   /** v0.8.0 需求9 收尾：用于回填时重读全局压缩阈值配置。 */
   agentId?: string | null;
+  /** 需求4（v0.9.4）：会话所属项目根——项目级 .jishu-agent/settings.json
+   * 的 compaction 优先于全局（对齐 pi deepMerge 语义），环按生效值展示。 */
+  projectPath?: string | null;
   compact?: ContextRingCompactControls;
 }) {
   const { t } = useTranslation();
@@ -53,9 +57,28 @@ export const ContextRing = memo(function ContextRing({
     agentId && sessionId ? { agentId } : undefined,
     usage?.updatedAt,
   );
+  // 需求4（v0.9.4）：项目级覆盖优先（load_project_settings 返回
+  // ProjectSettings，compaction 形状同全局）；与 pi deepMerge(project over
+  // global) 对齐。无项目/无覆盖时回落全局。
+  const { data: projectSettings } = useInvoke<{ compaction?: { thresholdPercent?: unknown } }>(
+    agentId && sessionId && projectPath ? "load_project_settings" : "",
+    agentId && sessionId && projectPath ? { agentId, projectPath } : undefined,
+    usage?.updatedAt,
+  );
+  const projectThresholdRaw = projectSettings?.compaction?.thresholdPercent;
+  const globalThresholdRaw = (agentConfig?.compaction as { thresholdPercent?: unknown } | undefined)?.thresholdPercent;
+  const projectThreshold =
+    typeof projectThresholdRaw === "number" && Number.isFinite(projectThresholdRaw)
+      ? Math.round(projectThresholdRaw)
+      : null;
+  const globalThreshold =
+    typeof globalThresholdRaw === "number" && Number.isFinite(globalThresholdRaw)
+      ? Math.round(globalThresholdRaw)
+      : null;
+  // 两级均未配置 → pi 默认 90（compaction.ts:135），标注「默认」消除错觉。
+  const thresholdIsDefault = projectThreshold === null && globalThreshold === null;
   const thresholdPercent = (() => {
-    const raw = (agentConfig?.compaction as { thresholdPercent?: unknown } | undefined)?.thresholdPercent;
-    const pct = typeof raw === "number" && Number.isFinite(raw) ? Math.round(raw) : 90;
+    const pct = projectThreshold ?? globalThreshold ?? 90;
     return Math.min(99, Math.max(1, pct));
   })();
   const compactionTriggerTokens =
@@ -214,6 +237,11 @@ export const ContextRing = memo(function ContextRing({
                     tokens: formatTokens(compactionTriggerTokens),
                     percent: String(thresholdPercent),
                   })}
+                  {thresholdIsDefault && (
+                    <span className="ml-1 text-muted-foreground/50">
+                      {t("sessions.usageThresholdDefault", "（默认）")}
+                    </span>
+                  )}
                 </p>
               )}
               <p className="text-[10px] leading-tight text-muted-foreground/60">

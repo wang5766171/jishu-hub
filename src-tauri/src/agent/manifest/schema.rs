@@ -36,6 +36,54 @@ pub struct AgentManifestFile {
     /// 自适应插件的 pi 扩展形态声明（v0.8.1 需求10）。
     #[serde(default)]
     pub pi_extension: Option<PiExtensionSection>,
+    /// MCP server 声明（v0.9.0 需求1 P2）：插件声明一个外部 MCP stdio
+    /// server，hub 聚合 server（jishu-cli mcp serve）spawn 并转发其工具，
+    /// 四家智能体经单条 jishu-hub 条目获得（结构化通道，区别于 [tool] 的
+    /// prompt 注入；两者可并存）。
+    #[serde(default)]
+    pub mcp: Option<McpSection>,
+    /// 声明式面板（v0.9.0 需求8）。
+    #[serde(default)]
+    pub panel: Option<PanelSection>,
+    /// Skill 声明（v0.9.0 需求20，v0.9.1 需求9 单/双形态）：插件声明的
+    /// SKILL.md 能力，hub 分发器部署到各 agent 的 skill 目录（启停即分发/
+    /// 回收，对标 [mcp] 总控模式）。`[skill]` 表 = 单 skill（存量形态），
+    /// `[[skill]]` 数组 = 一插件多 skill（对标 MCP 一 server 多工具）。
+    /// 另有目录形式源：`plugins/<id>/skills/<name>/SKILL.md` 文件即权威
+    /// （新增/更新 skill = 增改文件，rebuild 时同步）。
+    #[serde(default)]
+    pub skill: Option<SkillDecl>,
+    /// 智能体的 skill 根目录声明（v0.9.0 需求20 第四轮，kind = "agent" 专属）：
+    /// 声明后 hub 的 skill 分发器把启用插件的 SKILL.md 铺到该目录
+    /// （`<dir>/<skill名>/SKILL.md`），实现自建智能体的 skill 接入。
+    #[serde(default)]
+    pub skills: Option<SkillsDirSection>,
+}
+
+/// [skills] 段（v0.9.0 需求20 第四轮）：dir = skill 根目录（支持 ~ 展开），
+/// 即 `<skill 名>/SKILL.md` 所在目录。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillsDirSection {
+    pub dir: String,
+}
+
+/// 声明式面板（v0.9.0 需求8：kind = "tool" 专属段）——插件贡献自己的管理
+/// 页：受限 list 模板（title + 只读命令行），hub 渲染并按需执行展示。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PanelSection {
+    pub title: String,
+    #[serde(default)]
+    pub items: Vec<PanelItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PanelItem {
+    pub label: String,
+    /// 展示时执行的只读命令（与 [tool].usage 同级信任：用户安装插件即信任）。
+    pub command: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -66,14 +114,110 @@ pub struct ToolSection {
 #[serde(deny_unknown_fields)]
 pub struct PiExtensionSection {
     /// pi 扩展入口文件名（相对于插件目录，如 "discuss.ts"）。
-    pub entry: String,
+    /// v0.9.2 需求7 改为可选：纯闸门形态（如 interactive-qa）不部署扩展
+    /// 文件，仅声明 tools 治理全局扩展注册的工具。
+    pub entry: Option<String>,
     /// 部署目标 agent id（v1 仅 "jishu-self"）。
     #[serde(default = "default_pi_target")]
     pub target_agent: String,
+    /// 本插件治理的 pi 进程内扩展工具名（v0.9.2 需求7 热插拔闸门）：
+    /// spawn 时 adapter 按"插件已启用"聚合进 --tools 白名单。工具本体由
+    /// 全局部署的扩展注册（request-user-input.ts / jishu-task-conductor.ts），
+    /// 此处只声明治理归属，不负责注册。
+    #[serde(default)]
+    pub tools: Vec<String>,
 }
 
 fn default_pi_target() -> String {
     "jishu-self".to_string()
+}
+
+/// MCP server 传输类型（v0.9.0 需求1 二期）：缺省 stdio——既有 toml 无
+/// type 字段无损兼容。http = Streamable HTTP（POST JSON-RPC）；sse = 旧式
+/// HTTP+SSE（GET 流 + endpoint 事件 + POST）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTransportKind {
+    #[default]
+    Stdio,
+    Http,
+    Sse,
+}
+
+/// MCP server 声明（v0.9.0 需求1 P2/二期，kind = "tool" 专属段）：
+/// stdio 传输带 command/args/env（聚合 server spawn 子进程代理）；http/sse
+/// 传输带 url/headers（聚合 server 建远程连接代理）。工具名以插件 id 命名
+/// 空间隔离。仅 [mcp] 无 [tool] 合法（纯结构化工具插件，不参与 prompt 注入）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpSection {
+    #[serde(default, rename = "type")]
+    pub transport: McpTransportKind,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    #[serde(default)]
+    pub env: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: Option<std::collections::HashMap<String, String>>,
+}
+
+/// Skill 声明（v0.9.0 需求20，kind = "tool" 专属段）：
+/// description = SKILL.md frontmatter 描述（Agent Skills 规范必填，≤1024）；
+/// body = SKILL.md 正文指令。skill 名 = 插件 id（分发目录名即命名空间）。
+/// 仅 [skill] 无 [tool] 合法（纯 skill 插件，不参与 prompt 注入）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillSection {
+    pub description: String,
+    pub body: String,
+}
+
+/// v0.9.1 需求9：`[[skill]]` 数组项——一插件多 skill。name = skill 名
+/// （部署目录名 `<plugin_id>__<name>`，对标 MCP 工具命名 `<pid>__<tool>`；
+/// frontmatter name 保持声明原值）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
+    pub body: String,
+}
+
+/// v0.9.1 需求9：[skill] 段单/双形态——TOML 同 key 表/数组互斥，untagged
+/// 依形态分流；存量单 skill 插件零迁移。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SkillDecl {
+    One(SkillSection),
+    Many(Vec<SkillEntry>),
+}
+
+impl SkillDecl {
+    /// 展开为 `(skill 名, description, body)` 清单：单数形态名 = None
+    /// （调用方以插件 id 命名，保持 v0.9.0 部署目录名不变）。
+    pub fn entries(&self) -> Vec<(Option<&str>, &str, &str)> {
+        match self {
+            SkillDecl::One(s) => vec![(None, s.description.as_str(), s.body.as_str())],
+            SkillDecl::Many(list) => list
+                .iter()
+                .map(|e| {
+                    (
+                        Some(e.name.as_str()),
+                        e.description.as_str(),
+                        e.body.as_str(),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    pub fn is_many(&self) -> bool {
+        matches!(self, SkillDecl::Many(_))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,15 +368,107 @@ impl AgentManifestFile {
             return Err("[config] is only allowed for agent plugins".to_string());
         }
         // v0.8.1 需求10：[pi_extension] 与 [tool] 并存 = 自适应插件（合法）。
+        // v0.9.2 需求7：entry 可选——纯闸门形态仅声明 tools；二者至少其一
+        // 非空（都空 = 无意义声明，拒绝）。
         if let Some(pi_ext) = &self.pi_extension {
-            if pi_ext.entry.trim().is_empty() {
-                return Err("pi_extension.entry must not be empty".to_string());
+            let has_entry = pi_ext
+                .entry
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|e| !e.is_empty());
+            let has_tools = !pi_ext.tools.is_empty();
+            if !has_entry && !has_tools {
+                return Err(
+                    "pi_extension must declare a non-empty entry or at least one tool".to_string(),
+                );
+            }
+        }
+        // v0.9.0 需求1 P2/二期：[mcp] 段校验——按传输类型必填项检查
+        //（stdio → command；http/sse → url 且 http(s) 前缀）。
+        if let Some(mcp) = &self.mcp {
+            match mcp.transport {
+                McpTransportKind::Stdio => {
+                    if mcp
+                        .command
+                        .as_deref()
+                        .map(str::trim)
+                        .unwrap_or("")
+                        .is_empty()
+                    {
+                        return Err("mcp.command must not be empty for stdio transport".to_string());
+                    }
+                }
+                McpTransportKind::Http | McpTransportKind::Sse => {
+                    let url = mcp.url.as_deref().map(str::trim).unwrap_or("");
+                    if url.is_empty() {
+                        return Err(format!(
+                            "mcp.url must not be empty for {:?} transport",
+                            mcp.transport
+                        ));
+                    }
+                    if !url.starts_with("http://") && !url.starts_with("https://") {
+                        return Err("mcp.url must start with http:// or https://".to_string());
+                    }
+                }
+            }
+        }
+        if self.skills.is_some() {
+            return Err("[skills] is only allowed for agent plugins".to_string());
+        }
+        // v0.9.0 需求20：[skill] 段校验；v0.9.1 需求9 扩展单/双形态。
+        if let Some(decl) = &self.skill {
+            match decl {
+                SkillDecl::One(skill) => {
+                    if skill.description.trim().is_empty() {
+                        return Err("skill.description must not be empty".to_string());
+                    }
+                    if skill.body.trim().is_empty() {
+                        return Err("skill.body must not be empty".to_string());
+                    }
+                }
+                SkillDecl::Many(entries) => {
+                    for e in entries {
+                        if e.name.trim().is_empty() {
+                            return Err("skill[].name must not be empty".to_string());
+                        }
+                        if e.name.contains('/') || e.name.contains('\\') || e.name.contains("..") {
+                            return Err("skill[].name must be a plain directory name".to_string());
+                        }
+                        if e.description.trim().is_empty() {
+                            return Err("skill[].description must not be empty".to_string());
+                        }
+                        if e.body.trim().is_empty() {
+                            return Err("skill[].body must not be empty".to_string());
+                        }
+                    }
+                }
+            }
+        }
+        // v0.9.0 需求8：[panel] 段校验。
+        if let Some(panel) = &self.panel {
+            if panel.title.trim().is_empty() {
+                return Err("panel.title must not be empty".to_string());
+            }
+            for (i, item) in panel.items.iter().enumerate() {
+                if item.label.trim().is_empty() {
+                    return Err(format!("panel.items[{i}].label must not be empty"));
+                }
+                if item.command.trim().is_empty() {
+                    return Err(format!("panel.items[{i}].command must not be empty"));
+                }
             }
         }
         let tool = match self.tool.as_ref() {
             Some(tool) => tool,
-            // 仅 [pi_extension] 无 [tool]：合法（仅 jishu-self 深度形态）。
-            None if self.pi_extension.is_some() => return Ok(()),
+            // 仅 [pi_extension]/[mcp]/[panel]/[skill] 无 [tool]：合法（深度
+            // 形态 / 纯结构化工具 / 纯面板 / 纯 skill 插件）。
+            None if self.pi_extension.is_some()
+                || self.mcp.is_some()
+                || self.panel.is_some()
+                || self.skill.is_some() =>
+            {
+                return Ok(());
+            }
             None => return Err("kind = \"tool\" requires a [tool] section".to_string()),
         };
         if tool.description.trim().is_empty() {
@@ -248,6 +484,15 @@ impl AgentManifestFile {
     fn validate_agent(&self) -> Result<(), String> {
         if self.tool.is_some() {
             return Err("[tool] is only allowed for tool plugins (kind = \"tool\")".to_string());
+        }
+        if self.mcp.is_some() {
+            return Err("[mcp] is only allowed for tool plugins (kind = \"tool\")".to_string());
+        }
+        if self.panel.is_some() {
+            return Err("[panel] is only allowed for tool plugins (kind = \"tool\")".to_string());
+        }
+        if self.skill.is_some() {
+            return Err("[skill] is only allowed for tool plugins (kind = \"tool\")".to_string());
         }
         let transport = self
             .transport
@@ -303,6 +548,11 @@ impl AgentManifestFile {
                         ));
                     }
                 }
+            }
+        }
+        if let Some(sk) = &self.skills {
+            if sk.dir.trim().is_empty() {
+                return Err("skills.dir must not be empty".to_string());
             }
         }
         if let Some(cwd) = &transport.cwd {
@@ -410,6 +660,10 @@ mod tests {
             session: None,
             capabilities: None,
             pi_extension: None,
+            mcp: None,
+            panel: None,
+            skill: None,
+            skills: None,
             tool: None,
         }
     }
@@ -592,5 +846,189 @@ kind = "cli"
 chat_command = ["x", "{prompt}"]
 "#;
         assert!(toml::from_str::<AgentManifestFile>(src).is_err());
+    }
+
+    #[test]
+    fn tool_panel_section_validates() {
+        // v0.9.0 需求8：[panel] 解析与校验（合法/空 command 拒绝/agent 禁止/panel-only 合法）。
+        let mut m = base_manifest();
+        m.kind = crate::agent::manifest::schema::ManifestKind::Tool;
+        m.transport = None;
+        m.tool = None;
+        m.panel = Some(crate::agent::manifest::schema::PanelSection {
+            title: "状态".to_string(),
+            items: vec![crate::agent::manifest::schema::PanelItem {
+                label: "版本".to_string(),
+                command: "gh --version".to_string(),
+            }],
+        });
+        assert!(m.validate().is_ok()); // panel-only 合法
+        m.panel.as_mut().unwrap().items[0].command = "  ".to_string();
+        assert!(m.validate().is_err());
+        let mut agent_m = base_manifest();
+        agent_m.panel = Some(crate::agent::manifest::schema::PanelSection {
+            title: "x".to_string(),
+            items: vec![],
+        });
+        assert!(agent_m.validate().is_err()); // agent 插件禁止 [panel]
+    }
+
+    fn mcp_tool_manifest(mcp_toml: &str) -> Result<AgentManifestFile, String> {
+        let src = format!(
+            r#"
+schema = 1
+kind = "tool"
+[info]
+id = "x"
+display_name = "X"
+{mcp_toml}
+"#
+        );
+        let m: AgentManifestFile = toml::from_str(&src).map_err(|e| e.to_string())?;
+        m.validate().map_err(|e| e.to_string()).map(|_| m)
+    }
+
+    #[test]
+    fn skills_dir_section_agent_only() {
+        // v0.9.0 需求20 第四轮：[skills] 段（agent 专属 skill 根目录声明）。
+        let mut m = base_manifest();
+        m.skills = Some(SkillsDirSection {
+            dir: "~/.gemini/skills".into(),
+        });
+        assert!(m.validate().is_ok());
+        // 空目录拒绝。
+        m.skills = Some(SkillsDirSection { dir: "  ".into() });
+        assert!(m.validate().unwrap_err().contains("skills.dir"));
+        // tool 插件禁止。
+        let mut t = base_manifest();
+        t.kind = crate::agent::manifest::schema::ManifestKind::Tool;
+        t.transport = None;
+        t.tool = None;
+        t.mcp = Some(McpSection {
+            transport: McpTransportKind::Stdio,
+            command: Some("npx".into()),
+            args: None,
+            env: None,
+            url: None,
+            headers: None,
+        });
+        t.skills = Some(SkillsDirSection { dir: "~/x".into() });
+        assert!(t.validate().unwrap_err().contains("[skills]"));
+    }
+
+    #[test]
+    fn skill_section_parse_and_validate() {
+        // v0.9.0 需求20：[skill] 解析/校验（skill-only 合法；空 description/body 拒绝；agent 禁止）。
+        let src = r#"
+schema = 1
+kind = "tool"
+[info]
+id = "code-review"
+display_name = "Code Review"
+[skill]
+description = "提交前代码自查清单"
+body = "逐文件检查错误处理与测试覆盖。"
+"#;
+        let m: AgentManifestFile = toml::from_str(src).unwrap();
+        assert!(m.validate().is_ok());
+        assert!(
+            matches!(m.skill.as_ref().unwrap(), super::SkillDecl::One(s) if s.description == "提交前代码自查清单")
+        );
+
+        // 空 description / 空 body → 拒绝。
+        let bad = src.replace("提交前代码自查清单", "  ");
+        let m: AgentManifestFile = toml::from_str(&bad).unwrap();
+        assert!(m.validate().unwrap_err().contains("skill.description"));
+        let bad2 = src.replace("逐文件检查错误处理与测试覆盖。", "");
+        let m: AgentManifestFile = toml::from_str(&bad2).unwrap();
+        assert!(m.validate().unwrap_err().contains("skill.body"));
+
+        // agent 插件带 [skill] → 拒绝。
+        let mut agent_m = base_manifest();
+        agent_m.skill = Some(SkillDecl::One(SkillSection {
+            description: "d".into(),
+            body: "b".into(),
+        }));
+        assert!(agent_m.validate().unwrap_err().contains("[skill]"));
+    }
+
+    /// v0.9.1 需求9：[[skill]] 数组（一插件多 skill）解析/校验/entries 展开。
+    #[test]
+    fn skill_array_form_parse_and_expand() {
+        let src = r#"
+schema = 1
+kind = "tool"
+[info]
+id = "team-kit"
+display_name = "Team Kit"
+[[skill]]
+name = "review"
+description = "自查清单"
+body = "逐文件检查。"
+[[skill]]
+name = "release"
+description = "发版步骤"
+body = "跑测试后打包。"
+"#;
+        let m: AgentManifestFile = toml::from_str(src).unwrap();
+        assert!(m.validate().is_ok());
+        let SkillDecl::Many(entries) = m.skill.as_ref().unwrap() else {
+            panic!("array form must parse to Many");
+        };
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "review");
+        let expanded = m.skill.as_ref().unwrap().entries();
+        assert_eq!(
+            expanded,
+            vec![
+                (Some("review"), "自查清单", "逐文件检查。"),
+                (Some("release"), "发版步骤", "跑测试后打包。"),
+            ]
+        );
+
+        // 非法 name（路径分隔符）/空字段 → 拒绝。
+        let bad = src.replace("name = \"review\"", "name = \"a/b\"");
+        let m: AgentManifestFile = toml::from_str(&bad).unwrap();
+        assert!(m.validate().unwrap_err().contains("skill[].name"));
+        let bad2 = src.replace("发版步骤", " ");
+        let m: AgentManifestFile = toml::from_str(&bad2).unwrap();
+        assert!(m.validate().unwrap_err().contains("skill[].description"));
+    }
+
+    #[test]
+    fn mcp_transport_types_parse_and_validate() {
+        // v0.9.0 需求1 二期：三传输解析/校验。
+        // 缺省 type = stdio（既有 toml 无损）。
+        let m = mcp_tool_manifest(
+            r#"[mcp]
+command = "npx"
+args = ["-y", "pkg"]
+"#,
+        )
+        .expect("stdio default ok");
+        assert_eq!(m.mcp.as_ref().unwrap().transport, McpTransportKind::Stdio);
+        // 显式 stdio。
+        assert!(mcp_tool_manifest("[mcp]\ntype = \"stdio\"\ncommand = \"npx\"\n").is_ok());
+        // http：url 必填 + http(s) 前缀 + headers。
+        let m = mcp_tool_manifest(
+            "[mcp]\ntype = \"http\"\nurl = \"https://mcp.example.com/mcp\"\nheaders = { Authorization = \"Bearer x\" }\n",
+        )
+        .expect("http ok");
+        assert_eq!(m.mcp.as_ref().unwrap().transport, McpTransportKind::Http);
+        assert!(mcp_tool_manifest("[mcp]\ntype = \"sse\"\nurl = \"http://x/sse\"\n").is_ok());
+        // stdio 缺 command → 拒绝。
+        assert!(mcp_tool_manifest("[mcp]\n")
+            .unwrap_err()
+            .contains("mcp.command"));
+        // http 缺 url → 拒绝。
+        assert!(mcp_tool_manifest("[mcp]\ntype = \"http\"\n")
+            .unwrap_err()
+            .contains("mcp.url"));
+        // 非 http(s) 前缀 → 拒绝。
+        assert!(
+            mcp_tool_manifest("[mcp]\ntype = \"sse\"\nurl = \"ftp://x\"\n")
+                .unwrap_err()
+                .contains("http://")
+        );
     }
 }

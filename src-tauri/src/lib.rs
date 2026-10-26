@@ -19,7 +19,6 @@ mod memory_store;
 mod orchestrator;
 pub mod os_adapter;
 mod pi_rpc_runtime;
-mod usage_store;
 mod process_command;
 mod process_control;
 mod project;
@@ -27,6 +26,8 @@ mod project_config;
 mod session;
 mod task_launch;
 mod task_plan;
+mod channel_models_store;
+mod usage_store;
 mod util;
 
 #[cfg(feature = "cli")]
@@ -64,10 +65,52 @@ pub(crate) fn with_app_state<T>(
 // generate_handler 注册；main.rs 仍通过 lib 根路径调用 run_install_agent_cli。
 pub use commands::agent_install::run_install_agent_cli;
 
+/// 深链统一处理（v0.9.3 测试期·通知点击跳回）：`jishu-hub://session/<id>` →
+/// 聚焦主窗 + 广播 desktop-notify-click（前端经 ctx.switchSession 定位）；
+/// `jishu-hub://open` → 仅聚焦。运行中实例（single-instance 转发）与冷启动
+///（deep-link 事件）共用。
+fn handle_deep_link(app: &tauri::AppHandle, url: &str) {
+    use tauri::{Emitter, Manager};
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    let session_id = url
+        .strip_prefix("jishu-hub://session/")
+        .filter(|sid| !sid.is_empty());
+    let _ = app.emit(
+        "desktop-notify-click",
+        serde_json::json!({ "sessionId": session_id }),
+    );
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    // v0.9.3 测试期（通知点击跳回·通知中心补点）：single-instance 必须最先
+    // 注册——protocol toast 点击时 Windows 会启动新进程携带 jishu-hub://
+    // URL，本插件把参数转发给运行中实例（弹窗与通知中心补点统一路由）。
+    // 仅 release 注册：dev 实例与安装版共用 identifier com.jishu-hub.app，
+    // 安装版运行时起 dev 会被判为「第二实例」静默退出——表现为 tauri dev
+    // 起不来、vite 被 teardown 连杀（退出码 -1）。开发期允许与安装版并存
+    // （通知点击链路在安装版上验证）。
+    #[cfg(not(debug_assertions))]
+    let builder = tauri::Builder::default().plugin(tauri_plugin_single_instance::init(
+        |app, argv, _cwd| {
+            if let Some(url) = argv.iter().find(|a| a.starts_with("jishu-hub://")) {
+                handle_deep_link(app, url);
+            }
+        },
+    ));
+    #[cfg(debug_assertions)]
+    let builder = tauri::Builder::default();
+
+    builder
         .plugin(tauri_plugin_dialog::init())
+        // v0.9.2 需求1 M4：桌面通知插件（会话能力插件 session.desktop-notify 消费）
+        .plugin(tauri_plugin_notification::init())
+        // v0.9.3 测试期：jishu-hub:// scheme（通知点击跳回的协议激活接收端）。
+        .plugin(tauri_plugin_deep_link::init())
         // 注册日志后端：pi_rpc_runtime 等模块的 log::info!/warn! 才会真正输出。
         // dev 模式（npm run tauri dev）打印到终端，release 模式写入日志文件，
         // 便于排查 Pi RPC 会话卡死等运行时问题（此前 tauri_plugin_log 虽在依赖里
@@ -82,14 +125,60 @@ pub fn run() {
             let _ = hub::migrate_v0_5_0();
             // Phase 1: 自动注册 Conductor 扩展 + skill pack + 删除旧 skill
             task_plan::ensure_conductor_extension();
+            // v0.9.3 需求13 C1：内置组合式插件清单幂等部署。
+            agent::plugin::ensure_builtin_composed_manifests();
             // v0.8.1 需求9/10：内置自适应插件（任务需求/流程规划）随包分发，
             // 首启落 ~/.jishu-hub/agents/（幂等）。
             agent::plugin::ensure_builtin_adaptive_plugins();
+            // v0.9.1 需求13 测试期：重试默认固化（pi 未配置原生回退 3 次，
+            // hub 默认 10 需落盘触达；幂等——已有任何显式值不覆盖）。
+            agent::jishu_self::config::ensure_default_retry_settings();
+            // v0.9.0 需求2：[pi_extension] 声明插件的 entry 部署/回收（幂等）。
+            agent::pi_deploy::ensure_pi_extension_deployments();
             // 自动部署 request_user_input 扩展（conductor 的 discuss/plan 阶段依赖此工具）
             task_plan::ensure_request_user_input_extension();
+            // v0.9.3 需求22 P1/P2：审批与批次守卫扩展（自 pi 内置迁移，零 fork）。
+            task_plan::ensure_jishu_tool_approval_extension();
+            task_plan::ensure_jishu_batch_guard_extension();
             // 部署 session-context 扩展（session_id 注入 system prompt，取代 user message 注入）
             task_plan::ensure_session_context_extension();
+            // v0.9.2 测试期：部署 html-preview 扩展（preview_html 工具，agent 主动渲染 HTML 预览）
+            task_plan::ensure_html_preview_extension();
             let registry = Arc::new(agent::AgentRegistry::new());
+            // v0.9.0 需求1 P2/二期：四家 MCP 配置同步（MCP 解析器 mcp-resolver
+            // 系统插件默认启用 → 注入 jishu-hub 聚合条目，禁用 → 回收；
+            // 单家失败不影响启动）。
+            // v0.9.2 测试期：pi 桥接（hub_invoke）事件广播句柄注册。
+            let _ = crate::pi_rpc_runtime::HUB_APP_HANDLE.set(app.handle().clone());
+            // v0.9.3 测试期（通知点击跳回）：jishu-hub:// scheme 运行时注册
+            //（幂等——dev 二进制路径每次变化必须运行时注册，安装版亦由此兜底）
+            //+ 冷启动深链（应用未运行时点通知：进程带 URL 启动，延迟广播等
+            // 前端监听就绪）。运行中实例的路由由 single-instance 插件承担。
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let _ = app.deep_link().register_all();
+            }
+            if let Some(url) = std::env::args().find(|a| a.starts_with("jishu-hub://")) {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    crate::handle_deep_link(&handle, &url);
+                });
+            }
+            let _ = agent::mcp_inject::sync_hub_mcp_entries();
+            // v0.9.0 需求20：skill 分发同步（skill-resolver 门控；单目标失败
+            // 不影响启动）。
+            let _ = agent::skill_deploy::sync_skill_deployments(false);
+            // v0.9.1 需求11：MCP 适配器自动安装自愈——安装器阶段已尝试装，
+            // 此处幂等兜底（离线安装失败后每次启动重试）。后台执行不阻塞
+            // 启动，失败仅告警；环境检测页手动安装保留为最终兜底。
+            tauri::async_runtime::spawn(async {
+                match agent::jishu_self::JishuSelfAgent::ensure_mcp_adapter_installed().await {
+                    Ok(true) => log::info!("[startup] MCP adapter auto-installed"),
+                    Ok(false) => {}
+                    Err(e) => log::warn!("[startup] MCP adapter auto-install deferred: {e}"),
+                }
+            });
             // v0.7.0：全局 active agent 已移除（需求一：智能体切换去全局化）。
             // 各模块按自身作用域选择 agent，通过 agent_id 入参显式指定；
             // 会话与智能体在 Session 层绑定。启动时不再加载/设置全局 active。
@@ -144,6 +233,8 @@ pub fn run() {
                                             process_id: 0,
                                             stdin: None,
                                             acp: Some(control),
+                                            // 节点会话由编排器自管，签名未知 → 跳过漂移检测。
+                                            spawn_signature: String::new(),
                                         },
                                     );
                                 }
@@ -168,7 +259,11 @@ pub fn run() {
             // 惰性探测会同步 spawn 子进程并阻塞全部命令，预热后命中缓存。
             let tool_plugins = {
                 let disabled: std::collections::HashSet<String> =
-                    agent::plugin::load_plugin_config().disabled.iter().cloned().collect();
+                    agent::plugin::load_plugin_config()
+                        .disabled
+                        .iter()
+                        .cloned()
+                        .collect();
                 let plugins = agent::tool_plugin::load_tool_plugins(&disabled);
                 for p in &plugins {
                     let _ = p.installed();
@@ -193,12 +288,25 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+        // v0.9.4 需求12：开发日志强制开关（settings.json 持久化）。
+        commands::dev_log::get_dev_log_forced,
+        commands::dev_log::set_dev_log_forced,
             commands::agents::list_agents,
             commands::projects::scan_projects,
             commands::projects::list_project_files,
             commands::projects::add_project,
             commands::projects::remove_project,
             commands::sessions::list_sessions,
+            commands::sessions::usage_overview,
+            commands::sessions::export_text_file,
+            commands::sessions::export_binary_file,
+            commands::channel_probe::probe_channel_models,
+            channel_models_store::channel_models_probe_and_store,
+            channel_models_store::channel_models_stored,
+            channel_models_store::channel_custom_models_get,
+            channel_models_store::channel_custom_models_set,
+            channel_models_store::model_visibility_list,
+            channel_models_store::model_visibility_set,
             commands::sessions::get_session_messages,
             commands::sessions::delete_agent_session,
             commands::sessions::persist_interaction_blocks,
@@ -232,6 +340,8 @@ pub fn run() {
             commands::settings::save_theme,
             commands::settings::load_last_project,
             commands::settings::open_url,
+            commands::sessions::open_html_external,
+            commands::sessions::desktop_notify_send,
             commands::settings::save_last_project,
             commands::settings::load_font_sizes,
             commands::settings::save_font_sizes,
@@ -286,9 +396,21 @@ pub fn run() {
             commands::agents::plugin_set_enabled,
             commands::agents::plugin_remove,
             commands::agents::plugin_reload,
+            commands::plugin_panel::plugin_panel_run,
+            commands::skill_import::skill_import_sources,
+            commands::skill_import::skill_import_file,
+            commands::skill_import::skill_import_folder,
+            commands::sessions::session_generate_title,
             commands::agents::plugin_create,
+            commands::agents::plugin_create_skill_folder,
             commands::agents::plugin_get,
             commands::agents::plugin_update,
+            commands::agents::plugin_config_get_all,
+            commands::agents::plugin_config_set,
+            commands::agents::composed_plugin_manifests,
+            commands::agents::composed_plugin_save,
+            commands::agents::composed_plugin_delete,
+            commands::agents::plugin_confirm_pending,
             commands::agents::session_tool_list,
             commands::agents::session_set_tools,
             commands::sessions::persist_agent_turn,
@@ -372,6 +494,8 @@ pub fn run() {
             commands::orchestrator::orchestrator_resume_run,
             #[cfg(feature = "orchestrator")]
             commands::orchestrator::orchestrator_cancel_run,
+            commands::orchestrator::orchestrator_retry_node,
+            commands::orchestrator::orchestrator_skip_node,
             #[cfg(feature = "orchestrator")]
             commands::orchestrator::orchestrator_pending_approvals,
             #[cfg(feature = "orchestrator")]

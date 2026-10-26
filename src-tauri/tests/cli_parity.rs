@@ -21,6 +21,9 @@ fn cli_command_files_exist() {
         ("plugins.rs", "Plugins command handler"),
         ("task_artifact.rs", "Task-artifact command handler"),
         ("memory.rs", "Memory command handler"),
+        // v0.9.0 需求1（mcp，补锁）/ 需求20（skill）。
+        ("mcp.rs", "MCP command handler"),
+        ("skill.rs", "Skill command handler"),
     ];
 
     for (file, _desc) in &expected {
@@ -37,7 +40,7 @@ fn cli_args_define_all_public_subcommands() {
 
     let expected_variants = [
         "Agents", "Chat", "Doctor", "Plan", "Task", "Event", "Run", "Model", "Daemon", "Evolve",
-        "Acp", "Plugins", "TaskArtifact", "Memory",
+        "Acp", "Plugins", "TaskArtifact", "Memory", "Mcp", "Skill",
     ];
 
     for variant in &expected_variants {

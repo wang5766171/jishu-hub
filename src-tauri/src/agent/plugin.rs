@@ -30,6 +30,10 @@ pub enum PluginKind {
     /// 工具插件（v0.8.1 需求7）：CLI 能力单元，kind = "tool" 的 manifest，
     /// 不进 AgentRegistry，经会话 + 菜单注入智能体上下文。
     Tool,
+    /// 会话能力插件（v0.9.2 需求1）：前端会话区的可插拔能力（导航列、
+    /// 流程全景、HTML 渲染等）。实现编译在前端注册表，此处只登记描述符
+    /// （统一管理面 + plugins.json 启停持久化），不进 AgentRegistry。
+    Session,
 }
 
 /// 一个已装载插件的描述（UI / CLI 插件管理面的数据源）。
@@ -37,6 +41,10 @@ pub enum PluginKind {
 pub struct PluginDescriptor {
     pub id: String,
     pub display_name: String,
+    /// 中文说明（v0.9.3 需求11 补充：插件中心卡片展示）。manifest/tool 取
+    /// plugin.toml [info].description；builtin 智能体取内置对照表；session
+    /// 插件由前端 i18n 兜底（此处 None）。
+    pub description: Option<String>,
     pub kind: PluginKind,
     /// Builtin = 应用版本；Manifest = probe 探测版本（未探测为 None）。
     pub version: Option<String>,
@@ -46,6 +54,37 @@ pub struct PluginDescriptor {
     pub core: bool,
     /// 当前是否装载（false = 用户禁用，registry 无此 agent；数据保留）。
     pub enabled: bool,
+    /// 声明了 [mcp] 段（v0.9.0 需求1：hub 聚合 MCP server 的工具来源）。
+    pub has_mcp: bool,
+    /// 声明了 [panel] 段（v0.9.0 需求8：声明式面板）。
+    pub has_panel: bool,
+    /// 声明了 [skill] 段（v0.9.0 需求20：skill 分发服务的来源）。
+    pub has_skill: bool,
+    /// 声明了 [pi_extension] 段（v0.8.1 需求10：自适应/深度形态——前端
+    /// 「自定义插件」分类依据之一，v0.9.0 需求19 第三轮）。
+    pub has_pi_extension: bool,
+    /// [panel] 声明详情（has_panel 时非 None；前端面板 Dialog 数据源）。
+    pub panel: Option<PanelDecl>,
+    /// 系统插件（v0.9.0 需求1 二期）：hub 随包分发、启动幂等重部署——
+    /// 不可卸载/编辑（删了也会回来，编辑会被重部署覆盖），可禁用。
+    pub system: bool,
+    /// info.icon 声明值（v0.9.0 需求19：前端图标注册表渲染，未知键回退 Bot）。
+    pub icon: String,
+    /// 组合式插件（v0.9.3 需求13：manifest 装配，可经向导创建/删除）。
+    pub composed: bool,
+}
+
+/// [panel] 声明的 UI 投影（v0.9.0 需求8）。
+#[derive(Debug, Clone, Serialize)]
+pub struct PanelDecl {
+    pub title: String,
+    pub items: Vec<PanelDeclItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PanelDeclItem {
+    pub label: String,
+    pub command: String,
 }
 
 /// 插件启停配置（`~/.jishu-hub/plugins.json`，hub state 文件同款模式）。
@@ -60,6 +99,43 @@ pub struct PluginConfig {
 
 /// 核心引擎 id 清单（恒装载，禁用请求双层拒绝的依据）。
 pub const CORE_PLUGIN_IDS: [&str; 1] = [super::JISHU_SELF_AGENT_ID];
+
+/// 系统插件 id 清单（v0.9.0 需求1 二期）：hub 随包分发、启动幂等重部署——
+/// 卸载/编辑无意义（下次启动即恢复），plugin_remove 拒绝、前端隐藏入口；
+/// 可禁用（mcp-resolver 禁用 = MCP 服务总开关，见 mcp_inject）。
+pub const SYSTEM_PLUGIN_IDS: [&str; 7] = [
+    "mcp-resolver",
+    "skill-resolver",
+    "task-requirements",
+    "task-plan",
+    // v0.9.0 需求22：预置核心引擎指南（jishu CLI / MCP 创建 / Skill 创建）。
+    "jishu-cli-guide",
+    "mcp-create-tool",
+    "skill-create-tool",
+];
+
+/// 系统插件判定。
+pub fn is_system_plugin(id: &str) -> bool {
+    SYSTEM_PLUGIN_IDS.contains(&id)
+}
+
+/// MCP 解析器启用态（注入门控，mcp_inject::sync_hub_mcp_entries）：
+/// plugins.json disabled 集不含 mcp-resolver 即启用（默认启用——disabled
+/// 为 opt-in 存储，全新环境零配置即在位）。
+pub fn is_mcp_resolver_enabled() -> bool {
+    !load_plugin_config()
+        .disabled
+        .iter()
+        .any(|x| x == "mcp-resolver")
+}
+
+/// Skill 解析器启用态（skill 分发总开关，skill_deploy::sync_skill_deployments）。
+pub fn is_skill_resolver_enabled() -> bool {
+    !load_plugin_config()
+        .disabled
+        .iter()
+        .any(|x| x == "skill-resolver")
+}
 
 pub fn plugin_config_path() -> PathBuf {
     super::manifest::hub_home().join("plugins.json")
@@ -93,16 +169,524 @@ pub fn save_plugin_config(config: &PluginConfig) -> Result<(), String> {
 }
 
 /// 已知插件 id 集合（内置 + 已安装 manifest），启停校验用。
+/// 需求25 P2：组合/混合插件（plugins/<id>/plugin.toml，session-composed
+/// 形态）被 load_manifests 前置跳过（agent/manifest/mod.rs composed 分流），
+/// 但其描述符经 composed_session_plugin_specs 进插件页、启停同走本通道
+/// ——不补入则 set_plugin_enabled 对混合 id 恒拒 "Unknown plugin"（CLI
+/// add_hybrid 侧曾因此走直写 disabled 兜底），确认卡「启用」链路不通。
 fn known_plugin_ids() -> HashSet<String> {
     let mut ids: HashSet<String> = builtin_plugin_specs()
         .iter()
         .map(|(factory, _)| factory().info().id)
         .collect();
+    for (id, _name) in builtin_session_plugin_specs() {
+        ids.insert(id.to_string());
+    }
     let (agents, tools, _errors) = super::manifest::load_manifests(&[]);
     for (file, _path) in agents.into_iter().chain(tools) {
         ids.insert(file.info.id);
     }
+    for (id, _manifest) in composed_session_manifests() {
+        ids.insert(id);
+    }
     ids
+}
+
+/// 内置会话能力插件清单（v0.9.2 需求1）。
+///
+/// 前端实现（`src/features/session-kernel/plugins`）按 id 对齐；此处登记
+/// 描述符供统一插件管理面展示与启停持久化。**注册纪律**：前端实现未落地
+/// 的 id 不登记（插件页不出现无实现的开关）——`session.html-render` 随 M4
+/// 增补。`session.flow` 已 C5-slice1 组合化为 `session.task-board`（经
+/// BUILTIN_COMPOSED_MANIFESTS 装配），此处不再登记。
+pub fn builtin_session_plugin_specs() -> &'static [(&'static str, &'static str)] {
+    &[
+        // (id, display_name)——display_name 为兜底文案，插件页按 id 走 i18n。
+        // v0.9.2 M4 首期批次（用户圈定 2026-09-06）
+        ("session.html-render", "HTML 实时渲染"),
+        ("session.mermaid-render", "Mermaid 图表渲染"),
+        ("session.export", "会话导出"),
+        ("session.usage", "用量成本面板"),
+        // v0.9.2 底座增强后拆出
+        ("session.search", "消息搜索"),
+        ("session.interaction-render", "交互问答卡"),
+        // v0.9.2 测试期（sidebar-panel 首个插件）：产物中心——HTML/图片/
+        // Markdown/文本全类型预览（agent preview_html 自动预览 + 手动点选
+        // 主会话与子节点产物）。
+        ("session.artifacts", "产物中心"),
+        // v0.9.3 需求3（P1-3）：流式状态挂件——PluginStreamState 首个真实
+        // 订阅消费者（SessionDataHub 真订阅链路的验收件）。
+        ("session.stream-status", "流式状态挂件"),
+        // v0.9.3 需求8：上下文水位环——自 chat-page 内置渲染迁移为插件
+        //（composer-trailing 挂载点首插件，ctx 压缩命令面）。
+        ("session.context-ring", "上下文水位环"),
+    ]
+}
+
+/// pi 扩展工具兜底集（v0.9.2 需求7 fail-safe）：清单聚合结果为空时回落，
+/// 宁可"关不掉"不可"流程死"（历史教训：lock_requirement 缺失致需求讨论停摆）。
+pub const DEFAULT_PI_TOOLS: [&str; 4] = [
+    "request_user_input",
+    "lock_requirement",
+    "commit_plan",
+    "dispatch_to_node",
+];
+
+/// 聚合已启用插件声明的 pi 扩展工具（v0.9.2 需求7 热插拔闸门，纯函数）：
+/// 输入 (插件 id, 声明工具) 列表与禁用集，输出保序去重的工具名并集。
+pub fn merge_pi_extension_tools(
+    declared: &[(String, Vec<String>)],
+    disabled: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let mut merged: Vec<String> = Vec::new();
+    for (id, tools) in declared {
+        if disabled.contains(id) {
+            continue;
+        }
+        for tool in tools {
+            if !merged.iter().any(|existing| existing == tool) {
+                merged.push(tool.clone());
+            }
+        }
+    }
+    merged
+}
+
+/// 当前应注入 spawn --tools 白名单的 pi 扩展工具（fs 包装）：读插件禁用集
+/// 与已装载 manifest 的 [pi_extension].tools 声明聚合；结果为空时兜底
+/// DEFAULT_PI_TOOLS。每次 spawn 调用（文件 IO 轻，PiRpc 每会话一次）。
+pub fn enabled_pi_extension_tools() -> Vec<String> {
+    let disabled: std::collections::HashSet<String> =
+        load_plugin_config().disabled.iter().cloned().collect();
+    let (_agents, tools, _errors) = super::manifest::load_manifests(&[]);
+    let declared: Vec<(String, Vec<String>)> = tools
+        .iter()
+        .map(|(file, _path)| {
+            (
+                file.info.id.clone(),
+                file.pi_extension
+                    .as_ref()
+                    .map(|section| section.tools.clone())
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+    let merged = merge_pi_extension_tools(&declared, &disabled);
+    if merged.is_empty() {
+        return DEFAULT_PI_TOOLS.iter().map(|s| s.to_string()).collect();
+    }
+    merged
+}
+
+/// 内置组合式插件清单（v0.9.3 需求13 C1）：随包分发的 session-composed
+/// manifest，启动幂等部署到 ~/.jishu-hub/plugins/<id>/plugin.toml（系统语义：
+/// 重部署覆盖，用户改造需经新建组合插件另存）。
+const BUILTIN_COMPOSED_MANIFESTS: &[(&str, &str)] = &[
+    ("session.mermaid-render", include_str!("../../resources/composed-plugins/mermaid-render.toml")),
+    ("session.phase-divider", include_str!("../../resources/composed-plugins/phase-divider.toml")),
+    ("session.tool-stats", include_str!("../../resources/composed-plugins/tool-stats.toml")),
+    ("session.outline", include_str!("../../resources/composed-plugins/outline.toml")),
+    ("session.navigation", include_str!("../../resources/composed-plugins/navigation.toml")),
+    ("session.desktop-notify", include_str!("../../resources/composed-plugins/desktop-notify.toml")),
+    // v0.9.3 需求13 C4：pipeline 型样例（编排定义可视化；运行时驱动 C4-slice-2）。
+    ("session.video-maker", include_str!("../../resources/composed-plugins/video-maker.toml")),
+    // v0.9.3 需求13 C5-slice1：任务看板自 session.flow 组合化（task 源 ×
+    // render.task-board × dock；内置 TS 插件随之退役）。
+    ("session.task-board", include_str!("../../resources/composed-plugins/task-board.toml")),
+];
+
+fn composed_plugins_root() -> PathBuf {
+    super::manifest::hub_home().join("plugins")
+}
+
+/// 幂等部署内置组合清单（lib.rs 启动调用）。
+pub fn ensure_builtin_composed_manifests() {
+    for (id, toml) in BUILTIN_COMPOSED_MANIFESTS {
+        let dir = composed_plugins_root().join(id);
+        let _ = std::fs::create_dir_all(&dir);
+        let target = dir.join("plugin.toml");
+        if let Ok(existing) = std::fs::read_to_string(&target) {
+            if existing == *toml {
+                continue;
+            }
+        }
+        if let Err(e) = crate::util::atomic_write(&target, toml.as_bytes()) {
+            log::warn!("[composition] deploy {id} failed: {e}");
+        }
+    }
+}
+
+/// 扫描组合式清单（kind=session-composed），toml → JSON 透传（前端引擎装配）。
+/// v0.9.3 需求25：附带 `_files`（目录内文件 → 内容指纹，@file: 代码组件的
+/// 存在性校验与热更指纹）与 `_dir`（绝对路径，前端构建 asset 加载 URL）。
+pub fn composed_session_manifests() -> Vec<(String, serde_json::Value)> {
+    let root = composed_plugins_root();
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let toml_path = entry.path().join("plugin.toml");
+        let Ok(content) = std::fs::read_to_string(&toml_path) else {
+            continue;
+        };
+        let Ok(value) = content.parse::<toml::Value>() else {
+            log::warn!("[composition] invalid toml: {}", toml_path.display());
+            continue;
+        };
+        if value.get("plugin").and_then(|p| p.get("id")).is_none() {
+            continue;
+        }
+        let id = value
+            .get("plugin")
+            .and_then(|p| p.get("id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let mut json = serde_json::to_value(&value).unwrap_or(serde_json::Value::Null);
+        attach_plugin_files(&mut json, &entry.path());
+        out.push((id, json));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// 插件目录元信息注入（`_files`/`_dir`）：_files 取目录内常规文件（浅层）的
+/// sha256 前 8 位（热更指纹）；@file: 引用的文件缺失时注入 `_file_error`
+/// ——前端校验据此拒绝（错误信息带文件名）。
+fn attach_plugin_files(json: &mut serde_json::Value, dir: &std::path::Path) {
+    use sha2::{Digest, Sha256};
+    let mut files = serde_json::Map::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+            let name = match entry.file_name().into_string() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            let Ok(bytes) = std::fs::read(entry.path()) else {
+                continue;
+            };
+            let digest = Sha256::digest(&bytes);
+            files.insert(
+                name,
+                digest.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>().into(),
+            );
+        }
+    }
+    if let Some(obj) = json.as_object_mut() {
+        // @file: 组件存在性（render.component 形如 "@file:component.js"）。
+        let file_component = obj
+            .get("render")
+            .and_then(|r| r.get("component"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.strip_prefix("@file:"))
+            .map(str::to_string);
+        if let Some(rel) = file_component {
+            if !files.contains_key(&rel) {
+                obj.insert(
+                    "_file_error".into(),
+                    format!("代码文件不存在: {rel}").into(),
+                );
+            }
+        }
+        obj.insert(
+            "_dir".into(),
+            dir.to_string_lossy().to_string().into(),
+        );
+        obj.insert("_files".into(), serde_json::Value::Object(files));
+    }
+}
+
+/// 混合插件安装待确认项（需求25 P2 安全阀）：CLI `plugins add-hybrid` 落盘
+/// 的 `.pending-confirm` 标记内容。字段形状与 CLI 写入端（camelCase JSON，
+/// cli/commands/plugins.rs add_hybrid）逐字对齐——serde rename_all 保证
+/// 反序列化读标记 / 序列化回前端确认卡（TS PendingHybridPlugin 接口）同形。
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingHybridPlugin {
+    pub id: String,
+    pub name: String,
+    pub mount: String,
+    pub code_lines: u64,
+    pub dir: String,
+}
+
+/// 扫描 `~/.jishu-hub/plugins/*/.pending-confirm`（确认卡轮询数据源；CLI 是
+/// 独立进程发不了 plugins-changed 广播，标记文件即跨进程信箱）。单个标记
+/// 损坏/缺字段 → log warn 跳过（与 manifest 装载同纪律：局部失败不拖垮整表）。
+pub fn pending_confirm_list() -> Vec<PendingHybridPlugin> {
+    let root = composed_plugins_root();
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let marker = entry.path().join(".pending-confirm");
+        let Ok(content) = std::fs::read_to_string(&marker) else {
+            continue;
+        };
+        match serde_json::from_str::<PendingHybridPlugin>(&content) {
+            Ok(p) => out.push(p),
+            Err(e) => log::warn!(
+                "[plugin] invalid pending-confirm marker {}: {e}",
+                marker.display()
+            ),
+        }
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+/// 清除混合插件安装待确认标记（确认卡「启用/暂不」动作收尾；幂等，不存在
+/// 则无操作）。确认动作复用 plugin_set_enabled——本函数在其成功路径调用。
+pub fn clear_pending_confirm_marker(id: &str) {
+    let marker = composed_plugins_root().join(id).join(".pending-confirm");
+    if marker.is_file() {
+        let _ = std::fs::remove_file(&marker);
+    }
+}
+
+/// 用户组合清单保存（需求13 C3 向导落点）：校验可解析 + id 一致 + 非内置，
+/// 原子写 ~/.jishu-hub/plugins/<id>/plugin.toml。
+pub fn save_composed_manifest(id: &str, toml: &str) -> Result<(), String> {
+    if id.trim().is_empty() || !id.starts_with("session.") {
+        return Err("组合插件 id 须以 session. 开头".to_string());
+    }
+    if BUILTIN_COMPOSED_MANIFESTS.iter().any(|(bid, _)| *bid == id) {
+        return Err(format!("内置组合插件 {id} 不可覆盖（可另存新 id）"));
+    }
+    let value: toml::Value = toml.parse().map_err(|e| format!("TOML 解析失败: {e}"))?;
+    let decl_id = value
+        .get("plugin")
+        .and_then(|p| p.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if decl_id != id {
+        return Err(format!("清单 id ({decl_id:?}) 与目标 id ({id:?}) 不一致"));
+    }
+    let dir = composed_plugins_root().join(id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    crate::util::atomic_write(&dir.join("plugin.toml"), toml.as_bytes())
+        .map_err(|e| format!("写入清单失败: {e}"))
+}
+
+/// 删除用户组合插件（内置清单拒绝）；目录整体移除（启停记录随 plugins.json
+/// 清理由既有 rebuild 语义覆盖）。
+pub fn delete_composed_plugin(id: &str) -> Result<(), String> {
+    if BUILTIN_COMPOSED_MANIFESTS.iter().any(|(bid, _)| *bid == id) {
+        return Err(format!("内置组合插件 {id} 不可删除"));
+    }
+    let dir = composed_plugins_root().join(id);
+    if !dir.join("plugin.toml").is_file() {
+        return Err(format!("组合插件 {id} 不存在"));
+    }
+    std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())
+}
+
+// ── 声明驱动阶段流水线（v0.9.3 需求13 C4-slice2） ──────────────────────────
+// 模板展开与前端 capabilities/pipeline/contracts.ts 的 STAGE_TEMPLATES/
+// resolveStages 同义（两处小而稳定，改模板时同步）。
+
+/// 内置阶段模板（Rust 复刻；键与前端 StageTemplateKey 一致）。
+fn stage_template(key: &str) -> Option<serde_json::Value> {
+    let value = match key {
+        "phase.discuss" => serde_json::json!({
+            "name": "需求讨论",
+            "prompt": "与用户澄清目标/范围/约束，收敛为可执行的需求文档；未澄清前不进入下一阶段。",
+            "skills": ["jishu-conductor-dev:discuss"],
+            "tools": ["read", "grep", "find", "ls", "lock_requirement", "request_user_input"],
+            "gate": "confirm",
+            "outputs": [{ "kind": "document" }],
+        }),
+        "phase.plan" => serde_json::json!({
+            "name": "流程规划",
+            "prompt": "将需求拆分为有依赖关系的执行节点，产出 flow-plan；简单任务建议直接执行。",
+            "skills": ["jishu-conductor-dev:plan"],
+            "tools": ["read", "grep", "find", "ls", "commit_plan", "request_user_input"],
+            "gate": "confirm",
+            "outputs": [{ "kind": "plan" }],
+        }),
+        "phase.execute" => serde_json::json!({
+            "name": "执行",
+            "prompt": "按既定方案执行节点；阻塞/失败按重试与跳过策略处理，方案变更走修订。",
+            "skills": ["jishu-conductor-dev:execute"],
+            "tools": ["read", "bash", "edit", "write", "grep", "find", "ls", "commit_plan", "dispatch_to_node"],
+            "gate": "none",
+            "outputs": [{ "kind": "artifact" }],
+        }),
+        "phase.review" => serde_json::json!({
+            "name": "评审确认",
+            "prompt": "汇总产出请用户评审；通过则收尾，打回则回到指定阶段。",
+            "skills": [],
+            "tools": ["read", "grep", "find", "ls", "request_user_input"],
+            "gate": "confirm",
+            "outputs": [],
+        }),
+        _ => return None,
+    };
+    Some(value)
+}
+
+/// manifest 阶段声明展开（模板默认 ⨯ 声明覆盖）→ 阶段数组（运行时统一形状）。
+pub fn resolve_pipeline_stages(manifest: &serde_json::Value) -> Result<Vec<serde_json::Value>, String> {
+    let stages = manifest
+        .get("pipeline")
+        .and_then(|p| p.get("stages"))
+        .and_then(|s| s.as_array())
+        .ok_or("清单缺少 [pipeline].stages（非 pipeline 型插件）")?;
+    if stages.is_empty() {
+        return Err("[pipeline] 至少需要一个阶段".into());
+    }
+    let mut out = Vec::with_capacity(stages.len());
+    for (index, stage) in stages.iter().enumerate() {
+        let template_key = stage
+            .get("template")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let template = match template_key.as_deref() {
+            Some(key) => Some(
+                stage_template(key)
+                    .ok_or_else(|| format!("阶段 {} 引用了未知模板: {key}", index + 1))?,
+            ),
+            None => None,
+        };
+        let t = |field: &str| template.as_ref().and_then(|t| t.get(field).cloned());
+        // key 缺省取模板短键（phase.discuss→discuss 等——与 legacy 阶段名一致，
+        // 扩展侧深语义（lock_requirement/commit_plan 流）按 phase 名绑定）。
+        let key = stage
+            .get("key")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                template_key
+                    .as_deref()
+                    .and_then(|t| t.strip_prefix("phase."))
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| format!("stage-{}", index + 1));
+        let name = stage
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| t("name").and_then(|v| v.as_str().map(str::to_string)))
+            .unwrap_or_else(|| format!("阶段 {}", index + 1));
+        let declared_prompt = stage.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+        let template_prompt = t("prompt")
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let prompt = [template_prompt, declared_prompt.to_string()]
+            .iter()
+            .filter(|p| !p.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let pick_list = |field: &str| -> Option<Vec<serde_json::Value>> {
+            let declared = stage.get(field).and_then(|v| v.as_array());
+            match (declared, t(field).and_then(|v| v.as_array().cloned())) {
+                (Some(values), _) if !values.is_empty() => Some(values.clone()),
+                (None, Some(default)) => Some(default),
+                _ => None,
+            }
+        };
+        let stage_json = serde_json::json!({
+            "key": key,
+            "name": name,
+            "template": template_key,
+            "prompt": prompt,
+            "skills": pick_list("skills").unwrap_or_default(),
+            "tools": pick_list("tools").unwrap_or_default(),
+            "gate": stage
+                .get("gate")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .or_else(|| t("gate").and_then(|v| v.as_str().map(str::to_string)))
+                .unwrap_or_else(|| "none".into()),
+            "outputs": pick_list("outputs").unwrap_or_default(),
+        });
+        out.push(stage_json);
+    }
+    Ok(out)
+}
+
+/// 按插件 id 取展开后的流水线（`/jishu-pipeline` 扩展命令经 hub_invoke 消费）。
+pub fn composed_pipeline_by_id(id: &str) -> Result<serde_json::Value, String> {
+    let manifest = composed_session_manifests()
+        .into_iter()
+        .find(|(mid, _)| mid == id)
+        .map(|(_, value)| value)
+        .ok_or_else(|| format!("组合插件不存在: {id}"))?;
+    let name = manifest
+        .get("plugin")
+        .and_then(|p| p.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(id)
+        .to_string();
+    let stages = resolve_pipeline_stages(&manifest)?;
+    Ok(serde_json::json!({ "pluginId": id, "name": name, "stages": stages }))
+}
+
+/// 组合式插件的描述符（plugin_list 合并；启停沿 plugins.json 统一禁用集合）。
+pub fn composed_session_plugin_specs(disabled: &HashSet<String>) -> Vec<PluginDescriptor> {
+    composed_session_manifests()
+        .into_iter()
+        .map(|(id, manifest)| PluginDescriptor {
+            display_name: manifest
+                .get("plugin")
+                .and_then(|p| p.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(&id)
+                .to_string(),
+            description: manifest
+                .get("plugin")
+                .and_then(|p| p.get("description"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            id: id.clone(),
+            kind: PluginKind::Session,
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            source_path: None,
+            core: false,
+            enabled: !disabled.contains(&id),
+            has_mcp: false,
+            has_panel: false,
+            has_skill: false,
+            has_pi_extension: false,
+            panel: None,
+            system: BUILTIN_COMPOSED_MANIFESTS.iter().any(|(bid, _)| *bid == id),
+            icon: String::new(),
+            composed: false,
+        })
+        .collect()
+}
+
+/// 会话能力插件描述符（纯函数，可测）：不进 AgentRegistry（无 agent 实现），
+/// 启停与 agent/tool 插件共用 plugins.json 禁用集合。
+pub fn session_plugin_descriptors(disabled: &HashSet<String>) -> Vec<PluginDescriptor> {
+    builtin_session_plugin_specs()
+        .iter()
+        .map(|(id, display_name)| PluginDescriptor {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            description: None,
+            kind: PluginKind::Session,
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            source_path: None,
+            core: false,
+            enabled: !disabled.contains(*id),
+            has_mcp: false,
+            has_panel: false,
+            has_skill: false,
+            has_pi_extension: false,
+            panel: None,
+            system: false,
+            icon: String::new(),
+            composed: false,
+        })
+        .collect()
 }
 
 /// 设置插件启停并落盘。core 插件拒绝；未知 id 拒绝（配置漂移防写入）。
@@ -127,6 +711,102 @@ pub fn set_plugin_enabled(id: &str, enabled: bool) -> Result<PluginConfig, Strin
     Ok(config)
 }
 
+/// id 冲突检查（内置 + agents/ + plugins/ 全量已装）。GUI/CLI 各安装通道
+/// 共用（v0.9.4 需求3 从 install_manifest_file 提出）。
+pub fn ensure_plugin_id_free(id: &str) -> Result<(), String> {
+    let builtin_ids: Vec<String> = builtin_plugin_specs()
+        .iter()
+        .map(|(factory, _)| factory().info().id)
+        .collect();
+    let (installed_agents, installed_tools, _errors) =
+        super::manifest::load_manifests(&builtin_ids);
+    if builtin_ids.iter().any(|b| b == id)
+        || installed_agents
+            .iter()
+            .chain(installed_tools.iter())
+            .any(|(f, _)| f.info.id == id)
+    {
+        return Err(format!(
+            "agent id {:?} conflicts with a builtin or already-installed plugin",
+            id
+        ));
+    }
+    Ok(())
+}
+
+/// v0.9.4 需求3：以「文件夹形式」安装 skill 插件——目录形式插件
+/// `plugins/<id>/plugin.toml` + `skills/<skill_name>/`（整目录复制自
+/// skill_src，SKILL.md 以表单渲染内容覆写）。skill 发现与分发走既有
+/// 目录形式源链路（文件即权威，附属文件镜像同步到各 agent）。
+/// 校验由调用方先行完成；skill_name 必须是纯目录名（防路径逃逸）。
+pub fn install_skill_folder_plugin(
+    file: &super::manifest::schema::AgentManifestFile,
+    content_toml: &str,
+    skill_src: &std::path::Path,
+    skill_name: &str,
+    skill_md_content: &str,
+) -> Result<(String, PathBuf), String> {
+    if skill_name.is_empty()
+        || skill_name.contains('/')
+        || skill_name.contains('\\')
+        || skill_name.contains("..")
+    {
+        return Err("skill name must be a plain directory name".to_string());
+    }
+    if !skill_src.join("SKILL.md").is_file() {
+        return Err(format!(
+            "source skill folder has no SKILL.md: {}",
+            skill_src.display()
+        ));
+    }
+    ensure_plugin_id_free(&file.info.id)?;
+    let plugin_root = super::manifest::hub_home()
+        .join("plugins")
+        .join(&file.info.id);
+    std::fs::create_dir_all(&plugin_root).map_err(|e| e.to_string())?;
+    let toml_path = plugin_root.join("plugin.toml");
+    if toml_path.exists() {
+        return Err(format!(
+            "target file already exists: {} (remove it first)",
+            toml_path.display()
+        ));
+    }
+    crate::util::atomic_write(&toml_path, content_toml.as_bytes()).map_err(|e| e.to_string())?;
+
+    // skills/<name>/ 整目录复制（跳过根 SKILL.md，随后以表单渲染覆写）。
+    let skill_dst = plugin_root.join("skills").join(skill_name);
+    copy_skill_tree(skill_src, &skill_dst)?;
+    crate::util::atomic_write(
+        &skill_dst.join("SKILL.md"),
+        skill_md_content.as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
+    log::info!(
+        "[plugin] installed skill folder plugin {} -> {} (skill: {})",
+        file.info.id,
+        plugin_root.display(),
+        skill_name
+    );
+    Ok((file.info.id.clone(), toml_path))
+}
+
+/// 递归复制目录（覆盖式；v0.9.4 需求3，junction 处理对齐
+/// agent_install::copy_dir_recursive）。
+fn copy_skill_tree(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())?.flatten() {
+        let s = entry.path();
+        let d = dst.join(entry.file_name());
+        if std::fs::metadata(&s).map(|m| m.is_dir()).unwrap_or(false) {
+            copy_skill_tree(&s, &d)?;
+        } else {
+            std::fs::copy(&s, &d)
+                .map_err(|e| format!("copy {} -> {}: {e}", s.display(), d.display()))?;
+        }
+    }
+    Ok(())
+}
+
 /// 安装一个 manifest 插件：id 冲突检查（内置 + 已安装）→ 写入 agents 目录。
 /// 校验（schema/validate）由调用方先行完成——CLI `plugins add`（原始 TOML
 /// 内容）与 GUI `plugin_create`（表单 JSON → 后端生成 TOML）共用此落盘通道。
@@ -135,23 +815,7 @@ pub fn install_manifest_file(
     file: &super::manifest::schema::AgentManifestFile,
     content_toml: &str,
 ) -> Result<(String, PathBuf), String> {
-    let builtin_ids: Vec<String> = builtin_plugin_specs()
-        .iter()
-        .map(|(factory, _)| factory().info().id)
-        .collect();
-    let (installed_agents, installed_tools, _errors) =
-        super::manifest::load_manifests(&builtin_ids);
-    if builtin_ids.contains(&file.info.id)
-        || installed_agents
-            .iter()
-            .chain(installed_tools.iter())
-            .any(|(f, _)| f.info.id == file.info.id)
-    {
-        return Err(format!(
-            "agent id {:?} conflicts with a builtin or already-installed plugin",
-            file.info.id
-        ));
-    }
+    ensure_plugin_id_free(&file.info.id)?;
     let target = super::manifest::manifest_dir().join(format!("{}.toml", file.info.id));
     if target.exists() {
         return Err(format!(
@@ -190,17 +854,111 @@ pub fn builtin_adaptive_plugins() -> Vec<(&'static str, &'static str)> {
             "task-plan",
             include_str!("../../resources/plugins/task-plan/plugin.toml"),
         ),
+        // v0.9.2 需求7：交互问答纯闸门插件（治理 request_user_input，热插拔）。
+        (
+            "interactive-qa",
+            include_str!("../../resources/plugins/interactive-qa/plugin.toml"),
+        ),
+        // v0.9.2 测试期：HTML 页面预览纯闸门插件（治理 preview_html，热插拔；
+        // 工具由全局部署的 extensions/html-preview.ts 注册）。
+        (
+            "html-preview",
+            include_str!("../../resources/plugins/html-preview/plugin.toml"),
+        ),
+        // v0.9.0 需求22：预置核心引擎指南插件（[skill] 声明——经 Skill 解析器
+        // 分发到 agent skill 目录，agent 原生发现；内容 = 给 agent 的操作指南）。
+        (
+            "jishu-cli-guide",
+            include_str!("../../resources/plugins/jishu-cli-guide/plugin.toml"),
+        ),
+        (
+            "mcp-create-tool",
+            include_str!("../../resources/plugins/mcp-create-tool/plugin.toml"),
+        ),
+        (
+            "skill-create-tool",
+            include_str!("../../resources/plugins/skill-create-tool/plugin.toml"),
+        ),
     ]
 }
 
-/// 部署内建自适应插件（幂等——文件已存在且内容一致则跳过）。
+/// MCP 解析器系统插件（v0.9.0 需求1 二期）：聚合 server（jishu-cli mcp
+/// serve）的管理面实体——默认安装+启用、可禁用（= MCP 服务总开关）、
+/// 不可卸载。panel-only（无 [tool]/[mcp]——[mcp] 会自指）：面板命令在部署
+/// 时烘焙 jishu-cli 绝对路径（TOML 转义由 toml::Value 承担；路径变化时
+/// 内容比较不齐即重写）。与 task-* 静态内嵌不同，本 manifest 为生成式。
+pub fn resolver_plugin_toml() -> String {
+    let cli = crate::agent::jishu_self::resolve_jishu_cli_binary()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "jishu-cli".to_string());
+    let command = format!("\"{cli}\" mcp status");
+    format!(
+        "schema = 1\n\
+         kind = \"tool\"\n\
+         \n\
+         [info]\n\
+         id = \"mcp-resolver\"\n\
+         display_name = \"MCP 解析器\"\n\
+         icon = \"blocks\"\n\
+         \n\
+         [panel]\n\
+         title = \"MCP 服务状态\"\n\
+         \n\
+         [[panel.items]]\n\
+         label = \"聚合服务与插件清单\"\n\
+         command = {}\n",
+        toml::Value::String(command)
+    )
+}
+
+/// Skill 解析器系统插件（v0.9.0 需求20）：skill 分发服务的管理面实体——
+/// 默认安装+启用、可禁用（= 分发总开关）、不可卸载；面板命令烘焙 CLI 路径
+///（与 mcp-resolver 同构）。
+pub fn skill_resolver_plugin_toml() -> String {
+    let cli = crate::agent::jishu_self::resolve_jishu_cli_binary()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "jishu-cli".to_string());
+    let command = format!("\"{cli}\" skill status");
+    format!(
+        "schema = 1
+         kind = \"tool\"
+         
+         [info]
+         id = \"skill-resolver\"
+         display_name = \"Skill 解析器\"
+         icon = \"sparkles\"
+         
+         [panel]
+         title = \"Skill 服务状态\"
+         
+         [[panel.items]]
+         label = \"分发目标与 skill 清单\"
+         command = {}
+",
+        toml::Value::String(command)
+    )
+}
+
+/// 部署内建自适应插件与 MCP 解析器（幂等——文件已存在且内容一致则跳过）。
 /// 仅写 manifest TOML 到 agents 目录（与用户自建走同一装载管线）；
 /// pi 扩展入口文件由 task_plan.rs 的 conductor 部署管线管理（v1 过渡：
 /// conductor 仍为单一 TS 文件，插件 TOML 引用其函数名的入口约定在 v2 拆分）。
 pub fn ensure_builtin_adaptive_plugins() {
     let dir = super::manifest::manifest_dir();
     let _ = std::fs::create_dir_all(&dir);
-    for (id, toml) in builtin_adaptive_plugins() {
+    let statics = builtin_adaptive_plugins();
+    for (id, toml) in statics
+        .into_iter()
+        .map(|(id, t)| (id.to_string(), t.to_string()))
+        .chain(std::iter::once((
+            "mcp-resolver".to_string(),
+            resolver_plugin_toml(),
+        )))
+        .chain(std::iter::once((
+            "skill-resolver".to_string(),
+            skill_resolver_plugin_toml(),
+        )))
+    {
         let target = dir.join(format!("{id}.toml"));
         let needs_write = match std::fs::read_to_string(&target) {
             Ok(existing) => existing != toml,
@@ -208,7 +966,7 @@ pub fn ensure_builtin_adaptive_plugins() {
         };
         if needs_write {
             if let Err(e) = std::fs::write(&target, toml) {
-                log::warn!("[plugin] cannot deploy builtin adaptive plugin {id}: {e}");
+                log::warn!("[plugin] cannot deploy builtin system plugin {id}: {e}");
             }
         }
     }
@@ -244,6 +1002,19 @@ pub fn builtin_plugin_specs() -> Vec<(PluginFactory, bool)> {
     ]
 }
 
+/// 内置智能体的中文说明（AgentInfo 无 description 字段，此处单点对照；
+/// 未列出的 id（测试 fake 等）回退 None）。
+fn builtin_agent_description(id: &str) -> Option<String> {
+    Some(match id {
+        "jishu-self" => "内置智能体（内嵌 Pi 引擎，机枢 agent 本体，含任务流程编排能力）",
+        "claude-code" => "Claude Code 接入适配器（经 ACP 通道驱动官方 CLI）",
+        "codex" => "Codex 接入适配器（经 app-server 协议驱动官方 CLI）",
+        "opencode" => "OpenCode 接入适配器（第三方开源编码智能体）",
+        _ => return None,
+    }
+    .to_string())
+}
+
 /// 装配核心（纯函数，可测）：内建插件 + manifest 插件 + 禁用集合 →
 /// (agents 表, 插件描述符列表)。无禁用输入时产出与插件化之前的
 /// 硬编码装载逐项等价（行为不变的实现保证）。
@@ -269,11 +1040,20 @@ pub fn assemble(
         plugins.push(PluginDescriptor {
             id: id.clone(),
             display_name: info.display_name,
+            description: builtin_agent_description(&id),
             kind: PluginKind::Builtin,
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
             source_path: None,
             core,
             enabled,
+            has_mcp: false,
+            has_panel: false,
+            has_skill: false,
+            has_pi_extension: false,
+            panel: None,
+            system: false,
+            icon: info.icon.clone(),
+            composed: false,
         });
     }
 
@@ -289,6 +1069,7 @@ pub fn assemble(
         plugins.push(PluginDescriptor {
             id: id.clone(),
             display_name: file.info.display_name.clone(),
+            description: None,
             kind: PluginKind::Manifest,
             // 版本在 AgentRegistry::list_plugins 里经 health_cache 回填
             //（assemble 不做 IO）。
@@ -296,28 +1077,150 @@ pub fn assemble(
             source_path: Some(path.to_string_lossy().to_string()),
             core: false,
             enabled,
+            has_mcp: false,
+            has_panel: false,
+            has_skill: false,
+            has_pi_extension: false,
+            panel: None,
+            system: false,
+            icon: file.info.icon.clone(),
+            composed: false,
         });
     }
 
     (agents, plugins)
 }
 
+/// 工具/能力插件的中文说明来源：[tool].description（注入用完整描述，取
+/// 首句前的主句——通常本身即一句说明）优先，[skill]/[[skill]] 声明描述次之。
+fn manifest_plugin_description(file: &super::manifest::schema::AgentManifestFile) -> String {
+    if let Some(tool) = file.tool.as_ref() {
+        let first_sentence = tool
+            .description
+            .split(['。', '\n'])
+            .find(|s| !s.trim().is_empty())
+            .unwrap_or(&tool.description);
+        return first_sentence.trim().to_string();
+    }
+    if let Some(skill) = file.skill.as_ref() {
+        for (_name, description, _body) in skill.entries() {
+            return description.to_string();
+        }
+    }
+    String::new()
+}
+
 /// 工具插件 → 描述符（plugin_list 合并渲染用）。
 pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescriptor {
+    // v0.9.4 需求3：目录形式 skill 插件（plugins/<id>/skills/<name>/）无
+    // [skill] 段——描述回退取首个 SKILL.md frontmatter，has_skill 以目录
+    // 源存在为准（插件中心 skill 分类与状态展示不受影响）。
+    let dir_root = plugin
+        .source_path
+        .parent()
+        .filter(|p| p.file_name().is_some_and(|n| n == plugin.file.info.id.as_str()));
+    let dir_skills = dir_root
+        .map(|r| crate::agent::skill_deploy::dir_source_skills(r, &plugin.file.info.id));
+    let mut description = manifest_plugin_description(&plugin.file);
+    if description.is_empty() {
+        if let Some(first) = dir_skills.as_ref().and_then(|v| v.first()) {
+            description = first.description.clone();
+        }
+    }
     PluginDescriptor {
         id: plugin.file.info.id.clone(),
         display_name: plugin.file.info.display_name.clone(),
+        description: Some(description),
         kind: PluginKind::Tool,
         version: None,
         source_path: Some(plugin.source_path.to_string_lossy().to_string()),
         core: false,
         enabled: plugin.enabled,
+        has_mcp: plugin.file.mcp.is_some(),
+        has_panel: plugin.file.panel.is_some(),
+        has_skill: plugin
+            .file
+            .skill
+            .is_some()
+            || dir_skills.as_ref().is_some_and(|v| !v.is_empty()),
+        has_pi_extension: plugin.file.pi_extension.is_some(),
+        panel: plugin.file.panel.as_ref().map(|p| PanelDecl {
+            title: p.title.clone(),
+            items: p
+                .items
+                .iter()
+                .map(|i| PanelDeclItem {
+                    label: i.label.clone(),
+                    command: i.command.clone(),
+                })
+                .collect(),
+        }),
+        system: is_system_plugin(&plugin.file.info.id),
+        icon: plugin.file.info.icon.clone(),
+        composed: false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_pipeline_stages_expands_video_maker_shape() {
+        // video-maker 清单形状：discuss 模板段（模板默认展开）+ 自定义段。
+        let manifest: serde_json::Value = toml::from_str(
+            r#"
+            [plugin]
+            id = "session.video-maker"
+            name = "视频生成助手"
+            kind = "session-composed"
+
+            [[pipeline.stages]]
+            template = "phase.discuss"
+
+            [[pipeline.stages]]
+            name = "分镜设计"
+            prompt = "依据需求文档产出分镜表。"
+
+            [[pipeline.stages]]
+            name = "视频生成"
+            prompt = "渲染合成。"
+            gate = "confirm"
+            "#,
+        )
+        .unwrap();
+        let stages = resolve_pipeline_stages(&manifest).unwrap();
+        assert_eq!(stages.len(), 3);
+        // 模板段：key 取模板短键，name/prompt 取模板默认，tools 含 lock_requirement。
+        let first = &stages[0];
+        assert_eq!(first["key"], "discuss");
+        assert_eq!(first["name"], "需求讨论");
+        assert!(first["prompt"].as_str().unwrap().contains("澄清目标"));
+        assert!(first["tools"].as_array().unwrap().iter().any(|t| t == "lock_requirement"));
+        assert_eq!(first["gate"], "confirm");
+        // 自定义段：key 缺省 stage-N，声明覆盖 gate。
+        let second = &stages[1];
+        assert_eq!(second["key"], "stage-2");
+        assert_eq!(second["name"], "分镜设计");
+        assert_eq!(second["prompt"], "依据需求文档产出分镜表。");
+        assert_eq!(second["gate"], "none");
+        assert_eq!(second["tools"].as_array().unwrap().len(), 0);
+        let third = &stages[2];
+        assert_eq!(third["gate"], "confirm");
+    }
+
+    #[test]
+    fn resolve_pipeline_stages_rejects_missing_or_unknown_template() {
+        let no_pipeline: serde_json::Value = serde_json::json!({ "plugin": { "id": "x" } });
+        assert!(resolve_pipeline_stages(&no_pipeline).is_err());
+        let bad_template: serde_json::Value = serde_json::json!({
+            "pipeline": { "stages": [ { "template": "phase.nope" } ] }
+        });
+        let err = resolve_pipeline_stages(&bad_template).unwrap_err();
+        assert!(err.contains("未知模板"));
+        let empty: serde_json::Value = serde_json::json!({ "pipeline": { "stages": [] } });
+        assert!(resolve_pipeline_stages(&empty).is_err());
+    }
 
     // assemble 用假插件测形状与过滤（真 adapter 的行为等价由既有 registry
     // 测试锁定）；plugins.json 读写经 JISHU_HUB_HOME + tempdir 隔离。
@@ -460,6 +1363,10 @@ mod tests {
             session: None,
             capabilities: None,
             pi_extension: None,
+            mcp: None,
+            panel: None,
+            skill: None,
+            skills: None,
             tool: None,
         })
     }
@@ -530,6 +1437,74 @@ mod tests {
     use crate::agent::manifest::env_test_lock;
 
     #[test]
+    fn resolver_plugin_toml_parses_and_system_guards() {
+        // v0.9.0 需求1 二期：解析器 manifest 生成合法（panel-only 工具插件）
+        // + 系统插件判定。测试进程旁通常无 jishu-cli → 命令回退裸名，解析不受影响。
+        let toml = resolver_plugin_toml();
+        let file: super::super::manifest::schema::AgentManifestFile =
+            toml::from_str(&toml).unwrap();
+        assert!(file.validate().is_ok(), "resolver manifest must be valid");
+        assert_eq!(file.info.id, "mcp-resolver");
+        assert!(file.panel.is_some());
+        assert!(file.mcp.is_none()); // 解析器是 server 本体，[mcp] 会自指
+        assert!(file.tool.is_none());
+        assert!(is_system_plugin("mcp-resolver"));
+        assert!(is_system_plugin("task-requirements"));
+        assert!(!is_system_plugin("user-tool"));
+    }
+
+    #[test]
+    fn resolver_default_enabled_and_disable_gates_off() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        // 无 plugins.json → 默认启用。
+        assert!(is_mcp_resolver_enabled());
+        let mut cfg = load_plugin_config();
+        cfg.disabled.push("mcp-resolver".to_string());
+        save_plugin_config(&cfg).unwrap();
+        assert!(!is_mcp_resolver_enabled());
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    #[test]
+    fn ensure_deploys_system_plugins_idempotent() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        ensure_builtin_adaptive_plugins();
+        let dir = super::super::manifest::manifest_dir();
+        for id in SYSTEM_PLUGIN_IDS {
+            assert!(
+                dir.join(format!("{id}.toml")).exists(),
+                "{id} should be deployed"
+            );
+        }
+        // 全部系统 manifest 解析且校验合法；指南插件为 [skill] 声明形态。
+        for id in SYSTEM_PLUGIN_IDS {
+            let toml_src = std::fs::read_to_string(dir.join(format!("{id}.toml"))).unwrap();
+            let file: super::super::manifest::schema::AgentManifestFile =
+                toml::from_str(&toml_src).unwrap();
+            assert!(file.validate().is_ok(), "{id} manifest invalid");
+        }
+        let skill_toml = std::fs::read_to_string(dir.join("skill-resolver.toml")).unwrap();
+        let skill_file: super::super::manifest::schema::AgentManifestFile =
+            toml::from_str(&skill_toml).unwrap();
+        assert_eq!(skill_file.info.id, "skill-resolver");
+        assert!(skill_file.skill.is_none());
+        let guide: super::super::manifest::schema::AgentManifestFile =
+            toml::from_str(&std::fs::read_to_string(dir.join("mcp-create-tool.toml")).unwrap())
+                .unwrap();
+        assert!(guide.skill.is_some() && guide.mcp.is_none());
+        // 幂等：二次部署不报错、内容不变。
+        let before = std::fs::read_to_string(dir.join("mcp-resolver.toml")).unwrap();
+        ensure_builtin_adaptive_plugins();
+        let after = std::fs::read_to_string(dir.join("mcp-resolver.toml")).unwrap();
+        assert_eq!(before, after);
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    #[test]
     fn plugin_config_roundtrip_and_set_enabled_guards() {
         let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
@@ -560,5 +1535,61 @@ mod tests {
         std::fs::write(plugin_config_path(), "{not json").unwrap();
         assert!(load_plugin_config().disabled.is_empty());
         std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// v0.9.2 需求7：pi 扩展工具聚合——禁用插件剔除、多插件并集保序去重。
+    #[test]
+    fn merge_pi_extension_tools_filters_disabled_and_dedups() {
+        use std::collections::HashSet;
+        let declared = vec![
+            (
+                "interactive-qa".to_string(),
+                vec!["request_user_input".to_string()],
+            ),
+            (
+                "task-requirements".to_string(),
+                vec!["lock_requirement".to_string()],
+            ),
+            ("task-plan".to_string(), vec!["commit_plan".to_string()]),
+            (
+                "dup-plugin".to_string(),
+                vec!["request_user_input".to_string()],
+            ),
+        ];
+        let disabled: HashSet<String> = ["task-plan".to_string()].into_iter().collect();
+        let merged = merge_pi_extension_tools(&declared, &disabled);
+        assert_eq!(
+            merged,
+            vec![
+                "request_user_input".to_string(),
+                "lock_requirement".to_string()
+            ]
+        );
+        // 全禁用 → 空（调用方兜底 DEFAULT_PI_TOOLS）
+        let all_disabled: HashSet<String> = declared.iter().map(|(id, _)| id.clone()).collect();
+        assert!(merge_pi_extension_tools(&declared, &all_disabled).is_empty());
+    }
+
+    /// v0.9.2 需求1：会话能力插件描述符——kind=Session、非 core、随禁用
+    /// 集合启停；且进入 known ids（set_plugin_enabled 可用）。
+    #[test]
+    fn session_plugin_descriptors_follow_disabled_set() {
+        let disabled: std::collections::HashSet<String> =
+            ["session.stream-status".to_string()].into_iter().collect();
+        let descriptors = session_plugin_descriptors(&disabled);
+        assert!(descriptors.iter().all(|d| d.kind == PluginKind::Session));
+        assert!(descriptors.iter().all(|d| !d.core));
+        let nav = descriptors
+            .iter()
+            .find(|d| d.id == "session.stream-status")
+            .unwrap();
+        assert!(!nav.enabled);
+        assert!(
+            session_plugin_descriptors(&Default::default())
+                .iter()
+                .find(|d| d.id == "session.stream-status")
+                .unwrap()
+                .enabled
+        );
     }
 }

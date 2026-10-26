@@ -10,6 +10,10 @@ pub struct LlmRequest {
     pub stream: bool,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    /// v0.9.4 需求6 v2：请求级关闭思考（anthropic 协议 thinking disabled；
+    /// openai 协议忽略——标题生成等极小补全场景防思考模型吃光 max_tokens）。
+    #[serde(default)]
+    pub disable_thinking: bool,
 }
 
 fn default_true() -> bool {

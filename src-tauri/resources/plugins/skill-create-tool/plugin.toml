@@ -1,0 +1,49 @@
+schema = 1
+kind = "tool"
+
+[info]
+id = "skill-create-tool"
+display_name = "Skill 创建工具"
+icon = "sparkles"
+
+[skill]
+description = "把 SKILL.md 能力注册进 jishu hub 并自动分发到各智能体 skill 目录的操作指南——用户要求沉淀/注册/添加某个 skill，或你总结出一套可复用流程要固化为技能时使用。"
+body = '''
+# 把 Skill 注册进 jishu hub（两步 + 验证）
+
+## 第 1 步：写 plugin.toml（[skill] 段）
+
+```toml
+schema = 1
+kind = "tool"
+
+[info]
+id = "code-review"             # 即 skill 名（分发目录名）
+display_name = "Code Review"
+
+[skill]
+description = "提交前代码自查——逐文件检查错误处理与测试覆盖。何时用：用户要求自查/提交前检查时。"
+body = "逐文件检查：\n1. 错误处理是否完整\n2. 新逻辑是否有测试覆盖\n3. 命名与既有风格一致"
+```
+
+要点：
+
+- `description` 是各 agent 判断"何时使用该技能"的唯一依据——必须写清**做什么 + 何时用**（对照本文件的 description 写法）。
+- `body` 是 SKILL.md 正文（指令步骤）；多行可用 TOML 字面量字符串或 "\n" 转义。
+- skill 名 = 插件 id，全局唯一。
+
+## 第 2 步：安装
+
+`jishu-cli plugins add <toml文件>`
+
+## 生效与验证
+
+- 提示用户在 jishu hub「插件管理」页点「重新加载」（或重启 hub）；
+- hub 的 Skill 解析器会把 SKILL.md 自动分发到各智能体的 skill 目录（claude 与 jishu agent 原生发现，新会话即可用）；
+- `jishu-cli skill status` 验证清单出现。
+
+## 迭代
+
+- 修改技能：`jishu-cli plugins update <id> <新toml>` 覆盖 → hub 重新加载后自动重新分发；
+- 失效/弃用：`jishu-cli plugins disable <id>` 即从各智能体目录回收。
+'''

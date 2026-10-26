@@ -82,3 +82,4 @@ scripts/recover-v081/snapshot/
 scripts/recover-v081/snapshot-manifest.json
 scripts/recover-v081/apply-report.json
 scripts/recover-v081/ops.json
+.zcodeignore

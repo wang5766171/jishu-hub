@@ -84,6 +84,23 @@ pub fn load_manifests(
         .collect();
     files.sort();
 
+    // v0.9.0 需求2：目录形式插件 `~/.jishu-hub/plugins/<id>/plugin.toml`
+    //（pi 扩展插件的 entry TS 与插件目录同放；agents/ 单文件形式优先——
+    // 同 id 时目录形式跳过）。
+    let mut dir_form: Vec<PathBuf> = Vec::new();
+    let plugins_dir = hub_home().join("plugins");
+    if let Ok(subs) = std::fs::read_dir(&plugins_dir) {
+        let mut sub_paths: Vec<PathBuf> = subs.flatten().map(|e| e.path()).collect();
+        sub_paths.sort();
+        for sub in sub_paths {
+            let candidate = sub.join("plugin.toml");
+            if candidate.is_file() {
+                dir_form.push(candidate);
+            }
+        }
+    }
+    files.extend(dir_form);
+
     for path in files {
         let file_name = path
             .file_name()
@@ -96,6 +113,25 @@ pub fn load_manifests(
                 continue;
             }
         };
+        // v0.9.3 需求13：同域共存（设计决策 1）——组合式会话插件清单
+        //（kind=session-composed，[plugin]/[source]/[render] 段）与本扫描器
+        // 的 AgentManifestFile schema 不同形。此处前置识别并跳过（由
+        // composed_session_manifests 扫描装载）；不做 kind 预判会因
+        // deny_unknown_fields 报「unknown field `plugin`」刷屏插件中心。
+        let composed = content
+            .parse::<toml::Value>()
+            .ok()
+            .and_then(|v| {
+                v.get("plugin")
+                    .and_then(|p| p.get("id"))
+                    .and_then(|v| v.as_str())
+                    .map(|id| id.starts_with("session."))
+            })
+            .unwrap_or(false)
+            && content.contains("session-composed");
+        if composed {
+            continue;
+        }
         let parsed: schema::AgentManifestFile = match toml::from_str(&content) {
             Ok(parsed) => parsed,
             Err(e) => {
@@ -147,6 +183,9 @@ mod tests {
     fn missing_directory_yields_empty_silently() {
         // 用一个不存在的覆盖目录验证「目录不存在 → 空」路径的形状：
         // manifest_dir 本身不可注入，此处仅验证返回结构约定。
+        // 持 env 锁：JISHU_HUB_HOME 被并行测试临时改写时，本测试会读到他人
+        // 临时 home（v0.9.4 需求6 全量跑测实际踩中 tools 非空断言）。
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let (agents, tools, errors) = load_manifests(&["jishu-self".to_string()]);
         if !manifest_dir().exists() {
             assert!(agents.is_empty());

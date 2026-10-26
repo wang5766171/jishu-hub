@@ -92,6 +92,10 @@ use crate::agent::traits::{
     TransportAdapter,
 };
 impl AgentManifest for CodexAdapter {
+    fn config_dir(&self) -> Option<std::path::PathBuf> {
+        dirs::home_dir().map(|h| h.join(".codex"))
+    }
+
     fn info(&self) -> AgentInfo {
         AgentInfo {
             id: "codex".to_string(),
@@ -272,10 +276,19 @@ impl ConfigAdapter for CodexAdapter {
         ))
     }
 
+    /// v0.9.0 需求14：模型库角色接入（model/list 拉取 + config.toml model 键）。
+    fn as_model_store(
+        &self,
+    ) -> Option<&dyn crate::agent::config_roles::ModelStore> {
+        Some(self)
+    }
+
     fn config_surface(&self) -> crate::agent::ConfigSurface {
         crate::agent::ConfigSurface::Structured {
             schema_id: "codex-config".to_string(),
-            supports_model_picker: false,
+            // v0.9.0 需求14：经 app-server model/list 拉取账号模型清单，
+            // ModelStore 角色接入（本文件 impl ModelStore）。
+            supports_model_picker: true,
             supports_small_model: false,
             supports_large_model: false,
             supports_api_provider: false,
@@ -616,6 +629,16 @@ impl crate::agent::config_roles::PermissionModeConfig for CodexAdapter {
                 "approval_policy".to_string(),
                 toml::Value::String(mode.to_string()),
             );
+            // sandbox_mode 联动（需求17）：approval=never 只管「不弹审批」，
+            // codex 的文件系统限制由 sandbox_mode 独立控制（默认 read-only
+            // 导致完全访问模式下仍无法写文件——用户实测反馈）。映射：
+            // never → danger-full-access / 其余 → workspace-write（仍可
+            // 在工作区内工作，越权操作由审批链拦截）。
+            let sandbox = if mode == "never" { "danger-full-access" } else { "workspace-write" };
+            table.insert(
+                "sandbox_mode".to_string(),
+                toml::Value::String(sandbox.to_string()),
+            );
         }
         let content =
             toml::to_string_pretty(&toml_val).map_err(|e| format!("Serialization error: {}", e))?;
@@ -670,7 +693,7 @@ impl SessionAdapter for CodexAdapter {
                 .find(|m| m.role == "user")
                 .and_then(|m| {
                     m.content.first().and_then(|b| match b {
-                        crate::session::ContentBlock::Text { text } => {
+                        crate::session::ContentBlock::Text { text, .. } => {
                             Some(text.chars().take(50).collect::<String>())
                         }
                         _ => None,
@@ -1142,34 +1165,87 @@ fn parse_rollout_messages(path: &std::path::Path) -> Result<Vec<crate::session::
         let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
-        if val.get("type").and_then(|v| v.as_str()) != Some("event_msg") {
-            continue;
-        }
-        let Some(payload) = val.get("payload") else {
-            continue;
-        };
-        let p_type = payload.get("type").and_then(|v| v.as_str());
-        let role = match p_type {
-            Some("user_message") => "user",
-            Some("agent_message") => "assistant",
-            _ => continue,
-        };
-        let Some(msg) = payload.get("message").and_then(|v| v.as_str()) else {
-            continue;
-        };
         let timestamp = val
             .get("timestamp")
             .and_then(|v| v.as_str())
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.timestamp_millis());
+        let line_type = val.get("type").and_then(|v| v.as_str());
+        let Some(payload) = val.get("payload") else {
+            continue;
+        };
 
-        messages.push(crate::session::Message {
-            role: role.to_string(),
-            content: vec![crate::session::ContentBlock::Text {
-                text: msg.to_string(),
-            }],
-            timestamp,
-        });
+        // 需求18：codex 0.153+ rollout 双格式解析——
+        // 新格式 response_item + type=message + role 字段（0.153.1 实测）：
+        // {"type":"response_item","payload":{"type":"message","role":"user/assistant",
+        //  "content":[{"type":"input_text/output_text","text":"..."}]}}
+        // 旧格式 event_msg + type=user_message/agent_message（≤0.148）：
+        // {"type":"event_msg","payload":{"type":"user_message","message":"..."}}
+        if line_type == Some("response_item")
+            && payload.get("type").and_then(|v| v.as_str()) == Some("message")
+        {
+            let role = payload.get("role").and_then(|v| v.as_str());
+            // developer 角色 = 系统/skills 指令，不展示
+            let role = match role {
+                Some("user") => "user",
+                Some("assistant") => "assistant",
+                _ => continue,
+            };
+            let Some(content_arr) = payload.get("content").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            // 拼接 content 数组的文本块（input_text / output_text）
+            let text: String = content_arr
+                .iter()
+                .filter_map(|c| {
+                    let t = c.get("type").and_then(|v| v.as_str())?;
+                    if t == "input_text" || t == "output_text" || t == "text" {
+                        c.get("text").and_then(|v| v.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("
+");
+            // 过滤 codex 注入的系统前导块（skills/plugins 等 XML 标签开头）
+            if role == "user" && text.trim_start().starts_with('<') {
+                continue;
+            }
+            if text.trim().is_empty() {
+                continue;
+            }
+            messages.push(crate::session::Message {
+                role: role.to_string(),
+                content: vec![crate::session::ContentBlock::Text {
+                    text,
+                    tool_ids: Vec::new(),
+                }],
+                timestamp,
+            });
+            continue;
+        }
+
+        // 旧格式兼容（≤0.148 codex）
+        if line_type == Some("event_msg") {
+            let p_type = payload.get("type").and_then(|v| v.as_str());
+            let role = match p_type {
+                Some("user_message") => "user",
+                Some("agent_message") => "assistant",
+                _ => continue,
+            };
+            let Some(msg) = payload.get("message").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            messages.push(crate::session::Message {
+                role: role.to_string(),
+                content: vec![crate::session::ContentBlock::Text {
+                    text: msg.to_string(),
+                    tool_ids: Vec::new(),
+                }],
+                timestamp,
+            });
+        }
     }
     Ok(messages)
 }
@@ -1269,6 +1345,246 @@ fn apply_reasoning_effort(
         _ => {
             table.remove("model_reasoning_effort");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 模型列表拉取与选择（v0.9.0 需求14）
+// ---------------------------------------------------------------------------
+
+/// app-server `model/list` 返回的账号可用模型（schema 见探测：0.153.1）。
+#[derive(Debug, Clone)]
+pub struct CodexModelInfo {
+    pub id: String,
+    pub display_name: String,
+}
+
+/// 探测结果缓存（10 分钟 TTL——config 页打开/刷新触发，避免每次 spawn）。
+static MODEL_CACHE: std::sync::Mutex<Option<(std::time::Instant, Vec<CodexModelInfo>)>> =
+    std::sync::Mutex::new(None);
+
+/// spawn `codex app-server` → initialize → `model/list` → 退出。
+/// 整体 20s 护栏；失败返回 Err（调用方回退到当前模型单选）。
+fn probe_codex_models() -> Result<Vec<CodexModelInfo>, String> {
+    use std::io::{BufRead, BufReader, Write};
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "codex", "app-server"]);
+        c
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("codex");
+        c.arg("app-server");
+        c
+    };
+    // v0.9.1 需求7：后台探测须静默——GUI 进程派生 cmd/codex 不加
+    // CREATE_NO_WINDOW 会弹黑色命令行窗口（用户实测打开模型设置页 codex
+    // 即弹窗）。与 app-server 会话 spawn（tokio_no_window）同纪律。
+    crate::process_command::std_no_window(&mut cmd);
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn codex app-server failed: {e}"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "codex app-server stdin unavailable".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "codex app-server stdout unavailable".to_string())?;
+    let mut reader = BufReader::new(stdout);
+    let mut writer = stdin;
+
+    fn send(
+        writer: &mut std::process::ChildStdin,
+        obj: serde_json::Value,
+    ) -> Result<(), String> {
+        let mut line = serde_json::to_string(&obj).map_err(|e| e.to_string())?;
+        line.push('\n');
+        writer
+            .write_all(line.as_bytes())
+            .and_then(|_| writer.flush())
+            .map_err(|e| format!("write to codex failed: {e}"))
+    }
+
+    let result = (|| -> Result<Vec<CodexModelInfo>, String> {
+        send(
+            &mut writer,
+            serde_json::json!({
+                "id": 1, "method": "initialize",
+                "params": { "clientInfo": { "name": "jishu-hub", "version": env!("CARGO_PKG_VERSION") } },
+            }),
+        )?;
+        let mut models = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut line = String::new();
+        loop {
+            if std::time::Instant::now() > deadline {
+                return Err("codex model/list probe timeout (20s)".to_string());
+            }
+            line.clear();
+            let n = reader
+                .read_line(&mut line)
+                .map_err(|e| format!("read from codex failed: {e}"))?;
+            if n == 0 {
+                return Err("codex app-server exited before model/list".to_string());
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if v.get("id") == Some(&serde_json::json!(1)) {
+                send(
+                    &mut writer,
+                    serde_json::json!({ "id": 2, "method": "model/list", "params": {} }),
+                )?;
+                continue;
+            }
+            if v.get("id") == Some(&serde_json::json!(2)) {
+                if let Some(err) = v.get("error") {
+                    return Err(format!(
+                        "model/list failed: {}",
+                        err.get("message").and_then(|m| m.as_str()).unwrap_or("?")
+                    ));
+                }
+                if let Some(arr) = v.pointer("/result/data").and_then(|d| d.as_array()) {
+                    for m in arr {
+                        if m.get("hidden").and_then(|h| h.as_bool()).unwrap_or(false) {
+                            continue;
+                        }
+                        let id = m
+                            .get("id")
+                            .or_else(|| m.get("model"))
+                            .and_then(|x| x.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        if id.is_empty() {
+                            continue;
+                        }
+                        models.push(CodexModelInfo {
+                            display_name: m
+                                .get("displayName")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or(&id)
+                                .to_string(),
+                            id,
+                        });
+                    }
+                }
+                return Ok(models);
+            }
+        }
+    })();
+
+    let _ = child.kill();
+    let _ = child.wait();
+    result
+}
+
+fn list_codex_models_cached() -> Result<Vec<CodexModelInfo>, String> {
+    let mut guard = MODEL_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, ref models)) = *guard {
+        if at.elapsed() < std::time::Duration::from_secs(600) {
+            return Ok(models.clone());
+        }
+    }
+    let models = probe_codex_models()?;
+    *guard = Some((std::time::Instant::now(), models.clone()));
+    Ok(models)
+}
+
+impl crate::agent::config_roles::ModelStore for CodexAdapter {
+    /// picker_options_from_config 消费形状：
+    /// {"providers": {"codex": {"name": "Codex", "models": [{id, reasoning}]}}}。
+    /// 探测失败回退为「当前模型单选」（config.toml model 键），选择器仍可用。
+    fn load_model_store(&self) -> Result<serde_json::Value, String> {
+        let models: Vec<serde_json::Value> = match list_codex_models_cached() {
+            Ok(list) if !list.is_empty() => list
+                .iter()
+                .map(|m| serde_json::json!({ "id": m.id, "reasoning": true }))
+                .collect(),
+            _ => {
+                let current = self
+                    .load_config()?
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if current.is_empty() {
+                    return Err(
+                        "无法拉取 codex 模型列表（app-server model/list 失败），且 config.toml 未设置 model"
+                            .to_string(),
+                    );
+                }
+                vec![serde_json::json!({ "id": current, "reasoning": true })]
+            }
+        };
+        Ok(serde_json::json!({
+            "providers": {
+                "codex": { "name": "Codex", "models": models },
+            }
+        }))
+    }
+
+    /// 模型清单只读（来源为账号侧）；选择经 set_active_model 落 config.toml。
+    fn save_model_store(&self, _config: &serde_json::Value) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn get_active_model(&self) -> Result<Option<serde_json::Value>, String> {
+        let model = self
+            .load_config()?
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        Ok(model
+            .map(|m| serde_json::json!({ "provider": "codex", "model": m })))
+    }
+
+    fn set_active_model(&self, active: Option<&serde_json::Value>) -> Result<(), String> {
+        let model = active
+            .and_then(|a| a.get("model"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "codex set_active requires {model}".to_string())?;
+        let mut config = self.load_config()?;
+        config["model"] = serde_json::Value::String(model.to_string());
+        self.save_config(&config)
+    }
+}
+
+#[cfg(test)]
+mod model_tests {
+    use super::*;
+    use crate::agent::config_roles::ModelStore as _;
+
+    /// 形状契约：load_model_store 产物经 picker_options_from_config 得到
+    /// "codex/<id>" 选项（选择器 UI 全链路依赖此形状）。
+    #[test]
+    fn model_store_shape_feeds_picker() {
+        let store = CodexAdapter::new();
+        // 直接构造缓存，避免测试依赖本机 codex。
+        *MODEL_CACHE.lock().unwrap() = Some((
+            std::time::Instant::now(),
+            vec![
+                CodexModelInfo {
+                    id: "gpt-5.6-terra".into(),
+                    display_name: "GPT-5.6-Terra".into(),
+                },
+                CodexModelInfo {
+                    id: "gpt-5.6-sol".into(),
+                    display_name: "GPT-5.6-Sol".into(),
+                },
+            ],
+        ));
+        let config = store.load_model_store().expect("store");
+        let options = crate::agent::jishu_self::model_picker::picker_options_from_config(&config);
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].value, "codex/gpt-5.6-terra");
+        assert!(options[0].label.contains("Codex"));
     }
 }
 

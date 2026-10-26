@@ -9,7 +9,7 @@
  */
 import { useCallback } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
-import type { NodeRunProjection, RunProjection } from "@/features/task-instance/graph/use-task-graph";
+import type { NodeRunLookupSource, NodeRunStatusRef } from "@/features/task-instance/graph/use-task-graph";
 import type { NodeSessionInfo } from "./use-task-instance";
 
 /** orchestrator_get_attempt 返回的 NodeAttempt（精简版，只取需要的字段）。 */
@@ -22,8 +22,9 @@ interface NodeAttempt {
 }
 
 export interface UseNodeSessionOptions {
-  /** 当前 run 的投影（用于读取 nodeRuns）。 */
-  projection: RunProjection | null;
+  /** 当前 run 的 node_runs 查询源（最小形状 NodeRunLookupSource：线上
+   *  RunProjection 与内部 NodeRun 状态均结构满足）。 */
+  projection: NodeRunLookupSource | null;
   /** 回填到 useTaskInstance.nodeSessionMap。 */
   onNodeSession: (nodeId: string, info: NodeSessionInfo) => void;
 }
@@ -88,8 +89,8 @@ export function useNodeSession(options: UseNodeSessionOptions): UseNodeSessionRe
 }
 
 function findNodeRun(
-  projection: RunProjection,
+  projection: NodeRunLookupSource,
   nodeId: string,
-): NodeRunProjection | null {
+): NodeRunStatusRef | null {
   return projection.node_runs[nodeId] ?? null;
 }

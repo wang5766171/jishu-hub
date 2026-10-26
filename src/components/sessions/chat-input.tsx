@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { streamStore, useIsSessionStreaming } from "@/hooks/use-stream-store";
 import { Button } from "@/components/ui/button";
-import { Blocks, Check, ChevronDown, KeyRound, MessagesSquare, Paperclip, Plus, Send, Square, Sparkles } from "lucide-react";
+import { Blocks, Check, ChevronDown, KeyRound, MessagesSquare, Paperclip, Plus, Send, Server, Square, Sparkles } from "lucide-react";
 import { FilePreview } from "./file-preview";
 import { InteractionComposer } from "./interaction-composer";
 import { MessageStaging, type StagedMessage } from "./message-staging";
@@ -22,6 +22,7 @@ import type {
 } from "@/types";
 import { cn } from "@/lib/utils";
 import { EmbeddedToolPill } from "./embedded-tools";
+import { detectAtToken } from "./at-file";
 
 /** 会话工具插件条目（v0.8.1 需求7，后端 session_tool_list）。 */
 interface SessionTool {
@@ -32,6 +33,8 @@ interface SessionTool {
   enabled: boolean;
   /** M3：有 [tool] 段（可 CLI 注入）；false = 仅 pi 扩展形态。 */
   injectable?: boolean;
+  /** v0.9.0 需求20 第二轮：能力类别（cli | mcp | skill）——+ 菜单两级分组。 */
+  category?: string;
 }
 
 /** 内联工具 token：`@[显示名]`（v0.8.1 需求7）。全局正则——用前 reset /
@@ -139,7 +142,7 @@ interface ChatInputProps {
   onDraftChange?: (value: string) => void;
   onBeforeSend?: (message: string) => Promise<boolean | void> | boolean | void;
   prepareMessageForAgent?: (message: string) => Promise<string> | string;
-  onMessageSent?: (chatSessionId: string, userMessage: string) => void;
+  onMessageSent?: (chatSessionId: string, userMessage: string, toolIds?: string[]) => void;
   onSessionResolved?: (pendingSessionId: string, realSessionId: string) => void | Promise<void>;
   onSubmitMessage?: (message: string) => Promise<{ sessionId?: string } | void>;
   containerClassName?: string;
@@ -159,7 +162,7 @@ interface ChatInputProps {
   onInteractionSubmit?: (submission: ConversationInteractionSubmission) => void | Promise<void>;
   /** Called when user clicks "guide" on a staged message during streaming.
    *  For Jishu Agent: steer. For others: parent should stop + send. */
-  onGuideStaged?: (content: string) => Promise<void>;
+  onGuideStaged?: (content: string, toolIds?: string[]) => Promise<void>;
   /** Called when the user clicks the Stop button and the session is aborted. */
   onAbort?: () => void;
   /** When provided, the parent can auto-send staged guides at turn_complete
@@ -173,7 +176,15 @@ function isInsideProject(filePath: string, projectPath: string): boolean {
   return normFile.startsWith(normProject.endsWith("/") ? normProject : normProject + "/");
 }
 
-const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function ChatInput({
+/** v0.9.1 需求3 #1：ChatInput 命令句柄——focus 沿用原 textarea 转发语义；
+ * restoreTexts 供 chat-page 在收到 steer_queue_cleared（停止清队）时把被清空
+ * 的排队文本追加回草稿，不打字丢失。 */
+export interface ChatInputHandle {
+  focus: () => void;
+  restoreTexts: (texts: string[]) => void;
+}
+
+const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput({
   sessionId,
   projectPath,
   agentId,
@@ -214,11 +225,17 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
 }: ChatInputProps, ref) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
+  // v0.9.1 需求3 #1：命令句柄的 fresh mirror——restoreTexts 经 useImperativeHandle
+  // 空依赖暴露，须读最新草稿而非挂载期闭包值。
+  const messageRef = useRef(message);
+  messageRef.current = message;
   const [files, setFiles] = useState<AttachedFile[]>([]);
   const [sending, setSending] = useState(false);
   const [interactionSubmitting, setInteractionSubmitting] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
+  // 需求20 第二轮：+ 菜单两级——MCP 服务 / Skill 子菜单展开态（null = 收起）。
+  const [toolSubmenu, setToolSubmenu] = useState<"mcp" | "skill" | null>(null);
   const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
   const [accessMenuOpen, setAccessMenuOpen] = useState(false);
   const [stagedMessagesBySession, setStagedMessagesBySession] = useState<Record<string, StagedMessage[]>>({});
@@ -226,6 +243,8 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   const [sessionTools, setSessionTools] = useState<SessionTool[]>([]);
   const [guideLoading, setGuideLoading] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // v0.9.1 需求4 测试期修复二：输入框根容器——高度等比伸缩的宽度基准测量点。
+  const inputRootRef = useRef<HTMLDivElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const stagingSessionKey = sessionId ?? "__new_session__";
   const stagedMessages = stagedMessagesBySession[stagingSessionKey] ?? [];
@@ -289,19 +308,15 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         return;
       }
       setSlashFilter(null);
-      // @ 文件：光标前最近 @，@ 之前须为行首或空白，token 内无空白
+      // @ 文件（v0.9.0 需求10：行中触发——@ 前是非 ASCII 词字符即可，中文
+      // 语句中间 @ 可用；邮箱/路径保护与关闭条件见 at-file.ts 规则单点）。
       if (!allowFiles) {
         setAtToken(null);
         return;
       }
-      const beforeCaret = value.slice(0, caret);
-      const atIdx = beforeCaret.lastIndexOf("@");
-      if (
-        atIdx >= 0 &&
-        (atIdx === 0 || /\s/.test(beforeCaret[atIdx - 1])) &&
-        !/\s/.test(beforeCaret.slice(atIdx + 1))
-      ) {
-        setAtToken(beforeCaret.slice(atIdx + 1));
+      const token = detectAtToken(value.slice(0, caret));
+      if (token !== null) {
+        setAtToken(token);
         setSuggestIndex(0);
       } else {
         setAtToken(null);
@@ -438,10 +453,111 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     });
   }, [message, onDraftChange]);
 
+  /** v0.9.1 需求4 修复五（重构，取代修复四的运行时同步）：「外滚内长」——
+   * 固定高度的滚动容器（inputScrollRef）内，mirror（in-flow 撑起内容高度）
+   * 与 textarea（absolute 覆盖同几何、自身 overflow hidden 永不内部滚动）随
+   * 同一条滚动条整体滚动。两层对齐由 DOM 构造保证，无需 scrollTop/滚动条
+   * 占宽逐项同步（修复四的同步方案在 WebView2 下滚动后仍出现两层视口错位
+   * 重影，用户 2026-09-05 二次实测）。 */
+  const inputScrollRef = useRef<HTMLDivElement>(null);
+  /** mirror（in-flow 文本层）引用——撑高量测基准（见 syncProportionalInputHeight）。 */
+  const inputMirrorRef = useRef<HTMLDivElement>(null);
+
+  /** v0.9.1 需求4 测试期修复二/六：输入框高度随宽度等比伸缩——基准：初始
+   * 内容宽 820px ↔ 空态高 76px；宽度自适应（70%）后高度同比变高（用户裁决：
+   * 保持初始宽高比）；窄于基准不缩。
+   *
+   * 修复六（用户 2026-09-06 新裁决，取代修复四"恒定高度"）：内容可撑高
+   * 输入框，但有**约 11 行文字**的高度上限——超出上限才内部滚动；发送后
+   * 消息清空即回到初始高度。高度 = clamp(mirror 内容高, 76×scale 地板,
+   * (11×20+24)×scale 上限)：20px = text-sm 行高（1.25rem），24 = mirror
+   * 自身 py-3 上下 padding。量高用 mirror.offsetHeight（真实文本层）——
+   * 不能用 scroller.scrollHeight（≥ clientHeight，收缩时读不出更小值，
+   * 撑高后删行就缩不回去了）。
+   *
+   * 宽度守卫（修复三）：写高度会改变容器尺寸、再次触发 ResizeObserver——
+   * 回声通知宽度未变，跳过即断开回环（否则浏览器报「ResizeObserver loop
+   * completed with undelivered notifications」）；内容驱动路径（键入/粘贴/
+   * 回填/发送清空，经 [message] effect）传 force 绕过守卫。 */
+  const lastProportionalWidthRef = useRef(0);
+  const syncProportionalInputHeight = useCallback((options?: { force?: boolean }) => {
+    const root = inputRootRef.current;
+    const scroller = inputScrollRef.current;
+    const mirror = inputMirrorRef.current;
+    if (!root || !scroller) return;
+    const width = root.clientWidth;
+    if (width <= 0) return;
+    if (!options?.force && width === lastProportionalWidthRef.current) return;
+    lastProportionalWidthRef.current = width;
+    const scale = Math.max(1, width / 820);
+    const minH = Math.round(76 * scale);
+    const maxH = Math.round((11 * 20 + 24) * scale);
+    const contentH = mirror?.offsetHeight ?? 0;
+    const h = Math.max(minH, Math.min(contentH, maxH));
+    scroller.style.height = `${h}px`;
+    scroller.style.minHeight = `${minH}px`;
+    scroller.style.maxHeight = `${maxH}px`;
+  }, []);
+
+  /** 内容变化即时重算高度：键入/粘贴/回填/发送清空统一入口——发送后
+   * message 归空，mirror 塌回 padding 高度，高度落回地板即"恢复初始高度"。 */
+  useEffect(() => {
+    syncProportionalInputHeight({ force: true });
+  }, [message, syncProportionalInputHeight]);
+
+  /** 键入/回填后跟随光标：光标在末尾（常见键入与停止回填场景）滚到底；
+   * 中间位置不打断用户滚轮（textarea 全内容高度、自身不滚，光标定位由
+   * 用户滚动控制）。 */
+  const scrollInputCaretIntoView = useCallback(() => {
+    const scroller = inputScrollRef.current;
+    const textarea = textareaRef.current;
+    if (!scroller || !textarea) return;
+    if ((textarea.selectionStart ?? 0) >= textarea.value.length - 1) {
+      scroller.scrollTop = scroller.scrollHeight;
+    }
+  }, []);
+
+  // 容器宽度变化（窗口缩放/最大化/侧栏开合）即时重算；挂载时先同步一次。
+  // RO 回调走宽度守卫（自身写高度引发的回声通知宽度未变，跳过断开回环）。
+  useEffect(() => {
+    const root = inputRootRef.current;
+    if (!root) return;
+    syncProportionalInputHeight();
+    const observer = new ResizeObserver(() => syncProportionalInputHeight());
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [syncProportionalInputHeight]);
+
   /** M2：+ 菜单勾选切换会话启用集（会话级真源；乐观更新 + 失败回滚提示，
    * 不再静默吞错）。key 与发送同源（stagingSessionKey——新会话勾选落暂存
    * 键，首条消息由后端 compose 前迁移到会话键）。 */
-  useImperativeHandle(ref, () => textareaRef.current!, []);
+  useImperativeHandle(
+    ref,
+    () => ({
+      focus: () => textareaRef.current?.focus(),
+      // v0.9.1 需求3 #1：停止清队回填——被清空的排队文本追加到草稿尾部
+      // （多条换行拼接），同步草稿持久化（onDraftChange）并聚焦、光标置末。
+      restoreTexts: (texts: string[]) => {
+        const addition = texts.filter((text) => text.trim().length > 0).join("\n");
+        if (!addition) return;
+        const current = messageRef.current;
+        const next = current.trim().length > 0 ? `${current}\n${addition}` : addition;
+        messageRef.current = next;
+        setMessage(next);
+        onDraftChange?.(next);
+        requestAnimationFrame(() => {
+          const textarea = textareaRef.current;
+          if (!textarea) return;
+          const pos = next.length;
+          textarea.setSelectionRange(pos, pos);
+          textarea.focus();
+          // 程序性回填（末尾）后滚动容器跟到底，尾部可见（修复五结构）。
+          scrollInputCaretIntoView();
+        });
+      },
+    }),
+    [onDraftChange, scrollInputCaretIntoView],
+  );
 
   // Expose the staging-area lifecycle to the parent (Route 2: auto-send at
   // turn_complete). Set up ONCE on mount; methods take an explicit sessionKey
@@ -683,21 +799,59 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     [sessionId],
   );
 
-  /** M5：发送/引导共用的消息组装（单源）。用户裁决保持 workbuddy 形态：
-   * 本条消息里的 @[token] 集合 = 本条工具集（所见即所得，空 token = 本条
-   * 不带工具，覆盖写入会话集合）。与修前的差异：① 写入键修复
-   * （nextPendingId 同源，修前 activeSessionId 恒 null 落暂存键注入永不命
-   * 中）；② **await 写入完成**后才进入发送——修前 fire-and-forget 与
-   * send_message 的 compose 在后端并发，新会话首条消息（P0-0 红线场景）
-   * 集合可能未落盘 → 不注入（评审 P1-1 竞态）。任何新增的用户消息出口
+  /** M5 → v0.9.0 需求3 方案 C：发送/引导共用的消息组装（单源）。用户裁决保持
+   * workbuddy 形态：本条消息里的 @[token] 集合 = 本条工具集（所见即所得，空
+   * token = 本条不带工具，覆盖写入会话集合）。消息文本不再嵌 [JISHU-TOOLS]
+   * 标记——工具快照以 toolIds 返回值显式传递（流式渲染/引导占位用），回放
+   * 由后端从注入块派生（extract_tool_snapshot）。任何新增的用户消息出口
    * 必须走这里（§16.8 组装单源）。 */
+  // v0.9.4 需求8 补充（用户实测：steer 带附件/图片丢失）：附件上传管线
+  // 提取共用——普通发送与引导暂存（steering）同源。返回文件标记行
+  //（批次/路径引用，模型经 Read 工具查看），空数组表示无附件。
+  const saveInputFiles = useCallback(
+    async (inputFiles: AttachedFile[]): Promise<string[]> => {
+      if (!projectPath || inputFiles.length === 0) return [];
+      const localFiles = inputFiles.filter((f) => f.localPath && projectPath && isInsideProject(f.localPath, projectPath));
+      const externalPathFiles = inputFiles.filter((f) => f.localPath && !(projectPath && isInsideProject(f.localPath, projectPath)));
+      const uploadFiles = inputFiles.filter((f) => !f.localPath);
+      const allFileLines = [];
+      for (const f of localFiles) {
+        allFileLines.push(`${f.label}: ${f.localPath}`);
+      }
+      const filesToUpload = [...uploadFiles, ...externalPathFiles];
+      if (filesToUpload.length > 0) {
+        for (const f of externalPathFiles) {
+          if (!f.data && f.localPath) {
+            try {
+              f.data = await invokeCommand("read_file_as_base64", { path: f.localPath });
+            } catch { f.data = ""; }
+          }
+        }
+        const payload = filesToUpload.map((f) => ({
+          data: f.data,
+          filename: f.filename,
+          label: f.label || null,
+        }));
+        const saved = await invokeCommand<SavedFile[]>("save_session_files", {
+          projectPath,
+          files: payload,
+        });
+        for (const sv of saved) {
+          allFileLines.push(`${sv.label}（批次 ${sv.batch_id}）: ${sv.path}`);
+        }
+      }
+      return allFileLines;
+    },
+    [projectPath],
+  );
+
   const composeOutgoing = useCallback(
-    async (rawText: string): Promise<{ message: string; sessionKey: string }> => {
+    async (rawText: string): Promise<{ message: string; sessionKey: string; toolIds: string[] }> => {
       const sessionKey = nextPendingId();
       const hasTokens = TOOL_TOKEN_RE.test(rawText);
       TOOL_TOKEN_RE.lastIndex = 0;
       if (!hasTokens && !sessionTools.some((t) => t.enabled)) {
-        return { message: rawText, sessionKey };
+        return { message: rawText, sessionKey, toolIds: [] };
       }
       const { text: strippedText, toolIds } = extractToolTokens(rawText, sessionTools);
       try {
@@ -710,13 +864,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         // 警告与「工具没生效」的现象回溯——阻塞会导致普通消息也发不出。
         console.warn("Failed to sync session tools:", err);
       }
-      return {
-        message:
-          toolIds.length > 0
-            ? `[JISHU-TOOLS:${toolIds.join(",")}] ${strippedText}`
-            : strippedText,
-        sessionKey,
-      };
+      return { message: strippedText, sessionKey, toolIds };
     },
     [nextPendingId, sessionTools],
   );
@@ -725,6 +873,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     fullMessage: string,
     clearComposer: boolean,
     pendingIdOverride?: string,
+    toolIds?: string[],
   ) => {
     if (!projectPath) {
       throw new Error("project path is required");
@@ -747,7 +896,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     const agentMessage = await prepareMessageForAgent?.(fullMessage) ?? fullMessage;
 
     if (onSubmitMessage) {
-      if (onMessageSent) onMessageSent(pendingId, fullMessage);
+      if (onMessageSent) onMessageSent(pendingId, fullMessage, toolIds);
       const result = await onSubmitMessage(fullMessage);
       if (result?.sessionId && result.sessionId !== pendingId) {
         setActiveSessionId(result.sessionId);
@@ -762,8 +911,8 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
       return;
     }
 
-    streamStore.start(pendingId, fullMessage);
-    if (onMessageSent) onMessageSent(pendingId, fullMessage);
+    streamStore.start(pendingId, fullMessage, toolIds ?? []);
+    if (onMessageSent) onMessageSent(pendingId, fullMessage, toolIds);
 
     const chatSession = await invokeCommand<ChatSession>(
       "send_message",
@@ -774,6 +923,9 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         message: agentMessage,
       },
     );
+    // v0.9.4 需求12：send 受理确认（spawn 完成 + prompt 已发出）——阶段文案
+    // 从②「正在赶来」切③「思考中」（模型首响应慢不再误导为连接中）。
+    streamStore.markPromptAccepted(pendingId);
 
     setActiveSessionId(chatSession.session_id);
     await onSessionResolved?.(pendingId, chatSession.session_id);
@@ -796,10 +948,24 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     // interrupting the output. The user can then click "Guide" on the
     // staged message to deliver it (stop+send or steer).
     if (isStreaming) {
+      // v0.9.4 需求8 补充：暂存同步入列（files 随行，UI 即时可见）；附件
+      // 上传后台执行并回填 fileLines——旧实现 files 直接丢弃，带图引导
+      // 丢失附件（用户实测）。引导发送时若上传未完成则兜底等待。
+      const stagedId = crypto.randomUUID();
+      const stagedFiles = files;
       setCurrentStagedMessages((prev) => [
         ...prev,
-        { id: crypto.randomUUID(), content: message.trim() },
+        { id: stagedId, content: message.trim(), files: stagedFiles },
       ]);
+      void saveInputFiles(stagedFiles)
+        .then((lines) => {
+          if (lines.length > 0) {
+            setStagedMessagesForSession(stagingSessionKey, (prev) =>
+              prev.map((m) => (m.id === stagedId ? { ...m, fileLines: lines } : m)),
+            );
+          }
+        })
+        .catch((err) => console.warn("Failed to save staged files:", err));
       setMessage("");
       onDraftChange?.("");
       setFiles([]);
@@ -809,11 +975,11 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     setSending(true);
     try {
       let fullMessage = message.trim();
-      // v0.8.1 内联工具 pill（M0/M2 修订语义）：
+      // v0.8.1 内联工具 pill（M0/M2 修订语义 → v0.9.0 需求3 元数据化）：
       // - 会话级真源 = + 菜单勾选（session-tools.json，跨消息/重启保持）；
       // - @[token] = 本条追加——归一为 id 后**并集**写入会话集合（不覆盖、
-      //   空消息不再清空勾选），并在消息头嵌 [JISHU-TOOLS:id] 作为本条快照
-      //   （仅回放渲染 pill 用）；
+      //   空消息不再清空勾选）；本条快照以 toolIds 元数据传递（流式渲染/
+      //   引导占位用），回放由后端从注入块派生（extract_tool_snapshot）；
       // - 写入键 = 本条 send_message 携带的 sessionId（nextPendingId 同源，
       //   新会话为 pending-<ts>，续聊为真实 id）——修前用 activeSessionId
       //   （流式引用，非流式恒 null）导致写入全部落到暂存键、注入永不命中。
@@ -825,51 +991,18 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
       setHistoryPos(null);
       draftBeforeHistoryRef.current = "";
 
-      const localFiles = files.filter((f) => f.localPath && projectPath && isInsideProject(f.localPath, projectPath));
-      const externalPathFiles = files.filter((f) => f.localPath && !(projectPath && isInsideProject(f.localPath, projectPath!)));
-      const uploadFiles = files.filter((f) => !f.localPath);
-
-      if (allowFiles && (localFiles.length > 0 || uploadFiles.length > 0)) {
-        const allFileLines: string[] = [];
-
-        // Local project files: reference directly
-        for (const f of localFiles) {
-          allFileLines.push(`${f.label}: ${f.localPath}`);
-        }
-
-        // External files: copy to session_files
-        const filesToUpload = [...uploadFiles, ...externalPathFiles];
-        if (filesToUpload.length > 0) {
-          // Read base64 for external path files (from URI-list paste)
-          for (const f of externalPathFiles) {
-            if (!f.data && f.localPath) {
-              try {
-                f.data = await invokeCommand<string>("read_file_as_base64", { path: f.localPath });
-              } catch { f.data = ""; }
-            }
-          }
-          const inputFiles = filesToUpload.map((f) => ({
-            data: f.data,
-            filename: f.filename,
-            label: f.label || null,
-          }));
-          const saved = await invokeCommand<SavedFile[]>("save_session_files", {
-            projectPath,
-            files: inputFiles,
-          });
-          for (const s of saved) {
-            allFileLines.push(`${s.label}（批次 ${s.batch_id}）: ${s.path}`);
-          }
-        }
-
+      if (allowFiles && files.length > 0) {
+        const allFileLines = await saveInputFiles(files);
         if (!fullMessage) {
           fullMessage = t("projects.defaultFileMessage");
         }
-        const fileListStr = allFileLines.join("\n");
-        fullMessage += `\n\n<!--JISHU_HUB_IMAGES_BEGIN-->\n[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]\n${fileListStr}\n<!--JISHU_HUB_IMAGES_END-->`;
+        if (allFileLines.length > 0) {
+          const fileListStr = allFileLines.join("\n");
+          fullMessage += `\n\n<!--JISHU_HUB_IMAGES_BEGIN-->\n[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]\n${fileListStr}\n<!--JISHU_HUB_IMAGES_END-->`;
+        }
       }
 
-      await sendPreparedMessage(fullMessage, true, pendingId);
+      await sendPreparedMessage(fullMessage, true, pendingId, composed.toolIds);
     } catch (err) {
       console.error("Failed to send message:", err);
       setSending(false);
@@ -895,10 +1028,30 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
       // M5：引导路径与普通发送共用同一工具管线——剥 @[token]、归一 id、
       // 写消息头标记（回放 pill）、并集写入会话集（注入生效）。修前引导
       // 完全绕过：token 原文进 prompt、无 pill、无注入。
-      const { message, sessionKey } = await composeOutgoing(rawContent);
+      const { message, sessionKey, toolIds } = await composeOutgoing(rawContent);
+      // v0.9.4 需求8 补充：引导消息附加暂存附件的标记行（与普通发送同通道
+      // ——文件落盘 + Read 引用）。上传未完成时在此兜底等待（guide loading
+      // 态已覆盖等待期）。
+      const staged = stagedMessages.find((m) => m.id === id);
+      let fullGuide = message;
+      if (staged) {
+        let fileLines = staged.fileLines;
+        if (!fileLines && staged.files && staged.files.length > 0) {
+          const lines = await saveInputFiles(staged.files as AttachedFile[]);
+          if (lines.length > 0) {
+            fileLines = lines;
+            setStagedMessagesForSession(stagingSessionKey, (prev) =>
+              prev.map((m) => (m.id === id ? { ...m, fileLines: lines } : m)),
+            );
+          }
+        }
+        if (fileLines && fileLines.length > 0) {
+          fullGuide = `${message}\n\n<!--JISHU_HUB_IMAGES_BEGIN-->\n[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]\n${fileLines.join("\n")}\n<!--JISHU_HUB_IMAGES_END-->`;
+        }
+      }
       if (onGuideStaged) {
         // Caller handles delivery (steer for Pi RPC / ACP).
-        await onGuideStaged(message);
+        await onGuideStaged(fullGuide, toolIds);
       } else {
         // CLI/embedded agents have no mid-turn steer. Stop the current turn
         // first, then send. The abort MUST be awaited so its streamStore.drop
@@ -908,7 +1061,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         if (isStreaming) {
           await handleAbort();
         }
-        await sendPreparedMessage(message, true, sessionKey);
+        await sendPreparedMessage(message, true, sessionKey, toolIds);
       }
       setCurrentStagedMessages((prev) => prev.filter((m) => m.id !== id));
     } catch (err) {
@@ -961,14 +1114,11 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
     if (abortKey) {
       await invokeCommand("abort_chat", { sessionId: abortKey });
       await onAbort?.();
-      // Only drop the abort key (the canonical id the backend tracked). The
-      // aborted turn's turn_complete handler in chat-page already drops the
-      // resolved id (cid). Dropping sessionId/activeSessionId here too would
-      // race that handler: while `abort_chat`'s IPC is in flight the
-      // turn_complete(Aborted) event arrives and is processed — which may start
-      // a NEW stream (e.g. sending a queued guide) under the resolved id. This
-      // subsequent drop would then wipe that freshly-started "thinking" state.
-      streamStore.drop(abortKey);
+      // v0.9.4 需求7 测试期重构：此处不再 drop 任何流键——抢先 drop 会让
+      // 晚到的 turn_complete(Aborted)（唯一回合终结者：重复提交防重 + steering
+      // 重发收口 + 流 drop）被 pushTracked 拒绝，收口死。流的生命周期归属
+      // turn_complete 处理；极端丢失（进程崩溃）由重挂载对账（chat_turn_active）
+      // 兜底。
       setSending(false);
       setActiveSessionId(null);
     } else {
@@ -1119,7 +1269,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
   };
 
   return (
-    <div className={cn("mx-auto w-full max-w-[var(--message-content-max-width)] px-4 pb-4 pt-2", containerClassName)}>
+    <div ref={inputRootRef} className={cn("mx-auto w-full max-w-[var(--message-content-max-width)] px-4 pb-4 pt-2", containerClassName)}>
       <div
         className={cn(
           "relative flex flex-col overflow-visible rounded-2xl border border-input bg-card shadow-sm focus-within:ring-1 focus-within:ring-ring focus-within:border-ring transition-shadow",
@@ -1160,7 +1310,10 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
         )}
         <FilePreview files={files} onLabelChange={handleLabelChange} onRemove={handleRemoveFile} />
 
-        {(suggestionsActive || slashFilter !== null || atToken !== null) && (
+        {/* 需求9（回归修复）：@ 无匹配时不弹层——能带出补全才算引入文件，
+            带不出即普通 @ 文本输出（atToken 兜底条件移除；slash 的
+            slashNoMatch 提示保留——命令集合封闭，提示有价值）。 */}
+        {(suggestionsActive || slashFilter !== null) && (
           <div className="absolute bottom-[calc(100%-0.35rem)] left-3 z-[90] max-h-56 w-80 overflow-auto rounded-xl border border-border bg-popover p-1.5 shadow-xl">
             {slashFilter !== null ? (
               slashItems.length > 0 ? (
@@ -1188,7 +1341,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
               ) : (
                 <div className="px-2.5 py-2 text-xs text-muted-foreground/70">{t("sessions.slashNoMatch")}</div>
               )
-            ) : fileItems.length > 0 ? (
+            ) : (
               fileItems.map(({ item }, i) => (
                 <button
                   key={item}
@@ -1209,53 +1362,71 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                   <span className="truncate font-mono" dir="ltr">{item}</span>
                 </button>
               ))
-            ) : (
-              <div className="px-2.5 py-2 text-xs text-muted-foreground/70">{t("sessions.atFileNoMatch")}</div>
             )}
           </div>
         )}
 
         {/* v0.8.1 需求7 内联工具 pill：mirror 层方案——textarea 文字透明
-            （caret 仍可见），下方同字体同 padding 视觉层把 `@[显示名]`
-            token 渲染成 pill，其余文本原样显示。 */}
-        <div className="relative min-h-[76px]">
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 z-0 w-full overflow-hidden whitespace-pre-wrap break-words px-4 py-3 text-sm"
-          >
-            {renderMirrorText(message, sessionTools)}
+            （caret 仍可见），同字体同 padding 视觉层把 `@[工具名]` token
+            渲染成 pill，其余文本原样显示。
+            v0.9.1 需求4 修复五「外滚内长」重构：固定高度滚动容器内，
+            mirror（in-flow 撑内容高度）与 textarea（absolute 覆盖同几何、
+            overflow hidden 自身不滚）随同一条滚动条整体滚动——两层对齐由
+            DOM 构造保证（滚动条占宽对两层同时生效），杜绝滚动后重影。
+            修复六（用户 2026-09-06 裁决，取代修复四恒定高度）：内容可撑高
+            （上限约 11 行文字），超出才整体滚动；发送清空回初始高度。 */}
+        <div
+          ref={inputScrollRef}
+          className="min-h-[76px] overflow-x-hidden overflow-y-auto"
+        >
+          {/* 修复五补充：min-h-full——空草稿时 mirror（in-flow）只剩 padding
+              高度，absolute 的 textarea 会塌到 ~24px、placeholder 只露半行；
+              内层以滚动容器高度为最小值，空态铺满、长文超出照常滚动。 */}
+          <div className="relative min-h-full">
+            <div
+              ref={inputMirrorRef}
+              aria-hidden
+              className="pointer-events-none whitespace-pre-wrap break-words px-4 py-3 text-sm"
+            >
+              {renderMirrorText(message, sessionTools)}
+              {/* 尾部换行对齐（撑满后回车重影根因，测试期修复19）：div 的
+                  pre-wrap 不渲染末尾换行的空行而 textarea 计入——两层高度
+                  分叉，textarea 被浏览器自动内滚一行与 mirror 错位成重影；
+                  补零宽字符让 mirror 同样产出该空行，两层始终同高。 */}
+              {message.endsWith("\n") ? "\u200b" : null}
+            </div>
+            <textarea
+              ref={textareaRef}
+              value={message}
+              onChange={(e) => {
+                if (historyPos !== null) {
+                  // 用户在历史浏览中编辑：退出浏览模式，从当前显示文本继续
+                  setHistoryPos(null);
+                  draftBeforeHistoryRef.current = "";
+                }
+                const value = e.target.value;
+                const caret = e.target.selectionStart ?? value.length;
+                setMessage(value);
+                updateSuggestions(value, caret);
+                onDraftChange?.(value);
+              }}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              placeholder={placeholder}
+              disabled={disabled}
+              rows={1}
+              className={cn(
+                "absolute inset-0 z-10 h-full w-full resize-none overflow-hidden bg-transparent px-4 py-3 text-sm focus:outline-none",
+                messageHasToolToken(message) && "text-transparent caret-foreground",
+              )}
+              style={{ overflow: "hidden" }}
+              onInput={() => {
+                // 需求4 修复五：光标在末尾时滚动容器跟到底（中间位置不打断
+                // 用户滚轮）。
+                scrollInputCaretIntoView();
+              }}
+            />
           </div>
-          <textarea
-            ref={textareaRef}
-            value={message}
-            onChange={(e) => {
-              if (historyPos !== null) {
-                // 用户在历史浏览中编辑：退出浏览模式，从当前显示文本继续
-                setHistoryPos(null);
-                draftBeforeHistoryRef.current = "";
-              }
-              const value = e.target.value;
-              const caret = e.target.selectionStart ?? value.length;
-              setMessage(value);
-              updateSuggestions(value, caret);
-              onDraftChange?.(value);
-            }}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            placeholder={placeholder}
-            disabled={disabled}
-            rows={1}
-            className={cn(
-              "relative z-10 w-full resize-none bg-transparent px-4 py-3 text-sm focus:outline-none min-h-[76px] max-h-[220px]",
-              messageHasToolToken(message) && "text-transparent caret-foreground",
-            )}
-            style={{ height: "auto", overflow: "hidden" }}
-            onInput={(e) => {
-              const target = e.target as HTMLTextAreaElement;
-              target.style.height = "auto";
-              target.style.height = Math.min(target.scrollHeight, 220) + "px";
-            }}
-          />
         </div>
 
         {/* v0.8.0 需求4 补充：底部两侧允许换行 + min-w-0——右侧预览顶开
@@ -1285,6 +1456,7 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                     type="button"
                     onClick={() => {
                       setToolMenuOpen(false);
+                      setToolSubmenu(null);
                       handleFileSelect();
                     }}
                     disabled={disabled || sending || isStreaming || !allowFiles}
@@ -1293,51 +1465,86 @@ const ChatInputBase = forwardRef<HTMLTextAreaElement, ChatInputProps>(function C
                     <Paperclip className="h-4 w-4 text-[var(--icon-action)]" />
                     <span>{t("sessions.attachFile")}</span>
                   </button>
-                  <button
-                    type="button"
-                    disabled
-                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-muted-foreground opacity-55"
-                  >
-                    <Sparkles className="h-4 w-4 text-[var(--icon-theme)]" />
-                    <span className="flex-1">{t("sessions.skillsComingSoon")}</span>
-                    <span className="text-[0.72em]">{t("sessions.comingSoon")}</span>
-                  </button>
-                  {sessionTools.length > 0 && (
+                  {sessionTools.length > 0 && (() => {
+                    // 需求20 第二轮：两级分组——CLI 插件平铺；MCP 服务 / Skill
+                    // 折叠子菜单（点组名展开，点具体服务插入 pill）。选中即注入
+                    // 提示小节；未选中经解析器通道仍在线可用（动态性）。
+                    // v0.9.1 需求8：不可注入项（MCP/SKILL 解析器等 pi 扩展形态）
+                    // 此前渲染成置灰，用户裁决直接不显示——分组时即过滤。
+                    const injectable = (t: SessionTool) => t.injectable !== false;
+                    const cliTools = sessionTools.filter((t) => (!t.category || t.category === "cli") && injectable(t));
+                    const mcpTools = sessionTools.filter((t) => t.category === "mcp" && injectable(t));
+                    const skillTools = sessionTools.filter((t) => t.category === "skill" && injectable(t));
+                    const hasSelectableTools =
+                      cliTools.length + mcpTools.length + skillTools.length > 0;
+                    // v0.9.1 需求8：子项图标与所属类型组一致（MCP→Server、
+                    // Skill→Sparkles），CLI 插件保持 Blocks——内置服务与类型
+                    // 标识视觉统一（用户裁决，原全部为 Blocks 四小方形）。
+                    const renderToolButton = (tool: SessionTool, Icon: typeof Blocks, iconColor: string, indent = false) => (
+                      <button
+                        key={tool.id}
+                        type="button"
+                        onClick={() => {
+                          setToolMenuOpen(false);
+                          setToolSubmenu(null);
+                          insertToolToken(tool.display_name);
+                        }}
+                        disabled={disabled || sending || isStreaming}
+                        title={tool.description}
+                        className={cn(
+                          "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-fast hover:bg-accent/60 disabled:cursor-not-allowed disabled:opacity-45",
+                          indent && "pl-4",
+                        )}
+                      >
+                        <Icon className={cn("h-4 w-4 shrink-0", iconColor)} />
+                        <span className="flex-1 truncate">{tool.display_name}</span>
+                      </button>
+                    );
+                    return (
+                    hasSelectableTools && (
                     <div className="my-1 border-t border-border/60 pt-1">
-                      <div className="px-2.5 pb-1 pt-0.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/70">
-                        {t("sessions.pluginsSection", "插件")}
-                      </div>
-                      {sessionTools.map((tool) => {
-                        // 用户裁决（2026-08-31 晨）：保持 workbuddy 形态——菜单项
-                        // 点击 = 插入 @[显示名] pill 到输入框，消息即所见、发送即
-                        // 本条工具集。M3 的 injectable 保留用于禁用仅 pi 扩展项。
-                        const injectable = tool.injectable !== false;
-                        return (
+                      {cliTools.length > 0 && (
+                        <>
+                          <div className="px-2.5 pb-1 pt-0.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/70">
+                            {t("sessions.pluginsSection", "插件")}
+                          </div>
+                          {cliTools.map((tool) => renderToolButton(tool, Blocks, "text-[var(--icon-config)]"))}
+                        </>
+                      )}
+                      {mcpTools.length > 0 && (
+                        <>
                           <button
-                            key={tool.id}
                             type="button"
-                            onClick={() => {
-                              setToolMenuOpen(false);
-                              insertToolToken(tool.display_name);
-                            }}
-                            disabled={disabled || sending || isStreaming || !injectable}
-                            title={
-                              injectable
-                                ? tool.description
-                                : `${tool.description}（仅 pi 扩展形态，不参与 CLI 注入）`
-                            }
-                            className={cn(
-                              "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-fast hover:bg-accent/60 disabled:cursor-not-allowed",
-                              injectable ? "text-foreground disabled:opacity-45" : "text-muted-foreground opacity-55",
-                            )}
+                            aria-expanded={toolSubmenu === "mcp"}
+                            onClick={() => setToolSubmenu((cur) => (cur === "mcp" ? null : "mcp"))}
+                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-fast hover:bg-accent/60"
                           >
-                            <Blocks className={cn("h-4 w-4 shrink-0", injectable ? "text-[var(--icon-config)]" : "opacity-40")} />
-                            <span className="flex-1 truncate">{tool.display_name}</span>
+                            <Server className="h-4 w-4 shrink-0 text-[var(--icon-action)]" />
+                            <span className="flex-1">{t("sessions.mcpSection", "MCP 服务")}</span>
+                            <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform", toolSubmenu === "mcp" && "rotate-180")} />
                           </button>
-                        );
-                      })}
+                          {toolSubmenu === "mcp" && mcpTools.map((tool) => renderToolButton(tool, Server, "text-[var(--icon-action)]", true))}
+                        </>
+                      )}
+                      {skillTools.length > 0 && (
+                        <>
+                          <button
+                            type="button"
+                            aria-expanded={toolSubmenu === "skill"}
+                            onClick={() => setToolSubmenu((cur) => (cur === "skill" ? null : "skill"))}
+                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-fast hover:bg-accent/60"
+                          >
+                            <Sparkles className="h-4 w-4 shrink-0 text-[var(--icon-theme)]" />
+                            <span className="flex-1">{t("sessions.skillSection", "Skill")}</span>
+                            <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform", toolSubmenu === "skill" && "rotate-180")} />
+                          </button>
+                          {toolSubmenu === "skill" && skillTools.map((tool) => renderToolButton(tool, Sparkles, "text-[var(--icon-theme)]", true))}
+                        </>
+                      )}
                     </div>
-                  )}
+                    )
+                    );
+                  })()}
                 </div>
               )}
               {workModeOptions.length > 0 && workModeValue && (

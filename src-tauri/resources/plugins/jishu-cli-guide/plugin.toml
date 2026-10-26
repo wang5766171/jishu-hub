@@ -1,0 +1,58 @@
+schema = 1
+kind = "tool"
+
+[info]
+id = "jishu-cli-guide"
+display_name = "jishu CLI 指南"
+icon = "terminal"
+
+[skill]
+description = "jishu hub 命令行（jishu-cli）使用指南——需要把插件/MCP/Skill 注册进 jishu hub、查询或管理 hub 状态时使用。覆盖 plugins add/get/update/list/enable/disable/remove、mcp 与 skill 服务命令、plugin.toml 写法与生效流程。"
+body = '''
+# jishu-cli 使用指南（jishu hub 的命令行入口，与 GUI 同源落盘）
+
+## 常用命令
+
+- `jishu-cli plugins add <toml路径>`：安装插件（校验后落盘 ~/.jishu-hub/agents/<id>.toml）
+- `jishu-cli plugins get <id>`：打印某插件的完整 manifest（TOML）
+- `jishu-cli plugins update <id> <toml路径>`：覆盖更新既有插件（manifest 的 id 必须与 <id> 一致）
+- `jishu-cli plugins list`：列出全部插件（内置/manifest/工具）
+- `jishu-cli plugins enable|disable <id>`：启停插件
+- `jishu-cli plugins remove <id>`：卸载插件（核心引擎与系统插件不可卸载）
+- `jishu-cli mcp status` / `skill status`：查看 MCP/Skill 服务状态与已注册清单
+
+## 创建插件的完整流程
+
+1. 写一份 plugin.toml（见下方 schema）到临时文件；
+2. `jishu-cli plugins add <文件>` 安装；
+3. 提示用户：在 jishu hub 的「插件管理」页点击「重新加载」（或重启 hub）使运行中的应用生效；CLI 侧（plugins list / mcp serve）即时可见。
+
+## plugin.toml 最小示例（CLI 能力声明型）
+
+```toml
+schema = 1
+kind = "tool"
+
+[info]
+id = "my-tool"                 # 插件 id（即文件名与命名空间）
+display_name = "My Tool"
+
+[tool]
+description = "做什么、何时用"
+usage = "命令模板（agent 经 shell 执行）"
+```
+
+## 声明段一览（可组合，kind = "tool"）
+
+- `[tool]`：CLI 用法注入（description/usage/example/notes）
+- `[mcp]`：MCP server 声明（见「MCP 创建工具」技能）
+- `[skill]`：SKILL.md 能力声明（见「Skill 创建工具」技能）
+- `[panel]`：管理面板声明（title + items[label/command]）
+- `[probe]`：安装探测（command/version_args/version_regex）
+- 智能体插件（kind 缺省为 agent）：[transport]/[config]/[session]/[capabilities]
+
+## 注意
+
+- 一个插件文件只描述一个插件；id 是全局命名空间，冲突会被拒绝（先 remove 再 add，或用 update 覆盖）。
+- 写文件与执行命令遵循你既有的审批规则。
+'''

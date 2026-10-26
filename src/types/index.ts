@@ -93,9 +93,9 @@ export interface ConversationInteractionSubmission {
 }
 
 export type ContentBlock =
-  | { type: "text"; text: string; frozen?: boolean }
+  | { type: "text"; text: string; frozen?: boolean; tool_ids?: string[] }
   | { type: "tool_use"; id: string; name: string; input: unknown; view?: ToolView }
-  | { type: "tool_result"; tool_use_id: string; content: unknown }
+  | { type: "tool_result"; tool_use_id: string; content: unknown; is_error?: boolean }
   | { type: "thinking"; thinking: string; frozen?: boolean }
   | {
       type: "interaction";
@@ -320,6 +320,7 @@ export type NormalizedEvent =
   | { kind: "text_delta"; delta: string }
   | { kind: "message"; content: ContentBlock[] }
   | { kind: "tool_use_start"; call_id: string; tool: string; input: unknown; view?: ToolView }
+  | { kind: "tool_use_progress"; call_id: string; partial_output: string }
   | { kind: "tool_use_result"; call_id: string; output: unknown; is_error: boolean }
   | { kind: "thinking"; delta: string }
   | { kind: "approval_request"; request_id: string; approval_kind: string; payload: unknown }
@@ -358,7 +359,13 @@ export type NormalizedEvent =
   | { kind: "sub_agent_event"; run_id: string; step_id: string; sub_event: NormalizedEvent }
   | { kind: "raw"; agent: string; raw: unknown }
   | { kind: "phase_divider"; phase: string; title: string }
-  | { kind: "compaction_status"; active: boolean; reason: string };
+  | { kind: "compaction_status"; active: boolean; reason: string }
+  /** v0.9.1 需求14：pi 主轮自动重试状态——active=true 第 attempt/maxAttempts
+   * 次重试中（errorMessage 本次失败原因）；active=false 重试结束（success
+   * =true 后续成功，false 重试耗尽且 finalError 为最终失败原因）。 */
+  | { kind: "auto_retry_status"; active: boolean; attempt: number; max_attempts: number; delay_ms: number; error_message: string; success: boolean; final_error?: string | null }
+  /** v0.9.1 需求3 #1：停止时 pi 队列被清空的排队文本（回填输入框）。 */
+  | { kind: "steer_queue_cleared"; texts: string[]; follow_up_texts?: string[] };
 
 /** v0.8.0 需求2 Phase 1：渲染意图（Rust tool_view 镜像）——UI 只做
  * 「意图→组件」映射；locations 为归一化层一次提取的位置信息。 */

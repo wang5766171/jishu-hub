@@ -132,6 +132,18 @@ pub enum Commands {
         #[command(subcommand)]
         action: MemoryAction,
     },
+
+    /// hub MCP 聚合 server 与四家注入（v0.9.0 需求1：serve/inject/remove/status）.
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
+
+    /// Skill 分发服务（v0.9.0 需求20：deploy/remove/status）.
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
+    },
 }
 
 // ── Agent ────────────────────────────────────────────────────────────────────
@@ -396,6 +408,32 @@ pub enum PluginAction {
         path: String,
     },
 
+    /// Install a hybrid plugin from a local directory (plugin.toml +
+    /// component.js; installed disabled, GUI confirmation card enables it).
+    /// 需求25 P2：混合插件目录包安装（组合式清单 + 自定义代码组件）。
+    #[command(name = "add-hybrid")]
+    AddHybrid {
+        /// Path to the plugin directory (holding plugin.toml + component.js).
+        path: String,
+    },
+
+    /// Print the full manifest (TOML) of an installed plugin.
+    /// 页面/CLI 能力一致（v0.9.0 需求22）：GUI plugin_get 的 CLI 面。
+    Get {
+        /// Plugin identifier.
+        id: String,
+    },
+
+    /// Overwrite-update an installed plugin from a TOML file (id must match).
+    /// 页面/CLI 能力一致（v0.9.0 需求22）：GUI plugin_update 的 CLI 面。
+    Update {
+        /// Plugin identifier (must equal the manifest's info.id).
+        id: String,
+
+        /// Path to the new plugin manifest TOML.
+        path: String,
+    },
+
     /// List all plugins (builtin + manifest agents + tool plugins).
     List,
 
@@ -514,4 +552,37 @@ pub enum MemoryAction {
         #[arg(long)]
         key: String,
     },
+}
+
+// ── Mcp（v0.9.0 需求1 P2）────────────────────────────────────────────────────
+
+#[derive(Subcommand, Debug)]
+pub enum McpAction {
+    /// Run the hub MCP aggregation server over stdio (spawned by agents).
+    Serve,
+
+    /// Ensure the `jishu-hub` entry exists in all four agents' MCP configs
+    /// (only when MCP-declaring plugins are enabled; same logic as app sync).
+    Inject,
+
+    /// Remove the `jishu-hub` entry from all four agents' MCP configs.
+    Remove,
+
+    /// Show current sync status (plugin declarations + four-agent entries).
+    Status,
+}
+
+// ── Skill（v0.9.0 需求20）────────────────────────────────────────────────────
+
+#[derive(Subcommand, Debug)]
+pub enum SkillAction {
+    /// Force-deploy enabled [skill] plugins to agent skill dirs
+    /// (explicit command bypasses the resolver gate).
+    Deploy,
+
+    /// Remove all hub-deployed skill dirs from agent skill roots.
+    Remove,
+
+    /// Show skill resolver state, targets, and deployed list.
+    Status,
 }

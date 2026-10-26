@@ -13,9 +13,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { ArrowRight, Check, Eye, EyeOff, ExternalLink, Plus, Power, Trash2 } from "lucide-react";
-import type { AgentConfigSection, ClaudeConfig } from "@/types";
-import { McpEditor } from "./mcp-editor";
+import {
+  Check,
+  Loader2,
+  Plus,
+  Power,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
+import type { ClaudeConfig } from "@/types";
 import { ModelCombobox } from "./model-combobox";
 import { PermissionModeCards } from "./permission-cards";
 import { RuleQuickAdd } from "./rule-quick-add";
@@ -28,14 +34,17 @@ import { OPENCODE_MODEL_CATALOG } from "@/agents/config/presets/opencode-models"
 import { OpencodeProvidersBlock } from "./opencode-providers";
 import { CodexProvidersBlock } from "./codex-providers";
 import {
-  CODEX_DIRECT_MODELS,
   CODEX_PROXY_PRESETS,
   codexCustomModelsFor,
   rememberCodexCustomModel,
 } from "@/agents/config/presets/codex-presets";
+import { useCodexLiveModels } from "@/hooks/use-codex-live-models";
+import { ThirdPartyChannelPanel } from "./third-party-channel-panel";
+import { cn } from "@/lib/utils";
 import {
   CLAUDE_PROXY_PRESETS,
   applyProxyPresetToEnv,
+  dedupeProxyEnvCase,
   removeProxyEnv,
   type ClaudeProxyPreset,
 } from "@/agents/config/presets/claude-presets";
@@ -79,77 +88,39 @@ function modelCatalogOptionsFor(
 /** codex 渠道的预置模型（v0.7.6 需求2：直连 = OpenAI 官方预置，代理 =
  *  所选渠道预设 models，未知自定义渠道 = 空即纯自由输入），并追加该渠道
  *  记忆的自定义模型（localStorage，防后续上新模型重复手输）。 */
-function codexPresetModelsFor(providerId: string | null): string[] {
-  const presetModels = providerId
-    ? CODEX_PROXY_PRESETS.find((p) => p.id === providerId)?.models ?? []
-    : CODEX_DIRECT_MODELS;
-  const custom = codexCustomModelsFor(providerId ?? "direct");
+function codexPresetModelsFor(providerId: string): string[] {
+  const presetModels = CODEX_PROXY_PRESETS.find((p) => p.id === providerId)?.models ?? [];
+  const custom = codexCustomModelsFor(providerId);
   return [...presetModels, ...custom.filter((m) => !presetModels.includes(m))];
 }
 
-/** claude 模型链路环境变量的展示序（v0.7.6 需求2：模型子页透出实际生效值）。 */
-const MODEL_ENV_KEYS = [
+/** v0.9.2 需求12-6（用户裁决）：claude 模型链路 env 三键——高级设置
+ * env 编辑器置灰只读（不可改/删/重复添加），统一经「模型设置」页管理。 */
+const MODEL_CHAIN_ENV_LOCKED = new Set([
   "ANTHROPIC_BASE_URL",
   "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_API_KEY",
   "ANTHROPIC_MODEL",
-  "MAX_THINKING_TOKENS",
-] as const;
+]);
 
-/** 密钥类 env 值脱敏（键名含 TOKEN/KEY）。 */
-function maskEnvValue(key: string, value: string): string {
-  if (!/TOKEN|KEY/.test(key)) return value;
-  return value.length > 8 ? `••••${value.slice(-4)}` : "••••";
-}
-
-/** 「当前生效环境变量」只读块：展示模型链路 env 实际值，跳转高级设置修改。 */
-function ModelEnvOverview({
-  env,
-  onNavigate,
-}: {
-  env: Record<string, string>;
-  onNavigate?: () => void;
-}) {
-  const { t } = useTranslation();
-  const entries = MODEL_ENV_KEYS.map((key) => [key, env[key]] as const).filter(
-    ([, v]) => v !== undefined && v.trim() !== "",
-  );
-
-  return (
-    <div className="space-y-2 rounded-md border border-border/40 bg-muted/20 p-3">
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-xs font-medium text-muted-foreground">{t("config.modelEnvTitle")}</div>
-        {onNavigate && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 shrink-0 text-xs"
-            onClick={onNavigate}
-          >
-            {t("config.modelEnvEdit")}
-            <ArrowRight className="ml-1 h-3 w-3" />
-          </Button>
-        )}
-      </div>
-      {entries.length === 0 ? (
-        <p className="text-[11px] leading-relaxed text-muted-foreground/70">
-          {t("config.modelEnvEmpty")}
-        </p>
-      ) : (
-        <div className="space-y-1">
-          {entries.map(([key, value]) => (
-            <div key={key} className="flex items-center gap-2 text-[11px]">
-              <code className="shrink-0 font-mono text-muted-foreground">{key}</code>
-              <span className="min-w-0 flex-1 truncate font-mono" title={value}>
-                {maskEnvValue(key, value)}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-      {onNavigate && <p className="text-[10px] text-muted-foreground/70">{t("config.modelEnvHint")}</p>}
-    </div>
-  );
+/** v0.9.2 需求9 补丁七：联调测试封装（test_llm_connection——各 agent 仅
+ *  api/baseUrl 映射不同）。 */
+function testLlmConnection(
+  api: string,
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+): Promise<{ ok: boolean; text: string }> {
+  return invokeCommand<{ response?: string | null }>("test_llm_connection", {
+    api,
+    baseUrl,
+    apiKey,
+    model,
+  })
+    .then((result) => {
+      const reply = (result?.response ?? "").toString().trim();
+      return { ok: true, text: reply ? reply.slice(0, 120) : "OK" };
+    })
+    .catch((e) => ({ ok: false, text: String(e).slice(0, 200) }));
 }
 
 const API_PROVIDERS = [
@@ -188,16 +159,17 @@ export interface ConfigSurfaceFlags {
 export function ConfigModelsZone({
   config,
   onChange,
+  onCommit,
   surface,
-  onNavigateSection,
   agentId,
 }: ConfigZoneProps & {
   surface?: ConfigSurfaceFlags;
-  /** v0.7.6 需求2：跳转到指定配置子页（env 块「前往高级设置修改」）。 */
-  onNavigateSection?: (section: AgentConfigSection) => void;
   /** v0.7.6 需求3：管理作用域 agent id（官方直连认证卡查询用）。 */
   agentId?: string;
+  /** 需求14：激活类操作立即落盘（选模型/启用渠道/切直连）；缺省回退 onChange。 */
+  onCommit?: (partial: Partial<ClaudeConfig>) => void;
 }) {
+  const act = onCommit ?? onChange;
   const { t } = useTranslation();
   const supportsProxySetup = surface?.supports_proxy_setup ?? false;
 
@@ -209,14 +181,23 @@ export function ConfigModelsZone({
   const isDirect = !proxyBaseUrl;
 
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
-  const [apiKey, setApiKey] = useState("");
-  const [showKey, setShowKey] = useState(false);
 
   // codex 渠道态（supports_model_providers 分支）：当前激活渠道 id。
   const isCodexProviders = !supportsProxySetup && Boolean(surface?.supports_model_providers);
   const codexProviderId = isCodexProviders
     ? ((config as { modelProvider?: string | null }).modelProvider ?? null)
     : null;
+  // v0.9.0 需求14：codex 直连候选 = app-server model/list 实时拉取
+  //（静态预置表已按用户裁决删除）+ 直连态自定义记忆。
+  const {
+    models: codexDirectModels,
+    refresh: refreshCodexDirectModels,
+    loading: codexDirectLoading,
+  } = useCodexLiveModels(agentId, isCodexProviders && !codexProviderId);
+  const codexDirectCatalog = [
+    ...codexDirectModels,
+    ...codexCustomModelsFor("direct").filter((m) => !codexDirectModels.includes(m)),
+  ];
 
   // 候选项按接入态分流（v0.7.6 需求2）：
   //  - codex：直连 = OpenAI 官方预置，代理 = 渠道预设 models + 自定义记忆；
@@ -226,7 +207,10 @@ export function ConfigModelsZone({
   const seen = new Set<string>();
   const catalogOptions: ActiveModelOption[] = (
     isCodexProviders
-      ? codexPresetModelsFor(codexProviderId).map((m) => ({ value: m, label: m }))
+      ? (codexProviderId
+          ? codexPresetModelsFor(codexProviderId)
+          : codexDirectCatalog
+        ).map((m) => ({ value: m, label: m }))
       : supportsProxySetup && !isDirect
         ? (activePreset?.models ?? []).map((m) => ({ value: m, label: m }))
         : [
@@ -245,7 +229,11 @@ export function ConfigModelsZone({
     onChange({ model: model || null });
     // codex：自由输入的模型不在渠道预置内时记入候选（localStorage 按渠道隔离，
     // 防后续上新模型重复手输）。
-    if (isCodexProviders && model && !codexPresetModelsFor(codexProviderId).includes(model)) {
+    if (
+      isCodexProviders &&
+      model &&
+      !catalogOptions.some((o) => o.value === model)
+    ) {
       rememberCodexCustomModel(codexProviderId ?? "direct", model);
     }
   };
@@ -267,17 +255,33 @@ export function ConfigModelsZone({
     />
   );
 
-  const applyChannel = (preset: ClaudeProxyPreset) => {
-    setSelectedChannelId(preset.id);
-    if (preset.custom) return;
-    // 切渠道模型联动：当前模型不在目标渠道候选内时回落渠道默认，
-    // 避免残留旧渠道/官方模型（v0.7.6 需求2）。
-    const keepModel = config.model && preset.models.includes(config.model);
-    onChange({
-      env: applyProxyPresetToEnv(preset, "", env),
-      model: keepModel ? config.model : preset.model || null,
-    });
-  };
+  // v0.9.2 需求11（用户裁决）：渠道视图当前模型卡**只读**（对齐 jishu——
+  // 无下拉不可切换，模型经渠道面板行级激活）；官方直连保留交互下拉不动。
+  // hint = 当前生效渠道名（codex provider 名 / claude 预设名 / opencode
+  // provider 前缀）。
+  let channelHint: string | undefined;
+  if (isCodexProviders) {
+    const entry = codexProviderId
+      ? (config as unknown as { modelProviders?: Record<string, { name?: string }> }).modelProviders?.[codexProviderId]
+      : undefined;
+    channelHint = codexProviderId ? entry?.name || codexProviderId : undefined;
+  } else if (supportsProxySetup && !isDirect) {
+    channelHint = activePreset
+      ? t(activePreset.labelKey)
+      : proxyBaseUrl
+        ? t("config.preset.custom.name")
+        : undefined;
+  } else {
+    channelHint = config.model?.includes("/") ? config.model.split("/")[0] : undefined;
+  }
+  const modelCardReadOnly = (
+    <ActiveModelCard
+      current={
+        currentModelOption ? { ...currentModelOption, hint: channelHint } : null
+      }
+      readOnly
+    />
+  );
 
   const savedToken = env["ANTHROPIC_AUTH_TOKEN"]?.trim() || env["ANTHROPIC_API_KEY"]?.trim() || "";
 
@@ -295,20 +299,23 @@ export function ConfigModelsZone({
           }
           env={(config.env ?? {}) as Record<string, string>}
           modelCard={modelCard}
+          channelModelCard={modelCardReadOnly}
           agentId={agentId}
           onChange={(patch) => onChange(patch as Partial<ClaudeConfig>)}
+          commit={(patch) => act(patch as Partial<ClaudeConfig>)}
         />
       );
     }
     // opencode：统一渠道布局（内置渠道预置 + 自定义渠道 + 启用按钮），
-    // modelCard 由组件内右栏承载。
+    // modelCard 由组件内右栏承载（渠道视图 → 只读卡）。
     if (surface?.supports_custom_providers) {
       return (
         <OpencodeProvidersBlock
           providers={config.customProviders ?? {}}
           model={config.model ?? null}
-          modelCard={modelCard}
+          modelCard={modelCardReadOnly}
           onChange={(patch) => onChange(patch as Partial<ClaudeConfig>)}
+          commit={(patch) => act(patch as Partial<ClaudeConfig>)}
         />
       );
     }
@@ -339,6 +346,8 @@ export function ConfigModelsZone({
           label: t("config.preset.custom.name"),
           sub: proxyBaseUrl,
           active: true,
+          /* 补丁十八：claude 自定义渠道行可删——删除 = 清代理 env 三键回直连。 */
+          onRemove: () => onChange({ env: removeProxyEnv(env) }),
         } satisfies ChannelSidebarItem]
       : []),
   ];
@@ -358,21 +367,25 @@ export function ConfigModelsZone({
         directSelected={effectiveChannelId === "direct"}
         onSelectDirect={() => {
           setSelectedChannelId("direct");
-          if (!isDirect) onChange({ env: removeProxyEnv(env) });
+          /* 需求14：切直连 = 激活类操作，立即落盘。 */
+          if (!isDirect) act({ env: removeProxyEnv(env) });
         }}
         channels={sidebarChannels}
         selectedId={effectiveChannelId === "direct" ? null : effectiveChannelId}
         onSelect={handleChannelSelect}
         onAddCustom={() => setSelectedChannelId(CUSTOM_CHANNEL_ID)}
+        onRemoveChannel={() => onChange({ env: removeProxyEnv(env) })}
       />
 
       {/* 右：模型设置 + 渠道接入配置 */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground">{t("config.colModels")}</div>
-        {modelCard}
+        {/* 需求11：渠道视图只读卡（当前激活模型 + 渠道名）；直连保留交互下拉。 */}
+        {effectiveChannelId === "direct" ? modelCard : modelCardReadOnly}
 
         {effectiveChannelId === "direct" ? (
-          /* 官方直连：提示 + 认证卡 + env 总览（模型候选 = 官方目录） */
+          /* v0.9.2 需求9：官方直连 = 提示 + 认证卡 + 官方模型列表（首查 +
+              刷新按钮）；「添加模型」入口与「前往高级设置」跳转去除。 */
           <div className="space-y-3">
             <div className="rounded-md border border-border/40 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
               {t("config.connectDirectHint")}
@@ -383,201 +396,170 @@ export function ConfigModelsZone({
                 hintKey="config.officialAuthHintClaude"
               />
             )}
+            <div className="space-y-1.5 rounded-md border border-border/40 bg-muted/20 p-4">
+              <div className="flex items-center justify-between">
+                <Label className="text-[10px] text-muted-foreground/80">
+                  {t("config.models")}
+                  {codexDirectLoading ? " …" : ""}
+                </Label>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-6 w-6"
+                  disabled={codexDirectLoading}
+                  title={t("config.refreshModels")}
+                  onClick={() => void refreshCodexDirectModels()}
+                >
+                  {codexDirectLoading ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3 w-3" />
+                  )}
+                </Button>
+              </div>
+              {codexDirectModels.length === 0 ? (
+                <p className="px-1 text-[10px] text-muted-foreground/70">
+                  {t("config.noModelsHint")}
+                </p>
+              ) : (
+                <ul className="space-y-1">
+                  {codexDirectModels.map((mid) => (
+                    <li
+                      key={mid}
+                      className={cn(
+                        "flex items-center gap-2 rounded border px-2 py-1.5",
+                        config.model === mid
+                          ? "border-primary/60 bg-primary/10"
+                          : "border-border/30",
+                      )}
+                    >
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs">{mid}</span>
+                      <Button
+                        size="sm"
+                        variant={config.model === mid ? "default" : "outline"}
+                        className="h-6 text-xs"
+                        onClick={() => act({ model: mid })}
+                        title={t("config.setActive")}
+                      >
+                        {config.model === mid ? (
+                          <Check className="h-3 w-3" />
+                        ) : (
+                          <Power className="h-3 w-3" />
+                        )}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
-        ) : effectiveChannelId === CUSTOM_CHANNEL_ID ? (
-          /* 自定义渠道：地址 + 密钥 + 模型（v0.7.6 需求3：与预置渠道右栏同构，
-             多地址输入；保存写 env 三键并启用）。 */
-          <ClaudeCustomChannelCard
-            key={customActive ? proxyBaseUrl : "new"}
-            baseUrl={customActive ? proxyBaseUrl : ""}
-            model={env["ANTHROPIC_MODEL"] ?? ""}
-            onApply={(baseUrl, token, model) => {
-              const next = { ...env };
-              next["ANTHROPIC_BASE_URL"] = baseUrl;
-              if (token.trim()) next["ANTHROPIC_AUTH_TOKEN"] = token.trim();
-              if (model.trim()) next["ANTHROPIC_MODEL"] = model.trim();
-              onChange({ env: next, model: model.trim() || config.model || null });
+        ) : effectiveChannelId === CUSTOM_CHANNEL_ID && agentId ? (
+          /* v0.9.2 需求9 补丁七返工（用户裁决：第三方渠道与 jishu 前端完全
+             一致，仅保存适配）：claude 自定义渠道 = 共享面板；字段草稿经
+             onPatchFields 写 env（页头统一保存），无单独密钥按钮。 */
+          <ThirdPartyChannelPanel
+            agentId={agentId}
+            channelKey="claude-custom"
+            title={t("config.preset.custom.name")}
+            isActive={customActive}
+            /* 需求11：同预设渠道——env 有值（已保存/已生效）才显示「启用此渠道」。 */
+            channelSaved={customActive}
+            fields={{
+              displayName: t("config.preset.custom.name"),
+              baseUrl: customActive ? proxyBaseUrl : "",
+              protocol: "anthropic-messages",
+              apiKey: "",
+              savedApiKey: customActive ? savedToken : "",
+              protocolOptions: [{ value: "anthropic-messages", label: "anthropic-messages" }],
             }}
+            displayNameEditable={false}
+            presetModels={[]}
+            activeModelId={customActive ? (config.model ?? null) : null}
+            onPatchFields={(patch) => {
+              const next = { ...env };
+              if (patch.baseUrl !== undefined) next["ANTHROPIC_BASE_URL"] = patch.baseUrl;
+              if (patch.apiKey) next["ANTHROPIC_AUTH_TOKEN"] = patch.apiKey;
+              onChange({ env: dedupeProxyEnvCase(next) });
+            }}
+            onEnable={() => act({ env: removeProxyEnv(env) })}
+            /* 需求12-3：模型选择写 env ANTHROPIC_MODEL（同预设渠道）。 */
+            onSelectModel={(m) =>
+              /* 需求12-3 返工：dedupe 清除小写变体（Windows env 不区分
+                  大小写，anthropic_model 会覆盖 ANTHROPIC_MODEL）。
+                  需求14：激活即落盘。 */
+              act({ env: dedupeProxyEnvCase({ ...env, ANTHROPIC_MODEL: m }), model: m })
+            }
+            onTest={async (modelId) =>
+              testLlmConnection("anthropic-messages", customActive ? proxyBaseUrl : "", savedToken, modelId)
+            }
           />
-        ) : (
-          /* 预置渠道接入配置 */
+        ) : effectiveChannelId !== "direct" && effectiveChannelId !== CUSTOM_CHANNEL_ID && agentId ? (
+          /* claude 预置渠道 = 共享面板（direct 视图不动——用户裁决）。 */
           (() => {
             const selected = proxyPresets.find((p) => p.id === effectiveChannelId);
             if (!selected) return null;
             return (
-              <div className="space-y-3 rounded-md border border-border/40 bg-muted/20 p-4">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-sm font-medium">{t(selected.labelKey)}</div>
-                  {activePreset?.id === selected.id ? (
-                    <span className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
-                      <Check className="h-3 w-3" />
-                      {t("config.channelActive")}
-                    </span>
-                  ) : (
-                    <Button
-                      size="sm"
-                      className="h-7 shrink-0 text-xs"
-                      onClick={() => applyChannel(selected)}
-                    >
-                      <Power className="mr-1 h-3 w-3" />
-                      {t("config.channelEnable")}
-                    </Button>
-                  )}
-                </div>
-
-                <div className="space-y-1.5">
-                  <Label>{t("config.baseUrl")}</Label>
-                  <code className="block truncate rounded bg-muted px-2 py-1.5 font-mono text-xs text-muted-foreground">
-                    {selected.baseUrl}
-                  </code>
-                </div>
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="channel-apikey">{t("config.apiKey")}</Label>
-                    {selected.apiKeyUrl && (
-                      <button
-                        type="button"
-                        onClick={() => void invokeCommand("open_url", { url: selected.apiKeyUrl })}
-                        className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
-                      >
-                        {t("config.presetGetKey")}
-                        <ExternalLink className="h-3 w-3" />
-                      </button>
-                    )}
-                  </div>
-                  <div className="flex gap-2">
-                    <Input
-                      id="channel-apikey"
-                      type={showKey ? "text" : "password"}
-                      value={apiKey}
-                      onChange={(e) => setApiKey(e.target.value)}
-                      placeholder={t("config.quickSetupKeyPlaceholder")}
-                      autoComplete="off"
-                    />
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      className="shrink-0"
-                      onClick={() => setShowKey((v) => !v)}
-                      title={showKey ? t("config.hideKey") : t("config.showKey")}
-                    >
-                      {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                    </Button>
-                    <Button
-                      size="sm"
-                      className="h-9 shrink-0"
-                      disabled={!apiKey.trim()}
-                      onClick={() =>
-                        onChange({ env: applyProxyPresetToEnv(selected, apiKey, env) })
-                      }
-                    >
-                      {t("config.quickSetupApplyKey")}
-                    </Button>
-                  </div>
-                  {savedToken && (
-                    <p className="text-[10px] text-muted-foreground/70">
-                      {t("config.channelKeySaved")}
-                      {savedToken.length > 8
-                        ? `：••••${savedToken.slice(-4)}`
-                        : ""}
-                    </p>
-                  )}
-                </div>
-                <p className="text-[10px] leading-relaxed text-muted-foreground/70">
-                  {t("config.channelSaveHint")}
-                </p>
-              </div>
+              <ThirdPartyChannelPanel
+                agentId={agentId}
+                channelKey={`claude-preset:${selected.id}`}
+                title={t(selected.labelKey)}
+                isActive={activePreset?.id === selected.id}
+                fields={{
+                  displayName: t(selected.labelKey),
+                  baseUrl: selected.baseUrl,
+                  protocol: "anthropic-messages",
+                  apiKey: "",
+                  savedApiKey: activePreset?.id === selected.id ? savedToken : "",
+                  protocolOptions: [{ value: "anthropic-messages", label: "anthropic-messages" }],
+                }}
+                displayNameEditable={false}
+            presetModels={selected.models}
+            activeModelId={activePreset?.id === selected.id ? (config.model ?? null) : null}
+            /* 需求11：claude 预设无独立存储（单 env 槽）——仅生效渠道有
+                「已保存」态；未生效预设经填字段+保存启用（无启用按钮）。 */
+            channelSaved={activePreset?.id === selected.id}
+            onPatchFields={(patch) => {
+              /* 需求11：编辑预设字段 = 应用该渠道（写入即切换，页头保存
+                  落盘）——baseUrl 未动也带入预设地址，避免把新 token 写进
+                  旧渠道 env 形成混合态。 */
+              const key =
+                patch.apiKey || (activePreset?.id === selected.id ? savedToken : "");
+              const next = applyProxyPresetToEnv(selected, key, env);
+              if (
+                patch.baseUrl !== undefined &&
+                patch.baseUrl.trim() &&
+                patch.baseUrl.trim() !== selected.baseUrl
+              ) {
+                next["ANTHROPIC_BASE_URL"] = patch.baseUrl.trim();
+              }
+              onChange({ env: next });
+            }}
+            onEnable={() => act({ env: applyProxyPresetToEnv(selected, "", env) })}
+            onSelectModel={(m) =>
+              /* 需求12-3（用户裁决）：模型选择持久化到 env ANTHROPIC_MODEL——
+                  第三方模型经环境变量生效，apply 只带入预设默认模型，选中值
+                  需单独覆盖写入。 */
+              act({
+                env: { ...applyProxyPresetToEnv(selected, "", env), ANTHROPIC_MODEL: m },
+                model: m,
+              })
+            }
+                onTest={async (modelId) =>
+                  testLlmConnection(
+                    "anthropic-messages",
+                    selected.baseUrl,
+                    savedToken,
+                    modelId,
+                  )
+                }
+              />
             );
           })()
-        )}
-
-        {/* v0.7.6 需求2：透出当前生效的模型链路环境变量，可跳转高级设置修改 */}
-        <ModelEnvOverview
-          env={env}
-          onNavigate={onNavigateSection ? () => onNavigateSection("advanced") : undefined}
-        />
+        ) : null}
+        {/* v0.9.2 需求12-5（用户裁决）：模型链路 env 总览块（含「前往高级
+            设置修改」入口）整体移除——env 由模型设置页管理，高级设置侧
+            三个模型链路变量已置灰只读（需求12-6）。 */}
       </div>
-    </div>
-  );
-}
-
-/** claude 自定义渠道卡：地址 + 密钥 + 模型（Anthropic 兼容端点），
- *  保存写 env 三键并启用（v0.7.6 需求3）。 */
-function ClaudeCustomChannelCard({
-  baseUrl,
-  model,
-  onApply,
-}: {
-  baseUrl: string;
-  model: string;
-  onApply: (baseUrl: string, token: string, model: string) => void;
-}) {
-  const { t } = useTranslation();
-  const [addr, setAddr] = useState(baseUrl);
-  const [modelId, setModelId] = useState(model);
-  const [token, setToken] = useState("");
-  const [showKey, setShowKey] = useState(false);
-  const valid = addr.trim().startsWith("http");
-
-  return (
-    <div className="space-y-3 rounded-md border border-border/40 bg-muted/20 p-4">
-      <div className="text-sm font-medium">{t("config.preset.custom.name")}</div>
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        {t("config.channelCustomHint")}
-      </p>
-      <div className="space-y-1.5">
-        <Label htmlFor="custom-baseurl">Base URL</Label>
-        <Input
-          id="custom-baseurl"
-          value={addr}
-          onChange={(e) => setAddr(e.target.value)}
-          placeholder="https://example.com/anthropic"
-          className="font-mono text-xs"
-        />
-      </div>
-      <div className="space-y-1.5">
-        <Label htmlFor="custom-model">{t("config.modelId")}</Label>
-        <Input
-          id="custom-model"
-          value={modelId}
-          onChange={(e) => setModelId(e.target.value)}
-          placeholder={t("config.modelIdPlaceholder")}
-          className="font-mono text-xs"
-        />
-      </div>
-      <div className="space-y-1.5">
-        <Label htmlFor="custom-apikey">{t("config.apiKey")}</Label>
-        <div className="flex gap-2">
-          <Input
-            id="custom-apikey"
-            type={showKey ? "text" : "password"}
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder={t("config.quickSetupKeyPlaceholder")}
-            autoComplete="off"
-          />
-          <Button
-            variant="outline"
-            size="icon"
-            className="shrink-0"
-            onClick={() => setShowKey((v) => !v)}
-            title={showKey ? t("config.hideKey") : t("config.showKey")}
-          >
-            {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-          </Button>
-          <Button
-            size="sm"
-            className="h-9 shrink-0"
-            disabled={!valid}
-            onClick={() => onApply(addr.trim(), token, modelId)}
-          >
-            {t("config.customChannelApply")}
-          </Button>
-        </div>
-      </div>
-      <p className="text-[10px] leading-relaxed text-muted-foreground/70">
-        {t("config.channelSaveHint")}
-      </p>
     </div>
   );
 }
@@ -765,6 +747,7 @@ export function ConfigAdvancedZone({
 
   const handleAddEnv = () => {
     if (!newEnvKey.trim()) return;
+    if (MODEL_CHAIN_ENV_LOCKED.has(newEnvKey.trim())) return; // 模型链路键只读
     const env = { ...(config.env || {}) };
     env[newEnvKey.trim()] = "";
     onChange({ env });
@@ -797,20 +780,43 @@ export function ConfigAdvancedZone({
           </div>
         )}
         <div className="space-y-2 pt-1">
-          {Object.entries(config.env || {}).map(([key, value]) => (
+          {Object.entries(config.env || {}).map(([key, value]) => {
+            /* v0.9.2 需求12-6（用户裁决）：claude 模型链路三 env 置灰只读
+                （不允许改/删）——由「模型设置」页统一管理，避免两处编辑冲突。 */
+            const locked = MODEL_CHAIN_ENV_LOCKED.has(key);
+            return (
             <div key={key} className="flex items-center gap-2">
-              <code className="min-w-[140px] rounded bg-muted px-2 py-1 text-xs font-mono">{key}</code>
+              <code
+                className={cn(
+                  "min-w-[140px] rounded bg-muted px-2 py-1 text-xs font-mono",
+                  locked && "opacity-60",
+                )}
+              >
+                {key}
+              </code>
               <Input
                 value={value}
                 onChange={(e) => handleEnvChange(key, e.target.value)}
-                className="flex-1"
+                className={cn("flex-1", locked && "cursor-not-allowed opacity-60")}
+                disabled={locked}
+                title={locked ? t("config.envLockedModelHint") : undefined}
                 placeholder={t("config.value")}
               />
-              <Button variant="ghost" size="icon-xs" onClick={() => handleEnvDelete(key)}>
-                <Trash2 className="h-3 w-3" />
-              </Button>
+              {locked ? (
+                <span
+                  className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground/70"
+                  title={t("config.envLockedModelHint")}
+                >
+                  {t("config.envLockedModelHint")}
+                </span>
+              ) : (
+                <Button variant="ghost" size="icon-xs" onClick={() => handleEnvDelete(key)}>
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              )}
             </div>
-          ))}
+            );
+          })}
           <div className="flex items-center gap-2">
             <Input
               value={newEnvKey}
@@ -858,12 +864,6 @@ export function ConfigAdvancedZone({
           {(!config.enabledPlugins || Object.keys(config.enabledPlugins).length === 0) && (
             <p className="text-sm text-muted-foreground">{t("config.noPlugins")}</p>
           )}
-        </div>
-      </AdvancedBlock>
-
-      <AdvancedBlock title={t("config.mcpServers")} help={t("config.fieldMapMcp")}>
-        <div className="pt-1">
-          <McpEditor value={config.mcpServers} onChange={(v) => onChange({ mcpServers: v })} />
         </div>
       </AdvancedBlock>
 

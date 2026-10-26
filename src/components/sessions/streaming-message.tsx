@@ -1,16 +1,18 @@
 import { Fragment, useEffect, useCallback, memo, useRef } from "react";
+import { Loader2 } from "lucide-react";
+import { classifyRetryError } from "@/lib/retry-reason";
 import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { useSessionStream } from "@/hooks/use-stream-store";
 import { InlineImages, stripImagePrompt } from "./inline-image";
-import { parseEmbeddedTools, EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
+import { EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
 import { ToolGroup } from "@/components/observability/tool-call-card";
 import { resolveToolKind } from "@/components/observability/tool-call-card/types";
 import type { ToolCall } from "@/components/observability/tool-call-card";
 import type { ContentBlock } from "@/types";
-import { InteractionCard } from "./interaction-card";
+import { InteractionBlockWithRenderers } from "./interaction-card";
 import { dedupeInteractionItems, isInteractionToolName, isInteractionToolUseBlock } from "@/lib/interaction-tools";
 import { PhaseDivider, ThinkingBlock } from "./conversation-content";
 
@@ -21,6 +23,8 @@ interface StreamingMessageProps {
   /** Session id (pending or real) whose streaming state to render. */
   sessionId: string | null;
   isComplete?: boolean;
+  /** v0.9.4 需求10：当前智能体显示名（「正在赶来」文案用；空回退通用文案）。 */
+  agentDisplayName?: string | null;
   /**
    * Optional override for the leading user message bubble.
    * When omitted, falls back to the pending user message tracked in the store.
@@ -28,10 +32,13 @@ interface StreamingMessageProps {
    * message is already rendered by `MessageView`).
    */
   userMessage?: string | null;
+  /** v0.9.0 需求3 方案 C：userMessage 覆盖时配套的工具 id 快照；缺省回落
+   * store 的 pendingToolIds（与 pendingUserMessage 同源）。 */
+  userToolIds?: string[];
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
 }
 
-export const StreamingMessage = memo(function StreamingMessage({ sessionId, isComplete = false, userMessage, scrollContainerRef }: StreamingMessageProps) {
+export const StreamingMessage = memo(function StreamingMessage({ sessionId, isComplete = false, userMessage, userToolIds, scrollContainerRef, agentDisplayName }: StreamingMessageProps) {
   const state = useSessionStream(sessionId);
   const { t } = useTranslation();
   // v0.8.1 需求7：用户消息气泡内 pill 显示插件中文名（id→显示名映射）。
@@ -39,6 +46,10 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   const displayText = state?.text ?? "";
   const thinkingText = state?.thinking ?? "";
   const errorText = state?.error ?? "";
+  // v0.9.1 需求14：自动重试显性展示——进行态（第 N/M 次）与耗尽后的
+  // 最终失败原因（保留至下轮）。
+  const autoRetry = state?.autoRetry ?? null;
+  const retryFailed = state?.retryFailed ?? null;
   const toolUses = state?.tools ?? [];
   const content = state?.content ?? [];
   const steerSplits = state?.steerSplits ?? [];
@@ -46,7 +57,40 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   const interactionSplits = state?.interactionSplits ?? [];
   const steps = state?.steps ?? [];
   const resolvedUserMessage = userMessage === undefined ? state?.pendingUserMessage ?? undefined : userMessage ?? undefined;
+  const resolvedUserToolIds = userToolIds ?? state?.pendingToolIds ?? [];
   const userScrolledRef = useRef(false);
+
+  // v0.9.4 需求10：会话阶段判定（用户确认话术）——
+  // ② 连接中（无任何内容且首事件未到）→ {agent} 正在赶来
+  // ③ 等待模型响应（首事件已到、暂无思考/工具/正文）→ 思考中
+  // ④ 思考生成中 → 深度思考中
+  // ⑤ 工具调用中（有运行中工具）→ 工具调用中
+  // ⑥ 回复生成中（正文输出）→ 处理中
+  const hasRunningTool = toolUses.some((tool) => tool.output === undefined);
+  const phaseLabel = (() => {
+    const hasAnyContent = displayText.length > 0 || thinkingText.length > 0 || toolUses.length > 0 || content.length > 0;
+    if (!hasAnyContent) {
+      // v0.9.4 需求12 测试期修复（用户实测切模型卡②）：③「思考中」的权威
+      // 信号 = session_resolved（连接建立）；send IPC 返回过早（spawn 中）。
+      return state?.sessionResolved || state?.hasReceivedEvent
+        ? t("sessions.thinkingDots")
+        : (agentDisplayName
+          ? t("sessions.agentOnTheWay", "{{name}} 正在赶来...", { name: agentDisplayName })
+          : t("sessions.agentOnTheWayGeneric", "智能体正在赶来..."));
+    }
+    // v0.9.4 需求13：纯压缩流（内容只有 compaction divider）→ 压缩中文案
+    //（大上下文压缩可持续 2 分钟+，落"处理中"误导用户以为模型在干活）。
+    if (
+      content.length > 0 && displayText.length === 0 && thinkingText.length === 0
+      && toolUses.length === 0
+      && content.every((b) => b.type === "phase_divider" && b.phase === "compaction")
+    ) {
+      return t("sessions.compacting", "上下文压缩中...");
+    }
+    if (hasRunningTool) return t("sessions.toolCalling");
+    if (thinkingText.length > 0 && displayText.length === 0) return t("sessions.deepThinking", "深度思考中...");
+    return t("sessions.processing");
+  })();
 
   const isNearBottom = useCallback(() => {
     if (!scrollContainerRef?.current) return true;
@@ -95,6 +139,11 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
     output: tool.output === undefined ? undefined : (
       typeof tool.output === "string" ? tool.output : JSON.stringify(tool.output, null, 2)
     ),
+    // v0.9.4 需求8：运行中计时与实时输出快照（后台命令可视化）；
+    // endedAt 随 tool_use_result 登记（完成态定格总时长）。
+    startedAt: tool.startedAt,
+    endedAt: tool.endedAt,
+    partialOutput: tool.partialOutput,
   }));
   // Split the content array into assistant segments at the indices where Pi
   // injected a steer (user message) mid-turn. With no splits there is a single
@@ -229,7 +278,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
       {/* User message bubble */}
       {resolvedUserMessage && (
-        <StreamingUserBubble text={resolvedUserMessage} toolNames={toolNames} />
+        <StreamingUserBubble text={resolvedUserMessage} toolIds={resolvedUserToolIds} toolNames={toolNames} />
       )}
 
       {/* Assistant streaming response — one bubble per segment, with an inline
@@ -245,7 +294,6 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
               key={`user-insertion-${i}`}
               text={part.text}
               guided={part.guided}
-              toolNames={toolNames}
             />
           );
         }
@@ -258,7 +306,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                   <span className="font-medium text-muted-foreground">{t("sessions.assistant")}</span>
                 </div>
                 <div className="rounded-xl bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)] px-3 py-2 overflow-hidden min-w-0 max-w-full">
-                  <InteractionCard
+                  <InteractionBlockWithRenderers
                     items={part.items}
                     origin={part.origin}
                     defaultOpen={false}
@@ -273,7 +321,9 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
         const isLast = i === lastAssistantPartIndex;
         const segRenderItems = buildStreamRenderItems(seg, streamToolCalls);
         const segHasItems = segRenderItems.length > 0;
-        const showBubble = segHasItems || (isLast && (errorText.length > 0 || steps.length > 0));
+        const showBubble =
+          segHasItems ||
+          (isLast && (errorText.length > 0 || steps.length > 0 || !!autoRetry || !!retryFailed));
         const showThinking = isLast && !showBubble && !isComplete;
         if (!showBubble && !showThinking) return null;
         return (
@@ -286,7 +336,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                 {showThinking ? (
                   <div className="rounded-xl px-3 py-2 bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)] overflow-hidden">
                     <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm font-medium">
-                      <span className="processing-marquee">{t("sessions.thinkingDots")}</span>
+                      <span className="processing-marquee">{phaseLabel}</span>
                     </div>
                   </div>
                 ) : (
@@ -322,14 +372,37 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                             );
                           }
                           if (item.block.type === "phase_divider") {
+                            // v0.9.3 需求10 B1：行级咨询插件接管（未命中回退内置）。
                             return (
-                              <div key={`divider-${i}-${idx}`}>
-                                <PhaseDivider phase={item.block.phase} title={item.block.title} />
-                              </div>
+                              <PhaseDividerWithRenderers
+                                key={`divider-${i}-${idx}`}
+                                phase={item.block.phase}
+                                title={item.block.title}
+                              />
                             );
                           }
                           return null;
                         })}
+                        {isLast && autoRetry && (
+                          <div className="flex items-center gap-2 rounded-[6px] border border-border bg-muted px-2.5 py-2 text-sm text-muted-foreground dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-500">
+                            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                            <span title={autoRetry.errorMessage || undefined}>
+                              {autoRetry.errorMessage ? `${t(classifyRetryError(autoRetry.errorMessage))}，` : ""}
+                              {t("sessions.autoRetryInProgress", {
+                                attempt: autoRetry.attempt,
+                                max: autoRetry.maxAttempts,
+                              })}
+                            </span>
+                          </div>
+                        )}
+                        {isLast && retryFailed && (
+                          <div className="rounded-[6px] border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-sm text-destructive">
+                            {t("sessions.autoRetryExhausted", {
+                              attempt: retryFailed.attempt,
+                              error: retryFailed.finalError,
+                            })}
+                          </div>
+                        )}
                         {isLast && errorText && (
                           <div className="rounded-[6px] border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-sm text-destructive">
                             {errorText}
@@ -353,9 +426,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                         )}
                         {isLast && !isComplete && (
                           <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm font-medium">
-                            <span className="processing-marquee">
-                              {toolUses.length > 0 ? t("sessions.toolCalling") : t("sessions.processing")}
-                            </span>
+                            <span className="processing-marquee">{phaseLabel}</span>
                           </div>
                         )}
                       </div>
@@ -423,12 +494,10 @@ function StepStatusIcon({ kind }: { kind: string }) {
  * (right-aligned user bubble + amber "已引导" chip) so the transition from
  * bottom placeholder → inline, and later → committed message, is seamless.
  */
-/** 流式阶段主用户消息（v0.8.1 需求7 08f8f9f2：parseEmbeddedTools 剥
- * [JISHU-TOOLS] 标记并渲染 pill——此前只有 steer UserBubble 有解析，主消息
- * 内联渲染直接显示原始标记）。 */
-function StreamingUserBubble({ text, toolNames }: { text: string; toolNames: Record<string, string> }) {
+/** 流式阶段主用户消息（v0.9.0 需求3 方案 C：pill 数据源为 toolIds 元数据——
+ * compose 时前端已知、经 streamStore.pendingToolIds 传递；文本标记解析已废弃）。 */
+function StreamingUserBubble({ text, toolIds, toolNames }: { text: string; toolIds: string[]; toolNames: Record<string, string> }) {
   const { t } = useTranslation();
-  const { text: displayText, toolIds } = parseEmbeddedTools(text);
   return (
     <div className="w-full flex justify-end" data-user-message="true">
       <div className="max-w-[88%] min-w-0 flex flex-col items-end">
@@ -437,17 +506,19 @@ function StreamingUserBubble({ text, toolNames }: { text: string; toolNames: Rec
         </div>
         <div className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full" style={{ fontSize: "var(--font-size-prose)" }}>
           <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
-          <InlineImages text={displayText} />
-          {stripImagePrompt(displayText)}
+          <InlineImages text={text} />
+          {stripImagePrompt(text) || (text.includes("JISHU_HUB_IMAGES") ? t("sessions.imageOnlyBubble", "📎 发送了附件") : text)}
         </div>
       </div>
     </div>
   );
 }
 
-function UserBubble({ text, guided, toolNames }: { text: string; guided?: boolean; toolNames: Record<string, string> }) {
+function UserBubble({ text, guided }: { text: string; guided?: boolean }) {
+  // v0.9.0 需求3 已知取舍：steer 内联气泡（steer_injected echo 驱动）暂无
+  // toolIds 通道（需 SteerInjected 事件链扩字段，见需求3 02 §五偏离2），
+  // pill 不渲染；引导占位与回放面 pill 正常。
   const { t } = useTranslation();
-  const { text: displayText, toolIds } = parseEmbeddedTools(text);
   return (
     <div className="w-full flex justify-end" data-user-message="true">
       <div className="max-w-[88%] min-w-0 flex flex-col items-end">
@@ -464,10 +535,26 @@ function UserBubble({ text, guided, toolNames }: { text: string; guided?: boolea
           className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full"
           style={{ fontSize: "var(--font-size-prose)" }}
         >
-          <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
-          {displayText}
+          <InlineImages text={text} />
+          {stripImagePrompt(text) || (text.includes("JISHU_HUB_IMAGES") ? t("sessions.imageOnlyBubble", "📎 发送了附件") : text)}
         </div>
       </div>
     </div>
   );
+}
+import { useBlockRenderers, matchBlockTypeRenderer } from "@/features/session-kernel/plugins/mounts/use-block-renderers";
+
+/** v0.9.3 需求10 B1：phase_divider 流式渲染点行级咨询（message-view 同款）。 */
+function PhaseDividerWithRenderers({ phase, title }: { phase: string; title: string }) {
+  const renderers = useBlockRenderers();
+  const renderer = matchBlockTypeRenderer(renderers, "phase_divider");
+  if (renderer) {
+    const Block = renderer.BlockComponent;
+    return (
+      <div>
+        <Block block={{ type: "phase_divider", text: phase, title }} />
+      </div>
+    );
+  }
+  return <PhaseDivider phase={phase} title={title} />;
 }

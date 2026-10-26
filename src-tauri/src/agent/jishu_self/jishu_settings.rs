@@ -15,6 +15,11 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct JishuSettings {
+    /// v0.9.4 需求12：开发日志中心强制开关（设置页切换；开启后生产构建
+    /// 同样启用日志中心——安装包测试比 dev 稳定，dev 会被代码改动重启）。
+    /// serde default 兼容历史文件。
+    #[serde(rename = "devLogForced", default)]
+    pub dev_log_forced: bool,
     /// The provider+model pair the user picked in the GUI. Pi is
     /// launched with `--provider <active.provider> --model
     /// <active.model>` whenever a new session starts.
@@ -116,6 +121,7 @@ mod tests {
             model: "glm-5.1".to_string(),
         };
         let settings = JishuSettings {
+            dev_log_forced: false,
             active: Some(active.clone()),
         };
         save_to(&path, &settings).unwrap();
@@ -141,6 +147,7 @@ mod tests {
         let dir = unique_tmp("clear");
         let path = dir.join("settings.json");
         let mut settings = JishuSettings {
+            dev_log_forced: false,
             active: Some(ActiveModel {
                 provider: "zhipu".to_string(),
                 model: "glm-5.1".to_string(),

@@ -22,6 +22,13 @@ pub mod manifest;
 pub mod normalized;
 // v0.8.1 需求2：统一插件模型（内建/manifest 插件的描述符、启停配置、装配管线）。
 pub mod adaptive;
+// v0.9.0 需求1 P2：hub MCP 聚合 server + 四家配置注入（方案 b 聚合代理）。
+pub mod mcp_inject;
+pub mod plugin_options;
+pub mod mcp_server;
+pub mod skill_deploy;
+// v0.9.0 需求2：pi 扩展部署管线（[pi_extension].entry → pi extensions 目录）。
+pub mod pi_deploy;
 pub mod plugin;
 pub mod tool_plugin;
 pub mod traits;
@@ -82,6 +89,9 @@ pub struct AgentStatus {
     pub logo_path: Option<String>,
     pub capabilities: String,
     pub health: AgentHealth,
+    /// 配置目录是否存在（v0.9.0 需求21：CLI 未装但目录在——桌面端形态——
+    /// 也可进入设置页配置；读取时现算不进探测缓存）。
+    pub config_dir_exists: bool,
     pub install_hint: Option<String>,
     pub native_install_command: Option<String>,
     pub available_version: Option<String>,
@@ -345,6 +355,12 @@ impl AgentRegistry {
             .map(|(file, path)| (std::sync::Arc::new(file), path))
             .collect();
         let (agents, plugins) = plugin::assemble(builtins, manifests, &disabled);
+        // v0.9.2 需求1：会话能力插件描述符并入统一插件清单（不进 agents
+        // map——无 agent 实现；启停与 agent/tool 插件共用 plugins.json）。
+        let mut plugins = plugins;
+        plugins.extend(plugin::session_plugin_descriptors(&disabled));
+        // v0.9.3 需求13 C1：组合式插件（manifest 驱动，前端引擎装配）。
+        plugins.extend(plugin::composed_session_plugin_specs(&disabled));
 
         Self {
             agents,
@@ -418,6 +434,7 @@ impl AgentRegistry {
                         binary_path: None,
                         last_checked_at: 0,
                     });
+                let config_dir_exists = a.config_dir().map(|d| d.exists()).unwrap_or(false);
                 let (mcp_installed, mcp_version) = match a.as_mcp() {
                     Some(mcp) => {
                         // Auto-migrate on first status check.
@@ -470,6 +487,7 @@ impl AgentRegistry {
                     logo_path: info.logo_path.clone(),
                     capabilities: caps.bits().to_string(),
                     health,
+                    config_dir_exists,
                     install_hint: a.install_hint(),
                     native_install_command: a.native_install_command(),
                     available_version: a.available_version(),
@@ -693,6 +711,7 @@ mod tests {
                 binary_path: Some("codex".to_string()),
                 last_checked_at: 1,
             },
+            config_dir_exists: false,
             install_hint: None,
             native_install_command: None,
             available_version: None,
@@ -801,7 +820,8 @@ mod tests {
             codex.config_surface,
             ConfigSurface::Structured {
                 schema_id: "codex-config".to_string(),
-                supports_model_picker: false,
+                // v0.9.0 需求14：model/list 实时拉取接入 ModelStore。
+                supports_model_picker: true,
                 supports_small_model: false,
                 supports_large_model: false,
                 supports_api_provider: false,

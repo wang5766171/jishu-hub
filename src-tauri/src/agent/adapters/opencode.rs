@@ -117,7 +117,7 @@ fn normalize_opencode_tool_use(event: &serde_json::Value) -> Vec<NormalizedEvent
         return raw(event);
     }
 
-    let view = crate::agent::tool_view::classify_tool_view(&tool, &input);
+    let view = crate::agent::tool_view::classify_tool_view_for("opencode", &tool, &input);
     let mut normalized = vec![NormalizedEvent::ToolUseStart {
         call_id: call_id.clone(),
         tool,
@@ -428,6 +428,7 @@ fn append_part_blocks(part: &serde_json::Value, content: &mut Vec<crate::session
                 if !text.trim().is_empty() {
                     content.push(crate::session::ContentBlock::Text {
                         text: text.to_string(),
+                        tool_ids: Vec::new(),
                     });
                 }
             }
@@ -474,6 +475,11 @@ fn append_part_blocks(part: &serde_json::Value, content: &mut Vec<crate::session
                     content.push(crate::session::ContentBlock::ToolResult {
                         tool_use_id: call_id,
                         content: output,
+                        is_error: state
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .map(|status| status.eq_ignore_ascii_case("error"))
+                            .unwrap_or(false),
                     });
                 }
             }
@@ -1025,6 +1031,29 @@ fn save_opencode_config(
     Ok(())
 }
 
+/// 原始层删除 MCP 条目（v0.9.0 需求1）：opencode 的 merge 语义只增不删，
+/// 经 adapter save 无法回收条目——直接在原始 config（jsonc 容忍）上删
+/// `mcp.<name>`。返回是否实际删除（false = 不存在/形态不符由调用方判断）。
+pub(crate) fn remove_mcp_entry_raw(name: &str) -> Result<bool, String> {
+    let path = opencode_config_path().map_err(|e| e.to_string())?;
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut value = read_opencode_config_value().map_err(|e| e.to_string())?;
+    let Some(mcp) = value.get_mut("mcp").and_then(serde_json::Value::as_object_mut) else {
+        return Ok(false);
+    };
+    if mcp.remove(name).is_none() {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let content = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    crate::util::atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 fn backup_opencode_config() -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     let src = opencode_config_path()?;
     if !src.exists() {
@@ -1118,6 +1147,10 @@ use crate::agent::traits::{
     TransportAdapter,
 };
 impl AgentManifest for OpencodeAdapter {
+    fn config_dir(&self) -> Option<std::path::PathBuf> {
+        opencode_config_dir().ok()
+    }
+
     fn info(&self) -> AgentInfo {
         AgentInfo {
             id: "opencode".to_string(),
@@ -1900,7 +1933,7 @@ mod tests {
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[0].timestamp, Some(100));
         assert!(
-            matches!(&messages[0].content[0], crate::session::ContentBlock::Text { text } if text == "hello world")
+            matches!(&messages[0].content[0], crate::session::ContentBlock::Text { text, .. } if text == "hello world")
         );
 
         // reasoning -> thinking, tool -> tool_use + tool_result
@@ -1967,7 +2000,7 @@ mod tests {
 
         assert_eq!(sessions[0].messages.len(), 1);
         match &sessions[0].messages[0].content[0] {
-            crate::session::ContentBlock::Text { text } => {
+            crate::session::ContentBlock::Text { text, .. } => {
                 assert_eq!(text, "Open Code searchable history");
             }
             _ => panic!("expected hydrated text block"),
@@ -2005,7 +2038,7 @@ mod tests {
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[1].role, "assistant");
         match &messages[1].content[0] {
-            crate::session::ContentBlock::Text { text } => {
+            crate::session::ContentBlock::Text { text, .. } => {
                 assert_eq!(text, "你好！有什么可以帮你的？");
             }
             other => panic!("Expected text block, got {:?}", other),
@@ -2120,8 +2153,10 @@ mod tests {
         );
 
         // 编辑后全量带回（未知键保留）→ merge 整体替换 provider 段（支持删除供应商）。
+        // （夹具值用 key-2 而非 sk- 前缀，避免触发 secret_leak 源码扫描——
+        //   语义不变，仅替换后的断言对照值。）
         let mut edited = providers.clone();
-        edited["zhipu"]["options"]["apiKey"] = serde_json::json!("sk-2");
+        edited["zhipu"]["options"]["apiKey"] = serde_json::json!("key-2");
         let merged = super::merge_opencode_config(
             serde_json::json!({ "model": "zhipu/glm-5.1", "provider": { "old": {} } }),
             &crate::config::ClaudeConfig {
@@ -2131,7 +2166,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(merged["provider"]["zhipu"]["options"]["apiKey"], "sk-2");
+        assert_eq!(merged["provider"]["zhipu"]["options"]["apiKey"], "key-2");
         assert!(merged["provider"].get("old").is_none(), "wholesale replace");
         assert_eq!(
             merged["provider"]["zhipu"]["customExtra"],

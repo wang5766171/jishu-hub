@@ -2,6 +2,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 fn serialize_pathbuf<S: serde::Serializer>(path: &PathBuf, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&path.to_string_lossy())
 }
@@ -28,7 +32,13 @@ pub struct InteractionOptionInfo {
 #[serde(tag = "type")]
 pub enum ContentBlock {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        /// v0.9.0 需求3 方案 C：本条用户消息关联的工具插件 id 快照（回放时
+        /// 从注入块派生填充，见 tool_plugin::extract_tool_snapshot）。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tool_ids: Vec<String>,
+    },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -41,6 +51,10 @@ pub enum ContentBlock {
         #[serde(rename = "tool_use_id")]
         tool_use_id: String,
         content: serde_json::Value,
+        /// 工具执行是否失败（v0.9.3 测试期修复：回放渲染需与直播一致地
+        /// 显示 Error 徽标；pi JSONL 的 isError / opencode 的 status=error）。
+        #[serde(default, skip_serializing_if = "is_false")]
+        is_error: bool,
     },
     #[serde(rename = "thinking")]
     Thinking { thinking: String },
@@ -99,28 +113,46 @@ fn parse_ai_title(line: &str) -> Option<String> {
 }
 
 /// Generate a smart summary from text: split by punctuation, take first sentence, max 50 chars
+/// v0.9.4 需求6：分句规则修正——中文全角标点（。？！，）直接截断（无空格
+/// 惯例、无歧义）；英文半角标点（. ? ! , ;）仅当后跟空白或行尾才算句界
+/// （英文书写句点后跟空格；v0.9.4 / 3.14 类点后紧跟非空白不截断——修复
+/// 「开启v0.9.4版本开发」被腰斩成「开启v0」）。换行恒为分隔（取首行）；
+/// 超 50 字符按字符（非字节）截断加省略号。
 fn smart_summary(text: &str) -> String {
-    let text = text.trim();
-    if text.is_empty() {
+    let first_line = text.trim().lines().next().unwrap_or("").trim();
+    if first_line.is_empty() {
         return String::new();
     }
-    // Split by sentence-ending punctuation or newlines
-    let first_sentence = text
-        .split(&['。', '？', '！', '，', '\n', '.', '?', '!', ','][..])
-        .next()
-        .unwrap_or(text)
-        .trim();
-    if first_sentence.len() <= 50 {
-        first_sentence.to_string()
+    let chars: Vec<(usize, char)> = first_line.char_indices().collect();
+    let mut cut: Option<usize> = None;
+    for (idx, &(byte_i, c)) in chars.iter().enumerate() {
+        if matches!(c, '。' | '？' | '！' | '，') {
+            cut = Some(byte_i);
+            break;
+        }
+        if matches!(c, '.' | '?' | '!' | ',' | ';') {
+            let is_boundary = chars
+                .get(idx + 1)
+                .map(|&(_, nc)| nc.is_whitespace())
+                .unwrap_or(true); // 行尾
+            if is_boundary {
+                cut = Some(byte_i);
+                break;
+            }
+        }
+    }
+    let seg = match cut {
+        Some(i) => first_line[..i].trim(),
+        None => first_line,
+    };
+    if seg.is_empty() {
+        return String::new();
+    }
+    if seg.chars().count() <= 50 {
+        seg.to_string()
     } else {
-        // Find a natural break point near 50 chars
-        let end = first_sentence
-            .char_indices()
-            .take_while(|(i, _)| *i < 50)
-            .last()
-            .map(|(i, c)| i + c.len_utf8())
-            .unwrap_or(50);
-        format!("{}…", &first_sentence[..end])
+        let head: String = seg.chars().take(50).collect();
+        format!("{head}…")
     }
 }
 
@@ -156,7 +188,7 @@ fn parse_content_blocks(value: &serde_json::Value) -> Vec<ContentBlock> {
             if s.trim().is_empty() {
                 vec![]
             } else {
-                vec![ContentBlock::Text { text: s.clone() }]
+                vec![ContentBlock::Text { text: s.clone(), tool_ids: Vec::new() }]
             }
         }
         serde_json::Value::Array(arr) => arr
@@ -165,6 +197,27 @@ fn parse_content_blocks(value: &serde_json::Value) -> Vec<ContentBlock> {
             .collect(),
         _ => vec![],
     }
+}
+
+/// phase-enter 自定义消息内容首行 `=== 阶段名 ===` 标记解析（C4-slice2
+/// 声明驱动流水线的分隔线标题；取前 3 行内首个标记，无标记返回 None）。
+fn phase_enter_title_from_blocks(blocks: &[ContentBlock]) -> Option<String> {
+    let text = blocks.iter().find_map(|b| match b {
+        ContentBlock::Text { text, .. } => Some(text.as_str()),
+        _ => None,
+    })?;
+    for line in text.lines().take(3) {
+        let trimmed = line.trim();
+        if let Some(name) = trimmed
+            .strip_prefix("=== ")
+            .and_then(|rest| rest.strip_suffix(" ==="))
+        {
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
 }
 
 pub fn parse_message(line: &str) -> Option<Message> {
@@ -226,7 +279,7 @@ pub fn parse_message(line: &str) -> Option<Message> {
 
     let is_launch_text = role == "user"
         && filtered.iter().any(|b| match b {
-            ContentBlock::Text { text } => text.trim_start().starts_with("/jishu-task "),
+            ContentBlock::Text { text, .. } => text.trim_start().starts_with("/jishu-task "),
             _ => false,
         });
 
@@ -239,13 +292,18 @@ pub fn parse_message(line: &str) -> Option<Message> {
             "discuss"
         };
 
-        let title = match phase {
-            "discuss" => "需求讨论",
-            "plan" => "流程规划",
-            "execute" => "流程执行",
-            "done" => "已完成",
-            other => other,
-        };
+        // C4-slice2：声明驱动流水线的阶段名标题——phase-enter 消息内容首行
+        // `=== 阶段名 ===` 标记（PROMT 块内，不外显）；无标记回落内置映射。
+        let title = phase_enter_title_from_blocks(&filtered).unwrap_or_else(|| {
+            match phase {
+                "discuss" => "需求讨论",
+                "plan" => "流程规划",
+                "execute" => "流程执行",
+                "done" => "已完成",
+                other => other,
+            }
+            .to_string()
+        });
 
         let has_divider = filtered.iter().any(|b| match b {
             ContentBlock::PhaseDivider { phase: p, .. } => p == phase,
@@ -983,21 +1041,21 @@ where
         }
         // Parse conversation messages
         if let Some(mut msg) = parse_message(line) {
-            // v0.8.1 需求7/10：用户消息剥工具插件注入块——agent 原生 JSONL 记录的
-            // 是 compose_tool_message 前缀后的完整 prompt（<jishu-tool-plugins>…），
-            // 展示层统一还原为用户原文（[JISHU-TOOLS:…] 头保留给前端渲染 pill）。
-            // 与 commands::sessions::get_session_messages 的回放剥离同一纪律。
+            // v0.8.1 需求7/10 → v0.9.0 需求3 方案 C：用户消息剥工具插件注入块
+            // 并从块内 `## id — desc` 头派生 tool_ids 元数据（pill 渲染数据源）。
             if msg.role == "user" {
                 for block in &mut msg.content {
-                    if let ContentBlock::Text { text } = block {
-                        *text = crate::agent::tool_plugin::strip_tool_block(text);
+                    if let ContentBlock::Text { text, tool_ids } = block {
+                        let (clean, ids) = crate::agent::tool_plugin::extract_tool_snapshot(text);
+                        *text = clean;
+                        *tool_ids = ids;
                     }
                 }
             }
             // Capture first user message text for smart summary fallback
             if msg.role == "user" && first_user_text.is_none() {
                 for block in &msg.content {
-                    if let ContentBlock::Text { text } = block {
+                    if let ContentBlock::Text { text, .. } = block {
                         if !text.trim().is_empty() {
                             first_user_text = Some(text.clone());
                             break;
@@ -1054,11 +1112,11 @@ where
         .and_then(|m| m.timestamp)
         .map(|ts| DateTime::from_timestamp_millis(ts).unwrap_or_default());
 
-    // v0.8.1 需求10：会话列表名清洗工具标记（注入块 + [JISHU-TOOLS] 头）——
-    // 标题必须呈现用户真实问题，不得泄漏任何插件标记（§16.3 剥离契约）。
+    // v0.8.1 需求10 → v0.9.0 需求3：会话列表名清洗注入块（文本标记已废弃）——
+    // 标题必须呈现用户真实问题，不得泄漏插件注入块（§16.3 剥离契约）。
     let display_name = last_ai_title
-        .map(|t| crate::agent::tool_plugin::strip_all_markers(&t))
-        .or_else(|| first_user_text.map(|t| smart_summary(&crate::agent::tool_plugin::strip_all_markers(&t))));
+        .map(|t| crate::agent::tool_plugin::strip_tool_block(&t))
+        .or_else(|| first_user_text.map(|t| smart_summary(&crate::agent::tool_plugin::strip_tool_block(&t))));
 
     let project_path = path
         .parent()
@@ -1152,6 +1210,29 @@ mod tests {
         assert_eq!(smart_summary("第一句。第二句"), "第一句");
     }
 
+    /// v0.9.4 需求6：半角句点后非空白（版本号/小数）不截断。
+    #[test]
+    fn test_smart_summary_keeps_version_numbers() {
+        assert_eq!(smart_summary("开启v0.9.4版本开发"), "开启v0.9.4版本开发");
+        assert_eq!(smart_summary("Fix v2.1 bug"), "Fix v2.1 bug");
+        assert_eq!(smart_summary("升级到 3.14.2 后闪退"), "升级到 3.14.2 后闪退");
+        // 半角逗号后跟空格 → 仍是句界。
+        assert_eq!(smart_summary("Fix A, then B"), "Fix A");
+        // 多行取首行。
+        assert_eq!(smart_summary("第一行内容\n第二行"), "第一行内容");
+        // 行尾句点 → 截断且不带尾点。
+        assert_eq!(smart_summary("First sentence."), "First sentence");
+    }
+
+    /// v0.9.4 需求6：超长按字符截断（中文多字节安全）。
+    #[test]
+    fn test_smart_summary_long_unicode() {
+        let long = "很".repeat(60);
+        let result = smart_summary(&long);
+        assert!(result.ends_with('…'));
+        assert_eq!(result.chars().count(), 51); // 50 + 省略号
+    }
+
     #[test]
     fn test_parse_tool_use_message() {
         let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"call_123","name":"Read","input":{"file_path":"test.png"}}]}}"#;
@@ -1199,7 +1280,7 @@ mod tests {
         // tool_use for request_user_input should be filtered out
         assert_eq!(msg.content.len(), 1);
         match &msg.content[0] {
-            ContentBlock::Text { text } => assert_eq!(text, "Continuing..."),
+            ContentBlock::Text { text, .. } => assert_eq!(text, "Continuing..."),
             other => panic!("Expected Text, got {:?}", other),
         }
     }
@@ -1239,7 +1320,7 @@ mod tests {
 
         assert_eq!(assistant.content.len(), 4);
         match &assistant.content[0] {
-            ContentBlock::Text { text } => assert_eq!(text, "Intro"),
+            ContentBlock::Text { text, .. } => assert_eq!(text, "Intro"),
             other => panic!("Expected intro text, got {:?}", other),
         }
         match &assistant.content[1] {
@@ -1257,7 +1338,7 @@ mod tests {
             other => panic!("Expected Q2 interaction, got {:?}", other),
         }
         match &assistant.content[3] {
-            ContentBlock::Text { text } => assert_eq!(text, "Final summary"),
+            ContentBlock::Text { text, .. } => assert_eq!(text, "Final summary"),
             other => panic!("Expected final text, got {:?}", other),
         }
 
@@ -1393,7 +1474,7 @@ mod tests {
             .find(|m| m.role == "assistant")
             .unwrap();
         match &assistant.content[0] {
-            ContentBlock::Text { text } => assert_eq!(text, "the partial streamed reply"),
+            ContentBlock::Text { text, .. } => assert_eq!(text, "the partial streamed reply"),
             other => panic!("Expected text, got {:?}", other),
         }
 
@@ -1460,7 +1541,7 @@ mod tests {
             .filter(|m| m.role == "assistant")
             .flat_map(|m| m.content.iter())
             .filter_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.as_str()),
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -1505,7 +1586,7 @@ mod tests {
                     assert_eq!(thinking, "private reasoning");
                     has_thinking = true;
                 }
-                ContentBlock::Text { text } => {
+                ContentBlock::Text { text, .. } => {
                     assert_eq!(text, "visible answer");
                     has_text = true;
                 }

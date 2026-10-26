@@ -1,0 +1,76 @@
+[plugin]
+id = "session.mermaid-render"
+name = "Mermaid 图表渲染"
+description = "流程图/时序图等 mermaid 代码块渲染为图形（可缩放放大、导出 PNG/SVG）"
+
+kind = "session-composed"
+
+[source]
+type = "code-block"
+languages = ["mermaid", "mmd"]
+
+[render]
+component = "render.mermaid"
+mount = "block-renderer"
+fallback = "render.mono-text"
+
+[[action]]
+type = "export-file"
+format = "png"
+label = "PNG"
+scale = "@config.pngScale"
+
+[[action]]
+type = "export-file"
+format = "svg"
+label = "SVG"
+
+[[config]]
+key = "inlineScalePct"
+type = "number"
+label = "会话内初始缩放"
+description = "内联卡片按自然尺寸的百分比显示（放大查看器不受影响）"
+default = 50
+min = 10
+max = 100
+step = 5
+unit = "%"
+group = "显示"
+
+[[config]]
+key = "themeFollow"
+type = "switch"
+label = "主题跟随应用"
+description = "关闭后固定浅色主题渲染"
+default = true
+group = "显示"
+
+[[config]]
+key = "minScalePct"
+type = "number"
+label = "最小缩放"
+default = 15
+min = 5
+max = 100
+unit = "%"
+group = "显示"
+
+[[config]]
+key = "maxScaleX"
+type = "number"
+label = "最大放大倍数"
+default = 6
+min = 1
+max = 10
+unit = "×"
+group = "显示"
+
+[[config]]
+key = "pngScale"
+type = "number"
+label = "PNG 导出倍率"
+default = 2
+min = 1
+max = 4
+unit = "×"
+group = "导出"

@@ -8,19 +8,20 @@
 
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { useCodexLiveModels } from "@/hooks/use-codex-live-models";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Check, ExternalLink, Eye, EyeOff, Plus, Power, Trash2 } from "lucide-react";
+import { Check, Loader2, Plus, Power, RefreshCw, Trash2 } from "lucide-react";
 import {
-  CODEX_DIRECT_MODELS,
   CODEX_PROXY_PRESETS,
   codexCustomModelsFor,
   rememberCodexCustomModel,
   removeCodexCustomModel,
 } from "@/agents/config/presets/codex-presets";
 import { ChannelSidebar, type ChannelSidebarItem } from "./channel-sidebar";
+import { ThirdPartyChannelPanel } from "./third-party-channel-panel";
 import { OfficialAuthCard } from "./official-auth-card";
 
 type ProviderEntry = {
@@ -36,8 +37,10 @@ export function CodexProvidersBlock({
   modelProviders,
   env,
   modelCard,
+  channelModelCard,
   agentId,
   onChange,
+  commit,
 }: {
   /** 当前模型（config.model；切渠道时做模型联动判断） */
   model: string | null | undefined;
@@ -46,6 +49,8 @@ export function CodexProvidersBlock({
   env: Record<string, string> | null | undefined;
   /** 模型卡（由 ConfigModelsZone 组装传入——右栏「模型设置」，对齐 claude） */
   modelCard: ReactNode;
+  /** v0.9.2 需求11：渠道/自定义视图的只读当前模型卡（直连仍用 modelCard）。 */
+  channelModelCard?: ReactNode;
   /** v0.7.6 需求3：agent id（官方直连认证卡查询用）。 */
   agentId?: string;
   onChange: (patch: {
@@ -54,17 +59,31 @@ export function CodexProvidersBlock({
     env?: Record<string, string>;
     model?: string | null;
   }) => void;
+  /** 需求14：激活类操作立即落盘（选模型/启用渠道/切直连）；缺省回退 onChange。 */
+  commit?: (patch: {
+    modelProvider?: string | null;
+    modelProviders?: Record<string, unknown> | null;
+    env?: Record<string, string>;
+    model?: string | null;
+  }) => void;
 }) {
+  /* 需求14：激活走 commit（立即落盘），字段编辑仍走 onChange（草稿+页头保存）。 */
+  const act = commit ?? onChange;
   const { t } = useTranslation();
   // 查看目标渠道（右侧展示其接入配置）；null = 官方直连视图。初始跟随
   // 生效渠道（直连时 = null）。查看态与生效态分离：切换生效统一走右栏
   // 「启用此渠道」（v0.7.6 需求3 迭代三——修复直连态下点击渠道无反馈：
   // 此前直连态左栏 selectedId 被强制置空、右栏只认 modelProvider）。
   const [selectedId, setSelectedId] = useState<string | null>(modelProvider ?? null);
+  // v0.9.0 需求14：直连视图实时模型清单。
+  // v0.9.2 需求9：首查+会话缓存+手动刷新（返回形状改为对象）。
+  const {
+    models: directLiveModels,
+    refresh: refreshDirectModels,
+    loading: directModelsLoading,
+  } = useCodexLiveModels(agentId, selectedId === null);
   // v0.7.6 需求3：custom 从清单一项改为「添加自定义渠道」按钮触发的表单态。
   const [customFormOpen, setCustomFormOpen] = useState(false);
-  const [showKey, setShowKey] = useState(false);
-  const [keyDraft, setKeyDraft] = useState("");
 
   const providers = (modelProviders ?? {}) as Record<string, ProviderEntry>;
   const envMap = env ?? {};
@@ -85,6 +104,20 @@ export function CodexProvidersBlock({
         label: entry.name || id,
         sub: entry.base_url || "",
         active: modelProvider === id,
+        /* 补丁十八：自定义渠道行可删（hover ×）——预设行不删。 */
+        onRemove: () => {
+          const nextProviders = { ...providers };
+          const removed = nextProviders[id];
+          delete nextProviders[id];
+          const nextEnv = { ...envMap };
+          if (removed?.env_key) delete nextEnv[removed.env_key];
+          onChange({
+            modelProviders: nextProviders,
+            env: nextEnv,
+            ...(modelProvider === id ? { modelProvider: null, model: null } : {}),
+          });
+          if (selectedId === id) setSelectedId(null);
+        },
       })),
   ];
   const selectedPreset = CODEX_PROXY_PRESETS.find((p) => p.id === selectedId);
@@ -92,32 +125,8 @@ export function CodexProvidersBlock({
   const selectedLabel =
     channels.find((c) => c.id === selectedId)?.label ?? selectedId ?? "";
 
-  /** 应用预设渠道：生成/覆盖渠道并激活；当前模型不在渠道候选内时
-   *  带入预设默认模型（v0.7.6 需求2：切渠道模型对齐）；wire_api 按预设
-   *  声明（v0.7.6 需求3：百炼/KIMI 为 chat）。 */
-  const applyPreset = (presetId: string) => {
-    setSelectedId(presetId);
-    setCustomFormOpen(false);
-    const preset = CODEX_PROXY_PRESETS.find((p) => p.id === presetId);
-    if (!preset || preset.id === "custom") return;
-    const keepModel = model && preset.models.includes(model);
-    onChange({
-      modelProvider: preset.id,
-      modelProviders: {
-        ...providers,
-        [preset.id]: {
-          name: t(preset.labelKey),
-          base_url: preset.baseUrl,
-          wire_api: preset.wireApi ?? "responses",
-          env_key: preset.envKey,
-        },
-      },
-      ...(keepModel ? {} : { model: preset.model || null }),
-    });
-  };
-
-  // 左栏点击渠道 = 仅选中查看（v0.7.6 需求3 迭代三：切换生效统一走右栏
-  // 「启用此渠道」按钮 applyPreset）。
+  // 左栏点击渠道 = 仅选中查看（v0.9.2 需求11：切换生效走右栏「启用此
+  // 渠道」/字段保存/行级设为当前）。
   const handleChannelSelect = (id: string) => {
     setSelectedId(id);
     setCustomFormOpen(false);
@@ -138,18 +147,34 @@ export function CodexProvidersBlock({
         onSelectDirect={() => {
           setCustomFormOpen(false);
           setSelectedId(null);
-          if (modelProvider) onChange({ modelProvider: null });
+          /* 需求14：切直连 = 激活类操作，立即落盘。 */
+          if (modelProvider) act({ modelProvider: null });
         }}
         channels={channels}
         selectedId={customFormOpen ? null : selectedId}
         onSelect={handleChannelSelect}
         onAddCustom={() => setCustomFormOpen(true)}
+        onRemoveChannel={(id) => {
+          const entry = providers[id];
+          if (!entry) return;
+          const nextProviders = { ...providers };
+          delete nextProviders[id];
+          const nextEnv = { ...envMap };
+          if (entry.env_key) delete nextEnv[entry.env_key];
+          onChange({
+            modelProviders: nextProviders,
+            env: nextEnv,
+            ...(modelProvider === id ? { modelProvider: null, model: null } : {}),
+          });
+          if (selectedId === id) setSelectedId(null);
+        }}
       />
 
       {/* 右：模型设置 + 渠道接入配置（按查看态渲染，非生效态） */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground">{t("config.colModels")}</div>
-        {modelCard}
+        {/* 需求11：直连视图交互下拉（选模型/自由输入）；渠道/自定义视图只读卡。 */}
+        {selectedId === null && !customFormOpen ? modelCard : (channelModelCard ?? modelCard)}
 
         {customFormOpen ? (
           /* 添加自定义渠道表单（v0.7.6 需求3：与预置渠道右栏同构 + 地址输入）。 */
@@ -182,122 +207,142 @@ export function CodexProvidersBlock({
             {agentId && (
               <OfficialAuthCard agentId={agentId} hintKey="config.officialAuthHintCodex" />
             )}
+            {/* v0.9.0 需求14：直连候选 = app-server model/list 实时拉取
+                （静态预置表已删——其型号与账号可用集脱节，正是 400 问题源头）；
+                拉取中/失败为空，自由输入仍可手填。 */}
             <CodexChannelModels
               providerId="direct"
-              presetModels={CODEX_DIRECT_MODELS}
+              presetModels={directLiveModels}
               currentModel={model}
               onSelectModel={(m) => onChange({ model: m })}
-            />
-          </div>
-        ) : selectedProvider || selectedPreset ? (
-          <div className="space-y-3 rounded-md border border-border/40 bg-muted/20 p-4">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-sm font-medium">{selectedLabel}</div>
-              {modelProvider === selectedId ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
-                  <Check className="h-3 w-3" />
-                  {t("config.channelActive")}
-                </span>
-              ) : selectedPreset ? (
-                <Button
-                  size="sm"
-                  className="h-7 shrink-0 text-xs"
-                  onClick={() => applyPreset(selectedPreset.id)}
-                >
-                  <Power className="mr-1 h-3 w-3" />
-                  {t("config.channelEnable")}
-                </Button>
-              ) : selectedProvider ? (
-                /* 自定义渠道：直接切换激活（渠道条目已存在） */
-                <Button
-                  size="sm"
-                  className="h-7 shrink-0 text-xs"
-                  onClick={() => onChange({ modelProvider: selectedId })}
-                >
-                  <Power className="mr-1 h-3 w-3" />
-                  {t("config.channelEnable")}
-                </Button>
-              ) : null}
-            </div>
-
-            <div className="space-y-1.5">
-              <Label>{t("config.baseUrl")}</Label>
-              <code className="block truncate rounded bg-muted px-2 py-1.5 font-mono text-xs text-muted-foreground">
-                {selectedProvider?.base_url ?? selectedPreset?.baseUrl ?? ""}
-              </code>
-            </div>
-
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="codex-channel-apikey">{t("config.apiKey")}</Label>
-                {selectedPreset?.apiKeyUrl && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void invokeCommand("open_url", { url: selectedPreset.apiKeyUrl })
-                    }
-                    className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
-                  >
-                    {t("config.presetGetKey")}
-                    <ExternalLink className="h-3 w-3" />
-                  </button>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <Input
-                  id="codex-channel-apikey"
-                  type={showKey ? "text" : "password"}
-                  value={keyDraft}
-                  onChange={(e) => setKeyDraft(e.target.value)}
-                  placeholder={t("config.quickSetupKeyPlaceholder")}
-                  autoComplete="off"
-                />
+              /* v0.9.2 需求9：官方列表首次自动查、手动刷新更新；官方渠道
+                  下添加模型入口去除（官方列表即全部）。 */
+              headerExtra={
                 <Button
                   variant="outline"
                   size="icon"
-                  className="shrink-0"
-                  onClick={() => setShowKey((v) => !v)}
-                  title={showKey ? t("config.hideKey") : t("config.showKey")}
+                  className="h-6 w-6 shrink-0"
+                  disabled={directModelsLoading}
+                  title={t("config.refreshModels")}
+                  onClick={() => void refreshDirectModels()}
                 >
-                  {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  {directModelsLoading ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3 w-3" />
+                  )}
                 </Button>
-                <Button
-                  size="sm"
-                  className="h-9 shrink-0"
-                  disabled={!keyDraft.trim()}
-                  onClick={() => {
-                    onChange({ env: { ...envMap, [activeEnvKey]: keyDraft.trim() } });
-                    setKeyDraft("");
-                  }}
-                >
-                  {t("config.quickSetupApplyKey")}
-                </Button>
-              </div>
-              {savedKey && (
-                <p className="text-[10px] text-muted-foreground/70">
-                  {t("config.channelKeySaved")}
-                  {savedKey.length > 8 ? `：••••${savedKey.slice(-4)}` : ""}
-                </p>
-              )}
-            </div>
-            <p className="text-[10px] leading-relaxed text-muted-foreground/70">
-              {selectedProvider?.wire_api === "chat"
-                ? t("config.proxyChatHint")
-                : t("config.proxyResponsesHint")}
-            </p>
+              }
+              disableCustomAdd
+            />
           </div>
+        ) : selectedProvider || selectedPreset ? (
+          /* v0.9.2 需求9 补丁七返工（用户裁决：第三方渠道与 jishu 前端完全
+             一致，仅保存适配）：共享 ThirdPartyChannelPanel——字段草稿（页头
+             统一保存，无单独密钥按钮）+ 探测列表（首查+刷新+落库）+ 手动模型
+             （共用库立即持久化）+ 行内增/改/测/删 + [取消][保存] 内嵌表单。 */
+          <ThirdPartyChannelPanel
+            agentId={agentId ?? ""}
+            channelKey={`codex:${selectedId}`}
+            title={selectedLabel}
+            isActive={modelProvider === selectedId}
+            fields={{
+              displayName:
+                selectedProvider?.name ??
+                t(selectedPreset?.labelKey ?? "") ??
+                selectedId,
+              baseUrl: selectedProvider?.base_url ?? selectedPreset?.baseUrl ?? "",
+              protocol: selectedProvider?.wire_api ?? "responses",
+              apiKey: "",
+              savedApiKey: savedKey,
+              protocolOptions: [
+                { value: "responses", label: "openai-responses" },
+                { value: "chat", label: "openai-completions" },
+              ],
+            }}
+            presetModels={selectedPreset?.models ?? []}
+            activeModelId={model ?? null}
+            /* 需求11：渠道条目存在（字段保存过）才显示「启用此渠道」；
+                未保存渠道经字段保存启用（patch 同步切激活，页头保存落盘）。 */
+            channelSaved={Boolean(selectedId && providers[selectedId])}
+            onPatchFields={(patch) => {
+              const id = selectedId;
+              const entry: ProviderEntry = {
+                ...(selectedProvider ?? {
+                  name: t(selectedPreset?.labelKey ?? ""),
+                  base_url: selectedPreset?.baseUrl ?? "",
+                  wire_api: selectedPreset?.wireApi ?? "responses",
+                  env_key: selectedPreset?.envKey ?? `${id.toUpperCase()}_API_KEY`,
+                }),
+              };
+              if (patch.displayName !== undefined) entry.name = patch.displayName;
+              if (patch.baseUrl !== undefined) entry.base_url = patch.baseUrl;
+              if (patch.protocol !== undefined) entry.wire_api = patch.protocol;
+              /* 需求11：字段写入 = 该渠道进入待启用态（草稿层切激活，
+                  页头保存落盘）；当前模型不在渠道候选内时带入预设默认。 */
+              const keepModel = model && (selectedPreset?.models ?? []).includes(model);
+              onChange({
+                modelProviders: { ...providers, [id]: entry },
+                modelProvider: id,
+                ...(patch.apiKey
+                  ? { env: { ...envMap, [entry.env_key ?? `${id.toUpperCase()}_API_KEY`]: patch.apiKey } }
+                  : {}),
+                ...(!keepModel && selectedPreset?.model ? { model: selectedPreset.model } : {}),
+              });
+            }}
+            onEnable={() => {
+              /* 需求11：启用 = 仅切激活（条目已保存）；模型不在渠道候选
+                  内时带入预设默认，避免沿用旧渠道模型打新渠道。 */
+              const keepModel = model && (selectedPreset?.models ?? []).includes(model);
+              act({
+                modelProvider: selectedId,
+                ...(!keepModel && selectedPreset?.model ? { model: selectedPreset.model } : {}),
+              });
+            }}
+            onSelectModel={(m) => {
+              /* 行级设为当前：切渠道激活；条目不存在时补建预设默认条目
+                  （不覆盖用户已编辑字段——仅无条目场景）。 */
+              const id = selectedId;
+              if (!providers[id] && selectedPreset) {
+                act({
+                  modelProvider: id,
+                  model: m,
+                  modelProviders: {
+                    ...providers,
+                    [id]: {
+                      name: t(selectedPreset.labelKey),
+                      base_url: selectedPreset.baseUrl,
+                      wire_api: selectedPreset.wireApi ?? "responses",
+                      env_key: selectedPreset.envKey,
+                    },
+                  },
+                });
+                return;
+              }
+              act({ modelProvider: id, model: m });
+            }}
+            onTest={async (modelId) => {
+              try {
+                const result = await invokeCommand<{ response?: string | null; latency_ms?: number }>(
+                  "test_llm_connection",
+                  {
+                    api: (selectedProvider?.wire_api ?? selectedPreset?.wireApi ?? "responses") === "chat"
+                      ? "openai-completions"
+                      : "openai-responses",
+                    baseUrl: selectedProvider?.base_url ?? selectedPreset?.baseUrl ?? "",
+                    apiKey: savedKey,
+                    model: modelId,
+                  },
+                );
+                const reply = (result?.response ?? "").toString().trim();
+                return { ok: true, text: reply ? reply.slice(0, 120) : t("config.testModelOk") };
+              } catch (e) {
+                return { ok: false, text: String(e).slice(0, 200) };
+              }
+            }}
+          />
         ) : null}
 
-        {/* 渠道模型列表（v0.7.6 需求3 迭代六：代理渠道也支持显式添加
-            模型，对齐 jishu 交互；自定义渠道 presetModels 为空纯手加）。 */}
-        {selectedId !== null && !customFormOpen && (
-          <CodexChannelModels
-            providerId={selectedId}
-            presetModels={selectedPreset?.models ?? []}
-            currentModel={model}
-            onSelectModel={(m) => onChange({ model: m })}
-          />
-        )}
       </div>
     </div>
   );
@@ -312,12 +357,18 @@ function CodexChannelModels({
   presetModels,
   currentModel,
   onSelectModel,
+  /** v0.9.2 需求9：标题行右侧额外控件（刷新按钮等）。 */
+  headerExtra,
+  /** 官方渠道：去掉自由添加模型入口（官方列表即全部）。 */
+  disableCustomAdd = false,
 }: {
   /** 渠道 id；直连态传 "direct" */
   providerId: string;
   presetModels: string[];
   currentModel: string | null | undefined;
   onSelectModel: (model: string) => void;
+  headerExtra?: ReactNode;
+  disableCustomAdd?: boolean;
 }) {
   const { t } = useTranslation();
   // localStorage 非响应式：tick 强制添加/删除后重读（也顺带同步模型卡
@@ -339,9 +390,12 @@ function CodexChannelModels({
 
   return (
     <div className="space-y-1.5 rounded-md border border-border/40 bg-muted/20 p-4">
-      <Label className="text-[10px] text-muted-foreground/80">
-        {t("config.models")} ({all.length})
-      </Label>
+      <div className="flex items-center justify-between">
+        <Label className="text-[10px] text-muted-foreground/80">
+          {t("config.models")} ({all.length})
+        </Label>
+        {headerExtra}
+      </div>
       {all.length === 0 ? (
         <p className="px-1 text-[10px] text-muted-foreground/70">{t("config.noModelsHint")}</p>
       ) : (
@@ -386,22 +440,26 @@ function CodexChannelModels({
           })}
         </ul>
       )}
-      <div className="flex items-center gap-2 pt-1">
-        <Input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={t("config.modelIdPlaceholder")}
-          className="h-8 flex-1 font-mono text-xs"
-          onKeyDown={(e) => e.key === "Enter" && add()}
-        />
-        <Button size="sm" variant="outline" className="h-8 text-xs" disabled={!input.trim()} onClick={add}>
-          <Plus className="mr-1 h-3 w-3" />
-          {t("config.addModel")}
-        </Button>
-      </div>
-      <p className="text-[10px] leading-relaxed text-muted-foreground/70">
-        {t("config.codexCustomModelHint")}
-      </p>
+      {!(disableCustomAdd && providerId === "direct") && (
+        <>
+          <div className="flex items-center gap-2 pt-1">
+            <Input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder={t("config.modelIdPlaceholder")}
+              className="h-8 flex-1 font-mono text-xs"
+              onKeyDown={(e) => e.key === "Enter" && add()}
+            />
+            <Button size="sm" variant="outline" className="h-8 text-xs" disabled={!input.trim()} onClick={add}>
+              <Plus className="mr-1 h-3 w-3" />
+              {t("config.addModel")}
+            </Button>
+          </div>
+          <p className="text-[10px] leading-relaxed text-muted-foreground/70">
+            {t("config.codexCustomModelHint")}
+          </p>
+        </>
+      )}
     </div>
   );
 }

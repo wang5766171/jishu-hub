@@ -118,6 +118,7 @@ async fn async_test(
         stream: true,
         max_tokens: Some(64),
         temperature: Some(0.0),
+        disable_thinking: false,
     };
 
     let cancel = CancelToken::new();

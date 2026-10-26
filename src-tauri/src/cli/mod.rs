@@ -7,8 +7,8 @@ pub mod resolver;
 pub mod runtime;
 pub mod truncate;
 
-pub fn main() {
+pub fn main() -> std::process::ExitCode {
     use clap::Parser;
     let args = args::Cli::parse();
-    runtime::run(args);
+    runtime::run(args)
 }

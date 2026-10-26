@@ -40,11 +40,12 @@ fn node_is_ready(
     if !schedulable_state {
         return false;
     }
-    // 4. All predecessors must be Succeeded.
+    // 4. All predecessors must be Succeeded（v0.9.3 需求5：或 Skipped——失败
+    //    节点被人工跳过时下游继续，不视为依赖未满足）。
     if let Some(preds) = predecessors.get(node.node_id.as_str()) {
         for pred_id in preds {
             let pred_status = status_map.get(*pred_id).unwrap_or(&NodeRunStatus::Blocked);
-            if *pred_status != NodeRunStatus::Succeeded {
+            if !matches!(pred_status, NodeRunStatus::Succeeded | NodeRunStatus::Skipped) {
                 return false;
             }
         }
@@ -56,7 +57,7 @@ fn node_is_ready(
 ///
 /// A node is considered Ready if:
 /// 1. Its current status is `Blocked` (or it doesn't have a run state yet, but typically we initialize them as Blocked).
-/// 2. All incoming `control_dependency` and `data_dependency` edges originate from nodes that have `Succeeded`.
+/// 2. All incoming `control_dependency` and `data_dependency` edges originate from nodes that have `Succeeded` (v0.9.3 需求5：or `Skipped` — 人工跳过的失败节点放行下游).
 pub fn compute_ready_set(snapshot: &GraphSnapshot, runs: &[NodeRun], now: i64) -> Vec<String> {
     let mut ready_nodes = Vec::new();
 

@@ -44,13 +44,15 @@ pub(crate) async fn get_session_messages(
         .registry
         .require_agent(&agent_id)?
         .get_session_messages(&session_id, &encoded_name)?;
-    // v0.8.1 需求7：剥离工具插件注入块——agent 原生历史（自写 JSONL）记录的
-    // 是带前缀的消息，回放统一还原为用户原文（集中一处，覆盖全部 adapter）。
+    // v0.8.1 需求7 → v0.9.0 需求3 方案 C：剥注入块并派生 tool_ids 元数据
+    // （pill 渲染数据源；集中一处，覆盖全部 adapter 的回放）。
     for message in &mut messages {
         if message.role == "user" {
             for block in &mut message.content {
-                if let crate::session::ContentBlock::Text { text } = block {
-                    *text = crate::agent::tool_plugin::strip_tool_block(text);
+                if let crate::session::ContentBlock::Text { text, tool_ids } = block {
+                    let (clean, ids) = crate::agent::tool_plugin::extract_tool_snapshot(text);
+                    *text = clean;
+                    *tool_ids = ids;
                 }
             }
         }
@@ -195,6 +197,152 @@ pub(crate) fn open_with_default_app(path: String) -> Result<(), String> {
     crate::os_adapter::file_reveal::open_with_default_app(&path)
 }
 
+/// v0.9.3 需求6：HTML 渲染卡「在新窗口打开」——内容写临时文件后经系统
+/// 默认浏览器打开（沙箱 iframe 之外的完整交互能力）。临时文件名带纳秒
+/// 时间戳防覆盖，路径回传仅供日志。
+#[tauri::command]
+pub(crate) fn open_html_external(html: String) -> Result<String, String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path = std::env::temp_dir().join(format!("jishu-hub-html-preview-{nanos}.html"));
+    std::fs::write(&path, html).map_err(|e| format!("write temp html failed: {e}"))?;
+    let path_str = path.to_string_lossy().to_string();
+    crate::os_adapter::file_reveal::open_with_default_app(&path_str)?;
+    Ok(path_str)
+}
+
+/// v0.9.3 测试期（通知排查 + 点击跳回 + 通知中心补点）：直接发桌面 toast，
+/// **同步执行且错误如实返回**。
+///
+/// 点击跳回的完整链路（protocol 激活——弹窗点击与**通知中心补点**统一生效，
+/// 后者不重发进程内 Activated 事件，只能经系统协议激活路由）：
+/// toast XML `activationType="protocol" launch="jishu-hub://session/<id>"` →
+/// Windows 按注册 scheme 启动/激活应用（deep-link 插件注册，single-instance
+/// 插件把参数转发给运行中实例）→ lib.rs 解析 URL → 聚焦主窗 + 广播
+/// `desktop-notify-click` → 前端插件经 ctx.switchSession 定位会话。
+/// protocol toast 构造失败时回退 notify-rust（进程内激活，仅弹窗期点击有效）。
+#[tauri::command]
+pub(crate) fn desktop_notify_send(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+    session_id: Option<String>,
+    // v0.9.3 需求12 P1：提示音可配（None=响，兼容旧调用；Some(false)=静音）。
+    sound: Option<bool>,
+) -> Result<String, String> {
+    use tauri::{Emitter, Manager};
+
+    let identifier = app.config().identifier.clone();
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe failed: {e}"))?;
+    let dir = exe
+        .parent()
+        .ok_or("no exe dir")?
+        .to_string_lossy()
+        .to_string();
+    let dev = dir.ends_with("\\target\\debug")
+        || dir.ends_with("\\target\\release")
+        || dir.ends_with("/target/debug")
+        || dir.ends_with("/target/release");
+    let aumid: &str = if dev {
+        // dev 走 PowerShell AUMID（无应用快捷方式，自有 AUMID 的 toast 不显示）。
+        "{1AC14E34-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe"
+    } else {
+        identifier.as_str()
+    };
+    let launch = match &session_id {
+        Some(sid) => format!("jishu-hub://session/{sid}"),
+        // 无会话定位（任务失败通知）：点击仅打开/聚焦应用。
+        None => "jishu-hub://open".to_string(),
+    };
+
+    // 首选 protocol toast：弹窗与通知中心点击统一走系统激活。
+    if show_protocol_toast(aumid, &title, &body, &launch, sound.unwrap_or(true)).is_ok() {
+        return Ok(format!("toast(protocol) 已提交（AUMID={aumid}, launch={launch}）"));
+    }
+
+    // 回退：notify-rust 普通通知 + 进程内 Activated（仅弹窗期点击有效，
+    // wait_for_response 区分 Default 点击与关闭）。声音同款（Sound::from_str
+    // 裸名 "Default" → Notification.Default）。
+    let mut notification = notify_rust::Notification::new();
+    notification.summary(&title).body(&body);
+    if sound.unwrap_or(true) {
+        notification.sound_name("Default");
+    }
+    notification.app_id(aumid);
+    let handle = notification
+        .show()
+        .map_err(|e| format!("toast 发送失败：{e:?}"))?;
+    {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let _ = handle.wait_for_response(
+                |response: &notify_rust::NotificationResponse| {
+                    if response.is_default_action() {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.unminimize();
+                            let _ = window.set_focus();
+                        }
+                        let _ = app.emit(
+                            "desktop-notify-click",
+                            serde_json::json!({ "sessionId": session_id }),
+                        );
+                    }
+                },
+            );
+        });
+    }
+    Ok(format!("toast(fallback) 已提交（AUMID={aumid}）"))
+}
+
+/// XML 文本转义（toast 属性与文本节点）。
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// 经 WinRT 直发 protocol 激活的 toast（`activationType="protocol"`）。
+/// tauri-winrt-notification 封装不暴露 launch 属性，故此处手搓 XML——
+/// 这是「通知中心补点也能激活应用」的唯一路径（进程内事件不覆盖补点）。
+fn show_protocol_toast(aumid: &str, title: &str, body: &str, launch: &str, sound: bool) -> Result<(), String> {
+    use windows::core::HSTRING;
+    use windows::Data::Xml::Dom::XmlDocument;
+    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+
+    let audio_tag = if sound {
+        "<audio src=\"ms-winsoundevent:Notification.Default\"/>"
+    } else {
+        "<audio silent=\"true\"/>"
+    };
+    let xml = format!(
+        "<toast activationType=\"protocol\" launch=\"{}\" scenario=\"default\" duration=\"short\">\
+         <visual><binding template=\"ToastGeneric\">\
+         <text>{}</text><text>{}</text>\
+         </binding></visual>\
+         {}\
+         </toast>",
+        xml_escape(launch),
+        xml_escape(title),
+        xml_escape(body),
+        audio_tag,
+    );
+    let doc = XmlDocument::new().map_err(|e| format!("XmlDocument failed: {e}"))?;
+    doc.LoadXml(&HSTRING::from(xml.as_str()))
+        .map_err(|e| format!("LoadXml failed: {e}"))?;
+    let toast = ToastNotification::CreateToastNotification(&doc)
+        .map_err(|e| format!("CreateToastNotification failed: {e}"))?;
+    // windows 0.61：带 AUMID 的重载是 CreateToastNotifierWithId（无参版走
+    // 当前应用的包标识，未打包应用必须用 Id 版指定 AUMID）。
+    let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(aumid))
+        .map_err(|e| format!("CreateToastNotifier failed: {e}"))?;
+    notifier.Show(&toast).map_err(|e| format!("Show failed: {e}"))
+}
+
 #[tauri::command]
 pub(crate) fn rename_session(session_id: String, name: String) -> Result<(), String> {
     hub::rename_session(session_id, name).map_err(|e| e.to_string())
@@ -205,8 +353,58 @@ pub(crate) fn delete_session_name(session_id: String) -> Result<(), String> {
     hub::delete_session_name(session_id).map_err(|e| e.to_string())
 }
 
+/// v0.9.2 需求1 M4：用量面板数据源（usage.db 权威记账的只读聚合）。
+#[tauri::command]
+pub(crate) fn usage_overview() -> Result<crate::usage_store::UsageOverview, String> {
+    crate::usage_store::overview()
+}
+
+/// v0.9.2 需求1 M4：会话导出落盘（路径来自前端保存对话框；内容为 Markdown）。
+#[tauri::command]
+pub(crate) fn export_text_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, content).map_err(|e| format!("write export file failed: {e}"))
+}
+
+/// v0.9.2 测试期（mermaid 插件导出 PNG）：二进制导出落盘。前端把 Blob 编为
+/// base64 传入，此处解码写盘——与 export_text_file 同一「保存对话框选路径 +
+/// 命令落盘」模式。
+#[tauri::command]
+pub(crate) fn export_binary_file(path: String, base64_data: String) -> Result<(), String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_data.as_bytes())
+        .map_err(|e| format!("base64 decode failed: {e}"))?;
+    std::fs::write(&path, bytes).map_err(|e| format!("write export file failed: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn exports_binary_file_roundtrip() {
+        // v0.9.2 测试期（mermaid PNG 导出）：base64 解码落盘往返。
+        let path = std::env::temp_dir().join(format!(
+            "jishu-hub-export-bin-{}.png",
+            std::process::id()
+        ));
+        let payload: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF];
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+        super::export_binary_file(path.to_string_lossy().into_owned(), b64).unwrap();
+        let written = std::fs::read(&path).unwrap();
+        assert_eq!(written, payload);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn rejects_invalid_base64_export() {
+        let err = super::export_binary_file(
+            std::env::temp_dir().join("jishu-hub-export-bin-bad.png").to_string_lossy().into_owned(),
+            "!!not-base64!!".to_string(),
+        )
+        .unwrap_err();
+        assert!(err.contains("base64"), "unexpected: {err}");
+    }
+
     #[test]
     fn reads_text_file_preview() {
         let path =
@@ -354,4 +552,15 @@ mod tests {
         assert_eq!(interactions[0]["request_id"], "0_1");
         assert_eq!(interactions[0]["prompt"], "Why did the hair stay dry?");
     }
+}
+
+/// v0.9.4 需求6 v2：为会话生成 AI 标题（LLM 一次性补全，结果以 pi 原生
+/// session_info 条目落 JSONL）。幂等：已有命名（AI/用户重命名）返回 None；
+/// 全程 fail-soft——失败静默（标题回落 smart_summary 规则截断），前端
+/// 回合完成后触发一次。
+#[tauri::command]
+pub(crate) async fn session_generate_title(
+    session_id: String,
+) -> Result<Option<String>, String> {
+    Ok(crate::agent::jishu_self::session_title::generate_and_persist(&session_id).await)
 }

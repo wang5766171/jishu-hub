@@ -1,11 +1,12 @@
 pub(crate) mod config;
 pub(crate) mod jishu_settings;
+pub mod model_picker;
 pub(crate) mod paths;
 pub(crate) mod pi_model;
 pub(crate) mod pi_models_config;
 pub(crate) mod pi_runtime;
 pub(crate) mod pi_session;
-pub mod model_picker;
+pub(crate) mod session_title;
 mod probe;
 mod store;
 
@@ -25,6 +26,32 @@ impl JishuSelfAgent {
     /// awaited without holding the AgentRegistry MutexGuard.
     pub async fn install_mcp_standalone() -> Result<String, String> {
         Self::run_mcp_package_command("install").await
+    }
+
+    /// pi-mcp-adapter 安装位置（pi install npm:pkg 落
+    /// `<config_dir>/npm/node_modules/<pkg>`，与 check_mcp 同口径）。
+    pub(crate) fn mcp_adapter_dir() -> Option<std::path::PathBuf> {
+        pi_config_dir().map(|dir| {
+            std::path::Path::new(&dir)
+                .join("npm")
+                .join("node_modules")
+                .join("pi-mcp-adapter")
+        })
+    }
+
+    /// v0.9.1 需求11：MCP 适配器自动安装（幂等）——hub 安装期（NSIS
+    /// POSTINSTALL `--install-agent` / GUI 环境检测内装）与每次启动后台
+    /// 自愈共用：已安装 → Ok(false)；缺失 → `pi install npm:pi-mcp-adapter`
+    /// → Ok(true)。失败返回 Err（调用方仅告警不阻断——环境检测页的手动
+    /// 安装按钮保留为离线兜底）。
+    pub async fn ensure_mcp_adapter_installed() -> Result<bool, String> {
+        let Some(dir) = Self::mcp_adapter_dir() else {
+            return Err("cannot resolve ~/.jishu-agent/agent directory".to_string());
+        };
+        if dir.exists() {
+            return Ok(false);
+        }
+        Self::install_mcp_standalone().await.map(|_| true)
     }
 
     pub async fn update_mcp_standalone() -> Result<String, String> {
@@ -126,10 +153,14 @@ use crate::agent::traits::{
     TransportAdapter,
 };
 // JISHU_AGENT_VERSION_START (auto-updated by upgrade-version.mjs)
-pub const PI_AGENT_VERSION: &str = "0.84.2-9";
+pub const PI_AGENT_VERSION: &str = "0.85.0-13";
 // JISHU_AGENT_VERSION_END
 
 impl AgentManifest for JishuSelfAgent {
+    fn config_dir(&self) -> Option<std::path::PathBuf> {
+        crate::agent::jishu_self::paths::agent_dir().ok()
+    }
+
     fn info(&self) -> AgentInfo {
         AgentInfo {
             id: "jishu-self".to_string(),
@@ -426,9 +457,9 @@ impl ConfigAdapter for JishuSelfAgent {
                     .into(),
                 config: serde_json::json!({
                     "defaultThinkingLevel": "high",
-                    "compaction": { "enabled": true, "thresholdPercent": 90, "keepRecentTokens": 20000 },
-                    "defaultTools": ["read", "bash", "edit", "write"],
-                    "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }
+                    "compaction": { "enabled": true, "thresholdPercent": 95, "keepRecentTokens": 20000 },
+                    "defaultTools": template_default_tools(&[]),
+                    "retry": { "enabled": true, "maxRetries": 10, "baseDelayMs": 2000 }
                 }),
                 model_store_patch: Some(serde_json::json!({ "providers": {} })),
             },
@@ -442,9 +473,9 @@ impl ConfigAdapter for JishuSelfAgent {
                         .into(),
                 config: serde_json::json!({
                     "defaultThinkingLevel": "max",
-                    "compaction": { "enabled": true, "thresholdPercent": 85, "keepRecentTokens": 40000 },
-                    "defaultTools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
-                    "retry": { "enabled": true, "maxRetries": 5, "baseDelayMs": 2000 }
+                    "compaction": { "enabled": true, "thresholdPercent": 95, "keepRecentTokens": 40000 },
+                    "defaultTools": template_default_tools(&["grep", "find", "ls"]),
+                    "retry": { "enabled": true, "maxRetries": 10, "baseDelayMs": 2000 }
                 }),
                 model_store_patch: Some(serde_json::json!({ "providers": {} })),
             },
@@ -457,9 +488,9 @@ impl ConfigAdapter for JishuSelfAgent {
                     .into(),
                 config: serde_json::json!({
                     "defaultThinkingLevel": "low",
-                    "compaction": { "enabled": true, "thresholdPercent": 90, "keepRecentTokens": 20000 },
-                    "defaultTools": ["read", "bash", "edit", "write"],
-                    "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }
+                    "compaction": { "enabled": true, "thresholdPercent": 95, "keepRecentTokens": 20000 },
+                    "defaultTools": template_default_tools(&[]),
+                    "retry": { "enabled": true, "maxRetries": 10, "baseDelayMs": 2000 }
                 }),
                 model_store_patch: Some(serde_json::json!({ "providers": {} })),
             },
@@ -480,7 +511,6 @@ impl ConfigAdapter for JishuSelfAgent {
     fn as_mcp(&self) -> Option<&dyn crate::agent::config_roles::McpIntegration> {
         Some(self)
     }
-
 }
 
 impl crate::agent::config_roles::RawConfigStore for JishuSelfAgent {
@@ -495,7 +525,6 @@ impl crate::agent::config_roles::RawConfigStore for JishuSelfAgent {
     fn save_raw_config(&self, content: &str) -> Result<(), String> {
         config::save_raw_jishu_config(content).map_err(|e| e.to_string())
     }
-
 }
 
 impl crate::agent::config_roles::ConfigBackupStore for JishuSelfAgent {
@@ -514,7 +543,6 @@ impl crate::agent::config_roles::ConfigBackupStore for JishuSelfAgent {
     fn import_config(&self, path: &str) -> Result<serde_json::Value, String> {
         config::import_jishu_config(path).map_err(|e| e.to_string())
     }
-
 }
 
 impl crate::agent::config_roles::ModelStore for JishuSelfAgent {
@@ -544,7 +572,6 @@ impl crate::agent::config_roles::ModelStore for JishuSelfAgent {
     }
 
     // ── MCP adapter methods ──
-
 }
 
 impl crate::agent::config_roles::McpIntegration for JishuSelfAgent {
@@ -552,14 +579,10 @@ impl crate::agent::config_roles::McpIntegration for JishuSelfAgent {
         // Auto-migrate on check (idempotent).
         self.migrate_mcp_if_needed();
 
-        let agent_dir = pi_config_dir()
-            .ok_or_else(|| "Cannot resolve ~/.jishu-agent/agent directory".to_string())?;
         // pi install <npm:pkg> stores the package in
         // <PI_CODING_AGENT_DIR>/npm/node_modules/<pkg>, not under packages/.
-        let adapter_dir = std::path::Path::new(&agent_dir)
-            .join("npm")
-            .join("node_modules")
-            .join("pi-mcp-adapter");
+        let adapter_dir = Self::mcp_adapter_dir()
+            .ok_or_else(|| "Cannot resolve ~/.jishu-agent/agent directory".to_string())?;
 
         if !adapter_dir.exists() {
             return Ok(serde_json::json!({"installed": false, "version": null}));
@@ -608,22 +631,164 @@ impl crate::agent::config_roles::McpIntegration for JishuSelfAgent {
     }
 }
 
+/// v0.9.1 需求3 #3：配置模板的 defaultTools 集合——基础集 + 场景附加项，
+/// Windows 下追加 pi 可选原生 powershell 工具（与 bash 并存，pi
+/// docs/windows.md 的对比用法；`!`/`!!` 编辑器命令仍走 bash）。编译期平台
+/// 隔离，非 Windows 产物不含该工具名。
+fn template_default_tools(extra: &[&'static str]) -> Vec<&'static str> {
+    let mut tools: Vec<&'static str> = vec!["read", "bash", "edit", "write"];
+    tools.extend_from_slice(extra);
+    if cfg!(windows) {
+        tools.push("powershell");
+    }
+    tools
+}
+
+/// v0.9.1 需求13：settings 未配置 defaultTools 时向 spawn 参数追加
+/// `--tools <全集>`（Windows 含 powershell）。纯函数可单测。
+fn ensure_default_tools_arg(
+    args: &mut Vec<String>,
+    cfg: &Result<serde_json::Value, Box<dyn std::error::Error>>,
+    pi_extension_tools: &[String],
+) {
+    // v0.9.2 需求7：扩展工具按"插件已启用"聚合注入（热插拔闸门，见
+    // plugin::enabled_pi_extension_tools）。pi 的 --tools 是硬白名单——不在
+    // 名单的扩展工具连 conductor 阶段 setActiveTools 也救不回（测试期实证），
+    // 故必须显式进名单。
+    let unset = cfg
+        .as_ref()
+        .ok()
+        .map(|c| c.get("defaultTools").is_none())
+        .unwrap_or(true);
+    if unset {
+        let mut tools: Vec<String> = template_default_tools(&[])
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        tools.extend_from_slice(pi_extension_tools);
+        args.push("--tools".to_string());
+        args.push(tools.join(","));
+        return;
+    }
+    // 已配置 defaultTools 的用户：配置清单原样生效，仅追加已启用扩展工具。
+    if let Some(list) = cfg
+        .as_ref()
+        .ok()
+        .and_then(|c| c.get("defaultTools"))
+        .and_then(|v| v.as_array())
+    {
+        let mut names: Vec<String> = list
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        for tool in pi_extension_tools {
+            if !names.iter().any(|n| n == tool) {
+                names.push(tool.to_string());
+            }
+        }
+        args.push("--tools".to_string());
+        args.push(names.join(","));
+    }
+}
+
 fn mcp_package_args(base_args: &[String], action: &str) -> Vec<String> {
     let mut args = base_args.to_vec();
     args.push(action.to_string());
-    args.push("npm:pi-mcp-adapter".to_string());
+    // v0.9.3 测试期钉 2.32.1：最新 2.33.0 把 @modelcontextprotocol/{client,core}
+    // 钉到 pkg.pr.new（PR 预览 CDN），公司/受限网络拦截域名致 npm ETIMEDOUT；
+    // 2.32.1 为最后一个纯 registry 依赖版本（pack-pi 烘焙同钉）。上游修复
+    // （依赖回正式 registry）后可解除钉定。
+    args.push("npm:pi-mcp-adapter@2.32.1".to_string());
     args
+}
+
+/// v0.9.1 需求12 补充：从 settings.json Value 提取 hubSpawnEnv 环境变量
+/// 覆盖（键值均须字符串；空值合法——如 PI_OFFLINE="" 置空关闭）。纯函数
+/// 可单测。
+fn spawn_env_overrides(
+    cfg: &Result<serde_json::Value, Box<dyn std::error::Error>>,
+) -> Vec<(String, String)> {
+    let Ok(v) = cfg else {
+        return Vec::new();
+    };
+    v.get("hubSpawnEnv")
+        .and_then(|m| m.as_object())
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod mcp_tests {
     use super::mcp_package_args;
 
+    /// v0.9.1 需求13：未配置 defaultTools → 追加 --tools 全集；已配置 → 不动。
+    #[test]
+    fn default_tools_spawn_arg_only_when_unset() {
+        use serde_json::json;
+        let mut args = vec!["--mode".to_string(), "rpc".to_string()];
+        let ext = vec![
+            "request_user_input".to_string(),
+            "lock_requirement".to_string(),
+        ];
+        super::ensure_default_tools_arg(&mut args, &Ok(json!({})), &ext);
+        assert_eq!(args[2], "--tools");
+        assert!(args[3].starts_with("read,bash,edit,write"));
+        // v0.9.2 需求7：聚合的扩展工具随默认集注入（热插拔闸门的下游）
+        for tool in &ext {
+            assert!(args[3].split(',').any(|t| t == tool), "missing {tool}");
+        }
+
+        let mut args2 = vec!["--mode".to_string(), "rpc".to_string()];
+        super::ensure_default_tools_arg(&mut args2, &Ok(json!({"defaultTools": ["read"]})), &ext);
+        // 已配置清单照常生效，追加已启用扩展工具
+        assert_eq!(args2[2], "--tools");
+        assert_eq!(args2[3], "read,request_user_input,lock_requirement");
+
+        let mut args3 = vec![];
+        super::ensure_default_tools_arg(&mut args3, &Err("io".into()), &ext);
+        assert_eq!(args3.len(), 2, "读失败按未配置处理");
+    }
+
+    /// v0.9.1 需求12 补充：hubSpawnEnv 提取——字符串键值对；非字符串值跳过；
+    /// 空值合法（置空覆盖）；缺键/读失败 → 空。
+    #[test]
+    fn spawn_env_overrides_extracts_string_pairs() {
+        use serde_json::json;
+        let cfg = Ok(json!({
+            "defaultThinkingLevel": "high",
+            "hubSpawnEnv": {
+                "HTTP_PROXY": "http://127.0.0.1:7890",
+                "PI_OFFLINE": "",
+                "BAD": 123,
+            }
+        }));
+        let mut envs = super::spawn_env_overrides(&cfg);
+        envs.sort();
+        assert_eq!(
+            envs,
+            vec![
+                (
+                    "HTTP_PROXY".to_string(),
+                    "http://127.0.0.1:7890".to_string()
+                ),
+                ("PI_OFFLINE".to_string(), String::new()),
+            ]
+        );
+        // 无键 / Err → 空。
+        assert!(super::spawn_env_overrides(&Ok(json!({}))).is_empty());
+        assert!(super::spawn_env_overrides(&Err("io".into())).is_empty());
+    }
+
     #[test]
     fn mcp_update_uses_pi_single_package_update_command() {
+        // v0.9.3 测试期钉 2.32.1（最新 2.33.0 依赖走 pkg.pr.new，受限网络不可达）。
         assert_eq!(
             mcp_package_args(&["cli.js".to_string()], "update"),
-            vec!["cli.js", "update", "npm:pi-mcp-adapter"]
+            vec!["cli.js", "update", "npm:pi-mcp-adapter@2.32.1"]
         );
     }
 }
@@ -662,15 +827,29 @@ impl TransportAdapter for JishuSelfAgent {
         // --tools 白名单（内置全集 read/bash/edit/write/grep/find/ls 去掉
         // bash/edit/write）。工具名与语义是 Pi 私有知识，属于 adapter 职责；
         // 对此后新 spawn 的进程生效（Pi 每条消息一个进程）。
+        // v0.9.2 需求7：扩展工具按启用插件聚合（热插拔）。
+        let pi_extension_tools = crate::agent::plugin::enabled_pi_extension_tools();
         match crate::hub::load_agent_tool_mode("jishu-self").as_deref() {
             Some("readonly") => {
+                // 只读模式保留交互与任务提交类扩展工具（问答纯交互；
+                // lock/commit 为工作流操作，任务流须可用）。
+                let mut tools: Vec<String> = ["read", "grep", "find", "ls"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                tools.extend_from_slice(&pi_extension_tools);
                 args.push("--tools".to_string());
-                args.push("read,grep,find,ls".to_string());
+                args.push(tools.join(","));
             }
             // full-approve 与 full 工具集相同，差异只在 toolApproval 审批
             // 开关（set_agent_tool_mode 已联动写入 Pi settings）。
             _ => {}
         }
+        // v0.9.1 需求13：初始工具集默认=全部工具集——settings 未配置
+        // defaultTools 时 spawn 显式传全集（Windows 含 powershell），消除
+        // pi 回退仅四件的歧义（存量未配置用户无需改配置即生效）；已配置
+        // 任何清单按配置生效。
+        ensure_default_tools_arg(&mut args, &config::load_jishu_config(), &pi_extension_tools);
         // Resume an existing Pi session when a real (non-transient) session id
         // is provided. Without this, Pi creates a fresh session on every process
         // spawn, losing all conversation history (the root cause of "agent
@@ -687,6 +866,11 @@ impl TransportAdapter for JishuSelfAgent {
 
         let mut envs = Vec::new();
         envs.push(("PI_SKIP_VERSION_CHECK".to_string(), "1".to_string()));
+        // v0.9.1 需求3 #6：关闭 pi 启动期网络操作（版本检查/包管理器/模型目录
+        // 网络刷新——model-runtime 的 modelNetworkEnabled）。hub 自管模型库与
+        // 版本分发，这些网络操作纯浪费且离线时拖慢 spawn；该 flag 不门控对话
+        // 期的 provider HTTP 请求。
+        envs.push(("PI_OFFLINE".to_string(), "1".to_string()));
 
         // Always resolve the CLI explicitly for spawned Pi processes. Debug
         // resolves to target/debug/jishu-cli(.exe); installed builds resolve
@@ -703,6 +887,25 @@ impl TransportAdapter for JishuSelfAgent {
                 log::warn!("[task-plan-runtime] failed to resolve jishu-cli: {err}");
             }
         }
+        // v0.9.1 需求12 补充：会话环境变量（配置页高级设置）——settings.json
+        // 的 hubSpawnEnv（hub 专属键；pi 读写走全量 spread，未知键无损保留）
+        // 逐项附加注入 pi 会话进程。置于内置默认之后，用户可覆盖（如
+        // PI_OFFLINE="" 关闭离线刷新、HTTP(S)_PROXY 走代理）。
+        envs.extend(spawn_env_overrides(&config::load_jishu_config()));
+        // v0.9.4 需求9 P3：MCP 指纹进 spawn 签名（仅总开关）。pi 不重读
+        // mcp.json（pi-mcp-adapter 无 config watch），会话中途首次启用/关闭
+        // 解析器时，运行中进程的册子上连解析器入口工具都没有——唯一必须
+        // 换进程的场景。指纹进入 acp_turn_signature → 下一次空闲发送时
+        // 漂移回收重拉（resume 同一会话，历史不丢）。插件明细**不进**指纹：
+        // 热插拔由 hub_mcp_list/hub_mcp_call 动态发现承担，换进程反而打断
+        //（02 §二 P3）。
+        envs.push((
+            "JISHU_MCP_REV".to_string(),
+            format!(
+                "resolver:{}",
+                if crate::agent::plugin::is_mcp_resolver_enabled() { "on" } else { "off" }
+            ),
+        ));
 
         Ok(crate::agent::AcpCommandSpec {
             program: runtime.program.to_string_lossy().to_string(),

@@ -31,6 +31,8 @@ export interface AgentStatus {
   project_settings_surface: ProjectSettingsSurface;
   terminal_surface: TerminalSurface;
   transport: TransportSurface;
+  /** 配置目录存在（v0.9.0 需求21：CLI 未装但桌面端配置目录在——可进入设置页）。 */
+  config_dir_exists?: boolean;
   mcp_installed: boolean;
   mcp_version: string | null;
   /** Transport-bridge dependency status (only meaningful when supported). */

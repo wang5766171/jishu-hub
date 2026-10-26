@@ -149,6 +149,12 @@ export function FloatingSessionView() {
           <Bot className="h-3 w-3" />
         </span>
         <span className="text-xs font-medium truncate flex-1" title={sessionName}>{sessionName}</span>
+        {/* 需求2（v0.9.4）：dev 下悬浮窗标题栏同步展示徽标（与主窗同款）。 */}
+        {import.meta.env.DEV && (
+          <span className="shrink-0 rounded bg-amber-500 px-1 py-px text-[9px] font-bold tracking-widest text-black">
+            DEV
+          </span>
+        )}
         <button
           onMouseDown={(e) => e.stopPropagation()}
           onClick={handleRestore}

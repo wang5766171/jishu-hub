@@ -58,6 +58,19 @@ pub fn orchestrator_validate_proposal(
         .and_then(|v| v.as_array())
         .ok_or_else(|| "proposal missing 'nodes' array".to_string())?;
 
+    // v0.9.2 需求5：提前取 TaskInstance——派发 prompt 需要需求文档上下文
+    // （requirement_file 在执行链路此前零引用，是"原始需求遗漏"的根因之一）。
+    let instance = ti_instance(&req.project_root, &req.task_id)?;
+    let requirement_path = instance
+        .as_ref()
+        .and_then(|inst| inst.requirement_file.as_ref())
+        .map(|rel| {
+            PathBuf::from(&req.project_root)
+                .join(rel)
+                .to_string_lossy()
+                .into_owned()
+        });
+
     // 2. 构建 GraphSnapshot
     let mut snapshot_nodes: Vec<GraphNode> = Vec::new();
     let mut snapshot_edges: Vec<GraphEdge> = Vec::new();
@@ -102,11 +115,92 @@ pub fn orchestrator_validate_proposal(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        // v0.9.2 需求5：acceptance 不再在转图时丢弃——进 metadata（供 UI 展示
+        // 验收要点）并参与派发 prompt 组装。
+        let acceptance = node_val
+            .get("acceptance")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let role = node_val
             .get("role")
             .and_then(|v| v.as_str())
             .unwrap_or("developer")
             .to_string();
+        // 协作上下文：上下游节点摘要（从 proposal 的节点与依赖机械投影）
+        let deps = node_val
+            .get("depends_on")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|d| d.as_str().map(str::to_string))
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+        let upstream = deps
+            .iter()
+            .filter_map(|dep_id| {
+                nodes_arr
+                    .iter()
+                    .find(|n| n.get("id").and_then(|v| v.as_str()) == Some(dep_id.as_str()))
+                    .map(|n| CollaboratorSummary {
+                        node_id: dep_id.clone(),
+                        title: n
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(dep_id)
+                            .to_string(),
+                        responsibility: n
+                            .get("responsibility")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    })
+            })
+            .collect::<Vec<_>>();
+        let downstream = nodes_arr
+            .iter()
+            .filter(|n| {
+                n.get("depends_on")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().any(|d| d.as_str() == Some(node_id.as_str())))
+                    .unwrap_or(false)
+            })
+            .map(|n| CollaboratorSummary {
+                node_id: n
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                title: n
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                responsibility: n
+                    .get("responsibility")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            })
+            .collect::<Vec<_>>();
+        let collaboration = render_collaboration(&upstream, &downstream);
+        let dispatch_prompt = compose_dispatch_prompt(
+            &goal_text,
+            &title,
+            &responsibility,
+            &acceptance,
+            collaboration.as_deref(),
+            requirement_path.as_deref(),
+        );
+
+        let mut metadata = std::collections::HashMap::new();
+        if !acceptance.is_empty() {
+            metadata.insert(
+                "acceptance".to_string(),
+                serde_json::Value::String(acceptance.clone()),
+            );
+        }
 
         snapshot_nodes.push(GraphNode {
             node_id: node_id.clone(),
@@ -125,10 +219,10 @@ pub fn orchestrator_validate_proposal(
             capability_requirements: vec![],
             agent_assignment_constraint: None,
             policy: Default::default(),
-            metadata: Default::default(),
+            metadata,
             executable_payload: Some(ExecutablePayload::Dispatch {
                 role_id: role,
-                prompt: responsibility,
+                prompt: dispatch_prompt,
                 project: None,
                 session: None,
             }),
@@ -235,4 +329,223 @@ pub fn orchestrator_validate_proposal(
         revision_id,
         content_hash: revision.content_hash.0.clone(),
     })
+}
+
+/// 取 TaskInstance（不存在时 None，不视为错误——提案可先于实例登记到达）。
+pub(super) fn ti_instance(
+    project_root: &str,
+    task_id: &str,
+) -> Result<Option<TaskLaunchInstance>, String> {
+    let store = open_store(project_root)?;
+    store.get(task_id)
+}
+
+/// 协作摘要中单节点职责的截断上限（字符数）——契约要点足够，防 prompt 膨胀。
+const COLLABORATOR_SUMMARY_MAX_CHARS: usize = 240;
+
+/// 截断到字符边界的摘要。
+fn truncate_chars(text: &str, max: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max {
+        return trimmed.to_string();
+    }
+    let cut: String = trimmed.chars().take(max).collect();
+    format!("{cut}…")
+}
+
+/// 协作节点摘要（id/标题/职责截断）。
+pub(super) struct CollaboratorSummary {
+    pub(super) node_id: String,
+    pub(super) title: String,
+    pub(super) responsibility: String,
+}
+
+/// 渲染【协作上下文】：前置节点（其产出是本节点的输入）与后继节点（依赖本节点的产出）。
+/// 多节点一致性来自同一份计划文本的机械投影——各节点看到相同契约，而非各自解读全量需求。
+pub(super) fn render_collaboration(
+    upstream: &[CollaboratorSummary],
+    downstream: &[CollaboratorSummary],
+) -> Option<String> {
+    if upstream.is_empty() && downstream.is_empty() {
+        return None;
+    }
+    let mut sections: Vec<String> = Vec::new();
+    if !upstream.is_empty() {
+        let lines = upstream
+            .iter()
+            .map(|c| {
+                format!(
+                    "- {}（{}）：{}",
+                    c.title,
+                    c.node_id,
+                    truncate_chars(&c.responsibility, COLLABORATOR_SUMMARY_MAX_CHARS)
+                )
+            })
+            .collect::<Vec<_>>();
+        sections.push(format!(
+            "前置节点（其产出是本节点的输入）：
+{}",
+            lines.join(
+                "
+"
+            )
+        ));
+    }
+    if !downstream.is_empty() {
+        let lines = downstream
+            .iter()
+            .map(|c| {
+                format!(
+                    "- {}（{}）：{}",
+                    c.title,
+                    c.node_id,
+                    truncate_chars(&c.responsibility, COLLABORATOR_SUMMARY_MAX_CHARS)
+                )
+            })
+            .collect::<Vec<_>>();
+        sections.push(format!(
+            "后继节点（依赖本节点的产出，注意为其留好衔接）：
+{}",
+            lines.join(
+                "
+"
+            )
+        ));
+    }
+    Some(sections.join(
+        "
+
+",
+    ))
+}
+
+/// v0.9.2 需求5（2026-09-09 用户裁决修正：全量需求不下发）节点派发 prompt 组装：
+/// 任务目标 / 本节点职责（conductor 规划时梳理的自包含摘要）/ 验收标准 /
+/// 协作上下文（图结构机械投影的上下游契约）/ 需求文档**路径引用**（需要全局
+/// 背景时节点自行读取，不再内嵌全文——避免多节点各自解读全量需求导致实现
+/// 前后不一致，保持拆分协作的意义）。
+pub(super) fn compose_dispatch_prompt(
+    goal: &str,
+    title: &str,
+    responsibility: &str,
+    acceptance: &str,
+    collaboration: Option<&str>,
+    requirement_doc_path: Option<&str>,
+) -> String {
+    let mut prompt = String::new();
+    prompt.push_str(
+        "【任务目标】
+",
+    );
+    prompt.push_str(goal.trim());
+    prompt.push_str(
+        "
+
+【本节点职责】（节点：",
+    );
+    prompt.push_str(title.trim());
+    prompt.push_str(
+        "）
+",
+    );
+    if responsibility.trim().is_empty() {
+        prompt.push_str("（未填写，以任务目标与验收标准为准）");
+    } else {
+        prompt.push_str(responsibility.trim());
+    }
+    prompt.push_str(
+        "
+
+【验收标准】
+",
+    );
+    if acceptance.trim().is_empty() {
+        prompt.push_str("（未填写，以任务目标为准）");
+    } else {
+        prompt.push_str(acceptance.trim());
+    }
+    if let Some(collab) = collaboration {
+        prompt.push_str(
+            "
+
+【协作上下文】（来自任务计划，多节点协作契约）
+",
+        );
+        prompt.push_str(collab);
+    }
+    if let Some(path) = requirement_doc_path {
+        prompt.push_str(
+            "
+
+【需求文档】完整需求见：",
+        );
+        prompt.push_str(path);
+        prompt.push_str("（如需全局背景可读取；本节点职责与验收标准为权威口径，与需求文档冲突时先在职责口径内执行并反馈疑问）");
+    }
+    prompt
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_prompt_composes_sections_and_path_reference_only() {
+        let prompt = compose_dispatch_prompt(
+            "完成配置迁移",
+            "数据迁移脚本",
+            "编写迁移脚本",
+            "迁移后数据完整",
+            Some(
+                "前置节点（其产出是本节点的输入）：
+- 结构梳理（n1）：扫描现有配置",
+            ),
+            Some("/proj/REQUIREMENTS.md"),
+        );
+        assert!(prompt.contains(
+            "【任务目标】
+完成配置迁移"
+        ));
+        assert!(prompt.contains(
+            "【本节点职责】（节点：数据迁移脚本）
+编写迁移脚本"
+        ));
+        assert!(prompt.contains(
+            "【验收标准】
+迁移后数据完整"
+        ));
+        assert!(prompt.contains("【协作上下文】"));
+        assert!(prompt.contains("前置节点"));
+        // 需求文档仅路径引用，不内嵌全文
+        assert!(prompt.contains("/proj/REQUIREMENTS.md"));
+        assert!(prompt.contains("如需全局背景可读取"));
+        assert!(!prompt.contains("# 开发登录 Demo"));
+    }
+
+    #[test]
+    fn dispatch_prompt_falls_back_when_fields_missing() {
+        let prompt = compose_dispatch_prompt("目标", "节点A", "", "", None, None);
+        assert!(prompt.contains("（未填写，以任务目标与验收标准为准）"));
+        assert!(!prompt.contains("【协作上下文】"));
+        assert!(!prompt.contains("【需求文档】"));
+    }
+
+    #[test]
+    fn collaboration_summary_truncates_long_responsibility() {
+        let long = "字".repeat(500);
+        let rendered = render_collaboration(
+            &[CollaboratorSummary {
+                node_id: "n1".into(),
+                title: "上游".into(),
+                responsibility: long.clone(),
+            }],
+            &[],
+        )
+        .unwrap();
+        assert!(rendered.contains("上游（n1）："));
+        assert!(rendered.chars().count() < 500);
+        assert!(rendered.ends_with("…"));
+        // 双向均空 → None
+        assert!(render_collaboration(&[], &[]).is_none());
+    }
 }

@@ -1251,3 +1251,138 @@ fn resolve_approval_resumes_awaiting_human_run() {
         RunStatus::Running
     );
 }
+
+/// v0.9.3 需求5：失败节点人工重试——节点 Failed→Blocked（清 error），
+/// run Failed→Running；事件序 = RetryScheduled + RunResumed。
+#[test]
+fn retry_node_resets_failed_node_and_resumes_run() {
+    let svc = TaskService::open_in_memory().unwrap();
+    let (graph, revision) = svc
+        .create_graph(&CreateGraphInput {
+            title: "Retry".into(),
+            goal: "Do X".into(),
+            project_root: "/p".into(),
+            owner: "u".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let run = svc.start_run(&graph.graph_id, &revision.revision_id).unwrap();
+
+    let mut node_run = NodeRun::new("nr-1", &run.run_id, "node-1", &revision.revision_id);
+    node_run.status = crate::orchestrator::domain::run::NodeRunStatus::Failed;
+    node_run.error = Some("boom".into());
+    node_run.finished_at = Some(1);
+    svc.store.save_node_run(&node_run).unwrap();
+    // run 打到 Failed（模拟引擎 tick 收尾）。
+    let failed_event = build_event(
+        "evt-fail",
+        &run.run_id,
+        svc.store.get_run(&run.run_id).unwrap().run_seq + 1,
+        TaskEventType::RunFailed,
+        "engine",
+        1,
+        serde_json::Value::Null,
+    );
+    let failed_run = svc.store.get_run(&run.run_id).unwrap();
+    svc.store
+        .transition_run_with_event(
+            &run.run_id,
+            &failed_run.status,
+            &RunStatus::Failed,
+            None,
+            &failed_event,
+        )
+        .unwrap();
+
+    svc.retry_node(&run.run_id, "node-1").unwrap();
+
+    let recovered = svc.store.get_run(&run.run_id).unwrap();
+    assert_eq!(recovered.status, RunStatus::Running);
+    let node_runs = svc.get_node_runs(&run.run_id).unwrap();
+    assert_eq!(
+        node_runs[0].status,
+        crate::orchestrator::domain::run::NodeRunStatus::Blocked
+    );
+    assert!(node_runs[0].error.is_none());
+    assert!(node_runs[0].finished_at.is_none());
+
+    let events = svc.run_events_after(&run.run_id, 0).unwrap();
+    assert_eq!(events[events.len() - 2].event_type, TaskEventType::RetryScheduled);
+    assert_eq!(events.last().map(|e| &e.event_type), Some(&TaskEventType::RunResumed));
+}
+
+/// v0.9.3 需求5：失败节点人工跳过——节点 Failed→Skipped（error 保留供回看），
+/// run 拉回 Running；调度器把 Skipped 前置视为依赖满足（下游继续）。
+#[test]
+fn skip_node_marks_skipped_and_downstream_stays_schedulable() {
+    use crate::orchestrator::scheduler::compute_ready_set;
+    let svc = TaskService::open_in_memory().unwrap();
+    let (graph, revision) = svc
+        .create_graph(&CreateGraphInput {
+            title: "Skip".into(),
+            goal: "Do X".into(),
+            project_root: "/p".into(),
+            owner: "u".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    // A → B：A 失败被跳过后 B 应可调度。
+    let result = svc
+        .apply_commands(
+            &graph.graph_id,
+            &revision.revision_id,
+            &[
+                GraphCommand::AddNode {
+                    command_id: "add-a".into(),
+                    node: shell_node("a", "A"),
+                },
+                GraphCommand::AddNode {
+                    command_id: "add-b".into(),
+                    node: shell_node("b", "B"),
+                },
+                GraphCommand::AddEdge {
+                    command_id: "add-edge".into(),
+                    edge: GraphEdge {
+                        edge_id: "e1".into(),
+                        source_node_id: "a".into(),
+                        target_node_id: "b".into(),
+                        kind: EdgeKind::DataDependency,
+                    },
+                },
+            ],
+            "u",
+        )
+        .unwrap();
+    let run = svc
+        .start_run(&graph.graph_id, &result.revision.revision_id)
+        .unwrap();
+
+    let mut nr_a = NodeRun::new("nr-a", &run.run_id, "a", &result.revision.revision_id);
+    nr_a.status = crate::orchestrator::domain::run::NodeRunStatus::Failed;
+    nr_a.error = Some("boom".into());
+    svc.store.save_node_run(&nr_a).unwrap();
+
+    svc.skip_node(&run.run_id, "a").unwrap();
+
+    let node_runs = svc.get_node_runs(&run.run_id).unwrap();
+    let a = node_runs.iter().find(|nr| nr.node_id == "a").unwrap();
+    assert_eq!(a.status, crate::orchestrator::domain::run::NodeRunStatus::Skipped);
+    assert_eq!(a.error.as_deref(), Some("boom"));
+
+    // 调度器：B（前置 Skipped）进入就绪集——「跳过（下游继续）」语义。
+    let snapshot = svc
+        .store
+        .get_revision(&result.revision.revision_id)
+        .unwrap()
+        .snapshot()
+        .unwrap();
+    let runs = svc.get_node_runs(&run.run_id).unwrap();
+    let ready = compute_ready_set(&snapshot, &runs, 0);
+    assert!(ready.contains(&"b".to_string()), "downstream should be ready after skip, got {ready:?}");
+
+    // 非 Failed 节点不可跳过（Succeeded 拒绝）。
+    let mut nr_ok = NodeRun::new("nr-ok", &run.run_id, "b", &result.revision.revision_id);
+    nr_ok.status = crate::orchestrator::domain::run::NodeRunStatus::Succeeded;
+    svc.store.save_node_run(&nr_ok).unwrap();
+    assert!(svc.skip_node(&run.run_id, "b").is_err());
+}

@@ -1,5 +1,6 @@
 
 import "@/i18n";
+import { hydrateDevLogForced } from "@/lib/dev-log";
 import { lazy, Suspense } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { useTranslation } from "react-i18next";
@@ -17,7 +18,15 @@ import { useTheme, type Theme, ThemeProvider } from "@/hooks/use-theme";
 import { useFontSize, type FontLevel } from "@/hooks/use-font-size";
 import { AgentProvider, useAgent } from "@/agents";
 import { FileViewerProvider, useFileViewer } from "@/components/file-viewer";
+import {
+  SESSION_SIDEBAR_WIDTH_RATIO,
+  clampSidebarWidth,
+  setSessionSidebarEffectiveWidth,
+  useSessionSidebar,
+} from "@/features/session-kernel/shell/session-sidebar";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { HybridInstallConfirmation } from "@/components/hybrid-install-confirmation";
+import { HybridErrorNotification } from "@/features/session-kernel/capabilities/composition/hybrid-errors";
 import type { Page, Project, ProjectMeta } from "@/types";
 
 const ChatPage = lazy(() => import("@/pages/chat-page").then(m => ({ default: m.ChatPage })));
@@ -104,6 +113,11 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
   useEffect(() => {
     invokeCommand<boolean>("load_always_on_top").then(setPinned).catch(console.error);
     getVersion().then((v) => setVersion(v)).catch(() => setVersion(""));
+    // 需求2（v0.9.4）：dev 下窗口标题加后缀——Alt-Tab/任务栏悬停可辨。
+    // （复用 appWindow 的浏览器环境守卫，纯 vite 预览不炸。）
+    if (import.meta.env.DEV) {
+      appWindow?.setTitle("Jishu Hub · DEV").catch((e) => console.warn("setTitle failed:", e));
+    }
     appWindow?.isMaximized().then(setMaximized).catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
     // v0.7.2 需求 1 / M3.1：自动更新检查延后到启动高峰之后（配合后端 M3.2 的 24h
     // 冷却），避免启动瞬间 spawn 多个 PowerShell（google 探测 + gitee/github release
@@ -369,6 +383,17 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
         </button>
       </div>
       <div className="min-w-8 flex-1 self-stretch" onDoubleClick={toggleMaximizeWindow} />
+      {/* 需求2（v0.9.4）：dev 窗口显著标识——开发实例与安装版同图标同标题，
+          易误操作；dev 下右上角常驻徽标 + 窗口标题后缀，生产构建零变化。 */}
+      {import.meta.env.DEV && (
+        <span
+          className="mr-2 flex h-5 shrink-0 items-center self-center rounded bg-amber-500 px-1.5 text-[10px] font-bold tracking-widest text-black shadow-sm"
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          title="DEV 开发模式窗口"
+        >
+          DEV
+        </span>
+      )}
       <div className="ml-2 flex h-full items-stretch" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
         <button
           type="button"
@@ -404,7 +429,7 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
 
 function AppContent() {
   // v0.7.0 需求一：会话作用域状态。项目/会话/元数据随会话作用域 agent 切换重新拉取。
-  const { chatAgentId, setChatAgent } = useAgent();
+  const { chatAgentId, setChatAgent, setManageAgent } = useAgent();
   const [currentPage, setCurrentPage] = useState<Page>("chat");
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [projectSessionsLoading, setProjectSessionsLoading] = useState(false);
@@ -419,7 +444,12 @@ function AppContent() {
   const blockingLoading = loading || !initialProjectRestored || projectSessionsLoading;
 
   // Restore last project on startup
-  useEffect(() => {
+  // v0.9.4 需求12：开发日志强制开关水合（后端 settings.json 权威）。
+useEffect(() => {
+  void hydrateDevLogForced();
+}, []);
+
+useEffect(() => {
     if (!projects || initialProjectRestored) return;
     let cancelled = false;
     invokeCommand<string | null>("load_last_project")
@@ -467,6 +497,24 @@ function AppContent() {
     setManageNavKey(k => k + 1);
     setCurrentPage("manage");
   }, []);
+
+  // v0.9.2 需求10：会话页「前往配置」——跳管理页模型设置子页，并把管理
+  // 作用域智能体切到当前会话智能体（ConfigPage 读 manageAgentId 渲染）。
+  const [agentModelsNavKey, setAgentModelsNavKey] = useState(0);
+  const handleNavigateAgentModels = useCallback(() => {
+    if (chatAgentId) setManageAgent(chatAgentId);
+    setAgentModelsNavKey(k => k + 1);
+    setCurrentPage("manage");
+  }, [chatAgentId, setManageAgent]);
+
+  // v0.9.3 需求13 C4-slice2c：pipeline 插件「作为任务启动」——切会话页、
+  // 会话作用域切 jishu agent（任务引擎），ChatPage 按 key 预填启动命令。
+  const [pipelineLaunch, setPipelineLaunch] = useState<{ key: number; pluginId: string; name: string } | null>(null);
+  const handleLaunchPipeline = useCallback((pluginId: string, name: string) => {
+    setChatAgent("jishu-self");
+    setPipelineLaunch({ key: Date.now(), pluginId, name });
+    setCurrentPage("chat");
+  }, [setChatAgent]);
 
   const handleProjectSessionsLoadingChange = useCallback((nextLoading: boolean) => {
     setProjectSessionsLoading((prev) => prev === nextLoading ? prev : nextLoading);
@@ -573,11 +621,13 @@ function AppContent() {
       <ViewerPushRow>
         <Suspense fallback={<LoadingOverlay />}>
           {currentPage === "chat"
-            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} />
+            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} onNavigateAgentModels={handleNavigateAgentModels} pipelineLaunch={pipelineLaunch} />
             : <ManagePage
                 onBack={() => setCurrentPage("chat")}
                 onEnterProject={handleEnterProject}
                 navigateToProjects={manageNavKey}
+                navigateToAgentModels={agentModelsNavKey}
+                onLaunchPipeline={handleLaunchPipeline}
                 projects={projects}
                 projectMetas={projectMetas}
                 refetchProjects={refetchProjects}
@@ -589,6 +639,11 @@ function AppContent() {
           <span>{projects?.length ?? 0} projects</span>
         </div>
         {blockingLoading && <LoadingOverlay />}
+        {/* 需求25 P2：混合插件安装确认卡（安全阀）——全局挂载，页面切换/
+            项目切换不卸载；组件内部 createPortal 到 body，轮询
+            plugin_confirm_pending，无待确认项时渲染 null。 */}
+        <HybridInstallConfirmation />
+        <HybridErrorNotification />
       </div>
     </FileViewerProvider>
   );
@@ -597,13 +652,66 @@ function AppContent() {
 /** v0.8.0 需求4 补充（第三批）：三栏顶开——右侧预览展开时把会话/管理区
  * 往左顶（margin = 面板实际占宽），不再遮挡内容。面板与 margin 共用
  * effectiveWidth（含默认值回退与 420px 下限），拖动调宽时两边即时同步；
- * 子树元素引用稳定，宽度变化只重渲染本行容器。 */
+ * 子树元素引用稳定，宽度变化只重渲染本行容器。
+ * v0.9.2 测试期：插件侧边栏（sidebar-panel 形态）同享顶开——默认宽 =
+ * 内容区（不含左侧导航）× 50%（用户裁决），用户拖拽值优先；生效宽度经
+ * session-sidebar store 回填，侧栏面板与 margin 共用同一数值保证齐边；
+ * 两者同时打开取较宽者。 */
 function ViewerPushRow({ children }: { children: ReactNode }) {
   const viewer = useFileViewer();
+  const sidebar = useSessionSidebar();
+  const rowRef = useRef<HTMLDivElement>(null);
+  // 基准宽（内容区不含 margin 的完整宽）：实测 rect + 当前 margin 补偿——
+  // margin 会压缩本行自身宽度，直接用 rect 会形成自指反馈环（拖宽时
+  // m = k(T−m) 收敛到约一半，用户实测「最大拖到一半」的根因）。
+  const marginRef = useRef(0);
+  const [baseWidth, setBaseWidth] = useState(() => window.innerWidth);
+
+  const sidebarEffective = sidebar.openId
+    ? clampSidebarWidth(
+        sidebar.userWidth ?? baseWidth * SESSION_SIDEBAR_WIDTH_RATIO,
+        window.innerWidth,
+      )
+    : null;
+
+  // 回填生效宽度（面板渲染用）；引用稳定，值不变不触发订阅者。
+  useEffect(() => {
+    setSessionSidebarEffectiveWidth(sidebarEffective);
+  }, [sidebarEffective]);
+
+  const margin = viewer.open
+    ? sidebarEffective
+      ? Math.max(viewer.effectiveWidth, sidebarEffective)
+      : viewer.effectiveWidth
+    : sidebarEffective ?? 0;
+  // margin 写入 ref 供 measure 补偿。渲染体直接写 ref 属副作用（React 并发
+  // 纪律，v0.9.3 需求1 P2-3）——迁入 effect，且声明在下方测量 effect 之前，
+  // 挂载首测即读到补偿值，时序与原先渲染期赋值等价。
+  useEffect(() => {
+    marginRef.current = margin;
+  }, [margin]);
+
+  useEffect(() => {
+    const el = rowRef.current;
+    if (!el) return;
+    const measure = (w: number) => {
+      const base = w + marginRef.current;
+      if (base > 0) setBaseWidth(base);
+    };
+    measure(el.getBoundingClientRect().width);
+    const observer = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (w && w > 0) measure(w);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <div
+      ref={rowRef}
       className="flex-1 overflow-hidden"
-      style={{ marginRight: viewer.open ? viewer.effectiveWidth : 0 }}
+      style={{ marginRight: margin ? `${margin}px` : 0 }}
     >
       {children}
     </div>

@@ -63,6 +63,93 @@ impl TaskStore {
         Ok(())
     }
 
+    /// v0.9.3 需求4（评审 P2-1）：run 创建 + RunStarted 事件 + 结转种子
+    /// （Succeeded NodeRun + NodeResolved 事件）**单事务**原子提交。
+    ///
+    /// 此前结转种子在 start_run 返回后由 revise 逐个补写——引擎 tick 与补写
+    /// 之间存在竞窗（run 已可见但种子未落，引擎可能调度结转节点重跑）。
+    /// 原子提交后引擎任何时刻读库都看不到中间态，run_seq 守卫由事务保证：
+    /// run 行直接以最终 run_seq（1 + 种子数）落库，种子事件严格占用 2..=n+1。
+    pub fn create_run_with_event_and_seeds(
+        &self,
+        run: &GraphRun,
+        event: &TaskEvent,
+        seeds: &[(NodeRun, TaskEvent)],
+    ) -> Result<(), StoreError> {
+        if event.run_id != run.run_id || event.run_seq != 1 {
+            return Err(StoreError::Conflict(
+                "initial run event must use sequence 1 for the same run".into(),
+            ));
+        }
+        if run.run_seq != 1 + seeds.len() as u64 {
+            return Err(StoreError::Conflict(format!(
+                "run_seq must be 1 + seeds (expected {}, got {})",
+                1 + seeds.len(),
+                run.run_seq
+            )));
+        }
+        for (index, (node_run, seed_event)) in seeds.iter().enumerate() {
+            let expected = index as u64 + 2;
+            if seed_event.run_id != run.run_id
+                || seed_event.run_seq != expected
+                || node_run.run_id != run.run_id
+            {
+                return Err(StoreError::Conflict(
+                    "carryover seed events must occupy sequences 2..=n+1 for the same run"
+                        .into(),
+                ));
+            }
+        }
+        let conn = self
+            .writer
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO graph_run
+             (run_id, graph_id, active_revision_id, status, run_seq, budget_state,
+              planning_snapshot, started_at, finished_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                run.run_id,
+                run.graph_id,
+                run.active_revision_id,
+                serde_json::to_string(&run.status)?,
+                run.run_seq,
+                serde_json::to_string(&run.budget_state)?,
+                serde_json::to_string(&run.planning_snapshot)?,
+                run.started_at,
+                run.finished_at,
+            ],
+        )?;
+        insert_event(&tx, event)?;
+        for (node_run, seed_event) in seeds {
+            tx.execute(
+                "INSERT OR REPLACE INTO node_run
+                 (node_run_id, run_id, node_id, status, revision_id, started_at, finished_at,
+                  attempt_count, wake_at, error, loop_iteration, superseded)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    node_run.node_run_id,
+                    node_run.run_id,
+                    node_run.node_id,
+                    serde_json::to_string(&node_run.status)?,
+                    node_run.revision_id,
+                    node_run.started_at,
+                    node_run.finished_at,
+                    node_run.attempt_count,
+                    node_run.wake_at,
+                    node_run.error,
+                    node_run.loop_iteration,
+                    node_run.superseded as i32,
+                ],
+            )?;
+            insert_event(&tx, seed_event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn get_run(&self, run_id: &str) -> Result<GraphRun, StoreError> {
         let conn = self
             .reader

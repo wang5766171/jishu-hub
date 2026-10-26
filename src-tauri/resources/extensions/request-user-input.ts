@@ -27,9 +27,12 @@ export default function requestUserInputExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "request_user_input",
 		label: "Request User Input",
+		// v0.9.2 测试期修复：描述泛化到全部会话场景（原 "during task execution"
+		// 过窄，普通会话模型不认为该工具可用于问答/测验/澄清）。
 		description:
-			"Request structured input from the user during task execution. Use when you need the user to choose between options or provide information before continuing. The agent will pause until the user responds.",
-		promptSnippet: "request_user_input: Ask the user a question or offer choices",
+			"Ask the user a structured question mid-turn: an interactive card with options (single or multi select) or a free-text field. The agent pauses until the user responds, then continues the same turn with the answer. Use it whenever the user should choose or provide input — requirement clarification, confirmations, quizzes and interactive games, walking through alternatives. When the user asks for interactive/structured questioning (e.g. 交互模式), ALWAYS use this tool instead of listing options in plain text.",
+		promptSnippet:
+			"request_user_input: Interactive card to ask the user a question or offer choices; prefer it over plain-text option lists",
 		parameters: Type.Object({
 			question: Type.String({
 				description: "The question to ask the user",

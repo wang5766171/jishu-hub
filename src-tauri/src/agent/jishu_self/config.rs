@@ -45,7 +45,8 @@ pub struct JishuConfig {
     pub compaction: Option<crate::project_config::ProjectCompaction>,
 
     /// Pi defaultTools：初始激活的内置工具集（全集 read/bash/edit/write/
-    /// grep/find/ls；未设置时 Pi 默认 read/bash/edit/write）。
+    /// grep/find/ls + powershell[Windows，v0.9.1 需求3 #3]；未设置时 Pi 默认
+    /// read/bash/edit/write）。
     #[serde(
         rename = "defaultTools",
         skip_serializing_if = "Option::is_none",
@@ -74,10 +75,91 @@ fn jishu_backup_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     super::paths::backups_dir()
 }
 
+/// 键级 upsert/remove jishu-hub（纯函数可单测）：Some = 写自家条目（用户
+/// 自建同名条目 args 形态不符则保护不动）；None = 回收自家（仅形态属自家）。
+fn upsert_hub_entry_in_root(
+    root: &mut serde_json::Value,
+    entry: Option<&serde_json::Value>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::agent::mcp_server::HUB_MCP_ENTRY_NAME;
+    if root.get("mcpServers").and_then(|v| v.as_object()).is_none() {
+        root["mcpServers"] = serde_json::json!({});
+    }
+    let servers = root
+        .get_mut("mcpServers")
+        .and_then(|v| v.as_object_mut())
+        .expect("mcpServers object just ensured");
+    let looks_ours = |v: &serde_json::Value| -> bool {
+        let args = v.get("args").and_then(|a| a.as_array());
+        matches!(args, Some(a)
+            if a.len() >= 2
+                && a[0].as_str() == Some("mcp")
+                && a[1].as_str() == Some("serve"))
+    };
+    match entry {
+        Some(e) => {
+            let overwrite = servers
+                .get(HUB_MCP_ENTRY_NAME)
+                .map(looks_ours)
+                .unwrap_or(true);
+            if overwrite {
+                servers.insert(HUB_MCP_ENTRY_NAME.to_string(), e.clone());
+            }
+        }
+        None => {
+            if servers
+                .get(HUB_MCP_ENTRY_NAME)
+                .map(looks_ours)
+                .unwrap_or(false)
+            {
+                servers.remove(HUB_MCP_ENTRY_NAME);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// user-global standard MCP（`~/.config/mcp/mcp.json`）的 jishu-hub 键级
+/// 管理：Some(entry) = upsert 自家条目；None = 回收自家条目（同名用户自建
+/// 条目 args 形态不符则保留）。其余键原样保留（共享标准位）。
+fn upsert_standard_global_mcp(
+    entry: Option<&crate::config::McpServerConfig>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::agent::mcp_server::HUB_MCP_ENTRY_NAME;
+    let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+    let path = home.join(".config").join("mcp").join("mcp.json");
+    let mut root: serde_json::Value = if path.exists() {
+        serde_json::from_str(&std::fs::read_to_string(&path)?)
+            .unwrap_or_else(|_| serde_json::json!({"mcpServers": {}}))
+    } else {
+        serde_json::json!({"mcpServers": {}})
+    };
+    upsert_hub_entry_in_root(
+        &mut root,
+        entry.map(|e| serde_json::to_value(e)).transpose()?.as_ref(),
+    )?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let content = serde_json::to_string_pretty(&root)?;
+    crate::util::atomic_write(&path, content.as_bytes())?;
+    Ok(())
+}
+
 /// Sync mcpServers from JishuConfig to ~/.jishu-agent/mcp.json.
 /// pi-mcp-adapter reads MCP server definitions from <Pi agent dir>/mcp.json,
 /// not from settings.json's mcpServers field.
 pub fn sync_mcp_json(config: &JishuConfig) -> Result<(), Box<dyn std::error::Error>> {
+    // v0.9.0 需求20 第二轮真机根因补充：上游 pi-mcp-adapter 无 fork 的
+    // piConfig/env，agentDir 解析到 ~/.pi/agent——<agent_dir>/mcp.json 它不读。
+    // 改以 user-global standard（~/.config/mcp/mcp.json，其发现路径第一条）
+    // 为权威落点，键级 upsert/remove 只管 jishu-hub；agent-dir 副本保留。
+    let hub_entry = config
+        .mcp_servers
+        .as_ref()
+        .and_then(|m| m.get(crate::agent::mcp_server::HUB_MCP_ENTRY_NAME).cloned());
+    upsert_standard_global_mcp(hub_entry.as_ref())?;
+
     let mcp_path = super::paths::mcp_json_path()?;
 
     let mcp_content = if let Some(servers) = &config.mcp_servers {
@@ -173,6 +255,47 @@ pub fn save_pi_project_settings_fields(
     }
     crate::util::atomic_write(&path, serde_json::to_string_pretty(&value)?.as_bytes())?;
     Ok(())
+}
+
+/// v0.9.1 需求13 测试期补充：重试默认值固化——pi 对未配置的 retry 段
+/// 原生回退 maxRetries=3（settings-manager getRetrySettings `?? 3`），
+/// hub 产品默认（10 次）必须落盘才触达（模板只影响应用模板/新配置，
+/// 存量未配置用户实测仍 3 次）。启动时幂等调用：retry 段缺失 → 写入完整
+/// 默认 {enabled: true, maxRetries: 10, baseDelayMs: 2000}；retry 段存在
+/// 但缺 maxRetries → 仅补 maxRetries=10（enabled/baseDelayMs 的显式选择
+/// 不覆盖）；已显式配置任何 maxRetries → 不动。
+pub fn ensure_default_retry_settings() {
+    let Ok(mut v) = load_jishu_config() else {
+        return;
+    };
+    if ensure_default_retry_in_value(&mut v) {
+        let _ = save_jishu_config(&v);
+    }
+}
+
+/// 纯函数（测试注入）：返回是否发生写入。
+fn ensure_default_retry_in_value(v: &mut serde_json::Value) -> bool {
+    let Some(obj) = v.as_object_mut() else {
+        return false;
+    };
+    match obj.get("retry").and_then(|r| r.as_object()).cloned() {
+        None => {
+            obj.insert(
+                "retry".to_string(),
+                serde_json::json!({ "enabled": true, "maxRetries": 10, "baseDelayMs": 2000 }),
+            );
+            true
+        }
+        Some(retry) => {
+            if retry.contains_key("maxRetries") {
+                return false;
+            }
+            let mut merged = retry;
+            merged.insert("maxRetries".to_string(), serde_json::json!(10));
+            obj.insert("retry".to_string(), serde_json::Value::Object(merged));
+            true
+        }
+    }
 }
 
 pub fn load_jishu_config() -> Result<serde_json::Value, Box<dyn std::error::Error>> {
@@ -427,6 +550,28 @@ pub fn save_raw_jishu_config(content: &str) -> Result<(), Box<dyn std::error::Er
 
 #[cfg(test)]
 mod tests {
+    /// v0.9.1 需求13 测试期：重试默认固化三态。
+    #[test]
+    fn retry_default_materialization() {
+        use serde_json::json;
+        // 无 retry 段 → 写入完整默认。
+        let mut v = json!({"defaultThinkingLevel": "high"});
+        assert!(super::ensure_default_retry_in_value(&mut v));
+        assert_eq!(v["retry"]["maxRetries"], json!(10));
+        assert_eq!(v["retry"]["enabled"], json!(true));
+        // retry 段存在但缺 maxRetries → 仅补 10，显式字段保留。
+        let mut v2 = json!({"retry": {"enabled": false}});
+        assert!(super::ensure_default_retry_in_value(&mut v2));
+        assert_eq!(v2["retry"]["maxRetries"], json!(10));
+        assert_eq!(v2["retry"]["enabled"], json!(false));
+        // 已显式配置 → 不动。
+        let mut v3 = json!({"retry": {"maxRetries": 5, "enabled": true}});
+        assert!(!super::ensure_default_retry_in_value(&mut v3));
+        assert_eq!(v3["retry"]["maxRetries"], json!(5));
+        // 幂等：再次运行无写入。
+        assert!(!super::ensure_default_retry_in_value(&mut v2));
+    }
+
 
     #[test]
     fn pi_project_settings_round_trip_preserves_unknown_keys() {
@@ -612,5 +757,49 @@ mod tests {
             serde_json::json!(["extensions/session-context.ts"])
         );
         assert_eq!(value["theme"], serde_json::json!("dark"));
+    }
+}
+
+#[cfg(test)]
+mod mcp_global_tests {
+    use super::upsert_hub_entry_in_root;
+    use serde_json::json;
+
+    fn hub_entry() -> serde_json::Value {
+        json!({"command": "C:/x/jishu-cli.exe", "args": ["mcp", "serve"]})
+    }
+
+    #[test]
+    fn upsert_then_remove_manages_only_own_entry() {
+        let mut root = json!({"mcpServers": {"user-tool": {"url": "http://x"}}});
+        upsert_hub_entry_in_root(&mut root, Some(&hub_entry())).unwrap();
+        assert!(root["mcpServers"]["jishu-hub"].is_object());
+        assert!(root["mcpServers"]["user-tool"].is_object(), "其余键保留");
+        // 覆盖更新自家旧条目（路径变化）。
+        upsert_hub_entry_in_root(
+            &mut root,
+            Some(&json!({"command": "new", "args": ["mcp", "serve"]})),
+        )
+        .unwrap();
+        assert_eq!(root["mcpServers"]["jishu-hub"]["command"], json!("new"));
+        // 回收自家，用户键不动。
+        upsert_hub_entry_in_root(&mut root, None).unwrap();
+        assert!(root["mcpServers"].get("jishu-hub").is_none());
+        assert!(root["mcpServers"]["user-tool"].is_object());
+    }
+
+    #[test]
+    fn user_owned_same_name_entry_is_protected() {
+        // 用户自建同名条目（args 形态不符）→ upsert 不覆盖，remove 不回收。
+        let mut root =
+            json!({"mcpServers": {"jishu-hub": {"url": "http://x", "args": ["--stdio"]}}});
+        upsert_hub_entry_in_root(&mut root, Some(&hub_entry())).unwrap();
+        assert_eq!(root["mcpServers"]["jishu-hub"]["url"], json!("http://x"));
+        upsert_hub_entry_in_root(&mut root, None).unwrap();
+        assert!(root["mcpServers"]["jishu-hub"].is_object());
+        // 空根也能 upsert。
+        let mut fresh = json!({});
+        upsert_hub_entry_in_root(&mut fresh, Some(&hub_entry())).unwrap();
+        assert!(fresh["mcpServers"]["jishu-hub"].is_object());
     }
 }

@@ -17,7 +17,7 @@
 //! 在 toolCall 块上**无标志**（实测仅 type/id/name/arguments 四字段），按
 //! 用户裁决暂统一归入工具桶；est_mcp_tool/mcp_calls 列保留为前向预留。
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
@@ -149,7 +149,8 @@ fn init_conn(conn: &Connection) -> Result<(), String> {
             est_mcp_tool INTEGER NOT NULL DEFAULT 0,
             est_tool_results INTEGER NOT NULL DEFAULT 0,
             tool_calls INTEGER NOT NULL DEFAULT 0,
-            mcp_calls INTEGER NOT NULL DEFAULT 0
+            mcp_calls INTEGER NOT NULL DEFAULT 0,
+            cost REAL NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_usage_segment_session
             ON usage_segment(session_id, id);
@@ -173,6 +174,20 @@ fn init_conn(conn: &Connection) -> Result<(), String> {
         PRAGMA user_version = 2;",
     )
     .map_err(|e| e.to_string())?;
+    // v0.9.3 需求7：usage_segment 补 cost 列（按日成本曲线数据源）。版本号
+    // 不变（加列迁移，不触发 DROP 重建）——v2 旧库 ALTER 保数据，新建库经
+    // 上方 CREATE 直接建列。
+    let has_cost: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('usage_segment') WHERE name = 'cost'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if has_cost == 0 {
+        conn.execute_batch("ALTER TABLE usage_segment ADD COLUMN cost REAL NOT NULL DEFAULT 0;")
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -185,7 +200,9 @@ fn store() -> Result<&'static UsageStore, String> {
     let _ = STORE.set(UsageStore {
         conn: Mutex::new(conn),
     });
-    STORE.get().ok_or_else(|| "usage store init failed".to_string())
+    STORE
+        .get()
+        .ok_or_else(|| "usage store init failed".to_string())
 }
 
 /// 记一个生成分段：明细入 usage_segment，聚合 upsert 进 session_usage
@@ -215,8 +232,8 @@ fn record_segment_on(
         "INSERT INTO usage_segment
             (session_id, agent_id, ts, stop_reason, input_tokens, output_tokens,
              cache_read, cache_write, total_tokens, est_thinking, est_text,
-             est_builtin_tool, est_mcp_tool, est_tool_results, tool_calls, mcp_calls)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+             est_builtin_tool, est_mcp_tool, est_tool_results, tool_calls, mcp_calls, cost)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         rusqlite::params![
             session_id,
             agent_id,
@@ -234,6 +251,7 @@ fn record_segment_on(
             seg.est_tool_results,
             seg.tool_calls,
             seg.mcp_calls,
+            seg.total_cost,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -388,6 +406,172 @@ fn read_on(conn: &Connection, session_id: &str) -> Result<SessionUsageRow, Strin
 }
 
 /// 读取会话累计用量（无记录返回全零行）。
+/// 用量总览（v0.9.2 需求1 M4 用量面板数据源）：累计 / 会话排行 / 近 7 日趋势。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UsageOverview {
+    pub totals: UsageTotals,
+    pub top_sessions: Vec<UsageSessionSummary>,
+    pub daily: Vec<UsageDailySummary>,
+    /// 是否按套餐价格计价（false 且记账成本为 0 时前端隐藏金额）。
+    pub pricing_applied: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UsageTotals {
+    pub sessions: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_cost: f64,
+    pub tool_calls: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UsageSessionSummary {
+    pub session_id: String,
+    pub agent_id: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_cost: f64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UsageDailySummary {
+    /// YYYY-MM-DD（本地日期由前端无所谓——按 UTC 天聚合即可，展示用）。
+    pub day: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    /// v0.9.3 需求7：当日成本（记账值或套餐计价覆盖）。
+    pub cost: f64,
+}
+
+/// 套餐价格配置（v0.9.2 测试期，用户裁决：金额支持配置，不配置则隐藏）。
+/// 文件 `~/.jishu-hub/usage-pricing.json`：
+/// { "input_per_mtok": 4.0, "output_per_mtok": 16.0 }
+/// 配置存在时金额 = token 按档计价（覆盖 store 记账成本）；缺失则沿用记账值，
+/// 记账也为 0 时前端隐藏金额列（不显示无意义的 0）。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct UsagePricingConfig {
+    pub input_per_mtok: f64,
+    pub output_per_mtok: f64,
+}
+
+fn load_pricing_config() -> Option<UsagePricingConfig> {
+    let path = db_path()
+        .ok()?
+        .parent()?
+        .join("usage-pricing.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// 按档计价（纯函数）：元/百万 token。
+pub fn compute_pricing_cost(
+    pricing: &UsagePricingConfig,
+    input_tokens: u64,
+    output_tokens: u64,
+) -> f64 {
+    input_tokens as f64 / 1_000_000.0 * pricing.input_per_mtok
+        + output_tokens as f64 / 1_000_000.0 * pricing.output_per_mtok
+}
+
+pub fn overview() -> Result<UsageOverview, String> {
+    let pricing = load_pricing_config();
+    let store = store()?;
+    let conn = store.conn.lock().map_err(|e| e.to_string())?;
+    let mut totals = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),              COALESCE(SUM(total_cost),0), COALESCE(SUM(tool_calls),0) FROM session_usage",
+            [],
+            |row| {
+                Ok(UsageTotals {
+                    sessions: row.get(0)?,
+                    input_tokens: row.get(1)?,
+                    output_tokens: row.get(2)?,
+                    total_cost: row.get(3)?,
+                    tool_calls: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or(UsageTotals {
+            sessions: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_cost: 0.0,
+            tool_calls: 0,
+        });
+    let mut stmt = conn
+        .prepare(
+            "SELECT session_id, agent_id, input_tokens, output_tokens, total_cost, updated_at              FROM session_usage ORDER BY total_cost DESC LIMIT 10",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut top_sessions = stmt
+        .query_map([], |row| {
+            Ok(UsageSessionSummary {
+                session_id: row.get(0)?,
+                agent_id: row.get(1)?,
+                input_tokens: row.get(2)?,
+                output_tokens: row.get(3)?,
+                total_cost: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    // v0.9.3 需求7：修复预先存在的单位 bug——segment.ts 全线存**秒**
+    //（now_secs），旧查询却按毫秒比较并 ts/1000 取日期 → 近 7 日趋势恒空。
+    // 现按秒比较、date(ts) 直取；同时聚合 cost 列（按日成本曲线数据源）。
+    let week_ago_secs = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0))
+        - 7 * 24 * 3600;
+    let mut daily = daily_summary_on(&conn, week_ago_secs)?;
+    // 套餐价格优先：配置存在则按 token 计价覆盖金额字段
+    let pricing_applied = pricing.is_some();
+    if let Some(pricing) = &pricing {
+        totals.total_cost =
+            compute_pricing_cost(pricing, totals.input_tokens, totals.output_tokens);
+        for row in top_sessions.iter_mut() {
+            row.total_cost = compute_pricing_cost(pricing, row.input_tokens, row.output_tokens);
+        }
+        for row in daily.iter_mut() {
+            row.cost = compute_pricing_cost(pricing, row.input_tokens, row.output_tokens);
+        }
+    }
+
+    Ok(UsageOverview {
+        totals,
+        top_sessions,
+        daily,
+        pricing_applied,
+    })
+}
+
+/// 按日聚合（v0.9.3 需求7）：token 与 cost（segment.ts 为秒级时间戳）。
+/// 抽出为独立函数供单测（overview 走全局文件库不可测）。
+fn daily_summary_on(conn: &Connection, since_secs: i64) -> Result<Vec<UsageDailySummary>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT date(ts, 'unixepoch'), SUM(input_tokens), SUM(output_tokens), COALESCE(SUM(cost), 0) FROM usage_segment WHERE ts >= ?1 GROUP BY 1 ORDER BY 1",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([since_secs], |row| {
+            Ok(UsageDailySummary {
+                day: row.get::<_, String>(0)?,
+                input_tokens: row.get::<_, Option<u64>>(1)?.unwrap_or(0),
+                output_tokens: row.get::<_, Option<u64>>(2)?.unwrap_or(0),
+                cost: row.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
 pub fn get(session_id: &str) -> Result<SessionUsageRow, String> {
     let s = store()?;
     let conn = s.conn.lock().map_err(|e| e.to_string())?;
@@ -479,7 +663,10 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
-        assert_eq!((before, after, reason.as_str()), (190_000, 60_000, "threshold"));
+        assert_eq!(
+            (before, after, reason.as_str()),
+            (190_000, 60_000, "threshold")
+        );
         assert_eq!(kept, "entry-42");
 
         // 摘要开销并入总量 + 分段数 + 压缩计数
@@ -529,4 +716,98 @@ mod tests {
         record_segment_on(&conn, "jishu-self", "new", &seg(1, 1)).unwrap();
         assert_eq!(read_on(&conn, "new").unwrap().segments, 1);
     }
+
+/// v0.9.3 需求7：v2 旧库（usage_segment 无 cost 列）经 init_conn 迁移补列，
+/// 既有数据保留；新分段记账写入 cost。
+#[test]
+fn cost_column_migration_preserves_v2_data() {
+    let conn = Connection::open_in_memory().unwrap();
+    // 旧 v2 形状的 usage_segment（无 cost）+ user_version=2。
+    conn.execute_batch(
+        "CREATE TABLE usage_segment (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            agent_id   TEXT NOT NULL DEFAULT '',
+            ts INTEGER NOT NULL,
+            stop_reason TEXT NOT NULL DEFAULT '',
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read INTEGER NOT NULL DEFAULT 0,
+            cache_write INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            est_thinking INTEGER NOT NULL DEFAULT 0,
+            est_text INTEGER NOT NULL DEFAULT 0,
+            est_builtin_tool INTEGER NOT NULL DEFAULT 0,
+            est_mcp_tool INTEGER NOT NULL DEFAULT 0,
+            est_tool_results INTEGER NOT NULL DEFAULT 0,
+            tool_calls INTEGER NOT NULL DEFAULT 0,
+            mcp_calls INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO usage_segment (session_id, agent_id, ts, input_tokens, output_tokens)
+        VALUES ('legacy', 'jishu-self', 1700000000, 100, 50);
+        PRAGMA user_version = 2;",
+    )
+    .unwrap();
+
+    init_conn(&conn).unwrap();
+
+    // 版本未变 → 未触发 DROP 重建，旧数据在且补了 cost 列（默认 0）。
+    let (tokens, cost): (i64, f64) = conn
+        .query_row(
+            "SELECT input_tokens, cost FROM usage_segment WHERE session_id='legacy'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(tokens, 100);
+    assert_eq!(cost, 0.0);
+
+    // 新记账带 cost。
+    let mut seg = seg(10, 5);
+    seg.total_cost = 0.02;
+    record_segment_on(&conn, "jishu-self", "new", &seg).unwrap();
+    let cost: f64 = conn
+        .query_row(
+            "SELECT cost FROM usage_segment WHERE session_id='new'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!((cost - 0.02).abs() < 1e-9);
+}
+
+/// v0.9.3 需求7：按日聚合按**秒**比较与取日期（修复旧毫秒单位 bug——
+/// 旧查询下趋势恒空），cost 逐日累计。
+#[test]
+fn daily_summary_aggregates_by_day_in_seconds() {
+    let conn = Connection::open_in_memory().unwrap();
+    init_conn(&conn).unwrap();
+    let base = 1_750_000_000i64; // 2025-06 起
+    let day = 24 * 3600;
+    // 两天各两段，显式 ts（record_segment_on 用当前时间不可控）。
+    for (ts, in_tok, cost) in [
+        (base, 100, 0.01),
+        (base + 3600, 50, 0.02),
+        (base + day, 200, 0.05),
+    ] {
+        conn.execute(
+            "INSERT INTO usage_segment (session_id, agent_id, ts, input_tokens, cost)
+             VALUES ('s1', 'a', ?1, ?2, ?3)",
+            rusqlite::params![ts, in_tok, cost],
+        )
+        .unwrap();
+    }
+
+    let daily = daily_summary_on(&conn, base - day).unwrap();
+    assert_eq!(daily.len(), 2);
+    assert_eq!(daily[0].input_tokens, 150);
+    assert!((daily[0].cost - 0.03).abs() < 1e-9);
+    assert_eq!(daily[1].input_tokens, 200);
+    assert!((daily[1].cost - 0.05).abs() < 1e-9);
+    // 日期是真实日历日（旧 bug 下会是 1970 附近或恒空）。
+    assert_ne!(daily[0].day, "1970-01-01");
+
+    // 窗口外不聚合：since 晚于次日 → 只剩空。
+    assert!(daily_summary_on(&conn, base + day + 1).unwrap().is_empty());
+}
 }

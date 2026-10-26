@@ -88,7 +88,7 @@ fn normalize_claude_assistant(event: &serde_json::Value) -> Vec<NormalizedEvent>
                 .get("input")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
-            let view = crate::agent::tool_view::classify_tool_view(&tool, &input);
+            let view = crate::agent::tool_view::classify_tool_view_for("claude-code", &tool, &input);
             normalized.push(NormalizedEvent::ToolUseStart {
                 call_id,
                 tool,
@@ -191,6 +191,10 @@ use crate::agent::traits::{
     TransportAdapter,
 };
 impl AgentManifest for ClaudeCodeAgent {
+    fn config_dir(&self) -> Option<std::path::PathBuf> {
+        crate::config::claude_dir().ok()
+    }
+
     fn info(&self) -> AgentInfo {
         AgentInfo {
             id: "claude-code".to_string(),

@@ -81,12 +81,6 @@ export const CODEX_PROXY_PRESETS: CodexProxyPreset[] = [
 
 /** 官方直连态的 OpenAI 模型预置（与 PROVIDER_PRESETS openai 条目同源；
  *  v0.7.6 需求2：codex 模型下拉直连态也有预置可选）。 */
-export const CODEX_DIRECT_MODELS: string[] = [
-  "gpt-5.1-codex",
-  "gpt-5.1",
-  "gpt-5.1-mini",
-];
-
 /** 自定义模型记忆（localStorage，按渠道隔离；"direct" = 直连态）。
  *  模型 ID 不落 codex 原生配置——列表是纯前端候选补充，避免污染
  *  config.toml；渠道切换后各自记忆互不串扰。 */

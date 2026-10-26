@@ -1,0 +1,145 @@
+import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { cn } from "@/lib/utils";
+// v0.9.2 需求1 P1：轮次语义迁移至会话内核统一视图模型（与消息渲染同源）。
+import { buildTurnSummaries, type TurnSummary } from "@/features/session-kernel/view-model";
+
+export type { TurnSummary };
+export { buildTurnSummaries };
+
+interface TurnRailProps {
+  turns: TurnSummary[];
+  /** 当前阅读位置所在轮（scroll-spy），-1 = 未知。 */
+  activeIndex: number;
+  onJump: (index: number) => void;
+}
+
+/** v0.9.1 需求5：第二栏最左缘的“横杠导航轨”（参考 zcode）——每轮用户对话
+ * 一条横杠；悬停浮出预览卡片（问题两行 / 回答三行截断）；点击平滑滚动
+ * 到对应轮次。
+ *
+ * 定位细节：轨道外层容器 pointer-events-none（空白处穿透不挡消息区），
+ * 仅横杠按钮自身可交互；轮次过多时轨道内部滚动且隐藏滚动条。预览卡片
+ * 挂在外层轨道（而非内部滚动层——overflow 会把 absolute 子元素裁剪
+ * 掉），hover 时测量横杠相对轨道的偏移定位，垂直居中于横杠。
+ *
+ * 测试期修复一~三（用户 GUI 反馈，参考图）：轨道内容垂直居中（m-auto：
+ * 居中展示、超出时自动贴顶滚动不裁头）；横杠间距收窄；悬停“波浪”动效
+ * ——鼠标所在横杠最长、按距离依次变短，滑过整列如波浪——长度随
+ * |i - hovered| 分档，宽度 transition-all 自然成动画。hover 事件挂在横杠
+ * 列容器上（mouseleave 整列才收起），鼠标滑过横杠间隙时波浪不塌陷闪烁。
+ *
+ * 测试期修复四~六（用户 GUI 二轮反馈）：间距再收 gap-0.5；默认长度加长
+ * 至 w-3.5；活动轮**不再有长度特判**——静息态所有横杠同长，仅以颜色
+ * 区分（bg-foreground/80），长度变化只来自悬停波浪。 */
+
+/** 波浪宽度分档：d = |横杠下标 - 悬停下标|，d=0 最长，d≥3 回基础档。
+ * Tailwind v4 动态间距刻度，w-4.5 = 18px。 */
+const WAVE_WIDTH_BY_DISTANCE = ["w-5", "w-4.5", "w-4"] as const;
+const BASE_WIDTH = "w-3.5";
+
+function waveWidth(distance: number): string {
+  return distance < WAVE_WIDTH_BY_DISTANCE.length
+    ? WAVE_WIDTH_BY_DISTANCE[distance]
+    : BASE_WIDTH;
+}
+
+export function TurnRail({ turns, activeIndex, onJump }: TurnRailProps) {
+  const { t } = useTranslation();
+  const railRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [hovered, setHovered] = useState<{ index: number; top: number } | null>(null);
+
+  // v0.9.4 需求7 测试期（用户：参考 zcode 丝滑——可滚 + 跟随）：活动轮变化
+  // 时轨道内平滑滚到活动横杠（block:nearest 不强拉——用户手动浏览时跟随
+  // 阅读位置；最新轮激活时自然滚到底，解决「最后一项显示旧轮次」）。
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || activeIndex < 0) return;
+    const item = el.querySelector<HTMLElement>(`[data-turn-rail-item="${activeIndex}"]`);
+    // jsdom 无 scrollIntoView（测试环境）——存在性防御。
+    if (item && typeof item.scrollIntoView === "function") {
+      item.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [activeIndex]);
+
+  if (turns.length === 0) return null;
+
+  const showPreview = (index: number, bar: HTMLElement) => {
+    const rail = railRef.current;
+    if (!rail) return;
+    const top = bar.getBoundingClientRect().top - rail.getBoundingClientRect().top;
+    setHovered({ index, top });
+  };
+
+  return (
+    <div
+      ref={railRef}
+      role="navigation"
+      aria-label={t("sessions.turnRail.label")}
+      // v0.9.4 需求7 测试期（用户对比 zcode，两轮修正）：**纯 flex 稳态结构**
+      // ——占满全高 + justify-center 垂直居中（不溢出时）+ 内层 min-h-0
+      // overflow-y-auto（溢出时内部滚动）+ py-6 恒定上下留白。
+      // 弃用 absolute top:50%+translateY 技巧（多层定位祖先下百分比 maxHeight
+      // 与高度收缩行为不稳定，用户实测仍占满全高不居中）。
+      className="pointer-events-none absolute inset-y-0 left-0 z-10 flex w-6 flex-col items-center justify-center"
+    >
+      {/* 滚动层：min-h-0（flex 收缩许可）+ 可滚轮；横杠列 m-auto 不溢出居中。 */}
+      <div
+        ref={scrollRef}
+        className="pointer-events-auto flex min-h-0 flex-col overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
+        <div className="flex flex-col items-center gap-0.5" onMouseLeave={() => setHovered(null)}>
+          {turns.map((_turn, index) => {
+            const distance = hovered === null ? Infinity : Math.abs(index - hovered.index);
+            const width = hovered === null ? BASE_WIDTH : waveWidth(distance);
+            return (
+              <button
+                key={index}
+                type="button"
+                data-turn-rail-item={index}
+                aria-label={t("sessions.turnRail.jump", { index: index + 1 })}
+                className="group pointer-events-auto relative flex h-2 w-5 shrink-0 cursor-pointer items-center justify-center"
+                onMouseEnter={(e) => showPreview(index, e.currentTarget)}
+                onFocus={(e) => showPreview(index, e.currentTarget)}
+                onBlur={() => setHovered((cur) => (cur?.index === index ? null : cur))}
+                onClick={() => onJump(index)}
+              >
+                <span
+                  className={cn(
+                    "h-0.5 rounded-full transition-all duration-200",
+                    index === activeIndex
+                      ? "bg-foreground/80"
+                      : hovered?.index === index
+                        ? "bg-muted-foreground"
+                        : "bg-border",
+                    width,
+                  )}
+                />
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {hovered && (
+        <div
+          className="pointer-events-none absolute left-6 z-20 w-72 max-w-[calc(100vw-5rem)] -translate-y-1/2 rounded-lg border border-border/60 bg-popover/95 px-3 py-2.5 text-left shadow-lg backdrop-blur"
+          style={{ top: hovered.top + 4 }}
+        >
+          <div className="text-[10px] font-medium text-muted-foreground/70">
+            {t("sessions.turnRail.question")}
+          </div>
+          <div className="mt-0.5 line-clamp-2 whitespace-pre-wrap break-words text-[13px] font-medium leading-snug text-foreground">
+            {turns[hovered.index]?.question || t("sessions.turnRail.empty")}
+          </div>
+          <div className="mt-2 text-[10px] font-medium text-muted-foreground/70">
+            {t("sessions.turnRail.answer")}
+          </div>
+          <div className="mt-0.5 line-clamp-3 whitespace-pre-wrap break-words text-xs leading-snug text-muted-foreground">
+            {turns[hovered.index]?.answer || t("sessions.turnRail.empty")}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

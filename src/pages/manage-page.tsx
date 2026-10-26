@@ -26,6 +26,10 @@ interface ManagePageProps {
   onBack: () => void;
   onEnterProject: (project: Project) => void;
   navigateToProjects?: number;
+  /** v0.9.2 需求10：变化时切到「模型设置」子页（会话页「前往配置」入口）。 */
+  navigateToAgentModels?: number;
+  /** v0.9.3 需求13 C4-slice2c：pipeline 插件「作为任务启动」（插件详情入口）。 */
+  onLaunchPipeline?: (pluginId: string, name: string) => void;
   projects: Project[] | null;
   projectMetas: Record<string, ProjectMeta> | null;
   refetchProjects: (silent?: boolean) => Promise<Project[]>;
@@ -48,7 +52,7 @@ const menuGroups: { titleKey: string; titleFallback: string; items: ManageMenuIt
     titleFallback: "工作区",
     items: [
       { id: "projects", icon: FolderOpen, labelKey: "manage.menuProjects", fallback: "项目管理" },
-      { id: "plugins", icon: Blocks, labelKey: "manage.menuPlugins", fallback: "插件管理" },
+      { id: "plugins", icon: Blocks, labelKey: "manage.menuPlugins", fallback: "插件中心" },
     ],
   },
   {
@@ -91,7 +95,7 @@ const agentSectionTab: Partial<Record<AgentConfigSection, ManageTab>> = {
   advanced: "agent-advanced",
 };
 
-export function ManagePage({ onBack, onEnterProject, navigateToProjects, projects, projectMetas, refetchProjects, refetchProjectMetas }: ManagePageProps) {
+export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigateToAgentModels, onLaunchPipeline, projects, projectMetas, refetchProjects, refetchProjectMetas }: ManagePageProps) {
   const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<ManageTab>("projects");
   const prevNavRef = useRef(0);
@@ -102,6 +106,16 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, project
       setActiveTab("projects");
     }
   }, [navigateToProjects]);
+
+  // v0.9.2 需求10：会话页「前往配置」——切到模型设置子页（智能体定位
+  // 由 App 层 setManageAgent 完成，ConfigPage 自动渲染对应 agent）。
+  const prevAgentModelsNavRef = useRef(0);
+  useEffect(() => {
+    if (navigateToAgentModels && navigateToAgentModels !== prevAgentModelsNavRef.current) {
+      prevAgentModelsNavRef.current = navigateToAgentModels;
+      setActiveTab("agent-models");
+    }
+  }, [navigateToAgentModels]);
 
   const handleBack = () => {
     setActiveTab("projects");
@@ -194,7 +208,7 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, project
             onNavigateSection={handleNavigateAgentSection}
           />
         )}
-        {activeTab === "plugins" && <PluginsPage />}
+        {activeTab === "plugins" && <PluginsPage onLaunchPipeline={onLaunchPipeline} />}
         {activeTab === "commands" && <CommandsPage />}
         {activeTab === "env" && <EnvCheckPage />}
       </div>

@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::collections::HashMap;
 
 use tauri::Manager;
 
@@ -88,10 +89,18 @@ fn rebuild_registry(app: &tauri::AppHandle, state: &tauri::State<'_, Mutex<AppSt
     *s.tool_plugins.lock().unwrap_or_else(|e| e.into_inner()) = reloaded_tools;
     use tauri::Emitter;
     let _ = app.emit("plugins-changed", ());
+    // v0.9.0 需求1 P2：插件集变化后同步四家 MCP 条目（注入/回收，锁外执行）。
+    let _ = crate::agent::mcp_inject::sync_hub_mcp_entries();
+    // v0.9.0 需求20：skill 分发随插件启停同步。
+    let _ = crate::agent::skill_deploy::sync_skill_deployments(false);
+    // v0.9.0 需求2：pi 扩展部署随插件启停同步。
+    crate::agent::pi_deploy::ensure_pi_extension_deployments();
 }
 
 /// 启停插件并热生效（core 插件拒绝；写 plugins.json 持久化；agent 与 tool
 /// 插件共用同一启停集合——known ids 含两类）。
+/// 需求25 P2：混合插件确认卡「启用/暂不」复用本命令——成功后顺带清除
+/// `<id>/.pending-confirm` 安装标记（幂等，非混合插件无该文件则无操作）。
 #[tauri::command]
 pub(crate) fn plugin_set_enabled(
     app: tauri::AppHandle,
@@ -101,6 +110,7 @@ pub(crate) fn plugin_set_enabled(
 ) -> Result<(), String> {
     agent::plugin::set_plugin_enabled(&plugin_id, enabled)?;
     rebuild_registry(&app, &state);
+    agent::plugin::clear_pending_confirm_marker(&plugin_id);
     log::info!(
         "[plugin] {} {}d (registry rebuilt)",
         plugin_id,
@@ -110,7 +120,8 @@ pub(crate) fn plugin_set_enabled(
 }
 
 /// 卸载 manifest 插件（删除其 toml 文件 + 清理启停配置 + 热重建）。
-/// 内建插件拒绝；有活跃会话的插件拒绝（避免进程孤儿化——先结束会话）。
+/// 内建插件拒绝；系统插件拒绝（v0.9.0 需求1 二期——随包分发、启动幂等
+/// 重部署，卸载是无操作）；有活跃会话的插件拒绝（避免进程孤儿化——先结束会话）。
 #[tauri::command]
 pub(crate) fn plugin_remove(
     app: tauri::AppHandle,
@@ -137,6 +148,11 @@ pub(crate) fn plugin_remove(
         if descriptor.core {
             return Err(format!(
                 "Plugin {plugin_id} is the core engine and cannot be removed"
+            ));
+        }
+        if agent::plugin::is_system_plugin(&plugin_id) {
+            return Err(format!(
+                "Plugin {plugin_id} is a system plugin and cannot be removed"
             ));
         }
         descriptor
@@ -183,6 +199,10 @@ pub(crate) struct SessionToolInfo {
     /// M3：是否可参与 CLI 注入（有 [tool] 段）。false = 仅 pi 扩展形态
     /// （PiOnly 自适应插件）——前端 + 菜单区分展示，勾选后不会注入说明块。
     pub injectable: bool,
+    /// v0.9.0 需求20 第二轮：能力类别（+ 菜单两级分组）——mcp = [mcp] 声明
+    ///（经 jishu-hub 结构化通道，注入提示块）；skill = [skill] 声明（已分发
+    /// 到 agent skill 目录，注入提示块）；cli = 传统 [tool] 用法注入。
+    pub category: String,
 }
 
 #[tauri::command]
@@ -215,7 +235,14 @@ pub(crate) fn session_tool_list(
                 .map(|t| t.usage.clone())
                 .unwrap_or_default(),
             enabled: selected.contains(p.id()),
-            injectable: p.file.tool.is_some(),
+            injectable: p.file.tool.is_some() || p.file.mcp.is_some() || p.file.skill.is_some(),
+            category: if p.file.mcp.is_some() {
+                "mcp".to_string()
+            } else if p.file.skill.is_some() {
+                "skill".to_string()
+            } else {
+                "cli".to_string()
+            },
         })
         .collect()
 }
@@ -269,16 +296,121 @@ pub(crate) fn plugin_get(
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
     // agent 与 tool 两类 manifest 插件都在 ~/.jishu-hub/agents/ 下——直接按
-    // 文件名读（<id>.toml），与装载同源。
-    let path = agent::manifest::manifest_dir().join(format!("{plugin_id}.toml"));
+    // 文件名读（<id>.toml），与装载同源。v0.9.4 需求3：目录形式插件
+    //（plugins/<id>/plugin.toml，文件夹式 skill 等）回退读该处，并把
+    // skills/<name>/SKILL.md 注入为 [[skill]] 条目——表单可编辑（保存时
+    // plugin_update 目录形式路径写回，见下）。
+    let single = agent::manifest::manifest_dir().join(format!("{plugin_id}.toml"));
+    let dir_form = agent::manifest::hub_home()
+        .join("plugins")
+        .join(&plugin_id)
+        .join("plugin.toml");
+    let (path, is_dir_form) = if single.is_file() {
+        (single, false)
+    } else if dir_form.is_file() {
+        (dir_form, true)
+    } else {
+        return Err(format!("cannot read {}: file not found", single.display()));
+    };
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    let file: agent::manifest::schema::AgentManifestFile =
+    let mut file: agent::manifest::schema::AgentManifestFile =
         toml::from_str(&content).map_err(|e| format!("stored manifest is invalid: {e}"))?;
+    if is_dir_form && file.skill.is_none() {
+        let root = path.parent().expect("plugin.toml has parent");
+        let entries: Vec<agent::manifest::schema::SkillEntry> =
+            agent::skill_deploy::dir_source_skills(root, &plugin_id)
+                .into_iter()
+                .map(|e| {
+                    // dir_name = <pid>__<name> → 还原 skill 名；content 重析
+                    // frontmatter（name/description/body 三字段回填表单）。
+                    let name = e
+                        .dir_name
+                        .strip_prefix(&format!("{plugin_id}__"))
+                        .unwrap_or(&e.dir_name)
+                        .to_string();
+                    let parsed = crate::commands::skill_import::parse_skill_md(&e.content, &name);
+                    agent::manifest::schema::SkillEntry {
+                        name,
+                        description: parsed.description,
+                        body: parsed.body,
+                    }
+                })
+                .collect();
+        if !entries.is_empty() {
+            file.skill = Some(agent::manifest::schema::SkillDecl::Many(entries));
+        }
+    }
     serde_json::to_value(&file).map_err(|e| e.to_string())
 }
 
 /// 编辑模式：校验 → 覆盖写回原文件 → 热重建。id 不可变（后端防御：
+/// v0.9.3 需求13 C3：新建组合插件向导落点——保存清单并广播 plugins-changed
+///（前端 loader 热重建，新插件即时出现在插件中心与会话区）。
+#[tauri::command]
+pub(crate) fn composed_plugin_save(
+    app: tauri::AppHandle,
+    id: String,
+    toml: String,
+) -> Result<(), String> {
+    agent::plugin::save_composed_manifest(&id, &toml)?;
+    use tauri::Emitter;
+    let _ = app.emit("plugins-changed", ());
+    Ok(())
+}
+
+/// 需求25 P2 安全阀：混合插件安装待确认清单——扫描 `plugins/*/.pending-confirm`
+/// 标记（CLI `plugins add-hybrid` 落盘；CLI 是独立进程发不了广播，标记文件即
+/// 跨进程信箱）。前端确认卡轮询读取；「启用/暂不」经 plugin_set_enabled
+/// 落地并顺带清除标记。无待确认项返回空数组（轮询轻量）。
+#[tauri::command]
+pub(crate) fn plugin_confirm_pending() -> Vec<agent::plugin::PendingHybridPlugin> {
+    agent::plugin::pending_confirm_list()
+}
+
+/// v0.9.3 需求13 C3：删除用户组合插件（内置拒绝）并广播。
+#[tauri::command]
+pub(crate) fn composed_plugin_delete(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    agent::plugin::delete_composed_plugin(&id)?;
+    use tauri::Emitter;
+    let _ = app.emit("plugins-changed", ());
+    Ok(())
+}
+
+/// v0.9.3 需求13 C1：组合式清单扫描（toml→JSON，前端组合引擎装配）。
+/// 形状契约：`[{ id, manifest }]` 对象数组（元组会序列化成 `[id, manifest]`
+/// 数组——前端 loader 形状不匹配致组合清单全军覆没，测试期用户实测踩坑）。
+#[tauri::command]
+pub(crate) fn composed_plugin_manifests() -> Result<Vec<serde_json::Value>, String> {
+    Ok(agent::plugin::composed_session_manifests()
+        .into_iter()
+        .map(|(id, manifest)| serde_json::json!({ "id": id, "manifest": manifest }))
+        .collect())
+}
+
+/// v0.9.3 需求12 P1：插件配置面——全量读取（前端与 defaults 合并）。
+#[tauri::command]
+pub(crate) fn plugin_config_get_all() -> Result<HashMap<String, HashMap<String, serde_json::Value>>, String> {
+    Ok(agent::plugin_options::load_all())
+}
+
+/// v0.9.3 需求12 P1：覆写某插件配置组（原子落盘 + 广播 plugins-config-changed，
+/// 前端订阅即时生效）。值合法性由前端按 configSchema 校验。
+#[tauri::command]
+pub(crate) fn plugin_config_set(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    values: HashMap<String, serde_json::Value>,
+) -> Result<(), String> {
+    agent::plugin_options::set_values(&plugin_id, values)?;
+    use tauri::Emitter;
+    let _ = app.emit(
+        "plugins-config-changed",
+        serde_json::json!({ "pluginId": plugin_id }),
+    );
+    Ok(())
+}
+
 /// manifest.info.id 必须等于 plugin_id——文件名/会话归属/启停配置都以 id
 /// 为 key，改名等于换插件，请卸载后新建）。
 #[tauri::command]
@@ -288,7 +420,7 @@ pub(crate) fn plugin_update(
     plugin_id: String,
     manifest: serde_json::Value,
 ) -> Result<PluginCreated, String> {
-    let file: agent::manifest::schema::AgentManifestFile =
+    let mut file: agent::manifest::schema::AgentManifestFile =
         serde_json::from_value(manifest).map_err(|e| format!("invalid manifest payload: {e}"))?;
     if file.info.id != plugin_id {
         return Err(format!(
@@ -298,18 +430,87 @@ pub(crate) fn plugin_update(
         ));
     }
     file.validate()?;
-    let path = agent::manifest::manifest_dir().join(format!("{plugin_id}.toml"));
-    if !path.exists() {
-        return Err(format!("plugin file not found: {}", path.display()));
-    }
+    // v0.9.4 需求3：目录形式插件（agents/ 无、plugins/<id>/plugin.toml 有）
+    // → 写回该处并剥离 [skill] 段（目录源文件即权威）；表单 skill 条目
+    // 逐个渲染覆写 skills/<name>/SKILL.md（附件不动）。
+    let single = agent::manifest::manifest_dir().join(format!("{plugin_id}.toml"));
+    let dir_toml = agent::manifest::hub_home()
+        .join("plugins")
+        .join(&plugin_id)
+        .join("plugin.toml");
+    let (path, dir_form) = if single.exists() {
+        (single, false)
+    } else if dir_toml.exists() {
+        (dir_toml, true)
+    } else {
+        return Err(format!("plugin file not found: {}", single.display()));
+    };
+    let skill_entries = if dir_form { file.skill.take() } else { None };
     let content_toml =
         toml::to_string_pretty(&file).map_err(|e| format!("cannot serialize manifest: {e}"))?;
     crate::util::atomic_write(&path, content_toml.as_bytes())
         .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    if let Some(decl) = skill_entries {
+        let root = path.parent().expect("plugin.toml has parent").join("skills");
+        for (name, description, body) in decl.entries() {
+            let dir_name = name.unwrap_or(&plugin_id);
+            let target = root.join(dir_name).join("SKILL.md");
+            if !target.exists() {
+                continue; // 表单条目对应目录不存在（新建 skill 走创建流程）
+            }
+            let md = agent::skill_deploy::render_skill_md(dir_name, description, body);
+            crate::util::atomic_write(&target, md.as_bytes()).map_err(|e| {
+                format!("cannot write {}: {e}", target.display())
+            })?;
+        }
+    }
     rebuild_registry(&app, &state);
     log::info!("[plugin] updated {} ({})", plugin_id, path.display());
     Ok(PluginCreated {
         id: plugin_id,
+        path: path.to_string_lossy().to_string(),
+    })
+}
+
+/// v0.9.4 需求3：文件夹形式创建 skill 插件——manifest（含表单 skill 条目，
+/// 校验后剥离 [skill] 段）落 `plugins/<id>/plugin.toml`；skill_dir 整目录
+/// 复制到 `plugins/<id>/skills/<skill_name>/`，SKILL.md 以首条 skill 条目
+/// 渲染覆写（表单可编辑语义）。分发走目录形式源镜像同步（含附属文件）。
+#[tauri::command]
+pub(crate) fn plugin_create_skill_folder(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<AppState>>,
+    manifest: serde_json::Value,
+    skill_dir: String,
+    skill_name: String,
+) -> Result<PluginCreated, String> {
+    let mut file: agent::manifest::schema::AgentManifestFile =
+        serde_json::from_value(manifest).map_err(|e| format!("invalid manifest payload: {e}"))?;
+    file.validate()?;
+    // 首条 skill 条目 → SKILL.md 渲染（name 空则用插件 id，对齐单数形态
+    // 部署目录名语义）；随后剥离 [skill] 段（目录源文件即权威，避免双源）。
+    let skill_md = file.skill.as_ref().and_then(|decl| {
+        decl.entries().into_iter().next().map(|(name, desc, body)| {
+            agent::skill_deploy::render_skill_md(name.unwrap_or(&file.info.id), desc, body)
+        })
+    });
+    file.skill = None;
+    let content_toml =
+        toml::to_string_pretty(&file).map_err(|e| format!("cannot serialize manifest: {e}"))?;
+    let skill_src = std::path::PathBuf::from(&skill_dir);
+    if !skill_src.is_dir() {
+        return Err(format!("skill folder not found: {skill_dir}"));
+    }
+    let (id, path) = agent::plugin::install_skill_folder_plugin(
+        &file,
+        &content_toml,
+        &skill_src,
+        &skill_name,
+        &skill_md.ok_or("folder skill manifest must declare the [skill] entry")?,
+    )?;
+    rebuild_registry(&app, &state);
+    Ok(PluginCreated {
+        id,
         path: path.to_string_lossy().to_string(),
     })
 }
