@@ -15,7 +15,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { useTheme, type Theme, ThemeProvider } from "@/hooks/use-theme";
+import { useTheme, isBuiltinTheme, type BuiltinTheme, ThemeProvider } from "@/hooks/use-theme";
 import { usePluginTheme } from "@/features/theme/plugin-theme";
 // 需求14 M5（06-P2）：应用级浮层宿主（插件 app-overlay 挂载，跨页常驻）。
 import { AppOverlayHost } from "@/features/session-kernel/plugins/mounts/app-overlay-host";
@@ -49,12 +49,12 @@ import type { Page, Project, ProjectMeta } from "@/types";
 const ChatPage = lazy(() => import("@/pages/chat-page").then(m => ({ default: m.ChatPage })));
 const ManagePage = lazy(() => import("@/pages/manage-page").then(m => ({ default: m.ManagePage })));
 
-const themeConfig: Record<Theme, { icon: typeof Sun; labelKey: string }> = {
+const themeConfig: Record<BuiltinTheme, { icon: typeof Sun; labelKey: string }> = {
   light: { icon: Sun, labelKey: "theme.light" },
   colorful: { icon: Palette, labelKey: "theme.colorful" },
   dark: { icon: Moon, labelKey: "theme.dark" },
 };
-const themeOrder: Theme[] = ["light", "colorful", "dark"];
+const themeOrder: BuiltinTheme[] = ["light", "colorful", "dark"];
 const appWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? getCurrentWindow() : null;
 
 const fontLevels: { id: FontLevel; labelKey: string }[] = [
@@ -212,7 +212,8 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
   };
 
   const cycleTheme = () => {
-    const idx = themeOrder.indexOf(theme);
+    // 循环仅在内置三档间轮换（插件主题时 idx=-1 → 回 light）。
+    const idx = themeOrder.indexOf(isBuiltinTheme(theme) ? theme : "light");
     setTheme(themeOrder[(idx + 1) % themeOrder.length]);
   };
 
@@ -241,8 +242,15 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
     }
   };
 
-  const { icon: ThemeIcon, labelKey: themeLabelKey } = themeConfig[theme];
-  const themeLabel = t(themeLabelKey);
+  // 需求14 测试期修复（P3/B5 连带）：Theme 值域已含插件主题 id——标题栏
+  // 主题按钮查表对非内置值兜底（原 Record<Theme> 索引 undefined 解构崩溃：
+  // 切到主题插件即整页报错「Cannot destructure property 'icon'」）。
+  const themeMeta: { icon: typeof Sun; labelKey: string; fallback?: string } =
+    isBuiltinTheme(theme)
+      ? themeConfig[theme]
+      : { icon: Palette, labelKey: "theme.pluginTheme", fallback: "主题插件" };
+  const { icon: ThemeIcon } = themeMeta;
+  const themeLabel = t(themeMeta.labelKey, { defaultValue: themeMeta.fallback });
 
   return (
     <div
