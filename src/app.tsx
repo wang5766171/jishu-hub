@@ -16,6 +16,9 @@ import { listen } from "@tauri-apps/api/event";
 import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { useTheme, type Theme, ThemeProvider } from "@/hooks/use-theme";
+import { usePluginTheme } from "@/features/theme/plugin-theme";
+// 需求14 M5（06-P2）：应用级浮层宿主（插件 app-overlay 挂载，跨页常驻）。
+import { AppOverlayHost } from "@/features/session-kernel/plugins/mounts/app-overlay-host";
 import { useFontSize, type FontLevel } from "@/hooks/use-font-size";
 import { AgentProvider, useAgent } from "@/agents";
 import { FileViewerProvider, useFileViewer } from "@/components/file-viewer";
@@ -676,6 +679,7 @@ useEffect(() => {
             项目切换不卸载；组件内部 createPortal 到 body，轮询
             plugin_confirm_pending，无待确认项时渲染 null。 */}
         <HybridInstallConfirmation />
+      <AppOverlayHost />
         {/* 5d：选中文本右键菜单（发送到插件） */}
         <SelectionContextMenu />
         {/* 7a：pi 扩展发现卡（层一自动检测） */}
@@ -762,6 +766,9 @@ import { EnvCheckPage } from "@/pages/env-check-page";
 
 function AppContentWrapper() {
   const [envChecked, setEnvChecked] = useState(!!localStorage.getItem("jishu-hub-env-checked"));
+  // 需求14 M2（S3）：主题插件装载器——App 根部消费（ThemeProvider 内），
+  // 订阅组合清单版本实现主题热更；env-check 首屏阶段同样生效。
+  usePluginTheme();
 
   if (!envChecked) {
     return (

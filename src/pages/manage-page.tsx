@@ -1,11 +1,14 @@
 import { useState, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
+import { Palette } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ProjectsPage } from "./projects-page";
 import { ConfigPage } from "./config-page";
 import { CommandsPage } from "./commands-page";
 import { EnvCheckPage } from "./env-check-page";
 import { PluginsPage } from "./plugins-page";
+// 需求14 M2（S3）：外观设置页（主题卡列表）。
+import { AppearancePage } from "./appearance-page";
 import {
   FolderOpen,
   Rocket,
@@ -55,6 +58,7 @@ const menuGroups: { titleKey: string; titleFallback: string; items: ManageMenuIt
     items: [
       { id: "projects", icon: FolderOpen, labelKey: "manage.menuProjects", fallback: "项目管理" },
       { id: "plugins", icon: Blocks, labelKey: "manage.menuPlugins", fallback: "插件中心" },
+      { id: "appearance", icon: Palette, labelKey: "manage.menuAppearance", fallback: "外观" },
     ],
   },
   {
@@ -217,6 +221,7 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigat
           />
         )}
         {activeTab === "plugins" && <PluginsPage onLaunchPipeline={onLaunchPipeline} />}
+        {activeTab === "appearance" && <AppearancePage />}
         {activeTab === "commands" && <CommandsPage />}
         {activeTab === "env" && <EnvCheckPage />}
       </div>

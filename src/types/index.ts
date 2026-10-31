@@ -235,6 +235,7 @@ export type AgentConfigSection =
 export type ManageTab =
   | "projects"
   | "plugins"
+  | "appearance"
   | "agent-models"
   | "agent-behavior"
   | "agent-templates"
