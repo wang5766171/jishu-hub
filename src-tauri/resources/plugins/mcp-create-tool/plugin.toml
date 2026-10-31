@@ -5,6 +5,7 @@ kind = "tool"
 id = "mcp-create-tool"
 display_name = "MCP 创建工具"
 icon = "blocks"
+category = "core"
 
 [skill]
 description = "把 MCP server（stdio/HTTP/SSE）注册进 jishu hub 的操作指南——用户要求接入/注册/添加某个 MCP 服务，或你发现某 MCP server 值得接入时使用。注册后四家智能体（claude/codex/opencode/jishu）共享可用。"

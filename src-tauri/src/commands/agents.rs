@@ -513,6 +513,55 @@ pub(crate) fn plugin_config_set(
 
 /// manifest.info.id 必须等于 plugin_id——文件名/会话归属/启停配置都以 id
 /// 为 key，改名等于换插件，请卸载后新建）。
+/// 源码读取结果（需求14 M4 R8：前端 fetch 插件文件会被 CSP connect-src 拦
+///——无 asset 源，IPC 读取是唯一通路且顺带做目录越界校验）。
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PluginReadFile {
+    pub path: String,
+    pub content: String,
+}
+
+/// 读取插件源码文件（需求14 M4 G9 源码视图/编辑数据源）。
+/// 寻址双落点同 plugin_update：目录形态 plugins/<id>/<file> 优先；单文件
+/// 形态 agents/<id>.toml 仅接受虚拟名 "plugin.toml"。安全边界：file 只允许
+/// 浅层普通文件名（拒绝路径分隔/父目录段/点开头），不越出插件自身目录。
+#[tauri::command]
+pub(crate) fn plugin_read_file(
+    plugin_id: String,
+    file: String,
+) -> Result<PluginReadFile, String> {
+    if file.is_empty()
+        || file.contains('/')
+        || file.contains('\\')
+        || file.contains("..")
+        || file.starts_with('.')
+    {
+        return Err(format!("非法文件名: {file}（仅限插件目录内文件）"));
+    }
+    let read = |path: std::path::PathBuf| -> Result<PluginReadFile, String> {
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        Ok(PluginReadFile {
+            path: path.to_string_lossy().to_string(),
+            content,
+        })
+    };
+    // 目录形态（组合/混合/目录式 A 家族）：plugins/<id>/<file>。
+    let composed = agent::plugin::composed_plugins_dir().join(&plugin_id).join(&file);
+    if composed.is_file() {
+        return read(composed);
+    }
+    // 单文件形态（agents/<id>.toml）：仅清单本体，虚拟名 plugin.toml。
+    if file == "plugin.toml" {
+        let single = agent::manifest::manifest_dir().join(format!("{plugin_id}.toml"));
+        if single.is_file() {
+            return read(single);
+        }
+    }
+    Err(format!("文件不存在：{plugin_id}/{file}"))
+}
+
 #[tauri::command]
 pub(crate) fn plugin_update(
     app: tauri::AppHandle,
@@ -852,12 +901,17 @@ pub(crate) fn hybrid_plugin_save(
     // 默认禁用（确认卡安全阀——GUI 亲手创建同样走确认，与 CLI 通道一致）。
     let _ = agent::plugin::set_plugin_enabled(&id, false);
     let toml_value: toml::Value = toml.parse().map_err(|e| format!("TOML 解析失败: {e}"))?;
+    // 需求14 M1（02 §7 确认卡增强）：与 CLI finalize 同源计算资产清单与
+    // 语言接管摘要（pending_confirm_extras 共用），两通道确认卡同形。
+    let (assets, takeover) = agent::plugin::pending_confirm_extras(&dir, &toml_value);
     let pending = serde_json::json!({
         "id": id,
         "name": toml_value.get("plugin").and_then(|p| p.get("name")).and_then(|v| v.as_str()).unwrap_or(&id),
         "mount": toml_value.get("render").and_then(|r| r.get("mount")).and_then(|v| v.as_str()).unwrap_or("unknown"),
         "codeLines": component_js.lines().count(),
         "dir": dir.to_string_lossy(),
+        "assets": assets,
+        "takeover": takeover,
     });
     crate::util::atomic_write(
         &dir.join(".pending-confirm"),

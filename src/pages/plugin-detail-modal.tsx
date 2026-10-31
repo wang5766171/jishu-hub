@@ -31,6 +31,9 @@ import {
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
 import { resolveStages } from "@/features/session-kernel/capabilities/pipeline/contracts";
 import { cn } from "@/lib/utils";
+import { invokeCommand } from "@/hooks/use-invoke";
+import { CodeEditor } from "@/components/code-editor";
+import { FolderOpen } from "lucide-react";
 
 /** plugins-page 的描述符投影（避免循环依赖：仅取模态所需字段）。 */
 export interface DrawerPluginInfo {
@@ -43,6 +46,9 @@ export interface DrawerPluginInfo {
   core?: boolean;
   has_mcp?: boolean;
   enabled: boolean;
+  /** 需求14 M4（G9 源码视图）：组合/混合件标记与来源目录（编辑/打开定位）。 */
+  composed?: boolean;
+  source_path?: string | null;
 }
 
 type LeafField = Exclude<PluginConfigField, { type: "section" }>;
@@ -397,6 +403,175 @@ function BehaviorSection({
   );
 }
 
+/** 需求14 M4（G9 源码视图/R8）：源码 tab——plugin_read_file IPC 读取
+ *（前端 fetch 会被 CSP connect-src 拦，IPC 是唯一通路且带越界校验）。
+ * 编辑面：用户组合/混合件可编辑保存（composed_plugin_save / hybrid_plugin_
+ * save，守卫在后端 fail loud——含语言冲突/内置保护）；混合件保存后按安全阀
+ * 回到「待确认」；系统/内置与 A 家族件只读（A 家族编辑走创建向导编辑模式）。 */
+function SourceSection({ plugin }: { plugin: DrawerPluginInfo }) {
+  const { t } = useTranslation();
+  const tr = (k: string, f: string) => (t(k) === k ? f : t(k));
+  const [tomlFile, setTomlFile] = useState<{ path: string; content: string } | null>(null);
+  const [jsFile, setJsFile] = useState<{ path: string; content: string } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [draftToml, setDraftToml] = useState<string | null>(null);
+  const [draftJs, setDraftJs] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const editable = plugin.kind === "session" && !plugin.system;
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const toml = await invokeCommand<{ path: string; content: string }>("plugin_read_file", {
+        pluginId: plugin.id,
+        file: "plugin.toml",
+      });
+      setTomlFile(toml);
+      setDraftToml(null);
+      if (plugin.kind === "session") {
+        try {
+          const js = await invokeCommand<{ path: string; content: string }>("plugin_read_file", {
+            pluginId: plugin.id,
+            file: "component.js",
+          });
+          setJsFile(js);
+          setDraftJs(null);
+        } catch {
+          setJsFile(null);
+        }
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [plugin.id, plugin.kind]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const dirty =
+    (draftToml != null && draftToml !== tomlFile?.content) ||
+    (jsFile != null && draftJs != null && draftJs !== jsFile.content);
+
+  const save = useCallback(async () => {
+    if (!editable || !dirty) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const toml = draftToml ?? tomlFile?.content ?? "";
+      if (jsFile) {
+        await invokeCommand("hybrid_plugin_save", {
+          id: plugin.id,
+          toml,
+          componentJs: draftJs ?? jsFile.content,
+        });
+      } else {
+        await invokeCommand("composed_plugin_save", { id: plugin.id, toml });
+      }
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }, [dirty, draftJs, draftToml, editable, jsFile, load, plugin.id, tomlFile?.content]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          {tr("plugins.sourceTitle", "源码")}
+          {!editable ? (
+            <span className="ml-2 font-normal normal-case text-muted-foreground/60">
+              {tr("plugins.sourceReadonly", "（只读——系统/内置件或经表单向导编辑）")}
+            </span>
+          ) : null}
+        </h4>
+        <span className="flex-1" />
+        {tomlFile ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 text-[11px]"
+            onClick={() => {
+              void invokeCommand("reveal_in_file_manager", { path: tomlFile.path }).catch(() => undefined);
+            }}
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+            <span className="ml-1">{tr("plugins.sourceOpenLocation", "打开所在位置")}</span>
+          </Button>
+        ) : null}
+        {editable ? (
+          <Button size="sm" className="h-7 px-2 text-[11px]" disabled={!dirty || saving} onClick={() => void save()}>
+            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+            <span className="ml-1">{tr("common.save", "保存")}</span>
+          </Button>
+        ) : null}
+      </div>
+      {editable && jsFile ? (
+        <p className="text-[11px] text-amber-600">
+          {tr("plugins.sourceHybridNote", "含代码组件：保存后将回到「待确认安装」状态，需确认后生效（安全阀）。")}
+        </p>
+      ) : null}
+      {error ? (
+        <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          {error}
+        </div>
+      ) : null}
+      {loading ? (
+        <div className="flex items-center justify-center py-10">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        </div>
+      ) : (
+        <>
+          {tomlFile ? (
+            <div>
+              <div className="mb-1 flex items-baseline justify-between gap-2">
+                <span className="font-mono text-[10px] font-medium text-foreground/70">plugin.toml</span>
+                <span className="truncate font-mono text-[10px] text-muted-foreground/50">{tomlFile.path}</span>
+              </div>
+              {editable ? (
+                <textarea
+                  value={draftToml ?? tomlFile.content}
+                  onChange={(e) => setDraftToml(e.target.value)}
+                  spellCheck={false}
+                  className="h-56 w-full resize-y rounded-md border border-border/60 bg-background p-2.5 font-mono text-xs leading-relaxed outline-none focus:border-primary/50"
+                />
+              ) : (
+                <pre className="max-h-72 overflow-auto rounded-md border border-border/40 bg-muted/30 p-2.5 font-mono text-xs leading-relaxed">
+                  {tomlFile.content}
+                </pre>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground/70">
+              {tr("plugins.sourceNoFiles", "该插件无本地源码文件（内置 Rust 实现）。")}
+            </p>
+          )}
+          {jsFile ? (
+            <div>
+              <div className="mb-1 flex items-baseline justify-between gap-2">
+                <span className="font-mono text-[10px] font-medium text-foreground/70">component.js</span>
+                <span className="truncate font-mono text-[10px] text-muted-foreground/50">{jsFile.path}</span>
+              </div>
+              <CodeEditor
+                value={draftJs ?? jsFile.content}
+                onChange={editable ? setDraftJs : undefined}
+                readOnly={!editable}
+                pluginId={plugin.id}
+                height="300px"
+              />
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
 export function PluginDetailModal({
   plugin,
   initialTab = "info",
@@ -404,13 +579,13 @@ export function PluginDetailModal({
   onLaunchPipeline,
 }: {
   plugin: DrawerPluginInfo;
-  initialTab?: "info" | "settings";
+  initialTab?: "info" | "settings" | "source";
   onClose: () => void;
   /** C4-slice2c：pipeline 型插件「作为任务启动」——跳会话页预填 /jishu-pipeline。 */
   onLaunchPipeline?: (pluginId: string, name: string) => void;
 }) {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<"info" | "settings">(initialTab);
+  const [tab, setTab] = useState<"info" | "settings" | "source">(initialTab);
   const [draft, setDraft] = useState<PluginConfigValues | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -557,32 +732,43 @@ export function PluginDetailModal({
           </button>
         </div>
 
-        {/* tab 行（批次3：有配置面或有使用面均有设置页签——双段结构） */}
-        {configSchema || hasUsageFace ? (
+        {/* tab 行（批次3：有配置面或有使用面均有设置页签——双段结构；
+            需求14 M4：非内置件加「源码」页签——G9 全类型可看/可编辑）。 */}
+        {configSchema || hasUsageFace || plugin.kind !== "builtin" ? (
           <div className="flex shrink-0 items-center gap-1 border-b border-border/40 px-6">
-            {(["info", "settings"] as const).map((key) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setTab(key)}
-                className={cn(
-                  "-mb-px border-b-2 px-3 py-2.5 text-sm font-medium transition-colors",
-                  tab === key
-                    ? "border-primary text-foreground"
-                    : "border-transparent text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {key === "info"
-                  ? t("plugins.modalTabInfo", "概览")
-                  : t("plugins.modalTabSettings", "设置")}
-              </button>
-            ))}
+            {(["info", "settings", "source"] as const)
+              .filter((key) =>
+                key === "settings" ? Boolean(configSchema || hasUsageFace)
+                : key === "source" ? plugin.kind !== "builtin"
+                : true,
+              )
+              .map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setTab(key)}
+                  className={cn(
+                    "-mb-px border-b-2 px-3 py-2.5 text-sm font-medium transition-colors",
+                    tab === key
+                      ? "border-primary text-foreground"
+                      : "border-transparent text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {key === "info"
+                    ? t("plugins.modalTabInfo", "概览")
+                    : key === "settings"
+                      ? t("plugins.modalTabSettings", "设置")
+                      : t("plugins.modalTabSource", "源码")}
+                </button>
+              ))}
           </div>
         ) : null}
 
         {/* 主体 */}
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
-          {tab === "settings" && (configSchema || hasUsageFace) ? (
+          {tab === "source" ? (
+            <SourceSection plugin={plugin} />
+          ) : tab === "settings" && (configSchema || hasUsageFace) ? (
             <>
               {/* 批次3 双段结构：上半「实现配置段」（实现维度驱动：表单/无则缺省） */}
               {configSchema ? (

@@ -5,6 +5,7 @@ kind = "tool"
 id = "skill-create-tool"
 display_name = "Skill 创建工具"
 icon = "sparkles"
+category = "core"
 
 [skill]
 description = "把 SKILL.md 能力注册进 jishu hub 并自动分发到各智能体 skill 目录的操作指南——用户要求沉淀/注册/添加某个 skill，或你总结出一套可复用流程要固化为技能时使用。"

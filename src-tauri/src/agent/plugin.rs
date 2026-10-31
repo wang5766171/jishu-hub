@@ -31,8 +31,9 @@ pub use agent_tools::{
 pub use composed::{
     clear_pending_confirm_marker, composed_pipeline_by_id, composed_plugins_dir,
     composed_session_manifests, composed_session_plugin_specs, delete_composed_plugin,
-    ensure_builtin_composed_manifests, is_builtin_composed, pending_confirm_list,
-    resolve_pipeline_stages, save_composed_manifest, PendingHybridPlugin,
+    ensure_builtin_composed_manifests, is_builtin_composed, pending_confirm_extras,
+    pending_confirm_list, resolve_pipeline_stages, save_composed_manifest, PendingAssetInfo,
+    PendingHybridPlugin,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -99,6 +100,11 @@ pub struct PluginDescriptor {
     /// 声明了 [[pipeline.stages]]（v0.9.5 需求1（原需求26）1d：流水线形态
     /// 插件——插件中心独立「流水线」tab，不混入「会话能力」）。
     pub has_pipeline: bool,
+    /// 需求14 M4（G10 分类显式化）：清单显式声明的业务分类（八类枚举：
+    /// agent/core/session/pipeline/mcp/skill/cli/custom——A 家族 [info].category
+    /// / 组合家族 [plugin].category）。None = 未声明，前端按推断链兜底；
+    /// 显式声明优先于一切推断（CORE_ENGINE 前端硬编码名单由此退役）。
+    pub category: Option<String>,
 }
 
 /// [panel] 声明的 UI 投影（v0.9.0 需求8）。
@@ -327,13 +333,11 @@ pub fn builtin_session_plugin_specs() -> &'static [(&'static str, &'static str)]
     &[
         // (id, display_name)——display_name 为兜底文案，插件页按 id 走 i18n。
         // v0.9.2 M4 首期批次（用户圈定 2026-09-06）
-        ("session.html-render", "HTML 实时渲染"),
         ("session.mermaid-render", "Mermaid 图表渲染"),
         ("session.export", "会话导出"),
         ("session.usage", "用量成本面板"),
         // v0.9.2 底座增强后拆出
         ("session.search", "消息搜索"),
-        ("session.interaction-render", "交互问答卡"),
         // v0.9.2 测试期（sidebar-panel 首个插件）：产物中心——HTML/图片/
         // Markdown/文本全类型预览（agent preview_html 自动预览 + 手动点选
         // 主会话与子节点产物）。
@@ -436,6 +440,7 @@ pub fn session_plugin_descriptors(disabled: &HashSet<String>) -> Vec<PluginDescr
             icon: String::new(),
             composed: false,
             has_pipeline: false,
+            category: None,
         })
         .collect()
 }
@@ -675,6 +680,7 @@ pub fn resolver_plugin_toml() -> String {
          id = \"mcp-resolver\"\n\
          display_name = \"MCP 解析器\"\n\
          icon = \"blocks\"\n\
+         category = \"core\"\n\
          \n\
          [panel]\n\
          title = \"MCP 服务状态\"\n\
@@ -702,7 +708,8 @@ pub fn skill_resolver_plugin_toml() -> String {
          id = \"skill-resolver\"
          display_name = \"Skill 解析器\"
          icon = \"sparkles\"
-         
+         category = \"core\"
+
          [panel]
          title = \"Skill 服务状态\"
          
@@ -847,6 +854,7 @@ pub fn assemble(
             icon: info.icon.clone(),
             composed: false,
             has_pipeline: false,
+            category: None,
         });
     }
 
@@ -854,9 +862,21 @@ pub fn assemble(
         let id = file.info.id.clone();
         let enabled = !disabled.contains(&id);
         if enabled {
+            // 需求14 M3（02 §5.1-③）：{plugin_dir} 展开源——仅目录形态
+            //（plugins/<id>/plugin.toml）派生插件目录（agents/ 单文件形态
+            // 无目录语义）；从清单落点派生，不接受清单自报路径。
+            let plugin_dir = (|| {
+                let dir = path.parent()?;
+                let is_dir_form = path.file_name()?.to_string_lossy() == "plugin.toml"
+                    && dir.file_name()?.to_string_lossy() == id;
+                if is_dir_form { Some(dir.to_path_buf()) } else { None }
+            })();
             agents.insert(
                 id.clone(),
-                Box::new(super::manifest::agent::ManifestAgent::new(file.clone())),
+                Box::new(super::manifest::agent::ManifestAgent::new_with_dir(
+                    file.clone(),
+                    plugin_dir,
+                )),
             );
         }
         plugins.push(PluginDescriptor {
@@ -879,6 +899,7 @@ pub fn assemble(
             icon: file.info.icon.clone(),
             composed: false,
             has_pipeline: false,
+            category: file.info.category.clone(),
         });
     }
 
@@ -950,6 +971,7 @@ pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescrip
         icon: plugin.file.info.icon.clone(),
         composed: false,
         has_pipeline: false,
+        category: plugin.file.info.category.clone(),
     }
 }
 
@@ -1145,6 +1167,7 @@ mod tests {
                 display_name: format!("Manifest {id}"),
                 icon: String::new(),
                 install_hint: None,
+                category: None,
             },
             probe: None,
             transport: Some(super::super::manifest::schema::TransportSection {

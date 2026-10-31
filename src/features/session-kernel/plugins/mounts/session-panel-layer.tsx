@@ -27,6 +27,7 @@ import { usePanelActivation } from "../../shell/panel-activation";
 // 批次5：能力中心常驻挂件定位（复用 5a spotlight 脉冲）与管理页导航。
 import { requestInstallSpotlight } from "../../shell/install-spotlight";
 import { openManagePage } from "@/lib/app-nav";
+import { resolvePluginIcon } from "@/components/ui/icon-picker";
 import { useAllPluginBehaviors } from "../config-plane";
 import { listSessionPlugins, useEnabledSessionPlugins } from "../registry";
 import { dockPanelsOf, sidebarPanelsOf, railWidgetsOf, composerTrailingsOf } from "../types";
@@ -61,7 +62,8 @@ interface PanelEntry {
   CapsuleComponent?: React.ComponentType<{ ctx: SessionKernelContext }>;
 }
 
-/** 插件图标映射（按插件 id → lucide 图标组件）。 */
+/** 插件图标映射（按插件 id → lucide 图标组件）——内置 TS 件的声明暂驻代码
+ *（无清单可载；M6 批3 内置件外置时随迁为清单声明）。 */
 const PLUGIN_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   "session.task-board": Map,
   "session.todo-board": ListTodo,
@@ -69,6 +71,15 @@ const PLUGIN_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   "session.search": Search,
   "session.artifacts": Package,
 };
+
+/** 需求14 M4（B15/04 §2.3-5）：图标解析优先级 = 清单声明（[plugin].icon →
+ *  icon-picker 注册表）> 内置 id 映射（PLUGIN_ICONS）> LayoutGrid——
+ *  新插件从此不再一律回退同一图标。 */
+function pluginIconOf(pluginId: string): React.ComponentType<{ className?: string }> {
+  const declared = listSessionPlugins().find((p) => p.id === pluginId)?.icon;
+  if (declared) return resolvePluginIcon(declared);
+  return PLUGIN_ICONS[pluginId] ?? LayoutGrid;
+}
 
 /** 需求13 五轮：插件声明的 dock 槽位（showPanel 无记录时的 fallback 真源）。 */
 function declaredSlotOf(pluginId: string): DockSlot | undefined {
@@ -472,7 +483,7 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
   const activePluginId = activePanel?.id ?? capsulePanel?.id ?? sidebarOpenId;
   const activeTitle =
     activePanel?.title ?? capsulePanel?.title ?? sidebarEntries.find((e) => e.id === sidebarOpenId)?.title ?? null;
-  const ActiveIcon = activePluginId ? PLUGIN_ICONS[activePluginId] ?? LayoutGrid : LayoutGrid;
+  const ActiveIcon = activePluginId ? pluginIconOf(activePluginId) : LayoutGrid;
 
   return (
     <div ref={layerRef} className="pointer-events-none absolute inset-0 z-20">
@@ -506,7 +517,7 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
       <div ref={hubRef} className="pointer-events-auto absolute right-2 top-2 flex items-center gap-2">
         {collapsedPanels.map((panel) => {
           const Capsule = panel.CapsuleComponent;
-          const FallbackIcon = PLUGIN_ICONS[panel.id] ?? LayoutGrid;
+          const FallbackIcon = pluginIconOf(panel.id);
           return (
             <button
               key={panel.id}
@@ -565,7 +576,7 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
             </div>
             <div className="grid grid-cols-4 gap-1.5">
               {[...panels, ...sidebarEntries].map((entry) => {
-                const Icon = PLUGIN_ICONS[entry.id] ?? LayoutGrid;
+                const Icon = pluginIconOf(entry.id);
                 const isActive = !("hidden" in entry) ? sidebarOpenId === entry.id : !(entry as { hidden: boolean }).hidden;
                 return (
                   <button
@@ -596,7 +607,7 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
                 </div>
                 <div className="grid grid-cols-4 gap-1.5">
                   {residentEntries.map((entry) => {
-                    const Icon = PLUGIN_ICONS[entry.id] ?? LayoutGrid;
+                    const Icon = pluginIconOf(entry.id);
                     return (
                       <button
                         key={entry.id}

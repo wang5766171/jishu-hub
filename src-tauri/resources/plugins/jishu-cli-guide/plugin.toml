@@ -5,6 +5,7 @@ kind = "tool"
 id = "jishu-cli-guide"
 display_name = "jishu CLI 指南"
 icon = "terminal"
+category = "core"
 
 [skill]
 description = "jishu hub 命令行（jishu-cli）使用指南——需要把插件/MCP/Skill 注册进 jishu hub、查询或管理 hub 状态时使用。覆盖 plugins add/get/update/list/enable/disable/remove、mcp 与 skill 服务命令、plugin.toml 写法与生效流程。"

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { NativeMcpSection } from "./native-mcp-section";
 import { AgentLogo, useAgent } from "@/agents";
@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { AlertCircle, Download, Loader2, Pencil, Plus, RefreshCw, Trash2 , Bug as BugIcon } from "lucide-react";
+import { AlertCircle, Download, Loader2, Pencil, Plus, RefreshCw, Search, ShieldAlert, Trash2 , Bug as BugIcon } from "lucide-react";
 import type { AgentStatus } from "@/agents/types";
 import { PluginCreateDialog } from "./plugin-create-dialog";
 import { PluginDetailModal, type DrawerPluginInfo } from "./plugin-detail-modal";
@@ -22,7 +22,7 @@ import { PluginPipelineWizard } from "./plugin-pipeline-wizard";
 import { PluginCreateEntry } from "./plugin-create-entry";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
 import { composedVersion, subscribeComposed } from "@/features/session-kernel/capabilities/composition/loader";
-import { Info, Settings2, FileCode2 } from "lucide-react";
+import { Info, Settings2, FileCode2, LayoutGrid, Pin, Bell, MousePointerClick, Palette, Layers, Rocket, Wrench } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -47,7 +47,7 @@ interface PluginDescriptor {
   source_path: string | null;
   core: boolean;
   enabled: boolean;
-  /** v0.9.0 需求1：声明了 [mcp] 段（hub 聚合 MCP server 工具来源）。 */
+  /** v0.9.0 需求1：声明了 [mcp] 段（hub 聚合 server 工具来源）。 */
   has_mcp?: boolean;
   /** v0.9.0 需求20：声明了 [skill] 段（skill 分发服务来源）。 */
   has_skill?: boolean;
@@ -69,6 +69,9 @@ interface PluginDescriptor {
   /** v0.9.5 需求1（原需求26）1d：声明了 [[pipeline.stages]]（流水线形态——
    * 插件中心独立「流水线」tab，不混入「会话能力」）。 */
   has_pipeline?: boolean;
+  /** 需求14 M4（G10 分类显式化）：清单显式声明的业务分类（A 家族
+   * [info].category / 组合家族 [plugin].category）——声明值优先于推断链。 */
+  category?: string | null;
 }
 
 interface PluginListResult {
@@ -77,26 +80,56 @@ interface PluginListResult {
 }
 
 /** 需求19 第二轮：管理页分类（与创建页类型三分同构 + 核心引擎类）。
- * 核心引擎 = core（jishu-self）+ 解析器系统插件（mcp-resolver；后续
- * skill/CLI 解析器并入此判定）；MCP/CLI 按 kind=tool 的 has_mcp 分流；
- * 智能体 = 内置适配器与 manifest 智能体。 */
-type PluginCategory = "core" | "session" | "pipeline" | "mcp" | "skill" | "cli" | "custom" | "agent";
+ * 需求14 M4（G10/G11 分类显式化）：清单可显式声明 category（八类枚举，
+ * A 家族 [info].category / 组合家族 [plugin].category），声明值优先于
+ * 推断链；CORE_ENGINE 前端硬编码名单退役（5 个核心插件已声明 core）。 */
+type PluginCategory = "core" | "session" | "pipeline" | "mcp" | "skill" | "cli" | "custom" | "agent" | "appearance";
 
-/** 核心引擎 = core + 解析器 + 预置指南插件（v0.9.0 需求22 并入）。 */
-const CORE_ENGINE_PLUGIN_IDS = new Set([
-  "mcp-resolver",
-  "skill-resolver",
-  "jishu-cli-guide",
-  "mcp-create-tool",
-  "skill-create-tool",
+/** 需求14 M4-5（06 §5.3 △ 兑现）：呈现位徽标——会话插件卡片右上挂载位小
+ *  图标组（title 中文呈现位），「装完即知在哪用」。 */
+const MOUNT_FACE_ICONS: Record<string, { icon: typeof LayoutGrid; label: string }> = {
+  "block-renderer": { icon: FileCode2, label: "内容驱动（代码块/块渲染）" },
+  "dock-panel": { icon: LayoutDashboard, label: "调度面板（停靠/悬浮）" },
+  "sidebar-panel": { icon: LayoutDashboard, label: "侧栏面板" },
+  "rail-widget": { icon: Pin, label: "常驻挂件（贴边）" },
+  "composer-trailing": { icon: Pin, label: "输入框尾挂件" },
+  "event-hook": { icon: Bell, label: "事件钩子（无 UI）" },
+  "header-action": { icon: MousePointerClick, label: "标题栏动作" },
+  "tool-result-renderer": { icon: Wrench, label: "工具结果渲染" },
+  "app-theme": { icon: Palette, label: "全局外观" },
+  "app-overlay": { icon: Layers, label: "应用级浮层" },
+};
+
+function MountFaces({ pluginId }: { pluginId: string }) {
+  const desc = listSessionPlugins().find((p) => p.id === pluginId);
+  const faces = [...new Set((desc?.mounts ?? []).map((m) => m.kind))];
+  const pipeline = desc?.pipeline ? ["pipeline"] : [];
+  const all = [...faces, ...pipeline];
+  if (all.length === 0) return null;
+  return (
+    <span className="inline-flex items-center gap-0.5" title={all
+      .map((k) => k === "pipeline" ? "流水线（无 UI）" : MOUNT_FACE_ICONS[k]?.label ?? k)
+      .join(" · ")}>
+      {all.map((k) => {
+        const Icon = k === "pipeline" ? Rocket : MOUNT_FACE_ICONS[k]?.icon ?? LayoutGrid;
+        return <Icon key={k} className="h-2.5 w-2.5 text-muted-foreground/50" />;
+      })}
+    </span>
+  );
+}
+
+const CATEGORY_VALUES: ReadonlySet<string> = new Set([
+  "core", "session", "pipeline", "mcp", "skill", "cli", "custom", "agent", "appearance",
 ]);
 
 function categoryOf(p: PluginDescriptor): PluginCategory {
+  // 显式声明优先（拼错值由后端 fail loud 拒绝装载，此处再滤一道防御）。
+  if (p.category && CATEGORY_VALUES.has(p.category)) return p.category as PluginCategory;
   // v0.9.2 需求1：会话能力插件（前端注册表实现，此处统一管理面启停）。
   // v0.9.5 需求1（原需求26）1d：声明 pipeline 的组合式插件归独立「流水线」
   // tab（video-maker 等编排形态，原混在「会话能力」里不可辨）。
   if (p.kind === "session") return p.has_pipeline ? "pipeline" : "session";
-  if (p.core || CORE_ENGINE_PLUGIN_IDS.has(p.id)) return "core";
+  if (p.core) return "core";
   if (p.kind === "tool") {
     if (p.has_mcp) return "mcp";
     if (p.has_skill) return "skill";
@@ -144,6 +177,8 @@ const PLUGIN_CATEGORIES: Array<{ key: PluginCategory; labelKey: string; fallback
   { key: "skill", labelKey: "plugins.typeSkill", fallback: "Skill" },
   { key: "cli", labelKey: "plugins.typeCli", fallback: "CLI" },
   { key: "custom", labelKey: "plugins.catCustom", fallback: "自定义" },
+  // 需求14 M2（03 §2 场景 10）：外观分类——主题插件（[theme] 段声明）。
+  { key: "appearance", labelKey: "plugins.catAppearance", fallback: "外观" },
 ];
 
 export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId: string, name: string) => void } = {}) {
@@ -174,7 +209,7 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
   const [hybridPresetMount, setHybridPresetMount] = useState<"dock-panel" | "rail-widget" | "sidebar-panel" | "composer-trailing" | undefined>(undefined);
   // 3c：流水线向导。
   const [pipelineOpen, setPipelineOpen] = useState(false);
-  const [detailTab, setDetailTab] = useState<"info" | "settings">("info");
+  const [detailTab, setDetailTab] = useState<"info" | "settings" | "source">("info");
   const [panelOutputs, setPanelOutputs] = useState<Record<number, string>>({});
   const [panelRunning, setPanelRunning] = useState<number | null>(null);
   const runPanelItem = useCallback(async (pluginId: string, index: number) => {
@@ -376,6 +411,48 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
   };
   // 批次2：实现维度筛选（与业务 tab 正交——双视角管理，v3 双维度设计）。
   const [implFilter, setImplFilter] = useState<ImplKind | "all">("all");
+  // 需求14 M4（G8 搜索）：跨分类搜索（id/名称/描述/路径/接管语言集命中）；
+  // 非空时网格展示全库命中项（忽略当前 tab），实现维度筛选仍叠加。
+  const [search, setSearch] = useState("");
+  // 需求14 M4（R7）：待确认安装页内一等分区（app 级确认模态保留——本区
+  // 是「插件中心能自己发现」的补充入口，轮询同一 plugin_confirm_pending）。
+  const [pendingInstalls, setPendingInstalls] = useState<Array<{
+    id: string; name: string; mount: string; dir: string;
+    assets?: Array<{ name: string; size: number; sha8: string }>;
+    takeover?: string | null;
+  }>>([]);
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      try {
+        const list = await invokeCommand<unknown>("plugin_confirm_pending");
+        if (alive) setPendingInstalls((list as typeof pendingInstalls) ?? []);
+      } catch {
+        /* 后端无待确认项或命令失败——静默 */
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 5000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+  const pendingIds = useMemo(() => new Set(pendingInstalls.map((p) => p.id)), [pendingInstalls]);
+  /** 搜索命中：id/显示名/描述/来源路径 +（会话插件）块渲染器接管语言集。 */
+  const matchesSearch = useCallback((p: PluginDescriptor) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    const langs = p.kind === "session"
+      ? (listSessionPlugins().find((x) => x.id === p.id)?.mounts ?? []).flatMap((m) =>
+          m.kind === "block-renderer" && "languages" in m ? (m.languages as string[]) : [],
+        )
+      : [];
+    return [p.id, p.display_name, p.description ?? "", p.source_path ?? "", ...langs]
+      .join(" ")
+      .toLowerCase()
+      .includes(q);
+  }, [search]);
 
   // v0.9.0 需求1 二期：MCP 解析器（mcp-resolver 系统插件）启用态——新建
   // 插件对话框的 MCP 区门控（列表未加载完成前按启用放行，避免首开误锁）。
@@ -437,6 +514,13 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
                   {tr("plugins.disabledBadge", "已禁用")}
                 </Badge>
               )}
+              {/* 需求14 M4（G8 状态统一）：待确认安装一等徽标（红色角标引导——
+                  卡片直达确认动作，不必等 app 级模态轮询弹出）。 */}
+              {pendingIds.has(plugin.id) && (
+                <Badge variant="outline" className="border-amber-500/50 px-1 py-0 text-[9px] text-amber-600">
+                  {tr("plugins.pendingBadge", "待确认")}
+                </Badge>
+              )}
               {/* 批次2：会话插件显示实现维度徽标（配置/代码/内置/组合，双维度
                   X 轴）——取代原「内置」kind 徽标（组合式被误标内置的问题顺带
                   修复）；非会话插件保持原 kind 徽标（实现维度无信息增益）。 */}
@@ -472,6 +556,7 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
                   {tr("plugins.mcpBadge", "MCP")}
                 </Badge>
               )}
+              {plugin.kind === "session" && <MountFaces pluginId={plugin.id} />}
             </div>
             {/* 说明（v0.9.3 需求11 用户裁决：中文说明取代 id/版本显示；编码与
              * 版本等运维信息收进 title 悬停）。来源链：session → i18n →
@@ -570,7 +655,9 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
                   </Button>
                 )}
               {/* v0.9.0 需求1 二期：系统插件隐藏编辑/卸载（随包分发、启动
-               * 幂等重部署——编辑会被覆盖，卸载是无操作）。 */}
+               * 幂等重部署——编辑会被覆盖，卸载是无操作）。
+               * 需求14 M4（G9 全类型可编辑）：组合/混合件编辑铅笔直达详情
+               * 「源码」tab（可编辑保存）；A 家族维持表单向导编辑模式。 */}
               {!plugin.system && (plugin.kind === "manifest" || plugin.kind === "tool") && (
                 <Button
                   variant="ghost"
@@ -581,6 +668,22 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
                   onClick={() => {
                     setCreateOpen(false);
                     setEditPluginId(plugin.id);
+                  }}
+                >
+                  <Pencil className="h-3 w-3" />
+                </Button>
+              )}
+              {!plugin.system && plugin.kind === "session" && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6"
+                  disabled={busy}
+                  aria-label={tr("plugins.editSource", "编辑源码")}
+                  title={tr("plugins.editSource", "编辑源码")}
+                  onClick={() => {
+                    setDetailTab("source");
+                    setDetailTarget(plugin);
                   }}
                 >
                   <Pencil className="h-3 w-3" />
@@ -733,8 +836,66 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
         </div>
       )}
 
+      {/* 需求14 M4（R7）：待确认安装页内一等分区——红色角标引导，动作直达
+          （与 app 级确认模态共存：模态轮询兜底跨页发现，本区管「在这里看清」）。 */}
+      {pendingInstalls.length > 0 && (
+        <div className="rounded-md border border-amber-500/50 bg-amber-500/5 p-3">
+          <div className="flex items-center gap-2 text-sm font-medium text-amber-600">
+            <ShieldAlert className="h-4 w-4" />
+            {tr("plugins.pendingSectionTitle", "待确认安装")}
+            <Badge variant="outline" className="border-amber-500/50 px-1.5 py-0 text-[10px] text-amber-600">
+              {pendingInstalls.length}
+            </Badge>
+          </div>
+          <ul className="mt-2 space-y-1.5">
+            {pendingInstalls.map((p) => (
+              <li key={p.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                <span className="font-medium text-foreground">{p.name}</span>
+                <span className="font-mono text-[10px] text-muted-foreground/70">{p.id}</span>
+                <span className="text-muted-foreground">
+                  {p.mount} · {(p.assets ?? []).length > 0
+                    ? `${(p.assets ?? []).length} ${tr("plugins.pendingAssetUnit", "个文件")}`
+                    : tr("plugins.pendingNoAssets", "纯清单")}
+                </span>
+                {p.takeover ? <span className="text-amber-600">{p.takeover}</span> : null}
+                <span className="flex-1" />
+                <Button
+                  size="sm"
+                  className="h-6 px-2 text-[10px]"
+                  onClick={() => void (async () => {
+                    try {
+                      await invokeCommand("plugin_set_enabled", { pluginId: p.id, enabled: true });
+                      await refresh();
+                    } catch (e) {
+                      void alertDialog({ title: tr("plugins.actionFailed", "操作失败"), description: String(e) });
+                    }
+                  })()}
+                >
+                  {tr("plugins.pendingEnable", "启用")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-2 text-[10px]"
+                  onClick={() => void (async () => {
+                    try {
+                      await invokeCommand("plugin_set_enabled", { pluginId: p.id, enabled: false });
+                      await refresh();
+                    } catch (e) {
+                      void alertDialog({ title: tr("plugins.actionFailed", "操作失败"), description: String(e) });
+                    }
+                  })()}
+                >
+                  {tr("plugins.pendingDismiss", "暂不")}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* v0.9.3 需求11：分类横向 tab（胶囊形态）——业务 tab（Y 轴：在哪用）
-          × 实现筛选（X 轴：怎么造）双视角（批次2）。 */}
+          × 实现筛选（X 轴：怎么造）双视角（批次2）+ 需求14 搜索框（G8）。 */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-3">
         <div className="flex flex-wrap items-center gap-1.5">
         {PLUGIN_CATEGORIES.map((cat) => {
@@ -760,6 +921,17 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
           );
         })}
         </div>
+        <div className="flex items-center gap-2">
+        {/* 需求14 M4（G8）：跨分类搜索——非空时网格展示全库命中（忽略 tab）。 */}
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={tr("plugins.searchPlaceholder", "搜索 id/名称/描述/语言…")}
+            className="h-7 w-52 rounded-md border border-border/60 bg-background pl-7 pr-2 text-xs outline-none placeholder:text-muted-foreground/50 focus:border-primary/50"
+          />
+        </div>
         {/* 批次2：实现维度筛选 chips（X 轴：怎么造的/能不能改；🔒内置只读）。 */}
         <div className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
           <span className="mr-0.5">{tr("plugins.implFilterLabel", "实现")}</span>
@@ -779,26 +951,38 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
             </button>
           ))}
         </div>
+        </div>
       </div>
 
       {/* 卡片网格：自适应列数铺满区域（v0.9.3 需求11，minmax 卡宽 ~230px）；
-          批次2：叠加实现维度过滤。 */}
+          批次2：叠加实现维度过滤；需求14 M4（G8）：搜索非空时跨分类展示
+          全库命中（tab 失效、实现筛选叠加、专属区块隐藏）。 */}
       <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(230px,1fr))]">
         {/* v0.9.4 需求12：开发日志中心虚拟卡（用户裁决：入口放插件中心核心引擎
             分类，默认关闭手动开启；开关写 settings.json 跨启动保持）。 */}
-        {activeTab === "core" && <DevLogCard />}
+        {activeTab === "core" && !search.trim() && <DevLogCard />}
         {/* 需求11 追加三 A：原生 MCP 服务管理区（jishu 直连条目，键级管
             mcp.json 非 jishu-hub 用户条目；与聚合插件互补）。 */}
-        {activeTab === "mcp" && <NativeMcpSection />}
+        {activeTab === "mcp" && !search.trim() && <NativeMcpSection />}
         {(result?.plugins ?? [])
-          .filter((x) => categoryOf(x) === activeTab && (implFilter === "all" || implKindOf(x) === implFilter))
+          .filter((x) =>
+            search.trim()
+              ? matchesSearch(x) && (implFilter === "all" || implKindOf(x) === implFilter)
+              : categoryOf(x) === activeTab && (implFilter === "all" || implKindOf(x) === implFilter),
+          )
           .map((plugin) => renderCard(plugin))}
       </div>
-      {(result?.plugins ?? []).filter((x) => categoryOf(x) === activeTab && (implFilter === "all" || implKindOf(x) === implFilter)).length === 0 && (
+      {(result?.plugins ?? []).filter((x) =>
+        search.trim()
+          ? matchesSearch(x) && (implFilter === "all" || implKindOf(x) === implFilter)
+          : categoryOf(x) === activeTab && (implFilter === "all" || implKindOf(x) === implFilter),
+      ).length === 0 && (
         <p className="py-10 text-center text-sm text-muted-foreground">
-          {result && result.plugins.length === 0
-            ? tr("plugins.empty", "无插件")
-            : tr("plugins.categoryEmpty", "暂无插件")}
+          {search.trim()
+            ? tr("plugins.searchEmpty", "无匹配插件")
+            : result && result.plugins.length === 0
+              ? tr("plugins.empty", "无插件")
+              : tr("plugins.categoryEmpty", "暂无插件")}
         </p>
       )}
 
