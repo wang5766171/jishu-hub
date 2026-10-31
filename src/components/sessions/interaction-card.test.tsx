@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { InteractionCard } from "./interaction-card";
-import { interactionRenderPlugin } from "@/features/session-kernel/plugins/builtin/interaction-render";
+import { InteractionBlockRenderer } from "@/features/session-kernel/capabilities/renderers/components/InteractionRenderer";
 
 describe("InteractionCard", () => {
   beforeAll(async () => {
@@ -90,9 +90,7 @@ describe("InteractionCard", () => {
   it("v0.9.5 需求5 T6：插件渲染链透传 selectedOptions——多选回放以选项高亮表达，不落答案文字行", () => {
     // session.interaction-render 插件的真实 BlockComponent（经 useBlockRenderers
     // 咨询命中后的渲染路径，即 GUI 回放实际走的链）
-    const Block = (interactionRenderPlugin.mounts[0] as unknown as {
-      BlockComponent: React.ComponentType<{ block: Record<string, unknown> }>;
-    }).BlockComponent;
+    const Block = InteractionBlockRenderer as unknown as React.ComponentType<{ block: Record<string, unknown> }>;
     render(
       <Block
         block={{

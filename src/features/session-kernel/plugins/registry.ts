@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invokeCommand } from "@/hooks/use-invoke";
-import { htmlRenderPlugin } from "./builtin/html-render";
 import { sessionExportPlugin } from "./builtin/session-export";
 import { usagePanelPlugin } from "./builtin/usage-panel";
 import { messageSearchPlugin } from "./builtin/message-search";
-import { interactionRenderPlugin } from "./builtin/interaction-render";
 import "@/features/session-kernel/capabilities/renderers/components/MermaidRenderer";
+// 需求14 M5 批1：html/interaction 组合化——渲染键注册（组件本体）+ 内置
+// 组合清单（描述符/挂载声明，resources/composed-plugins/*.toml）。
+import "@/features/session-kernel/capabilities/renderers/components/HtmlRenderer";
+import "@/features/session-kernel/capabilities/renderers/components/InteractionRenderer";
 import "@/features/session-kernel/capabilities/renderers/components/primitives";
 import "@/features/session-kernel/capabilities/sources/aggregate-source";
 import "@/features/session-kernel/capabilities/sources/artifact-index";
@@ -31,11 +33,9 @@ const BUILTIN_SESSION_PLUGINS: SessionPluginDescriptor[] = [
   // 中心（artifacts，产出文件侧栏预览）是两个能力，均保留——前者处理代码
   // 块、后者处理落盘文件（v0.9.3 测试期用户确认，非 html-preview 残留）。
   // 任务流程全景（session.flow）已 C5-slice1 组合化（session.task-board）。
-  htmlRenderPlugin,
   sessionExportPlugin,
   usagePanelPlugin,
   messageSearchPlugin,
-  interactionRenderPlugin,
   artifactsPlugin,
   streamStatusPlugin,
   contextRingPlugin,

@@ -314,6 +314,17 @@ GUI（插件页 + 创建/编辑对话框）与 CLI（`jishu-cli plugins add/list
 - **演进预留**：配置型（TOML 参数化模板）→ 代码型（沙箱）→ 分发（签名与契约版本协商）三阶段，方向全文见版本文档；描述符自带 `contractVersion` 与 `source` 字段为协商基础。
 - **数据枢纽与真订阅（v0.9.3 需求3）**：`SessionDataHub`（`session-kernel/kernel/data-hub.ts`）持有各数据面监听器集合与最新快照——ctx.subscribe 注册即回放、数据变更 publish 逐个回调、退订真实移除；ctx 重建只重放快照不丢订阅。ctx 命令面含会话压缩（compactSession/isCompacting/autoCompaction，需求8）。
 - **内建会话插件**（v0.9.4 盘点，`plugins/builtin/` 九款）：交互问答卡 / HTML 实时渲染 / 上下文水位环 / 消息搜索 / 流式状态指示 / 用量成本面板 / 产物中心（+台账）/ 会话导出。内置插件的块渲染样式 = 产品视觉的权威形态：**接管同一块类型的渲染件与内置卡样式必须一致**（如 interaction 的插件渲染件委托内置 InteractionCard），禁止另起视觉。
+- **混合组件接管代码块渲染（v0.9.5 需求14 M1）**：@file: 代码组件解禁 block-renderer 挂载（payload 统一 `{kind:"code-block", language, code}`，引擎两臂透传 fileComponent）；export-file 禁令维持（代码组件无注册表 toFile 通道，02 §13-6 方案 b）。遮蔽语义**用户插件 > 内置**：后端组合清单用户件排前（`composed_session_manifests` builtin 殿后）+ 前端 `BlockRenderersProvider` 按 `source` 分区（config 先于 builtin），两配合成链；用户插件之间同语言互斥（`save_composed_manifest` 启用集冲突守卫，fail loud 指认先装者）。API v1 纯加法 `api.loadAsset(rel, kind)`：插件目录资产加载（`_files` 指纹白名单 + 浅层平铺 + 越界拒绝 + 模块级库缓存），不提供网络通道。`render.fallback` 自本期起消费（代码组件崩溃渲染兜底键，缺省维持崩溃即卸载）——此前为死字段。
+
+### 16.12 能力点开放判据（v0.9.5 需求14 M5/M6）
+
+「内置 = 注册表默认条目」而非唯一来源——新增客户端能力默认以插件形态落地（内核只保留宿主/注册表/受控上下文/策略/协议 runtime）；评审新需求时「能不能做成插件」是必答题。三件套齐活（manifest 段与校验 + GUI 呈现/编辑 + CLI/skill 模板）缺一件不算落地。覆盖语义总表：语言接管 = 用户插件 > 内置（后端组合清单用户件排前 + 前端按 source 分区两配合）；主题 = 互斥激活（state.theme 单真源，值域含插件 id）；挂载位 = 多插件共存；id = 全局唯一（不做同名替换）。
+
+内建会话插件外置评估（M6 批3，2026-10-30 裁定）：
+- **已外置（批1）**：html-render / interaction-render → 渲染键（render.html / render.interaction）+ 内置组合清单（mermaid 先例模式）；mermaid-render 原生即此形态。
+- **保留内核件（特权依赖，描述符即标注）**：context-ring（读 ctx 水位数据面 + 内核布局位）、stream-status（内核流状态信号消费）、todo-board（SESSION_PLUGIN_PROXY 代理 pi-todo 双条目一体管理）、artifacts（event-hook 联动 + 产物索引特权源）、session.export / usage / search（header-action / 聚合器虽可组合化，但回归面大于收益——按需再评）。
+- **主题三档基座保留 index.css**（K9：插件 css 异步装载首帧闪烁——迁移需启动同步缓存机制，列后续）；官方示范主题 session.theme-midnight 随包（theme+css 成对部署）。
+- 06-P2 app-overlay 挂载位已开放（矩阵/engine/AppOverlayHost）；DevLogCenter 迁移为组合件列后续（dev 工具，回归面收敛后再动）。06-P1 BlockZoomOverlay 统一外壳裁定不做内部重构（两 Overlay 交互语义差异大、均为多轮修复产物——纯结构重构风险 > 价值；echarts 放大由组件按 html 宽版阅读器模式自实现）。
 
 ### 16.10 会话内核纪律
 

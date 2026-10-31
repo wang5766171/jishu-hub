@@ -206,6 +206,22 @@ function MarkdownPreWithRenderers({ children }: { children?: React.ReactNode }) 
       const renderer = matchBlockRenderer(renderers, language, code);
       if (renderer) {
         const Renderer = renderer.Component;
+        // 需求14 M1（K5）：接管可见性——右上角轻角标（hover 提亮，title 全称），
+        // 「谁接管了这块」一眼可辨（含遮蔽内置的场合）。
+        const source = renderer as { pluginId?: string; pluginLabel?: string };
+        if (source.pluginId) {
+          return (
+            <div className="relative">
+              <span
+                className="pointer-events-none absolute -top-0.5 right-1 z-10 rounded bg-background/70 px-1 text-[9px] leading-4 text-muted-foreground/50"
+                title={`由插件渲染：${source.pluginLabel ?? source.pluginId}（${source.pluginId}）`}
+              >
+                ⚙ {source.pluginLabel ?? source.pluginId}
+              </span>
+              <Renderer code={code} language={language} />
+            </div>
+          );
+        }
         return <Renderer code={code} language={language} />;
       }
     }

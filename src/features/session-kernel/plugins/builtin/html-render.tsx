@@ -4,8 +4,6 @@ import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { Code2, ExternalLink, Eye, Maximize2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { SESSION_PLUGIN_CONTRACT_VERSION } from "../types";
-import type { SessionPluginDescriptor } from "../types";
 
 /**
  * HTML 实时渲染插件（v0.9.2 需求1 M4；v0.9.3 测试期四轮增强）。
@@ -196,7 +194,7 @@ function HtmlZoomOverlay({ code, onClose }: { code: string; onClose: () => void 
   );
 }
 
-function HtmlPreviewCard({ code }: { code: string; language: string }) {
+export function HtmlPreviewCard({ code }: { code: string; language?: string }) {
   const { t } = useTranslation();
   const [mode, setMode] = useState<"preview" | "source">("preview");
   const [expanded, setExpanded] = useState(false);
@@ -268,23 +266,3 @@ function HtmlPreviewCard({ code }: { code: string; language: string }) {
     </div>
   );
 }
-
-export const htmlRenderPlugin: SessionPluginDescriptor = {
-  id: "session.html-render",
-  displayNameKey: "sessionPlugins.htmlRender.name",
-  displayNameFallback: "HTML 实时渲染",
-  descriptionKey: "sessionPlugins.htmlRender.description",
-  descriptionFallback: "消息中的 HTML（完整文档与卡片片段）按内容高度直接渲染",
-  contractVersion: SESSION_PLUGIN_CONTRACT_VERSION,
-  source: "builtin",
-  permissions: ["read:blocks"],
-  mounts: [
-    {
-      kind: "block-renderer",
-      matching: "code",
-      languages: ["html"],
-      detect: (_lang, code) => isRenderableHtmlBlock(code),
-      Component: HtmlPreviewCard,
-    },
-  ],
-};

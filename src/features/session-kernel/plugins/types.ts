@@ -288,7 +288,7 @@ export interface SidebarPanelMount {
  * detect 恒真即命中一切代码块；联合后跨域匹配在类型层不可表达。
  * 匹配域只有一条进入路径：code → matchBlockRenderer（语言咨询），
  * block-type → matchBlockTypeRenderer（块类型咨询）。 */
-export interface CodeBlockRendererMount {
+export interface CodeBlockRendererMount extends RendererSourceMeta {
   kind: "block-renderer";
   matching: "code";
   /** 语言匹配（小写，如 ["html"]）——**显式封闭集，无通配**：插件只接管
@@ -300,7 +300,7 @@ export interface CodeBlockRendererMount {
   Component: ComponentType<{ code: string; language: string }>;
 }
 
-export interface BlockTypeRendererMount {
+export interface BlockTypeRendererMount extends RendererSourceMeta {
   kind: "block-renderer";
   matching: "block-type";
   /** 接管的核心块类型（interaction / phase_divider 等）。 */
@@ -310,6 +310,13 @@ export interface BlockTypeRendererMount {
 }
 
 export type BlockRendererMount = CodeBlockRendererMount | BlockTypeRendererMount;
+
+/** 需求14 M1（K5）：块渲染接管可见性——mount 附来源插件（渲染头部
+ *  「由插件 X 渲染」角标；内置组合件同标——「装了什么、谁管这块」统一可见）。 */
+export interface RendererSourceMeta {
+  pluginId?: string;
+  pluginLabel?: string;
+}
 
 /** composer 尾部控制行挂载点（v0.9.3 需求8：上下文占用环迁移）：渲染在
  *  模型选择器/思考档同一行的内联槽位（模型行与无模型行两处互斥位点，
@@ -327,7 +334,8 @@ export type PluginMount =
   | ComposerTrailingMount
   | EventHookMount
   | HeaderActionMount
-  | ToolResultRendererMount;
+  | ToolResultRendererMount
+  | AppOverlayMount;
 
 /** 内核信号（事件钩子挂载点的数据面）。 */
 export type SessionSignal =
@@ -383,6 +391,13 @@ export interface SessionPluginDescriptor {
   /** 显示名 i18n key 与兜底（插件页/快捷图标消费）。 */
   displayNameKey: string;
   displayNameFallback: string;
+  /** 需求14 M4（B15）：组合清单 [plugin].icon 声明（icon-picker 注册表键）
+   *  ——能力中心/插件中心图标统一优先来源；内置 TS 件无此字段（id 映射
+   *  兜底，M6 批3 外置时随迁为清单声明）。 */
+  icon?: string;
+  /** 需求14 M2（S3）：主题声明（app-theme 挂载件）——应用级装载器消费
+   * （后端读 css → 内联 <style> + data-jishu-theme；base 归一化非空）。 */
+  theme?: { css: string; base: string; preview?: string[] };
   /** v0.9.3 需求12 P1：配置面声明——详情抽屉自动生成设置表单，组件经
    * usePluginConfig 取值（代码常量抽离为可编辑参数的挂点）。 */
   configSchema?: import("./config-plane").PluginConfigField[];
@@ -405,6 +420,13 @@ export interface SessionPluginDescriptor {
   mounts: PluginMount[];
   /** 快捷键（如 "ctrl+f"）：按下组合键切换对应面板显隐。null = 无绑定。 */
   shortcut?: string;
+}
+
+/** 需求14 M5（06-P2）：应用级浮层挂载——页面层外常驻（AppOverlayHost 消费），
+ *  无会话 ctx（全局形态；数据自取）。 */
+export interface AppOverlayMount {
+  kind: "app-overlay";
+  Component: React.ComponentType;
 }
 
 export function dockPanelsOf(plugin: SessionPluginDescriptor): DockPanelMount[] {
