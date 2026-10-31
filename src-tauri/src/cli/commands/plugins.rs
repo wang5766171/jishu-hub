@@ -778,7 +778,7 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
                     "plugin {id} is a built-in composed plugin and cannot be removed"
                 )));
             }
-            let _ = agent::plugin::set_plugin_enabled(id, true); // 清 disabled 引用（先于删目录）
+            agent::plugin::forget_plugin_disabled(id); // 清 disabled 引用（T16：id 已离 known 集时 set_enabled 静默失败残留死键）（先于删目录）
             std::fs::remove_dir_all(&composed_dir).map_err(|e| {
                 CliError::InvalidArg(format!("cannot remove {}: {e}", composed_dir.display()))
             })?;
@@ -803,9 +803,20 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
     let source = source.ok_or_else(|| {
         CliError::InvalidArg(format!("plugin {id} is builtin and cannot be removed"))
     })?;
-    std::fs::remove_file(&source)
-        .map_err(|e| CliError::InvalidArg(format!("cannot remove {}: {e}", source.display())))?;
-    let _ = agent::plugin::set_plugin_enabled(id, true); // 清 disabled 引用
+    // 需求14 测试期修复（T14R）：目录形态（plugins/<id>/plugin.toml）只删清单
+    // 会孤儿残留附带文件（bridge.js 等）——判目录形态删整个目录（与组合件
+    // 同纪律；单文件形态 agents/<id>.toml 维持删文件）。
+    let is_dir_form = source.file_name().map(|n| n == "plugin.toml").unwrap_or(false)
+        && source.parent().and_then(|p| p.file_name()).map(|n| n == id).unwrap_or(false);
+    if is_dir_form {
+        let dir = source.parent().expect("plugin.toml has parent");
+        std::fs::remove_dir_all(dir)
+            .map_err(|e| CliError::InvalidArg(format!("cannot remove {}: {e}", dir.display())))?;
+    } else {
+        std::fs::remove_file(&source)
+            .map_err(|e| CliError::InvalidArg(format!("cannot remove {}: {e}", source.display())))?;
+    }
+    agent::plugin::forget_plugin_disabled(id); // 清 disabled 引用（T16：id 已离 known 集时 set_enabled 静默失败残留死键）
 
     if ctx.json {
         println!(

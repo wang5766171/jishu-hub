@@ -1081,6 +1081,7 @@ body",
                 icon: String::new(),
                 install_hint: None,
             category: None,
+            description: None,
             },
             probe: None,
             transport: Some(ms::TransportSection {

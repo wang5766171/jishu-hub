@@ -298,6 +298,19 @@ pub fn save_plugin_config(config: &PluginConfig) -> Result<(), String> {
     crate::util::atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())
 }
 
+/// 需求14 测试期修复（T16）：卸载后清理 disabled 引用——remove 旧的
+/// set_plugin_enabled(id, true) 在 id 已离开 known 集时静默失败（"Unknown
+/// plugin"），plugins.json 残留死键。恒幂等：load→retain≠id→save。
+pub fn forget_plugin_disabled(id: &str) {
+    let mut config = load_plugin_config();
+    let before = config.disabled.len();
+    config.disabled.retain(|x| x != id);
+    if config.disabled.len() != before {
+        config.updated_at = crate::util::now_ms();
+        let _ = save_plugin_config(&config);
+    }
+}
+
 /// 已知插件 id 集合（内置 + 已安装 manifest），启停校验用。
 /// 需求25 P2：组合/混合插件（plugins/<id>/plugin.toml，session-composed
 /// 形态）被 load_manifests 前置跳过（agent/manifest/mod.rs composed 分流），
@@ -882,7 +895,8 @@ pub fn assemble(
         plugins.push(PluginDescriptor {
             id: id.clone(),
             display_name: file.info.display_name.clone(),
-            description: None,
+            // 需求14 测试期补（T12）：[info].description 透出（此前恒 None）。
+            description: file.info.description.clone(),
             kind: PluginKind::Manifest,
             // 版本在 AgentRegistry::list_plugins 里经 health_cache 回填
             //（assemble 不做 IO）。
@@ -1168,6 +1182,7 @@ mod tests {
                 icon: String::new(),
                 install_hint: None,
                 category: None,
+                description: None,
             },
             probe: None,
             transport: Some(super::super::manifest::schema::TransportSection {

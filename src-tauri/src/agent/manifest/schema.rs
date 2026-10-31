@@ -249,6 +249,11 @@ pub struct InfoSection {
     /// = schema 变更（旧 hub 拒新清单——本地清单生态无跨版本分发，K10 已评估）。
     #[serde(default)]
     pub category: Option<String>,
+    /// 需求14 测试期补（T12）：中文说明——管理面卡片此前对 manifest 智能体
+    /// 恒空（tool 家族在 [tool].description）。skill 模板6 两处本就带着该
+    /// 字段（deny_unknown_fields 下照抄装不上），补位使模板合法且卡片有说明。
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// 分类枚举合法值（与前端 PLUGIN_CATEGORIES 一致；fail loud 防拼错静默落错 tab）。
@@ -705,6 +710,7 @@ mod tests {
                 icon: String::new(),
                 install_hint: None,
             category: None,
+            description: None,
             },
             probe: None,
             transport: Some(TransportSection {

@@ -182,8 +182,22 @@ pub(crate) fn plugin_remove(
         }
     }
 
-    std::fs::remove_file(&source_path).map_err(|e| format!("Cannot remove {source_path}: {e}"))?;
-    let _ = agent::plugin::set_plugin_enabled(&plugin_id, true); // 清 disabled 引用（忽略结果：id 即将消失）
+    // 需求14 测试期修复（T14R，同 CLI remove）：目录形态删整目录防附带文件
+    //（bridge.js 等）孤儿残留；单文件形态维持删文件。
+    let source = std::path::Path::new(&source_path);
+    let is_dir_form = source.file_name().map(|n| n == "plugin.toml").unwrap_or(false)
+        && source
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n == plugin_id.as_str())
+            .unwrap_or(false);
+    if is_dir_form {
+        let dir = source.parent().expect("plugin.toml has parent");
+        std::fs::remove_dir_all(dir).map_err(|e| format!("Cannot remove {}: {e}", dir.display()))?;
+    } else {
+        std::fs::remove_file(source).map_err(|e| format!("Cannot remove {source_path}: {e}"))?;
+    }
+    agent::plugin::forget_plugin_disabled(&plugin_id); // 清 disabled 引用（T16 同款）
     rebuild_registry(&app, &state);
     log::info!("[plugin] removed {} ({})", plugin_id, source_path);
     Ok(())
