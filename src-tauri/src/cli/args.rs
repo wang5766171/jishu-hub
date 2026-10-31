@@ -434,6 +434,26 @@ pub enum PluginAction {
         path: String,
     },
 
+    /// Edit an installed plugin in place: targeted field assignment
+    /// (--field section.key=value) or open the manifest location in the
+    /// file manager (--open; apply changes afterwards via update).
+    /// 需求14 M4（R9）：edit 缺口收窄——update 已是覆盖式编辑，此处补
+    /// 定点字段编辑与打开所在位置。
+    Edit {
+        /// Plugin identifier.
+        id: String,
+
+        /// Targeted assignment, repeatable: `--field section.key=value`
+        /// (dotted path, last segment is the key; value parsed as TOML,
+        /// falling back to string). Array items not addressable.
+        #[arg(long = "field")]
+        field: Vec<String>,
+
+        /// Reveal the manifest in the system file manager (no write).
+        #[arg(long = "open", default_value_t = false)]
+        open: bool,
+    },
+
     /// List all plugins (builtin + manifest agents + tool plugins).
     List,
 

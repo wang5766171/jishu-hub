@@ -1297,6 +1297,12 @@ export function PluginCreateDialog({
                     className="flex w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-xs font-mono"
                   />
                   <FieldHelp>{tr("plugins.hAcpCommand", "")}</FieldHelp>
+                  <FieldHelp>
+                    {tr(
+                      "plugins.hAcpPluginDir",
+                      "桥接形态：转换脚本随插件目录分发时经 CLI 安装目录包（jishu-cli plugins add <目录>），命令中用 {plugin_dir} 引用插件目录（如 node {plugin_dir}/bridge.js）——动态变量（{prompt} 等）不允许。",
+                    )}
+                  </FieldHelp>
                 </Labeled>
               )}
             </div>

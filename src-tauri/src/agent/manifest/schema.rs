@@ -8,8 +8,16 @@ use serde::{Deserialize, Serialize};
 /// manifest 格式版本；不认识的版本整文件拒绝（misconfiguration fails loud）。
 pub const SCHEMA_VERSION: i64 = 1;
 
-/// chat_command / cwd 模板中允许的全部变量。
+/// chat_command / cwd 模板中允许的**动态**变量（含用户/会话内容——acp_command
+/// 的「静态 argv」防线拒的就是这一集）。
 pub const TEMPLATE_VARS: [&str; 3] = ["{prompt}", "{cwd}", "{session_id}"];
+
+/// 需求14 M3（B16）：**静态**变量集——每插件安装期常量、无动态内容。
+/// `{plugin_dir}` = 插件目录（ManifestAgent 从自身清单落点派生，不接受
+/// 清单自报路径）：桥脚本随插件分发（zcode.toml + bridge.js 目录形态），
+/// `acp_command = ["node", "{plugin_dir}/bridge.js", "--stdio"]`。
+/// acp_command 校验只拒动态集（plugin_dir 与静态 argv 防注入初衷不冲突）。
+pub const STATIC_TEMPLATE_VARS: [&str; 1] = ["{plugin_dir}"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -236,7 +244,18 @@ pub struct InfoSection {
     pub icon: String,
     #[serde(default)]
     pub install_hint: Option<String>,
+    /// 需求14 M4（G10 分类显式化）：业务分类显式声明（八类枚举，见
+    /// PLUGIN_CATEGORIES；未声明由前端推断链兜底，声明值优先）。加字段
+    /// = schema 变更（旧 hub 拒新清单——本地清单生态无跨版本分发，K10 已评估）。
+    #[serde(default)]
+    pub category: Option<String>,
 }
+
+/// 分类枚举合法值（与前端 PLUGIN_CATEGORIES 一致；fail loud 防拼错静默落错 tab）。
+/// 需求14 M2：appearance = 外观（主题插件，03 §2 场景 10 新增分类）。
+pub const PLUGIN_CATEGORY_VALUES: &[&str] = &[
+    "agent", "core", "session", "pipeline", "mcp", "skill", "cli", "custom", "appearance",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -246,6 +265,11 @@ pub struct ProbeSection {
     pub version_args: Option<Vec<String>>,
     #[serde(default)]
     pub version_regex: Option<String>,
+    /// 需求14 M3（R6 探测补缺）：可选候选路径列表——私有路径安装的 CLI
+    ///（如 D:\tools\zcode\zcode.exe）PATH 查找探测不到，显式列出候选
+    /// （绝对路径或含可执行名的相对段），probe 时逐个尝试。
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -356,6 +380,15 @@ impl AgentManifestFile {
         }
         if self.info.display_name.trim().is_empty() {
             return Err("info.display_name must not be empty".to_string());
+        }
+        // 需求14 M4：分类声明必须是八类枚举之一（拼错 fail loud，不静默落错 tab）。
+        if let Some(category) = &self.info.category {
+            if !PLUGIN_CATEGORY_VALUES.contains(&category.as_str()) {
+                return Err(format!(
+                    "info.category 无效：{category:?}（合法：{}）",
+                    PLUGIN_CATEGORY_VALUES.join("/")
+                ));
+            }
         }
         match self.kind {
             ManifestKind::Agent => self.validate_agent()?,
@@ -618,9 +651,11 @@ fn check_template_vars(segment: &str) -> Result<(), String> {
             .map(|i| start + i)
             .ok_or_else(|| format!("unbalanced '{{' in template segment {segment:?}"))?;
         let var = &rest[start..=end];
-        if !TEMPLATE_VARS.contains(&var) {
+        // 需求14 M3（B16）：静态集（{plugin_dir}）在 chat_command/cwd 同样
+        // 合法（展开为安装期常量，与动态集同走 argv 单段直传）。
+        if !TEMPLATE_VARS.contains(&var) && !STATIC_TEMPLATE_VARS.contains(&var) {
             return Err(format!(
-                "unknown template variable {var} in {segment:?} (allowed: {TEMPLATE_VARS:?})"
+                "unknown template variable {var} in {segment:?} (allowed: {TEMPLATE_VARS:?} or {STATIC_TEMPLATE_VARS:?})"
             ));
         }
         rest = &rest[end + 1..];
@@ -669,6 +704,7 @@ mod tests {
                 display_name: "Demo".to_string(),
                 icon: String::new(),
                 install_hint: None,
+            category: None,
             },
             probe: None,
             transport: Some(TransportSection {
@@ -808,6 +844,7 @@ mod tests {
             command: "demo".to_string(),
             version_args: None,
             version_regex: Some("([".to_string()),
+            paths: None,
         });
         assert!(m.validate().unwrap_err().contains("version_regex"));
     }

@@ -1080,6 +1080,7 @@ body",
                 display_name: id.to_string(),
                 icon: String::new(),
                 install_hint: None,
+            category: None,
             },
             probe: None,
             transport: Some(ms::TransportSection {

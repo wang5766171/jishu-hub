@@ -95,6 +95,7 @@ mod tests {
                 display_name: "Demo".to_string(),
                 icon: String::new(),
                 install_hint: None,
+            category: None,
             },
             probe: None,
             transport: None,
