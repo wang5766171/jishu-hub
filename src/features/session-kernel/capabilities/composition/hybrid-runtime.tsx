@@ -25,6 +25,7 @@ import i18next from "i18next";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
 import { setErrorSuppression } from "@/lib/error-suppression";
+import { devLog } from "@/lib/dev-log";
 
 /** 资产 URL 构建（可注入——vitest 无 Tauri 内部注入时走测试替身）。
  *  路径归一：Rust _dir 在 Windows 是反斜杠（C:\Users\...），asset 协议
@@ -135,16 +136,19 @@ async function loadPluginAsset(
     normalized.startsWith("/") ||
     /^[a-zA-Z]:/.test(normalized)
   ) {
+    devLog("capability", `loadAsset rejected: ${rel} (path)`, { rel, reason: "path-traversal" });
     throw new Error(`loadAsset: 非法资产路径 ${rel}（仅限插件目录内相对路径）`);
   }
   const fingerprint = scope.files[normalized];
   if (!fingerprint) {
+    devLog("capability", `loadAsset rejected: ${normalized} (not in _files)`, { rel: normalized, reason: "not-in-manifest" });
     throw new Error(
       `loadAsset: 资产 ${rel} 不在插件文件清单——资产必须平铺在插件根目录（子目录不入 _files 白名单）`,
     );
   }
   const url = `${buildAssetUrl(scope.dir, normalized)}?v=${fingerprint}`;
   if (kind === "script") await loadLibraryScript(url);
+  devLog("capability", `loadAsset ${kind ?? "url"}: ${normalized} ok`, { rel: normalized, kind });
   return url;
 }
 

@@ -27,6 +27,9 @@ export type DevLogCategory =
   /** v0.9.5 需求2 测试期：后端运行时桥接日志（hub-dev-log 事件——Pi RPC
    * 循环状态迁移/命令处置/watchdog；见 attachRuntimeLogBridge）。 */
   | "runtime"
+  /** v0.9.5 需求14：能力发现机制——插件装载/遮蔽/冲突/回退/主题激活/资产
+   * 加载的触发路径（诊断 agent 是否走到某条通路的关键观测点）。 */
+  | "capability"
   /** v0.9.5 需求13 五轮（用户裁决）：能力中心/悬浮窗/胶囊的交互操作——
    * 多轮形态调整的定位依据。 */
   | "panel";

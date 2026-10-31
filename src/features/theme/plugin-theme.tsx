@@ -15,6 +15,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useTheme, isBuiltinTheme } from "@/hooks/use-theme";
 import { invokeCommand } from "@/hooks/use-invoke";
+import { devLog } from "@/lib/dev-log";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
 import {
   composedVersion,
@@ -83,7 +84,7 @@ export function usePluginTheme(): void {
     }
     const descriptor = listSessionPlugins().find((p) => p.id === theme && p.theme);
     if (!descriptor?.theme) {
-      // 插件缺失/清单损坏——回落内置并持久化。
+      devLog("capability", `theme fallback: ${theme} not found → dark`, { requested: theme, reason: "descriptor-missing" });
       setTheme("dark");
       return;
     }
@@ -98,6 +99,7 @@ export function usePluginTheme(): void {
         if (cancelled) return;
         const enabled = (list.plugins ?? []).some((p) => p.id === theme && p.enabled);
         if (!enabled) {
+          devLog("capability", `theme fallback: ${theme} disabled → dark`, { requested: theme, reason: "disabled" });
           setTheme("dark");
           return;
         }
@@ -117,9 +119,10 @@ export function usePluginTheme(): void {
         document.documentElement.setAttribute("data-jishu-theme", theme);
         // 基座属性（base 归一化非空，engine 缺省 dark）。
         document.documentElement.setAttribute("data-theme", decl.base);
+        devLog("capability", `theme activated: ${theme} (base=${decl.base}, css=${r.content.length}B)`, { themeId: theme, base: decl.base });
       } catch (e) {
         if (!cancelled) {
-          if (import.meta.env.DEV) console.warn("[plugin-theme] 主题装载失败，回落内置:", e);
+          devLog("capability", `theme load failed: ${theme} → dark`, { requested: theme, error: String(e).slice(0, 120) });
           setTheme("dark");
         }
       }

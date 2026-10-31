@@ -1,3 +1,4 @@
+import { devLog } from "@/lib/dev-log";
 /** 组合清单装载（需求13 C1）：Rust 扫描 toml → engine 装配 → 注册表合并。
  *  v0.9.3 需求25：@file: 混合插件在此装载代码组件（hybrid-runtime），
  *  指纹随 _files 透传实现热更；崩溃回调自动停用（plugin_set_enabled）。 */
@@ -159,6 +160,12 @@ export async function reloadComposed(): Promise<void> {
     loaded = true;
     version += 1;
     bump();
+    // 需求14：能力发现观测——装载结果（数量/混合件数/跳过数），诊断"插件装了
+    // 但没出现"问题的第一步。
+    { const hybridCount = descriptors.filter(d => (d as { implKind?: string }).implKind === "code").length;
+      const skipped = (items?.length ?? 0) - descriptors.length;
+      devLog("capability", `composed manifests loaded: ${descriptors.length} plugins (${hybridCount} hybrid, ${skipped} skipped)`,
+        { total: items?.length ?? 0, loaded: descriptors.length, hybrid: hybridCount, skipped }); }
   } catch (err) {
     console.warn("[composition] composed_plugin_manifests failed:", err);
   }
