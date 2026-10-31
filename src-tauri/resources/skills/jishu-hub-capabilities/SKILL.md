@@ -18,6 +18,7 @@ description: 在 Jishu Hub 会话中向用户呈现内容前必读——图表/�
 | 已交付的 HTML 文件看实际效果 | preview_html 工具（仅机枢 agent） | 写文件后调用 preview_html |
 | 结构化外部能力（数据库、API、内部系统等） | MCP 工具（仅机枢 agent） | 直接调用 `插件id__` 前缀的工具 |
 | 已沉淀的可复用流程 | skill | read 对应 SKILL.md 后按指引执行 |
+| **改变客户端外观/行为**（做主题/换配色/聊天背景/新图表渲染/接入新智能体/新面板/给 AI 新能力——不是在回复中输出代码块，而是改变客户端本身） | **插件创作** | **read jishu-plugin-authoring 的 SKILL.md 按模板产出并安装** |
 
 ## 会话内直接渲染（首选：零文件、零工具调用）
 

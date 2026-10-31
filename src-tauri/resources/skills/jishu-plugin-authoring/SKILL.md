@@ -1,6 +1,6 @@
 ---
 name: jishu-plugin-authoring
-description: 创建/安装 Jishu Hub 插件前必读——四层指南：①判断指南（用户想要什么 → 该造哪种插件：智能体工具/会话界面组合式/混合代码/流水线/自建智能体/MCP/Skill）；②六形态可复制模板（plugin.toml + component.js 完整示例，含代码块渲染接管变体——echarts/katex 类图表插件：block-renderer + api.loadAsset 引库）；③混合插件 component.js API 参考（JishuPlugin.register/h/useState/loadAsset/props 形状）；④陷阱与最佳实践。配套 CLI：plugins add（统一寻址）/ validate / add-hybrid。用户说"加一个插件/让 AI 能 X/在会话里显示 X"时按本指南产出并安装。
+description: 创建/安装 Jishu Hub 插件前必读——用户想改变客户端本身时（做主题/换配色/聊天背景/新图表渲染/接入新智能体/新面板/给 AI 新能力）读此指南。四层指南：①判断指南（用户想要什么 → 该造哪种插件：智能体工具/会话界面组合式/混合代码/流水线/自建智能体/MCP/Skill/外观主题）；②七形态可复制模板（plugin.toml + component.js/theme.css 完整示例，含代码块渲染接管变体——echarts/katex 类图表插件：block-renderer + api.loadAsset 引库）；③混合插件 component.js API 参考（JishuPlugin.register/h/useState/loadAsset/props 形状）；④陷阱与最佳实践。配套 CLI：plugins add（统一寻址/目录桥接）/ validate / add-hybrid。用户说"加一个插件/让 AI 能 X/在会话里显示 X/换个主题/接个新智能体"时按本指南产出并安装。
 ---
 
 # Jishu Hub 插件创作指南（四层）
